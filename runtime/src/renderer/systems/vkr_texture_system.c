@@ -28,6 +28,8 @@
 #define VKR_TEXTURE_SYSTEM_ASYNC_DMEMORY_RESERVE MB(16)
 /* Vulkan VkFormat 97, recorded directly in KTX2 without a Vulkan dependency. */
 #define VKR_KTX2_VK_FORMAT_R16G16B16A16_SFLOAT 97u
+#define VKR_KTX2_VK_FORMAT_ASTC_4x4_UNORM_BLOCK 157u
+#define VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK 158u
 
 vkr_internal String8 vkr_texture_strip_resource_key_prefix(String8 name);
 
@@ -2411,10 +2413,9 @@ vkr_internal bool8_t vkr_texture_ktx2_load_cached_transcode(
   VkrTextureDecodeResult *out_result = decode->out_result;
   VkrTextureTranscodeCacheRecord cached = {0};
   if (!vkr_texture_transcode_cache_load(
-          decode->allocator, decode->vkt_path, decode->file_data,
-          decode->file_size, target_format, base_texture->baseWidth,
-          base_texture->baseHeight, base_texture->numLevels,
-          decode->physical_layers, &cached)) {
+          decode->allocator, decode->file_data, decode->file_size,
+          target_format, base_texture->baseWidth, base_texture->baseHeight,
+          base_texture->numLevels, decode->physical_layers, &cached)) {
     return false_v;
   }
 
@@ -2441,25 +2442,15 @@ vkr_internal bool8_t vkr_texture_ktx2_load_cached_transcode(
   return true_v;
 }
 
-/* Transcodes the Basis payload and copies every mip, layer and face into
+/* Copies every mip, layer and face of the texture's device-ready payload into
  * upload storage owned by the decode. */
-vkr_internal bool8_t vkr_texture_ktx2_transcode_upload(
-    VkrTextureKtx2Decode *decode, ktx_transcode_fmt_e target_transcode_format,
-    ktx_size_t *out_data_size, uint32_t *out_region_count) {
+vkr_internal bool8_t vkr_texture_ktx2_copy_upload(VkrTextureKtx2Decode *decode,
+                                                  ktx_size_t *out_data_size,
+                                                  uint32_t *out_region_count) {
   ktxTexture *base_texture = decode->base_texture;
   const uint32_t face_count = decode->face_count;
   VkrTextureDecodeResult *out_result = decode->out_result;
-  ktxResult ktx_result = ktxTexture2_TranscodeBasis(decode->ktx_texture,
-                                                    target_transcode_format, 0);
-  if (ktx_result != KTX_SUCCESS) {
-    log_error("Failed to transcode KTX2 texture '%s' to '%s': %s",
-              decode->path_cstr,
-              ktxTranscodeFormatString(target_transcode_format),
-              ktxErrorString(ktx_result));
-    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return false_v;
-  }
-
+  ktxResult ktx_result = KTX_SUCCESS;
   uint8_t *ktx_data = ktxTexture_GetData(base_texture);
   ktx_size_t ktx_data_size = ktxTexture_GetDataSize(base_texture);
   if (!ktx_data || ktx_data_size == 0) {
@@ -2526,6 +2517,70 @@ vkr_internal bool8_t vkr_texture_ktx2_transcode_upload(
   return true_v;
 }
 
+/* Transcodes the Basis payload, then copies it into upload storage. */
+vkr_internal bool8_t vkr_texture_ktx2_transcode_upload(
+    VkrTextureKtx2Decode *decode, ktx_transcode_fmt_e target_transcode_format,
+    ktx_size_t *out_data_size, uint32_t *out_region_count) {
+  const ktxResult ktx_result = ktxTexture2_TranscodeBasis(
+      decode->ktx_texture, target_transcode_format, 0);
+  if (ktx_result != KTX_SUCCESS) {
+    log_error("Failed to transcode KTX2 texture '%s' to '%s': %s",
+              decode->path_cstr,
+              ktxTranscodeFormatString(target_transcode_format),
+              ktxErrorString(ktx_result));
+    decode->out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+  return vkr_texture_ktx2_copy_upload(decode, out_data_size, out_region_count);
+}
+
+/* Uploads a native ASTC 4x4 payload (a workspace import on an ASTC host)
+ * without transcoding; the file already holds the device format, so the
+ * transcode cache is not involved. A device without ASTC cannot sample it:
+ * the asset must be rebuilt for this platform. */
+vkr_internal bool8_t
+vkr_texture_ktx2_decode_astc(VkrTextureKtx2Decode *decode) {
+  ktxTexture *base_texture = decode->base_texture;
+  VkrTextureDecodeResult *out_result = decode->out_result;
+  if (!decode->system->supports_texture_astc_4x4) {
+    log_error("Texture '%s' holds ASTC 4x4 blocks, which this device cannot "
+              "sample; rebuild the asset on this platform",
+              decode->path_cstr);
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+  ktx_size_t data_size = 0;
+  uint32_t region_count = 0;
+  if (!vkr_texture_ktx2_copy_upload(decode, &data_size, &region_count)) {
+    return false_v;
+  }
+  const VkrTextureFormat format =
+      decode->ktx_texture->vkFormat == VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK
+          ? VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB
+          : VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+  out_result->upload_data = decode->upload_data;
+  out_result->upload_data_size = data_size;
+  out_result->upload_regions = decode->upload_regions;
+  out_result->upload_region_count = region_count;
+  out_result->upload_mip_levels = base_texture->numLevels;
+  out_result->upload_array_layers = decode->physical_layers;
+  out_result->upload_format = format;
+  out_result->upload_type = decode->texture_type;
+  out_result->upload_is_compressed = true_v;
+  out_result->width = (int32_t)base_texture->baseWidth;
+  out_result->height = (int32_t)base_texture->baseHeight;
+  out_result->original_channels =
+      (int32_t)vkr_texture_channel_count_from_format(format);
+  out_result->has_transparency = vkr_texture_ktx_metadata_bool(
+      base_texture, "vkr.has_transparency", false_v);
+  out_result->alpha_mask =
+      vkr_texture_ktx_metadata_bool(base_texture, "vkr.alpha_mask", false_v);
+  out_result->success = true_v;
+  decode->upload_data = NULL;
+  decode->upload_regions = NULL;
+  return true_v;
+}
+
 /* Transcodes a Basis-compressed KTX2 texture to the selected device format,
  * serving it from and refreshing the transcode cache. */
 vkr_internal bool8_t
@@ -2589,9 +2644,8 @@ vkr_texture_ktx2_decode_transcoded(VkrTextureKtx2Decode *decode) {
       .regions = decode->upload_regions,
       .region_count = region_count,
   };
-  if (vkr_texture_transcode_cache_store(decode->allocator, decode->vkt_path,
-                                        decode->file_data, decode->file_size,
-                                        &cache_record)) {
+  if (vkr_texture_transcode_cache_store(decode->allocator, decode->file_data,
+                                        decode->file_size, &cache_record)) {
     vkr_atomic_uint64_fetch_add(&system->transcode_cache_writes, 1u,
                                 VKR_MEMORY_ORDER_RELAXED);
   }
@@ -2670,7 +2724,10 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
     goto cleanup;
   }
 
-  if (!ktxTexture2_NeedsTranscoding(decode.ktx_texture)) {
+  if (decode.ktx_texture->vkFormat == VKR_KTX2_VK_FORMAT_ASTC_4x4_UNORM_BLOCK ||
+      decode.ktx_texture->vkFormat == VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK) {
+    success = vkr_texture_ktx2_decode_astc(&decode);
+  } else if (!ktxTexture2_NeedsTranscoding(decode.ktx_texture)) {
     success = vkr_texture_ktx2_decode_direct(&decode);
   } else {
     success = vkr_texture_ktx2_decode_transcoded(&decode);

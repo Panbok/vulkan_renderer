@@ -183,12 +183,34 @@ Details rows come from each component's type descriptor and apply through the
 edit journal.
 RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
 Console snapshots bounded structured logger history with a checkbox filter dropdown. In
-legacy scene mode, Bakery runs nine recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
-anisotropy, diffuse volume, and reflection probe—in one cancellable child
-process at a time. Its setup, jobs and output views use labeled controls and
+legacy scene mode, Bakery runs twelve recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
+anisotropy, diffuse volume, reflection probe, collision hull, collision mesh
+and shaders—as one cancellable
+[`vkr_bakery`](adr/077-asset-build-system.md) child process at a time. Cook,
+table and shader recipes stream its JSON events into per-action progress and
+Console lines. Its setup, jobs and output views use labeled controls and
 adapt to dock width; cancellation terminates the complete child process tree.
 The diffuse recipe defaults to a tracked enclosed-room example; invalid-volume
 bounds and child-baker diagnostics are reported in Bakery output.
+
+`vkr_bakery` is the only asset and shader build program: cooked assets, lookup
+tables, the shader catalog, managed project jobs, scene bakes, material
+previews and C script modules share one per-user action cache, scheduler and
+event stream. Builds run
+`vkr_bakery shaders` into `<build>/shaders`; the renderer resolves SPIR-V, MSL
+and `.metallib` files through the [shader catalog](../renderer/src/vkr_shader_catalog.c),
+and Metal loads a metallib only when its manifest matches the MSL source.
+Each editor process supervises one `vkr_bakery serve` daemon (macOS; Windows
+has no transport yet) that recompiles the loaded shader catalog when a shader
+source changes, then asks for a restart because pipelines do not hot reload,
+and marks Content items Changed or Missing when their files change on disk; an
+edited source of an asset in the open scene queues its Rebuild job unless the
+scene has unsaved edits. Relative asset paths resolve against one content root
+(the repository, or a bundle's `content/` directory), and mounted `.vkpak`
+archives serve identities below it through the ordinary filesystem calls;
+`vkr_bakery bundle` packs a scene's closure with the runtime and shader
+catalog into a directory that runs without the repository.
+[ADR-077](adr/077-asset-build-system.md) records the contract and its gaps.
 Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
 and Color and a clipped, scrollable right content area. The editor emits typed
 `VkrGraphicsSettingsRequest` values; the sample runtime validates and owns their
@@ -231,8 +253,9 @@ deletion; project-shared assets remain. Incomplete file removal offers Retry.
 import, dirty-state prompts, scene activation and progress. Preparation progress
 and errors stay inside Scene; runtime streaming displays without a loading
 overlay while other editor panels remain usable. Its
-[job process](../tools/editor_project_jobs.py) validates scene versions 3 and 4
-and lowers inventory references to explicit runtime paths. Imports preserve cooked geometry
+[job runner](../tools/bakery/project/vkr_project_main.c) (`vkr_bakery project`)
+validates scene versions 3 to 5 and lowers inventory references to explicit
+runtime paths. Imports preserve cooked geometry
 identity, copy material/texture dependencies and publish fresh artifact revisions
 before changing manifest references. Scene saves use immutable overlay revisions
 and manifest fingerprint checks. Workspace writer leases cover asynchronous
@@ -493,7 +516,10 @@ Workers perform CPU-only resource preparation. Render-thread finalization owns
 GPU publication; its upload budgets allow an oversized first upload to progress.
 Required dependency/publication failure prevents scene activation.
 Materials initially publish semantic defaults and request textures incrementally;
-ready textures replace material rows. Shared texture residency counts each GPU
+ready textures replace material rows. `vkr_material_system_replace` swaps a live
+material's whole definition, streaming its textures as a group and publishing
+them with the new factors in one row, which the editor uses to show a background
+finalization's materials as they finish ([ADR-077](adr/077-asset-build-system.md)). Shared texture residency counts each GPU
 texture once and completion-retires resources only after their last resident
 reference leaves. Loader/cooker decisions are in
 [ADR-030](adr/030-offline-mesh-optimization-and-cooking.md) and
@@ -1262,7 +1288,7 @@ These are limits of current code or retained acceptance, not scheduled promises:
 - Native source exists for both backends, but same-revision crossed transmission,
   visibility/packed geometry, punctual lighting, shadow-transition, tonemap,
   UI/text color/coverage/picking and mixed-DPI evidence remains incomplete.
-- The Graphics Settings and nine-recipe Bakery integration is source-integrated.
+- The Graphics Settings and twelve-recipe Bakery integration is source-integrated.
   Settings CPU oracles pass two round trips, twenty invalid/default and
   dependency cases, restart/live classification, and missing-file handling;
   the process-group cancellation oracle also passes. Release and Debug wrappers

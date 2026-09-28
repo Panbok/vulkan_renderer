@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-26
+updated: 2026-09-27
 authority: proposal
 ---
 
@@ -238,18 +238,18 @@ insufficient.
 
 ## Cooker and Bakery migration
 
-- [ ] Run `tools\pack_vkt_textures.bat` and verify KTX2/UASTC outputs for base
+- [ ] Run `vkr_bakery.exe cook assets\textures` and verify KTX2/UASTC outputs for base
   color, alpha-cutout coverage, and paired normal/roughness variants. Exercise
   opaque, single-sided cutout, double-sided cutout, transmission, and normal
   map fixtures through the Vulkan visibility and material assertions. The
   format and variant contract is [ADR-012](../adr/012-texture-compression-pipeline.md).
-- [ ] Run `tools\cook_vkr_meshes.bat` and `tools\cook_vkr_fonts.bat`; verify
-  versioned mesh hierarchy, cooked MTSDF fonts, and unchanged-output skipping
+- [ ] Run `vkr_bakery.exe build assets\bakery.json`; verify versioned mesh
+  hierarchy, cooked MTSDF fonts, and cache hits for unchanged inputs
   under [ADR-030](../adr/030-offline-mesh-optimization-and-cooking.md) and
   [ADR-034](../adr/034-offline-cooked-font-artifacts.md).
-- [ ] Exercise all nine Bakery recipes—mesh, font, single texture, texture
-  directory, GGX DFG, Charlie, anisotropy, diffuse volume, and reflection
-  probe. Verify each job records source identity, output path, status, and
+- [ ] Exercise all twelve Bakery recipes—mesh, font, single texture, texture
+  directory, GGX DFG, Charlie, anisotropy, diffuse volume, reflection probe,
+  collision hull, collision mesh and shaders. Verify each job records source identity, output path, status, and
   failure text, and that a failed job does not publish a partial artifact.
   Every recipe failed on the first Windows run, for four separate reasons now
   fixed: `write_file_atomic` reported nothing, so a cooker failure reached the
@@ -268,7 +268,7 @@ insufficient.
 - [ ] Run a Windows Bakery job for an actual glass scene with multi-bounce
   transport and photon caustics. Verify valid-probe/cell counts, finite SH,
   nonzero caustic deposits, dependency manifest, CRCs, and `--check` freshness
-  using the [diffuse-volume wrapper](../../tools/bake_diffuse_volume.py).
+  using `vkr_bakery.exe bake diffuse` ([ADR-077](../adr/077-asset-build-system.md)).
 - [ ] Cancel a running Bakery job from the UI and from its owning process. The
   cancellation must reach nested cooker children, leave no orphan processes,
   remove only temporary outputs, and leave the last published artifact usable.

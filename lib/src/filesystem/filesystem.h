@@ -236,7 +236,20 @@ typedef struct FileHandle {
   void *handle;         /**< Platform-specific file handle (FILE* on POSIX) */
   const FilePath *path; /**< Pointer to the file path used to open this file */
   FileMode mode;        /**< Copy of the mode flags used to open this file */
+  /** Non-null when a mounted content archive serves a read-only open
+   * (filesystem/vkr_vfs.h): the entry's mapped bytes and the read position. */
+  const uint8_t *memory;
+  uint64_t memory_size;
+  uint64_t memory_position;
 } FileHandle;
+
+/** A read-only mapping of a whole file; bytes stay valid until file_unmap. */
+typedef struct FileMapping {
+  const uint8_t *data;
+  uint64_t size;
+  uint64_t last_modified; /**< Unix seconds. */
+  void *platform;
+} FileMapping;
 
 /**
  * @brief File metadata information.
@@ -294,6 +307,10 @@ FilePath file_path_create(const char *path, VkrAllocator *allocator,
  */
 FileError file_open(const FilePath *path, FileMode mode,
                     FileHandle *out_handle);
+
+/** Maps a whole file read-only. An empty file is FILE_ERROR_FILE_EMPTY. */
+FileError file_map_readonly(const FilePath *path, FileMapping *out_mapping);
+void file_unmap(FileMapping *mapping);
 
 /**
  * @brief Closes an open file handle.

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-13
+updated: 2026-09-28
 authority: adr
 ---
 # ADR-030: Versioned meshoptimizer-cooked mesh artifacts
@@ -19,8 +19,13 @@ stable packed-geometry contract while glTF remains an authoring input.
 Cook meshes into versioned `.vkb` artifacts. Each artifact records explicit
 little-endian fields, source and settings identities, meshoptimizer and codec
 versions, ranges, dependencies, decode data, and checksums. The cooker applies
-meshoptimizer locality and vertex/index encoding per range. The loader fully
-validates the artifact before decoding it into runtime geometry.
+meshoptimizer locality and vertex/index encoding per range, with ranges
+encoded on up to eight threads and folded into the header in range order, so
+the artifact is byte-identical to a serial cook. Its dependencies are the
+files the cook reads: the glTF, its buffers and the images a texture samples,
+not images named only by an extension the importer ignores (Bistro's
+`MSFT_texture_dds` alternates), and no image at the deferred texture tier. The
+loader fully validates the artifact before decoding it into runtime geometry.
 
 The tool-owned glTF importer also decodes `EXT_meshopt_compression` input
 buffers. Runtime mesh loading accepts cooked `.vkb` artifacts; it does not
@@ -54,8 +59,8 @@ Runtime `.vkb` loading needs no authoring file to recover node identities.
 Scene-specific light range overrides are resolved by the offline mesh cooker
 through repeatable `--light-range <definition>=<meters>` arguments. Main Bistro
 uses `bistro-lights-main.vkb` with six 5 m overrides; scenes without those
-adjustments retain `bistro-lights.vkb`. The [cook scripts](../../tools/cook_vkr_meshes.sh)
-retain the exact inputs. Runtime scene loading rejects source-light import
+adjustments retain `bistro-lights.vkb`. The [repository cook manifest](../../assets/bakery.json)
+retains the exact inputs for `vkr_bakery build`. Runtime scene loading rejects source-light import
 fields and instantiates the already-resolved punctual values from cooked nodes.
 Changed scene or source fingerprints can invalidate existing editor override
 sidecars. The loader preserves those files and rejects conflicting overrides;

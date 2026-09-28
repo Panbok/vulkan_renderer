@@ -9,11 +9,11 @@ import subprocess
 
 root = Path(__file__).resolve().parents[2]
 fixtures = Path('tests/fixtures/rendering/diffuse_sheet')
-cooker = root / 'build_release/tools/vkr_mesh_cooker'
+bakery = root / 'build_release/tools/bakery/vkr_bakery'
 for variant in ('on', 'off', 'black', 'cutout'):
     stem = 'diffuse_sheet_' + variant
     source = fixtures / (stem + '.gltf')
-    subprocess.run([str(cooker), '--input', str(source), '--output',
+    subprocess.run([str(bakery), 'tool', 'mesh', '--input', str(source), '--output',
                     str(source.with_suffix('.vkb'))], cwd=root, check=True)
     materials = list((root / 'assets/materials' / stem).glob('*.mt'))
     assert len(materials) == 1, materials

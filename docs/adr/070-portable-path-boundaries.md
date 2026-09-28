@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-13
+updated: 2026-09-27
 authority: adr
 ---
 # ADR-070: Portable path boundaries
@@ -81,17 +81,19 @@ No document version bump is needed for this repair.
 
 ## Regression gates
 
-The normal CPU test wrappers run the source boundary guard and Python path
-conformance check before the C suite. The guard rejects new narrow file calls in
+The normal CPU test wrappers run the source boundary guard, then build and run
+the path conformance check through the Debug `vkr_bakery project` runner before
+the C suite. The guard rejects new narrow file calls in
 shipping consumers and native serialization of managed references; behavioral
 tests remain the correctness oracle.
 
 ```sh
 python tools/checks/check_path_boundaries.py
-python tools/checks/check_path_contract.py
 ./build_test.sh
-python tools/checks/check_native_paths.py --cooker build_release/tools/vkr_mesh_cooker --hdr build_release/tools/vkr_hdr_cube_packer --packer build_release/tools/vkr_vkt_packer
-python tools/checks/check_path_lifecycle.py --mesh-cooker build_release/tools/vkr_mesh_cooker --texture-packer build_release/tools/vkr_vkt_packer
+B=build_release/tools/bakery/vkr_bakery
+python tools/checks/check_path_contract.py --bakery $B
+python tools/checks/check_native_paths.py --cooker $B --hdr $B --packer $B
+python tools/checks/check_path_lifecycle.py --mesh-cooker $B --texture-packer $B
 ```
 
 Use `.bat` and `.exe` counterparts on Windows. Native-path fixtures cover Unicode
@@ -127,6 +129,6 @@ workspaces or a different runtime resource-reference syntax are required.
 ## Implementation
 
 - [Filesystem API](../../lib/src/filesystem/filesystem.h), [C++ native bridge](../../lib/src/filesystem/vkr_filesystem_cpp.h), [startup](../../lib/src/platform/vkr_entry.h)
-- [Asset resolver](../../lib/src/filesystem/vkr_asset_path.c), [project store](../../editor/src/editor_project_store.c), [project jobs](../../tools/editor_project_jobs.py)
+- [Asset resolver](../../lib/src/filesystem/vkr_asset_path.c), [project store](../../editor/src/editor_project_store.c), [project jobs](../../tools/bakery/project/vkr_project_util.c)
 - [Cgltf adapter](../../tools/assets/cgltf_impl.c), [KTX adapter](../../tools/assets/vkr_ktx_file.h)
 - [Shared managed corpus](../../tests/fixtures/paths/managed.json), [native lexical corpus](../../tests/fixtures/paths/native.json), [C tests](../../tests/src/asset_path_test.c)

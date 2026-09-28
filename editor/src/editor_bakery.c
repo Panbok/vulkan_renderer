@@ -1,4 +1,5 @@
 #include "editor_bakery.h"
+#include "editor_bakery_service.h"
 #include "editor_internal.h"
 
 #include "core/logger.h"
@@ -7,7 +8,10 @@
 #include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
 #include "platform/vkr_platform.h"
+#include "vkr_shader_catalog.h"
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define EDITOR_BAKERY_JOB_CAPACITY 16u
@@ -27,14 +31,15 @@ typedef enum EditorBakeKind {
   EDITOR_BAKE_REFLECTION_PROBE,
   EDITOR_BAKE_COLLISION_HULL,
   EDITOR_BAKE_COLLISION_MESH,
+  EDITOR_BAKE_SHADERS,
   EDITOR_BAKE_KIND_COUNT,
   EDITOR_BAKE_PROJECT = EDITOR_BAKE_KIND_COUNT,
 } EditorBakeKind;
 
 static const char *const editor_bakery_kind_names[] = {
-    "Mesh",       "Font",    "Texture",        "Texture folder",
-    "GGX DFG",    "Charlie", "Anisotropy",     "Diffuse",
-    "Reflection", "Hull",    "Collision mesh", "Project"};
+    "Mesh",           "Font",       "Texture", "Texture folder", "GGX DFG",
+    "Charlie",        "Anisotropy", "Diffuse", "Reflection",     "Hull",
+    "Collision mesh", "Shaders",    "Project"};
 _Static_assert(ArrayCount(editor_bakery_kind_names) == EDITOR_BAKE_PROJECT + 1,
                "Every bake kind and the project job need a display name");
 
@@ -64,6 +69,12 @@ typedef struct EditorBakeJob {
   bool8_t force;
   bool8_t process_ok;
   bool8_t timed_out;
+  /* Bytes of the event stream already forwarded to the Console, and the
+     action counters seen so far. */
+  uint64_t console_offset;
+  uint32_t actions_total;
+  uint32_t actions_finished;
+  uint32_t actions_failed;
 } EditorBakeJob;
 
 struct VkrEditorBakery {
@@ -95,9 +106,15 @@ struct VkrEditorBakery {
   uint8_t log[EDITOR_BAKERY_LOG_CAPACITY];
   uint32_t log_length;
   float64_t next_log_read;
+  float64_t next_console_read;
   char log_directory[EDITOR_BAKERY_PATH_CAPACITY];
   char lock_directory[EDITOR_BAKERY_PATH_CAPACITY];
   char message[192];
+  /* The `vkr_bakery serve` daemon; NULL where it is unavailable. The shader
+     watch recompiles this editor's catalog when a shader source changes. */
+  EditorBakeryService *service;
+  uint32_t shader_watch;
+  bool8_t shader_watch_requested;
 };
 
 /* Bakery text is UI labels and path fragments, and both are legitimately
@@ -126,9 +143,21 @@ static bool8_t editor_bakery_is_static_table(EditorBakeKind kind) {
          kind == EDITOR_BAKE_ANISOTROPY_TABLE;
 }
 
+/* Cook, table and shader recipes stream vkr_bakery JSON events and are cached
+ * by action key, so a rebuild of unchanged inputs needs an explicit Force.
+ * Project jobs and scene bakes print a plain log and publish a result. */
+static bool8_t editor_bakery_streams_events(EditorBakeKind kind) {
+  return kind != EDITOR_BAKE_PROJECT && kind != EDITOR_BAKE_DIFFUSE_VOLUME &&
+         kind != EDITOR_BAKE_REFLECTION_PROBE;
+}
+
 static bool8_t editor_bakery_supports_force(EditorBakeKind kind) {
-  return kind == EDITOR_BAKE_FONT || kind == EDITOR_BAKE_TEXTURE ||
-         kind == EDITOR_BAKE_TEXTURES;
+  return editor_bakery_streams_events(kind);
+}
+
+/* Recipes whose source is fixed: renderer tables and the shader catalog. */
+static bool8_t editor_bakery_has_fixed_source(EditorBakeKind kind) {
+  return editor_bakery_is_static_table(kind) || kind == EDITOR_BAKE_SHADERS;
 }
 
 static const char *editor_bakery_table_output(EditorBakeKind kind) {
@@ -151,78 +180,75 @@ static bool8_t editor_bakery_is_cancelled(void *context) {
 static void *editor_bakery_worker(void *argument) {
   VkrEditorBakery *bakery = argument;
   EditorBakeJob *job = &bakery->jobs[bakery->running];
-  const char *arguments[24];
+  const char *arguments[32];
   char manifest[EDITOR_BAKERY_PATH_CAPACITY + 20u];
   uint32_t count = 0u;
-  const char *executable;
-  if (job->kind == EDITOR_BAKE_PROJECT) {
-    executable = VKR_EDITOR_PYTHON_PATH;
-    arguments[count++] = PROJECT_SOURCE_DIR "tools/editor_project_jobs.py";
+  if (editor_bakery_streams_events(job->kind)) {
+    /* One vkr_bakery process per recipe; its JSON event stream on stdout
+       drives the job's progress, action list, output and Console lines. */
+    switch (job->kind) {
+    case EDITOR_BAKE_SHADERS:
+      arguments[count++] = "shaders";
+      arguments[count++] = "--out";
+      arguments[count++] = job->input;
+      break;
+    case EDITOR_BAKE_DFG_TABLE:
+    case EDITOR_BAKE_SHEEN_TABLE:
+    case EDITOR_BAKE_ANISOTROPY_TABLE:
+      arguments[count++] = "cook";
+      arguments[count++] = "--producer";
+      arguments[count++] = "table";
+      arguments[count++] = "--recipe";
+      arguments[count++] = job->kind == EDITOR_BAKE_DFG_TABLE ? "table=dfg"
+                           : job->kind == EDITOR_BAKE_SHEEN_TABLE
+                               ? "table=sheen"
+                               : "table=anisotropy";
+      break;
+    case EDITOR_BAKE_COLLISION_HULL:
+    case EDITOR_BAKE_COLLISION_MESH:
+      arguments[count++] = "cook";
+      arguments[count++] = job->input;
+      arguments[count++] = "--producer";
+      arguments[count++] = "collision";
+      arguments[count++] = "--recipe";
+      arguments[count++] =
+          job->kind == EDITOR_BAKE_COLLISION_HULL ? "kind=hull" : "kind=mesh";
+      arguments[count++] = "--out";
+      arguments[count++] = job->output;
+      break;
+    default:
+      arguments[count++] = "cook";
+      arguments[count++] = job->input;
+      if (job->kind != EDITOR_BAKE_TEXTURES) {
+        arguments[count++] = "--producer";
+        arguments[count++] = job->kind == EDITOR_BAKE_MESH   ? "mesh"
+                             : job->kind == EDITOR_BAKE_FONT ? "font"
+                                                             : "texture";
+      }
+      break;
+    }
+    arguments[count++] = "--root";
+    arguments[count++] = PROJECT_SOURCE_DIR;
+    arguments[count++] = "--json";
+    if (job->force) {
+      arguments[count++] = "--force";
+    }
+  } else if (job->kind == EDITOR_BAKE_PROJECT) {
+    arguments[count++] = "project";
     arguments[count++] = "--request";
     arguments[count++] = job->input;
     arguments[count++] = "--result";
     arguments[count++] = job->output;
-  } else if (job->kind == EDITOR_BAKE_MESH) {
-    executable = VKR_EDITOR_MESH_COOKER_PATH;
-    arguments[count++] = "--input";
-    arguments[count++] = job->input;
-    arguments[count++] = "--output";
-    arguments[count++] = job->output;
-  } else if (job->kind == EDITOR_BAKE_COLLISION_HULL ||
-             job->kind == EDITOR_BAKE_COLLISION_MESH) {
-    executable = VKR_EDITOR_COLLISION_COOKER_PATH;
-    arguments[count++] = "--input";
-    arguments[count++] = job->input;
-    arguments[count++] = "--output";
-    arguments[count++] = job->output;
-    arguments[count++] = "--kind";
-    arguments[count++] =
-        job->kind == EDITOR_BAKE_COLLISION_HULL ? "hull" : "mesh";
-  } else if (job->kind == EDITOR_BAKE_FONT) {
-    executable = VKR_EDITOR_FONT_COOKER_PATH;
-    arguments[count++] = "--config";
-    arguments[count++] = job->input;
-  } else if (job->kind == EDITOR_BAKE_TEXTURE ||
-             job->kind == EDITOR_BAKE_TEXTURES) {
-    executable = VKR_EDITOR_TEXTURE_COOKER_PATH;
-    if (job->kind == EDITOR_BAKE_TEXTURES) {
-      arguments[count++] = "--input-dir";
-      arguments[count++] = job->input;
-      arguments[count++] = "--strict";
-    } else {
-      arguments[count++] = "--output";
-      arguments[count++] = job->output;
-      arguments[count++] = "--type";
-      arguments[count++] = "2d";
-      arguments[count++] = "--layer";
-      arguments[count++] = job->input;
-    }
-    /* Basis encoding is the whole cost of a texture job and scales with
-       cores. Two threads left most of this host idle; "auto" asks the packer
-       for one worker per hardware thread. */
-    arguments[count++] = "--basis-threads";
-    arguments[count++] = "auto";
-  } else if (job->kind == EDITOR_BAKE_DFG_TABLE) {
-    executable = VKR_EDITOR_DFG_COOKER_PATH;
-    arguments[count++] = job->output;
-  } else if (job->kind == EDITOR_BAKE_SHEEN_TABLE) {
-    executable = VKR_EDITOR_SHEEN_COOKER_PATH;
-    arguments[count++] = job->output;
-  } else if (job->kind == EDITOR_BAKE_ANISOTROPY_TABLE) {
-    executable = VKR_EDITOR_ANISOTROPY_COOKER_PATH;
-    arguments[count++] = job->output;
   } else if (job->kind == EDITOR_BAKE_DIFFUSE_VOLUME) {
-    executable = VKR_EDITOR_PYTHON_PATH;
     (void)snprintf(manifest, sizeof(manifest), "%s.manifest.json", job->output);
-    arguments[count++] = "tools/bake_diffuse_volume.py";
+    arguments[count++] = "bake";
+    arguments[count++] = "diffuse";
     arguments[count++] = "--scene";
     arguments[count++] = job->input;
     arguments[count++] = "--output";
     arguments[count++] = job->output;
     arguments[count++] = "--manifest";
     arguments[count++] = manifest;
-    arguments[count++] = "--baker";
-    arguments[count++] = VKR_EDITOR_DIFFUSE_BAKER_PATH;
     arguments[count++] = "--grid";
     arguments[count++] = "4";
     arguments[count++] = "4";
@@ -238,8 +264,8 @@ static void *editor_bakery_worker(void *argument) {
     arguments[count++] = "--photons";
     arguments[count++] = "1000000";
   } else {
-    executable = VKR_EDITOR_PYTHON_PATH;
-    arguments[count++] = "tools/bake_reflection_probe.py";
+    arguments[count++] = "bake";
+    arguments[count++] = "probe";
     arguments[count++] = "--scene";
     arguments[count++] = job->input;
     arguments[count++] = "--position";
@@ -252,13 +278,9 @@ static void *editor_bakery_worker(void *argument) {
     arguments[count++] = job->output;
     arguments[count++] = "--harness";
     arguments[count++] = VKR_EDITOR_HARNESS_PATH;
-    arguments[count++] = "--packer";
-    arguments[count++] = VKR_EDITOR_HDR_CUBE_PACKER_PATH;
   }
-  if (job->force && editor_bakery_supports_force(job->kind))
-    arguments[count++] = "--force";
   const VkrPlatformProcessConfig config = {
-      .executable = executable,
+      .executable = VKR_EDITOR_BAKERY_PATH,
       .arguments = arguments,
       .argument_count = count,
       .working_directory = PROJECT_SOURCE_DIR,
@@ -331,6 +353,7 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
   }
   snprintf(bakery->lock_directory, sizeof(bakery->lock_directory), "%s",
            PROJECT_SOURCE_DIR "build/_artifacts/bakery");
+  bakery->service = editor_bakery_service_create(allocator);
   return bakery;
 }
 
@@ -344,6 +367,7 @@ void vkr_editor_bakery_destroy(VkrEditorBakery *bakery) {
     (void)vkr_thread_destroy(bakery->allocator, &bakery->worker);
     vkr_platform_process_lock_release(&bakery->process_lock);
   }
+  editor_bakery_service_destroy(bakery->service);
   vkr_allocator_free(bakery->allocator, bakery, sizeof(*bakery),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
 }
@@ -378,29 +402,408 @@ static uint32_t editor_bakery_tail(const char *path, uint8_t *bytes,
   return length;
 }
 
+/* vkr_bakery event lines are compact JSON objects. String values are copied
+ * with their escapes decoded so messages read naturally in the panel. */
+static uint32_t editor_bakery_event_text(const char *line, uint64_t length,
+                                         const char *field, char *out,
+                                         uint32_t capacity) {
+  out[0] = 0;
+  VkrJsonReader reader = vkr_json_reader_create((const uint8_t *)line, length);
+  String8 raw = {0};
+  if (!vkr_json_get_string(&reader, field, &raw) || capacity == 0u)
+    return 0u;
+  uint32_t written = 0u;
+  for (uint64_t i = 0u; i < raw.length && written + 4u < capacity; ++i) {
+    uint8_t c = raw.str[i];
+    if (c == '\\' && i + 1u < raw.length) {
+      const uint8_t escape = raw.str[++i];
+      if (escape == 'n')
+        c = '\n';
+      else if (escape == 't')
+        c = '\t';
+      else if (escape == 'r')
+        continue;
+      else if (escape == 'u' && i + 4u < raw.length) {
+        uint32_t codepoint = 0u;
+        for (uint32_t d = 1u; d <= 4u; ++d) {
+          const uint8_t h = raw.str[i + d];
+          codepoint = codepoint * 16u +
+                      (uint32_t)(h <= '9' ? h - '0' : (h | 0x20) - 'a' + 10);
+        }
+        i += 4u;
+        if (codepoint < 0x80u) {
+          out[written++] = (char)codepoint;
+        } else if (codepoint < 0x800u) {
+          out[written++] = (char)(0xC0u | (codepoint >> 6));
+          out[written++] = (char)(0x80u | (codepoint & 0x3Fu));
+        } else {
+          out[written++] = (char)(0xE0u | (codepoint >> 12));
+          out[written++] = (char)(0x80u | ((codepoint >> 6) & 0x3Fu));
+          out[written++] = (char)(0x80u | (codepoint & 0x3Fu));
+        }
+        continue;
+      } else
+        c = escape;
+    }
+    out[written++] = (char)c;
+  }
+  out[written] = 0;
+  return written;
+}
+
+static int64_t editor_bakery_event_int(const char *line, uint64_t length,
+                                       const char *field) {
+  VkrJsonReader reader = vkr_json_reader_create((const uint8_t *)line, length);
+  float64_t value = 0.0;
+  return vkr_json_find_field(&reader, field) &&
+                 vkr_json_parse_double(&reader, &value)
+             ? (int64_t)value
+             : 0;
+}
+
+typedef struct EditorBakeRunning {
+  int64_t id;
+  float64_t fraction;
+  char label[96];
+} EditorBakeRunning;
+
+typedef struct EditorBakeDisplay {
+  uint32_t total;
+  uint32_t finished;
+  uint32_t cached;
+  uint32_t failed;
+  bool8_t summary;
+  EditorBakeRunning running[6];
+  uint8_t *lines;
+  uint32_t lines_length;
+  uint32_t lines_capacity;
+} EditorBakeDisplay;
+
+static void editor_bakery_display_line(EditorBakeDisplay *display,
+                                       const char *format, ...) {
+  char text[768];
+  va_list args;
+  va_start(args, format);
+  int length = vsnprintf(text, sizeof(text), format, args);
+  va_end(args);
+  if (length <= 0)
+    return;
+  if ((uint32_t)length >= sizeof(text))
+    length = (int)sizeof(text) - 1;
+  text[length++] = '\n';
+  /* Keep the newest lines: drop whole old lines when the buffer is full. */
+  while (display->lines_length + (uint32_t)length > display->lines_capacity &&
+         display->lines_length) {
+    uint32_t cut = display->lines_length / 4u;
+    while (cut < display->lines_length && display->lines[cut - 1u] != '\n')
+      ++cut;
+    memmove(display->lines, display->lines + cut, display->lines_length - cut);
+    display->lines_length -= cut;
+  }
+  if ((uint32_t)length <= display->lines_capacity) {
+    MemCopy(display->lines + display->lines_length, text, (uint32_t)length);
+    display->lines_length += (uint32_t)length;
+  }
+}
+
+/* Applies one event to the display and, when `console` is set, reports its
+ * diagnostics and failures through the editor log (the Console). */
+static void editor_bakery_apply_event(EditorBakeDisplay *display,
+                                      const char *line, uint64_t length,
+                                      bool8_t console) {
+  char event[16];
+  if (!editor_bakery_event_text(line, length, "ev", event, sizeof(event)))
+    return;
+  char text[512];
+  char source[256];
+  if (!strcmp(event, "graph")) {
+    display->total = (uint32_t)editor_bakery_event_int(line, length, "actions");
+    display->cached = (uint32_t)editor_bakery_event_int(line, length, "cached");
+    display->finished = display->cached;
+  } else if (!strcmp(event, "start")) {
+    for (uint32_t i = 0u; i < ArrayCount(display->running); ++i) {
+      EditorBakeRunning *slot = &display->running[i];
+      if (slot->id)
+        continue;
+      slot->id = editor_bakery_event_int(line, length, "id");
+      slot->fraction = -1.0;
+      (void)editor_bakery_event_text(line, length, "source", slot->label,
+                                     sizeof(slot->label));
+      break;
+    }
+  } else if (!strcmp(event, "progress")) {
+    const int64_t id = editor_bakery_event_int(line, length, "id");
+    for (uint32_t i = 0u; i < ArrayCount(display->running); ++i) {
+      if (display->running[i].id == id) {
+        VkrJsonReader reader =
+            vkr_json_reader_create((const uint8_t *)line, length);
+        float64_t fraction = -1.0;
+        if (vkr_json_find_field(&reader, "fraction") &&
+            vkr_json_parse_double(&reader, &fraction))
+          display->running[i].fraction = fraction;
+      }
+    }
+  } else if (!strcmp(event, "done")) {
+    const int64_t id = editor_bakery_event_int(line, length, "id");
+    (void)snprintf(source, sizeof(source), "action %lld", (long long)id);
+    for (uint32_t i = 0u; i < ArrayCount(display->running); ++i) {
+      if (display->running[i].id == id) {
+        (void)snprintf(source, sizeof(source), "%s", display->running[i].label);
+        display->running[i] = (EditorBakeRunning){0};
+      }
+    }
+    char status[16];
+    (void)editor_bakery_event_text(line, length, "status", status,
+                                   sizeof(status));
+    display->finished += 1u;
+    if (strcmp(status, "ok")) {
+      display->failed += 1u;
+      editor_bakery_display_line(display, "%s  %s", status, source);
+      if (console)
+        log_error("Bakery: %s %s", source, status);
+    } else {
+      editor_bakery_display_line(
+          display, "done  %s  %.2fs  %lld MiB", source,
+          (float64_t)editor_bakery_event_int(line, length, "wall_ms") / 1000.0,
+          (long long)editor_bakery_event_int(line, length, "peak_rss_mib"));
+    }
+  } else if (!strcmp(event, "diag")) {
+    char code[32];
+    char severity[16];
+    char hint[256];
+    (void)editor_bakery_event_text(line, length, "code", code, sizeof(code));
+    (void)editor_bakery_event_text(line, length, "severity", severity,
+                                   sizeof(severity));
+    (void)editor_bakery_event_text(line, length, "source", source,
+                                   sizeof(source));
+    (void)editor_bakery_event_text(line, length, "message", text, sizeof(text));
+    (void)editor_bakery_event_text(line, length, "hint", hint, sizeof(hint));
+    const int64_t line_number = editor_bakery_event_int(line, length, "line");
+    char location[300];
+    if (line_number > 0)
+      (void)snprintf(location, sizeof(location), "%s:%lld", source,
+                     (long long)line_number);
+    else
+      (void)snprintf(location, sizeof(location), "%s", source);
+    editor_bakery_display_line(display, "%s %s %s%s%s%s%s", severity, code,
+                               location, location[0] ? ": " : "", text,
+                               hint[0] ? "\n  hint: " : "", hint);
+    if (console) {
+      if (!strcmp(severity, "error"))
+        log_error("Bakery %s %s: %s", code, location, text);
+      else
+        log_warn("Bakery %s %s: %s", code, location, text);
+    }
+  } else if (!strcmp(event, "log")) {
+    char level[16];
+    (void)editor_bakery_event_text(line, length, "level", level, sizeof(level));
+    (void)editor_bakery_event_text(line, length, "text", text, sizeof(text));
+    editor_bakery_display_line(display, "%s%s",
+                               strcmp(level, "warn") ? "" : "warn ", text);
+  } else if (!strcmp(event, "summary")) {
+    display->summary = true_v;
+    editor_bakery_display_line(
+        display, "%lld ok, %lld failed, %lld cancelled, %lld cached in %.2fs",
+        (long long)editor_bakery_event_int(line, length, "ok"),
+        (long long)editor_bakery_event_int(line, length, "failed"),
+        (long long)editor_bakery_event_int(line, length, "cancelled"),
+        (long long)editor_bakery_event_int(line, length, "cached"),
+        (float64_t)editor_bakery_event_int(line, length, "wall_ms") / 1000.0);
+  }
+}
+
+/* Reads up to the last 1 MiB of a job's event file; returns malloc storage. */
+static uint8_t *editor_bakery_read_events(const char *path, uint64_t offset,
+                                          uint64_t *out_length,
+                                          uint64_t *out_start) {
+  *out_length = 0u;
+  *out_start = offset;
+  FILE *file = file_fopen(path, "rb");
+  if (!file)
+    return NULL;
+  uint8_t *data = NULL;
+  if (FSEEK64(file, 0, SEEK_END) == 0) {
+    const int64_t size = FTELL64(file);
+    uint64_t start = offset;
+    if (size > 0 && (uint64_t)size > start + MB(1))
+      start = (uint64_t)size - MB(1);
+    if (size > 0 && (uint64_t)size > start &&
+        FSEEK64(file, (int64_t)start, SEEK_SET) == 0) {
+      data = malloc((size_t)((uint64_t)size - start) + 1u);
+      if (data) {
+        *out_length = fread(data, 1u, (size_t)((uint64_t)size - start), file);
+        data[*out_length] = 0u;
+        *out_start = start;
+      }
+    }
+  }
+  fclose(file);
+  return data;
+}
+
+/* Calls `apply` for each complete line; returns bytes consumed. */
+static uint64_t editor_bakery_for_lines(const uint8_t *data, uint64_t length,
+                                        bool8_t skip_partial_first,
+                                        EditorBakeDisplay *display,
+                                        bool8_t console) {
+  uint64_t start = 0u;
+  if (skip_partial_first) {
+    while (start < length && data[start] != '\n')
+      ++start;
+    start = start < length ? start + 1u : length;
+  }
+  uint64_t consumed = start;
+  for (uint64_t i = start; i < length; ++i) {
+    if (data[i] != '\n')
+      continue;
+    if (i > start && data[start] == '{')
+      editor_bakery_apply_event(display, (const char *)data + start, i - start,
+                                console);
+    start = i + 1u;
+    consumed = start;
+  }
+  return consumed;
+}
+
+/* Forwards new diagnostics of the running job to the Console. */
+static void editor_bakery_forward_console(EditorBakeJob *job) {
+  if (!editor_bakery_streams_events(job->kind))
+    return;
+  uint64_t length = 0u;
+  uint64_t start = 0u;
+  uint8_t *data = editor_bakery_read_events(
+      job->stdout_path, job->console_offset, &length, &start);
+  if (!data)
+    return;
+  uint8_t scratch[4096];
+  EditorBakeDisplay display = {.lines = scratch,
+                               .lines_capacity = sizeof(scratch),
+                               .total = job->actions_total,
+                               .finished = job->actions_finished,
+                               .failed = job->actions_failed};
+  job->console_offset =
+      start + editor_bakery_for_lines(
+                  data, length, start != job->console_offset, &display, true_v);
+  job->actions_total = display.total;
+  job->actions_finished = display.finished;
+  job->actions_failed = display.failed;
+  free(data);
+}
+
 static void editor_bakery_read_log(VkrEditorBakery *bakery) {
   if (bakery->selected == EDITOR_BAKERY_NONE)
     return;
   const EditorBakeJob *job = &bakery->jobs[bakery->selected];
   uint32_t length = (uint32_t)snprintf(
       (char *)bakery->log, sizeof(bakery->log),
-      "%s | %s | exit %d%s\nSource: %s\nOutput: %s\n\nOutput (tail):\n",
+      "%s | %s | exit %d%s\nSource: %s\nOutput: %s\n",
       editor_bakery_kind_names[job->kind], editor_bakery_status(job->status),
       job->exit_code, job->timed_out ? " | timed out" : "", job->input,
-      job->output[0] ? job->output : "See cooker output below");
-  length += editor_bakery_tail(job->stdout_path, bakery->log + length, KB(8));
-  static const char errors[] = "\nErrors (tail):\n";
-  MemCopy(bakery->log + length, errors, sizeof(errors) - 1u);
-  length += sizeof(errors) - 1u;
-  length += editor_bakery_tail(job->stderr_path, bakery->log + length,
-                               (uint32_t)sizeof(bakery->log) - length - 1u);
+      job->output[0] ? job->output : "Declared by the recipe");
+  if (!editor_bakery_streams_events(job->kind)) {
+    static const char output[] = "\nOutput (tail):\n";
+    MemCopy(bakery->log + length, output, sizeof(output) - 1u);
+    length += sizeof(output) - 1u;
+    length += editor_bakery_tail(job->stdout_path, bakery->log + length, KB(8));
+    static const char errors[] = "\nErrors (tail):\n";
+    MemCopy(bakery->log + length, errors, sizeof(errors) - 1u);
+    length += sizeof(errors) - 1u;
+    length += editor_bakery_tail(job->stderr_path, bakery->log + length,
+                                 (uint32_t)sizeof(bakery->log) - length - 1u);
+    bakery->log[length] = 0u;
+    bakery->log_length = length;
+    return;
+  }
+  uint8_t lines[KB(12)];
+  EditorBakeDisplay display = {.lines = lines, .lines_capacity = sizeof(lines)};
+  uint64_t events_length = 0u;
+  uint64_t start = 0u;
+  uint8_t *data =
+      editor_bakery_read_events(job->stdout_path, 0u, &events_length, &start);
+  if (data) {
+    (void)editor_bakery_for_lines(data, events_length, start != 0u, &display,
+                                  false_v);
+    free(data);
+  }
+  length += (uint32_t)snprintf(
+      (char *)bakery->log + length, sizeof(bakery->log) - length,
+      "Progress: %u/%u actions, %u cached, %u failed\n", display.finished,
+      display.total, display.cached, display.failed);
+  for (uint32_t i = 0u; i < ArrayCount(display.running); ++i) {
+    const EditorBakeRunning *running = &display.running[i];
+    if (!running->id || length + 160u >= sizeof(bakery->log))
+      continue;
+    length += (uint32_t)snprintf(
+        (char *)bakery->log + length, sizeof(bakery->log) - length,
+        running->fraction >= 0.0 ? "Running: %s %.0f%%\n" : "Running: %s\n",
+        running->label, running->fraction * 100.0);
+  }
+  static const char separator[] = "\n";
+  MemCopy(bakery->log + length, separator, sizeof(separator) - 1u);
+  length += sizeof(separator) - 1u;
+  const uint32_t copy =
+      Min(display.lines_length, (uint32_t)sizeof(bakery->log) - length - 1u);
+  MemCopy(bakery->log + length, display.lines + display.lines_length - copy,
+          copy);
+  length += copy;
+  /* With no events the process never ran; show why. */
+  if (!display.total && !display.summary &&
+      length + 64u < sizeof(bakery->log)) {
+    const uint32_t tail =
+        editor_bakery_tail(job->stderr_path, bakery->log + length,
+                           (uint32_t)sizeof(bakery->log) - length - 1u);
+    length += tail;
+  }
   bakery->log[length] = 0u;
   bakery->log_length = length;
+}
+
+/* Recompiles the catalog this editor loads whenever a shader source changes.
+   The renderer has no pipeline hot reload (ARCHITECTURE.md), so the Console
+   asks for a restart once the compile succeeds. */
+static void editor_bakery_watch_shaders(VkrEditorBakery *bakery) {
+  if (!bakery->shader_watch_requested) {
+    bakery->shader_watch_requested = true_v;
+    char catalog[EDITOR_BAKERY_PATH_CAPACITY];
+    if (!vkr_shader_catalog_root(catalog, sizeof(catalog))) {
+      return;
+    }
+    const char *paths[] = {PROJECT_SOURCE_DIR "renderer/src/shaders"};
+    const char *arguments[] = {"shaders", "--out", catalog, "--root",
+                               PROJECT_SOURCE_DIR};
+    bakery->shader_watch =
+        editor_bakery_service_watch(bakery->service, paths, ArrayCount(paths),
+                                    arguments, ArrayCount(arguments));
+  }
+  char changed[4][EDITOR_BAKERY_SERVICE_PATH];
+  while (editor_bakery_service_take_changes(
+      bakery->service, bakery->shader_watch, changed, ArrayCount(changed))) {
+  }
+  EditorBakeryRebuild rebuild = {0};
+  if (!editor_bakery_service_take_rebuild(bakery->service, bakery->shader_watch,
+                                          &rebuild)) {
+    return;
+  }
+  if (rebuild.exit_code == 3) {
+    log_warn("Shaders: background compile cancelled");
+  } else if (rebuild.exit_code != 0) {
+    log_error("Shaders: background compile failed (exit %d, %u of %u "
+              "entries failed); the diagnostics are above",
+              rebuild.exit_code, rebuild.failed, rebuild.actions);
+  } else if (rebuild.actions > rebuild.cached) {
+    log_warn("Shaders: recompiled %u entries; restart the editor to "
+             "load them",
+             rebuild.actions - rebuild.cached);
+  }
 }
 
 void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
   if (!bakery)
     return;
+  if (bakery->service) {
+    editor_bakery_watch_shaders(bakery);
+    editor_bakery_service_update(bakery->service);
+  }
   if (bakery->worker &&
       vkr_atomic_bool_load(&bakery->complete, VKR_MEMORY_ORDER_ACQUIRE)) {
     (void)vkr_thread_join(bakery->worker);
@@ -424,6 +827,7 @@ void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
     } else {
       log_info("Bakery: %s: %s", editor_bakery_status(job->status), job->input);
     }
+    editor_bakery_forward_console(job);
     bakery->running = EDITOR_BAKERY_NONE;
     bakery->next_log_read = 0.0;
   }
@@ -466,6 +870,11 @@ void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
     }
   }
   const float64_t now = vkr_platform_get_absolute_time();
+  if (bakery->running != EDITOR_BAKERY_NONE &&
+      now >= bakery->next_console_read) {
+    editor_bakery_forward_console(&bakery->jobs[bakery->running]);
+    bakery->next_console_read = now + 0.25;
+  }
   const bool8_t selected_running =
       bakery->selected < bakery->job_count &&
       bakery->jobs[bakery->selected].status == EDITOR_BAKE_RUNNING;
@@ -478,6 +887,16 @@ void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
 
 static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
                                   const char *input, const char *output) {
+  char catalog[EDITOR_BAKERY_PATH_CAPACITY];
+  if (kind == EDITOR_BAKE_SHADERS) {
+    /* Compile into the catalog this editor's renderer loads. */
+    if (!vkr_shader_catalog_root(catalog, sizeof(catalog))) {
+      snprintf(bakery->message, sizeof(bakery->message),
+               "The shader catalog path is too long.");
+      return;
+    }
+    input = catalog;
+  }
   if (!input[0]) {
     snprintf(bakery->message, sizeof(bakery->message),
              "Enter a source path or font configuration first.");
@@ -549,7 +968,9 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
       .force = editor_bakery_supports_force(kind) ? bakery->force : false_v,
       .exit_code = -1};
   snprintf(job->input, sizeof(job->input), "%s", input);
-  if (editor_bakery_is_static_table(kind)) {
+  if (kind == EDITOR_BAKE_SHADERS) {
+    snprintf(job->output, sizeof(job->output), "%s", input);
+  } else if (editor_bakery_is_static_table(kind)) {
     snprintf(job->input, sizeof(job->input), "%s",
              editor_bakery_table_output(kind));
     snprintf(job->output, sizeof(job->output), "%s",
@@ -561,7 +982,9 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
     snprintf(job->output, sizeof(job->output), "%s.vkt", input);
   else if (editor_bakery_uses_explicit_output(kind))
     snprintf(job->output, sizeof(job->output), "%s", output);
-  snprintf(job->stdout_path, sizeof(job->stdout_path), "%s/%u.stdout.log",
+  snprintf(job->stdout_path, sizeof(job->stdout_path),
+           editor_bakery_streams_events(kind) ? "%s/%u.events.jsonl"
+                                              : "%s/%u.stdout.log",
            bakery->log_directory, index);
   snprintf(job->stderr_path, sizeof(job->stderr_path), "%s/%u.stderr.log",
            bakery->log_directory, index);
@@ -663,7 +1086,8 @@ static const VkrUiIcon editor_bakery_kind_icons[] = {
     VKR_UI_ICON_MESH,     VKR_UI_ICON_FONT,         VKR_UI_ICON_TEXTURE,
     VKR_UI_ICON_FOLDER,   VKR_UI_ICON_GRAPH,        VKR_UI_ICON_SPARKLE,
     VKR_UI_ICON_WAVES,    VKR_UI_ICON_SUN_DIM,      VKR_UI_ICON_PROBE,
-    VKR_UI_ICON_COLLIDER, VKR_UI_ICON_BOUNDING_BOX, VKR_UI_ICON_PROJECT};
+    VKR_UI_ICON_COLLIDER, VKR_UI_ICON_BOUNDING_BOX, VKR_UI_ICON_CODE,
+    VKR_UI_ICON_PROJECT};
 _Static_assert(ArrayCount(editor_bakery_kind_icons) ==
                    ArrayCount(editor_bakery_kind_names),
                "Every bake kind needs an icon");
@@ -776,7 +1200,8 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
   if (vkr_ui_panel_begin(ui, string8_lit("source"), &source)) {
     VkrUiWidgetConfig config = editor_bakery_widget(0u, 0u);
     vkr_ui_label(ui, string8_lit("label"),
-                 editor_bakery_is_static_table(bakery->kind)
+                 bakery->kind == EDITOR_BAKE_SHADERS ? string8_lit("Catalog")
+                 : editor_bakery_is_static_table(bakery->kind)
                      ? string8_lit("Table")
                      : string8_lit("Source"),
                  &config);
@@ -796,11 +1221,12 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
         "sources into subtrees with the CLI.",
         "Static glTF/GLB geometry; cooks triangle collision for static or "
         "kinematic bodies.",
+        "Shader catalog this editor's renderer loads.",
     };
     _Static_assert(ArrayCount(path_hints) == EDITOR_BAKE_KIND_COUNT,
                    "Every bake recipe needs a source hint");
     config.tooltip = editor_bakery_string(path_hints[bakery->kind]);
-    config.disabled = editor_bakery_is_static_table(bakery->kind);
+    config.disabled = editor_bakery_has_fixed_source(bakery->kind);
     VkrUiTextEditBuffer buffer = {.data = bakery->source_paths[bakery->kind],
                                   .length =
                                       bakery->source_lengths[bakery->kind],
@@ -810,7 +1236,7 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
     bakery->source_lengths[bakery->kind] = buffer.length;
     config = editor_bakery_widget(wide ? 0u : 2u, wide ? 2u : 0u);
     vkr_editor_action_style(&config, heading);
-    config.disabled = !buffer.length ||
+    config.disabled = (!buffer.length && bakery->kind != EDITOR_BAKE_SHADERS) ||
                       (editor_bakery_uses_explicit_output(bakery->kind) &&
                        !bakery->output_lengths[bakery->kind]) ||
                       bakery->job_count == EDITOR_BAKERY_JOB_CAPACITY;
@@ -857,15 +1283,9 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       if (vkr_ui_text_field(ui, string8_lit("output"), &output, &config))
         bakery->message[0] = '\0';
       bakery->output_lengths[bakery->kind] = output.length;
-    } else if (bakery->kind == EDITOR_BAKE_MESH) {
-      config.tooltip = string8_lit("Meshes always rebuild their output");
-      vkr_ui_label(ui, string8_lit("rebuild"),
-                   width < 180.0f ? string8_lit("Rebuild")
-                                  : string8_lit("Meshes always rebuild"),
-                   &config);
     } else if (editor_bakery_supports_force(bakery->kind)) {
-      config.tooltip =
-          string8_lit("Bake again even when the output is current");
+      config.tooltip = string8_lit(
+          "Bake again even when the cache already holds this result");
       (void)vkr_ui_checkbox(ui, string8_lit("force"),
                             width < 180.0f ? string8_lit("Rebuild")
                                            : string8_lit("Rebuild existing"),
@@ -931,6 +1351,9 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
       "output.\nSplit detailed sources into subtrees with the CLI.",
       "Cooks triangle collision from static glTF/GLB geometry into the .vkc "
       "output.\nUse it for static or kinematic bodies.",
+      "Compiles changed Metal and Vulkan shaders into the renderer's catalog. "
+      "Unchanged shaders come from the cache.\nRestart the editor to load "
+      "them.",
   };
   _Static_assert(ArrayCount(help) == EDITOR_BAKE_KIND_COUNT,
                  "Every bake recipe needs help text");
@@ -994,11 +1417,17 @@ static void editor_bakery_jobs(VkrEditorBakery *bakery, VkrUiSystem *ui,
       while (shown_length < name_length &&
              ((uint8_t)name[shown_length] & 0xc0u) == 0x80u)
         --shown_length;
+      char progress[48] = "";
+      if (job->actions_total) {
+        snprintf(progress, sizeof(progress), "  \xc2\xb7  %u/%u%s",
+                 job->actions_finished, job->actions_total,
+                 job->actions_failed ? " (failures)" : "");
+      }
       const String8 text = string8_create_formatted(
-          ui->frame_allocator, "%s  \xc2\xb7  %s  \xc2\xb7  %.*s%s",
+          ui->frame_allocator, "%s  \xc2\xb7  %s%s  \xc2\xb7  %.*s%s",
           editor_bakery_status(job->status),
-          editor_bakery_kind_names[job->kind], (int)shown_length, name,
-          shown_length < name_length ? "\xe2\x80\xa6" : "");
+          editor_bakery_kind_names[job->kind], progress, (int)shown_length,
+          name, shown_length < name_length ? "\xe2\x80\xa6" : "");
       VkrUiWidgetConfig config = editor_bakery_widget(i, 0u);
       editor_bakery_tab_style(&config, heading, i == bakery->selected);
       config.placement.justify = VKR_UI_ALIGN_STRETCH;
@@ -1099,6 +1528,10 @@ static void editor_bakery_jobs(VkrEditorBakery *bakery, VkrUiSystem *ui,
       selected->exit_code = -1;
       selected->timed_out = false_v;
       selected->process_ok = false_v;
+      selected->console_offset = 0u;
+      selected->actions_total = 0u;
+      selected->actions_finished = 0u;
+      selected->actions_failed = 0u;
       bakery->message[0] = 0;
       editor_bakery_remove_log(selected->stdout_path);
       editor_bakery_remove_log(selected->stderr_path);
@@ -1262,6 +1695,10 @@ bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
   *reflection = bakery->reflection;
   *diffuse = bakery->diffuse;
   return true_v;
+}
+
+EditorBakeryService *vkr_editor_bakery_service(VkrEditorBakery *bakery) {
+  return bakery ? bakery->service : NULL;
 }
 
 bool8_t vkr_editor_bakery_busy(const VkrEditorBakery *bakery) {

@@ -2,6 +2,7 @@
 #include "core/vkr_json.h"
 #include "core/vkr_subsystem_plan.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "gameplay/vkr_gameplay_player.h"
 #include "renderer/resources/loaders/scene_loader.h"
 #include "vkr_sample_runtime_config.h"
@@ -4198,7 +4199,7 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
                 scene_request->asset_root.length);
       } else {
         snprintf(next_asset_root, sizeof(next_asset_root), "%s",
-                 PROJECT_SOURCE_DIR);
+                 vkr_content_root());
       }
       if (scene_request->path.length) {
         MemCopy(next_path, scene_request->path.str, scene_request->path.length);
@@ -4918,14 +4919,14 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
   state->sidecar_path[0] = '\0';
   state->scene_status[0] = '\0';
   snprintf(state->physics_asset_root, sizeof(state->physics_asset_root), "%s",
-           PROJECT_SOURCE_DIR);
+           vkr_content_root());
   state->modal = runtime_config->project_managed;
   if (!runtime_config->project_managed) {
     const char *scene_path = options->scene_path;
     const bool8_t absolute = scene_path[0] == '/' || scene_path[0] == '\\' ||
                              (strlen(scene_path) > 1u && scene_path[1] == ':');
     snprintf(state->sidecar_path, sizeof(state->sidecar_path),
-             "%s%s.editor.json", absolute ? "" : PROJECT_SOURCE_DIR,
+             "%s%s.editor.json", absolute ? "" : vkr_content_root(),
              scene_path);
   }
   state->edits = (VkrSceneEditState){
@@ -5048,6 +5049,11 @@ vkr_internal void vkr_sample_runtime_log_device_information(
 
 int vkr_sample_runtime_run(int argc, char **argv,
                            const VkrSampleRuntimeConfig *runtime_config) {
+  /* A bundle's content mounts before any path resolves (ADR-077). */
+  if (!vkr_vfs_mount_startup()) {
+    fprintf(stderr, "Cannot mount the bundled content\n");
+    return 1;
+  }
   VkrSampleRuntimeOptions options;
   if (!vkr_sample_runtime_options_parse(argc, argv, runtime_config, &options)) {
     return 2;
@@ -5061,6 +5067,10 @@ int vkr_sample_runtime_run(int argc, char **argv,
   if (!vkr_standard_scene_runtime_create(&application, &scene_runtime_config)) {
     fprintf(stderr, "VkrStandardSceneRuntime creation failed\n");
     return 1;
+  }
+  if (vkr_vfs_pack_count()) {
+    log_info("Content: %u archives mounted over %s", vkr_vfs_pack_count(),
+             vkr_content_root());
   }
   application.host.window.defer_close = runtime_config->project_managed;
   if (runtime_config->presentation.headless) {

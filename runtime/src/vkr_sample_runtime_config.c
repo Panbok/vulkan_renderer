@@ -1,6 +1,7 @@
 #include "vkr_sample_runtime_config.h"
 
 #include "containers/str.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,8 +128,12 @@ vkr_internal bool8_t sample_load_graphics(bool8_t project_managed,
                                           VkrSampleRuntimeOptions *options) {
   const char *graphics_path =
       project_managed ? "" : getenv("VKR_GRAPHICS_SETTINGS_PATH");
+  /* The options keep this pointer for the process's lifetime. */
+  static char default_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   if (!graphics_path) {
-    graphics_path = PROJECT_SOURCE_DIR ".vkr-graphics-settings.json";
+    snprintf(default_path, sizeof(default_path),
+             "%s.vkr-graphics-settings.json", vkr_content_root());
+    graphics_path = default_path;
   }
   if (strlen(graphics_path) >= VKR_SAMPLE_RUNTIME_PATH_CAPACITY) {
     fprintf(stderr, "Graphics settings path is too long\n");
@@ -197,6 +202,11 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
 #endif
   };
   options->scene_requested = options->scene_path && options->scene_path[0];
+  if (!options->scene_requested && vkr_vfs_bundle_scene()) {
+    /* A bundle opens its own scene, as if it were requested. */
+    options->scene_path = vkr_vfs_bundle_scene();
+    options->scene_requested = true_v;
+  }
   if (!options->scene_requested) {
     options->scene_path = SCENE_PATH;
   }
@@ -204,7 +214,7 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
     return false_v;
   }
   // The runtime copies the scene path and derives `<path>.editor.json`.
-  if (strlen(PROJECT_SOURCE_DIR) + strlen(options->scene_path) +
+  if (strlen(vkr_content_root()) + strlen(options->scene_path) +
           sizeof(".editor.json") >
       VKR_SAMPLE_RUNTIME_PATH_CAPACITY) {
     fprintf(stderr, "Scene path is too long\n");

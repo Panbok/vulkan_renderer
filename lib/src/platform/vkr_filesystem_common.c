@@ -1,4 +1,5 @@
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_filesystem_internal.h"
 
 // Path, whole-file and error-text helpers shared by the macOS and Windows
@@ -31,7 +32,7 @@ vkr_internal String8 fs_string_duplicate(VkrAllocator *allocator,
 
 FilePath file_path_create(const char *path, VkrAllocator *allocator,
                           FilePathType type) {
-  const char *root = type == FILE_PATH_TYPE_RELATIVE ? PROJECT_SOURCE_DIR : "";
+  const char *root = type == FILE_PATH_TYPE_RELATIVE ? vkr_content_root() : "";
   const uint64_t root_length = string_length(root);
   const uint64_t path_length = string_length(path);
   const uint64_t length = root_length + path_length;

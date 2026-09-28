@@ -1,5 +1,5 @@
 #include "filesystem/vkr_filesystem_cpp.h"
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -15,6 +15,8 @@ extern "C" {
 #include "memory/vkr_arena_allocator.h"
 }
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -24,8 +26,10 @@ extern "C" {
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -44,6 +48,7 @@ struct Options {
   uint32_t face_size = 16, samples = 64, max_depth = 12, seed = 1,
            photons = 1000000;
   float photon_radius = 0.0f;
+  uint32_t threads = 0; // Zero bakes probes on every hardware thread.
 };
 
 bool number(const char *text, float *out) {
@@ -66,7 +71,7 @@ void usage() {
                        "Bake: --output file.vkdv [--manifest file.json] "
                        "[--face-size 16] [--samples 64]\n"
                        "      [--max-depth 12] [--seed 1] [--photons 1000000] "
-                       "[--photon-radius meters]\n");
+                       "[--photon-radius meters] [--threads 0]\n");
 }
 bool parse(int argc, char **argv, Options *out) {
   for (int i = 1; i < argc; ++i) {
@@ -108,6 +113,9 @@ bool parse(int argc, char **argv, Options *out) {
         return false;
     } else if (std::strcmp(argv[i], "--photons") == 0 && i + 1 < argc) {
       if (!integer(argv[++i], &out->photons))
+        return false;
+    } else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+      if (!integer(argv[++i], &out->threads))
         return false;
     } else if (std::strcmp(argv[i], "--photon-radius") == 0 && i + 1 < argc) {
       if (!number(argv[++i], &out->photon_radius) || out->photon_radius <= 0.0f)
@@ -261,50 +269,93 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
       return 1;
   }
   std::vector<VkrDiffuseVolumeProbe> probes(rooms.probe_count);
-  std::vector<Vec3> radiance(6u * options.face_size * options.face_size);
   const float32_t sh_deringing = scene.environment.sh_deringing;
-  for (uint32_t probe = 0; probe < rooms.probe_count; ++probe) {
-    probes[probe].region_id = rooms.probes[probe].region_id;
-    if (!probes[probe].region_id)
-      continue;
-    for (uint32_t face = 0; face < 6; ++face)
-      for (uint32_t y = 0; y < options.face_size; ++y)
-        for (uint32_t x = 0; x < options.face_size; ++x) {
-          const uint32_t pixel =
-              (face * options.face_size + y) * options.face_size + x;
-          double sum[3] = {};
-          for (uint32_t sample = 0; sample < options.samples; ++sample) {
-            uint32_t seed =
-                mix_seed(options.seed ^ mix_seed(probe) ^
-                         mix_seed(pixel + 256u) ^ mix_seed(sample + 65536u));
-            Vec3 direction = vkr_bake_cube_direction(
-                face, 2.0f * (x + random_unit(seed)) / options.face_size - 1.0f,
-                2.0f * (y + random_unit(seed ^ 0x9e3779b9u)) /
-                        options.face_size -
-                    1.0f);
-            VkrBakeIntegratorResult traced = {};
-            if (!vkr_bake_integrator_trace(&integrator,
-                                           rooms.probes[probe].position,
-                                           direction, seed, &traced, &error)) {
-              std::fprintf(
-                  stderr, "Path failed: probe=%u pixel=%u sample=%u error=%u\n",
-                  probe, pixel, sample, error);
-              return 1;
+  // Every path's seed derives from (probe, pixel, sample) and the integrator,
+  // scene, textures and photon map are read-only while tracing, so probes
+  // bake on independent workers and each probe keeps its serial sample
+  // order: the volume is byte-identical for any worker count.
+  std::atomic<uint32_t> next_probe{0u};
+  std::atomic<uint32_t> baked_probes{0u};
+  std::atomic<bool> failed{false};
+  std::mutex report_mutex;
+  auto bake_probes = [&]() {
+    std::vector<Vec3> radiance(6u * options.face_size * options.face_size);
+    for (;;) {
+      const uint32_t probe = next_probe.fetch_add(1u);
+      if (probe >= rooms.probe_count || failed.load()) {
+        return;
+      }
+      probes[probe].region_id = rooms.probes[probe].region_id;
+      if (!probes[probe].region_id) {
+        continue;
+      }
+      for (uint32_t face = 0; face < 6; ++face)
+        for (uint32_t y = 0; y < options.face_size; ++y)
+          for (uint32_t x = 0; x < options.face_size; ++x) {
+            const uint32_t pixel =
+                (face * options.face_size + y) * options.face_size + x;
+            double sum[3] = {};
+            for (uint32_t sample = 0; sample < options.samples; ++sample) {
+              uint32_t seed =
+                  mix_seed(options.seed ^ mix_seed(probe) ^
+                           mix_seed(pixel + 256u) ^ mix_seed(sample + 65536u));
+              Vec3 direction = vkr_bake_cube_direction(
+                  face,
+                  2.0f * (x + random_unit(seed)) / options.face_size - 1.0f,
+                  2.0f * (y + random_unit(seed ^ 0x9e3779b9u)) /
+                          options.face_size -
+                      1.0f);
+              VkrBakeIntegratorResult traced = {};
+              VkrBakeIntegratorError trace_error = {};
+              if (!vkr_bake_integrator_trace(&integrator,
+                                             rooms.probes[probe].position,
+                                             direction, seed, &traced,
+                                             &trace_error)) {
+                std::lock_guard<std::mutex> lock(report_mutex);
+                if (!failed.exchange(true)) {
+                  std::fprintf(stderr,
+                               "Path failed: probe=%u pixel=%u sample=%u "
+                               "error=%u\n",
+                               probe, pixel, sample, trace_error);
+                }
+                return;
+              }
+              sum[0] += traced.radiance.x;
+              sum[1] += traced.radiance.y;
+              sum[2] += traced.radiance.z;
             }
-            sum[0] += traced.radiance.x;
-            sum[1] += traced.radiance.y;
-            sum[2] += traced.radiance.z;
+            radiance[pixel] = {(float)(sum[0] / options.samples),
+                               (float)(sum[1] / options.samples),
+                               (float)(sum[2] / options.samples)};
           }
-          radiance[pixel] = {(float)(sum[0] / options.samples),
-                             (float)(sum[1] / options.samples),
-                             (float)(sum[2] / options.samples)};
-        }
-    if (!vkr_bake_sh_project(radiance.data(), options.face_size, sh_deringing,
-                             &probes[probe].sh))
-      return 1;
-    std::printf("baked_probe=%u/%u region=%u\n", probe + 1, rooms.probe_count,
-                probes[probe].region_id);
-    std::fflush(stdout);
+      if (!vkr_bake_sh_project(radiance.data(), options.face_size,
+                               sh_deringing, &probes[probe].sh)) {
+        failed.store(true);
+        return;
+      }
+      std::lock_guard<std::mutex> lock(report_mutex);
+      std::printf("baked_probe=%u/%u region=%u done=%u\n", probe + 1,
+                  rooms.probe_count, probes[probe].region_id,
+                  baked_probes.fetch_add(1u) + 1u);
+      std::fflush(stdout);
+    }
+  };
+  uint32_t worker_count = options.threads;
+  if (!worker_count) {
+    worker_count = std::max(1u, std::thread::hardware_concurrency());
+  }
+  worker_count = std::min(worker_count, std::max(1u, rooms.probe_count));
+  std::vector<std::thread> workers;
+  workers.reserve(worker_count - 1u);
+  for (uint32_t i = 1u; i < worker_count; ++i) {
+    workers.emplace_back(bake_probes);
+  }
+  bake_probes();
+  for (std::thread &worker : workers) {
+    worker.join();
+  }
+  if (failed.load()) {
+    return 1;
   }
   VkrDiffuseVolume volume = {rooms.origin,
                              rooms.spacing,
@@ -468,7 +519,7 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
 }
 } // namespace
 
-VKR_MAIN(argc, argv) {
+VKR_TOOL_ENTRY(vkr_diffuse_baker_tool_main) {
   Options options;
   if (!parse(argc, argv, &options)) {
     usage();

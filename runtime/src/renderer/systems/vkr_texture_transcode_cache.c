@@ -6,6 +6,7 @@
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/vkr_resources.h"
 
@@ -204,31 +205,41 @@ static bool8_t vkr_texture_cache_record_is_valid(
   return true_v;
 }
 
+/* The default cache lives under the content root, so a bundle keeps its own
+ * cache and a repository build keeps `build/_asset_cache` wherever the
+ * process starts. */
 static String8 vkr_texture_transcode_cache_root(VkrAllocator *allocator) {
   const char *root = getenv("VKR_ASSET_CACHE_ROOT");
   if (!root || root[0] == '\0') {
-    root = VKR_TEXTURE_TRANSCODE_CACHE_DEFAULT_ROOT;
+    return string8_create_formatted(allocator, "%s%s/textures",
+                                    vkr_content_root(),
+                                    VKR_TEXTURE_TRANSCODE_CACHE_DEFAULT_ROOT);
   }
   return string8_create_formatted(allocator, "%s/textures", root);
 }
 
+uint64_t vkr_texture_transcode_cache_source_hash(const uint8_t *source_data,
+                                                 uint64_t source_size) {
+  return vkr_texture_cache_fast_hash64(source_data, source_size);
+}
+
+/* Entries are named by their source's content, so one texture reached through
+ * several paths (projects, imports, bundles) transcodes and stores once. */
 bool8_t vkr_texture_transcode_cache_path(VkrAllocator *allocator,
-                                         String8 source_path,
+                                         uint64_t source_hash,
                                          VkrTextureFormat target_format,
                                          String8 *out_path) {
-  if (!allocator || !source_path.str || source_path.length == 0u || !out_path ||
-      target_format < 0 || target_format >= VKR_TEXTURE_FORMAT_COUNT) {
+  if (!allocator || !out_path || target_format < 0 ||
+      target_format >= VKR_TEXTURE_FORMAT_COUNT) {
     return false_v;
   }
-  const uint64_t path_hash =
-      vkr_texture_cache_fast_hash64(source_path.str, source_path.length);
   const String8 root = vkr_texture_transcode_cache_root(allocator);
   if (!root.str) {
     return false_v;
   }
   *out_path = string8_create_formatted(
       allocator, "%.*s/%016llx_%08x.vktc", (int32_t)root.length, root.str,
-      (unsigned long long)path_hash, (uint32_t)target_format);
+      (unsigned long long)source_hash, (uint32_t)target_format);
   return out_path->str && out_path->length > 0u;
 }
 
@@ -297,17 +308,19 @@ static bool8_t vkr_texture_cache_header_valid(
 }
 
 bool8_t vkr_texture_transcode_cache_load(
-    VkrAllocator *scratch, String8 source_path, const uint8_t *source_data,
-    uint64_t source_size, VkrTextureFormat target_format,
-    uint32_t expected_width, uint32_t expected_height,
-    uint32_t expected_mip_levels, uint32_t expected_array_layers,
+    VkrAllocator *scratch, const uint8_t *source_data, uint64_t source_size,
+    VkrTextureFormat target_format, uint32_t expected_width,
+    uint32_t expected_height, uint32_t expected_mip_levels,
+    uint32_t expected_array_layers,
     VkrTextureTranscodeCacheRecord *out_record) {
   if (!scratch || !source_data || source_size == 0u || !out_record) {
     return false_v;
   }
   *out_record = (VkrTextureTranscodeCacheRecord){0};
+  const uint64_t source_hash =
+      vkr_texture_transcode_cache_source_hash(source_data, source_size);
   String8 cache_path = {0};
-  if (!vkr_texture_transcode_cache_path(scratch, source_path, target_format,
+  if (!vkr_texture_transcode_cache_path(scratch, source_hash, target_format,
                                         &cache_path)) {
     return false_v;
   }
@@ -335,8 +348,6 @@ bool8_t vkr_texture_transcode_cache_load(
     vkr_texture_cache_remove(cache_path);
     return false_v;
   }
-  const uint64_t source_hash =
-      vkr_texture_cache_fast_hash64(source_data, source_size);
   if (!vkr_texture_cache_header_valid(
           &header, source_hash, target_format, expected_width, expected_height,
           expected_mip_levels, expected_array_layers)) {
@@ -441,8 +452,8 @@ bool8_t vkr_texture_transcode_cache_load(
 }
 
 bool8_t vkr_texture_transcode_cache_store(
-    VkrAllocator *scratch, String8 source_path, const uint8_t *source_data,
-    uint64_t source_size, const VkrTextureTranscodeCacheRecord *record) {
+    VkrAllocator *scratch, const uint8_t *source_data, uint64_t source_size,
+    const VkrTextureTranscodeCacheRecord *record) {
   if (!scratch || !source_data || source_size == 0u ||
       !vkr_texture_cache_record_is_valid(record)) {
     return false_v;
@@ -451,8 +462,10 @@ bool8_t vkr_texture_transcode_cache_store(
   if (!root.str || !file_ensure_directory(scratch, &root)) {
     return false_v;
   }
+  const uint64_t source_hash =
+      vkr_texture_transcode_cache_source_hash(source_data, source_size);
   String8 cache_path = {0};
-  if (!vkr_texture_transcode_cache_path(scratch, source_path, record->format,
+  if (!vkr_texture_transcode_cache_path(scratch, source_hash, record->format,
                                         &cache_path)) {
     return false_v;
   }
@@ -496,8 +509,7 @@ bool8_t vkr_texture_transcode_cache_store(
       .version = vkr_texture_cache_u32_le(VKR_TEXTURE_TRANSCODE_CACHE_VERSION),
       .endian = vkr_texture_cache_u32_le(VKR_TEXTURE_TRANSCODE_CACHE_ENDIAN),
       .header_size = vkr_texture_cache_u32_le(sizeof(header)),
-      .source_hash = vkr_texture_cache_u64_le(
-          vkr_texture_cache_fast_hash64(source_data, source_size)),
+      .source_hash = vkr_texture_cache_u64_le(source_hash),
       .data_size = vkr_texture_cache_u64_le(record->data_size),
       .target_format = vkr_texture_cache_u32_le(record->format),
       .width = vkr_texture_cache_u32_le(record->width),

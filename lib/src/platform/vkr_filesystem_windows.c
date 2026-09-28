@@ -73,6 +73,11 @@ FILE *file_fopen(const char *utf8_path, const char *mode) {
     errno = EINVAL;
     return NULL;
   }
+  bool8_t served = false_v;
+  FILE *archived = fs_vfs_fopen(utf8_path, mode, &served);
+  if (served) {
+    return archived;
+  }
   FilePath path = {
       .path = {.str = (uint8_t *)utf8_path, .length = strlen(utf8_path)}};
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
@@ -106,6 +111,9 @@ static FileError fs_windows_error(DWORD error) {
 }
 
 bool8_t file_exists(const FilePath *path) {
+  if (path && path->path.str && fs_vfs_stats(path, NULL)) {
+    return true_v;
+  }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   return file_windows_native_path(path, native) &&
          GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES;
@@ -115,6 +123,9 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (!out_stats || !file_windows_native_path(path, native)) {
     return FILE_ERROR_INVALID_PATH;
+  }
+  if (fs_vfs_stats(path, out_stats)) {
+    return FILE_ERROR_NONE;
   }
   WIN32_FILE_ATTRIBUTE_DATA data;
   if (!GetFileAttributesExW(native, GetFileExInfoStandard, &data)) {
@@ -292,6 +303,9 @@ FileError file_open(const FilePath *path, FileMode mode,
   if (has_exclusive && (!has_create || has_truncate || has_append)) {
     return FILE_ERROR_INVALID_MODE;
   }
+  if (fs_vfs_open(path, mode, out_handle)) {
+    return FILE_ERROR_NONE;
+  }
 
   if (has_read) {
     access |= GENERIC_READ;
@@ -331,14 +345,71 @@ FileError file_open(const FilePath *path, FileMode mode,
     SetFilePointer(hFile, 0, NULL, FILE_END);
   }
 
-  out_handle->handle = hFile;
-  out_handle->path = path;
-  out_handle->mode = mode;
-
+  *out_handle = (FileHandle){.handle = hFile, .path = path, .mode = mode};
   return FILE_ERROR_NONE;
 }
 
+FileError file_map_readonly(const FilePath *path, FileMapping *out_mapping) {
+  if (!path || !path->path.str || !out_mapping) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  *out_mapping = (FileMapping){0};
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!file_windows_native_path(path, native)) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  HANDLE file = CreateFileW(native, GENERIC_READ, FILE_SHARE_READ, NULL,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE) {
+    return fs_windows_error(GetLastError());
+  }
+  LARGE_INTEGER size;
+  FILETIME written;
+  if (!GetFileSizeEx(file, &size) || !GetFileTime(file, NULL, NULL, &written)) {
+    CloseHandle(file);
+    return FILE_ERROR_IO_ERROR;
+  }
+  if (size.QuadPart == 0) {
+    CloseHandle(file);
+    return FILE_ERROR_FILE_EMPTY;
+  }
+  HANDLE mapping = CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
+  CloseHandle(file);
+  if (!mapping) {
+    return FILE_ERROR_IO_ERROR;
+  }
+  const void *data = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+  if (!data) {
+    CloseHandle(mapping);
+    return FILE_ERROR_IO_ERROR;
+  }
+  ULARGE_INTEGER time;
+  time.LowPart = written.dwLowDateTime;
+  time.HighPart = written.dwHighDateTime;
+  *out_mapping = (FileMapping){
+      .data = data,
+      .size = (uint64_t)size.QuadPart,
+      .last_modified = (time.QuadPart / 10000000ULL) - 11644473600ULL,
+      .platform = mapping,
+  };
+  return FILE_ERROR_NONE;
+}
+
+void file_unmap(FileMapping *mapping) {
+  if (mapping && mapping->data) {
+    UnmapViewOfFile(mapping->data);
+    CloseHandle((HANDLE)mapping->platform);
+  }
+  if (mapping) {
+    *mapping = (FileMapping){0};
+  }
+}
+
 void file_close(FileHandle *handle) {
+  if (handle && handle->memory) {
+    *handle = (FileHandle){0};
+    return;
+  }
   if (handle && handle->handle) {
     CloseHandle((HANDLE)handle->handle);
     handle->handle = NULL;
@@ -347,7 +418,8 @@ void file_close(FileHandle *handle) {
 
 FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
                      uint64_t *bytes_written) {
-  if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_written) {
+  if (!handle || !handle->handle || handle->memory || (!buffer && size > 0u) ||
+      !bytes_written) {
     return FILE_ERROR_INVALID_HANDLE;
   }
   *bytes_written = 0;
@@ -373,6 +445,9 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
   if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_read) {
     return FILE_ERROR_INVALID_HANDLE;
   }
+  if (handle->memory) {
+    return fs_memory_read_into(handle, buffer, size, bytes_read);
+  }
   *bytes_read = 0;
   uint8_t *current = buffer;
   uint64_t remaining = size;
@@ -397,6 +472,9 @@ FileError file_remaining_size(FileHandle *handle, uint64_t *out_size) {
   if (!handle || !handle->handle) {
     return FILE_ERROR_INVALID_HANDLE;
   }
+  if (handle->memory) {
+    return fs_memory_remaining(handle, out_size);
+  }
   const HANDLE file = (HANDLE)handle->handle;
   LARGE_INTEGER size;
   LARGE_INTEGER position;
@@ -411,7 +489,7 @@ FileError file_remaining_size(FileHandle *handle, uint64_t *out_size) {
 }
 
 FileError file_sync(FileHandle *handle) {
-  if (!handle || !handle->handle) {
+  if (!handle || !handle->handle || handle->memory) {
     return FILE_ERROR_INVALID_HANDLE;
   }
   return FlushFileBuffers((HANDLE)handle->handle) ? FILE_ERROR_NONE
@@ -457,6 +535,10 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
   *out_line = (String8){0};
   if (!handle || !handle->handle) {
     return FILE_ERROR_INVALID_HANDLE;
+  }
+  if (handle->memory) {
+    return fs_memory_read_line(handle, allocator, line_allocator,
+                               max_line_length, out_line);
   }
   HANDLE hFile = (HANDLE)handle->handle;
   if (max_line_length == 0 || max_line_length == UINT64_MAX) {

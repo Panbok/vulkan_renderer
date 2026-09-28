@@ -187,7 +187,10 @@ bool8_t vkr_harness_capture_replays_build(const VkrHarnessCase *case_manifest,
     return false_v;
   }
   *out_count = 0u;
-  for (uint32_t capture_index = 0; capture_index < case_manifest->capture_count;
+  /* A single session's first checkpoint replay renders every checkpoint. */
+  const uint32_t capture_count =
+      case_manifest->single_capture_session ? 1u : case_manifest->capture_count;
+  for (uint32_t capture_index = 0; capture_index < capture_count;
        ++capture_index) {
     const VkrHarnessCapture *capture = &case_manifest->captures[capture_index];
     for (uint32_t i = 0; i < capture->channel_count; ++i) {

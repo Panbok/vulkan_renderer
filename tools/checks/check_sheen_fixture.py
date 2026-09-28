@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Check the fixed sheen witness after capturing local.sheen.layers.
 
-Pack tests/fixtures/rendering/sheen with tools/pack_vkt_textures.sh first.
+Pack tests/fixtures/rendering/sheen with
+`vkr_bakery cook tests/fixtures/rendering/sheen` first.
 This checks visible roughness response, transmitted background and retained coat
 SSR. Channel decoding and numerical energy use separate CPU/furnace checks.
 """

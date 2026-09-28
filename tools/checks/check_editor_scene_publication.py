@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """Exercise scene directory publication and rollback without renderer assets."""
-import importlib.util
 from pathlib import Path
 import tempfile
 import uuid
 
 
 def main():
-    source = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
-    spec = importlib.util.spec_from_file_location('editor_project_jobs', source)
-    jobs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs)
+    import project_jobs as jobs
     with tempfile.TemporaryDirectory(prefix='vkr-publication-') as temporary:
         root = Path(temporary)
         workspace = root / '.vkreditor'
@@ -35,18 +31,13 @@ def main():
         assert scene.read_bytes() == published, 'Existing scene was overwritten'
 
         failed_request = dict(request, scene_id=str(uuid.uuid4()))
-        failed = jobs.Job(failed_request, result)
-        progress = failed.progress
-
-        def fail_after_publication(label, *args, **kwargs):
-            if label == 'Opening scene':
-                assert (failed.final / 'scene.json').is_file()
-                raise jobs.JobError('Injected failure after directory publication')
-            return progress(label, *args, **kwargs)
-
-        failed.progress = fail_after_publication
+        # Fail after the scene directory is published; the job rolls it back.
+        failed = jobs.Job(failed_request, result,
+                          environment={'VKR_BAKERY_FAULT_STAGE': 'Opening scene'})
         assert failed.execute() == 1
-        assert not failed.final.exists(), 'Failed publication was not rolled back'
+        assert 'Injected failure at Opening scene' in jobs.load_json(result)['error']
+        assert not (project / 'scenes' / failed_request['scene_id']).exists(), \
+            'Failed publication was not rolled back'
         assert not list((project / '.staging').iterdir())
         assert scene.read_bytes() == published
         assert manifest.read_bytes() == original

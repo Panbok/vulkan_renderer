@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """CPU checks for permanent scene cleanup without deleting unrelated files."""
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -13,10 +12,7 @@ import uuid
 
 
 def main():
-    module_path = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
-    spec = importlib.util.spec_from_file_location('editor_project_jobs', module_path)
-    jobs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs)
+    import project_jobs as jobs
     with tempfile.TemporaryDirectory(prefix='vkr-scene-delete-') as temporary:
         root = Path(temporary).resolve()
         workspace = root / 'workspace'
@@ -66,18 +62,12 @@ def main():
         for invalid in (str(protected[2]), str(scene / '..' / scene_id / 'scene.json')):
             execute({'scene_path': invalid}, success=False)
             assert (scene / 'scene.json').is_file()
-        try:
-            jobs.Job({**request, 'read_only': True}, result_path)
-        except jobs.JobError:
-            pass
-        else:
-            raise AssertionError('Read-only deletion was accepted')
-        try:
-            jobs.Job({**request, 'scene_id': '../external'}, result_path)
-        except jobs.JobError:
-            pass
-        else:
-            raise AssertionError('Invalid scene UUID was accepted')
+        read_only = execute({'read_only': True, 'runtime_directory': str(root / 'runtime')},
+                            success=False)
+        assert 'Read-only' in read_only['error'], 'Read-only deletion was accepted'
+        invalid = execute({'scene_id': '../external'}, success=False)
+        assert 'identifier' in invalid['error'], 'Invalid scene UUID was accepted'
+        assert (scene / 'scene.json').is_file()
 
         def make_link(link, target):
             # Windows junctions do not require the symlink creation privilege.
@@ -115,17 +105,11 @@ def main():
 
         (scene / 'builds' / 'revision').mkdir(parents=True)
         (scene / 'builds' / 'revision' / 'mesh.bin').write_bytes(b'owned')
-        original_rmtree = jobs.shutil.rmtree
-
-        def partial_failure(path, *args, **kwargs):
-            if Path(path) == scene:
-                (scene / 'builds' / 'revision' / 'mesh.bin').unlink()
-                raise PermissionError('injected locked scene file')
-            return original_rmtree(path, *args, **kwargs)
-
-        with patch.object(jobs.shutil, 'rmtree', side_effect=partial_failure):
+        # A cleanup that stops partway leaves the unpublished scene for a retry.
+        (scene / 'builds' / 'revision' / 'mesh.bin').unlink()
+        with patch.dict(os.environ, {'VKR_BAKERY_FAULT_STAGE': 'Deleting scene files'}):
             result = execute(success=False)
-        assert 'injected locked scene file' in result['error']
+        assert 'Injected failure at Deleting scene files' in result['error']
         assert scene.is_dir() and not (scene / 'builds' / 'revision' / 'mesh.bin').exists()
         execute()
         assert not scene.exists()

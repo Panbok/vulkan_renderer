@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-13
+updated: 2026-09-27
 authority: adr
 ---
 
@@ -69,9 +69,10 @@ leaves the output empty. Import can leave partial allocations in its result aren
 on failure, which the caller must release. Sampling allocates nothing and borrows
 validated assets and caller-provided buffers. No GPU ownership is introduced.
 
-The [standalone cooker](../../tools/vkr_animation_cooker.c) imports and atomically
-writes an explicitly named `.vka`, or inspects and samples an existing bank. The
-shell and Windows wrappers build it without selecting or modifying project assets.
+The [animation cooker](../../tools/vkr_animation_cooker.c), run as
+`vkr_bakery tool animation` or the cached `animation` producer, imports and
+atomically writes an explicitly named `.vka`, or inspects and samples an existing
+bank. Building it selects or modifies no project assets.
 
 ### Runtime ownership and playback
 
@@ -275,7 +276,8 @@ Debug AddressSanitizer/UndefinedBehaviorSanitizer configuration on macOS. Tests
 include analytical interpolation/hierarchy results, independently constructed
 binary records, truncation/corruption and sparse/strided/GLB source fixtures.
 
-`VKR_BUILD_TARGET=vkr_animation_cooker ./build.sh Release` builds the cooker. A
+`VKR_BUILD_TARGET=vkr_bakery ./build.sh Release` builds the cooker, run as
+`vkr_bakery tool animation`. A
 private player-source cook produced 1,518,286 bytes with 72 nodes, one skin and all
 25 clips. Artifact SHA-256:
 `9456ab8dcbdd5a1b808e53e53d4f16a7d04271a1c7f9db087235ad99d190e4dd`.
@@ -283,13 +285,13 @@ An independent double-precision source evaluator compared 129 poses across all
 clips, including endpoints and opposite-sign quaternion intervals. Maximum global
 matrix component difference was `1.19934e-6`, below the `3e-5` check tolerance.
 These are CPU and asset checks, not rendering or performance evidence. The local
-task note retains exact private-source commands and reports. The Windows wrapper has not been exercised.
+task note retains exact private-source commands and reports. The Windows build has not been exercised.
 
 Mesh checks pass `./build_test.sh` with analytical deformed-triangle
 checks through deduplication and fetch remapping, normalized integer glTF weights,
 shared-mesh binding rejection, CRC-repaired malformed extensions and source-variant
-preservation. `VKR_BUILD_TARGET=vkr_mesh_cooker ./build.sh Release` builds the mesh
-cooker. Cooking an isolated unchanged copy of the player source produced a version
+preservation. `VKR_BUILD_TARGET=vkr_bakery ./build.sh Release` builds the mesh
+cooker, run as `vkr_bakery tool mesh`. Cooking an isolated unchanged copy of the player source produced a version
 18 mesh of 3,652,128 bytes, with 71,972 vertices, 340,962 indices and three ranges.
 Independent parsing verified the normalized influence multiset, all 72 node
 bindings, 68-joint skin and animation fingerprint `2f2a93735f2760a1`. This multiset

@@ -2,7 +2,6 @@
 """CPU-only oracle for immutable mesh/bank publication and rebuild rollback."""
 import argparse
 import base64
-import importlib.util
 import json
 from pathlib import Path
 import struct
@@ -51,10 +50,7 @@ def main():
     parser.add_argument('--mesh-cooker', required=True)
     parser.add_argument('--animation-cooker', required=True)
     args = parser.parse_args()
-    module_path = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
-    spec = importlib.util.spec_from_file_location('editor_project_jobs', module_path)
-    jobs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs)
+    import project_jobs as jobs
     with tempfile.TemporaryDirectory(prefix='vkr-animation-publication-') as temporary:
         root = Path(temporary)
         workspace = root / '.vkreditor'
@@ -106,9 +102,10 @@ def main():
         assert Path(controls['path']).parent != bank.parent and bank.read_bytes() == first_bank
         # Bank cooker failure must leave the previously published scene/pair intact.
         before = scene_path.read_bytes()
-        failed = dict(rebuild, tools={'mesh': request['tools']['mesh']})
-        assert jobs.Job(failed, result_path).execute() == 1
-        assert 'animation tool' in jobs.load_json(result_path)['error']
+        failed = jobs.Job(rebuild, result_path,
+                          environment={'VKR_BAKERY_FAULT_STAGE': 'Cooking animations'})
+        assert failed.execute() == 1
+        assert 'Cooking animations' in jobs.load_json(result_path)['error']
         assert scene_path.read_bytes() == before
         assert Path(controls['path']).read_bytes() == first_bank
         # Reimporting the same rig without clips removes the generated binding.

@@ -4,10 +4,18 @@
 #define NOMINMAX
 #endif
 
+#include <ktx-software/external/astc-encoder/Source/astcenc.h>
 #include <ktx.h>
+// Declarations only; basisu compiles the definitions once.
+#define MINIZ_HEADER_FILE_ONLY
+#include <ktx-software/external/basisu/encoder/basisu_miniz.h>
 #include <vulkan/vulkan_core.h>
 
 #include <stb_image.h>
+
+#if defined(__APPLE__)
+#include <AppleTextureEncoder.h>
+#endif
 
 #include "vkr_vkt_mips.h"
 #include "vkr_vkt_normal_roughness.h"
@@ -16,12 +24,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -66,6 +76,27 @@ struct LevelImage {
   std::vector<uint8_t> pixels;
 };
 
+// One pack input: an image file, or RGBA8 pixels a caller converted, rows
+// top first as an image decodes, named by their content hash in place of the
+// file's bytes. A pixel source without pixels can only confirm a current
+// output.
+struct SourceImage {
+  fs::path path;
+  const uint8_t *pixels = nullptr;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  uint64_t hash = 0u;
+  bool converted = false;
+};
+
+std::vector<SourceImage> file_sources(const std::vector<fs::path> &paths) {
+  std::vector<SourceImage> sources(paths.size());
+  for (size_t i = 0; i < paths.size(); ++i) {
+    sources[i].path = paths[i];
+  }
+  return sources;
+}
+
 struct PackStats {
   uint32_t discovered = 0;
   uint32_t packed = 0;
@@ -106,7 +137,17 @@ struct PackConfig {
   float normal_scale = 1.0f;
   float roughness_factor = 1.0f;
   bool roughness_source = false;
+  // Preview tier: mip levels larger than this extent are not stored; 0 keeps
+  // every level.
+  uint32_t max_extent = 0u;
+  // Native ASTC 4x4 blocks, which the runtime uploads without transcoding,
+  // for hosts that sample them directly; transcodable UASTC otherwise.
+  VkrVktEncoding encoding = VKR_VKT_ENCODING_UASTC;
 };
+
+bool is_astc(const PackConfig &config) {
+  return config.encoding != VKR_VKT_ENCODING_UASTC;
+}
 
 std::string to_lower_ascii(std::string value);
 
@@ -257,7 +298,8 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
         std::cerr << "Missing value for --layer\n";
         return ParseResult::kError;
       }
-      out_config.layers.emplace_back(vkr_filesystem_native_utf8_path(argv[++index]));
+      out_config.layers.emplace_back(
+          vkr_filesystem_native_utf8_path(argv[++index]));
       out_config.layered_mode = true;
       continue;
     }
@@ -331,6 +373,33 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
       out_config.basis_threads = parsed;
       continue;
     }
+    if (arg == "--encoding") {
+      if (index + 1 >= argc) {
+        std::cerr << "Missing value for --encoding\n";
+        return ParseResult::kError;
+      }
+      const std::string value = to_lower_ascii(argv[++index]);
+      if (!vkr_vkt_parse_encoding(value.c_str(), &out_config.encoding)) {
+        std::cerr << "Invalid --encoding value '" << value
+                  << "' (expected uastc|astc|astc-fast; astc-fast needs "
+                     "Apple's system encoder)\n";
+        return ParseResult::kError;
+      }
+      continue;
+    }
+    if (arg == "--max-extent") {
+      if (index + 1 >= argc) {
+        std::cerr << "Missing value for --max-extent\n";
+        return ParseResult::kError;
+      }
+      uint32_t parsed = 0u;
+      if (!parse_uint32_nonzero(argv[++index], &parsed)) {
+        std::cerr << "Invalid --max-extent value\n";
+        return ParseResult::kError;
+      }
+      out_config.max_extent = parsed;
+      continue;
+    }
     if (arg == "--uastc-level") {
       if (index + 1 >= argc) {
         std::cerr << "Missing value for --uastc-level\n";
@@ -398,6 +467,7 @@ void print_usage(const char *program_name) {
          "Options: [--strict] [--force] [--verbose]"
          " [--progress|--no-progress] [--basis-threads <auto|n>]"
          " [--uastc-level <fastest|faster|default|slower|veryslow>]"
+         " [--encoding <uastc|astc|astc-fast>] [--max-extent <pixels>]"
          " [--source-hash|--no-source-hash]\n";
   std::cout << "Cutout color mips: --alpha-cutoff <0..1>"
                " [--alpha-factor <0..1>] (explicit output/color class only)\n";
@@ -609,15 +679,16 @@ std::string to_hex_u64(uint64_t value) {
   return out;
 }
 
-bool combined_source_hash(const std::vector<fs::path> &source_paths,
+bool combined_source_hash(const std::vector<SourceImage> &sources,
                           uint64_t *out_hash) {
-  if (!out_hash || source_paths.empty()) {
+  if (!out_hash || sources.empty()) {
     return false;
   }
   uint64_t combined = kFnvOffsetBasis;
-  for (const fs::path &path : source_paths) {
+  for (const SourceImage &source : sources) {
     bool ok = true;
-    const uint64_t source_hash = fnv1a_file_hash(path, &ok);
+    const uint64_t source_hash =
+        source.converted ? source.hash : fnv1a_file_hash(source.path, &ok);
     if (!ok) {
       return false;
     }
@@ -647,9 +718,24 @@ std::string pack_settings_identity(TextureClass texture_class,
                                    const PackConfig &config) {
   std::ostringstream settings;
   settings << "asset=1;shape=" << texture_shape_metadata_value(shape)
-           << ";class=" << texture_class_metadata_value(texture_class)
-           << ";uastc=" << uastc_level_to_string(config.uastc_level)
-           << ";mips=rgba8-area-srgb-v2;flip=vertical";
+           << ";class=" << texture_class_metadata_value(texture_class);
+  if (config.encoding == VKR_VKT_ENCODING_ASTC) {
+    settings << ";encoding=astc-4x4-fastest";
+    if (texture_class == TextureClass::kNormalRg) {
+      settings << ";astc_rg=alpha-one-db39-c1-v2";
+    }
+  } else if (config.encoding == VKR_VKT_ENCODING_ASTC_FAST) {
+    settings << ";encoding=astc-4x4-system-equal-t12-v1";
+    if (texture_class == TextureClass::kNormalRg) {
+      settings << ";astc_rg=alpha-one";
+    }
+  } else {
+    settings << ";uastc=" << uastc_level_to_string(config.uastc_level);
+  }
+  settings << ";mips=rgba8-area-srgb-v2;flip=vertical";
+  if (config.max_extent) {
+    settings << ";max_extent=" << config.max_extent;
+  }
   if (texture_class == TextureClass::kNormalRg) {
     settings << ";basis_rg=source-ra-v1";
   }
@@ -705,20 +791,19 @@ bool add_kv_bool(ktxTexture2 *texture, const char *key, bool value) {
          KTX_SUCCESS;
 }
 
-bool should_skip_output(const std::vector<fs::path> &source_paths,
+bool should_skip_output(const std::vector<SourceImage> &sources,
                         const fs::path &dst, TextureClass texture_class,
                         TextureShape shape, const PackConfig &config) {
   if (config.force || !config.write_source_hash || !fs::exists(dst)) {
     return false;
   }
   uint64_t source_hash = 0u;
-  if (!combined_source_hash(source_paths, &source_hash)) {
+  if (!combined_source_hash(sources, &source_hash)) {
     return false;
   }
   ktxTexture2 *texture = nullptr;
-  if (vkr_ktx_read_file(dst.u8string().c_str(),
-                                      KTX_TEXTURE_CREATE_NO_FLAGS,
-                                      &texture) != KTX_SUCCESS ||
+  if (vkr_ktx_read_file(dst.u8string().c_str(), KTX_TEXTURE_CREATE_NO_FLAGS,
+                        &texture) != KTX_SUCCESS ||
       !texture) {
     return false;
   }
@@ -755,7 +840,6 @@ bool publish_temporary_output(const fs::path &temporary,
 }
 
 struct PackedSource {
-  fs::path path;
   uint32_t width = 0u;
   uint32_t height = 0u;
   std::vector<LevelImage> levels;
@@ -815,15 +899,239 @@ bool load_source_rgba8(const fs::path &path, LevelImage &image) {
   return true;
 }
 
-bool write_packed_sources(const std::vector<fs::path> &source_paths,
+// Loads a source as the packer stores it: files through the decoder, and
+// converted pixels flipped the same way.
+bool load_source(const SourceImage &source, LevelImage &image) {
+  if (!source.converted) {
+    return load_source_rgba8(source.path, image);
+  }
+  if (!source.pixels || source.width == 0u || source.height == 0u ||
+      source.width > kMaxTextureDimension ||
+      source.height > kMaxTextureDimension) {
+    return false;
+  }
+  const size_t row = static_cast<size_t>(source.width) * 4u;
+  image.width = source.width;
+  image.height = source.height;
+  image.pixels.resize(row * source.height);
+  for (uint32_t y = 0u; y < source.height; ++y) {
+    std::memcpy(image.pixels.data() + row * y,
+                source.pixels + row * (source.height - 1u - y), row);
+  }
+  return true;
+}
+
+// Creates the ASTC 4x4 texture that receives the encoded images of `source`.
+ktxTexture2 *create_astc_texture(ktxTexture2 *source,
+                                 KTX_error_code *out_result) {
+  const bool srgb = source->vkFormat == VK_FORMAT_R8G8B8A8_SRGB;
+  ktxTextureCreateInfo create_info = {};
+  create_info.vkFormat =
+      srgb ? VK_FORMAT_ASTC_4x4_SRGB_BLOCK : VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+  create_info.baseWidth = source->baseWidth;
+  create_info.baseHeight = source->baseHeight;
+  create_info.baseDepth = source->baseDepth;
+  create_info.numDimensions = source->numDimensions;
+  create_info.numLevels = source->numLevels;
+  create_info.numLayers = source->numLayers;
+  create_info.numFaces = source->numFaces;
+  create_info.isArray = source->isArray;
+  create_info.generateMipmaps = KTX_FALSE;
+  ktxTexture2 *encoded = nullptr;
+  *out_result = ktxTexture2_Create(&create_info,
+                                   KTX_TEXTURE_CREATE_ALLOC_STORAGE, &encoded);
+  return *out_result == KTX_SUCCESS ? encoded : nullptr;
+}
+
+// Calls encode(width, height, texels, blocks, block_size) for every image of
+// `source`, stopping at the first that returns false.
+template <typename Encode>
+bool encode_astc_images(ktxTexture2 *source, ktxTexture2 *encoded,
+                        Encode encode) {
+  for (uint32_t level = 0u; level < source->numLevels; ++level) {
+    const uint32_t width = std::max(1u, source->baseWidth >> level);
+    const uint32_t height = std::max(1u, source->baseHeight >> level);
+    const ktx_size_t block_size =
+        ktxTexture_GetImageSize(ktxTexture(encoded), level);
+    for (uint32_t layer = 0u; layer < source->numLayers; ++layer) {
+      for (uint32_t face = 0u; face < source->numFaces; ++face) {
+        ktx_size_t in_offset = 0u;
+        ktx_size_t out_offset = 0u;
+        if (ktxTexture_GetImageOffset(ktxTexture(source), level, layer, face,
+                                      &in_offset) != KTX_SUCCESS ||
+            ktxTexture_GetImageOffset(ktxTexture(encoded), level, layer, face,
+                                      &out_offset) != KTX_SUCCESS ||
+            !encode(width, height, source->pData + in_offset,
+                    encoded->pData + out_offset, block_size)) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+// Encodes every image of an RGBA8 texture to ASTC 4x4 with astcenc, as
+// ktxTexture2_CompressAstcEx does at its "fastest" level, and moves the
+// key/value data to the returned texture. Normals (R, G; B zero, A one) aim
+// at 39 dB with one candidate instead of the preset's 43: on Bistro's baked
+// normals that encoded 1.8 times faster and still scored above UASTC
+// "faster" (41.2 against 40.9 dB in RG), where the preset kept searching
+// blocks that never reach its target. libktx exposes neither setting.
+ktxTexture2 *compress_astc(ktxTexture2 *source, TextureClass texture_class,
+                           uint32_t thread_count, KTX_error_code *out_result) {
+  ktxTexture2 *encoded = create_astc_texture(source, out_result);
+  if (!encoded) {
+    return nullptr;
+  }
+  std::unique_ptr<ktxTexture2, decltype(&destroy_ktx_texture)> owner(
+      encoded, destroy_ktx_texture);
+
+  const bool srgb = source->vkFormat == VK_FORMAT_R8G8B8A8_SRGB;
+  astcenc_config astc_config;
+  if (astcenc_config_init(srgb ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR, 4u, 4u,
+                          1u, ASTCENC_PRE_FASTEST, 0u,
+                          &astc_config) != ASTCENC_SUCCESS) {
+    *out_result = KTX_INVALID_OPERATION;
+    return nullptr;
+  }
+  if (texture_class == TextureClass::kNormalRg) {
+    astc_config.tune_db_limit = 39.0f;
+    astc_config.tune_candidate_limit = 1u;
+  }
+  const uint32_t threads = std::max(1u, thread_count);
+  astcenc_context *context = nullptr;
+  if (astcenc_context_alloc(&astc_config, threads, &context) !=
+      ASTCENC_SUCCESS) {
+    *out_result = KTX_OUT_OF_MEMORY;
+    return nullptr;
+  }
+  const astcenc_swizzle swizzle = {ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B,
+                                   ASTCENC_SWZ_A};
+  const bool encoded_all = encode_astc_images(
+      source, encoded,
+      [&](uint32_t width, uint32_t height, uint8_t *texels, uint8_t *blocks,
+          ktx_size_t block_size) {
+        void *slice = texels;
+        astcenc_image image = {width, height, 1u, ASTCENC_TYPE_U8, &slice};
+        std::atomic<int> failed{0};
+        std::vector<std::thread> workers;
+        workers.reserve(threads);
+        for (uint32_t thread = 0u; thread < threads; ++thread) {
+          workers.emplace_back([&, thread] {
+            if (astcenc_compress_image(context, &image, &swizzle, blocks,
+                                       block_size, thread) != ASTCENC_SUCCESS) {
+              failed = 1;
+            }
+          });
+        }
+        for (std::thread &worker : workers) {
+          worker.join();
+        }
+        astcenc_compress_reset(context);
+        return failed == 0;
+      });
+  astcenc_context_free(context);
+  if (!encoded_all) {
+    *out_result = KTX_INVALID_OPERATION;
+    return nullptr;
+  }
+  std::swap(ktxTexture(encoded)->kvDataHead, ktxTexture(source)->kvDataHead);
+  *out_result = KTX_SUCCESS;
+  return owner.release();
+}
+
+// Encodes every image of an RGBA8 texture to ASTC 4x4 with Apple's system
+// encoder, which threads each image itself, and moves the key/value data to
+// the returned texture. Channels weigh equally, as in astcenc, rather than
+// as luminance, and blocks stop searching below a mean square error of
+// 2^-12. On Bistro that encoded source colours at 3 times astcenc's
+// "fastest" speed (52.8 against 55.3 dB) and paired normals at 2.2 times
+// (36.6 against 40.4 dB in RG, where lower thresholds gain nothing); ADR-012
+// records the classes. An opaque texture encodes opaque blocks, which spend
+// no bits on alpha.
+ktxTexture2 *compress_astc_system(ktxTexture2 *source,
+                                  KTX_error_code *out_result) {
+#if defined(__APPLE__)
+  constexpr float kErrorThreshold = 1.0f / 4096.0f;
+  ktxTexture2 *encoded = create_astc_texture(source, out_result);
+  if (!encoded) {
+    return nullptr;
+  }
+  std::unique_ptr<ktxTexture2, decltype(&destroy_ktx_texture)> owner(
+      encoded, destroy_ktx_texture);
+
+  bool opaque = true;
+  const ktx_size_t data_size = ktxTexture_GetDataSize(ktxTexture(source));
+  for (ktx_size_t i = 3u; i < data_size && opaque; i += 4u) {
+    opaque = source->pData[i] == 255u;
+  }
+  at_encoder_t encoder = at_encoder_create(
+      at_texel_format_rgba8_unorm, at_alpha_not_premultiplied,
+      at_block_format_astc_4x4_ldr,
+      opaque ? at_alpha_opaque : at_alpha_not_premultiplied, nullptr);
+  if (!encoder) {
+    *out_result = KTX_INVALID_OPERATION;
+    return nullptr;
+  }
+  const bool encoded_all = encode_astc_images(
+      source, encoded,
+      [&](uint32_t width, uint32_t height, uint8_t *texels, uint8_t *blocks,
+          ktx_size_t block_size) {
+        const at_texel_region_t region = {
+            texels,
+            {width, height, 1u},
+            static_cast<size_t>(width) * 4u,
+            static_cast<size_t>(width) * height * 4u};
+        const at_block_buffer_t destination = {
+            blocks, static_cast<size_t>((width + 3u) / 4u) * 16u, block_size};
+        return at_encoder_compress_texels(
+                   encoder, &region, &destination, kErrorThreshold,
+                   static_cast<at_flags_t>(at_flags_skip_error_calculation |
+                                           at_flags_weight_channels_equally)) >=
+               0.0f;
+      });
+  os_release(encoder);
+  if (!encoded_all) {
+    *out_result = KTX_INVALID_OPERATION;
+    return nullptr;
+  }
+  std::swap(ktxTexture(encoded)->kvDataHead, ktxTexture(source)->kvDataHead);
+  *out_result = KTX_SUCCESS;
+  return owner.release();
+#else
+  (void)source;
+  *out_result = KTX_UNSUPPORTED_FEATURE;
+  return nullptr;
+#endif
+}
+
+// A preview keeps the chain from the first level within its extent; levels
+// before it are computed only to filter the ones kept.
+size_t first_stored_level(uint32_t width, uint32_t height, size_t level_count,
+                          const PackConfig &config) {
+  size_t first_level = 0u;
+  while (config.max_extent && first_level + 1u < level_count &&
+         std::max(std::max(1u, width >> first_level),
+                  std::max(1u, height >> first_level)) > config.max_extent) {
+    ++first_level;
+  }
+  return first_level;
+}
+
+bool write_packed_sources(const std::vector<SourceImage> &source_images,
                           const std::vector<PackedSource> &sources,
                           const fs::path &dst_path, TextureClass texture_class,
                           TextureShape shape, const PackConfig &config,
                           AlphaAnalysis aggregate_alpha) {
   const size_t source_count = sources.size();
-  const uint32_t width = sources.front().width;
-  const uint32_t height = sources.front().height;
-  const size_t mip_count = sources.front().levels.size();
+  const size_t first_level =
+      first_stored_level(sources.front().levels.front().width,
+                         sources.front().levels.front().height,
+                         sources.front().levels.size(), config);
+  const uint32_t width = sources.front().levels[first_level].width;
+  const uint32_t height = sources.front().levels[first_level].height;
+  const size_t mip_count = sources.front().levels.size() - first_level;
   const bool cube =
       shape == TextureShape::kCube || shape == TextureShape::kCubeArray;
   const uint32_t face_count = cube ? 6u : 1u;
@@ -853,14 +1161,17 @@ bool write_packed_sources(const std::vector<fs::path> &source_paths,
   }
   const std::unique_ptr<ktxTexture2, decltype(&destroy_ktx_texture)> owner(
       texture, destroy_ktx_texture);
+  // The native ASTC texture replaces `texture` for writing, when encoded.
+  std::unique_ptr<ktxTexture2, decltype(&destroy_ktx_texture)> encoded(
+      nullptr, destroy_ktx_texture);
 
   bool success = false;
   do {
     for (uint32_t layer = 0u; layer < layer_count; ++layer) {
       for (uint32_t face = 0u; face < face_count; ++face) {
         const PackedSource &source = sources[layer * face_count + face];
-        for (uint32_t mip = 0u; mip < source.levels.size(); ++mip) {
-          const LevelImage &level = source.levels[mip];
+        for (uint32_t mip = 0u; mip < mip_count; ++mip) {
+          const LevelImage &level = source.levels[first_level + mip];
           result = ktxTexture_SetImageFromMemory(
               ktxTexture(texture), mip, layer, face, level.pixels.data(),
               static_cast<ktx_size_t>(level.pixels.size()));
@@ -874,6 +1185,18 @@ bool write_packed_sources(const std::vector<fs::path> &source_paths,
       }
       if (result != KTX_SUCCESS) {
         break;
+      }
+    }
+    // Native ASTC normals keep X and Y in R and G, which shaders sample. The
+    // alpha copy of G serves only Basis two-channel transcodes; a constant
+    // alpha encodes faster and more accurately (Bistro pair normals: 1.4x,
+    // +2 dB in RG).
+    if (result == KTX_SUCCESS && is_astc(config) &&
+        texture_class == TextureClass::kNormalRg) {
+      uint8_t *data = ktxTexture_GetData(ktxTexture(texture));
+      const ktx_size_t data_size = ktxTexture_GetDataSize(ktxTexture(texture));
+      for (ktx_size_t i = 3u; i < data_size; i += 4u) {
+        data[i] = 255u;
       }
     }
     if (result != KTX_SUCCESS ||
@@ -893,7 +1216,7 @@ bool write_packed_sources(const std::vector<fs::path> &source_paths,
 
     if (config.write_source_hash) {
       uint64_t combined_hash = 0u;
-      if (!combined_source_hash(source_paths, &combined_hash) ||
+      if (!combined_source_hash(source_images, &combined_hash) ||
           !add_kv_string(texture, "vkr.source_hash",
                          to_hex_u64(combined_hash))) {
         break;
@@ -907,7 +1230,17 @@ bool write_packed_sources(const std::vector<fs::path> &source_paths,
     basis_params.threadCount = config.basis_threads;
     basis_params.uastcFlags = config.uastc_level;
     basis_params.uastcRDO = KTX_FALSE;
-    result = ktxTexture2_CompressBasisEx(texture, &basis_params);
+    if (config.encoding == VKR_VKT_ENCODING_ASTC) {
+      // astcenc "fastest" beat UASTC "faster", the former final tier, on
+      // Bistro's colours, paired normals and metal-roughness (52.6/40.1/49.2
+      // against 52.2/38.5/47.4 dB) at 4 to 9 times its speed (ADR-077).
+      encoded.reset(
+          compress_astc(texture, texture_class, config.basis_threads, &result));
+    } else if (config.encoding == VKR_VKT_ENCODING_ASTC_FAST) {
+      encoded.reset(compress_astc_system(texture, &result));
+    } else {
+      result = ktxTexture2_CompressBasisEx(texture, &basis_params);
+    }
     if (result != KTX_SUCCESS) {
       std::cerr << "Failed to compress layered texture: "
                 << ktxErrorString(result) << "\n";
@@ -930,8 +1263,8 @@ bool write_packed_sources(const std::vector<fs::path> &source_paths,
         static_cast<uint64_t>(
             std::hash<std::thread::id>{}(std::this_thread::get_id()));
     tmp_path += ".tmp." + to_hex_u64(unique_suffix);
-    result = vkr_ktx_write_file(ktxTexture(texture),
-                                         tmp_path.u8string().c_str());
+    result = vkr_ktx_write_file(ktxTexture((encoded ? encoded.get() : texture)),
+                                tmp_path.u8string().c_str());
     if (result != KTX_SUCCESS) {
       std::cerr << "Failed to write temporary output '" << tmp_path
                 << "': " << ktxErrorString(result) << "\n";
@@ -950,11 +1283,11 @@ bool write_packed_sources(const std::vector<fs::path> &source_paths,
   return success;
 }
 
-bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
+bool pack_texture_set_to_vkt(const std::vector<SourceImage> &source_images,
                              const fs::path &dst_path,
                              TextureClass texture_class, TextureShape shape,
                              const PackConfig &config) {
-  const size_t source_count = source_paths.size();
+  const size_t source_count = source_images.size();
   const bool valid_count =
       (shape == TextureShape::k2D && source_count == 1u) ||
       (shape == TextureShape::k2DArray && source_count > 1u) ||
@@ -973,13 +1306,12 @@ bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
   uint32_t height = 0u;
   size_t mip_count = 0u;
   AlphaAnalysis aggregate_alpha = {};
-  for (const fs::path &path : source_paths) {
+  for (const SourceImage &source_image : source_images) {
     LevelImage image;
-    if (!load_source_rgba8(path, image)) {
+    if (!load_source(source_image, image)) {
       return false;
     }
     PackedSource source;
-    source.path = path;
     source.width = image.width;
     source.height = image.height;
     source.alpha =
@@ -1021,7 +1353,7 @@ bool pack_texture_set_to_vkt(const std::vector<fs::path> &source_paths,
     return false;
   }
 
-  return write_packed_sources(source_paths, sources, dst_path, texture_class,
+  return write_packed_sources(source_images, sources, dst_path, texture_class,
                               shape, config, aggregate_alpha);
 }
 
@@ -1082,6 +1414,8 @@ void build_normal_roughness_mips(const LevelImage &normal_image,
                             roughness.height, TextureClass::kDataMask, config);
   normal.levels.reserve(roughness.levels.size());
   std::vector<VkrVktMaterialMoment> moments;
+  const size_t first_level = first_stored_level(
+      normal.width, normal.height, roughness.levels.size(), config);
   const auto base_sample = [&](size_t index) {
     return vkr_vkt_material_moment(normal_image.pixels.data() + index * 4u,
                                    roughness_image.pixels[index * 4u + 1u],
@@ -1093,7 +1427,9 @@ void build_normal_roughness_mips(const LevelImage &normal_image,
     LevelImage normal_level;
     normal_level.width = roughness_level.width;
     normal_level.height = roughness_level.height;
-    normal_level.pixels.resize(roughness_level.pixels.size());
+    if (mip >= first_level) {
+      normal_level.pixels.resize(roughness_level.pixels.size());
+    }
     if (mip == 1u) {
       moments = reduce_material_moments(normal.width, normal.height,
                                         normal_level.width, normal_level.height,
@@ -1107,7 +1443,10 @@ void build_normal_roughness_mips(const LevelImage &normal_image,
     }
     const size_t count =
         static_cast<size_t>(normal_level.width) * normal_level.height;
-    if (mip == 0u) {
+    if (mip < first_level) {
+      // Dropped by the preview extent: its moments still feed the next
+      // level, but its encoded texels are never stored.
+    } else if (mip == 0u) {
       for (size_t index = 0; index < count; ++index) {
         vkr_vkt_encode_material_moment(
             base_sample(index), normal_level.pixels.data() + index * 4u,
@@ -1126,7 +1465,8 @@ void build_normal_roughness_mips(const LevelImage &normal_image,
 
 bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
                          TextureClass texture_class, const PackConfig &config) {
-  return pack_texture_set_to_vkt({src_path}, dst_path, texture_class,
+  return pack_texture_set_to_vkt(file_sources({src_path}), dst_path,
+                                 texture_class,
                                  TextureShape::k2D, config);
 }
 
@@ -1156,54 +1496,182 @@ bool discover_source_textures(const fs::path &root_dir,
 
 } // namespace
 
-int vkr_vkt_pack_cutout(const char *source, const char *output, float cutoff,
-                        float factor) {
-  if (!source || !source[0] || !output || !output[0] ||
-      !std::isfinite(cutoff) || !std::isfinite(factor) || cutoff < 0.0f ||
-      cutoff > 1.0f || factor < 0.0f || factor > 1.0f) {
+static std::atomic<int> g_vkr_vkt_preview_tier{0};
+
+void vkr_vkt_set_preview_tier(int preview) {
+  g_vkr_vkt_preview_tier.store(preview ? 1 : 0);
+}
+
+int vkr_vkt_preview_tier(void) { return g_vkr_vkt_preview_tier.load(); }
+
+int vkr_vkt_parse_encoding(const char *name, VkrVktEncoding *out) {
+  if (!name || !out) {
     return 0;
   }
+  if (std::strcmp(name, "uastc") == 0) {
+    *out = VKR_VKT_ENCODING_UASTC;
+    return 1;
+  }
+  if (std::strcmp(name, "astc") == 0) {
+    *out = VKR_VKT_ENCODING_ASTC;
+    return 1;
+  }
+#if defined(__APPLE__)
+  if (std::strcmp(name, "astc-fast") == 0) {
+    *out = VKR_VKT_ENCODING_ASTC_FAST;
+    return 1;
+  }
+#endif
+  return 0;
+}
+
+static std::atomic<int> g_vkr_vkt_encoding{VKR_VKT_ENCODING_UASTC};
+
+void vkr_vkt_set_encoding(VkrVktEncoding encoding) {
+  g_vkr_vkt_encoding.store(encoding);
+}
+
+VkrVktEncoding vkr_vkt_encoding(void) {
+  return static_cast<VkrVktEncoding>(g_vkr_vkt_encoding.load());
+}
+
+const char *vkr_vkt_variant_suffix(void) {
+  static const char *const suffixes[6] = {
+      "",      ".preview",         ".astc", ".astc.preview",
+      ".astc-fast", ".astc-fast.preview"};
+  return suffixes[vkr_vkt_encoding() * 2 + (vkr_vkt_preview_tier() ? 1 : 0)];
+}
+
+void *vkr_vkt_encode_png_rgba8(const void *pixels, int width, int height,
+                               size_t *out_size) {
+  // The writer stores 16-bit extents. Level 2 is greedy parsing with six
+  // probes: about three times the speed of stb_image_write and smaller output
+  // on converted Bistro images.
+  constexpr buminiz::mz_uint kPngLevel = 2u;
+  if (!out_size) {
+    return nullptr;
+  }
+  *out_size = 0u;
+  if (!pixels || width <= 0 || height <= 0 || width > 65535 || height > 65535) {
+    return nullptr;
+  }
+  return buminiz::tdefl_write_image_to_png_file_in_memory_ex(
+      pixels, width, height, 4, out_size, kPngLevel, MZ_FALSE);
+}
+
+void vkr_vkt_free_png(void *bytes) { buminiz::mz_free(bytes); }
+
+namespace {
+
+// Settings of the in-process packs: the process tier and encoding.
+PackConfig process_pack_config() {
+  PackConfig config;
+  if (vkr_vkt_preview_tier()) {
+    config.uastc_level = KTX_PACK_UASTC_LEVEL_FASTEST;
+    config.max_extent = VKR_VKT_PREVIEW_MAX_EXTENT;
+  }
+  config.encoding = vkr_vkt_encoding();
+  config.basis_threads = resolve_basis_thread_count(config.basis_threads);
+  return config;
+}
+
+bool source_valid(const VkrVktSource *source) {
+  return source && ((source->path && source->path[0] && !source->pixels) ||
+                    (!source->path && source->width && source->height));
+}
+
+SourceImage source_image(const VkrVktSource &source) {
+  SourceImage image;
+  if (source.path) {
+    image.path = vkr_filesystem_native_utf8_path(source.path);
+    return image;
+  }
+  image.pixels = source.pixels;
+  image.width = source.width;
+  image.height = source.height;
+  image.hash = source.hash;
+  image.converted = true;
+  return image;
+}
+
+// Packs one 2D texture from `source` unless `destination` is current.
+VkrVktPackResult pack_single(const VkrVktSource *source,
+                             const fs::path &destination,
+                             TextureClass texture_class,
+                             const PackConfig &config) {
+  const std::vector<SourceImage> sources = {source_image(*source)};
+  if (should_skip_output(sources, destination, texture_class,
+                         TextureShape::k2D, config)) {
+    return VKR_VKT_PACK_SUCCESS;
+  }
+  if (sources.front().converted && !sources.front().pixels) {
+    return VKR_VKT_PACK_STALE;
+  }
+  return pack_texture_set_to_vkt(sources, destination, texture_class,
+                                 TextureShape::k2D, config)
+             ? VKR_VKT_PACK_SUCCESS
+             : VKR_VKT_PACK_FAILED;
+}
+
+} // namespace
+
+VkrVktPackResult vkr_vkt_pack_image(const VkrVktSource *source,
+                                    const char *texture_class,
+                                    const char *output) {
+  TextureClass parsed_class = TextureClass::kColorSrgb;
+  if (!source_valid(source) || !texture_class || !output || !output[0] ||
+      !parse_texture_class_option(texture_class, &parsed_class)) {
+    return VKR_VKT_PACK_FAILED;
+  }
   try {
-    PackConfig config = {};
-    config.cutout = true;
-    config.alpha_cutoff = cutoff == 0.0f ? 0.0f : cutoff;
-    config.alpha_factor = factor == 0.0f ? 0.0f : factor;
-    config.basis_threads = resolve_basis_thread_count(config.basis_threads);
-    const std::vector<fs::path> sources = {vkr_filesystem_native_utf8_path(source)};
-    const fs::path destination = vkr_filesystem_native_utf8_path(output);
-    if (should_skip_output(sources, destination, TextureClass::kColorSrgb,
-                           TextureShape::k2D, config)) {
-      return 1;
-    }
-    return pack_texture_set_to_vkt(sources, destination,
-                                   TextureClass::kColorSrgb, TextureShape::k2D,
-                                   config)
-               ? 1
-               : 0;
+    return pack_single(source, vkr_filesystem_native_utf8_path(output),
+                       parsed_class, process_pack_config());
   } catch (const std::exception &error) {
-    std::cerr << "Cutout packing failed: " << error.what() << "\n";
-    return 0;
+    std::cerr << "Texture packing failed: " << error.what() << "\n";
+    return VKR_VKT_PACK_FAILED;
   }
 }
 
-int vkr_vkt_pack_normal_roughness(const char *normal_source,
-                                  const char *roughness_source,
-                                  const char *normal_output,
-                                  const char *roughness_output,
-                                  float normal_scale, float roughness_factor) {
+VkrVktPackResult vkr_vkt_pack_cutout(const VkrVktSource *source,
+                                     const char *output, float cutoff,
+                                     float factor) {
+  if (!source_valid(source) || !output || !output[0] ||
+      !std::isfinite(cutoff) || !std::isfinite(factor) || cutoff < 0.0f ||
+      cutoff > 1.0f || factor < 0.0f || factor > 1.0f) {
+    return VKR_VKT_PACK_FAILED;
+  }
+  try {
+    PackConfig config = process_pack_config();
+    config.cutout = true;
+    config.alpha_cutoff = cutoff == 0.0f ? 0.0f : cutoff;
+    config.alpha_factor = factor == 0.0f ? 0.0f : factor;
+    return pack_single(source, vkr_filesystem_native_utf8_path(output),
+                       TextureClass::kColorSrgb, config);
+  } catch (const std::exception &error) {
+    std::cerr << "Cutout packing failed: " << error.what() << "\n";
+    return VKR_VKT_PACK_FAILED;
+  }
+}
+
+VkrVktPackResult vkr_vkt_pack_normal_roughness(
+    const char *normal_source, const VkrVktSource *roughness_source,
+    const char *normal_output, const char *roughness_output,
+    float normal_scale, float roughness_factor) {
   if (!normal_source || !normal_source[0] || !normal_output ||
       !normal_output[0] || !roughness_output || !roughness_output[0] ||
-      (roughness_source && !roughness_source[0]) ||
+      (roughness_source && !source_valid(roughness_source)) ||
       !std::isfinite(normal_scale) || !std::isfinite(roughness_factor) ||
       roughness_factor < 0.0f || roughness_factor > 1.0f) {
-    return VKR_VKT_PAIR_FAILED;
+    return VKR_VKT_PACK_FAILED;
   }
   try {
     const fs::path normal_path = vkr_filesystem_native_utf8_path(normal_output);
-    const fs::path roughness_path = vkr_filesystem_native_utf8_path(roughness_output);
-    std::vector<fs::path> sources = {vkr_filesystem_native_utf8_path(normal_source)};
+    const fs::path roughness_path =
+        vkr_filesystem_native_utf8_path(roughness_output);
+    std::vector<SourceImage> sources(1);
+    sources.front().path = vkr_filesystem_native_utf8_path(normal_source);
     if (roughness_source) {
-      sources.emplace_back(vkr_filesystem_native_utf8_path(roughness_source));
+      sources.push_back(source_image(*roughness_source));
     }
     // Publishing a pair must never overwrite either source or the other output.
     const fs::path normal_absolute =
@@ -1211,45 +1679,51 @@ int vkr_vkt_pack_normal_roughness(const char *normal_source,
     const fs::path roughness_absolute =
         fs::absolute(roughness_path).lexically_normal();
     if (normal_absolute == roughness_absolute) {
-      return VKR_VKT_PAIR_FAILED;
+      return VKR_VKT_PACK_FAILED;
     }
-    for (const fs::path &source : sources) {
-      const fs::path absolute = fs::absolute(source).lexically_normal();
+    for (const SourceImage &source : sources) {
+      if (source.converted) {
+        continue;
+      }
+      const fs::path absolute = fs::absolute(source.path).lexically_normal();
       if (absolute == normal_absolute || absolute == roughness_absolute) {
-        return VKR_VKT_PAIR_FAILED;
+        return VKR_VKT_PACK_FAILED;
       }
     }
-    PackConfig config;
+    PackConfig config = process_pack_config();
     config.normal_roughness = true;
     config.normal_scale = normal_scale == 0.0f ? 0.0f : normal_scale;
     config.roughness_factor =
         roughness_factor == 0.0f ? 0.0f : roughness_factor;
     config.roughness_source = roughness_source != nullptr;
-    config.basis_threads = resolve_basis_thread_count(config.basis_threads);
     // The normal output records only its own source; see
     // pack_settings_identity.
-    const std::vector<fs::path> normal_sources = {sources.front()};
+    const std::vector<SourceImage> normal_sources = {sources.front()};
     const bool normal_cached =
-        should_skip_output(normal_sources, normal_path,
-                           TextureClass::kNormalRg, TextureShape::k2D, config);
+        should_skip_output(normal_sources, normal_path, TextureClass::kNormalRg,
+                           TextureShape::k2D, config);
     const bool roughness_cached =
         should_skip_output(sources, roughness_path, TextureClass::kDataMask,
                            TextureShape::k2D, config);
     if (normal_cached && roughness_cached) {
-      return VKR_VKT_PAIR_SUCCESS;
+      return VKR_VKT_PACK_SUCCESS;
+    }
+    if (roughness_source && sources.back().converted &&
+        !sources.back().pixels) {
+      return VKR_VKT_PACK_STALE;
     }
     LevelImage normal_image;
     LevelImage roughness_image;
-    if (!load_source_rgba8(sources[0], normal_image)) {
-      return VKR_VKT_PAIR_FAILED;
+    if (!load_source(sources[0], normal_image)) {
+      return VKR_VKT_PACK_FAILED;
     }
     if (roughness_source) {
-      if (!load_source_rgba8(sources[1], roughness_image)) {
-        return VKR_VKT_PAIR_FAILED;
+      if (!load_source(sources[1], roughness_image)) {
+        return VKR_VKT_PACK_FAILED;
       }
       if (normal_image.width != roughness_image.width ||
           normal_image.height != roughness_image.height) {
-        return VKR_VKT_PAIR_INCOMPATIBLE;
+        return VKR_VKT_PACK_INCOMPATIBLE;
       }
     } else {
       roughness_image.width = normal_image.width;
@@ -1272,13 +1746,30 @@ int vkr_vkt_pack_normal_roughness(const char *normal_source,
          !write_packed_sources(sources, roughness, roughness_path,
                                TextureClass::kDataMask, TextureShape::k2D,
                                config, roughness_alpha))) {
-      return VKR_VKT_PAIR_FAILED;
+      return VKR_VKT_PACK_FAILED;
     }
-    return VKR_VKT_PAIR_SUCCESS;
+    return VKR_VKT_PACK_SUCCESS;
   } catch (const std::exception &error) {
     std::cerr << "Normal/roughness packing failed: " << error.what() << "\n";
-    return VKR_VKT_PAIR_FAILED;
+    return VKR_VKT_PACK_FAILED;
   }
+}
+
+const char *vkr_vkt_infer_texture_class(const char *path) {
+  switch (infer_texture_class(fs::u8path(path))) {
+  case TextureClass::kNormalRg:
+    return "normal-rg";
+  case TextureClass::kDataMask:
+    return "data-mask";
+  case TextureClass::kColorLinear:
+    return "color-linear";
+  default:
+    return "color-srgb";
+  }
+}
+
+int vkr_vkt_is_supported_source(const char *path) {
+  return is_supported_source_extension(fs::u8path(path)) ? 1 : 0;
 }
 
 int vkr_vkt_packer_main(int argc, char **argv) {
@@ -1305,13 +1796,14 @@ int vkr_vkt_packer_main(int argc, char **argv) {
         config.texture_class_explicit
             ? config.texture_class
             : infer_texture_class(config.layers.front());
-    if (should_skip_output(config.layers, config.output, texture_class,
-                           config.shape, config)) {
+    const std::vector<SourceImage> layers = file_sources(config.layers);
+    if (should_skip_output(layers, config.output, texture_class, config.shape,
+                           config)) {
       std::cout << "Layered output is up to date: " << config.output << "\n";
       return 0;
     }
     const bool packed = pack_texture_set_to_vkt(
-        config.layers, config.output, texture_class, config.shape, config);
+        layers, config.output, texture_class, config.shape, config);
     std::cout << "vkt layered pack: output=" << config.output
               << " sources=" << config.layers.size()
               << " status=" << (packed ? "packed" : "failed") << "\n";
@@ -1337,13 +1829,21 @@ int vkr_vkt_packer_main(int argc, char **argv) {
 
   PackStats stats = {};
   stats.discovered = static_cast<uint32_t>(sources.size());
-  log_progress_line(config.progress,
-                    "Discovered " + std::to_string(stats.discovered) +
-                        " source textures under " + config.input_dir.u8string());
+  log_progress_line(config.progress, "Discovered " +
+                                         std::to_string(stats.discovered) +
+                                         " source textures under " +
+                                         config.input_dir.u8string());
   {
     std::ostringstream encode_config_line;
-    encode_config_line << "Encode config: uastc_level="
-                       << uastc_level_to_string(config.uastc_level)
+    encode_config_line << "Encode config: "
+                       << (is_astc(config)
+                               ? std::string("encoding=") +
+                                     (config.encoding ==
+                                              VKR_VKT_ENCODING_ASTC_FAST
+                                          ? "astc-4x4-system"
+                                          : "astc-4x4-fastest")
+                               : std::string("uastc_level=") +
+                                     uastc_level_to_string(config.uastc_level))
                        << " basis_threads=" << config.basis_threads
                        << " source_hash="
                        << (config.write_source_hash ? "enabled" : "disabled");
@@ -1380,9 +1880,10 @@ int vkr_vkt_packer_main(int argc, char **argv) {
       log_progress_line(true, header.str());
     }
 
-    const fs::path dst_path = vkr_filesystem_native_utf8_path(src_path.u8string() + ".vkt");
+    const fs::path dst_path =
+        vkr_filesystem_native_utf8_path(src_path.u8string() + ".vkt");
     const TextureClass texture_class = infer_texture_class(src_path);
-    if (should_skip_output({src_path}, dst_path, texture_class,
+    if (should_skip_output(file_sources({src_path}), dst_path, texture_class,
                            TextureShape::k2D, config)) {
       ++stats.skipped;
       log_progress_line(config.progress, "  - skip: content/settings match");

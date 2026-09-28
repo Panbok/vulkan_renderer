@@ -1237,8 +1237,7 @@ vkr_internal void test_harness_scene_manifest_tracks_transitive_content(void) {
   assert(!vkr_harness_scene_manifest_build(
       root, "assets/scenes/test.scene.json", missing_arena, &missing, &error));
   assert(string_equals(error.code, "scene_manifest.missing"));
-  assert(strstr(error.message,
-                "./tools/cook_vkr_meshes.sh assets/models/test.gltf"));
+  assert(strstr(error.message, "vkr_bakery cook assets/models/test.gltf"));
   assert(strstr(error.message, "assets/textures/generated/test.png?cs=srgb"));
   assert(strstr(error.message, "query ignored"));
   arena_destroy(missing_arena);
@@ -1745,6 +1744,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   char legacy_v6_path[VKR_HARNESS_PATH_MAX];
   char legacy_v9_path[VKR_HARNESS_PATH_MAX];
   char legacy_v14_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v15_path[VKR_HARNESS_PATH_MAX];
   char current_path[VKR_HARNESS_PATH_MAX];
   snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
   snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
@@ -1756,6 +1756,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   snprintf(legacy_v9_path, sizeof(legacy_v9_path), "%s/legacy-v9.bin",
            directory);
   snprintf(legacy_v14_path, sizeof(legacy_v14_path), "%s/legacy-v14.bin",
+           directory);
+  snprintf(legacy_v15_path, sizeof(legacy_v15_path), "%s/legacy-v15.bin",
            directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3 *legacy = calloc(1u, sizeof(*legacy));
@@ -2059,6 +2061,55 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
          VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
   assert(strcmp(summary.profile.id, "legacy.v14.profile") == 0);
 
+  /* Version 16 grew each checkpoint by a camera override; version-15
+   * checkpoints and every case field after them must still read in place. */
+  VkrHarnessCaptureSummaryHeaderV15 *legacy_v15 =
+      calloc(1u, sizeof(*legacy_v15));
+  assert(legacy_v15);
+  MemCopy(legacy_v15->magic, magic, sizeof(magic));
+  legacy_v15->version = 15u;
+  legacy_v15->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v15->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy_v15->case_manifest.capture_count = 2u;
+  legacy_v15->case_manifest.captures[0].at_frame = 7u;
+  legacy_v15->case_manifest.captures[0].channel_count = 1u;
+  VKR_STRING_COPY_LITERAL(legacy_v15->case_manifest.captures[0].channels[0],
+                          "scene_color");
+  legacy_v15->case_manifest.captures[1].at_frame = 19u;
+  legacy_v15->case_manifest.captures[1].channel_count = 1u;
+  VKR_STRING_COPY_LITERAL(legacy_v15->case_manifest.captures[1].channels[0],
+                          "depth");
+  legacy_v15->case_manifest.captures[1].compare.max_pixel_delta = 0.25;
+  legacy_v15->case_manifest.assertion_count = 3u;
+  legacy_v15->case_manifest.compare.max_pixel_delta = 0.5;
+  legacy_v15->case_manifest.content_scale = 1.5f;
+  legacy_v15->case_manifest.asset_context =
+      VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE;
+  VKR_STRING_COPY_LITERAL(legacy_v15->profile.id, "legacy.v15.profile");
+  assert(vkr_harness_atomic_write(legacy_v15_path, legacy_v15,
+                                  sizeof(*legacy_v15), &error));
+  free(legacy_v15);
+  assert(vkr_harness_capture_summary_read(legacy_v15_path, arena, &summary));
+  assert(summary.case_manifest.capture_count == 2u);
+  assert(summary.case_manifest.captures[0].at_frame == 7u);
+  assert(summary.case_manifest.captures[1].at_frame == 19u);
+  assert(strcmp(summary.case_manifest.captures[1].channels[0], "depth") == 0);
+  assert(summary.case_manifest.captures[1].compare.max_pixel_delta == 0.25);
+  assert(!summary.case_manifest.captures[0].has_camera_mode &&
+         !summary.case_manifest.captures[1].has_camera_mode);
+  assert(!summary.case_manifest.single_capture_session);
+  assert(summary.case_manifest.assertion_count == 3u);
+  assert(summary.case_manifest.compare.max_pixel_delta == 0.5);
+  assert(summary.case_manifest.content_scale == 1.5f);
+  assert(summary.case_manifest.asset_context ==
+         VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
+  assert(strcmp(summary.profile.id, "legacy.v15.profile") == 0);
+
+  report.case_manifest.single_capture_session = true_v;
+  report.case_manifest.capture_count = 1u;
+  report.case_manifest.captures[0].at_frame = 8u;
+  report.case_manifest.captures[0].has_camera_mode = true_v;
+  report.case_manifest.captures[0].camera_mode = VKR_HARNESS_CAMERA_CUBEMAP_NY;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -2068,9 +2119,14 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 15u);
+  assert(current_version == 16u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
+  assert(summary.case_manifest.single_capture_session);
+  assert(summary.case_manifest.captures[0].at_frame == 8u);
+  assert(summary.case_manifest.captures[0].has_camera_mode &&
+         summary.case_manifest.captures[0].camera_mode ==
+             VKR_HARNESS_CAMERA_CUBEMAP_NY);
   assert(summary.case_manifest.renderer.physics_fixture);
   assert(summary.case_manifest.asset_context ==
          VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
@@ -2118,6 +2174,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(unlink(legacy_v6_path) == 0);
   assert(unlink(legacy_v9_path) == 0);
   assert(unlink(legacy_v14_path) == 0);
+  assert(unlink(legacy_v15_path) == 0);
   assert(unlink(current_path) == 0);
   assert(rmdir(directory) == 0);
   arena_destroy(arena);

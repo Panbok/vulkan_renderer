@@ -246,7 +246,7 @@ before a project opens, fills the window.
 ### Documents and compatibility
 
 Managed scenes are version 5 documents, lowered by the
-[project jobs](../../tools/editor_project_jobs.py) to the runtime scene
+[project jobs](../../tools/bakery/project/vkr_project_lower.c) to the runtime scene
 format:
 
 - Every entity has a document-stable UUID `id`, unique within its document.

@@ -1,3 +1,4 @@
+#include "vkr_shader_catalog.h"
 #include "vulkan/vkr_vulkan_internal.h"
 #include <spirv_reflect.h>
 
@@ -8,6 +9,18 @@ vkr_internal bool8_t
 vkr_vk_create_atmosphere_pipelines(VkrVulkanRenderer *renderer);
 vkr_internal bool8_t
 vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer);
+
+/* SPIR-V modules come from the shader catalog published by `vkr_bakery
+ * shaders`; names are the catalog file names in vkr_vulkan_internal.h. */
+vkr_internal FilePath vkr_vk_shader_file(VkrVulkanRenderer *renderer,
+                                         const char *name) {
+  char path[4096];
+  if (!vkr_shader_catalog_path("vulkan", name, path, sizeof(path))) {
+    log_error("Shader catalog path for %s does not fit", name);
+    return (FilePath){0};
+  }
+  return file_path_create(path, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+}
 
 bool8_t vkr_vk_pipeline_cache_initialize(VkrVulkanRenderer *renderer) {
   const char *path = getenv("VKR_PIPELINE_CACHE_PATH");
@@ -362,8 +375,7 @@ vkr_internal bool8_t vkr_vk_validate_reflected_fields(
 vkr_internal bool8_t
 vkr_vk_validate_packet_root_abi(VkrVulkanRenderer *renderer) {
   FilePath shader_path =
-      file_path_create(VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV,
-                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+      vkr_vk_shader_file(renderer, VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -465,8 +477,7 @@ vkr_internal bool8_t vkr_vk_validate_root_abi_with_gpu_record(
     const VkrVulkanReflectedField *fields, uint32_t field_count,
     uint32_t expected_size, const char *gpu_field,
     VkrGpuAbiRecordId gpu_record_id) {
-  FilePath shader_path =
-      file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  FilePath shader_path = vkr_vk_shader_file(renderer, shader);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -527,8 +538,7 @@ vkr_internal bool8_t vkr_vk_validate_froxel_root_abi(
     VkrVulkanRenderer *renderer, const char *shader, const char *entry,
     const VkrVulkanReflectedField *fields, uint32_t field_count,
     uint32_t expected_size, bool8_t requires_storage_3d) {
-  FilePath shader_path =
-      file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  FilePath shader_path = vkr_vk_shader_file(renderer, shader);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -604,9 +614,8 @@ vkr_internal bool8_t vkr_vk_validate_froxel_root_abi(
 
 vkr_internal bool8_t
 vkr_vk_validate_transmission_material_abi(VkrVulkanRenderer *renderer) {
-  FilePath shader_path =
-      file_path_create(VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV,
-                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  FilePath shader_path = vkr_vk_shader_file(
+      renderer, VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -797,8 +806,7 @@ vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
 vkr_internal bool8_t
 vkr_vk_validate_gtao_root_abi(VkrVulkanRenderer *renderer) {
   FilePath shader_path =
-      file_path_create(VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV,
-                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+      vkr_vk_shader_file(renderer, VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -910,8 +918,7 @@ vkr_vk_validate_ibl_sh_root_abi(VkrVulkanRenderer *renderer) {
 
 vkr_internal bool8_t vkr_vk_validate_motion_blur_root_abi(
     VkrVulkanRenderer *renderer, const char *shader, const char *entry) {
-  FilePath shader_path =
-      file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  FilePath shader_path = vkr_vk_shader_file(renderer, shader);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -970,8 +977,7 @@ vkr_internal bool8_t vkr_vk_validate_motion_blur_root_abi(
 
 vkr_internal bool8_t vkr_vk_validate_subsurface_root_abi(
     VkrVulkanRenderer *renderer, const char *shader, const char *entry) {
-  FilePath shader_path =
-      file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  FilePath shader_path = vkr_vk_shader_file(renderer, shader);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -1040,8 +1046,7 @@ vkr_internal bool8_t vkr_vk_validate_subsurface_root_abi(
 vkr_internal bool8_t vkr_vk_validate_dof_root_abi(VkrVulkanRenderer *renderer,
                                                   const char *shader,
                                                   const char *entry) {
-  FilePath shader_path =
-      file_path_create(shader, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  FilePath shader_path = vkr_vk_shader_file(renderer, shader);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -1098,8 +1103,7 @@ vkr_internal bool8_t vkr_vk_validate_dof_root_abi(VkrVulkanRenderer *renderer,
 vkr_internal bool8_t
 vkr_vk_validate_ssr_reprojection_abi(VkrVulkanRenderer *renderer) {
   FilePath shader_path =
-      file_path_create(VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV,
-                       renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+      vkr_vk_shader_file(renderer, VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV);
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   vkr_vk_reflect_shader =
@@ -1989,8 +1993,7 @@ vkr_internal bool8_t vkr_vk_validate_ui_root_abi(VkrVulkanRenderer *renderer) {
 vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
                                                  const char *path,
                                                  VkShaderModule *out_module) {
-  FilePath shader_path =
-      file_path_create(path, renderer->allocator, FILE_PATH_TYPE_ABSOLUTE);
+  FilePath shader_path = vkr_vk_shader_file(renderer, path);
   uint8_t *bytes = NULL;
   uint64_t size = 0;
   if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,

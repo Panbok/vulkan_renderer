@@ -4,6 +4,14 @@
 #include <arm_acle.h>
 #endif
 
+/* Every Apple silicon core implements the ARMv8 SHA-256 instructions; they
+ * hash about ten times faster than the portable rounds, which dominate
+ * content hashing of large imports. */
+#if defined(__APPLE__) && defined(__aarch64__)
+#define VKR_SHA256_ARM 1
+#include <arm_neon.h>
+#endif
+
 static const uint32_t vkr_sha256_round_constants[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu,
     0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u, 0xd807aa98u, 0x12835b01u,
@@ -20,6 +28,7 @@ static const uint32_t vkr_sha256_round_constants[64] = {
     0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
 };
 
+#if !VKR_SHA256_ARM
 vkr_internal uint32_t vkr_sha256_rotr(uint32_t value, uint32_t bits) {
   return (value >> bits) | (value << (32u - bits));
 }
@@ -78,6 +87,53 @@ vkr_internal void vkr_sha256_transform(VkrSha256 *hash,
   hash->state[6] += g;
   hash->state[7] += h;
 }
+#endif
+
+#if VKR_SHA256_ARM
+/* Same FIPS 180-4 compression as vkr_sha256_transform, four rounds per
+ * instruction pair; the message schedule advances four words at a time. */
+__attribute__((target("sha2"))) vkr_internal void
+vkr_sha256_transform_blocks(VkrSha256 *hash, const uint8_t *blocks,
+                            uint64_t count) {
+  uint32x4_t abcd = vld1q_u32(&hash->state[0]);
+  uint32x4_t efgh = vld1q_u32(&hash->state[4]);
+  for (uint64_t block = 0; block < count; ++block) {
+    const uint8_t *bytes = blocks + block * 64u;
+    const uint32x4_t abcd_saved = abcd;
+    const uint32x4_t efgh_saved = efgh;
+    uint32x4_t message[4];
+    for (uint32_t i = 0; i < 4u; ++i) {
+      message[i] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes + i * 16u)));
+    }
+#pragma clang loop unroll(full)
+    for (uint32_t group = 0; group < 16u; ++group) {
+      const uint32x4_t words =
+          vaddq_u32(message[group % 4u],
+                    vld1q_u32(&vkr_sha256_round_constants[group * 4u]));
+      if (group < 12u) {
+        message[group % 4u] = vsha256su1q_u32(
+            vsha256su0q_u32(message[group % 4u], message[(group + 1u) % 4u]),
+            message[(group + 2u) % 4u], message[(group + 3u) % 4u]);
+      }
+      const uint32x4_t abcd_before = abcd;
+      abcd = vsha256hq_u32(abcd, efgh, words);
+      efgh = vsha256h2q_u32(efgh, abcd_before, words);
+    }
+    abcd = vaddq_u32(abcd, abcd_saved);
+    efgh = vaddq_u32(efgh, efgh_saved);
+  }
+  vst1q_u32(&hash->state[0], abcd);
+  vst1q_u32(&hash->state[4], efgh);
+}
+#else
+vkr_internal void vkr_sha256_transform_blocks(VkrSha256 *hash,
+                                              const uint8_t *blocks,
+                                              uint64_t count) {
+  for (uint64_t block = 0; block < count; ++block) {
+    vkr_sha256_transform(hash, blocks + block * 64u);
+  }
+}
+#endif
 
 void vkr_sha256_init(VkrSha256 *hash) {
   *hash = (VkrSha256){
@@ -96,16 +152,17 @@ void vkr_sha256_update(VkrSha256 *hash, const void *data, uint64_t size) {
     bytes += copied;
     size -= copied;
     if (hash->block_length == 64u) {
-      vkr_sha256_transform(hash, hash->block);
+      vkr_sha256_transform_blocks(hash, hash->block, 1u);
       hash->bit_length += 512u;
       hash->block_length = 0;
     }
   }
-  while (size >= 64u) {
-    vkr_sha256_transform(hash, bytes);
-    hash->bit_length += 512u;
-    bytes += 64u;
-    size -= 64u;
+  const uint64_t blocks = size / 64u;
+  if (blocks) {
+    vkr_sha256_transform_blocks(hash, bytes, blocks);
+    hash->bit_length += blocks * 512u;
+    bytes += blocks * 64u;
+    size -= blocks * 64u;
   }
   if (size > 0u) {
     MemCopy(hash->block, bytes, size);
@@ -120,7 +177,7 @@ void vkr_sha256_final(VkrSha256 *hash, uint8_t digest[VKR_SHA256_DIGEST_SIZE]) {
     while (i < 64u) {
       hash->block[i++] = 0;
     }
-    vkr_sha256_transform(hash, hash->block);
+    vkr_sha256_transform_blocks(hash, hash->block, 1u);
     i = 0;
   }
   while (i < 56u) {
@@ -130,7 +187,7 @@ void vkr_sha256_final(VkrSha256 *hash, uint8_t digest[VKR_SHA256_DIGEST_SIZE]) {
   for (uint32_t byte = 0; byte < 8u; ++byte) {
     hash->block[63u - byte] = (uint8_t)(hash->bit_length >> (byte * 8u));
   }
-  vkr_sha256_transform(hash, hash->block);
+  vkr_sha256_transform_blocks(hash, hash->block, 1u);
   for (uint32_t word = 0; word < 8u; ++word) {
     digest[word * 4u] = (uint8_t)(hash->state[word] >> 24u);
     digest[word * 4u + 1u] = (uint8_t)(hash->state[word] >> 16u);

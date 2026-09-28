@@ -27,23 +27,26 @@ typedef struct VkrTextureTranscodeCacheRecord {
  * vkr_texture_transcode_cache_release(). A miss or corrupt entry returns false.
  */
 bool8_t vkr_texture_transcode_cache_load(
-    VkrAllocator *scratch, String8 source_path, const uint8_t *source_data,
-    uint64_t source_size, VkrTextureFormat target_format,
-    uint32_t expected_width, uint32_t expected_height,
-    uint32_t expected_mip_levels, uint32_t expected_array_layers,
-    VkrTextureTranscodeCacheRecord *out_record);
+    VkrAllocator *scratch, const uint8_t *source_data, uint64_t source_size,
+    VkrTextureFormat target_format, uint32_t expected_width,
+    uint32_t expected_height, uint32_t expected_mip_levels,
+    uint32_t expected_array_layers, VkrTextureTranscodeCacheRecord *out_record);
 
 /** Atomically writes one validated GPU-ready texture payload. */
 bool8_t vkr_texture_transcode_cache_store(
-    VkrAllocator *scratch, String8 source_path, const uint8_t *source_data,
-    uint64_t source_size, const VkrTextureTranscodeCacheRecord *record);
+    VkrAllocator *scratch, const uint8_t *source_data, uint64_t source_size,
+    const VkrTextureTranscodeCacheRecord *record);
 
 /** Releases malloc-owned data returned by the cache loader. */
 void vkr_texture_transcode_cache_release(
     VkrTextureTranscodeCacheRecord *record);
 
-/** Returns the deterministic cache path for diagnostics and focused tests. */
+/** Content hash that names and validates a source's entries. */
+uint64_t vkr_texture_transcode_cache_source_hash(const uint8_t *source_data,
+                                                 uint64_t source_size);
+/** Returns the deterministic cache path for diagnostics and focused tests:
+ * entries are named by source content and target format, not by path. */
 bool8_t vkr_texture_transcode_cache_path(VkrAllocator *allocator,
-                                         String8 source_path,
+                                         uint64_t source_hash,
                                          VkrTextureFormat target_format,
                                          String8 *out_path);

@@ -8,12 +8,16 @@
 #include "containers/str.h"
 #include "containers/vector.h"
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
+#include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "math/vec.h"
 #include "math/vkr_math.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_platform.h"
 #include "vkr_geometry_data.h"
 Vector(Vec2);
 Vector(Vec3);
@@ -63,6 +67,13 @@ typedef struct VkrMeshLoaderMaterialBucket {
 } VkrMeshLoaderMaterialBucket;
 Vector(VkrMeshLoaderMaterialBucket);
 
+/* A file's SHA-256 and byte size: its bundle name and its dependency digest. */
+typedef struct VkrMeshLoaderBundleHash {
+  String8 source;
+  uint64_t size;
+  uint8_t digest[32];
+} VkrMeshLoaderBundleHash;
+
 typedef struct VkrMeshLoaderState {
   VkrAllocator *load_allocator;
   VkrAllocator *scratch_allocator;
@@ -90,6 +101,12 @@ typedef struct VkrMeshLoaderState {
   String8 bundle_root;
   String8 import_id;
   String8 generated_root;
+
+  /* Content hashes of files already copied into the bundle: one texture is
+     named by many materials, and the dependencies copy the same files. */
+  VkrMeshLoaderBundleHash *bundle_hashes;
+  uint32_t bundle_hash_count;
+  uint32_t bundle_hash_capacity;
 
   VkrRendererError *out_error;
 } VkrMeshLoaderState;
@@ -136,6 +153,14 @@ vkr_internal bool8_t vkr_mesh_loader_capture_source_dependency(
     VkrMeshLoaderState *state, String8 path);
 vkr_internal bool8_t vkr_mesh_loader_collect_source_dependencies(
     VkrMeshLoaderState *state, Vector_String8 *paths);
+
+/* Set by vkr_mesh_cook_set_defer_textures for every later cook. */
+vkr_internal bool8_t vkr_mesh_cook_defer_textures = false_v;
+/* Set by vkr_mesh_cook_set_ready_log and vkr_mesh_cook_set_material_priority
+   for every later glTF cook; borrowed from the caller. */
+vkr_internal const char *vkr_mesh_cook_ready_log = NULL;
+vkr_internal const String8 *vkr_mesh_cook_material_priority = NULL;
+vkr_internal uint32_t vkr_mesh_cook_material_priority_count = 0u;
 
 vkr_internal String8 vkr_mesh_loader_get_extension(VkrAllocator *allocator,
                                                    String8 path) {
@@ -1322,6 +1347,10 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
         .out_dependency_paths = &dependency_paths,
         .out_generated_material_paths = &dependency_paths,
         .out_generated_asset_paths = &generated_asset_paths,
+        .defer_textures = vkr_mesh_cook_defer_textures,
+        .ready_log = vkr_mesh_cook_ready_log,
+        .material_priority = vkr_mesh_cook_material_priority,
+        .material_priority_count = vkr_mesh_cook_material_priority_count,
     };
     if (!vkr_mesh_loader_gltf_parse(&parse_info)) {
       return false_v;
@@ -1354,10 +1383,11 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
 /* Content naming makes an existing blob the same bytes. A copy-on-write clone
  * shares the source's blocks where the file system can; otherwise the bytes
  * already read for naming are written. */
+/* Clones `source` to `physical`; without clone support the bytes are read
+   and written. */
 vkr_internal bool8_t vkr_mesh_loader_bundle_store(VkrMeshLoaderState *state,
                                                   String8 source,
-                                                  String8 physical,
-                                                  String8 bytes) {
+                                                  String8 physical) {
   const String8 from_text = string8_create_formatted(
       state->scratch_allocator, "%.*s", (int32_t)source.length, source.str);
   const String8 to_text = string8_create_formatted(
@@ -1379,9 +1409,186 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_store(VkrMeshLoaderState *state,
     return true_v;
   }
   const FileError cloned = file_clone(&from, &to);
-  return cloned == FILE_ERROR_NONE || cloned == FILE_ERROR_ALREADY_EXISTS ||
+  if (cloned == FILE_ERROR_NONE || cloned == FILE_ERROR_ALREADY_EXISTS) {
+    return true_v;
+  }
+  String8 bytes = {0};
+  return vkr_mesh_loader_read_file_to_string(state->scratch_allocator, source,
+                                             &bytes, NULL) &&
          vkr_mesh_cooked_write_atomic(state->scratch_allocator, physical,
                                       bytes.str, bytes.length);
+}
+
+/* SHA-256 and size of a file, resolved as file_path_create would; workers
+   call it without an allocator. */
+vkr_internal bool8_t vkr_mesh_loader_hash_file(String8 path,
+                                               VkrMeshLoaderBundleHash *out) {
+  const bool8_t absolute =
+      path.length > 0u && (path.str[0] == '/' || path.str[0] == '\\' ||
+                           (path.length > 1u && path.str[1] == ':'));
+  const char *root = absolute ? "" : vkr_content_root();
+  const uint64_t root_length = string_length(root);
+  char cpath[4096];
+  if (root_length + path.length >= sizeof(cpath)) {
+    return false_v;
+  }
+  MemCopy(cpath, root, root_length);
+  MemCopy(cpath + root_length, path.str, path.length);
+  cpath[root_length + path.length] = 0;
+  FilePath file = {
+      .path = {.str = (uint8_t *)cpath, .length = root_length + path.length},
+      .type = absolute ? FILE_PATH_TYPE_ABSOLUTE : FILE_PATH_TYPE_RELATIVE,
+  };
+  return vkr_mesh_cooked_hash_file(&file, out->digest, &out->size);
+}
+
+/* The 16 hex digits that name a bundle copy: the digest's first 8 bytes. */
+vkr_internal uint64_t
+vkr_mesh_loader_bundle_name(const VkrMeshLoaderBundleHash *hash) {
+  uint64_t name = 0u;
+  for (uint32_t i = 0; i < 8u; ++i) {
+    name = (name << 8u) | hash->digest[i];
+  }
+  return name;
+}
+
+vkr_internal void
+vkr_mesh_loader_remember_hash(VkrMeshLoaderState *state, String8 source,
+                              const VkrMeshLoaderBundleHash *hash) {
+  for (uint32_t i = 0; i < state->bundle_hash_count; ++i) {
+    if (string8_equals(&state->bundle_hashes[i].source, &source)) {
+      return;
+    }
+  }
+  if (state->bundle_hash_count == state->bundle_hash_capacity) {
+    const uint32_t capacity =
+        state->bundle_hash_capacity ? state->bundle_hash_capacity * 2u : 64u;
+    VkrMeshLoaderBundleHash *grown =
+        vkr_allocator_alloc(state->load_allocator, sizeof(*grown) * capacity,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!grown) {
+      return;
+    }
+    if (state->bundle_hash_count) {
+      MemCopy(grown, state->bundle_hashes,
+              sizeof(*grown) * state->bundle_hash_count);
+    }
+    state->bundle_hashes = grown;
+    state->bundle_hash_capacity = capacity;
+  }
+  VkrMeshLoaderBundleHash *entry =
+      &state->bundle_hashes[state->bundle_hash_count++];
+  *entry = *hash;
+  entry->source = string8_duplicate(state->load_allocator, &source);
+}
+
+vkr_internal void vkr_mesh_loader_forget_hash(VkrMeshLoaderState *state,
+                                              String8 source) {
+  for (uint32_t i = 0; i < state->bundle_hash_count; ++i) {
+    if (string8_equals(&state->bundle_hashes[i].source, &source)) {
+      state->bundle_hashes[i] =
+          state->bundle_hashes[--state->bundle_hash_count];
+      return;
+    }
+  }
+}
+
+typedef struct VkrMeshLoaderPrefetch {
+  const String8 *paths;
+  VkrMeshLoaderBundleHash *hashes;
+  bool8_t *hashed;
+  uint32_t count;
+  VkrAtomicUint32 next;
+} VkrMeshLoaderPrefetch;
+
+vkr_internal void *vkr_mesh_loader_prefetch_worker(void *argument) {
+  VkrMeshLoaderPrefetch *prefetch = argument;
+  for (;;) {
+    const uint32_t index = vkr_atomic_uint32_fetch_add(
+        &prefetch->next, 1u, VKR_MEMORY_ORDER_RELAXED);
+    if (index >= prefetch->count) {
+      return NULL;
+    }
+    prefetch->hashed[index] = vkr_mesh_loader_hash_file(
+        prefetch->paths[index], &prefetch->hashes[index]);
+  }
+}
+
+/* Hashes every dependency on worker threads before the bundle copies them,
+   so the serial copies find their names in the memo and the cooked mesh its
+   dependency digests. A file that fails here is hashed again, and reported,
+   by the copy itself. */
+vkr_internal void
+vkr_mesh_loader_prefetch_bundle_hashes(VkrMeshLoaderState *state) {
+  const uint32_t count = (uint32_t)state->source_dependencies.length;
+  if (!count) {
+    return;
+  }
+  String8 *paths = malloc(sizeof(*paths) * count);
+  VkrMeshLoaderBundleHash *hashes = calloc(count, sizeof(*hashes));
+  bool8_t *hashed = calloc(count, sizeof(*hashed));
+  if (!paths || !hashes || !hashed) {
+    free(paths);
+    free(hashes);
+    free(hashed);
+    return;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    paths[i] = state->source_dependencies.data[i].path;
+  }
+  VkrMeshLoaderPrefetch prefetch = {
+      .paths = paths, .hashes = hashes, .hashed = hashed, .count = count};
+  VkrThread workers[7] = {0};
+  const uint32_t cores = Max(vkr_platform_get_logical_core_count(), 1u);
+  const uint32_t extra = Min(Min(cores, count), 8u) - 1u;
+  uint32_t started = 0u;
+  for (uint32_t i = 0; i < extra; ++i) {
+    if (vkr_thread_create(state->load_allocator, &workers[started],
+                          vkr_mesh_loader_prefetch_worker, &prefetch)) {
+      ++started;
+    }
+  }
+  (void)vkr_mesh_loader_prefetch_worker(&prefetch);
+  for (uint32_t i = 0; i < started; ++i) {
+    (void)vkr_thread_join(workers[i]);
+    (void)vkr_thread_destroy(state->load_allocator, &workers[i]);
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (hashed[i]) {
+      vkr_mesh_loader_remember_hash(state, paths[i], &hashes[i]);
+    }
+  }
+  free(paths);
+  free(hashes);
+  free(hashed);
+}
+
+/* The recorded hash of `source`, or null. */
+vkr_internal const VkrMeshLoaderBundleHash *
+vkr_mesh_loader_find_hash(const VkrMeshLoaderState *state, String8 source) {
+  for (uint32_t i = 0; i < state->bundle_hash_count; ++i) {
+    if (string8_equals(&state->bundle_hashes[i].source, &source)) {
+      return &state->bundle_hashes[i];
+    }
+  }
+  return NULL;
+}
+
+/* SHA-256 of a file's bytes, computed once per source path in one cook. */
+vkr_internal bool8_t vkr_mesh_loader_bundle_hash(VkrMeshLoaderState *state,
+                                                 String8 source,
+                                                 VkrMeshLoaderBundleHash *out) {
+  const VkrMeshLoaderBundleHash *known =
+      vkr_mesh_loader_find_hash(state, source);
+  if (known) {
+    *out = *known;
+    return true_v;
+  }
+  if (!vkr_mesh_loader_hash_file(source, out)) {
+    return false_v;
+  }
+  vkr_mesh_loader_remember_hash(state, source, out);
+  return true_v;
 }
 
 /* Each copied blob is identified by its contents, retaining its extension.
@@ -1396,14 +1603,9 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_copy(VkrMeshLoaderState *state,
   if (!vkr_allocator_scope_is_valid(&scope)) {
     return false_v;
   }
-  String8 bytes = {0};
-  bool8_t ok = vkr_mesh_loader_read_file_to_string(state->scratch_allocator,
-                                                   source, &bytes, NULL);
+  VkrMeshLoaderBundleHash hash = {0};
+  bool8_t ok = vkr_mesh_loader_bundle_hash(state, source, &hash);
   if (ok) {
-    uint64_t hash = UINT64_C(14695981039346656037);
-    for (uint64_t i = 0; i < bytes.length; ++i) {
-      hash = (hash ^ bytes.str[i]) * UINT64_C(1099511628211);
-    }
     String8 extension =
         vkr_mesh_loader_get_extension(state->load_allocator, source);
     for (uint64_t i = 0; i < extension.length; ++i) {
@@ -1415,11 +1617,17 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_copy(VkrMeshLoaderState *state,
     if (ok) {
       *out_reference = string8_create_formatted(
           state->load_allocator, "./%s/%016llx.%.*s", directory,
-          (unsigned long long)hash, (int32_t)extension.length, extension.str);
+          (unsigned long long)vkr_mesh_loader_bundle_name(&hash),
+          (int32_t)extension.length, extension.str);
       *out_physical = file_path_join(state->load_allocator, state->bundle_root,
                                      *out_reference);
       ok = out_physical->str &&
-           vkr_mesh_loader_bundle_store(state, source, *out_physical, bytes);
+           vkr_mesh_loader_bundle_store(state, source, *out_physical);
+      /* The copy holds the same bytes, so it is not hashed again when it
+         is bundled as a dependency itself. */
+      if (ok) {
+        vkr_mesh_loader_remember_hash(state, *out_physical, &hash);
+      }
     }
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
@@ -1474,8 +1682,45 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_material(VkrMeshLoaderState *state,
       return false_v;
     }
   }
+  /* The rewritten material is a dependency too; its old hash is stale. */
+  vkr_mesh_loader_forget_hash(state, physical);
   return vkr_mesh_cooked_write_atomic(state->scratch_allocator, physical,
                                       rewritten.str, rewritten.length);
+}
+
+vkr_internal const char *vkr_mesh_cook_dependency_list_path = NULL;
+
+void vkr_mesh_cook_set_defer_textures(bool8_t defer) {
+  vkr_mesh_cook_defer_textures = defer;
+}
+void vkr_mesh_cook_set_ready_log(const char *path) {
+  vkr_mesh_cook_ready_log = path;
+}
+void vkr_mesh_cook_set_material_priority(const String8 *names, uint32_t count) {
+  vkr_mesh_cook_material_priority = names;
+  vkr_mesh_cook_material_priority_count = names ? count : 0u;
+}
+void vkr_mesh_cook_set_dependency_list(const char *path) {
+  vkr_mesh_cook_dependency_list_path = path;
+}
+
+vkr_internal bool8_t
+vkr_mesh_cook_write_dependency_list(const VkrMeshLoaderState *state) {
+  if (!vkr_mesh_cook_dependency_list_path) {
+    return true_v;
+  }
+  FILE *file = file_fopen(vkr_mesh_cook_dependency_list_path, "wb");
+  if (!file) {
+    return false_v;
+  }
+  bool8_t ok = true_v;
+  for (uint64_t i = 0; i < state->source_dependencies.length; ++i) {
+    const String8 path = state->source_dependencies.data[i].path;
+    ok = ok && fwrite(path.str, 1u, (size_t)path.length, file) == path.length &&
+         fputc('\n', file) != EOF;
+  }
+  ok = fclose(file) == 0 && ok;
+  return ok;
 }
 
 vkr_internal bool8_t vkr_mesh_cook_source_internal(
@@ -1536,6 +1781,7 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
   }
 
   if (bundle_root.length) {
+    vkr_mesh_loader_prefetch_bundle_hashes(&state);
     for (uint64_t i = 0; i < state.merged_submeshes.length; ++i) {
       String8 material = state.merged_submeshes.data[i].material_name;
       if (!material.length) {
@@ -1620,6 +1866,27 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
         .pipeline_domain = source_range->pipeline_domain,
     };
   }
+  /* Dependencies hashed for their bundle names keep their digests. */
+  VkrMeshCookedDependencyDigest *dependency_digests = vkr_allocator_alloc(
+      scratch_allocator,
+      (uint64_t)dependency_count * sizeof(*dependency_digests),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!dependency_digests) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  for (uint32_t i = 0; i < dependency_count; ++i) {
+    const VkrMeshLoaderBundleHash *known =
+        vkr_mesh_loader_find_hash(&state, dependency_paths[i]);
+    dependency_digests[i] = (VkrMeshCookedDependencyDigest){0};
+    if (known) {
+      dependency_digests[i].known = true_v;
+      dependency_digests[i].byte_size = known->size;
+      MemCopy(dependency_digests[i].hash, known->digest,
+              sizeof(dependency_digests[i].hash));
+    }
+  }
+
   VkrMeshCookedEncodeInfo encode_info = {
       .source_path =
           bundle_root.length ? dependency_references[0] : source_path,
@@ -1627,6 +1894,7 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
       .skin = state.skin,
       .dependency_references = dependency_references,
       .dependency_paths = dependency_paths,
+      .dependency_digests = dependency_digests,
       .dependency_count = dependency_count,
       .mesh_buffer =
           {
@@ -1649,7 +1917,8 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
   if (!vkr_mesh_cooked_encode(scratch_allocator, &encode_info, &artifact,
                               &artifact_size) ||
       !vkr_mesh_cooked_write_atomic(scratch_allocator, output_path, artifact,
-                                    artifact_size)) {
+                                    artifact_size) ||
+      !vkr_mesh_cook_write_dependency_list(&state)) {
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }

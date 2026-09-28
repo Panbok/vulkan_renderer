@@ -66,6 +66,18 @@ typedef struct VkrMeshLoaderGltfParseInfo {
   Vector_String8 *out_generated_material_paths; // The paths to the generated
                                                 // material files.
   Vector_String8 *out_generated_asset_paths;    // Persistent derived textures.
+  // Materials keep their factors and name no textures; nothing is converted,
+  // baked or recorded as a texture dependency. A scene can open at once and
+  // gain its textures from a later cook.
+  bool8_t defer_textures;
+  // Optional file that receives one JSON line per material whose textures
+  // are all final once its file is written (the ready log, ADR-077).
+  const char *ready_log;
+  // Optional material names whose files are written first, in this order;
+  // the rest follow in material order. Results are gathered in material
+  // order either way.
+  const String8 *material_priority;
+  uint32_t material_priority_count;
 } VkrMeshLoaderGltfParseInfo;
 
 /**

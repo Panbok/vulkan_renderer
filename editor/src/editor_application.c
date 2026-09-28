@@ -178,6 +178,8 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
   if (!editor->ui.content) {
     editor->ui.content = vkr_editor_content_create(
         &frame->ui->retained_allocator, frame->assets);
+    vkr_editor_content_set_service(
+        editor->ui.content, vkr_editor_bakery_service(editor->ui.bakery));
   }
   vkr_editor_content_update(editor->ui.content);
   vkr_editor_projects_update(editor->ui.projects, &editor->ui, frame);

@@ -59,6 +59,11 @@ typedef struct VkrMetalPacketRendererConfig {
   const char *graph_path;
   const char *slang_msl_path;
   const char *fragment_msl_path;
+  /** Optional precompiled libraries for the two MSL sources above. When set,
+   * each is loaded instead of compiling its source; the source path remains
+   * the fallback if loading fails. */
+  const char *slang_metallib_path;
+  const char *fragment_metallib_path;
   /** Optional Metal 4 archive path used for cold capture and warm lookup. */
   const char *pipeline_archive_path;
   VkrMetalPacketTargetKind target_kind;

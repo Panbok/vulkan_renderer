@@ -5,7 +5,7 @@
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 
 #include <errno.h>
 #include <math.h>
@@ -69,7 +69,7 @@ static bool8_t animation_print_pose(VkrAllocator *allocator,
   return true_v;
 }
 
-int main(int argc, char **argv) {
+VKR_TOOL_ENTRY(vkr_animation_cooker_tool_main) {
   const char *input = NULL;
   const char *output = NULL;
   bool8_t inspect = false_v;

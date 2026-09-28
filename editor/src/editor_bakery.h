@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/vkr_json_writer.h"
+#include "editor_bakery_service.h"
 #include "renderer/systems/vkr_ui_system.h"
 
 typedef struct VkrEditorBakery VkrEditorBakery;
@@ -45,6 +46,8 @@ void vkr_editor_bakery_set_managed(VkrEditorBakery *bakery, bool8_t enabled,
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
                                           bool8_t *reflection,
                                           bool8_t *diffuse);
+/** The editor's Bakery daemon, or NULL where it is unavailable. */
+EditorBakeryService *vkr_editor_bakery_service(VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_busy(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_write_settings(const VkrEditorBakery *bakery,
                                          VkrJsonWriter *writer);

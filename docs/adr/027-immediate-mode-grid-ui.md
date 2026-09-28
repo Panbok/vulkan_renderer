@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-09-27
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -345,24 +345,25 @@ session also appends every record to
 each line is flushed as it is logged so the file survives a crash, and
 opening another workspace continues in a file there.
 
-Bakery queues nine recipes—mesh, font, single texture, texture directory, GGX
-DFG, Charlie, anisotropy, diffuse volume, and reflection probe—on one worker.
-The worker launches one cancellable child with explicit arguments, writes no
+Bakery queues twelve recipes—mesh, font, single texture, texture directory, GGX
+DFG, Charlie, anisotropy, diffuse volume, reflection probe, collision hull,
+collision mesh and shaders—on one worker. The worker launches one cancellable
+[`vkr_bakery`](077-asset-build-system.md) child with explicit arguments, writes no
 renderer state, terminates the complete child process tree on cancellation, and
 publishes completion before the UI reads results. Shutdown cancels and joins the
 worker. New bake separates mesh, font, single texture and texture-directory
 sources, retaining each source draft when the type changes. Jobs shows textual
-status, selection, cancellation and retry; Output shows a wrapped 4 KiB display
-tail and copies up to 16 KiB of captured status/output. Controls stack in narrow
-docks. Mesh jobs accept `.obj`, `.gltf` and `.glb`, always rebuild, and replace
-the source extension with `.vkb`. Font and texture cookers own incremental
-checks; their Rebuild option bypasses unchanged-output skipping. All cookers own
-atomic artifact publication. The GGX DFG, Charlie, and anisotropy table cookers
-write sibling temporary files and atomically rename only complete output, so a
-cancelled or failed table job leaves the previous shared table intact. Reload the
-scene after mesh or texture baking;
-restart the editor after baking a font it already loaded. Build wrappers compile
-cooker tools without running them; Bakery invokes the cookers. Pinned bootstrap
+status, selection, cancellation and retry, and per-action progress parsed from
+the child's JSON event stream; warnings and errors also reach the Console.
+Output shows a wrapped 4 KiB display tail and copies up to 16 KiB of captured
+status/output. Controls stack in narrow docks. Mesh jobs accept `.obj`, `.gltf`
+and `.glb` and replace the source extension with `.vkb`. Cook, table and shader
+recipes hit the action cache for unchanged inputs; Force ignores those hits.
+`vkr_bakery` publishes every product atomically, so a cancelled or failed job
+leaves the previous artifact or shared table intact. Reload the scene after
+mesh or texture baking; restart the editor after baking a font it already
+loaded. Build wrappers compile `vkr_bakery` and the shader catalog without
+cooking assets; Bakery cooks. Pinned bootstrap
 fonts keep the first editor launch independent of Bakery; see
 [ADR-034](034-offline-cooked-font-artifacts.md).
 
@@ -371,7 +372,7 @@ The diffuse recipe starts from the tracked
 and writes `assets/textures/bakery_diffuse_room.vkdv`. Its mesh, glTF source,
 buffer and material are checked in. The planar `diffuse_volume_local` scene is
 only a runtime lookup witness and cannot supply automatic three-dimensional
-bake bounds. Invalid bounds report their extents before room detection; wrapper
+bake bounds. Invalid bounds report their extents before room detection; bake
 failures forward the final 4 KiB of child output and the exact full-log path to
 Bakery. The room proof and existing bake budget remain unchanged.
 
@@ -472,7 +473,7 @@ layout behavior grids cannot express.
 - [Sample runtime settings owner](../../runtime/src/vkr_sample_runtime.c)
 - [Sample runtime startup options](../../runtime/src/vkr_sample_runtime_config.c)
 
-The Graphics Settings and nine-recipe Bakery additions are source-integrated.
+The Graphics Settings and twelve-recipe Bakery additions are source-integrated.
 CPU oracles, macOS UI/Bakery checks, and Release/Debug/editor wrapper evidence
 pass. Windows UI/process-tree behavior and native Vulkan execution remain
 unverified; this ADR does not claim those gates have passed.

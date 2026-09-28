@@ -1,4 +1,4 @@
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 #include "vkr_atomic_file.h"
 #include "vkr_sheen_lut.h"
 
@@ -941,7 +941,7 @@ std::string emit_sheen_lut(const std::vector<uint16_t> &energy,
 }
 }  // namespace
 
-VKR_MAIN(argc, argv) {
+VKR_TOOL_ENTRY(vkr_sheen_cooker_tool_main) {
   if (argc != 2) {
     std::cerr << "Usage: vkr_sheen_cooker <output.inc>\n";
     return 2;

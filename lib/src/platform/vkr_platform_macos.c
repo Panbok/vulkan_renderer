@@ -259,7 +259,10 @@ vkr_platform_process_child_setup(const VkrPlatformProcessConfig *config) {
     if (!paths[i]) {
       continue;
     }
-    const int descriptor = open(paths[i], O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    const int descriptor =
+        open(paths[i],
+             O_CREAT | O_WRONLY | (config->append_output ? O_APPEND : O_TRUNC),
+             0644);
     if (descriptor < 0 || dup2(descriptor, streams[i]) < 0) {
       if (descriptor >= 0) {
         close(descriptor);

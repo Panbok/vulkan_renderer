@@ -2,7 +2,6 @@
 """CPU transaction checks: copied imports, relocation, missing assets and rollback."""
 import argparse
 import base64
-import importlib.util
 import copy
 import json
 from pathlib import Path
@@ -13,6 +12,12 @@ import tempfile
 import uuid
 import zlib
 
+
+def tool_command(executable, tool):
+    """Command prefix for a cooker; vkr_bakery runs cookers as `tool <name>`."""
+    if Path(executable).stem == 'vkr_bakery':
+        return [str(executable), 'tool', tool]
+    return [str(executable)]
 
 def write_png(path, width, height, rgb):
     """Writes an opaque 8-bit RGB PNG filled with one color."""
@@ -64,10 +69,7 @@ def main():
     parser.add_argument('--diffuse-baker')
     parser.add_argument('--collision-cooker')
     args = parser.parse_args()
-    module_path = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
-    spec = importlib.util.spec_from_file_location('editor_project_jobs', module_path)
-    jobs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs)
+    import project_jobs as jobs
     with tempfile.TemporaryDirectory(prefix='vkr-project-job-') as temporary:
         root = Path(temporary)
         workspace = root / 'workspace' / '.vkreditor'
@@ -187,8 +189,8 @@ def main():
         paired_request = dict(request, scene_id=str(uuid.uuid4()), models=[str(paired_model)])
         assert jobs.Job(paired_request, result_path).execute() == 0
         generated = workspace / 'cache' / 'generated' / 'normalrough_v2'
-        normals = sorted(generated.glob('*_normal.vkt'))
-        roughness = sorted(generated.glob('*_metalrough.vkt'))
+        normals = sorted(generated.glob('*_normal*.vkt'))
+        roughness = sorted(generated.glob('*_metalrough*.vkt'))
         assert len(normals) == 1 and len(roughness) == 2, (normals, roughness)
         assert '_roughness_' not in normals[0].name
         paired_root = Path(jobs.load_json(result_path)['scene_path']).parent
@@ -235,6 +237,7 @@ def main():
         texture.write_bytes((source / 'nested' / 'pixel.png').read_bytes())
         textured = json.loads(gltf_path.read_text())
         textured['images'] = [{'uri': 'objects/props/pixel.png'}]
+        textured['textures'] = [{'source': 0}]  # Only sampled images are sources.
         repository_model = legacy / 'assets' / 'models' / 'legacy.gltf'
         repository_model.parent.mkdir(parents=True)
         repository_model.write_text(json.dumps(textured))
@@ -252,18 +255,13 @@ def main():
                                models=[str(outside_model)])
         assert jobs.Job(outside_request, legacy_result).execute() == 1
         assert 'Source file is unavailable' in legacy_result.read_text()
-        # On APFS an import clones its closure instead of duplicating it.
-        if sys.platform == 'darwin':
-            clone = root / 'clone.png'
-            assert jobs.clone_file(texture, clone)
-            assert clone.read_bytes() == texture.read_bytes()
         node_result = jobs.load_json(result_path)
         node_scene = jobs.read_managed_scene(node_result['scene_path'])
         node_runtime = jobs.load_json(node_result['runtime_path'])
         node_mesh = Path(node_runtime['entities'][0]['mesh']['path'])
         node_job = jobs.Job(node_request, result_path)
         node_info = node_job.inspect_mesh(node_mesh)
-        node_hash = jobs.Job.mesh_identity(jobs.source_fingerprint(node_request['scene_id'].encode()), node_info['fingerprint'])
+        node_hash = jobs.mesh_identity(jobs.source_fingerprint(node_request['scene_id'].encode()), node_info['fingerprint'])
         node_root = Path(node_result['scene_path']).parent
         jobs.atomic_json(node_root / 'edits' / 'node.json', {'version': 1, 'overrides': [
             {'scene_entity': 0, 'gltf_node': 0, 'source_fingerprint': node_hash, 'fields': 9,
@@ -284,7 +282,7 @@ def main():
         assert any(entity.get('transform', {}).get('matrix', [0] * 16)[4] == 0.25 for entity in baked_nodes)
         if args.diffuse_baker:
             import subprocess
-            check = subprocess.run([str(Path(args.diffuse_baker).resolve()), '--scene', effective_node['runtime_path'],
+            check = subprocess.run([*tool_command(Path(args.diffuse_baker).resolve(), 'diffuse-baker'), '--scene', effective_node['runtime_path'],
                 '--inspect', '--manifest', str(root / 'edited-light.json'), '--grid', '2', '2', '2',
                 '--bounds', '-1', '-1', '-1', '10', '10', '10'], capture_output=True, text=True)
             assert check.returncode == 0, check.stdout + check.stderr
@@ -299,7 +297,7 @@ def main():
         if args.collision_cooker:
             import subprocess
             cooked = workspace / 'shared-shape.vkc'
-            check = subprocess.run([request['tools']['collision'], '--input', str(gltf_path),
+            check = subprocess.run([*tool_command(request['tools']['collision'], 'collision'), '--input', str(gltf_path),
                 '--output', str(cooked), '--kind', 'mesh'], capture_output=True, text=True)
             assert check.returncode == 0, check.stdout + check.stderr
             cooked_bytes = cooked.read_bytes()
@@ -322,7 +320,7 @@ def main():
             cloned = jobs.load_json(clone_path.parent / clone_scene['edit_overlay'])
             assert cloned['version'] == 3 and cloned['collision_settings'] == journal['collision_settings']
             record = cloned['overrides'][0]
-            clone_hash = jobs.Job.mesh_identity(jobs.source_fingerprint(clone['scene_id'].encode()), node_info['fingerprint'])
+            clone_hash = jobs.mesh_identity(jobs.source_fingerprint(clone['scene_id'].encode()), node_info['fingerprint'])
             assert record['source_fingerprint'] == clone_hash
             assert record['physics']['attachment']['source']['fingerprint'] == clone_hash
             assert record['physics']['joints'][0]['target']['fingerprint'] == clone_hash
@@ -335,8 +333,8 @@ def main():
             jobs.atomic_json(legacy_physics, {'version': 2, 'source_identity': 'physics-legacy',
                 'entities': [{'mesh': {'path': str(node_mesh)}}]})
             legacy_journal = json.loads(json.dumps(journal))
-            legacy_hash = jobs.Job.mesh_identity(jobs.source_fingerprint(b'physics-legacy'), node_info['fingerprint'])
-            for reference, field, required in jobs.Job.overlay_references(legacy_journal['overrides'][0]):
+            legacy_hash = jobs.mesh_identity(jobs.source_fingerprint(b'physics-legacy'), node_info['fingerprint'])
+            for reference, field, required in jobs.overlay_references(legacy_journal['overrides'][0]):
                 reference[field] = legacy_hash
             jobs.atomic_json(Path(str(legacy_physics) + '.editor.json'), legacy_journal)
             legacy_clone = dict(clone, scene_id=str(uuid.uuid4()), source_scene=str(legacy_physics),
@@ -402,7 +400,7 @@ def main():
         if args.diffuse_baker:
             import subprocess
             inspect_path = root / 'diffuse.manifest.json'
-            command = [str(Path(args.diffuse_baker).resolve()), '--scene', str(legacy),
+            command = [*tool_command(Path(args.diffuse_baker).resolve(), 'diffuse-baker'), '--scene', str(legacy),
                        '--inspect', '--manifest', str(inspect_path), '--grid', '2', '2', '2',
                        '--bounds', '-1', '-1', '-1', '2', '2', '2']
             # A managed material and its identity/remap sidecar are read through
@@ -551,21 +549,12 @@ def main():
         assert scene_path.read_bytes() == invalid_scene
         legacy_mesh['source'] = valid_source
         jobs.write_managed_scene(scene_path, legacy_scene)
-        transaction = jobs.Job(rebuild, result_path)
-        write_json = jobs.atomic_json
-        fired = False
-        def cancel_after_commit(path, value):
-            nonlocal fired
-            write_json(path, value)
-            if Path(path) == scene_path and not fired:
-                fired = True
-                transaction.cancel()
-        jobs.atomic_json = cancel_after_commit
-        try:
-            assert transaction.execute() == 2
-        finally:
-            jobs.atomic_json = write_json
-        assert fired
+        committed_before = scene_path.read_bytes()
+        transaction = jobs.Job(rebuild, result_path,
+                               environment={'VKR_BAKERY_FAULT_CANCEL_AFTER': str(scene_path)})
+        assert transaction.execute() == 2, transaction.output
+        assert jobs.load_json(result_path)['status'] == 'cancelled'
+        assert scene_path.read_bytes() != committed_before, 'Cancellation fired before the commit'
         after = jobs.read_managed_scene(scene_path)
         rebuilt_mesh = next(item for item in after['assets'] if item['id'] == mesh_record['id'])
         assert '\\' not in rebuilt_mesh['source'], 'Legacy source path was not normalized'

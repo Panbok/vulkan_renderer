@@ -357,6 +357,10 @@ typedef struct VkrHarnessCapture {
   char channels[VKR_HARNESS_MAX_CAPTURE_CHANNELS][64];
   uint32_t channel_count;
   VkrHarnessCompareConfig compare;
+  /** Cubemap face the camera shows while rendering toward this checkpoint,
+   * overriding the case camera's face; unset keeps the case camera. */
+  bool8_t has_camera_mode;
+  VkrHarnessCameraMode camera_mode;
 } VkrHarnessCapture;
 
 /**
@@ -426,6 +430,9 @@ typedef struct VkrHarnessCase {
   VkrHarnessCamera camera;
   VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
   uint32_t capture_count;
+  /** `capture_session: "single"`: one child takes every checkpoint in frame
+   * order instead of one child per checkpoint. */
+  bool8_t single_capture_session;
   VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
   uint32_t assertion_count;
   VkrHarnessCompareConfig compare;

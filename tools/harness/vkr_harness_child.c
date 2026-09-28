@@ -10,6 +10,8 @@
  */
 #include "vkr_harness_runtime.h"
 
+#include "filesystem/vkr_vfs.h"
+
 #include "application/vkr_standard_scene_runtime.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
@@ -1114,6 +1116,7 @@ vkr_internal void vkr_harness_child_update(void *state,
   }
   vkr_harness_child_sample(application);
   if (child->capture_requested && !child->capture_complete) {
+    const uint32_t published_before = child->capture_report->capture_count;
     VkrCapturePollResult poll = {0};
     VkrCaptureStatus status = vkr_renderer_capture_poll(
         &application->renderer, child->capture_request.request_id, &poll);
@@ -1132,14 +1135,25 @@ vkr_internal void vkr_harness_child_update(void *state,
                                    child->capture_request.request_id);
       const VkrHarnessCompareConfig thresholds =
           child->case_manifest->captures[child->capture_index].compare;
-      for (uint32_t i = 0; i < child->capture_report->capture_count; ++i) {
+      for (uint32_t i = published_before;
+           i < child->capture_report->capture_count; ++i) {
         child->capture_report->captures[i].thresholds = thresholds;
         string_format(
             child->capture_report->captures[i].comparison_status,
             sizeof(child->capture_report->captures[i].comparison_status),
             "not_run");
       }
-      child->capture_complete = true_v;
+      const int32_t next_index = child->capture_index + 1;
+      if (child->case_manifest->single_capture_session &&
+          next_index < (int32_t)child->case_manifest->capture_count) {
+        /* The same replay continues toward the next checkpoint. */
+        child->capture_index = next_index;
+        child->capture_request.request_id =
+            (VkrCaptureRequestId)next_index + 1u;
+        child->capture_requested = false_v;
+      } else {
+        child->capture_complete = true_v;
+      }
     } else if (status == VKR_CAPTURE_STATUS_FAILED) {
       vkr_renderer_capture_release(&application->renderer,
                                    child->capture_request.request_id);
@@ -1286,9 +1300,15 @@ vkr_internal void vkr_harness_child_update(void *state,
   /* Determinism rule 2: the pose is a function of the case-frame index and the
      fixed delta, never of wall-clock time or input. */
   VkrHarnessCameraScriptPose pose = {0};
+  VkrHarnessCamera script_camera = child->case_manifest->camera;
+  if (child->capture_index >= 0 &&
+      child->case_manifest->captures[child->capture_index].has_camera_mode) {
+    script_camera.mode =
+        child->case_manifest->captures[child->capture_index].camera_mode;
+  }
   if (!camera ||
       !vkr_harness_camera_evaluate_script(
-          &child->case_manifest->camera,
+          &script_camera,
           vkr_harness_camera_script_time(
               child->completed_frames, child->case_manifest->warmup_frames,
               child->case_manifest->fixed_delta_seconds),
@@ -2088,10 +2108,14 @@ vkr_internal bool8_t vkr_harness_child_init_capture_report(
     return false_v;
   }
   MemZero(child->capture_report, sizeof(VkrHarnessReport));
-  if (!vkr_harness_report_init_storage(
-          child->capture_report, child->arenas->persistent,
-          replay->channel_count,
-          replay->channel_count * VKR_HARNESS_ARTIFACTS_PER_CAPTURE)) {
+  const uint32_t checkpoints = child->case_manifest->single_capture_session
+                                   ? child->case_manifest->capture_count
+                                   : 1u;
+  if (!vkr_harness_report_init_storage(child->capture_report,
+                                       child->arenas->persistent,
+                                       replay->channel_count * checkpoints,
+                                       replay->channel_count * checkpoints *
+                                           VKR_HARNESS_ARTIFACTS_PER_CAPTURE)) {
     vkr_harness_stderr("Unable to size the capture report tables\n");
     return false_v;
   }
@@ -2214,6 +2238,12 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *scene_content_digest) {
   VkrHarnessProvenance provenance = {0};
   vkr_harness_timestamp_utc(provenance.started_at);
+  /* $VKR_CONTENT_PACKS or $VKR_CONTENT serve the case's content from
+     archives (ADR-077). */
+  if (!vkr_vfs_mount_startup()) {
+    vkr_harness_stderr("Cannot mount the requested content archives\n");
+    return VKR_HARNESS_EXIT_ERROR;
+  }
   VkrHarnessError error = {0};
   VkrHarnessCase case_manifest = {0};
   VkrHarnessProfile profile = {0};

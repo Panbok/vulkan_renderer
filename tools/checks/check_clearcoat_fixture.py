@@ -2,10 +2,7 @@
 """Validate the clearcoat fixture's independent material witnesses.
 
 Usage:
-  VKR_VKT_PACKER_BIN=./build_release/tools/vkr_vkt_packer \\
-    VKR_TEXTURE_PACK_INPUT_DIR=tests/fixtures/rendering/clearcoat \\
-    VKR_VKT_PACK_STRICT=1 VKR_VKT_PACK_VERBOSE=1 \\
-    ./tools/pack_vkt_textures.sh
+  ./build_release/tools/bakery/vkr_bakery cook tests/fixtures/rendering/clearcoat
   python3 tools/checks/check_clearcoat_fixture.py <harness-snapshot-directory>
 
 The material source textures are intentionally tracked as PNGs. Run the

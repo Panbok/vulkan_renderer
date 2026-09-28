@@ -8,12 +8,18 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/clonefile.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 
 FILE *file_fopen(const char *utf8_path, const char *mode) {
   if (!utf8_path || !mode) {
     errno = EINVAL;
     return NULL;
+  }
+  bool8_t served = false_v;
+  FILE *archived = fs_vfs_fopen(utf8_path, mode, &served);
+  if (served) {
+    return archived;
   }
   return fopen(utf8_path, mode);
 }
@@ -26,6 +32,9 @@ bool8_t file_exists(const FilePath *path) {
   if (!path || !path->path.str || !path->path.length) {
     return false_v;
   }
+  if (fs_vfs_stats(path, NULL)) {
+    return true_v;
+  }
   struct stat buffer;
   return stat((char *)path->path.str, &buffer) == 0;
 }
@@ -33,6 +42,9 @@ bool8_t file_exists(const FilePath *path) {
 FileError file_stats(const FilePath *path, FileStats *out_stats) {
   if (!path || !path->path.str || !path->path.length || !out_stats) {
     return FILE_ERROR_INVALID_PATH;
+  }
+  if (fs_vfs_stats(path, out_stats)) {
+    return FILE_ERROR_NONE;
   }
   struct stat buffer;
   if (stat((char *)path->path.str, &buffer) == 0) {
@@ -168,6 +180,9 @@ FileError file_open(const FilePath *path, FileMode mode,
   if (has_exclusive && (!has_create || has_truncate || has_append)) {
     return FILE_ERROR_INVALID_MODE;
   }
+  if (fs_vfs_open(path, mode, out_handle)) {
+    return FILE_ERROR_NONE;
+  }
 
   if (has_read && has_write)
     flags |= O_RDWR;
@@ -206,13 +221,54 @@ FileError file_open(const FilePath *path, FileMode mode,
   }
 
   /* Offset by one so a valid descriptor zero is not confused with NULL. */
-  out_handle->handle = (void *)(intptr_t)(fd + 1);
-  out_handle->path = path;
-  out_handle->mode = mode;
+  *out_handle = (FileHandle){
+      .handle = (void *)(intptr_t)(fd + 1), .path = path, .mode = mode};
   return FILE_ERROR_NONE;
 }
 
+FileError file_map_readonly(const FilePath *path, FileMapping *out_mapping) {
+  if (!path || !path->path.str || !out_mapping) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  *out_mapping = (FileMapping){0};
+  const int fd = open((const char *)path->path.str, O_RDONLY);
+  if (fd < 0) {
+    return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_OPEN_FAILED;
+  }
+  struct stat stats;
+  if (fstat(fd, &stats) != 0 || stats.st_size < 0) {
+    close(fd);
+    return FILE_ERROR_IO_ERROR;
+  }
+  if (stats.st_size == 0) {
+    close(fd);
+    return FILE_ERROR_FILE_EMPTY;
+  }
+  void *data = mmap(NULL, (size_t)stats.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  close(fd);
+  if (data == MAP_FAILED) {
+    return FILE_ERROR_IO_ERROR;
+  }
+  *out_mapping = (FileMapping){.data = data,
+                               .size = (uint64_t)stats.st_size,
+                               .last_modified = (uint64_t)stats.st_mtime};
+  return FILE_ERROR_NONE;
+}
+
+void file_unmap(FileMapping *mapping) {
+  if (mapping && mapping->data) {
+    (void)munmap((void *)mapping->data, (size_t)mapping->size);
+  }
+  if (mapping) {
+    *mapping = (FileMapping){0};
+  }
+}
+
 void file_close(FileHandle *handle) {
+  if (handle && handle->memory) {
+    *handle = (FileHandle){0};
+    return;
+  }
   if (handle && handle->handle) {
     close(fs_file_descriptor(handle));
     handle->handle = NULL;
@@ -221,7 +277,8 @@ void file_close(FileHandle *handle) {
 
 FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
                      uint64_t *bytes_written) {
-  if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_written) {
+  if (!handle || !handle->handle || handle->memory || (!buffer && size > 0u) ||
+      !bytes_written) {
     return FILE_ERROR_INVALID_HANDLE;
   }
   *bytes_written = 0u;
@@ -245,6 +302,9 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
   if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_read) {
     return FILE_ERROR_INVALID_HANDLE;
   }
+  if (handle->memory) {
+    return fs_memory_read_into(handle, buffer, size, bytes_read);
+  }
   *bytes_read = 0u;
   while (*bytes_read < size) {
     const ssize_t count =
@@ -267,6 +327,8 @@ FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
 FileError file_remaining_size(FileHandle *handle, uint64_t *out_size) {
   if (!handle || !handle->handle)
     return FILE_ERROR_INVALID_HANDLE;
+  if (handle->memory)
+    return fs_memory_remaining(handle, out_size);
   struct stat stats;
   const int fd = fs_file_descriptor(handle);
   if (fstat(fd, &stats) != 0 || stats.st_size < 0)
@@ -279,7 +341,7 @@ FileError file_remaining_size(FileHandle *handle, uint64_t *out_size) {
 }
 
 FileError file_sync(FileHandle *handle) {
-  if (!handle || !handle->handle) {
+  if (!handle || !handle->handle || handle->memory) {
     return FILE_ERROR_INVALID_HANDLE;
   }
   return fsync(fs_file_descriptor(handle)) == 0 ? FILE_ERROR_NONE
@@ -348,6 +410,9 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
   *out_line = (String8){0};
   if (!handle || !handle->handle)
     return FILE_ERROR_INVALID_HANDLE;
+  if (handle->memory)
+    return fs_memory_read_line(handle, allocator, line_allocator,
+                               max_line_length, out_line);
   int fd = fs_file_descriptor(handle);
   if (max_line_length == 0 || max_line_length == UINT64_MAX)
     return FILE_ERROR_LINE_TOO_LONG;

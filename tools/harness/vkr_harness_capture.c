@@ -94,6 +94,10 @@ typedef struct VkrHarnessSummaryLayout {
   uint64_t camera;
   uint64_t captures;
   uint64_t capture_count;
+  /** Stored size of one capture checkpoint in the case. */
+  uint64_t capture_checkpoint;
+  /** Zero when the version predates single capture sessions. */
+  uint64_t single_capture_session;
   uint64_t assertions;
   uint64_t assertion_count;
   uint64_t compare;
@@ -106,13 +110,20 @@ typedef struct VkrHarnessSummaryLayout {
   uint64_t artifact_record;
 } VkrHarnessSummaryLayout;
 
-/* Record sizes of versions 2 through 15. Growing a record freezes its old
+/* Record sizes of versions 2 through 16. Growing a record freezes its old
  * layout and bumps the version; the pin in the layout header enforces it. */
 #define VKR_HARNESS_CAPTURE_RECORD_V2 2072u
 #define VKR_HARNESS_ARTIFACT_RECORD_V2 512u
 
 #define VKR_HARNESS_SUMMARY_LAYOUT(header, case_type, renderer_bytes,          \
                                    content_scale_offset, asset_context_offset) \
+  VKR_HARNESS_SUMMARY_LAYOUT_SESSION(header, case_type, renderer_bytes,        \
+                                     content_scale_offset,                     \
+                                     asset_context_offset, 0u)
+
+#define VKR_HARNESS_SUMMARY_LAYOUT_SESSION(                                    \
+    header, case_type, renderer_bytes, content_scale_offset,                   \
+    asset_context_offset, single_session_offset)                               \
   {                                                                            \
       .header_size = sizeof(header),                                           \
       .profile = offsetof(header, profile),                                    \
@@ -121,6 +132,8 @@ typedef struct VkrHarnessSummaryLayout {
       .camera = offsetof(case_type, camera),                                   \
       .captures = offsetof(case_type, captures),                               \
       .capture_count = offsetof(case_type, capture_count),                     \
+      .capture_checkpoint = sizeof(((case_type *)0)->captures[0]),             \
+      .single_capture_session = (single_session_offset),                       \
       .assertions = offsetof(case_type, assertions),                           \
       .assertion_count = offsetof(case_type, assertion_count),                 \
       .compare = offsetof(case_type, compare),                                 \
@@ -180,11 +193,17 @@ static const VkrHarnessSummaryLayout s_summary_layouts[] = {
         sizeof(VkrHarnessRendererConfigV14),
         offsetof(VkrHarnessCaseV14, content_scale),
         offsetof(VkrHarnessCaseV14, asset_context)),
-    [VKR_HARNESS_CAPTURE_SUMMARY_VERSION] = VKR_HARNESS_SUMMARY_LAYOUT(
-        VkrHarnessCaptureSummaryHeaderV15, VkrHarnessCase,
+    [15] = VKR_HARNESS_SUMMARY_LAYOUT(
+        VkrHarnessCaptureSummaryHeaderV15, VkrHarnessCaseV15,
+        sizeof(VkrHarnessRendererConfig),
+        offsetof(VkrHarnessCaseV15, content_scale),
+        offsetof(VkrHarnessCaseV15, asset_context)),
+    [VKR_HARNESS_CAPTURE_SUMMARY_VERSION] = VKR_HARNESS_SUMMARY_LAYOUT_SESSION(
+        VkrHarnessCaptureSummaryHeaderV16, VkrHarnessCase,
         sizeof(VkrHarnessRendererConfig),
         offsetof(VkrHarnessCase, content_scale),
-        offsetof(VkrHarnessCase, asset_context)),
+        offsetof(VkrHarnessCase, asset_context),
+        offsetof(VkrHarnessCase, single_capture_session)),
 };
 
 _Static_assert(ArrayCount(s_summary_layouts) ==
@@ -270,10 +289,20 @@ static void vkr_harness_case_from_stored(uint32_t version,
   }
   MemCopy(&destination->camera, source + layout->camera,
           sizeof(destination->camera));
-  MemCopy(destination->captures, source + layout->captures,
-          sizeof(destination->captures));
+  /* Checkpoints before version 16 end before the cubemap face; the face
+     stays unset. */
+  for (uint32_t i = 0u; i < VKR_HARNESS_MAX_CAPTURES; ++i) {
+    MemCopy(&destination->captures[i],
+            source + layout->captures + i * layout->capture_checkpoint,
+            Min(layout->capture_checkpoint, sizeof(destination->captures[i])));
+  }
   MemCopy(&destination->capture_count, source + layout->capture_count,
           sizeof(destination->capture_count));
+  if (layout->single_capture_session != 0u) {
+    MemCopy(&destination->single_capture_session,
+            source + layout->single_capture_session,
+            sizeof(destination->single_capture_session));
+  }
   MemCopy(destination->assertions, source + layout->assertions,
           sizeof(destination->assertions));
   MemCopy(&destination->assertion_count, source + layout->assertion_count,
@@ -1085,7 +1114,7 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
       (uint64_t)report->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
       (uint64_t)report->artifact_count * sizeof(VkrHarnessArtifact);
-  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV15) +
+  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV16) +
                         capture_bytes + artifact_bytes;
   Scratch scratch = scratch_create(transient);
   uint8_t *bytes = arena_alloc(transient, size, ARENA_MEMORY_TAG_ARRAY);
@@ -1094,8 +1123,8 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
     return false_v;
   }
   MemZero(bytes, size);
-  VkrHarnessCaptureSummaryHeaderV15 *header =
-      (VkrHarnessCaptureSummaryHeaderV15 *)bytes;
+  VkrHarnessCaptureSummaryHeaderV16 *header =
+      (VkrHarnessCaptureSummaryHeaderV16 *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
   header->version = VKR_HARNESS_CAPTURE_SUMMARY_VERSION;
   header->capture_count = report->capture_count;

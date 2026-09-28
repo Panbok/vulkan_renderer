@@ -3,10 +3,14 @@
 #include "assets/vkr_mesh_decode.h"
 #include "assets/vkr_meshoptimizer_encode.h"
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
+#include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "memory/arena.h"
+#include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 
 #include <math.h>
@@ -52,63 +56,148 @@ static bool8_t vkr_mesh_cooked_path_is_absolute(String8 path) {
          (path.length > 1 && path.str[1] == ':');
 }
 
-static bool8_t vkr_mesh_cooked_read_file(VkrAllocator *allocator, String8 path,
-                                         uint8_t **out_data,
-                                         uint64_t *out_size) {
-  String8 owned_path = string8_duplicate(allocator, &path);
-  if (!owned_path.str) {
-    return false_v;
-  }
-  FilePath file_path = file_path_create(string8_cstr(&owned_path), allocator,
-                                        vkr_mesh_cooked_path_is_absolute(path)
-                                            ? FILE_PATH_TYPE_ABSOLUTE
-                                            : FILE_PATH_TYPE_RELATIVE);
+typedef struct VkrMeshCookedHashJob {
+  VkrMeshCookedDependencyBuild *dependencies;
+  FilePath *paths;
+  bool8_t *hashed;
+  uint32_t count;
+  VkrAtomicUint32 next;
+} VkrMeshCookedHashJob;
+
+bool8_t vkr_mesh_cooked_hash_file(FilePath *path, uint8_t out_hash[32],
+                                  uint64_t *out_size) {
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
   FileHandle file = {0};
-  if (file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
+  if (file_open(path, mode, &file) != FILE_ERROR_NONE) {
     return false_v;
   }
-  FileError error = file_read_all(&file, allocator, out_data, out_size);
+
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  uint8_t block[64u * 1024u];
+  uint64_t size = 0u;
+  uint64_t count = 0u;
+  FileError error = FILE_ERROR_NONE;
+  while ((error = file_read_into(&file, block, sizeof(block), &count)) ==
+             FILE_ERROR_NONE &&
+         count != 0u) {
+    vkr_sha256_update(&hash, block, count);
+    size += count;
+  }
   file_close(&file);
-  return error == FILE_ERROR_NONE;
+  if (error != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  vkr_sha256_final(&hash, out_hash);
+  *out_size = size;
+  return true_v;
 }
 
+static void *vkr_mesh_cooked_hash_worker(void *argument) {
+  VkrMeshCookedHashJob *job = argument;
+  for (;;) {
+    const uint32_t index =
+        vkr_atomic_uint32_fetch_add(&job->next, 1u, VKR_MEMORY_ORDER_RELAXED);
+    if (index >= job->count) {
+      return NULL;
+    }
+    if (job->hashed[index]) {
+      continue;
+    }
+    job->hashed[index] = vkr_mesh_cooked_hash_file(
+        &job->paths[index], job->dependencies[index].hash,
+        &job->dependencies[index].byte_size);
+  }
+}
+
+/* Hashes each dependency the caller has not on worker threads, then forms
+   the source hash: SHA-256 over every dependency's path length, path, byte
+   size and digest, in dependency order. */
 static bool8_t vkr_mesh_cooked_hash_dependencies(
     VkrAllocator *scratch_allocator, VkrMeshCookedDependencyBuild *dependencies,
-    uint32_t dependency_count, uint8_t out_hash[32]) {
+    const VkrMeshCookedDependencyDigest *digests, uint32_t dependency_count,
+    uint8_t out_hash[32]) {
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return false_v;
+  }
+  bool8_t ok = true_v;
+  VkrMeshCookedHashJob job = {
+      .dependencies = dependencies,
+      .count = dependency_count,
+  };
+  if (dependency_count) {
+    job.paths = vkr_allocator_alloc(scratch_allocator,
+                                    sizeof(*job.paths) * dependency_count,
+                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    job.hashed = vkr_allocator_alloc(scratch_allocator,
+                                     sizeof(*job.hashed) * dependency_count,
+                                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    ok = job.paths && job.hashed;
+  }
+  for (uint32_t i = 0; ok && i < dependency_count; ++i) {
+    String8 owned_path =
+        string8_duplicate(scratch_allocator, &dependencies[i].physical_path);
+    ok = owned_path.str != NULL;
+    if (ok) {
+      job.paths[i] =
+          file_path_create(string8_cstr(&owned_path), scratch_allocator,
+                           vkr_mesh_cooked_path_is_absolute(owned_path)
+                               ? FILE_PATH_TYPE_ABSOLUTE
+                               : FILE_PATH_TYPE_RELATIVE);
+      job.hashed[i] = digests && digests[i].known;
+      if (job.hashed[i]) {
+        dependencies[i].byte_size = digests[i].byte_size;
+        MemCopy(dependencies[i].hash, digests[i].hash,
+                sizeof(dependencies[i].hash));
+      }
+    }
+  }
+
+  if (ok && dependency_count) {
+    VkrThread workers[7] = {0};
+    const uint32_t cores = Max(vkr_platform_get_logical_core_count(), 1u);
+    const uint32_t extra =
+        Min(Min(cores, dependency_count), ArrayCount(workers) + 1u) - 1u;
+    uint32_t started = 0u;
+    for (uint32_t i = 0; i < extra; ++i) {
+      if (vkr_thread_create(scratch_allocator, &workers[started],
+                            vkr_mesh_cooked_hash_worker, &job)) {
+        ++started;
+      }
+    }
+    (void)vkr_mesh_cooked_hash_worker(&job);
+    for (uint32_t i = 0; i < started; ++i) {
+      (void)vkr_thread_join(workers[i]);
+      (void)vkr_thread_destroy(scratch_allocator, &workers[i]);
+    }
+  }
+
   VkrSha256 aggregate;
   vkr_sha256_init(&aggregate);
-  for (uint32_t i = 0; i < dependency_count; ++i) {
-    VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch_allocator);
-    if (!vkr_allocator_scope_is_valid(&scope)) {
-      return false_v;
-    }
-    uint8_t *bytes = NULL;
-    uint64_t size = 0;
-    bool8_t ok = vkr_mesh_cooked_read_file(
-        scratch_allocator, dependencies[i].physical_path, &bytes, &size);
-    if (ok) {
-      vkr_sha256(bytes, size, dependencies[i].hash);
-      dependencies[i].byte_size = size;
-
-      uint8_t path_length_le[8];
-      uint8_t byte_size_le[8];
-      vkr_store_le_u64(path_length_le, dependencies[i].path.length);
-      vkr_store_le_u64(byte_size_le, size);
-      vkr_sha256_update(&aggregate, path_length_le, sizeof(path_length_le));
-      vkr_sha256_update(&aggregate, dependencies[i].path.str,
-                        dependencies[i].path.length);
-      vkr_sha256_update(&aggregate, byte_size_le, sizeof(byte_size_le));
-      vkr_sha256_update(&aggregate, bytes, size);
-    }
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    if (!ok) {
+  for (uint32_t i = 0; ok && i < dependency_count; ++i) {
+    if (!job.hashed[i]) {
       log_error("MeshCooked: failed to read dependency '%.*s'",
                 (int32_t)dependencies[i].path.length, dependencies[i].path.str);
-      return false_v;
+      ok = false_v;
+      break;
     }
+    uint8_t path_length_le[8];
+    uint8_t byte_size_le[8];
+    vkr_store_le_u64(path_length_le, dependencies[i].path.length);
+    vkr_store_le_u64(byte_size_le, dependencies[i].byte_size);
+    vkr_sha256_update(&aggregate, path_length_le, sizeof(path_length_le));
+    vkr_sha256_update(&aggregate, dependencies[i].path.str,
+                      dependencies[i].path.length);
+    vkr_sha256_update(&aggregate, byte_size_le, sizeof(byte_size_le));
+    vkr_sha256_update(&aggregate, dependencies[i].hash,
+                      sizeof(dependencies[i].hash));
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (!ok) {
+    return false_v;
   }
   vkr_sha256_final(&aggregate, out_hash);
   return true_v;
@@ -275,10 +364,12 @@ vkr_internal bool8_t vkr_mesh_cooked_validate_vertices(
  * Validates upload range `i`, reorders it for vertex locality, quantizes and
  * compresses its streams into `out_range`, and accumulates it into `header`.
  */
+/* Optimizes, quantizes and encodes one range from shared read-only input into
+ * `scratch_allocator`; order-dependent header fields are left to
+ * vkr_mesh_cooked_accumulate_range. Ranges encode on worker threads. */
 vkr_internal bool8_t vkr_mesh_cooked_encode_range(
     VkrAllocator *scratch_allocator, const VkrMeshCookedEncodeInfo *info,
-    uint32_t i, bool8_t has_skin, VkrMeshCookedHeaderBuild *header,
-    VkrMeshCookedRangeBuild *out_range) {
+    uint32_t i, bool8_t has_skin, VkrMeshCookedRangeBuild *out_range) {
   const VkrVertex3d *source_vertices =
       (const VkrVertex3d *)info->mesh_buffer.vertices;
   const uint32_t *source_indices = (const uint32_t *)info->mesh_buffer.indices;
@@ -391,21 +482,6 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
               range_quantization.color_max);
     return false_v;
   }
-  if (i == 0)
-    header->geometry_decode = range_decode;
-  header->quantization_max.position_max = Max(
-      header->quantization_max.position_max, range_quantization.position_max);
-  header->quantization_max.normal_degrees_max =
-      Max(header->quantization_max.normal_degrees_max,
-          range_quantization.normal_degrees_max);
-  header->quantization_max.tangent_degrees_max =
-      Max(header->quantization_max.tangent_degrees_max,
-          range_quantization.tangent_degrees_max);
-  header->quantization_max.uv_max =
-      Max(header->quantization_max.uv_max, range_quantization.uv_max);
-  header->quantization_max.color_max =
-      Max(header->quantization_max.color_max, range_quantization.color_max);
-
   size_t vertex_bound = vkr_meshopt_vertex_encode_bound(
       optimized_vertex_count, sizeof(VkrPackedStaticVertex));
   size_t index_bound = vkr_meshopt_index_encode_bound(range->index_count,
@@ -440,8 +516,6 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
       .encoded_index_size = index_encoded_size,
       .vertex_count = (uint32_t)optimized_vertex_count,
       .index_count = range->index_count,
-      .first_index = (uint32_t)header->total_indices,
-      .material_offset = header->string_size,
       .vertex_crc = vkr_crc32(encoded_vertices, vertex_encoded_size),
       .index_crc = vkr_crc32(encoded_indices, index_encoded_size),
       .quantization = range_quantization,
@@ -450,22 +524,115 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
       .min_extents = optimized_min,
       .max_extents = optimized_max,
   };
-  if (!vkr_checked_add_u64(header->string_size, range->material_name.length,
-                           &header->string_size)) {
-    return false_v;
-  }
-  out_range->shader_offset = header->string_size;
-  if (!vkr_checked_add_u64(header->string_size, range->shader_override.length,
-                           &header->string_size)) {
-    return false_v;
-  }
-  header->total_vertices += optimized_vertex_count;
-  header->total_indices += range->index_count;
-  if (header->total_vertices > UINT32_MAX ||
-      header->total_indices > UINT32_MAX) {
-    return false_v;
-  }
   return true_v;
+}
+
+/* Folds one encoded range into the header in range order: the first range's
+ * decode record, quantization maxima, index start, string offsets and
+ * totals. */
+vkr_internal bool8_t
+vkr_mesh_cooked_accumulate_range(VkrMeshCookedHeaderBuild *header, uint32_t i,
+                                 VkrMeshCookedRangeBuild *range) {
+  if (i == 0) {
+    header->geometry_decode = range->decode;
+  }
+  header->quantization_max.position_max = Max(
+      header->quantization_max.position_max, range->quantization.position_max);
+  header->quantization_max.normal_degrees_max =
+      Max(header->quantization_max.normal_degrees_max,
+          range->quantization.normal_degrees_max);
+  header->quantization_max.tangent_degrees_max =
+      Max(header->quantization_max.tangent_degrees_max,
+          range->quantization.tangent_degrees_max);
+  header->quantization_max.uv_max =
+      Max(header->quantization_max.uv_max, range->quantization.uv_max);
+  header->quantization_max.color_max =
+      Max(header->quantization_max.color_max, range->quantization.color_max);
+  range->first_index = (uint32_t)header->total_indices;
+  range->material_offset = header->string_size;
+  if (!vkr_checked_add_u64(header->string_size,
+                           range->source->material_name.length,
+                           &header->string_size)) {
+    return false_v;
+  }
+  range->shader_offset = header->string_size;
+  if (!vkr_checked_add_u64(header->string_size,
+                           range->source->shader_override.length,
+                           &header->string_size)) {
+    return false_v;
+  }
+  header->total_vertices += range->vertex_count;
+  header->total_indices += range->index_count;
+  return header->total_vertices <= UINT32_MAX &&
+         header->total_indices <= UINT32_MAX;
+}
+
+#define VKR_MESH_COOKED_RANGE_WORKERS 8u
+
+/* Worker arenas hold every range's encoded streams until the artifact is
+ * written; vkr_mesh_cooked_encode destroys them on every exit. */
+typedef struct VkrMeshCookedRangeJob {
+  const VkrMeshCookedEncodeInfo *info;
+  VkrMeshCookedRangeBuild *ranges;
+  bool8_t has_skin;
+  VkrAtomicUint32 next;
+  VkrAtomicBool failed;
+  Arena *arenas[VKR_MESH_COOKED_RANGE_WORKERS];
+  VkrAtomicUint32 arena_count;
+} VkrMeshCookedRangeJob;
+
+vkr_internal void *vkr_mesh_cooked_range_worker(void *argument) {
+  VkrMeshCookedRangeJob *job = argument;
+  const uint32_t slot = vkr_atomic_uint32_fetch_add(&job->arena_count, 1u,
+                                                    VKR_MEMORY_ORDER_RELAXED);
+  Arena *arena =
+      slot < VKR_MESH_COOKED_RANGE_WORKERS ? arena_create(GB(8), MB(4)) : NULL;
+  if (!arena) {
+    vkr_atomic_bool_store(&job->failed, true_v, VKR_MEMORY_ORDER_RELAXED);
+    return NULL;
+  }
+  job->arenas[slot] = arena;
+  VkrAllocator allocator = {.ctx = arena};
+  if (!vkr_allocator_arena(&allocator)) {
+    vkr_atomic_bool_store(&job->failed, true_v, VKR_MEMORY_ORDER_RELAXED);
+    return NULL;
+  }
+  for (;;) {
+    const uint32_t i =
+        vkr_atomic_uint32_fetch_add(&job->next, 1u, VKR_MEMORY_ORDER_RELAXED);
+    if (i >= job->info->range_count ||
+        vkr_atomic_bool_load(&job->failed, VKR_MEMORY_ORDER_RELAXED)) {
+      return NULL;
+    }
+    if (!vkr_mesh_cooked_encode_range(&allocator, job->info, i, job->has_skin,
+                                      &job->ranges[i])) {
+      vkr_atomic_bool_store(&job->failed, true_v, VKR_MEMORY_ORDER_RELAXED);
+      return NULL;
+    }
+  }
+}
+
+/* Encodes every range on up to eight threads, the caller among them. */
+vkr_internal bool8_t vkr_mesh_cooked_encode_ranges(
+    VkrAllocator *scratch_allocator, VkrMeshCookedRangeJob *job) {
+  VkrThread workers[VKR_MESH_COOKED_RANGE_WORKERS - 1u] = {0};
+  const uint32_t cores = Max(vkr_platform_get_logical_core_count(), 1u);
+  const uint32_t extra =
+      Min(Min(cores, job->info->range_count), VKR_MESH_COOKED_RANGE_WORKERS) -
+      1u;
+  uint32_t started = 0u;
+  for (uint32_t i = 0; i < extra; ++i) {
+    if (vkr_thread_create(scratch_allocator, &workers[started],
+                          vkr_mesh_cooked_range_worker, job)) {
+      ++started;
+    }
+  }
+  (void)vkr_mesh_cooked_range_worker(job);
+  for (uint32_t i = 0; i < started; ++i) {
+    (void)vkr_thread_join(workers[i]);
+    (void)vkr_thread_destroy(scratch_allocator, &workers[i]);
+  }
+  return !vkr_atomic_bool_load(&job->failed, VKR_MEMORY_ORDER_RELAXED);
 }
 
 /**
@@ -713,9 +880,9 @@ vkr_internal bool8_t vkr_mesh_cooked_write_strings(
   return ok;
 }
 
-bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
-                               const VkrMeshCookedEncodeInfo *info,
-                               uint8_t **out_data, uint64_t *out_size) {
+vkr_internal bool8_t vkr_mesh_cooked_encode_artifact(
+    VkrAllocator *scratch_allocator, const VkrMeshCookedEncodeInfo *info,
+    VkrMeshCookedRangeJob *range_job, uint8_t **out_data, uint64_t *out_size) {
   if (!scratch_allocator || !info || !out_data || !out_size ||
       !vkr_mesh_cooked_string_is_valid(info->source_path, false_v) ||
       !info->dependency_paths || info->dependency_count == 0 ||
@@ -788,16 +955,22 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
   if (!vkr_mesh_cooked_validate_vertices(info, has_skin)) {
     return false_v;
   }
+  range_job->info = info;
+  range_job->ranges = ranges;
+  range_job->has_skin = has_skin;
+  if (info->range_count &&
+      !vkr_mesh_cooked_encode_ranges(scratch_allocator, range_job)) {
+    return false_v;
+  }
   for (uint32_t i = 0; i < info->range_count; ++i) {
-    if (!vkr_mesh_cooked_encode_range(scratch_allocator, info, i, has_skin,
-                                      &header, &ranges[i])) {
+    if (!vkr_mesh_cooked_accumulate_range(&header, i, &ranges[i])) {
       return false_v;
     }
   }
 
-  if (!vkr_mesh_cooked_hash_dependencies(scratch_allocator, dependencies,
-                                         info->dependency_count,
-                                         header.source_hash)) {
+  if (!vkr_mesh_cooked_hash_dependencies(
+          scratch_allocator, dependencies, info->dependency_digests,
+          info->dependency_count, header.source_hash)) {
     return false_v;
   }
   vkr_mesh_cooked_hash_settings(&info->budgets, header.settings_hash);
@@ -854,6 +1027,20 @@ bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
   *out_data = artifact;
   *out_size = header.file_size;
   return true_v;
+}
+
+bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,
+                               const VkrMeshCookedEncodeInfo *info,
+                               uint8_t **out_data, uint64_t *out_size) {
+  VkrMeshCookedRangeJob range_job = {0};
+  const bool8_t ok = vkr_mesh_cooked_encode_artifact(
+      scratch_allocator, info, &range_job, out_data, out_size);
+  for (uint32_t i = 0; i < VKR_MESH_COOKED_RANGE_WORKERS; ++i) {
+    if (range_job.arenas[i]) {
+      arena_destroy(range_job.arenas[i]);
+    }
+  }
+  return ok;
 }
 
 bool8_t vkr_mesh_cooked_write_atomic(VkrAllocator *scratch_allocator,

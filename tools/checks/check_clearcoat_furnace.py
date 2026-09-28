@@ -2,7 +2,7 @@
 """Check unit-environment energy on coated opaque, blend and transmission rows.
 
 Prepare after ./build_release.sh:
-  ./build_release/tools/vkr_mesh_cooker --input tests/fixtures/rendering/clearcoat_furnace.gltf --output tests/fixtures/rendering/clearcoat_furnace.vkb
+  ./build_release/tools/bakery/vkr_bakery cook tests/fixtures/rendering/clearcoat_furnace.gltf
 Capture tools/cases/local/clearcoat_furnace_local.case.json with
   tools/profiles/local-brdf-display-validation.json
 Then: python3 tools/checks/check_clearcoat_furnace.py <snapshot-directory>

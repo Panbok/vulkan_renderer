@@ -41,6 +41,9 @@ typedef struct VkrPlatformProcessConfig {
   const char *working_directory;
   const char *stdout_path;
   const char *stderr_path;
+  /** Appends to redirected output files instead of truncating them, so one
+   * log can collect several consecutive processes while it is being read. */
+  bool8_t append_output;
   /** Borrowed overrides applied to the inherited environment for the child. */
   const VkrPlatformEnvironmentVariable *environment;
   uint32_t environment_count;

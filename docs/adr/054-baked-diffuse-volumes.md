@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-09-27
 authority: adr
 ---
 
@@ -69,14 +69,16 @@ header CRC32 values. Each probe stores a nonzero room region and the canonical
 `VkrShL2Packed` coefficients; each cell stores its valid region or zero. Native
 struct serialization is prohibited.
 
-[`tools/bake_diffuse_volume.py`](../../tools/bake_diffuse_volume.py) writes an
+[`vkr_bakery bake diffuse`](../../tools/bakery/vkr_bakery_bake.c) writes an
 inspect manifest before baking, records the complete source dependency closure,
-recipe, tool and wrapper digests, and validates the resulting `.vkdv` file. It
-checks the same closure before publication and writes the sidecar
-`.vkdv.bake.json`; `--check --output volume.vkdv` rejects stale inputs or corrupt
-output. The wrapper publishes only after its temporary output, manifest, and
-source checks succeed. When inspection finds no valid cell, the wrapper stops
-before the bake pass and exits 3 without output. The baker refuses to bake an
+recipe and tool digest, and validates the resulting `.vkdv` file. It checks the
+same closure before publication and writes the sidecar `.vkdv.bake.json`;
+`--check --output volume.vkdv` rejects stale inputs or corrupt output. The
+command publishes only after its temporary output, manifest, and source checks
+succeed. When inspection finds no valid cell, it stops before the bake pass and
+exits 3 without output. The baker traces probes on worker threads; each path's
+seed derives from its probe, pixel and sample, so the volume is byte-identical
+for any `--threads` value ([ADR-077](077-asset-build-system.md)). The baker refuses to bake an
 all-invalid volume, and such a volume would render like no volume. Open and
 exterior scenes such as Bistro at the default whole-scene grid take this path.
 
@@ -145,7 +147,7 @@ The `.vkdv` SHA-256 is
 On Metal, an all-invalid volume and a scene without a volume produce byte-identical
 HDR payloads (SHA-256
 `d130dbb29986f49ef80044a67dbdad3f0679a82c64531b7f360e0dd1754018f7`).
-The wrapper detects stale source files, corrupt output, and source/output aliasing.
+`bake diffuse --check` detects stale source files, corrupt output, and source/output aliasing.
 
 Native Vulkan execution is unavailable; Metal evidence and compiled reflection
 do not establish Vulkan parity. These checks establish the implemented transport,

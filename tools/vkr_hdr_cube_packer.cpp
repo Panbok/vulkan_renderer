@@ -1,6 +1,6 @@
 #include "filesystem/vkr_filesystem_cpp.h"
 #include "assets/vkr_ktx_file.h"
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -370,7 +370,7 @@ bool pack_hdr_cube(const Config &config) {
 
 } // namespace
 
-VKR_MAIN(argc, argv) {
+VKR_TOOL_ENTRY(vkr_hdr_cube_packer_tool_main) {
   Config config;
   const ParseResult parsed = parse_args(argc, argv, &config);
   if (parsed == ParseResult::kHelp) {

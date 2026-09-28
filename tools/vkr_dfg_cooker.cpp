@@ -1,4 +1,4 @@
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 #include "vkr_atomic_file.h"
 #include "vkr_dfg_lut.h"
 
@@ -98,7 +98,7 @@ Integral integrate(double no_v, double roughness,
 }
 } // namespace
 
-VKR_MAIN(argc, argv) {
+VKR_TOOL_ENTRY(vkr_dfg_cooker_tool_main) {
   if (argc != 2) {
     std::cerr << "Usage: vkr_dfg_cooker <output.inc>\n";
     return 2;

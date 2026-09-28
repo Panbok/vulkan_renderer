@@ -1,16 +1,26 @@
 #pragma once
 
 #include "assets/vkr_mesh_cooked.h"
+#include "filesystem/filesystem.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* A dependency's SHA-256 and byte size, when the caller already hashed it. */
+typedef struct VkrMeshCookedDependencyDigest {
+  bool8_t known;
+  uint64_t byte_size;
+  uint8_t hash[32];
+} VkrMeshCookedDependencyDigest;
 
 typedef struct VkrMeshCookedEncodeInfo {
   String8 source_path;
   const String8 *dependency_paths;
   const String8 *dependency_references; // Optional portable encoded names;
                                         // paths are physical read locations.
+  // Optional, one per dependency; known entries are not read again.
+  const VkrMeshCookedDependencyDigest *dependency_digests;
   uint32_t dependency_count;
   VkrGeometryUploadBuffer mesh_buffer;
   VkrMeshSource source;
@@ -27,6 +37,10 @@ typedef struct VkrMeshCookStats {
   uint32_t index_count;
   uint32_t range_count;
 } VkrMeshCookStats;
+
+/** SHA-256 and byte size of a file, streamed through a fixed buffer. */
+bool8_t vkr_mesh_cooked_hash_file(FilePath *path, uint8_t out_hash[32],
+                                  uint64_t *out_size);
 
 /** Encodes an immutable cooked artifact into scratch-owned memory. */
 bool8_t vkr_mesh_cooked_encode(VkrAllocator *scratch_allocator,

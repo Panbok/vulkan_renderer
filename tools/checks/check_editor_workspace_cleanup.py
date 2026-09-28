@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """CPU workspace cleanup checks: reachable data survives, garbage is removed."""
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,10 +10,7 @@ import uuid
 
 
 def main():
-    module_path = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
-    spec = importlib.util.spec_from_file_location('editor_project_jobs', module_path)
-    jobs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs)
+    import project_jobs as jobs
     old = time.time() - 30 * 24 * 60 * 60
 
     def age(path):
@@ -92,6 +88,9 @@ def main():
         write(generated / 'normalrough_v2' / 'used_normal.vkt', b'used texture')
         write(generated / 'normalrough_v2' / 'pending_normal.vkt', b'pending texture')
         write(generated / 'cutout_v1' / 'unused.vkt', b'no scene uses this')
+        age(generated / 'cutout_v1')
+        # An unreferenced intermediate stays through the grace period.
+        write(generated / 'gltf_sg3' / 'recent.png', b'converted image')
         old_job = workspace / 'jobs' / str(uuid.uuid4())
         write(old_job / 'request.json', b'{}')
         age(old_job)
@@ -117,12 +116,20 @@ def main():
         assert present(generated / 'normalrough_v2' / 'used_normal.vkt',
                        generated / 'normalrough_v2' / 'pending_normal.vkt')
         assert absent(generated / 'cutout_v1'), 'Unused derived texture or its empty folder kept'
+        assert present(generated / 'gltf_sg3' / 'recent.png'), 'Recent intermediate removed'
         assert absent(old_job) and present(recent_job)
+        # Files within the grace period stay regardless, so they are not hashed.
+        assert jobs.load_json(cache / 'generated-index.json') == {}, 'Recent derived files hashed'
+        (generated / 'gltf_sg3' / 'recent.png').unlink()
+
+        # Past the grace period referenced files are hashed, kept and indexed.
+        age(generated / 'normalrough_v2')
+        assert job.collect_garbage() == (0, 0)
         index = jobs.load_json(cache / 'generated-index.json')
         assert sorted(index) == ['normalrough_v2/pending_normal.vkt', 'normalrough_v2/used_normal.vkt']
 
-        # A second pass finds nothing and reuses indexed digests.
-        assert job.collect_garbage() == ([], 0)
+        # A further pass finds nothing and reuses indexed digests.
+        assert job.collect_garbage() == (0, 0)
 
         # An unreadable scene leaves every cache entry alone.
         unused_again = write(generated / 'cutout_v1' / 'unused.vkt', b'no scene uses this')
@@ -154,6 +161,7 @@ def main():
             'artifacts': [{'role': 'texture', 'path': 'builds/r/texture.vkt', 'version': 1}],
             'fingerprint': 'sha256:' + only_doomed}]})
         write(generated / 'cutout_v1' / 'doomed.vkt', b'only in doomed project')
+        age(generated / 'cutout_v1')
         delete = {'version': 1, 'operation': 'delete_project', 'workspace_root': str(workspace),
                   'project_path': str(doomed / 'project.json')}
         assert jobs.Job(delete, recent_job / 'delete.json').execute() == 1, 'Published project was erased'

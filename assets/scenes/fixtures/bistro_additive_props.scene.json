@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Street Props",
+      "parent": null,
+      "transform": {"pos": [-5.0, 0.0, 6.0], "rot": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]}
+    },
+    {
+      "name": "Crate",
+      "parent": 0,
+      "transform": {"pos": [0.0, 0.5, 0.0], "rot": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      "shape": {"type": "cube", "dimensions": [1.0, 1.0, 1.0], "material": {"name": "default_world", "path": "assets/materials/default.world.mt"}}
+    },
+    {
+      "name": "Crate Lamp",
+      "parent": 0,
+      "transform": {"pos": [0.0, 2.0, 0.0], "rot": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      "point_light": {"enabled": true, "color": [1.0, 0.6, 0.3], "intensity": 4.0, "attenuation": {"constant": 1.0, "linear": 0.09, "quadratic": 0.032}}
+    },
+    {
+      "name": "Props Fog",
+      "components": {"fog": {"enabled": true, "density": 0.2, "max_distance": 500, "sky_distance": 400}}
+    }
+  ]
+}

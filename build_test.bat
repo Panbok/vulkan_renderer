@@ -14,11 +14,6 @@ if errorlevel 1 (
     popd
     exit /b 1
 )
-python tools/checks/check_path_contract.py
-if errorlevel 1 (
-    popd
-    exit /b 1
-)
 
 rem Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
 set "VKR_BUILD_TARGET=vulkan_renderer_tester"
@@ -33,6 +28,15 @@ set "BUILD_DIR=build_debug"
 for %%S in (address thread memory leak none) do if /I "%VKR_DEBUG_SANITIZER%"=="%%S" set "BUILD_DIR=build_debug_%%S"
 if not "%VKR_BUILD_DIR%"=="" set "BUILD_DIR=%VKR_BUILD_DIR%"
 for %%D in ("%BUILD_DIR%") do set "BUILD_DIR=%%~fD"
+
+rem The managed path grammar runs through the project runner this build made.
+set "BAKERY_EXE=%BUILD_DIR%\tools\bakery\vkr_bakery.exe"
+if not exist "!BAKERY_EXE!" set "BAKERY_EXE=%BUILD_DIR%\tools\bakery\Debug\vkr_bakery.exe"
+python tools/checks/check_path_contract.py --bakery "!BAKERY_EXE!"
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
 
 rem Return to the original directory
 popd

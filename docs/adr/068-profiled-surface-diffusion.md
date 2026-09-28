@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-27
 authority: adr
 ---
 
@@ -193,7 +193,7 @@ python3 .scratch/build-subsurface-sampler-check.py
 python3 .scratch/check-subsurface-reflection.py --generated build_release/renderer/generated/vulkan --spirv-dis /Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/bin/spirv-dis --spirv-val /Users/Yaroslav_Panok/VulkanSDK/1.4.357.0/macOS/bin/spirv-val
 env -u VKR_DISPLAY_OUTPUT -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS ./build_release/tools/vkr_harness snapshot --case tools/cases/local/subsurface_enabled_local.case.json --profile tools/profiles/local-brdf-display-validation.json
 python3 tools/checks/check_subsurface.py .scratch/subsurface-native-runs.json
-./build_release/tools/vkr_diffuse_baker --scene .scratch/subsurface-bake/glass.scene.json --output .scratch/subsurface-bake/glass.vkdv --manifest .scratch/subsurface-bake/manifest.json --grid 6 4 6 --voxel-size .1 --face-size 8 --samples 4 --max-depth 12 --photons 20000 --photon-radius .3
+./build_release/tools/bakery/vkr_bakery tool diffuse-baker --scene .scratch/subsurface-bake/glass.scene.json --output .scratch/subsurface-bake/glass.vkdv --manifest .scratch/subsurface-bake/manifest.json --grid 6 4 6 --voxel-size .1 --face-size 8 --samples 4 --max-depth 12 --photons 20000 --photon-radius .3
 ```
 
 Numeric results are retained in `.scratch/subsurface-profile-math.json`,

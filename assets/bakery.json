@@ -1,0 +1,90 @@
+{
+  "v": 1,
+  "root": "..",
+  "description": "Repository cook targets: `vkr_bakery build assets/bakery.json`. Optional sources are local downloads skipped when absent. Main Bistro keeps authored light ranges in its own artifact; the untuned bistro-lights.vkb serves other scenes sharing the source.",
+  "targets": [
+    {
+      "source": "assets/models/falcon.obj",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/sponza.obj",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/New_Sponza_001.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/NewSponza_Curtains_glTF.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/bistro-lights.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/bistrox.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/bistro.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/san-miguel-low-poly.obj",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "tests/fixtures/rendering/specgloss_factor_parity.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "tests/fixtures/rendering/editor_nodes.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "tests/fixtures/rendering/editor_lights.gltf",
+      "producer": "mesh",
+      "optional": true
+    },
+    {
+      "source": "assets/models/bistro-lights.gltf",
+      "producer": "mesh",
+      "optional": true,
+      "output": "assets/models/bistro-lights-main.vkb",
+      "recipe": {
+        "light_ranges": {
+          "LMBR_000019c_Paris_StringLights_01_Yellow_Color": 5.0,
+          "LMBR_000019a_Paris_StringLights_01_Pink_Color": 5.0,
+          "LMBR_0000197_Paris_StringLights_01_Red_Color": 5.0,
+          "LMBR_0000199_Paris_StringLights_01_Green_Color": 5.0,
+          "LMBR_000019b_Paris_StringLights_01_Orange_Color": 5.0,
+          "LMBR_0000198_Paris_StringLights_01_Blue_Color": 5.0
+        }
+      }
+    },
+    {
+      "source": "assets/fonts/UbuntuMono-cooked.fontcfg",
+      "producer": "font"
+    },
+    {
+      "source": "assets/fonts/UbuntuMono-Bold-cooked.fontcfg",
+      "producer": "font"
+    },
+    {
+      "source": "assets/textures",
+      "optional": true
+    }
+  ]
+}

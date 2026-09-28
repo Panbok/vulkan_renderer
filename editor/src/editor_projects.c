@@ -5,7 +5,9 @@
 #include "editor_scene_panels.h"
 #include <math.h>
 
+#include "core/logger.h"
 #include "core/vkr_atomic.h"
+#include "core/vkr_hash.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include "core/vkr_threads.h"
@@ -14,6 +16,8 @@
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_file_dialog.h"
 #include "platform/vkr_platform.h"
+#include "renderer/resources/loaders/material_loader.h"
+#include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -290,6 +294,32 @@ struct VkrEditorProjects {
   char delete_project_name[513];
   bool8_t delete_project_waiting_unload;
   uint64_t delete_project_job;
+  /* Scenes and Content imports at the deferred or preview texture tier
+     upgrade to the final tier in a background job that yields to every other
+     project job (ADR-077). A project finalize publishes its inventory only
+     while the inventory still hashes as it did when the job started. */
+  char finalize_scene_id[37];
+  char finalize_result_path[1100];
+  uint64_t finalize_job;
+  uint32_t finalize_failures;
+  bool8_t finalize_project;
+  bool8_t finalize_running_project;
+  uint8_t finalize_assets_digest[VKR_SHA256_DIGEST_SIZE];
+  /* The running finalize job's ready log: its complete lines replace the
+     live materials they name as they arrive (ADR-077). A scene reloaded
+     meanwhile (another generation) loses them, and a finished job then
+     reopens it. Visible materials are those the request prioritized. */
+  char finalize_ready_path[1100];
+  uint64_t finalize_ready_offset;
+  uint32_t finalize_ready_applied;
+  uint32_t finalize_ready_rejected;
+  uint64_t finalize_scene_generation;
+  float64_t finalize_ready_polled;
+  float64_t finalize_started;
+  float64_t finalize_first_applied;
+  uint64_t finalize_visible[128];
+  uint32_t finalize_visible_count;
+  uint32_t finalize_visible_applied;
   char rename_name[513];
   char action_name[513];
   char message[512];
@@ -1374,6 +1404,12 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
       project_json_text(writer, "workspace_root", projects->workspace.root) &&
       project_json_text(writer, "project_path",
                         projects->project->manifest_path) &&
+      /* Scene and Content imports open with untextured materials at once
+         and a background finalize job adds full-quality textures. Textures
+         only the editor shows encode with the fast encoder where the host
+         has one. */
+      project_json_text(writer, "texture_tier", "deferred") &&
+      project_json_text(writer, "texture_encode_speed", "fast") &&
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
                                                  : PROJECT_SOURCE_DIR) &&
@@ -1511,17 +1547,15 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   }
   ok = ok && vkr_json_writer_name(writer, string8_lit("tools")) &&
        vkr_json_writer_begin_object(writer) &&
-       project_json_text(writer, "mesh", VKR_EDITOR_MESH_COOKER_PATH) &&
-       project_json_text(writer, "animation",
-                         VKR_EDITOR_ANIMATION_COOKER_PATH) &&
-       project_json_text(writer, "collision",
-                         VKR_EDITOR_COLLISION_COOKER_PATH) &&
-       project_json_text(writer, "font", VKR_EDITOR_FONT_COOKER_PATH) &&
-       project_json_text(writer, "texture", VKR_EDITOR_TEXTURE_COOKER_PATH) &&
+       /* Every cooker is a `vkr_bakery tool`; the job maps keys to tools. */
+       project_json_text(writer, "mesh", VKR_EDITOR_BAKERY_PATH) &&
+       project_json_text(writer, "animation", VKR_EDITOR_BAKERY_PATH) &&
+       project_json_text(writer, "collision", VKR_EDITOR_BAKERY_PATH) &&
+       project_json_text(writer, "font", VKR_EDITOR_BAKERY_PATH) &&
+       project_json_text(writer, "texture", VKR_EDITOR_BAKERY_PATH) &&
        project_json_text(writer, "harness", VKR_EDITOR_HARNESS_PATH) &&
-       project_json_text(writer, "hdr_packer",
-                         VKR_EDITOR_HDR_CUBE_PACKER_PATH) &&
-       project_json_text(writer, "diffuse", VKR_EDITOR_DIFFUSE_BAKER_PATH) &&
+       project_json_text(writer, "hdr_packer", VKR_EDITOR_BAKERY_PATH) &&
+       project_json_text(writer, "diffuse", VKR_EDITOR_BAKERY_PATH) &&
        vkr_json_writer_end_object(writer) &&
        vkr_json_writer_end_object(writer) && vkr_json_file_writer_commit(&file);
   if (!ok) {
@@ -1540,6 +1574,634 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   return true_v;
 }
 
+// =============================================================================
+// Background texture finalization
+// =============================================================================
+
+static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame, bool8_t create);
+
+/* Adopts a job result's project asset inventory and default font; the
+   caller saves the project. */
+static bool8_t project_apply_inventory(VkrEditorProjects *projects,
+                                       String8 result) {
+  String8 assets = project_member(result, "project_assets");
+  String8 default_font = project_member(result, "default_font");
+  if (!assets.length || !default_font.length) {
+    return true_v;
+  }
+  if (!string8_equals(&assets, &projects->project->assets)) {
+    String8 replacement = string8_duplicate(projects->allocator, &assets);
+    if (!replacement.str) {
+      snprintf(projects->message, sizeof(projects->message),
+               "Cannot retain project asset inventory.");
+      return false_v;
+    }
+    if (projects->owned_assets.str) {
+      vkr_allocator_free(projects->allocator, projects->owned_assets.str,
+                         projects->owned_assets.length + 1,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+    projects->owned_assets = replacement;
+    projects->project->assets = replacement;
+  }
+  if (!string8_equals(&default_font, &projects->project->default_font)) {
+    String8 replacement = string8_duplicate(projects->allocator, &default_font);
+    if (!replacement.str) {
+      snprintf(projects->message, sizeof(projects->message),
+               "Cannot retain project font setting.");
+      return false_v;
+    }
+    if (projects->owned_default_font.str) {
+      vkr_allocator_free(projects->allocator, projects->owned_default_font.str,
+                         projects->owned_default_font.length + 1,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+    projects->owned_default_font = replacement;
+    projects->project->default_font = replacement;
+  }
+  return true_v;
+}
+
+/* A published scene still holding deferred or preview textures queues its
+   finalize job; the most recent scene wins. */
+static void project_schedule_finalize(VkrEditorProjects *projects,
+                                      String8 result) {
+  VkrJsonReader reader = vkr_json_reader_from_string(result);
+  int32_t preview = 0;
+  char scene_id[37] = {0};
+  VkrEditorProjectError error = {0};
+  if (!vkr_json_get_int(&reader, "preview_assets", &preview) || preview <= 0 ||
+      !vkr_editor_project_json_string(result, "scene_id", scene_id,
+                                      sizeof(scene_id), &error)) {
+    return;
+  }
+  if (strcmp(scene_id, projects->finalize_scene_id)) {
+    projects->finalize_failures = 0u;
+  }
+  snprintf(projects->finalize_scene_id, sizeof(projects->finalize_scene_id),
+           "%s", scene_id);
+}
+
+/* A user's job runs first: a running finalize job is cancelled, which
+   publishes nothing, and retried once the editor is idle again. */
+static void project_yield_finalize(VkrEditorProjects *projects,
+                                   VkrEditorUi *editor) {
+  if (!projects->finalize_job) {
+    return;
+  }
+  vkr_editor_bakery_project_cancel(editor->bakery, projects->finalize_job);
+  projects->finalize_job = 0;
+}
+
+static uint32_t project_scene_index(const VkrEditorProjects *projects,
+                                    const char *scene_id) {
+  for (uint32_t i = 0; projects->project && i < projects->project->scene_count;
+       ++i) {
+    if (!strcmp(projects->project->scenes[i].id, scene_id)) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
+/* Adds each material of a visible instance to `coverage`, indexed by
+   material slot, as the share of the Scene view its submesh's projected
+   bounds cover; occlusion is not considered. */
+static void project_material_coverage(const VkrSampleUiFrame *frame,
+                                      float32_t *coverage, uint32_t capacity) {
+  VkrMeshManager *meshes = &frame->assets->mesh_manager;
+  const uint32_t instance_count = vkr_mesh_manager_instance_count(meshes);
+  for (uint32_t live = 0; live < instance_count; ++live) {
+    uint32_t slot = 0;
+    VkrMeshInstance *instance =
+        vkr_mesh_manager_get_instance_by_live_index(meshes, live, &slot);
+    VkrMeshAsset *asset =
+        instance && instance->visible
+            ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
+            : NULL;
+    if (!asset) {
+      continue;
+    }
+    const Mat4 clip = mat4_mul(frame->view_projection, instance->model);
+    for (uint64_t s = 0; s < asset->submeshes.length; ++s) {
+      const VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
+      if (submesh->material.id == 0u || submesh->material.id > capacity) {
+        continue;
+      }
+      float32_t min_x = 1.0f;
+      float32_t min_y = 1.0f;
+      float32_t max_x = -1.0f;
+      float32_t max_y = -1.0f;
+      bool8_t surrounds = false_v;
+      for (uint32_t corner = 0; corner < 8u && !surrounds; ++corner) {
+        const Vec4 point = mat4_mul_vec4(
+            clip,
+            vec4_new(
+                corner & 1u ? submesh->max_extents.x : submesh->min_extents.x,
+                corner & 2u ? submesh->max_extents.y : submesh->min_extents.y,
+                corner & 4u ? submesh->max_extents.z : submesh->min_extents.z,
+                1.0f));
+        if (point.w <= 1e-4f) {
+          /* A corner behind the camera: the bounds surround the view. */
+          surrounds = true_v;
+          break;
+        }
+        min_x = Min(min_x, point.x / point.w);
+        min_y = Min(min_y, point.y / point.w);
+        max_x = Max(max_x, point.x / point.w);
+        max_y = Max(max_y, point.y / point.w);
+      }
+      const float32_t width =
+          surrounds ? 2.0f
+                    : Clamp(max_x, -1.0f, 1.0f) - Clamp(min_x, -1.0f, 1.0f);
+      const float32_t height =
+          surrounds ? 2.0f
+                    : Clamp(max_y, -1.0f, 1.0f) - Clamp(min_y, -1.0f, 1.0f);
+      if (width > 0.0f && height > 0.0f) {
+        coverage[submesh->material.id - 1u] += width * height * 0.25f;
+      }
+    }
+  }
+}
+
+/* Writes the finalize request fields that make its results progressive: the
+   ready log the job appends finished materials to, and the materials of the
+   open scene ordered by their share of the Scene view, which the cook
+   writes first (ADR-077). */
+static bool8_t project_write_progressive_fields(VkrEditorProjects *projects,
+                                                const VkrSampleUiFrame *frame,
+                                                VkrJsonWriter *writer,
+                                                const char *job_directory) {
+  snprintf(projects->finalize_ready_path, sizeof(projects->finalize_ready_path),
+           "%s/ready.jsonl", job_directory);
+  projects->finalize_ready_offset = 0u;
+  projects->finalize_ready_applied = 0u;
+  projects->finalize_ready_rejected = 0u;
+  projects->finalize_ready_polled = 0.0;
+  projects->finalize_scene_generation = frame->scene_generation;
+  projects->finalize_started = vkr_platform_get_absolute_time();
+  projects->finalize_first_applied = 0.0;
+  projects->finalize_visible_count = 0u;
+  projects->finalize_visible_applied = 0u;
+  MemZero(projects->finalize_visible, sizeof(projects->finalize_visible));
+
+  VkrMaterialSystem *materials = &frame->assets->material_system;
+  const uint32_t capacity = (uint32_t)materials->materials.length;
+  VkrAllocator *allocator = frame->ui->frame_allocator;
+  float32_t *coverage = vkr_allocator_alloc(
+      allocator, sizeof(*coverage) * capacity, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *order = vkr_allocator_alloc(allocator, sizeof(*order) * capacity,
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t visible = 0u;
+  if (coverage && order) {
+    MemZero(coverage, sizeof(*coverage) * capacity);
+    project_material_coverage(frame, coverage, capacity);
+    for (uint32_t i = 0u; i < capacity; ++i) {
+      if (coverage[i] > 0.0f && materials->materials.data[i].name) {
+        order[visible++] = i;
+        if (i < 64u * ArrayCount(projects->finalize_visible)) {
+          projects->finalize_visible[i / 64u] |= 1ull << (i % 64u);
+          projects->finalize_visible_count++;
+        }
+      }
+    }
+    /* Insertion sort, largest share first; a scene has a few hundred. */
+    for (uint32_t i = 1u; i < visible; ++i) {
+      const uint32_t key = order[i];
+      uint32_t j = i;
+      while (j > 0u && coverage[order[j - 1u]] < coverage[key]) {
+        order[j] = order[j - 1u];
+        --j;
+      }
+      order[j] = key;
+    }
+  }
+  if (visible) {
+    log_info("Textures: %u materials in view are encoded first", visible);
+  }
+  bool8_t ok =
+      project_json_text(writer, "ready_log", projects->finalize_ready_path) &&
+      vkr_json_writer_name(writer, project_string("material_priority")) &&
+      vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0u; ok && i < visible; ++i) {
+    ok = vkr_json_writer_string(
+        writer, project_string(materials->materials.data[order[i]].name));
+  }
+  return ok && vkr_json_writer_end_array(writer);
+}
+
+/* Applies the complete lines the finalize job has added to its ready log
+   since the last call: each replaces the live material it names, which
+   publishes once its textures load. A material that is not live is not
+   shown, so it is skipped. `drain` reads to the end; otherwise at most ten
+   times a second. */
+static void project_apply_ready(VkrEditorProjects *projects,
+                                const VkrSampleUiFrame *frame, bool8_t drain) {
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (!projects->finalize_ready_path[0] ||
+      (!drain && now < projects->finalize_ready_polled + 0.1)) {
+    return;
+  }
+  projects->finalize_ready_polled = now;
+  FILE *log = file_fopen(projects->finalize_ready_path, "rb");
+  if (!log) {
+    return;
+  }
+  VkrAllocator *allocator = frame->ui->frame_allocator;
+  enum { ProjectReadyChunk = 1 << 20 };
+  uint8_t *chunk = vkr_allocator_alloc(allocator, ProjectReadyChunk,
+                                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  bool8_t more = chunk != NULL;
+  while (more &&
+         fseek(log, (long)projects->finalize_ready_offset, SEEK_SET) == 0) {
+    const size_t read = fread(chunk, 1u, ProjectReadyChunk, log);
+    uint64_t consumed = 0u;
+    for (uint64_t end = 0u; end < read; ++end) {
+      if (chunk[end] != '\n') {
+        continue;
+      }
+      const String8 line = {.str = chunk + consumed, .length = end - consumed};
+      consumed = end + 1u;
+      VkrAllocatorScope scope = vkr_allocator_begin_scope(allocator);
+      String8 name = {0};
+      String8 path = {0};
+      String8 definition = {0};
+      VkrJsonReader name_reader = vkr_json_reader_from_string(line);
+      VkrJsonReader path_reader = vkr_json_reader_from_string(line);
+      VkrJsonReader definition_reader = vkr_json_reader_from_string(line);
+      if (!vkr_json_find_field(&name_reader, "material") ||
+          !vkr_json_parse_string_decoded(&name_reader, allocator, &name) ||
+          !vkr_json_find_field(&path_reader, "path") ||
+          !vkr_json_parse_string_decoded(&path_reader, allocator, &path) ||
+          !vkr_json_find_field(&definition_reader, "definition") ||
+          !vkr_json_parse_string_decoded(&definition_reader, allocator,
+                                         &definition)) {
+        log_warn("Textures: skipping an unreadable finished-material record");
+        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+        continue;
+      }
+      VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+      if (vkr_material_loader_replace_live(&frame->assets->material_system,
+                                           path, definition, allocator,
+                                           &error)) {
+        if (!projects->finalize_ready_applied++) {
+          projects->finalize_first_applied = now;
+        }
+        const VkrMaterialEntry *entry = vkr_hash_table_get_VkrMaterialEntry(
+            &frame->assets->material_system.material_by_name,
+            (const char *)name.str);
+        const bool8_t visible =
+            entry && entry->id < 64u * ArrayCount(projects->finalize_visible) &&
+            (projects->finalize_visible[entry->id / 64u] &
+             (1ull << (entry->id % 64u)));
+        const uint32_t shown =
+            visible ? ++projects->finalize_visible_applied : 0u;
+        if (visible && (shown == (projects->finalize_visible_count + 1u) / 2u ||
+                        shown == projects->finalize_visible_count)) {
+          log_info("Textures: %u of %u materials in view applied after %.1f s",
+                   shown, projects->finalize_visible_count,
+                   now - projects->finalize_started);
+        }
+      } else if (error != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED &&
+                 !projects->finalize_ready_rejected++) {
+        log_warn("Textures: a finished material could not be applied; the "
+                 "scene reopens when the textures are ready");
+      }
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+    projects->finalize_ready_offset += consumed;
+    /* A full chunk may hold more complete lines; a partial last line waits
+       for the rest. */
+    more = drain && read == ProjectReadyChunk && consumed > 0u;
+  }
+  fclose(log);
+}
+
+/* A finished finalize whose every material the open scene uses was applied
+   as it arrived needs no reopen: the scene shows what a reopen would load.
+   The records then cover every material the job rebuilt, since the job
+   records those the cook did not. */
+static bool8_t project_finalize_applied(const VkrEditorProjects *projects,
+                                        const VkrSampleUiFrame *frame) {
+  return projects->finalize_ready_applied > 0u &&
+         projects->finalize_ready_rejected == 0u &&
+         projects->finalize_scene_generation == frame->scene_generation;
+}
+
+/* Logs how the progressive finalize went, for scripted measurements. */
+static void project_log_finalize_timing(const VkrEditorProjects *projects) {
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (projects->finalize_first_applied > 0.0) {
+    log_info("Textures: %u materials applied; first after %.1f s, all after "
+             "%.1f s",
+             projects->finalize_ready_applied,
+             projects->finalize_first_applied - projects->finalize_started,
+             now - projects->finalize_started);
+  }
+}
+
+void vkr_editor_projects_finalize_stats(const VkrEditorProjects *projects,
+                                        bool8_t *out_running,
+                                        uint32_t *out_applied) {
+  *out_running = projects && projects->finalize_job != 0u;
+  *out_applied = projects ? projects->finalize_ready_applied : 0u;
+}
+
+static uint64_t project_start_finalize(VkrEditorProjects *projects,
+                                       VkrEditorUi *editor,
+                                       const VkrSampleUiFrame *frame) {
+  const uint32_t scene =
+      project_scene_index(projects, projects->finalize_scene_id);
+  VkrEditorProjectError error = {0};
+  char scene_path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char job_id[37];
+  if (scene == UINT32_MAX ||
+      !vkr_editor_project_scene_path(projects->project, scene, true_v,
+                                     scene_path, &error) ||
+      !vkr_editor_project_id_generate(job_id, &error)) {
+    projects->finalize_scene_id[0] = '\0';
+    return 0;
+  }
+  char job_directory[1024];
+  char request_path[1100];
+  snprintf(job_directory, sizeof(job_directory), "%s/jobs/%s",
+           projects->workspace.root, job_id);
+  snprintf(request_path, sizeof(request_path), "%s/request.json",
+           job_directory);
+  snprintf(projects->finalize_result_path,
+           sizeof(projects->finalize_result_path), "%s/result.json",
+           job_directory);
+  String8 directory = project_string(job_directory);
+  VkrJsonFileWriter file = {0};
+  if (!file_ensure_directory(frame->ui->frame_allocator, &directory) ||
+      !vkr_json_file_writer_begin(&file, project_string(request_path))) {
+    return 0;
+  }
+  VkrJsonWriter *writer = &file.writer;
+  const bool8_t ok =
+      vkr_json_writer_begin_object(writer) &&
+      project_json_number(writer, "version", 1) &&
+      project_json_bool(writer, "read_only", false_v) &&
+      project_json_text(writer, "operation", "finalize_textures") &&
+      project_json_text(writer, "texture_tier", "final") &&
+      project_json_text(writer, "texture_encode_speed", "fast") &&
+      project_json_text(writer, "workspace_root", projects->workspace.root) &&
+      project_json_text(writer, "project_path",
+                        projects->project->manifest_path) &&
+      project_json_text(writer, "legacy_root",
+                        projects->legacy_root[0] ? projects->legacy_root
+                                                 : PROJECT_SOURCE_DIR) &&
+      project_json_text(writer, "runtime_directory", job_directory) &&
+      project_json_text(writer, "scene_id",
+                        projects->project->scenes[scene].id) &&
+      project_json_text(writer, "scene_path", scene_path) &&
+      project_write_progressive_fields(projects, frame, writer,
+                                       job_directory) &&
+      vkr_json_writer_end_object(writer) && vkr_json_file_writer_commit(&file);
+  if (!ok) {
+    vkr_json_file_writer_abort(&file);
+    return 0;
+  }
+  return vkr_editor_bakery_project_start(editor->bakery, request_path,
+                                         projects->finalize_result_path);
+}
+
+/* Rebuilds the project's deferred and preview Content imports at the final
+   tier. The result carries the new inventory, published only while the
+   inventory it started from is unchanged. */
+static uint64_t project_start_project_finalize(VkrEditorProjects *projects,
+                                               VkrEditorUi *editor,
+                                               const VkrSampleUiFrame *frame) {
+  VkrEditorProjectError error = {0};
+  char job_id[37];
+  if (!vkr_editor_project_id_generate(job_id, &error)) {
+    return 0;
+  }
+  char job_directory[1024];
+  char request_path[1100];
+  snprintf(job_directory, sizeof(job_directory), "%s/jobs/%s",
+           projects->workspace.root, job_id);
+  snprintf(request_path, sizeof(request_path), "%s/request.json",
+           job_directory);
+  snprintf(projects->finalize_result_path,
+           sizeof(projects->finalize_result_path), "%s/result.json",
+           job_directory);
+  String8 directory = project_string(job_directory);
+  VkrJsonFileWriter file = {0};
+  if (!file_ensure_directory(frame->ui->frame_allocator, &directory) ||
+      !vkr_json_file_writer_begin(&file, project_string(request_path))) {
+    return 0;
+  }
+  VkrJsonWriter *writer = &file.writer;
+  const bool8_t ok =
+      vkr_json_writer_begin_object(writer) &&
+      project_json_number(writer, "version", 1) &&
+      project_json_bool(writer, "read_only", false_v) &&
+      project_json_text(writer, "operation", "finalize_project_assets") &&
+      project_json_text(writer, "texture_tier", "final") &&
+      project_json_text(writer, "texture_encode_speed", "fast") &&
+      project_json_text(writer, "workspace_root", projects->workspace.root) &&
+      project_json_text(writer, "project_path",
+                        projects->project->manifest_path) &&
+      project_json_text(writer, "legacy_root",
+                        projects->legacy_root[0] ? projects->legacy_root
+                                                 : PROJECT_SOURCE_DIR) &&
+      project_json_text(writer, "runtime_directory", job_directory) &&
+      project_write_progressive_fields(projects, frame, writer,
+                                       job_directory) &&
+      vkr_json_writer_end_object(writer) && vkr_json_file_writer_commit(&file);
+  if (!ok) {
+    vkr_json_file_writer_abort(&file);
+    return 0;
+  }
+  vkr_sha256(projects->project->assets.str, projects->project->assets.length,
+             projects->finalize_assets_digest);
+  return vkr_editor_bakery_project_start(editor->bakery, request_path,
+                                         projects->finalize_result_path);
+}
+
+/* A finished project finalize: the new inventory replaces the one it was
+   built from, and an unchanged open scene naming a finalized asset reopens.
+   An inventory changed meanwhile keeps the job pending for a retry. */
+static void project_finalize_project_complete(VkrEditorProjects *projects,
+                                              VkrEditorUi *editor,
+                                              const VkrSampleUiFrame *frame) {
+  String8 result = {0};
+  VkrEditorProjectError error = {0};
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256(projects->project->assets.str, projects->project->assets.length,
+             digest);
+  if (MemCompare(digest, projects->finalize_assets_digest, sizeof(digest))) {
+    log_info("Textures: Content changed while encoding; retrying");
+    return;
+  }
+  if (!project_read_file(projects->finalize_result_path,
+                         frame->ui->frame_allocator, &result) ||
+      !project_apply_inventory(projects, result) ||
+      !vkr_editor_project_save(projects->project, &error)) {
+    log_warn("Textures: cannot publish the finalized Content: %s",
+             error.message[0] ? error.message : projects->message);
+    return;
+  }
+  projects->finalize_project = false_v;
+  vkr_editor_content_refresh(editor->content);
+
+  /* Reopen only a clean open scene that names a finalized asset. */
+  String8 scene = {0};
+  bool8_t uses = false_v;
+  if (projects->scene_manifest_path[0] &&
+      project_read_file(projects->scene_manifest_path,
+                        frame->ui->frame_allocator, &scene)) {
+    VkrJsonReader reader = vkr_json_reader_from_string(result);
+    if (vkr_json_find_array(&reader, "finalized_assets")) {
+      while (!uses && vkr_json_next_array_element(&reader)) {
+        String8 id = {0};
+        uses = vkr_json_parse_string(&reader, &id) && id.length &&
+               string8_contains(&scene, &id);
+      }
+    }
+  }
+  if (!uses) {
+    log_info("Textures: full quality is ready for the imported Content");
+    return;
+  }
+  if (project_finalize_applied(projects, frame)) {
+    log_info("Textures: full quality is applied to the open scene");
+    return;
+  }
+  if (!project_scene_dirty(frame) && !projects->job_id &&
+      !projects->waiting_activation && !frame->scene_loading &&
+      projects->project &&
+      projects->active_scene < projects->project->scene_count) {
+    log_info("Textures: full quality is ready; reopening the scene");
+    projects->pending_scene = projects->active_scene;
+    projects->operation[0] = '\0';
+    project_start_job(projects, editor, frame, false_v);
+    return;
+  }
+  log_info("Textures: full quality is ready; it loads the next time the "
+           "scene opens");
+}
+
+/* A finished finalize job: an unchanged open scene reopens with its full
+   quality textures; otherwise they load the next time the scene opens and
+   later saves build on the new publication. */
+static void project_finalize_complete(VkrEditorProjects *projects,
+                                      VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame) {
+  String8 result = {0};
+  VkrEditorProjectError error = {0};
+  char scene_id[37] = {0};
+  char fingerprint[17] = {0};
+  if (!project_read_file(projects->finalize_result_path,
+                         frame->ui->frame_allocator, &result) ||
+      !vkr_editor_project_json_string(result, "scene_id", scene_id,
+                                      sizeof(scene_id), &error) ||
+      !vkr_editor_project_json_string(result, "manifest_fingerprint",
+                                      fingerprint, sizeof(fingerprint),
+                                      &error)) {
+    log_warn("Textures: cannot read the finalize result: %s", error.message);
+    return;
+  }
+  if (!strcmp(projects->finalize_scene_id, scene_id)) {
+    projects->finalize_scene_id[0] = '\0';
+  }
+  const bool8_t active =
+      projects->project &&
+      projects->active_scene < projects->project->scene_count &&
+      !strcmp(projects->project->scenes[projects->active_scene].id, scene_id);
+  if (!active) {
+    log_info("Textures: full quality is ready for a scene that is not open");
+    return;
+  }
+  if (project_finalize_applied(projects, frame)) {
+    /* The open scene already shows the published revision's materials, so
+       it adopts the revision as a reopen would, without reloading. */
+    projects->scene_manifest_fingerprint = strtoull(fingerprint, NULL, 16);
+    log_info("Textures: full quality is applied to the open scene");
+    return;
+  }
+  if (!project_scene_dirty(frame) && !projects->job_id &&
+      !projects->waiting_activation && !frame->scene_loading) {
+    log_info("Textures: full quality is ready; reopening the scene");
+    projects->pending_scene = projects->active_scene;
+    projects->operation[0] = '\0';
+    project_start_job(projects, editor, frame, false_v);
+    return;
+  }
+  projects->scene_manifest_fingerprint = strtoull(fingerprint, NULL, 16);
+  log_info("Textures: full quality is ready; it loads the next time the "
+           "scene opens");
+}
+
+static void project_update_finalize(VkrEditorProjects *projects,
+                                    VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame) {
+  if (projects->finalize_job) {
+    const VkrEditorProjectJobStatus status = vkr_editor_bakery_project_status(
+        editor->bakery, projects->finalize_job, NULL);
+    if (status == VKR_EDITOR_PROJECT_JOB_QUEUED ||
+        status == VKR_EDITOR_PROJECT_JOB_RUNNING) {
+      project_apply_ready(projects, frame, false_v);
+      return;
+    }
+    /* Materials already applied stay: their textures are final either way,
+       and a retry or the next open brings the rest. */
+    project_apply_ready(projects, frame, true_v);
+    projects->finalize_job = 0;
+    if (status == VKR_EDITOR_PROJECT_JOB_SUCCEEDED) {
+      project_log_finalize_timing(projects);
+      if (projects->finalize_running_project) {
+        project_finalize_project_complete(projects, editor, frame);
+      } else {
+        project_finalize_complete(projects, editor, frame);
+      }
+    } else if (status == VKR_EDITOR_PROJECT_JOB_FAILED) {
+      /* A save while it ran changes the scene under it; that retries. */
+      String8 result = {0};
+      const bool8_t raced =
+          project_read_file(projects->finalize_result_path,
+                            frame->ui->frame_allocator, &result) &&
+          strstr((const char *)result.str, "Scene changed") != NULL;
+      if (!raced && ++projects->finalize_failures >= 2u) {
+        log_warn("Textures: finalizing full-quality textures failed twice; "
+                 "Rebuild the model to retry");
+        if (projects->finalize_running_project) {
+          projects->finalize_project = false_v;
+        } else {
+          projects->finalize_scene_id[0] = '\0';
+        }
+      }
+    }
+    return;
+  }
+  /* A Content import left at the deferred or preview tier, including one a
+     previous session did not finish, still awaits its final textures. */
+  if (!projects->finalize_project && projects->finalize_failures < 2u &&
+      projects->project && projects->project->assets.length) {
+    const String8 marker = string8_lit("\"texture_tier\"");
+    projects->finalize_project =
+        string8_contains(&projects->project->assets, &marker);
+  }
+  /* Start only while the editor is idle: no job, activation or load. */
+  if ((!projects->finalize_scene_id[0] && !projects->finalize_project) ||
+      projects->read_only || !projects->project || projects->job_id ||
+      projects->waiting_activation || frame->scene_loading ||
+      projects->view != PROJECT_VIEW_EDITOR) {
+    return;
+  }
+  /* Content imports first: they may be what the open scene shows. */
+  projects->finalize_running_project = projects->finalize_project;
+  projects->finalize_job =
+      projects->finalize_project
+          ? project_start_project_finalize(projects, editor, frame)
+          : project_start_finalize(projects, editor, frame);
+  if (projects->finalize_job) {
+    log_info("Textures: encoding full-quality textures in the background");
+  }
+}
+
 static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame, bool8_t create) {
   if (projects->read_only && (create || projects->operation[0])) {
@@ -1556,6 +2218,7 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   if (!project_write_job(projects, frame, create)) {
     return;
   }
+  project_yield_finalize(projects, editor);
   projects->job_id = vkr_editor_bakery_project_start(
       editor->bakery, projects->request_path, projects->result_path);
   if (!projects->job_id) {
@@ -1758,6 +2421,7 @@ static void project_delete_scene(VkrEditorProjects *projects,
   }
   projects->pending_scene = UINT32_MAX;
   projects->discard_edits = false_v;
+  project_yield_finalize(projects, editor);
   projects->job_id = vkr_editor_bakery_project_start(
       editor->bakery, projects->request_path, projects->result_path);
   projects->view = PROJECT_VIEW_PROGRESS;
@@ -1810,6 +2474,7 @@ static uint64_t project_start_delete_job(VkrEditorProjects *projects,
     vkr_json_file_writer_abort(&file);
     return 0;
   }
+  project_yield_finalize(projects, editor);
   return vkr_editor_bakery_project_start(editor->bakery, request_path,
                                          result_path);
 }
@@ -2105,6 +2770,7 @@ static void project_job_complete(VkrEditorProjects *projects,
       projects->job_id = 0;
       return;
     }
+    project_schedule_finalize(projects, result);
   }
   if (!unbuilt && !projects->job_creates_project &&
       !projects->job_project_assets &&
@@ -2117,43 +2783,9 @@ static void project_job_complete(VkrEditorProjects *projects,
     projects->job_id = 0;
     return;
   }
-  String8 assets = project_member(result, "project_assets");
-  String8 default_font = project_member(result, "default_font");
-  if (assets.length && default_font.length) {
-    if (!string8_equals(&assets, &projects->project->assets)) {
-      String8 replacement = string8_duplicate(projects->allocator, &assets);
-      if (!replacement.str) {
-        snprintf(projects->message, sizeof(projects->message),
-                 "Cannot retain project asset inventory.");
-        projects->job_id = 0;
-        return;
-      }
-      if (projects->owned_assets.str) {
-        vkr_allocator_free(projects->allocator, projects->owned_assets.str,
-                           projects->owned_assets.length + 1,
-                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
-      }
-      projects->owned_assets = replacement;
-      projects->project->assets = replacement;
-    }
-    if (!string8_equals(&default_font, &projects->project->default_font)) {
-      String8 replacement =
-          string8_duplicate(projects->allocator, &default_font);
-      if (!replacement.str) {
-        snprintf(projects->message, sizeof(projects->message),
-                 "Cannot retain project font setting.");
-        projects->job_id = 0;
-        return;
-      }
-      if (projects->owned_default_font.str) {
-        vkr_allocator_free(projects->allocator,
-                           projects->owned_default_font.str,
-                           projects->owned_default_font.length + 1,
-                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
-      }
-      projects->owned_default_font = replacement;
-      projects->project->default_font = replacement;
-    }
+  if (!project_apply_inventory(projects, result)) {
+    projects->job_id = 0;
+    return;
   }
   if (projects->job_project_assets) {
     /* Publish the grown inventory; the open scene never unloaded. */
@@ -2164,6 +2796,13 @@ static void project_job_complete(VkrEditorProjects *projects,
     if (!vkr_editor_project_save(projects->project, &error)) {
       project_error(projects, &error);
       return;
+    }
+    VkrJsonReader preview_reader = vkr_json_reader_from_string(result);
+    int32_t preview = 0;
+    if (vkr_json_get_int(&preview_reader, "preview_assets", &preview) &&
+        preview > 0) {
+      projects->finalize_project = true_v;
+      projects->finalize_failures = 0u;
     }
     /* File the new assets into the folder the import targeted. */
     VkrJsonReader reader = vkr_json_reader_from_string(result);
@@ -2779,6 +3418,18 @@ static void project_content_action(VkrEditorProjects *projects,
     project_import_assets(projects, editor, frame, NULL);
     return;
   }
+  /* A rebuild after a source edit never interrupts: with unsaved scene edits
+     the asset keeps its Changed state until the user rebuilds it. */
+  if (action->automatic) {
+    if (projects->read_only || !projects->project ||
+        projects->active_scene >= projects->project->scene_count ||
+        project_scene_dirty(frame)) {
+      log_warn("Content: %s changed on disk; save the scene, then Rebuild it",
+               action->name);
+      return;
+    }
+    log_info("Content: %s changed on disk; rebuilding it", action->name);
+  }
   if (projects->read_only || !projects->project ||
       projects->active_scene >= projects->project->scene_count) {
     snprintf(projects->message, sizeof(projects->message),
@@ -2926,6 +3577,7 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
                            projects->job_id || projects->waiting_activation ||
                            vkr_editor_bakery_busy(editor->bakery));
   vkr_editor_bakery_update(editor->bakery);
+  project_update_finalize(projects, editor, frame);
   if (projects->delete_waiting_unload) {
     project_delete_scene(projects, editor, frame);
   }
@@ -5001,6 +5653,7 @@ void vkr_editor_projects_build_scene_progress(VkrEditorProjects *projects,
       if (!projects->job_id && strcmp(projects->operation, "delete_scene")) {
         project_job_complete(projects, editor, frame);
       } else {
+        project_yield_finalize(projects, editor);
         projects->job_id = vkr_editor_bakery_project_start(
             editor->bakery, projects->request_path, projects->result_path);
         projects->message[0] = '\0';

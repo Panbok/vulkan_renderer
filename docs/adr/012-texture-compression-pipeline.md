@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-09-28
 authority: adr
 ---
 # ADR-012: KTX2/UASTC texture artifacts with capability-selected transcode
@@ -22,6 +22,34 @@ the extension alone. The loader selects a transcode target from texture class,
 sRGB intent, device class, and advertised BC7, BC5, ASTC, ETC2, and EAC RG11
 support. Every selected target has a libktx transcode mapping; RGBA32 is the
 terminal fallback.
+
+Textures a workspace derives for its own host may instead hold native ASTC 4x4
+blocks (`--encoding astc`, astcenc's `fastest` preset). Managed imports choose
+this encoding on Apple silicon, whose GPUs sample ASTC under Metal and
+MoltenVK; other hosts, repository `.vkt` files and bundles keep UASTC, so one
+file still serves every device. On Bistro's converted colours, paired normals
+and metallic-roughness, `fastest` measured 52.6, 40.1 and 49.2 dB against 52.2,
+38.5 and 47.4 dB for UASTC `faster`, at four to nine times its speed. The
+settings identity records `encoding=astc-4x4-fastest`, so an ASTC file never
+satisfies a UASTC recipe. Native ASTC normals store alpha as one instead of the
+G copy, which only Basis two-channel transcodes read; every shader samples XY.
+The packer calls astcenc directly, since libktx exposes no search limits: other
+classes keep the preset, and normals stop searching a block at 39 dB with one
+candidate. On baked Bistro normals that encoded 1.8 times faster and scored
+41.2 dB in RG against 40.9 for UASTC `faster`.
+A third encoding, `astc-fast`, encodes the same ASTC 4x4 format with Apple's
+system encoder (AppleTextureEncoder, macOS only), with channels weighed
+equally and blocks accepted below a mean square error of 2^-12. It is for
+textures only the editor shows (ADR-077's `texture_encode_speed`): on Bistro's
+pre-encode data it ran 2.2 times astcenc's speed on paired normals (36.6
+against 40.4 dB in RG; the encoder saturates there at any threshold), 3.4
+times on metallic-roughness (62.0 against 67.4 dB) and 2.6-3.3 dB below
+astcenc on alpha-weighted colours. Its identity records
+`encoding=astc-4x4-system-equal-t12-v1` and its files carry `.astc-fast`
+names, so neither ASTC encoding satisfies the other's recipe.
+The loader uploads a native ASTC payload without transcoding or the transcode
+cache, and a device without ASTC refuses it with an instruction to rebuild the
+asset on that platform.
 
 For ordinary texture jobs, the offline packer filters `color-srgb` RGB channels in linear light using the
 [sRGB transfer functions](https://registry.khronos.org/DataFormat/specs/1.4/dataformat.1.4.html),
@@ -157,8 +185,9 @@ were selected to use the existing portable material inputs.
 
 ## Revisit when
 
-The supported device profile adds a compression family or the runtime no longer
-needs legacy `.vkt` compatibility.
+The supported device profile adds a compression family, the runtime no longer
+needs legacy `.vkt` compatibility, or a measured BC7 encoder can give desktop
+hosts native derived textures as ASTC gives Apple silicon.
 
 ## Code evidence
 
@@ -167,6 +196,6 @@ needs legacy `.vkt` compatibility.
 - [normal/roughness moments](../../tools/vkr_vkt_normal_roughness.h)
 - [synchronous cooker entry point](../../tools/vkr_vkt_packer.h)
 - [glTF material integration](../../tools/assets/mesh_loader_gltf.c)
-- [analytic mip checks](../../tests/src/texture_vkt_tests.c)
+- [analytic mip checks and native ASTC load](../../tests/src/texture_vkt_tests.c)
 - [selection and KTX2 load](../../runtime/src/renderer/systems/vkr_texture_system.c)
 - [texture contract](../../runtime/src/renderer/systems/vkr_texture_system.h)

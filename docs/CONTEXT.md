@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-09-28
 authority: context
 ---
 # Project vocabulary
@@ -101,6 +101,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Deformation stream | Per-instance compute output and producer-matched previous positions, separate from immutable geometry. | [ADR-071](adr/071-animation-bank-and-reference-pose.md) |
 | Mesh skin data | Four-influence records following cooked vertex order, with node-selected skin palettes and animation-source identity; stored in skinned `.vkb` version 18. | [ADR-030](adr/030-offline-mesh-optimization-and-cooking.md), [vkr_mesh_skin.h](../runtime/src/assets/vkr_mesh_skin.h) |
 | KTX2 / UASTC | Texture container / intermediate block encoding used for target-format transcoding. | [ADR-012](adr/012-texture-compression-pipeline.md) |
+| Native ASTC texture | `.vkt` holding ASTC 4x4 blocks that a workspace built for an ASTC host; uploaded without transcoding. `astc` comes from astcenc; `astc-fast`, from Apple's system encoder at the editor's fast encode speed. | [ADR-012](adr/012-texture-compression-pipeline.md) |
 | MTSDF / em / DPI | Multi-channel signed-distance field with true-distance alpha / font-relative layout unit / display scale used before UI layout. | [ADR-035](adr/035-canonical-mtsdf-screen-pixel-range-shading.md), [ADR-036](adr/036-dpi-derived-ui-text-scale.md) |
 | Immediate-mode UI | Widgets are declared each frame while stable IDs retain interaction, layout, and text caches. | [ADR-027](adr/027-immediate-mode-grid-ui.md) |
 | Picking | Rendered object-ID selection in Scene viewport coordinates, with physics ray selection for enabled collider debug display and priority for gizmos. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |
@@ -118,10 +119,20 @@ Editor workflow terms:
 | Managed reference | Owner-relative serialized path with `/` separators and validated raw segments, resolved with physical containment checks. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Resource reference | Runtime asset reference with explicit owner-relative or legacy repository-root semantics, separate from a source format URI. | [Asset resolver](../lib/src/filesystem/vkr_asset_path.h) |
 | Project | Version 1 JSON owner of a name, scene membership, default font, asset inventory and editor preferences. | [ADR-069](adr/069-editor-projects-and-workspaces.md) |
-| Managed scene | Version 4 authored scene document with stable ID, typed asset references and separate build revisions; its asset records live in the immutable inventory revision it names (version 3 kept them inline). Jobs lower it to runtime inputs. | [Project jobs](../tools/editor_project_jobs.py) |
+| Managed scene | Version 5 authored scene document with stable ID, typed asset references and separate build revisions; its asset records live in the immutable inventory revision it names (version 3 kept them inline). `vkr_bakery project` lowers it to runtime inputs. | [Project jobs](../tools/bakery/project/vkr_project_lower.c) |
 | Derived texture cache | Workspace `cache/generated` directory of cooker-derived textures named by source content and parameters; managed bundles hold clones of the variants their materials use. | [Mesh cooker](../tools/assets/vkr_mesh_cook_source.c) |
 | Source identity | Stable managed-scene or cooked source-node identity used to bind authored edits independently of imported file location. | [Scene loader](../runtime/src/renderer/resources/loaders/scene_loader.c) |
-| Bakery | Editor queue for cooker, renderer-table and scene-bake processes; managed project jobs publish into an explicit workspace. | [Bakery](../editor/src/editor_bakery.c) |
+| Bakery | Editor queue that runs `vkr_bakery` recipes, project jobs and scene bakes one child at a time; managed project jobs publish into an explicit workspace. | [Bakery](../editor/src/editor_bakery.c) |
+| `vkr_bakery` | The single asset and shader build program: producers, action cache, scheduler, event stream, project jobs and bakes. | [ADR-077](adr/077-asset-build-system.md) |
+| Producer / action | A registered source-to-product transform / one keyed run of it on one source and recipe; an unchanged key reuses cached products. | [Registry](../tools/bakery/vkr_bakery_registry.c) |
+| Action cache | Per-user content-addressed store of products, action records and a path-hash index, shared by checkouts and workspaces. | [Cache](../tools/bakery/vkr_bakery_cache.c) |
+| Bakery daemon | `vkr_bakery serve`: a local-socket process that runs Bakery commands for clients and reruns a command when watched files settle; the editor supervises one per process. | [Daemon](../tools/bakery/vkr_bakery_serve.c) |
+| Content root | Directory relative asset paths resolve against: the repository, or a mounted bundle's `content/` directory. | [Mounts](../lib/src/filesystem/vkr_vfs.h) |
+| Ready log | JSON lines a finalize job appends for each material whose final textures exist, which the editor applies to the open scene's live materials before the job publishes. | [ADR-077](adr/077-asset-build-system.md) |
+| Texture tier | How far a managed import builds textures: `final`, `preview` (1,024-pixel mip floor) or `deferred` (none); `finalize_textures` brings preview and deferred assets to final. | [ADR-077](adr/077-asset-build-system.md) |
+| `.vkpak` archive / bundle | Content archive of identity-addressed, hash-deduplicated entries / a directory with the runtime, shader catalog, archives and `bundle.json` that runs without the repository. | [ADR-077](adr/077-asset-build-system.md) |
+| Script module | `<module>.script.json` naming C sources that `vkr_bakery` compiles into a hot-reload library and a static archive; the runtime does not load it yet. | [Producers](../tools/bakery/vkr_bakery_script.c) |
+| Shader catalog | Directory of compiled SPIR-V, MSL and metallib files with per-backend manifests that the renderer resolves shader files through. | [Catalog](../renderer/src/vkr_shader_catalog.c) |
 | Content | Folder browser over project, scene and editor assets, scenes, presets, the World and built-in objects, with tile and list views and texture/material previews. | [Content browser](../editor/src/editor_content.c) |
 | Scene edit overlay | Authored overrides validated against source identities. Legacy saves use `<scene>.editor.json`; managed saves publish immutable overlay revisions referenced by the scene manifest. | [Scene edit owner](../runtime/src/renderer/systems/vkr_scene_edit.c), [project store](../editor/src/editor_project_store.c) |
 

@@ -1,4 +1,5 @@
 #include "editor_content.h"
+#include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_json.h"
 #include "core/vkr_threads.h"
@@ -9,7 +10,10 @@
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include <ctype.h>
+#include <limits.h>
 #include <math.h>
+#include <stdlib.h>
+#include <time.h>
 
 #define CONTENT_MAX_ASSETS 8192u
 #define CONTENT_CACHE_COUNT 64u
@@ -97,6 +101,8 @@ typedef struct ContentAsset {
   uint32_t label;
   bool8_t missing;
   bool8_t stale;
+  /* A source or artifact file changed on disk since the listing was read. */
+  bool8_t changed;
 } ContentAsset;
 
 /* One row of the folder tree; parents precede their children. */
@@ -216,6 +222,14 @@ struct VkrEditorContent {
   bool8_t worker_timed_out;
   int32_t worker_exit;
   VkrEditorContentAction action;
+  /* Change reports for the open project directory from the Bakery daemon.
+     Files published by a job were written before the listing that shows them
+     was read, so only files modified after `listed_at` (Unix seconds) count
+     as edits. */
+  EditorBakeryService *service;
+  uint32_t watch;
+  char watched[CONTENT_PATH];
+  int64_t listed_at;
   /* The project's labels and presets documents; the arrays live as long as
      the browser. */
   VkrEditorContentLabels labels;
@@ -308,8 +322,9 @@ static void *content_worker(void *context) {
   uint32_t count = 0;
   const char *executable = VKR_EDITOR_ASSET_PREVIEW_PATH;
   if (content->worker_material) {
-    executable = VKR_EDITOR_PYTHON_PATH;
-    arguments[count++] = PROJECT_SOURCE_DIR "tools/editor_material_preview.py";
+    executable = VKR_EDITOR_BAKERY_PATH;
+    arguments[count++] = "preview";
+    arguments[count++] = "material";
   }
   arguments[count++] = "--input";
   arguments[count++] = content->worker_input;
@@ -320,8 +335,6 @@ static void *content_worker(void *context) {
   if (content->worker_material) {
     arguments[count++] = "--workspace";
     arguments[count++] = content->worker_workspace;
-    arguments[count++] = "--mesh-cooker";
-    arguments[count++] = VKR_EDITOR_MESH_COOKER_PATH;
     arguments[count++] = "--harness";
     arguments[count++] = VKR_EDITOR_HARNESS_PATH;
   }
@@ -345,10 +358,9 @@ static void *content_worker(void *context) {
     char directory[CONTENT_PATH];
     snprintf(directory, sizeof(directory), "%s/cache/thumbnails",
              content->worker_workspace);
-    const char *prune_arguments[] = {PROJECT_SOURCE_DIR
-                                     "tools/editor_preview_cache.py",
-                                     "--directory", directory};
-    VkrPlatformProcessConfig prune = {.executable = VKR_EDITOR_PYTHON_PATH,
+    const char *prune_arguments[] = {"preview", "prune", "--directory",
+                                     directory};
+    VkrPlatformProcessConfig prune = {.executable = VKR_EDITOR_BAKERY_PATH,
                                       .arguments = prune_arguments,
                                       .argument_count =
                                           ArrayCount(prune_arguments),
@@ -469,6 +481,7 @@ void vkr_editor_content_destroy(VkrEditorContent *content) {
   if (!vkr_editor_content_stop_previews(content)) {
     return;
   }
+  editor_bakery_service_unwatch(content->service, content->watch);
   for (uint32_t i = 0; i < CONTENT_CACHE_COUNT; ++i) {
     content_release_preview(&content->cache[i]);
   }
@@ -1405,6 +1418,146 @@ static void content_read_builtins(VkrEditorContent *content) {
   }
 }
 
+/* Watches the open project's directory; a project change replaces the
+   watch. */
+static void content_watch_project(VkrEditorContent *content) {
+  char root[CONTENT_PATH] = {0};
+  if (content->service && content->project[0]) {
+    snprintf(root, sizeof(root), "%s/projects/%s", content->workspace,
+             content->project);
+  }
+  if (!strcmp(root, content->watched)) {
+    return;
+  }
+  editor_bakery_service_unwatch(content->service, content->watch);
+  content->watch = EDITOR_BAKERY_SERVICE_NONE;
+  content_copy(content->watched, sizeof(content->watched), root);
+  if (root[0]) {
+    const char *paths[] = {root};
+    content->watch = editor_bakery_service_watch(content->service, paths,
+                                                 ArrayCount(paths), NULL, 0u);
+  }
+}
+
+/* Canonical form of an entry path: change reports name real paths. */
+static bool8_t content_real_path(const char *path, char *out,
+                                 uint32_t capacity) {
+  if (!path[0]) {
+    return false_v;
+  }
+#if defined(_WIN32)
+  return content_copy(out, capacity, path);
+#else
+  char resolved[PATH_MAX];
+  if (realpath(path, resolved)) {
+    return content_copy(out, capacity, resolved);
+  }
+  return content_copy(out, capacity, path);
+#endif
+}
+
+/* Marks the entries whose source or artifact the change names. A deleted
+   artifact is Missing; an edited source queues a rebuild of a scene-owned
+   asset of the open scene when no other action waits. */
+static void content_apply_change(VkrEditorContent *content, const char *path) {
+  FileStats stats = {0};
+  FilePath file = {.path = content_string(path),
+                   .type = FILE_PATH_TYPE_ABSOLUTE};
+  const bool8_t exists = file_stats(&file, &stats) == FILE_ERROR_NONE;
+  if (exists && (int64_t)stats.last_modified <= content->listed_at) {
+    return;
+  }
+  /* Real path of the open scene's directory with a trailing separator. */
+  char scene_root[CONTENT_PATH];
+  snprintf(scene_root, sizeof(scene_root), "%s/scenes/%s", content->watched,
+           content->scene);
+  char resolved_scene[CONTENT_PATH];
+  (void)content_real_path(scene_root, resolved_scene,
+                          sizeof(resolved_scene) - 1u);
+  strcat(resolved_scene, "/");
+  for (uint32_t i = 0u; i < content->asset_count; ++i) {
+    ContentAsset *entry = &content->entries[i];
+    char source[CONTENT_PATH];
+    char artifact[CONTENT_PATH];
+    const bool8_t is_source =
+        content_real_path(entry->source, source, sizeof(source)) &&
+        !strcmp(source, path);
+    const bool8_t is_artifact =
+        content_real_path(entry->path, artifact, sizeof(artifact)) &&
+        !strcmp(artifact, path);
+    /* One report per file until the listing is read again: an editor can
+       save one file as several writes. */
+    if ((!is_source && !is_artifact) || entry->changed || entry->missing) {
+      continue;
+    }
+    if (!exists) {
+      entry->missing = is_artifact;
+      entry->changed = !is_artifact;
+      snprintf(entry->diagnostic, sizeof(entry->diagnostic), "%s",
+               is_artifact ? "Artifact removed on disk. Rebuild or Reimport."
+                           : "Source removed on disk. Reimport to update.");
+      continue;
+    }
+    entry->changed = true_v;
+    if (!is_source) {
+      snprintf(entry->diagnostic, sizeof(entry->diagnostic),
+               "Artifact changed on disk. Rebuild or Reimport.");
+      continue;
+    }
+    const uint64_t scene_length = strlen(resolved_scene);
+    if (content->read_only || content->action.kind || entry->scope != 0u ||
+        entry->kind == CONTENT_SCENE || !content->scene[0] ||
+        strncmp(source, resolved_scene, scene_length)) {
+      snprintf(entry->diagnostic, sizeof(entry->diagnostic),
+               "Source changed on disk. Rebuild to update.");
+      log_warn("Content: %s changed on disk; Rebuild to update it",
+               entry->name);
+      continue;
+    }
+    snprintf(entry->diagnostic, sizeof(entry->diagnostic),
+             "Source changed on disk.");
+    content->action = (VkrEditorContentAction){
+        .kind = VKR_EDITOR_CONTENT_ACTION_REBUILD,
+        .automatic = true_v,
+    };
+    content_copy(content->action.asset_id, sizeof(content->action.asset_id),
+                 entry->id);
+    content_copy(content->action.source, sizeof(content->action.source),
+                 entry->source);
+    content_copy(content->action.name, sizeof(content->action.name),
+                 entry->name);
+    content_copy(content->action.scope, sizeof(content->action.scope), "scene");
+  }
+}
+
+static void content_poll_changes(VkrEditorContent *content) {
+  if (!content->watch) {
+    return;
+  }
+  char changed[16][EDITOR_BAKERY_SERVICE_PATH];
+  uint32_t count = 0u;
+  while ((count = editor_bakery_service_take_changes(
+              content->service, content->watch, changed,
+              ArrayCount(changed))) != 0u) {
+    for (uint32_t i = 0u; i < count; ++i) {
+      content_apply_change(content, changed[i]);
+    }
+    content->filter_dirty = true_v;
+  }
+}
+
+void vkr_editor_content_set_service(VkrEditorContent *content,
+                                    EditorBakeryService *service) {
+  if (!content || content->service == service) {
+    return;
+  }
+  editor_bakery_service_unwatch(content->service, content->watch);
+  content->watch = EDITOR_BAKERY_SERVICE_NONE;
+  content->watched[0] = '\0';
+  content->service = service;
+  content_watch_project(content);
+}
+
 void vkr_editor_content_refresh(VkrEditorContent *content) {
   if (!content) {
     return;
@@ -1425,6 +1578,8 @@ void vkr_editor_content_refresh(VkrEditorContent *content) {
     content_release_preview(&content->cache[i]);
   }
   content_read_builtins(content);
+  content->listed_at = (int64_t)time(NULL);
+  content_watch_project(content);
   char root[CONTENT_PATH];
   char manifest[CONTENT_PATH];
   if (content->project[0]) {
@@ -1637,6 +1792,7 @@ void vkr_editor_content_update(VkrEditorContent *content) {
   }
   ++content->frame;
   content->uploads_this_frame = 0;
+  content_poll_changes(content);
   if (content->worker &&
       vkr_atomic_bool_load(&content->complete, VKR_MEMORY_ORDER_ACQUIRE)) {
     (void)vkr_thread_join(content->worker);
@@ -3427,15 +3583,16 @@ static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
       : entry->scope == CONTENT_SCOPE_BUILTIN ? "Built-in"
       : entry->missing                        ? "Missing"
       : entry->stale                          ? "Stale"
+      : entry->changed                        ? "Changed"
       : preview && preview->failed            ? "Preview error"
       : preview && preview->queued            ? "Building preview"
                                               : "Current";
   VkrUiWidgetConfig info = content_widget(0, 3);
   info.style.font_size_pt = theme->font_caption;
-  info.style.text_color =
-      entry->missing || entry->stale || (preview && preview->failed)
-          ? theme->warning
-          : theme->text_secondary;
+  info.style.text_color = entry->missing || entry->stale || entry->changed ||
+                                  (preview && preview->failed)
+                              ? theme->warning
+                              : theme->text_secondary;
   String8 line = string8_create_formatted(ui->frame_allocator, "%s · %s",
                                           content_kinds[entry->kind], status);
   vkr_ui_label(ui, string8_lit("status"), line, &info);

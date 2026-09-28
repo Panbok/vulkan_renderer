@@ -29,6 +29,13 @@ def run(command):
                              + completed.stderr.decode("utf-8", errors="replace"))
 
 
+def tool_command(executable, tool):
+    """Command prefix for a cooker; vkr_bakery runs cookers as `tool <name>`."""
+    if Path(executable).stem == "vkr_bakery":
+        return [str(executable), "tool", tool]
+    return [str(executable)]
+
+
 def check(root, cooker, hdr, packer):
     root.mkdir(parents=True)
     buffer_name = "\u0431\u0443\u0444\u0435\u0440 #%.bin"
@@ -53,13 +60,13 @@ def check(root, cooker, hdr, packer):
     bundle = root / "\u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442"
     bundle.mkdir()
     output = bundle / "\u0441\u0435\u0442\u043a\u0430.vkb"
-    run([cooker, "--input", source, "--output", output, "--bundle-root", bundle, "--import-id", "native-path-fixture"])
+    run([*tool_command(cooker, "mesh"), "--input", source, "--output", output, "--bundle-root", bundle, "--import-id", "native-path-fixture"])
     assert output.stat().st_size > 0
     textures = list((bundle / "textures").glob("*.png"))
     assert textures and textures[0].read_bytes() == png(), "glTF texture identity changed"
     if packer:
         texture_output = root / "\u0442\u0435\u043a\u0441\u0442\u0443\u0440\u0430.vkt"
-        run([packer, "--type", "2d", "--layer", root / image_name, "--output", texture_output])
+        run([*tool_command(packer, "texture"), "--type", "2d", "--layer", root / image_name, "--output", texture_output])
         assert texture_output.read_bytes().startswith(b"\xabKTX 20\xbb\r\n\x1a\n")
     if hdr:
         faces = []
@@ -68,7 +75,7 @@ def check(root, cooker, hdr, packer):
             path.write_bytes(struct.pack("<4e", 1, 0.5, 0.25, 1) * 4)
             faces += ["--face", path]
         cube = root / "\u043a\u0443\u0431.vkt"
-        run([hdr, "--size", "2", "--output", cube, *faces])
+        run([*tool_command(hdr, "hdr-cube"), "--size", "2", "--output", cube, *faces])
         assert cube.read_bytes().startswith(b"\xabKTX 20\xbb\r\n\x1a\n")
     print(json.dumps({"path_characters": len(str(output)), "mesh_sha256": hashlib.sha256(output.read_bytes()).hexdigest(), "textures": len(textures)}))
 

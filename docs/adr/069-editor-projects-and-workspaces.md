@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-09-28
 authority: adr
 ---
 
@@ -48,6 +48,9 @@ replacing the manifest, as with edit overlays. Version 3 manifests with inline
 records remain readable and become version 4 at their next job publication.
 Display names can change independently of IDs. Paths in manifests resolve within
 the declared owner; imports copy their dependency closure into the workspace.
+A glTF snapshot keeps only the images a texture samples: images named only by
+an optional extension (Bistro's `MSFT_texture_dds` alternates) are left out,
+the kept images renumbered and the extension references removed.
 A glTF image resolves beside its model; a model inside the repository's
 `assets` tree also finds it where the mesh cooker looks, under `assets` and
 `assets/textures`, without a legacy `objects/` prefix and by file name, so the
@@ -58,9 +61,16 @@ Bistro's 3.1 GiB of source textures, and a bundle's `dependencies` and
 `textures` copies share blocks instead of duplicating them; other file systems
 copy the bytes. The cooker writes derived textures (paired normal/roughness,
 cutout, converted specular-glossiness and embedded images) once into
-`.vkreditor/cache/generated`, named by source content and parameters, so later
-imports reuse them. Job-packed material textures use `.vkreditor/cache/textures`
-keyed by source hash and class; after a packer rebuild the packer revalidates a
+`.vkreditor/cache/generated`, named by source content and parameters, including
+the texture tier and encoding ([ADR-077](077-asset-build-system.md)), so later
+imports reuse them. Converted specular-glossiness images are packed from
+memory, named by their pixels' content hash, and never written as image
+files. Their material records a memo keyed by its source images' bytes,
+samplers and factors that holds the converted images' extent and hashes, so a
+later import names its packed textures without decoding and converting; only
+a pack whose output is missing or stale converts again.
+Job-packed material textures use `.vkreditor/cache/textures` keyed by source
+hash, class, tier and encoding; after a packer rebuild the packer revalidates a
 cached output and recooks only when its recorded recipe no longer matches.
 
 Every successful write job then cleans the workspace on a best-effort basis;
@@ -68,7 +78,11 @@ read-only and scene-opening jobs do not, and a cleanup failure never fails the
 published job. A cache entry survives while a listed scene's records or the
 project's assets name its content digest, because bundles hold clones or copies
 of cache files rather than paths into the cache. `cache/generated-index.json`
-retains derived-file digests between runs. If any scene or project manifest is
+retains derived-file digests between runs; a derived file younger than the
+grace period is not hashed, since no rule removes it yet. A derived file no
+bundle holds,
+such as a paired bake's intermediate, is removed once it is older
+than 24 hours, so importing the model again within a day reuses it. If any scene or project manifest is
 unreadable, no cache entry is removed. Build and inventory revisions a live
 scene no longer names are removed after 24 hours, so an editor still streaming a
 replaced revision keeps its files; staging leftovers also wait 24 hours.
@@ -131,8 +145,9 @@ runtime reloads the published scene and the editor selects the first added
 entity. Adding is durable publication, outside Inspector undo history. Failed
 jobs return to the draft for correction; Cancel reloads the original scene.
 
-The [job process](../../tools/editor_project_jobs.py) validates managed scene
-versions 3 and 4 and lowers typed asset references into explicit runtime scene and font
+The [job runner](../../tools/bakery/project/vkr_project_main.c),
+`vkr_bakery project` ([ADR-077](077-asset-build-system.md)), validates managed
+scene versions 3 to 5 and lowers typed asset references into explicit runtime scene and font
 inputs. Runtime loaders do not discover workspaces. New source imports use
 explicit cooker destinations. Cooked-only imports preserve `.vkb` geometry bytes
 and use an adjacent versioned material-remap document; the
@@ -207,7 +222,7 @@ move through the list while keeping the selected card visible.
 `Commands > Show Content` adds the panel to retained layouts, and Ctrl+Space
 toggles it. New layouts place Content beside Console. Textures use bounded CPU previews;
 materials use an isolated canonical-sphere
-[preview job](../../tools/editor_material_preview.py). Meshes and fonts use vector
+preview job, `vkr_bakery preview material`. Meshes and fonts use vector
 icons. Preview jobs and GPU texture requests have independent cancellation and
 retirement owners; the browser retains at most 64 texture requests and prunes its
 generated disk cache through a bounded worker operation.
@@ -216,9 +231,9 @@ generated disk cache through a bounded worker operation.
 
 Publishing the manifest at creation passes the Release editor build and the CPU
 project-store suite. A native click-through of a failed first scene job remains
-unverified. `tools/checks/check_editor_project_jobs.py` with the Release mesh
-cooker, texture packer and diffuse baker covers the open-scene diffuse skip and
-an invalid recipe that still fails.
+unverified. `tools/checks/check_editor_project_jobs.py` with the Release
+`vkr_bakery` covers the open-scene diffuse skip and an invalid recipe that still
+fails.
 
 On 2026-09-25 the Release editor opened a scratch copy of a new project's
 manifest without loading a scene. It exited 0 and wrote graphics, runtime,
@@ -322,11 +337,12 @@ VKR_AUTOCLOSE_SECONDS=240 "$repo/.scratch/VKR Projects Check.app/Contents/MacOS/
   --scene-id bf7f5ecd-797c-466d-83e4-d52996acbece
 ```
 
-The reflection job command, run from the checkout, was:
+The reflection job ran through the former Python job runner; the same request
+now runs as:
 
 ```sh
 env -u MTL_DEBUG_LAYER -u MTL_SHADER_VALIDATION -u VK_INSTANCE_LAYERS \
-  python3 tools/editor_project_jobs.py \
+  ./build_release/tools/bakery/vkr_bakery project \
   --request .scratch/projects-portable-check/.vkreditor/jobs/acceptance-reflection/request.json \
   --result .scratch/projects-portable-check/.vkreditor/jobs/acceptance-reflection/result.json
 ```

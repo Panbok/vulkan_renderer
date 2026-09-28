@@ -1,4 +1,6 @@
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 #include "vkr_vkt_packer.h"
 
-VKR_MAIN(argc, argv) { return vkr_vkt_packer_main(argc, argv); }
+VKR_TOOL_ENTRY(vkr_vkt_packer_tool_main) {
+  return vkr_vkt_packer_main(argc, argv);
+}

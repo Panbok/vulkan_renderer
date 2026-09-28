@@ -4,7 +4,7 @@
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +42,7 @@ cleanup:
   return success;
 }
 
-VKR_MAIN(argc, argv) {
+VKR_TOOL_ENTRY(vkr_collision_cooker_tool_main) {
   const char *input = NULL;
   const char *output = NULL;
   VkrCollisionKind kind = 0;

@@ -1,5 +1,5 @@
 #include "filesystem/vkr_filesystem_cpp.h"
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
 #if defined(_WIN32) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
@@ -1054,7 +1054,7 @@ void print_usage(const char *program) {
 
 } // namespace
 
-VKR_MAIN(argc, argv) {
+VKR_TOOL_ENTRY(vkr_font_cooker_tool_main) {
   Options options;
   if (!parse_args(argc, argv, &options)) {
     print_usage(argv[0]);

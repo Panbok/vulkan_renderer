@@ -46,9 +46,10 @@ implementation logic or asserts a registration constant does not qualify.
 ```
 
 `build_test.sh` incrementally configures the shared `build_debug` tree, builds the
-`vulkan_renderer_tester` target, and runs the suite. It does not explicitly
-build cooker tools, cook, pack, or bake assets; run Bakery or an explicit
-cooker wrapper when fixture regeneration is required. The runner is
+`vulkan_renderer_tester` target with the `vkr_bakery` shader-catalog builder,
+checks the managed path contract through that `vkr_bakery`, and runs the suite.
+It does not cook, pack, or bake assets; run Bakery or `vkr_bakery cook` when
+fixture regeneration is required. The runner is
 `build_debug/tests/vulkan_renderer_tester`; it currently ignores arguments and
 has no suite filter. Do not invent a focused-test CLI.
 

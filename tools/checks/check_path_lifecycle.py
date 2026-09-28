@@ -7,11 +7,12 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
-import sys
 import tempfile
 from urllib.parse import quote
 import uuid
 import zlib
+
+import project_jobs as jobs
 
 
 def load(path):
@@ -31,7 +32,7 @@ def main():
     parser.add_argument('--mesh-cooker', required=True)
     parser.add_argument('--texture-packer', required=True)
     args = parser.parse_args()
-    script = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
+    bakery = Path(args.mesh_cooker).resolve()
     with tempfile.TemporaryDirectory(prefix='vkr-lifecycle-') as temporary:
         root = Path(temporary).resolve()
         # Long paths exercise the same argument/file boundaries as nested staging.
@@ -68,7 +69,7 @@ def main():
             request_path = root / 'request.json'
             result_path = root / 'result.json'
             save(request_path, value)
-            result = subprocess.run([sys.executable, str(script), '--request', str(request_path), '--result', str(result_path)], capture_output=True, encoding='utf-8', errors='replace')
+            result = subprocess.run([str(bakery), 'project', '--request', str(request_path), '--result', str(result_path)], capture_output=True, encoding='utf-8', errors='replace')
             if result.returncode:
                 raise AssertionError(f'{operation} failed:\n{result.stdout}\n{result.stderr}\n{load(result_path)}')
             response = load(result_path)
@@ -78,7 +79,7 @@ def main():
         result = run('create_scene')
         scene_path = Path(result['scene_path'])
         assert len(str(scene_path)) > 260
-        scene = load(scene_path)
+        scene = jobs.read_managed_scene(scene_path)
         mesh = next(item for item in scene['assets'] if item['kind'] == 'mesh')
         asset_id = mesh['id']
         old_artifact = scene_path.parent / mesh['artifacts'][0]['path']
@@ -91,10 +92,10 @@ def main():
         scene['edit_overlay'] = 'edits/автор.json'
         # Deliberately exercise compatibility loading of pre-fix Windows sources.
         mesh['source'] = mesh['source'].replace('/', '\\')
-        save(scene_path, scene)
+        jobs.write_managed_scene(scene_path, scene)
         result = run('prepare_scene', scene_path=str(scene_path))
         result = run('rebuild_asset', scene_path=str(scene_path), asset_id=asset_id)
-        rebuilt = load(scene_path)
+        rebuilt = jobs.read_managed_scene(scene_path)
         assert next(item for item in rebuilt['assets'] if item['id'] == asset_id)['source'].find('\\') == -1
         assert digest(old_artifact) == old_digest
         data = bytearray(binary)
@@ -104,7 +105,7 @@ def main():
         updated_model['accessors'][0]['max'] = [2, 1, 0]
         save(model, updated_model)
         result = run('reimport_asset', scene_path=str(scene_path), asset_id=asset_id, source=str(model))
-        reimported = load(scene_path)
+        reimported = jobs.read_managed_scene(scene_path)
         mesh = next(item for item in reimported['assets'] if item['id'] == asset_id)
         assert digest(scene_path.parent / mesh['artifacts'][0]['path']) != old_digest
         assert digest(old_artifact) == old_digest and digest(overlay) == overlay_digest

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "name": "bistro",
+  "scene": "assets/scenes/bistro.scene.json",
+  "include": [
+    "assets/render_graphs/main.rendergraph.json",
+    "assets/fonts/UbuntuMono-cooked.fontcfg",
+    "assets/fonts/UbuntuMono-bitmap.fontcfg",
+    "assets/fonts/UbuntuMono21px.fnt.vkf",
+    "assets/textures/UbuntuMono21px_0.png",
+    "assets/fonts/NotoSansCJK.fontcfg"
+  ]
+}

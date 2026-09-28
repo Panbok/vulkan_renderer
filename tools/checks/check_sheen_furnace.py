@@ -4,7 +4,7 @@
 Alternating rows also have clearcoat; six columns span sheen roughness.
 
 Prepare after ./build_release.sh:
-  ./build_release/tools/vkr_mesh_cooker --input tests/fixtures/rendering/sheen_furnace.gltf --output tests/fixtures/rendering/sheen_furnace.vkb
+  ./build_release/tools/bakery/vkr_bakery cook tests/fixtures/rendering/sheen_furnace.gltf
 Capture tools/cases/local/sheen_furnace_local.case.json with
   tools/profiles/local-brdf-display-validation.json
 Then: python3 tools/checks/check_sheen_furnace.py <snapshot-directory>

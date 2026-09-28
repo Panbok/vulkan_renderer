@@ -14,14 +14,14 @@ import subprocess
 fixture = Path(__file__).resolve().parent
 root = fixture.parents[3]
 source = fixture / "local_shadow_transmission_matrix.gltf"
-tool_dir = root / "build_release/tools"
+bakery = root / "build_release/tools/bakery/vkr_bakery"
 subprocess.run(
-    [str(tool_dir / "vkr_vkt_packer"), "--input-dir", str(fixture),
+    [str(bakery), "tool", "texture", "--input-dir", str(fixture),
      "--texture-class", "data-mask", "--strict", "--force"],
     cwd=root, check=True,
 )
 subprocess.run(
-    [str(tool_dir / "vkr_mesh_cooker"), "--input", str(source.relative_to(root)),
+    [str(bakery), "tool", "mesh", "--input", str(source.relative_to(root)),
      "--output", str(source.with_suffix(".vkb").relative_to(root))],
     cwd=root, check=True,
 )

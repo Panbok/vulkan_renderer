@@ -3,8 +3,10 @@
 #include "container_test_allocator.h"
 
 #include "containers/str.h"
+#include "core/vkr_hash.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
@@ -673,6 +675,128 @@ static void test_file_allocation_failures(void) {
   printf("  test_file_allocation_failures PASSED\n");
 }
 
+/* A two-entry archive written by the `.vkpak` layout in filesystem/vkr_vfs.h:
+ * both identities share one chunk. Mounted, paths below the content root read
+ * through every read API; a corrupted index or catalog order is rejected. */
+vkr_internal void test_vfs_pack_mount(void) {
+  printf("  Running test_vfs_pack_mount...\n");
+  static const char text[] = "line one\nline two\n";
+  static const char *const identities[] = {"assets/vfs/a.txt",
+                                           "assets/vfs/b.txt"};
+  const uint64_t chunk_offset = VKR_PACK_ALIGNMENT * 2u;
+  const uint64_t text_size = sizeof(text) - 1u;
+  uint8_t image[1024] = {0};
+
+  VkrPackCatalogHeader catalog_header = {.entry_count = 2u};
+  VkrPackEntry entries[2] = {
+      {.identity_offset = 0u, .identity_length = 16u, .chunk = 0u},
+      {.identity_offset = 16u, .identity_length = 16u, .chunk = 0u},
+  };
+  const uint64_t catalog_offset = chunk_offset + VKR_PACK_ALIGNMENT;
+  const uint64_t catalog_size = sizeof(catalog_header) + sizeof(entries) + 32u;
+  const uint64_t table_offset = catalog_offset + catalog_size;
+  VkrPackChunk chunk = {.offset = chunk_offset,
+                        .size = text_size,
+                        .alignment = VKR_PACK_ALIGNMENT};
+  vkr_sha256(text, text_size, chunk.sha256);
+
+  MemCopy(image + chunk_offset, text, text_size);
+  uint8_t *catalog = image + catalog_offset;
+  MemCopy(catalog, &catalog_header, sizeof(catalog_header));
+  MemCopy(catalog + sizeof(catalog_header), entries, sizeof(entries));
+  MemCopy(catalog + sizeof(catalog_header) + sizeof(entries), identities[0],
+          16u);
+  MemCopy(catalog + sizeof(catalog_header) + sizeof(entries) + 16u,
+          identities[1], 16u);
+  MemCopy(image + table_offset, &chunk, sizeof(chunk));
+  VkrPackHeader header = {
+      .version = VKR_PACK_VERSION,
+      .catalog_offset = catalog_offset,
+      .catalog_size = catalog_size,
+      .chunk_table_offset = table_offset,
+      .chunk_table_size = sizeof(chunk),
+      .total_size = table_offset + sizeof(chunk),
+  };
+  MemCopy(header.magic, VKR_PACK_MAGIC, 4u);
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  vkr_sha256_update(&hash, catalog, catalog_size);
+  vkr_sha256_update(&hash, image + table_offset, sizeof(chunk));
+  vkr_sha256_final(&hash, header.index_sha256);
+  MemCopy(image, &header, sizeof(header));
+  const uint64_t size = header.total_size;
+
+  char error[128];
+  assert(vkr_pack_validate(image, size, error, sizeof(error)));
+  /* A catalog byte the index hash no longer covers. */
+  image[catalog_offset + catalog_size - 1u] ^= 1u;
+  assert(!vkr_pack_validate(image, size, error, sizeof(error)));
+  image[catalog_offset + catalog_size - 1u] ^= 1u;
+  /* Identities out of order, even with a matching hash. */
+  VkrPackEntry swapped[2] = {entries[1], entries[0]};
+  uint8_t reordered[1024];
+  MemCopy(reordered, image, size);
+  MemCopy(reordered + catalog_offset + sizeof(catalog_header), swapped,
+          sizeof(swapped));
+  VkrPackHeader reordered_header = header;
+  vkr_sha256_init(&hash);
+  vkr_sha256_update(&hash, reordered + catalog_offset, catalog_size);
+  vkr_sha256_update(&hash, reordered + table_offset, sizeof(chunk));
+  vkr_sha256_final(&hash, reordered_header.index_sha256);
+  MemCopy(reordered, &reordered_header, sizeof(reordered_header));
+  assert(!vkr_pack_validate(reordered, size, error, sizeof(error)));
+
+  char pack_path[1024];
+  snprintf(pack_path, sizeof(pack_path), "%s%s/vfs_%u.vkpak",
+           PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, g_fs_test_counter++);
+  FILE *file = fopen(pack_path, "wb");
+  assert(file && fwrite(image, 1u, size, file) == size);
+  fclose(file);
+  assert(vkr_vfs_mount_pack(pack_path));
+
+  Arena *arena = arena_create(KB(64), KB(64));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  FilePath path =
+      file_path_create(identities[1], &allocator, FILE_PATH_TYPE_RELATIVE);
+  assert(file_exists(&path));
+  FileStats stats = {0};
+  assert(file_stats(&path, &stats) == FILE_ERROR_NONE &&
+         stats.size == text_size);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle handle = {0};
+  assert(file_open(&path, mode, &handle) == FILE_ERROR_NONE && handle.memory);
+  String8 line = {0};
+  assert(file_read_line(&handle, &allocator, NULL, 64u, &line) ==
+             FILE_ERROR_NONE &&
+         line.length == 9u && MemCompare(line.str, "line one\n", 9u) == 0);
+  uint8_t *rest = NULL;
+  uint64_t rest_size = 0u;
+  assert(file_read_all(&handle, &allocator, &rest, &rest_size) ==
+             FILE_ERROR_NONE &&
+         rest_size == 9u && MemCompare(rest, "line two\n", 9u) == 0);
+  uint64_t written = 0u;
+  assert(file_write(&handle, 1u, (const uint8_t *)"x", &written) ==
+         FILE_ERROR_INVALID_HANDLE);
+  file_close(&handle);
+  FILE *stream = file_fopen((const char *)path.path.str, "rb");
+  char streamed[32] = {0};
+  assert(stream && fread(streamed, 1u, sizeof(streamed), stream) == text_size &&
+         MemCompare(streamed, text, text_size) == 0);
+  fclose(stream);
+  /* An identity the archive lacks falls through to the disk. */
+  FilePath absent =
+      file_path_create("assets/vfs/c.txt", &allocator, FILE_PATH_TYPE_RELATIVE);
+  assert(!file_exists(&absent));
+
+  vkr_vfs_unmount_all();
+  assert(!file_exists(&path));
+  arena_destroy(arena);
+  fs_test_remove_file(pack_path);
+  printf("  test_vfs_pack_mount PASSED\n");
+}
+
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
   g_fs_test_counter = 0;
@@ -690,6 +814,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_portable_publication_primitives();
   test_file_io_failures_release_owned_outputs();
   test_file_allocation_failures();
+  test_vfs_pack_mount();
 
   printf("--- Filesystem Tests Completed ---\n");
   return true;

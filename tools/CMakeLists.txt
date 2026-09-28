@@ -9,23 +9,27 @@ if(APPLE)
     enable_language(OBJC)
 endif()
 
-# Offline generators for checked-in, shared immutable BRDF coefficients. The
-# editor's Bakery invokes these explicitly; configuring or building a renderer
+# Every cooker below is a static library holding its original command line as
+# one entry function; tools/bakery links them into vkr_bakery, which runs them
+# as `vkr_bakery tool <name>` and through its producers.
+#
+# Offline generators for checked-in, shared immutable BRDF coefficients. Only
+# the explicit `table` producer runs them; configuring or building a renderer
 # must never rewrite its static table sources.
-add_executable(vkr_dfg_cooker vkr_dfg_cooker.cpp)
+add_library(vkr_dfg_cooker STATIC vkr_dfg_cooker.cpp)
 target_compile_features(vkr_dfg_cooker PRIVATE cxx_std_17)
 vkr_configure_table_cooker_target(vkr_dfg_cooker)
 target_link_libraries(vkr_dfg_cooker PRIVATE vkr_foundation)
 target_include_directories(vkr_dfg_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
 # Charlie energy and rectangle fits share one immutable payload in both backends.
-add_executable(vkr_sheen_cooker vkr_sheen_cooker.cpp)
+add_library(vkr_sheen_cooker STATIC vkr_sheen_cooker.cpp)
 target_compile_features(vkr_sheen_cooker PRIVATE cxx_std_17)
 vkr_configure_table_cooker_target(vkr_sheen_cooker)
 target_link_libraries(vkr_sheen_cooker PRIVATE vkr_foundation)
 target_include_directories(vkr_sheen_cooker PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src")
 
-add_executable(vkr_anisotropy_cooker vkr_anisotropy_cooker.cpp
+add_library(vkr_anisotropy_cooker STATIC vkr_anisotropy_cooker.cpp
     "${CMAKE_SOURCE_DIR}/renderer/src/vkr_ltc_lut.c")
 target_compile_features(vkr_anisotropy_cooker PRIVATE cxx_std_17)
 vkr_configure_table_cooker_target(vkr_anisotropy_cooker)
@@ -149,10 +153,14 @@ target_link_libraries(vkr_vkt_cooking
         vkr_foundation
         vkr_image_decode
 )
+if(APPLE)
+    # AppleTextureEncoder (libate) encodes the "astc-fast" encoding.
+    target_link_libraries(vkr_vkt_cooking PRIVATE ate)
+endif()
 
 target_link_libraries(vkr_asset_cooking PRIVATE vkr_vkt_cooking)
 
-add_executable(vkr_vkt_packer
+add_library(vkr_vkt_packer STATIC
     vkr_vkt_packer_main.cpp
 )
 vkr_require_declared_c_functions(vkr_vkt_packer)
@@ -160,7 +168,7 @@ vkr_configure_cooker_target(vkr_vkt_packer)
 target_compile_features(vkr_vkt_packer PRIVATE cxx_std_17)
 target_link_libraries(vkr_vkt_packer PRIVATE vkr_vkt_cooking)
 
-add_executable(vkr_hdr_cube_packer vkr_hdr_cube_packer.cpp)
+add_library(vkr_hdr_cube_packer STATIC vkr_hdr_cube_packer.cpp)
 vkr_configure_cooker_target(vkr_hdr_cube_packer)
 target_compile_features(vkr_hdr_cube_packer PRIVATE cxx_std_17)
 target_include_directories(vkr_hdr_cube_packer PRIVATE ${Vulkan_INCLUDE_DIRS})
@@ -187,12 +195,12 @@ target_compile_features(vkr_bake_core PRIVATE cxx_std_17)
 target_include_directories(vkr_bake_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src" "${CMAKE_SOURCE_DIR}/vendor" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(vkr_bake_core PUBLIC vkr_asset_formats PRIVATE ktx vkr_image_decode)
-add_executable(vkr_diffuse_baker vkr_diffuse_baker.cpp)
+add_library(vkr_diffuse_baker STATIC vkr_diffuse_baker.cpp)
 vkr_configure_cooker_target(vkr_diffuse_baker)
 target_compile_features(vkr_diffuse_baker PRIVATE cxx_std_17)
 target_link_libraries(vkr_diffuse_baker PRIVATE vkr_bake_core)
 
-add_executable(vkr_mesh_cooker
+add_library(vkr_mesh_cooker STATIC
     vkr_mesh_cooker.c
 )
 vkr_require_declared_c_functions(vkr_mesh_cooker)
@@ -210,12 +218,12 @@ target_include_directories(vkr_collision_cooking PUBLIC "${CMAKE_CURRENT_SOURCE_
     PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
 target_compile_features(vkr_collision_cooking PRIVATE cxx_std_17)
 target_link_libraries(vkr_collision_cooking PUBLIC vkr_asset_cooking PRIVATE Jolt)
-add_executable(vkr_collision_cooker vkr_collision_cooker.c)
+add_library(vkr_collision_cooker STATIC vkr_collision_cooker.c)
 vkr_require_declared_c_functions(vkr_collision_cooker)
 vkr_configure_cooker_target(vkr_collision_cooker)
 target_link_libraries(vkr_collision_cooker PRIVATE vkr_collision_cooking)
 
-add_executable(vkr_animation_cooker vkr_animation_cooker.c)
+add_library(vkr_animation_cooker STATIC vkr_animation_cooker.c)
 vkr_require_declared_c_functions(vkr_animation_cooker)
 vkr_configure_cooker_target(vkr_animation_cooker)
 target_link_libraries(vkr_animation_cooker PRIVATE vkr_asset_cooking)
@@ -313,7 +321,7 @@ unset(VKR_TOOLS_BUILD_SHARED_LIBS_SAVED)
 
 vkr_configure_cooker_dependencies(msdf-atlas-gen msdfgen-core msdfgen-ext)
 
-add_executable(vkr_font_cooker
+add_library(vkr_font_cooker STATIC
     vkr_font_cooker.cpp
 )
 vkr_configure_cooker_target(vkr_font_cooker)
@@ -353,3 +361,7 @@ if(APPLE)
 endif()
 
 endif()
+
+# The build system itself; always present because renderer builds compile
+# their shader catalog through it.
+add_subdirectory(bakery)

@@ -21,6 +21,11 @@ bool8_t vkr_editor_projects_launcher(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects);
 /* A scene job, its activation or a Set primary swap is still in progress. */
 bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects);
+/** Background finalize progress for the Cmd `stats` root: whether a job
+ * runs and how many finished materials its (or the last) job applied. */
+void vkr_editor_projects_finalize_stats(const VkrEditorProjects *projects,
+                                        bool8_t *out_running,
+                                        uint32_t *out_applied);
 void vkr_editor_projects_update(VkrEditorProjects *projects,
                                 VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame);

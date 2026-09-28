@@ -39,10 +39,8 @@ for that restricted graph; repository wrappers enable these options again.
 `VKR_BUILD_RUNTIME=OFF` also removes the runtime when its consumers are disabled.
 
 The app and editor are separate executables using `vkr_runtime` and
-`vkr_sample_runtime`. Repository builds compile shaders and required cooker tools
-without running cooking. Explicit texture, font and mesh cooker wrappers build
-their tool in `build_release` before invoking it. `VKR_FONT_COOKER_BUILD_DIR`
-retains the font wrapper's custom-tree override. `build_test.sh` and
+`vkr_sample_runtime`. Repository builds compile `vkr_bakery` and run
+`vkr_bakery shaders` into `<build>/shaders`; they never cook assets. `build_test.sh` and
 `build_test.bat` build and run the CPU tester in `build_debug` by default.
 
 Set `VKR_DEBUG_SANITIZER` to `default`, `address`, `thread`, `memory`, `leak` or
@@ -77,11 +75,23 @@ Selecting app versus editor does not change it. The
 [build policy](ARCHITECTURE.md#build-policy) defines optimization and dependency
 configuration; these settings alone do not establish measured performance.
 
-Bakery owns mesh, font, texture, BRDF/table, reflection/probe and diffuse-volume
-jobs.
+[`vkr_bakery`](adr/077-asset-build-system.md) owns every cooked asset, table,
+shader catalog, project job and scene bake; the editor's Bakery panel drives it,
+and on macOS the editor keeps one `vkr_bakery serve` daemon for file watches.
 
-When artifact regeneration is required, run Bakery or invoke the explicit
-cooker wrapper. The main Bistro artifact includes its scene-specific light
+When artifact regeneration is required, run Bakery or `vkr_bakery` directly:
+
+```sh
+./build_release/tools/bakery/vkr_bakery cook assets/models/bistro.gltf
+./build_release/tools/bakery/vkr_bakery build assets/bakery.json
+./build_release/tools/bakery/vkr_bakery help
+```
+
+`vkr_bakery bundle assets/bundles/bistro.bundle.json --out <dir> --app
+build_release/app/vulkan_renderer --shaders build_release/shaders` writes a
+Bistro bundle (about 2.5 GiB) whose executable runs from any directory.
+
+Unchanged inputs hit the per-user cache instead of re-encoding. The main Bistro artifact includes its scene-specific light
 ranges; runtime mesh loading accepts `.vkb`, not source OBJ/glTF/GLB. Small
 tracked harness scenes use cooked fixtures under `tests/fixtures/rendering`.
 
@@ -101,26 +111,20 @@ their Release variants. Explicit toolchain and triplet settings take
 precedence. Use a fresh build directory when changing either setting.
 
 `build_run.sh` and `build_editor_run.sh` also launch their respective targets.
-The standalone animation cooker builds and writes an explicitly selected bank:
+`vkr_bakery` cooks an explicitly selected animation bank or static collision
+proxy, and `tool <name>` runs a cooker's own command line:
 
 ```sh
-./tools/cook_vkr_animations.sh --input /path/to/player.gltf --output /path/to/player.vka
-./build_release/tools/vkr_animation_cooker --inspect --input /path/to/player.vka --clip 0 --time 0.5
+B=./build_release/tools/bakery/vkr_bakery
+$B cook /path/to/player.gltf --producer animation --out /path/to/player.vka
+$B tool animation --inspect --input /path/to/player.vka --clip 0 --time 0.5
+$B cook /path/to/proxy.gltf --producer collision --recipe kind=hull --out /path/to/proxy.vkc
+$B tool collision --inspect --input /path/to/proxy.vkc
 ```
 
-The collision cooker writes one static proxy hull or triangle mesh:
-
-```sh
-./tools/cook_vkr_collisions.sh --input /path/to/proxy.gltf --output /path/to/proxy.vkc --kind hull
-./build_release/tools/vkr_collision_cooker --inspect --input /path/to/proxy.vkc
-```
-
-Use `--kind mesh` for Static/Kinematic triangle collision and `--node <index>`
-for a selected subtree in its local coordinates. Bakery exposes both recipes.
-On Windows, use `tools/cook_vkr_collisions.bat` with the same arguments.
+Use `kind=mesh` for Static/Kinematic triangle collision and `node=<index>` for
+a selected subtree in its local coordinates. Bakery exposes both recipes.
 [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) specifies format limits.
-
-On Windows, use `tools/cook_vkr_animations.bat` with the same arguments.
 Managed model import and Rebuild publish matching mesh and animation banks.
 Scene bindings evaluate per-wrapper poses and blend controllers for compute skinning; see
 [ADR-071](adr/071-animation-bank-and-reference-pose.md).
@@ -144,7 +148,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [006](adr/006-cpu-memory-allocators.md) | CPU allocation by lifetime | implemented |
 | [009](adr/009-frame-synchronization.md) | Separate submission and presentation completion | implemented |
 | [010](adr/010-ecs-scene-system.md) | ECS-owned scene state with glTF node identities and a retained render mirror | implemented |
-| [012](adr/012-texture-compression-pipeline.md) | KTX2/UASTC texture artifacts with capability-selected transcode | implemented |
+| [012](adr/012-texture-compression-pipeline.md) | KTX2/UASTC texture artifacts with capability-selected transcode; native ASTC 4x4 for workspace textures on Apple silicon, from the system encoder for editor-only textures | implemented |
 | [014](adr/014-offscreen-present-target.md) | Window and offscreen targets share frame submission | implemented |
 | [015](adr/015-metrics-module.md) | Bounded typed metrics and pinned snapshots | implemented |
 | [017](adr/017-prepared-specular-glossiness-lowering.md) | Prepare PBR materials before publication | implemented |
@@ -202,6 +206,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [074](adr/074-volumetric-cloud-layer.md) | One volumetric cloud layer: runtime-generated noise, half-resolution traced history, sun-projected shadows and aerial perspective at cloud depth | implemented |
 | [075](adr/075-editor-cmd-bar-and-evaluator.md) | Editor Cmd bar: typed commands with completion, an expression evaluator over scene and editor data, and `--exec` scripts with `[cmd]` stdout results | implemented |
 | [076](adr/076-project-object-model.md) | Typed descriptors, entities as ID plus components, the World beside primary and additive scenes with inherit-World singleton resolution and Set primary, World-only physics and animation settings, shared physics, structural undo, presets, registered component types, document-stable entity IDs, version 5 scene documents, prefab instances, Content folder browser, Outliner above Details, viewport documents | implemented |
+| [077](adr/077-asset-build-system.md) | One `vkr_bakery` program for cooked assets, tables, the shader catalog with Metal metallibs, managed project jobs, scene bakes and material previews, with one action cache, scheduler and event stream, the editor's `serve` daemon for shader and Content file watches, `.vkpak` bundles mounted under one content root, C script modules, deferred, preview and final texture tiers, a fast editor encode speed and progressive finalization in the editor; Windows paths and managed-project bundles pending | partial |
 
 ## Proposals
 
@@ -220,6 +225,7 @@ decisions before dependent implementation.
 | [Collision extensions and destructibles](proposals/entity-collision-and-physics.md) | Engine/UI research and remaining AVBD/destruction, deforming collision and active-ragdoll work; implemented contracts are in ADR-072. |
 | [Code-first entity behavior and visual authoring](proposals/entity-behavior-system.md) | ECS gameplay with prefab composition/lifecycle, simulation-owned actions/events, weapons, character/camera behavior, visual authoring, native reload and performance acceptance. |
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
+| [Asset build system](proposals/asset-build-system.md) | Remaining `vkr_bakery` scope after ADR-077: the daemon, bundles and scripts on Windows, managed-project bundles and shader hot reload. |
 | [Editor Projects](proposals/editor-projects.md) | Remaining Projects workflow, native-platform, inspection, retirement and frame-budget acceptance; implemented contracts are in ADR-069. |
 | [Portable path contract](proposals/portable-path-contract.md) | Remaining macOS, network-share and interactive scene-selection evidence gates; implemented contract is in ADR-070. |
 | [Lighting efficiency](proposals/lighting-efficiency.md) | Measured deferred-lighting and frame cost split and remaining ordered fixes: fewer passes in multi-pass chains, static and dynamic shadow atlas layers and half-precision BRDF terms. The material kernel split (ADR-062), Metal culling of only redrawn local faces (ADR-019), Metal compute-run encoders (ADR-025), in-face shadow taps, the local shadow mask pass, local contact shadows and the screen-sized shadow atlas (ADR-019) have shipped. |

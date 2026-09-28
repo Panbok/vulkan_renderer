@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-09
+updated: 2026-09-27
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -56,6 +56,17 @@ layout; the new field occupies former alignment padding before the camera, so
 case size alone cannot distinguish the formats. Version 11 records the requested
 `renderer.display_output`; readers migrate versions 2–10 to SDR. AUTO output
 enters the workload fingerprint; SDR preserves existing identities.
+
+A case may set `capture_session: "single"`: one child then takes every capture
+checkpoint in frame order instead of one child per checkpoint, and the
+checkpoints must request identical channels at increasing frames. A checkpoint
+may name `camera_mode` as a cubemap face of a cubemap case camera; the camera
+shows that face while rendering toward the checkpoint. Both enter the case
+digest. Capture-summary version 16 stores them; readers migrate versions 2–15
+with per-checkpoint sessions and no face overrides. The
+[reflection probe bake](077-asset-build-system.md) uses one session for its six
+faces: on Bistro at 64² it took 14.2 s against 83.7 s for six sessions, with
+five faces byte-identical and 18 binary16 components of `nx` one ULP apart.
 
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible

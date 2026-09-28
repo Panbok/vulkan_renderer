@@ -20,9 +20,23 @@ vkr_metal_packet_release_budgeted_resource(VkrMetalPacketRenderer *renderer,
 
 vkr_internal id<MTLLibrary>
 vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
-                                const char *path, NSString *name)
-    API_AVAILABLE(macos(26.0)) {
+                                const char *path, const char *metallib_path,
+                                NSString *name) API_AVAILABLE(macos(26.0)) {
   NSError *error = nil;
+  /* A catalog metallib is compiled offline from this same source by
+   * `vkr_bakery shaders`; failure to load it falls back to the source. */
+  if (metallib_path && metallib_path[0]) {
+    NSURL *url = [NSURL
+        fileURLWithPath:[NSString stringWithUTF8String:metallib_path]];
+    id<MTLLibrary> precompiled = [renderer->device newLibraryWithURL:url
+                                                               error:&error];
+    if (precompiled) {
+      precompiled.label = name;
+      return precompiled;
+    }
+    vkr_metal_packet_print_error("metallib_load", error);
+    error = nil;
+  }
   NSString *source =
       [NSString stringWithContentsOfFile:[NSString stringWithUTF8String:path]
                                 encoding:NSUTF8StringEncoding
@@ -1591,15 +1605,21 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
 
 vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     VkrMetalPacketRenderer *renderer, const char *slang_msl_path,
-    const char *fragment_msl_path) API_AVAILABLE(macos(26.0)) {
+    const char *slang_metallib_path, const char *fragment_msl_path,
+    const char *fragment_metallib_path) API_AVAILABLE(macos(26.0)) {
   if (!vkr_metal_packet_abi_validate_host()) {
     log_error("Metal packet host ABI does not match its durable manifest");
     return false_v;
   }
+  /* Startup shader cost is the baseline for precompiled libraries. */
+  const float64_t library_start = vkr_platform_get_absolute_time();
   id<MTLLibrary> slang = vkr_metal_packet_create_library(
-      renderer, slang_msl_path, @"VKR Metal packet Slang shaders");
+      renderer, slang_msl_path, slang_metallib_path,
+      @"VKR Metal packet Slang shaders");
   id<MTLLibrary> fragment = vkr_metal_packet_create_library(
-      renderer, fragment_msl_path, @"VKR Metal packet resource shaders");
+      renderer, fragment_msl_path, fragment_metallib_path,
+      @"VKR Metal packet resource shaders");
+  const float64_t library_end = vkr_platform_get_absolute_time();
   bool8_t created = false_v;
   if (!slang || !fragment)
     goto cleanup;
@@ -1628,6 +1648,13 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     goto cleanup;
   renderer->fragment_library = [fragment retain];
   created = true_v;
+  log_info("Metal shader startup: libraries %.1f ms (%s), pipelines %.1f ms "
+           "(archive %s)",
+           (library_end - library_start) * 1000.0,
+           slang_metallib_path && fragment_metallib_path ? "metallib"
+                                                         : "source",
+           (vkr_platform_get_absolute_time() - library_end) * 1000.0,
+           renderer->pipeline_archive_warm ? "warm" : "cold");
 
 cleanup:
   /* Every exit after library creation releases both libraries; the fragment
@@ -2978,8 +3005,9 @@ vkr_internal bool8_t vkr_metal_packet_create_device_resources(
          vkr_metal_packet_create_sheen_luts(renderer) &&
          vkr_metal_packet_create_anisotropy_luts(renderer) &&
          vkr_metal_packet_create_gtao_white_visibility(renderer) &&
-         vkr_metal_packet_create_pipelines(renderer, config->slang_msl_path,
-                                           config->fragment_msl_path) &&
+         vkr_metal_packet_create_pipelines(
+             renderer, config->slang_msl_path, config->slang_metallib_path,
+             config->fragment_msl_path, config->fragment_metallib_path) &&
          vkr_metal_packet_create_cloud_noise(renderer) &&
          vkr_rg_executor_registry_init(&renderer->executors,
                                        renderer->allocator) &&

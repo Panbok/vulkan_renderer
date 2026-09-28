@@ -49,362 +49,175 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef VKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV
-#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV                              \
-  "packet.editor_overlay.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV
-#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV                              \
-  "packet.editor_overlay.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV
-#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV                      \
-  "packet.editor_overlay_picking.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SELECTION_OUTLINE_VERT_SPV
-#define VKR_VULKAN_PACKET_SELECTION_OUTLINE_VERT_SPV                           \
-  "packet.selection_outline.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV
-#define VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV                           \
-  "packet.selection_outline.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_WORLD_VERT_SPV
+/* SPIR-V file names in the shader catalog (vkr_shader_catalog.h). The
+ * entry table lives in renderer/src/shaders/vulkan/slang/library.recipe.json
+ * and these names must match its "name" fields. */
 #define VKR_VULKAN_PACKET_WORLD_VERT_SPV "packet.world.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV
 #define VKR_VULKAN_PACKET_WORLD_TEMPORAL_VERT_SPV                              \
   "packet.world.temporal.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_WORLD_FRAG_SPV
 #define VKR_VULKAN_PACKET_WORLD_FRAG_SPV "packet.world.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV
 #define VKR_VULKAN_PACKET_WORLD_TEMPORAL_FRAG_SPV                              \
   "packet.world.temporal.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_PICKING_FRAG_SPV
 #define VKR_VULKAN_PACKET_PICKING_FRAG_SPV "packet.picking.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV
+#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_VERT_SPV                              \
+  "packet.editor_overlay.vert.spv"
+#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_FRAG_SPV                              \
+  "packet.editor_overlay.frag.spv"
+#define VKR_VULKAN_PACKET_EDITOR_OVERLAY_PICKING_FRAG_SPV                      \
+  "packet.editor_overlay_picking.frag.spv"
+#define VKR_VULKAN_PACKET_SELECTION_OUTLINE_VERT_SPV                           \
+  "packet.selection_outline.vert.spv"
+#define VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV                           \
+  "packet.selection_outline.frag.spv"
 #define VKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV "packet.fullscreen.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV
 #define VKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV "packet.fullscreen.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TEXT_VERT_SPV
 #define VKR_VULKAN_PACKET_TEXT_VERT_SPV "packet.text.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TEXT_FRAG_SPV
 #define VKR_VULKAN_PACKET_TEXT_FRAG_SPV "packet.text.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV
 #define VKR_VULKAN_PACKET_TEXT_PICKING_FRAG_SPV "packet.text_picking.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_UI_VERT_SPV
 #define VKR_VULKAN_PACKET_UI_VERT_SPV "packet.ui.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_UI_FRAG_SPV
 #define VKR_VULKAN_PACKET_UI_FRAG_SPV "packet.ui.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_IBL_PREFILTER_COMP_SPV "packet.ibl_prefilter.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_IBL_SH_COMP_SPV
-#define VKR_VULKAN_PACKET_IBL_SH_COMP_SPV "packet.ibl_sh.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV
 #define VKR_VULKAN_PACKET_ATMOSPHERE_TRANSMITTANCE_COMP_SPV                    \
   "packet.atmosphere_transmittance.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV
 #define VKR_VULKAN_PACKET_ATMOSPHERE_MULTIPLE_SCATTERING_COMP_SPV              \
   "packet.atmosphere_multiple_scattering.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV
 #define VKR_VULKAN_PACKET_ATMOSPHERE_SOURCE_COMP_SPV                           \
   "packet.atmosphere_source.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV
-#define VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV "packet.visibility.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV
-#define VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV "packet.visibility.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV
-#define VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV                           \
-  "packet.visibility_opaque.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV
-#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
-  "packet.local_shadow_transmission.vert.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV
-#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV                   \
-  "packet.local_shadow_transmission.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV
-#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV          \
-  "packet.local_shadow_transmission_overflow.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV
-#define VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV                           \
-  "packet.visibility_shadow.frag.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV
+#define VKR_VULKAN_PACKET_IBL_SH_COMP_SPV "packet.ibl_sh.comp.spv"
 #define VKR_VULKAN_PACKET_GPU_DRAW_CLASSIFY_COMP_SPV                           \
   "packet.gpu_draw_classify.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV
 #define VKR_VULKAN_PACKET_GPU_DRAW_PREFIX_COMP_SPV                             \
   "packet.gpu_draw_prefix.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV
 #define VKR_VULKAN_PACKET_GPU_DRAW_ENCODE_COMP_SPV                             \
   "packet.gpu_draw_encode.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV
-#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV                        \
-  "packet.gbuffer_resolve.none.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV
-#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV                    \
-  "packet.gbuffer_resolve.emissive.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV
-#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV                       \
-  "packet.gbuffer_resolve.debug.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV
-#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV              \
-  "packet.gbuffer_resolve.emissive_debug.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SKINNING_COMP_SPV
+#define VKR_VULKAN_PACKET_ANIMATION_PREVIEW_VERT_SPV                           \
+  "packet.animation_preview.vert.spv"
+#define VKR_VULKAN_PACKET_ANIMATION_PREVIEW_FRAG_SPV                           \
+  "packet.animation_preview.frag.spv"
 #define VKR_VULKAN_PACKET_SKINNING_COMP_SPV "packet.skinning.comp.spv"
-#endif
-
-#ifndef VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV
 #define VKR_VULKAN_PACKET_TEMPORAL_TRANSFORM_COMP_SPV                          \
   "packet.temporal_transform.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV
+#define VKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV "packet.fsr31.prepare.comp.spv"
+#define VKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV                             \
+  "packet.fsr31.stabilize.comp.spv"
+#define VKR_VULKAN_PACKET_VISIBILITY_VERT_SPV "packet.visibility.vert.spv"
+#define VKR_VULKAN_PACKET_VISIBILITY_FRAG_SPV "packet.visibility.frag.spv"
+#define VKR_VULKAN_PACKET_VISIBILITY_OPAQUE_FRAG_SPV                           \
+  "packet.visibility_opaque.frag.spv"
+#define VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV                           \
+  "packet.visibility_shadow.frag.spv"
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
+  "packet.local_shadow_transmission.vert.spv"
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_FRAG_SPV                   \
+  "packet.local_shadow_transmission.frag.spv"
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_OVERFLOW_FRAG_SPV          \
+  "packet.local_shadow_transmission_overflow.frag.spv"
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV                        \
+  "packet.gbuffer_resolve.none.comp.spv"
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_COMP_SPV                    \
+  "packet.gbuffer_resolve.emissive.comp.spv"
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV                       \
+  "packet.gbuffer_resolve.debug.comp.spv"
+#define VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV              \
+  "packet.gbuffer_resolve.emissive_debug.comp.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV                           \
   "packet.local_shadow_mask.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
   "packet.deferred_lighting_layered.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV
 #define VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV                            \
   "packet.temporal_resolve.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV
 #define VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV
-#define VKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV                              \
-  "packet.ssr_depth_base.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV
-#define VKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV "packet.ssr_depth_mip.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV
-#define VKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV "packet.ssr_trace.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV
-#define VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV "packet.ssr_temporal.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV
-#define VKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV "packet.ssr_composite.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV
-#define VKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV                             \
-  "packet.ssgi_depth_base.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV
-#define VKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV                              \
-  "packet.ssgi_depth_mip.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV
-#define VKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV "packet.ssgi_trace.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV
-#define VKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV "packet.ssgi_temporal.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV
-#define VKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV                              \
-  "packet.ssgi_composite.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV
-#define VKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV "packet.fog_apply.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV
-#define VKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV "packet.froxel_inject.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV
-#define VKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV                            \
-  "packet.froxel_integrate.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV
-#define VKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV "packet.froxel_apply.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SKY_VIEW_COMP_SPV
-#define VKR_VULKAN_PACKET_SKY_VIEW_COMP_SPV "packet.sky_view.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_AERIAL_PERSPECTIVE_COMP_SPV
-#define VKR_VULKAN_PACKET_AERIAL_PERSPECTIVE_COMP_SPV                          \
-  "packet.aerial_perspective.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_CLOUD_BASE_NOISE_COMP_SPV
-#define VKR_VULKAN_PACKET_CLOUD_BASE_NOISE_COMP_SPV                            \
-  "packet.cloud_base_noise.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_CLOUD_DETAIL_NOISE_COMP_SPV
-#define VKR_VULKAN_PACKET_CLOUD_DETAIL_NOISE_COMP_SPV                          \
-  "packet.cloud_detail_noise.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV
-#define VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV "packet.cloud_weather.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV
-#define VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV "packet.cloud_shadow.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV
-#define VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV "packet.cloud_trace.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV
+#define VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV "packet.sdsm_reduce.comp.spv"
 #define VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV                              \
   "packet.exposure_clear.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV
 #define VKR_VULKAN_PACKET_EXPOSURE_HISTOGRAM_COMP_SPV                          \
   "packet.exposure_histogram.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV
 #define VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV                            \
   "packet.exposure_resolve.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV
 #define VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV                           \
   "packet.subsurface_gather.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV
 #define VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV                        \
   "packet.motion_blur_tile_max.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV
 #define VKR_VULKAN_PACKET_MOTION_BLUR_NEIGHBOR_MAX_COMP_SPV                    \
   "packet.motion_blur_neighbor_max.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV
 #define VKR_VULKAN_PACKET_MOTION_BLUR_RECONSTRUCT_COMP_SPV                     \
   "packet.motion_blur_reconstruct.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DOF_COC_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_COC_COMP_SPV "packet.dof_coc.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_DILATE_HORIZONTAL_COMP_SPV                       \
   "packet.dof_dilate_horizontal.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_DILATE_VERTICAL_COMP_SPV                         \
   "packet.dof_dilate_vertical.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_PREFILTER_COMP_SPV "packet.dof_prefilter.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DOF_GATHER_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_GATHER_COMP_SPV "packet.dof_gather.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_DOF_COMPOSITE_COMP_SPV
 #define VKR_VULKAN_PACKET_DOF_COMPOSITE_COMP_SPV "packet.dof_composite.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_BLOOM_PREFILTER_COMP_SPV                             \
   "packet.bloom_prefilter.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV
 #define VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_TENT13_COMP_SPV                     \
   "packet.bloom_downsample_tent13.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV
 #define VKR_VULKAN_PACKET_BLOOM_DOWNSAMPLE_BOX4_COMP_SPV                       \
   "packet.bloom_downsample_box4.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV
 #define VKR_VULKAN_PACKET_BLOOM_UPSAMPLE_COMP_SPV                              \
   "packet.bloom_upsample.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV
-#define VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV "packet.bloom_combine.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV
 #define VKR_VULKAN_PACKET_GTAO_DEPTH_PREFILTER_COMP_SPV                        \
   "packet.gtao_depth_prefilter.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV
 #define VKR_VULKAN_PACKET_GTAO_DEPTH_MIP_COMP_SPV                              \
   "packet.gtao_depth_mip.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV
 #define VKR_VULKAN_PACKET_GTAO_EVALUATE_COMP_SPV "packet.gtao_evaluate.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV
 #define VKR_VULKAN_PACKET_GTAO_DENOISE_COMP_SPV "packet.gtao_denoise.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV
-#define VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV "packet.sdsm_reduce.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV
+#define VKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV                              \
+  "packet.ssr_depth_base.comp.spv"
+#define VKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV "packet.ssr_depth_mip.comp.spv"
+#define VKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV "packet.ssr_trace.comp.spv"
+#define VKR_VULKAN_PACKET_SSR_TEMPORAL_COMP_SPV "packet.ssr_temporal.comp.spv"
+#define VKR_VULKAN_PACKET_SSR_COMPOSITE_COMP_SPV "packet.ssr_composite.comp.spv"
+#define VKR_VULKAN_PACKET_SSGI_DEPTH_BASE_COMP_SPV                             \
+  "packet.ssgi_depth_base.comp.spv"
+#define VKR_VULKAN_PACKET_SSGI_DEPTH_MIP_COMP_SPV                              \
+  "packet.ssgi_depth_mip.comp.spv"
+#define VKR_VULKAN_PACKET_SSGI_TRACE_COMP_SPV "packet.ssgi_trace.comp.spv"
+#define VKR_VULKAN_PACKET_SSGI_TEMPORAL_COMP_SPV "packet.ssgi_temporal.comp.spv"
+#define VKR_VULKAN_PACKET_SSGI_COMPOSITE_COMP_SPV                              \
+  "packet.ssgi_composite.comp.spv"
+#define VKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV "packet.fog_apply.comp.spv"
+#define VKR_VULKAN_PACKET_FROXEL_INJECT_COMP_SPV "packet.froxel_inject.comp.spv"
+#define VKR_VULKAN_PACKET_FROXEL_INTEGRATE_COMP_SPV                            \
+  "packet.froxel_integrate.comp.spv"
+#define VKR_VULKAN_PACKET_FROXEL_APPLY_COMP_SPV "packet.froxel_apply.comp.spv"
+#define VKR_VULKAN_PACKET_SKY_VIEW_COMP_SPV "packet.sky_view.comp.spv"
+#define VKR_VULKAN_PACKET_AERIAL_PERSPECTIVE_COMP_SPV                          \
+  "packet.aerial_perspective.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_BASE_NOISE_COMP_SPV                            \
+  "packet.cloud_base_noise.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_DETAIL_NOISE_COMP_SPV                          \
+  "packet.cloud_detail_noise.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV "packet.cloud_weather.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV "packet.cloud_shadow.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV "packet.cloud_trace.comp.spv"
+#define VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV "packet.bloom_combine.comp.spv"
 #define VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV                             \
   "packet.picking_resolve.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_COMP_SPV                          \
   "packet.transmission_shade.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_COMP_SPV              \
   "packet.transmission_shade_partitioned.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_COMP_SPV               \
   "packet.transmission_shade_production.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PRODUCTION_TEMPORAL_COMP_SPV      \
   "packet.transmission_shade_production_temporal.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_COMP_SPV   \
   "packet.transmission_shade_partitioned_production.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_SHADE_PARTITIONED_PRODUCTION_TEMPORAL_COMP_SPV \
   "packet.transmission_shade_partitioned_production_temporal.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_CLEAR_COMP_SPV                  \
   "packet.transmission_compact_clear.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_COMP_SPV                        \
   "packet.transmission_compact.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_COMPACT_FINALIZE_COMP_SPV               \
   "packet.transmission_compact_finalize.comp.spv"
-#endif
-#ifndef VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV
 #define VKR_VULKAN_PACKET_TRANSMISSION_COVERAGE_COMP_SPV                       \
   "packet.transmission_coverage.comp.spv"
-#endif
 
 enum {
   /**

@@ -32,3 +32,22 @@ bool8_t vkr_mesh_cook_source_managed(
     uint32_t range_override_count, VkrAllocator *source_allocator,
     VkrAllocator *scratch_allocator, VkrMeshCookStats *out_stats,
     VkrRendererError *out_error);
+
+/* Names a file that receives every recorded source dependency, one path per
+ * line, after each later successful cook in this process: authored inputs
+ * and the generated materials and derived textures the cook wrote. vkr_bakery
+ * sets it once per tool process; NULL disables it. The string is borrowed
+ * until the process exits. */
+void vkr_mesh_cook_set_dependency_list(const char *path);
+
+/* Every later glTF cook in this process keeps material factors and names no
+ * textures (the "deferred" texture tier); a later cook adds them. */
+void vkr_mesh_cook_set_defer_textures(bool8_t defer);
+
+/** Later glTF cooks append a JSON line to `path` for each material whose
+ * textures are final once its file is written; NULL stops. Borrowed. */
+void vkr_mesh_cook_set_ready_log(const char *path);
+
+/** Later glTF cooks write these materials' files first, in this order.
+ * Borrowed; NULL restores material order. */
+void vkr_mesh_cook_set_material_priority(const String8 *names, uint32_t count);

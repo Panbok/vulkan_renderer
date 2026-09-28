@@ -1,6 +1,7 @@
 #include "vkr_renderer.h"
 #include "containers/str.h"
 #include "core/logger.h"
+#include "filesystem/vkr_vfs.h"
 #include "math/mat.h"
 #include "math/vec.h"
 #include "memory/vkr_dmemory_allocator.h"
@@ -15,9 +16,22 @@
 #include "vkr_renderer_internal.h"
 #include "vkr_renderer_metrics.h"
 #include "vkr_rg_json.h"
+#include "vkr_shader_catalog.h"
 #include "vulkan/vkr_vulkan_renderer.h"
 
 #include <math.h>
+
+/* The render graph ships in the build tree beside the renderer; a mounted
+ * bundle carries it as content instead (ADR-077). */
+vkr_internal const char *vkr_renderer_graph_path(char *storage,
+                                                 uint64_t capacity) {
+  if (!vkr_vfs_pack_count()) {
+    return VKR_RENDER_GRAPH_PATH;
+  }
+  snprintf(storage, capacity, "%sassets/render_graphs/main.rendergraph.json",
+           vkr_content_root());
+  return storage;
+}
 
 vkr_internal bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
@@ -341,16 +355,42 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   const uint64_t capture_bytes = backend_config->capture_max_batch_bytes > 0
                                      ? backend_config->capture_max_batch_bytes
                                      : MB(32);
+  /* Shaders come from the catalog `vkr_bakery shaders` publishes. A metallib
+   * is used only when its manifest proves it was built from the current MSL;
+   * otherwise the renderer compiles the MSL at startup. */
+  char slang_msl[4096];
+  char slang_metallib[4096];
+  char fragment_msl[4096];
+  char fragment_metallib[4096];
+  char archive_default[4096];
+  char graph_path[4096];
+  const bool8_t slang_precompiled = vkr_shader_catalog_metallib(
+      "library.slang", slang_metallib, slang_msl, sizeof(slang_msl));
+  const bool8_t fragment_precompiled = vkr_shader_catalog_metallib(
+      "library", fragment_metallib, fragment_msl, sizeof(fragment_msl));
+  if (!slang_msl[0] || !fragment_msl[0] ||
+      !vkr_shader_catalog_path("metal", "vkr_application.mtlarchive",
+                               archive_default, sizeof(archive_default))) {
+    log_error("Shader catalog paths do not fit");
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
+    return false_v;
+  }
+  const bool8_t use_metallib =
+      slang_precompiled && fragment_precompiled &&
+      !vkr_renderer_env_enabled("VKR_METAL_COMPILE_SOURCE");
   const char *pipeline_archive_path = getenv("VKR_PIPELINE_CACHE_PATH");
   if (!pipeline_archive_path || pipeline_archive_path[0] == '\0')
-    pipeline_archive_path = VKR_METAL_PACKET_ARCHIVE_PATH;
+    pipeline_archive_path = archive_default;
   VkrMetalPacketRendererConfig metal_config = {
       .ssr = ssr_config,
       .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
-      .graph_path = VKR_RENDER_GRAPH_PATH,
-      .slang_msl_path = VKR_METAL_PACKET_SLANG_MSL,
-      .fragment_msl_path = VKR_METAL_PACKET_FRAGMENT_MSL,
+      .graph_path = vkr_renderer_graph_path(graph_path, sizeof(graph_path)),
+      .slang_msl_path = slang_msl,
+      .fragment_msl_path = fragment_msl,
+      .slang_metallib_path = use_metallib ? slang_metallib : NULL,
+      .fragment_metallib_path = use_metallib ? fragment_metallib : NULL,
       .pipeline_archive_path = pipeline_archive_path,
       .target_kind =
           renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
@@ -406,11 +446,12 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   return true_v;
 #else
   (void)device_requirements;
+  char graph_path[4096];
   VkrVulkanRendererConfig config = {
       .ssr = ssr_config,
       .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
-      .graph_path = VKR_RENDER_GRAPH_PATH,
+      .graph_path = vkr_renderer_graph_path(graph_path, sizeof(graph_path)),
       .surface = surface ? *surface : (VkrNativeSurface){0},
       .display_output_mode = backend_config->display_output_mode,
       .target_kind = renderer->present_target.kind,

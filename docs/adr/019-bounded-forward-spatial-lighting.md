@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-26
+updated: 2026-09-27
 authority: adr
 ---
 
@@ -167,7 +167,8 @@ a one-mip saved source therefore projects SH from mip 0 and prefilter sampling
 falls back to mip 0. The runtime does not render six scene views for a saved
 probe. A probe with no cubemap continues to alias the ready scene environment.
 
-`tools/bake_reflection_probe.py` owns offline six-view capture. A bake records
+[`vkr_bakery bake probe`](../../tools/bakery/vkr_bakery_bake.c) owns offline
+six-view capture in one harness session. A bake records
 the source scene manifest, per-face capture and report digests, output digest,
 and one stable native provenance record in `<output>.bake.json`. It captures the
 six KTX cube faces in `+X, -X, +Y, -Y, +Z, -Z` order with local probes disabled,
@@ -178,12 +179,12 @@ one mip level. It has no runtime-generated source mips or orientation repair.
 Example bake and freshness check:
 
 ```sh
-python3 tools/bake_reflection_probe.py \
+./build_release/tools/bakery/vkr_bakery bake probe \
   --scene assets/scenes/example.json \
   --position 0 1 0 \
   --output assets/probes/example.vkt
 
-python3 tools/bake_reflection_probe.py \
+./build_release/tools/bakery/vkr_bakery bake probe \
   --output assets/probes/example.vkt --check
 ```
 
@@ -276,7 +277,7 @@ different memory or raster budget.
 
 [`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c)
 parses and owns direct source loading. [`vkr_world_resources.c`](../../runtime/src/renderer/systems/vkr_world_resources.c)
-requests the one-time probe bake. [`bake_reflection_probe.py`](../../tools/bake_reflection_probe.py)
+requests the one-time probe bake. [`vkr_bakery_bake.c`](../../tools/bakery/vkr_bakery_bake.c)
 and [`vkr_hdr_cube_packer.cpp`](../../tools/vkr_hdr_cube_packer.cpp) define the
 offline artifact and provenance contract. [`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
 [`vkr_standard_scene_runtime.c`](../../runtime/src/application/vkr_standard_scene_runtime.c),

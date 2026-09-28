@@ -2,7 +2,6 @@
 """Check append publication, overlay identity and failed-add preservation."""
 import argparse
 import copy
-import importlib.util
 from pathlib import Path
 import tempfile
 import uuid
@@ -12,10 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mesh-cooker', required=True)
     args = parser.parse_args()
-    source = Path(__file__).resolve().parents[1] / 'editor_project_jobs.py'
-    spec = importlib.util.spec_from_file_location('editor_project_jobs', source)
-    jobs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs)
+    import project_jobs as jobs
     with tempfile.TemporaryDirectory(prefix='vkr-add-entities-') as temporary:
         root = Path(temporary)
         workspace = root / '.vkreditor'

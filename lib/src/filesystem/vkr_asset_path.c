@@ -1,4 +1,5 @@
 #include "filesystem/vkr_asset_path.h"
+#include "filesystem/vkr_vfs.h"
 
 static bool8_t asset_path_separator(uint8_t value) {
 #if defined(PLATFORM_WINDOWS)
@@ -204,8 +205,9 @@ FilePath vkr_asset_path_file(VkrAllocator *allocator, String8 path) {
   if (asset_path_root(resolved, &native_root) && native_root) {
     return (FilePath){.path = resolved, .type = FILE_PATH_TYPE_ABSOLUTE};
   }
-  String8 root = string8_create_from_cstr((const uint8_t *)PROJECT_SOURCE_DIR,
-                                          strlen(PROJECT_SOURCE_DIR));
+  const char *content_root = vkr_content_root();
+  String8 root = string8_create_from_cstr((const uint8_t *)content_root,
+                                          strlen(content_root));
   if (root.length + resolved.length > 32767) {
     vkr_allocator_free(allocator, resolved.str, resolved.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);

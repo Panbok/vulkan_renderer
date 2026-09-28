@@ -1108,6 +1108,106 @@ vkr_internal bool8_t vkr_harness_capture_channel_known(const char *channel) {
   return vkr_harness_capture_channel_description(channel) != NULL;
 }
 
+vkr_internal bool8_t vkr_harness_cubemap_mode(const char *mode,
+                                              VkrHarnessCameraMode *out_mode) {
+  vkr_local_persist const char *const faces[] = {"cubemap_px", "cubemap_nx",
+                                                 "cubemap_py", "cubemap_ny",
+                                                 "cubemap_pz", "cubemap_nz"};
+  for (uint32_t i = 0u; i < ArrayCount(faces); ++i) {
+    if (string_equals(mode, faces[i])) {
+      *out_mode = (VkrHarnessCameraMode)(VKR_HARNESS_CAMERA_CUBEMAP_PX + i);
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* An optional per-checkpoint cubemap face; the case camera supplies the
+   position and 90 degree field of view it keeps. */
+vkr_internal bool8_t vkr_harness_parse_capture_camera(
+    const VkrHarnessJsonDocument *doc, int32_t item, VkrHarnessCapture *capture,
+    VkrHarnessError *error) {
+  int32_t token = -1;
+  if (!vkr_harness_manifest_field(doc, item, "camera_mode", false_v, &token,
+                                  error)) {
+    return false_v;
+  }
+  if (token < 0) {
+    return true_v;
+  }
+  char mode[32];
+  if (!vkr_harness_json_string(doc, token, mode, sizeof(mode),
+                               "$.captures[].camera_mode", error) ||
+      !vkr_harness_cubemap_mode(mode, &capture->camera_mode)) {
+    vkr_harness_error_set(error, "capture.camera_mode",
+                          "$.captures[].camera_mode",
+                          "Capture camera_mode must name a cubemap face");
+    return false_v;
+  }
+  capture->has_camera_mode = true_v;
+  return true_v;
+}
+
+/* `capture_session: "single"` renders every checkpoint in one child: frames
+   must increase and every checkpoint must request the same channels, so one
+   replay's render state and readback items serve them all. */
+vkr_internal bool8_t vkr_harness_parse_capture_session(
+    const VkrHarnessJsonDocument *doc, VkrHarnessCase *case_manifest,
+    VkrHarnessError *error) {
+  int32_t token = -1;
+  if (!vkr_harness_manifest_field(doc, 0, "capture_session", false_v, &token,
+                                  error)) {
+    return false_v;
+  }
+  bool8_t has_camera_mode = false_v;
+  for (uint32_t i = 0u; i < case_manifest->capture_count; ++i) {
+    has_camera_mode =
+        has_camera_mode || case_manifest->captures[i].has_camera_mode;
+  }
+  if (has_camera_mode &&
+      (case_manifest->camera.mode < VKR_HARNESS_CAMERA_CUBEMAP_PX ||
+       case_manifest->camera.mode > VKR_HARNESS_CAMERA_CUBEMAP_NZ)) {
+    vkr_harness_error_set(error, "capture.camera_mode", "$.captures",
+                          "Capture camera_mode requires a cubemap case camera");
+    return false_v;
+  }
+  if (token < 0) {
+    return true_v;
+  }
+  char session[32];
+  if (!vkr_harness_json_string(doc, token, session, sizeof(session),
+                               "$.capture_session", error)) {
+    return false_v;
+  }
+  if (string_equals(session, "per_checkpoint")) {
+    return true_v;
+  }
+  if (!string_equals(session, "single") || case_manifest->capture_count == 0u) {
+    vkr_harness_error_set(error, "capture.session", "$.capture_session",
+                          "capture_session must be per_checkpoint, or single "
+                          "with at least one capture");
+    return false_v;
+  }
+  const VkrHarnessCapture *first = &case_manifest->captures[0];
+  for (uint32_t i = 1u; i < case_manifest->capture_count; ++i) {
+    const VkrHarnessCapture *capture = &case_manifest->captures[i];
+    bool8_t same =
+        capture->at_frame > case_manifest->captures[i - 1u].at_frame &&
+        capture->channel_count == first->channel_count;
+    for (uint32_t c = 0u; same && c < capture->channel_count; ++c) {
+      same = string_equals(capture->channels[c], first->channels[c]);
+    }
+    if (!same) {
+      vkr_harness_error_set(error, "capture.session", "$.captures",
+                            "A single capture session needs increasing frames "
+                            "and identical channel lists");
+      return false_v;
+    }
+  }
+  case_manifest->single_capture_session = true_v;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_harness_parse_captures(
     const VkrHarnessJsonDocument *doc, int32_t token,
     VkrHarnessCase *case_manifest, VkrHarnessError *error) {
@@ -1121,7 +1221,7 @@ vkr_internal bool8_t vkr_harness_parse_captures(
     return false_v;
   }
   vkr_local_persist const char *const allowed[] = {"at_frame", "channels",
-                                                   "compare"};
+                                                   "compare", "camera_mode"};
   vkr_local_persist const char *const required[] = {"at_frame", "channels"};
   int32_t item = token + 1;
   while (item >= 0 &&
@@ -1156,6 +1256,9 @@ vkr_internal bool8_t vkr_harness_parse_captures(
       return false_v;
     }
     capture->at_frame = (uint32_t)frame;
+    if (!vkr_harness_parse_capture_camera(doc, item, capture, error)) {
+      return false_v;
+    }
     int32_t channel_token = channels + 1;
     while (channel_token >= 0 &&
            capture->channel_count < doc->tokens[channels].child_count) {
@@ -1532,6 +1635,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
                                                    "camera",
                                                    "renderer",
                                                    "captures",
+                                                   "capture_session",
                                                    "assertions",
                                                    "compare"};
   vkr_local_persist const char *const required[] = {
@@ -1624,6 +1728,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       !vkr_harness_manifest_field(&doc, 0, "captures", false_v, &captures,
                                   out_error) ||
       !vkr_harness_parse_captures(&doc, captures, out_case, out_error) ||
+      !vkr_harness_parse_capture_session(&doc, out_case, out_error) ||
       !vkr_harness_manifest_field(&doc, 0, "assertions", false_v, &assertions,
                                   out_error) ||
       !vkr_harness_parse_assertions(&doc, assertions, out_case, out_error)) {

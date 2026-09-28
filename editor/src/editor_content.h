@@ -1,5 +1,6 @@
 #pragma once
 #include "core/vkr_json_writer.h"
+#include "editor_bakery_service.h"
 #include "editor_project_store.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_ui_system.h"
@@ -61,6 +62,9 @@ typedef struct VkrEditorContentAction {
   /* A created object goes where drop_px meets the scene. */
   bool8_t dropped;
   VkrEntityId entity;
+  /* A REBUILD the browser queued because the asset's source changed on disk,
+     not a click; it runs only while the scene has no unsaved edits. */
+  bool8_t automatic;
 } VkrEditorContentAction;
 
 /** UI/render-thread owner. Freeable allocator and assets must outlive it.
@@ -85,6 +89,10 @@ struct VkrSampleUiFrame;
 void vkr_editor_content_sync_objects(
     VkrEditorContent *content, const struct VkrSampleUiFrame *frame,
     const char *const scene_ids[1 + VKR_SCENE_ADDITIVE_MAX]);
+/** Borrowed daemon that reports file changes under the open project; it must
+ * outlive the browser. NULL disables change tracking. */
+void vkr_editor_content_set_service(VkrEditorContent *content,
+                                    EditorBakeryService *service);
 /** Disable workspace mutations while retaining browsing and Reveal. */
 void vkr_editor_content_set_read_only(VkrEditorContent *content,
                                       bool8_t read_only);

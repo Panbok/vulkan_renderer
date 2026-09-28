@@ -1,0 +1,540 @@
+{
+  "library": "library.slang",
+  "profile": "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT+spvGroupNonUniformArithmetic",
+  "arguments": [
+    "-fvk-use-entrypoint-name",
+    "-fvk-use-scalar-layout",
+    "-O2"
+  ],
+  "entries": [
+    {
+      "name": "packet.world.vert",
+      "entry": "world_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.world.temporal.vert",
+      "entry": "world_temporal_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.world.frag",
+      "entry": "world_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.world.temporal.frag",
+      "entry": "world_temporal_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.picking.frag",
+      "entry": "picking_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.editor_overlay.vert",
+      "entry": "editor_overlay_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.editor_overlay.frag",
+      "entry": "editor_overlay_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.editor_overlay_picking.frag",
+      "entry": "editor_overlay_picking_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.selection_outline.vert",
+      "entry": "selection_outline_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.selection_outline.frag",
+      "entry": "selection_outline_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.fullscreen.vert",
+      "entry": "fullscreen_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.fullscreen.frag",
+      "entry": "fullscreen_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.text.vert",
+      "entry": "text_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.text.frag",
+      "entry": "text_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.text_picking.frag",
+      "entry": "text_picking_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.ui.vert",
+      "entry": "ui_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.ui.frag",
+      "entry": "ui_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.ibl_prefilter.comp",
+      "entry": "ibl_prefilter",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.atmosphere_transmittance.comp",
+      "entry": "atmosphere_transmittance_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.atmosphere_multiple_scattering.comp",
+      "entry": "atmosphere_multiple_scattering_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.atmosphere_source.comp",
+      "entry": "atmosphere_source_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ibl_sh.comp",
+      "entry": "ibl_sh",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_IBL_SH_ROOT=1"
+      ]
+    },
+    {
+      "name": "packet.gpu_draw_classify.comp",
+      "entry": "vk_gpu_draw_classify",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.gpu_draw_prefix.comp",
+      "entry": "vk_gpu_draw_prefix",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.gpu_draw_encode.comp",
+      "entry": "vk_gpu_draw_encode",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.animation_preview.vert",
+      "entry": "animation_preview_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.animation_preview.frag",
+      "entry": "animation_preview_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.skinning.comp",
+      "entry": "vk_skinning",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.temporal_transform.comp",
+      "entry": "vk_temporal_transform",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.fsr31.prepare.comp",
+      "entry": "vk_fsr31_prepare",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.fsr31.stabilize.comp",
+      "entry": "vk_fsr31_stabilize",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.visibility.vert",
+      "entry": "vk_visibility_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.visibility.frag",
+      "entry": "vk_visibility_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.visibility_opaque.frag",
+      "entry": "vk_visibility_opaque_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.visibility_shadow.frag",
+      "entry": "vk_visibility_shadow_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.local_shadow_transmission.vert",
+      "entry": "vk_local_shadow_transmission_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.local_shadow_transmission.frag",
+      "entry": "vk_local_shadow_transmission_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.local_shadow_transmission_overflow.frag",
+      "entry": "vk_local_shadow_transmission_overflow_fragment",
+      "stage": "fragment"
+    },
+    {
+      "name": "packet.gbuffer_resolve.none.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=0",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=0"
+      ]
+    },
+    {
+      "name": "packet.gbuffer_resolve.emissive.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=1",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=0"
+      ]
+    },
+    {
+      "name": "packet.gbuffer_resolve.debug.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=0",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=1"
+      ]
+    },
+    {
+      "name": "packet.gbuffer_resolve.emissive_debug.comp",
+      "entry": "vk_gbuffer_resolve",
+      "stage": "compute",
+      "arguments": [
+        "-DVKR_VULKAN_GBUFFER_WRITE_EMISSIVE=1",
+        "-DVKR_VULKAN_GBUFFER_WRITE_DEBUG=1"
+      ]
+    },
+    {
+      "name": "packet.local_shadow_mask.comp",
+      "entry": "vk_local_shadow_mask",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.deferred_lighting.comp",
+      "entry": "vk_deferred_lighting",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.deferred_lighting_layered.comp",
+      "entry": "vk_deferred_lighting_layered",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.temporal_resolve.comp",
+      "entry": "vk_temporal_resolve",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.hzb_build.comp",
+      "entry": "vk_hzb_build",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.sdsm_reduce.comp",
+      "entry": "vk_sdsm_reduce",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.exposure_clear.comp",
+      "entry": "vk_exposure_clear",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.exposure_histogram.comp",
+      "entry": "vk_exposure_histogram",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.exposure_resolve.comp",
+      "entry": "vk_exposure_resolve",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.subsurface_gather.comp",
+      "entry": "vk_subsurface_gather",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.motion_blur_tile_max.comp",
+      "entry": "vk_motion_blur_tile_max",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.motion_blur_neighbor_max.comp",
+      "entry": "vk_motion_blur_neighbor_max",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.motion_blur_reconstruct.comp",
+      "entry": "vk_motion_blur_reconstruct",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.dof_coc.comp",
+      "entry": "vk_dof_coc",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.dof_dilate_horizontal.comp",
+      "entry": "vk_dof_dilate_horizontal",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.dof_dilate_vertical.comp",
+      "entry": "vk_dof_dilate_vertical",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.dof_prefilter.comp",
+      "entry": "vk_dof_prefilter",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.dof_gather.comp",
+      "entry": "vk_dof_gather",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.dof_composite.comp",
+      "entry": "vk_dof_composite",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.bloom_prefilter.comp",
+      "entry": "vk_bloom_prefilter",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.bloom_downsample_tent13.comp",
+      "entry": "vk_bloom_downsample_tent13",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.bloom_downsample_box4.comp",
+      "entry": "vk_bloom_downsample_box4",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.bloom_upsample.comp",
+      "entry": "vk_bloom_upsample",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.gtao_depth_prefilter.comp",
+      "entry": "vk_gtao_depth_prefilter",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.gtao_depth_mip.comp",
+      "entry": "vk_gtao_depth_mip",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.gtao_evaluate.comp",
+      "entry": "vk_gtao_evaluate",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.gtao_denoise.comp",
+      "entry": "vk_gtao_denoise",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssr_depth_base.comp",
+      "entry": "vk_ssr_depth_base",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssr_depth_mip.comp",
+      "entry": "vk_ssr_depth_mip",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssr_trace.comp",
+      "entry": "vk_ssr_trace",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssr_temporal.comp",
+      "entry": "vk_ssr_temporal",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssr_composite.comp",
+      "entry": "vk_ssr_composite",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssgi_depth_base.comp",
+      "entry": "ssgi_depth_base_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssgi_depth_mip.comp",
+      "entry": "ssgi_depth_mip_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssgi_trace.comp",
+      "entry": "ssgi_trace_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssgi_temporal.comp",
+      "entry": "ssgi_temporal_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.ssgi_composite.comp",
+      "entry": "ssgi_composite_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.fog_apply.comp",
+      "entry": "fog_apply_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.froxel_inject.comp",
+      "entry": "froxel_inject_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.froxel_integrate.comp",
+      "entry": "froxel_integrate_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.froxel_apply.comp",
+      "entry": "froxel_apply_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.sky_view.comp",
+      "entry": "sky_view_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.aerial_perspective.comp",
+      "entry": "aerial_perspective_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.cloud_base_noise.comp",
+      "entry": "cloud_base_noise_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.cloud_detail_noise.comp",
+      "entry": "cloud_detail_noise_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.cloud_weather.comp",
+      "entry": "cloud_weather_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.cloud_shadow.comp",
+      "entry": "cloud_shadow_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.cloud_trace.comp",
+      "entry": "cloud_trace_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.bloom_combine.comp",
+      "entry": "vk_bloom_combine",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.picking_resolve.comp",
+      "entry": "vk_picking_resolve",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_shade.comp",
+      "entry": "vk_transmission_shade",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_shade_partitioned.comp",
+      "entry": "vk_transmission_shade_partitioned",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_shade_production.comp",
+      "entry": "vk_transmission_shade_production",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_shade_production_temporal.comp",
+      "entry": "vk_transmission_shade_production_temporal",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_shade_partitioned_production.comp",
+      "entry": "vk_transmission_shade_partitioned_production",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_shade_partitioned_production_temporal.comp",
+      "entry": "vk_transmission_shade_partitioned_production_temporal",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_compact_clear.comp",
+      "entry": "vk_transmission_compact_clear",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_compact.comp",
+      "entry": "vk_transmission_compact",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_compact_finalize.comp",
+      "entry": "vk_transmission_compact_finalize",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.transmission_coverage.comp",
+      "entry": "vk_transmission_coverage",
+      "stage": "compute"
+    }
+  ]
+}

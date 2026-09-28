@@ -7,7 +7,8 @@
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
-#include "platform/vkr_entry.h"
+#include "vkr_tool_entry.h"
+#include "vkr_vkt_packer.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -25,8 +26,51 @@ static void vkr_mesh_cooker_print_usage(const char *program) {
           "Usage: %s --input <mesh.obj|mesh.gltf|mesh.glb> "
           "--output <mesh.vkb> [--light-range <definition-name>=<meters>]... "
           "[--bundle-root <absolute-directory> --import-id <id> "
-          "[--generated-root <absolute-directory>]]\n",
+          "[--generated-root <absolute-directory>]] "
+          "[--texture-tier preview|deferred|final] "
+          "[--texture-encoding uastc|astc|astc-fast] "
+          "[--dependency-list <file>] [--ready-log <file>] "
+          "[--material-priority <file>]\n",
           program, program, program);
+}
+
+/* Reads one material name per line from `path` for
+   vkr_mesh_cook_set_material_priority. The names stay allocated until the
+   process exits, as the cook borrows them. */
+static bool8_t vkr_mesh_cooker_set_priority(const char *path) {
+  FILE *file = file_fopen(path, "rb");
+  if (!file) {
+    return false_v;
+  }
+  char line[512];
+  uint32_t count = 0u;
+  uint32_t capacity = 0u;
+  String8 *names = NULL;
+  while (fgets(line, sizeof(line), file)) {
+    size_t length = strcspn(line, "\r\n");
+    if (length == 0u) {
+      continue;
+    }
+    if (count == capacity) {
+      capacity = capacity ? capacity * 2u : 256u;
+      String8 *grown = realloc(names, sizeof(*names) * capacity);
+      if (!grown) {
+        fclose(file);
+        return false_v;
+      }
+      names = grown;
+    }
+    uint8_t *copy = malloc(length);
+    if (!copy) {
+      fclose(file);
+      return false_v;
+    }
+    MemCopy(copy, line, length);
+    names[count++] = (String8){.str = copy, .length = length};
+  }
+  fclose(file);
+  vkr_mesh_cook_set_material_priority(names, count);
+  return true_v;
 }
 
 static bool8_t vkr_mesh_cooker_float_array(VkrJsonReader object,
@@ -275,13 +319,15 @@ cleanup:
   return success;
 }
 
-VKR_MAIN(argc, argv) {
+VKR_TOOL_ENTRY(vkr_mesh_cooker_tool_main) {
   const char *input = NULL;
   const char *output = NULL;
   const char *bundle_root = NULL;
   const char *import_id = NULL;
   const char *generated_root = NULL;
   bool8_t inspect = false_v;
+  /* A cook also writes the --inspect report of its output here. */
+  const char *inspect_output = NULL;
   const char *source_patches = NULL;
   VkrSceneLightRangeOverride light_ranges[VKR_MESH_COOKER_MAX_LIGHT_RANGES] = {
       0};
@@ -289,6 +335,8 @@ VKR_MAIN(argc, argv) {
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--inspect") == 0) {
       inspect = true_v;
+    } else if (strcmp(argv[i], "--inspect-output") == 0 && i + 1 < argc) {
+      inspect_output = argv[++i];
     } else if (strcmp(argv[i], "--source-patches") == 0 && i + 1 < argc) {
       source_patches = argv[++i];
     } else if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
@@ -299,8 +347,41 @@ VKR_MAIN(argc, argv) {
       bundle_root = argv[++i];
     } else if (strcmp(argv[i], "--import-id") == 0 && i + 1 < argc) {
       import_id = argv[++i];
+    } else if (strcmp(argv[i], "--dependency-list") == 0 && i + 1 < argc) {
+      vkr_mesh_cook_set_dependency_list(argv[++i]);
+    } else if (strcmp(argv[i], "--ready-log") == 0 && i + 1 < argc) {
+      /* One JSON line per material whose textures are final (ADR-077). */
+      vkr_mesh_cook_set_ready_log(argv[++i]);
+    } else if (strcmp(argv[i], "--material-priority") == 0 && i + 1 < argc) {
+      /* Material names whose files are written first. */
+      const char *priority = argv[++i];
+      if (!vkr_mesh_cooker_set_priority(priority)) {
+        fprintf(stderr, "Cannot read --material-priority '%s'\n", priority);
+        return 2;
+      }
     } else if (strcmp(argv[i], "--generated-root") == 0 && i + 1 < argc) {
       generated_root = argv[++i];
+    } else if (strcmp(argv[i], "--texture-tier") == 0 && i + 1 < argc) {
+      /* Derived textures encode at the preview tier under their own names;
+         the deferred tier writes materials without textures. */
+      const char *tier = argv[++i];
+      if (strcmp(tier, "preview") != 0 && strcmp(tier, "final") != 0 &&
+          strcmp(tier, "deferred") != 0) {
+        fprintf(stderr, "--texture-tier expects preview, deferred or final\n");
+        return 2;
+      }
+      vkr_vkt_set_preview_tier(strcmp(tier, "preview") == 0);
+      vkr_mesh_cook_set_defer_textures(strcmp(tier, "deferred") == 0);
+    } else if (strcmp(argv[i], "--texture-encoding") == 0 && i + 1 < argc) {
+      /* Derived textures as UASTC, or native ASTC 4x4 under ".astc" or
+         ".astc-fast" names. */
+      VkrVktEncoding encoding = VKR_VKT_ENCODING_UASTC;
+      if (!vkr_vkt_parse_encoding(argv[++i], &encoding)) {
+        fprintf(stderr, "--texture-encoding expects uastc, astc or astc-fast "
+                        "(astc-fast needs Apple's system encoder)\n");
+        return 2;
+      }
+      vkr_vkt_set_encoding(encoding);
     } else if (strcmp(argv[i], "--light-range") == 0 && i + 1 < argc) {
       if (light_range_count == VKR_MESH_COOKER_MAX_LIGHT_RANGES) {
         vkr_mesh_cooker_print_usage(argv[0]);
@@ -383,6 +464,10 @@ VKR_MAIN(argc, argv) {
           : vkr_mesh_cook_source_with_light_ranges(
                 input_path, output_path, light_ranges, light_range_count,
                 &source_allocator, &scratch_allocator, &stats, &error);
+  if (success && !inspect && !source_patches && inspect_output) {
+    success = vkr_mesh_cooker_inspect(output, inspect_output, NULL,
+                                      &source_allocator, &scratch_allocator);
+  }
   if (success && !inspect && !source_patches) {
     printf("cooked=%llu decoded=%llu vertices=%u indices=%u ranges=%u "
            "output=%s\n",

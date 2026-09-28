@@ -9,14 +9,19 @@
 #include <cgltf.h>
 #include <math.h>
 #include <stb_image.h>
-#include <stb_image_write.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "containers/str.h"
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
+#include "core/vkr_hash.h"
 #include "core/vkr_json.h"
+#include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
 #include "math/mat.h"
+#include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_platform.h"
 #include "vkr_vkt_packer.h"
 
 #define VKR_FNV1A64_OFFSET_BASIS 0xcbf29ce484222325ull
@@ -468,29 +473,17 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_has_vkt_extension(String8 path) {
   return string8_equalsi(&suffix, &extension);
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
-    const VkrMeshLoaderGltfParseInfo *info, String8 source_texture,
-    float32_t alpha_cutoff, float32_t alpha_factor, String8 *out_texture) {
-  if (!info || !info->load_allocator || !info->scratch_allocator ||
-      !out_texture || !source_texture.str || source_texture.length == 0u) {
-    return false_v;
-  }
-  *out_texture = (String8){0};
-
-  VkrAllocatorScope scope = vkr_allocator_begin_scope(info->scratch_allocator);
-  if (!vkr_allocator_scope_is_valid(&scope)) {
-    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
-    return false_v;
-  }
-
-  bool8_t ok = false_v;
-  String8 source_path = vkr_mesh_loader_gltf_strip_query(source_texture);
+/* Names a cutout's source image file: its path, in the scratch allocator,
+   and the hash of its bytes. A packed texture cannot be a cutout source. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_cutout_file_source(
+    const VkrMeshLoaderGltfParseInfo *info, String8 source_path,
+    VkrVktSource *out_source, uint64_t *out_hash) {
   if (vkr_mesh_loader_gltf_has_vkt_extension(source_path)) {
     log_error("MeshLoader(glTF): cannot bake cutout variant from packed source "
               "'%.*s'; the source image is required",
               (int32_t)source_path.length, source_path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
-    goto cleanup;
+    return false_v;
   }
 
   String8 source_sidecar =
@@ -506,7 +499,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
         (int32_t)source_sidecar.length, source_sidecar.str,
         (int32_t)source_path.length, source_path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
-    goto cleanup;
+    return false_v;
   }
 
   String8 source_cstr =
@@ -514,7 +507,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
                                (int32_t)source_path.length, source_path.str);
   if (!source_cstr.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
-    goto cleanup;
+    return false_v;
   }
   FilePath source_file =
       file_path_create((const char *)source_cstr.str, info->scratch_allocator,
@@ -529,7 +522,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
     log_error("MeshLoader(glTF): failed to open cutout source '%.*s'",
               (int32_t)source_path.length, source_path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
-    goto cleanup;
+    return false_v;
   }
   uint8_t *source_bytes = NULL;
   uint64_t source_size = 0u;
@@ -540,6 +533,47 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
     log_error("MeshLoader(glTF): failed to read cutout source '%.*s'",
               (int32_t)source_path.length, source_path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
+    return false_v;
+  }
+
+  *out_hash = vkr_mesh_loader_gltf_hash_bytes(VKR_FNV1A64_OFFSET_BASIS,
+                                              source_bytes, source_size);
+  *out_source = (VkrVktSource){.path = (const char *)source_cstr.str};
+  return true_v;
+}
+
+/* Bakes the cutout variant of a base color texture: the image file of
+   `source_texture`, or `converted` pixels, which name the variant by their
+   hash. A converted source without pixels returns VKR_VKT_PACK_STALE unless
+   the variant is current. */
+vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_bake_cutout_variant(
+    const VkrMeshLoaderGltfParseInfo *info, String8 source_texture,
+    const VkrVktSource *converted, float32_t alpha_cutoff,
+    float32_t alpha_factor, String8 *out_texture) {
+  if (!info || !info->load_allocator || !info->scratch_allocator ||
+      !out_texture ||
+      (!converted && (!source_texture.str || source_texture.length == 0u))) {
+    return VKR_VKT_PACK_FAILED;
+  }
+  *out_texture = (String8){0};
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(info->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return VKR_VKT_PACK_FAILED;
+  }
+
+  VkrVktPackResult result = VKR_VKT_PACK_FAILED;
+  String8 source_path = converted
+                            ? string8_lit("converted base color")
+                            : vkr_mesh_loader_gltf_strip_query(source_texture);
+  VkrVktSource source = {0};
+  uint64_t source_hash = 0u;
+  if (converted) {
+    source = *converted;
+    source_hash = converted->hash;
+  } else if (!vkr_mesh_loader_gltf_cutout_file_source(info, source_path,
+                                                      &source, &source_hash)) {
     goto cleanup;
   }
 
@@ -547,23 +581,25 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
   uint32_t factor_bits = 0u;
   MemCopy(&cutoff_bits, &alpha_cutoff, sizeof(cutoff_bits));
   MemCopy(&factor_bits, &alpha_factor, sizeof(factor_bits));
-  const uint64_t source_hash = vkr_mesh_loader_gltf_hash_bytes(
-      VKR_FNV1A64_OFFSET_BASIS, source_bytes, source_size);
   String8 variant_path = string8_create_formatted(
       info->load_allocator,
       "assets/textures/generated/cutout_v%u/source_%016llx_cutoff_%08x_"
-      "factor_%08x.vkt",
+      "factor_%08x%s.vkt",
       VKR_VKT_CUTOUT_POLICY_VERSION, (unsigned long long)source_hash,
-      cutoff_bits, factor_bits);
+      cutoff_bits, factor_bits, vkr_vkt_variant_suffix());
   variant_path = vkr_mesh_loader_gltf_output_path(info, variant_path);
   if (!variant_path.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
 
-  if (!vkr_vkt_pack_cutout((const char *)source_cstr.str,
-                           (const char *)variant_path.str, alpha_cutoff,
-                           alpha_factor)) {
+  const VkrVktPackResult packed = vkr_vkt_pack_cutout(
+      &source, (const char *)variant_path.str, alpha_cutoff, alpha_factor);
+  if (packed == VKR_VKT_PACK_STALE) {
+    result = VKR_VKT_PACK_STALE;
+    goto cleanup;
+  }
+  if (packed != VKR_VKT_PACK_SUCCESS) {
     log_error("MeshLoader(glTF): cutout pack failed for '%.*s'",
               (int32_t)source_path.length, source_path.str);
     vkr_mesh_loader_gltf_set_error(info,
@@ -579,14 +615,14 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_bake_cutout_variant(
   }
   *out_texture = vkr_mesh_loader_gltf_append_query(
       info->load_allocator, variant_path, "cs=srgb&tc=color_srgb");
-  ok = out_texture->str ? true_v : false_v;
-  if (!ok) {
+  result = out_texture->str ? VKR_VKT_PACK_SUCCESS : VKR_VKT_PACK_FAILED;
+  if (result != VKR_VKT_PACK_SUCCESS) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
   }
 
 cleanup:
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
-  return ok;
+  return result;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_pair_view_is_compatible(
@@ -727,45 +763,52 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_pair_mappings_are_compatible(
   return true_v;
 }
 
-vkr_internal enum VkrVktPairResult
+/* Bakes the paired normal/roughness variant. Roughness comes from the image
+   file of `roughness_texture`, or from `converted_roughness` pixels, which
+   name the variant by their hash; a converted source without pixels returns
+   VKR_VKT_PACK_STALE unless the variant is current. */
+vkr_internal VkrVktPackResult
 vkr_mesh_loader_gltf_bake_normal_roughness_variant(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
     const cgltf_texture_view *normal_view,
     const cgltf_texture_view *roughness_view, String8 normal_texture,
-    String8 roughness_texture, float32_t normal_scale,
-    float32_t roughness_factor, String8 *out_normal_texture,
-    String8 *out_roughness_texture) {
+    String8 roughness_texture, const VkrVktSource *converted_roughness,
+    float32_t normal_scale, float32_t roughness_factor,
+    String8 *out_normal_texture, String8 *out_roughness_texture) {
   if (!info || !info->load_allocator || !info->scratch_allocator || !material ||
       !out_normal_texture || !out_roughness_texture) {
-    return VKR_VKT_PAIR_FAILED;
+    return VKR_VKT_PACK_FAILED;
   }
   *out_normal_texture = (String8){0};
   *out_roughness_texture = (String8){0};
   if (!normal_texture.str || normal_texture.length == 0u ||
       !vkr_mesh_loader_gltf_pair_mappings_are_compatible(material, normal_view,
                                                          roughness_view)) {
-    return VKR_VKT_PAIR_INCOMPATIBLE;
+    return VKR_VKT_PACK_INCOMPATIBLE;
   }
 
   VkrAllocatorScope scope = vkr_allocator_begin_scope(info->scratch_allocator);
   if (!vkr_allocator_scope_is_valid(&scope)) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
-    return VKR_VKT_PAIR_FAILED;
+    return VKR_VKT_PACK_FAILED;
   }
 
-  enum VkrVktPairResult result = VKR_VKT_PAIR_FAILED;
+  VkrVktPackResult result = VKR_VKT_PACK_FAILED;
   String8 normal_source = vkr_mesh_loader_gltf_strip_query(normal_texture);
+  const bool8_t has_roughness_file = !converted_roughness &&
+                                     roughness_texture.str &&
+                                     roughness_texture.length > 0u;
   const bool8_t has_roughness_source =
-      roughness_texture.str && roughness_texture.length > 0u;
+      converted_roughness != NULL || has_roughness_file;
   String8 roughness_source =
-      has_roughness_source ? vkr_mesh_loader_gltf_strip_query(roughness_texture)
-                           : (String8){0};
+      has_roughness_file ? vkr_mesh_loader_gltf_strip_query(roughness_texture)
+                         : (String8){0};
   if (!vkr_mesh_loader_gltf_pair_source_is_compatible(info, normal_texture,
                                                       "normal") ||
-      (has_roughness_source &&
+      (has_roughness_file &&
        !vkr_mesh_loader_gltf_pair_source_is_compatible(info, roughness_texture,
                                                        "metallic-roughness"))) {
-    result = VKR_VKT_PAIR_INCOMPATIBLE;
+    result = VKR_VKT_PACK_INCOMPATIBLE;
     goto cleanup;
   }
 
@@ -777,12 +820,12 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
                                          (int32_t)normal_source.length,
                                          normal_source.str);
   roughness_cstr =
-      has_roughness_source
+      has_roughness_file
           ? string8_create_formatted(info->scratch_allocator, "%.*s",
                                      (int32_t)roughness_source.length,
                                      roughness_source.str)
           : (String8){0};
-  if (!normal_cstr.str || (has_roughness_source && !roughness_cstr.str)) {
+  if (!normal_cstr.str || (has_roughness_file && !roughness_cstr.str)) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
@@ -796,9 +839,12 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
   const bool8_t hashes_ok =
       vkr_mesh_loader_gltf_hash_pair_source(info, normal_source, normal_cstr,
                                             &normal_hash) &&
-      (!has_roughness_source ||
+      (!has_roughness_file ||
        vkr_mesh_loader_gltf_hash_pair_source(info, roughness_source,
                                              roughness_cstr, &roughness_hash));
+  if (converted_roughness) {
+    roughness_hash = converted_roughness->hash;
+  }
   vkr_allocator_end_scope(&hash_scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
   if (!hashes_ok) {
     goto cleanup;
@@ -843,29 +889,38 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
+  /* A preview-tier or ASTC bake never takes a final UASTC bake's name. */
+  const char *tier = vkr_vkt_variant_suffix();
   String8 normal_variant = string8_create_formatted(
-      info->load_allocator, "%.*s_normal.vkt", (int32_t)normal_recipe.length,
-      normal_recipe.str);
+      info->load_allocator, "%.*s_normal%s.vkt", (int32_t)normal_recipe.length,
+      normal_recipe.str, tier);
   String8 roughness_variant =
-      string8_create_formatted(info->load_allocator, "%.*s_metalrough.vkt",
-                               (int32_t)recipe.length, recipe.str);
+      string8_create_formatted(info->load_allocator, "%.*s_metalrough%s.vkt",
+                               (int32_t)recipe.length, recipe.str, tier);
   if (!normal_variant.str || !roughness_variant.str) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
 
-  const int pack_result = vkr_vkt_pack_normal_roughness(
-      (const char *)normal_cstr.str,
-      has_roughness_source ? (const char *)roughness_cstr.str : NULL,
+  const VkrVktSource roughness =
+      converted_roughness
+          ? *converted_roughness
+          : (VkrVktSource){.path = (const char *)roughness_cstr.str};
+  const VkrVktPackResult pack_result = vkr_vkt_pack_normal_roughness(
+      (const char *)normal_cstr.str, has_roughness_source ? &roughness : NULL,
       (const char *)normal_variant.str, (const char *)roughness_variant.str,
       normal_scale, roughness_factor);
-  if (pack_result == VKR_VKT_PAIR_INCOMPATIBLE) {
-    log_warn("MeshLoader(glTF): skipping paired normal/roughness bake because "
-             "the source image dimensions differ");
-    result = VKR_VKT_PAIR_INCOMPATIBLE;
+  if (pack_result == VKR_VKT_PACK_STALE) {
+    result = VKR_VKT_PACK_STALE;
     goto cleanup;
   }
-  if (pack_result != VKR_VKT_PAIR_SUCCESS) {
+  if (pack_result == VKR_VKT_PACK_INCOMPATIBLE) {
+    log_warn("MeshLoader(glTF): skipping paired normal/roughness bake because "
+             "the source image dimensions differ");
+    result = VKR_VKT_PACK_INCOMPATIBLE;
+    goto cleanup;
+  }
+  if (pack_result != VKR_VKT_PACK_SUCCESS) {
     log_error("MeshLoader(glTF): paired normal/roughness pack failed for "
               "'%.*s'",
               (int32_t)normal_source.length, normal_source.str);
@@ -890,7 +945,7 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
   }
   *out_normal_texture = cooked_normal;
   *out_roughness_texture = cooked_roughness;
-  result = VKR_VKT_PAIR_SUCCESS;
+  result = VKR_VKT_PACK_SUCCESS;
 
 cleanup:
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
@@ -940,19 +995,17 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_material_has_non_unit_vertex_alpha(
   return true_v;
 }
 
+typedef struct VkrMeshLoaderGltfEncodedImage {
+  uint8_t *bytes;
+  uint64_t size;
+  String8 path;
+} VkrMeshLoaderGltfEncodedImage;
+
 typedef struct VkrMeshLoaderGltfDecodedImage {
   uint8_t *pixels;
   int32_t width;
   int32_t height;
 } VkrMeshLoaderGltfDecodedImage;
-
-typedef struct VkrMeshLoaderGltfPngBuffer {
-  VkrAllocator *allocator;
-  uint8_t *data;
-  uint64_t count;
-  uint64_t capacity;
-  bool8_t failed;
-} VkrMeshLoaderGltfPngBuffer;
 
 typedef struct VkrMeshLoaderGltfPreparedSpecGloss {
   Vec4 base_color_factor;
@@ -962,6 +1015,32 @@ typedef struct VkrMeshLoaderGltfPreparedSpecGloss {
   String8 base_color_texture;
   String8 metallic_roughness_texture;
 } VkrMeshLoaderGltfPreparedSpecGloss;
+
+/* A spec-gloss material converted to metallic-roughness, with factors.
+   `textured` is false when the material has no textures to convert, and a
+   uniform image becomes a factor instead. A repository cook publishes the
+   images as PNGs (`base_path`, `metal_rough_path`), which the runtime reads
+   as sources. A managed cook packs them itself, from the pixels it keeps
+   (`base_pixels`, `metal_rough_pixels`, in the load allocator), named by
+   their content hashes; after a memo hit the pixels stay null until a pack
+   finds its output stale. */
+typedef struct VkrMeshLoaderGltfConvertedSpecGloss {
+  bool8_t textured;
+  bool8_t base_uniform;
+  bool8_t metal_rough_uniform;
+  String8 base_path;
+  String8 metal_rough_path;
+  int32_t width;
+  int32_t height;
+  uint64_t base_hash;
+  uint64_t metal_rough_hash;
+  uint8_t *base_pixels;
+  uint8_t *metal_rough_pixels;
+  Vec4 base_color_factor;
+  float32_t metallic_factor;
+  float32_t roughness_factor;
+  Vec3 dielectric_specular_factor;
+} VkrMeshLoaderGltfConvertedSpecGloss;
 
 vkr_internal void vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
     const VkrMeshLoaderGltfParseInfo *info, String8 base_path,
@@ -985,57 +1064,18 @@ vkr_internal void vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
       info->load_allocator, metal_rough_path, "tc=data_mask");
 }
 
-vkr_internal void vkr_mesh_loader_gltf_png_write(void *context, void *data,
-                                                 int32_t size) {
-  VkrMeshLoaderGltfPngBuffer *buffer = (VkrMeshLoaderGltfPngBuffer *)context;
-  if (!buffer || !data || size <= 0 || buffer->failed) {
-    return;
-  }
-
-  const uint64_t required = buffer->count + (uint64_t)size;
-  if (required > buffer->capacity) {
-    uint64_t capacity = buffer->capacity > 0 ? buffer->capacity : KB(64);
-    while (capacity < required) {
-      if (capacity > UINT64_MAX / 2u) {
-        buffer->failed = true_v;
-        return;
-      }
-      capacity *= 2u;
-    }
-    uint8_t *grown = (uint8_t *)vkr_allocator_realloc(
-        buffer->allocator, buffer->data, buffer->capacity, capacity,
-        VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    if (!grown) {
-      buffer->failed = true_v;
-      return;
-    }
-    buffer->data = grown;
-    buffer->capacity = capacity;
-  }
-
-  MemCopy(buffer->data + buffer->count, data, (uint64_t)size);
-  buffer->count = required;
-}
-
-vkr_internal bool8_t vkr_mesh_loader_gltf_write_png_atomic(
+/* Publishes `bytes` at `output_path` through a temporary file. Two
+   materials that convert to identical pixels publish one path, possibly from
+   two workers at once. Encoding runs unlocked; publication is serialized, and
+   the second publisher finds the file present. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_publish_bytes(
     const VkrMeshLoaderGltfParseInfo *info, String8 output_path,
-    const uint8_t *pixels, int32_t width, int32_t height) {
-  if (!info || !info->scratch_allocator || !output_path.str || !pixels ||
-      width <= 0 || height <= 0) {
-    return false_v;
+    const uint8_t *bytes, uint64_t size, bool8_t *out_created) {
+  vkr_local_persist VkrAtomicBool publish_lock = false_v;
+  while (vkr_atomic_bool_exchange(&publish_lock, true_v,
+                                  VKR_MEMORY_ORDER_ACQUIRE)) {
+    vkr_platform_sleep(0u);
   }
-
-  VkrMeshLoaderGltfPngBuffer png = {
-      .allocator = info->scratch_allocator,
-  };
-  if (!stbi_write_png_to_func(vkr_mesh_loader_gltf_png_write, &png, width,
-                              height, 4, pixels, width * 4) ||
-      png.failed || !png.data || png.count == 0) {
-    log_error("MeshLoader(glTF): failed to encode prepared texture '%.*s'",
-              (int32_t)output_path.length, output_path.str);
-    return false_v;
-  }
-
   String8 temp_path =
       string8_create_formatted(info->scratch_allocator, "%.*s.tmp",
                                (int32_t)output_path.length, output_path.str);
@@ -1049,6 +1089,11 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_png_atomic(
                        vkr_mesh_loader_gltf_path_is_absolute(output_path)
                            ? FILE_PATH_TYPE_ABSOLUTE
                            : FILE_PATH_TYPE_RELATIVE);
+  *out_created = false_v;
+  if (file_exists(&output)) {
+    vkr_atomic_bool_store(&publish_lock, false_v, VKR_MEMORY_ORDER_RELEASE);
+    return true_v;
+  }
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_WRITE);
   bitset8_set(&mode, FILE_MODE_TRUNCATE);
@@ -1059,18 +1104,47 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_png_atomic(
   const FileError open_error = file_open(&temp, mode, &file);
   const bool8_t write_ok =
       open_error == FILE_ERROR_NONE &&
-      file_write(&file, png.count, png.data, &written) == FILE_ERROR_NONE &&
-      written == png.count && file_sync(&file) == FILE_ERROR_NONE;
+      file_write(&file, size, bytes, &written) == FILE_ERROR_NONE &&
+      written == size && file_sync(&file) == FILE_ERROR_NONE;
   if (file.handle) {
     file_close(&file);
   }
-  if (!write_ok || file_rename(&temp, &output, true_v) != FILE_ERROR_NONE) {
+  const bool8_t published =
+      write_ok && file_rename(&temp, &output, true_v) == FILE_ERROR_NONE;
+  *out_created = published;
+  if (!published) {
     (void)file_remove(&temp);
-    log_error("MeshLoader(glTF): failed to publish prepared texture '%.*s'",
+  }
+  vkr_atomic_bool_store(&publish_lock, false_v, VKR_MEMORY_ORDER_RELEASE);
+  if (!published) {
+    log_error("MeshLoader(glTF): failed to publish '%.*s'",
               (int32_t)output_path.length, output_path.str);
     return false_v;
   }
   return true_v;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_gltf_write_png_atomic(
+    const VkrMeshLoaderGltfParseInfo *info, String8 output_path,
+    const uint8_t *pixels, int32_t width, int32_t height,
+    bool8_t *out_created) {
+  if (!info || !info->scratch_allocator || !output_path.str || !pixels ||
+      width <= 0 || height <= 0) {
+    return false_v;
+  }
+
+  size_t png_size = 0u;
+  void *png = vkr_vkt_encode_png_rgba8(pixels, width, height, &png_size);
+  if (!png || png_size == 0u) {
+    vkr_vkt_free_png(png);
+    log_error("MeshLoader(glTF): failed to encode prepared texture '%.*s'",
+              (int32_t)output_path.length, output_path.str);
+    return false_v;
+  }
+  const bool8_t published = vkr_mesh_loader_gltf_publish_bytes(
+      info, output_path, png, png_size, out_created);
+  vkr_vkt_free_png(png);
+  return published;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_pixels_are_uniform(
@@ -1105,12 +1179,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_publish_content_texture(
   if (vkr_mesh_loader_gltf_path_exists(info->scratch_allocator, path)) {
     return true_v;
   }
-  if (!vkr_mesh_loader_gltf_write_png_atomic(info, path, pixels, width,
-                                             height)) {
-    return false_v;
-  }
-  *out_created = true_v;
-  return true_v;
+  return vkr_mesh_loader_gltf_write_png_atomic(info, path, pixels, width,
+                                               height, out_created);
 }
 
 vkr_internal void vkr_mesh_loader_gltf_remove_content_texture(
@@ -1131,13 +1201,15 @@ vkr_internal void vkr_mesh_loader_gltf_remove_content_texture(
   }
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_decode_texture_view(
+/* Reads the encoded source image of a view into the scratch allocator.
+   Leaves `out_encoded` empty for a view without a texture. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_read_texture_view(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_texture_view *view,
-    VkrMeshLoaderGltfDecodedImage *out_image) {
-  if (!info || !out_image) {
+    VkrMeshLoaderGltfEncodedImage *out_encoded) {
+  if (!info || !out_encoded) {
     return false_v;
   }
-  *out_image = (VkrMeshLoaderGltfDecodedImage){0};
+  *out_encoded = (VkrMeshLoaderGltfEncodedImage){0};
   if (!view || !view->texture || !view->texture->image) {
     return true_v;
   }
@@ -1197,15 +1269,33 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_decode_texture_view(
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
     return false_v;
   }
+  *out_encoded = (VkrMeshLoaderGltfEncodedImage){
+      .bytes = encoded,
+      .size = encoded_size,
+      .path = existing_path,
+  };
+  return true_v;
+}
+
+/* Decodes a source image read by vkr_mesh_loader_gltf_read_texture_view to
+   RGBA8. An empty source leaves `out_image` empty. */
+vkr_internal bool8_t
+vkr_mesh_loader_gltf_decode_image(const VkrMeshLoaderGltfParseInfo *info,
+                                  const VkrMeshLoaderGltfEncodedImage *encoded,
+                                  VkrMeshLoaderGltfDecodedImage *out_image) {
+  *out_image = (VkrMeshLoaderGltfDecodedImage){0};
+  if (!encoded->bytes) {
+    return true_v;
+  }
 
   int32_t channels = 0;
   stbi_set_flip_vertically_on_load_thread(0);
-  out_image->pixels =
-      stbi_load_from_memory(encoded, (int32_t)encoded_size, &out_image->width,
-                            &out_image->height, &channels, 4);
+  out_image->pixels = stbi_load_from_memory(
+      encoded->bytes, (int32_t)encoded->size, &out_image->width,
+      &out_image->height, &channels, 4);
   if (!out_image->pixels || out_image->width <= 0 || out_image->height <= 0) {
     log_error("MeshLoader(glTF): failed to decode spec-gloss source '%.*s'",
-              (int32_t)existing_path.length, existing_path.str);
+              (int32_t)encoded->path.length, encoded->path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
   }
@@ -1316,10 +1406,214 @@ vkr_internal Vec4 vkr_mesh_loader_gltf_sample_image(
       top.z + (bottom.z - top.z) * ty, top.w + (bottom.w - top.w) * ty);
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
+/* Converted images are named by their pixels. A shared generated root keeps
+   them in one directory, so importing a model again finds them instead of
+   encoding them again; repository cooks keep one directory per source. */
+vkr_internal String8 vkr_mesh_loader_gltf_spec_gloss_output_dir(
+    const VkrMeshLoaderGltfParseInfo *info, uint64_t source_hash) {
+  String8 output_dir =
+      info->generated_root.length
+          ? string8_create_formatted(info->load_allocator,
+                                     "assets/textures/generated/gltf_sg%u",
+                                     VKR_GLTF_SPEC_GLOSS_CACHE_VERSION)
+          : string8_create_formatted(
+                info->load_allocator,
+                "assets/textures/generated/gltf_sg%u_%016llx",
+                VKR_GLTF_SPEC_GLOSS_CACHE_VERSION,
+                (unsigned long long)source_hash);
+  return vkr_mesh_loader_gltf_output_path(info, output_dir);
+}
+
+/* The memo maps a managed spec-gloss material's conversion inputs to its
+   converted images' extent and content hashes and its factors, so importing
+   a model again names its packed textures without decoding and converting
+   the sources; only a pack whose output is missing or stale converts again.
+   The key covers everything the conversion reads: both source files' bytes,
+   their samplers and the material factors. VKR_GLTF_SPEC_GLOSS_CACHE_VERSION
+   names the conversion itself; bump VKR_GLTF_SPEC_GLOSS_MEMO_VERSION when
+   the memo format changes. */
+#define VKR_GLTF_SPEC_GLOSS_MEMO_VERSION 2u
+
+vkr_internal void vkr_mesh_loader_gltf_spec_gloss_memo_view(
+    VkrSha256 *hash, const cgltf_texture_view *view,
+    const VkrMeshLoaderGltfEncodedImage *encoded) {
+  const cgltf_sampler *sampler =
+      view && view->texture ? view->texture->sampler : NULL;
+  const int32_t sampler_state[4] = {
+      sampler ? (int32_t)sampler->wrap_s : -1,
+      sampler ? (int32_t)sampler->wrap_t : -1,
+      sampler ? (int32_t)sampler->mag_filter : -1,
+      sampler ? (int32_t)sampler->min_filter : -1,
+  };
+  vkr_sha256_update(hash, sampler_state, sizeof(sampler_state));
+  vkr_sha256_update(hash, &encoded->size, sizeof(encoded->size));
+  if (encoded->bytes) {
+    vkr_sha256_update(hash, encoded->bytes, encoded->size);
+  }
+}
+
+vkr_internal String8 vkr_mesh_loader_gltf_spec_gloss_memo_path(
+    const VkrMeshLoaderGltfParseInfo *info, String8 output_dir,
+    const cgltf_pbr_specular_glossiness *source,
+    const VkrMeshLoaderGltfEncodedImage *diffuse,
+    const VkrMeshLoaderGltfEncodedImage *spec_gloss) {
+  const uint32_t versions[2] = {VKR_GLTF_SPEC_GLOSS_MEMO_VERSION,
+                                VKR_GLTF_SPEC_GLOSS_CACHE_VERSION};
+  const float32_t factors[8] = {
+      source->diffuse_factor[0],  source->diffuse_factor[1],
+      source->diffuse_factor[2],  source->diffuse_factor[3],
+      source->specular_factor[0], source->specular_factor[1],
+      source->specular_factor[2], source->glossiness_factor,
+  };
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  vkr_sha256_update(&hash, versions, sizeof(versions));
+  vkr_sha256_update(&hash, factors, sizeof(factors));
+  vkr_mesh_loader_gltf_spec_gloss_memo_view(&hash, &source->diffuse_texture,
+                                            diffuse);
+  vkr_mesh_loader_gltf_spec_gloss_memo_view(
+      &hash, &source->specular_glossiness_texture, spec_gloss);
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256_final(&hash, digest);
+  char hex[VKR_SHA256_HEX_SIZE];
+  vkr_sha256_hex(digest, hex);
+  return string8_create_formatted(info->load_allocator, "%.*s/memo/%s.sgm",
+                                  (int32_t)output_dir.length, output_dir.str,
+                                  hex);
+}
+
+/* Fills `out_converted`, without pixels, from a memo. Returns false on any
+   miss, and the caller converts. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_spec_gloss_memo_read(
+    const VkrMeshLoaderGltfParseInfo *info, String8 memo_path,
+    VkrGltfMetalRoughSample factor_converted,
+    VkrMeshLoaderGltfConvertedSpecGloss *out_converted) {
+  FilePath path =
+      file_path_create((const char *)memo_path.str, info->scratch_allocator,
+                       vkr_mesh_loader_gltf_path_is_absolute(memo_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  FileHandle file = {0};
+  if (file_open(&path, mode, &file) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t size = 0;
+  const FileError read_error =
+      file_read_all(&file, info->scratch_allocator, &bytes, &size);
+  file_close(&file);
+  if (read_error != FILE_ERROR_NONE || !bytes || size == 0 || size > KB(1)) {
+    return false_v;
+  }
+
+  char text[KB(1) + 1];
+  MemCopy(text, bytes, size);
+  text[size] = '\0';
+  uint32_t version = 0;
+  int32_t width = 0;
+  int32_t height = 0;
+  char hashes[2][17];
+  uint32_t bits[6] = {0};
+  if (sscanf(text, "vkr-sg-memo %u %d %d %16s %16s %x %x %x %x %x %x", &version,
+             &width, &height, hashes[0], hashes[1], &bits[0], &bits[1],
+             &bits[2], &bits[3], &bits[4], &bits[5]) != 11 ||
+      version != VKR_GLTF_SPEC_GLOSS_MEMO_VERSION || width <= 0 ||
+      height <= 0) {
+    return false_v;
+  }
+  bool8_t uniform[2] = {false_v, false_v};
+  uint64_t values[2] = {0u, 0u};
+  for (uint32_t i = 0; i < 2u; ++i) {
+    uniform[i] = hashes[i][0] == '-' && hashes[i][1] == '\0';
+    unsigned long long value = 0u;
+    if (!uniform[i] && sscanf(hashes[i], "%16llx", &value) != 1) {
+      return false_v;
+    }
+    values[i] = value;
+  }
+
+  float32_t factors[6];
+  MemCopy(factors, bits, sizeof(factors));
+  *out_converted = (VkrMeshLoaderGltfConvertedSpecGloss){
+      .textured = true_v,
+      .base_uniform = uniform[0],
+      .metal_rough_uniform = uniform[1],
+      .width = width,
+      .height = height,
+      .base_hash = values[0],
+      .metal_rough_hash = values[1],
+      .base_color_factor =
+          vec4_new(factors[0], factors[1], factors[2], factors[3]),
+      .metallic_factor = factors[4],
+      .roughness_factor = factors[5],
+      .dielectric_specular_factor = factor_converted.dielectric_specular,
+  };
+  return true_v;
+}
+
+/* Records a conversion under its memo key. A failed write only costs the
+   next import a conversion. */
+vkr_internal void vkr_mesh_loader_gltf_spec_gloss_memo_write(
+    const VkrMeshLoaderGltfParseInfo *info, String8 memo_path,
+    const VkrMeshLoaderGltfConvertedSpecGloss *converted) {
+  char hashes[2][17] = {"-", "-"};
+  if (!converted->base_uniform) {
+    (void)snprintf(hashes[0], sizeof(hashes[0]), "%016llx",
+                   (unsigned long long)converted->base_hash);
+  }
+  if (!converted->metal_rough_uniform) {
+    (void)snprintf(hashes[1], sizeof(hashes[1]), "%016llx",
+                   (unsigned long long)converted->metal_rough_hash);
+  }
+  const float32_t factors[6] = {
+      converted->base_color_factor.x, converted->base_color_factor.y,
+      converted->base_color_factor.z, converted->base_color_factor.w,
+      converted->metallic_factor,     converted->roughness_factor,
+  };
+  uint32_t bits[6];
+  MemCopy(bits, factors, sizeof(bits));
+  String8 text = string8_create_formatted(
+      info->scratch_allocator,
+      "vkr-sg-memo %u\n%d %d\n%s\n%s\n%08x %08x %08x %08x %08x %08x\n",
+      VKR_GLTF_SPEC_GLOSS_MEMO_VERSION, converted->width, converted->height,
+      hashes[0], hashes[1], bits[0], bits[1], bits[2], bits[3], bits[4],
+      bits[5]);
+
+  String8 memo_dir = memo_path;
+  for (uint64_t c = memo_path.length; c > 0; --c) {
+    if (memo_path.str[c - 1u] == '/') {
+      memo_dir = string8_create_formatted(info->scratch_allocator, "%.*s",
+                                          (int32_t)(c - 1u), memo_path.str);
+      break;
+    }
+  }
+  FilePath memo_dir_path =
+      file_path_create((const char *)memo_dir.str, info->scratch_allocator,
+                       vkr_mesh_loader_gltf_path_is_absolute(memo_dir)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
+  bool8_t created = false_v;
+  if (!file_ensure_directory(info->scratch_allocator, &memo_dir_path.path) ||
+      !vkr_mesh_loader_gltf_publish_bytes(info, memo_path, text.str,
+                                          text.length, &created)) {
+    log_warn("MeshLoader(glTF): spec-gloss memo '%.*s' was not recorded",
+             (int32_t)memo_path.length, memo_path.str);
+  }
+}
+
+/* Decodes and converts one material's images; a repository cook publishes
+   them as PNGs and a managed cook keeps the pixels. A managed cook first
+   consults the memo when `use_memo` is set. Reads only the parse info's paths
+   and writes through its allocators and error, so workers run it on private
+   copies of the info. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
-    uint64_t source_hash, VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
-  if (!info || !material || !out_prepared ||
+    uint64_t source_hash, bool8_t use_memo,
+    VkrMeshLoaderGltfConvertedSpecGloss *out_converted) {
+  if (!info || !material || !out_converted ||
       !material->has_pbr_specular_glossiness) {
     return false_v;
   }
@@ -1344,8 +1638,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
   };
   const VkrGltfMetalRoughSample factor_converted =
       vkr_gltf_convert_spec_gloss_sample(factor_sample);
-  if (!has_diffuse_texture && !has_spec_gloss_texture) {
-    *out_prepared = (VkrMeshLoaderGltfPreparedSpecGloss){
+  if ((!has_diffuse_texture && !has_spec_gloss_texture) ||
+      info->defer_textures) {
+    *out_converted = (VkrMeshLoaderGltfConvertedSpecGloss){
         .base_color_factor = factor_converted.base_color,
         .metallic_factor = factor_converted.metallic,
         .roughness_factor = factor_converted.roughness,
@@ -1363,16 +1658,35 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
     return false_v;
   }
 
-  String8 output_dir = string8_create_formatted(
-      info->load_allocator, "assets/textures/generated/gltf_sg%u_%016llx",
-      VKR_GLTF_SPEC_GLOSS_CACHE_VERSION, (unsigned long long)source_hash);
-  output_dir = vkr_mesh_loader_gltf_output_path(info, output_dir);
+  const String8 output_dir =
+      vkr_mesh_loader_gltf_spec_gloss_output_dir(info, source_hash);
+
+  VkrMeshLoaderGltfEncodedImage diffuse_source = {0};
+  VkrMeshLoaderGltfEncodedImage spec_gloss_source = {0};
+  if (!vkr_mesh_loader_gltf_read_texture_view(info, diffuse_view,
+                                              &diffuse_source) ||
+      !vkr_mesh_loader_gltf_read_texture_view(info, spec_gloss_view,
+                                              &spec_gloss_source)) {
+    return false_v;
+  }
+
+  /* Only the shared directory outlives one cook, so only it keeps a memo. */
+  const bool8_t managed = info->generated_root.length > 0u;
+  String8 memo_path = {0};
+  if (managed) {
+    memo_path = vkr_mesh_loader_gltf_spec_gloss_memo_path(
+        info, output_dir, source, &diffuse_source, &spec_gloss_source);
+    if (use_memo && vkr_mesh_loader_gltf_spec_gloss_memo_read(
+                        info, memo_path, factor_converted, out_converted)) {
+      return true_v;
+    }
+  }
 
   VkrMeshLoaderGltfDecodedImage diffuse = {0};
   VkrMeshLoaderGltfDecodedImage spec_gloss = {0};
-  if (!vkr_mesh_loader_gltf_decode_texture_view(info, diffuse_view, &diffuse) ||
-      !vkr_mesh_loader_gltf_decode_texture_view(info, spec_gloss_view,
-                                                &spec_gloss)) {
+  if (!vkr_mesh_loader_gltf_decode_image(info, &diffuse_source, &diffuse) ||
+      !vkr_mesh_loader_gltf_decode_image(info, &spec_gloss_source,
+                                         &spec_gloss)) {
     if (diffuse.pixels) {
       stbi_image_free(diffuse.pixels);
     }
@@ -1397,12 +1711,13 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
     return false_v;
   }
 
-  uint8_t *base_pixels =
-      (uint8_t *)vkr_allocator_alloc(info->scratch_allocator, pixel_count * 4u,
-                                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-  uint8_t *metal_rough_pixels =
-      (uint8_t *)vkr_allocator_alloc(info->scratch_allocator, pixel_count * 4u,
-                                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  /* A managed cook packs the pixels after this returns. */
+  VkrAllocator *pixel_allocator =
+      managed ? info->load_allocator : info->scratch_allocator;
+  uint8_t *base_pixels = (uint8_t *)vkr_allocator_alloc(
+      pixel_allocator, pixel_count * 4u, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  uint8_t *metal_rough_pixels = (uint8_t *)vkr_allocator_alloc(
+      pixel_allocator, pixel_count * 4u, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!base_pixels || !metal_rough_pixels) {
     if (diffuse.pixels) {
       stbi_image_free(diffuse.pixels);
@@ -1498,6 +1813,36 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
       metal_rough_uniform ? (float32_t)metal_rough_pixels[1] / 255.0f : 1.0f;
   const float32_t metallic_factor =
       metal_rough_uniform ? (float32_t)metal_rough_pixels[2] / 255.0f : 1.0f;
+  if (managed) {
+    stbi_image_free(diffuse.pixels);
+    stbi_image_free(spec_gloss.pixels);
+    const uint64_t byte_count = pixel_count * 4u;
+    *out_converted = (VkrMeshLoaderGltfConvertedSpecGloss){
+        .textured = true_v,
+        .base_uniform = base_uniform,
+        .metal_rough_uniform = metal_rough_uniform,
+        .width = width,
+        .height = height,
+        .base_hash = base_uniform ? 0u
+                                  : vkr_mesh_loader_gltf_hash_bytes(
+                                        VKR_FNV1A64_OFFSET_BASIS, base_pixels,
+                                        byte_count),
+        .metal_rough_hash =
+            metal_rough_uniform
+                ? 0u
+                : vkr_mesh_loader_gltf_hash_bytes(
+                      VKR_FNV1A64_OFFSET_BASIS, metal_rough_pixels, byte_count),
+        .base_pixels = base_uniform ? NULL : base_pixels,
+        .metal_rough_pixels = metal_rough_uniform ? NULL : metal_rough_pixels,
+        .base_color_factor = base_factor,
+        .metallic_factor = metallic_factor,
+        .roughness_factor = roughness_factor,
+        .dielectric_specular_factor = factor_converted.dielectric_specular,
+    };
+    vkr_mesh_loader_gltf_spec_gloss_memo_write(info, memo_path, out_converted);
+    return true_v;
+  }
+
   const String8 base_path =
       base_uniform ? (String8){0}
                    : vkr_mesh_loader_gltf_make_content_texture_path(
@@ -1544,15 +1889,26 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
     return false_v;
   }
 
-  vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
-      info, base_path, metal_rough_path, base_factor, metallic_factor,
-      roughness_factor, factor_converted.dielectric_specular, out_prepared);
+  *out_converted = (VkrMeshLoaderGltfConvertedSpecGloss){
+      .textured = true_v,
+      .base_uniform = base_uniform,
+      .metal_rough_uniform = metal_rough_uniform,
+      .base_path = base_path,
+      .metal_rough_path = metal_rough_path,
+      .width = width,
+      .height = height,
+      .base_color_factor = base_factor,
+      .metallic_factor = metallic_factor,
+      .roughness_factor = roughness_factor,
+      .dielectric_specular_factor = factor_converted.dielectric_specular,
+  };
   return true_v;
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss(
+vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
-    uint64_t source_hash, VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
+    uint64_t source_hash, bool8_t use_memo,
+    VkrMeshLoaderGltfConvertedSpecGloss *out_converted) {
   if (!info || !info->scratch_allocator) {
     return false_v;
   }
@@ -1561,18 +1917,189 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_prepare_spec_gloss(
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
   }
-  const bool8_t result = vkr_mesh_loader_gltf_prepare_spec_gloss_inner(
-      info, material, source_hash, out_prepared);
+  const bool8_t result = vkr_mesh_loader_gltf_convert_spec_gloss_inner(
+      info, material, source_hash, use_memo, out_converted);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   return result;
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_write_line(FileHandle *file,
-                                                     String8 line) {
+/* Records the converted images as generated assets and forms the material's
+   texture lines. Main thread. */
+vkr_internal void vkr_mesh_loader_gltf_prepare_spec_gloss(
+    const VkrMeshLoaderGltfParseInfo *info,
+    const VkrMeshLoaderGltfConvertedSpecGloss *converted,
+    VkrMeshLoaderGltfPreparedSpecGloss *out_prepared) {
+  if (!converted->textured) {
+    *out_prepared = (VkrMeshLoaderGltfPreparedSpecGloss){
+        .base_color_factor = converted->base_color_factor,
+        .metallic_factor = converted->metallic_factor,
+        .roughness_factor = converted->roughness_factor,
+        .dielectric_specular_factor = converted->dielectric_specular_factor,
+    };
+    return;
+  }
+  vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
+      info, converted->base_path, converted->metal_rough_path,
+      converted->base_color_factor, converted->metallic_factor,
+      converted->roughness_factor, converted->dielectric_specular_factor,
+      out_prepared);
+}
+
+// =============================================================================
+// Converted spec-gloss packs
+// =============================================================================
+
+/* The pack source of one converted image of a managed cook. */
+vkr_internal VkrVktSource vkr_mesh_loader_gltf_converted_source(
+    const VkrMeshLoaderGltfConvertedSpecGloss *converted, bool8_t base) {
+  return (VkrVktSource){
+      .pixels = base ? converted->base_pixels : converted->metal_rough_pixels,
+      .width = (uint32_t)converted->width,
+      .height = (uint32_t)converted->height,
+      .hash = base ? converted->base_hash : converted->metal_rough_hash,
+  };
+}
+
+/* Converts a memo hit's images again once a pack finds its output missing or
+   stale. The conversion is deterministic, so it must reproduce the memo;
+   a difference means the conversion changed without a new
+   VKR_GLTF_SPEC_GLOSS_CACHE_VERSION. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_convert_pixels(
+    const VkrMeshLoaderGltfParseInfo *info, const cgltf_material *material,
+    uint64_t source_hash, VkrMeshLoaderGltfConvertedSpecGloss *converted) {
+  VkrMeshLoaderGltfConvertedSpecGloss fresh = {0};
+  if (!vkr_mesh_loader_gltf_convert_spec_gloss(info, material, source_hash,
+                                               false_v, &fresh)) {
+    return false_v;
+  }
+  if (fresh.base_uniform != converted->base_uniform ||
+      fresh.metal_rough_uniform != converted->metal_rough_uniform ||
+      fresh.width != converted->width || fresh.height != converted->height ||
+      fresh.base_hash != converted->base_hash ||
+      fresh.metal_rough_hash != converted->metal_rough_hash) {
+    log_error("MeshLoader(glTF): spec-gloss conversion of '%s' differs from "
+              "its memo; the conversion changed without a new cache version",
+              material->name ? material->name : "<unnamed>");
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+  *converted = fresh;
+  return true_v;
+}
+
+/* Packs one converted image of a managed cook as a plain texture named by
+   its content hash and the process settings. */
+vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_pack_converted(
+    const VkrMeshLoaderGltfParseInfo *info, uint64_t source_hash,
+    const VkrMeshLoaderGltfConvertedSpecGloss *converted, bool8_t base,
+    String8 *out_texture) {
+  const String8 output_dir =
+      vkr_mesh_loader_gltf_spec_gloss_output_dir(info, source_hash);
+  const String8 output = string8_create_formatted(
+      info->load_allocator, "%.*s/%s_%dx%d_%016llx%s.vkt",
+      (int32_t)output_dir.length, output_dir.str,
+      base ? "basecolor" : "metalrough", converted->width, converted->height,
+      (unsigned long long)(base ? converted->base_hash
+                                : converted->metal_rough_hash),
+      vkr_vkt_variant_suffix());
+  if (!output.str) {
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return VKR_VKT_PACK_FAILED;
+  }
+  const VkrVktSource source =
+      vkr_mesh_loader_gltf_converted_source(converted, base);
+  const VkrVktPackResult result = vkr_vkt_pack_image(
+      &source, base ? "color-srgb" : "data-mask", (const char *)output.str);
+  if (result == VKR_VKT_PACK_STALE) {
+    return result;
+  }
+  if (result != VKR_VKT_PACK_SUCCESS) {
+    log_error("MeshLoader(glTF): failed to pack converted texture '%.*s'",
+              (int32_t)output.length, output.str);
+    vkr_mesh_loader_gltf_set_error(info,
+                                   VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED);
+    return VKR_VKT_PACK_FAILED;
+  }
+  if (info->out_generated_asset_paths &&
+      !vkr_mesh_loader_gltf_push_unique_path(info->out_generated_asset_paths,
+                                             output, info->load_allocator)) {
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return VKR_VKT_PACK_FAILED;
+  }
+  *out_texture = vkr_mesh_loader_gltf_append_query(
+      info->load_allocator, output,
+      base ? "cs=srgb&tc=color_srgb" : "tc=data_mask");
+  return VKR_VKT_PACK_SUCCESS;
+}
+
+// =============================================================================
+// Parallel material files
+// =============================================================================
+
+/* Runs `worker(context)` on up to `max_workers` threads, the caller among
+   them; a failed thread start only reduces parallelism. */
+vkr_internal void
+vkr_mesh_loader_gltf_run_workers(const VkrMeshLoaderGltfParseInfo *info,
+                                 uint32_t items, uint32_t max_workers,
+                                 void *(*worker)(void *), void *context) {
+  const uint32_t cores = Max(vkr_platform_get_logical_core_count(), 1u);
+  const uint32_t worker_count = Max(Min(Min(cores, items), max_workers), 1u);
+  VkrThread threads[16] = {0};
+  uint32_t started = 0u;
+  for (uint32_t i = 1u; i < worker_count && started < ArrayCount(threads);
+       ++i) {
+    if (vkr_thread_create(info->load_allocator, &threads[started], worker,
+                          context)) {
+      ++started;
+    }
+  }
+  (void)worker(context);
+  for (uint32_t i = 0u; i < started; ++i) {
+    (void)vkr_thread_join(threads[i]);
+    (void)vkr_thread_destroy(info->load_allocator, &threads[i]);
+  }
+}
+
+/* A generated material's text, built in memory and written at once, so a
+   cook that records ready materials can also copy it into its ready log. */
+typedef struct VkrMeshLoaderGltfText {
+  VkrAllocator *allocator;
+  uint8_t *data;
+  uint64_t length;
+  uint64_t capacity;
+} VkrMeshLoaderGltfText;
+
+/* Appends `length` bytes to `text`, growing it in its allocator. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_text_append(
+    VkrMeshLoaderGltfText *text, const void *bytes, uint64_t length) {
+  if (text->length + length > text->capacity) {
+    const uint64_t capacity =
+        Max(text->capacity * 2u, text->length + length + KB(1));
+    uint8_t *grown = vkr_allocator_alloc(text->allocator, capacity,
+                                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    if (!grown) {
+      return false_v;
+    }
+    if (text->length) {
+      MemCopy(grown, text->data, text->length);
+    }
+    text->data = grown;
+    text->capacity = capacity;
+  }
+  if (length) {
+    MemCopy(text->data + text->length, bytes, length);
+  }
+  text->length += length;
+  return true_v;
+}
+
+vkr_internal bool8_t
+vkr_mesh_loader_gltf_write_line(VkrMeshLoaderGltfText *text, String8 line) {
   if (!line.str || line.length == 0) {
     return true_v;
   }
-  return file_write_line(file, &line) == FILE_ERROR_NONE ? true_v : false_v;
+  return vkr_mesh_loader_gltf_text_append(text, line.str, line.length) &&
+         vkr_mesh_loader_gltf_text_append(text, "\n", 1u);
 }
 
 typedef struct VkrMeshLoaderGltfTextureWriteLine {
@@ -1581,71 +2108,73 @@ typedef struct VkrMeshLoaderGltfTextureWriteLine {
   const char *prefix_literal;
 } VkrMeshLoaderGltfTextureWriteLine;
 
-vkr_internal bool8_t
-vkr_mesh_loader_gltf_write_literal_line(FileHandle *file, const char *literal) {
+vkr_internal bool8_t vkr_mesh_loader_gltf_write_literal_line(
+    VkrMeshLoaderGltfText *text, const char *literal) {
   if (!literal || literal[0] == '\0') {
     return true_v;
   }
   String8 line = string8_create_from_cstr((const uint8_t *)literal,
                                           string_length(literal));
-  return vkr_mesh_loader_gltf_write_line(file, line);
+  return vkr_mesh_loader_gltf_write_line(text, line);
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_string(
-    FileHandle *file, VkrAllocator *allocator, const char *key, String8 value) {
-  if (!file || !allocator || !key || !value.str || value.length == 0) {
+    VkrMeshLoaderGltfText *text, VkrAllocator *allocator, const char *key,
+    String8 value) {
+  if (!text || !allocator || !key || !value.str || value.length == 0) {
     return false_v;
   }
 
   return vkr_mesh_loader_gltf_write_line(
-      file, string8_create_formatted(allocator, "%s=%.*s", key,
+      text, string8_create_formatted(allocator, "%s=%.*s", key,
                                      (int32_t)value.length, value.str));
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_f32(FileHandle *file,
-                                                        VkrAllocator *allocator,
-                                                        const char *key,
-                                                        float32_t value) {
-  if (!file || !allocator || !key) {
+vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_f32(
+    VkrMeshLoaderGltfText *text, VkrAllocator *allocator, const char *key,
+    float32_t value) {
+  if (!text || !allocator || !key) {
     return false_v;
   }
   return vkr_mesh_loader_gltf_write_line(
-      file, string8_create_formatted(allocator, "%s=%f", key, value));
+      text, string8_create_formatted(allocator, "%s=%f", key, value));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_vec3(
-    FileHandle *file, VkrAllocator *allocator, const char *key, Vec3 value) {
-  if (!file || !allocator || !key) {
+    VkrMeshLoaderGltfText *text, VkrAllocator *allocator, const char *key,
+    Vec3 value) {
+  if (!text || !allocator || !key) {
     return false_v;
   }
   return vkr_mesh_loader_gltf_write_line(
-      file, string8_create_formatted(allocator, "%s=%f,%f,%f", key, value.x,
+      text, string8_create_formatted(allocator, "%s=%f,%f,%f", key, value.x,
                                      value.y, value.z));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_vec4(
-    FileHandle *file, VkrAllocator *allocator, const char *key, Vec4 value) {
-  if (!file || !allocator || !key) {
+    VkrMeshLoaderGltfText *text, VkrAllocator *allocator, const char *key,
+    Vec4 value) {
+  if (!text || !allocator || !key) {
     return false_v;
   }
   return vkr_mesh_loader_gltf_write_line(
-      file, string8_create_formatted(allocator, "%s=%f,%f,%f,%f", key, value.x,
+      text, string8_create_formatted(allocator, "%s=%f,%f,%f,%f", key, value.x,
                                      value.y, value.z, value.w));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_optional_texture_line(
-    FileHandle *file, VkrAllocator *allocator,
+    VkrMeshLoaderGltfText *text, VkrAllocator *allocator,
     const VkrMeshLoaderGltfTextureWriteLine *line) {
-  if (!file || !allocator || !line) {
+  if (!text || !allocator || !line) {
     return false_v;
   }
   if (!line->value.str || line->value.length == 0) {
     return true_v;
   }
-  if (!vkr_mesh_loader_gltf_write_literal_line(file, line->prefix_literal)) {
+  if (!vkr_mesh_loader_gltf_write_literal_line(text, line->prefix_literal)) {
     return false_v;
   }
-  return vkr_mesh_loader_gltf_write_key_string(file, allocator, line->key,
+  return vkr_mesh_loader_gltf_write_key_string(text, allocator, line->key,
                                                line->value);
 }
 
@@ -1849,38 +2378,38 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_resolve_material_textures(
 
 /** Writes the anisotropy, sheen, and clearcoat factors a material uses. */
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_extension_lines(
-    FileHandle *file, const VkrMeshLoaderGltfParseInfo *info,
+    VkrMeshLoaderGltfText *text, const VkrMeshLoaderGltfParseInfo *info,
     const cgltf_material *material) {
   bool8_t ok = true_v;
   if (material->has_anisotropy) {
     ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                   file, info->load_allocator, "anisotropy_strength",
+                   text, info->load_allocator, "anisotropy_strength",
                    material->anisotropy.anisotropy_strength);
     ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                   file, info->load_allocator, "anisotropy_rotation",
+                   text, info->load_allocator, "anisotropy_rotation",
                    remainderf(material->anisotropy.anisotropy_rotation,
                               6.283185307179586f));
   }
   if (material->has_sheen) {
     ok = ok && vkr_mesh_loader_gltf_write_key_vec3(
-                   file, info->load_allocator, "sheen_color",
+                   text, info->load_allocator, "sheen_color",
                    vec3_new(material->sheen.sheen_color_factor[0],
                             material->sheen.sheen_color_factor[1],
                             material->sheen.sheen_color_factor[2]));
     ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                   file, info->load_allocator, "sheen_roughness",
+                   text, info->load_allocator, "sheen_roughness",
                    material->sheen.sheen_roughness_factor);
   }
 
   if (material->has_clearcoat) {
     ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                   file, info->load_allocator, "clearcoat_factor",
+                   text, info->load_allocator, "clearcoat_factor",
                    material->clearcoat.clearcoat_factor);
     ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                   file, info->load_allocator, "clearcoat_roughness",
+                   text, info->load_allocator, "clearcoat_roughness",
                    material->clearcoat.clearcoat_roughness_factor);
     ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                   file, info->load_allocator, "clearcoat_normal_scale",
+                   text, info->load_allocator, "clearcoat_normal_scale",
                    material->clearcoat.clearcoat_normal_texture.texture
                        ? material->clearcoat.clearcoat_normal_texture.scale
                        : 1.0f);
@@ -1889,7 +2418,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_extension_lines(
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_texture_lines(
-    FileHandle *file, const VkrMeshLoaderGltfParseInfo *info,
+    VkrMeshLoaderGltfText *text, const VkrMeshLoaderGltfParseInfo *info,
     const VkrMeshLoaderGltfMaterialTextures *textures) {
   const VkrMeshLoaderGltfTextureWriteLine texture_lines[] = {
       {.key = "base_color_texture",
@@ -1929,9 +2458,142 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_texture_lines(
   bool8_t ok = true_v;
   for (uint32_t i = 0; i < ArrayCount(texture_lines); ++i) {
     ok = ok && vkr_mesh_loader_gltf_write_optional_texture_line(
-                   file, info->load_allocator, &texture_lines[i]);
+                   text, info->load_allocator, &texture_lines[i]);
   }
   return ok;
+}
+
+/* Writes `text` to `path` through a synced temporary file and a rename. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_write_text_atomic(
+    const VkrMeshLoaderGltfParseInfo *info, String8 path,
+    const VkrMeshLoaderGltfText *text) {
+  FilePath file_path = file_path_create(
+      (const char *)path.str, info->load_allocator,
+      vkr_mesh_loader_gltf_path_is_absolute(path) ? FILE_PATH_TYPE_ABSOLUTE
+                                                  : FILE_PATH_TYPE_RELATIVE);
+  String8 temp_path = string8_create_formatted(info->load_allocator, "%.*s.tmp",
+                                               (int32_t)path.length, path.str);
+  FilePath temp_file_path =
+      file_path_create((const char *)temp_path.str, info->load_allocator,
+                       vkr_mesh_loader_gltf_path_is_absolute(temp_path)
+                           ? FILE_PATH_TYPE_ABSOLUTE
+                           : FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle file = {0};
+  FileError open_error = file_open(&temp_file_path, mode, &file);
+  if (open_error != FILE_ERROR_NONE) {
+    log_error("MeshLoader(glTF): failed to open generated material '%s': %s",
+              file_path.path.str, file_get_error_string(open_error).str);
+    return false_v;
+  }
+  uint64_t written = 0u;
+  const bool8_t ok = file_write(&file, text->length, text->data, &written) ==
+                         FILE_ERROR_NONE &&
+                     written == text->length &&
+                     file_sync(&file) == FILE_ERROR_NONE;
+  file_close(&file);
+  if (!ok ||
+      file_rename(&temp_file_path, &file_path, true_v) != FILE_ERROR_NONE) {
+    (void)file_remove(&temp_file_path);
+    return false_v;
+  }
+  return true_v;
+}
+
+/* True when every texture a material names is a packed file at an absolute
+   path, which stays valid after the revision being built moves. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_textures_are_final(
+    const VkrMeshLoaderGltfMaterialTextures *textures) {
+  const String8 values[] = {
+      textures->base_color_texture,       textures->metallic_roughness_texture,
+      textures->occlusion_texture,        textures->normal_texture,
+      textures->emissive_texture,         textures->transmission_texture,
+      textures->thickness_texture,        textures->anisotropy_texture,
+      textures->sheen_color_texture,      textures->sheen_roughness_texture,
+      textures->clearcoat_texture,        textures->clearcoat_roughness_texture,
+      textures->clearcoat_normal_texture,
+  };
+  for (uint32_t i = 0u; i < ArrayCount(values); ++i) {
+    const String8 path = vkr_mesh_loader_gltf_strip_query(values[i]);
+    if (path.length && (!vkr_mesh_loader_gltf_path_is_absolute(path) ||
+                        !vkr_mesh_loader_gltf_has_vkt_extension(path))) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Appends `value` to `text` as the body of a JSON string. */
+vkr_internal bool8_t vkr_mesh_loader_gltf_text_append_json(
+    VkrMeshLoaderGltfText *text, const uint8_t *value, uint64_t length) {
+  bool8_t ok = true_v;
+  for (uint64_t i = 0u; ok && i < length; ++i) {
+    const uint8_t c = value[i];
+    char escaped[8];
+    if (c == '"' || c == '\\') {
+      escaped[0] = '\\';
+      escaped[1] = (char)c;
+      ok = vkr_mesh_loader_gltf_text_append(text, escaped, 2u);
+    } else if (c == '\n') {
+      ok = vkr_mesh_loader_gltf_text_append(text, "\\n", 2u);
+    } else if (c < 0x20u) {
+      const int32_t count = snprintf(escaped, sizeof(escaped), "\\u%04x", c);
+      ok = vkr_mesh_loader_gltf_text_append(text, escaped, (uint64_t)count);
+    } else {
+      ok = vkr_mesh_loader_gltf_text_append(text, &c, 1u);
+    }
+  }
+  return ok;
+}
+
+/* Records a material whose textures are all final in the cook's ready log as
+   one JSON line: its name, its file (against which the text's references
+   resolve) and its text. The editor applies it to the live material before
+   the revision publishes. A line appends whole under a lock and a reader
+   ignores an unterminated last line; a record that fails to append only
+   means the material appears when the revision publishes. */
+vkr_internal void vkr_mesh_loader_gltf_record_ready(
+    const VkrMeshLoaderGltfParseInfo *info, String8 material_id,
+    String8 material_path, const VkrMeshLoaderGltfText *text,
+    const VkrMeshLoaderGltfMaterialTextures *textures) {
+  if (!info->ready_log || !info->ready_log[0] ||
+      !vkr_mesh_loader_gltf_textures_are_final(textures)) {
+    return;
+  }
+  VkrMeshLoaderGltfText line = {.allocator = info->scratch_allocator};
+  const bool8_t built =
+      vkr_mesh_loader_gltf_text_append(&line, "{\"material\":\"", 13u) &&
+      vkr_mesh_loader_gltf_text_append_json(&line, material_id.str,
+                                            material_id.length) &&
+      vkr_mesh_loader_gltf_text_append(&line, "\",\"path\":\"", 10u) &&
+      vkr_mesh_loader_gltf_text_append_json(&line, material_path.str,
+                                            material_path.length) &&
+      vkr_mesh_loader_gltf_text_append(&line, "\",\"definition\":\"", 16u) &&
+      vkr_mesh_loader_gltf_text_append_json(&line, text->data, text->length) &&
+      vkr_mesh_loader_gltf_text_append(&line, "\"}\n", 3u);
+  if (!built) {
+    return;
+  }
+  vkr_local_persist VkrAtomicBool append_lock = false_v;
+  while (vkr_atomic_bool_exchange(&append_lock, true_v,
+                                  VKR_MEMORY_ORDER_ACQUIRE)) {
+    vkr_platform_sleep(0u);
+  }
+  FILE *log = file_fopen(info->ready_log, "ab");
+  const bool8_t appended =
+      log && fwrite(line.data, 1u, (size_t)line.length, log) == line.length;
+  if (log) {
+    (void)fclose(log);
+  }
+  vkr_atomic_bool_store(&append_lock, false_v, VKR_MEMORY_ORDER_RELEASE);
+  if (!appended) {
+    log_warn("MeshLoader(glTF): ready record for '%.*s' was not written",
+             (int32_t)material_id.length, material_id.str);
+  }
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
@@ -1952,11 +2614,21 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
   float32_t roughness = 1.0f;
   Vec3 dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   VkrMeshLoaderGltfPreparedSpecGloss prepared_spec_gloss = {0};
+  /* A managed cook packs converted images itself: as cutouts, as the
+     roughness of a paired bake or, otherwise, as plain textures. */
+  VkrMeshLoaderGltfConvertedSpecGloss converted = {0};
+  bool8_t pack_base = false_v;
+  bool8_t pack_metal_rough = false_v;
   if (material->has_pbr_specular_glossiness) {
-    if (!vkr_mesh_loader_gltf_prepare_spec_gloss(info, material, source_hash,
-                                                 &prepared_spec_gloss)) {
+    if (!vkr_mesh_loader_gltf_convert_spec_gloss(info, material, source_hash,
+                                                 true_v, &converted)) {
       return false_v;
     }
+    const bool8_t packs = converted.textured && info->generated_root.length;
+    pack_base = packs && !converted.base_uniform;
+    pack_metal_rough = packs && !converted.metal_rough_uniform;
+    vkr_mesh_loader_gltf_prepare_spec_gloss(info, &converted,
+                                            &prepared_spec_gloss);
     base_color = prepared_spec_gloss.base_color_factor;
     metallic = prepared_spec_gloss.metallic_factor;
     roughness = prepared_spec_gloss.roughness_factor;
@@ -2020,136 +2692,256 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
         prepared_spec_gloss.metallic_roughness_texture;
   }
 
-  if (!vkr_mesh_loader_gltf_resolve_material_textures(
+  if (!info->defer_textures &&
+      !vkr_mesh_loader_gltf_resolve_material_textures(
           info, material, base_color_texture_view,
           metallic_roughness_texture_view, &textures)) {
     return false_v;
   }
 
+  /* Each pack below retries once with converted pixels when a memo hit's
+     output turns out missing or stale. */
   if (material->alpha_mode == cgltf_alpha_mode_mask &&
-      textures.base_color_texture.str &&
-      textures.base_color_texture.length > 0u) {
+      (pack_base || (textures.base_color_texture.str &&
+                     textures.base_color_texture.length > 0u))) {
     if (non_unit_vertex_alpha) {
       log_warn("MeshLoader(glTF): skipping alpha-coverage variant for MASK "
                "material '%s' because COLOR_0 has non-unit alpha",
                material->name ? material->name : "<unnamed>");
-    } else if (!vkr_mesh_loader_gltf_bake_cutout_variant(
-                   info, textures.base_color_texture, alpha_cutoff,
-                   base_color.w, &textures.base_color_texture)) {
-      return false_v;
+    } else {
+      VkrVktPackResult cutout = VKR_VKT_PACK_STALE;
+      for (uint32_t attempt = 0u; cutout == VKR_VKT_PACK_STALE && attempt < 2u;
+           ++attempt) {
+        if (attempt > 0u && !vkr_mesh_loader_gltf_convert_pixels(
+                                info, material, source_hash, &converted)) {
+          return false_v;
+        }
+        const VkrVktSource source =
+            vkr_mesh_loader_gltf_converted_source(&converted, true_v);
+        cutout = vkr_mesh_loader_gltf_bake_cutout_variant(
+            info, textures.base_color_texture, pack_base ? &source : NULL,
+            alpha_cutoff, base_color.w, &textures.base_color_texture);
+      }
+      if (cutout != VKR_VKT_PACK_SUCCESS) {
+        return false_v;
+      }
+      pack_base = false_v;
     }
   }
 
   if (textures.normal_texture.str && textures.normal_texture.length > 0u) {
     String8 cooked_normal_texture = {0};
     String8 cooked_metallic_roughness_texture = {0};
-    const enum VkrVktPairResult pair_result =
-        vkr_mesh_loader_gltf_bake_normal_roughness_variant(
-            info, material, &material->normal_texture,
-            metallic_roughness_texture_view, textures.normal_texture,
-            textures.metallic_roughness_texture, normal_scale, roughness,
-            &cooked_normal_texture, &cooked_metallic_roughness_texture);
-    if (pair_result == VKR_VKT_PAIR_FAILED) {
+    VkrVktPackResult pair_result = VKR_VKT_PACK_STALE;
+    for (uint32_t attempt = 0u;
+         pair_result == VKR_VKT_PACK_STALE && attempt < 2u; ++attempt) {
+      if (attempt > 0u && !vkr_mesh_loader_gltf_convert_pixels(
+                              info, material, source_hash, &converted)) {
+        return false_v;
+      }
+      const VkrVktSource source =
+          vkr_mesh_loader_gltf_converted_source(&converted, false_v);
+      pair_result = vkr_mesh_loader_gltf_bake_normal_roughness_variant(
+          info, material, &material->normal_texture,
+          metallic_roughness_texture_view, textures.normal_texture,
+          textures.metallic_roughness_texture,
+          pack_metal_rough ? &source : NULL, normal_scale, roughness,
+          &cooked_normal_texture, &cooked_metallic_roughness_texture);
+    }
+    if (pair_result == VKR_VKT_PACK_FAILED ||
+        pair_result == VKR_VKT_PACK_STALE) {
       return false_v;
     }
-    if (pair_result == VKR_VKT_PAIR_SUCCESS) {
+    if (pair_result == VKR_VKT_PACK_SUCCESS) {
       textures.normal_texture = cooked_normal_texture;
       textures.metallic_roughness_texture = cooked_metallic_roughness_texture;
       normal_scale = 1.0f;
       roughness = 1.0f;
+      pack_metal_rough = false_v;
     }
   }
 
-  FilePath file_path =
-      file_path_create((const char *)material_path.str, info->load_allocator,
-                       vkr_mesh_loader_gltf_path_is_absolute(material_path)
-                           ? FILE_PATH_TYPE_ABSOLUTE
-                           : FILE_PATH_TYPE_RELATIVE);
-  String8 temp_path = string8_create_formatted(info->load_allocator, "%.*s.tmp",
-                                               (int32_t)material_path.length,
-                                               material_path.str);
-  FilePath temp_file_path =
-      file_path_create((const char *)temp_path.str, info->load_allocator,
-                       vkr_mesh_loader_gltf_path_is_absolute(temp_path)
-                           ? FILE_PATH_TYPE_ABSOLUTE
-                           : FILE_PATH_TYPE_RELATIVE);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_WRITE);
-  bitset8_set(&mode, FILE_MODE_TRUNCATE);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-
-  FileHandle file = {0};
-  FileError open_error = file_open(&temp_file_path, mode, &file);
-  if (open_error != FILE_ERROR_NONE) {
-    log_error("MeshLoader(glTF): failed to open generated material '%s': %s",
-              file_path.path.str, file_get_error_string(open_error).str);
-    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
-    return false_v;
+  const bool8_t plain_packs[2] = {pack_base, pack_metal_rough};
+  String8 *plain_textures[2] = {&textures.base_color_texture,
+                                &textures.metallic_roughness_texture};
+  for (uint32_t i = 0u; i < ArrayCount(plain_packs); ++i) {
+    VkrVktPackResult packed =
+        plain_packs[i] ? VKR_VKT_PACK_STALE : VKR_VKT_PACK_SUCCESS;
+    for (uint32_t attempt = 0u; packed == VKR_VKT_PACK_STALE && attempt < 2u;
+         ++attempt) {
+      if (attempt > 0u && !vkr_mesh_loader_gltf_convert_pixels(
+                              info, material, source_hash, &converted)) {
+        return false_v;
+      }
+      packed = vkr_mesh_loader_gltf_pack_converted(
+          info, source_hash, &converted, i == 0u, plain_textures[i]);
+    }
+    if (packed != VKR_VKT_PACK_SUCCESS) {
+      return false_v;
+    }
   }
 
+  VkrMeshLoaderGltfText text = {.allocator = info->load_allocator};
   bool8_t ok = true_v;
-  ok = ok && vkr_mesh_loader_gltf_write_key_string(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_string(&text, info->load_allocator,
                                                    "name", material_id);
-  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&file, "type=pbr");
+  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&text, "type=pbr");
   ok = ok && vkr_mesh_loader_gltf_write_literal_line(
-                 &file, "base_color_colorspace=srgb");
-  ok = ok && vkr_mesh_loader_gltf_write_key_vec4(&file, info->load_allocator,
+                 &text, "base_color_colorspace=srgb");
+  ok = ok && vkr_mesh_loader_gltf_write_key_vec4(&text, info->load_allocator,
                                                  "base_color", base_color);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "metallic", metallic);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "roughness", roughness);
-  ok = ok && vkr_mesh_loader_gltf_write_key_vec3(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_vec3(&text, info->load_allocator,
                                                  "dielectric_specular",
                                                  dielectric_specular);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "normal_scale", normal_scale);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "occlusion_strength",
                                                 occlusion_strength);
   ok = ok &&
-       vkr_mesh_loader_gltf_write_key_vec3(&file, info->load_allocator,
+       vkr_mesh_loader_gltf_write_key_vec3(&text, info->load_allocator,
                                            "emissive_factor", emissive_factor);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "transmission_factor",
                                                 transmission_factor);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "ior", ior);
   ok = ok &&
-       vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+       vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                           "thickness_factor", thickness_factor);
-  ok = ok && vkr_mesh_loader_gltf_write_key_vec3(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_vec3(&text, info->load_allocator,
                                                  "attenuation_color",
                                                  attenuation_color);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "attenuation_distance",
                                                 attenuation_distance);
-  ok = ok && vkr_mesh_loader_gltf_write_key_string(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_string(&text, info->load_allocator,
                                                    "alpha_mode", alpha_mode);
   ok = ok && vkr_mesh_loader_gltf_write_literal_line(
-                 &file, material->double_sided ? "double_sided=true"
+                 &text, material->double_sided ? "double_sided=true"
                                                : "double_sided=false");
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "alpha_cutoff", alpha_cutoff);
-  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&file,
+  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&text,
                                                      "shader=shader.pbr.world");
-  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&file, "pipeline=world");
+  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&text, "pipeline=world");
 
-  ok = ok && vkr_mesh_loader_gltf_write_extension_lines(&file, info, material);
-  ok = ok && vkr_mesh_loader_gltf_write_texture_lines(&file, info, &textures);
+  ok = ok && vkr_mesh_loader_gltf_write_extension_lines(&text, info, material);
+  ok = ok && vkr_mesh_loader_gltf_write_texture_lines(&text, info, &textures);
 
-  ok = ok && file_sync(&file) == FILE_ERROR_NONE;
-  file_close(&file);
   if (!ok ||
-      file_rename(&temp_file_path, &file_path, true_v) != FILE_ERROR_NONE) {
-    (void)file_remove(&temp_file_path);
-    log_error("MeshLoader(glTF): failed publishing generated material '%s'",
-              file_path.path.str);
+      !vkr_mesh_loader_gltf_write_text_atomic(info, material_path, &text)) {
+    log_error("MeshLoader(glTF): failed publishing generated material '%.*s'",
+              (int32_t)material_path.length, material_path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
     return false_v;
   }
-
+  vkr_mesh_loader_gltf_record_ready(info, material_id, material_path, &text,
+                                    &textures);
   return true_v;
+}
+
+/* One material's file and derived textures: spec-gloss conversion, cutout
+   variants, paired normal/roughness bakes and converted packs run on workers
+   with private arenas; the paths of the generated textures return in malloc
+   storage. */
+typedef struct VkrMeshLoaderGltfMaterialWork {
+  String8 material_id;
+  String8 material_path;
+  bool8_t non_unit_vertex_alpha;
+  bool8_t succeeded;
+  VkrRendererError error;
+  String8 *generated;
+  uint32_t generated_count;
+} VkrMeshLoaderGltfMaterialWork;
+
+typedef struct VkrMeshLoaderGltfMaterialJob {
+  const VkrMeshLoaderGltfParseInfo *info;
+  const cgltf_data *data;
+  uint64_t source_hash;
+  const uint32_t *order; /* Material indices in the order workers take them. */
+  VkrMeshLoaderGltfMaterialWork *work;
+  uint32_t count;
+  VkrAtomicUint32 next;
+} VkrMeshLoaderGltfMaterialJob;
+
+/* A worker's arenas hold at most one material's images at a time. */
+#define VKR_GLTF_CONVERT_ARENA_RESERVE GB(4)
+#define VKR_GLTF_CONVERT_ARENA_COMMIT MB(16)
+
+/* A final-tier UASTC paired bake encodes on every core, so a few materials at
+   once keep the cores busy through its serial stretches while bounding
+   memory. At the preview tier's mip floor, or with the far cheaper ASTC
+   encoder, decoding and mips weigh as much as the block encode, so each core
+   takes a material. */
+#define VKR_GLTF_MATERIAL_MAX_WORKERS 3u
+#define VKR_GLTF_MATERIAL_WIDE_MAX_WORKERS 8u
+
+vkr_internal void *vkr_mesh_loader_gltf_material_worker(void *argument) {
+  VkrMeshLoaderGltfMaterialJob *job = argument;
+  Arena *load_arena = arena_create(VKR_GLTF_CONVERT_ARENA_RESERVE,
+                                   VKR_GLTF_CONVERT_ARENA_COMMIT);
+  Arena *scratch_arena = arena_create(VKR_GLTF_CONVERT_ARENA_RESERVE,
+                                      VKR_GLTF_CONVERT_ARENA_COMMIT);
+  VkrAllocator load = {.ctx = load_arena};
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  const bool8_t ready = load_arena && scratch_arena &&
+                        vkr_allocator_arena(&load) &&
+                        vkr_allocator_arena(&scratch);
+  for (;;) {
+    const uint32_t position =
+        vkr_atomic_uint32_fetch_add(&job->next, 1u, VKR_MEMORY_ORDER_RELAXED);
+    if (position >= job->count) {
+      break;
+    }
+    const uint32_t index = job->order[position];
+    VkrMeshLoaderGltfMaterialWork *work = &job->work[index];
+    if (!ready) {
+      work->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      continue;
+    }
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&load);
+    Vector_String8 generated = {.allocator = &load};
+    VkrMeshLoaderGltfParseInfo private_info = *job->info;
+    private_info.load_allocator = &load;
+    private_info.scratch_allocator = &scratch;
+    private_info.out_error = &work->error;
+    private_info.out_generated_asset_paths =
+        job->info->out_generated_asset_paths ? &generated : NULL;
+    bool8_t ok = vkr_mesh_loader_gltf_write_material_file(
+        &private_info, work->material_id, &job->data->materials[index],
+        work->material_path, job->source_hash, work->non_unit_vertex_alpha);
+    if (ok && generated.length) {
+      work->generated = calloc(generated.length, sizeof(String8));
+      ok = work->generated != NULL;
+      for (uint64_t g = 0; ok && g < generated.length; ++g) {
+        const String8 path = *vector_get_String8(&generated, g);
+        uint8_t *copy = malloc(path.length ? path.length : 1u);
+        ok = copy != NULL;
+        if (ok) {
+          MemCopy(copy, path.str, path.length);
+          work->generated[work->generated_count++] =
+              (String8){.str = copy, .length = path.length};
+        }
+      }
+      if (!ok) {
+        work->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+    }
+    work->succeeded = ok;
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  if (load_arena) {
+    arena_destroy(load_arena);
+  }
+  if (scratch_arena) {
+    arena_destroy(scratch_arena);
+  }
+  return NULL;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
@@ -2221,7 +3013,16 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
 
   uint64_t source_hash = vkr_mesh_loader_gltf_hash_source_path(
       info->import_id.length ? info->import_id : info->source_path);
-  for (uint32_t i = 0; i < (uint32_t)data->materials_count; ++i) {
+  const uint32_t count = (uint32_t)data->materials_count;
+  VkrMeshLoaderGltfMaterialWork *work =
+      vkr_allocator_alloc(info->load_allocator, sizeof(*work) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!work) {
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return false_v;
+  }
+  MemZero(work, sizeof(*work) * count);
+  for (uint32_t i = 0; i < count; ++i) {
     const cgltf_material *material = &data->materials[i];
     const bool8_t has_base_texture =
         material->has_pbr_specular_glossiness
@@ -2230,10 +3031,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
                       .texture
             : material->pbr_metallic_roughness.base_color_texture.texture !=
                   NULL;
-    bool8_t non_unit_vertex_alpha = false_v;
     if (material->alpha_mode == cgltf_alpha_mode_mask && has_base_texture &&
         !vkr_mesh_loader_gltf_material_has_non_unit_vertex_alpha(
-            data, material, &non_unit_vertex_alpha)) {
+            data, material, &work[i].non_unit_vertex_alpha)) {
       log_error("MeshLoader(glTF): failed to inspect COLOR_0 alpha for "
                 "material %u",
                 i);
@@ -2241,24 +3041,86 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
                                      VKR_RENDERER_ERROR_INVALID_PARAMETER);
       return false_v;
     }
-    String8 material_id = vkr_mesh_loader_gltf_make_material_id(
+    work[i].material_id = vkr_mesh_loader_gltf_make_material_id(
         info->load_allocator, source_hash, i);
     material_paths[i] = string8_create_formatted(
         info->load_allocator, "%.*s/%.*s.mt", (int32_t)material_dir.length,
-        material_dir.str, (int32_t)material_id.length, material_id.str);
-    if (!vkr_mesh_loader_gltf_write_material_file(
-            info, material_id, material, material_paths[i], source_hash,
-            non_unit_vertex_alpha)) {
-      return false_v;
+        material_dir.str, (int32_t)work[i].material_id.length,
+        work[i].material_id.str);
+    work[i].material_path = material_paths[i];
+  }
+
+  /* Requested materials start first, so the ones the editor shows arrive
+     first; the rest follow in material order. */
+  uint32_t *order =
+      vkr_allocator_alloc(info->load_allocator, sizeof(*order) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *ordered =
+      vkr_allocator_alloc(info->load_allocator, sizeof(*ordered) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!order || !ordered) {
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return false_v;
+  }
+  MemZero(ordered, sizeof(*ordered) * count);
+  uint32_t ordered_count = 0u;
+  for (uint32_t p = 0u; p < info->material_priority_count; ++p) {
+    for (uint32_t i = 0u; i < count; ++i) {
+      if (!ordered[i] &&
+          string8_equals(&work[i].material_id, &info->material_priority[p])) {
+        ordered[i] = true_v;
+        order[ordered_count++] = i;
+        break;
+      }
     }
-    if (out_generated_material_paths) {
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!ordered[i]) {
+      order[ordered_count++] = i;
+    }
+  }
+
+  VkrMeshLoaderGltfMaterialJob job = {.info = info,
+                                      .data = data,
+                                      .source_hash = source_hash,
+                                      .order = order,
+                                      .work = work,
+                                      .count = count};
+  vkr_mesh_loader_gltf_run_workers(
+      info, count,
+      vkr_vkt_preview_tier() || vkr_vkt_encoding() != VKR_VKT_ENCODING_UASTC
+          ? VKR_GLTF_MATERIAL_WIDE_MAX_WORKERS
+          : VKR_GLTF_MATERIAL_MAX_WORKERS,
+      vkr_mesh_loader_gltf_material_worker, &job);
+
+  /* Results publish in material order, as a serial cook would. */
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (ok && !work[i].succeeded) {
+      vkr_mesh_loader_gltf_set_error(info,
+                                     work[i].error != VKR_RENDERER_ERROR_NONE
+                                         ? work[i].error
+                                         : VKR_RENDERER_ERROR_UNKNOWN);
+      ok = false_v;
+    }
+    for (uint32_t g = 0; g < work[i].generated_count; ++g) {
+      if (ok && info->out_generated_asset_paths) {
+        String8 path = work[i].generated[g];
+        String8 copy = string8_duplicate(info->load_allocator, &path);
+        ok = copy.str &&
+             vkr_mesh_loader_gltf_push_unique_path(
+                 info->out_generated_asset_paths, copy, info->load_allocator);
+      }
+      free(work[i].generated[g].str);
+    }
+    free(work[i].generated);
+    if (ok && out_generated_material_paths) {
       vkr_mesh_loader_gltf_push_unique_path(out_generated_material_paths,
                                             material_paths[i],
                                             info->load_allocator);
     }
   }
-
-  return true_v;
+  return ok;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_read_vec2(
@@ -3318,9 +4180,19 @@ vkr_internal void vkr_mesh_loader_gltf_collect_dependencies(
     }
   }
 
+  /* Only images a texture samples are read: an image named solely by an
+     extension the loader ignores (MSFT_texture_dds alternates, 2 GiB in
+     Bistro) is no dependency, and a deferred cook reads no image. */
+  if (info->defer_textures) {
+    return;
+  }
   for (uint32_t i = 0; i < (uint32_t)data->images_count; ++i) {
     const cgltf_image *image = &data->images[i];
-    if (!image->uri) {
+    bool8_t sampled = false_v;
+    for (cgltf_size t = 0; t < data->textures_count && !sampled; ++t) {
+      sampled = data->textures[t].image == image;
+    }
+    if (!image->uri || !sampled) {
       continue;
     }
 

@@ -309,21 +309,11 @@ static bool8_t vkr_harness_scene_manifest_add_reference(
       char generated_source[VKR_HARNESS_PATH_MAX];
       if (vkr_harness_scene_generated_material_source(owner,
                                                       generated_source)) {
-#if defined(PLATFORM_WINDOWS)
         vkr_harness_error_set(
             out_error, "scene_manifest.missing", "$.scene",
             "Generated dependency '%s' is missing (query ignored). Rebuild "
-            "with "
-            "'tools\\cook_vkr_meshes.bat %s'",
+            "with 'vkr_bakery cook %s'",
             reference, generated_source);
-#else
-        vkr_harness_error_set(
-            out_error, "scene_manifest.missing", "$.scene",
-            "Generated dependency '%s' is missing (query ignored). Rebuild "
-            "with "
-            "'./tools/cook_vkr_meshes.sh %s'",
-            reference, generated_source);
-#endif
       } else {
         vkr_harness_error_set(
             out_error, "scene_manifest.missing", "$.scene",

@@ -692,11 +692,17 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
     if (paths[i]) {
       wchar_t wide_path[32768];
-      output[i] = vkr_platform_native_path(paths[i], wide_path)
-                      ? CreateFileW(wide_path, GENERIC_WRITE, FILE_SHARE_READ,
-                                    &security, CREATE_ALWAYS,
-                                    FILE_ATTRIBUTE_NORMAL, NULL)
-                      : INVALID_HANDLE_VALUE;
+      output[i] =
+          vkr_platform_native_path(paths[i], wide_path)
+              ? CreateFileW(
+                    wide_path,
+                    config->append_output ? FILE_APPEND_DATA : GENERIC_WRITE,
+                    config->append_output ? FILE_SHARE_READ | FILE_SHARE_WRITE
+                                          : FILE_SHARE_READ,
+                    &security,
+                    config->append_output ? OPEN_ALWAYS : CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, NULL)
+              : INVALID_HANDLE_VALUE;
       if (output[i] == INVALID_HANDLE_VALUE) {
         for (uint32_t close_index = 0; close_index < i; ++close_index) {
           if (paths[close_index]) {
