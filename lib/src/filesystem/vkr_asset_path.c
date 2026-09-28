@@ -77,11 +77,14 @@ bool8_t vkr_asset_path_managed_valid(String8 reference) {
   if (!reference.str || !reference.length) {
     return false_v;
   }
+  // Characters Windows cannot store in a filename would make the project
+  // unopenable there, so no host accepts them.
+  static const char windows_reserved[] = "\\:*?\"<>|";
   uint64_t segment = 0;
   for (uint64_t i = 0; i <= reference.length; ++i) {
     if (i < reference.length &&
-        (reference.str[i] == '\\' || reference.str[i] == ':' ||
-         reference.str[i] == 0)) {
+        (reference.str[i] == 0 || memchr(windows_reserved, reference.str[i],
+                                         sizeof(windows_reserved) - 1u))) {
       return false_v;
     }
     if (i == reference.length || reference.str[i] == '/') {

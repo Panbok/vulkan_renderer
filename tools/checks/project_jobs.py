@@ -331,7 +331,7 @@ def validate_managed_path(value):
     if isinstance(value, str) and '..' in value.split('/'):
         raise JobError(f'Managed path escapes its owner: {value}')
     if (not isinstance(value, str) or not value or
-            any(character in value for character in ('\\', ':', '\x00')) or
+            any(character in '\\:*?"<>|\x00' for character in value) or
             any(part in ('', '.', '..') for part in value.split('/'))):
         raise JobError(f'Invalid managed path: {value!r}')
     return value

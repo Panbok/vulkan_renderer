@@ -2,6 +2,7 @@
 
 #include "../vkr_bakery_buffer.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_asset_path.h"
 #include "platform/vkr_platform.h"
 
 #include <errno.h>
@@ -614,15 +615,13 @@ bool8_t vkr_project_validate_managed_path(VkrProjectJob *job,
   if (!value) {
     return vkr_project_fail(job, "Invalid managed path: None");
   }
+  // A `..` segment gets its own message; the shared grammar owns the rest.
   bool8_t dotdot = false_v;
-  bool8_t bad_part = !value[0];
   const char *part = value;
   for (const char *c = value;; ++c) {
     if (*c == '/' || *c == 0) {
       const uint64_t length = (uint64_t)(c - part);
       dotdot = dotdot || (length == 2u && part[0] == '.' && part[1] == '.');
-      bad_part = bad_part || length == 0u || (length == 1u && part[0] == '.') ||
-                 (length == 2u && part[0] == '.' && part[1] == '.');
       if (*c == 0) {
         break;
       }
@@ -632,7 +631,8 @@ bool8_t vkr_project_validate_managed_path(VkrProjectJob *job,
   if (dotdot) {
     return vkr_project_fail(job, "Managed path escapes its owner: %s", value);
   }
-  if (bad_part || strchr(value, '\\') || strchr(value, ':')) {
+  if (!vkr_asset_path_managed_valid(
+          (String8){.str = (uint8_t *)value, .length = strlen(value)})) {
     return vkr_project_fail(job, "Invalid managed path: '%s'", value);
   }
   return true_v;

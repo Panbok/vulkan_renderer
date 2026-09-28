@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-09-28
 authority: adr
 ---
 # ADR-070: Portable path boundaries
@@ -24,7 +24,7 @@ full import and reload lifecycle.
 | Value | Contract and owner |
 |---|---|
 | Host path | UTF-8 at C interfaces, `Path` in Python. The filesystem owner converts to native encoding/root syntax immediately before I/O. C++ uses the same native adapter for STL file operations. |
-| Managed reference | UTF-8 owner-relative path with `/` separators and nonempty raw segments. Reject roots, drives, `.`, `..`, backslashes and NUL before filesystem normalization. C and Python consume the same conformance corpus. |
+| Managed reference | UTF-8 owner-relative path with `/` separators and nonempty raw segments. Reject roots, drives, `.`, `..`, backslashes, NUL and the other characters Windows cannot store in a filename (`: * ? " < > |`) before filesystem normalization, on every host, so a project stays openable on Windows. C and Python consume the same conformance corpus. |
 | Resource reference | Explicit `./` or `../` resolves against the owning file; bare references retain legacy repository-root meaning. Native root classification precedes query and dot processing. |
 | glTF URI | Decode URI path escapes exactly once at the import boundary. Data URIs remain separate. Python managed imports reject remote/query/fragment dependencies. |
 | OBJ/MTL filename | Parse supported quotes and comments without shell escapes or URL decoding. Native Windows separators remain separators; literal percent characters remain filename bytes. |

@@ -2,7 +2,8 @@
 #include "filesystem/filesystem.h"
 
 /** Validate raw portable owner-relative manifest segments, without
- * normalization. */
+ * normalization. Characters Windows cannot store in a filename are rejected on
+ * every host. */
 bool8_t vkr_asset_path_managed_valid(String8 reference);
 
 /** Return owned, null-terminated paths in allocator storage. Bare relative

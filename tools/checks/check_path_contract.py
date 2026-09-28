@@ -202,7 +202,8 @@ def check_faces(space):
     code, result = space.run('prepare_scene', scene_id, scene_path=str(scene_path))
     assert code == 0, result
     runtime = jobs.load_json(result['runtime_path'])
-    assert runtime['reflection_probes'][0]['cubemap']['base_path'] == str((directory / 'cube').resolve())
+    # Compare paths, not spellings: Windows accepts either separator.
+    assert Path(runtime['reflection_probes'][0]['cubemap']['base_path']) == (directory / 'cube').resolve()
 
 
 def main():
