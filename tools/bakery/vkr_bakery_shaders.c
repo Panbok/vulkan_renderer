@@ -183,9 +183,13 @@ void vkr_bakery_task_read_depfile(VkrBakeryTask *task, const char *path) {
         c == 0 || c == ' ' || c == '\t' || c == '\n' || c == '\r';
     if (c == '\\' && (cursor[1] == '\n' || cursor[1] == '\r')) {
       boundary = true_v;
-    } else if (c == '\\' && cursor[1] == ' ') {
+    } else if (c == '\\' && (cursor[1] == ' ' || cursor[1] == ':' ||
+                             cursor[1] == '\\' || cursor[1] == '#')) {
+      /* Makefile escapes. slangc on Windows writes `E\:\\dir\\file`; kept
+       * escaped, no prerequisite resolved below the root and an edited
+       * include reused the stale product. */
       if (token_length + 1u < sizeof(token)) {
-        token[token_length++] = ' ';
+        token[token_length++] = cursor[1];
       }
       cursor += 1;
       continue;
@@ -294,9 +298,11 @@ vkr_internal bool8_t vkr_bakery_spirv_run(VkrBakeryTask *task) {
   return vkr_bakery_task_product(task, "spv", staged);
 }
 
+/* Version 2 discards Windows records whose escaped depfiles named no
+ * includes, so their keys ignored every edited include. */
 const VkrBakeryProducer vkr_bakery_producer_shader_spirv = {
     .id = "shader_spirv",
-    .version = 1u,
+    .version = 2u,
     .identity = VKR_BAKERY_IDENTITY_SHADER,
     .summary = "One Vulkan Slang entry point to SPIR-V.",
     .recipe_fields = vkr_bakery_spirv_fields,
