@@ -187,7 +187,8 @@ were selected to use the existing portable material inputs.
 
 The supported device profile adds a compression family, the runtime no longer
 needs legacy `.vkt` compatibility, or a measured BC7 encoder can give desktop
-hosts native derived textures as ASTC gives Apple silicon.
+hosts native derived textures as ASTC gives Apple silicon
+([Windows asset builds](../proposals/windows-asset-builds.md)).
 
 ## Code evidence
 
