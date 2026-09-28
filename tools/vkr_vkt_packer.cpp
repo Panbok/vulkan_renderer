@@ -39,6 +39,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -791,14 +792,16 @@ bool add_kv_bool(ktxTexture2 *texture, const char *key, bool value) {
          KTX_SUCCESS;
 }
 
-bool should_skip_output(const std::vector<SourceImage> &sources,
-                        const fs::path &dst, TextureClass texture_class,
-                        TextureShape shape, const PackConfig &config) {
-  if (config.force || !config.write_source_hash || !fs::exists(dst)) {
-    return false;
-  }
-  uint64_t source_hash = 0u;
-  if (!combined_source_hash(sources, &source_hash)) {
+// Output reads and replacements share one lock: material workers can target
+// one output, and Windows cannot replace a file another thread holds open.
+std::mutex output_mutex;
+
+// Whether `dst` already holds the pack of sources hashing to `source_hash`
+// with these settings. The caller holds output_mutex.
+bool output_matches(const fs::path &dst, uint64_t source_hash,
+                    TextureClass texture_class, TextureShape shape,
+                    const PackConfig &config) {
+  if (!fs::exists(dst)) {
     return false;
   }
   ktxTexture2 *texture = nullptr;
@@ -816,6 +819,20 @@ bool should_skip_output(const std::vector<SourceImage> &sources,
           texture, "vkr.pack_settings",
           pack_settings_identity(texture_class, shape, config));
   return matches;
+}
+
+bool should_skip_output(const std::vector<SourceImage> &sources,
+                        const fs::path &dst, TextureClass texture_class,
+                        TextureShape shape, const PackConfig &config) {
+  if (config.force || !config.write_source_hash) {
+    return false;
+  }
+  uint64_t source_hash = 0u;
+  if (!combined_source_hash(sources, &source_hash)) {
+    return false;
+  }
+  const std::lock_guard<std::mutex> lock(output_mutex);
+  return output_matches(dst, source_hash, texture_class, shape, config);
 }
 
 bool publish_temporary_output(const fs::path &temporary,
@@ -1214,8 +1231,8 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
       break;
     }
 
+    uint64_t combined_hash = 0u;
     if (config.write_source_hash) {
-      uint64_t combined_hash = 0u;
       if (!combined_source_hash(source_images, &combined_hash) ||
           !add_kv_string(texture, "vkr.source_hash",
                          to_hex_u64(combined_hash))) {
@@ -1269,6 +1286,16 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
       std::cerr << "Failed to write temporary output '" << tmp_path
                 << "': " << ktxErrorString(result) << "\n";
       fs::remove(tmp_path, ec);
+      break;
+    }
+
+    // Workers encode in parallel but publish in turn. Another worker may have
+    // published this identity since the skip check; its output stays.
+    const std::lock_guard<std::mutex> lock(output_mutex);
+    if (!config.force && config.write_source_hash &&
+        output_matches(dst_path, combined_hash, texture_class, shape, config)) {
+      fs::remove(tmp_path, ec);
+      success = true;
       break;
     }
     if (!publish_temporary_output(tmp_path, dst_path, &ec)) {
