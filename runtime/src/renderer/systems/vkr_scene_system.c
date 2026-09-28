@@ -2740,7 +2740,8 @@ bool8_t vkr_scene_set_directional_light(VkrScene *scene, VkrEntityId entity,
   if (!scene || !scene->world || !light ||
       !isfinite(light->sun_angular_diameter_degrees) ||
       light->sun_angular_diameter_degrees < 0.0f ||
-      light->sun_angular_diameter_degrees >= 180.0f ||
+      light->sun_angular_diameter_degrees >
+          VKR_DIRECTIONAL_LIGHT_MAX_SUN_ANGULAR_DIAMETER_DEGREES ||
       !(light->temperature_kelvin == 0.0f ||
         (light->temperature_kelvin >= VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K &&
          light->temperature_kelvin <= VKR_ATMOSPHERE_SUN_TEMPERATURE_MAX_K)))

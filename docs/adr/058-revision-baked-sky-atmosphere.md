@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-09-28
 authority: adr
 ---
 
@@ -93,8 +93,9 @@ found, and the loader warns when a scene authors more than one. The light's
 local rotation applied to `direction_local` points away from the sun. Its
 colour, tinted by an optional `temperature_kelvin` in `[1000, 40000]` through
 the blackbody helper below, times its intensity becomes the top-of-atmosphere
-irradiance. A diameter in `(0, 5]` degrees replaces the visible disc; zero, a
-hard-shadow light, keeps the authored disc.
+irradiance. The light's diameter, in `[0, 5]` degrees, sizes the visible disc as
+well as the shadow penumbra. Zero, a hard-shadow light, keeps the atmosphere's
+saved disc, which Details does not show so the disc has one visible control.
 
 The renderer lights with that one directional light. Details marks any other
 enabled directional light "Inactive: <name> is the sun" (the scene records

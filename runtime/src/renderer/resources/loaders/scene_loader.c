@@ -2884,8 +2884,11 @@ vkr_internal bool8_t scene_json_parse_directional_light(
                 entity_index);
       return false_v;
     }
+    /* Older scenes authored up to 180 degrees for shadow softness alone; the
+       diameter now also sizes the sky's disc, which stops at its limit. */
     out_entity->directional_light.sun_angular_diameter_degrees =
-        sun_angular_diameter_degrees;
+        Min(sun_angular_diameter_degrees,
+            VKR_DIRECTIONAL_LIGHT_MAX_SUN_ANGULAR_DIAMETER_DEGREES);
   }
 
   VkrJsonReader temperature_reader = dir_light_obj;

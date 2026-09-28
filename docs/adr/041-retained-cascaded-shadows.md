@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-09-28
 authority: adr
 ---
 
@@ -67,7 +67,9 @@ retain the existing PCF path and tap count. Existing bias, kernel rotation,
 uniform-region early-out, cascade cross-fade and distance fade remain active.
 
 Scene directional lights author `sun_angular_diameter_degrees`, defaulting to
-0.53 degrees, with finite values in `[0, 180)`. Scene loading, editor changes and
+0.53 degrees, with finite values in `[0, 5]`, the sky disc's limit, because the
+same diameter sizes the visible disc (ADR-058). Loading clamps older values up
+to 180 degrees to that limit. Scene loading, editor changes and
 undo persistence retain this value. It controls the shadow-filter approximation;
 it does not turn directional BRDF evaluation or offline baking into disk-light
 transport. Frame input version 36 stores its half-angle tangent in the fourth

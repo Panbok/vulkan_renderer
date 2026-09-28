@@ -2671,6 +2671,12 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 20:
       ok = edit_json_floats(
           j, &v->directional_light.sun_angular_diameter_degrees, 1);
+      /* Older overlays authored up to 180 degrees; see the scene loader. */
+      if (ok && v->directional_light.sun_angular_diameter_degrees >
+                    VKR_DIRECTIONAL_LIGHT_MAX_SUN_ANGULAR_DIAMETER_DEGREES) {
+        v->directional_light.sun_angular_diameter_degrees =
+            VKR_DIRECTIONAL_LIGHT_MAX_SUN_ANGULAR_DIAMETER_DEGREES;
+      }
       break;
     case 19:
       ok = edit_json_bool(j, &v->point_light.casts_shadow);

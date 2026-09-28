@@ -11,6 +11,9 @@ typedef enum VkrPointLightKind {
 
 /** Apparent solar-disc diameter of a directional light that authors none. */
 #define VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES 0.53f
+/** The light's diameter drives both the sky's disc and the shadow penumbra,
+ * so it shares the sky's disc limit (ADR-058). */
+#define VKR_DIRECTIONAL_LIGHT_MAX_SUN_ANGULAR_DIAMETER_DEGREES 5.0f
 
 #define VKR_MAX_SCENE_POINT_LIGHTS 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
