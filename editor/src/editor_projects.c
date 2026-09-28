@@ -2838,14 +2838,16 @@ static void project_job_complete(VkrEditorProjects *projects,
       projects->job_id = 0;
       return;
     }
-    projects->creating_project = false_v;
-    project_restore_settings(projects, editor, frame);
-    projects->view = PROJECT_VIEW_EDITOR;
     projects->job_id = 0;
     project_refresh(projects);
-    projects->content_scene[0] = '\0';
-    vkr_editor_content_set_project(editor->content, projects->workspace.root,
-                                   projects->project->id, "");
+    /* Opening the published project restores its settings and prepares its
+       root World, as opening it from the chooser does (ADR-076). Loading
+       replaces the project storage, so copy its identity first. */
+    char id[37];
+    snprintf(id, sizeof(id), "%s", projects->project->id);
+    if (!project_load(projects, id, editor, frame)) {
+      projects->view = PROJECT_VIEW_CHOOSER;
+    }
     return;
   }
   if (projects->job_creates_scene) {
