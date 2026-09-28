@@ -191,8 +191,9 @@ void vkr_window_resolve_close(VkrWindow *window, bool8_t confirm);
 
 /**
  * @brief Gets the physical output-pixel size of the native client area.
- * @param window Pointer to the `Window` to query. Must not be NULL.
- * @return Physical output pixels, including the platform backing scale.
+ * @param window Pointer to the `Window` to query.
+ * @return Physical output pixels, including the platform backing scale; zero
+ * for a window that was never created, as in an offscreen application.
  */
 VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window);
 
@@ -235,7 +236,8 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height);
  * request fills the screen without covering the menu bar, Dock, or taskbar.
  * Platform resize events remain the authority for the renderer's pixel extent.
  *
- * @return `true_v` when the platform accepted the new frame.
+ * @return `true_v` when the platform accepted the new frame; `false_v` for a
+ * window that was never created.
  */
 bool8_t vkr_window_resize_centered(VkrWindow *window, uint32_t width,
                                    uint32_t height);
@@ -275,6 +277,7 @@ void *vkr_window_get_win32_instance(VkrWindow *window);
 /**
  * @brief Sets the mouse capture state.
  * Repeating the current state does not hide, center or restore the cursor.
+ * A window that was never created ignores the request.
  * @param window Pointer to the `Window` to modify.
  * @param capture `true` if the mouse should be captured, `false` otherwise.
  * @note This function is platform-specific and may not be available on all
@@ -311,7 +314,8 @@ void vkr_window_request_close(VkrWindow *window);
 /**
  * @brief Checks if the mouse is captured by the window.
  * @param window Pointer to the `Window` to check.
- * @return `true_v` if the mouse is captured, `false_v` otherwise.
+ * @return `true_v` if the mouse is captured, `false_v` otherwise, including
+ * for a window that was never created.
  * @note This function is platform-specific and may not be available on all
  * platforms.
  */

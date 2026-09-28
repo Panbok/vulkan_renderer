@@ -1094,8 +1094,10 @@ bool8_t vkr_window_update(VkrWindow *window) {
 }
 
 VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
-  assert_log(window != NULL, "Window not initialized");
-  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  /* An offscreen application never creates its window. */
+  if (!window || !window->platform_state) {
+    return (VkrWindowPixelSize){0};
+  }
 
   PlatformState *state = (PlatformState *)window->platform_state;
 
@@ -1149,8 +1151,9 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
 
 bool8_t vkr_window_resize_centered(VkrWindow *window, uint32_t width,
                                    uint32_t height) {
-  assert_log(window != NULL, "Window not initialized");
-  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  if (!window || !window->platform_state) {
+    return false_v;
+  }
   if (width == 0 || height == 0) {
     return false_v;
   }
@@ -1239,8 +1242,9 @@ void *vkr_window_get_metal_layer(VkrWindow *window) {
 }
 
 void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
-  assert_log(window != NULL, "Window not initialized");
-  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  if (!window || !window->platform_state) {
+    return;
+  }
 
   PlatformState *state = (PlatformState *)window->platform_state;
 
@@ -1304,8 +1308,9 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
 }
 
 bool8_t vkr_window_is_mouse_captured(VkrWindow *window) {
-  assert_log(window != NULL, "Window not initialized");
-  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  if (!window || !window->platform_state) {
+    return false_v;
+  }
 
   PlatformState *state = (PlatformState *)window->platform_state;
   return state->mouse_captured;
