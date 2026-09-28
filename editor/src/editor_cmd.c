@@ -12,8 +12,8 @@
 /* Cmd bar: a typed command line in the top bar, modeled on the Unreal
  * Editor's Cmd field. Typed lines and startup scripts share one interpreter
  * and one queue that runs a single command per frame, because the runtime
- * accepts one request of each kind per UI build. docs/editor-cmd.md lists the
- * vocabulary and explains how to add a command. */
+ * accepts one request of each kind per UI build. ADR-075 lists the
+ * vocabulary. */
 
 #define CMD_FIELD_WIDTH_PT 300.0f
 #define CMD_TAG_WIDTH_PT 40.0f
@@ -21,6 +21,7 @@
 #define CMD_ROW_PT 26.0f
 #define CMD_POPUP_PADDING_PT 4.0f
 #define CMD_SCENE_WAIT_LIMIT_SECONDS 120.0
+#define CMD_HOLD_LIMIT_SECONDS 600.0
 
 #if defined(PLATFORM_APPLE)
 #define CMD_SHORTCUT "\xe2\x8c\x98P"
@@ -159,6 +160,9 @@ struct CmdDef {
   EditorCommand command;
   /* Runner-specific selector, such as which light-icon switch to change. */
   uint32_t value;
+  /* It starts a Bakery job or a scene load, so the queue holds until that
+   * work settles and the next statement sees its result. */
+  bool8_t holds;
 };
 
 /* ---- Text helpers (String8 is not null-terminated) ---- */
@@ -1040,10 +1044,12 @@ static bool8_t cmd_run_wait(CmdContext *ctx, const CmdDef *def, String8 arg) {
 
 #define CMD_SIMPLE(name, help, command)                                        \
   {name, CMD_ARG_NONE, "", help, cmd_run_command, command, 0u}
+#define CMD_SIMPLE_HOLDS(name, help, command)                                  \
+  {name, CMD_ARG_NONE, "", help, cmd_run_command, command, 0u, .holds = true_v}
 
 static const CmdDef cmd_defs[] = {
-    CMD_SIMPLE("scene.load", "Load the scene", CMD_LOAD),
-    CMD_SIMPLE("scene.reload", "Reload the scene from disk", CMD_RELOAD),
+    CMD_SIMPLE_HOLDS("scene.load", "Load the scene", CMD_LOAD),
+    CMD_SIMPLE_HOLDS("scene.reload", "Reload the scene from disk", CMD_RELOAD),
     CMD_SIMPLE("scene.unload", "Unload the scene", CMD_UNLOAD),
     CMD_SIMPLE("scene.save", "Save scene edits", CMD_SAVE),
     CMD_SIMPLE("undo", "Undo the last edit", CMD_UNDO),
@@ -1097,15 +1103,15 @@ static const CmdDef cmd_defs[] = {
      "Turn eased interface motion off or on", cmd_run_motion, CMD_COUNT, 0u},
     {"scene.add", CMD_ARG_TEXT, "<name|path>",
      "Load a project scene or scene file beside the active one",
-     cmd_run_scene_add, CMD_COUNT, 0u},
+     cmd_run_scene_add, CMD_COUNT, 0u, .holds = true_v},
     {"scene.remove", CMD_ARG_TEXT, "<slot|name> [discard]",
      "Remove an added scene", cmd_run_scene_remove, CMD_COUNT, 0u},
     {"scene.instantiate", CMD_ARG_TEXT, "<name>",
      "Copy a project scene into the open one as a prefab instance",
-     cmd_run_scene_instantiate, CMD_COUNT, 0u},
+     cmd_run_scene_instantiate, CMD_COUNT, 0u, .holds = true_v},
     {"scene.primary", CMD_ARG_TEXT, "<slot|name>",
      "Make an added scene the primary scene", cmd_run_scene_primary, CMD_COUNT,
-     0u},
+     0u, .holds = true_v},
     {"create", CMD_ARG_OBJECT, "<object>",
      "Create an object in front of the camera", cmd_run_create, CMD_COUNT, 0u},
     {"delete", CMD_ARG_TEXT, "[name]", "Delete the selection or a named object",
@@ -1118,29 +1124,29 @@ static const CmdDef cmd_defs[] = {
      "Move the selection under an object, keeping its place", cmd_run_parent,
      CMD_COUNT, 0u},
     {"tab.new", CMD_ARG_NONE, "", "Open a new document showing the World",
-     cmd_run_tab, CMD_COUNT, 0u},
+     cmd_run_tab, CMD_COUNT, 0u, .holds = true_v},
     {"tab.show", CMD_ARG_NUMBER, "<n>", "Switch to viewport document n",
-     cmd_run_tab, CMD_COUNT, 0u},
+     cmd_run_tab, CMD_COUNT, 0u, .holds = true_v},
     {"scene.open", CMD_ARG_TEXT, "<name>", "Open a project scene by name",
-     cmd_run_scene_open, CMD_COUNT, 0u},
+     cmd_run_scene_open, CMD_COUNT, 0u, .holds = true_v},
     {"scene.import", CMD_ARG_TEXT, "<path>",
      "Open the Create window importing a scene JSON and inspect it",
-     cmd_run_scene_import, CMD_COUNT, 0u},
+     cmd_run_scene_import, CMD_COUNT, 0u, .holds = true_v},
     {"scene.create", CMD_ARG_TEXT, "<name>",
      "Create an empty scene in the project and open it", cmd_run_scene_create,
-     CMD_COUNT, 0u},
+     CMD_COUNT, 0u, .holds = true_v},
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Whether the open scene uses the World's objects where it has none",
      cmd_run_scene_inherit, CMD_COUNT, 0u},
     {"content.import", CMD_ARG_TEXT, "<path>",
      "Import a file into the project's shared assets", cmd_run_content_import,
-     CMD_COUNT, 0u},
+     CMD_COUNT, 0u, .holds = true_v},
     {"content.search", CMD_ARG_TEXT, "[text]",
      "Search Content below the current folder by name, type, folder or tag",
      cmd_run_content_search, CMD_COUNT, 0u},
     {"content.command", CMD_ARG_TEXT, "<load|open|place|rename|delete> <item>",
      "Run a Content context menu command on an item or folder",
-     cmd_run_content_folder, CMD_COUNT, 0u},
+     cmd_run_content_folder, CMD_COUNT, 0u, .holds = true_v},
     {"content.open", CMD_ARG_TEXT, "[folder]",
      "Show a Content folder, such as Props/Bistro; empty shows the root",
      cmd_run_content_folder, CMD_COUNT, 0u},
@@ -1161,7 +1167,7 @@ static const CmdDef cmd_defs[] = {
      cmd_run_content_folder, CMD_COUNT, 0u},
     {"content.place", CMD_ARG_TEXT, "<item>",
      "Drop a Content item on the viewport centre: a mesh is placed there",
-     cmd_run_content_folder, CMD_COUNT, 0u},
+     cmd_run_content_folder, CMD_COUNT, 0u, .holds = true_v},
     {"content.view", CMD_ARG_TEXT, "<list|tiles>",
      "Show Content as a list with columns or as tiles", cmd_run_content_folder,
      CMD_COUNT, 0u},
@@ -1242,6 +1248,10 @@ static bool8_t cmd_execute_line(VkrEditorUi *editor,
                def->usage);
   } else {
     ok = def->run(&ctx, def, arg);
+    if (ok && def->holds) {
+      editor->cmd_holding = true_v;
+      editor->cmd_hold_seconds = 0.0;
+    }
   }
   if (ctx.message[0]) {
     cmd_report(ok, ctx.message);
@@ -1306,6 +1316,27 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       }
       return;
     }
+  }
+  /* The hold's work shows from the next frame: runners start project jobs at
+   * once, and the runtime starts requested loads after this build. */
+  if (editor->cmd_holding) {
+    const bool8_t busy = frame->scene_loading || frame->additive_loading ||
+                         vkr_editor_projects_busy(editor->projects);
+    editor->cmd_hold_seconds += dt;
+    if (busy && editor->cmd_hold_seconds < CMD_HOLD_LIMIT_SECONDS) {
+      return;
+    }
+    editor->cmd_holding = false_v;
+    if (busy) {
+      cmd_report(false_v, "Job or scene load timed out; dropped the remaining "
+                          "commands");
+      editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
+      return;
+    }
+    char text[64];
+    snprintf(text, sizeof(text), "Settled after %.2f s",
+             editor->cmd_hold_seconds);
+    cmd_report(true_v, text);
   }
   /* One non-empty command per frame keeps each runtime request slot single. */
   while (editor->cmd_queue_offset < editor->cmd_queue_length) {

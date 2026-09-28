@@ -210,6 +210,9 @@ typedef struct VkrEditorUi {
   uint32_t cmd_queue_offset;
   float64_t cmd_wait_seconds;
   float64_t cmd_wait_scene_seconds;
+  /* A job-starting command holds the queue until its work settles. */
+  bool8_t cmd_holding;
+  float64_t cmd_hold_seconds;
   VkrFontHandle heading_font;
   /* Inter body text, Phosphor icon atlases and the monospace Console face. */
   VkrFontHandle text_font;

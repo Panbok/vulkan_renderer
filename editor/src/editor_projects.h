@@ -19,6 +19,8 @@ bool8_t vkr_editor_projects_dialog_contains(const VkrEditorProjects *projects,
  * shows a compact launcher instead of the editor shell. */
 bool8_t vkr_editor_projects_launcher(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects);
+/* A scene job, its activation or a Set primary swap is still in progress. */
+bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects);
 void vkr_editor_projects_update(VkrEditorProjects *projects,
                                 VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame);

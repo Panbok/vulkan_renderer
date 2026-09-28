@@ -2525,6 +2525,11 @@ bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects) {
                       projects->waiting_activation);
 }
 
+bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects) {
+  return projects && (projects->job_id || projects->waiting_activation ||
+                      projects->swap != PROJECT_SWAP_NONE);
+}
+
 /* A dialog is open: a project view other than the editor and its progress
    strip. */
 static bool8_t project_dialog_open(const VkrEditorProjects *projects) {

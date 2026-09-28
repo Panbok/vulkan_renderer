@@ -3790,6 +3790,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .mouse_captured = vkr_window_is_mouse_captured(&application->host.window),
   };
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    frame.additive_loading |= state->additive_pending[i];
     if (state->additive_handles[i]) {
       frame.additive[i] =
           vkr_scene_handle_get_scene(state->additive_handles[i]);

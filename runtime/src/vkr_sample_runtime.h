@@ -226,6 +226,8 @@ typedef struct VkrSampleUiFrame {
   String8 scene_path;
   String8 scene_status;
   bool8_t scene_loading;
+  /** An added scene's load is still pending in some additive slot. */
+  bool8_t additive_loading;
   /* A modal client sets this to suppress world input and global edit keys. */
   bool8_t *modal;
   float64_t simulation_time;

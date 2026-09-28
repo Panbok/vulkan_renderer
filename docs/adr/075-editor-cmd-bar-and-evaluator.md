@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-09-28
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -31,6 +31,16 @@ required-argument command with nothing after it that reads as a value
 environment variable share one queue; the environment script runs first. The
 queue runs one statement per frame because the runtime accepts one request of
 each kind per UI build; `wait` and `wait.scene` pause it.
+
+A command that starts a Bakery job or a scene load holds the queue until that
+work settles, so the next statement reads its result without a timed `wait`:
+`scene.load`, `scene.reload`, `scene.open`, `scene.add`, `scene.create`,
+`scene.import`, `scene.instantiate`, `scene.primary`, `tab.new`, `tab.show`,
+`content.import`, `content.command` and `content.place`. The hold ends when no
+project job, activation or Set primary swap runs and neither the primary scene
+nor an added scene is loading, and prints `[cmd] Settled after <s> s`. After
+600 s it reports an error and drops the queue. An unsaved-edits prompt does not
+hold the queue: a script saves or discards first.
 
 Every result goes three ways: a `[cmd]` line on stdout, flushed per line
 (`[cmd] > <statement>`, then `[cmd] <result>` or `[cmd] error: <message>`); the

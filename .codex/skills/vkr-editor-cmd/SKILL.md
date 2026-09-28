@@ -55,9 +55,12 @@ task asks for it.
 The evaluator has no loops, user functions or file access, and cannot create
 entities; `create`, `delete` and `component.*` make structural edits. Vector
 literals have three components: a four-component color keeps its alpha.
-Project scene jobs (`scene.open`, `scene.add <name>`, `scene.primary`,
-`scene.instantiate`) run through Bakery; give each a generous `wait` before
-reading the result.
+Commands that start a Bakery job or a scene load (`scene.open`, `scene.add`,
+`scene.primary`, `scene.instantiate`, `content.import`, and the others ADR-075
+lists) hold the queue until the work settles and print
+`[cmd] Settled after <s> s`; write the next statement directly, without a
+timed `wait`. Save or discard edits before such a command, because an
+unsaved-edits prompt does not hold the queue.
 Mouse gestures such as dragging or right-clicking a Content item have no
 statement: use `content.place`, `content.drop`, `content.move` and
 `content.command`, which run the same actions, and report the gesture itself
