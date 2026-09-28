@@ -659,7 +659,9 @@ static void project_queue_settings_save(VkrEditorProjects *projects,
     if (views[i].length) {
       MemCopy(save->bytes + offset, views[i].str, views[i].length);
     }
-    *destinations[i] = string8_create(save->bytes + offset, views[i].length);
+    // A project created this session has no loaded document yet.
+    *destinations[i] = (String8){.str = save->bytes + offset,
+                                 .length = views[i].length};
     offset += views[i].length;
   }
   save->error = (VkrEditorProjectError){0};
