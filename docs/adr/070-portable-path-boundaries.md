@@ -57,6 +57,13 @@ name cannot launch with that deep working directory; the operation fails rather
 than silently changing the directory. This restriction does not apply to the
 extended source, output and redirected-log paths supported by the I/O owner.
 
+A Windows child inherits only its standard handles, through
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`; redirection files and capture pipes are
+created non-inheritable and passed as listed duplicates. Unrestricted
+inheritance handed every child the files other threads had open, which then
+stayed open until that child exited: parallel Bakery shader compiles lost
+four to eight actions per cold run to rename sharing violations.
+
 The project store resolves selected scene paths for the editor's request writer.
 Missing-manifest deletion requests retain their distinct checked-join behavior.
 Request open/serialization failures produce a visible message rather than a

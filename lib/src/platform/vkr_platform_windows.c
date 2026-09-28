@@ -659,6 +659,81 @@ static bool8_t vkr_platform_native_executable(const char *path,
   return vkr_platform_native_path(path, output);
 }
 
+/* CreateProcessW with inheritance hands the child every inheritable handle
+ * this process holds, including files other threads opened through the CRT.
+ * They stay open until that child exits, so a concurrent writer's rename of
+ * its own file fails with a sharing violation. A child instead inherits only
+ * its standard handles, listed as inheritable duplicates closed after
+ * creation. */
+typedef struct VkrPlatformChildHandles {
+  STARTUPINFOEXW startup;
+  HANDLE inherited[3];
+  uint32_t inherited_count;
+  _Alignas(16) uint8_t attribute_storage[128];
+} VkrPlatformChildHandles;
+
+static void vkr_platform_child_handles_release(VkrPlatformChildHandles *child) {
+  if (child->startup.lpAttributeList) {
+    DeleteProcThreadAttributeList(child->startup.lpAttributeList);
+    child->startup.lpAttributeList = NULL;
+  }
+  for (uint32_t i = 0; i < child->inherited_count; ++i) {
+    CloseHandle(child->inherited[i]);
+  }
+  child->inherited_count = 0u;
+}
+
+/* An absent standard handle stays absent. Create the child with
+ * EXTENDED_STARTUPINFO_PRESENT and inheritance only when inherited_count is
+ * nonzero; release after CreateProcessW either way. */
+static bool8_t vkr_platform_child_handles_begin(VkrPlatformChildHandles *child,
+                                                HANDLE input, HANDLE output,
+                                                HANDLE error) {
+  MemZero(child, sizeof(*child));
+  child->startup.StartupInfo.cb = sizeof(child->startup);
+  child->startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  const HANDLE sources[3] = {input, output, error};
+  HANDLE *targets[3] = {&child->startup.StartupInfo.hStdInput,
+                        &child->startup.StartupInfo.hStdOutput,
+                        &child->startup.StartupInfo.hStdError};
+  for (uint32_t i = 0; i < ArrayCount(sources); ++i) {
+    *targets[i] = sources[i];
+    if (!sources[i] || sources[i] == INVALID_HANDLE_VALUE) {
+      continue;
+    }
+    HANDLE copy = NULL;
+    if (!DuplicateHandle(GetCurrentProcess(), sources[i], GetCurrentProcess(),
+                         &copy, 0u, TRUE, DUPLICATE_SAME_ACCESS)) {
+      vkr_platform_child_handles_release(child);
+      return false_v;
+    }
+    child->inherited[child->inherited_count++] = copy;
+    *targets[i] = copy;
+  }
+  if (!child->inherited_count) {
+    child->startup.StartupInfo.cb = sizeof(child->startup.StartupInfo);
+    return true_v;
+  }
+
+  SIZE_T size = 0u;
+  (void)InitializeProcThreadAttributeList(NULL, 1u, 0u, &size);
+  LPPROC_THREAD_ATTRIBUTE_LIST list =
+      (LPPROC_THREAD_ATTRIBUTE_LIST)child->attribute_storage;
+  if (!size || size > sizeof(child->attribute_storage) ||
+      !InitializeProcThreadAttributeList(list, 1u, 0u, &size)) {
+    vkr_platform_child_handles_release(child);
+    return false_v;
+  }
+  child->startup.lpAttributeList = list;
+  if (!UpdateProcThreadAttribute(
+          list, 0u, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, child->inherited,
+          child->inherited_count * sizeof(HANDLE), NULL, NULL)) {
+    vkr_platform_child_handles_release(child);
+    return false_v;
+  }
+  return true_v;
+}
+
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
                                  bool8_t *out_timed_out) {
@@ -684,8 +759,8 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                               wide_directory))) {
     return false_v;
   }
-  SECURITY_ATTRIBUTES security = {.nLength = sizeof(security),
-                                  .bInheritHandle = TRUE};
+  /* Redirection files are not inheritable; the child receives listed
+   * duplicates (VkrPlatformChildHandles). */
   HANDLE output[2] = {GetStdHandle(STD_OUTPUT_HANDLE),
                       GetStdHandle(STD_ERROR_HANDLE)};
   const char *paths[2] = {config->stdout_path, config->stderr_path};
@@ -699,8 +774,7 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                     config->append_output ? FILE_APPEND_DATA : GENERIC_WRITE,
                     config->append_output ? FILE_SHARE_READ | FILE_SHARE_WRITE
                                           : FILE_SHARE_READ,
-                    &security,
-                    config->append_output ? OPEN_ALWAYS : CREATE_ALWAYS,
+                    NULL, config->append_output ? OPEN_ALWAYS : CREATE_ALWAYS,
                     FILE_ATTRIBUTE_NORMAL, NULL)
               : INVALID_HANDLE_VALUE;
       if (output[i] == INVALID_HANDLE_VALUE) {
@@ -713,13 +787,16 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       }
     }
   }
-  STARTUPINFOW startup = {
-      .cb = sizeof(startup),
-      .dwFlags = STARTF_USESTDHANDLES,
-      .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
-      .hStdOutput = output[0],
-      .hStdError = output[1],
-  };
+  VkrPlatformChildHandles child;
+  if (!vkr_platform_child_handles_begin(&child, GetStdHandle(STD_INPUT_HANDLE),
+                                        output[0], output[1])) {
+    for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
+      if (paths[i]) {
+        CloseHandle(output[i]);
+      }
+    }
+    return false_v;
+  }
   PROCESS_INFORMATION process = {0};
   VkrPlatformSavedEnvironment saved[16] = {0};
   HANDLE job = NULL;
@@ -733,6 +810,7 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       if (job) {
         CloseHandle(job);
       }
+      vkr_platform_child_handles_release(&child);
       for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
         if (paths[i]) {
           CloseHandle(output[i]);
@@ -749,12 +827,17 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     if (config->terminate_process_tree) {
       creation_flags |= CREATE_SUSPENDED;
     }
-    created = CreateProcessW(
-        wide_executable[0] ? wide_executable : NULL, wide_command, NULL, NULL,
-        TRUE, creation_flags, NULL,
-        config->working_directory ? wide_directory : NULL, &startup, &process);
+    if (child.inherited_count) {
+      creation_flags |= EXTENDED_STARTUPINFO_PRESENT;
+    }
+    created = CreateProcessW(wide_executable[0] ? wide_executable : NULL,
+                             wide_command, NULL, NULL,
+                             child.inherited_count > 0u, creation_flags, NULL,
+                             config->working_directory ? wide_directory : NULL,
+                             &child.startup.StartupInfo, &process);
     vkr_platform_environment_restore(saved, config->environment_count);
   }
+  vkr_platform_child_handles_release(&child);
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
     if (paths[i]) {
       CloseHandle(output[i]);
@@ -848,32 +931,30 @@ bool8_t vkr_platform_process_capture(const char *executable,
                                 working_directory, wide_directory))) {
     return false_v;
   }
-  SECURITY_ATTRIBUTES security = {.nLength = sizeof(security),
-                                  .bInheritHandle = TRUE};
+  /* Only the child's listed duplicate of the write end is inheritable, so no
+   * other child can hold the pipe open past this one's exit. */
   HANDLE read_handle = NULL;
   HANDLE write_handle = NULL;
-  if (!CreatePipe(&read_handle, &write_handle, &security, 0u) ||
-      !SetHandleInformation(read_handle, HANDLE_FLAG_INHERIT, 0u)) {
-    if (read_handle) {
-      CloseHandle(read_handle);
-    }
-    if (write_handle) {
-      CloseHandle(write_handle);
-    }
+  if (!CreatePipe(&read_handle, &write_handle, NULL, 0u)) {
     return false_v;
   }
-  STARTUPINFOW startup = {
-      .cb = sizeof(startup),
-      .dwFlags = STARTF_USESTDHANDLES,
-      .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
-      .hStdOutput = write_handle,
-      .hStdError = GetStdHandle(STD_ERROR_HANDLE),
-  };
+  VkrPlatformChildHandles child;
+  if (!vkr_platform_child_handles_begin(&child, GetStdHandle(STD_INPUT_HANDLE),
+                                        write_handle,
+                                        GetStdHandle(STD_ERROR_HANDLE))) {
+    CloseHandle(read_handle);
+    CloseHandle(write_handle);
+    return false_v;
+  }
   PROCESS_INFORMATION process = {0};
   const BOOL created = CreateProcessW(
       wide_executable[0] ? wide_executable : NULL, wide_command, NULL, NULL,
-      TRUE, CREATE_NO_WINDOW, NULL, working_directory ? wide_directory : NULL,
-      &startup, &process);
+      child.inherited_count > 0u,
+      CREATE_NO_WINDOW |
+          (child.inherited_count ? EXTENDED_STARTUPINFO_PRESENT : 0u),
+      NULL, working_directory ? wide_directory : NULL,
+      &child.startup.StartupInfo, &process);
+  vkr_platform_child_handles_release(&child);
   CloseHandle(write_handle);
   if (!created) {
     CloseHandle(read_handle);
