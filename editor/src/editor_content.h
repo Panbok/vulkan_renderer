@@ -135,6 +135,13 @@ void vkr_editor_content_set_drop_target(VkrEditorContent *content,
 void vkr_editor_content_search(VkrEditorContent *content, String8 query);
 /** Show an existing Content folder; the empty path is the root. */
 bool8_t vkr_editor_content_open_folder(VkrEditorContent *content, String8 path);
+/** Opens the folder of the asset that owns `path`, an absolute workspace
+ * file: its artifact, or a file of the same build revision. Selects the asset
+ * and scrolls it into view; false when no listed asset owns the file. */
+bool8_t vkr_editor_content_reveal_path(VkrEditorContent *content,
+                                       const char *path);
+/** The selected item's shown name, or "". */
+const char *vkr_editor_content_selected_name(const VkrEditorContent *content);
 /** Add a project folder and its ancestors. */
 bool8_t vkr_editor_content_new_folder(VkrEditorContent *content, String8 path);
 /** Move an item, named by id or display name, or a folder, named by path,

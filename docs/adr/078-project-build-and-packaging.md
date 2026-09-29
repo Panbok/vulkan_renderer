@@ -114,8 +114,12 @@ Build saves `game.json`, then runs the preflight: the existing Save/Discard/
 Cancel prompt for any container with unsaved edits, then a drained preference
 writer. The package job runs as `EDITOR_BAKE_PACKAGE` on Bakery's single worker,
 so it never overlaps a project job. A status strip shows the stage and Cancel.
-The Build tab shows the stage checklist and durations, the log, Open Folder, Run
-and Copy Log. Build and Run forwards the game's output to the Console as
+The Build tab shows the stage checklist and durations, the diagnostics, the
+log, Open Folder, Run and Copy Log. A diagnostic whose source is a package
+identity or a host path has Reveal: the identity maps back to the project or
+editor-bundle file, and `vkr_editor_content_reveal_path` selects the asset whose
+artifact it is, else the asset whose build revision holds it, in its Content
+folder. `content.reveal <path>` runs the same step. Build and Run forwards the game's output to the Console as
 `[game]` lines. `build.game [profile]` and `build.run [profile]` hold the Cmd
 queue and report the result
 ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
@@ -171,6 +175,10 @@ queue and report the result
   1512x949 point window in its own Space below the notch; a windowed run is
   1280x752 with its title bar. The pause-menu switch was not exercised, since
   the run takes no input.
+- Reveal: headless `content.reveal` on a fixture selects the texture that
+  owns its `.vkt` artifact in Textures, and for the mesh revision's
+  `mesh.vkb.remap.json`, which no record names, the mesh in Meshes; a path no
+  asset owns is refused. Clicking a Build tab diagnostic was not exercised.
 - Not run: Windows/Vulkan packaging and window modes (the Windows code is not
   compiled on this host), a copy to another volume, a package from a
   Debug tree (its players are Debug), and a timed build claim, which needs

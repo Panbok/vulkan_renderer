@@ -19,8 +19,6 @@ its evidence. This proposal keeps what remains.
   ([package](../../tools/bakery/vkr_bakery_package.c)).
 - The player template is the build tree's `<build>/player`, and its
   `template.json` names that tree's shader catalog by absolute path.
-- The Build tab lists diagnostics as text; a diagnostic that names an asset does
-  not reveal it in Content.
 
 ## Remaining work
 
@@ -34,8 +32,6 @@ its evidence. This proposal keeps what remains.
 3. **Distributed templates.** A distributed editor ships `templates/` beside
    itself with the player, engine resources and shader catalog, and the
    bakery looks there before the build tree.
-4. **Diagnostics in Content.** A Build tab diagnostic whose source is a package
-   identity selects that asset in Content.
 
 Cross-compiling a package for another platform stays out of scope: Metal
 libraries need the macOS toolchain and the Vulkan catalog is produced per host.

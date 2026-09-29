@@ -98,6 +98,7 @@ dependable channel for scripts.
 | `content.command` | `<load\|open\|place\|rename\|delete> <item>` | Run an item's or folder's context menu command, as a right-click would |
 | `content.move` | `<item\|folder> <folder>` | Move an item (id or name, quoted when it has spaces) or folder |
 | `content.view` | `<list\|tiles>` | Content view |
+| `content.reveal` | `<path>` | Select the asset that owns a workspace file (its artifact or build revision) in its folder, as a Build diagnostic's Reveal does |
 | `content.import` | `<path> [world\|new <name>\|scene <name>\|content]` | Import a file into the project, filed in the current folder; with a placement, run the import step's choice for a model: the World's root, a new scene, or a project scene |
 | `content.drop` | `<path>` | Act as an OS file drop on the current folder: opens the import step |
 | `content.place` | `<item>` | Act as a drop of an item at the viewport centre: places a mesh or adds an object kind |

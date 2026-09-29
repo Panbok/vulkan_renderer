@@ -161,6 +161,8 @@ struct VkrEditorContent {
   uint32_t uploads_this_frame;
   uint32_t selected;
   uint32_t first_row;
+  /* The grid scrolls the selection into view once, after a reveal. */
+  bool8_t reveal_selection;
   float32_t tree_scroll;
   Keys navigation_key;
   float64_t navigation_elapsed;
@@ -4826,6 +4828,21 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
   (void)vkr_ui_button(ui, string8_lit("asset-grid-focus"), (String8){0},
                       &grid_focus);
   content_grid_keys(content, ui, grid_id, columns, visible_rows);
+  if (content->reveal_selection && !content->filter_dirty) {
+    content->reveal_selection = false_v;
+    const uint32_t selection = content_selection(content);
+    for (uint32_t position = 0; position < content->filtered_count;
+         ++position) {
+      if (content->filtered[position] == selection) {
+        const uint32_t row = position / columns;
+        if (row < content->first_row ||
+            row >= content->first_row + visible_rows) {
+          content->first_row = Min(row, max_first);
+        }
+        break;
+      }
+    }
+  }
   content_build_grid(content, ui, columns, rows, max_first, card_width,
                      card_height, grid_id, grid_area);
   content_build_inspector(content, ui, inspector_height, show_details);
@@ -4941,6 +4958,54 @@ static bool8_t content_shown_path_matches(const VkrEditorContent *content,
     }
   }
   return end == 0u;
+}
+
+const char *vkr_editor_content_selected_name(const VkrEditorContent *content) {
+  return content && content->selected < content->count
+             ? content->entries[content->selected].name
+             : "";
+}
+
+bool8_t vkr_editor_content_reveal_path(VkrEditorContent *content,
+                                       const char *path) {
+  if (!content || !path || !path[0]) {
+    return false_v;
+  }
+  /* The asset whose artifact is the file, else the one whose build revision
+     holds it: a mesh owns the materials and textures it built. */
+  uint32_t found = CONTENT_NONE;
+  uint32_t revision_match = CONTENT_NONE;
+  for (uint32_t i = 0; found == CONTENT_NONE && i < content->asset_count; ++i) {
+    const ContentAsset *entry = &content->entries[i];
+    if (!entry->path[0] || entry->kind == CONTENT_SCENE) {
+      continue;
+    }
+    if (!strcmp(entry->path, path)) {
+      found = i;
+      continue;
+    }
+    const char *builds = strstr(entry->path, "/builds/");
+    const char *end = builds ? strchr(builds + 8, '/') : NULL;
+    if (end && revision_match == CONTENT_NONE &&
+        !strncmp(entry->path, path, (size_t)(end - entry->path + 1))) {
+      revision_match = i;
+    }
+  }
+  if (found == CONTENT_NONE) {
+    found = revision_match;
+  }
+  if (found == CONTENT_NONE) {
+    return false_v;
+  }
+  content->query[0] = 0;
+  content->query_length = 0;
+  content->tag_filter[0] = '\0';
+  content->filter_dirty = true_v;
+  content_open_folder(content,
+                      content_item_folder(content, &content->entries[found]));
+  content_select(content, found);
+  content->reveal_selection = true_v;
+  return true_v;
 }
 
 bool8_t vkr_editor_content_open_folder(VkrEditorContent *content,

@@ -65,6 +65,17 @@ typedef struct BuildStage {
   float64_t seconds;
 } BuildStage;
 
+#define BUILD_DIAGNOSTIC_MAX 32u
+
+/* One coded diagnostic of the job; `source` is a package content identity,
+   a host path or a stage name. */
+typedef struct BuildDiagnostic {
+  char severity[16];
+  char code[32];
+  char source[512];
+  char message[384];
+} BuildDiagnostic;
+
 struct VkrEditorBuild {
   VkrAllocator *allocator;
   /* The project whose game.json the draft holds. */
@@ -107,6 +118,8 @@ struct VkrEditorBuild {
   uint32_t warning_count;
   uint8_t log[BUILD_LOG_CAPACITY];
   uint32_t log_length;
+  BuildDiagnostic diagnostics[BUILD_DIAGNOSTIC_MAX];
+  uint32_t diagnostic_count;
   /* A game started by Build and Run; its output goes to the Console. */
   VkrThread game;
   VkrAtomicBool game_done;
@@ -355,6 +368,15 @@ static void build_apply_event(VkrEditorBuild *build, String8 bytes) {
     (void)build_event_text(line, "source", source, sizeof(source));
     (void)build_event_text(line, "message", text, sizeof(text));
     build_log_line(build, "%s %s %s: %s", severity, code, source, text);
+    if (build->diagnostic_count < BUILD_DIAGNOSTIC_MAX) {
+      BuildDiagnostic *diagnostic =
+          &build->diagnostics[build->diagnostic_count++];
+      snprintf(diagnostic->severity, sizeof(diagnostic->severity), "%s",
+               severity);
+      snprintf(diagnostic->code, sizeof(diagnostic->code), "%s", code);
+      snprintf(diagnostic->source, sizeof(diagnostic->source), "%s", source);
+      snprintf(diagnostic->message, sizeof(diagnostic->message), "%s", text);
+    }
     if (!strcmp(severity, "error")) {
       log_error("Build %s %s: %s", code, source, text);
     } else {
@@ -746,6 +768,7 @@ bool8_t vkr_editor_build_start(VkrEditorBuild *build, VkrEditorUi *editor,
   build->report_path[0] = '\0';
   build->result[0] = '\0';
   build->log_length = 0u;
+  build->diagnostic_count = 0u;
   build->stage = UINT32_MAX;
   build->fraction = -1.0;
   build->detail[0] = '\0';
@@ -1420,6 +1443,24 @@ void vkr_editor_build_settings_build(VkrEditorBuild *build, VkrEditorUi *editor,
 // Build tab and status strip
 // =============================================================================
 
+/* The workspace file a diagnostic names: a package identity maps back to the
+   project or editor bundle file it was packed from. */
+static bool8_t build_source_path(const VkrEditorBuild *build,
+                                 const char *workspace, const char *source,
+                                 char out[BUILD_PATH]) {
+  int32_t written = -1;
+  if (!strncmp(source, "project/", 8u) && build->project_directory[0]) {
+    written = snprintf(out, BUILD_PATH, "%s/%s", build->project_directory,
+                       source + 8u);
+  } else if (!strncmp(source, "editor/", 7u) && workspace[0]) {
+    written = snprintf(out, BUILD_PATH, "%s/editor/bundles/1/%s", workspace,
+                       source + 7u);
+  } else if (source[0] == '/' || (source[0] && source[1] == ':')) {
+    written = snprintf(out, BUILD_PATH, "%s", source);
+  }
+  return written > 0 && (uint32_t)written < BUILD_PATH;
+}
+
 void vkr_editor_build_panel(VkrEditorBuild *build, VkrEditorUi *editor,
                             const VkrSampleUiFrame *frame, VkrUiRect rect) {
   VkrUiSystem *ui = frame->ui;
@@ -1429,8 +1470,9 @@ void vkr_editor_build_panel(VkrEditorBuild *build, VkrEditorUi *editor,
   }
   const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t log_lines = (float32_t)build->log_length / 60.0f + 4.0f;
-  const float32_t content_height =
-      70.0f + 26.0f * BUILD_STAGE_COUNT + 18.0f * log_lines;
+  const float32_t content_height = 70.0f + 26.0f * BUILD_STAGE_COUNT +
+                                   28.0f * build->diagnostic_count +
+                                   18.0f * log_lines;
   const float32_t height = rect.height / ui->content_scale;
   if (!ui->mouse_captured && ui->mouse_input_layer == ui->input_layer &&
       ui->mouse_x >= rect.x && ui->mouse_x < rect.x + rect.width &&
@@ -1545,6 +1587,45 @@ void vkr_editor_build_panel(VkrEditorBuild *build, VkrEditorUi *editor,
     y += 26;
   }
   y += 6;
+  /* Diagnostics: one that names an asset file selects it in Content. */
+  const char *workspace = vkr_editor_projects_workspace_root(editor->projects);
+  for (uint32_t i = 0; i < build->diagnostic_count; ++i) {
+    const BuildDiagnostic *diagnostic = &build->diagnostics[i];
+    const bool8_t error = !strcmp(diagnostic->severity, "error");
+    char path[BUILD_PATH];
+    const bool8_t file =
+        build_source_path(build, workspace, diagnostic->source, path);
+    (void)vkr_ui_push_id_u64(ui, 1000u + i);
+    c = build_widget(10, y, width - (file ? 120 : 20), 24);
+    c.style.text_color = theme->text;
+    c.icon = error ? VKR_UI_ICON_LOG_ERROR : VKR_UI_ICON_LOG_WARNING;
+    c.icon_color = error ? theme->error : theme->warning;
+    c.icon_size_pt = 12.0f;
+    c.tooltip = build_text(diagnostic->source);
+    vkr_ui_label(ui, string8_lit("diagnostic"),
+                 string8_create_formatted(ui->frame_allocator, "%s  %s",
+                                          diagnostic->code,
+                                          diagnostic->message),
+                 &c);
+    if (file) {
+      c = build_widget(width - 104, y, 94, 24);
+      vkr_editor_action_style(&c, editor->heading_font);
+      c.icon = VKR_UI_ICON_REVEAL;
+      c.icon_size_pt = 12.0f;
+      c.tooltip = string8_lit("Select the asset this file belongs to in "
+                              "Content");
+      if (vkr_ui_button(ui, string8_lit("reveal"), string8_lit("Reveal"), &c)) {
+        if (vkr_editor_content_reveal_path(editor->content, path)) {
+          vkr_editor_dock_show(frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
+        } else {
+          vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                           "No Content asset owns this file");
+        }
+      }
+    }
+    (void)vkr_ui_pop_id(ui);
+    y += 28;
+  }
   if (build->log_length) {
     c = build_widget(10, y, width - 20, 18.0f * log_lines);
     c.style.min_size_pt.y = 20;

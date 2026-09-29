@@ -861,6 +861,24 @@ static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
                                         (VkrEditorContentCommand)i);
       }
     }
+  } else if (!strcmp(def->name, "content.reveal")) {
+    char path[1024];
+    const String8 text = cmd_unquote(arg);
+    ok = text.length < sizeof(path);
+    if (ok) {
+      MemCopy(path, text.str, text.length);
+      path[text.length] = '\0';
+      ok = vkr_editor_content_reveal_path(content, path);
+    }
+    if (ok) {
+      vkr_editor_dock_show(ctx->frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
+      snprintf(ctx->message, sizeof(ctx->message), "Revealed %s in %s",
+               vkr_editor_content_selected_name(content),
+               vkr_editor_content_folder(content)[0]
+                   ? vkr_editor_content_folder(content)
+                   : "Content");
+      return true_v;
+    }
   } else if (!strcmp(def->name, "content.place")) {
     /* The drop lands at the viewport's centre. */
     const Vec4 image = ctx->frame->mapping.image_rect_px;
@@ -1235,6 +1253,10 @@ static const CmdDef cmd_defs[] = {
     {"content.place", CMD_ARG_TEXT, "<item>",
      "Drop a Content item on the viewport centre: a mesh is placed there",
      cmd_run_content_folder, CMD_COUNT, 0u, .holds = true_v},
+    {"content.reveal", CMD_ARG_TEXT, "<path>",
+     "Select the asset that owns a workspace file, as a Build diagnostic's "
+     "Reveal does",
+     cmd_run_content_folder, CMD_COUNT, 0u},
     {"content.view", CMD_ARG_TEXT, "<list|tiles>",
      "Show Content as a list with columns or as tiles", cmd_run_content_folder,
      CMD_COUNT, 0u},
