@@ -91,6 +91,8 @@ struct VkrEditorBuild {
   uint32_t fields_profile;
   bool8_t fields_valid;
   float32_t settings_scroll;
+  /* Height the settings sections laid out last frame, in points. */
+  float32_t settings_height;
   float32_t panel_scroll;
   /* The build: preflight, then the package job on Bakery's worker. */
   BuildPhase phase;
@@ -1329,7 +1331,9 @@ void vkr_editor_build_settings_build(VkrEditorBuild *build, VkrEditorUi *editor,
     build_fields_load(build);
   }
   const float32_t footer = 84.0f;
-  const float32_t content_height = 620.0f + 28.0f * (project->scene_count + 1u);
+  /* The sections' height depends on the profile and scene list, so the scroll
+     range follows last frame's layout. */
+  const float32_t content_height = Max(build->settings_height, height - footer);
   if (!ui->mouse_captured && ui->mouse_input_layer == ui->input_layer &&
       ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
       ui->mouse_y >= bounds.y &&
@@ -1366,6 +1370,7 @@ void vkr_editor_build_settings_build(VkrEditorBuild *build, VkrEditorUi *editor,
     build_settings_target(build, editor, frame, &y, width, &dialog);
     if (!dialog) {
       build_settings_options(build, ui, editor->heading_font, frame, &y, width);
+      build->settings_height = y + 12.0f;
     }
     vkr_ui_scroll_area_end(ui);
   }
