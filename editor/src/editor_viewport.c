@@ -252,7 +252,9 @@ static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
                               ? KEY_DELETE
                               : KEY_BACKSPACE;
   if (input_key_just_pressed(frame->input, delete_key) &&
-      input_key_press_modifiers(frame->input, delete_key) == 0u && selected) {
+      input_key_press_modifiers(frame->input, delete_key) == 0u && selected &&
+      !vkr_editor_scene_panels_cooking(editor->scene_panels,
+                                       frame->selected_entity)) {
     *frame->scene_edit = (VkrSceneEditRequest){
         .action = VKR_SCENE_EDIT_DELETE, .entity = frame->selected_entity};
     ui->capture.keyboard = true_v;

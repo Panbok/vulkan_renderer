@@ -58,6 +58,17 @@ void vkr_editor_request_component(const VkrSampleUiFrame *frame,
                                   VkrEntityId entity, const VkrTypeDesc *type,
                                   const void *value);
 
+/* `entity` in container `scene` renders a mesh loaded from one of the build
+   revisions `revisions`, such as those a background finalize rebuilds. */
+bool8_t vkr_editor_entity_mesh_from(const VkrSampleUiFrame *frame,
+                                    const VkrScene *scene, VkrEntityId entity,
+                                    const char (*revisions)[37],
+                                    uint32_t count);
+/* The Outliner shows `entity` in a model whose textures cook in a background
+   finalize (ADR-077); it stays locked against deletion and reparenting. */
+bool8_t vkr_editor_scene_panels_cooking(const VkrEditorScenePanels *panels,
+                                        VkrEntityId entity);
+
 bool8_t vkr_editor_scene_panels_write_json(const VkrEditorScenePanels *panels,
                                            VkrJsonWriter *writer);
 bool8_t vkr_editor_scene_panels_read_json(VkrEditorScenePanels *panels,

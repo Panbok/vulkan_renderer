@@ -690,11 +690,25 @@ static bool8_t cmd_run_scene_import(CmdContext *ctx, const CmdDef *def,
   return true_v;
 }
 
-/* Imports one file into the project's shared assets (ADR-076). */
+/* Imports one file into the project's shared assets (ADR-076), or places a
+   model as the import step does: in the World, a new scene or a project
+   scene. A path with spaces is quoted. */
 static bool8_t cmd_run_content_import(CmdContext *ctx, const CmdDef *def,
                                       String8 arg) {
   (void)def;
-  const String8 path = cmd_unquote(arg);
+  String8 rest = {0};
+  String8 path = cmd_trim(arg);
+  if (path.length > 1u && path.str[0] == '"') {
+    uint64_t end = 1u;
+    while (end < path.length && path.str[end] != '"')
+      ++end;
+    rest =
+        cmd_trim((String8){.str = path.str + Min(end + 1u, path.length),
+                           .length = path.length - Min(end + 1u, path.length)});
+    path = (String8){.str = path.str + 1, .length = end - 1u};
+  } else {
+    path = cmd_split(path, &rest);
+  }
   char text[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!path.length || path.length >= sizeof(text)) {
     snprintf(ctx->message, sizeof(ctx->message), "content.import needs a path");
@@ -702,6 +716,20 @@ static bool8_t cmd_run_content_import(CmdContext *ctx, const CmdDef *def,
   }
   MemCopy(text, path.str, path.length);
   text[path.length] = '\0';
+  String8 name = {0};
+  const String8 target = cmd_split(rest, &name);
+  if (target.length) {
+    if (!vkr_editor_projects_import_to(ctx->editor->projects, ctx->editor,
+                                       ctx->frame, text, target,
+                                       cmd_unquote(name))) {
+      snprintf(ctx->message, sizeof(ctx->message), "%s",
+               vkr_editor_projects_message(ctx->editor->projects));
+      return false_v;
+    }
+    snprintf(ctx->message, sizeof(ctx->message), "Importing %s to %.*s", text,
+             (int)target.length, (const char *)target.str);
+    return true_v;
+  }
   if (!vkr_editor_projects_import_asset(ctx->editor->projects, ctx->editor,
                                         ctx->frame, text)) {
     snprintf(ctx->message, sizeof(ctx->message),
@@ -1138,9 +1166,11 @@ static const CmdDef cmd_defs[] = {
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Whether the open scene uses the World's objects where it has none",
      cmd_run_scene_inherit, CMD_COUNT, 0u},
-    {"content.import", CMD_ARG_TEXT, "<path>",
-     "Import a file into the project's shared assets", cmd_run_content_import,
-     CMD_COUNT, 0u, .holds = true_v},
+    {"content.import", CMD_ARG_TEXT,
+     "<path> [world|new <name>|scene <name>|content]",
+     "Import a file into the project's shared assets, or place a model in the "
+     "World, a new scene or a project scene",
+     cmd_run_content_import, CMD_COUNT, 0u, .holds = true_v},
     {"content.search", CMD_ARG_TEXT, "[text]",
      "Search Content below the current folder by name, type, folder or tag",
      cmd_run_content_search, CMD_COUNT, 0u},

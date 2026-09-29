@@ -265,6 +265,30 @@ bool8_t vkr_editor_presets_parse(String8 bytes, VkrEditorPresets *doc,
 bool8_t vkr_editor_presets_write(struct VkrJsonWriter *writer,
                                  const VkrEditorPresets *doc);
 
+// The World document places project meshes at its root (ADR-076): each such
+// entity names its asset and the artifact path the project inventory
+// `assets` resolves, from the document's directory. Appends one entity per
+// mesh asset of `ids`, skipping other ids, and publishes the document
+// atomically; `*out_added` counts the entities.
+bool8_t
+vkr_editor_project_world_add_meshes(const char *world_path, String8 assets,
+                                    const char (*ids)[37], uint32_t count,
+                                    VkrAllocator *scratch, uint32_t *out_added,
+                                    VkrEditorProjectError *error);
+// Points each World entity naming a project mesh at the artifact `assets`
+// names now, as after a rebuild publishes a new revision. Publishes only
+// when a path changed; `*out_changed` counts them.
+bool8_t vkr_editor_project_world_refresh(const char *world_path, String8 assets,
+                                         VkrAllocator *scratch,
+                                         uint32_t *out_changed,
+                                         VkrEditorProjectError *error);
+
+// Identities of the project meshes the World document places, at most
+// `capacity`; zero when the document is missing or unreadable.
+uint32_t vkr_editor_project_world_meshes(const char *world_path,
+                                         VkrAllocator *scratch, char (*ids)[37],
+                                         uint32_t capacity);
+
 /** OS-local jobs directory for read-only workspace runtime projections. */
 bool8_t vkr_editor_project_local_jobs_directory(
     char out[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error);

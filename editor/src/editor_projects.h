@@ -139,3 +139,15 @@ bool8_t vkr_editor_projects_import_asset(VkrEditorProjects *projects,
                                          VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const char *source);
+/* Runs the import step for one file as its form would (ADR-076): `target`
+   is "world", "new" (a scene named `name`, else the file's name), "scene"
+   (the project scene named `name`) or "content". False when nothing could
+   start; vkr_editor_projects_message says why. Unsaved edits the placement
+   would reload open the save prompt instead. */
+bool8_t vkr_editor_projects_import_to(VkrEditorProjects *projects,
+                                      VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      const char *source, String8 target,
+                                      String8 name);
+/* The Projects status line: the last outcome or problem. */
+const char *vkr_editor_projects_message(const VkrEditorProjects *projects);

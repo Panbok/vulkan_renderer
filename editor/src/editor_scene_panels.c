@@ -42,6 +42,8 @@ typedef struct EditorTreeNode {
   bool8_t header;
   bool8_t expanded;
   bool8_t match;
+  /* Its model's textures encode in a background finalize (ADR-077). */
+  bool8_t cooking;
 } EditorTreeNode;
 
 typedef struct TreeContainer {
@@ -65,6 +67,8 @@ struct VkrEditorScenePanels {
   EditorTreeNode *nodes;
   uint32_t *rows;
   uint32_t capacity;
+  /* Nodes the last rebuild laid out: headers and directory slots. */
+  uint32_t node_total;
   uint32_t row_count;
   uint32_t live_count;
   uint32_t selected_row;
@@ -79,6 +83,10 @@ struct VkrEditorScenePanels {
   bool8_t rebuild;
   char search[192];
   float32_t hierarchy_scroll;
+  /* Cooking marks follow the cooking revisions and the tree they were
+     computed for, and refresh while cooking as models finish loading. */
+  uint64_t cooking_key;
+  float64_t cooking_marked_at;
   VkrEntityId revealed;
   VkrEntityId inspecting;
   uint64_t edit_revision;
@@ -424,6 +432,8 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
     }
     index = n->next;
   }
+  p->node_total = capacity;
+  p->cooking_key = 0u;
   p->generation = frame->scene_generation;
   p->tree_world = frame->world;
   p->structure_revision = frame->scene ? frame->scene->structure_revision : 0u;
@@ -437,6 +447,61 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
   }
   p->rebuild = false_v;
   return true_v;
+}
+
+bool8_t vkr_editor_entity_mesh_from(const VkrSampleUiFrame *frame,
+                                    const VkrScene *scene, VkrEntityId entity,
+                                    const char (*revisions)[37],
+                                    uint32_t count) {
+  VkrMeshManager *meshes = &frame->assets->mesh_manager;
+  const SceneMeshRenderer *renderer =
+      scene && count ? vkr_entity_get_component(scene->world, entity,
+                                                scene->comp_mesh_renderer)
+                     : NULL;
+  VkrMeshInstance *instance =
+      renderer ? vkr_mesh_manager_get_instance(meshes, renderer->instance)
+               : NULL;
+  const VkrMeshAsset *asset =
+      instance ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
+               : NULL;
+  for (uint32_t r = 0u; asset && r < count; ++r) {
+    if (contains(asset->mesh_path, revisions[r])) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Marks nodes whose mesh loaded from a build revision a background finalize
+   rebuilds (ADR-077), and their ancestors, so a collapsed model shows it. */
+static void tree_mark_cooking(VkrEditorScenePanels *p,
+                              const VkrSampleUiFrame *frame,
+                              const char (*revisions)[37], uint32_t count) {
+  for (uint32_t i = 0u; i < p->node_total; ++i) {
+    p->nodes[i].cooking = false_v;
+  }
+  for (uint32_t i = 0u; count && i < p->node_total; ++i) {
+    const EditorTreeNode *n = &p->nodes[i];
+    if (n->header || !n->entity.u64 || n->cooking ||
+        !vkr_editor_entity_mesh_from(frame, tree_node_scene(frame, n),
+                                     n->entity, revisions, count)) {
+      continue;
+    }
+    for (uint32_t node = i; node != NO_ROW && !p->nodes[node].header;
+         node = p->nodes[node].parent) {
+      p->nodes[node].cooking = true_v;
+    }
+  }
+}
+
+bool8_t vkr_editor_scene_panels_cooking(const VkrEditorScenePanels *panels,
+                                        VkrEntityId entity) {
+  for (uint32_t i = 0u; panels && entity.u64 && i < panels->node_total; ++i) {
+    if (panels->nodes[i].entity.u64 == entity.u64) {
+      return panels->nodes[i].cooking;
+    }
+  }
+  return false_v;
 }
 
 /* True when the additive containers or their structure changed. */
@@ -954,11 +1019,14 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
     c = widget_at(8, 64, w - 16, 40);
     c.style.text_color = theme->text_secondary;
     c.placement.justify = VKR_UI_ALIGN_CENTER;
-    c.icon = VKR_UI_ICON_SCENE;
+    c.icon = frame->world_loading ? VKR_UI_ICON_SPINNER : VKR_UI_ICON_SCENE;
     c.icon_size_pt = 18.0f;
     c.icon_color = theme->text_disabled;
-    /* Scenes open from Content or the Scenes menu. */
-    vkr_ui_label(ui, string8_lit("no.scene"), string8_lit("No scene loaded"),
+    /* Scenes open from Content or the Scenes menu; a World whose document
+       changed streams back in. */
+    vkr_ui_label(ui, string8_lit("no.scene"),
+                 frame->world_loading ? string8_lit("Loading World...")
+                                      : string8_lit("No scene loaded"),
                  &c);
     return;
   }
@@ -978,6 +1046,23 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
         p->selected_row = row;
         break;
       }
+  }
+  /* Models whose textures cook are marked and locked (ADR-077). */
+  char revisions[16][37];
+  const uint32_t cooking_count = vkr_editor_content_cooking(
+      editor->content, revisions, ArrayCount(revisions), NULL, 0u);
+  uint64_t cooking_key = UINT64_C(14695981039346656037) ^ cooking_count;
+  for (uint32_t r = 0u; r < cooking_count; ++r) {
+    for (const char *byte = revisions[r]; *byte; ++byte) {
+      cooking_key = (cooking_key ^ (uint8_t)*byte) * UINT64_C(1099511628211);
+    }
+  }
+  const float64_t marked_at = vkr_platform_get_absolute_time();
+  if (cooking_key != p->cooking_key ||
+      (cooking_count && marked_at - p->cooking_marked_at > 1.0)) {
+    tree_mark_cooking(p, frame, revisions, cooking_count);
+    p->cooking_key = cooking_key;
+    p->cooking_marked_at = marked_at;
   }
   const float32_t row_h = HIERARCHY_ROW_PT;
   float32_t page =
@@ -1109,8 +1194,10 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       Vec4 icon_color;
       /* Names use the eye button's space on rows that do not show it. */
       const bool8_t show_eye = visibility && (row_hot || hidden || selected);
-      c = widget_at(26 + indent, y,
-                    Max(10.0f, w - (show_eye ? 58.0f : 36.0f) - indent), row_h);
+      c = widget_at(
+          26 + indent, y,
+          Max(10.0f, w - (show_eye || n->cooking ? 58.0f : 36.0f) - indent),
+          row_h);
       c.placement.align = VKR_UI_ALIGN_START;
       c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
       c.style.text_color = hidden     ? theme->text_disabled
@@ -1123,8 +1210,26 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       if (hidden)
         c.icon_color.w = 0.45f;
       c.tooltip = (String8){0};
+      if (n->cooking) {
+        /* A pulsing spinner: its textures are still encoding. */
+        c.icon = VKR_UI_ICON_SPINNER;
+        c.icon_color = vkr_ui_color_alpha(
+            selected ? theme->text_on_accent : theme->accent_hover,
+            0.55f + 0.45f * sinf((float32_t)marked_at * 4.0f));
+        c.tooltip = string8_lit(
+            "Cooking full-quality textures in the background; locked until "
+            "they are ready");
+      }
       vkr_ui_label(ui, string8_lit("node.label"),
                    (String8){.str = name.str, .length = preview_length}, &c);
+      if (n->cooking && !show_eye) {
+        c = widget_at(w - 32, y + 2, 20, 20);
+        c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+        c.icon = VKR_UI_ICON_LOCK;
+        c.icon_size_pt = 12.0f;
+        c.icon_color = selected ? theme->text_on_accent : theme->text_secondary;
+        vkr_ui_label(ui, string8_lit("cooking"), (String8){0}, &c);
+      }
       if (show_eye) {
         c = widget_at(w - 32, y + 2, 20, 20);
         vkr_editor_ghost_style(&c);
@@ -2630,7 +2735,9 @@ static void inspector_mesh_section(VkrEditorScenePanels *p,
                                    const VkrSampleUiFrame *f, float32_t w,
                                    float32_t *y, VkrFontHandle heading) {
   SceneMeshInfo info;
-  if (!vkr_scene_mesh_info(f->scene, f->selected_entity, &info) ||
+  /* A World or added scene object reads its own container. */
+  const VkrScene *scene = vkr_editor_entity_scene(f, f->selected_entity);
+  if (!scene || !vkr_scene_mesh_info(scene, f->selected_entity, &info) ||
       !inspector_section(p, f->ui, w, y, INSPECTOR_SECTION_MESH,
                          VKR_UI_ICON_MESH, (Vec4){0.62f, 0.78f, 0.98f, 1.0f},
                          "Mesh", heading)) {

@@ -96,6 +96,26 @@ void vkr_editor_content_set_service(VkrEditorContent *content,
 /** Disable workspace mutations while retaining browsing and Reveal. */
 void vkr_editor_content_set_read_only(VkrEditorContent *content,
                                       bool8_t read_only);
+/** A background finalize (ADR-077) rebuilds the project's Content imports
+ * (`project`) or the assets of scene `scene_id` (empty for none): their items
+ * still at the deferred or preview tier show as cooking and are locked. */
+void vkr_editor_content_set_cooking(VkrEditorContent *content, bool8_t project,
+                                    const char *scene_id);
+/** The World streams in the project meshes `ids`, or scene `scene_id` (empty
+ * for none) streams in its meshes: their items show as loading and are
+ * locked (ADR-076). */
+void vkr_editor_content_set_loading(VkrEditorContent *content,
+                                    const char (*ids)[37], uint32_t count,
+                                    const char *scene_id);
+/** Whether a listed mesh is loading, with the first one's name and how many
+ * more in `label`. */
+bool8_t vkr_editor_content_loading(const VkrEditorContent *content, char *label,
+                                   uint32_t label_capacity);
+/** Build revisions of the meshes cooking now, at most `capacity`, and in
+ * `label` the first one's name and how many more; returns the count. */
+uint32_t vkr_editor_content_cooking(const VkrEditorContent *content,
+                                    char (*revisions)[37], uint32_t capacity,
+                                    char *label, uint32_t label_capacity);
 /** Poll once every UI frame even when hidden. Suspend while scene work or GPU
  * bakes own the renderer; late process results are discarded by generation. */
 void vkr_editor_content_update(VkrEditorContent *content);

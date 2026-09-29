@@ -103,6 +103,14 @@ typedef struct ContentAsset {
   bool8_t stale;
   /* A source or artifact file changed on disk since the listing was read. */
   bool8_t changed;
+  /* Its textures are still at the deferred or preview tier, or it shares a
+     build revision with such a mesh: a background finalize rebuilds it
+     (ADR-077). `revision` names its artifact's build directory. */
+  bool8_t pending_tier;
+  char revision[37];
+  /* A CONTENT_ENTITY whose model renders a mesh a background finalize
+     rebuilds. */
+  bool8_t cooking_object;
 } ContentAsset;
 
 /* One row of the folder tree; parents precede their children. */
@@ -164,6 +172,19 @@ struct VkrEditorContent {
   bool8_t filter_dirty;
   bool8_t suspended;
   bool8_t read_only;
+  /* A background finalize rebuilds the project's Content imports or one
+     scene's assets; their pending cards are locked until it ends. */
+  bool8_t cooking_project;
+  char cooking_scene[37];
+  /* Project meshes of a World streaming in, and the scene whose meshes
+     stream in; their cards show loading and are locked (ADR-076). */
+  char loading_ids[32][37];
+  uint32_t loading_count;
+  char loading_scene[37];
+  /* When object cooking marks were last computed, and for which cooking
+     revisions. */
+  float64_t objects_marked_at;
+  uint64_t objects_marked_key;
   char workspace[CONTENT_PATH];
   char project[37];
   char scene[37];
@@ -263,6 +284,7 @@ struct VkrEditorContent {
 };
 
 static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui);
+static const char *content_cooking_status(bool8_t loading);
 
 static const char *const content_kinds[] = {
     "Texture", "Material",  "Mesh",   "Font",        "Environment", "Scene",
@@ -701,6 +723,7 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     list = vkr_json_reader_from_string(assets);
     list.pos = 1;
   }
+  const uint32_t first = content->count;
   /* The owner resolves once; each record's paths resolve beneath it. */
   char resolved_root[CONTENT_PATH];
   const FilePath owner = {.path = content_string(root),
@@ -797,6 +820,14 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
                                    .length = artifact.length};
         if (vkr_editor_project_json_string(artifact_object, "path", relative,
                                            sizeof(relative), &error)) {
+          /* Artifacts live in builds/<revision>/ below their owner. */
+          const char *revision =
+              !strncmp(relative, "builds/", 7u) ? relative + 7u : NULL;
+          const char *end = revision ? strchr(revision, '/') : NULL;
+          if (end && (uint64_t)(end - revision) < sizeof(entry.revision)) {
+            MemCopy(entry.revision, revision, (uint64_t)(end - revision));
+            entry.revision[end - revision] = '\0';
+          }
           entry.missing = !vkr_editor_project_resolve_within(
               resolved_root, relative, entry.path, &error);
           if (entry.missing) {
@@ -813,7 +844,24 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
       snprintf(entry.diagnostic, sizeof(entry.diagnostic),
                "No completed artifact. Build this asset.");
     }
+    char tier[16] = {0};
+    entry.pending_tier =
+        vkr_editor_project_json_string(record, "texture_tier", tier,
+                                       sizeof(tier), &error) &&
+        (!strcmp(tier, "deferred") || !strcmp(tier, "preview"));
     content->entries[content->count++] = entry;
+  }
+  /* A pending mesh's materials share its build revision and are rebuilt
+     with it. */
+  for (uint32_t i = first; i < content->count; ++i) {
+    const ContentAsset *pending = &content->entries[i];
+    if (!pending->pending_tier || !pending->revision[0]) {
+      continue;
+    }
+    for (uint32_t j = first; j < content->count; ++j) {
+      ContentAsset *entry = &content->entries[j];
+      entry->pending_tier |= !strcmp(entry->revision, pending->revision);
+    }
   }
 cleanup:
   if (bytes) {
@@ -931,6 +979,49 @@ static const char *content_item_folder(const VkrEditorContent *content,
     }
   }
   return content_default_folder(entry);
+}
+
+/* The entry's build revision is being rebuilt by the running background
+   finalize: Content imports, or the assets of the scene it finalizes. */
+static bool8_t content_cooking(const VkrEditorContent *content,
+                               const ContentAsset *entry) {
+  if (entry->kind == CONTENT_ENTITY) {
+    return entry->cooking_object;
+  }
+  if (!entry->pending_tier) {
+    return false_v;
+  }
+  if (entry->scope == 1u) {
+    return content->cooking_project;
+  }
+  return entry->scope == 0u && content->cooking_scene[0] &&
+         entry->home[0] == CONTENT_SCENE_MARK &&
+         !strcmp(entry->home + 1, content->cooking_scene);
+}
+
+/* The mesh streams into the World or the scene loading now. */
+static bool8_t content_loading(const VkrEditorContent *content,
+                               const ContentAsset *entry) {
+  if (entry->kind != CONTENT_MESH) {
+    return false_v;
+  }
+  if (entry->scope == 1u) {
+    for (uint32_t i = 0; i < content->loading_count; ++i) {
+      if (!strcmp(content->loading_ids[i], entry->id)) {
+        return true_v;
+      }
+    }
+    return false_v;
+  }
+  return entry->scope == 0u && content->loading_scene[0] &&
+         entry->home[0] == CONTENT_SCENE_MARK &&
+         !strcmp(entry->home + 1, content->loading_scene);
+}
+
+/* Loading or cooking: the item is locked until the work ends. */
+static bool8_t content_locked(const VkrEditorContent *content,
+                              const ContentAsset *entry) {
+  return content_cooking(content, entry) || content_loading(content, entry);
 }
 
 static VkrUiIcon content_icon(const ContentAsset *entry) {
@@ -1708,6 +1799,61 @@ static void content_object_add(VkrEditorContent *content, const VkrScene *scene,
   content_copy(entry->home, sizeof(entry->home), home);
 }
 
+/* Marks objects whose subtree renders a mesh from a cooking build revision
+   (ADR-077), after the objects or the revisions change and once a second
+   while cooking, as models finish loading. */
+static void content_mark_cooking_objects(VkrEditorContent *content,
+                                         const VkrSampleUiFrame *frame,
+                                         bool8_t rebuilt) {
+  char revisions[16][37];
+  const uint32_t count = vkr_editor_content_cooking(
+      content, revisions, ArrayCount(revisions), NULL, 0u);
+  uint64_t key = UINT64_C(14695981039346656037) ^ count;
+  for (uint32_t r = 0u; r < count; ++r) {
+    for (const char *byte = revisions[r]; *byte; ++byte) {
+      key = (key ^ (uint8_t)*byte) * UINT64_C(1099511628211);
+    }
+  }
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (!rebuilt && key == content->objects_marked_key &&
+      (!count || now - content->objects_marked_at < 1.0)) {
+    return;
+  }
+  content->objects_marked_key = key;
+  content->objects_marked_at = now;
+  for (uint32_t i = content->asset_count; i < content->count; ++i) {
+    content->entries[i].cooking_object = false_v;
+  }
+  for (uint32_t i = content->asset_count; count && i < content->count; ++i) {
+    ContentAsset *object = &content->entries[i];
+    const VkrScene *scene = vkr_editor_entity_scene(frame, object->entity);
+    if (object->kind != CONTENT_ENTITY || object->cooking_object || !scene) {
+      continue;
+    }
+    for (uint32_t slot = 0u; slot < scene->world->dir.capacity; ++slot) {
+      if (!scene->world->dir.records[slot].chunk) {
+        continue;
+      }
+      const VkrEntityId entity = vkr_entity_id_from_index(scene->world, slot);
+      if (!vkr_editor_entity_mesh_from(frame, scene, entity, revisions,
+                                       count)) {
+        continue;
+      }
+      /* Every object above the mesh cooks with it. */
+      for (VkrEntityId ancestor = entity; ancestor.u64;) {
+        for (uint32_t j = content->asset_count; j < content->count; ++j) {
+          if (content->entries[j].entity.u64 == ancestor.u64) {
+            content->entries[j].cooking_object = true_v;
+          }
+        }
+        const SceneTransform *transform = vkr_entity_get_component(
+            scene->world, ancestor, scene->comp_transform);
+        ancestor = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+      }
+    }
+  }
+}
+
 void vkr_editor_content_sync_objects(
     VkrEditorContent *content, const VkrSampleUiFrame *frame,
     const char *const scene_ids[1 + VKR_SCENE_ADDITIVE_MAX]) {
@@ -1722,6 +1868,7 @@ void vkr_editor_content_sync_objects(
   uint64_t key = UINT64_C(14695981039346656037);
   content_visit_objects(content, frame, scene_ids, content_object_hash, &key);
   if (key == content->objects_key) {
+    content_mark_cooking_objects(content, frame, false_v);
     return;
   }
   content->objects_key = key;
@@ -1742,6 +1889,7 @@ void vkr_editor_content_sync_objects(
       content->selected = i;
     }
   }
+  content_mark_cooking_objects(content, frame, true_v);
   content->filter_dirty = true_v;
 }
 
@@ -1784,6 +1932,92 @@ void vkr_editor_content_set_read_only(VkrEditorContent *content,
       content->action = (VkrEditorContentAction){0};
     }
   }
+}
+
+void vkr_editor_content_set_cooking(VkrEditorContent *content, bool8_t project,
+                                    const char *scene_id) {
+  if (!content) {
+    return;
+  }
+  content->cooking_project = project;
+  content_copy(content->cooking_scene, sizeof(content->cooking_scene),
+               scene_id ? scene_id : "");
+}
+
+void vkr_editor_content_set_loading(VkrEditorContent *content,
+                                    const char (*ids)[37], uint32_t count,
+                                    const char *scene_id) {
+  if (!content) {
+    return;
+  }
+  content->loading_count =
+      Min(count, (uint32_t)ArrayCount(content->loading_ids));
+  if (content->loading_count) {
+    MemCopy(content->loading_ids, ids,
+            content->loading_count * sizeof(content->loading_ids[0]));
+  }
+  content_copy(content->loading_scene, sizeof(content->loading_scene),
+               scene_id ? scene_id : "");
+}
+
+bool8_t vkr_editor_content_loading(const VkrEditorContent *content, char *label,
+                                   uint32_t label_capacity) {
+  if (label && label_capacity) {
+    label[0] = '\0';
+  }
+  if (!content || (!content->loading_count && !content->loading_scene[0])) {
+    return false_v;
+  }
+  uint32_t count = 0u;
+  const char *first = NULL;
+  for (uint32_t i = 0; i < content->asset_count; ++i) {
+    const ContentAsset *entry = &content->entries[i];
+    if (content_loading(content, entry)) {
+      first = first ? first : entry->name;
+      ++count;
+    }
+  }
+  if (first && label && label_capacity) {
+    if (count > 1u) {
+      snprintf(label, label_capacity, "%s and %u more", first, count - 1u);
+    } else {
+      snprintf(label, label_capacity, "%s", first);
+    }
+  }
+  return count != 0u;
+}
+
+uint32_t vkr_editor_content_cooking(const VkrEditorContent *content,
+                                    char (*revisions)[37], uint32_t capacity,
+                                    char *label, uint32_t label_capacity) {
+  if (label && label_capacity) {
+    label[0] = '\0';
+  }
+  if (!content || (!content->cooking_project && !content->cooking_scene[0])) {
+    return 0u;
+  }
+  uint32_t count = 0u;
+  const char *first = NULL;
+  for (uint32_t i = 0; i < content->asset_count; ++i) {
+    const ContentAsset *entry = &content->entries[i];
+    if (entry->kind != CONTENT_MESH || !entry->revision[0] ||
+        !content_cooking(content, entry)) {
+      continue;
+    }
+    first = first ? first : entry->name;
+    if (count < capacity) {
+      content_copy(revisions[count], sizeof(revisions[0]), entry->revision);
+    }
+    ++count;
+  }
+  if (first && label && label_capacity) {
+    if (count > 1u) {
+      snprintf(label, label_capacity, "%s and %u more", first, count - 1u);
+    } else {
+      snprintf(label, label_capacity, "%s", first);
+    }
+  }
+  return Min(count, capacity);
 }
 
 void vkr_editor_content_suspend_previews(VkrEditorContent *content,
@@ -2570,8 +2804,10 @@ static bool8_t content_move(VkrEditorContent *content, uint32_t shown,
     return false_v;
   }
   const ContentAsset *entry = &content->entries[shown];
-  /* A scene's assets stay in its folder; only project assets move. */
-  if (entry->scope != 1u || entry->kind == CONTENT_PRESET) {
+  /* A scene's assets stay in its folder; only project assets move, and not
+     while they cook. */
+  if (entry->scope != 1u || entry->kind == CONTENT_PRESET ||
+      content_locked(content, entry)) {
     return false_v;
   }
   const VkrEditorAssetLabel *label = content_label(content, entry->id);
@@ -3219,7 +3455,13 @@ static String8 content_description(const VkrEditorContent *content,
       folder_index < content->tree_count ? content->tree[folder_index].label
                                          : "Content",
       tags ? "\nTags: " : "", tags ? label->tags : "",
-      entry->diagnostic[0] ? entry->diagnostic : "Ready");
+      content_loading(content, entry)
+          ? "Loading into the viewport; locked until it is shown"
+      : content_cooking(content, entry)
+          ? "Cooking full-quality textures in the background; locked until "
+            "they are ready"
+      : entry->diagnostic[0] ? entry->diagnostic
+                             : "Ready");
 }
 
 /* Whether the viewport accepts a dropped item: object types and built
@@ -3346,6 +3588,9 @@ static bool8_t content_renamable(const VkrEditorContent *content,
     return false_v;
   }
   const ContentAsset *entry = &content->entries[shown];
+  if (content_locked(content, entry)) {
+    return false_v;
+  }
   return entry->kind == CONTENT_ENTITY || entry->kind == CONTENT_PRESET ||
          (entry->scope == 0u && entry->kind != CONTENT_SCENE);
 }
@@ -3530,15 +3775,48 @@ static void content_build_folder_card(VkrEditorContent *content,
   vkr_ui_label(ui, string8_lit("picture"), (String8){0}, &picture);
   VkrUiWidgetConfig label = content_widget(0, 2);
   content_build_name(content, ui, shown, name, &label);
+  /* A folder holding a loading or cooking item says so. */
+  bool8_t loading = false_v;
+  bool8_t busy = false_v;
+  for (uint32_t i = 0; i < content->count && !loading; ++i) {
+    const ContentAsset *entry = &content->entries[i];
+    if (content_locked(content, entry) &&
+        vkr_editor_folder_within(content_item_folder(content, entry),
+                                 folder->path)) {
+      busy = true_v;
+      loading = content_loading(content, entry);
+    }
+  }
+  if (busy) {
+    VkrUiWidgetConfig lock = content_widget(0, 1);
+    lock.icon = VKR_UI_ICON_LOCK;
+    lock.icon_size_pt = 14;
+    lock.icon_color = theme->accent_hover;
+    lock.placement.justify = VKR_UI_ALIGN_END;
+    lock.placement.align = VKR_UI_ALIGN_START;
+    lock.style.padding_pt = (VkrUiEdges){4, 6, 4, 6};
+    vkr_ui_label(ui, string8_lit("cooking"), (String8){0}, &lock);
+  }
   VkrUiWidgetConfig info = content_widget(0, 3);
   info.style.font_size_pt = theme->font_caption;
-  info.style.text_color = theme->text_secondary;
+  info.style.text_color = busy ? theme->accent_hover : theme->text_secondary;
   vkr_ui_label(ui, string8_lit("status"),
-               scene            ? string8_lit("Scene")
+               busy    ? content_string(content_cooking_status(loading))
+               : scene ? string8_lit("Scene")
                : folder->system ? string8_lit("System folder")
                                 : string8_lit("Folder"),
                &info);
   (void)vkr_ui_panel_end(ui);
+}
+
+/* "Cooking" with dots that advance twice a second, so a locked card shows
+   the work is alive. */
+static const char *content_cooking_status(bool8_t loading) {
+  static const char *const frames[2][4] = {
+      {"Cooking", "Cooking.", "Cooking..", "Cooking..."},
+      {"Loading", "Loading.", "Loading..", "Loading..."}};
+  const uint64_t step = (uint64_t)(vkr_platform_get_absolute_time() * 2.0);
+  return frames[loading ? 1 : 0][step % ArrayCount(frames[0])];
 }
 
 static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
@@ -3583,10 +3861,24 @@ static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
   }
   VkrUiWidgetConfig name = content_widget(0, 2);
   content_build_name(content, ui, asset, entry->name, &name);
+  const bool8_t loading = content_loading(content, entry);
+  const bool8_t cooking = loading || content_cooking(content, entry);
+  if (cooking) {
+    /* Locked while its final textures encode (ADR-077). */
+    VkrUiWidgetConfig lock = content_widget(0, 1);
+    lock.icon = VKR_UI_ICON_LOCK;
+    lock.icon_size_pt = 14;
+    lock.icon_color = theme->accent_hover;
+    lock.placement.justify = VKR_UI_ALIGN_END;
+    lock.placement.align = VKR_UI_ALIGN_START;
+    lock.style.padding_pt = (VkrUiEdges){4, 6, 4, 6};
+    vkr_ui_label(ui, string8_lit("cooking"), (String8){0}, &lock);
+  }
   const bool8_t preset =
       entry->kind == CONTENT_PRESET && entry->object < content->presets.count;
   const char *status =
-      preset ? content->presets.presets[entry->object].type->label
+      cooking  ? content_cooking_status(loading)
+      : preset ? content->presets.presets[entry->object].type->label
       /* An object names the container it belongs to. */
       : entry->kind == CONTENT_ENTITY
           ? (entry->home[0] ? content_folder_label(content, entry->home)
@@ -3600,7 +3892,8 @@ static void content_build_card(VkrEditorContent *content, VkrUiSystem *ui,
                                               : "Current";
   VkrUiWidgetConfig info = content_widget(0, 3);
   info.style.font_size_pt = theme->font_caption;
-  info.style.text_color = entry->missing || entry->stale || entry->changed ||
+  info.style.text_color = cooking ? theme->accent_hover
+                          : entry->missing || entry->stale || entry->changed ||
                                   (preview && preview->failed)
                               ? theme->warning
                               : theme->text_secondary;
@@ -3702,10 +3995,17 @@ static void content_build_row(VkrEditorContent *content, VkrUiSystem *ui,
                              : content_type_colors[entry->kind];
   content_build_name(content, ui, shown, folder ? tree->label : entry->name,
                      &name);
+  const bool8_t loading = !folder && content_loading(content, entry);
+  const bool8_t cooking =
+      loading || (!folder && content_cooking(content, entry));
   String8 texts[] = {
-      content_string(scene    ? "Scene"
-                     : folder ? (tree->system ? "System folder" : "Folder")
-                              : content_kinds[entry->kind]),
+      cooking ? string8_create_formatted(ui->frame_allocator, "%s \xc2\xb7 %s",
+                                         content_kinds[entry->kind],
+                                         content_cooking_status(loading))
+              : content_string(scene ? "Scene"
+                               : folder
+                                   ? (tree->system ? "System folder" : "Folder")
+                                   : content_kinds[entry->kind]),
       content_string(content_folder_label(content, location)),
       content_string(label ? label->tags : "")};
   for (uint32_t i = 0; i < ArrayCount(texts); ++i) {
@@ -3915,14 +4215,15 @@ static void content_build_asset_actions(VkrEditorContent *content,
     }
     VkrUiWidgetConfig reimport = content_widget(0, 1);
     /* Reimport and rebuild run as jobs on scene-owned records. */
-    reimport.disabled =
-        content->read_only || !entry->source[0] || entry->scope != 0;
+    reimport.disabled = content->read_only || !entry->source[0] ||
+                        entry->scope != 0 || content_locked(content, entry);
     if (vkr_ui_button(ui, string8_lit("reimport"), string8_lit("Reimport"),
                       &reimport)) {
       content_action(content, VKR_EDITOR_CONTENT_ACTION_REIMPORT);
     }
     VkrUiWidgetConfig rebuild = content_widget(1, 1);
-    rebuild.disabled = content->read_only || scene || entry->scope != 0;
+    rebuild.disabled = content->read_only || scene || entry->scope != 0 ||
+                       content_locked(content, entry);
     if (vkr_ui_button(ui, string8_lit("rebuild"), string8_lit("Rebuild"),
                       &rebuild)) {
       content_action(content, VKR_EDITOR_CONTENT_ACTION_REBUILD);
@@ -4057,7 +4358,9 @@ static bool8_t content_menu_enabled(const VkrEditorContent *content,
     return false_v;
   }
   const ContentAsset *entry = &content->entries[shown];
-  const bool8_t writable = !content->read_only;
+  /* A cooking asset is locked until its final textures publish. */
+  const bool8_t writable =
+      !content->read_only && !content_locked(content, entry);
   switch (command) {
   case VKR_EDITOR_CONTENT_COMMAND_LOAD:
     return false_v;

@@ -1791,6 +1791,401 @@ bool8_t vkr_editor_project_json_read_file(const char *path,
   return project_json_finish(&json, true_v);
 }
 
+// =============================================================================
+// World models (ADR-076)
+// =============================================================================
+
+/* Replaces the document at `path` through a synced staged file, so a failure
+   leaves the previous document. */
+static bool8_t project_publish_document(const char *path, String8 bytes,
+                                        VkrEditorProjectError *error) {
+  char transaction[37];
+  char staged_path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!vkr_editor_project_id_generate(transaction, error)) {
+    return false_v;
+  }
+  const int32_t length = snprintf(staged_path, sizeof(staged_path), "%s.tmp.%s",
+                                  path, transaction);
+  if (length < 0 || (uint32_t)length >= sizeof(staged_path)) {
+    return project_error(error, "Document path exceeds supported length: %s",
+                         path);
+  }
+  FilePath staged = project_path(staged_path);
+  FilePath destination = project_path(path);
+  FileHandle output = {0};
+  const FileMode exclusive = {.set = FILE_MODE_WRITE | FILE_MODE_BINARY |
+                                     FILE_MODE_CREATE | FILE_MODE_EXCLUSIVE};
+  if (file_open(&staged, exclusive, &output) != FILE_ERROR_NONE) {
+    return project_error(error, "Cannot stage document: %s", path);
+  }
+  const bool8_t written =
+      project_write_sink(&output, bytes.str, bytes.length) &&
+      file_sync(&output) == FILE_ERROR_NONE;
+  file_close(&output);
+  if (!written ||
+      file_rename(&staged, &destination, true_v) != FILE_ERROR_NONE) {
+    file_remove(&staged);
+    return project_error(
+        error, "Cannot publish document; previous version preserved: %s", path);
+  }
+  return true_v;
+}
+
+/* Name and mesh artifact path of project mesh `id` in the parsed inventory;
+   false when the asset is missing, not a mesh, or has no mesh artifact. */
+static bool8_t project_world_mesh(s_ProjectJson *assets, const char *id,
+                                  char *name, uint32_t name_capacity,
+                                  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
+  const s_ProjectJsonToken *list = &assets->tokens[0];
+  for (uint32_t item = list->child; item < list->next;
+       item = assets->tokens[item].next) {
+    char text[64];
+    if (assets->tokens[item].kind != '{' ||
+        !project_json_text(assets, item, "id", text, sizeof(text)) ||
+        strcmp(text, id)) {
+      continue;
+    }
+    if (!project_json_text(assets, item, "kind", text, sizeof(text)) ||
+        strcmp(text, "mesh")) {
+      return false_v;
+    }
+    if (!project_json_text(assets, item, "name", name, name_capacity)) {
+      snprintf(name, name_capacity, "Mesh");
+    }
+    const uint32_t artifacts = project_json_field(assets, item, "artifacts");
+    if (artifacts == UINT32_MAX || assets->tokens[artifacts].kind != '[') {
+      return false_v;
+    }
+    for (uint32_t artifact = assets->tokens[artifacts].child;
+         artifact < assets->tokens[artifacts].next;
+         artifact = assets->tokens[artifact].next) {
+      if (assets->tokens[artifact].kind == '{' &&
+          project_json_text(assets, artifact, "role", text, sizeof(text)) &&
+          !strcmp(text, "mesh") &&
+          project_json_text(assets, artifact, "path", path,
+                            VKR_EDITOR_PROJECT_PATH_CAPACITY)) {
+        return project_relative_valid(path);
+      }
+    }
+    return false_v;
+  }
+  return false_v;
+}
+
+/* The runtime resolves `./` from the World document, which sits in the
+   project directory the inventory's paths are relative to. */
+static bool8_t
+project_world_runtime_path(const char *artifact,
+                           char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
+  const int32_t length =
+      snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "./%s", artifact);
+  return length > 0 && (uint32_t)length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
+}
+
+/* Parses the World document and the project inventory and finds the World's
+   entity list. */
+static bool8_t project_world_open(const char *world_path, String8 assets,
+                                  VkrAllocator *scratch, String8 *document,
+                                  s_ProjectJson *world,
+                                  s_ProjectJson *inventory, uint32_t *entities,
+                                  VkrEditorProjectError *error) {
+  if (!world_path || !scratch ||
+      !project_read(world_path, scratch, document, error)) {
+    return false_v;
+  }
+  if (!project_json_parse(world, *document) || world->tokens[0].kind != '{') {
+    return project_error(error, "World document is not valid JSON: %s",
+                         world_path);
+  }
+  *entities = project_json_field(world, 0, "entities");
+  if (*entities == UINT32_MAX || world->tokens[*entities].kind != '[') {
+    return project_error(error, "World document has no entity list: %s",
+                         world_path);
+  }
+  if (!project_json_parse(inventory, assets) ||
+      inventory->tokens[0].kind != '[') {
+    return project_error(error, "Project asset inventory is invalid");
+  }
+  return true_v;
+}
+
+bool8_t
+vkr_editor_project_world_add_meshes(const char *world_path, String8 assets,
+                                    const char (*ids)[37], uint32_t count,
+                                    VkrAllocator *scratch, uint32_t *out_added,
+                                    VkrEditorProjectError *error) {
+  if (!out_added || (count && !ids)) {
+    return project_error(error, "Invalid World model request");
+  }
+  *out_added = 0u;
+  String8 document = {0};
+  s_ProjectJson world = {0};
+  s_ProjectJson inventory = {0};
+  uint8_t *bytes = NULL;
+  uint64_t capacity = 0u;
+  bool8_t success = false_v;
+  uint32_t entities = 0u;
+  if (!project_world_open(world_path, assets, scratch, &document, &world,
+                          &inventory, &entities, error)) {
+    goto cleanup;
+  }
+  /* A document gives every entity an id or none (ADR-076). */
+  const uint32_t first = world.tokens[entities].child;
+  const bool8_t populated = first < world.tokens[entities].next;
+  const bool8_t identified =
+      !populated || (world.tokens[first].kind == '{' &&
+                     project_json_field(&world, first, "id") != UINT32_MAX);
+  capacity = document.length + (uint64_t)count * 3072u + 1u;
+  bytes =
+      vkr_allocator_alloc(scratch, capacity, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!bytes) {
+    project_error(error, "Cannot allocate the World document");
+    goto cleanup;
+  }
+  s_ProjectMemorySink sink = {.bytes = bytes, .capacity = capacity};
+  /* New entities go before the closing bracket of the entity list. */
+  const uint32_t close = world.tokens[entities].end - 1u;
+  bool8_t comma = populated;
+  bool8_t ok = project_memory_sink(&sink, document.str, close);
+  for (uint32_t i = 0; ok && i < count; ++i) {
+    char name[VKR_EDITOR_PROJECT_NAME_CAPACITY * 4u];
+    char artifact[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+    char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+    char entity_id[37];
+    if (!project_world_mesh(&inventory, ids[i], name, sizeof(name), artifact) ||
+        !project_world_runtime_path(artifact, path)) {
+      continue;
+    }
+    VkrJsonWriter writer;
+    vkr_json_writer_init(&writer, project_memory_sink, &sink);
+    ok = (!comma || project_memory_sink(&sink, (const uint8_t *)",", 1u)) &&
+         (!identified || vkr_editor_project_id_generate(entity_id, error)) &&
+         vkr_json_writer_begin_object(&writer) &&
+         (!identified ||
+          (vkr_json_writer_name(&writer, string8_lit("id")) &&
+           vkr_json_writer_string(&writer, project_string(entity_id)))) &&
+         vkr_json_writer_name(&writer, string8_lit("name")) &&
+         vkr_json_writer_string(&writer, project_string(name)) &&
+         vkr_json_writer_name(&writer, string8_lit("parent")) &&
+         vkr_json_writer_null(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("transform")) &&
+         vkr_json_writer_begin_object(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("pos")) &&
+         vkr_json_writer_begin_array(&writer) &&
+         vkr_json_writer_f64(&writer, 0.0) &&
+         vkr_json_writer_f64(&writer, 0.0) &&
+         vkr_json_writer_f64(&writer, 0.0) &&
+         vkr_json_writer_end_array(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("rot")) &&
+         vkr_json_writer_begin_array(&writer) &&
+         vkr_json_writer_f64(&writer, 0.0) &&
+         vkr_json_writer_f64(&writer, 0.0) &&
+         vkr_json_writer_f64(&writer, 0.0) &&
+         vkr_json_writer_f64(&writer, 1.0) &&
+         vkr_json_writer_end_array(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("scale")) &&
+         vkr_json_writer_begin_array(&writer) &&
+         vkr_json_writer_f64(&writer, 1.0) &&
+         vkr_json_writer_f64(&writer, 1.0) &&
+         vkr_json_writer_f64(&writer, 1.0) &&
+         vkr_json_writer_end_array(&writer) &&
+         vkr_json_writer_end_object(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("mesh")) &&
+         vkr_json_writer_begin_object(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("path")) &&
+         vkr_json_writer_string(&writer, project_string(path)) &&
+         vkr_json_writer_name(&writer, string8_lit("asset")) &&
+         vkr_json_writer_begin_object(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("scope")) &&
+         vkr_json_writer_string(&writer, string8_lit("project")) &&
+         vkr_json_writer_name(&writer, string8_lit("id")) &&
+         vkr_json_writer_string(&writer, project_string(ids[i])) &&
+         vkr_json_writer_name(&writer, string8_lit("role")) &&
+         vkr_json_writer_string(&writer, string8_lit("mesh")) &&
+         vkr_json_writer_end_object(&writer) &&
+         vkr_json_writer_name(&writer, string8_lit("pipeline_domain")) &&
+         vkr_json_writer_string(&writer, string8_lit("world")) &&
+         vkr_json_writer_end_object(&writer) &&
+         vkr_json_writer_end_object(&writer) &&
+         vkr_json_writer_complete(&writer);
+    comma = true_v;
+    ++*out_added;
+  }
+  ok = ok && project_memory_sink(&sink, document.str + close,
+                                 document.length - close);
+  if (!ok) {
+    if (!error || !error->message[0]) {
+      project_error(error, "Cannot compose the World document");
+    }
+    goto cleanup;
+  }
+  if (!*out_added) {
+    success = true_v;
+    goto cleanup;
+  }
+  const String8 updated = string8_create(bytes, sink.length);
+  s_ProjectJson check = {0};
+  if (!project_json_finish(&check, project_json_parse(&check, updated))) {
+    project_error(error, "Composed World document is invalid");
+    goto cleanup;
+  }
+  success = project_publish_document(world_path, updated, error);
+cleanup:
+  if (!success) {
+    *out_added = 0u;
+  }
+  project_json_finish(&world, true_v);
+  project_json_finish(&inventory, true_v);
+  if (bytes) {
+    vkr_allocator_free(scratch, bytes, capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  if (document.str) {
+    vkr_allocator_free(scratch, document.str, document.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  return success;
+}
+
+bool8_t vkr_editor_project_world_refresh(const char *world_path, String8 assets,
+                                         VkrAllocator *scratch,
+                                         uint32_t *out_changed,
+                                         VkrEditorProjectError *error) {
+  if (!out_changed) {
+    return project_error(error, "Invalid World refresh request");
+  }
+  *out_changed = 0u;
+  String8 document = {0};
+  s_ProjectJson world = {0};
+  s_ProjectJson inventory = {0};
+  uint8_t *bytes = NULL;
+  uint64_t capacity = 0u;
+  bool8_t success = false_v;
+  uint32_t entities = 0u;
+  if (!project_world_open(world_path, assets, scratch, &document, &world,
+                          &inventory, &entities, error)) {
+    goto cleanup;
+  }
+  uint32_t count = 0u;
+  for (uint32_t entity = world.tokens[entities].child;
+       entity < world.tokens[entities].next;
+       entity = world.tokens[entity].next) {
+    ++count;
+  }
+  capacity = document.length +
+             (uint64_t)count * (VKR_EDITOR_PROJECT_PATH_CAPACITY + 8u) + 1u;
+  bytes =
+      vkr_allocator_alloc(scratch, capacity, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!bytes) {
+    project_error(error, "Cannot allocate the World document");
+    goto cleanup;
+  }
+  s_ProjectMemorySink sink = {.bytes = bytes, .capacity = capacity};
+  uint32_t copied = 0u;
+  bool8_t ok = true_v;
+  for (uint32_t entity = world.tokens[entities].child;
+       ok && entity < world.tokens[entities].next;
+       entity = world.tokens[entity].next) {
+    const uint32_t mesh = world.tokens[entity].kind == '{'
+                              ? project_json_field(&world, entity, "mesh")
+                              : UINT32_MAX;
+    if (mesh == UINT32_MAX || world.tokens[mesh].kind != '{') {
+      continue;
+    }
+    const uint32_t asset = project_json_field(&world, mesh, "asset");
+    const uint32_t field = project_json_field(&world, mesh, "path");
+    char scope[16];
+    char id[64];
+    char previous[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+    char name[VKR_EDITOR_PROJECT_NAME_CAPACITY * 4u];
+    char artifact[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+    char current[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+    if (asset == UINT32_MAX || world.tokens[asset].kind != '{' ||
+        field == UINT32_MAX || world.tokens[field].kind != '"' ||
+        !project_json_text(&world, asset, "scope", scope, sizeof(scope)) ||
+        strcmp(scope, "project") ||
+        !project_json_text(&world, asset, "id", id, sizeof(id)) ||
+        !project_json_decode(&world, field, previous, sizeof(previous)) ||
+        !project_world_mesh(&inventory, id, name, sizeof(name), artifact) ||
+        !project_world_runtime_path(artifact, current) ||
+        !strcmp(previous, current)) {
+      continue;
+    }
+    VkrJsonWriter writer;
+    vkr_json_writer_init(&writer, project_memory_sink, &sink);
+    ok = project_memory_sink(&sink, document.str + copied,
+                             world.tokens[field].start - copied) &&
+         vkr_json_writer_string(&writer, project_string(current)) &&
+         vkr_json_writer_complete(&writer);
+    copied = world.tokens[field].end;
+    ++*out_changed;
+  }
+  ok = ok && project_memory_sink(&sink, document.str + copied,
+                                 document.length - copied);
+  if (!ok) {
+    project_error(error, "Cannot compose the World document");
+    goto cleanup;
+  }
+  success = !*out_changed ||
+            project_publish_document(world_path,
+                                     string8_create(bytes, sink.length), error);
+cleanup:
+  if (!success) {
+    *out_changed = 0u;
+  }
+  project_json_finish(&world, true_v);
+  project_json_finish(&inventory, true_v);
+  if (bytes) {
+    vkr_allocator_free(scratch, bytes, capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  if (document.str) {
+    vkr_allocator_free(scratch, document.str, document.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  return success;
+}
+
+uint32_t vkr_editor_project_world_meshes(const char *world_path,
+                                         VkrAllocator *scratch, char (*ids)[37],
+                                         uint32_t capacity) {
+  String8 document = {0};
+  s_ProjectJson world = {0};
+  uint32_t count = 0u;
+  if (!world_path || !scratch || !ids ||
+      !project_read(world_path, scratch, &document, NULL)) {
+    return 0u;
+  }
+  const uint32_t entities =
+      project_json_parse(&world, document) && world.tokens[0].kind == '{'
+          ? project_json_field(&world, 0, "entities")
+          : UINT32_MAX;
+  if (entities != UINT32_MAX && world.tokens[entities].kind == '[') {
+    for (uint32_t entity = world.tokens[entities].child;
+         count < capacity && entity < world.tokens[entities].next;
+         entity = world.tokens[entity].next) {
+      const uint32_t mesh = world.tokens[entity].kind == '{'
+                                ? project_json_field(&world, entity, "mesh")
+                                : UINT32_MAX;
+      const uint32_t asset =
+          mesh != UINT32_MAX && world.tokens[mesh].kind == '{'
+              ? project_json_field(&world, mesh, "asset")
+              : UINT32_MAX;
+      char scope[16];
+      if (asset != UINT32_MAX && world.tokens[asset].kind == '{' &&
+          project_json_text(&world, asset, "scope", scope, sizeof(scope)) &&
+          !strcmp(scope, "project") &&
+          project_json_text(&world, asset, "id", ids[count], sizeof(ids[0]))) {
+        ++count;
+      }
+    }
+  }
+  project_json_finish(&world, true_v);
+  vkr_allocator_free(scratch, document.str, document.length + 1,
+                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  return count;
+}
+
 bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
                                               uint64_t *expected_fingerprint,
                                               VkrSceneEditState *edits,

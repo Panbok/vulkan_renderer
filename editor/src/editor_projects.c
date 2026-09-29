@@ -3,6 +3,7 @@
 #include "editor_internal.h"
 #include "editor_project_store.h"
 #include "editor_scene_panels.h"
+#include <ctype.h>
 #include <math.h>
 
 #include "core/logger.h"
@@ -50,6 +51,17 @@ typedef enum ProjectCreateStep {
   PROJECT_CREATE_SCENE,
   PROJECT_CREATE_IMPORT,
 } ProjectCreateStep;
+
+/* Where imported models go (ADR-076): a new scene holding them, the World's
+   root, a project scene, or only Content. Each placement shows the model in
+   the viewport once its job finishes. */
+typedef enum ProjectImportTarget {
+  PROJECT_IMPORT_NEW_SCENE,
+  PROJECT_IMPORT_WORLD,
+  PROJECT_IMPORT_SCENE,
+  PROJECT_IMPORT_CONTENT,
+  PROJECT_IMPORT_TARGET_COUNT,
+} ProjectImportTarget;
 
 typedef struct ProjectCard {
   char id[37];
@@ -226,6 +238,15 @@ struct VkrEditorProjects {
   char import_sources[VKR_WINDOW_DROP_PATH_MAX][VKR_WINDOW_DROP_PATH_CAPACITY];
   uint32_t import_source_count;
   char import_folder[VKR_EDITOR_FOLDER_PATH_CAPACITY];
+  /* The import step's placement of models and, for PROJECT_IMPORT_SCENE,
+     the project scene index. */
+  ProjectImportTarget import_target;
+  uint32_t import_scene_index;
+  /* The running job came from the import step: a failure returns to the
+     editor with a message instead of another form. */
+  bool8_t job_imports_models;
+  /* The running Content import places its meshes at the World's root. */
+  bool8_t job_world_models;
   char progress_stage[128];
   char progress_detail[512];
   float64_t next_progress_check;
@@ -233,6 +254,13 @@ struct VkrEditorProjects {
   /* Root World document and its edit sidecar beside project.json. */
   char world_path[1024];
   char world_sidecar[1024];
+  /* Frames a requested World load still counts as busy: the runtime starts
+     it after this build and reports it loading until it activates. */
+  uint32_t world_wait;
+  /* Project meshes the requested World document places; Content shows them
+     loading while the World streams. */
+  char world_meshes[32][37];
+  uint32_t world_mesh_count;
   char scene_manifest_path[1024];
   uint64_t scene_manifest_fingerprint;
   char edit_path[1024];
@@ -853,15 +881,35 @@ static bool8_t project_scene_dirty(const VkrSampleUiFrame *frame) {
   return frame->edits->revision != frame->edits->saved_revision;
 }
 
+static bool8_t project_world_dirty(const VkrSampleUiFrame *frame) {
+  return frame->world && frame->world_edits &&
+         frame->world_edits->revision != frame->world_edits->saved_revision;
+}
+
+/* Reloads the World after its document changed, keeping added scenes and the
+   view; an asked-for discard drops its unsaved edits. */
+static void project_reload_world(VkrEditorProjects *projects,
+                                 const VkrSampleUiFrame *frame) {
+  *frame->world_request = (VkrSampleWorldRequest){
+      .path = project_string(projects->world_path),
+      .sidecar_path = project_string(projects->world_sidecar),
+      .load = true_v,
+      .reload = true_v,
+      .discard_edits = projects->discard_edits};
+  projects->discard_edits = false_v;
+  projects->world_wait = 2u;
+  projects->world_mesh_count = vkr_editor_project_world_meshes(
+      projects->world_path, frame->ui->frame_allocator, projects->world_meshes,
+      ArrayCount(projects->world_meshes));
+}
+
 static bool8_t project_any_dirty(const VkrSampleUiFrame *frame) {
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
     if (frame->additive[i] && frame->additive_edits[i]->revision !=
                                   frame->additive_edits[i]->saved_revision)
       return true_v;
   }
-  return project_scene_dirty(frame) ||
-         (frame->world && frame->world_edits &&
-          frame->world_edits->revision != frame->world_edits->saved_revision);
+  return project_scene_dirty(frame) || project_world_dirty(frame);
 }
 
 static float32_t project_world_number(VkrJsonReader graphics, const char *key,
@@ -1078,11 +1126,23 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
   *frame->scene_request = (VkrSampleSceneRequest){
       .unload = true_v, .discard_edits = projects->discard_edits};
   if (project_world_prepare(projects)) {
+    /* World models follow rebuilds published since the World last saved. */
+    uint32_t moved = 0u;
+    if (candidate->assets.length &&
+        !vkr_editor_project_world_refresh(
+            projects->world_path, candidate->assets, frame->ui->frame_allocator,
+            &moved, &error)) {
+      log_warn("Project: World models keep their paths: %s", error.message);
+    }
     *frame->world_request = (VkrSampleWorldRequest){
         .path = project_string(projects->world_path),
         .sidecar_path = project_string(projects->world_sidecar),
         .load = true_v,
         .discard_edits = projects->discard_edits};
+    projects->world_wait = 2u;
+    projects->world_mesh_count = vkr_editor_project_world_meshes(
+        projects->world_path, frame->ui->frame_allocator,
+        projects->world_meshes, ArrayCount(projects->world_meshes));
   } else {
     snprintf(projects->message, sizeof(projects->message),
              "The project World could not be prepared.");
@@ -1268,6 +1328,8 @@ static void project_reset_scene_draft(VkrEditorProjects *projects) {
   projects->action_asset[0] = '\0';
   projects->action_source[0] = '\0';
   projects->import_scene = false_v;
+  projects->job_imports_models = false_v;
+  projects->job_world_models = false_v;
   projects->message[0] = '\0';
 }
 
@@ -1508,8 +1570,12 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
     if (projects->placing_asset && !projects->place_prefab) {
       ok = ok && project_write_placed_asset(projects, writer);
     } else if (projects->adding_model) {
-      ok = ok &&
-           vkr_json_writer_string(writer, project_string(projects->models[0]));
+      /* The Add entity form names one model; an import names each file. */
+      const uint32_t count = Max(projects->model_count, 1u);
+      for (uint32_t i = 0; ok && i < count; ++i) {
+        ok =
+            vkr_json_writer_string(writer, project_string(projects->models[i]));
+      }
     }
     ok = ok && vkr_json_writer_end_array(writer) &&
          vkr_json_writer_name(writer, string8_lit("lights")) &&
@@ -2049,6 +2115,23 @@ static void project_finalize_project_complete(VkrEditorProjects *projects,
   projects->finalize_project = false_v;
   vkr_editor_content_refresh(editor->content);
 
+  /* World models name the rebuilt revisions from now on (ADR-076). Their
+     materials were replaced live as they finished; otherwise a clean World
+     reloads to show them. */
+  uint32_t moved = 0u;
+  if (projects->world_path[0] &&
+      !vkr_editor_project_world_refresh(
+          projects->world_path, projects->project->assets,
+          frame->ui->frame_allocator, &moved, &error)) {
+    log_warn("Textures: cannot point World models at the final textures: %s",
+             error.message);
+  }
+  const bool8_t applied_live = projects->finalize_ready_applied > 0u &&
+                               projects->finalize_ready_rejected == 0u;
+  if (moved && !applied_live && !project_world_dirty(frame)) {
+    project_reload_world(projects, frame);
+  }
+
   /* Reopen only a clean open scene that names a finalized asset. */
   String8 scene = {0};
   bool8_t uses = false_v;
@@ -2186,10 +2269,12 @@ static void project_update_finalize(VkrEditorProjects *projects,
     projects->finalize_project =
         string8_contains(&projects->project->assets, &marker);
   }
-  /* Start only while the editor is idle: no job, activation or load. */
+  /* Start only while the editor is idle: no job, activation or load. A World
+     still loading would miss the materials finished before it is live. */
   if ((!projects->finalize_scene_id[0] && !projects->finalize_project) ||
       projects->read_only || !projects->project || projects->job_id ||
       projects->waiting_activation || frame->scene_loading ||
+      frame->world_loading || projects->world_wait ||
       projects->view != PROJECT_VIEW_EDITOR) {
     return;
   }
@@ -2708,6 +2793,40 @@ static void project_read_inspection(VkrEditorProjects *projects,
   }
 }
 
+/* Places the meshes a Content import added at the World's root (ADR-076),
+   once the inventory naming them is saved, and reloads the World to show
+   them. */
+static void project_place_world_models(VkrEditorProjects *projects,
+                                       VkrEditorUi *editor,
+                                       const VkrSampleUiFrame *frame,
+                                       const char (*ids)[37], uint32_t count) {
+  projects->job_world_models = false_v;
+  VkrEditorProjectError error = {0};
+  uint32_t added = 0u;
+  if (!ids || !vkr_editor_project_world_add_meshes(
+                  projects->world_path, projects->project->assets, ids, count,
+                  frame->ui->frame_allocator, &added, &error)) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Imported into Content; the World could not take the model: %s",
+             error.message[0] ? error.message : "no imported assets");
+    log_warn("Import: %s", projects->message);
+    vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
+                     projects->message);
+    projects->discard_edits = false_v;
+    return;
+  }
+  if (!added) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Imported into Content; no model to place in the World.");
+    projects->discard_edits = false_v;
+    return;
+  }
+  project_reload_world(projects, frame);
+  snprintf(projects->message, sizeof(projects->message),
+           "Added %u model%s to the World.", added, added == 1u ? "" : "s");
+  log_info("Import: %s", projects->message);
+}
+
 static void project_job_complete(VkrEditorProjects *projects,
                                  VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
@@ -2809,7 +2928,14 @@ static void project_job_complete(VkrEditorProjects *projects,
     /* File the new assets into the folder the import targeted. */
     VkrJsonReader reader = vkr_json_reader_from_string(result);
     uint32_t imported = 0u;
+    uint32_t id_capacity = 0u;
+    char (*ids)[37] = NULL;
     if (vkr_json_find_array(&reader, "imported_assets")) {
+      /* Each quoted identity and its separator take at least 38 bytes. */
+      id_capacity = (uint32_t)Min(reader.length / 38u + 1u, 65536u);
+      ids = vkr_allocator_alloc(frame->ui->frame_allocator,
+                                sizeof(*ids) * id_capacity,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       while (vkr_json_next_array_element(&reader)) {
         String8 id = {0};
         char text[37];
@@ -2818,6 +2944,9 @@ static void project_job_complete(VkrEditorProjects *projects,
         }
         MemCopy(text, id.str, id.length);
         text[id.length] = '\0';
+        if (ids && imported < id_capacity) {
+          MemCopy(ids[imported], text, sizeof(text));
+        }
         ++imported;
         if (projects->import_folder[0]) {
           (void)vkr_editor_content_file_into(editor->content, text,
@@ -2830,6 +2959,11 @@ static void project_job_complete(VkrEditorProjects *projects,
              "Imported %u assets into Content%s%s.", imported,
              projects->import_folder[0] ? "/" : "", projects->import_folder);
     projects->import_source_count = 0u;
+    projects->job_imports_models = false_v;
+    if (projects->job_world_models) {
+      project_place_world_models(projects, editor, frame, ids,
+                                 Min(imported, id_capacity));
+    }
     return;
   }
   if (projects->job_creates_project) {
@@ -3169,8 +3303,9 @@ bool8_t vkr_editor_projects_loading(const VkrEditorProjects *projects) {
 }
 
 bool8_t vkr_editor_projects_busy(const VkrEditorProjects *projects) {
-  return projects && (projects->job_id || projects->waiting_activation ||
-                      projects->swap != PROJECT_SWAP_NONE);
+  return projects &&
+         (projects->job_id || projects->waiting_activation ||
+          projects->swap != PROJECT_SWAP_NONE || projects->world_wait);
 }
 
 /* A dialog is open: a project view other than the editor and its progress
@@ -3329,8 +3464,68 @@ static void project_open_world(VkrEditorUi *editor,
   (void)vkr_editor_viewport_tab_new(editor, frame);
 }
 
+/* A model file the import step can place: glTF, GLB, OBJ or cooked VKB. */
+static bool8_t project_model_file(const char *path) {
+  const char *dot = strrchr(path, '.');
+  if (!dot) {
+    return false_v;
+  }
+  char suffix[8] = {0};
+  for (uint32_t i = 0; i + 1u < sizeof(suffix) && dot[i]; ++i) {
+    suffix[i] = (char)tolower((unsigned char)dot[i]);
+  }
+  static const char *const models[] = {".gltf", ".glb", ".obj", ".vkb"};
+  for (uint32_t i = 0; i < ArrayCount(models); ++i) {
+    if (!strcmp(suffix, models[i])) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Every file of the import step is a model, so it can be placed. */
+static bool8_t project_import_models(const VkrEditorProjects *projects) {
+  if (!projects->import_source_count) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < projects->import_source_count; ++i) {
+    if (!project_model_file(projects->import_sources[i])) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Opens the import step for `import_sources` (ADR-076). Models go to the
+   open scene by default, else to the World; a new scene takes the first
+   file's name. */
+static void project_open_import_step(VkrEditorProjects *projects,
+                                     VkrEditorUi *editor) {
+  const bool8_t open_scene =
+      projects->active_scene < projects->project->scene_count;
+  projects->import_target =
+      open_scene ? PROJECT_IMPORT_SCENE : PROJECT_IMPORT_WORLD;
+  projects->import_scene_index = open_scene ? projects->active_scene : 0u;
+  const char *path = projects->import_sources[0];
+  const char *name = path;
+  for (const char *c = path; *c; ++c) {
+    if (*c == '/' || *c == '\\') {
+      name = c + 1;
+    }
+  }
+  const char *dot = strrchr(name, '.');
+  const int32_t stem =
+      dot && dot > name ? (int32_t)(dot - name) : (int32_t)strlen(name);
+  snprintf(projects->scene_name, sizeof(projects->scene_name), "%.*s", stem,
+           name);
+  projects->message[0] = '\0';
+  projects->create_step = PROJECT_CREATE_IMPORT;
+  editor->windows[VKR_EDITOR_WINDOW_CREATE].visible = true_v;
+}
+
 /* Import into the project (ADR-076): every scene may use the result, and the
-   open scene keeps running. Without `source` a file dialog asks for one. */
+   open scene keeps running. Without `source` a file dialog asks for one; a
+   chosen model opens the import step, which asks where it goes. */
 static void project_import_assets(VkrEditorProjects *projects,
                                   VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame,
@@ -3342,6 +3537,8 @@ static void project_import_assets(VkrEditorProjects *projects,
   }
   snprintf(projects->operation, sizeof(projects->operation),
            "import_project_assets");
+  projects->job_imports_models = false_v;
+  projects->job_world_models = false_v;
   if (!projects->import_source_count) {
     snprintf(projects->import_folder, sizeof(projects->import_folder), "%s",
              vkr_editor_content_folder(editor->content));
@@ -3359,6 +3556,16 @@ static void project_import_assets(VkrEditorProjects *projects,
                    "Choose an asset to import into the project", extensions,
                    ArrayCount(extensions), false_v, projects->action_source,
                    sizeof(projects->action_source));
+    if (projects->action_source[0] &&
+        project_model_file(projects->action_source) &&
+        strlen(projects->action_source) < sizeof(projects->import_sources[0])) {
+      snprintf(projects->import_sources[0], sizeof(projects->import_sources[0]),
+               "%s", projects->action_source);
+      projects->import_source_count = 1u;
+      projects->operation[0] = '\0';
+      project_open_import_step(projects, editor);
+      return;
+    }
   }
   if (projects->action_source[0]) {
     project_start_job(projects, editor, frame, false_v);
@@ -3581,7 +3788,29 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
                            projects->job_id || projects->waiting_activation ||
                            vkr_editor_bakery_busy(editor->bakery));
   vkr_editor_bakery_update(editor->bakery);
+  if (projects->world_wait) {
+    projects->world_wait =
+        frame->world_loading ? 1u : projects->world_wait - 1u;
+  }
   project_update_finalize(projects, editor, frame);
+  /* Models of the World or scene streaming in show as loading (ADR-076). */
+  const bool8_t world_loading = frame->world_loading || projects->world_wait;
+  const bool8_t scene_loading =
+      (frame->scene_loading || projects->waiting_activation) &&
+      projects->project &&
+      projects->pending_scene < projects->project->scene_count;
+  vkr_editor_content_set_loading(
+      editor->content, projects->world_meshes,
+      world_loading ? projects->world_mesh_count : 0u,
+      scene_loading ? projects->project->scenes[projects->pending_scene].id
+                    : "");
+  /* What the background finalize rebuilds shows as cooking (ADR-077). */
+  vkr_editor_content_set_cooking(
+      editor->content,
+      projects->finalize_job && projects->finalize_running_project,
+      projects->finalize_job && !projects->finalize_running_project
+          ? projects->finalize_scene_id
+          : "");
   if (projects->delete_waiting_unload) {
     project_delete_scene(projects, editor, frame);
   }
@@ -3700,6 +3929,23 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
         snprintf(projects->message, sizeof(projects->message),
                  "Nothing was placed. Rebuild the asset or see Bakery for "
                  "details.");
+      } else if (!strcmp(projects->operation, "add_entities") &&
+                 projects->job_imports_models) {
+        /* Nothing was added; the scene open before the import reopens. */
+        projects->job_id = 0;
+        projects->job_imports_models = false_v;
+        projects->operation[0] = '\0';
+        projects->view = PROJECT_VIEW_EDITOR;
+        snprintf(projects->message, sizeof(projects->message),
+                 "%s. The model was not added; see Bakery for details.",
+                 status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Import cancelled"
+                                                            : "Import failed");
+        vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING,
+                         vkr_ui_theme()->warning, projects->message);
+        if (projects->active_scene < projects->project->scene_count) {
+          projects->pending_scene = projects->active_scene;
+          project_start_job(projects, editor, frame, false_v);
+        }
       } else if (!strcmp(projects->operation, "add_entities")) {
         projects->job_id = 0;
         projects->view = PROJECT_VIEW_ADD_ENTITY;
@@ -5812,18 +6058,117 @@ bool8_t vkr_editor_projects_flush(VkrEditorProjects *projects,
   return saved;
 }
 
-/* Import step for files dropped from the OS: what arrives and where it is
-   filed. Import runs one project job for every file. */
+/* Runs the import step's choice (ADR-076). A placement is one job that
+   imports the models and shows them: a new scene holding them opens, a
+   project scene gains them and opens, or they join the World's root. Edits
+   the placement would reload ask to be saved or discarded first; the form
+   then waits for another Import. Returns false with a message when the
+   choice cannot run. */
+static bool8_t project_import_submit(VkrEditorProjects *projects,
+                                     VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame) {
+  if (projects->read_only || !projects->project ||
+      !projects->import_source_count) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Importing needs a writable project and a file.");
+    return false_v;
+  }
+  const ProjectImportTarget target = project_import_models(projects)
+                                         ? projects->import_target
+                                         : PROJECT_IMPORT_CONTENT;
+  if (target == PROJECT_IMPORT_CONTENT) {
+    project_import_assets(projects, editor, frame, projects->import_sources[0]);
+    return projects->job_id != 0;
+  }
+  const uint32_t count =
+      Min(projects->import_source_count, PROJECT_MODEL_COUNT);
+  if (target == PROJECT_IMPORT_NEW_SCENE) {
+    char name[sizeof(projects->scene_name)];
+    snprintf(name, sizeof(name), "%s", projects->scene_name);
+    project_reset_scene_draft(projects);
+    snprintf(projects->scene_name, sizeof(projects->scene_name), "%s", name);
+  } else {
+    project_reset_scene_draft(projects);
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    snprintf(projects->models[i], sizeof(projects->models[i]), "%s",
+             projects->import_sources[i]);
+  }
+  projects->model_count = count;
+  projects->job_imports_models = true_v;
+  if (target == PROJECT_IMPORT_NEW_SCENE) {
+    project_create(projects, editor, frame);
+    return projects->job_id != 0;
+  }
+  if (target == PROJECT_IMPORT_SCENE) {
+    const uint32_t scene = projects->import_scene_index;
+    if (scene >= projects->project->scene_count) {
+      snprintf(projects->message, sizeof(projects->message),
+               "Choose a scene to add the model to.");
+      return false_v;
+    }
+    /* One document cannot be loaded twice: an added scene opens as the
+       primary scene through Set primary first. */
+    for (uint32_t slot = 0; slot < VKR_SCENE_ADDITIVE_MAX; ++slot) {
+      if (frame->additive[slot] &&
+          project_added_scene(projects, frame->additive_names[slot]) == scene) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "%s is loaded beside the open scene; make it primary or "
+                 "remove it first.",
+                 projects->project->scenes[scene].name);
+        return false_v;
+      }
+    }
+    projects->adding_model = true_v;
+    projects->placing_asset = false_v;
+    projects->light_count = 0u;
+    projects->pending_scene = scene;
+    snprintf(projects->operation, sizeof(projects->operation), "add_entities");
+    /* The scene opens with the model in place of the open one. */
+    if (project_scene_dirty(frame)) {
+      projects->resume_view = PROJECT_VIEW_EDITOR;
+      projects->resume_action = PROJECT_RESUME_JOB;
+      projects->view = PROJECT_VIEW_CONFIRM;
+      return true_v;
+    }
+    project_start_job(projects, editor, frame, false_v);
+    return projects->job_id != 0;
+  }
+  /* The World: the models import into Content, then join its root. */
+  snprintf(projects->operation, sizeof(projects->operation),
+           "import_project_assets");
+  projects->action_asset[0] = '\0';
+  projects->action_name[0] = '\0';
+  snprintf(projects->action_source, sizeof(projects->action_source), "%s",
+           projects->import_sources[0]);
+  projects->job_world_models = true_v;
+  if (project_world_dirty(frame)) {
+    projects->resume_view = PROJECT_VIEW_EDITOR;
+    projects->resume_action = PROJECT_RESUME_JOB;
+    projects->view = PROJECT_VIEW_CONFIRM;
+    return true_v;
+  }
+  project_start_job(projects, editor, frame, false_v);
+  return projects->job_id != 0;
+}
+
+/* Import step for dropped or chosen files (ADR-076): what arrives, where
+   models go, and the Content folder their assets are filed in. */
 static void project_build_import_step(VkrEditorProjects *projects,
                                       VkrEditorUi *editor,
                                       const VkrSampleUiFrame *frame,
                                       float32_t width, bool8_t busy) {
   VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const bool8_t models = project_import_models(projects);
+  /* The placement choices need more room than a saved window may have. */
+  VkrEditorWindowState *window = &editor->windows[VKR_EDITOR_WINDOW_CREATE];
+  window->size_pt.y = Max(window->size_pt.y, models ? 400.0f : 300.0f);
   project_label(ui, "import.title",
                 projects->import_source_count == 1u ? "Import 1 file"
                                                     : "Import dropped files",
                 16, 12, width - 32);
-  const uint32_t shown = Min(projects->import_source_count, 5u);
+  const uint32_t shown = Min(projects->import_source_count, 3u);
   for (uint32_t i = 0; i < shown; ++i) {
     const char *path = projects->import_sources[i];
     const char *name = path;
@@ -5833,7 +6178,7 @@ static void project_build_import_step(VkrEditorProjects *projects,
       }
     }
     VkrUiWidgetConfig row = project_widget(16, 40 + 24.0f * i, width - 32, 22);
-    row.icon = VKR_UI_ICON_FILE;
+    row.icon = project_model_file(path) ? VKR_UI_ICON_MESH : VKR_UI_ICON_FILE;
     row.icon_size_pt = 13.0f;
     row.tooltip = project_string(path);
     (void)vkr_ui_push_id_u64(ui, i);
@@ -5843,34 +6188,116 @@ static void project_build_import_step(VkrEditorProjects *projects,
   if (projects->import_source_count > shown) {
     VkrUiWidgetConfig more =
         project_widget(16, 40 + 24.0f * shown, width - 32, 22);
-    more.style.text_color = vkr_ui_theme()->text_secondary;
+    more.style.text_color = theme->text_secondary;
     vkr_ui_label(
         ui, string8_lit("import.more"),
         string8_create_formatted(ui->frame_allocator, "and %u more",
                                  projects->import_source_count - shown),
         &more);
   }
-  VkrUiWidgetConfig into = project_widget(16, 170, width - 32, 22);
+  float32_t y = 40.0f + 24.0f * (shown + 1u) + 4.0f;
+  if (models) {
+    project_label(ui, "import.place", "Place the model in", 16, y, width - 32);
+    y += 28.0f;
+    static const char *const targets[PROJECT_IMPORT_TARGET_COUNT] = {
+        "New scene", "World", "Scene", "Content only"};
+    const float32_t segment_width = (width - 32) / PROJECT_IMPORT_TARGET_COUNT;
+    for (uint32_t i = 0; i < PROJECT_IMPORT_TARGET_COUNT; ++i) {
+      const bool8_t selected =
+          projects->import_target == (ProjectImportTarget)i;
+      VkrUiWidgetConfig segment =
+          project_widget(16 + i * segment_width, y, segment_width, 30);
+      vkr_editor_toggle_style(&segment, selected);
+      if (!selected) {
+        segment.style.background_color = theme->field;
+        segment.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+        segment.style.border_color = theme->border;
+      }
+      segment.style.corner_radius_pt = i == 0 ? (Vec4){6, 0, 0, 6}
+                                       : i + 1 == PROJECT_IMPORT_TARGET_COUNT
+                                           ? (Vec4){0, 6, 6, 0}
+                                           : (Vec4){0, 0, 0, 0};
+      /* Scene needs a project scene to add to. */
+      segment.disabled =
+          i == PROJECT_IMPORT_SCENE && !projects->project->scene_count;
+      (void)vkr_ui_push_id_u64(ui, i);
+      if (vkr_ui_button(ui, string8_lit("import.target"),
+                        project_string(targets[i]), &segment)) {
+        projects->import_target = (ProjectImportTarget)i;
+        projects->message[0] = '\0';
+      }
+      (void)vkr_ui_pop_id(ui);
+    }
+    y += 40.0f;
+    const char *detail = "";
+    switch (projects->import_target) {
+    case PROJECT_IMPORT_NEW_SCENE:
+      project_field(ui, "import.scene_name", projects->scene_name,
+                    sizeof(projects->scene_name), 16, y, width - 32);
+      y += 36.0f;
+      detail = "Creates a scene holding the model and opens it.";
+      break;
+    case PROJECT_IMPORT_WORLD:
+      detail = "Adds the model at the World's root; every scene that uses "
+               "the World shows it.";
+      break;
+    case PROJECT_IMPORT_SCENE: {
+      const uint32_t scene_count = projects->project->scene_count;
+      if (scene_count) {
+        projects->import_scene_index %= scene_count;
+        if (project_button(ui, "import.scene.previous", "<", 16, y, 36,
+                           scene_count < 2u)) {
+          projects->import_scene_index =
+              (projects->import_scene_index + scene_count - 1u) % scene_count;
+        }
+        VkrUiWidgetConfig chosen = project_widget(58, y, width - 116, 30);
+        vkr_editor_field_style(&chosen);
+        chosen.icon = VKR_UI_ICON_SCENE;
+        chosen.icon_size_pt = 14.0f;
+        vkr_ui_label(
+            ui, string8_lit("import.scene"),
+            project_string(
+                projects->project->scenes[projects->import_scene_index].name),
+            &chosen);
+        if (project_button(ui, "import.scene.next", ">", width - 52, y, 36,
+                           scene_count < 2u)) {
+          projects->import_scene_index =
+              (projects->import_scene_index + 1u) % scene_count;
+        }
+        y += 36.0f;
+      }
+      detail = "Adds the model to the scene and opens it.";
+      break;
+    }
+    default:
+      detail = "Imports the assets without placing them.";
+      break;
+    }
+    project_label(ui, "import.detail", detail, 16, y, width - 32);
+    y += 28.0f;
+  }
+  VkrUiWidgetConfig into = project_widget(16, y, width - 32, 22);
   into.icon = VKR_UI_ICON_FOLDER;
   into.icon_color = (Vec4){0.96f, 0.78f, 0.42f, 1.0f};
   vkr_ui_label(ui, string8_lit("import.folder"),
-               string8_create_formatted(ui->frame_allocator, "Into Content%s%s",
+               string8_create_formatted(ui->frame_allocator,
+                                        "Assets into Content%s%s",
                                         projects->import_folder[0] ? "/" : "",
                                         projects->import_folder),
                &into);
-  project_label(ui, "create.message", projects->message, 16, 196, width - 32);
-  if (project_button(ui, "import.cancel", "Cancel", 16, 226, 96, false_v)) {
+  y += 26.0f;
+  project_label(ui, "create.message", projects->message, 16, y, width - 32);
+  y += 30.0f;
+  if (project_button(ui, "import.cancel", "Cancel", 16, y, 96, false_v)) {
     projects->import_source_count = 0u;
     projects->create_step = PROJECT_CREATE_CHOOSE;
     editor->windows[VKR_EDITOR_WINDOW_CREATE].visible = false_v;
   }
-  if (project_button(ui, "import.submit", "Import", width - 136, 226, 120,
-                     busy || !projects->import_source_count)) {
-    project_import_assets(projects, editor, frame, projects->import_sources[0]);
-    if (projects->job_id) {
-      editor->windows[VKR_EDITOR_WINDOW_CREATE].visible = false_v;
-      projects->create_step = PROJECT_CREATE_CHOOSE;
-    }
+  if (project_button(ui, "import.submit", "Import", width - 136, y, 120,
+                     busy || !projects->import_source_count) &&
+      project_import_submit(projects, editor, frame)) {
+    editor->windows[VKR_EDITOR_WINDOW_CREATE].visible = false_v;
+    projects->create_step = PROJECT_CREATE_CHOOSE;
   }
 }
 
@@ -6353,10 +6780,66 @@ bool8_t vkr_editor_projects_import_files(VkrEditorProjects *projects,
   }
   snprintf(projects->import_folder, sizeof(projects->import_folder), "%s",
            folder ? folder : "");
-  projects->message[0] = '\0';
-  projects->create_step = PROJECT_CREATE_IMPORT;
-  editor->windows[VKR_EDITOR_WINDOW_CREATE].visible = true_v;
+  project_open_import_step(projects, editor);
   return true_v;
+}
+
+bool8_t vkr_editor_projects_import_to(VkrEditorProjects *projects,
+                                      VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      const char *source, String8 target,
+                                      String8 name) {
+  if (!vkr_editor_projects_switch_ready(projects) || projects->read_only ||
+      !source || !source[0] ||
+      strlen(source) >= sizeof(projects->import_sources[0])) {
+    if (projects) {
+      snprintf(projects->message, sizeof(projects->message),
+               "No writable, idle project can import now.");
+    }
+    return false_v;
+  }
+  snprintf(projects->import_sources[0], sizeof(projects->import_sources[0]),
+           "%s", source);
+  projects->import_source_count = 1u;
+  snprintf(projects->import_folder, sizeof(projects->import_folder), "%s",
+           vkr_editor_content_folder(editor->content));
+  project_open_import_step(projects, editor);
+  editor->windows[VKR_EDITOR_WINDOW_CREATE].visible = false_v;
+  projects->create_step = PROJECT_CREATE_CHOOSE;
+  static const char *const targets[PROJECT_IMPORT_TARGET_COUNT] = {
+      "new", "world", "scene", "content"};
+  uint32_t chosen = PROJECT_IMPORT_TARGET_COUNT;
+  for (uint32_t i = 0; i < PROJECT_IMPORT_TARGET_COUNT; ++i) {
+    const String8 word = project_string(targets[i]);
+    if (string8_equals(&target, &word)) {
+      chosen = i;
+    }
+  }
+  if (chosen == PROJECT_IMPORT_TARGET_COUNT) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Choose world, new <name>, scene <name> or content.");
+    return false_v;
+  }
+  projects->import_target = (ProjectImportTarget)chosen;
+  if (chosen == PROJECT_IMPORT_NEW_SCENE && name.length) {
+    snprintf(projects->scene_name, sizeof(projects->scene_name), "%.*s",
+             (int)name.length, (const char *)name.str);
+  }
+  if (chosen == PROJECT_IMPORT_SCENE) {
+    projects->import_scene_index = UINT32_MAX;
+    for (uint32_t i = 0; i < projects->project->scene_count; ++i) {
+      const String8 candidate =
+          project_string(projects->project->scenes[i].name);
+      if (string8_equals(&candidate, &name)) {
+        projects->import_scene_index = i;
+      }
+    }
+  }
+  return project_import_submit(projects, editor, frame);
+}
+
+const char *vkr_editor_projects_message(const VkrEditorProjects *projects) {
+  return projects ? projects->message : "";
 }
 
 bool8_t vkr_editor_projects_import_scene_form(VkrEditorProjects *projects,

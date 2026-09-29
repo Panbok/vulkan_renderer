@@ -3,6 +3,7 @@
 
 #include "editor_graphics.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -1042,10 +1043,12 @@ static void editor_scene_stats_build(const VkrSampleUiFrame *frame) {
   const bool8_t gameplay = frame->scene && frame->scene->player_entity.u64 &&
                            frame->simulation_running;
   /* The runtime formats performance as newline-separated lines. */
-  String8 summary = frame->scene_rendering_stopped ? string8_lit("Frozen")
-                    : !frame->scene && !frame->world
-                        ? string8_lit("No scene loaded")
-                        : frame->text.performance;
+  String8 summary =
+      frame->scene_rendering_stopped ? string8_lit("Frozen")
+      : !frame->scene && !frame->world
+          ? (frame->world_loading ? string8_lit("Loading World")
+                                  : string8_lit("No scene loaded"))
+          : frame->text.performance;
   uint8_t *line =
       vkr_allocator_alloc(ui->frame_allocator, summary.length * 3u + 1u,
                           VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -1109,10 +1112,77 @@ static void editor_scene_stats_build(const VkrSampleUiFrame *frame) {
   (void)vkr_ui_button(ui, string8_lit("editor.scene.stats"), summary, &chip);
 }
 
+/* Bottom-left chip while models stream into the World or a scene (ADR-076),
+   or a background finalize encodes their full-quality textures (ADR-077):
+   which assets, and for cooking how many materials are applied. Their
+   Content items and Outliner rows are locked meanwhile. */
+static void editor_scene_cooking_build(VkrEditorUi *editor,
+                                       const VkrSampleUiFrame *frame) {
+  if (!frame->mapping_valid || !editor->content) {
+    return;
+  }
+  bool8_t running = false_v;
+  uint32_t applied = 0u;
+  vkr_editor_projects_finalize_stats(editor->projects, &running, &applied);
+  char label[160];
+  char revision[1][37];
+  const bool8_t loading =
+      vkr_editor_content_loading(editor->content, label, sizeof(label));
+  if (!loading &&
+      (!running || !vkr_editor_content_cooking(editor->content, revision, 1u,
+                                               label, sizeof(label)))) {
+    return;
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = frame->ui;
+  const float32_t scale = ui->content_scale;
+  const Vec4 viewport = frame->mapping.panel_rect_px;
+  if (viewport.z / scale < 260.0f || viewport.w / scale < 120.0f) {
+    return;
+  }
+  VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
+  chip.placement = VKR_UI_PLACEMENT_DEFAULT;
+  chip.placement.column = chip.placement.row = 0u;
+  chip.placement.justify = VKR_UI_ALIGN_START;
+  chip.placement.align = VKR_UI_ALIGN_END;
+  chip.placement.margin_pt =
+      (VkrUiEdges){0.0f, 0.0f,
+                   Max(0.0f, (float32_t)ui->target_height / scale -
+                                 (viewport.y + viewport.w) / scale + 10.0f),
+                   viewport.x / scale + 10.0f};
+  chip.style = vkr_editor_overlay_style();
+  chip.style.padding_pt = (VkrUiEdges){4.0f, 10.0f, 4.0f, 8.0f};
+  chip.style.font_size_pt = theme->font_caption;
+  chip.style.text_color = theme->text;
+  chip.style.hover_background_color = theme->popup;
+  /* The spinner pulses so the work reads as alive. */
+  const float32_t pulse =
+      0.55f + 0.45f * sinf((float32_t)vkr_platform_get_absolute_time() * 4.0f);
+  chip.icon = VKR_UI_ICON_SPINNER;
+  chip.icon_size_pt = 12.0f;
+  chip.icon_color = vkr_ui_color_alpha(theme->accent_hover, pulse);
+  chip.tooltip =
+      loading ? string8_lit("The model streams into the viewport; it is "
+                            "locked in Content until it shows.")
+              : string8_lit("Full-quality textures encode in the background; "
+                            "materials update as they finish. The cooking "
+                            "assets are locked in Content and the Outliner "
+                            "until then.");
+  (void)vkr_ui_button(
+      ui, string8_lit("editor.scene.cooking"),
+      loading
+          ? string8_create_formatted(ui->frame_allocator, "Loading %s", label)
+          : string8_create_formatted(ui->frame_allocator,
+                                     "Cooking %s  \xc2\xb7  %u materials ready",
+                                     label, applied),
+      &chip);
+}
+
 void vkr_editor_scene_overlays_build(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame) {
   (void)vkr_ui_input_layer_set(frame->ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER);
   editor_scene_stats_build(frame);
+  editor_scene_cooking_build(editor, frame);
   editor_scene_error_build(editor, frame);
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
 }
@@ -1657,6 +1727,9 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
     const SceneTransform *transform = vkr_entity_get_component(
         scene->world, editor->context_entity, scene->comp_transform);
     const bool8_t hidden = visibility && !visibility->visible;
+    /* A model whose textures cook stays in place until they finish. */
+    const bool8_t cooking = vkr_editor_scene_panels_cooking(
+        editor->scene_panels, editor->context_entity);
     items[0] = (EditorContextItem){"Frame", VKR_UI_ICON_FRAME, "F", false_v,
                                    CONTEXT_FRAME};
     items[1] =
@@ -1665,12 +1738,13 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
                             NULL, !visibility, CONTEXT_VISIBILITY};
     items[2] = (EditorContextItem){"Copy name", VKR_UI_ICON_COPY, NULL, false_v,
                                    CONTEXT_COPY_NAME};
-    items[3] = (EditorContextItem){"Detach from parent", VKR_UI_ICON_TREE, NULL,
-                                   !transform || !transform->parent.u64,
-                                   CONTEXT_DETACH};
+    items[3] = (EditorContextItem){
+        "Detach from parent", VKR_UI_ICON_TREE, NULL,
+        cooking || !transform || !transform->parent.u64, CONTEXT_DETACH};
     items[4] = (EditorContextItem){
         "Delete", VKR_UI_ICON_TRASH, EDITOR_SHORTCUT("\xe2\x8c\xab", "Del"),
-        !vkr_scene_edit_can_delete(scene, editor->context_entity, NULL),
+        cooking ||
+            !vkr_scene_edit_can_delete(scene, editor->context_entity, NULL),
         CONTEXT_DELETE};
     return 5u;
   }
