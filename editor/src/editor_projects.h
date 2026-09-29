@@ -170,6 +170,16 @@ vkr_editor_projects_project(const VkrEditorProjects *projects);
 const char *
 vkr_editor_projects_workspace_root(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_read_only(const VkrEditorProjects *projects);
+/* After a build that finalized project assets: publishes the report's
+   inventory while the project's inventory still has the SHA-256 `expected`
+   it had when the build started, then points World models at the new
+   revisions. False when the inventory changed meanwhile or publication
+   failed; the next build finalizes again from the cache. */
+bool8_t vkr_editor_projects_adopt_inventory(VkrEditorProjects *projects,
+                                            VkrEditorUi *editor,
+                                            const VkrSampleUiFrame *frame,
+                                            String8 assets,
+                                            const uint8_t expected[32]);
 
 /* The Projects status line: the last outcome or problem. */
 const char *vkr_editor_projects_message(const VkrEditorProjects *projects);

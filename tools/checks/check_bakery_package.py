@@ -220,6 +220,26 @@ def main():
                                  timeout=300)
         assert refused.returncode == 1 and tree_digest(foreign) == {'notes.txt': jobs.digest(foreign / 'notes.txt')}
 
+        # A project asset imported at the preview tier is finalized for the
+        # package; the report returns the final inventory, which the editor
+        # publishes, and project.json stays as it was.
+        job = jobs.Job(dict(base, operation='import_project_assets', texture_tier='preview',
+                            sources=[str(source / 'test.obj')]), result_path, bakery)
+        assert job.execute() == 0, job.output
+        document = json.loads(manifest.read_text())
+        document['assets'] = jobs.load_json(result_path)['project_assets']
+        assert any(asset.get('texture_tier') == 'preview' for asset in document['assets'])
+        manifest.write_text(json.dumps(document))
+        manifest_before = manifest.read_bytes()
+        finalized = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        assert finalized.returncode == 0, finalized.stdout + finalized.stderr
+        assert manifest.read_bytes() == manifest_before, 'the editor publishes project.json'
+        report = json.loads(sorted((workspace / 'logs' / 'builds').glob('*.json'))[-1].read_text())
+        finalize = next(stage for stage in report['stages'] if stage['name'] == 'Finalize')
+        assert 'detail' not in finalize, finalize
+        assert report['project_assets'] and not any(
+            asset.get('texture_tier') in ('preview', 'deferred') for asset in report['project_assets'])
+
         # Cancellation once staging exists leaves no package.
         cancelled_out = root / 'builds' / 'Cancelled'
         staging = Path(str(cancelled_out) + '.staging')
@@ -235,8 +255,8 @@ def main():
                    if line.startswith('{')), stdout
         assert not cancelled_out.exists() and not staging.exists()
     print('Bakery package: layout, two archives, portable documents, byte-identical World, rewritten '
-          'overlay, startup scene, stage events, report, kept package on failure, refused folder and '
-          'cancellation passed')
+          'overlay, startup scene, stage events, report, kept package on failure, refused folder, '
+          'finalized project inventory and cancellation passed')
 
 
 if __name__ == '__main__':

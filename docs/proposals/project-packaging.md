@@ -17,8 +17,6 @@ its evidence. This proposal keeps what remains.
   two version 1 archives, `content/game.vkpak` and `content/engine.vkpak`, each
   rewritten in full by every build
   ([package](../../tools/bakery/vkr_bakery_package.c)).
-- A shipping build that finalizes project assets lowers against the returned
-  inventory without publishing it; the editor does not adopt it from the report.
 - Only `windowed` is a valid `game.window.mode`; the platform window has no
   fullscreen or borderless mode.
 - The player template is the build tree's `<build>/player`, and its
@@ -28,21 +26,17 @@ its evidence. This proposal keeps what remains.
 
 ## Remaining work
 
-1. **Adopt finalized inventories.** After a successful build, the editor
-   publishes the report's `project_assets` through the store while its
-   inventory still matches, as a project finalize does, so the next build and
-   the open scenes use the final revisions.
-2. **Incremental packages.** Reuse unchanged chunks and archives, one archive
+1. **Incremental packages.** Reuse unchanged chunks and archives, one archive
    per scene for streaming, and per-chunk compression. Compression changes
    `.vkpak` to version 2 and needs approval first.
-3. **Shipping polish.** Fullscreen and borderless window modes; Windows icon and
+2. **Shipping polish.** Fullscreen and borderless window modes; Windows icon and
    version resources; the macOS `.app` layout and signing; linking script module
    archives once the [entity behavior](entity-behavior-system.md) runtime loads
    them.
-4. **Distributed templates.** A distributed editor ships `templates/` beside
+3. **Distributed templates.** A distributed editor ships `templates/` beside
    itself with the player, engine resources and shader catalog, and the
    bakery looks there before the build tree.
-5. **Diagnostics in Content.** A Build tab diagnostic whose source is a package
+4. **Diagnostics in Content.** A Build tab diagnostic whose source is a package
    identity selects that asset in Content.
 
 Cross-compiling a package for another platform stays out of scope: Metal

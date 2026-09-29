@@ -118,10 +118,13 @@ queue and report the result
   World need no second application path, and the runtime has one boot path.
 - Package bytes do not depend on the build path: the editor's `build.game` and
   the command line write identical archives for one profile.
-- A project-asset finalize publishes revisions the manifest does not name yet;
-  workspace cleanup removes them after 24 hours unless the editor adopts the
-  report's inventory, which it does not do yet. A World that places project
-  meshes keeps the revisions it names.
+- A project-asset finalize publishes revisions the manifest does not name yet.
+  After an editor build, `vkr_editor_projects_adopt_inventory` publishes the
+  report's inventory while the project inventory still matches its SHA-256 at
+  the build's start, then points World models at the new revisions; otherwise
+  workspace cleanup removes the revisions after 24 hours and the next build
+  finalizes again from the cache. A command-line build never adopts, and the
+  package's World keeps the revisions its document names.
 - Every package carries about 24 MiB of engine resources, most of it the CJK
   fallback font.
 
@@ -134,8 +137,14 @@ queue and report the result
   document, a byte-identical World, a rewritten collider identity, the startup
   scene, the seven stage events, the report, and that the project directory is
   unchanged. A failed build keeps the earlier package, a non-package folder is
-  refused, and a SIGINT once staging exists exits 3 with no package. The CPU
-  store test covers defaults, merge preservation and validation.
+  refused, and a SIGINT once staging exists exits 3 with no package. A
+  preview-tier project asset is finalized, the report returns a final-tier
+  inventory, and `project.json` is unchanged. The CPU store test covers
+  defaults, merge preservation and validation.
+- Adoption: a fixture workspace with one preview-tier project import, headless
+  editor `--exec 'build.game'`, settles in 0.46 s and logs the adoption;
+  `project.json` then names the new mesh revision with final-tier ASTC
+  textures and no preview-tier asset.
 - Bistro, macOS/Metal, Release. From the repository Testbed workspace,
   `vkr_bakery bundle .vkreditor/projects/45a13e01-... --out
   /tmp/vkr-pkg/Testbed` exits 0 in about 21 s. It packs 781 files: `game.vkpak`

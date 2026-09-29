@@ -5,6 +5,7 @@
 
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
+#include "core/vkr_hash.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include "core/vkr_threads.h"
@@ -96,6 +97,9 @@ struct VkrEditorBuild {
   char detail[160];
   char report_path[BUILD_PATH];
   char result[256];
+  /* The project inventory when the job started; a finalized inventory in the
+     report is adopted only while the project still has it. */
+  uint8_t assets_digest[VKR_SHA256_DIGEST_SIZE];
   /* The last complete package. */
   char output[BUILD_PATH];
   char executable[BUILD_PATH];
@@ -403,17 +407,18 @@ static void build_read_events(VkrEditorBuild *build) {
   free(data);
 }
 
-/* The report names the package; its archives give the package size. */
-static void build_read_report(VkrEditorBuild *build, VkrAllocator *scratch) {
-  if (!build->report_path[0]) {
-    return;
-  }
+/* The report names the package; its archives give the package size.
+   Returns the report's bytes, borrowed from `scratch`, or an empty view. */
+static String8 build_read_report(VkrEditorBuild *build, VkrAllocator *scratch) {
   String8 bytes = {0};
+  if (!build->report_path[0]) {
+    return bytes;
+  }
   uint64_t fingerprint = 0u;
   VkrEditorProjectError error = {0};
   if (!vkr_editor_project_json_read_file(build->report_path, scratch, &bytes,
                                          &fingerprint, &error)) {
-    return;
+    return (String8){0};
   }
   char status[32];
   char output[BUILD_PATH];
@@ -462,6 +467,7 @@ static void build_read_report(VkrEditorBuild *build, VkrAllocator *scratch) {
       }
     }
   }
+  return bytes;
 }
 
 static bool8_t build_game_cancelled(void *context) {
@@ -555,7 +561,7 @@ static void build_finish(VkrEditorBuild *build, VkrEditorUi *editor,
                          const VkrSampleUiFrame *frame,
                          VkrEditorProjectJobStatus status) {
   build_read_events(build);
-  build_read_report(build, frame->ui->frame_allocator);
+  const String8 report = build_read_report(build, frame->ui->frame_allocator);
   build->phase = BUILD_FINISHED;
   build->job_id = 0u;
   build->succeeded = status == VKR_EDITOR_PROJECT_JOB_SUCCEEDED;
@@ -570,6 +576,15 @@ static void build_finish(VkrEditorBuild *build, VkrEditorUi *editor,
                build->output, mib);
     }
     log_info("Build: %s", build->result);
+    /* A shipping build that finalized project assets returns their new
+       inventory; the editor publishes it, as after its own finalize. */
+    String8 assets = {0};
+    VkrEditorProjectError error = {0};
+    if (report.length && vkr_editor_project_json_member(
+                             report, "project_assets", &assets, &error)) {
+      (void)vkr_editor_projects_adopt_inventory(editor->projects, editor, frame,
+                                                assets, build->assets_digest);
+    }
     vkr_editor_toast(editor, VKR_UI_ICON_CHECK_CIRCLE, vkr_ui_theme()->success,
                      "Build complete");
     if (build->run_after) {
@@ -622,6 +637,7 @@ static bool8_t build_begin_job(VkrEditorBuild *build, VkrEditorUi *editor,
              "Bakery's queue is full; try again when a job finishes.");
     return false_v;
   }
+  vkr_sha256(project->assets.str, project->assets.length, build->assets_digest);
   build->events_offset = 0u;
   build->phase = BUILD_RUNNING;
   log_info("Build: packaging %s with profile %s", project->name,

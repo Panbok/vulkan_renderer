@@ -1661,6 +1661,28 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
 
 /* Adopts a job result's project asset inventory and default font; the
    caller saves the project. */
+/* Retains `assets` as the project inventory the next save publishes. */
+static bool8_t project_replace_assets(VkrEditorProjects *projects,
+                                      String8 assets) {
+  if (string8_equals(&assets, &projects->project->assets)) {
+    return true_v;
+  }
+  String8 replacement = string8_duplicate(projects->allocator, &assets);
+  if (!replacement.str) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Cannot retain project asset inventory.");
+    return false_v;
+  }
+  if (projects->owned_assets.str) {
+    vkr_allocator_free(projects->allocator, projects->owned_assets.str,
+                       projects->owned_assets.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  projects->owned_assets = replacement;
+  projects->project->assets = replacement;
+  return true_v;
+}
+
 static bool8_t project_apply_inventory(VkrEditorProjects *projects,
                                        String8 result) {
   String8 assets = project_member(result, "project_assets");
@@ -1668,20 +1690,8 @@ static bool8_t project_apply_inventory(VkrEditorProjects *projects,
   if (!assets.length || !default_font.length) {
     return true_v;
   }
-  if (!string8_equals(&assets, &projects->project->assets)) {
-    String8 replacement = string8_duplicate(projects->allocator, &assets);
-    if (!replacement.str) {
-      snprintf(projects->message, sizeof(projects->message),
-               "Cannot retain project asset inventory.");
-      return false_v;
-    }
-    if (projects->owned_assets.str) {
-      vkr_allocator_free(projects->allocator, projects->owned_assets.str,
-                         projects->owned_assets.length + 1,
-                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    }
-    projects->owned_assets = replacement;
-    projects->project->assets = replacement;
+  if (!project_replace_assets(projects, assets)) {
+    return false_v;
   }
   if (!string8_equals(&default_font, &projects->project->default_font)) {
     String8 replacement = string8_duplicate(projects->allocator, &default_font);
@@ -6094,6 +6104,50 @@ vkr_editor_projects_build_preflight(VkrEditorProjects *projects,
   return project_save_settings(projects, editor, frame->dock)
              ? VKR_EDITOR_BUILD_PREFLIGHT_READY
              : VKR_EDITOR_BUILD_PREFLIGHT_CANCELLED;
+}
+
+bool8_t vkr_editor_projects_adopt_inventory(
+    VkrEditorProjects *projects, VkrEditorUi *editor,
+    const VkrSampleUiFrame *frame, String8 assets,
+    const uint8_t expected[VKR_SHA256_DIGEST_SIZE]) {
+  if (!projects || !projects->project || projects->read_only ||
+      !assets.length) {
+    return false_v;
+  }
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256(projects->project->assets.str, projects->project->assets.length,
+             digest);
+  if (MemCompare(digest, expected, sizeof(digest))) {
+    log_info("Build: Content changed during the build; its finalized assets "
+             "are not adopted");
+    return false_v;
+  }
+  const String8 previous = projects->project->assets;
+  VkrEditorProjectError error = {0};
+  if (!project_replace_assets(projects, assets)) {
+    return false_v;
+  }
+  if (!vkr_editor_project_save(projects->project, &error)) {
+    projects->project->assets = previous;
+    log_warn("Build: cannot publish the finalized Content: %s", error.message);
+    return false_v;
+  }
+  vkr_editor_content_refresh(editor->content);
+  /* World models name the finalized revisions, as after a finalize. */
+  uint32_t moved = 0u;
+  if (projects->world_path[0] &&
+      !vkr_editor_project_world_refresh(
+          projects->world_path, projects->project->assets,
+          frame->ui->frame_allocator, &moved, &error)) {
+    log_warn("Build: cannot point World models at the final textures: %s",
+             error.message);
+  }
+  if (moved && !project_world_dirty(frame)) {
+    project_reload_world(projects, frame);
+  }
+  log_info("Build: adopted the finalized project Content; open scenes use it "
+           "the next time they open");
+  return true_v;
 }
 
 const VkrEditorProject *
