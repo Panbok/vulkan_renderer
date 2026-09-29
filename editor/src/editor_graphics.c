@@ -63,6 +63,10 @@ void vkr_editor_graphics_build(VkrEditorUi *editor,
 
   const VkrUiTrack content_track = {.value = content, .unit = VKR_UI_TRACK_PX};
   VkrUiPanelConfig area = vkr_ui_panel_config_default();
+  /* The notice occupies the window's single cell; the rows share it below
+     the notice's padding instead of looking for a free cell. */
+  area.placement.column = 0u;
+  area.placement.row = 0u;
   area.rows = &content_track;
   area.row_count = 1u;
   area.clip_children = true_v;
