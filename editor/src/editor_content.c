@@ -701,6 +701,16 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     list = vkr_json_reader_from_string(assets);
     list.pos = 1;
   }
+  /* The owner resolves once; each record's paths resolve beneath it. */
+  char resolved_root[CONTENT_PATH];
+  const FilePath owner = {.path = content_string(root),
+                          .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (file_path_resolve(&owner, resolved_root, sizeof(resolved_root)) !=
+      FILE_ERROR_NONE) {
+    snprintf(content->diagnostic, sizeof(content->diagnostic),
+             "Inventory owner is inaccessible: %.400s", root);
+    goto cleanup;
+  }
   while (vkr_json_next_array_element(&list)) {
     VkrJsonReader object = {0};
     if (!vkr_json_enter_object(&list, &object) || !content_reserve(content)) {
@@ -771,7 +781,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     if (vkr_editor_project_json_string(record, "source", relative,
                                        sizeof(relative), &error) &&
         relative[0]) {
-      (void)vkr_editor_project_resolve(root, relative, entry.source, &error);
+      (void)vkr_editor_project_resolve_within(resolved_root, relative,
+                                              entry.source, &error);
     }
     String8 artifacts = {0};
     if (vkr_editor_project_json_member(record, "artifacts", &artifacts,
@@ -786,8 +797,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
                                    .length = artifact.length};
         if (vkr_editor_project_json_string(artifact_object, "path", relative,
                                            sizeof(relative), &error)) {
-          entry.missing =
-              !vkr_editor_project_resolve(root, relative, entry.path, &error);
+          entry.missing = !vkr_editor_project_resolve_within(
+              resolved_root, relative, entry.path, &error);
           if (entry.missing) {
             snprintf(entry.diagnostic, sizeof(entry.diagnostic),
                      "Missing artifact: %.220s", relative);

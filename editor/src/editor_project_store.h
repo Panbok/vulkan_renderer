@@ -92,6 +92,12 @@ bool8_t
 vkr_editor_project_resolve(const char *owner_root, const char *relative,
                            char out_path[VKR_EDITOR_PROJECT_PATH_CAPACITY],
                            VkrEditorProjectError *error);
+// As vkr_editor_project_resolve under a root already resolved with
+// file_path_resolve, so a listing resolves its owner once.
+bool8_t vkr_editor_project_resolve_within(
+    const char *root, const char *relative,
+    char out_path[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+    VkrEditorProjectError *error);
 
 // Resolve the selected scene from its loaded manifest owner. Deletion may name
 // a missing manifest; its job still verifies physical containment before

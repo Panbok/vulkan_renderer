@@ -29,8 +29,15 @@ typedef struct s_ProjectJsonToken {
   uint32_t end;
   uint32_t next;
   uint32_t child;
+  /* An object key's hash of its decoded name: key comparisons decode only
+     on a match, so an object with many members parses in linear time. */
+  uint32_t key_hash;
   char kind;
 } s_ProjectJsonToken;
+
+/* Tokens a document of up to about 1.2 KB, such as one inventory record,
+   can need; such documents parse without creating an arena. */
+#define PROJECT_JSON_INLINE_TOKENS 640u
 
 typedef struct s_ProjectJson {
   String8 bytes;
@@ -39,6 +46,7 @@ typedef struct s_ProjectJson {
   s_ProjectJsonToken *tokens;
   uint32_t capacity;
   Arena *arena;
+  s_ProjectJsonToken inline_tokens[PROJECT_JSON_INLINE_TOKENS];
 } s_ProjectJson;
 
 static bool8_t project_error(VkrEditorProjectError *error, const char *format,
@@ -318,6 +326,14 @@ static bool8_t project_json_decode(s_ProjectJson *json, uint32_t token,
   return success;
 }
 
+static uint32_t project_json_key_hash(const char *name) {
+  uint32_t hash = 2166136261u;
+  for (const char *c = name; *c; ++c) {
+    hash = (hash ^ (uint8_t)*c) * 16777619u;
+  }
+  return hash;
+}
+
 static bool8_t project_json_value(s_ProjectJson *json, uint32_t depth) {
   project_json_space(json);
   if (depth >= PROJECT_JSON_DEPTH || json->pos >= json->bytes.length ||
@@ -353,11 +369,15 @@ static bool8_t project_json_value(s_ProjectJson *json, uint32_t depth) {
             !project_json_decode(json, key, name, sizeof(name))) {
           return false_v;
         }
+        const uint32_t hash = project_json_key_hash(name);
+        json->tokens[key].key_hash = hash;
         for (uint32_t previous = token->child; previous < key;) {
-          char prior[256];
-          if (!project_json_decode(json, previous, prior, sizeof(prior)) ||
-              strcmp(name, prior) == 0) {
-            return false_v;
+          if (json->tokens[previous].key_hash == hash) {
+            char prior[256];
+            if (!project_json_decode(json, previous, prior, sizeof(prior)) ||
+                strcmp(name, prior) == 0) {
+              return false_v;
+            }
           }
           previous = json->tokens[previous + 1].next;
         }
@@ -442,7 +462,12 @@ static bool8_t project_json_finish(s_ProjectJson *json, bool8_t result) {
   if (json->arena) {
     arena_destroy(json->arena);
   }
-  *json = (s_ProjectJson){0};
+  json->bytes = (String8){0};
+  json->pos = 0;
+  json->count = 0;
+  json->tokens = NULL;
+  json->capacity = 0;
+  json->arena = NULL;
   return result;
 }
 
@@ -456,14 +481,18 @@ static bool8_t project_json_parse(s_ProjectJson *json, String8 bytes) {
    * root. This bound supports any document within the byte limit and avoids
    * fixed token ceilings and multi-megabyte stack frames. */
   json->capacity = (uint32_t)(bytes.length / 2 + 2);
-  uint64_t storage = (uint64_t)json->capacity * sizeof(*json->tokens);
-  json->arena = arena_create(storage + KB(64), KB(64));
-  if (!json->arena) {
-    return false_v;
-  }
-  json->tokens = arena_alloc(json->arena, storage, ARENA_MEMORY_TAG_ARRAY);
-  if (!json->tokens) {
-    return false_v;
+  if (json->capacity <= PROJECT_JSON_INLINE_TOKENS) {
+    json->tokens = json->inline_tokens;
+  } else {
+    uint64_t storage = (uint64_t)json->capacity * sizeof(*json->tokens);
+    json->arena = arena_create(storage + KB(64), KB(64));
+    if (!json->arena) {
+      return false_v;
+    }
+    json->tokens = arena_alloc(json->arena, storage, ARENA_MEMORY_TAG_ARRAY);
+    if (!json->tokens) {
+      return false_v;
+    }
   }
   json->bytes = bytes;
   json->count = 0;
@@ -480,10 +509,12 @@ static uint32_t project_json_field(s_ProjectJson *json, uint32_t object,
   if (json->tokens[object].kind != '{') {
     return UINT32_MAX;
   }
+  const uint32_t hash = project_json_key_hash(name);
   for (uint32_t key = json->tokens[object].child;
        key < json->tokens[object].next; key = json->tokens[key + 1].next) {
     char text[256];
-    if (project_json_decode(json, key, text, sizeof(text)) &&
+    if (json->tokens[key].key_hash == hash &&
+        project_json_decode(json, key, text, sizeof(text)) &&
         !strcmp(text, name)) {
       return key + 1;
     }
@@ -620,10 +651,20 @@ vkr_editor_project_resolve(const char *owner_root, const char *relative,
                            char out_path[VKR_EDITOR_PROJECT_PATH_CAPACITY],
                            VkrEditorProjectError *error) {
   char root[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  char combined[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   FilePath owner = project_path(owner_root);
+  if (file_path_resolve(&owner, root, sizeof(root)) != FILE_ERROR_NONE) {
+    return project_error(error, "Invalid managed path: %s",
+                         relative ? relative : "(null)");
+  }
+  return vkr_editor_project_resolve_within(root, relative, out_path, error);
+}
+
+bool8_t vkr_editor_project_resolve_within(
+    const char *root, const char *relative,
+    char out_path[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+    VkrEditorProjectError *error) {
+  char combined[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!project_relative_valid(relative) ||
-      file_path_resolve(&owner, root, sizeof(root)) != FILE_ERROR_NONE ||
       !project_join(combined, root, relative)) {
     return project_error(error, "Invalid managed path: %s",
                          relative ? relative : "(null)");
