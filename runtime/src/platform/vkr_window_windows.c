@@ -990,21 +990,30 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
 
   case WM_LBUTTONDOWN:
   case WM_LBUTTONUP:
+  case WM_LBUTTONDBLCLK:
   case WM_RBUTTONDOWN:
   case WM_RBUTTONUP:
+  case WM_RBUTTONDBLCLK:
   case WM_MBUTTONDOWN:
-  case WM_MBUTTONUP: {
+  case WM_MBUTTONUP:
+  case WM_MBUTTONDBLCLK: {
     // Button messages carry their own client position; no preceding move is
     // required. Captured camera input retains its virtual cursor coordinates.
     if (!state->mouse_captured)
       input_process_mouse_move(state->input_state, GET_X_LPARAM(lparam),
                                GET_Y_LPARAM(lparam));
-    const Buttons button =
-        (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)   ? BUTTON_LEFT
-        : (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) ? BUTTON_RIGHT
-                                                         : BUTTON_MIDDLE;
-    const bool8_t pressed =
-        msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN;
+    const Buttons button = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
+                            msg == WM_LBUTTONDBLCLK)
+                               ? BUTTON_LEFT
+                           : (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP ||
+                              msg == WM_RBUTTONDBLCLK)
+                               ? BUTTON_RIGHT
+                               : BUTTON_MIDDLE;
+    // CS_DBLCLKS turns a double click's second press into a DBLCLK message;
+    // it is a press like any other, and the UI times double clicks itself.
+    const bool8_t pressed = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN ||
+                            msg == WM_MBUTTONDOWN || msg == WM_LBUTTONDBLCLK ||
+                            msg == WM_RBUTTONDBLCLK || msg == WM_MBUTTONDBLCLK;
     input_process_button(state->input_state, button, pressed);
     return FALSE;
   }
