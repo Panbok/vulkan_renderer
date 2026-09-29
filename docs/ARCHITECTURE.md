@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-27
+updated: 2026-09-29
 authority: architecture
 ---
 
@@ -239,8 +239,9 @@ Authored environment, lights, probes and overrides
 remain scene data. Explicit `--scene` retains legacy startup.
 Creating a project publishes no scene. Opening a project loads its World
 (`world.scene.json`, created as a blank level of sun, sky atmosphere, clouds,
-height fog and post process when missing) with a grid and the camera above the
-origin. Project resource preparation does not mark a scene as loading, and
+height fog and post process when missing) asynchronously, with a grid and the
+camera above the origin; imported models can be placed at its root, in a new
+scene or in a project scene ([ADR-076](adr/076-project-object-model.md)). Project resource preparation does not mark a scene as loading, and
 scene selection remains an explicit action. Creation publishes the project manifest
 before its first job, so a failed first scene leaves the project listed.
 Successful write jobs remove unused cache entries, stale revisions, abandoned
@@ -304,8 +305,10 @@ ownership, publication decisions and selected native Metal evidence. Native
 Windows/Vulkan parity, long-session stability and frame-budget acceptance remain
 separate gates.
 
-Managed JSON documents remain bounded to 1 MiB and nesting depth 32; a version 4
-scene's immutable inventory revision holds its asset records within 16 MiB. The
+Managed scene and settings documents remain bounded to 1 MiB and nesting depth
+32; a version 4 scene's immutable inventory revision and the project manifest,
+which carries the project asset inventory inline, hold their records within
+16 MiB. The
 [project store](../editor/src/editor_project_store.c) sizes temporary token storage
 from input bytes rather than imposing a smaller asset-count ceiling. Settings
 updates merge owned fields into prior objects, retaining unknown nested fields;

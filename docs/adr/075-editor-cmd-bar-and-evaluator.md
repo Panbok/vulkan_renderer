@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-09-29
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -94,7 +94,7 @@ dependable channel for scripts.
 | `content.command` | `<load\|open\|place\|rename\|delete> <item>` | Run an item's or folder's context menu command, as a right-click would |
 | `content.move` | `<item\|folder> <folder>` | Move an item (id or name, quoted when it has spaces) or folder |
 | `content.view` | `<list\|tiles>` | Content view |
-| `content.import` | `<path>` | Import a file into the project, filed in the current folder |
+| `content.import` | `<path> [world\|new <name>\|scene <name>\|content]` | Import a file into the project, filed in the current folder; with a placement, run the import step's choice for a model: the World's root, a new scene, or a project scene |
 | `content.drop` | `<path>` | Act as an OS file drop on the current folder: opens the import step |
 | `content.place` | `<item>` | Act as a drop of an item at the viewport centre: places a mesh or adds an object kind |
 | `preset.save`, `preset.apply` | `<component>`, `<name>` | Save the selection's component as a preset, or apply one |

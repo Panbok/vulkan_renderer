@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-09-29
 authority: adr
 ---
 
@@ -42,8 +42,11 @@ workspace manifest and UUID-named project directories. Each project has a
 default font, editor settings and scene-specific editor recall. Each scene has
 its own `scenes/<id>/scene.json` and artifact directories. Scene version 4 keeps
 its asset records in an immutable `inventory/<id>.json` revision named by the
-manifest, so the manifest stays within the 1 MiB store limit while an inventory
-may reach 16 MiB. A job publishes a new inventory revision before atomically
+manifest, so a scene manifest stays within the 1 MiB scene-document limit while
+an inventory may reach 16 MiB. A project manifest carries the project asset
+inventory inline and shares the 16 MiB inventory bound, which the editor store,
+job results and the bakery's project-document validation all apply; one large
+imported model otherwise leaves no room for a second import. A job publishes a new inventory revision before atomically
 replacing the manifest, as with edit overlays. Version 3 manifests with inline
 records remain readable and become version 4 at their next job publication.
 Display names can change independently of IDs. Paths in manifests resolve within
@@ -192,8 +195,13 @@ members; arrays remain serializer-owned values. An owner without persistable
 state writes an empty object, which keeps its last saved members; the animation
 editor does this until an animated source populates its document. The document
 parser enforces the
-1 MiB byte limit and depth limit with temporary dynamically sized token storage,
-so a large valid scene inventory does not fail a smaller fixed token ceiling.
+16 MiB byte limit and depth limit with temporary dynamically sized token storage,
+so a large valid scene inventory does not fail a smaller fixed token ceiling;
+documents of about 1.2 KB, such as one inventory record, use inline token
+storage instead of an arena. Duplicate-key checks and member lookups compare
+key hashes before decoding, so an object with many members (a mesh record's
+closure) parses in linear time. Content resolves each inventory's owner once
+and its records' paths beneath it.
 Managed names retain UTF-8 even when a glyph is unavailable. The shipped managed
 UI system face supplies its available Latin, Greek and Cyrillic glyphs through
 U+052F; on-demand glyph rasterization and IME composition are separate work.
@@ -202,8 +210,8 @@ U+052F; on-demand glyph rasterization and IME composition are separate work.
 cancelled or error results with caller-released UTF-8 paths on the UI thread.
 Managed editor native close requests remain pending until the dirty-state flow
 resolves them. [Content](../../editor/src/editor_content.c) indexes manifests on
-refresh, reading a version 4 scene's inventory revision in place because it may
-exceed the 1 MiB manifest parser, and virtualizes filtered asset cards. Its layout follows the navigation,
+refresh, reading a version 4 scene's inventory revision in place rather than
+tokenizing up to 16 MiB, and virtualizes filtered asset cards. Its layout follows the navigation,
 sources, search and asset-view organization described in Epic's
 [Content Browser interface](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine).
 The left sources tree groups Scene, Project and Editor inventories into logical
@@ -282,6 +290,18 @@ warning; the jobs check covers failure without the choice and success with it.
 Content details show an asset's build recipe, dependency count and texture
 size, and a cooked-only import states that its source is unavailable for
 reimport.
+
+On 2026-09-29 a main-thread stack sampler with a window-response probe
+(RelWithDebInfo editor, Windows 10, one `content.import` of
+`assets/models/bistro-lights.gltf` into a scratch project) found the UI thread
+blocked for 3.65 s after the background finalize and 0.59 s after the import,
+both in the Content refresh re-parsing a 767 KB inventory whose mesh record
+holds about a thousand closure keys; a user's Debug session showed a 7.4 s
+gap. With the linear parser, inline record tokens and one owner resolve per
+inventory, the refreshes after the finalize and after a new-scene placement
+took 0.36 s and 0.27 s under the sampler, most of it the per-asset
+containment resolves. Sampler timings include its own suspension
+overhead.
 
 Entity addition passes the Release editor build and
 `tools/checks/check_editor_add_entities.py --mesh-cooker <built cooker>`.

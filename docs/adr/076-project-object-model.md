@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-09-29
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -108,7 +108,12 @@ the active scene.
 A **container** is one `VkrScene`: one ECS world, allocator, document, overlay
 and journal. The **root World** uses world id `VKR_SCENE_WORLD_ROOT_ID` and
 loads from the project's `world.scene.json` with `world.editor.json` as its
-overlay. It stays loaded while the project is open. A new project's World is a
+overlay. It stays loaded while the project is open. It loads asynchronously
+through the resource system, like an added scene, so models in it stream
+instead of blocking the frame; its picking range follows the additive ranges
+(`VKR_SCENE_WORLD_RENDER_ID_BASE`). A reload after its document changed keeps
+the added scenes and the view, and the Outliner shows the World loading until
+it activates. A new project's World is a
 blank level: directional light, sky atmosphere, volumetric clouds, height fog
 and post process. A new project has no scene.
 
@@ -228,8 +233,40 @@ the scene that is already loading or open does nothing, from Content, the
 Scenes view or `scene.open`.
 The placed entity references the existing asset by scope and ID; nothing is
 copied into the scene. Files dropped from the OS (macOS drag destination,
-Windows `WM_DROPFILES`) open the Create or import window. Their imports go
-into the project and are filed in the project folder under the pointer.
+Windows `WM_DROPFILES`), and models chosen with Import, open the import step
+of the Create or import window. Its assets are filed in the project folder
+under the pointer. When every file is a model, the step places it too:
+
+- **New scene** runs `create_scene` with the models and opens the scene; its
+  assets belong to that scene.
+- **World** imports the models into the project, then the
+  [project store](../../editor/src/editor_project_store.c) appends one root
+  entity per mesh to `world.scene.json`, naming the project asset
+  (`mesh.asset`) and the artifact path it resolves to (`mesh.path`, from the
+  document's directory), and the World reloads. A finalize that rebuilds the
+  asset under a new revision, and each project open, rewrite that path.
+- **Scene** runs `add_entities` with the models on a chosen project scene
+  and opens it; a scene loaded beside the open one is refused.
+- **Content only** imports without placing.
+
+Edits the placement reloads ask to be saved or discarded first. A failed
+placement reopens the scene that was open.
+
+While a background finalize encodes a model's final textures (ADR-077), a
+viewport chip names the model and the materials already applied. Its Content
+items (the mesh and the materials sharing its build revision) show a lock and
+"Cooking" and refuse rename, delete, move, rebuild and reimport. Outliner
+rows whose mesh loaded from that revision, and their ancestors, show a
+pulsing spinner and a lock and refuse delete and detach.
+
+While the World or a scene streams in after an import, a project open or a
+World reload, the chip names the loading model first ("Loading"), and the
+[project store](../../editor/src/editor_project_store.c) lists the World's
+mesh asset IDs so Content can lock those mesh cards with "Loading". A folder
+card containing a locked item, and a World object card whose mesh loaded from
+a cooking revision, carry the same lock and status. Details shows mesh
+information for World and added-scene objects through the entity's own
+container.
 
 The Outliner lists the World's entities with each loaded scene nested below
 it. Each scene row has an inherit toggle, and double-clicking a row frames
@@ -293,8 +330,26 @@ World, so Bistro cases and baselines are unchanged.
   single-scene harness run has no World and keeps its previous work.
 - Save, dirty state and journals are per container. ADR-069's single active
   world scene is superseded by the World plus primary scene.
-- Windows drop handling compiles only on Windows and is unverified until a
-  Windows build runs.
+- A reload of the World drops it until its replacement resolves: the
+  resource cache holds one load per document path, so the old World cannot
+  stay visible while the new one streams (about 3 s for bistro-lights).
+- On 2026-09-29 the Release editor (Windows 10, RX 6700 XT, Vulkan) placed
+  `assets/models/bistro-lights.gltf` in the World, a new scene and an
+  existing scene (the second add used the `clearcoat_furnace` fixture)
+  through `content.import <path> world|new|scene` in a windowed run on a
+  scratch copy of a project. Screenshots showed each model in the viewport,
+  Outliner and Content, the cooking chip, locks and spinners during
+  finalize, and their removal afterwards; a reopened project loaded the
+  World and its model asynchronously. Windows now accepts
+  `WM_*BUTTONDBLCLK` as a press, so double clicks open Content folders; a
+  synthetic double click on the Materials folder card opened it.
+- A later run of the same build showed the "Loading" chip and locked mesh,
+  folder and World object cards while the World streamed, and their removal
+  once it resolved. Toggling HDR and FSR in Preferences no longer freezes the
+  window: the "Restart required" notice had filled the section's one-cell
+  grid, so the auto-placed scroll area failed placement and every later frame
+  failed to prepare; the scroll area now claims the cell explicitly. The run
+  logged no frame preparation failure.
 
 ## Alternatives considered
 

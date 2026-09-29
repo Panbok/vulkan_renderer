@@ -151,8 +151,9 @@ from it.
   `deferred` for scene jobs and Content imports and runs the matching
   finalize job in the background, Content first, whenever a result or the
   saved inventory holds such assets: any other project job cancels it and it
-  retries when the editor is idle. A project inventory is adopted only if it
-  is unchanged since the job started.
+  retries when the editor is idle, including no pending World load, whose
+  materials would otherwise not be live when their records arrive. A project
+  inventory is adopted only if it is unchanged since the job started.
 - **Progressive finalization.** A finalize request may name a `ready_log`
   and a `material_priority`. The mesh cooker (`--ready-log`,
   `--material-priority`) appends one JSON line per material whose textures
@@ -177,7 +178,19 @@ from it.
   names a finalized asset reopens as before, and anything else takes effect
   when the scene next opens. Materials applied before a cancellation or
   failure stay: their textures are final and content-addressed in the
-  generated root.
+  generated root. On Windows/Vulkan (2026-09-29, bistro-lights placed in the
+  World) all 254 records applied with no pending replacements or textures,
+  yet some surfaces rendered black for the rest of the process, including
+  after an in-session World reload and when the finalize ran in a session
+  after the import's. A fresh process renders the same revision correctly.
+  The applied definitions match the published files, their texture bytes are
+  identical, no texture changes after its record is written (509 textures
+  watched), and every material slot names the final texture; the cause lies
+  in renderer texture or material state that outlives the reload, so the live
+  replacement path is not yet at parity with a fresh load.
+  A finalize after several imports records the texture closures of only the
+  project records its own job staged; records from earlier imports are
+  already published and have no staged artifacts.
   Indexing a bundle writes `.textures-packed` into the revision once every
   material names packed textures; preparing a scene reads the materials of
   revisions without it only.
