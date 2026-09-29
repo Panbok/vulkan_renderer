@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-09-29
 authority: context
 ---
 # Project vocabulary
@@ -102,6 +102,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Mesh skin data | Four-influence records following cooked vertex order, with node-selected skin palettes and animation-source identity; stored in skinned `.vkb` version 18. | [ADR-030](adr/030-offline-mesh-optimization-and-cooking.md), [vkr_mesh_skin.h](../runtime/src/assets/vkr_mesh_skin.h) |
 | KTX2 / UASTC | Texture container / intermediate block encoding used for target-format transcoding. | [ADR-012](adr/012-texture-compression-pipeline.md) |
 | Native ASTC texture | `.vkt` holding ASTC 4x4 blocks that a workspace built for an ASTC host; uploaded without transcoding. `astc` comes from astcenc; `astc-fast`, from Apple's system encoder at the editor's fast encode speed. | [ADR-012](adr/012-texture-compression-pipeline.md) |
+| Native BC texture | `.vkt` holding BC7 (colour and data, bc7e) or BC5 (normals, rgbcx) blocks that a workspace built for an x86-64 host; uploaded without transcoding. `bc-fast` encodes colours with bc7e's fastest profile at the editor's fast encode speed. | [ADR-012](adr/012-texture-compression-pipeline.md) |
 | MTSDF / em / DPI | Multi-channel signed-distance field with true-distance alpha / font-relative layout unit / display scale used before UI layout. | [ADR-035](adr/035-canonical-mtsdf-screen-pixel-range-shading.md), [ADR-036](adr/036-dpi-derived-ui-text-scale.md) |
 | Immediate-mode UI | Widgets are declared each frame while stable IDs retain interaction, layout, and text caches. | [ADR-027](adr/027-immediate-mode-grid-ui.md) |
 | Picking | Rendered object-ID selection in Scene viewport coordinates, with physics ray selection for enabled collider debug display and priority for gizmos. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |

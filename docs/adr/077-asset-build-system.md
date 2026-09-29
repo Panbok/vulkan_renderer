@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-28
+updated: 2026-09-29
 authority: adr
 ---
 
@@ -42,10 +42,32 @@ from it.
   (`--cache`, `$VKR_BAKERY_CACHE`, or the platform cache directory), shared by
   checkouts and workspaces. Products publish by clone-or-copy and atomic rename;
   [`gc`](../../tools/bakery/vkr_bakery_cache.c) removes unused entries.
+- **Workspace copies.** Copy-on-write clones (APFS, and ReFS or Dev Drive
+  through extent duplication) place files where the volume can. Elsewhere,
+  such as NTFS, a content-named file the workspace already owns (a source
+  snapshot, a generated texture, a published build file) is hard linked into
+  a new revision instead of copied: project blobs whose source lies inside the
+  workspace, and the mesh cook's bundle dependencies below its `--link-root`,
+  which the runner sets to the workspace. Workspace files are replaced only by
+  rename, so a replacement never changes another name's bytes
+  ([`file_link`](../../lib/src/filesystem/filesystem.h)). User files are always
+  copied, since their editors may rewrite them in place. On Windows an open
+  handle without delete sharing blocks removing or replacing any name of a
+  linked file, as it already blocked that name (accepted 2026-09-28).
+  A snapshot places its new blobs on parallel workers after hashing them
+  ([`vkr_project_prefetch_blobs`](../../tools/bakery/project/vkr_project_util.c)),
+  and a user file another snapshot of the project already holds is linked
+  from that copy, so a re-import writes no source bytes. The path index also
+  accepts another path's entry for the same file (volume, file identity,
+  size and modification time), so a revision of linked files is indexed
+  without reading it. Within one glTF cook each source file is read and
+  hashed once however many packs name it (`vkr_vkt_begin_file_hash_scope`),
+  and material workers take every logical core up to 16.
 - **Scheduler.** [Workers](../../tools/bakery/vkr_bakery_graph.c) run ready
   actions in priority order under `--jobs` and a memory budget from each
   producer's peak estimate; final-tier UASTC encodes share two all-core
-  slots, while preview-tier and ASTC encodes, which stay near one core, run
+  slots, while preview-tier and native (ASTC, BC) encodes, which stay near
+  one core, run
   like any other action.
   SIGINT/SIGTERM cancel pending actions and terminate children without
   publishing partial products.
@@ -90,21 +112,26 @@ from it.
   still named by source image. Repository cooks, whose runtime reads
   materials' images as sources, keep writing converted PNGs. Material files,
   cutout variants and paired normal/roughness bakes run on eight workers at
-  the preview tier and with ASTC and on three at the final UASTC tier,
+  the preview tier and with native encodings (ASTC, BC) and on three at the
+  final UASTC tier,
   publishing results in material order. The cooker hashes each bundle
   dependency once, in parallel, with SHA-256: the digest's first 64 bits name
   the bundle copy and the cooked mesh's dependency table records the digest
   without reading the copy again.
-  SHA-256 uses the ARMv8 instructions on Apple silicon.
+  SHA-256 uses the ARMv8 instructions on Apple silicon and the SHA extensions
+  on x86-64 cores that have them (AMD Zen, Intel Goldmont and Ice Lake on),
+  selected once by CPUID.
 - **Texture tiers and encodings.** A request's `texture_tier` (`final` by
   default, `preview`, `deferred`) and `texture_encoding` (`uastc`, `astc` or
-  `astc-fast`; by default ASTC on Apple silicon and UASTC elsewhere, per
+  `astc-fast`, `bc` or `bc-fast`; by default ASTC on Apple silicon, BC on
+  x86-64 and UASTC elsewhere, per
   [ADR-012](012-texture-compression-pipeline.md)) select how material textures
   and the mesh cooker's derived textures are built (`--texture-tier`,
   `--texture-encoding`). `texture_encode_speed` `fast` turns `astc` into
-  `astc-fast`, Apple's system encoder, as Unreal's editor encodes new
-  textures at its `Fast` speed and cooks at `Final`; UASTC has no fast
-  encoder and ignores it. The editor sends `fast` on every project job, so
+  `astc-fast`, Apple's system encoder, and `bc` into `bc-fast`, bc7e's
+  fastest colour profile, as Unreal's editor encodes new textures at its
+  `Fast` speed and cooks at `Final`; UASTC has no fast encoder and ignores
+  it. The editor sends `fast` on every project job, so
   textures only it shows take the faster encoder, while explicit and
   command-line requests keep astcenc. A bundle of a managed project, which
   does not exist yet, would rebuild `astc-fast` textures at the final speed. Preview keeps a 1,024-pixel mip floor: levels larger
@@ -510,12 +537,141 @@ M1, Release, 2026-09-27:
   positions, a failed build keeps the published library, and a bundle ships
   the archive byte-identically.
 
+Windows 10 Pro 19045, Ryzen 5 2600 (6 cores, 12 threads), 16 GiB, NTFS on an
+NVMe SSD, Defender real-time protection on, Release, 2026-09-28. Each run used a
+fresh workspace and cache: a deferred `create_scene` of Bistro
+(`assets/models/bistro-lights.gltf`), `finalize_textures`, then a second
+deferred import and finalization in the same workspace. The measurement runner
+and logs are local to that host; wall time is the job's, CPU and writes are
+the job object's totals.
+
+- Before this work (UASTC, the former Windows default; two runs): cold
+  finalization 756.6 and 701.6 s (7,283 and 7,228 CPU-seconds), repeat
+  finalization 63.0 and 50.4 s, cold deferred import 14.4 and 12.8 s. Every
+  finalization wrote about 7.2 GB that APFS clones: 4.2 GB of bundle
+  dependencies and 3.0 GB of generated textures copied into the new revision.
+- After, runs interleaved with the before build. UASTC: cold finalization
+  704.4 and 682.1 s, repeat 14.7 and 14.8 s, writing 60 MB instead of 7.2 GB
+  through hard links. BC, now the default: cold finalization 202.9 and 197.5 s
+  (2,018 and 2,024 CPU-seconds, peak commit 3.4 against 2.6 GiB), repeat 13.2
+  and 13.4 s; cold deferred import 10.1-10.6 s, of which the cook is 4.0 s and
+  the rest mostly the 1.2 GB copy of user sources, which stays a byte copy.
+- Per-file flushes, measured with a local build that skipped them: cold
+  import 10.1 against 7.4 s, cold finalization 197 against 194 s, repeat 12.9
+  against 12.4 s (two runs each). Durability is kept (2026-09-28): an
+  unflushed snapshot torn by power loss would be trusted by the stat-keyed
+  index.
+- SHA-256 over 256 MiB: 205 MB/s with the portable rounds, 1,380 MB/s with
+  the SHA extensions, identical digests, also from an `x86-64-v3` build.
+- Rendered through the Bistro windowed snapshot camera at manual exposure 16
+  (`managed_workspace` case, Vulkan, RX 6700 XT), the BC scene differs from
+  the UASTC one by PSNR 47.8 dB (mean 0.51/255, 734 pixels above 10/255 and 23
+  above 30/255 of 691,200), the size of the accepted ASTC difference. Two
+  UASTC renders are identical; two BC renders differ in one pixel (77 dB),
+  not yet explained.
+- Second round, 2026-09-29, at the editor's `bc-fast` speed, scenes kept
+  between rounds, the build before it measured before and after this one:
+  cold finalization 143.1, 133.8 and 133.1 s (1,262-1,265 CPU-seconds) to
+  94.5, 96.3 and 94.4 s (884-890); repeat finalization 13.0-13.3 to 8.7-8.8
+  s (reading 6 instead of 11 GB); cold deferred import 9.8-12.7 to 7.1-7.4 s;
+  re-import 9.7-10.1 to 6.3-6.6 s, writing 33 MB instead of 1.2 GB. At `bc`
+  a cold finalization took 190.5 s (1,948 CPU-seconds) against 197.5-202.9.
+  A user-mode sampler over the job's process tree (the host has no
+  administrator rights for traces) placed the cold finalization's CPU in
+  bc7e (about 40%, mostly metallic-roughness), specular-glossiness
+  conversion (15%), PNG inflation (10%), colour mips (11%) and paired-bake
+  moments (11%, 5% after the tables), and the warm one in reading and hashing
+  sources: a paired bake's normal map was hashed three times per cook and
+  the parent reread every linked revision file. Materials and textures of
+  finalized scenes were byte-identical to the build before at each step
+  except the `bc-fast` metallic-roughness profile, which changes those
+  textures only; peak commit rose from 3.4 to 4.3-4.8 GiB with twelve
+  material workers instead of eight.
+- Third round, same host and method, byte-identical output throughout: a
+  specular-glossiness conversion memo, an exact sRGB encode table for colour
+  mips (checked against the direct formula on 151 million values), mip
+  filters without per-texel divisions, the revision's unnamed textures hashed
+  on parallel workers, and 8-bit RGB and RGBA PNGs decoded through libdeflate
+  with vectorized unfiltering
+  ([`vkr_image_decode_rgba8`](../../runtime/src/assets/vkr_image_decode.c);
+  2.3 times stb_image on Bistro's 343 source PNGs, identical pixels, other
+  images decoded by stb_image). At `bc-fast` a cold finalization took 94.4-96.3
+  s before and 80.9-82.2 s after (785-791 CPU-seconds); at `bc` 190.5 before
+  and 176.9 s after. A deferred import still takes about 7.1 s: the snapshot
+  2.1 s, the cook 3.7 s (about 1 s of it flushing some 500 material files,
+  kept per the durability decision) and scene validation 1.2 s.
+- Fourth round, same host and method, with administrator rights for traces.
+  A minifilter trace of a deferred import (xperf `FLT_IO`) charged the
+  import's processes 2.5 thread-seconds inside file-system filters, 1.3 of
+  them in Defender's `WdFilter.sys`, about 0.4 ms per rename, and showed the
+  cook rewriting all 254 materials one after another at 5.3 ms each (flush,
+  rename, scan), although a deferred material names no texture and so already
+  held those bytes. The cook now leaves a material whose rewritten text
+  equals the file alone, places each pass's bundle copies and material writes
+  on worker threads (each still flushed before its rename), records a written
+  material's hash rather than rereading it, and indexes its dependency and
+  hash lists; `file_ensure_directory` answers an existing directory with one
+  query on Windows. At `bc-fast`, byte-identical throughout: cold deferred
+  import 7.1-7.4 to 5.4-6.0 s, re-import 6.3-6.6 to 4.8-4.9 s, repeat
+  finalization 8.6-8.9 to 6.4-6.5 s, cold finalization 80-81 to 78-80 s.
+  A cold import's 2.2 s before the cook is now mostly the parallel 1.2 GB
+  copy of user sources (1.05 s). Over one full cycle Defender's service used
+  54 CPU-seconds and a network monitor installed on the host 38.
+- Fifth round, same host and method, attributed with xperf CPU stacks (a
+  PDB for the bakery, ISPC CodeView symbols for a bc7e bench, Microsoft's
+  for the kernel). bc7e was 64% of a cold `bc-fast` finalization's CPU: the
+  four-lane build, the opaque base colours and the data-mask row
+  deduplication of ADR-012 cut it most. Output-identical changes followed:
+  in-flight claims, so workers naming one texture encode it once instead of
+  discarding copies; native encoders reading mip levels in place instead of
+  a copy in libktx storage; power-of-two halving without the overlap
+  arithmetic and a bucketed sRGB encode with one shared table; decoded
+  images, mip levels and moments in reused blocks rather than fresh pages
+  (the finalization's page faults fell from 19.3 to 4.9 million); and
+  bundle validation resolving each dependency once. At `bc-fast`: cold
+  finalization 78-80 to 47.6-48.5 s (785 to 460 CPU-seconds, peak commit
+  4.6 to 4.0 GiB), repeat finalization 6.4-6.5 to 5.9-6.1 s, cold deferred
+  import 5.4-6.0 to 5.3-5.5 s; at `bc` a cold finalization 176.9 to 121-124
+  s. Rejected on measurement: largest-first material order (no gain once
+  claims stopped duplicate encodes), banded threads inside a material's
+  conversion (the tail is bc7e throughput), eight-lane specular-glossiness
+  conversion (bit-exact on 96 million lanes but slower than the memo), a
+  gather-free bc7e selector evaluation (bit-exact, slower) and ISPC's AVX2
+  targets. Then, also byte-identical: one persistent block-encoding pool
+  instead of threads started per mip level (kernel time 34 to 23
+  CPU-seconds, finalization 46.3-47.7 s), the packer recording each
+  published texture's SHA-256 for the cook, and the cook reporting its
+  bundle files' digests (`--digest-output`) for the bakery's index, which no
+  longer hashes the revision's textures; the wall-time effect of those two
+  is within run-to-run spread. At about 447 CPU-seconds the finalization
+  cannot pass 37 s on this host even fully parallel; the bakery's remaining
+  2-3 s after the cook is file-metadata calls.
+- A headless Release editor opened a deferred Bistro project scene and ran
+  its background finalization at `bc-fast` while rendering; sampled each
+  minute, it had applied 222 of 254 materials after the first minute and all
+  254 after the second, with none pending, and idled at 4.1-4.5 ms per frame.
+  The published revision holds only BC textures (120 BC5, 194 BC7, 195 BC7
+  sRGB colours with the `ultrafast` identity) and the scene no longer awaits
+  finalization.
+- [`check_editor_texture_tiers.py`](../../tools/checks/check_editor_texture_tiers.py)
+  covers BC names, identities and formats, BC as the default and `bc-fast`,
+  and passes in a workspace below a non-ASCII user directory once the ready
+  log is read as UTF-8. `build_test.bat`, `check_spec_gloss_memo.py`,
+  `check_path_lifecycle.py` and `check_editor_scene_publication.py` pass.
+  `check_editor_scene_deletion.py` and `check_editor_project_jobs.py` fail the
+  same way with the build before this work (Windows line endings and path
+  separators in the checks); `check_editor_workspace_cleanup.py` needs the
+  symbolic-link privilege.
+
 Unavailable: a Bistro diffuse bake (memory limit of the measurement host),
 native Vulkan execution of the catalog path (MoltenVK 1.2), the daemon and a
 Vulkan bundle on Windows, Windows script modules, a bundle of a managed
 project, a runtime that loads script modules, and an editor frame-time measurement with the daemon running; the
 editor-side cost is one non-blocking socket read per frame, but it is not
-measured.
+measured. On Windows: extent-duplication clones (Windows 10 Pro cannot create
+ReFS or Dev Drive volumes; the NTFS path falls back as tested) and imports
+with Defender exclusions or on a Dev Drive. The BC encoders are not built for ARM, and Metal
+has not loaded a BC texture.
 
 ## Alternatives considered
 
@@ -532,7 +688,14 @@ measured.
   no dual plane, 10% of block modes) also fell below it (52.7 against about
   53.5 dB). A GPU encoder that passes would need most single-partition
   modes, which is where the time goes. The system encoder is accepted for the
-  editor-only fast speed instead.
+  editor-only fast speed instead. On Windows (RX 6700 XT, 2026-09-29),
+  DirectXTex's DirectCompute BC7 encoder, timed with upload and readback,
+  was slower or worse than bc7e on the Ryzen's twelve threads on the same
+  Bistro images: its quick mode 51.5 dB on colours at 56 Mpx/s against 52.4
+  at 52 for bc7e `ultrafast`, its default 54.7 dB at 5.7 Mpx/s against 55.4
+  at 14 for `veryfast`, and 64.2 against 64.4 dB on metallic-roughness at 6
+  against 97 Mpx/s. Encoding was then about a quarter of a `bc-fast`
+  finalization's CPU, and the editor renders on that GPU while finalizing.
 
 ## Revisit when
 

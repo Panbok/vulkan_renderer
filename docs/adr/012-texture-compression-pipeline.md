@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-09-29
 authority: adr
 ---
 # ADR-012: KTX2/UASTC texture artifacts with capability-selected transcode
@@ -26,8 +26,8 @@ terminal fallback.
 Textures a workspace derives for its own host may instead hold native ASTC 4x4
 blocks (`--encoding astc`, astcenc's `fastest` preset). Managed imports choose
 this encoding on Apple silicon, whose GPUs sample ASTC under Metal and
-MoltenVK; other hosts, repository `.vkt` files and bundles keep UASTC, so one
-file still serves every device. On Bistro's converted colours, paired normals
+MoltenVK; x86-64 hosts choose BC (below), other hosts UASTC, and repository
+`.vkt` files and bundles keep UASTC, so one file still serves every device. On Bistro's converted colours, paired normals
 and metallic-roughness, `fastest` measured 52.6, 40.1 and 49.2 dB against 52.2,
 38.5 and 47.4 dB for UASTC `faster`, at four to nine times its speed. The
 settings identity records `encoding=astc-4x4-fastest`, so an ASTC file never
@@ -47,9 +47,55 @@ times on metallic-roughness (62.0 against 67.4 dB) and 2.6-3.3 dB below
 astcenc on alpha-weighted colours. Its identity records
 `encoding=astc-4x4-system-equal-t12-v1` and its files carry `.astc-fast`
 names, so neither ASTC encoding satisfies the other's recipe.
-The loader uploads a native ASTC payload without transcoding or the transcode
-cache, and a device without ASTC refuses it with an instruction to rebuild the
-asset on that platform.
+A native BC encoding, `bc`, serves x86-64 hosts, whose desktop GPUs all
+sample BC; managed imports choose it by default there, and it is built only
+on x86-64 (`cmake/vkr_bc7e.cmake`), so other hosts reject it. Colours and
+data encode BC7 (vkFormat 145 unorm, 146 sRGB) with Binomial's bc7e
+([vendored](../../vendor/bc7enc_rdo.md)); normals encode BC5 (141) from R and
+G with rgbcx. On one in six of a Bistro finalize's pre-encode images (84
+level-0 images dumped before encoding; a Ryzen 5 2600 on 12 threads, whole
+class as one mean square error), UASTC `faster` scored 51.1 dB in RGB on
+colours at 4.1 Mpx/s, 65.8 dB on metallic-roughness at 16.5 and 41.7 dB in RG
+on paired normals at 2.4. bc7e's `veryfast` profile scored 54.1 dB on colours
+at 13.0 Mpx/s, better on 25 of 28 images; rgbcx's BC5 scored 48.5 dB on
+normals at 566 Mpx/s, since BC5 keeps the two channels apart. Data masks keep
+bc7e's default profile, whose channel-rotation modes uncorrelated channels
+need: 65.3 dB for the class at 31 Mpx/s, 0.5 dB below UASTC because one
+texture loses 1.9 dB under every BC7 profile, while the mean per image is 70.2
+against 66.6 dB and 8 of the 12 textured images score higher; accepted
+(2026-09-28). The faster profiles drop those modes and do not keep constant
+masks exact. Compressonator's CMP_Core was measured and rejected: 2.3-3.1
+Mpx/s and 50.4-52.8 dB on colours, 50.6-61.9 dB on data masks. The
+identities record `encoding=bc7-bc7e-veryfast-v1`, `bc7-bc7e-default-v1` and
+`bc5-rgbcx-v1`, and files carry `.bc` names. `bc-fast`, the editor's fast
+speed, encodes colours with bc7e's `ultrafast` profile (51.4 dB at 54 Mpx/s,
+`bc7-bc7e-ultrafast-v1`) and data masks with bc7e limited to modes 4, 5 and 6
+and rotations 0, 2 and 3 (`bc7-bc7e-m456-r023-v1`), under `.bc-fast` names;
+normals encode as `bc` does. On another one-in-six sample of 42 masks that
+profile scored 64.7 dB for the class (mean 63.0, worst image 49.5) against
+65.9 for the default profile and 63.5 (62.3, 49.1) for UASTC `faster`, at 63
+against 36 and 17 Mpx/s, and kept constant masks exact.
+The encoder repeats one encoded block row for a uniform image, and paired
+bakes tabulate base-level moments over the 65,536 normal X/Y byte pairs; both
+produce the bytes the direct computation does. A data-mask row encodes each
+distinct block once, solid blocks grouped ahead of the rest, and copies the
+result to its repeats (176 against 113 Mpx/s on Bistro's masks, same bytes).
+bc7e is built for four-lane SSE2 and SSE4 only (2026-09-29): on a Ryzen 5
+2600 that encoded Bistro's colours 1.55 times as fast as eight-lane AVX2 (83
+against 53 Mpx/s, 52.276 against 52.275 dB, masks 64.411 against 64.414),
+and without fused multiply-adds every x86 host encodes the same bytes.
+The base colour of an opaque glTF material, whose alpha no shader reads
+(both backends output alpha one for opaque materials and test or blend it
+only for cutout and blend), packs with alpha one under its own identity
+(`alpha=opaque-v1`, `basecolor_opaque` names). Bistro's RGBA diffuse maps
+carry stray alpha of 251-254 in a few percent of texels, which sent whole
+blocks down bc7e's alpha modes: opaque, its colours encoded at 203 against
+83 Mpx/s and 52.309 against 52.276 dB in RGB. A Bistro render of the
+finalized scene against the one before these changes: PSNR 67.2 dB, mean
+0.003/255, 13 of 691,200 pixels above 10/255.
+The loader uploads a native ASTC, BC7 or BC5 payload without transcoding or
+the transcode cache, and a device that cannot sample the format refuses it
+with an instruction to rebuild the asset on that platform.
 
 For ordinary texture jobs, the offline packer filters `color-srgb` RGB channels in linear light using the
 [sRGB transfer functions](https://registry.khronos.org/DataFormat/specs/1.4/dataformat.1.4.html),
@@ -186,9 +232,9 @@ were selected to use the existing portable material inputs.
 ## Revisit when
 
 The supported device profile adds a compression family, the runtime no longer
-needs legacy `.vkt` compatibility, or a measured BC7 encoder can give desktop
-hosts native derived textures as ASTC gives Apple silicon
-([Windows asset builds](../proposals/windows-asset-builds.md)).
+needs legacy `.vkt` compatibility, bc7e gains an ARM build worth measuring
+against ASTC on Apple silicon, or a BC7 profile reaches UASTC `faster` on the
+hardest data mask at a useful speed.
 
 ## Code evidence
 
@@ -197,6 +243,8 @@ hosts native derived textures as ASTC gives Apple silicon
 - [normal/roughness moments](../../tools/vkr_vkt_normal_roughness.h)
 - [synchronous cooker entry point](../../tools/vkr_vkt_packer.h)
 - [glTF material integration](../../tools/assets/mesh_loader_gltf.c)
-- [analytic mip checks and native ASTC load](../../tests/src/texture_vkt_tests.c)
+- [BC encoder build](../../cmake/vkr_bc7e.cmake)
+- [analytic mip checks and native ASTC, BC7 and BC5 loads](../../tests/src/texture_vkt_tests.c)
+- [encoding names, identities and formats](../../tools/checks/check_editor_texture_tiers.py)
 - [selection and KTX2 load](../../runtime/src/renderer/systems/vkr_texture_system.c)
 - [texture contract](../../runtime/src/renderer/systems/vkr_texture_system.h)

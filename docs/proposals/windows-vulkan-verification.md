@@ -238,8 +238,9 @@ insufficient.
 
 ## Cooker and Bakery migration
 
-Import speed on Windows, including native BC7/BC5 derived textures, is
-specified in [Windows asset builds](windows-asset-builds.md).
+Native BC7/BC5 derived textures and Windows import measurements are in
+[ADR-077](../adr/077-asset-build-system.md); remaining import work is in
+[Windows asset builds](windows-asset-builds.md).
 
 - [ ] Run `vkr_bakery.exe cook assets\textures` and verify KTX2/UASTC outputs for base
   color, alpha-cutout coverage, and paired normal/roughness variants. Exercise
