@@ -576,6 +576,18 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
 FileError file_clone(const FilePath *source, const FilePath *destination);
 
 /**
+ * Creates `destination` as another name (hard link) of `source`. Both names
+ * then refer to one file: a write through either changes both, and on Windows
+ * an open handle without delete sharing blocks removing or replacing any of
+ * its names. Link only files that are never rewritten in place and are
+ * replaced only by rename. An existing destination fails with
+ * FILE_ERROR_ALREADY_EXISTS; a filesystem or volume pair without links, or a
+ * file at its link limit, reports FILE_ERROR_UNSUPPORTED, and callers copy
+ * the bytes instead. Failure leaves no destination.
+ */
+FileError file_link(const FilePath *source, const FilePath *destination);
+
+/**
  * Resolves an existing path, following symbolic links/reparse points, into a
  * caller-owned null-terminated buffer.
  */

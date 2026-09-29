@@ -248,6 +248,13 @@ bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
   if (!file_windows_native_path(&input, native)) {
     return false_v;
   }
+  /* Most calls name an existing directory; one query settles them rather
+     than a create per component, each passing every file-system filter. */
+  const DWORD existing = GetFileAttributesW(native);
+  if (existing != INVALID_FILE_ATTRIBUTES &&
+      (existing & FILE_ATTRIBUTE_DIRECTORY)) {
+    return true_v;
+  }
   size_t start = 7; // \\?\C:\ drive root
   if (!wcsncmp(native, L"\\\\?\\UNC\\", 8)) {
     start = 8;
@@ -521,12 +528,140 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
                                       : fs_windows_error(GetLastError());
 }
 
+/* ReFS (including Dev Drive) shares clusters between files through extent
+ * duplication; NTFS and FAT volumes lack block reference counts, and callers
+ * copy the bytes there. Each request must stay below 4 GiB and end on a
+ * cluster boundary, which may run past the source's end of file. */
 FileError file_clone(const FilePath *source, const FilePath *destination) {
   if (!source || !source->path.str || !destination || !destination->path.str) {
     return FILE_ERROR_INVALID_PATH;
   }
-  // Block cloning needs ReFS/Dev Drive extent duplication; callers copy.
-  return FILE_ERROR_UNSUPPORTED;
+  wchar_t from[VKR_WINDOWS_PATH_WCHARS];
+  wchar_t to[VKR_WINDOWS_PATH_WCHARS];
+  if (!file_windows_native_path(source, from) ||
+      !file_windows_native_path(destination, to)) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+
+  HANDLE input = CreateFileW(from, GENERIC_READ, FILE_SHARE_READ, NULL,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (input == INVALID_HANDLE_VALUE) {
+    return fs_windows_error(GetLastError());
+  }
+  FileError result = FILE_ERROR_NONE;
+  HANDLE output = INVALID_HANDLE_VALUE;
+  DWORD source_serial = 0;
+  DWORD volume_flags = 0;
+  if (!GetVolumeInformationByHandleW(input, NULL, 0, &source_serial, NULL,
+                                     &volume_flags, NULL, 0) ||
+      !(volume_flags & FILE_SUPPORTS_BLOCK_REFCOUNTING)) {
+    result = FILE_ERROR_UNSUPPORTED;
+    goto cleanup;
+  }
+  FILE_STANDARD_INFO standard;
+  FILE_BASIC_INFO basic;
+  FSCTL_GET_INTEGRITY_INFORMATION_BUFFER integrity;
+  DWORD returned = 0;
+  if (!GetFileInformationByHandleEx(input, FileStandardInfo, &standard,
+                                    sizeof(standard)) ||
+      !GetFileInformationByHandleEx(input, FileBasicInfo, &basic,
+                                    sizeof(basic)) ||
+      !DeviceIoControl(input, FSCTL_GET_INTEGRITY_INFORMATION, NULL, 0,
+                       &integrity, sizeof(integrity), &returned, NULL)) {
+    result = FILE_ERROR_IO_ERROR;
+    goto cleanup;
+  }
+
+  output = CreateFileW(to, GENERIC_READ | GENERIC_WRITE | DELETE, 0, NULL,
+                       CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (output == INVALID_HANDLE_VALUE) {
+    result = fs_windows_error(GetLastError());
+    goto cleanup;
+  }
+  /* Extents duplicate only within one volume. */
+  DWORD destination_serial = 0;
+  if (!GetVolumeInformationByHandleW(output, NULL, 0, &destination_serial, NULL,
+                                     NULL, NULL, 0) ||
+      destination_serial != source_serial) {
+    result = FILE_ERROR_UNSUPPORTED;
+    goto cleanup;
+  }
+  /* The destination must match the source's sparseness and integrity
+   * streams, and already span the cloned range. */
+  const FSCTL_SET_INTEGRITY_INFORMATION_BUFFER set_integrity = {
+      .ChecksumAlgorithm = integrity.ChecksumAlgorithm,
+      .Flags = integrity.Flags,
+  };
+  FILE_END_OF_FILE_INFO end_of_file = {.EndOfFile = standard.EndOfFile};
+  if (((basic.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE) &&
+       !DeviceIoControl(output, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &returned,
+                        NULL)) ||
+      !DeviceIoControl(output, FSCTL_SET_INTEGRITY_INFORMATION,
+                       (void *)&set_integrity, sizeof(set_integrity), NULL, 0,
+                       &returned, NULL) ||
+      !SetFileInformationByHandle(output, FileEndOfFileInfo, &end_of_file,
+                                  sizeof(end_of_file))) {
+    result = fs_windows_error(GetLastError());
+    goto cleanup;
+  }
+
+  const int64_t cluster = (int64_t)integrity.ClusterSizeInBytes;
+  const int64_t size = standard.EndOfFile.QuadPart;
+  const int64_t chunk = (int64_t)GB(1);
+  for (int64_t offset = 0; offset < size; offset += chunk) {
+    const int64_t remaining = size - offset;
+    const int64_t count = remaining < chunk
+                              ? (remaining + cluster - 1) / cluster * cluster
+                              : chunk;
+    DUPLICATE_EXTENTS_DATA extents = {
+        .FileHandle = input,
+        .SourceFileOffset = {.QuadPart = offset},
+        .TargetFileOffset = {.QuadPart = offset},
+        .ByteCount = {.QuadPart = count},
+    };
+    if (!DeviceIoControl(output, FSCTL_DUPLICATE_EXTENTS_TO_FILE, &extents,
+                         sizeof(extents), NULL, 0, &returned, NULL)) {
+      const DWORD error = GetLastError();
+      result = error == ERROR_NOT_SUPPORTED || error == ERROR_INVALID_FUNCTION
+                   ? FILE_ERROR_UNSUPPORTED
+                   : fs_windows_error(error);
+      goto cleanup;
+    }
+  }
+  /* A copy flushes before its rename; a clone keeps the same durability. */
+  if (!FlushFileBuffers(output)) {
+    result = FILE_ERROR_IO_ERROR;
+  }
+
+cleanup:
+  if (output != INVALID_HANDLE_VALUE) {
+    if (result != FILE_ERROR_NONE) {
+      FILE_DISPOSITION_INFO disposition = {.DeleteFile = TRUE};
+      (void)SetFileInformationByHandle(output, FileDispositionInfo,
+                                       &disposition, sizeof(disposition));
+    }
+    CloseHandle(output);
+  }
+  CloseHandle(input);
+  return result;
+}
+
+FileError file_link(const FilePath *source, const FilePath *destination) {
+  wchar_t from[VKR_WINDOWS_PATH_WCHARS];
+  wchar_t to[VKR_WINDOWS_PATH_WCHARS];
+  if (!source || !destination || !file_windows_native_path(source, from) ||
+      !file_windows_native_path(destination, to)) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (CreateHardLinkW(to, from, NULL)) {
+    return FILE_ERROR_NONE;
+  }
+  const DWORD error = GetLastError();
+  /* FAT volumes, other volumes and the 1,023-link limit. */
+  return error == ERROR_NOT_SAME_DEVICE || error == ERROR_INVALID_FUNCTION ||
+                 error == ERROR_NOT_SUPPORTED || error == ERROR_TOO_MANY_LINKS
+             ? FILE_ERROR_UNSUPPORTED
+             : fs_windows_error(error);
 }
 
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,

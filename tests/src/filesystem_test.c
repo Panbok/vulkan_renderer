@@ -441,7 +441,7 @@ vkr_internal void test_file_clone(void) {
   if (cloned == FILE_ERROR_UNSUPPORTED) {
     // Callers copy on file systems without cloning; nothing was created.
     assert(!file_exists(&clone));
-    assert(file_clone(&missing, &clone) == FILE_ERROR_UNSUPPORTED);
+    assert(file_clone(&missing, &clone) == FILE_ERROR_NOT_FOUND);
   } else {
     assert(cloned == FILE_ERROR_NONE);
     FileMode read_mode = bitset8_create();
@@ -477,6 +477,90 @@ vkr_internal void test_file_clone(void) {
   fs_test_remove_dir((const char *)directory_text.str);
   arena_destroy(arena);
   printf("  test_file_clone PASSED\n");
+}
+
+vkr_internal void fs_test_expect_bytes(const FilePath *path,
+                                       const uint8_t *expected, uint64_t size) {
+  FileMode read_mode = bitset8_create();
+  bitset8_set(&read_mode, FILE_MODE_READ);
+  bitset8_set(&read_mode, FILE_MODE_BINARY);
+  FileHandle file = {0};
+  uint8_t received[16] = {0};
+  uint64_t transferred = 0u;
+  assert(size <= sizeof(received));
+  assert(file_open(path, read_mode, &file) == FILE_ERROR_NONE);
+  assert(file_read_into(&file, received, sizeof(received), &transferred) ==
+         FILE_ERROR_NONE);
+  file_close(&file);
+  assert(transferred == size && MemCompare(received, expected, size) == 0);
+}
+
+/* Workspaces hard link files that are only ever replaced by rename: a
+ * replacement publishes a new file under that name and leaves every other
+ * name of the old one holding the old bytes. */
+vkr_internal void test_file_link(void) {
+  printf("  Running test_file_link...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  const uint32_t id = ++g_fs_test_counter;
+  String8 directory_text = string8_create_formatted(
+      &allocator, "%s%s/link_%u", PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, id);
+  FilePath directory = {.path = directory_text,
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory_exclusive(&directory) == FILE_ERROR_NONE);
+  const char *root = (const char *)directory_text.str;
+  FilePath source = {
+      .path = string8_create_formatted(&allocator, "%s/source.bin", root),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath linked = {
+      .path = string8_create_formatted(&allocator, "%s/linked.bin", root),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath staged = {
+      .path = string8_create_formatted(&allocator, "%s/staged.bin", root),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath missing = {
+      .path = string8_create_formatted(&allocator, "%s/missing.bin", root),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+
+  FileMode write_mode = bitset8_create();
+  bitset8_set(&write_mode, FILE_MODE_WRITE);
+  bitset8_set(&write_mode, FILE_MODE_BINARY);
+  bitset8_set(&write_mode, FILE_MODE_TRUNCATE);
+  FileHandle file = {0};
+  const uint8_t payload[] = {4u, 3u, 2u, 1u};
+  const uint8_t replacement[] = {9u, 8u};
+  uint64_t transferred = 0u;
+  assert(file_open(&source, write_mode, &file) == FILE_ERROR_NONE);
+  assert(file_write(&file, sizeof(payload), payload, &transferred) ==
+         FILE_ERROR_NONE);
+  file_close(&file);
+
+  const FileError linked_result = file_link(&source, &linked);
+  if (linked_result == FILE_ERROR_UNSUPPORTED) {
+    // Callers copy on file systems without links; nothing was created.
+    assert(!file_exists(&linked));
+  } else {
+    assert(linked_result == FILE_ERROR_NONE);
+    fs_test_expect_bytes(&linked, payload, sizeof(payload));
+    assert(file_link(&source, &linked) == FILE_ERROR_ALREADY_EXISTS);
+    assert(file_link(&missing, &staged) == FILE_ERROR_NOT_FOUND);
+    assert(!file_exists(&staged));
+
+    assert(file_open(&staged, write_mode, &file) == FILE_ERROR_NONE);
+    assert(file_write(&file, sizeof(replacement), replacement, &transferred) ==
+           FILE_ERROR_NONE);
+    file_close(&file);
+    assert(file_rename(&staged, &source, true_v) == FILE_ERROR_NONE);
+    fs_test_expect_bytes(&source, replacement, sizeof(replacement));
+    fs_test_expect_bytes(&linked, payload, sizeof(payload));
+    assert(file_remove(&linked) == FILE_ERROR_NONE);
+  }
+
+  assert(file_remove(&source) == FILE_ERROR_NONE);
+  fs_test_remove_dir(root);
+  arena_destroy(arena);
+  printf("  test_file_link PASSED\n");
 }
 
 vkr_internal void test_file_portable_publication_primitives(void) {
@@ -811,6 +895,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_path_helpers();
   test_file_get_error_strings();
   test_file_clone();
+  test_file_link();
   test_file_portable_publication_primitives();
   test_file_io_failures_release_owned_outputs();
   test_file_allocation_failures();

@@ -404,6 +404,26 @@ FileError file_clone(const FilePath *source, const FilePath *destination) {
   return FILE_ERROR_NONE;
 }
 
+FileError file_link(const FilePath *source, const FilePath *destination) {
+  if (!source || !source->path.str || !destination || !destination->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (link((const char *)source->path.str,
+           (const char *)destination->path.str) == 0) {
+    return FILE_ERROR_NONE;
+  }
+  if (errno == EEXIST) {
+    return FILE_ERROR_ALREADY_EXISTS;
+  }
+  if (errno == ENOENT) {
+    return FILE_ERROR_NOT_FOUND;
+  }
+  // Other volumes, file systems without links and the link limit.
+  return errno == EXDEV || errno == EPERM || errno == ENOTSUP || errno == EMLINK
+             ? FILE_ERROR_UNSUPPORTED
+             : FILE_ERROR_IO_ERROR;
+}
+
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
                          VkrAllocator *line_allocator, uint64_t max_line_length,
                          String8 *out_line) {
