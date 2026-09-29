@@ -17,8 +17,6 @@ its evidence. This proposal keeps what remains.
   two version 1 archives, `content/game.vkpak` and `content/engine.vkpak`, each
   rewritten in full by every build
   ([package](../../tools/bakery/vkr_bakery_package.c)).
-- Only `windowed` is a valid `game.window.mode`; the platform window has no
-  fullscreen or borderless mode.
 - The player template is the build tree's `<build>/player`, and its
   `template.json` names that tree's shader catalog by absolute path.
 - The Build tab lists diagnostics as text; a diagnostic that names an asset does
@@ -29,7 +27,7 @@ its evidence. This proposal keeps what remains.
 1. **Incremental packages.** Reuse unchanged chunks and archives, one archive
    per scene for streaming, and per-chunk compression. Compression changes
    `.vkpak` to version 2 and needs approval first.
-2. **Shipping polish.** Fullscreen and borderless window modes; Windows icon and
+2. **Shipping polish.** Windows icon and
    version resources; the macOS `.app` layout and signing; linking script module
    archives once the [entity behavior](entity-behavior-system.md) runtime loads
    them.

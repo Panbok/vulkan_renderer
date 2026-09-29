@@ -84,6 +84,19 @@ typedef struct PlatformState {
   int32_t drag_height;
   bool8_t drag_allowed;
 
+  /* Display mode. Borderless keeps the windowed style and frame to restore;
+     a switch from native fullscreen waits for its exit transition. */
+  VkrWindowMode mode;
+  VkrWindowMode pending_mode;
+  bool8_t mode_pending;
+  /* Native fullscreen is entered from the event pump once the application
+     is active; a toggle before that is ignored. */
+  bool8_t fullscreen_wanted;
+  bool8_t fullscreen_entering;
+  uint32_t fullscreen_attempts;
+  NSWindowStyleMask windowed_style;
+  NSRect windowed_frame;
+
   // Mouse capture state
   bool8_t cursor_hidden;
   bool8_t mouse_captured;
@@ -238,6 +251,21 @@ static void hide_cursor(PlatformState *state);
 static void show_cursor(PlatformState *state);
 static void update_cursor_image(PlatformState *state);
 static void center_cursor_in_window(PlatformState *state);
+static void vkr_window_enter_borderless(PlatformState *state);
+
+/* A borderless NSWindow refuses key and main status by default; this one
+   keeps both, so a borderless game still receives keyboard input. */
+@interface VkrNativeWindow : NSWindow
+@end
+
+@implementation VkrNativeWindow
+- (BOOL)canBecomeKeyWindow {
+  return YES;
+}
+- (BOOL)canBecomeMainWindow {
+  return YES;
+}
+@end
 
 @interface WindowDelegate : NSObject <NSWindowDelegate> {
   PlatformState *state;
@@ -356,6 +384,31 @@ static void center_cursor_in_window(PlatformState *state);
     center_cursor_in_window(state);
   }
   update_cursor_image(state);
+}
+
+- (void)windowDidEnterFullScreen:(NSNotification *)notification {
+  (void)notification;
+  /* The green button enters fullscreen without a mode request. */
+  state->mode = VKR_WINDOW_MODE_FULLSCREEN;
+  state->fullscreen_wanted = false_v;
+  state->fullscreen_entering = false_v;
+}
+
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)window {
+  (void)window;
+  state->fullscreen_entering = false_v;
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)notification {
+  (void)notification;
+  /* A switch from native fullscreen to borderless waits for this exit; an
+     exit the user made returns to a window. */
+  state->mode = state->mode_pending ? state->pending_mode
+                                    : VKR_WINDOW_MODE_WINDOWED;
+  state->mode_pending = false_v;
+  if (state->mode == VKR_WINDOW_MODE_BORDERLESS) {
+    vkr_window_enter_borderless(state);
+  }
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification {
@@ -886,11 +939,11 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
         NSWindowStyleMaskClosable | NSWindowStyleMaskResizable;
     if (window->unified_title_bar)
       style_mask |= NSWindowStyleMaskFullSizeContentView;
-    state->window =
-        [[NSWindow alloc] initWithContentRect:NSMakeRect(x, y, width, height)
-                                    styleMask:style_mask
-                                      backing:NSBackingStoreBuffered
-                                        defer:NO];
+    state->window = [[VkrNativeWindow alloc]
+        initWithContentRect:NSMakeRect(x, y, width, height)
+                  styleMask:style_mask
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
     if (!state->window) {
       log_error("Failed to create window");
       vkr_window_destroy(window);
@@ -1062,6 +1115,17 @@ bool8_t vkr_window_update(VkrWindow *window) {
 
   @autoreleasepool {
     vkr_window_refresh_display_output(state);
+    if (state->fullscreen_wanted && !state->fullscreen_entering &&
+        [NSApp isActive] && [state->window isVisible]) {
+      if (state->fullscreen_attempts++ < 3u) {
+        state->fullscreen_entering = true_v;
+        [state->window toggleFullScreen:nil];
+      } else {
+        state->fullscreen_wanted = false_v;
+        state->mode = VKR_WINDOW_MODE_WINDOWED;
+        log_warn("The window could not enter fullscreen");
+      }
+    }
 
     NSEvent *event;
 
@@ -1223,6 +1287,76 @@ void vkr_window_request_close(VkrWindow *window) {
       window ? (PlatformState *)window->platform_state : NULL;
   if (state && state->window)
     [state->window performClose:nil];
+}
+
+/* A borderless window over the whole screen, above the hidden menu bar and
+   Dock; the windowed style and frame return on leaving. */
+static void vkr_window_enter_borderless(PlatformState *state) {
+  NSWindow *window = state->window;
+  NSScreen *screen = [window screen] ? [window screen] : [NSScreen mainScreen];
+  state->windowed_style = [window styleMask];
+  state->windowed_frame = [window frame];
+  [NSApp setPresentationOptions:NSApplicationPresentationHideDock |
+                                NSApplicationPresentationHideMenuBar];
+  [window setStyleMask:NSWindowStyleMaskBorderless];
+  [window setFrame:[screen frame] display:YES];
+  [window makeKeyAndOrderFront:nil];
+}
+
+static void vkr_window_leave_borderless(PlatformState *state) {
+  NSWindow *window = state->window;
+  [NSApp setPresentationOptions:NSApplicationPresentationDefault];
+  [window setStyleMask:state->windowed_style];
+  [window setFrame:state->windowed_frame display:YES];
+  [window makeKeyAndOrderFront:nil];
+}
+
+bool8_t vkr_window_set_mode(VkrWindow *window, VkrWindowMode mode) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (!state || !state->window || mode > VKR_WINDOW_MODE_BORDERLESS) {
+    return false_v;
+  }
+  if (mode == state->mode && !state->mode_pending) {
+    return true_v;
+  }
+  @autoreleasepool {
+    NSWindow *native = state->window;
+    const bool8_t fullscreen =
+        ([native styleMask] & NSWindowStyleMaskFullScreen) != 0;
+    if (state->mode == VKR_WINDOW_MODE_BORDERLESS) {
+      vkr_window_leave_borderless(state);
+    }
+    if (fullscreen && mode != VKR_WINDOW_MODE_FULLSCREEN) {
+      /* The exit transition is asynchronous; windowDidExitFullScreen applies
+         the requested mode once it ends. */
+      state->pending_mode = mode;
+      state->mode_pending = true_v;
+      [native toggleFullScreen:nil];
+      return true_v;
+    }
+    state->mode_pending = false_v;
+    state->fullscreen_wanted = false_v;
+    if (mode == VKR_WINDOW_MODE_FULLSCREEN && !fullscreen) {
+      [native setCollectionBehavior:[native collectionBehavior] |
+                                    NSWindowCollectionBehaviorFullScreenPrimary];
+      state->fullscreen_wanted = true_v;
+      state->fullscreen_attempts = 0u;
+    } else if (mode == VKR_WINDOW_MODE_BORDERLESS) {
+      vkr_window_enter_borderless(state);
+    }
+  }
+  state->mode = mode;
+  return true_v;
+}
+
+VkrWindowMode vkr_window_get_mode(const VkrWindow *window) {
+  const PlatformState *state =
+      window ? (const PlatformState *)window->platform_state : NULL;
+  if (!state) {
+    return VKR_WINDOW_MODE_WINDOWED;
+  }
+  return state->mode_pending ? state->pending_mode : state->mode;
 }
 
 void *vkr_window_get_cocoa_handle(VkrWindow *window) {

@@ -515,15 +515,18 @@ vkr_internal bool8_t vkr_package_game_settings(VkrPackage *package,
   const VkrBakeryJson *window = vkr_bakery_json_get(game, "window");
   int64_t width = 0;
   int64_t height = 0;
+  const VkrBakeryJson *mode = vkr_bakery_json_get(window, "mode");
   if (!window || window->type != VKR_BAKERY_JSON_OBJECT ||
-      !vkr_bakery_json_is_string(vkr_bakery_json_get(window, "mode"),
-                                 "windowed") ||
+      !(vkr_bakery_json_is_string(mode, "windowed") ||
+        vkr_bakery_json_is_string(mode, "fullscreen") ||
+        vkr_bakery_json_is_string(mode, "borderless")) ||
       !vkr_bakery_json_get_int(window, "width", &width) ||
       !vkr_bakery_json_get_int(window, "height", &height) || width < 320 ||
       height < 240 || width > 16384 || height > 16384) {
     return vkr_package_fail(package, game_path,
-                            "the window must be windowed, 320x240 to "
-                            "16384x16384; other modes are not supported yet");
+                            "the window mode must be windowed, fullscreen or "
+                            "borderless, and its size 320x240 to "
+                            "16384x16384");
   }
   const VkrBakeryJson *graphics = vkr_bakery_json_get(game, "graphics");
   if (graphics && graphics->type != VKR_BAKERY_JSON_OBJECT) {

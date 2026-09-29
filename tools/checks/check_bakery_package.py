@@ -212,6 +212,16 @@ def main():
         assert not Path(str(out) + '.staging').exists()
         world.write_text(json.dumps({'version': 2, 'entities': []}))
 
+        # A window mode the player does not know is refused before packaging.
+        modes = json.loads((project / 'game.json').read_text())
+        modes['game']['window']['mode'] = 'exclusive'
+        (project / 'game.json').write_text(json.dumps(modes))
+        refused_mode = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        assert refused_mode.returncode == 1 and 'window mode' in refused_mode.stdout
+        assert tree_digest(out) == package_before
+        modes['game']['window']['mode'] = 'borderless'
+        (project / 'game.json').write_text(json.dumps(modes))
+
         # An existing folder that is not a package is refused and untouched.
         foreign = root / 'builds' / 'Documents'
         foreign.mkdir()

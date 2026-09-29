@@ -1017,6 +1017,26 @@ static void build_settings_game(VkrEditorBuild *build, VkrUiSystem *ui,
     game->window_height = (uint32_t)strtoul(build->height_text, NULL, 10);
   }
   *y += 30;
+  build_label(ui, "mode.label", string8_lit("Display"), 12, *y, 120, true_v);
+  const char *modes[] = {"windowed", "fullscreen", "borderless"};
+  const char *mode_labels[] = {"Windowed", "Fullscreen", "Borderless"};
+  const char *mode_tips[] = {
+      "A window of the size above",
+      "The platform's fullscreen: its own Space on macOS",
+      "A borderless window covering the display"};
+  for (uint32_t i = 0; i < ArrayCount(modes); ++i) {
+    const bool8_t selected = !strcmp(game->window_mode, modes[i]);
+    c = build_widget(132 + i * 124, *y, 120, 24);
+    vkr_editor_toggle_style(&c, selected);
+    c.tooltip = build_text(mode_tips[i]);
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("mode"), build_text(mode_labels[i]),
+                      &c)) {
+      snprintf(game->window_mode, sizeof(game->window_mode), "%s", modes[i]);
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  *y += 30;
 }
 
 static void build_settings_scenes(VkrEditorBuild *build, VkrUiSystem *ui,
@@ -1272,7 +1292,7 @@ void vkr_editor_build_settings_build(VkrEditorBuild *build, VkrEditorUi *editor,
     build_fields_load(build);
   }
   const float32_t footer = 84.0f;
-  const float32_t content_height = 560.0f + 28.0f * (project->scene_count + 1u);
+  const float32_t content_height = 590.0f + 28.0f * (project->scene_count + 1u);
   if (!ui->mouse_captured && ui->mouse_input_layer == ui->input_layer &&
       ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
       ui->mouse_y >= bounds.y &&

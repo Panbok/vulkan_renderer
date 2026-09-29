@@ -32,6 +32,8 @@ typedef struct VkrPlayer {
   uint32_t font_count;
   uint32_t window_width;
   uint32_t window_height;
+  /* `game.window.mode`; the pause menu switches between it and a window. */
+  VkrWindowMode window_mode;
   /* Views into the mounted bundle description; the camera is an editor
      viewport recall (vkr_sample_scene_recall_read_json). */
   String8 graphics;

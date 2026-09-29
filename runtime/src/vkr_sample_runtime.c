@@ -5167,11 +5167,19 @@ int vkr_sample_runtime_run(int argc, char **argv,
                                      scene_runtime_config.height);
     log_info("Headless: rendering offscreen at %ux%u",
              scene_runtime_config.width, scene_runtime_config.height);
-  } else if (runtime_config->presentation.window_width_pt &&
-             runtime_config->presentation.window_height_pt) {
-    (void)vkr_window_resize_centered(
-        &application.host.window, runtime_config->presentation.window_width_pt,
-        runtime_config->presentation.window_height_pt);
+  } else {
+    if (runtime_config->presentation.window_width_pt &&
+        runtime_config->presentation.window_height_pt) {
+      (void)vkr_window_resize_centered(
+          &application.host.window,
+          runtime_config->presentation.window_width_pt,
+          runtime_config->presentation.window_height_pt);
+    }
+    if (runtime_config->presentation.window_mode != VKR_WINDOW_MODE_WINDOWED &&
+        !vkr_window_set_mode(&application.host.window,
+                             runtime_config->presentation.window_mode)) {
+      log_warn("The window could not enter its display mode");
+    }
   }
   if (options.metal_validation_enabled &&
       renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
