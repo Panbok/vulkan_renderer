@@ -552,6 +552,10 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_TEXT;
   if (type == &vkr_scene_animation_type)
     return VKR_UI_ICON_ANIMATION;
+  if (type == &vkr_scene_player_start_type)
+    return VKR_UI_ICON_PERSON_WALK;
+  if (vkr_scene_world_type_registered(type))
+    return VKR_UI_ICON_CODE;
   return VKR_UI_ICON_LIGHT;
 }
 
@@ -594,23 +598,50 @@ static const EditorObjectKind s_object_kinds[] = {
      &vkr_scene_animation_settings_type, false_v},
     {"cube", "Cube", VKR_UI_ICON_SHAPES, &vkr_scene_shape_type, false_v},
     {"text", "Text", VKR_UI_ICON_TEXT, &vkr_scene_text_type, false_v},
+    {"player_start", "Player Start", VKR_UI_ICON_PERSON_WALK,
+     &vkr_scene_player_start_type, false_v},
 };
 
+/* Built-in kinds, then one Script object per component type a script module
+ * registered (ADR-079); the object is a new entity carrying that script. */
+static bool8_t editor_object_kind(uint32_t kind, EditorObjectKind *out) {
+  if (kind < ArrayCount(s_object_kinds)) {
+    *out = s_object_kinds[kind];
+    return true_v;
+  }
+  const VkrTypeDesc *type =
+      vkr_scene_registered_type(kind - ArrayCount(s_object_kinds));
+  if (!type) {
+    return false_v;
+  }
+  *out = (EditorObjectKind){.word = type->name,
+                            .label = type->label,
+                            .icon = VKR_UI_ICON_CODE,
+                            .type = type};
+  return true_v;
+}
+
 uint32_t vkr_editor_object_kind_count(void) {
-  return ArrayCount(s_object_kinds);
+  uint32_t count = ArrayCount(s_object_kinds);
+  while (vkr_scene_registered_type(count - ArrayCount(s_object_kinds))) {
+    ++count;
+  }
+  return count;
 }
 
 const char *vkr_editor_object_kind_word(uint32_t kind) {
-  return kind < ArrayCount(s_object_kinds) ? s_object_kinds[kind].word : NULL;
+  EditorObjectKind object;
+  return editor_object_kind(kind, &object) ? object.word : NULL;
 }
 
 const char *vkr_editor_object_kind_label(uint32_t kind) {
-  return kind < ArrayCount(s_object_kinds) ? s_object_kinds[kind].label : NULL;
+  EditorObjectKind object;
+  return editor_object_kind(kind, &object) ? object.label : NULL;
 }
 
 VkrUiIcon vkr_editor_object_kind_icon(uint32_t kind) {
-  return kind < ArrayCount(s_object_kinds) ? s_object_kinds[kind].icon
-                                           : VKR_UI_ICON_NONE;
+  EditorObjectKind object;
+  return editor_object_kind(kind, &object) ? object.icon : VKR_UI_ICON_NONE;
 }
 
 uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame) {
@@ -628,10 +659,11 @@ uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame) {
 
 bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
                                   uint16_t container, const Vec2 *drop_px) {
-  if (kind >= ArrayCount(s_object_kinds)) {
+  EditorObjectKind kind_value;
+  if (!editor_object_kind(kind, &kind_value)) {
     return false_v;
   }
-  const EditorObjectKind *object = &s_object_kinds[kind];
+  const EditorObjectKind *object = &kind_value;
   /* World-only settings always go to the World. */
   if (object->type && (object->type->flags & VKR_TYPE_FLAG_WORLD_ONLY)) {
     container = frame->world ? VKR_SCENE_WORLD_ROOT_ID : UINT16_MAX;
@@ -792,9 +824,15 @@ VkrUiIcon vkr_editor_entity_icon(const VkrScene *scene, VkrEntityId entity,
                : VKR_UI_ICON_POINT_LIGHT;
   if (vkr_entity_get_component(world, entity, scene->comp_rectangle_light))
     return VKR_UI_ICON_RECT_LIGHT;
+  /* A scripted entity shows its behavior before its body or geometry. */
+  const VkrTypeDesc *script_type = NULL;
+  for (uint32_t i = 0; (script_type = vkr_scene_registered_type(i)); ++i) {
+    if (vkr_scene_get_typed(scene, entity, script_type)) {
+      *out_color = (Vec4){0.80f, 0.66f, 0.98f, 1.0f};
+      return VKR_UI_ICON_CODE;
+    }
+  }
   *out_color = physics;
-  if (scene->player_entity.u64 == entity.u64)
-    return VKR_UI_ICON_PERSON_WALK;
   if (vkr_entity_get_component(world, entity, scene->comp_physics_body))
     return VKR_UI_ICON_RIGID_BODY;
   if (vkr_entity_get_component(world, entity, scene->comp_physics_collider))

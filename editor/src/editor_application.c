@@ -6,6 +6,7 @@
 #include "editor_projects.h"
 
 #include "core/logger.h"
+#include "fps_module.h"
 #include "platform/vkr_platform.h"
 #include <math.h>
 #include <stdlib.h>
@@ -371,6 +372,9 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .headless = editor->headless,
   };
   editor->window_launcher = editor->project_managed;
+  static const VkrScriptModuleEntry script_modules[] = {vkr_script_module_fps};
+  config.script_modules = script_modules;
+  config.script_module_count = ArrayCount(script_modules);
   config.ui = (VkrSampleUiClient){
       .state = editor,
       .initialize = editor_application_initialize,

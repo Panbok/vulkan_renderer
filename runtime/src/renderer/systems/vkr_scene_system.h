@@ -186,6 +186,15 @@ typedef struct SceneShape {
 } SceneShape;
 
 /**
+ * Where a game spawns its player once simulation runs (ADR-079), a typed
+ * component. The entity's world transform is the spawn pose; the scene
+ * resolves its first enabled, visible start, then the root World's.
+ */
+typedef struct ScenePlayerStart {
+  bool8_t enabled;
+} ScenePlayerStart;
+
+/**
  * Authored shape values (ADR-076), a typed component. Setting it rebuilds
  * the entity's generated geometry and mesh; removing it releases them.
  */
@@ -654,12 +663,6 @@ typedef struct VkrScene {
   uint64_t structure_revision;
   uint16_t world_id; // Copied into entity IDs
 
-  // Optional authored player binding; invalid entity means no player.
-  VkrEntityId player_entity;
-  float32_t player_yaw; // Initial look yaw in radians.
-  VkrEntityId player_weapon_entity;
-  uint32_t player_weapon_bone; // Source node in the player animation skeleton.
-
   // Component type IDs (cached after registration)
   /** Document ids by document entity index, or NULL when the document has
       none. Scene-owned and freed at shutdown; the loader fills them. */
@@ -795,6 +798,14 @@ bool8_t vkr_scene_set_typed(VkrScene *scene, VkrEntityId entity,
                             const struct VkrTypeDesc *type, const void *value);
 bool8_t vkr_scene_remove_typed(VkrScene *scene, VkrEntityId entity,
                                const struct VkrTypeDesc *type);
+/** Writes up to `capacity` live entities carrying `type` in entity index
+    order and returns how many carry it, which may exceed `capacity`. */
+uint32_t vkr_scene_find_typed(const VkrScene *scene,
+                              const struct VkrTypeDesc *type,
+                              VkrEntityId *out_entities, uint32_t capacity);
+/** World matrix of the resolved Player Start: the scene's first enabled,
+    visible one, then the root World's. False when neither has one. */
+bool8_t vkr_scene_player_start(const VkrScene *scene, Mat4 *out_world);
 /** Create a named root entity carrying one component; used for world
     components that have no placed transform. Returns invalid on failure. */
 VkrEntityId vkr_scene_create_typed_entity(VkrScene *scene, String8 name,

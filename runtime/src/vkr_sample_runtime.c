@@ -4,7 +4,6 @@
 #include "core/vkr_subsystem_plan.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
-#include "gameplay/vkr_gameplay_player.h"
 #include "renderer/resources/loaders/scene_loader.h"
 #include "vkr_sample_runtime_config.h"
 
@@ -33,6 +32,7 @@
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_ui_system.h"
+#include "script/vkr_script_host.h"
 #include "vkr_renderer.h"
 #include <stdio.h>
 
@@ -111,14 +111,18 @@ typedef struct ApplicationUiText {
 } ApplicationUiText;
 
 typedef struct State {
-  VkrGameplayPlayer player;
-  VkrEntityId player_visual;
+  /* Script modules and the session of the active scene (ADR-079). */
+  VkrScriptHost scripts;
+  /* Last presentation the modules published; its HUD replaces the camera
+     text while they run. */
+  VkrScriptView script_view;
   Vec3 editor_camera_position;
   float32_t editor_camera_yaw;
   float32_t editor_camera_pitch;
-  bool8_t player_camera_active;
+  bool8_t script_camera_active;
   bool8_t gameplay_enabled;
-  bool8_t gameplay_attempted;
+  /* One session start per reset boundary; Reset and scene changes clear it. */
+  bool8_t script_start_attempted;
   InputState *input_state;
   bool8_t scene_keyboard_focus;
   VkrSampleViewState view_state;
@@ -269,6 +273,7 @@ typedef struct State {
 vkr_global State *state = NULL;
 
 static uint32_t sample_additive_slot(VkrEntityId entity);
+static void sample_scripts_stop(VkrStandardSceneRuntime *application);
 static void sample_physics_attach(VkrStandardSceneRuntime *application,
                                   VkrScene *scene, bool8_t driver);
 vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application);
@@ -1892,17 +1897,7 @@ vkr_internal void vkr_standard_scene_runtime_unload_scene_system(
     return;
   }
 
-  if (state->player_camera_active) {
-    VkrCamera *camera = vkr_camera_registry_get_by_handle(
-        &application->camera_system, application->active_camera);
-    if (camera) {
-      vkr_camera_set_pose(camera, state->editor_camera_position,
-                          state->editor_camera_yaw, state->editor_camera_pitch);
-    }
-    state->player_camera_active = false_v;
-  }
-  vkr_gameplay_player_shutdown(&state->player);
-  state->gameplay_attempted = false_v;
+  sample_scripts_stop(application);
   String8 scene_path = state->scene_path;
   if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
       state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
@@ -2305,9 +2300,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_handle_hotkeys(
 
 vkr_internal void vkr_standard_scene_runtime_handle_gameplay_input(
     VkrStandardSceneRuntime *application, InputState *input_state) {
-  if (state->player.scene &&
-      input_key_just_pressed(input_state, KEY_BACKSPACE)) {
-    VkrScene *scene = state->player.scene;
+  if (input_key_just_pressed(input_state, KEY_BACKSPACE)) {
+    VkrScene *scene = state->scripts.session.scene;
     vkr_scene_physics_set_paused(scene, true_v);
     const char *error = NULL;
     if (!vkr_scene_physics_reset(scene, &error)) {
@@ -2539,9 +2533,8 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
     return;
   }
 
-  if (state->gameplay_enabled ||
-      (state->player.scene &&
-       application->editor_viewport.simulation_running)) {
+  if (vkr_script_host_active(&state->scripts) &&
+      application->editor_viewport.simulation_running) {
     vkr_standard_scene_runtime_handle_gameplay_input(application, input_state);
     return;
   }
@@ -2645,20 +2638,10 @@ vkr_standard_scene_runtime_update_fps_text(VkrStandardSceneRuntime *application,
           frame_alloc, "Pos: x %.2f  y %.2f  z %.2f\nYaw %.2f  Pitch %.2f",
           camera->position.x, camera->position.y, camera->position.z,
           camera->yaw, camera->pitch);
-      if (state->player.scene) {
-        const VkrPlayerState *player = vkr_entity_get_component_if_alive_const(
-            state->player.scene->world, state->player.entity,
-            state->player.component);
-        if (player) {
-          left_text = string8_create_formatted(
-              frame_alloc,
-              "Ammo %u / %u%s  Hits %llu\nWASD move | Mouse fire/look | R "
-              "reload\nSpace jump | Ctrl crouch | V camera\nTab mouse | "
-              "Backspace reset",
-              player->weapon.magazine_rounds, player->reserve_rounds,
-              player->weapon.reloading ? "  Reloading" : "",
-              (unsigned long long)state->player.hits);
-        }
+      if (vkr_script_host_active(&state->scripts) &&
+          state->script_view.hud[0]) {
+        left_text =
+            string8_create_formatted(frame_alloc, "%s", state->script_view.hud);
       }
       if (left_text.length > 0) {
         vkr_standard_scene_runtime_ui_text_set(&state->left_text, left_text);
@@ -2801,206 +2784,47 @@ vkr_internal void vkr_standard_scene_runtime_init_world_content(
   vkr_clock_start(&state->world_text_update_clock);
 }
 
+/* Starts the script session once simulation first runs from a reset
+ * boundary. A failure keeps the scene paused and reports why. */
+static void sample_scripts_start(VkrStandardSceneRuntime *application) {
+  state->script_start_attempted = true_v;
+  const char *error = NULL;
+  const uint32_t flags = state->gameplay_enabled
+                             ? VKR_SCRIPT_SESSION_SAMPLE_CONTENT
+                             : VKR_SCRIPT_SESSION_NONE;
+  if (!vkr_script_host_start(&state->scripts, application->active_scene,
+                             state->input_state, &application->assets, flags,
+                             &error)) {
+    application->editor_viewport.simulation_running = false_v;
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "Scripts failed to start: %s", error ? error : "unknown error");
+    log_error("%s", state->scene_status);
+    return;
+  }
+  if (vkr_script_host_active(&state->scripts) &&
+      application->editor_viewport.simulation_running) {
+    vkr_window_set_mouse_capture(&application->host.window, true_v);
+  }
+}
+
+/* Ends the session and returns the camera to the editing pose. */
+static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
+  vkr_script_host_stop(&state->scripts);
+  state->script_start_attempted = false_v;
+  state->script_view = (VkrScriptView){0};
+  application->editor_viewport.scripts_own_camera = false_v;
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (camera && state->script_camera_active) {
+    vkr_camera_set_pose(camera, state->editor_camera_position,
+                        state->editor_camera_yaw, state->editor_camera_pitch);
+  }
+  state->script_camera_active = false_v;
+}
+
 /**
  * @brief Update scene system each frame.
  */
-/* A small playable training platform in the loaded Bistro world. Its collision
- * belongs to these explicit scene bodies; the decorative city is not implicitly
- * promoted to collision geometry. */
-static bool8_t sample_gameplay_start(VkrStandardSceneRuntime *application) {
-  VkrScene *scene = application->active_scene;
-  state->gameplay_attempted = true_v;
-  vkr_scene_physics_set_paused(scene, true_v);
-  const char *error = NULL;
-  if (!vkr_scene_physics_reset(scene, &error)) {
-    log_error("Gameplay reset failed: %s", error ? error : "unknown error");
-    return false_v;
-  }
-  if (scene->player_entity.u64) {
-    if (!vkr_gameplay_player_attach(
-            &state->player, scene, state->input_state, scene->player_entity,
-            application->scene_generation + 1, scene->player_yaw, &error)) {
-      log_error("Scene player setup failed: %s",
-                error ? error : "unknown error");
-      return false_v;
-    }
-    state->player_visual = scene->player_entity;
-    Mat4 initial = vkr_scene_get_transform(scene, scene->player_entity)->world;
-    if (scene->player_weapon_entity.u64) {
-      VkrAnimationPlayer *animation =
-          vkr_scene_animation_get_player(scene, scene->player_entity);
-      const VkrAnimationAsset *asset = vkr_animation_player_asset(animation);
-      if (!asset || scene->player_weapon_bone >= asset->node_count ||
-          !vkr_scene_set_evaluated_transform(scene, scene->player_weapon_entity,
-                                             &initial)) {
-        vkr_gameplay_player_shutdown(&state->player);
-        log_error("Player weapon requires a valid animation bone");
-        return false_v;
-      }
-    }
-    if (!vkr_scene_set_evaluated_transform(scene, scene->player_entity,
-                                           &initial)) {
-      vkr_scene_set_evaluated_transform(scene, scene->player_weapon_entity,
-                                        NULL);
-      vkr_gameplay_player_shutdown(&state->player);
-      return false_v;
-    }
-    if (application->editor_viewport.simulation_running) {
-      vkr_window_set_mouse_capture(&application->host.window, true_v);
-      vkr_scene_physics_set_paused(scene, false_v);
-    }
-    return true_v;
-  }
-  VkrEntityId created[7] = {0};
-  uint32_t count = 0;
-  VkrEntityId root = vkr_scene_create_entity(scene, NULL);
-  if (!root.u64) {
-    return false_v;
-  }
-  created[count++] = root;
-  if (!vkr_scene_set_name(scene, root, string8_lit("GameplayPlayer")) ||
-      !vkr_scene_set_transform(scene, root, vec3_new(-28, 20, 3),
-                               vkr_quat_identity(), vec3_one())) {
-    goto fail;
-  }
-  for (uint32_t i = 0; i < 6; ++i) {
-    VkrEntityId entity = vkr_scene_create_entity(scene, NULL);
-    if (!entity.u64) {
-      goto fail;
-    }
-    created[count++] = entity;
-    Vec3 position;
-    VkrSceneShapeConfig shape = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
-    if (i == 0) {
-      position = vec3_new(0, .9f, 0);
-      shape.dimensions = vec3_new(.6f, 1.8f, .6f);
-      shape.color = vec4_new(.15f, .45f, .85f, 1);
-    } else if (i == 1) {
-      position = vec3_new(-28, 19.5f, 0);
-      shape.dimensions = vec3_new(16, 1, 16);
-      shape.color = vec4_new(.25f, .3f, .32f, 1);
-    } else if (i == 5) {
-      position = vec3_new(-24, 20.15f, 0);
-      shape.dimensions = vec3_new(2, .3f, 2);
-      shape.color = vec4_new(.55f, .6f, .65f, 1);
-    } else {
-      position = vec3_new(-28 + ((int32_t)i - 3) * 2.0f, 20.6f, -2);
-      shape.dimensions = vec3_new(1, 1.2f, 1);
-      shape.color = vec4_new(.85f, .3f, .12f, 1);
-    }
-    if (!vkr_scene_set_transform(scene, entity, position, vkr_quat_identity(),
-                                 vec3_one()) ||
-        !vkr_scene_set_shape(scene, &application->assets, entity, &shape,
-                             NULL)) {
-      goto fail;
-    }
-    if (i == 0) {
-      vkr_scene_set_parent(scene, entity, root);
-      state->player_visual = entity;
-      vkr_scene_set_visibility(scene, entity, false_v, false_v);
-    } else {
-      VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
-      body.body.motion =
-          i == 1 || i == 5 ? VKR_PHYSICS_STATIC : VKR_PHYSICS_DYNAMIC;
-      body.colliders[0].half_extent = vec3_scale(shape.dimensions, .5f);
-      if (!vkr_scene_physics_apply(scene, entity, &body, &error)) {
-        goto fail;
-      }
-    }
-  }
-  if (!vkr_gameplay_player_attach(&state->player, scene, state->input_state,
-                                  root, application->scene_generation + 1,
-                                  -1.57079632679f, &error)) {
-    goto fail;
-  }
-  vkr_window_set_mouse_capture(&application->host.window, true_v);
-  vkr_scene_physics_set_paused(scene, false_v);
-  log_info("Gameplay ready: WASD move, mouse look, left click fire, R reload, "
-           "Space jump, V camera mode, Backspace reset, Tab/Escape release or "
-           "capture mouse. "
-           "Collision is limited to the training platform and targets.");
-  return true_v;
-fail:
-  vkr_gameplay_player_shutdown(&state->player);
-  while (count) {
-    vkr_scene_destroy_entity(scene, created[--count]);
-  }
-  log_error("Gameplay setup failed: %s",
-            error ? error : "scene/resource allocation");
-  return false_v;
-}
-
-/* Presentation overrides never modify the authored spawn or weapon transform.
- * Both components are acquired during attachment; updates reuse their storage.
- */
-static void sample_gameplay_visuals(VkrStandardSceneRuntime *application,
-                                    const VkrCameraRigPose *camera) {
-  VkrScene *scene = application->active_scene;
-  if (!scene->player_entity.u64) {
-    return;
-  }
-  VkrGameplayPlayer *player = &state->player;
-  const float32_t alpha =
-      scene->physics_paused
-          ? 1.0f
-          : (float32_t)Min(1.0, scene->simulation.accumulator /
-                                    VKR_SCENE_SIMULATION_FIXED_DT);
-  const Vec3 foot = vec3_add(
-      player->previous_foot,
-      vec3_scale(vec3_sub(player->current_foot, player->previous_foot), alpha));
-  const VkrQuat rotation = vkr_quat_from_axis_angle(
-      vec3_new(0, 1, 0), -player->render_yaw - 1.57079632679f);
-  const Mat4 root = mat4_mul(mat4_translate(foot), vkr_quat_to_mat4(rotation));
-  vkr_scene_set_evaluated_transform(scene, scene->player_entity, &root);
-  if (scene->player_weapon_entity.u64) {
-    Mat4 weapon;
-    if (camera && application->editor_viewport.simulation_running &&
-        player->camera.mode == VKR_CAMERA_RIG_FIRST_PERSON) {
-      const Vec3 right = vec3_cross(camera->forward, camera->up);
-      const Vec3 position =
-          vec3_add(camera->position,
-                   vec3_add(vec3_scale(right, .22f),
-                            vec3_add(vec3_scale(camera->up, -.25f),
-                                     vec3_scale(camera->forward, .35f))));
-      weapon = mat4_identity();
-      weapon.elements[0] = right.x;
-      weapon.elements[1] = right.y;
-      weapon.elements[2] = right.z;
-      weapon.elements[4] = camera->up.x;
-      weapon.elements[5] = camera->up.y;
-      weapon.elements[6] = camera->up.z;
-      weapon.elements[8] = -camera->forward.x;
-      weapon.elements[9] = -camera->forward.y;
-      weapon.elements[10] = -camera->forward.z;
-      weapon.elements[12] = position.x;
-      weapon.elements[13] = position.y;
-      weapon.elements[14] = position.z;
-      VkrAnimationPlayer *animation =
-          vkr_scene_animation_get_player(scene, scene->player_entity);
-      const VkrAnimationAsset *asset = vkr_animation_player_asset(animation);
-      if (player->weapon_reference_valid && asset &&
-          scene->player_weapon_bone < asset->node_count) {
-        const Mat4 delta = mat4_mul(player->weapon_reference_inverse,
-                                    vkr_animation_player_global_pose(
-                                        animation)[scene->player_weapon_bone]);
-        weapon = mat4_mul(weapon, delta);
-      }
-    } else {
-      VkrAnimationPlayer *animation =
-          vkr_scene_animation_get_player(scene, scene->player_entity);
-      const VkrAnimationAsset *asset = vkr_animation_player_asset(animation);
-      if (!asset || scene->player_weapon_bone >= asset->node_count) {
-        return;
-      }
-      weapon = mat4_mul(root, vkr_animation_player_global_pose(
-                                  animation)[scene->player_weapon_bone]);
-    }
-    vkr_scene_set_evaluated_transform(scene, scene->player_weapon_entity,
-                                      &weapon);
-  }
-  vkr_scene_update_transforms(scene);
-}
-
 vkr_internal void
 vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
                                         float64_t delta_time) {
@@ -3022,25 +2846,29 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     return;
   }
 
-  if ((state->gameplay_enabled ||
-       application->active_scene->player_entity.u64) &&
-      !state->gameplay_attempted) {
-    sample_gameplay_start(application);
+  if (!state->scripts.started && !state->script_start_attempted &&
+      application->editor_viewport.simulation_running) {
+    sample_scripts_start(application);
   }
-  if (state->player.scene) {
+  if (vkr_script_host_active(&state->scripts)) {
     VkrScene *scene = application->active_scene;
     if (!scene->simulation.faulted) {
       vkr_scene_physics_set_paused(
           scene, !application->editor_viewport.simulation_running);
     }
-    const bool8_t focused =
-        !state->modal && !application->ui_capture.keyboard &&
-        !application->ui_capture.mouse &&
-        state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
-        vkr_window_is_mouse_captured(&application->host.window);
-    const float64_t gameplay_dt = vkr_gameplay_player_frame(
-        &state->player, vkr_platform_get_absolute_time(), focused);
-    vkr_scene_handle_update(state->scene_resource.as.scene, gameplay_dt);
+    VkrScriptFrame frame = {
+        .now = vkr_platform_get_absolute_time(),
+        .scene_delta = delta_time,
+        .input_focused =
+            !state->modal && !application->ui_capture.keyboard &&
+            !application->ui_capture.mouse &&
+            state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
+            vkr_window_is_mouse_captured(&application->host.window),
+        .simulation_running = application->editor_viewport.simulation_running,
+        .camera_available =
+            state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
+    vkr_script_host_frame(&state->scripts, &frame);
+    vkr_scene_handle_update(state->scene_resource.as.scene, frame.scene_delta);
     if (scene->physics_paused &&
         application->editor_viewport.simulation_running) {
       application->editor_viewport.simulation_running = false_v;
@@ -3050,40 +2878,28 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
                "Simulation stopped: %s", reason ? reason : "paused");
       log_error("%s", state->scene_status);
     }
-    vkr_scene_set_visibility(
-        scene, state->player_visual,
-        !application->editor_viewport.simulation_running ||
-            state->view_state.camera_view != VKR_SAMPLE_CAMERA_PERSPECTIVE ||
-            state->player.camera.mode != VKR_CAMERA_RIG_FIRST_PERSON,
-        true_v);
-    VkrCameraRigPose pose;
+    frame.simulation_running = application->editor_viewport.simulation_running;
+    vkr_script_host_present(&state->scripts, &frame, &state->script_view);
     VkrCamera *camera = vkr_camera_registry_get_by_handle(
         &application->camera_system, application->active_camera);
-    const bool8_t have_pose = vkr_gameplay_player_camera(&state->player, &pose);
-    if (camera && !application->editor_viewport.simulation_running &&
-        state->player_camera_active) {
+    if (camera && !frame.simulation_running && state->script_camera_active) {
       vkr_camera_set_pose(camera, state->editor_camera_position,
                           state->editor_camera_yaw, state->editor_camera_pitch);
-      state->player_camera_active = false_v;
+      state->script_camera_active = false_v;
     }
-    if (camera && application->editor_viewport.simulation_running &&
-        state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
-        have_pose) {
-      if (!state->player_camera_active) {
+    if (camera && state->script_view.camera_valid) {
+      if (!state->script_camera_active) {
         state->editor_camera_position = camera->position;
         state->editor_camera_yaw = camera->yaw;
         state->editor_camera_pitch = camera->pitch;
-        state->player_camera_active = true_v;
+        state->script_camera_active = true_v;
       }
-      vkr_camera_set_pose(camera, pose.position,
-                          state->player.render_yaw * 57.2957795131f,
-                          pose.pitch * 57.2957795131f);
+      vkr_camera_set_pose(camera, state->script_view.camera_position,
+                          state->script_view.camera_yaw_degrees,
+                          state->script_view.camera_pitch_degrees);
     }
-    sample_gameplay_visuals(application,
-                            have_pose && state->view_state.camera_view ==
-                                             VKR_SAMPLE_CAMERA_PERSPECTIVE
-                                ? &pose
-                                : NULL);
+    application->editor_viewport.scripts_own_camera =
+        state->script_view.camera_valid;
     vkr_scene_handle_sync(state->scene_resource.as.scene, &application->assets);
   } else {
     vkr_scene_handle_update_and_sync(state->scene_resource.as.scene,
@@ -3644,11 +3460,11 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
       Vec3 target;
       float32_t half_height = 25.0f;
       if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
-        if (state->player_camera_active) {
+        if (state->script_camera_active) {
           vkr_camera_set_pose(camera, state->editor_camera_position,
                               state->editor_camera_yaw,
                               state->editor_camera_pitch);
-          state->player_camera_active = false_v;
+          state->script_camera_active = false_v;
         }
         state->perspective_camera = *camera;
         state->perspective_camera_saved = true_v;
@@ -3751,6 +3567,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
           },
       .simulation_time = application->editor_viewport.simulation_time,
       .simulation_running = application->editor_viewport.simulation_running,
+      .scripts_running = vkr_script_host_active(&state->scripts) &&
+                         application->editor_viewport.simulation_running,
       .scene_rendering_stopped =
           application->editor_viewport.scene_rendering_stopped,
       .scene_error = application->editor_viewport.scene_error,
@@ -4604,18 +4422,24 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
   switch (transport_action) {
   case VKR_SAMPLE_TRANSPORT_START_SIMULATION:
     application->editor_viewport.simulation_running = true_v;
-    if (state->player.scene) {
+    if (vkr_script_host_active(&state->scripts)) {
       vkr_window_set_mouse_capture(&application->host.window, true_v);
     }
     break;
   case VKR_SAMPLE_TRANSPORT_PAUSE_SIMULATION:
     application->editor_viewport.simulation_running = false_v;
-    if (state->player.scene) {
+    if (vkr_script_host_active(&state->scripts)) {
       vkr_window_set_mouse_capture(&application->host.window, false_v);
     }
     break;
   case VKR_SAMPLE_TRANSPORT_STEP_SIMULATION: {
     const char *error = NULL;
+    /* Stepping from a reset boundary starts the session, as running does. */
+    if (!application->editor_viewport.simulation_running &&
+        application->active_scene && !state->scripts.started &&
+        !state->script_start_attempted) {
+      sample_scripts_start(application);
+    }
     if (!application->editor_viewport.simulation_running &&
         application->active_scene &&
         !vkr_scene_physics_step(application->active_scene, &error)) {
@@ -4627,6 +4451,10 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
   case VKR_SAMPLE_TRANSPORT_RESET_SIMULATION: {
     const char *error = NULL;
     application->editor_viewport.simulation_running = false_v;
+    /* Reset ends the session: spawned objects leave and the next run starts
+       a new one from the authored scene. */
+    sample_scripts_stop(application);
+    vkr_window_set_mouse_capture(&application->host.window, false_v);
     vkr_scene_physics_set_paused(application->active_scene, true_v);
     if (application->active_scene &&
         !vkr_scene_physics_reset(application->active_scene, &error)) {
@@ -5034,6 +4862,15 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
     return false_v;
   }
   state->gameplay_enabled = options->gameplay_enabled;
+  /* Module component types join the scene types before any scene exists. */
+  vkr_script_host_init(&state->scripts, &application->app_allocator);
+  for (uint32_t i = 0; i < runtime_config->script_module_count; ++i) {
+    const char *error = NULL;
+    if (!vkr_script_host_add_module(
+            &state->scripts, runtime_config->script_modules[i], &error)) {
+      log_error("Script module %u was not registered: %s", i, error);
+    }
+  }
   state->world_text_id = 0;
   state->world_text_update_clock = vkr_clock_create();
   state->free_camera_use_gamepad = false_v;
@@ -5647,12 +5484,12 @@ sample_recall_snapshot(VkrStandardSceneRuntime *application) {
   }
   if (camera && camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
     result.camera_valid = true_v;
-    result.position = state->player_camera_active
+    result.position = state->script_camera_active
                           ? state->editor_camera_position
                           : camera->position;
     result.yaw =
-        state->player_camera_active ? state->editor_camera_yaw : camera->yaw;
-    result.pitch = state->player_camera_active ? state->editor_camera_pitch
+        state->script_camera_active ? state->editor_camera_yaw : camera->yaw;
+    result.pitch = state->script_camera_active ? state->editor_camera_pitch
                                                : camera->pitch;
     result.field_of_view = camera->zoom;
     result.near_plane = camera->near_clip;
@@ -5694,7 +5531,7 @@ sample_editor_state_apply(VkrStandardSceneRuntime *application,
       camera->type = VKR_CAMERA_TYPE_PERSPECTIVE;
       state->view_state.camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE;
       state->perspective_camera_saved = false_v;
-      state->player_camera_active = false_v;
+      state->script_camera_active = false_v;
       vkr_camera_set_pose(camera, value->position, value->yaw, value->pitch);
       (void)vkr_camera_set_perspective_lens(
           camera, value->field_of_view, value->near_plane, value->far_plane,

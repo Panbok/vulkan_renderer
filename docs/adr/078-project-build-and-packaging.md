@@ -46,7 +46,7 @@ runs seven stages. Each is a `start`/`done` event pair with coded diagnostics:
 
 | Stage | Work |
 |---|---|
-| Validate | Settings, profile, host platform, player template, and an output outside the workspace directory and repository. An existing output must hold a `bundle.json` or be empty. Portable lowering of the World and every included scene. Warns when the startup scene has no player. |
+| Validate | Settings, profile, host platform, player template, and an output outside the workspace directory and repository. An existing output must hold a `bundle.json` or be empty. Portable lowering of the World and every included scene. Warns when the startup scene has neither a Player Start nor an `fps_player` ([ADR-079](079-c-script-modules.md)). |
 | Finalize | `finalize_textures` for a scene with preview or deferred assets (the job publishes the scene), and `finalize_project_assets` when project assets are. The returned inventory is lowered against without publishing `project.json`, which the editor owns. Shipping finalizes with the final encoder, development with the fast one. Fast-encoded final textures are not re-encoded; the report counts them. |
 | Bake | With `bake_lighting`, `bake_scene` with reflection and diffuse for each included scene. |
 | Lower | Lowers again only when an earlier stage published. |
@@ -289,7 +289,7 @@ vcpkg triplet and the system Vulkan loader.
 - Publish the finalized project inventory from the bakery: `project.json`
   belongs to the editor store and its stale-write protection.
 - Ship `vulkan_renderer`: it carries harness, overlay and sample controls, and
-  its `--gameplay` spawns the Bistro training platform.
+  its `--gameplay` asks the FPS script module for the Bistro training platform.
 
 ## Revisit when
 

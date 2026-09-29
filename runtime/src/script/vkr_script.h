@@ -1,0 +1,252 @@
+/**
+ * @file vkr_script.h
+ * @brief Native C script module ABI (ADR-079).
+ *
+ * A script module is game code built with a project. It reaches the engine
+ * only through the host-owned VkrScriptApi table, so the same module can be
+ * linked statically into an executable or built as a shared library that
+ * links no engine symbols. Runtime headers still supply its value types and
+ * inline math. Scene, input and asset pointers are opaque to a module: it
+ * passes them back to the table and never reads their fields.
+ *
+ * Behaviors a user attaches to entities are the module's component types:
+ * plain-data VkrTypeDesc tables that the host registers as scene world types
+ * before any scene initializes. Documents, Details, Add component, presets
+ * and Cmd paths then accept them like engine components.
+ */
+#pragma once
+
+#include "animation/vkr_animation_player.h"
+#include "core/input.h"
+#include "core/logger.h"
+#include "core/vkr_type_desc.h"
+#include "renderer/systems/vkr_scene_physics.h"
+
+#define VKR_SCRIPT_ABI_VERSION 1u
+
+struct VkrRenderAssets;
+struct VkrAnimationGraphInstance;
+
+/**
+ * Engine entry points a module may call. The host fills it once; `size` is
+ * sizeof(VkrScriptApi) of the host, so a module built against a shorter
+ * table can check that the members it uses are present. Every function keeps
+ * the contract of the engine function it forwards to.
+ */
+typedef struct VkrScriptApi {
+  uint32_t version;
+  uint32_t size;
+
+  /* Diagnostics: one formatted message per call. */
+  void (*log)(LogLevel level, const char *message);
+
+  /* Entities and components. */
+  bool8_t (*entity_alive)(const VkrScene *scene, VkrEntityId entity);
+  VkrEntityId (*create_entity)(VkrScene *scene, VkrSceneError *out_error);
+  void (*destroy_entity)(VkrScene *scene, VkrEntityId entity);
+  bool8_t (*set_name)(VkrScene *scene, VkrEntityId entity, String8 name);
+  bool8_t (*set_transform)(VkrScene *scene, VkrEntityId entity, Vec3 position,
+                           VkrQuat rotation, Vec3 scale);
+  void (*set_parent)(VkrScene *scene, VkrEntityId entity, VkrEntityId parent);
+  void (*set_visibility)(VkrScene *scene, VkrEntityId entity, bool8_t visible,
+                         bool8_t inherit_parent);
+  /** Effective visibility through inheriting parents. */
+  bool8_t (*entity_visible)(const VkrScene *scene, VkrEntityId entity);
+  bool8_t (*set_shape)(VkrScene *scene, struct VkrRenderAssets *assets,
+                       VkrEntityId entity, const VkrSceneShapeConfig *config,
+                       VkrSceneError *out_error);
+  /** The entity's evaluated world matrix; false for a dead entity. */
+  bool8_t (*world_matrix)(VkrScene *scene, VkrEntityId entity, Mat4 *out);
+  bool8_t (*set_evaluated_transform)(VkrScene *scene, VkrEntityId entity,
+                                     const Mat4 *world);
+  void (*update_transforms)(VkrScene *scene);
+  /** Authored component of a registered or engine type, or NULL. */
+  const void *(*get_typed)(const VkrScene *scene, VkrEntityId entity,
+                           const VkrTypeDesc *type);
+  bool8_t (*set_typed)(VkrScene *scene, VkrEntityId entity,
+                       const VkrTypeDesc *type, const void *value);
+  /** Writes up to `capacity` entities carrying `type` in entity order and
+   * returns how many carry it, which may exceed `capacity`. */
+  uint32_t (*find_typed)(const VkrScene *scene, const VkrTypeDesc *type,
+                         VkrEntityId *out_entities, uint32_t capacity);
+  /** Runtime-only component storage: never serialized or edited. */
+  VkrComponentTypeId (*register_state)(VkrScene *scene, const char *name,
+                                       uint32_t size, uint32_t align);
+  bool8_t (*add_state)(VkrScene *scene, VkrEntityId entity,
+                       VkrComponentTypeId type, const void *value);
+  bool8_t (*remove_state)(VkrScene *scene, VkrEntityId entity,
+                          VkrComponentTypeId type);
+  bool8_t (*has_state)(const VkrScene *scene, VkrEntityId entity,
+                       VkrComponentTypeId type);
+  void *(*get_state)(VkrScene *scene, VkrEntityId entity,
+                     VkrComponentTypeId type);
+  /** The engine's Player Start component type, for set_typed. */
+  const VkrTypeDesc *player_start_type;
+  /** World matrix of the Player Start the scene resolves (its own, then the
+   * root World's); false when neither has one. */
+  bool8_t (*player_start)(const VkrScene *scene, Mat4 *out_world);
+
+  /* Shared simulation clock (ADR-073). */
+  /** Not paused, not disabled and not faulted. */
+  bool8_t (*simulation_running)(const VkrScene *scene);
+  uint64_t (*simulation_completed_ticks)(const VkrScene *scene);
+  float64_t (*physics_time)(const VkrScene *scene);
+  float64_t (*physics_debt)(const VkrScene *scene);
+  bool8_t (*physics_paused)(const VkrScene *scene);
+  Vec3 (*gravity)(const VkrScene *scene);
+
+  /* Physics bodies, queries and characters (ADR-072). */
+  VkrScenePhysicsSnapshot (*physics_default)(void);
+  bool8_t (*physics_apply)(VkrScene *scene, VkrEntityId entity,
+                           const VkrScenePhysicsSnapshot *snapshot,
+                           const char **error);
+  bool8_t (*physics_impulse)(VkrScene *scene, VkrEntityId entity, Vec3 impulse,
+                             const Vec3 *world_point, const char **error);
+  bool8_t (*raycast)(VkrScene *scene, Vec3 origin, Vec3 displacement,
+                     const VkrPhysicsQueryFilter *filter,
+                     VkrPhysicsRayHit *hit);
+  bool8_t (*sweep_sphere)(VkrScene *scene, Vec3 origin, Vec3 displacement,
+                          float32_t radius, const VkrPhysicsQueryFilter *filter,
+                          VkrPhysicsRayHit *hit, bool8_t *found);
+  VkrPhysicsCharacterDesc (*character_default)(void);
+  /** NULL `spawn_foot` spawns at the authored root pose. */
+  bool8_t (*character_create)(VkrScene *scene, VkrEntityId entity,
+                              const VkrPhysicsCharacterDesc *settings,
+                              const Vec3 *spawn_foot, const char **error);
+  bool8_t (*character_destroy)(VkrScene *scene, VkrEntityId entity,
+                               const char **error);
+  bool8_t (*character_get_state)(VkrScene *scene, VkrEntityId entity,
+                                 VkrPhysicsCharacterState *state,
+                                 const char **error);
+  bool8_t (*character_step)(VkrScene *scene, VkrEntityId entity,
+                            const VkrPhysicsCharacterInput *input,
+                            VkrPhysicsCharacterState *state,
+                            const char **error);
+
+  /* Animation playback of scene-bound animated meshes (ADR-071). */
+  VkrAnimationPlayer *(*animation_player)(const VkrScene *scene,
+                                          VkrEntityId entity);
+  const struct VkrAnimationGraphInstance *(*animation_graph)(
+      const VkrScene *scene, VkrEntityId entity);
+  const VkrAnimationAsset *(*animation_asset)(const VkrAnimationPlayer *player);
+  const Mat4 *(*animation_global_pose)(const VkrAnimationPlayer *player);
+  bool8_t (*animation_select_clip)(VkrAnimationPlayer *player, uint32_t clip,
+                                   bool8_t loop);
+  bool8_t (*animation_crossfade)(VkrAnimationPlayer *player, uint32_t clip,
+                                 bool8_t loop, float64_t duration);
+  void (*animation_set_playing)(VkrAnimationPlayer *player, bool8_t playing);
+  bool8_t (*animation_set_rate)(VkrAnimationPlayer *player, float64_t rate);
+  float64_t (*animation_rate)(const VkrAnimationPlayer *player);
+  float64_t (*animation_duration)(const VkrAnimationPlayer *player);
+  float64_t (*animation_time)(const VkrAnimationPlayer *player);
+
+  /* Synchronous ordered input (ADR-073): one observer per input context. */
+  bool8_t (*input_observe)(InputState *input, VkrInputObserver observer,
+                           void *context);
+  bool8_t (*input_unobserve)(InputState *input, void *context);
+  bool8_t (*input_key_down)(InputState *input, Keys key);
+} VkrScriptApi;
+
+typedef enum VkrScriptSessionFlags {
+  VKR_SCRIPT_SESSION_NONE = 0u,
+  /** The application asked for sample gameplay content (`--gameplay`). */
+  VKR_SCRIPT_SESSION_SAMPLE_CONTENT = 1u << 0,
+} VkrScriptSessionFlags;
+
+/** One simulated scene run by every module. Host-owned and stable from
+ * start until stop; modules borrow it and its pointers for that span. */
+typedef struct VkrScriptSession {
+  const VkrScriptApi *api;
+  VkrScene *scene;
+  InputState *input;
+  struct VkrRenderAssets *assets;
+  /** Nonzero and distinct for every session this process starts. */
+  uint64_t instance_id;
+  uint32_t flags; /**< VkrScriptSessionFlags. */
+} VkrScriptSession;
+
+/** Variable-rate frame state before the scene advances. */
+typedef struct VkrScriptFrame {
+  /** Monotonic seconds measured after the input pump. */
+  float64_t now;
+  /** Elapsed time the scene advances this frame. A module that owns the
+   * input clock may replace it with its admitted elapsed time. */
+  float64_t scene_delta;
+  /** Scene keyboard and mouse belong to gameplay. */
+  bool8_t input_focused;
+  bool8_t simulation_running;
+  /** The Scene shows its perspective camera, which scripts may drive. */
+  bool8_t camera_available;
+} VkrScriptFrame;
+
+#define VKR_SCRIPT_HUD_CAPACITY 256u
+
+/** Presentation a module publishes after the scene advanced. */
+typedef struct VkrScriptView {
+  bool8_t camera_valid;
+  Vec3 camera_position;
+  float32_t camera_yaw_degrees;
+  float32_t camera_pitch_degrees;
+  /** Optional overlay text; empty for none. */
+  char hud[VKR_SCRIPT_HUD_CAPACITY];
+} VkrScriptView;
+
+typedef enum VkrScriptStart {
+  VKR_SCRIPT_START_FAILED = 0,
+  /** Nothing in this scene uses the module; it receives no further calls. */
+  VKR_SCRIPT_START_IDLE,
+  VKR_SCRIPT_START_ACTIVE,
+} VkrScriptStart;
+
+/**
+ * A module's static description. `state` is `state_size` bytes at
+ * `state_align` that the host owns and zeroes before every start; modules
+ * keep no session state elsewhere. Hooks run on the scene-owning thread.
+ *
+ * - start: the scene is paused at a reset boundary (tick zero). Structural
+ *   edits, characters and bodies may be created. A failure must leave
+ *   nothing behind.
+ * - before_physics/after_physics: the ADR-073 tick hooks. No structural
+ *   edits. Returning false faults the simulation with `*error`, valid until
+ *   return.
+ * - reset: infallible restore after a native simulation reset.
+ * - frame: before the scene advances, every frame.
+ * - present: after the scene advanced, every frame.
+ * - stop: the scene is paused; release everything start created.
+ * Every hook except start and stop is optional.
+ */
+typedef struct VkrScriptModuleDesc {
+  uint32_t abi_version;
+  uint32_t size;
+  const char *name;
+  const VkrTypeDesc *const *types;
+  uint32_t type_count;
+  uint32_t state_size;
+  uint32_t state_align;
+  VkrScriptStart (*start)(const VkrScriptSession *session, void *state,
+                          const char **error);
+  void (*stop)(const VkrScriptSession *session, void *state);
+  bool8_t (*before_physics)(const VkrScriptSession *session, void *state,
+                            uint64_t tick, const char **error);
+  bool8_t (*after_physics)(const VkrScriptSession *session, void *state,
+                           uint64_t tick, const char **error);
+  void (*reset)(const VkrScriptSession *session, void *state);
+  void (*frame)(const VkrScriptSession *session, void *state,
+                VkrScriptFrame *frame);
+  void (*present)(const VkrScriptSession *session, void *state,
+                  const VkrScriptFrame *frame, VkrScriptView *view);
+} VkrScriptModuleDesc;
+
+/**
+ * A module's one entry point, named `vkr_script_module_<name>` so several
+ * modules can link into one executable. It keeps `api` for the process and
+ * returns its static description, or NULL when the table is too old.
+ */
+typedef const VkrScriptModuleDesc *(*VkrScriptModuleEntry)(
+    const VkrScriptApi *api);
+
+#if defined(_WIN32)
+#define VKR_SCRIPT_EXPORT __declspec(dllexport)
+#else
+#define VKR_SCRIPT_EXPORT __attribute__((visibility("default")))
+#endif

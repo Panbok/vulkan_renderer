@@ -29,6 +29,9 @@ event, scene, loader or cooking owner.
 decoding, not source import or artifact encoding. `vkr_runtime` builds on the
 renderer and format libraries. It supplies the reusable application host,
 standard scene runtime, runtime core services, and scene-facing systems.
+C script modules under `scripts/` build over `vkr_runtime` headers and call the
+engine through the runtime script host's table
+([ADR-079](adr/079-c-script-modules.md)).
 `vkr_sample_runtime` is an optional consumer that supplies sample control and
 presentation policy for the app, the editor and the packaged-game player
 (`vkr_player`, [ADR-078](adr/078-project-build-and-packaging.md)). `vkr_asset_cooking` is tool-only;
@@ -152,6 +155,8 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `renderer/src/vkr_gpu_*`, `vkr_capture_ring.*` |
 | Render assets | Geometry, textures, materials, meshes, animation banks, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
 | Scene physics | Authored bodies/collider children, staged editor mutations, fixed ticks and evaluated pose publication | `runtime/src/renderer/systems/vkr_scene_physics.c` |
+| Script host | C script module ABI table, module registration, one session's hooks on the scene clock | `runtime/src/script/vkr_script_host.h` |
+| FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the script API | `scripts/fps/src/fps_module.c` |
 | Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |
 | Production shaders | Shared math and native bindings/entry points | `renderer/src/shaders/` |
 | Offline tools/harness | Asset cooking, cases, captures, comparisons and profiles | `tools/` |
@@ -458,11 +463,16 @@ without rigid bodies; callback failure requires reset before further gameplay.
 ECS query/tick scopes reject structural mutation while rows are borrowed, and
 scene update refreshes cached queries when new archetypes appear. The native
 weapon primitive provides tick-based ammo, reload and independent firing locks
-with reservation before consumption. The sample application installs a C
-player/weapon client with `--gameplay`,
-using ordered input, a Jolt character capsule and first/third-person or shoulder
-camera rig on a training platform in Bistro. Authored `player` and `player_weapon`
-entity fields bind that client to existing managed assets in editor simulation.
+with reservation before consumption. Gameplay lives in C script modules
+([ADR-079](adr/079-c-script-modules.md)). A module calls the engine only
+through the `VkrScriptApi` table of the runtime script host, registers its
+component types as Script objects and runs on the scene clock. The host is the
+scene's only simulation callback client. The editor session starts on the first
+run or step and ends at Reset. The FPS module, linked into the app, editor and
+player, uses ordered input, a Jolt character capsule and a first/third-person
+or shoulder camera rig. The player is an `fps_player` entity, or a capsule
+spawned at the resolved Player Start. `--gameplay` adds a training platform in
+Bistro, and an `fps_weapon` entity follows the player's animated hand.
 Transient evaluated world matrices turn the avatar and attach its weapon without
 changing authored TRS; presentation propagation does not consume simulation debt.
 Editor pause and saved recall preserve the editing camera. The player selects

@@ -36,13 +36,15 @@ bool8_t vkr_scene_physics_layers_owner(const VkrScene *scene);
 uint32_t vkr_scene_physics_simulated_body_count(const VkrScene *scene);
 
 /* One character per root entity with unit scale and no rigid body. Creation
- * copies settings but takes foot_position/entity_id from the authored entity.
+ * copies settings but takes entity_id from the entity and foot_position from
+ * `spawn_foot`, or from the authored root pose when it is NULL, such as a
+ * player spawned at a Player Start (ADR-079). Authored TRS stays unchanged.
  * Create/destroy require pause and no active callbacks/prepared edits. Reset
- * transactionally rebuilds native characters from authored root poses while
+ * transactionally rebuilds native characters at the same spawn while
  * preserving entity identity. Scene shutdown releases all native characters. */
 bool8_t vkr_scene_character_create(VkrScene *scene, VkrEntityId entity,
                                    const VkrPhysicsCharacterDesc *settings,
-                                   const char **error);
+                                   const Vec3 *spawn_foot, const char **error);
 bool8_t vkr_scene_character_destroy(VkrScene *scene, VkrEntityId entity,
                                     const char **error);
 /* Call once from before_physics per tick. Input dt must match the scene fixed

@@ -1537,6 +1537,31 @@ const VkrTypeDesc vkr_scene_animation_settings_type = {
     .defaults = animation_settings_defaults,
 };
 
+static const VkrPropertyDesc s_player_start_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .tooltip = "A disabled start is skipped; the first enabled one spawns "
+                "the player",
+     .offset = TYPE_OFFSET(ScenePlayerStart, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void player_start_defaults(void *value) {
+  ScenePlayerStart *start = value;
+  start->enabled = true_v;
+}
+
+const VkrTypeDesc vkr_scene_player_start_type = {
+    .name = "player_start",
+    .label = "Player start",
+    .category = "Gameplay",
+    .properties = s_player_start_properties,
+    .property_count = ArrayCount(s_player_start_properties),
+    .size = sizeof(ScenePlayerStart),
+    .align = AlignOf(ScenePlayerStart),
+    .defaults = player_start_defaults,
+};
+
 static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_environment_type,
     &vkr_scene_atmosphere_type,
@@ -1553,6 +1578,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_shape_type,
     &vkr_scene_text_type,
     &vkr_scene_animation_type,
+    &vkr_scene_player_start_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -1579,7 +1605,11 @@ const VkrTypeDesc *vkr_scene_world_type_named(String8 name) {
   return NULL;
 }
 
-static bool8_t scene_type_registered(const VkrTypeDesc *type) {
+const VkrTypeDesc *vkr_scene_registered_type(uint32_t index) {
+  return index < s_registered_type_count ? s_registered_types[index] : NULL;
+}
+
+bool8_t vkr_scene_world_type_registered(const VkrTypeDesc *type) {
   for (uint32_t i = 0; i < s_registered_type_count; ++i) {
     if (s_registered_types[i] == type) {
       return true_v;
@@ -1602,7 +1632,7 @@ bool8_t vkr_scene_register_world_type(const VkrTypeDesc *type) {
 
 bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
   /* Registered types have no load-baked products; they apply when added. */
-  if (scene_type_registered(type)) {
+  if (vkr_scene_world_type_registered(type)) {
     return true_v;
   }
   return type == &vkr_scene_atmosphere_type || type == &vkr_scene_clouds_type ||
@@ -1611,5 +1641,6 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_post_process_type ||
          type == &vkr_scene_physics_settings_type ||
          type == &vkr_scene_animation_settings_type ||
-         type == &vkr_scene_shape_type || type == &vkr_scene_text_type;
+         type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
+         type == &vkr_scene_player_start_type;
 }

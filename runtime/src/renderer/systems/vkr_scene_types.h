@@ -35,6 +35,8 @@ extern const VkrTypeDesc vkr_scene_animation_settings_type;
 extern const VkrTypeDesc vkr_scene_shape_type;
 extern const VkrTypeDesc vkr_scene_text_type;
 extern const VkrTypeDesc vkr_scene_animation_type;
+/** Player Start (ADR-079): the spawn pose a game script reads. */
+extern const VkrTypeDesc vkr_scene_player_start_type;
 /** Read-only SceneMeshInfo rows; not a component type. */
 extern const VkrTypeDesc vkr_scene_mesh_info_type;
 
@@ -60,3 +62,6 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type);
  * (VKR_SCENE_REGISTERED_TYPE_MAX). */
 #define VKR_SCENE_REGISTERED_TYPE_MAX 8u
 bool8_t vkr_scene_register_world_type(const VkrTypeDesc *type);
+/** Registered types in registration order; NULL past the end. */
+const VkrTypeDesc *vkr_scene_registered_type(uint32_t index);
+bool8_t vkr_scene_world_type_registered(const VkrTypeDesc *type);

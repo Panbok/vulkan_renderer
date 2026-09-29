@@ -18,6 +18,7 @@
 #include "scene_animation_tests.h"
 #include "scene_physics_test.h"
 #include "scene_simulation_test.h"
+#include "script_host_test.h"
 #include "type_desc_test.h"
 #include "weapon_test.h"
 
@@ -45,6 +46,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_camera_rig_tests),
     VKR_TEST_SUITE(run_gameplay_input_tests),
     VKR_TEST_SUITE(run_gameplay_player_tests),
+    VKR_TEST_SUITE(run_script_host_tests),
     VKR_TEST_SUITE(run_player_animation_tests),
     VKR_TEST_SUITE(run_character_tests),
     VKR_TEST_SUITE(run_hash_tests),

@@ -67,9 +67,9 @@ material, submeshes, vertices, triangles, bounds, load state, shadow
 mobility) generated from `vkr_scene_mesh_info_type`, which describes a view
 of the mesh instance, not a component.
 
-Modules outside the renderer, such as script or gameplay modules, register
-their own component descriptors with `vkr_scene_register_world_type` before
-any scene initializes. A registered type joins the world types, so
+Modules outside the renderer, such as script modules
+([ADR-079](079-c-script-modules.md)), register their own component descriptors
+with `vkr_scene_register_world_type` before any scene initializes. A registered type joins the world types, so
 documents, overlays, Details, Add component, presets and Cmd paths accept it
 and scenes store it generically; its behavior belongs to its module.
 
@@ -91,8 +91,9 @@ create, delete, reparent, add component and remove component. Undo and redo
 recreate deleted entities and remap their IDs. The edit overlay (version 4)
 records authoritative `components`, created entities, deleted records and
 parents, and per-scene settings. New objects come from built-in **object
-kinds** (empty, four light kinds and one per live world type); the runtime
-places them in front of the camera.
+kinds** (empty, four light kinds, one per live world type and the Player Start),
+followed by one Script object per registered script component type; the
+runtime places them in front of the camera.
 
 ### Containers: the root World, a primary scene and additive scenes
 

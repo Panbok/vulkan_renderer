@@ -24,7 +24,8 @@ function(vkr_configure_application_target target)
                      "${CMAKE_SOURCE_DIR}")
     endif()
 
-    target_link_libraries(${target} PRIVATE vkr_sample_runtime)
+    # Repository applications register the FPS sample script module.
+    target_link_libraries(${target} PRIVATE vkr_sample_runtime vkr_script_fps)
     target_compile_definitions(${target} PRIVATE
         $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:LOG_LEVEL=3>
         $<$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${VKR_EDITOR_LOGGING}>>>:VKR_LOG_DEFAULT_LEVEL=1>

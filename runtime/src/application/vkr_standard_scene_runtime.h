@@ -40,6 +40,8 @@ typedef struct VkrStandardSceneRuntimeEditorViewport {
   bool8_t enabled;
   bool8_t scene_only;
   bool8_t simulation_running;
+  /* A script session drives the camera; the free-camera controller rests. */
+  bool8_t scripts_own_camera;
   bool8_t scene_rendering_stopped;
   bool8_t scene_backdrop_blur;
   VkrRendererError scene_error;

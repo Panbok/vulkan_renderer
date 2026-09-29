@@ -1107,8 +1107,7 @@ static void editor_scene_stats_build(const VkrSampleUiFrame *frame) {
   const bool8_t fallback = frame->scene_output_scale < 1.0f;
   const bool8_t incomplete =
       frame->texture_pending_count || frame->texture_demanded_missing_count;
-  const bool8_t gameplay = frame->scene && frame->scene->player_entity.u64 &&
-                           frame->simulation_running;
+  const bool8_t gameplay = frame->scripts_running;
   /* The runtime formats performance as newline-separated lines. */
   String8 summary =
       frame->scene_rendering_stopped ? string8_lit("Frozen")
@@ -1706,7 +1705,7 @@ typedef struct EditorContextItem {
   uint32_t value;
 } EditorContextItem;
 
-#define EDITOR_CONTEXT_ITEM_CAPACITY 16u
+#define EDITOR_CONTEXT_ITEM_CAPACITY 24u
 #define EDITOR_CONTEXT_WIDTH_PT 210.0f
 
 /* Object creation: every kind, then the project's model import flow. */

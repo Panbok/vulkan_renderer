@@ -40,6 +40,9 @@ typedef struct ScenePhysicsCharacter {
   VkrPhysicsCharacterState previous;
   VkrPhysicsCharacterState current;
   uint64_t last_step_tick;
+  /* Explicit spawn replacing the authored root position at reset. */
+  Vec3 spawn_foot;
+  bool8_t spawn_explicit;
 } ScenePhysicsCharacter;
 
 typedef struct PhysicsStagedJoints {
@@ -952,6 +955,7 @@ uint32_t vkr_scene_physics_simulated_body_count(const VkrScene *scene) {
 
 static bool8_t physics_character_authored(const VkrScene *scene,
                                           VkrEntityId entity,
+                                          const Vec3 *spawn_foot,
                                           VkrPhysicsCharacterDesc *settings,
                                           const char **error) {
   const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
@@ -971,6 +975,13 @@ static bool8_t physics_character_authored(const VkrScene *scene,
       fabsf(scale.z - 1) > 1e-5f) {
     return physics_fail(error, "Character transform must have unit scale");
   }
+  if (spawn_foot) {
+    if (!isfinite(spawn_foot->x) || !isfinite(spawn_foot->y) ||
+        !isfinite(spawn_foot->z)) {
+      return physics_fail(error, "Character spawn must be finite");
+    }
+    position = *spawn_foot;
+  }
   settings->entity_id = entity.u64;
   settings->foot_position[0] = position.x;
   settings->foot_position[1] = position.y;
@@ -980,14 +991,14 @@ static bool8_t physics_character_authored(const VkrScene *scene,
 
 bool8_t vkr_scene_character_create(VkrScene *scene, VkrEntityId entity,
                                    const VkrPhysicsCharacterDesc *settings,
-                                   const char **error) {
+                                   const Vec3 *spawn_foot, const char **error) {
   if (!scene || !settings || !scene->physics_paused ||
       scene->simulation.active || !vkr_scene_physics_mutations_allowed(scene) ||
       (scene->physics && scene->physics->prepared)) {
     return physics_fail(error, "Create characters at a paused scene boundary");
   }
   VkrPhysicsCharacterDesc desc = *settings;
-  if (!physics_character_authored(scene, entity, &desc, error) ||
+  if (!physics_character_authored(scene, entity, spawn_foot, &desc, error) ||
       !physics_ensure(scene, error)) {
     return false_v;
   }
@@ -1002,7 +1013,11 @@ bool8_t vkr_scene_character_create(VkrScene *scene, VkrEntityId entity,
   if (index == ArrayCount(scene->physics->characters)) {
     return physics_fail(error, "Scene character capacity exceeded");
   }
-  ScenePhysicsCharacter prepared = {.entity = entity, .settings = desc};
+  ScenePhysicsCharacter prepared = {.entity = entity,
+                                    .settings = desc,
+                                    .spawn_foot =
+                                        spawn_foot ? *spawn_foot : vec3_zero(),
+                                    .spawn_explicit = spawn_foot != NULL};
   if (!vkr_physics_character_create(scene->physics->world, &desc,
                                     &prepared.native) ||
       !vkr_physics_character_get_state(scene->physics->world, prepared.native,
@@ -2134,7 +2149,10 @@ static bool8_t physics_reset_stage(VkrScene *scene,
       continue;
     }
     VkrPhysicsCharacterDesc desc = character->settings;
-    if (!physics_character_authored(scene, character->entity, &desc, error)) {
+    if (!physics_character_authored(
+            scene, character->entity,
+            character->spawn_explicit ? &character->spawn_foot : NULL, &desc,
+            error)) {
       return false_v;
     }
     if (!vkr_physics_character_create(replacement, &desc,

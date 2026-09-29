@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-22
+updated: 2026-09-29
 authority: adr
 ---
 
@@ -9,9 +9,13 @@ authority: adr
 ## Status
 
 Accepted (partial). Shared ticks, ordered input admission, a C player/weapon
-client, native character movement and camera rigs are implemented. The sample
-application offers an opt-in playable Bistro training platform. Managed scenes
-can persist a player and an attached weapon and run them through editor simulation.
+client, native character movement and camera rigs are implemented. The
+player/weapon client, its camera rig and action animation are now the FPS
+script module ([ADR-079](079-c-script-modules.md)). The module calls the engine
+through the script API table, and the script host owns the scene callbacks.
+The fixed `player`/`player_weapon` entity fields became the module's
+`fps_player`/`fps_weapon` components and the engine Player Start. The sample
+application still offers an opt-in playable Bistro training platform.
 Prefab assets,
 a general action registry, projectile pools, network transport and visual
 behavior authoring remain in the [behavior proposal](../proposals/entity-behavior-system.md).
@@ -82,7 +86,7 @@ query arrays rather than overwriting their allocation. Scene setters remain
 responsible for hierarchy and render dirtiness; raw component writes cannot
 replace those owner contracts.
 
-[VkrWeaponState](../../runtime/src/gameplay/vkr_weapon.h) is caller-owned C value
+[FpsWeaponState](../../scripts/fps/src/fps_weapon.h) is caller-owned C value
 state suitable for an ECS component. Initialization validates magazine capacity,
 nonzero integer tick durations and a nonzero instance identity. Fire validates
 ammo, reload, cooldown and independent firing locks, then asks a caller sink to
@@ -108,7 +112,7 @@ asynchronous platform event. Frame latches still serve editor/UI clients. The
 observer and producer share one thread; this adds no worker-to-gameplay dispatch.
 These timestamps record engine observation, not hardware/OS event arrival time.
 
-[VkrGameplayInput](../../runtime/src/gameplay/vkr_gameplay_input.h) holds 256
+[FpsInput](../../scripts/fps/src/fps_input.h) holds 256
 ordered typed commands by tick and sequence. Each interval `[n/60,(n+1)/60)` maps
 to tick `n+1`; rapid press/release sequences remain separate records. Future
 commands survive empty or catch-up frames. Adjacent absolute LOOK samples within
@@ -132,8 +136,8 @@ fault requiring reset; adjacent LOOK coalescing remains the queue-pressure rule.
 Commands have serializable fields but no network/wire encoding or cross-platform
 deterministic replay guarantee.
 
-[VkrGameplayPlayer](../../runtime/src/gameplay/vkr_gameplay_player.h) demonstrates
-composition on an existing root entity: `VkrPlayerState` stores weapon, inventory,
+[FpsPlayer](../../scripts/fps/src/fps_player.h) demonstrates
+composition on an existing root entity: `FpsPlayerState` stores weapon, inventory,
 held intent and simulation aim; scene physics owns its motor. Before physics it
 completes due reloads, consumes ordered commands, performs hitscan fire, and steps
 the motor. After native physics it consumes a reserved shot fact and applies a
@@ -167,7 +171,7 @@ Both stances keep the foot anchor. The default capsule shrinks from 1.8 m to
 1.08 m, camera eye height changes from 1.6 m to 0.9 m and crouched speed is
 0.6 m/s. Stance changes allocate no new shapes; Jolt contact storage may grow.
 
-[VkrCameraRig](../../runtime/src/gameplay/vkr_camera_rig.h) computes first-person,
+[FpsCameraRig](../../scripts/fps/src/fps_camera_rig.h) computes first-person,
 third-person and left/right shoulder poses from a supplied target foot position
 and radians-based look. It clamps pitch and optionally retracts a sphere sweep
 against obstruction. The player supplies interpolated motor position and latest
@@ -179,7 +183,7 @@ attach that weapon to the player's evaluated animation bone.
 
 ### Character action animation
 
-[VkrPlayerAnimation](../../runtime/src/gameplay/vkr_player_animation.h) is a
+[FpsPlayerAnimation](../../scripts/fps/src/fps_player_animation.h) is a
 caller-owned C playback controller borrowing the scene's animation player. Cold
 attachment/reset resolves named clips, preferring rifle actions with available
 fallbacks; indices are not persisted. Existing scene animation remains the sole
@@ -203,7 +207,7 @@ specific error; reset resolves the current binding before borrowing it again.
 
 Build with `./build_release.sh`, then launch the sample with `--gameplay --scene
 assets/scenes/bistro.scene.json`. This creates a training platform, a step and
-three dynamic targets above the loaded Bistro scene. Only those explicitly
+three dynamic targets and a Player Start above the loaded Bistro scene. Only those explicitly
 created bodies participate in gameplay collision; the decorative city does not
 implicitly become collision geometry. Existing scene/asset owners retain all
 created entities, geometry and native resources; normal scene unload releases
@@ -213,19 +217,19 @@ Controls: WASD moves, mouse looks, left button fires, R reloads, Space jumps,
 Ctrl holds crouch, V cycles camera modes, Tab/Escape captures/releases the mouse,
 and Backspace
 resets the player and native scene. The HUD shows ammo, reload state and hits.
-An entity can declare `"player": {"yaw": -1.57079632679}` to bind the C client
-without creating the sample platform. One separate entity can declare
-`"player_weapon": {"bone": 45}`; its bone index addresses the sole player's
-animation source. Both entities must be roots with unit scale. Parsing rejects
-duplicate bindings and a weapon without a player; attachment checks the loaded
-animation and post-overlay motor constraints. Managed projection preserves these
-fields and asset ownership. This is a fixed native composition, not a general
-script or prefab registry.
+An entity carrying the `fps_player` script component becomes the player
+without the sample platform. One separate entity carrying `fps_weapon` names
+the bone of the sole player's animation that holds the weapon. Both entities
+must be roots with unit scale. The module rejects duplicate players or weapons
+and a weapon without a player, and attachment checks the loaded animation and
+motor constraints. Without an `fps_player`, a Player Start spawns a capsule
+player ([ADR-079](079-c-script-modules.md)).
 
-The editor attaches this client while paused. Start Simulation captures the mouse
-and activates the player camera; Pause returns to the editing camera. Saved viewport
-recall retains that editing camera during gameplay. Reset restores authored motor
-spawn, spawn aim and inventory. Simulation still uses the loaded scene; a cloned
+The editor starts the script session when simulation first runs or steps.
+Start Simulation captures the mouse and activates the player camera, and Pause
+returns to the editing camera. Saved viewport recall retains that editing
+camera during gameplay. Backspace restores the motor spawn, spawn aim and
+inventory. Reset ends the session and removes what it spawned. Simulation still uses the loaded scene; a cloned
 Play world and a visual behavior inspector remain future work.
 
 `SceneEvaluatedTransform` stores a transient world matrix, with precedence over

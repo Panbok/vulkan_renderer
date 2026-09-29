@@ -1,0 +1,105 @@
+#pragma once
+
+#include "fps_camera_rig.h"
+#include "fps_input.h"
+#include "fps_player_animation.h"
+#include "fps_weapon.h"
+#include "script/vkr_script.h"
+
+/* Authored behavior values of the `fps_player` script component. */
+typedef struct FpsPlayerSettings {
+  float32_t move_speed;   // Metres/second standing.
+  float32_t crouch_speed; // Metres/second crouched.
+  float32_t jump_speed;   // Takeoff vertical speed, metres/second.
+  uint32_t magazine;      // Rounds per magazine.
+  uint32_t reserve;       // Reserve rounds at spawn and reset.
+} FpsPlayerSettings;
+
+FpsPlayerSettings fps_player_settings_default(void);
+
+/* One existing root entity owns motor, weapon and intent data; the player
+ * owns input admission. The script host calls its tick hooks. Keep it at a
+ * stable address and shut it down before its borrowed input/scene expire.
+ * It owns neither a renderer nor an Actor registry. */
+typedef struct FpsPlayerState {
+  FpsWeaponState weapon;
+  FpsWeaponReloadToken reload;
+  uint32_t reserve_rounds;
+  uint32_t held;
+  float32_t yaw;
+  float32_t pitch;
+  Vec3 velocity;
+  bool8_t grounded;
+  bool8_t crouched;
+} FpsPlayerState;
+
+typedef struct FpsPlayerConfig {
+  const VkrScriptApi *api;
+  VkrScene *scene;
+  InputState *input;
+  VkrEntityId entity;
+  FpsPlayerSettings settings;
+  /* Motor spawn replacing the entity's authored position, or none. */
+  Vec3 spawn_foot;
+  bool8_t has_spawn;
+  float32_t yaw;
+  /* Weapon bone in the player's animation skeleton; UINT32_MAX for none. */
+  uint32_t weapon_bone;
+  /* Nonzero base of the weapon identities this player allocates. */
+  uint64_t instance_id;
+} FpsPlayerConfig;
+
+typedef struct FpsPlayer {
+  const VkrScriptApi *api;
+  VkrScene *scene;
+  InputState *input;
+  VkrEntityId entity;
+  VkrComponentTypeId component;
+  FpsPlayerSettings settings;
+  FpsInput commands;
+  FpsCameraRig camera;
+  FpsPlayerAnimation animation;
+  Mat4 weapon_reference_inverse;
+  uint32_t weapon_bone;
+  bool8_t weapon_reference_valid;
+  char error[192];
+  FpsWeaponShot pending_shot;
+  VkrPhysicsRayHit pending_hit;
+  uint64_t shots_fired;
+  uint64_t hits;
+  uint64_t instance_id;
+  float64_t epoch;
+  float64_t last_frame_time;
+  float32_t spawn_yaw;
+  float32_t render_yaw;
+  float32_t render_pitch;
+  Vec3 previous_foot;
+  Vec3 current_foot;
+  bool8_t clock_running;
+  bool8_t active;
+  bool8_t shot_pending;
+  bool8_t hit_pending;
+} FpsPlayer;
+
+/* Zero-initialize player before first attachment; reattachment requires
+ * shutdown. Attach to a root entity at unit scale while the scene is paused
+ * at a reset boundary. Initializes an automatic weapon (10 shots/s, reload
+ * matched to the available clip), movement and a first-person camera. */
+bool8_t fps_player_attach(FpsPlayer *player, const FpsPlayerConfig *config,
+                          const char **error);
+void fps_player_shutdown(FpsPlayer *player);
+
+/* Tick hooks for the script host; `*error` stays valid until the next call. */
+bool8_t fps_player_before_physics(FpsPlayer *player, uint64_t tick,
+                                  const char **error);
+void fps_player_after_physics(FpsPlayer *player);
+/* Restores spawn state after a native simulation reset. */
+void fps_player_reset(FpsPlayer *player);
+
+/* Call once before scene_update, after the input pump. Returns admitted elapsed
+ * time while the scene runs, independently of input focus and a display-delta
+ * clamp. Inactive input cancels held actions and reload, discards pending
+ * input, and requires fresh presses. Only scene pause/disable/fault stops the
+ * clock. */
+float64_t fps_player_frame(FpsPlayer *player, float64_t now, bool8_t active);
+bool8_t fps_player_camera(FpsPlayer *player, FpsCameraRigPose *pose);

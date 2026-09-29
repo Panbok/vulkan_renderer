@@ -8,6 +8,7 @@
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_ui_system.h"
+#include "script/vkr_script.h"
 #include "vkr_graphics_settings.h"
 #include "vkr_renderer.h"
 
@@ -237,6 +238,8 @@ typedef struct VkrSampleUiFrame {
   bool8_t *modal;
   float64_t simulation_time;
   bool8_t simulation_running;
+  /** Script modules drive the Scene camera and HUD this frame. */
+  bool8_t scripts_running;
   bool8_t scene_rendering_stopped;
   VkrRendererError scene_error;
   float32_t scene_output_scale;
@@ -306,6 +309,10 @@ typedef struct VkrSampleRuntimeConfig {
   String8 graphics_defaults;
   VkrSamplePresentationConfig presentation;
   VkrSampleUiClient ui;
+  /** C script modules linked into the executable (ADR-079), registered in
+   * order before any scene loads. */
+  const VkrScriptModuleEntry *script_modules;
+  uint32_t script_module_count;
 } VkrSampleRuntimeConfig;
 
 VkrSampleRuntimeConfig vkr_sample_runtime_config_default(void);

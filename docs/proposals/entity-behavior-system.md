@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-14
+updated: 2026-09-29
 authority: proposal
 ---
 
@@ -50,6 +50,9 @@ query freshness, ordered input, a caller-owned weapon primitive, native characte
 motors, camera rigs and an opt-in playable C client in Bistro. General prefab
 composition, projectile/interaction systems, advanced movement/camera policies,
 native module reload and visual-authoring designs below remain proposals.
+The C module ABI, the runtime script host and Script objects are in
+[ADR-079](../adr/079-c-script-modules.md); library loading is in the
+[script modules proposal](script-modules.md).
 No gameplay performance measurements accompany this document.
 
 ## Current VKR foundation

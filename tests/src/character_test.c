@@ -279,8 +279,10 @@ static void test_character_scene_reset_and_evaluated_pose(void) {
   assert(vkr_scene_set_transform(&scene, test.entity, vec3_new(0, 2, 0),
                                  vkr_quat_identity(), vec3_one()));
   const VkrPhysicsCharacterDesc settings = vkr_physics_character_default();
-  assert(vkr_scene_character_create(&scene, test.entity, &settings, NULL));
-  assert(!vkr_scene_character_create(&scene, test.entity, &settings, NULL));
+  assert(
+      vkr_scene_character_create(&scene, test.entity, &settings, NULL, NULL));
+  assert(
+      !vkr_scene_character_create(&scene, test.entity, &settings, NULL, NULL));
   const VkrScenePhysicsSnapshot body = vkr_scene_physics_default();
   assert(!vkr_scene_physics_apply(&scene, test.entity, &body, NULL));
   const VkrSceneSimulationCallbacks callbacks = {
@@ -308,9 +310,43 @@ static void test_character_scene_reset_and_evaluated_pose(void) {
   assert(vkr_scene_get_transform(&scene, test.entity)->world.elements[12] == 0);
   VkrPhysicsCharacterState state;
   assert(!vkr_scene_character_get_state(&scene, test.entity, &state, NULL));
-  assert(vkr_scene_character_create(&scene, test.entity, &settings, NULL));
+  assert(
+      vkr_scene_character_create(&scene, test.entity, &settings, NULL, NULL));
   vkr_scene_destroy_entity(&scene, test.entity);
   assert(!vkr_scene_entity_alive(&scene, test.entity));
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_allocator_destroy(&allocator);
+}
+
+/* A Player Start spawn replaces the authored root position at creation and
+ * at every reset, while authored TRS keeps the designer's placement. */
+static void test_character_explicit_spawn(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(32), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &allocator, 48, 16, NULL));
+  const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, entity, vec3_new(0, 2, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  const VkrPhysicsCharacterDesc settings = vkr_physics_character_default();
+  const Vec3 invalid = vec3_new(NAN, 0, 0);
+  assert(
+      !vkr_scene_character_create(&scene, entity, &settings, &invalid, NULL));
+  const Vec3 spawn = vec3_new(5, 3, -1);
+  assert(vkr_scene_character_create(&scene, entity, &settings, &spawn, NULL));
+  VkrPhysicsCharacterState state;
+  assert(vkr_scene_character_get_state(&scene, entity, &state, NULL));
+  assert(state.foot_position[0] == 5 && state.foot_position[1] == 3 &&
+         state.foot_position[2] == -1);
+  assert(vkr_scene_physics_reset(&scene, NULL));
+  assert(vkr_scene_character_get_state(&scene, entity, &state, NULL));
+  assert(state.foot_position[0] == 5 && state.foot_position[1] == 3 &&
+         state.foot_position[2] == -1);
+  const SceneTransform *transform = vkr_scene_get_transform(&scene, entity);
+  assert(transform->position.x == 0 && transform->position.y == 2 &&
+         transform->position.z == 0);
   vkr_scene_shutdown(&scene, NULL);
   vkr_dmemory_allocator_destroy(&allocator);
 }
@@ -322,6 +358,7 @@ bool32_t run_character_tests(void) {
   test_character_crouch_clearance_and_foot_anchor();
   test_character_bilateral_filter();
   test_character_scene_reset_and_evaluated_pose();
+  test_character_explicit_spawn();
   printf("Character tests PASSED\n");
   return true_v;
 }
