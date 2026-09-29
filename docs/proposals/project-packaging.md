@@ -5,9 +5,11 @@ authority: proposal
 ---
 # Project build and packaging: remaining scope
 
-Phase 1 shipped: `game.json`, portable lowering, project-mode
-`vkr_bakery bundle`, the `vkr_player` template, `bundle.json` version 2 and the
-editor Build menu, settings, progress, report and Cmd commands.
+Shipped: `game.json`, portable lowering, project-mode `vkr_bakery bundle`, the
+`vkr_player` template, `bundle.json` version 2, the editor Build menu,
+settings, progress, report and Cmd commands, window modes, signed macOS `.app`
+packages, reuse of unchanged archives, zstd-compressed `.vkpak` version 2
+chunks, and the relocatable editor distribution.
 [ADR-078](../adr/078-project-build-and-packaging.md) records the contract and
 its evidence. This proposal keeps what remains.
 
@@ -35,6 +37,10 @@ Cross-compiling a package for another platform stays out of scope: Metal
 libraries need the macOS toolchain and the Vulkan catalog is produced per host.
 
 ## Evidence needed
+
+The Windows code of this work (window modes, package staging, distribution
+install) has not been compiled; every gate below except the macOS ones needs a
+Windows machine.
 
 - Windows/Vulkan: import `assets/models/bistro.gltf` into a scratch workspace,
   build the Shipping profile, and run the package in normal Release with
