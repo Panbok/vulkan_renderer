@@ -101,7 +101,24 @@ endif()
 target_link_libraries(vkr_asset_formats PRIVATE vkr_mesh_codecs)
 target_compile_features(vkr_asset_formats PRIVATE cxx_std_11)
 
-add_library(vkr_image_decode STATIC "${CMAKE_SOURCE_DIR}/runtime/src/assets/stb_image_impl.c")
+# libdeflate's zlib decompressor for the PNG fast path (vendor/libdeflate.md).
+set(_vkr_libdeflate "${CMAKE_SOURCE_DIR}/vendor/libdeflate")
+add_library(vkr_libdeflate STATIC
+    "${_vkr_libdeflate}/lib/adler32.c"
+    "${_vkr_libdeflate}/lib/deflate_decompress.c"
+    "${_vkr_libdeflate}/lib/zlib_decompress.c"
+    "${_vkr_libdeflate}/lib/utils.c"
+    "${_vkr_libdeflate}/lib/x86/cpu_features.c"
+    "${_vkr_libdeflate}/lib/arm/cpu_features.c")
+vkr_configure_cooker_target(vkr_libdeflate)
+target_include_directories(vkr_libdeflate SYSTEM PUBLIC "${_vkr_libdeflate}")
+
+add_library(vkr_image_decode STATIC
+    "${CMAKE_SOURCE_DIR}/runtime/src/assets/stb_image_impl.c"
+    "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_image_decode.c")
 vkr_configure_library(vkr_image_decode)
 vkr_configure_cooker_target(vkr_image_decode)
-target_include_directories(vkr_image_decode PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
+target_include_directories(vkr_image_decode
+    PRIVATE "${CMAKE_SOURCE_DIR}/vendor" "${CMAKE_SOURCE_DIR}/lib/src"
+    PUBLIC "${CMAKE_SOURCE_DIR}/runtime/src")
+target_link_libraries(vkr_image_decode PRIVATE vkr_libdeflate)
