@@ -49,7 +49,7 @@ runs seven stages. Each is a `start`/`done` event pair with coded diagnostics:
 | Finalize | `finalize_textures` for a scene with preview or deferred assets (the job publishes the scene), and `finalize_project_assets` when project assets are. The returned inventory is lowered against without publishing `project.json`, which the editor owns. Shipping finalizes with the final encoder, development with the fast one. Fast-encoded final textures are not re-encoded; the report counts them. |
 | Bake | With `bake_lighting`, `bake_scene` with reflection and diffuse for each included scene. |
 | Lower | Lowers again only when an earlier stage published. |
-| Pack | Walks the closure over identity mounts: staged documents, `project/` to the project directory, `editor/` to the editor bundle, `assets/` to the template's engine resources. Rejects a document naming the workspace directory or the repository. Writes `content/game.vkpak` and `content/engine.vkpak` (`assets/...`). |
+| Pack | Walks the closure over identity mounts: staged documents, `project/` to the project directory, `editor/` to the editor bundle, `assets/` to the template's engine resources. Rejects a document naming the workspace directory or the repository. Writes `content/game.vkpak` and `content/engine.vkpak` (`assets/...`); an archive whose entries all match the previous package's `products`, written by the same `archive_writer`, is cloned from it instead. |
 | Stage runtime | Copies the profile's player as `<executable>[.exe]` and only the host backend's shader catalog. Writes `bundle.json` version 2. |
 | Verify and report | Validates and rehashes both archives, then renames `<out>.staging` over `<out>`. |
 
@@ -82,6 +82,11 @@ engine's UbuntuMono configuration), `window`, `graphics`, and `startup_camera`,
 the startup scene's editor viewport recall without selection. The
 [vfs](../../lib/src/filesystem/vkr_vfs.h) reads only root members, through
 `vkr_json_find_root_field`, and keeps the description for the player.
+
+**Template lookup.** `--template <dir>`, then `templates/player` beside the
+running `vkr_bakery`, as a distributed editor would ship it, then the build
+tree's `<build>/player`. `template.json` may name its shader catalog relative to
+the template.
 
 **Player.** `vkr_player` (development: INFO logging and the F6 overlay) and
 `vkr_player_shipping` (errors only, no developer UI) are prebuilt in every tree
@@ -175,6 +180,15 @@ queue and report the result
   1512x949 point window in its own Space below the notch; a windowed run is
   1280x752 with its title bar. The pause-menu switch was not exercised, since
   the run takes no input.
+- Reuse: rebuilding the unchanged Testbed package logs `reused` for both
+  archives, and `game.vkpak` keeps SHA-256 `0f80cf7b...`; the check asserts
+  byte-identical reuse and that changed game content rewrites only the game
+  archive. Hashing and verification still read every file, so an unchanged
+  rebuild saves the 3 GB write rather than much time (19.5 s, then 18.0 s,
+  single runs).
+- Template lookup: a copied `vkr_bakery` with a `templates/player` beside it
+  whose `engine_include` omits the CJK font packages 7 engine entries instead
+  of 9, with a relative shader catalog.
 - Reveal: headless `content.reveal` on a fixture selects the texture that
   owns its `.vkt` artifact in Textures, and for the mesh revision's
   `mesh.vkb.remap.json`, which no record names, the mesh in Meshes; a path no

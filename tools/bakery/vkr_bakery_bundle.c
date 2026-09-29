@@ -568,6 +568,10 @@ vkr_internal bool8_t vkr_bundle_copy(FILE *file, const char *path,
 /* Writes the archive to `path` through a staging file. Chunks follow in
  * identity order; the catalog and chunk table follow them, and the header,
  * written last, points at both. */
+void vkr_bundle_sort(VkrBundleItem *items, uint32_t item_count) {
+  qsort(items, item_count, sizeof(*items), vkr_bundle_compare_identity);
+}
+
 bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
                               VkrBundleItem *items, uint32_t item_count,
                               uint32_t *out_chunks, uint64_t *out_bytes) {

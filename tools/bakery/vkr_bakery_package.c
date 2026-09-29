@@ -34,6 +34,9 @@
 #define VKR_PACKAGE_MAX_SCENES 128u
 #define VKR_PACKAGE_JSON_LIMIT (64ull * 1024ull * 1024ull)
 #define VKR_PACKAGE_LARGEST 16u
+/* Written to bundle.json; an archive is reused only from a package written by
+   the same archive writer. Change it with any change to archive bytes. */
+#define VKR_PACKAGE_ARCHIVE_WRITER 1
 
 #if defined(_WIN32)
 #define VKR_PACKAGE_PLATFORM "windows-x64"
@@ -84,6 +87,8 @@ typedef struct VkrPackage {
   const VkrBakeryJson *game;
   const VkrBakeryJson *profile;
   const VkrBakeryJson *template_description;
+  /* The bundle.json of the package the output folder holds, if any. */
+  const VkrBakeryJson *previous;
   const char *project_name;
   const char *profile_name;
   const char *config;
@@ -687,6 +692,9 @@ vkr_internal bool8_t vkr_package_check_output(VkrPackage *package) {
   if (vkr_bakery_is_file(package->out)) {
     return vkr_package_fail(package, package->out, "the output path is a file");
   }
+  if (vkr_bakery_is_file(description)) {
+    package->previous = vkr_package_read_json(package, description, false_v);
+  }
   (void)snprintf(package->staging, sizeof(package->staging), "%s.staging",
                  package->out);
   (void)snprintf(package->work, sizeof(package->work), "%s/.work",
@@ -702,8 +710,23 @@ vkr_internal bool8_t vkr_package_check_output(VkrPackage *package) {
   return true_v;
 }
 
+/* The player template: --template, then `templates/player` beside this
+   vkr_bakery, as a distributed editor ships it, then the build tree's. */
 vkr_internal bool8_t vkr_package_check_template(VkrPackage *package) {
   const char *root = package->cli->player_template;
+  char directory[VKR_BAKERY_PATH_CAPACITY];
+  char beside[VKR_BAKERY_PATH_CAPACITY];
+  char description_beside[VKR_BAKERY_PATH_CAPACITY];
+  vkr_bakery_path_parent(directory, sizeof(directory),
+                         package->cli->config.self_path);
+  if (!root &&
+      vkr_bakery_path_join(beside, sizeof(beside), directory,
+                           "templates/player") &&
+      vkr_bakery_path_join(description_beside, sizeof(description_beside),
+                           beside, "template.json") &&
+      vkr_bakery_is_file(description_beside)) {
+    root = beside;
+  }
 #if defined(VKR_BAKERY_PLAYER_TEMPLATE_DEFAULT)
   if (!root) {
     root = VKR_BAKERY_PLAYER_TEMPLATE_DEFAULT;
@@ -1075,6 +1098,51 @@ vkr_internal void vkr_package_keep_identities(VkrPackage *package,
   }
 }
 
+/* Clones the previous package's archive when it holds exactly `items`: the
+   writer is a pure function of identities and bytes, so matching products
+   mean matching archive bytes. Verification still rehashes it. */
+vkr_internal bool8_t vkr_package_reuse_archive(VkrPackage *package,
+                                               const char *name,
+                                               const VkrBundleItem *items,
+                                               uint32_t count, bool8_t engine,
+                                               const char *destination) {
+  int64_t writer = 0;
+  const VkrBakeryJson *products =
+      vkr_bakery_json_get(package->previous, "products");
+  if (!products ||
+      !vkr_bakery_json_get_int(package->previous, "archive_writer", &writer) ||
+      writer != VKR_PACKAGE_ARCHIVE_WRITER) {
+    return false_v;
+  }
+  uint32_t previous_count = 0u;
+  for (const VkrBakeryJson *product = products->first; product;
+       product = product->next) {
+    const bool8_t engine_product =
+        product->key.length >= 7u &&
+        MemCompare(product->key.str, "assets/", 7u) == 0;
+    previous_count += engine_product == engine;
+  }
+  if (previous_count != count) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    char hex[VKR_BAKERY_SHA256_HEX];
+    for (uint32_t b = 0u; b < 32u; ++b) {
+      snprintf(hex + b * 2u, 3u, "%02x", items[i].sha256[b]);
+    }
+    if (!vkr_bakery_json_is_string(
+            vkr_bakery_json_get(products, items[i].identity), hex)) {
+      return false_v;
+    }
+  }
+  char source[VKR_BAKERY_PATH_CAPACITY];
+  return vkr_bakery_path_join(
+             source, sizeof(source), package->out,
+             vkr_package_printf(package, "content/%s", name)) &&
+         vkr_bakery_is_file(source) &&
+         vkr_bakery_clone_or_copy(source, destination);
+}
+
 typedef struct VkrPackageOwner {
   const char *name;
   uint32_t first; /* First file index the owner reached. */
@@ -1262,9 +1330,28 @@ vkr_internal bool8_t vkr_package_pack(VkrPackage *package,
     char path[VKR_BAKERY_PATH_CAPACITY];
     uint32_t chunks = 0u;
     uint64_t bytes = 0u;
-    ok = vkr_bakery_path_join(path, sizeof(path), directory, packs[p].name) &&
-         vkr_bundle_write_pack(&bundle, path, packs[p].items, packs[p].count,
-                               &chunks, &bytes);
+    ok = vkr_bakery_path_join(path, sizeof(path), directory, packs[p].name);
+    /* An archive whose entries are unchanged since the previous package is
+       cloned from it; otherwise it is written. */
+    vkr_bundle_sort(packs[p].items, packs[p].count);
+    const bool8_t reused =
+        ok && vkr_package_reuse_archive(package, packs[p].name, packs[p].items,
+                                        packs[p].count, p == 1u, path);
+    if (reused) {
+      VkrBakeryStat info;
+      bytes = vkr_bakery_stat(path, &info) ? info.size : 0u;
+      for (uint32_t i = 0u; i < packs[p].count; ++i) {
+        bool8_t repeated = false_v;
+        for (uint32_t j = 0u; j < i && !repeated; ++j) {
+          repeated = MemCompare(packs[p].items[i].sha256,
+                                packs[p].items[j].sha256, 32u) == 0;
+        }
+        chunks += !repeated;
+      }
+    } else {
+      ok = ok && vkr_bundle_write_pack(&bundle, path, packs[p].items,
+                                       packs[p].count, &chunks, &bytes);
+    }
     if (!ok) {
       vkr_package_fail(package, path, "cannot write the archive");
       break;
@@ -1280,9 +1367,11 @@ vkr_internal bool8_t vkr_package_pack(VkrPackage *package,
                         vkr_bakery_json_int(arena, chunks));
     vkr_bakery_json_set(arena, record, "bytes",
                         vkr_bakery_json_int(arena, (int64_t)bytes));
+    vkr_bakery_json_set(arena, record, "reused",
+                        vkr_bakery_json_bool(arena, reused));
     vkr_bakery_json_append(archives, record);
-    vkr_bakery_print("wrote %s: %u entries, %u chunks, %.1f MiB\n", path,
-                     packs[p].count, chunks,
+    vkr_bakery_print("%s %s: %u entries, %u chunks, %.1f MiB\n",
+                     reused ? "reused" : "wrote", path, packs[p].count, chunks,
                      (float64_t)bytes / (1024.0 * 1024.0));
   }
   vkr_bakery_json_set(arena, package->summary, "archives", archives);
@@ -1433,6 +1522,8 @@ vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
                       vkr_bakery_json_cstr(arena, package->config));
   vkr_bakery_json_set(arena, description, "executable",
                       vkr_bakery_json_cstr(arena, executable));
+  vkr_bakery_json_set(arena, description, "archive_writer",
+                      vkr_bakery_json_int(arena, VKR_PACKAGE_ARCHIVE_WRITER));
   VkrBakeryJson *packs = vkr_bakery_json_array(arena);
   vkr_bakery_json_append(packs,
                          vkr_bakery_json_cstr(arena, "content/game.vkpak"));
@@ -1510,7 +1601,7 @@ vkr_internal void vkr_package_write_report(VkrPackage *package, bool8_t ok) {
   }
   name[length] = 0;
   (void)snprintf(package->report_path, sizeof(package->report_path),
-                 "%s/logs/builds/%s-%u.json", package->workspace, name,
+                 "%s/logs/builds/%s-%03u.json", package->workspace, name,
                  (uint32_t)(vkr_bakery_monotonic_seconds() * 1000.0) % 1000u);
   VkrBakeryJson *report = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, report, "version", vkr_bakery_json_int(arena, 1));

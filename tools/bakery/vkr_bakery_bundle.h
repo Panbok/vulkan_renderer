@@ -58,8 +58,11 @@ void vkr_bundle_close(VkrBundle *bundle);
  * frees. Reports the first unreadable file. */
 bool8_t vkr_bundle_hash(VkrBundle *bundle, VkrBundleItem **out_items,
                         uint64_t *out_bytes);
+/** Sorts `items` by identity bytes, the catalog order an archive writes. */
+void vkr_bundle_sort(VkrBundleItem *items, uint32_t item_count);
 /** Writes an archive of `items` to `path` through a staging file, sorting
- * `items` by identity. */
+ * `items` by identity. The bytes depend only on the identities and their
+ * contents. */
 bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
                               VkrBundleItem *items, uint32_t item_count,
                               uint32_t *out_chunks, uint64_t *out_bytes);

@@ -14,24 +14,25 @@ its evidence. This proposal keeps what remains.
 ## Current baseline
 
 - A package is `<executable>`, `bundle.json`, one backend's shader catalog and
-  two version 1 archives, `content/game.vkpak` and `content/engine.vkpak`, each
-  rewritten in full by every build
-  ([package](../../tools/bakery/vkr_bakery_package.c)).
-- The player template is the build tree's `<build>/player`, and its
-  `template.json` names that tree's shader catalog by absolute path.
+  two version 1 archives, `content/game.vkpak` and `content/engine.vkpak`
+  ([package](../../tools/bakery/vkr_bakery_package.c)). An unchanged archive is
+  cloned from the previous package; a changed one is rewritten in full.
+- The bakery finds a player template beside itself in `templates/player`
+  before the build tree's, but no install layout yet assembles a distributed
+  editor with one.
 
 ## Remaining work
 
-1. **Incremental packages.** Reuse unchanged chunks and archives, one archive
-   per scene for streaming, and per-chunk compression. Compression changes
-   `.vkpak` to version 2 and needs approval first.
+1. **Incremental packages.** Reuse unchanged chunks inside a changed archive,
+   one archive per scene for streaming, and per-chunk compression. Compression
+   changes `.vkpak` to version 2 and needs approval first.
 2. **Shipping polish.** Windows icon and
    version resources; the macOS `.app` layout and signing; linking script module
    archives once the [entity behavior](entity-behavior-system.md) runtime loads
    them.
-3. **Distributed templates.** A distributed editor ships `templates/` beside
-   itself with the player, engine resources and shader catalog, and the
-   bakery looks there before the build tree.
+3. **Editor distribution.** Install rules that lay out the editor,
+   `vkr_bakery` and `templates/player` (players, engine resources, shader
+   catalog and a relative `template.json`) as one folder.
 
 Cross-compiling a package for another platform stays out of scope: Metal
 libraries need the macOS toolchain and the Vulkan catalog is produced per host.

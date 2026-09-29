@@ -51,6 +51,11 @@ def tree_digest(directory):
             for path in sorted(directory.rglob('*')) if path.is_file()}
 
 
+def latest_report(workspace):
+    """The newest build report; names order by second only."""
+    return max((workspace / 'logs' / 'builds').glob('*.json'), key=lambda path: path.stat().st_mtime_ns)
+
+
 def strings(value):
     if isinstance(value, str):
         yield value
@@ -195,10 +200,19 @@ def main():
                    for event in report_events) == len(stages), report_events
         assert stages == ['Validate', 'Finalize', 'Bake', 'Lower', 'Pack', 'Stage runtime',
                           'Verify and report'], stages
-        report = json.loads(sorted((workspace / 'logs' / 'builds').glob('*.json'))[-1].read_text())
+        report = json.loads(latest_report(workspace).read_text())
         assert report['status'] == 'complete' and report['output'] == str(out)
         assert report['package']['files'] == len(entries)
         assert tree_digest(project) == workspace_before, 'a package build must not write the project'
+
+        # An unchanged rebuild reuses both archives byte for byte.
+        archives_before = {name: jobs.digest(out / 'content' / name)
+                           for name in ('game.vkpak', 'engine.vkpak')}
+        rebuilt = subprocess.run(command, capture_output=True, text=True, timeout=300)
+        assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
+        report = json.loads(latest_report(workspace).read_text())
+        assert all(archive['reused'] for archive in report['package']['archives']), report
+        assert {name: jobs.digest(out / 'content' / name) for name in archives_before} == archives_before
 
         # A failed stage keeps the earlier package.
         package_before = tree_digest(out)
@@ -244,11 +258,14 @@ def main():
         finalized = subprocess.run(command, capture_output=True, text=True, timeout=300)
         assert finalized.returncode == 0, finalized.stdout + finalized.stderr
         assert manifest.read_bytes() == manifest_before, 'the editor publishes project.json'
-        report = json.loads(sorted((workspace / 'logs' / 'builds').glob('*.json'))[-1].read_text())
+        report = json.loads(latest_report(workspace).read_text())
         finalize = next(stage for stage in report['stages'] if stage['name'] == 'Finalize')
         assert 'detail' not in finalize, finalize
         assert report['project_assets'] and not any(
             asset.get('texture_tier') in ('preview', 'deferred') for asset in report['project_assets'])
+        # Changed game content rewrites only the game archive.
+        reused = {archive['path']: archive['reused'] for archive in report['package']['archives']}
+        assert reused == {'content/game.vkpak': False, 'content/engine.vkpak': True}, reused
 
         # Cancellation once staging exists leaves no package.
         cancelled_out = root / 'builds' / 'Cancelled'
@@ -266,7 +283,7 @@ def main():
         assert not cancelled_out.exists() and not staging.exists()
     print('Bakery package: layout, two archives, portable documents, byte-identical World, rewritten '
           'overlay, startup scene, stage events, report, kept package on failure, refused folder, '
-          'finalized project inventory and cancellation passed')
+          'finalized project inventory, archive reuse and cancellation passed')
 
 
 if __name__ == '__main__':
