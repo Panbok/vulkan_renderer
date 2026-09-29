@@ -1,6 +1,7 @@
 #include "vkr_bakery_bake.h"
 
 #include "core/vkr_hash.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_buffer.h"
 
@@ -2373,7 +2374,7 @@ int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
     fprintf(stderr, "Out of memory\n");
     return 1;
   }
-  (void)vkr_bake_resolve(PROJECT_SOURCE_DIR, bake.repo);
+  (void)vkr_bake_resolve(vkr_content_root(), bake.repo);
   vkr_bakery_install_cancel_signals();
   const int code = strcmp(argv[0], "diffuse") == 0
                        ? vkr_bake_diffuse_main(&bake, argc, argv)
@@ -3075,7 +3076,7 @@ int vkr_bakery_preview_main(const VkrBakeryConfig *config, int argc,
     fprintf(stderr, "Out of memory\n");
     return 1;
   }
-  (void)vkr_bake_resolve(PROJECT_SOURCE_DIR, bake.repo);
+  (void)vkr_bake_resolve(vkr_content_root(), bake.repo);
   vkr_bakery_install_cancel_signals();
   VkrPreviewArgs args = {.size = 128};
   const char *directory = NULL;

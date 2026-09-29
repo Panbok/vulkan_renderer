@@ -1,5 +1,7 @@
 #include "vkr_harness.h"
 
+#include "filesystem/vkr_vfs.h"
+
 /**
  * Fully resolves an existing path, following symlinks, into a harness-sized
  * buffer through the renderer filesystem boundary.
@@ -121,6 +123,11 @@ bool8_t vkr_harness_renderer_directory(const char *executable, const char *root,
   if (!vkr_harness_resolve_existing_path(root, "workspace.json", marker,
                                          NULL)) {
     return vkr_harness_realpath(root, out);
+  }
+  /* An installed harness (an editor distribution) carries the renderer's
+   * resources in its content directory. */
+  if (!vkr_content_root_is_repository()) {
+    return vkr_harness_realpath(vkr_content_root(), out);
   }
   if (!vkr_harness_realpath(executable, out)) {
     return false_v;

@@ -64,6 +64,14 @@ target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 
 # Find Vulkan package
 find_package(Vulkan REQUIRED)
+# macOS programs load the Vulkan loader through @rpath/libvulkan.1.dylib, its
+# install name. Installed programs and game packages ship this file under
+# that name, since the SDK directory exists only on the building machine.
+if(APPLE)
+    get_filename_component(VKR_VULKAN_LOADER "${Vulkan_LIBRARY}" REALPATH)
+    set(VKR_VULKAN_LOADER "${VKR_VULKAN_LOADER}" CACHE INTERNAL
+        "Vulkan loader that installed macOS programs ship")
+endif()
 
 # Locate SPIR-V headers (needed by spirv_reflect.h when using system headers).
 set(_VKR_VULKAN_SDK_INCLUDE "")

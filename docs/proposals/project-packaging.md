@@ -18,9 +18,8 @@ its evidence. This proposal keeps what remains.
   ([package](../../tools/bakery/vkr_bakery_package.c)). Chunks the runtime
   reads into memory are zstd-compressed. An unchanged archive is cloned from
   the previous package; a changed one is rewritten in full.
-- The bakery finds a player template beside itself in `templates/player`
-  before the build tree's, but no install layout yet assembles a distributed
-  editor with one.
+- `build_editor_dist.sh` installs a relocatable editor distribution with its
+  bakery, harness, engine content and player template (ADR-078).
 
 ## Remaining work
 
@@ -29,10 +28,8 @@ its evidence. This proposal keeps what remains.
 2. **Shipping polish.** Windows icon and version resources; game icons in
    the `.app`; notarization of a Developer ID signed `.app`; linking script
    module archives once the [entity behavior](entity-behavior-system.md)
-   runtime loads them.
-3. **Editor distribution.** Install rules that lay out the editor,
-   `vkr_bakery` and `templates/player` (players, engine resources, shader
-   catalog and a relative `template.json`) as one folder.
+   runtime loads them; an editor distribution as a signed `.app` or Windows
+   installer.
 
 Cross-compiling a package for another platform stays out of scope: Metal
 libraries need the macOS toolchain and the Vulkan catalog is produced per host.
@@ -43,7 +40,10 @@ libraries need the macOS toolchain and the Vulkan catalog is produced per host.
   build the Shipping profile, and run the package in normal Release with
   graphics validation unset and `VKR_AUTOCLOSE_SECONDS` set; it exits 0 and
   `$VKR_VFS_RECORD` names only package products.
-- A macOS package copied to another volume runs the same way.
+- A macOS package copied to another volume runs the same way, and a package
+  and an editor distribution run on a Mac without the Vulkan SDK or Homebrew.
+- A Windows editor distribution from `build_editor_dist.bat` builds a package
+  from a moved folder.
 - An incremental package needs byte-identical content to a full build and a
   matched Release timing comparison with the event logs retained (ADR-077).
 

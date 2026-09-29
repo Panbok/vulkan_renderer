@@ -81,6 +81,8 @@ typedef struct VkrPackage {
   char engine_root[VKR_BAKERY_PATH_CAPACITY];
   char shaders[VKR_BAKERY_PATH_CAPACITY];
   char player[VKR_BAKERY_PATH_CAPACITY];
+  /* Libraries shipped beside the player, or empty. */
+  char libraries[VKR_BAKERY_PATH_CAPACITY];
   char editor_bundle[VKR_BAKERY_PATH_CAPACITY];
   char out[VKR_BAKERY_PATH_CAPACITY];
   char staging[VKR_BAKERY_PATH_CAPACITY];
@@ -693,20 +695,37 @@ vkr_internal bool8_t vkr_package_visit_any(void *context, const char *name,
   return true_v;
 }
 
+/* Directories a package must neither lie in nor name: the workspace, the
+   repository this bakery was built from, and an installed editor's engine
+   content. Returns the count. */
+vkr_internal uint32_t vkr_package_foreign_roots(
+    const VkrPackage *package, char roots[3][VKR_BAKERY_PATH_CAPACITY]) {
+  uint32_t count = 0u;
+  (void)snprintf(roots[count++], VKR_BAKERY_PATH_CAPACITY, "%s",
+                 package->workspace_directory);
+  (void)vkr_project_resolve(PROJECT_SOURCE_DIR, false_v, roots[count++],
+                            VKR_BAKERY_PATH_CAPACITY);
+  if (!vkr_content_root_is_repository() &&
+      vkr_project_resolve(vkr_content_root(), false_v, roots[count],
+                          VKR_BAKERY_PATH_CAPACITY)) {
+    ++count;
+  }
+  return count;
+}
+
 /* The output replaces a previous package only: an existing directory must
    hold a bundle.json, and neither it nor its staging sibling may lie inside
-   the workspace or the repository. */
+   a foreign root. */
 vkr_internal bool8_t vkr_package_check_output(VkrPackage *package) {
-  char repository[VKR_BAKERY_PATH_CAPACITY];
-  (void)vkr_project_resolve(PROJECT_SOURCE_DIR, false_v, repository,
-                            sizeof(repository));
-  const char *roots[] = {package->workspace_directory, repository};
-  for (uint32_t i = 0u; i < ArrayCount(roots); ++i) {
+  char roots[3][VKR_BAKERY_PATH_CAPACITY];
+  const uint32_t root_count = vkr_package_foreign_roots(package, roots);
+  for (uint32_t i = 0u; i < root_count; ++i) {
     if (vkr_project_is_relative_to(package->out, roots[i]) ||
         vkr_project_is_relative_to(roots[i], package->out)) {
       return vkr_package_fail(package, package->out,
                               "the output folder must be outside the "
-                              "workspace and the repository (%s)",
+                              "workspace, the repository and the editor's "
+                              "content (%s)",
                               roots[i]);
     }
   }
@@ -766,6 +785,24 @@ vkr_internal bool8_t vkr_package_check_output(VkrPackage *package) {
   return true_v;
 }
 
+/* A template path: absolute, or relative to the template, resolved so that
+   `..` segments do not reach the package's paths. */
+vkr_internal bool8_t
+vkr_package_template_path(const VkrPackage *package, const char *value,
+                          char out[VKR_BAKERY_PATH_CAPACITY]) {
+  char joined[VKR_BAKERY_PATH_CAPACITY];
+  if (vkr_bakery_path_is_absolute(value)) {
+    if ((uint32_t)snprintf(joined, sizeof(joined), "%s", value) >=
+        sizeof(joined)) {
+      return false_v;
+    }
+  } else if (!vkr_bakery_path_join(joined, sizeof(joined),
+                                   package->template_root, value)) {
+    return false_v;
+  }
+  return vkr_project_resolve(joined, false_v, out, VKR_BAKERY_PATH_CAPACITY);
+}
+
 /* The player template: --template, then `templates/player` beside this
    vkr_bakery, as a distributed editor ships it, then the build tree's. */
 vkr_internal bool8_t vkr_package_check_template(VkrPackage *package) {
@@ -807,6 +844,8 @@ vkr_internal bool8_t vkr_package_check_template(VkrPackage *package) {
       vkr_package_text(package, package->template_description, "engine");
   const char *shaders =
       vkr_package_text(package, package->template_description, "shaders");
+  const char *libraries =
+      vkr_package_text(package, package->template_description, "libraries");
   if (!vkr_bakery_json_get_int(package->template_description, "version",
                                &version) ||
       version != 1 || !player || !engine || !shaders) {
@@ -818,27 +857,26 @@ vkr_internal bool8_t vkr_package_check_template(VkrPackage *package) {
                           NULL);
     return false_v;
   }
+  /* Template paths are relative to the template; an installed template
+     names the editor distribution's content and catalog above it. */
   char manifest[VKR_BAKERY_PATH_CAPACITY];
   const bool8_t found =
-      vkr_bakery_path_join(package->player, sizeof(package->player),
-                           package->template_root, player) &&
-      vkr_bakery_path_join(package->engine_root, sizeof(package->engine_root),
-                           package->template_root, engine) &&
-      (vkr_bakery_path_is_absolute(shaders)
-           ? (uint32_t)snprintf(package->shaders, sizeof(package->shaders),
-                                "%s", shaders) < sizeof(package->shaders)
-           : vkr_bakery_path_join(package->shaders, sizeof(package->shaders),
-                                  package->template_root, shaders)) &&
+      vkr_package_template_path(package, player, package->player) &&
+      vkr_package_template_path(package, engine, package->engine_root) &&
+      vkr_package_template_path(package, shaders, package->shaders) &&
+      (!libraries ||
+       vkr_package_template_path(package, libraries, package->libraries)) &&
       vkr_bakery_path_join(manifest, sizeof(manifest), package->shaders,
                            VKR_PACKAGE_BACKEND "/shader_manifest.json");
   if (!found || !vkr_bakery_is_file(package->player) ||
       !vkr_bakery_is_directory(package->engine_root) ||
-      !vkr_bakery_is_file(manifest)) {
+      !vkr_bakery_is_file(manifest) ||
+      (libraries && !vkr_bakery_is_directory(package->libraries))) {
     vkr_bakery_event_diag(
         package->stage_id, VKR_BAKERY_DIAG_BUNDLE_MISSING_RUNTIME,
         package->player, 0u, 0u,
-        "the player template lacks its executable, engine "
-        "resources or " VKR_PACKAGE_BACKEND " shader catalog; build vkr_player",
+        "the player template lacks its executable, engine resources, "
+        "libraries or " VKR_PACKAGE_BACKEND " shader catalog; build vkr_player",
         NULL);
     return false_v;
   }
@@ -1049,14 +1087,12 @@ vkr_internal bool8_t vkr_package_is_text(const char *identity) {
   return false_v;
 }
 
-/* No archived document may name the workspace or the repository: the
-   package runs where neither exists. */
+/* No archived document may name a foreign root: the package runs where
+   none exists. */
 vkr_internal bool8_t vkr_package_check_portable(VkrPackage *package,
                                                 VkrBundle *bundle) {
-  char repository[VKR_BAKERY_PATH_CAPACITY];
-  (void)vkr_project_resolve(PROJECT_SOURCE_DIR, false_v, repository,
-                            sizeof(repository));
-  const char *roots[] = {package->workspace_directory, repository};
+  char roots[3][VKR_BAKERY_PATH_CAPACITY];
+  const uint32_t root_count = vkr_package_foreign_roots(package, roots);
   bool8_t ok = true_v;
   for (uint32_t i = 0u; i < bundle->files.count; ++i) {
     const char *identity = bundle->files.items[i];
@@ -1069,7 +1105,7 @@ vkr_internal bool8_t vkr_package_check_portable(VkrPackage *package,
       free(data);
       continue;
     }
-    for (uint32_t r = 0u; r < ArrayCount(roots); ++r) {
+    for (uint32_t r = 0u; r < root_count; ++r) {
       const uint64_t root_length = strlen(roots[r]);
       for (uint64_t c = 0u; root_length && c + root_length <= length; ++c) {
         if (MemCompare(data + c, roots[r], root_length) == 0) {
@@ -1544,9 +1580,62 @@ vkr_internal void vkr_package_identifier_part(const char *text, char *out,
   out[length] = '\0';
 }
 
+#if defined(__APPLE__)
+typedef struct VkrPackageSign {
+  VkrPackage *package;
+  const char *identity;
+  const char *directory; /* Listed while signing its files. */
+  bool8_t ok;
+} VkrPackageSign;
+
+/* Signs one bundle or file with the profile's identity. */
+vkr_internal bool8_t vkr_package_codesign(VkrPackageSign *sign,
+                                          const char *path) {
+  VkrPackage *package = sign->package;
+  const char *arguments[] = {"--force", "--sign", sign->identity,
+                             "--timestamp=none", path};
+  const char *log =
+      vkr_package_printf(package, "%s/codesign.log", package->work);
+  const VkrPlatformProcessConfig config = {
+      .executable = "/usr/bin/codesign",
+      .arguments = arguments,
+      .argument_count = ArrayCount(arguments),
+      .stdout_path = log,
+      .stderr_path = log,
+      .append_output = true_v,
+      .termination_grace_ms = 2000u,
+      .hidden = true_v,
+      .is_cancelled = vkr_package_poll_job,
+      .cancel_context = package,
+  };
+  int32_t code = -1;
+  bool8_t timed_out = false_v;
+  if (!vkr_platform_process_run(&config, &code, &timed_out) || code != 0) {
+    return vkr_package_fail(
+        package, log, "codesign could not sign %s with %s", path,
+        strcmp(sign->identity, "-") ? sign->identity : "an ad hoc signature");
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_package_visit_sign(void *context, const char *name,
+                                            bool8_t is_directory) {
+  VkrPackageSign *sign = context;
+  char path[VKR_BAKERY_PATH_CAPACITY];
+  (void)is_directory;
+  if (!vkr_bakery_path_join(path, sizeof(path), sign->directory, name) ||
+      !vkr_package_codesign(sign, path)) {
+    sign->ok = false_v;
+    return false_v;
+  }
+  return true_v;
+}
+#endif
+
 /* The macOS application bundle around the staged package: an Info.plist,
-   then a signature over the executable and every resource. The profile's
-   `signing_identity` names a certificate; without one it signs ad hoc. */
+   then signatures over its libraries and over the application with the
+   executable and every resource. The profile's `signing_identity` names a
+   certificate; without one it signs ad hoc. */
 vkr_internal bool8_t vkr_package_stage_app(VkrPackage *package) {
 #if defined(__APPLE__)
   const VkrBakeryJson *settings = vkr_bakery_json_get(package->game, "game");
@@ -1586,30 +1675,23 @@ vkr_internal bool8_t vkr_package_stage_app(VkrPackage *package) {
       !vkr_bakery_write_file_atomic(path, plist, (uint64_t)written)) {
     return vkr_package_fail(package, app, "cannot write the Info.plist");
   }
+  /* Nested code signs before the application that seals it. */
   const char *identity =
       vkr_package_text(package, package->profile, "signing_identity");
-  const char *arguments[] = {"--force", "--sign",
-                             identity && identity[0] ? identity : "-",
-                             "--timestamp=none", app};
-  const char *log =
-      vkr_package_printf(package, "%s/codesign.log", package->work);
-  const VkrPlatformProcessConfig config = {
-      .executable = "/usr/bin/codesign",
-      .arguments = arguments,
-      .argument_count = ArrayCount(arguments),
-      .stdout_path = log,
-      .stderr_path = log,
-      .termination_grace_ms = 2000u,
-      .hidden = true_v,
-      .is_cancelled = vkr_package_poll_job,
-      .cancel_context = package,
-  };
-  int32_t code = -1;
-  bool8_t timed_out = false_v;
-  if (!vkr_platform_process_run(&config, &code, &timed_out) || code != 0) {
-    return vkr_package_fail(
-        package, log, "codesign could not sign %s with %s", app,
-        identity && identity[0] ? identity : "an ad hoc signature");
+  VkrPackageSign sign = {.package = package,
+                         .identity = identity && identity[0] ? identity : "-",
+                         .ok = true_v};
+  char frameworks[VKR_BAKERY_PATH_CAPACITY];
+  if ((uint32_t)snprintf(frameworks, sizeof(frameworks),
+                         "%s/Contents/Frameworks", app) < sizeof(frameworks) &&
+      vkr_bakery_is_directory(frameworks)) {
+    sign.directory = frameworks;
+    if (!vkr_bakery_list_directory(frameworks, vkr_package_visit_sign, &sign)) {
+      sign.ok = false_v;
+    }
+  }
+  if (!sign.ok || !vkr_package_codesign(&sign, app)) {
+    return false_v;
   }
 #else
   (void)package;
@@ -1643,6 +1725,28 @@ vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
   /* A byte copy, unlike a clone, drops the template's mode. */
   (void)chmod(destination, 0755);
 #endif
+  /* The template's libraries go where the player's rpath finds them: a
+     macOS application's Contents/Frameworks, else beside the executable. */
+  if (package->libraries[0]) {
+    char libraries[VKR_BAKERY_PATH_CAPACITY];
+#if defined(__APPLE__)
+    const bool8_t placed =
+        (uint32_t)snprintf(libraries, sizeof(libraries),
+                           "%s/%s.app/Contents/Frameworks", package->staging,
+                           package->executable) < sizeof(libraries);
+#else
+    const bool8_t placed =
+        (uint32_t)snprintf(libraries, sizeof(libraries), "%s", directory) <
+        sizeof(libraries);
+#endif
+    if (!placed || !vkr_bundle_copy_tree(package->libraries, libraries)) {
+      vkr_bakery_event_diag(package->stage_id,
+                            VKR_BAKERY_DIAG_BUNDLE_MISSING_RUNTIME,
+                            package->libraries, 0u, 0u,
+                            "cannot copy the player's libraries", NULL);
+      return false_v;
+    }
+  }
   if (!vkr_bakery_path_join(catalog, sizeof(catalog), package->shaders,
                             VKR_PACKAGE_BACKEND) ||
       !vkr_package_runtime_path(package, package->staging,

@@ -1,5 +1,6 @@
 #include "editor_application.h"
 #include "editor_content.h"
+#include "editor_install.h"
 #include "editor_internal.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
@@ -322,6 +323,8 @@ static void editor_application_project_scene(void *state,
 VkrSampleRuntimeConfig
 vkr_editor_application_config(VkrEditorApplication *editor, int argc,
                               char **argv) {
+  /* Companion programs and per-user state are fixed before anything runs. */
+  vkr_editor_install_resolve();
   *editor = (VkrEditorApplication){
       .layout_path = getenv("VKR_EDITOR_LAYOUT_PATH"),
       .argc = argc,

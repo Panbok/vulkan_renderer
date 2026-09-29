@@ -31,6 +31,8 @@ typedef struct VkrVfsPack {
 typedef struct VkrVfsState {
   char root[VKR_VFS_PATH_MAX];
   uint64_t root_length;
+  /* The root is the repository the program was built from. */
+  bool8_t repository;
   VkrVfsPack packs[VKR_VFS_MAX_PACKS];
   uint32_t pack_count;
   char bundle_scene[VKR_PACK_IDENTITY_MAX];
@@ -213,11 +215,34 @@ bool8_t vkr_pack_validate(const uint8_t *data, uint64_t size, char *error,
 // Content root and identities
 // =============================================================================
 
+vkr_internal uint32_t
+vkr_vfs_executable_directories(char directories[2][VKR_VFS_PATH_MAX]);
+
+/* The repository, unless the program is installed with a `content/`
+   directory beside it: an editor distribution or a package. The repository
+   is set first, so the existence check cannot recurse into this. */
 vkr_internal void vkr_vfs_default_root(void) {
-  if (!vkr_vfs.root_length) {
-    (void)vkr_string_copy_bounded(vkr_vfs.root, sizeof(vkr_vfs.root),
-                                  PROJECT_SOURCE_DIR);
-    vkr_vfs.root_length = strlen(vkr_vfs.root);
+  if (vkr_vfs.root_length) {
+    return;
+  }
+  (void)vkr_string_copy_bounded(vkr_vfs.root, sizeof(vkr_vfs.root),
+                                PROJECT_SOURCE_DIR);
+  vkr_vfs.root_length = strlen(vkr_vfs.root);
+  vkr_vfs.repository = true_v;
+
+  char directories[2][VKR_VFS_PATH_MAX];
+  const uint32_t directory_count = vkr_vfs_executable_directories(directories);
+  for (uint32_t i = 0u; i < directory_count; ++i) {
+    char content[VKR_VFS_PATH_MAX];
+    const int written =
+        snprintf(content, sizeof(content), "%s/content", directories[i]);
+    const FilePath file = {.path = string8_create_from_cstr(
+                               (const uint8_t *)content, strlen(content)),
+                           .type = FILE_PATH_TYPE_ABSOLUTE};
+    if (written > 0 && (uint32_t)written < sizeof(content) &&
+        file_exists(&file) && vkr_vfs_set_content_root(content)) {
+      return;
+    }
   }
 }
 
@@ -226,12 +251,18 @@ const char *vkr_content_root(void) {
   return vkr_vfs.root;
 }
 
+bool8_t vkr_content_root_is_repository(void) {
+  vkr_vfs_default_root();
+  return vkr_vfs.repository;
+}
+
 bool8_t vkr_vfs_set_content_root(const char *directory) {
   const uint64_t length = directory ? strlen(directory) : 0u;
   if (!length || length + 2u > sizeof(vkr_vfs.root)) {
     return false_v;
   }
   MemCopy(vkr_vfs.root, directory, length);
+  vkr_vfs.repository = false_v;
   if (directory[length - 1u] != '/' && directory[length - 1u] != '\\') {
     vkr_vfs.root[length] = '/';
     vkr_vfs.root[length + 1u] = 0;
@@ -571,6 +602,38 @@ vkr_internal bool8_t vkr_vfs_mount_bundle(const char *directory) {
   return ok && vkr_vfs.pack_count > 0u;
 }
 
+/* Where an installed program's content sits: beside the executable, or in a
+   macOS application bundle's Contents/Resources when it runs from
+   Contents/MacOS. Returns the directory count. */
+vkr_internal uint32_t
+vkr_vfs_executable_directories(char directories[2][VKR_VFS_PATH_MAX]) {
+  char executable[VKR_VFS_PATH_MAX];
+  if (!vkr_platform_executable_path(executable, sizeof(executable))) {
+    return 0u;
+  }
+  char *separator = NULL;
+  for (char *c = executable; *c; ++c) {
+    if (vkr_vfs_is_separator((uint8_t)*c)) {
+      separator = c;
+    }
+  }
+  if (!separator) {
+    return 0u;
+  }
+  *separator = 0;
+  uint32_t directory_count = 0u;
+  snprintf(directories[directory_count++], VKR_VFS_PATH_MAX, "%s", executable);
+  const uint64_t length = strlen(executable);
+  const char suffix[] = "/Contents/MacOS";
+  if (length > sizeof(suffix) - 1u &&
+      !strcmp(executable + length - (sizeof(suffix) - 1u), suffix)) {
+    snprintf(directories[directory_count++], VKR_VFS_PATH_MAX,
+             "%.*s/Contents/Resources", (int)(length - (sizeof(suffix) - 1u)),
+             executable);
+  }
+  return directory_count;
+}
+
 bool8_t vkr_vfs_mount_startup(void) {
   vkr_vfs_default_root();
   const char *record = getenv("VKR_VFS_RECORD");
@@ -590,42 +653,18 @@ bool8_t vkr_vfs_mount_startup(void) {
   if (bundle && bundle[0]) {
     return vkr_vfs_mount_bundle(bundle);
   }
-  char executable[VKR_VFS_PATH_MAX];
-  if (vkr_platform_executable_path(executable, sizeof(executable))) {
-    char *separator = NULL;
-    for (char *c = executable; *c; ++c) {
-      if (vkr_vfs_is_separator((uint8_t)*c)) {
-        separator = c;
-      }
-    }
-    if (separator) {
-      *separator = 0;
-      /* Beside the executable, or in a macOS application bundle's
-         Contents/Resources when it runs from Contents/MacOS. */
-      char directories[2][VKR_VFS_PATH_MAX];
-      uint32_t directory_count = 0u;
-      snprintf(directories[directory_count++], VKR_VFS_PATH_MAX, "%s",
-               executable);
-      const uint64_t length = strlen(executable);
-      const char suffix[] = "/Contents/MacOS";
-      if (length > sizeof(suffix) - 1u &&
-          !strcmp(executable + length - (sizeof(suffix) - 1u), suffix)) {
-        snprintf(directories[directory_count++], VKR_VFS_PATH_MAX,
-                 "%.*s/Contents/Resources",
-                 (int)(length - (sizeof(suffix) - 1u)), executable);
-      }
-      for (uint32_t i = 0u; i < directory_count; ++i) {
-        char description[VKR_VFS_PATH_MAX];
-        snprintf(description, sizeof(description), "%s/bundle.json",
-                 directories[i]);
-        const FilePath file = {
-            .path = string8_create_from_cstr((const uint8_t *)description,
-                                             strlen(description)),
-            .type = FILE_PATH_TYPE_ABSOLUTE};
-        if (file_exists(&file)) {
-          return vkr_vfs_mount_bundle(directories[i]);
-        }
-      }
+  char directories[2][VKR_VFS_PATH_MAX];
+  const uint32_t directory_count = vkr_vfs_executable_directories(directories);
+  for (uint32_t i = 0u; i < directory_count; ++i) {
+    char description[VKR_VFS_PATH_MAX];
+    snprintf(description, sizeof(description), "%s/bundle.json",
+             directories[i]);
+    const FilePath file = {
+        .path = string8_create_from_cstr((const uint8_t *)description,
+                                         strlen(description)),
+        .type = FILE_PATH_TYPE_ABSOLUTE};
+    if (file_exists(&file)) {
+      return vkr_vfs_mount_bundle(directories[i]);
     }
   }
 

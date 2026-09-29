@@ -7,6 +7,7 @@
 #include "filesystem/vkr_vfs.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_entry.h"
+#include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_texture_transcode_cache.h"
 
 #include <stdio.h>
@@ -90,47 +91,20 @@ static bool8_t player_user_directory(const VkrPlayer *player, const char *base,
   return file_ensure_directory(allocator, &path);
 }
 
-/* Per-user Graphics preferences and caches: %APPDATA% and %LOCALAPPDATA% on
-   Windows, Application Support and Caches on macOS, the XDG directories
-   elsewhere. */
+/* Per-user Graphics preferences and caches below the platform's settings and
+   cache directories; Windows keeps caches in a Cache folder of their own. */
 static bool8_t player_user_paths(VkrPlayer *player, VkrAllocator *allocator) {
   char settings_base[VKR_PLAYER_PATH_CAPACITY];
   char cache_base[VKR_PLAYER_PATH_CAPACITY];
+  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_SETTINGS, settings_base,
+                                   sizeof(settings_base)) ||
+      !vkr_platform_user_directory(VKR_PLATFORM_USER_CACHE, cache_base,
+                                   sizeof(cache_base))) {
+    return false_v;
+  }
 #if defined(_WIN32)
-  const char *roaming = getenv("APPDATA");
-  const char *local = getenv("LOCALAPPDATA");
-  if (!roaming || !roaming[0] || !local || !local[0]) {
-    return false_v;
-  }
-  snprintf(settings_base, sizeof(settings_base), "%s", roaming);
-  snprintf(cache_base, sizeof(cache_base), "%s", local);
   const char *cache_leaf = "/Cache";
-#elif defined(__APPLE__)
-  const char *home = getenv("HOME");
-  if (!home || !home[0]) {
-    return false_v;
-  }
-  snprintf(settings_base, sizeof(settings_base),
-           "%s/Library/Application Support", home);
-  snprintf(cache_base, sizeof(cache_base), "%s/Library/Caches", home);
-  const char *cache_leaf = "";
 #else
-  const char *home = getenv("HOME");
-  const char *config = getenv("XDG_CONFIG_HOME");
-  const char *cache = getenv("XDG_CACHE_HOME");
-  if ((!config || !config[0] || !cache || !cache[0]) && (!home || !home[0])) {
-    return false_v;
-  }
-  if (config && config[0]) {
-    snprintf(settings_base, sizeof(settings_base), "%s", config);
-  } else {
-    snprintf(settings_base, sizeof(settings_base), "%s/.config", home);
-  }
-  if (cache && cache[0]) {
-    snprintf(cache_base, sizeof(cache_base), "%s", cache);
-  } else {
-    snprintf(cache_base, sizeof(cache_base), "%s/.cache", home);
-  }
   const char *cache_leaf = "";
 #endif
   char settings[VKR_PLAYER_PATH_CAPACITY];

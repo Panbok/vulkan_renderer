@@ -1,5 +1,6 @@
 #include "editor_bakery.h"
 #include "editor_bakery_service.h"
+#include "editor_install.h"
 #include "editor_internal.h"
 
 #include "core/logger.h"
@@ -7,6 +8,7 @@
 #include "core/vkr_json.h"
 #include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 #include "vkr_shader_catalog.h"
 #include <stdarg.h>
@@ -238,7 +240,7 @@ static void *editor_bakery_worker(void *argument) {
       break;
     }
     arguments[count++] = "--root";
-    arguments[count++] = PROJECT_SOURCE_DIR;
+    arguments[count++] = vkr_content_root();
     arguments[count++] = "--json";
     if (job->force) {
       arguments[count++] = "--force";
@@ -287,13 +289,13 @@ static void *editor_bakery_worker(void *argument) {
     arguments[count++] = "--output";
     arguments[count++] = job->output;
     arguments[count++] = "--harness";
-    arguments[count++] = VKR_EDITOR_HARNESS_PATH;
+    arguments[count++] = vkr_editor_tool_path(VKR_EDITOR_TOOL_HARNESS);
   }
   const VkrPlatformProcessConfig config = {
-      .executable = VKR_EDITOR_BAKERY_PATH,
+      .executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY),
       .arguments = arguments,
       .argument_count = count,
-      .working_directory = PROJECT_SOURCE_DIR,
+      .working_directory = vkr_content_root(),
       .stdout_path = job->stdout_path,
       .stderr_path = job->stderr_path,
       .timeout_ms = job->kind == EDITOR_BAKE_REFLECTION_PROBE
@@ -352,10 +354,24 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
     bakery->output_lengths[i] =
         (uint32_t)snprintf((char *)bakery->output_paths[i],
                            EDITOR_BAKERY_PATH_CAPACITY, "%s", outputs[i]);
+  /* Until a workspace opens, job logs go below the repository's build tree,
+     or below a per-user directory when the editor is installed. */
+  char artifacts[EDITOR_BAKERY_PATH_CAPACITY];
+  bool8_t artifacts_ok = false_v;
+  if (vkr_content_root_is_repository()) {
+    const int written =
+        snprintf(artifacts, sizeof(artifacts), "%sbuild/_artifacts/bakery",
+                 vkr_content_root());
+    artifacts_ok = written > 0 && (uint32_t)written < sizeof(artifacts);
+  } else {
+    artifacts_ok = vkr_editor_user_path(VKR_PLATFORM_USER_CACHE, "bakery",
+                                        artifacts, sizeof(artifacts));
+  }
   const int directory_length =
-      snprintf(bakery->log_directory, sizeof(bakery->log_directory),
-               PROJECT_SOURCE_DIR "build/_artifacts/bakery/%u",
-               vkr_platform_get_process_id());
+      artifacts_ok
+          ? snprintf(bakery->log_directory, sizeof(bakery->log_directory),
+                     "%s/%u", artifacts, vkr_platform_get_process_id())
+          : -1;
   /* Keep room for each job's /<slot>.stdout.log or .stderr.log suffix. */
   if (directory_length < 0 ||
       directory_length + 20 >= EDITOR_BAKERY_PATH_CAPACITY) {
@@ -364,7 +380,7 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
     return NULL;
   }
   snprintf(bakery->lock_directory, sizeof(bakery->lock_directory), "%s",
-           PROJECT_SOURCE_DIR "build/_artifacts/bakery");
+           artifacts);
   bakery->service = editor_bakery_service_create(allocator);
   return bakery;
 }
@@ -776,13 +792,18 @@ static void editor_bakery_read_log(VkrEditorBakery *bakery) {
 static void editor_bakery_watch_shaders(VkrEditorBakery *bakery) {
   if (!bakery->shader_watch_requested) {
     bakery->shader_watch_requested = true_v;
+    /* An installed editor has a compiled catalog and no shader sources. */
     char catalog[EDITOR_BAKERY_PATH_CAPACITY];
-    if (!vkr_shader_catalog_root(catalog, sizeof(catalog))) {
+    char sources[EDITOR_BAKERY_PATH_CAPACITY];
+    if (!vkr_content_root_is_repository() ||
+        !vkr_shader_catalog_root(catalog, sizeof(catalog))) {
       return;
     }
-    const char *paths[] = {PROJECT_SOURCE_DIR "renderer/src/shaders"};
+    (void)snprintf(sources, sizeof(sources), "%srenderer/src/shaders",
+                   vkr_content_root());
+    const char *paths[] = {sources};
     const char *arguments[] = {"shaders", "--out", catalog, "--root",
-                               PROJECT_SOURCE_DIR};
+                               vkr_content_root()};
     bakery->shader_watch =
         editor_bakery_service_watch(bakery->service, paths, ArrayCount(paths),
                                     arguments, ArrayCount(arguments));

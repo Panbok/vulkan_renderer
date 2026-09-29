@@ -1,5 +1,7 @@
 #include "vkr_project_internal.h"
 
+#include "filesystem/vkr_vfs.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -122,7 +124,7 @@ vkr_internal bool8_t vkr_project_job_init(VkrProjectJob *job) {
   (void)snprintf(job->final_path, sizeof(job->final_path), "%s/scenes/%s",
                  job->project_root, job->scene_id ? job->scene_id : "unused");
   const char *legacy = vkr_project_json_text(job->request, "legacy_root");
-  (void)vkr_project_resolve(legacy && legacy[0] ? legacy : PROJECT_SOURCE_DIR,
+  (void)vkr_project_resolve(legacy && legacy[0] ? legacy : vkr_content_root(),
                             false_v, job->legacy_root,
                             sizeof(job->legacy_root));
   (void)snprintf(job->generated_root, sizeof(job->generated_root),

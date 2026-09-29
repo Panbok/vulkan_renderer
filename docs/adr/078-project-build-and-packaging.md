@@ -9,9 +9,10 @@ authority: adr
 ## Status
 
 Accepted. Phase 1 of the
-[project packaging proposal](../proposals/project-packaging.md) is implemented
-and verified on macOS/Metal. The Windows/Vulkan package gate has not run.
-Incremental packages and shipping polish remain in the proposal.
+[project packaging proposal](../proposals/project-packaging.md) and the
+relocatable editor distribution are implemented and verified on macOS/Metal.
+The Windows/Vulkan package and distribution gates have not run. Incremental
+packages and shipping polish remain in the proposal.
 
 ## Context
 
@@ -50,7 +51,7 @@ runs seven stages. Each is a `start`/`done` event pair with coded diagnostics:
 | Bake | With `bake_lighting`, `bake_scene` with reflection and diffuse for each included scene. |
 | Lower | Lowers again only when an earlier stage published. |
 | Pack | Walks the closure over identity mounts: staged documents, `project/` to the project directory, `editor/` to the editor bundle, `assets/` to the template's engine resources. Rejects a document naming the workspace directory or the repository. Writes `content/game.vkpak` and `content/engine.vkpak` (`assets/...`), compressing the chunks the runtime reads into memory (ADR-077); an archive whose entries all match the previous package's `products`, written by the same `archive_writer`, is cloned from it instead. |
-| Stage runtime | Copies the profile's player as `<executable>[.exe]` and only the host backend's shader catalog. Writes `bundle.json` version 2. On macOS the package is `<executable>.app`: the player in `Contents/MacOS`, an Info.plist (`com.<company>.<executable>`, the game version) and the rest in `Contents/Resources`, signed with `codesign` using the profile's `signing_identity`, else ad hoc. |
+| Stage runtime | Copies the profile's player as `<executable>[.exe]`, the template's libraries, and only the host backend's shader catalog. Writes `bundle.json` version 2. On macOS the package is `<executable>.app`: the player in `Contents/MacOS`, an Info.plist (`com.<company>.<executable>`, the game version) and the rest in `Contents/Resources`, signed with `codesign` using the profile's `signing_identity`, else ad hoc. |
 | Verify and report | Validates and rehashes both archives, then renames `<out>.staging` over `<out>`. |
 
 Project jobs run as child `vkr_bakery project` processes, so publication keeps
@@ -88,15 +89,21 @@ executable in a bundle's `Contents/MacOS`; the
 `../Resources/shaders` the same way.
 
 **Template lookup.** `--template <dir>`, then `templates/player` beside the
-running `vkr_bakery`, as a distributed editor would ship it, then the build
-tree's `<build>/player`. `template.json` may name its shader catalog relative to
-the template.
+running `vkr_bakery`, as the editor distribution ships it, then the build
+tree's `<build>/player`. `template.json` names its players, engine resources,
+shader catalog and optional `libraries` directory, each absolute or relative
+to the template. The engine resource list lives in
+[`vkr_engine_content.cmake`](../../cmake/vkr_engine_content.cmake).
 
 **Player.** `vkr_player` (development: INFO logging and the F6 overlay) and
 `vkr_player_shipping` (errors only, no developer UI) are prebuilt in every tree
 under `<build>/player`. So are `template.json` and `engine/assets`, which hold
 the render graph and runtime fonts of the former Bistro recipe with the files
-they name. The [player](../../player/src/main.c) mounts the package, then opens
+they name. On macOS the template's `lib/` holds the Vulkan loader, which the
+players link as `@rpath/libvulkan.1.dylib`; a package copies it into
+`Contents/Frameworks` and signs it before the application, and the players'
+rpath lists `@executable_path/../Frameworks`. Before, a package loaded the
+loader from the building machine's Vulkan SDK. The [player](../../player/src/main.c) mounts the package, then opens
 the World and the startup scene with their overlays on its first frame through
 the same requests the editor issues. It registers the package fonts and applies
 the startup camera once the scene activates. A scene's player entity starts
@@ -134,6 +141,31 @@ queue and report the result
 ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 [`editor_build.c`](../../editor/src/editor_build.c) owns this workflow.
 
+**Editor distribution.** `build_editor_dist.sh [folder]` (or `.bat`) builds the
+Release editor and runs `cmake --install --component editor`
+([rules](../../editor/CMakeLists.txt)) into one relocatable folder:
+`vkr_editor`, `vkr_bakery`, `vkr_harness` and `vkr_asset_preview` side by
+side, the Vulkan loader beside them on macOS, `resources/editor`, the shader
+catalog in `shaders/`, the engine content in `content/`, and
+`templates/player`, whose `template.json` names `../../content` and
+`../../shaders`. The content is the package engine set plus the offscreen
+profile probe bakes copy. Every program takes its content root from a
+`content/` directory beside its executable when one exists, else the
+repository it was built from (`vkr_content_root_is_repository()` in the
+[mounts](../../lib/src/filesystem/vkr_vfs.h)). With an installed root the
+render graph comes from content, the editor passes that root to its jobs as
+`--root`, working directory and legacy root, and the harness runs children in
+it. [`editor_install.c`](../../editor/src/editor_install.c) takes each
+companion program from beside the editor, else from the build tree. An
+installed editor keeps its transcode cache in `<cache>/VKR/asset_cache` and
+pre-workspace Bakery logs in `<cache>/VKR/bakery`, where `<cache>` is
+`%LOCALAPPDATA%` or `~/Library/Caches`
+(`vkr_platform_user_directory`). It has no shader sources, so the shader
+watcher stays off. A package may not lie in or name the installed content, as
+for the workspace and the repository. On macOS FreeType and libpng link
+statically, so no program loads a Homebrew library; Windows links the static
+vcpkg triplet and the system Vulkan loader.
+
 ## Consequences
 
 - A project ships without the editor, workspace or repository. Overlays and the
@@ -151,6 +183,11 @@ queue and report the result
   of it the CJK fallback font.
 - A compressed entry's decoded bytes stay resident until exit: about 28 MiB
   for the Testbed package, most of it the CJK font.
+- The distribution is 153 MiB on macOS, most of it the shader catalogs of both
+  backends and the CJK font, which `content/` and the fonts in
+  `resources/editor` each carry. An installed editor serves managed workspaces;
+  `--scene` over repository scenes and shader recompilation need a build
+  tree.
 
 ## Evidence
 
@@ -207,6 +244,25 @@ queue and report the result
   distinct reads, all products. The CPU test mounts a compressed entry and a
   version 1 archive. The package check decodes every chunk with the `zstd`
   tool and asserts that no mesh or texture is compressed.
+- Editor distribution, macOS/Metal, Release: `build_editor_dist.sh` installed
+  into one folder, which was then moved to another path. It ran under
+  `sandbox-exec` with reads and writes below the repository, `~/VulkanSDK` and
+  `/opt/homebrew` denied, `HOME` isolated, and `VKR_AUTOCLOSE_SECONDS` set. The
+  headless editor opened the Bistro project from an APFS clone of the Testbed
+  workspace, and `build.game "Mac Shipping"` settled in 39.6 s with a 3062.5
+  MiB package. Its only content-root reads were the render graph and the
+  UbuntuMono atlas from `content/`, and its transcode cache went to the
+  isolated `Library/Caches/VKR`. `scene.create` and `content.import` of a
+  synthetic triangle glTF succeeded. The installed `vkr_bakery preview
+  material` with the installed harness wrote the same PNG bytes as the build
+  tree's tools for an emissive and a textured Bistro material. That package's
+  application passes `codesign --verify --strict`, holds
+  `Contents/Frameworks/libvulkan.1.dylib`, and ran under the same sandbox:
+  exit 0 with all 779 distinct reads in its products. `otool -L` lists only
+  system libraries and `@rpath/libvulkan.1.dylib` for every installed program.
+  The package check asserts the Frameworks loader and rpath. Not run: a
+  Windows distribution, and a macOS host without the Vulkan SDK or Homebrew
+  (the sandbox denies both paths instead).
 - Template lookup: a copied `vkr_bakery` with a `templates/player` beside it
   whose `engine_include` omits the CJK font packages 7 engine entries instead
   of 9, with a relative shader catalog.

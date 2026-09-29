@@ -9,6 +9,8 @@
  */
 #include "vkr_harness_runtime.h"
 
+#include "filesystem/vkr_vfs.h"
+
 static const char *vkr_harness_option(int argc, char **argv, const char *name) {
   for (int i = 1; i + 1 < argc; ++i) {
     if (string_equals(argv[i], name)) {
@@ -76,7 +78,7 @@ VKR_MAIN(argc, argv) {
   const char *artifact_root_override =
       vkr_harness_option(argc, argv, "--artifact-root");
   if (!repo_root) {
-    repo_root = PROJECT_SOURCE_DIR;
+    repo_root = vkr_content_root();
   }
   if (baseline_command) {
     if (argc < 3 || !vkr_platform_init()) {

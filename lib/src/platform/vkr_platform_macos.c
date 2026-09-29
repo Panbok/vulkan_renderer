@@ -8,6 +8,8 @@
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
@@ -30,6 +32,28 @@ bool8_t vkr_platform_executable_path(char *path, uint32_t capacity) {
   MemCopy(path, canonical, strlen(canonical) + 1u);
   return true_v;
 }
+
+bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
+                                    uint32_t capacity) {
+  if (!path || capacity == 0u) {
+    return false_v;
+  }
+  path[0] = '\0';
+  const char *home = getenv("HOME");
+  if (!home || !home[0]) {
+    return false_v;
+  }
+  const char *leaf = kind == VKR_PLATFORM_USER_CACHE
+                         ? "Library/Caches"
+                         : "Library/Application Support";
+  const int written = snprintf(path, capacity, "%s/%s", home, leaf);
+  if (written < 0 || (uint32_t)written >= capacity) {
+    path[0] = '\0';
+    return false_v;
+  }
+  return true_v;
+}
+
 static bool32_t timebase_initialized = false;
 
 bool8_t vkr_platform_init() {

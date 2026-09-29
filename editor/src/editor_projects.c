@@ -1,5 +1,6 @@
 #include "editor_projects.h"
 #include "editor_content.h"
+#include "editor_install.h"
 #include "editor_internal.h"
 #include "editor_project_store.h"
 #include "editor_scene_panels.h"
@@ -13,6 +14,7 @@
 #include "core/vkr_json_writer.h"
 #include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_file_dialog.h"
@@ -1486,7 +1488,7 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
       project_json_text(writer, "texture_encode_speed", "fast") &&
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
-                                                 : PROJECT_SOURCE_DIR) &&
+                                                 : vkr_content_root()) &&
       project_json_text(writer, "bootstrap_directory",
                         projects->bootstrap_directory) &&
       project_json_text(
@@ -1626,14 +1628,22 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   ok = ok && vkr_json_writer_name(writer, string8_lit("tools")) &&
        vkr_json_writer_begin_object(writer) &&
        /* Every cooker is a `vkr_bakery tool`; the job maps keys to tools. */
-       project_json_text(writer, "mesh", VKR_EDITOR_BAKERY_PATH) &&
-       project_json_text(writer, "animation", VKR_EDITOR_BAKERY_PATH) &&
-       project_json_text(writer, "collision", VKR_EDITOR_BAKERY_PATH) &&
-       project_json_text(writer, "font", VKR_EDITOR_BAKERY_PATH) &&
-       project_json_text(writer, "texture", VKR_EDITOR_BAKERY_PATH) &&
-       project_json_text(writer, "harness", VKR_EDITOR_HARNESS_PATH) &&
-       project_json_text(writer, "hdr_packer", VKR_EDITOR_BAKERY_PATH) &&
-       project_json_text(writer, "diffuse", VKR_EDITOR_BAKERY_PATH) &&
+       project_json_text(writer, "mesh",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY)) &&
+       project_json_text(writer, "animation",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY)) &&
+       project_json_text(writer, "collision",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY)) &&
+       project_json_text(writer, "font",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY)) &&
+       project_json_text(writer, "texture",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY)) &&
+       project_json_text(writer, "harness",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_HARNESS)) &&
+       project_json_text(writer, "hdr_packer",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY)) &&
+       project_json_text(writer, "diffuse",
+                         vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY)) &&
        vkr_json_writer_end_object(writer) &&
        vkr_json_writer_end_object(writer) && vkr_json_file_writer_commit(&file);
   if (!ok) {
@@ -2039,7 +2049,7 @@ static uint64_t project_start_finalize(VkrEditorProjects *projects,
                         projects->project->manifest_path) &&
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
-                                                 : PROJECT_SOURCE_DIR) &&
+                                                 : vkr_content_root()) &&
       project_json_text(writer, "runtime_directory", job_directory) &&
       project_json_text(writer, "scene_id",
                         projects->project->scenes[scene].id) &&
@@ -2094,7 +2104,7 @@ static uint64_t project_start_project_finalize(VkrEditorProjects *projects,
                         projects->project->manifest_path) &&
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
-                                                 : PROJECT_SOURCE_DIR) &&
+                                                 : vkr_content_root()) &&
       project_json_text(writer, "runtime_directory", job_directory) &&
       project_write_progressive_fields(projects, frame, writer,
                                        job_directory) &&

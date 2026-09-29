@@ -211,7 +211,7 @@ vkr_internal bool8_t vkr_project_import_overlay_collision(
     return vkr_project_source_file(job, value, out);
   }
   if (!source_scene) {
-    /* Legacy runtime resolves physics assets against PROJECT_SOURCE_DIR. */
+    /* Legacy runtime resolves physics assets against the content root. */
     char joined[VKR_PROJECT_PATH];
     (void)vkr_bakery_path_join(joined, sizeof(joined), job->legacy_root, value);
     return vkr_project_source_file(job, joined, out);

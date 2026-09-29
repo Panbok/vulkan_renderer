@@ -158,6 +158,13 @@ def main():
             signature = subprocess.run(['codesign', '--verify', '--strict', str(app)],
                                        capture_output=True, text=True)
             assert signature.returncode == 0, signature.stderr
+            # The player loads the Vulkan loader the application carries, not
+            # the building machine's SDK.
+            assert (app / 'Contents' / 'Frameworks' / 'libvulkan.1.dylib').is_file()
+            load_commands = subprocess.run(
+                ['otool', '-l', str(app / 'Contents' / 'MacOS' / 'Fixture Game')],
+                capture_output=True, text=True, check=True).stdout
+            assert '@executable_path/../Frameworks' in load_commands
         else:
             assert (out / ('Fixture Game' + suffix)).is_file()
         assert (runtime_root / 'shaders' / description['backend'] / 'shader_manifest.json').is_file()

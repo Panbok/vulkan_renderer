@@ -1,6 +1,18 @@
+# Installed macOS programs find the libraries they ship beside themselves (an
+# editor distribution) or in a game's Contents/Frameworks; the build tree
+# keeps the linker's paths as well.
+function(vkr_configure_installed_rpath target)
+    if(APPLE)
+        set(paths "@executable_path" "@executable_path/../Frameworks")
+        set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH ${paths})
+        set_property(TARGET ${target} PROPERTY INSTALL_RPATH ${paths})
+    endif()
+endfunction()
+
 function(vkr_configure_application_target target)
     vkr_require_declared_c_functions(${target})
     vkr_set_main_stack_reserve(${target})
+    vkr_configure_installed_rpath(${target})
 
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         set_property(TARGET ${target} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY

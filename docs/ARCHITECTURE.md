@@ -209,7 +209,8 @@ source changes, then asks for a restart because pipelines do not hot reload,
 and marks Content items Changed or Missing when their files change on disk; an
 edited source of an asset in the open scene queues its Rebuild job unless the
 scene has unsaved edits. Relative asset paths resolve against one content root
-(the repository, or a bundle's `content/` directory), and mounted `.vkpak`
+(the repository, an installed program's `content/` directory, or a bundle's
+`content/` directory), and mounted `.vkpak`
 archives serve identities below it through the ordinary filesystem calls;
 `vkr_bakery bundle` packs a scene's closure with the runtime and shader
 catalog into a directory that runs without the repository. Given a managed
@@ -218,7 +219,10 @@ packs `game.vkpak` and `engine.vkpak`, stages the `vkr_player` template and
 publishes the package only after verification; the editor's Build menu runs
 it on Bakery's worker, and the player opens the World and startup scene
 through the requests the editor issues
-([ADR-078](adr/078-project-build-and-packaging.md)).
+([ADR-078](adr/078-project-build-and-packaging.md)). `build_editor_dist.sh`
+installs the editor, its companion programs, engine content and player
+template as one relocatable folder that keeps writable state in per-user
+directories (ADR-078).
 [ADR-077](adr/077-asset-build-system.md) records the contract and its gaps.
 Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
 and Color and a clipped, scrollable right content area. The editor emits typed

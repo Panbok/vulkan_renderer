@@ -4,7 +4,8 @@
 #include "defines.h"
 
 /* Read-only content mounts (ADR-077). Relative asset paths resolve against one
- * content root: the repository by default, or a bundle's `content/` directory.
+ * content root: the repository by default, an installed program's `content/`
+ * directory (vkr_content_root()), or a bundle's `content/` directory.
  * `.vkpak` archives mounted over that root serve an asset identity (its path
  * below the root) before the directory does; the first mounted archive that
  * holds an identity wins, so a patch archive mounted first overrides a base
@@ -126,8 +127,15 @@ typedef struct VkrVfsView {
   uint64_t last_modified; /**< The archive file's modification time. */
 } VkrVfsView;
 
-/** Absolute content root with a trailing separator. */
+/** Absolute content root with a trailing separator: the repository the
+ * program was built from, or the `content/` directory an installed program
+ * (an editor distribution or a package) carries beside its executable, or in
+ * its macOS application bundle's Contents/Resources. */
 const char *vkr_content_root(void);
+/** True while the content root is the repository. An installed program keeps
+ * its settings and caches in per-user directories instead, and has no
+ * shader sources. */
+bool8_t vkr_content_root_is_repository(void);
 /** Replaces the content root; `directory` must be absolute and exist. */
 bool8_t vkr_vfs_set_content_root(const char *directory);
 /** Maps and validates one archive and appends it to the mount order. */

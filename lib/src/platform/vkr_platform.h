@@ -96,6 +96,20 @@ uint32_t vkr_platform_get_process_id(void);
  */
 bool8_t vkr_platform_executable_path(char *path, uint32_t capacity);
 
+/** Per-user base directories an installed program keeps its state below. */
+typedef enum VkrPlatformUserDirectory {
+  /** %APPDATA% on Windows; ~/Library/Application Support on macOS. */
+  VKR_PLATFORM_USER_SETTINGS = 0,
+  /** %LOCALAPPDATA% on Windows; ~/Library/Caches on macOS. */
+  VKR_PLATFORM_USER_CACHE,
+} VkrPlatformUserDirectory;
+
+/** UTF-8 path of a per-user base directory with '/' separators and no
+ * trailing separator; false when the environment does not name one or it
+ * does not fit. The directory is not created. */
+bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
+                                    uint32_t capacity);
+
 bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
 
 /**

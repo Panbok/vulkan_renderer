@@ -22,10 +22,10 @@
 #include <math.h>
 
 /* The render graph ships in the build tree beside the renderer; a mounted
- * bundle carries it as content instead (ADR-077). */
+ * bundle or an installed program carries it as content instead (ADR-077). */
 vkr_internal const char *vkr_renderer_graph_path(char *storage,
                                                  uint64_t capacity) {
-  if (!vkr_vfs_pack_count()) {
+  if (!vkr_vfs_pack_count() && vkr_content_root_is_repository()) {
     return VKR_RENDER_GRAPH_PATH;
   }
   snprintf(storage, capacity, "%sassets/render_graphs/main.rendergraph.json",

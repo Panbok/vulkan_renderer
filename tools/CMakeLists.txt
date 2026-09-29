@@ -86,6 +86,8 @@ if(NOT WIN32)
     target_link_libraries(vkr_harness_core PUBLIC m)
 endif()
 
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_application_target.cmake")
+
 # The parent orchestrator, the child repetition runtime, and their shared
 # sample/provenance seam. Only the child opens a renderer target.
 add_executable(vkr_harness
@@ -100,6 +102,7 @@ add_executable(vkr_harness
 vkr_require_declared_c_functions(vkr_harness)
 # The child opens a renderer target and reaches the same unoptimized dispatch.
 vkr_set_main_stack_reserve(vkr_harness)
+vkr_configure_installed_rpath(vkr_harness)
 
 target_link_libraries(vkr_harness PRIVATE vkr_harness_core)
 target_compile_definitions(vkr_harness PRIVATE
@@ -293,6 +296,24 @@ set(MSDFGEN_DISABLE_SVG ON CACHE BOOL "" FORCE)
 set(MSDFGEN_DISABLE_PNG ON CACHE BOOL "" FORCE)
 set(MSDFGEN_INSTALL OFF CACHE BOOL "" FORCE)
 find_package(Freetype REQUIRED)
+# On macOS FreeType and its PNG decoder link from their static archives, so
+# a distributed vkr_bakery loads no dylib from the machine that built it.
+if(APPLE)
+    get_filename_component(VKR_FREETYPE_DIRECTORY "${FREETYPE_LIBRARY}" DIRECTORY)
+    find_library(VKR_FREETYPE_ARCHIVE NAMES libfreetype.a
+        HINTS "${VKR_FREETYPE_DIRECTORY}" NO_DEFAULT_PATH)
+    find_library(VKR_PNG_ARCHIVE NAMES libpng16.a
+        HINTS "${VKR_FREETYPE_DIRECTORY}")
+    if(NOT VKR_FREETYPE_ARCHIVE OR NOT VKR_PNG_ARCHIVE)
+        message(FATAL_ERROR "The macOS build links FreeType and libpng statically; "
+            "install their archives (Homebrew freetype and libpng)")
+    endif()
+    set_target_properties(Freetype::Freetype PROPERTIES
+        IMPORTED_LOCATION "${VKR_FREETYPE_ARCHIVE}"
+        IMPORTED_LOCATION_RELEASE "${VKR_FREETYPE_ARCHIVE}"
+        IMPORTED_LOCATION_DEBUG "${VKR_FREETYPE_ARCHIVE}"
+        INTERFACE_LINK_LIBRARIES "${VKR_PNG_ARCHIVE};z;bz2")
+endif()
 # vcpkg's FreeType export and compatibility wrapper embed raw Debug archive
 # paths in link-interface generator expressions. Imported-location mapping does
 # not rewrite those expressions, so select their Release branches explicitly.

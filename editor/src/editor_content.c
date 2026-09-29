@@ -3,10 +3,12 @@
 #include "core/vkr_atomic.h"
 #include "core/vkr_json.h"
 #include "core/vkr_threads.h"
+#include "editor_install.h"
 #include "editor_internal.h"
 #include "editor_project_store.h"
 #include "editor_scene_panels.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include <ctype.h>
@@ -344,9 +346,9 @@ static void *content_worker(void *context) {
   VkrEditorContent *content = context;
   const char *arguments[18];
   uint32_t count = 0;
-  const char *executable = VKR_EDITOR_ASSET_PREVIEW_PATH;
+  const char *executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_ASSET_PREVIEW);
   if (content->worker_material) {
-    executable = VKR_EDITOR_BAKERY_PATH;
+    executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY);
     arguments[count++] = "preview";
     arguments[count++] = "material";
   }
@@ -360,7 +362,7 @@ static void *content_worker(void *context) {
     arguments[count++] = "--workspace";
     arguments[count++] = content->worker_workspace;
     arguments[count++] = "--harness";
-    arguments[count++] = VKR_EDITOR_HARNESS_PATH;
+    arguments[count++] = vkr_editor_tool_path(VKR_EDITOR_TOOL_HARNESS);
   }
 #if defined(PLATFORM_WINDOWS)
   char reveal_argument[CONTENT_PATH + 16];
@@ -384,18 +386,18 @@ static void *content_worker(void *context) {
              content->worker_workspace);
     const char *prune_arguments[] = {"preview", "prune", "--directory",
                                      directory};
-    VkrPlatformProcessConfig prune = {.executable = VKR_EDITOR_BAKERY_PATH,
-                                      .arguments = prune_arguments,
-                                      .argument_count =
-                                          ArrayCount(prune_arguments),
-                                      .working_directory = PROJECT_SOURCE_DIR,
-                                      .stderr_path = content->worker_log,
-                                      .timeout_ms = 10000,
-                                      .termination_grace_ms = 250,
-                                      .terminate_process_tree = true_v,
-                                      .hidden = true_v,
-                                      .is_cancelled = content_cancelled,
-                                      .cancel_context = content};
+    VkrPlatformProcessConfig prune = {
+        .executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY),
+        .arguments = prune_arguments,
+        .argument_count = ArrayCount(prune_arguments),
+        .working_directory = vkr_content_root(),
+        .stderr_path = content->worker_log,
+        .timeout_ms = 10000,
+        .termination_grace_ms = 250,
+        .terminate_process_tree = true_v,
+        .hidden = true_v,
+        .is_cancelled = content_cancelled,
+        .cancel_context = content};
     if (!vkr_platform_process_run(&prune, &content->worker_exit,
                                   &content->worker_timed_out) ||
         content->worker_exit || content->worker_timed_out) {
@@ -409,7 +411,7 @@ static void *content_worker(void *context) {
       .executable = executable,
       .arguments = arguments,
       .argument_count = count,
-      .working_directory = PROJECT_SOURCE_DIR,
+      .working_directory = vkr_content_root(),
       .stderr_path = content->worker_log[0] ? content->worker_log : NULL,
       .timeout_ms = content->worker_material ? 180000 : 30000,
       .termination_grace_ms = 250,

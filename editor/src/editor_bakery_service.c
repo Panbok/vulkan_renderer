@@ -1,4 +1,5 @@
 #include "editor_bakery_service.h"
+#include "editor_install.h"
 
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
@@ -147,7 +148,7 @@ static void *editor_bakery_service_supervise(void *context) {
       "serve",       "--root", service->root, "--socket", service->socket_path,
       "--idle-exit", "30"};
   const VkrPlatformProcessConfig config = {
-      .executable = VKR_EDITOR_BAKERY_PATH,
+      .executable = vkr_editor_tool_path(VKR_EDITOR_TOOL_BAKERY),
       .arguments = arguments,
       .argument_count = ArrayCount(arguments),
       .stdout_path = service->log_path,

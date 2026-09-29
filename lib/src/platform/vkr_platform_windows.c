@@ -36,6 +36,34 @@ bool8_t vkr_platform_executable_path(char *path, uint32_t capacity) {
   return true_v;
 }
 
+bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
+                                    uint32_t capacity) {
+  if (!path || capacity == 0u || capacity > INT_MAX) {
+    return false_v;
+  }
+  path[0] = '\0';
+  wchar_t directory[32768];
+  const DWORD length = GetEnvironmentVariableW(
+      kind == VKR_PLATFORM_USER_CACHE ? L"LOCALAPPDATA" : L"APPDATA", directory,
+      ArrayCount(directory));
+  if (!length || length >= ArrayCount(directory) ||
+      !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, directory, -1, path,
+                           (int)capacity, NULL, NULL)) {
+    path[0] = '\0';
+    return false_v;
+  }
+  for (char *at = path; *at; ++at) {
+    if (*at == '\\') {
+      *at = '/';
+    }
+  }
+  const uint64_t used = strlen(path);
+  if (used && path[used - 1u] == '/') {
+    path[used - 1u] = '\0';
+  }
+  return true_v;
+}
+
 bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length) {
   if (!buffer || capacity == 0u || !out_length)

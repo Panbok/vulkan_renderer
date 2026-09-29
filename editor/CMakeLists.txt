@@ -18,6 +18,7 @@ add_executable(vkr_editor
     src/editor_bakery.c
     src/editor_bakery_service.c
     src/editor_build.c
+    src/editor_install.c
     src/editor_scene_panels.c
     src/editor_details.c
     src/editor_labels.c
@@ -75,4 +76,33 @@ foreach(resource UbuntuMono21px_0.png)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/assets/textures/${resource}"
         "$<TARGET_FILE_DIR:vkr_editor>/resources/editor/fonts/${resource}")
+endforeach()
+
+# Editor distribution (docs/adr/078-project-build-and-packaging.md):
+# `cmake --install <build> --prefix <dir>` lays out one relocatable folder.
+#   vkr_editor, vkr_bakery, vkr_harness, vkr_asset_preview
+#   libvulkan.1.dylib          macOS: the Vulkan loader the programs link
+#   resources/editor/          the bootstrap UI resources above
+#   shaders/<backend>/         the shader catalog
+#   content/                   engine content, the installed content root
+#   templates/player/          the player template (player/CMakeLists.txt)
+# The programs find each other, the content and the catalog beside
+# themselves, and keep writable state in per-user directories.
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
+install(TARGETS vkr_editor vkr_bakery vkr_harness vkr_asset_preview
+    RUNTIME DESTINATION . COMPONENT editor)
+if(APPLE)
+    install(FILES "${VKR_VULKAN_LOADER}" DESTINATION .
+        RENAME libvulkan.1.dylib COMPONENT editor)
+endif()
+install(DIRECTORY "$<TARGET_FILE_DIR:vkr_editor>/resources/"
+    DESTINATION resources COMPONENT editor)
+install(DIRECTORY "${VKR_SHADER_CATALOG_DIR}/"
+    DESTINATION shaders COMPONENT editor)
+# Probe bakes copy the offscreen profile into each job.
+foreach(resource IN LISTS VKR_ENGINE_FILES ITEMS
+        tools/profiles/local-offscreen.json)
+    get_filename_component(directory "${resource}" DIRECTORY)
+    install(FILES "${CMAKE_SOURCE_DIR}/${resource}"
+        DESTINATION "content/${directory}" COMPONENT editor)
 endforeach()
