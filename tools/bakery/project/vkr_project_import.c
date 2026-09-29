@@ -518,7 +518,7 @@ bool8_t vkr_project_prepare_font(VkrProjectJob *job) {
       job->pending_default_font = font;
       VkrBakeryJson *document = vkr_project_document(job);
       ok = document && vkr_project_validate_document(
-                           job, document, VKR_PROJECT_MAX_DOCUMENT_BYTES);
+                           job, document, VKR_PROJECT_MAX_MANIFEST_BYTES);
     }
   }
   (void)snprintf(job->stage, sizeof(job->stage), "%s", old_stage);

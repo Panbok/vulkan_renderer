@@ -9,6 +9,9 @@
 #define VKR_EDITOR_PROJECT_NAME_CAPACITY 513u
 #define VKR_EDITOR_PROJECT_MAX_SCENES 128u
 #define VKR_EDITOR_PROJECT_JSON_LIMIT (1024u * 1024u)
+/* A project manifest carries the project's asset inventory, and job results
+   return it; both take the inventory bound of the job runner. */
+#define VKR_EDITOR_PROJECT_MANIFEST_LIMIT (16u * 1024u * 1024u)
 
 typedef struct VkrEditorProjectError {
   char message[512];

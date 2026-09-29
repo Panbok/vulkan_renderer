@@ -1408,7 +1408,7 @@ VkrBakeryJson *vkr_project_import_project_assets(VkrProjectJob *job) {
   job->pending_project_assets = pending;
   VkrBakeryJson *document = vkr_project_document(job);
   if (!document || !vkr_project_validate_document(
-                       job, document, VKR_PROJECT_MAX_DOCUMENT_BYTES)) {
+                       job, document, VKR_PROJECT_MAX_MANIFEST_BYTES)) {
     return NULL;
   }
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
@@ -1497,7 +1497,7 @@ VkrBakeryJson *vkr_project_finalize_project_assets(VkrProjectJob *job) {
                                      job->project_root);
   VkrBakeryJson *document = vkr_project_document(job);
   if (!document || !vkr_project_validate_document(
-                       job, document, VKR_PROJECT_MAX_DOCUMENT_BYTES)) {
+                       job, document, VKR_PROJECT_MAX_MANIFEST_BYTES)) {
     return NULL;
   }
   VkrBakeryJson *result = vkr_bakery_json_object(arena);

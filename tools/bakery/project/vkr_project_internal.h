@@ -17,6 +17,9 @@
 #define VKR_PROJECT_MAX_DOCUMENT_BYTES (1024ull * 1024ull)
 #define VKR_PROJECT_SCENE_VERSION 5
 #define VKR_PROJECT_MAX_INVENTORY_BYTES (16ull * 1024ull * 1024ull)
+/* The project manifest carries the project's asset inventory, so it takes
+   the inventory bound rather than the scene document bound. */
+#define VKR_PROJECT_MAX_MANIFEST_BYTES VKR_PROJECT_MAX_INVENTORY_BYTES
 #define VKR_PROJECT_MAX_IMPORT_BYTES (8ull * 1024ull * 1024ull * 1024ull)
 #define VKR_PROJECT_MAX_IMPORT_FILES 16384u
 #define VKR_PROJECT_MAX_MODEL_BYTES (256ull * 1024ull * 1024ull)

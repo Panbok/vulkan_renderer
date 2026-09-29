@@ -666,8 +666,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
   if (scope == 0 &&
       vkr_editor_project_json_string(document, "inventory", inventory_reference,
                                      sizeof(inventory_reference), &error)) {
-    /* Scene v4 keeps its records in an immutable inventory revision that may
-     * exceed the 1 MiB manifest parser, so its array is walked in place. */
+    /* Scene v4 keeps its records in an immutable inventory revision of up to
+     * 16 MiB, so its array is walked in place rather than tokenized. */
     char inventory[CONTENT_PATH];
     vkr_allocator_free(content->allocator, bytes, size + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);

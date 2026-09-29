@@ -395,7 +395,7 @@ static bool8_t project_read_file(const char *path, VkrAllocator *allocator,
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   if (file_stats(&file_path, &stats) != FILE_ERROR_NONE ||
-      stats.size > VKR_EDITOR_PROJECT_JSON_LIMIT ||
+      stats.size > VKR_EDITOR_PROJECT_MANIFEST_LIMIT ||
       file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
     return false_v;
   }

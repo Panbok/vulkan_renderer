@@ -474,7 +474,7 @@ static bool8_t project_json_finish(s_ProjectJson *json, bool8_t result) {
 static bool8_t project_json_parse(s_ProjectJson *json, String8 bytes) {
   (void)project_json_finish(json, true_v);
   if (!bytes.str || !bytes.length ||
-      bytes.length > VKR_EDITOR_PROJECT_JSON_LIMIT) {
+      bytes.length > VKR_EDITOR_PROJECT_MANIFEST_LIMIT) {
     return false_v;
   }
   /* Every token consumes at least one byte plus a delimiter, apart from the
@@ -563,8 +563,8 @@ bool8_t vkr_editor_project_parse(String8 bytes, VkrEditorProject *project,
     return project_json_finish(
         &json,
         project_error(error,
-                      "Malformed project JSON (1 MiB, 16384 tokens, 32 levels, "
-                      "255-byte keys maximum; duplicate keys are invalid)"));
+                      "Malformed project JSON (16 MiB, 32 levels and 255-byte "
+                      "keys maximum; duplicate keys are invalid)"));
   }
   uint32_t version = project_json_field(&json, 0, "version");
   if (version == UINT32_MAX ||
@@ -745,9 +745,9 @@ static bool8_t project_read(const char *path, VkrAllocator *allocator,
   FileHandle handle = {0};
   FileError result = file_stats(&file, &stats);
   if (result != FILE_ERROR_NONE || !stats.size ||
-      stats.size > VKR_EDITOR_PROJECT_JSON_LIMIT) {
+      stats.size > VKR_EDITOR_PROJECT_MANIFEST_LIMIT) {
     return project_error(
-        error, "Cannot read manifest (missing, empty, or exceeds 1 MiB): %s",
+        error, "Cannot read manifest (missing, empty, or exceeds 16 MiB): %s",
         path);
   }
   result = file_open(
@@ -1050,9 +1050,9 @@ bool8_t vkr_editor_project_save(VkrEditorProject *project,
   file_close(&output);
   FileStats staged_stats;
   if (file_stats(&temp, &staged_stats) != FILE_ERROR_NONE ||
-      staged_stats.size > VKR_EDITOR_PROJECT_JSON_LIMIT) {
-    project_error(error,
-                  "Project manifest exceeds 1 MiB; previous version preserved");
+      staged_stats.size > VKR_EDITOR_PROJECT_MANIFEST_LIMIT) {
+    project_error(
+        error, "Project manifest exceeds 16 MiB; previous version preserved");
     goto cleanup;
   }
   if (!project_file_fingerprint(temporary, &current)) {
