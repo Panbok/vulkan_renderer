@@ -602,6 +602,9 @@ typedef struct VkrSceneWorldState {
 /** Picking render ids per container: container c owns
  * [c * RANGE, (c + 1) * RANGE); the primary scene keeps range 0. */
 #define VKR_SCENE_RENDER_ID_RANGE (1u << 22)
+/** The root World's picking range follows the additive containers'. */
+#define VKR_SCENE_WORLD_RENDER_ID_BASE                                         \
+  ((VKR_SCENE_ADDITIVE_MAX + 1u) * VKR_SCENE_RENDER_ID_RANGE)
 
 /** Largest number of descriptor-typed component types a scene registers. */
 #define VKR_SCENE_TYPE_MAX 32u

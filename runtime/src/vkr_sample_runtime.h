@@ -179,6 +179,9 @@ typedef struct VkrSampleWorldRequest {
   bool8_t save;
   /** With load: drop unsaved World edits instead of refusing. */
   bool8_t discard_edits;
+  /** With load: the same World's document changed; added scenes and the
+   * camera stay. */
+  bool8_t reload;
 } VkrSampleWorldRequest;
 
 typedef struct VkrSampleUiFrame {
@@ -228,6 +231,8 @@ typedef struct VkrSampleUiFrame {
   bool8_t scene_loading;
   /** An added scene's load is still pending in some additive slot. */
   bool8_t additive_loading;
+  /** The World document's load is still pending. */
+  bool8_t world_loading;
   /* A modal client sets this to suppress world input and global edit keys. */
   bool8_t *modal;
   float64_t simulation_time;

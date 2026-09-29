@@ -3563,9 +3563,12 @@ scene_loader_ensure_scene_handle(VkrSceneLoaderAsyncPayload *payload,
   }
 
   scene->assets = payload->assets;
-  /* Additive containers own picking range `world_id` (ADR-076). */
+  /* Additive containers own picking range `world_id`, the World the range
+     after them (ADR-076). */
   if (world_id && world_id <= VKR_SCENE_ADDITIVE_MAX) {
     scene->render_id_base = (uint32_t)world_id * VKR_SCENE_RENDER_ID_RANGE;
+  } else if (world_id == VKR_SCENE_WORLD_ROOT_ID) {
+    scene->render_id_base = VKR_SCENE_WORLD_RENDER_ID_BASE;
   }
   payload->scene_handle = handle;
   payload->scene = scene;

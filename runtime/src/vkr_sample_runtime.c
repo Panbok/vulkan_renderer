@@ -161,6 +161,14 @@ typedef struct State {
   VkrScenePhysicsSet *physics_set;
   /* Root World container (ADR-076): its document, sidecar and journal. */
   VkrSceneHandle world_handle;
+  /* The document loads through the resource system like an added scene, so
+     models in the World stream instead of blocking the frame; pending until
+     it resolves. A missing document starts an empty World directly. */
+  VkrResourceHandleInfo world_resource;
+  bool8_t world_pending;
+  /* Opened alone, the World frames the camera once it activates; a reload of
+     the same document keeps the view. */
+  bool8_t world_frame_camera;
   VkrSceneEditState world_edits;
   char world_path[1024];
   char world_sidecar[1024];
@@ -263,6 +271,7 @@ static uint32_t sample_additive_slot(VkrEntityId entity);
 static void sample_physics_attach(VkrStandardSceneRuntime *application,
                                   VkrScene *scene, bool8_t driver);
 vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application);
+vkr_internal void sample_world_update(VkrStandardSceneRuntime *application);
 static bool8_t sample_additive_dirty(uint32_t slot);
 vkr_internal void sample_additive_remove(VkrStandardSceneRuntime *application,
                                          uint32_t slot);
@@ -3000,12 +3009,15 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
 
   (void)vkr_standard_scene_runtime_try_activate_scene_resource(application);
   if (!state->scene_resource.as.scene || !application->active_scene) {
+    /* Opened alone, the World still streams and renders its models. */
+    sample_world_update(application);
     return;
   }
 
   VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
   if (vkr_resource_system_get_state(&state->scene_resource, &state_error) !=
       VKR_RESOURCE_LOAD_STATE_READY) {
+    sample_world_update(application);
     return;
   }
 
@@ -3076,12 +3088,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     vkr_scene_handle_update_and_sync(state->scene_resource.as.scene,
                                      &application->assets, delta_time);
   }
-  /* The World's transforms and render products follow its edits; it has no
-     simulation of its own (ADR-076). */
-  if (state->world_handle) {
-    vkr_scene_handle_update_and_sync(state->world_handle, &application->assets,
-                                     0.0);
-  }
+  sample_world_update(application);
   /* Additive scenes render beside the active scene; their simulation and
      physics stay paused (ADR-076). */
   sample_additive_poll(application);
@@ -3314,13 +3321,19 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
         VkrSceneHandle picked_handle = state->scene_resource.as.scene;
         entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
                                                          result.object_id);
-        /* Each additive container owns its own picking range. */
+        /* Each additive container, and the World, owns its own picking
+           range. */
         for (uint32_t i = 0; !entity.u64 && i < VKR_SCENE_ADDITIVE_MAX; ++i) {
           if (state->additive_handles[i]) {
             picked_handle = state->additive_handles[i];
             entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
                                                              result.object_id);
           }
+        }
+        if (!entity.u64 && state->world_handle) {
+          picked_handle = state->world_handle;
+          entity = vkr_scene_handle_entity_from_picking_id(picked_handle,
+                                                           result.object_id);
         }
 
         if (entity.u64 != VKR_ENTITY_ID_INVALID.u64) {
@@ -3777,6 +3790,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .world_request = &requests->world_request,
       .world_status = string8_create_from_cstr(
           (const uint8_t *)state->world_status, strlen(state->world_status)),
+      .world_loading = state->world_pending,
       .runtime_preferences = sample_preferences_snapshot(application),
       .scene_recall = sample_recall_snapshot(application),
       .editor_state_request = &requests->editor_state_request,
@@ -3834,10 +3848,15 @@ static bool8_t sample_world_dirty(void) {
          state->world_edits.revision != state->world_edits.saved_revision;
 }
 
+static String8 sample_world_document(void) {
+  return string8_create_from_cstr((const uint8_t *)state->world_path,
+                                  strlen(state->world_path));
+}
+
 /* Waits for GPU work before release: with no scene loaded the World renders
-   alone and owns the published sky products. */
+   alone and owns the published sky products. A pending load is cancelled. */
 vkr_internal void sample_world_unload(VkrStandardSceneRuntime *application) {
-  if (!state->world_handle) {
+  if (!state->world_handle && !state->world_pending) {
     return;
   }
   if (state->has_selection &&
@@ -3852,49 +3871,27 @@ vkr_internal void sample_world_unload(VkrStandardSceneRuntime *application) {
     application->last_renderer_error = VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
   application->world_scene = NULL;
-  vkr_scene_handle_destroy(state->world_handle, &application->assets);
+  if (state->world_resource.type == VKR_RESOURCE_TYPE_SCENE) {
+    const String8 document = sample_world_document();
+    vkr_resource_system_unload(&state->world_resource, document);
+    (void)vkr_scene_loader_request_container(&application->assets, document,
+                                             0u);
+  } else if (state->world_handle) {
+    vkr_scene_handle_destroy(state->world_handle, &application->assets);
+  }
+  state->world_resource = (VkrResourceHandleInfo){0};
   state->world_handle = NULL;
+  state->world_pending = false_v;
   vkr_scene_edit_reset(&state->world_edits,
                        &application->ui_system.retained_allocator, 0u);
 }
 
-vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
-                                       String8 path, String8 sidecar) {
-  if (path.length >= sizeof(state->world_path) ||
-      sidecar.length >= sizeof(state->world_sidecar)) {
-    snprintf(state->world_status, sizeof(state->world_status),
-             "World path is too long.");
-    return false_v;
-  }
-  sample_world_unload(application);
-  MemZero(state->world_path, sizeof(state->world_path));
-  MemZero(state->world_sidecar, sizeof(state->world_sidecar));
-  MemCopy(state->world_path, path.str, path.length);
-  MemCopy(state->world_sidecar, sidecar.str, sidecar.length);
-
-  VkrSceneError error = VKR_SCENE_ERROR_NONE;
-  VkrSceneHandle handle =
-      vkr_scene_handle_create(&application->assets.allocator,
-                              VKR_SCENE_WORLD_ROOT_ID, 64u, 64u, &error);
-  if (!handle) {
-    snprintf(state->world_status, sizeof(state->world_status),
-             "World could not be created (%d).", (int)error);
-    return false_v;
-  }
+/* Publishes a loaded World: its journal and sidecar, shared physics and
+   collision layers, and its own picking range. */
+vkr_internal void sample_world_activate(VkrStandardSceneRuntime *application,
+                                        VkrSceneHandle handle) {
   VkrScene *world = vkr_scene_handle_get_scene(handle);
-  const FilePath document = {
-      .path = string8_create_from_cstr((const uint8_t *)state->world_path,
-                                       strlen(state->world_path)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
-  if (state->world_path[0] && file_exists(&document) &&
-      !vkr_scene_load_from_file(world, &application->assets, document.path,
-                                &application->assets.scratch_allocator, NULL,
-                                &error)) {
-    vkr_scene_handle_destroy(handle, &application->assets);
-    snprintf(state->world_status, sizeof(state->world_status),
-             "World document could not be loaded (%d).", (int)error);
-    return false_v;
-  }
+  world->render_id_base = VKR_SCENE_WORLD_RENDER_ID_BASE;
   (void)vkr_scene_resolve_world(world);
   state->world_handle = handle;
   application->world_scene = world;
@@ -3913,12 +3910,99 @@ vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
      ground grid, looking slightly down toward -Z. */
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
-  if (!application->active_scene && camera) {
+  if (state->world_frame_camera && !application->active_scene && camera) {
     vkr_camera_set_pose(camera, vec3_new(0.0f, 2.5f, 8.0f), -90.0f, -15.0f);
     vkr_camera_system_update(camera);
   }
+  state->world_frame_camera = false_v;
   state->world_status[0] = '\0';
+}
+
+/* Starts loading the World document; `reload` keeps the camera. A missing
+   document starts an empty World at once. */
+vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
+                                       String8 path, String8 sidecar,
+                                       bool8_t reload) {
+  if (path.length >= sizeof(state->world_path) ||
+      sidecar.length >= sizeof(state->world_sidecar)) {
+    snprintf(state->world_status, sizeof(state->world_status),
+             "World path is too long.");
+    return false_v;
+  }
+  sample_world_unload(application);
+  MemZero(state->world_path, sizeof(state->world_path));
+  MemZero(state->world_sidecar, sizeof(state->world_sidecar));
+  MemCopy(state->world_path, path.str, path.length);
+  MemCopy(state->world_sidecar, sidecar.str, sidecar.length);
+  state->world_frame_camera = !reload;
+
+  const String8 document = sample_world_document();
+  const FilePath file = {.path = document, .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (!state->world_path[0] || !file_exists(&file)) {
+    VkrSceneError error = VKR_SCENE_ERROR_NONE;
+    VkrSceneHandle handle =
+        vkr_scene_handle_create(&application->assets.allocator,
+                                VKR_SCENE_WORLD_ROOT_ID, 64u, 64u, &error);
+    if (!handle) {
+      snprintf(state->world_status, sizeof(state->world_status),
+               "World could not be created (%d).", (int)error);
+      return false_v;
+    }
+    sample_world_activate(application, handle);
+    return true_v;
+  }
+  if (!vkr_scene_loader_request_container(&application->assets, document,
+                                          VKR_SCENE_WORLD_ROOT_ID)) {
+    snprintf(state->world_status, sizeof(state->world_status),
+             "Too many scene container requests to load the World.");
+    return false_v;
+  }
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, document,
+                                &application->frame_allocator,
+                                &state->world_resource, &error)) {
+    (void)vkr_scene_loader_request_container(&application->assets, document,
+                                             0u);
+    state->world_resource = (VkrResourceHandleInfo){0};
+    const String8 message = vkr_renderer_get_error_string(error);
+    snprintf(state->world_status, sizeof(state->world_status),
+             "World document could not be loaded: %.*s", (int)message.length,
+             message.str);
+    return false_v;
+  }
+  state->world_pending = true_v;
   return true_v;
+}
+
+/* Activates a World load that resolved or reports one that failed, then
+   keeps the World's transforms and render products current; it has no
+   simulation of its own (ADR-076). */
+vkr_internal void sample_world_update(VkrStandardSceneRuntime *application) {
+  if (state->world_pending) {
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    const VkrResourceLoadState load =
+        vkr_resource_system_get_state(&state->world_resource, &error);
+    VkrResourceHandleInfo resolved = {0};
+    if (load == VKR_RESOURCE_LOAD_STATE_FAILED ||
+        load == VKR_RESOURCE_LOAD_STATE_CANCELED) {
+      const String8 message = vkr_renderer_get_error_string(error);
+      sample_world_unload(application);
+      snprintf(state->world_status, sizeof(state->world_status),
+               "World document could not be loaded: %.*s", (int)message.length,
+               message.str);
+    } else if (load == VKR_RESOURCE_LOAD_STATE_READY &&
+               vkr_resource_system_try_get_resolved(&state->world_resource,
+                                                    &resolved) &&
+               resolved.as.scene) {
+      state->world_resource = resolved;
+      state->world_pending = false_v;
+      sample_world_activate(application, resolved.as.scene);
+    }
+  }
+  if (state->world_handle) {
+    vkr_scene_handle_update_and_sync(state->world_handle, &application->assets,
+                                     0.0);
+  }
 }
 
 vkr_internal void sample_world_save(void) {
@@ -3947,8 +4031,8 @@ vkr_internal void sample_world_request(VkrStandardSceneRuntime *application,
     return;
   }
   /* Closing a project closes every container: added scenes go with the
-     World they belong to. */
-  if (request->unload || request->load) {
+     World they belong to. A reload of the same World keeps them. */
+  if (request->unload || (request->load && !request->reload)) {
     for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
       if (sample_additive_dirty(i) && !request->discard_edits) {
         snprintf(state->world_status, sizeof(state->world_status),
@@ -3963,7 +4047,8 @@ vkr_internal void sample_world_request(VkrStandardSceneRuntime *application,
   if (request->unload) {
     sample_world_unload(application);
   } else if (request->load) {
-    (void)sample_world_load(application, request->path, request->sidecar_path);
+    (void)sample_world_load(application, request->path, request->sidecar_path,
+                            request->reload);
   }
 }
 
