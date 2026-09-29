@@ -274,7 +274,7 @@ def ready_records(log_path, materials_directory):
     record's path) to the bytes the published file's references name, with
     the same queries."""
     records = {}
-    for line in Path(log_path).read_text().splitlines():
+    for line in Path(log_path).read_text(encoding='utf-8').splitlines():
         record = json.loads(line)
         assert record['material'] not in records, record['material']
         records[record['material']] = record
