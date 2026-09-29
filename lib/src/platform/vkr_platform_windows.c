@@ -5,6 +5,7 @@
 #if defined(PLATFORM_WINDOWS)
 #include "containers/str.h"
 #include <limits.h>
+#include <stdio.h>
 
 #define PSAPI_VERSION 2
 #include <psapi.h>
@@ -1086,4 +1087,40 @@ void vkr_platform_shutdown() {
     high_res_timer_enabled = false;
   }
 }
+
+bool8_t vkr_platform_library_open(const char *path, VkrPlatformLibrary *out,
+                                  char *error, uint32_t error_capacity) {
+  *out = (VkrPlatformLibrary){0};
+  wchar_t wide[32768];
+  if (!vkr_platform_widen(path, wide, (int32_t)ArrayCount(wide))) {
+    if (error && error_capacity) {
+      snprintf(error, error_capacity, "invalid library path");
+    }
+    return false_v;
+  }
+  out->handle = (void *)LoadLibraryW(wide);
+  if (!out->handle) {
+    if (error && error_capacity) {
+      snprintf(error, error_capacity, "LoadLibraryW failed (%lu)",
+               (unsigned long)GetLastError());
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+void *vkr_platform_library_symbol(const VkrPlatformLibrary *library,
+                                  const char *name) {
+  return library && library->handle
+             ? (void *)GetProcAddress((HMODULE)library->handle, name)
+             : NULL;
+}
+
+void vkr_platform_library_close(VkrPlatformLibrary *library) {
+  if (library && library->handle) {
+    FreeLibrary((HMODULE)library->handle);
+    library->handle = NULL;
+  }
+}
+
 #endif

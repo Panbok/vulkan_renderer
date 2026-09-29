@@ -1,35 +1,41 @@
 ---
 status: proposed
-updated: 2026-09-29
+updated: 2026-09-30
 authority: proposal
 ---
 
-# Script modules: loading, packaging, TypeScript and the shell split
+# Script modules: packaging, SDK headers, TypeScript and the shell split
 
 ## Baseline
 
 [ADR-079](../adr/079-c-script-modules.md) defines the C script ABI and the
-runtime host. It also defines Script objects and the Player Start, and ships
-the FPS sample as a statically linked module. Bakery already builds a
-module's shared library and static archive
+runtime host. It also covers:
+
+- loading project libraries in the editor, with hot reload that keeps state;
+- the Script editor;
+- Script objects and the Player Start;
+- the FPS sample as a statically linked module.
+
+Bakery builds each module's shared library and static archive
 ([ADR-077](../adr/077-asset-build-system.md)). This proposal covers what
 remains.
 
 ## Remaining work
 
-1. **Editor loading.** Load a project's `lib<module>.dylib`/`.dll` built by
-   Bakery, registering its types before the project's scenes load. The
-   initial reload rule is to stop Play, unload and reload. Changing a
-   component's layout requires reopening the project, because the ECS has no
-   schema migration.
+1. **Component migration.** Hot reload refuses a component whose fields
+   changed; the project must be reopened, and nothing migrates the old bytes.
+   A migration needs versioned field serialization and atomic replacement of
+   the live values.
 2. **Packaged games.** The recommended first step ships the shared library
    beside the prebuilt `vkr_player`, signed inside the `.app`. The player
    then loads the modules `bundle.json` names instead of linking the FPS
    module. Consoles and iOS need static linking later. That requires a linker
    at package time and runtime archives and headers in the editor
    distribution.
-3. **Headers for projects.** The editor distribution needs the runtime and
-   foundation headers, or a trimmed script SDK header, so project scripts
+3. **Headers for projects.** Bakery and the Script editor's completion read
+   the engine headers from this source tree (`VKR_BAKERY_SCRIPT_SDK_DIRS`,
+   `VKR_EDITOR_SCRIPT_SDK_ROOT`). The editor distribution needs the runtime
+   and foundation headers, or a trimmed script SDK header, so project scripts
    compile outside the repository.
 4. **Shell split.** `vkr_sample_runtime.c` still mixes the game shell with
    editor tooling: gizmo, picking, the edit journal, transport and view
@@ -65,7 +71,8 @@ remains.
 
 ## Evidence to accept
 
-- A Bakery-built module loads in the editor on macOS and Windows.
+- The editor builds, loads and hot reloads a project module on Windows as it
+  does on macOS.
 - A packaged Bistro game runs its bundled module on both platforms.
 - The shell split leaves the player without editor tooling objects.
 - A TypeScript behavior matches its C equivalent on Bistro, with measured

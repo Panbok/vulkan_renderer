@@ -3,11 +3,13 @@
 #include "editor_animation.h"
 #include "editor_bakery.h"
 #include "editor_build.h"
+#include "editor_code.h"
 #include "editor_console.h"
 #include "editor_content.h"
 #include "editor_details.h"
 #include "editor_physics_settings.h"
 #include "editor_scene_panels.h"
+#include "editor_scripts.h"
 #include "vkr_sample_runtime.h"
 
 typedef struct VkrEditorProjects VkrEditorProjects;
@@ -37,6 +39,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_CREATE,
   /* Game settings and build profiles. */
   VKR_EDITOR_WINDOW_BUILD,
+  /* Project script sources (ADR-079). */
+  VKR_EDITOR_WINDOW_SCRIPT,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -47,6 +51,9 @@ typedef struct VkrEditorWindowState {
   bool8_t visible;
   bool8_t dragging;
   Vec2 drag_grab_pt;
+  /* Windows with a corner grip: the grip is held. */
+  bool8_t resizable;
+  bool8_t resizing;
 } VkrEditorWindowState;
 
 typedef struct VkrEditorLabelAnchor {
@@ -147,6 +154,9 @@ typedef struct VkrEditorUi {
   VkrEditorBakery *bakery;
   VkrEditorBuild *build;
   VkrEditorContent *content;
+  /* Project script modules and the Script editor window (ADR-079). */
+  struct VkrEditorScripts *scripts;
+  struct VkrEditorCode *code;
   VkrEditorScenePanels *scene_panels;
   VkrEditorPhysicsSettings *physics_settings;
   VkrEditorMenu menu;

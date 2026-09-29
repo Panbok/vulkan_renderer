@@ -167,6 +167,18 @@ bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length);
 bool8_t vkr_platform_clipboard_write_text(const uint8_t *text, uint32_t length);
 
+/** A shared library loaded into the process (dlopen, LoadLibraryW). Open
+ * binds every symbol immediately; `error` receives the loader's message on
+ * failure. Symbols stay valid until close. */
+typedef struct VkrPlatformLibrary {
+  void *handle;
+} VkrPlatformLibrary;
+bool8_t vkr_platform_library_open(const char *path, VkrPlatformLibrary *out,
+                                  char *error, uint32_t error_capacity);
+void *vkr_platform_library_symbol(const VkrPlatformLibrary *library,
+                                  const char *name);
+void vkr_platform_library_close(VkrPlatformLibrary *library);
+
 void vkr_platform_console_write(const char *message, uint8_t colour);
 
 bool8_t vkr_platform_init();

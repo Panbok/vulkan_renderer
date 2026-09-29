@@ -18,9 +18,9 @@ typedef struct FpsPlayerSettings {
 FpsPlayerSettings fps_player_settings_default(void);
 
 /* One existing root entity owns motor, weapon and intent data; the player
- * owns input admission. The script host calls its tick hooks. Keep it at a
- * stable address and shut it down before its borrowed input/scene expire.
- * It owns neither a renderer nor an Actor registry. */
+ * owns input admission. The script host calls its tick and input hooks. Keep
+ * it at a stable address and shut it down before its borrowed input/scene
+ * expire. It owns neither a renderer nor an Actor registry. */
 typedef struct FpsPlayerState {
   FpsWeaponState weapon;
   FpsWeaponReloadToken reload;
@@ -95,6 +95,9 @@ bool8_t fps_player_before_physics(FpsPlayer *player, uint64_t tick,
 void fps_player_after_physics(FpsPlayer *player);
 /* Restores spawn state after a native simulation reset. */
 void fps_player_reset(FpsPlayer *player);
+
+/* One ordered input transition from the script host's input hook. */
+void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event);
 
 /* Call once before scene_update, after the input pump. Returns admitted elapsed
  * time while the scene runs, independently of input focus and a display-delta

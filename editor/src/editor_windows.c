@@ -125,6 +125,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_ANIMATION] = {"Animation editor", VKR_UI_ICON_ANIMATION, NULL,
                        false_v},
     [CMD_PHYSICS] = {"Physics settings", VKR_UI_ICON_PHYSICS, NULL, false_v},
+    [CMD_SCRIPT_EDITOR] = {"Script editor", VKR_UI_ICON_CODE, NULL, false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, NULL,
                           false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, NULL, false_v},
@@ -282,6 +283,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor_panel_visible(frame, VKR_UI_DOCK_PANEL_CONTENT);
   case CMD_ANIMATION:
     return editor->windows[VKR_EDITOR_WINDOW_ANIMATION].visible;
+  case CMD_SCRIPT_EDITOR:
+    return editor->windows[VKR_EDITOR_WINDOW_SCRIPT].visible;
   case CMD_PHYSICS:
     return editor->windows[VKR_EDITOR_WINDOW_PHYSICS].visible;
   case CMD_GRAPHICS:
@@ -347,6 +350,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_ANIMATION:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_ANIMATION);
+    break;
+  case CMD_SCRIPT_EDITOR:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_SCRIPT);
     break;
   case CMD_GRAPHICS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_GRAPHICS);
@@ -483,6 +489,7 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_CONTENT},
     {CMD_CONSOLE},
     {CMD_ANIMATION, true_v},
+    {CMD_SCRIPT_EDITOR},
     {CMD_PHYSICS},
     {CMD_GRAPHICS},
     {CMD_LABELS, true_v},
@@ -1370,6 +1377,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Animation editor");
     title_icon = VKR_UI_ICON_ANIMATION;
     break;
+  case VKR_EDITOR_WINDOW_SCRIPT:
+    title_text = string8_lit("Script editor");
+    title_icon = VKR_UI_ICON_CODE;
+    break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");
     title_icon = VKR_UI_ICON_ADD;
@@ -1426,8 +1437,27 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
       window->drag_grab_pt = (Vec2){press.x - window->position_pt.x,
                                     press.y - window->position_pt.y};
     }
+    /* The bottom-right corner resizes a resizable window. */
+    if (!occluded && window->resizable &&
+        press.x >= window->position_pt.x + window->size_pt.x - 16 &&
+        press.x < window->position_pt.x + window->size_pt.x &&
+        press.y >= window->position_pt.y + window->size_pt.y - 16 &&
+        press.y < window->position_pt.y + window->size_pt.y) {
+      window->resizing = true_v;
+    }
   }
   const bool8_t down = input_is_button_down(input, BUTTON_LEFT);
+  if (window->resizing && !frame->mouse_captured &&
+      (down || ui->mouse_released)) {
+    window->size_pt = (Vec2){
+        Max(420.0f, ui->mouse_x / ui->content_scale - window->position_pt.x),
+        Max(260.0f, ui->mouse_y / ui->content_scale - window->position_pt.y)};
+    ui->capture.mouse = true_v;
+    ui->cursor = VKR_WINDOW_CURSOR_RESIZE_EW;
+  }
+  if (!down || frame->mouse_captured) {
+    window->resizing = false_v;
+  }
   if (window->dragging && !frame->mouse_captured &&
       (down || ui->mouse_released)) {
     /* Include the final endpoint when press and release share one UI frame. */
@@ -1566,6 +1596,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     }
   } else if (kind == VKR_EDITOR_WINDOW_ANIMATION) {
     vkr_editor_animation_build(editor, frame);
+  } else if (kind == VKR_EDITOR_WINDOW_SCRIPT) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("script.body"),
+                                 &bounds)) {
+      vkr_editor_code_build(editor->code, editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
   } else if (kind == VKR_EDITOR_WINDOW_CREATE) {
     VkrUiRect bounds = {0};
     if (editor_window_body_begin(ui, window, string8_lit("create.body"),

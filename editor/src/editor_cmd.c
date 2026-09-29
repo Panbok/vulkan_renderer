@@ -56,14 +56,15 @@ static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_CONSOLE,   VKR_UI_DOCK_PANEL_BAKERY,
     VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD};
 
-static const char *const cmd_windows[] = {"animation", "physics", "preferences",
-                                          "draws",     "memory",  "help",
-                                          "create",    "build",   NULL};
+static const char *const cmd_windows[] = {
+    "animation", "physics", "preferences", "draws",  "memory",
+    "help",      "create",  "build",       "script", NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION, VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,  VKR_EDITOR_WINDOW_DRAWS,
     VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP,
-    VKR_EDITOR_WINDOW_CREATE,    VKR_EDITOR_WINDOW_BUILD};
+    VKR_EDITOR_WINDOW_CREATE,    VKR_EDITOR_WINDOW_BUILD,
+    VKR_EDITOR_WINDOW_SCRIPT};
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -85,16 +86,21 @@ const uint32_t vkr_editor_cmd_tool_modes[] = {
 static const char *const cmd_switches[] = {"on", "off", "toggle", NULL};
 static const char *const cmd_zoom_words[] = {"in", "out", "reset", NULL};
 
-/* Filled once from the object kinds and world types, NULL-terminated. */
-static const char *cmd_object_words[32];
+/* Filled from the object kinds and world types, NULL-terminated; refilled
+ * when a script module registers more (ADR-079). */
+static const char *cmd_object_words[48];
 static const char *cmd_component_words[VKR_SCENE_TYPE_MAX + 1u];
+static uint32_t cmd_object_word_kinds;
 
 static void cmd_structure_words(void) {
-  if (cmd_object_words[0]) {
+  const uint32_t kinds = vkr_editor_object_kind_count();
+  if (cmd_object_words[0] && cmd_object_word_kinds == kinds) {
     return;
   }
-  for (uint32_t i = 0; i < vkr_editor_object_kind_count() &&
-                       i + 1u < ArrayCount(cmd_object_words);
+  cmd_object_word_kinds = kinds;
+  MemZero(cmd_object_words, sizeof(cmd_object_words));
+  MemZero(cmd_component_words, sizeof(cmd_component_words));
+  for (uint32_t i = 0; i < kinds && i + 1u < ArrayCount(cmd_object_words);
        ++i) {
     cmd_object_words[i] = vkr_editor_object_kind_word(i);
   }
@@ -637,6 +643,119 @@ static bool8_t cmd_run_scene_remove(CmdContext *ctx, const CmdDef *def,
   *ctx->frame->scene_request = (VkrSampleSceneRequest){
       .remove = true_v, .container = container, .discard_edits = discard};
   snprintf(ctx->message, sizeof(ctx->message), "Removing scene %u", container);
+  return true_v;
+}
+
+/* Script modules (ADR-079): create one from the template, open a source in
+ * the Script editor, or report each module's build and load state. */
+static bool8_t cmd_run_script_new(CmdContext *ctx, const CmdDef *def,
+                                  String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  char text[64];
+  char path[VKR_EDITOR_SCRIPT_PATH];
+  if (!name.length || name.length >= sizeof(text)) {
+    snprintf(ctx->message, sizeof(ctx->message), "script.new needs a name");
+    return false_v;
+  }
+  MemCopy(text, name.str, name.length);
+  text[name.length] = '\0';
+  if (!vkr_editor_scripts_create_module(ctx->editor->scripts, text, path,
+                                        sizeof(path), ctx->message,
+                                        sizeof(ctx->message))) {
+    return false_v;
+  }
+  (void)vkr_editor_code_open(ctx->editor->code, ctx->editor, path);
+  snprintf(ctx->message, sizeof(ctx->message), "Created %s", path);
+  return true_v;
+}
+
+static bool8_t cmd_run_script_open(CmdContext *ctx, const CmdDef *def,
+                                   String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  const VkrEditorScripts *scripts = ctx->editor->scripts;
+  for (uint32_t i = 0; i < vkr_editor_scripts_file_count(scripts); ++i) {
+    const VkrEditorScriptFile *file = vkr_editor_scripts_file(scripts, i);
+    if (strlen(file->name) == name.length &&
+        !MemCompare(file->name, name.str, name.length) &&
+        vkr_editor_code_open(ctx->editor->code, ctx->editor, file->path)) {
+      snprintf(ctx->message, sizeof(ctx->message), "Opened %s", file->path);
+      return true_v;
+    }
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "No script file '%.*s'",
+           (int)name.length, name.str);
+  return false_v;
+}
+
+static bool8_t cmd_run_script_goto(CmdContext *ctx, const CmdDef *def,
+                                   String8 arg) {
+  (void)def;
+  char text[16] = {0};
+  MemCopy(text, arg.str, Min(arg.length, (uint64_t)sizeof(text) - 1u));
+  const long line = strtol(text, NULL, 10);
+  if (line <= 0 || !vkr_editor_code_goto(ctx->editor->code, (uint32_t)line)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "script.goto needs a line and an open script");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Line %ld", line);
+  return true_v;
+}
+
+static bool8_t cmd_run_script_type(CmdContext *ctx, const CmdDef *def,
+                                   String8 arg) {
+  (void)def;
+  const String8 value = cmd_unquote(arg);
+  char text[256];
+  if (!value.length || value.length >= sizeof(text)) {
+    snprintf(ctx->message, sizeof(ctx->message), "script.type needs text");
+    return false_v;
+  }
+  MemCopy(text, value.str, value.length);
+  text[value.length] = '\0';
+  if (!vkr_editor_code_type(ctx->editor->code, text)) {
+    snprintf(ctx->message, sizeof(ctx->message), "No script tab is open");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Typed %u characters",
+           (uint32_t)value.length);
+  return true_v;
+}
+
+static bool8_t cmd_run_script_save(CmdContext *ctx, const CmdDef *def,
+                                   String8 arg) {
+  (void)def;
+  (void)arg;
+  if (!vkr_editor_code_save_active(ctx->editor->code, ctx->editor)) {
+    snprintf(ctx->message, sizeof(ctx->message), "No script tab to save");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Saved; rebuilding");
+  return true_v;
+}
+
+static bool8_t cmd_run_script_status(CmdContext *ctx, const CmdDef *def,
+                                     String8 arg) {
+  (void)def;
+  (void)arg;
+  static const char *const statuses[] = {"unbuilt", "building", "build failed",
+                                         "loading", "loaded",   "load failed"};
+  const VkrEditorScripts *scripts = ctx->editor->scripts;
+  uint32_t length = 0u;
+  const uint32_t count = vkr_editor_scripts_module_count(scripts);
+  for (uint32_t i = 0; i < count && length < sizeof(ctx->message); ++i) {
+    const VkrEditorScriptModule *module = vkr_editor_scripts_module(scripts, i);
+    length += (uint32_t)snprintf(
+        ctx->message + length, sizeof(ctx->message) - length, "%s%s: %s (%s)",
+        i ? "; " : "", module->name, statuses[module->status], module->message);
+  }
+  if (length < sizeof(ctx->message)) {
+    snprintf(ctx->message + length, sizeof(ctx->message) - length,
+             "%s%u diagnostics", count ? "; " : "no modules; ",
+             vkr_editor_scripts_diagnostic_count(scripts));
+  }
   return true_v;
 }
 
@@ -1197,6 +1316,24 @@ static const CmdDef cmd_defs[] = {
      0u, .holds = true_v},
     {"create", CMD_ARG_OBJECT, "<object>",
      "Create an object in front of the camera", cmd_run_create, CMD_COUNT, 0u},
+    {"script.new", CMD_ARG_TEXT, "<Name>",
+     "Create a script module in Scripts/ and open it", cmd_run_script_new,
+     CMD_COUNT, 0u},
+    {"script.open", CMD_ARG_TEXT, "<file>",
+     "Open a script source in the Script editor", cmd_run_script_open,
+     CMD_COUNT, 0u},
+    {"script.goto", CMD_ARG_TEXT, "<line>",
+     "Move the Script editor's caret to a line", cmd_run_script_goto, CMD_COUNT,
+     0u},
+    {"script.type", CMD_ARG_TEXT, "<text>",
+     "Type text into the Script editor at its caret", cmd_run_script_type,
+     CMD_COUNT, 0u},
+    {"script.save", CMD_ARG_NONE, "",
+     "Save the Script editor's tab, rebuilding and hot reloading its module",
+     cmd_run_script_save, CMD_COUNT, 0u},
+    {"script.status", CMD_ARG_NONE, "",
+     "Report each script module's build and load state", cmd_run_script_status,
+     CMD_COUNT, 0u},
     {"delete", CMD_ARG_TEXT, "[name]", "Delete the selection or a named object",
      cmd_run_delete, CMD_COUNT, 0u},
     {"component.add", CMD_ARG_COMPONENT, "<type>",

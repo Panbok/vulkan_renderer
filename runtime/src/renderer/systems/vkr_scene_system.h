@@ -616,7 +616,7 @@ typedef struct VkrSceneWorldState {
   ((VKR_SCENE_ADDITIVE_MAX + 1u) * VKR_SCENE_RENDER_ID_RANGE)
 
 /** Largest number of descriptor-typed component types a scene registers. */
-#define VKR_SCENE_TYPE_MAX 32u
+#define VKR_SCENE_TYPE_MAX 64u
 
 typedef struct VkrSceneComponentType {
   const struct VkrTypeDesc *type;
@@ -798,6 +798,10 @@ bool8_t vkr_scene_set_typed(VkrScene *scene, VkrEntityId entity,
                             const struct VkrTypeDesc *type, const void *value);
 bool8_t vkr_scene_remove_typed(VkrScene *scene, VkrEntityId entity,
                                const struct VkrTypeDesc *type);
+/** Adds world types registered after this scene initialized, such as a
+    script module loaded later (ADR-079). Call outside queries and ticks.
+    False when the scene's type table is full. */
+bool8_t vkr_scene_sync_world_types(VkrScene *scene);
 /** Writes up to `capacity` live entities carrying `type` in entity index
     order and returns how many carry it, which may exceed `capacity`. */
 uint32_t vkr_scene_find_typed(const VkrScene *scene,

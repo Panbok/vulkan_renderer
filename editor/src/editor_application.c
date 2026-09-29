@@ -86,12 +86,14 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
     goto cleanup;
   editor->ui.bakery = vkr_editor_bakery_create(&ui->retained_allocator);
   editor->ui.build = vkr_editor_build_create(&ui->retained_allocator);
+  editor->ui.scripts = vkr_editor_scripts_create(&ui->retained_allocator);
+  editor->ui.code = vkr_editor_code_create(&ui->retained_allocator);
   editor->ui.scene_panels =
       vkr_editor_scene_panels_create(&ui->retained_allocator);
   editor->ui.physics_settings =
       vkr_editor_physics_settings_create(&ui->retained_allocator);
   if (!editor->ui.bakery || !editor->ui.build || !editor->ui.scene_panels ||
-      !editor->ui.physics_settings)
+      !editor->ui.physics_settings || !editor->ui.scripts || !editor->ui.code)
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;
@@ -157,6 +159,10 @@ cleanup:
   editor_release_font(ui, &editor->ui.icon_fill_font);
   vkr_editor_build_destroy(editor->ui.build);
   editor->ui.build = NULL;
+  vkr_editor_code_destroy(editor->ui.code);
+  editor->ui.code = NULL;
+  vkr_editor_scripts_destroy(editor->ui.scripts);
+  editor->ui.scripts = NULL;
   vkr_editor_bakery_destroy(editor->ui.bakery);
   vkr_editor_animation_shutdown(&editor->ui.animation);
   vkr_editor_physics_settings_destroy(editor->ui.physics_settings);
@@ -214,8 +220,20 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
         &frame->ui->retained_allocator, frame->assets);
     vkr_editor_content_set_service(
         editor->ui.content, vkr_editor_bakery_service(editor->ui.bakery));
+    vkr_editor_content_set_scripts(editor->ui.content, editor->ui.scripts);
   }
   vkr_editor_content_update(editor->ui.content);
+  if (editor->scripts_directory && !editor->scripts_opened) {
+    /* A loose Scripts folder builds into the user cache. */
+    char output[VKR_EDITOR_SCRIPT_PATH];
+    if (vkr_editor_user_path(VKR_PLATFORM_USER_CACHE, "scripts", output,
+                             sizeof(output))) {
+      vkr_editor_scripts_open(
+          editor->ui.scripts, editor->scripts_directory, output,
+          vkr_editor_bakery_service(editor->ui.bakery), frame);
+    }
+    editor->scripts_opened = true_v;
+  }
   vkr_editor_projects_update(editor->ui.projects, &editor->ui, frame);
   /* Choosing or creating a project happens in a compact launcher; opening
    * one grows the same window into the editor, like Unity Hub or the UE
@@ -285,6 +303,10 @@ static bool8_t editor_application_shutdown(void *state,
   /* A running game stops with the editor; Bakery cancels a package job. */
   vkr_editor_build_destroy(editor->ui.build);
   editor->ui.build = NULL;
+  vkr_editor_code_destroy(editor->ui.code);
+  editor->ui.code = NULL;
+  vkr_editor_scripts_destroy(editor->ui.scripts);
+  editor->ui.scripts = NULL;
   vkr_editor_bakery_destroy(editor->ui.bakery);
   editor->ui.bakery = NULL;
   (void)vkr_editor_projects_destroy(editor->ui.projects, &editor->ui, dock);
@@ -345,6 +367,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       editor->exec_script = argv[i + 1];
     if (strcmp(argv[i], "--headless") == 0)
       editor->headless = true_v;
+    if (strcmp(argv[i], "--scripts") == 0 && i + 1 < argc)
+      editor->scripts_directory = argv[i + 1];
     if (strcmp(argv[i], "--scene-only") == 0)
       scene_only = true_v;
     else if (strcmp(argv[i], "--paneled") == 0)

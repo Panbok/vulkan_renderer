@@ -201,7 +201,7 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
   assert(vkr_scene_simulation_completed_ticks(&scene) == 1);
   VkrInputTransition event = {.kind = VKR_INPUT_TRANSITION_LOOK,
                               .time_seconds = boundary};
-  input.observer(&event, input.observer_context);
+  fps_player_observe(&player, &event);
   assert(!player.commands.faulted && player.commands.count == 1);
   assert(player.commands.commands[player.commands.head].tick == 2);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
@@ -210,25 +210,25 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
   for (uint32_t i = 0; i < 1024; ++i) {
     event.time_seconds = 100.040 + i * 1e-7;
     event.delta_x = 0.125;
-    input.observer(&event, input.observer_context);
+    fps_player_observe(&player, &event);
   }
   assert(!player.commands.faulted && player.commands.count == 1);
   event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_BUTTON,
                                .time_seconds = 100.041,
                                .code = BUTTON_LEFT,
                                .pressed = true_v};
-  input.observer(&event, input.observer_context);
+  fps_player_observe(&player, &event);
   event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
                                .delta_x = -0.125};
   for (uint32_t i = 0; i < 1024; ++i) {
     event.time_seconds = 100.042 + i * 1e-7;
-    input.observer(&event, input.observer_context);
+    fps_player_observe(&player, &event);
   }
   event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_BUTTON,
                                .time_seconds = 100.043,
                                .code = BUTTON_LEFT,
                                .pressed = false_v};
-  input.observer(&event, input.observer_context);
+  fps_player_observe(&player, &event);
   assert(!player.commands.faulted && player.commands.count == 4);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   assert(!scene.simulation.faulted);
@@ -247,16 +247,16 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
                                .code = KEY_LCONTROL,
                                .pressed = true_v};
   input.current_keys.keys[KEY_LCONTROL] = true_v;
-  input.observer(&event, input.observer_context);
+  fps_player_observe(&player, &event);
   event.time_seconds = 100.061;
   event.code = KEY_RCONTROL;
   input.current_keys.keys[KEY_RCONTROL] = true_v;
-  input.observer(&event, input.observer_context);
+  fps_player_observe(&player, &event);
   event.time_seconds = 100.062;
   event.code = KEY_LCONTROL;
   event.pressed = false_v;
   input.current_keys.keys[KEY_LCONTROL] = false_v;
-  input.observer(&event, input.observer_context);
+  fps_player_observe(&player, &event);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   assert(!scene.simulation.faulted);
   VkrPhysicsCharacterState motor;
@@ -268,7 +268,7 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
   event.time_seconds = 100.070;
   event.code = KEY_RCONTROL;
   input.current_keys.keys[KEY_RCONTROL] = false_v;
-  input.observer(&event, input.observer_context);
+  fps_player_observe(&player, &event);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   assert(!scene.simulation.faulted);
   assert(vkr_scene_character_get_state(&scene, entity, &motor, NULL));
@@ -300,7 +300,7 @@ static void test_player_unfocused_simulation(VkrAllocator *allocator) {
                                     .kind = VKR_INPUT_TRANSITION_BUTTON,
                                     .code = BUTTON_LEFT,
                                     .pressed = true_v};
-  input.observer(&press, input.observer_context);
+  fps_player_observe(&player, &press);
   state->held = 1u << FPS_ACTION_FORWARD;
 
   // UI input capture cancels player intent, but cannot freeze a running world.
@@ -320,7 +320,7 @@ static void test_player_unfocused_simulation(VkrAllocator *allocator) {
 
   VkrInputTransition ignored = press;
   ignored.time_seconds = 100 + 8.5 * VKR_SCENE_SIMULATION_FIXED_DT;
-  input.observer(&ignored, input.observer_context);
+  fps_player_observe(&player, &ignored);
   assert(!player.commands.count);
   const float64_t resumed = 100 + 9 * VKR_SCENE_SIMULATION_FIXED_DT;
   vkr_scene_update(&scene, fps_player_frame(&player, resumed, true_v));
@@ -330,7 +330,7 @@ static void test_player_unfocused_simulation(VkrAllocator *allocator) {
   // A fresh press after focus returns retains the shared scene tick mapping.
   VkrInputTransition fresh = press;
   fresh.time_seconds = resumed + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
-  input.observer(&fresh, input.observer_context);
+  fps_player_observe(&player, &fresh);
   assert(!player.commands.faulted && player.commands.count == 1);
   assert(player.commands.commands[player.commands.head].tick == 10);
   vkr_scene_update(
@@ -346,7 +346,7 @@ static void test_player_unfocused_simulation(VkrAllocator *allocator) {
   vkr_scene_physics_set_paused(&scene, false_v);
   assert(fps_player_frame(&player, 200, true_v) == 0);
   fresh.time_seconds = 200 + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
-  input.observer(&fresh, input.observer_context);
+  fps_player_observe(&player, &fresh);
   assert(!player.commands.faulted && player.commands.count == 1);
   assert(player.commands.commands[player.commands.head].tick == 11);
   vkr_scene_update(
@@ -393,11 +393,11 @@ bool32_t run_gameplay_player_tests(void) {
                                     .kind = VKR_INPUT_TRANSITION_BUTTON,
                                     .code = BUTTON_LEFT,
                                     .pressed = true_v};
-  input.observer(&press, input.observer_context);
+  fps_player_observe(&player, &press);
   VkrInputTransition release = press;
   release.time_seconds = 100.002;
   release.pressed = false_v;
-  input.observer(&release, input.observer_context);
+  fps_player_observe(&player, &release);
   vkr_scene_update(&scene, 0);
   assert(player.shots_fired == 0);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);

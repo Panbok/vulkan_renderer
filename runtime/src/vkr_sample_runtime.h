@@ -8,7 +8,7 @@
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_ui_system.h"
-#include "script/vkr_script.h"
+#include "script/vkr_script_host.h"
 #include "vkr_graphics_settings.h"
 #include "vkr_renderer.h"
 
@@ -185,6 +185,30 @@ typedef struct VkrSampleWorldRequest {
   bool8_t reload;
 } VkrSampleWorldRequest;
 
+#define VKR_SAMPLE_SCRIPT_LOAD_MAX 8u
+
+typedef struct VkrSampleScriptLoad {
+  char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
+  char path[VKR_SCRIPT_PATH_CAPACITY];
+} VkrSampleScriptLoad;
+
+/** Script library requests (ADR-079), applied after the UI build and before
+ * scene and World requests, so a project's component types register before
+ * its documents load. Retiring comes before the loads. */
+typedef struct VkrSampleScriptRequest {
+  bool8_t retire_libraries;
+  uint32_t load_count;
+  VkrSampleScriptLoad loads[VKR_SAMPLE_SCRIPT_LOAD_MAX];
+} VkrSampleScriptRequest;
+
+/** Outcome of one applied load; `serial` increases with every load. */
+typedef struct VkrSampleScriptResult {
+  uint64_t serial;
+  char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
+  VkrScriptReload result;
+  char message[256];
+} VkrSampleScriptResult;
+
 typedef struct VkrSampleUiFrame {
   VkrUiSystem *ui;
   VkrWindow *window;
@@ -251,6 +275,12 @@ typedef struct VkrSampleUiFrame {
   uint32_t texture_demanded_missing_count;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
+  VkrSampleScriptRequest *script_request;
+  /** The latest applied loads, most recent last; borrowed for the build. */
+  const VkrSampleScriptResult *script_results;
+  uint32_t script_result_count;
+  /** Registered modules and the session; read-only. */
+  const VkrScriptHost *scripts;
   VkrSampleViewState view_state;
   VkrSampleViewRequest *view_request;
   VkrSamplePhysicsRequest *physics_request;

@@ -28,6 +28,8 @@ add_executable(vkr_editor
     src/editor_content.c
     src/editor_projects.c
     src/editor_project_store.c
+    src/editor_scripts.c
+    src/editor_code.c
 )
 target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 vkr_configure_application_target(vkr_editor)
@@ -45,6 +47,8 @@ target_compile_definitions(vkr_editor PRIVATE
     VKR_EDITOR_ASSET_PREVIEW_PATH="$<TARGET_FILE:vkr_asset_preview>"
     VKR_EDITOR_BAKERY_PATH="$<TARGET_FILE:vkr_bakery>"
     VKR_EDITOR_HARNESS_PATH="$<TARGET_FILE:vkr_harness>"
+    # Script completion reads the script SDK headers of this tree (ADR-079).
+    VKR_EDITOR_SCRIPT_SDK_ROOT="${CMAKE_SOURCE_DIR}"
 )
 
 # Installed bootstrap UI resources allow the chooser to run before a workspace

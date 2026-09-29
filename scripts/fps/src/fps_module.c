@@ -377,6 +377,13 @@ static void fps_reset(const VkrScriptSession *session, void *state) {
   fps_player_reset(&module->player);
 }
 
+static void fps_input(const VkrScriptSession *session, void *state,
+                      const VkrInputTransition *transition) {
+  (void)session;
+  FpsModule *module = state;
+  fps_player_observe(&module->player, transition);
+}
+
 static void fps_frame(const VkrScriptSession *session, void *state,
                       VkrScriptFrame *frame) {
   (void)session;
@@ -488,6 +495,7 @@ static const VkrScriptModuleDesc s_module = {
     .type_count = ArrayCount(s_types),
     .state_size = sizeof(FpsModule),
     .state_align = AlignOf(FpsModule),
+    .state_version = 1,
     .start = fps_start,
     .stop = fps_stop,
     .before_physics = fps_before_physics,
@@ -495,6 +503,7 @@ static const VkrScriptModuleDesc s_module = {
     .reset = fps_reset,
     .frame = fps_frame,
     .present = fps_present,
+    .input = fps_input,
 };
 
 VKR_SCRIPT_EXPORT const VkrScriptModuleDesc *

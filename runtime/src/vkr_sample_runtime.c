@@ -116,6 +116,10 @@ typedef struct State {
   /* Last presentation the modules published; its HUD replaces the camera
      text while they run. */
   VkrScriptView script_view;
+  /* Outcomes of the latest library loads the UI requested. */
+  VkrSampleScriptResult script_results[VKR_SAMPLE_SCRIPT_LOAD_MAX];
+  uint32_t script_result_count;
+  uint64_t script_result_serial;
   Vec3 editor_camera_position;
   float32_t editor_camera_yaw;
   float32_t editor_camera_pitch;
@@ -274,6 +278,8 @@ vkr_global State *state = NULL;
 
 static uint32_t sample_additive_slot(VkrEntityId entity);
 static void sample_scripts_stop(VkrStandardSceneRuntime *application);
+static void sample_script_request(VkrStandardSceneRuntime *application,
+                                  const VkrSampleScriptRequest *request);
 static void sample_physics_attach(VkrStandardSceneRuntime *application,
                                   VkrScene *scene, bool8_t driver);
 vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application);
@@ -2807,6 +2813,52 @@ static void sample_scripts_start(VkrStandardSceneRuntime *application) {
   }
 }
 
+/* Library loads between frames, where no module hook runs (ADR-079). A
+ * reload during a session keeps its state or restarts it; retiring ends the
+ * session and returns the camera. */
+static void sample_script_request(VkrStandardSceneRuntime *application,
+                                  const VkrSampleScriptRequest *request) {
+  if (request->retire_libraries) {
+    sample_scripts_stop(application);
+    vkr_script_host_retire_libraries(&state->scripts);
+  }
+  if (!request->load_count) {
+    return;
+  }
+  state->script_result_count = 0u;
+  for (uint32_t i = 0;
+       i < request->load_count && i < VKR_SAMPLE_SCRIPT_LOAD_MAX; ++i) {
+    const VkrSampleScriptLoad *load = &request->loads[i];
+    const char *error = NULL;
+    const VkrScriptReload result = vkr_script_host_load_library(
+        &state->scripts, load->name, load->path, &error);
+    VkrSampleScriptResult *out =
+        &state->script_results[state->script_result_count++];
+    *out = (VkrSampleScriptResult){.serial = ++state->script_result_serial,
+                                   .result = result};
+    snprintf(out->name, sizeof(out->name), "%s", load->name);
+    snprintf(out->message, sizeof(out->message), "%s", error ? error : "");
+    if (result == VKR_SCRIPT_RELOAD_LOADED) {
+      /* Scenes already loaded learn the module's component types. */
+      VkrScene *world = vkr_scene_handle_get_scene(state->world_handle);
+      (void)vkr_scene_sync_world_types(application->active_scene);
+      (void)vkr_scene_sync_world_types(world);
+      for (uint32_t s = 0; s < VKR_SCENE_ADDITIVE_MAX; ++s) {
+        (void)vkr_scene_sync_world_types(
+            vkr_scene_handle_get_scene(state->additive_handles[s]));
+      }
+    }
+    if (result == VKR_SCRIPT_RELOAD_FAILED) {
+      log_error("Script %s was not loaded: %s", load->name,
+                error ? error : "unknown error");
+    } else if (result == VKR_SCRIPT_RELOAD_RESTARTED) {
+      log_info("Script %s reloaded; its state changed shape, so the "
+               "simulation restarted",
+               load->name);
+    }
+  }
+}
+
 /* Ends the session and returns the camera to the editing pose. */
 static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
   vkr_script_host_stop(&state->scripts);
@@ -3530,6 +3582,7 @@ typedef struct VkrSampleUiRequests {
   VkrSceneEditRequest scene_edit;
   VkrSampleSceneRequest scene_request;
   VkrSampleWorldRequest world_request;
+  VkrSampleScriptRequest script_request;
   VkrSampleEditorStateRequest editor_state_request;
   VkrSampleCloseResponse close_response;
   bool8_t quit;
@@ -3590,6 +3643,10 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .graphics = &state->graphics,
       .graphics_request = &requests->graphics_request,
       .transport_action = &requests->transport_action,
+      .script_request = &requests->script_request,
+      .script_results = state->script_results,
+      .script_result_count = state->script_result_count,
+      .scripts = &state->scripts,
       .view_state = state->view_state,
       .view_request = &requests->view_request,
       .physics_request = &requests->physics_request,
@@ -4646,6 +4703,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     application->ui_capture.keyboard = true_v;
     vkr_window_set_mouse_capture(&application->host.window, false_v);
   }
+  sample_script_request(application, &requests.script_request);
   vkr_standard_scene_runtime_apply_scene_request(
       application, &requests.scene_request, &requests.scene_edit);
   sample_world_request(application, &requests.world_request);
@@ -5157,6 +5215,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
     sample_additive_remove(&application, i);
   }
   sample_world_unload(&application);
+  /* Scenes that ran module code are gone; close the libraries. */
+  vkr_script_host_shutdown(&state->scripts);
   vkr_scene_physics_set_destroy(state->physics_set);
   state->physics_set = NULL;
   if (application.last_renderer_error == VKR_RENDERER_ERROR_DEVICE_ERROR)

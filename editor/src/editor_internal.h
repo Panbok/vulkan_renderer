@@ -54,6 +54,8 @@ typedef enum EditorCommand {
   CMD_BUILD_OPEN,
   CMD_BUILD_LOG,
   CMD_SCENE_BAKE,
+  /* The Script editor window (ADR-079). */
+  CMD_SCRIPT_EDITOR,
   CMD_COUNT
 } EditorCommand;
 

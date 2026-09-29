@@ -10,9 +10,15 @@
  * passes them back to the table and never reads their fields.
  *
  * Behaviors a user attaches to entities are the module's component types:
- * plain-data VkrTypeDesc tables that the host registers as scene world types
- * before any scene initializes. Documents, Details, Add component, presets
- * and Cmd paths then accept them like engine components.
+ * plain-data VkrTypeDesc tables that the host copies and registers as scene
+ * world types before any scene initializes. Documents, Details, Add component,
+ * presets and Cmd paths then accept them like engine components.
+ *
+ * Hot reload replaces a shared library's code while its state stays. The
+ * engine therefore keeps no module function pointer past one call except
+ * those in the description, which the host reads again after every reload,
+ * and a module keeps no pointer to its own code or constants in its state.
+ * Superseded libraries stay loaded until the session stops.
  */
 #pragma once
 
@@ -22,7 +28,7 @@
 #include "core/vkr_type_desc.h"
 #include "renderer/systems/vkr_scene_physics.h"
 
-#define VKR_SCRIPT_ABI_VERSION 1u
+#define VKR_SCRIPT_ABI_VERSION 2u
 
 struct VkrRenderAssets;
 struct VkrAnimationGraphInstance;
@@ -140,10 +146,7 @@ typedef struct VkrScriptApi {
   float64_t (*animation_duration)(const VkrAnimationPlayer *player);
   float64_t (*animation_time)(const VkrAnimationPlayer *player);
 
-  /* Synchronous ordered input (ADR-073): one observer per input context. */
-  bool8_t (*input_observe)(InputState *input, VkrInputObserver observer,
-                           void *context);
-  bool8_t (*input_unobserve)(InputState *input, void *context);
+  /* Keyboard state; ordered transitions arrive through the input hook. */
   bool8_t (*input_key_down)(InputState *input, Keys key);
 } VkrScriptApi;
 
@@ -210,10 +213,18 @@ typedef enum VkrScriptStart {
  *   edits. Returning false faults the simulation with `*error`, valid until
  *   return.
  * - reset: infallible restore after a native simulation reset.
+ * - input: each ordered key, button and look transition while the session
+ *   runs, on the producer thread before its asynchronous event (ADR-073).
  * - frame: before the scene advances, every frame.
  * - present: after the scene advanced, every frame.
+ * - reload: after a hot reload swapped in this code with the running
+ *   session's state, before any other hook of the new code.
  * - stop: the scene is paused; release everything start created.
  * Every hook except start and stop is optional.
+ *
+ * A reload keeps the running state only when `state_size`, `state_align` and
+ * `state_version` match; bump `state_version` whenever the state struct
+ * changes. Component types must keep their layout across a reload.
  */
 typedef struct VkrScriptModuleDesc {
   uint32_t abi_version;
@@ -223,6 +234,7 @@ typedef struct VkrScriptModuleDesc {
   uint32_t type_count;
   uint32_t state_size;
   uint32_t state_align;
+  uint32_t state_version;
   VkrScriptStart (*start)(const VkrScriptSession *session, void *state,
                           const char **error);
   void (*stop)(const VkrScriptSession *session, void *state);
@@ -235,6 +247,9 @@ typedef struct VkrScriptModuleDesc {
                 VkrScriptFrame *frame);
   void (*present)(const VkrScriptSession *session, void *state,
                   const VkrScriptFrame *frame, VkrScriptView *view);
+  void (*input)(const VkrScriptSession *session, void *state,
+                const VkrInputTransition *transition);
+  void (*reload)(const VkrScriptSession *session, void *state);
 } VkrScriptModuleDesc;
 
 /**

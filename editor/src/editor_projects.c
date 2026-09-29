@@ -1138,6 +1138,21 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
   project_restore_settings(projects, editor, frame);
   *frame->scene_request = (VkrSampleSceneRequest){
       .unload = true_v, .discard_edits = projects->discard_edits};
+  /* Script modules build and load before the World and scenes load, so
+     their component types register first (ADR-079). */
+  char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char scripts_directory[VKR_EDITOR_PROJECT_PATH_CAPACITY + 16u];
+  char scripts_output[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  vkr_editor_code_close_saved(editor->code);
+  if (vkr_editor_project_directory(candidate, directory) &&
+      snprintf(scripts_directory, sizeof(scripts_directory), "%s/Scripts",
+               directory) < (int32_t)sizeof(scripts_directory) &&
+      snprintf(scripts_output, sizeof(scripts_output), "%s/scripts/%s",
+               projects->workspace.root,
+               candidate->id) < (int32_t)sizeof(scripts_output)) {
+    vkr_editor_scripts_open(editor->scripts, scripts_directory, scripts_output,
+                            vkr_editor_bakery_service(editor->bakery), frame);
+  }
   if (project_world_prepare(projects)) {
     /* World models follow rebuilds published since the World last saved. */
     uint32_t moved = 0u;
@@ -2644,6 +2659,8 @@ static void project_delete_project(VkrEditorProjects *projects,
     *frame->world_request =
         (VkrSampleWorldRequest){.unload = true_v, .discard_edits = true_v};
     vkr_editor_content_set_project(editor->content, "", "", "");
+    vkr_editor_scripts_close_project(
+        editor->scripts, vkr_editor_bakery_service(editor->bakery), frame);
     if (projects->project_arena) {
       vkr_allocator_release_global_accounting(&projects->project_allocator);
       arena_destroy(projects->project_arena);
@@ -3176,6 +3193,8 @@ static void project_choose_workspace(VkrEditorProjects *projects,
       .unload = true_v, .discard_edits = projects->discard_edits};
   projects->discard_edits = false_v;
   vkr_editor_content_set_project(editor->content, "", "", "");
+  vkr_editor_scripts_close_project(
+      editor->scripts, vkr_editor_bakery_service(editor->bakery), frame);
   if (projects->project_arena) {
     vkr_allocator_release_global_accounting(&projects->project_allocator);
     arena_destroy(projects->project_arena);
@@ -3729,6 +3748,10 @@ static void project_take_content_action(VkrEditorProjects *projects,
       project_open_scene_id(projects, editor, frame, content_action.asset_id);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_WORLD) {
       project_open_world(editor, frame);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT) {
+      (void)vkr_editor_code_open(editor->code, editor, content_action.source);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
+      vkr_editor_code_new_script(editor->code, editor);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
       vkr_editor_request_create(
           frame, content_action.object, vkr_editor_create_container(frame),

@@ -281,9 +281,8 @@ void fps_player_reset(FpsPlayer *player) {
   }
 }
 
-static void player_observe(const VkrInputTransition *event, void *context) {
-  FpsPlayer *player = context;
-  if (!player->active || player->commands.faulted) {
+void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event) {
+  if (!player->scene || !player->active || player->commands.faulted) {
     return;
   }
   FpsAction action;
@@ -437,12 +436,6 @@ bool8_t fps_player_attach(FpsPlayer *player, const FpsPlayerConfig *config,
     }
     goto remove_motor;
   }
-  if (!api->input_observe(config->input, player_observe, player)) {
-    if (error) {
-      *error = "Player input is already observed";
-    }
-    goto remove_motor;
-  }
   return true_v;
 remove_motor:
   api->character_destroy(scene, config->entity, NULL);
@@ -458,7 +451,6 @@ void fps_player_shutdown(FpsPlayer *player) {
     return;
   }
   const VkrScriptApi *api = player->api;
-  api->input_unobserve(player->input, player);
   // The scene owner destroys the entity; teardown releases only what attach
   // created and resets no unrelated native state.
   api->character_destroy(player->scene, player->entity, NULL);

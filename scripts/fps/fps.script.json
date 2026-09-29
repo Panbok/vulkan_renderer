@@ -8,6 +8,6 @@
     "src/fps_player_animation.c",
     "src/fps_weapon.c"
   ],
-  "include_roots": ["src", "../../runtime/src", "../../lib/src", "../../renderer/src"],
+  "include_roots": ["src"],
   "standard": "c11"
 }

@@ -13,6 +13,10 @@ typedef struct VkrEditorApplication {
   const char *exec_script;
   /** `--headless`: no window; the editor quits when its Cmd script ends. */
   bool8_t headless;
+  /** `--scripts <dir>`: a Scripts folder of C modules to build, load and
+   * hot reload without a project (ADR-079); opened on the first frame. */
+  const char *scripts_directory;
+  bool8_t scripts_opened;
   /** Window shape last requested: the compact launcher or the editor. */
   bool8_t window_launcher;
   /** Plain frames left around a launcher/editor resize; the resize is

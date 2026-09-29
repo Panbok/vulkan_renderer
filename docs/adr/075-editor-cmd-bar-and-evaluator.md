@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-09-30
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -68,7 +68,7 @@ dependable channel for scripts.
 | `frame` | | Frame the selection |
 | `visibility.toggle` | | Hide or show the selection |
 | `panel` | `<outliner\|details\|console\|bakery\|content\|build> [on\|off\|toggle]` | Docked panels |
-| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build> [on\|off\|toggle]` | Floating windows |
+| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script> [on\|off\|toggle]` | Floating windows |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
 | `layout.reset` | | Default dock layout |
@@ -85,6 +85,9 @@ dependable channel for scripts.
 | `labels`, `labels.directional`, `labels.spot`, `labels.point` | `[on\|off\|toggle]` | Light icons |
 | `create` | `<object>` | Create an object kind (`empty`, `cube`, `text`, a light kind or a world component type) in the selection's container, else the primary scene, else the World; World-only settings always go to the World |
 | `delete` | `[name]` | Delete the named object or the selection (undoable) |
+| `script.new`, `script.open` | `<Name>`, `<file>` | Create a script module from the template in the open Scripts folder and open it, or open a listed source in the Script editor ([ADR-079](079-c-script-modules.md)) |
+| `script.goto`, `script.type` | `<line>`, `<text>` | Move the Script editor's caret to a line, or type ASCII text at it as the keyboard would, completion included |
+| `script.save`, `script.status` | | Save the active Script editor tab, which rebuilds and hot reloads its module; report each module's build and load state and the diagnostic count |
 | `component.add`, `component.remove` | `<type>` | Add or remove a live world component, or `physics_body`, on the selection (undoable); World-only types only on World objects |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |
 | `scene.open`, `scene.create` | `<name>` | Open a project scene (the scene already loading or open stays as it is), or create an empty one and open it |

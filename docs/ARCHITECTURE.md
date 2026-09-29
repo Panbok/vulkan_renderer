@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-29
+updated: 2026-09-30
 authority: architecture
 ---
 
@@ -155,7 +155,9 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `renderer/src/vkr_gpu_*`, `vkr_capture_ring.*` |
 | Render assets | Geometry, textures, materials, meshes, animation banks, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
 | Scene physics | Authored bodies/collider children, staged editor mutations, fixed ticks and evaluated pose publication | `runtime/src/renderer/systems/vkr_scene_physics.c` |
-| Script host | C script module ABI table, module registration, one session's hooks on the scene clock | `runtime/src/script/vkr_script_host.h` |
+| Script host | C script module ABI table, linked and shared-library modules, hot reload, one session's hooks on the scene clock | `runtime/src/script/vkr_script_host.h` |
+| Editor scripts | Project `Scripts/` modules: Bakery builds, diagnostics, loads before the project's documents, rebuilds on save and file changes | `editor/src/editor_scripts.c` |
+| Script editor | Floating code window: tabs, C highlighting, completion, diagnostics, drawn by `vkr_ui_code_view` | `editor/src/editor_code.c` |
 | FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the script API | `scripts/fps/src/fps_module.c` |
 | Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |
 | Production shaders | Shared math and native bindings/entry points | `renderer/src/shaders/` |
@@ -467,8 +469,15 @@ with reservation before consumption. Gameplay lives in C script modules
 ([ADR-079](adr/079-c-script-modules.md)). A module calls the engine only
 through the `VkrScriptApi` table of the runtime script host, registers its
 component types as Script objects and runs on the scene clock. The host is the
-scene's only simulation callback client. The editor session starts on the first
-run or step and ends at Reset. The FPS module, linked into the app, editor and
+scene's only simulation callback client and input observer. The editor session
+starts on the first run or step and ends at Reset.
+
+A project's `Scripts/` modules, or `--scripts <dir>` in scene mode, build with
+Bakery and load as shared libraries before the project's documents. Saving in
+the Script editor, or changing a source on disk, rebuilds the module and hot
+reloads it between frames. The session keeps its state unless the state
+version changed, and compiler diagnostics mark the editor's gutter. The FPS
+module, linked into the app, editor and
 player, uses ordered input, a Jolt character capsule and a first/third-person
 or shoulder camera rig. The player is an `fps_player` entity, or a capsule
 spawned at the resolved Player Start. `--gameplay` adds a training platform in

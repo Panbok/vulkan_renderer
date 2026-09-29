@@ -21,6 +21,7 @@ typedef enum VkrUiNodeKind {
   VKR_UI_NODE_TEXT_FIELD,
   VKR_UI_NODE_IMAGE,
   VKR_UI_NODE_BEZIER,
+  VKR_UI_NODE_CODE,
 } VkrUiNodeKind;
 
 struct VkrUiRetainedState {
@@ -74,6 +75,10 @@ struct VkrUiFrameNode {
   Vec2 image_size;
   Vec2 bezier_points[4];
   float32_t bezier_width;
+  /* Code views: a frame-allocated copy of the caller's view and lines. */
+  VkrUiCodeView code;
+  uint64_t code_hash;
+  uint32_t code_glyphs;
   float32_t icon_size_px;
   bool8_t disabled;
   bool8_t focusable;
@@ -1700,6 +1705,8 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
   hash = vkr_ui_hash_bytes(hash, &node->style, sizeof(node->style));
   hash = vkr_ui_hash_bytes(hash, &node->image, sizeof(node->image));
   hash = vkr_ui_hash_bytes(hash, &node->image_size, sizeof(node->image_size));
+  if (node->kind == VKR_UI_NODE_CODE)
+    hash = vkr_ui_hash_bytes(hash, &node->code_hash, sizeof(node->code_hash));
   if (node->kind == VKR_UI_NODE_BEZIER) {
     hash = vkr_ui_hash_bytes(hash, node->bezier_points,
                              sizeof(node->bezier_points));
@@ -2627,6 +2634,308 @@ vkr_internal void vkr_ui_emit_scrollbar(const VkrUiSystem *system,
       radii);
 }
 
+// =============================================================================
+// Code view
+// =============================================================================
+
+#define VKR_UI_CODE_TAB_COLUMNS 4u
+
+/* One UTF-8 codepoint at `*offset`, advancing past it; malformed bytes read
+ * as U+FFFD, one byte each. */
+vkr_internal uint32_t vkr_ui_code_decode(String8 text, uint32_t *offset) {
+  const uint8_t *bytes = text.str + *offset;
+  const uint64_t remaining = text.length - *offset;
+  const uint8_t lead = bytes[0];
+  uint32_t length = lead < 0x80u   ? 1u
+                    : lead < 0xe0u ? 2u
+                    : lead < 0xf0u ? 3u
+                                   : 4u;
+  if (lead >= 0x80u && lead < 0xc0u)
+    length = 1u;
+  if (length > remaining) {
+    *offset += 1u;
+    return 0xfffdu;
+  }
+  uint32_t codepoint = length == 1u   ? lead
+                       : length == 2u ? lead & 0x1fu
+                       : length == 3u ? lead & 0x0fu
+                                      : lead & 0x07u;
+  for (uint32_t i = 1u; i < length; ++i)
+    codepoint = (codepoint << 6u) | (bytes[i] & 0x3fu);
+  *offset += length;
+  return lead >= 0x80u && lead < 0xc0u ? 0xfffdu : codepoint;
+}
+
+/* Display column of byte `offset`, with tabs expanded. */
+vkr_internal uint32_t vkr_ui_code_column(String8 text, uint32_t offset) {
+  uint32_t column = 0u;
+  uint32_t at = 0u;
+  while (at < offset && at < text.length) {
+    const uint32_t codepoint = vkr_ui_code_decode(text, &at);
+    column = codepoint == '\t' ? (column / VKR_UI_CODE_TAB_COLUMNS + 1u) *
+                                     VKR_UI_CODE_TAB_COLUMNS
+                               : column + 1u;
+  }
+  return column;
+}
+
+vkr_internal VkrFont *vkr_ui_code_font(VkrUiSystem *system,
+                                       VkrFontHandle handle) {
+  return vkr_font_system_get_by_handle(
+      system->fonts, handle.id ? handle : system->default_font);
+}
+
+Vec2 vkr_ui_code_cell_size(VkrUiSystem *system, VkrFontHandle handle,
+                           float32_t font_size_pt) {
+  VkrFont *font = system ? vkr_ui_code_font(system, handle) : NULL;
+  if (!font || font_size_pt <= 0.0f)
+    return (Vec2){0};
+  const VkrFontGlyphId *glyph = vkr_ui_font_glyph(font, '0');
+  const float32_t advance = glyph ? glyph->advance : 0.5f;
+  const float32_t line = font->em_ascender - font->em_descender > 0.0f
+                             ? font->em_ascender - font->em_descender
+                             : 1.2f;
+  return (Vec2){advance * font_size_pt, line * font_size_pt};
+}
+
+bool8_t vkr_ui_code_view(VkrUiSystem *system, String8 id_label,
+                         const VkrUiCodeView *view,
+                         const VkrUiWidgetConfig *source_config,
+                         VkrUiId *out_id) {
+  if (out_id)
+    *out_id = VKR_UI_ID_NONE;
+  if (!system || !system->frame_open || !view ||
+      (view->line_count && !view->lines) || !(view->font_size_pt > 0.0f) ||
+      !(view->line_height_pt > 0.0f))
+    return false_v;
+  const VkrUiWidgetConfig fallback = vkr_ui_widget_config_default();
+  const VkrUiWidgetConfig *config = source_config ? source_config : &fallback;
+  const VkrUiId id = vkr_ui_id_stack_widget_label(&system->id_stack, id_label);
+  if (out_id)
+    *out_id = id;
+  const uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_CODE,
+                                         config->placement, &config->style);
+  if (index == VKR_UI_NODE_NONE)
+    return false_v;
+  VkrUiFrameNode *node = &system->frame_nodes[index];
+  node->cursor = VKR_WINDOW_CURSOR_IBEAM;
+  node->disabled = config->disabled;
+  (void)vkr_ui_interact_input(system, node, true_v);
+
+  /* Copy lines, text and spans: drawing resolves after the caller's frame
+     data may be gone. The hash drives retained tile damage. */
+  uint64_t bytes = (uint64_t)view->line_count * sizeof(VkrUiCodeLine);
+  for (uint32_t i = 0; i < view->line_count; ++i)
+    bytes += view->lines[i].text.length +
+             (uint64_t)view->lines[i].span_count * sizeof(VkrUiCodeSpan) + 8u;
+  uint8_t *storage = bytes ? vkr_allocator_alloc(system->frame_allocator, bytes,
+                                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                           : NULL;
+  if (bytes && !storage)
+    return false_v;
+  VkrUiCodeLine *lines = (VkrUiCodeLine *)storage;
+  uint8_t *cursor = storage + (uint64_t)view->line_count * sizeof(*lines);
+  /* Field by field: struct padding is not part of the view. */
+  const float32_t metrics[4] = {view->font_size_pt, view->line_height_pt,
+                                view->gutter_width_pt, view->scroll_x_pt};
+  const Vec4 colors[5] = {view->text_color, view->gutter_text_color,
+                          view->selection_color, view->current_line_color,
+                          view->caret_color};
+  uint64_t hash =
+      vkr_ui_hash_bytes(UINT64_C(1469598103934665603), &view->line_count,
+                        sizeof(view->line_count));
+  hash = vkr_ui_hash_bytes(hash, &view->font, sizeof(view->font));
+  hash = vkr_ui_hash_bytes(hash, metrics, sizeof(metrics));
+  hash = vkr_ui_hash_bytes(hash, colors, sizeof(colors));
+  uint32_t glyphs = 0u;
+  for (uint32_t i = 0; i < view->line_count; ++i) {
+    const VkrUiCodeLine *from = &view->lines[i];
+    VkrUiCodeLine *line = &lines[i];
+    *line = *from;
+    cursor = (uint8_t *)(((uintptr_t)cursor + 7u) & ~(uintptr_t)7u);
+    if (from->span_count && from->spans) {
+      VkrUiCodeSpan *spans = (VkrUiCodeSpan *)cursor;
+      MemCopy(spans, from->spans, from->span_count * sizeof(*spans));
+      line->spans = spans;
+      cursor += from->span_count * sizeof(*spans);
+      hash = vkr_ui_hash_bytes(hash, spans, from->span_count * sizeof(*spans));
+    } else {
+      line->spans = NULL;
+      line->span_count = 0u;
+    }
+    if (from->text.length) {
+      MemCopy(cursor, from->text.str, from->text.length);
+      line->text = (String8){.str = cursor, .length = from->text.length};
+      cursor += from->text.length;
+      hash = vkr_ui_hash_bytes(hash, line->text.str, line->text.length);
+    }
+    const uint32_t marks[6] = {line->number,          line->selection_start,
+                               line->selection_end,   line->caret,
+                               line->underline_start, line->underline_end};
+    hash = vkr_ui_hash_bytes(hash, marks, sizeof(marks));
+    hash = vkr_ui_hash_bytes(hash, &line->underline_color,
+                             sizeof(line->underline_color));
+    hash = vkr_ui_hash_bytes(hash, &line->marker_color,
+                             sizeof(line->marker_color));
+    hash = vkr_ui_hash_bytes(hash, &line->current, sizeof(line->current));
+    glyphs += (uint32_t)Min(line->text.length, (uint64_t)UINT32_MAX / 4u) + 12u;
+  }
+  node->code = *view;
+  node->code.lines = lines;
+  node->code_hash = hash;
+  node->code_glyphs = glyphs;
+  const bool8_t focused = system->focused_id == id && !node->disabled;
+  if (focused)
+    system->focused_is_text = true_v;
+  return focused;
+}
+
+/* One glyph at pen `x` on `baseline`; a glyph the font lacks draws as '?'. */
+vkr_internal void vkr_ui_code_glyph(VkrUiDrawBuffer *buffer,
+                                    const VkrFont *font, uint32_t codepoint,
+                                    float32_t x, float32_t baseline,
+                                    float32_t em, Vec4 color,
+                                    float32_t screen_range) {
+  const VkrFontGlyphId *glyph = vkr_ui_font_glyph(font, codepoint);
+  if (!glyph || !glyph->has_geometry)
+    glyph = vkr_ui_font_glyph(font, '?');
+  if (!glyph || !glyph->has_geometry)
+    return;
+  const VkrUiRect rect = {x + glyph->plane_left * em,
+                          baseline - glyph->plane_top * em,
+                          (glyph->plane_right - glyph->plane_left) * em,
+                          (glyph->plane_top - glyph->plane_bottom) * em};
+  (void)vkr_ui_draw_buffer_text_quad(
+      buffer, rect,
+      (Vec4){glyph->uv_left, glyph->uv_top, glyph->uv_right, glyph->uv_bottom},
+      color, (VkrUiTextureRef){font->atlas.id, font->atlas.generation},
+      VKR_UI_DRAW_MODE_MTSDF_TEXT, screen_range, font->mtsdf_unit_range);
+}
+
+vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
+                                   const VkrUiFrameNode *node,
+                                   VkrUiRect content) {
+  const VkrUiCodeView *view = &node->code;
+  VkrFont *font = vkr_ui_code_font(system, view->font);
+  if (!font || font->atlas.id == 0u || font->type != VKR_FONT_TYPE_MTSDF)
+    return;
+  const float32_t scale = system->content_scale;
+  const float32_t em = view->font_size_pt * scale;
+  const float32_t line_height = roundf(view->line_height_pt * scale);
+  const Vec2 cell =
+      vkr_ui_code_cell_size(system, view->font, view->font_size_pt);
+  const float32_t advance = cell.x * scale;
+  const float32_t gutter = roundf(view->gutter_width_pt * scale);
+  const float32_t pad = roundf(4.0f * scale);
+  const float32_t em_size = font->em_size > 0.0f ? font->em_size : 1.0f;
+  const float32_t screen_range =
+      font->sdf_distance_range * view->font_size_pt * scale / em_size;
+  const float32_t text_left = content.x + gutter + pad;
+  const float32_t origin_x = text_left - view->scroll_x_pt * scale;
+  const VkrUiRect text_area = {content.x + gutter, content.y,
+                               Max(0.0f, content.width - gutter),
+                               content.height};
+  const Vec4 text_color = vkr_ui_linear_color(view->text_color);
+  const Vec4 gutter_color = vkr_ui_linear_color(view->gutter_text_color);
+  const Vec4 selection = vkr_ui_linear_color(view->selection_color);
+  const Vec4 current = vkr_ui_linear_color(view->current_line_color);
+  const Vec4 caret = vkr_ui_linear_color(view->caret_color);
+  const float32_t glyph_box = (font->em_ascender - font->em_descender) * em;
+  for (uint32_t i = 0; i < view->line_count; ++i) {
+    const VkrUiCodeLine *line = &view->lines[i];
+    const float32_t top = content.y + line_height * (float32_t)i;
+    if (top >= content.y + content.height)
+      break;
+    const float32_t baseline =
+        roundf(top + (line_height - glyph_box) * 0.5f + font->em_ascender * em);
+    if (line->current)
+      vkr_ui_emit_rect(buffer,
+                       (VkrUiRect){content.x, top, content.width, line_height},
+                       current, (Vec4){0});
+    if (line->marker_color.w > 0.0f) {
+      const float32_t size = roundf(line_height * 0.4f);
+      vkr_ui_emit_rect(
+          buffer,
+          (VkrUiRect){content.x + pad, top + (line_height - size) * 0.5f, size,
+                      size},
+          vkr_ui_linear_color(line->marker_color),
+          (Vec4){size * 0.5f, size * 0.5f, size * 0.5f, size * 0.5f});
+    }
+    if (line->number) {
+      char digits[12];
+      const int32_t count =
+          snprintf(digits, sizeof(digits), "%u", line->number);
+      float32_t x = content.x + gutter - pad - advance * (float32_t)count;
+      for (int32_t d = 0; d < count; ++d, x += advance)
+        vkr_ui_code_glyph(buffer, font, (uint32_t)digits[d], x, baseline, em,
+                          gutter_color, screen_range);
+    }
+    if (!vkr_ui_draw_buffer_push_clip(
+            buffer, vkr_ui_rect_intersect(text_area, node->clip)))
+      continue;
+    if (line->selection_end > line->selection_start) {
+      const float32_t x0 =
+          origin_x + advance * (float32_t)vkr_ui_code_column(
+                                   line->text, line->selection_start);
+      const bool8_t breaks = line->selection_end > line->text.length;
+      const float32_t x1 =
+          origin_x + advance * ((float32_t)vkr_ui_code_column(
+                                    line->text, line->selection_end) +
+                                (breaks ? 0.6f : 0.0f));
+      vkr_ui_emit_rect(buffer, (VkrUiRect){x0, top, x1 - x0, line_height},
+                       selection, (Vec4){0});
+    }
+    uint32_t span = 0u;
+    uint32_t column = 0u;
+    uint32_t offset = 0u;
+    const float32_t right = content.x + content.width;
+    while (offset < line->text.length) {
+      const uint32_t at = offset;
+      const uint32_t codepoint = vkr_ui_code_decode(line->text, &offset);
+      const float32_t x = origin_x + advance * (float32_t)column;
+      column = codepoint == '\t' ? (column / VKR_UI_CODE_TAB_COLUMNS + 1u) *
+                                       VKR_UI_CODE_TAB_COLUMNS
+                                 : column + 1u;
+      if (x > right)
+        break;
+      if (codepoint <= ' ' || x + advance < text_area.x)
+        continue;
+      while (span < line->span_count &&
+             line->spans[span].start + line->spans[span].length <= at)
+        ++span;
+      const bool8_t colored =
+          span < line->span_count && line->spans[span].start <= at;
+      vkr_ui_code_glyph(buffer, font, codepoint, x, baseline, em,
+                        colored ? vkr_ui_linear_color(line->spans[span].color)
+                                : text_color,
+                        screen_range);
+    }
+    if (line->underline_end > line->underline_start) {
+      const float32_t x0 =
+          origin_x + advance * (float32_t)vkr_ui_code_column(
+                                   line->text, line->underline_start);
+      const float32_t x1 =
+          origin_x + advance * (float32_t)vkr_ui_code_column(
+                                   line->text, line->underline_end);
+      const float32_t thickness = Max(1.0f, roundf(scale));
+      vkr_ui_emit_rect(buffer,
+                       (VkrUiRect){x0, baseline + thickness * 2.0f,
+                                   Max(x1 - x0, advance), thickness},
+                       vkr_ui_linear_color(line->underline_color), (Vec4){0});
+    }
+    if (line->caret != UINT32_MAX) {
+      const float32_t x = origin_x + advance * (float32_t)vkr_ui_code_column(
+                                                   line->text, line->caret);
+      vkr_ui_emit_rect(buffer,
+                       (VkrUiRect){roundf(x), top + scale,
+                                   Max(1.0f, roundf(2.0f * scale)),
+                                   line_height - 2.0f * scale},
+                       caret, (Vec4){0});
+    }
+    (void)vkr_ui_draw_buffer_pop_clip(buffer);
+  }
+}
+
 vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
                                    VkrUiDrawBuffer *buffer) {
   VkrUiFrameNode *node = &system->frame_nodes[node_index];
@@ -2697,6 +3006,9 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
     }
     break;
   }
+  case VKR_UI_NODE_CODE:
+    vkr_ui_emit_code(system, buffer, node, content);
+    break;
   case VKR_UI_NODE_IMAGE: {
     const float32_t fit = Min(content.width / node->image_size.x,
                               content.height / node->image_size.y);
@@ -2973,7 +3285,8 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
     estimate += node->kind == VKR_UI_NODE_IMAGE ? 26u
                 : node->kind == VKR_UI_NODE_BEZIER
                     ? 9u + vkr_ui_bezier_segments(node)
-                    : 9u;
+                : node->kind == VKR_UI_NODE_CODE ? 9u + node->code_glyphs
+                                                 : 9u;
     if (node->icon != VKR_UI_ICON_NONE)
       estimate += 20u;
     if (node->retained->text_live) {

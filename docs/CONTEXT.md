@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-09-30
 authority: context
 ---
 # Project vocabulary
@@ -89,6 +89,8 @@ below are starting points for checking a definition, not alternate API specs.
 | Script module | Game code built with a project that calls the engine only through `VkrScriptApi` and describes its component types, state and hooks. | [vkr_script.h](../runtime/src/script/vkr_script.h), [ADR-079](adr/079-c-script-modules.md) |
 | Script host | Runtime owner of the API table, registered modules and the one session run on the active scene's clock. | [vkr_script_host.h](../runtime/src/script/vkr_script_host.h) |
 | Script object | An object kind creating an entity with one registered script component; the same component attaches through Add component. | [ADR-079](adr/079-c-script-modules.md) |
+| Hot reload | Swapping a script library's code between frames while the session keeps its state; a changed state version restarts the session and a changed component layout is refused. | [vkr_script_host.h](../runtime/src/script/vkr_script_host.h) |
+| Script editor | The editor's floating window for script sources, with highlighting, completion and compiler diagnostics. | [editor_code.c](../editor/src/editor_code.c) |
 | Player Start | Engine component whose entity's world transform is the spawn pose the scene resolves for a game's player. | [vkr_scene_types.c](../runtime/src/renderer/systems/vkr_scene_types.c) |
 | Scene simulation | Scene-owned fixed clock and optional C hooks around native animation/physics; distinct from display-frame callbacks. | [ADR-073](adr/073-native-gameplay-foundation.md) |
 | Physics body | Entity owning motion, mass/material settings, sensor role and collision membership/mask; runtime state is separate from authored TRS. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h), [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) |

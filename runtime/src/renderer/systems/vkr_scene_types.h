@@ -60,7 +60,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type);
  * scene initializes and keep the descriptor alive for the process. Fails
  * for a NULL or oversized type, a taken name or a full table
  * (VKR_SCENE_REGISTERED_TYPE_MAX). */
-#define VKR_SCENE_REGISTERED_TYPE_MAX 8u
+#define VKR_SCENE_REGISTERED_TYPE_MAX 32u
 bool8_t vkr_scene_register_world_type(const VkrTypeDesc *type);
 /** Registered types in registration order; NULL past the end. */
 const VkrTypeDesc *vkr_scene_registered_type(uint32_t index);

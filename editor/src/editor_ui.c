@@ -207,6 +207,14 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                       .z_order = 8u,
                       .visible = false_v,
                   },
+              [VKR_EDITOR_WINDOW_SCRIPT] =
+                  {
+                      .position_pt = {240.0f, 80.0f},
+                      .size_pt = {860.0f, 620.0f},
+                      .z_order = 9u,
+                      .visible = false_v,
+                      .resizable = true_v,
+                  },
           },
   };
 }
@@ -289,6 +297,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   editor->reduce_motion = frame->ui->reduce_motion;
   vkr_editor_animation_update(editor, frame);
   vkr_editor_bakery_update(editor->bakery);
+  vkr_editor_scripts_update(editor->scripts,
+                            vkr_editor_bakery_service(editor->bakery), frame);
   vkr_editor_build_update(editor->build, editor, frame);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_cmd_update(editor, frame);

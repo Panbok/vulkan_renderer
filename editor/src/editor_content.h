@@ -35,6 +35,10 @@ typedef enum VkrEditorContentActionKind {
   VKR_EDITOR_CONTENT_ACTION_DELETE_SCENE,
   /* Remove an unreferenced asset (`asset_id`, `scope`) from its inventory. */
   VKR_EDITOR_CONTENT_ACTION_DELETE_ASSET,
+  /* A script source (`source` is its path): open it in the Script editor, or
+     ask for a new script module (ADR-079). */
+  VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT,
+  VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT,
 } VkrEditorContentActionKind;
 
 /* A Content context menu's commands (ADR-076). */
@@ -93,6 +97,10 @@ void vkr_editor_content_sync_objects(
  * outlive the browser. NULL disables change tracking. */
 void vkr_editor_content_set_service(VkrEditorContent *content,
                                     EditorBakeryService *service);
+/** Lists the project's script sources, borrowed until replaced (ADR-079). */
+struct VkrEditorScripts;
+void vkr_editor_content_set_scripts(VkrEditorContent *content,
+                                    const struct VkrEditorScripts *scripts);
 /** Disable workspace mutations while retaining browsing and Reveal. */
 void vkr_editor_content_set_read_only(VkrEditorContent *content,
                                       bool8_t read_only);

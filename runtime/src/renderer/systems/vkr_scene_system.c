@@ -420,6 +420,27 @@ static bool8_t scene_world_singleton(const VkrScene *scene,
   return gather.best.u64 != 0u;
 }
 
+bool8_t vkr_scene_sync_world_types(VkrScene *scene) {
+  if (!scene || !scene->world) {
+    return false_v;
+  }
+  const VkrTypeDesc *type = NULL;
+  for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
+    if (vkr_scene_type_id(scene, type) != VKR_COMPONENT_TYPE_INVALID) {
+      continue;
+    }
+    const VkrComponentTypeId id = vkr_entity_register_component_once(
+        scene->world, type->name, type->size, type->align);
+    if (id == VKR_COMPONENT_TYPE_INVALID ||
+        scene->type_count == VKR_SCENE_TYPE_MAX) {
+      return false_v;
+    }
+    scene->types[scene->type_count++] =
+        (VkrSceneComponentType){.type = type, .id = id};
+  }
+  return true_v;
+}
+
 uint32_t vkr_scene_find_typed(const VkrScene *scene, const VkrTypeDesc *type,
                               VkrEntityId *out_entities, uint32_t capacity) {
   const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
