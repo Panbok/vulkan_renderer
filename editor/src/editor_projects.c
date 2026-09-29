@@ -1,4 +1,5 @@
 #include "editor_projects.h"
+#include "editor_build.h"
 #include "editor_content.h"
 #include "editor_install.h"
 #include "editor_internal.h"
@@ -4094,8 +4095,11 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   if (projects->project && now >= projects->next_settings_check) {
     projects->next_settings_check = now + .25;
     project_remember_scene(projects, editor, frame);
+    /* A package build reads project.json while it lowers scenes and fails
+       if the file changes, so remembered viewports wait until it ends. */
     if (!projects->job_id && !projects->delete_waiting_unload &&
-        !projects->delete_project_waiting_unload) {
+        !projects->delete_project_waiting_unload &&
+        !vkr_editor_build_busy(editor->build)) {
       project_queue_settings_save(projects, editor, frame->dock);
     }
   }
