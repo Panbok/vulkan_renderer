@@ -1310,25 +1310,46 @@ vkr_internal const char *vkr_project_source_value(const VkrBakeryJson *value) {
   return NULL;
 }
 
+/* Records the dependency closure of one record whose artifacts the job
+   built into its stage. */
+vkr_internal bool8_t vkr_project_record_closure(VkrProjectJob *job,
+                                                VkrBakeryJson *record) {
+  VkrBakeryJson *visited = vkr_bakery_json_object(job->arena);
+  const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
+  for (const VkrBakeryJson *product = artifacts ? artifacts->first : NULL;
+       product; product = product->next) {
+    char path[VKR_PROJECT_PATH];
+    VKR_PROJECT_TRY(vkr_project_contained(
+        job, job->stage, vkr_project_json_text(product, "path"), true_v, path));
+    VKR_PROJECT_TRY(vkr_project_validate_bundle_dependencies(job, job->stage,
+                                                             path, visited));
+  }
+  VkrBakeryJson *closure = vkr_project_closure(job, visited, job->stage);
+  VKR_PROJECT_TRY(closure);
+  vkr_bakery_json_set(job->arena, record, "closure", closure);
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_project_record_closures(VkrProjectJob *job,
                                                  VkrBakeryJson *records) {
   for (VkrBakeryJson *record = records->first; record; record = record->next) {
-    VkrBakeryJson *visited = vkr_bakery_json_object(job->arena);
-    const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
-    for (const VkrBakeryJson *product = artifacts ? artifacts->first : NULL;
-         product; product = product->next) {
-      char path[VKR_PROJECT_PATH];
-      VKR_PROJECT_TRY(vkr_project_contained(
-          job, job->stage, vkr_project_json_text(product, "path"), true_v,
-          path));
-      VKR_PROJECT_TRY(vkr_project_validate_bundle_dependencies(job, job->stage,
-                                                               path, visited));
-    }
-    VkrBakeryJson *closure = vkr_project_closure(job, visited, job->stage);
-    VKR_PROJECT_TRY(closure);
-    vkr_bakery_json_set(job->arena, record, "closure", closure);
+    VKR_PROJECT_TRY(vkr_project_record_closure(job, record));
   }
   return true_v;
+}
+
+/* A record whose first artifact the job built into its stage; a record an
+   earlier job published keeps its artifacts and closure in the project. */
+vkr_internal bool8_t vkr_project_record_staged(VkrProjectJob *job,
+                                               const VkrBakeryJson *record) {
+  const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
+  const char *relative = artifacts && artifacts->first
+                             ? vkr_project_json_text(artifacts->first, "path")
+                             : NULL;
+  char path[VKR_PROJECT_PATH];
+  return relative && relative[0] &&
+         vkr_bakery_path_join(path, sizeof(path), job->stage, relative) &&
+         vkr_bakery_is_file(path);
 }
 
 VkrBakeryJson *vkr_project_import_project_assets(VkrProjectJob *job) {
@@ -1456,9 +1477,17 @@ VkrBakeryJson *vkr_project_finalize_project_assets(VkrProjectJob *job) {
         finalized, vkr_bakery_json_clone(
                        arena, vkr_bakery_json_get(pending.items[i], "id")));
   }
+  /* Only the records this job rebuilt have artifacts in its stage; other
+     imports of the project keep their published closures. */
+  for (VkrBakeryJson *record = job->assets->first; record;
+       record = record->next) {
+    if (vkr_project_record_staged(job, record) &&
+        !vkr_project_record_closure(job, record)) {
+      return NULL;
+    }
+  }
   static const char *const folders[] = {"sources", "builds", "imports"};
-  if (!vkr_project_record_closures(job, job->assets) ||
-      !vkr_project_publish_folders(
+  if (!vkr_project_publish_folders(
           job, folders, ArrayCount(folders), job->project_root,
           "Project asset revision already exists", &job->project_builds)) {
     return NULL;
