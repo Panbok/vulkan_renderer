@@ -121,8 +121,12 @@ bool8_t vkr_vfs_mount_pack(const char *path);
  * Returns false only when a named bundle or archive cannot be mounted.
  */
 bool8_t vkr_vfs_mount_startup(void);
-/** Scene identity a mounted bundle opens by default, or NULL. */
+/** Scene identity a version 1 bundle opens by default, or NULL. */
 const char *vkr_vfs_bundle_scene(void);
+/** The mounted bundle's `bundle.json` bytes, valid until unmount; empty when
+ * no bundle is mounted. A version 2 description carries a `game` object
+ * (docs/proposals/project-packaging.md) its player reads. */
+String8 vkr_vfs_bundle_description(void);
 uint32_t vkr_vfs_pack_count(void);
 /** Resolves a path below the content root (absolute or root-relative) to
  * mounted archive bytes. */

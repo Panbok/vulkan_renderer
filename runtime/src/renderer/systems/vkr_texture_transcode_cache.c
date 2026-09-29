@@ -205,11 +205,22 @@ static bool8_t vkr_texture_cache_record_is_valid(
   return true_v;
 }
 
+/* Written once before a renderer exists; read-only afterwards. */
+static char vkr_texture_transcode_cache_override[4096];
+
+void vkr_texture_transcode_cache_set_root(const char *path) {
+  (void)snprintf(vkr_texture_transcode_cache_override,
+                 sizeof(vkr_texture_transcode_cache_override), "%s",
+                 path ? path : "");
+}
+
 /* The default cache lives under the content root, so a bundle keeps its own
  * cache and a repository build keeps `build/_asset_cache` wherever the
  * process starts. */
 static String8 vkr_texture_transcode_cache_root(VkrAllocator *allocator) {
-  const char *root = getenv("VKR_ASSET_CACHE_ROOT");
+  const char *root = vkr_texture_transcode_cache_override[0]
+                         ? vkr_texture_transcode_cache_override
+                         : getenv("VKR_ASSET_CACHE_ROOT");
   if (!root || root[0] == '\0') {
     return string8_create_formatted(allocator, "%s%s/textures",
                                     vkr_content_root(),

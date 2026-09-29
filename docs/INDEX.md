@@ -76,7 +76,8 @@ Selecting app versus editor does not change it. The
 configuration; these settings alone do not establish measured performance.
 
 [`vkr_bakery`](adr/077-asset-build-system.md) owns every cooked asset, table,
-shader catalog, project job and scene bake; the editor's Bakery panel drives it,
+shader catalog, project job, project package and scene bake; the editor's Build
+menu and its Develop > Bakery panel drive it,
 and on macOS the editor keeps one `vkr_bakery serve` daemon for file watches.
 
 When artifact regeneration is required, run Bakery or `vkr_bakery` directly:
@@ -90,6 +91,10 @@ When artifact regeneration is required, run Bakery or `vkr_bakery` directly:
 `vkr_bakery bundle assets/bundles/bistro.bundle.json --out <dir> --app
 build_release/app/vulkan_renderer --shaders build_release/shaders` writes a
 Bistro bundle (about 2.5 GiB) whose executable runs from any directory.
+`vkr_bakery bundle <workspace>/.vkreditor/projects/<id> [--profile <name>]
+[--out <dir>]` packages a managed project with the `vkr_player` template that
+every build tree places in `<build>/player`; the editor's Build menu runs the
+same command ([ADR-078](adr/078-project-build-and-packaging.md)).
 
 Unchanged inputs hit the per-user cache instead of re-encoding. The main Bistro artifact includes its scene-specific light
 ranges; runtime mesh loading accepts `.vkb`, not source OBJ/glTF/GLB. Small
@@ -206,7 +211,8 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [074](adr/074-volumetric-cloud-layer.md) | One volumetric cloud layer: runtime-generated noise, half-resolution traced history, sun-projected shadows and aerial perspective at cloud depth | implemented |
 | [075](adr/075-editor-cmd-bar-and-evaluator.md) | Editor Cmd bar: typed commands with completion, an expression evaluator over scene and editor data, and `--exec` scripts with `[cmd]` stdout results | implemented |
 | [076](adr/076-project-object-model.md) | Typed descriptors, entities as ID plus components, the World beside primary and additive scenes with inherit-World singleton resolution and Set primary, World-only physics and animation settings, shared physics, structural undo, presets, registered component types, document-stable entity IDs, version 5 scene documents, prefab instances, Content folder browser, Outliner above Details, viewport documents, an asynchronously loaded World, and import placement in the World, a new scene or a project scene with cooking marks | implemented |
-| [077](adr/077-asset-build-system.md) | One `vkr_bakery` program for cooked assets, tables, the shader catalog with Metal metallibs, managed project jobs, scene bakes and material previews, with one action cache, scheduler and event stream, the editor's `serve` daemon for shader and Content file watches, `.vkpak` bundles mounted under one content root, C script modules, deferred, preview and final texture tiers, a fast editor encode speed and progressive finalization in the editor; Windows paths and managed-project bundles pending | partial |
+| [077](adr/077-asset-build-system.md) | One `vkr_bakery` program for cooked assets, tables, the shader catalog with Metal metallibs, managed project jobs, scene bakes and material previews, with one action cache, scheduler and event stream, the editor's `serve` daemon for shader and Content file watches, `.vkpak` bundles mounted under one content root, C script modules, deferred, preview and final texture tiers, a fast editor encode speed and progressive finalization in the editor; Windows paths pending | partial |
+| [078](adr/078-project-build-and-packaging.md) | Managed projects build into standalone games: `game.json` settings and profiles, portable lowering, project-mode `vkr_bakery bundle` with staged publication and a report, `vkr_player` templates, `bundle.json` version 2, and the editor Build menu, settings, progress and `build.*` commands with Bakery under Develop | implemented |
 
 ## Proposals
 
@@ -226,7 +232,7 @@ decisions before dependent implementation.
 | [Code-first entity behavior and visual authoring](proposals/entity-behavior-system.md) | ECS gameplay with prefab composition/lifecycle, simulation-owned actions/events, weapons, character/camera behavior, visual authoring, native reload and performance acceptance. |
 | [Editor UI extensions](proposals/editor-ui-extensions.md) | Advanced widgets, accessibility, and floating-window ownership. |
 | [Asset build system](proposals/asset-build-system.md) | Remaining `vkr_bakery` scope after ADR-077: the daemon, bundles and scripts on Windows and shader hot reload; managed-project bundles moved to Project build and packaging. |
-| [Project build and packaging](proposals/project-packaging.md) | Build a managed project into a standalone game: `game.json` settings and build profiles, portable lowering, project-mode `vkr_bakery bundle`, the `vkr_player` template, and the editor Build menu, settings, progress and report replacing Bakery for users. |
+| [Project build and packaging](proposals/project-packaging.md) | Remaining packaging scope after ADR-078: adopting finalized inventories, incremental and streamed archives, fullscreen, platform resources and signing, distributed templates, and the Windows/Vulkan gate. |
 | [Editor Projects](proposals/editor-projects.md) | Remaining Projects workflow, native-platform, inspection, retirement and frame-budget acceptance; implemented contracts are in ADR-069. |
 | [Portable path contract](proposals/portable-path-contract.md) | Remaining macOS, network-share and interactive scene-selection evidence gates; implemented contract is in ADR-070. |
 | [Lighting efficiency](proposals/lighting-efficiency.md) | Measured deferred-lighting and frame cost split and remaining ordered fixes: fewer passes in multi-pass chains, static and dynamic shadow atlas layers and half-precision BRDF terms. The material kernel split (ADR-062), Metal culling of only redrawn local faces (ADR-019), Metal compute-run encoders (ADR-025), in-face shadow taps, the local shadow mask pass, local contact shadows and the screen-sized shadow atlas (ADR-019) have shipped. |

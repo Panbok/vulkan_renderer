@@ -164,6 +164,13 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
                                         "Ctrl+0"),
                         false_v},
     [CMD_REDUCE_MOTION] = {"Reduce motion", VKR_UI_ICON_SPARKLE, NULL, false_v},
+    [CMD_BUILD] = {"Build", VKR_UI_ICON_EXPORT, NULL, false_v},
+    [CMD_BUILD_RUN] = {"Build and Run", VKR_UI_ICON_PLAY, NULL, false_v},
+    [CMD_BUILD_SETTINGS] = {"Build Settings\xe2\x80\xa6", VKR_UI_ICON_SETTINGS,
+                            NULL, false_v},
+    [CMD_BUILD_OPEN] = {"Open Last Build", VKR_UI_ICON_FOLDER, NULL, false_v},
+    [CMD_BUILD_LOG] = {"Build log", VKR_UI_ICON_LIST, NULL, false_v},
+    [CMD_SCENE_BAKE] = {"Bake lighting", VKR_UI_ICON_PROBE, NULL, false_v},
 };
 
 static bool8_t editor_panel_visible(const VkrSampleUiFrame *frame,
@@ -243,6 +250,16 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
     return frame->ui->user_scale > VKR_UI_USER_SCALE_MIN;
   case CMD_ZOOM_RESET:
     return frame->ui->user_scale != 1.0f;
+  case CMD_BUILD:
+  case CMD_BUILD_RUN:
+    return vkr_editor_build_available(editor->build, editor);
+  case CMD_BUILD_SETTINGS:
+    return vkr_editor_projects_project(editor->projects) != NULL;
+  case CMD_BUILD_OPEN:
+    return vkr_editor_build_has_package(editor->build);
+  case CMD_SCENE_BAKE:
+    return frame->scene != NULL &&
+           vkr_editor_bakery_scene_bake_available(editor->bakery);
   default:
     return true_v;
   }
@@ -289,6 +306,10 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->labels_point;
   case CMD_REDUCE_MOTION:
     return frame->ui->reduce_motion;
+  case CMD_BUILD_SETTINGS:
+    return editor->windows[VKR_EDITOR_WINDOW_BUILD].visible;
+  case CMD_BUILD_LOG:
+    return editor_panel_visible(frame, VKR_UI_DOCK_PANEL_BUILD);
   default:
     return -1;
   }
@@ -400,6 +421,37 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
   case CMD_COMMANDS:
     editor->cmd_focus_request = true_v;
     break;
+  case CMD_BUILD:
+  case CMD_BUILD_RUN: {
+    char message[256];
+    const bool8_t started =
+        vkr_editor_build_start(editor->build, editor, command == CMD_BUILD_RUN,
+                               message, sizeof(message));
+    vkr_editor_toast(
+        editor, started ? VKR_UI_ICON_EXPORT : VKR_UI_ICON_WARNING_FILL,
+        started ? vkr_ui_theme()->accent_hover : vkr_ui_theme()->warning,
+        message);
+    break;
+  }
+  case CMD_BUILD_SETTINGS:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_BUILD);
+    break;
+  case CMD_BUILD_OPEN: {
+    char message[256];
+    const bool8_t opened =
+        vkr_editor_build_open_last(editor->build, message, sizeof(message));
+    vkr_editor_toast(
+        editor, opened ? VKR_UI_ICON_FOLDER : VKR_UI_ICON_WARNING_FILL,
+        opened ? vkr_ui_theme()->accent_hover : vkr_ui_theme()->warning,
+        message);
+    break;
+  }
+  case CMD_BUILD_LOG:
+    vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_BUILD);
+    break;
+  case CMD_SCENE_BAKE:
+    (void)vkr_editor_bakery_request_scene_bake(editor->bakery, true_v, true_v);
+    break;
   default:
     break;
   }
@@ -430,12 +482,9 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_INSPECTOR},
     {CMD_CONTENT},
     {CMD_CONSOLE},
-    {CMD_BAKERY},
     {CMD_ANIMATION, true_v},
     {CMD_PHYSICS},
     {CMD_GRAPHICS},
-    {CMD_DRAWS, true_v},
-    {CMD_MEMORY},
     {CMD_LABELS, true_v},
     {CMD_LABELS_DIRECTIONAL, false_v, true_v},
     {CMD_LABELS_SPOT, false_v, true_v},
@@ -449,7 +498,20 @@ static const EditorMenuEntry s_view_menu[] = {
 static const EditorMenuEntry s_scene_menu[] = {
     {CMD_SIM_TOGGLE}, {CMD_SIM_STEP},
     {CMD_SIM_RESET},  {CMD_RENDER_TOGGLE, true_v},
-    {CMD_CAMERA},
+    {CMD_CAMERA},     {CMD_SCENE_BAKE, true_v},
+};
+/* Build replaces Bakery for users; its recipes stay under Develop. */
+static const EditorMenuEntry s_build_menu[] = {
+    {CMD_BUILD},
+    {CMD_BUILD_RUN},
+    {CMD_BUILD_SETTINGS, true_v},
+    {CMD_BUILD_OPEN, true_v},
+    {CMD_BUILD_LOG},
+};
+static const EditorMenuEntry s_develop_menu[] = {
+    {CMD_BAKERY},
+    {CMD_DRAWS, true_v},
+    {CMD_MEMORY},
 };
 static const EditorMenuEntry s_help_menu[] = {
     {CMD_HELP},
@@ -467,6 +529,9 @@ static const EditorMenuDefinition s_menus[VKR_EDITOR_MENU_COUNT] = {
     [VKR_EDITOR_MENU_EDIT] = {"Edit", s_edit_menu, ArrayCount(s_edit_menu)},
     [VKR_EDITOR_MENU_VIEW] = {"View", s_view_menu, ArrayCount(s_view_menu)},
     [VKR_EDITOR_MENU_SCENE] = {"Scene", s_scene_menu, ArrayCount(s_scene_menu)},
+    [VKR_EDITOR_MENU_BUILD] = {"Build", s_build_menu, ArrayCount(s_build_menu)},
+    [VKR_EDITOR_MENU_DEVELOP] = {"Develop", s_develop_menu,
+                                 ArrayCount(s_develop_menu)},
     [VKR_EDITOR_MENU_HELP] = {"Help", s_help_menu, ArrayCount(s_help_menu)},
 };
 
@@ -821,6 +886,8 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
       {.unit = VKR_UI_TRACK_AUTO}, /* Edit */
       {.unit = VKR_UI_TRACK_AUTO}, /* View */
       {.unit = VKR_UI_TRACK_AUTO}, /* Scene */
+      {.unit = VKR_UI_TRACK_AUTO}, /* Build */
+      {.unit = VKR_UI_TRACK_AUTO}, /* Develop */
       {.unit = VKR_UI_TRACK_AUTO}, /* Help */
       {.value = 12.0f, .unit = VKR_UI_TRACK_PX},
       {.unit = VKR_UI_TRACK_AUTO}, /* save */
@@ -910,12 +977,12 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
     }
   }
 
-  editor_top_icon_button(editor, ui, frame, 8u, CMD_SAVE);
-  editor_top_icon_button(editor, ui, frame, 9u, CMD_UNDO);
-  editor_top_icon_button(editor, ui, frame, 10u, CMD_REDO);
+  editor_top_icon_button(editor, ui, frame, 10u, CMD_SAVE);
+  editor_top_icon_button(editor, ui, frame, 11u, CMD_UNDO);
+  editor_top_icon_button(editor, ui, frame, 12u, CMD_REDO);
 
   if (projects)
-    vkr_editor_projects_navigation(editor->projects, editor, frame, 12u);
+    vkr_editor_projects_navigation(editor->projects, editor, frame, 14u);
 
   if ((float32_t)ui->target_width / ui->content_scale >= 980.0f) {
     const bool8_t running = frame->simulation_running;
@@ -923,7 +990,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
     VkrUiWidgetConfig status =
         vkr_editor_text_config(theme->font_caption, theme->text_secondary);
     status.placement = (VkrUiPlacement){
-        .column = 14u,
+        .column = 16u,
         .row = 0u,
         .column_span = 1u,
         .row_span = 1u,
@@ -956,8 +1023,8 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
     vkr_ui_label(ui, string8_lit("status"), content, &status);
   }
 
-  vkr_editor_cmd_bar_build(editor, frame, 15u);
-  editor_caption_buttons_build(frame, 16u);
+  vkr_editor_cmd_bar_build(editor, frame, 17u);
+  editor_caption_buttons_build(frame, 18u);
   (void)vkr_ui_panel_end(ui);
   editor_transport_build(editor, frame);
   (void)vkr_ui_input_layer_set(ui, 0u);
@@ -1283,6 +1350,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Create or import");
     title_icon = VKR_UI_ICON_ADD;
     break;
+  case VKR_EDITOR_WINDOW_BUILD:
+    title_text = string8_lit("Build settings");
+    title_icon = VKR_UI_ICON_EXPORT;
+    break;
   case VKR_EDITOR_WINDOW_GRAPHICS:
     title_text = string8_lit("Preferences");
     title_icon = VKR_UI_ICON_GRAPHICS;
@@ -1499,6 +1570,24 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
           Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
       vkr_editor_projects_build_create_window(editor->projects, editor, frame,
                                               bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_BUILD) {
+    VkrUiPanelConfig body = vkr_ui_panel_config_default();
+    body.placement.column = 0;
+    body.placement.row = 1;
+    body.style.padding_pt = (VkrUiEdges){0};
+    body.style.background_color = theme->panel;
+    body.style.corner_radius_pt =
+        (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
+    body.clip_children = true_v;
+    if (vkr_ui_panel_begin(ui, string8_lit("build.body"), &body)) {
+      const VkrUiRect bounds = {
+          window->position_pt.x * ui->content_scale,
+          (window->position_pt.y + 30.0f) * ui->content_scale,
+          window->size_pt.x * ui->content_scale,
+          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+      vkr_editor_build_settings_build(editor->build, editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_PHYSICS) {

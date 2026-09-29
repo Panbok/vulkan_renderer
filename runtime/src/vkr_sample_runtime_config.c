@@ -124,10 +124,15 @@ vkr_internal bool8_t sample_bootstrap_font_directory(char *path,
 /* Missing files keep defaults; an invalid file is reported and ignored.
  * Temporal upscaling needs FSR on Vulkan or MetalFX outside Metal validation;
  * dynamic resolution also needs MetalFX temporal upscaling. */
-vkr_internal bool8_t sample_load_graphics(bool8_t project_managed,
-                                          VkrSampleRuntimeOptions *options) {
+vkr_internal bool8_t
+sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
+                     VkrSampleRuntimeOptions *options) {
+  const bool8_t project_managed = runtime_config->project_managed;
   const char *graphics_path =
       project_managed ? "" : getenv("VKR_GRAPHICS_SETTINGS_PATH");
+  if (!graphics_path) {
+    graphics_path = runtime_config->graphics_settings_path;
+  }
   /* The options keep this pointer for the process's lifetime. */
   static char default_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   if (!graphics_path) {
@@ -142,6 +147,12 @@ vkr_internal bool8_t sample_load_graphics(bool8_t project_managed,
 
   const VkrRendererBackendType backend = options->renderer_backend;
   VkrGraphicsSettings settings = vkr_graphics_settings_defaults(backend);
+  if (runtime_config->graphics_defaults.length &&
+      !vkr_graphics_settings_read_json(runtime_config->graphics_defaults,
+                                       &settings)) {
+    fprintf(stderr, "Ignoring invalid default Graphics settings\n");
+    settings = vkr_graphics_settings_defaults(backend);
+  }
   options->graphics_loaded =
       vkr_graphics_settings_load(graphics_path, &settings);
   if (!options->graphics_loaded) {
@@ -236,7 +247,7 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
           sizeof(options->bootstrap_font_directory))) {
     return false_v;
   }
-  if (!sample_load_graphics(runtime_config->project_managed, options)) {
+  if (!sample_load_graphics(runtime_config, options)) {
     return false_v;
   }
 

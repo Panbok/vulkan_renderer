@@ -108,6 +108,18 @@ vkr_internal const char *vkr_project_record_label(const VkrBakeryJson *record,
   return fallback;
 }
 
+/* A lowered file reference: the resolved path, replaced in portable mode by
+   its package content identity. */
+vkr_internal bool8_t vkr_project_lowered_path(VkrProjectJob *job, char *path) {
+  if (!job->portable) {
+    return true_v;
+  }
+  char identity[VKR_PROJECT_PATH];
+  VKR_PROJECT_TRY(vkr_project_portable_identity(job, path, identity));
+  MemCopy(path, identity, strlen(identity) + 1u);
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_project_lower_asset(
     VkrProjectLowering *lowering, const VkrBakeryJson *reference,
     const char *default_role, char *out_path, const VkrBakeryJson **out_record,
@@ -169,6 +181,7 @@ vkr_internal bool8_t vkr_project_lower_asset(
     return vkr_project_fail(job, "Asset is not a file: %s",
                             vkr_bakery_path_name(out_path));
   }
+  VKR_PROJECT_TRY(vkr_project_lowered_path(job, out_path));
   if (out_record) {
     *out_record = record;
   }
@@ -267,6 +280,7 @@ vkr_internal bool8_t vkr_project_lower_cube(VkrProjectLowering *lowering,
                              vkr_project_faces[f], extension ? extension : ""),
           true_v, face));
     }
+    VKR_PROJECT_TRY(vkr_project_lowered_path(job, base));
     vkr_bakery_json_set(arena, cubemap, "base_path",
                         vkr_bakery_json_cstr(arena, base));
     vkr_bakery_json_set(
@@ -466,6 +480,40 @@ vkr_internal void vkr_project_inventory_init(VkrProjectInventory *inventory,
   inventory->records = records ? records : vkr_bakery_json_array(arena);
 }
 
+/* A portable overlay names each collision asset, a workspace-relative path
+   in the workspace, by the content identity of the file it resolves to, as
+   vkr_project_validate_overlay_dependencies resolves it below `root`. */
+vkr_internal bool8_t vkr_project_portable_overlay(VkrProjectJob *job,
+                                                  VkrBakeryJson *overlay,
+                                                  const char *root) {
+  VkrProjectNodes colliders;
+  VKR_PROJECT_TRY(vkr_project_overlay_colliders(job, overlay, &colliders));
+  const char *final_reference = NULL;
+  if (colliders.count && job->scene_id) {
+    VKR_PROJECT_TRY(vkr_project_managed_reference(
+        job, job->final_path, job->workspace, &final_reference));
+  }
+  for (uint32_t i = 0u; i < colliders.count; ++i) {
+    const char *value = vkr_project_json_text(colliders.items[i], "asset");
+    VKR_PROJECT_TRY(vkr_project_validate_managed_path(job, value));
+    const uint64_t length = final_reference ? strlen(final_reference) : 0u;
+    char path[VKR_PROJECT_PATH];
+    if (final_reference && strncmp(value, final_reference, length) == 0 &&
+        value[length] == '/') {
+      VKR_PROJECT_TRY(
+          vkr_project_contained(job, root, value + length + 1u, true_v, path));
+    } else {
+      VKR_PROJECT_TRY(
+          vkr_project_contained(job, job->workspace, value, true_v, path));
+    }
+    char identity[VKR_PROJECT_PATH];
+    VKR_PROJECT_TRY(vkr_project_portable_identity(job, path, identity));
+    vkr_bakery_json_set(job->arena, colliders.items[i], "asset",
+                        vkr_bakery_json_cstr(job->arena, identity));
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_project_lower_overlay(VkrProjectJob *job,
                                                const VkrBakeryJson *scene,
                                                const char *root,
@@ -503,6 +551,9 @@ vkr_internal bool8_t vkr_project_lower_overlay(VkrProjectJob *job,
                           vkr_bakery_json_int(arena, 1));
       vkr_bakery_json_set(arena, selected, "overrides",
                           vkr_bakery_json_array(arena));
+    }
+    if (job->portable) {
+      VKR_PROJECT_TRY(vkr_project_portable_overlay(job, selected, root));
     }
     (void)vkr_bakery_path_join(edit_path, VKR_PROJECT_PATH,
                                job->runtime_directory, "scene.editor.json");
@@ -664,6 +715,109 @@ VkrBakeryJson *vkr_project_lower(VkrProjectJob *job, VkrBakeryJson *scene,
       arena, result, "preview_assets",
       vkr_bakery_json_int(arena, vkr_project_count_preview(
                                      vkr_bakery_json_get(scene, "assets"))));
+  return result;
+}
+
+/* Every string of the World that names a file relative to the document
+   (`./` or `../`) must resolve to an existing file inside the project, and no
+   string may be an absolute path: a package holds neither. */
+vkr_internal bool8_t vkr_project_check_world_value(VkrProjectJob *job,
+                                                   const VkrBakeryJson *value) {
+  if (value->type == VKR_BAKERY_JSON_STRING) {
+    const char *text = vkr_project_printf(
+        job, "%.*s", (int)value->string.length, value->string.str);
+    if (vkr_bakery_path_is_absolute(text)) {
+      return vkr_project_fail(job,
+                              "The World names an absolute path, which a "
+                              "package cannot hold: %s",
+                              text);
+    }
+    if (strncmp(text, "./", 2u) == 0 || strncmp(text, "../", 3u) == 0) {
+      char path[VKR_PROJECT_PATH];
+      const char *query = strchr(text, '?');
+      const char *relative =
+          query ? vkr_project_printf(job, "%.*s", (int)(query - text), text)
+                : text;
+      VKR_PROJECT_TRY(vkr_project_contained(job, job->project_root,
+                                            relative + 2u, true_v, path));
+      if (!vkr_bakery_is_file(path)) {
+        return vkr_project_fail(job, "The World names a missing file: %s",
+                                text);
+      }
+    }
+    return true_v;
+  }
+  for (const VkrBakeryJson *child = value->first; child; child = child->next) {
+    VKR_PROJECT_TRY(vkr_project_check_world_value(job, child));
+  }
+  return true_v;
+}
+
+VkrBakeryJson *vkr_project_package_world(VkrProjectJob *job) {
+  Arena *arena = job->arena;
+  if (!job->read_only || !job->portable) {
+    vkr_project_fail(job, "package_world requires a read-only portable job");
+    return NULL;
+  }
+  if (!vkr_project_progress(job, "Packaging the World", 0.2, "")) {
+    return NULL;
+  }
+  char document[VKR_PROJECT_PATH];
+  char overlay_path[VKR_PROJECT_PATH];
+  char world_path[VKR_PROJECT_PATH] = {0};
+  char edit_path[VKR_PROJECT_PATH] = {0};
+  (void)snprintf(document, sizeof(document), "%s/world.scene.json",
+                 job->project_root);
+  (void)snprintf(overlay_path, sizeof(overlay_path), "%s/world.editor.json",
+                 job->project_root);
+  if (vkr_bakery_is_file(document)) {
+    /* The document ships byte-identical: without a source identity, the
+       overlay binds World entities by a fingerprint of these bytes. */
+    const char *text = NULL;
+    uint64_t length = 0u;
+    if (!vkr_project_read_text(job, document, VKR_PROJECT_MAX_JSON_BYTES, &text,
+                               &length)) {
+      return NULL;
+    }
+    VkrBakeryJsonError error = {0};
+    const VkrBakeryJson *world = vkr_bakery_json_parse(
+        arena, (const uint8_t *)text, length, 256u, &error);
+    if (!world || world->type != VKR_BAKERY_JSON_OBJECT) {
+      vkr_project_fail(job, "The World document is not valid JSON: %s",
+                       error.message);
+      return NULL;
+    }
+    (void)vkr_bakery_path_join(world_path, sizeof(world_path),
+                               job->runtime_directory, "world.scene.json");
+    if (!vkr_project_check_world_value(job, world) ||
+        !vkr_project_write_text(job, world_path, text, length)) {
+      return NULL;
+    }
+  }
+  if (vkr_bakery_is_file(overlay_path)) {
+    VkrBakeryJson *overlay =
+        vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_JSON_BYTES);
+    (void)vkr_bakery_path_join(edit_path, sizeof(edit_path),
+                               job->runtime_directory, "world.editor.json");
+    if (!overlay || !vkr_project_checked_overlay(job, overlay) ||
+        !vkr_project_validate_overlay_dependencies(job, overlay,
+                                                   job->project_root) ||
+        !vkr_project_portable_overlay(job, overlay, job->project_root) ||
+        !vkr_project_atomic_json(job, edit_path, overlay)) {
+      return NULL;
+    }
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, result, "version",
+                      vkr_bakery_json_int(arena, VKR_PROJECT_VERSION));
+  vkr_bakery_json_set(arena, result, "status",
+                      vkr_bakery_json_cstr(arena, "complete"));
+  vkr_bakery_json_set(arena, result, "world_path",
+                      vkr_bakery_json_cstr(arena, world_path));
+  vkr_bakery_json_set(arena, result, "edit_path",
+                      vkr_bakery_json_cstr(arena, edit_path));
+  vkr_bakery_json_set(arena, result, "fonts", vkr_bakery_json_array(arena));
+  vkr_bakery_json_set(arena, result, "warnings", job->warnings);
   return result;
 }
 

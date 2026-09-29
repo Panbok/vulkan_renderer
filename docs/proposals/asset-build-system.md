@@ -16,9 +16,10 @@ Windows transport, Windows Vulkan bundles and script modules, shader hot
 reload, and mesh-cooker derived textures as child `texture` actions (declined
 in ADR-077 until a second consumer needs them). Loading script modules belongs
 to the entity behavior proposal. Bundles of managed projects, the game
-executable and the editor's Build workflow belong to the
-[project build and packaging proposal](project-packaging.md), which supersedes
-the `bundle <project>` form in sections 5 and 11.
+executable and the editor's Build workflow shipped as
+[ADR-078](../adr/078-project-build-and-packaging.md), which supersedes the
+`bundle <project>` form in sections 5 and 11; their remaining scope is the
+[project build and packaging proposal](project-packaging.md).
 
 ## Handoff notes for the implementer
 

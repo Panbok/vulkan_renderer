@@ -14,7 +14,7 @@
  * material or font configuration names its textures and atlases; an image is
  * read through its `.vkt` sibling. */
 
-#include "vkr_bakery_commands.h"
+#include "vkr_bakery_bundle.h"
 
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
@@ -32,17 +32,7 @@
 // Identity set
 // =============================================================================
 
-/* Insertion-ordered set of root-relative identities; the order is the
- * closure's discovery order and doubles as its work list. */
-typedef struct VkrBundleSet {
-  char **items;
-  uint32_t count;
-  uint32_t capacity;
-  uint32_t *slots; /* Item index + 1; zero is empty. */
-  uint32_t slot_capacity;
-} VkrBundleSet;
-
-vkr_internal uint64_t vkr_bundle_hash(const char *text) {
+vkr_internal uint64_t vkr_bundle_set_hash(const char *text) {
   uint64_t hash = 14695981039346656037ull;
   for (const char *c = text; *c; ++c) {
     hash = (hash ^ (uint8_t)*c) * 1099511628211ull;
@@ -65,7 +55,7 @@ vkr_internal bool8_t vkr_bundle_set_grow(VkrBundleSet *set) {
   set->items = items;
   set->capacity = slot_capacity / 2u;
   for (uint32_t i = 0u; i < set->count; ++i) {
-    uint64_t slot = vkr_bundle_hash(items[i]) & (slot_capacity - 1u);
+    uint64_t slot = vkr_bundle_set_hash(items[i]) & (slot_capacity - 1u);
     while (slots[slot]) {
       slot = (slot + 1u) & (slot_capacity - 1u);
     }
@@ -83,7 +73,7 @@ vkr_internal int32_t vkr_bundle_set_add(VkrBundleSet *set,
   if (set->count == set->capacity && !vkr_bundle_set_grow(set)) {
     return -1;
   }
-  uint64_t slot = vkr_bundle_hash(identity) & (set->slot_capacity - 1u);
+  uint64_t slot = vkr_bundle_set_hash(identity) & (set->slot_capacity - 1u);
   while (set->slots[slot]) {
     if (strcmp(set->items[set->slots[slot] - 1u], identity) == 0) {
       return 0;
@@ -112,13 +102,30 @@ vkr_internal void vkr_bundle_set_free(VkrBundleSet *set) {
 // Closure
 // =============================================================================
 
-typedef struct VkrBundle {
-  VkrBakeryCli *cli;
-  Arena *arena;
-  const char *root;
-  VkrBundleSet files;
-  uint32_t missing;
-} VkrBundle;
+/* Host path below the first mount matching `identity` that holds a file,
+   or a directory when `directory` is set. */
+vkr_internal bool8_t vkr_bundle_resolve(const VkrBundle *bundle,
+                                        const char *identity, char *out,
+                                        uint32_t capacity, bool8_t directory) {
+  for (uint32_t i = 0u; i < bundle->mount_count; ++i) {
+    const VkrBundleMount *mount = &bundle->mounts[i];
+    const uint64_t length = strlen(mount->prefix);
+    if (strncmp(identity, mount->prefix, length) != 0 ||
+        !vkr_bakery_path_join(out, capacity, mount->directory,
+                              identity + length)) {
+      continue;
+    }
+    if (directory ? vkr_bakery_is_directory(out) : vkr_bakery_is_file(out)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_bundle_source(const VkrBundle *bundle, const char *identity,
+                          char *out, uint32_t capacity) {
+  return vkr_bundle_resolve(bundle, identity, out, capacity, false_v);
+}
 
 vkr_internal bool8_t vkr_bundle_has_extension(const char *path,
                                               const char *extension) {
@@ -217,13 +224,11 @@ vkr_internal bool8_t vkr_bundle_add_file(VkrBundle *bundle,
   if (!as_named && vkr_bundle_is_image(identity)) {
     char cooked[VKR_PACK_IDENTITY_MAX];
     snprintf(cooked, sizeof(cooked), "%s.vkt", identity);
-    if (vkr_bakery_path_join(path, sizeof(path), bundle->root, cooked) &&
-        vkr_bakery_is_file(path)) {
+    if (vkr_bundle_source(bundle, cooked, path, sizeof(path))) {
       MemCopy(identity, cooked, strlen(cooked) + 1u);
     }
   }
-  if (!vkr_bakery_path_join(path, sizeof(path), bundle->root, identity) ||
-      !vkr_bakery_is_file(path)) {
+  if (!vkr_bundle_source(bundle, identity, path, sizeof(path))) {
     if (required) {
       vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_IDX_MISSING_SOURCE, identity,
                             0u, 0u, "bundle input not found", NULL);
@@ -234,30 +239,46 @@ vkr_internal bool8_t vkr_bundle_add_file(VkrBundle *bundle,
   return vkr_bundle_set_add(&bundle->files, identity) >= 0;
 }
 
-vkr_internal bool8_t vkr_bundle_add(VkrBundle *bundle, const char *reference,
-                                    uint64_t length, bool8_t required) {
+bool8_t vkr_bundle_add(VkrBundle *bundle, const char *reference,
+                       uint64_t length, bool8_t required) {
   return vkr_bundle_add_file(bundle, reference, length, required, false_v);
 }
 
 /* A string that names an existing file relative to the root or to the
- * document that holds it. */
-vkr_internal void vkr_bundle_reference(VkrBundle *bundle, const char *owner,
-                                       const char *text, uint64_t length) {
+ * document that holds it. As the runtime resolves them, `./` and `../`
+ * references are relative to the owner only. A required reference that
+ * names no file is reported against its owner. */
+vkr_internal bool8_t vkr_bundle_reference(VkrBundle *bundle, const char *owner,
+                                          const char *text, uint64_t length,
+                                          bool8_t required) {
   if (!length || length >= VKR_PACK_IDENTITY_MAX ||
       memchr(text, '\n', length)) {
-    return;
+    return false_v;
   }
-  if (vkr_bundle_add(bundle, text, length, false_v)) {
-    return;
+  const bool8_t owner_relative =
+      (length > 1u && text[0] == '.' && text[1] == '/') ||
+      (length > 2u && text[0] == '.' && text[1] == '.' && text[2] == '/');
+  if (!owner_relative && vkr_bundle_add(bundle, text, length, false_v)) {
+    return true_v;
   }
   char relative[VKR_PACK_IDENTITY_MAX];
   char directory[VKR_PACK_IDENTITY_MAX];
   vkr_bakery_path_parent(directory, sizeof(directory), owner);
   if (directory[0] &&
       (uint32_t)snprintf(relative, sizeof(relative), "%s/%.*s", directory,
-                         (int)length, text) < sizeof(relative)) {
-    (void)vkr_bundle_add(bundle, relative, strlen(relative), false_v);
+                         (int)length, text) < sizeof(relative) &&
+      vkr_bundle_add(bundle, relative, strlen(relative), false_v)) {
+    return true_v;
   }
+  if (required) {
+    char message[VKR_PACK_IDENTITY_MAX + 32u];
+    snprintf(message, sizeof(message), "names a missing file: %.*s",
+             (int)length, text);
+    vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_IDX_MISSING_SOURCE, owner, 0u, 0u,
+                          message, NULL);
+    ++bundle->missing;
+  }
+  return false_v;
 }
 
 vkr_internal void vkr_bundle_walk_json(VkrBundle *bundle, const char *owner,
@@ -266,8 +287,8 @@ vkr_internal void vkr_bundle_walk_json(VkrBundle *bundle, const char *owner,
     return;
   }
   if (value->type == VKR_BAKERY_JSON_STRING) {
-    vkr_bundle_reference(bundle, owner, (const char *)value->string.str,
-                         value->string.length);
+    (void)vkr_bundle_reference(bundle, owner, (const char *)value->string.str,
+                               value->string.length, false_v);
     return;
   }
   if (value->type == VKR_BAKERY_JSON_OBJECT) {
@@ -307,15 +328,23 @@ vkr_internal void vkr_bundle_walk_pairs(VkrBundle *bundle, const char *owner,
       while (size && (value[size - 1u] == '\r' || value[size - 1u] == ' ')) {
         --size;
       }
-      vkr_bundle_reference(bundle, owner, (const char *)value, size);
+      (void)vkr_bundle_reference(bundle, owner, (const char *)value, size,
+                                 false_v);
     }
     line = end + 1u;
   }
 }
 
-/* A mesh names its materials; the mesh cooker reports them. */
+/* A mesh names its materials, which the mesh cooker reports, relative to the
+ * root or, as managed bundles name them, to the mesh; an adjacent
+ * `.remap.json` maps them (vkr_mesh_cooked.h). */
 vkr_internal void vkr_bundle_walk_mesh(VkrBundle *bundle, const char *owner,
                                        const char *path) {
+  char remap[VKR_PACK_IDENTITY_MAX];
+  if ((uint32_t)snprintf(remap, sizeof(remap), "%s.remap.json", owner) <
+      sizeof(remap)) {
+    (void)vkr_bundle_add(bundle, remap, strlen(remap), false_v);
+  }
   char report[VKR_BAKERY_PATH_CAPACITY];
   vkr_bakery_temp_path(report, sizeof(report), bundle->cli->config.cache_dir,
                        "bundle-mesh.json");
@@ -336,8 +365,9 @@ vkr_internal void vkr_bundle_walk_mesh(VkrBundle *bundle, const char *owner,
     for (const VkrBakeryJson *material = materials ? materials->first : NULL;
          material; material = material->next) {
       if (material->type == VKR_BAKERY_JSON_STRING) {
-        (void)vkr_bundle_add(bundle, (const char *)material->string.str,
-                             material->string.length, true_v);
+        (void)vkr_bundle_reference(bundle, owner,
+                                   (const char *)material->string.str,
+                                   material->string.length, true_v);
       }
     }
     free(data);
@@ -347,7 +377,7 @@ vkr_internal void vkr_bundle_walk_mesh(VkrBundle *bundle, const char *owner,
 
 vkr_internal void vkr_bundle_expand(VkrBundle *bundle, const char *identity) {
   char path[VKR_BAKERY_PATH_CAPACITY];
-  if (!vkr_bakery_path_join(path, sizeof(path), bundle->root, identity)) {
+  if (!vkr_bundle_source(bundle, identity, path, sizeof(path))) {
     return;
   }
   if (vkr_bundle_has_extension(identity, ".vkb")) {
@@ -383,11 +413,55 @@ typedef struct VkrBundleDirectory {
 vkr_internal bool8_t vkr_bundle_visit(void *context, const char *name,
                                       bool8_t is_directory);
 
-/* Every file below a root-relative directory, in byte order of names. */
-vkr_internal void vkr_bundle_add_directory(VkrBundle *bundle,
-                                           const char *identity) {
+void vkr_bundle_close(VkrBundle *bundle) {
+  for (uint32_t i = 0u; i < bundle->files.count; ++i) {
+    char identity[VKR_PACK_IDENTITY_MAX];
+    snprintf(identity, sizeof(identity), "%s", bundle->files.items[i]);
+    vkr_bundle_expand(bundle, identity);
+  }
+}
+
+vkr_internal bool8_t vkr_bundle_hex_digest(const char *hex, uint8_t out[32]) {
+  for (uint32_t i = 0u; i < 32u; ++i) {
+    unsigned int byte = 0u;
+    if (sscanf(hex + i * 2u, "%2x", &byte) != 1) {
+      return false_v;
+    }
+    out[i] = (uint8_t)byte;
+  }
+  return true_v;
+}
+
+bool8_t vkr_bundle_hash(VkrBundle *bundle, VkrBundleItem **out_items,
+                        uint64_t *out_bytes) {
+  VkrBundleItem *items =
+      calloc(bundle->files.count ? bundle->files.count : 1u, sizeof(*items));
+  *out_items = items;
+  *out_bytes = 0u;
+  if (!items) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < bundle->files.count; ++i) {
+    char path[VKR_BAKERY_PATH_CAPACITY];
+    char hex[VKR_BAKERY_SHA256_HEX];
+    items[i].identity = bundle->files.items[i];
+    if (!vkr_bundle_source(bundle, items[i].identity, path, sizeof(path)) ||
+        !vkr_bakery_hash_file(path, hex, &items[i].size) ||
+        !vkr_bundle_hex_digest(hex, items[i].sha256)) {
+      vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_IDX_UNREADABLE_SOURCE,
+                            items[i].identity, 0u, 0u, "cannot read", NULL);
+      return false_v;
+    }
+    *out_bytes += items[i].size;
+  }
+  return true_v;
+}
+
+void vkr_bundle_free(VkrBundle *bundle) { vkr_bundle_set_free(&bundle->files); }
+
+void vkr_bundle_add_directory(VkrBundle *bundle, const char *identity) {
   char path[VKR_BAKERY_PATH_CAPACITY];
-  if (!vkr_bakery_path_join(path, sizeof(path), bundle->root, identity)) {
+  if (!vkr_bundle_resolve(bundle, identity, path, sizeof(path), true_v)) {
     return;
   }
   VkrBundleDirectory directory = {.bundle = bundle, .identity = identity};
@@ -415,13 +489,6 @@ vkr_internal bool8_t vkr_bundle_visit(void *context, const char *name,
 // Archive writer
 // =============================================================================
 
-typedef struct VkrBundleItem {
-  const char *identity;
-  uint8_t sha256[32];
-  uint64_t size;
-  uint32_t chunk;
-} VkrBundleItem;
-
 vkr_internal int vkr_bundle_compare_identity(const void *lhs, const void *rhs) {
   const VkrBundleItem *a = lhs;
   const VkrBundleItem *b = rhs;
@@ -436,7 +503,7 @@ vkr_internal int vkr_bundle_compare_chunk(const void *lhs, const void *rhs) {
                 ((const VkrPackChunk *)rhs)->sha256, 32u);
 }
 
-vkr_internal uint32_t vkr_bundle_loader(const char *identity) {
+uint32_t vkr_bundle_loader(const char *identity) {
   static const struct {
     const char *extension;
     VkrPackLoader loader;
@@ -466,17 +533,6 @@ vkr_internal uint32_t vkr_bundle_alignment(const char *identity) {
                  loader == VKR_PACK_LOADER_VOLUME
              ? VKR_PACK_MAPPABLE_ALIGNMENT
              : VKR_PACK_ALIGNMENT;
-}
-
-vkr_internal bool8_t vkr_bundle_hex_digest(const char *hex, uint8_t out[32]) {
-  for (uint32_t i = 0u; i < 32u; ++i) {
-    unsigned int byte = 0u;
-    if (sscanf(hex + i * 2u, "%2x", &byte) != 1) {
-      return false_v;
-    }
-    out[i] = (uint8_t)byte;
-  }
-  return true_v;
 }
 
 vkr_internal bool8_t vkr_bundle_pad(FILE *file, uint64_t *offset,
@@ -512,11 +568,9 @@ vkr_internal bool8_t vkr_bundle_copy(FILE *file, const char *path,
 /* Writes the archive to `path` through a staging file. Chunks follow in
  * identity order; the catalog and chunk table follow them, and the header,
  * written last, points at both. */
-vkr_internal bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
-                                           VkrBundleItem *items,
-                                           uint32_t item_count,
-                                           uint32_t *out_chunks,
-                                           uint64_t *out_bytes) {
+bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
+                              VkrBundleItem *items, uint32_t item_count,
+                              uint32_t *out_chunks, uint64_t *out_bytes) {
   qsort(items, item_count, sizeof(*items), vkr_bundle_compare_identity);
   VkrPackChunk *chunks = calloc(item_count ? item_count : 1u, sizeof(*chunks));
   uint8_t *block = malloc(VKR_BUNDLE_COPY_BLOCK);
@@ -546,8 +600,7 @@ vkr_internal bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
     const uint32_t alignment = vkr_bundle_alignment(item->identity);
     char source[VKR_BAKERY_PATH_CAPACITY];
     ok = vkr_bundle_pad(file, &offset, alignment) &&
-         vkr_bakery_path_join(source, sizeof(source), bundle->root,
-                              item->identity) &&
+         vkr_bundle_source(bundle, item->identity, source, sizeof(source)) &&
          vkr_bundle_copy(file, source, item->size, block);
     chunks[chunk_count] = (VkrPackChunk){
         .offset = offset, .size = item->size, .alignment = alignment};
@@ -644,7 +697,7 @@ vkr_internal bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
 
 /* Reads the archive back through the runtime's validator and rehashes every
  * chunk, so a writer defect cannot ship. */
-vkr_internal bool8_t vkr_bundle_verify(const char *path) {
+bool8_t vkr_bundle_verify(const char *path) {
   const FilePath file = {
       .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
       .type = FILE_PATH_TYPE_ABSOLUTE};
@@ -707,12 +760,34 @@ vkr_internal bool8_t vkr_bundle_copy_visit(void *context, const char *name,
   return copy->ok;
 }
 
+bool8_t vkr_bundle_copy_tree(const char *source, const char *destination) {
+  VkrBundleCopy copy = {
+      .source = source, .destination = destination, .ok = true_v};
+  return vkr_bakery_make_directories(destination) &&
+         vkr_bakery_list_directory(source, vkr_bundle_copy_visit, &copy) &&
+         copy.ok;
+}
+
 int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
-  if (cli->positional_count != 1u || !cli->out) {
+  if (cli->positional_count != 1u) {
+    return vkr_bakery_usage(
+        "bundle needs one recipe or one managed project directory");
+  }
+  char manifest[VKR_BAKERY_PATH_CAPACITY];
+  if (vkr_bakery_is_directory(cli->positional[0]) &&
+      vkr_bakery_path_join(manifest, sizeof(manifest), cli->positional[0],
+                           "project.json") &&
+      vkr_bakery_is_file(manifest)) {
+    return vkr_bakery_bundle_project(cli, cli->positional[0]);
+  }
+  if (!cli->out) {
     return vkr_bakery_usage("bundle needs one recipe and --out <dir>");
   }
   Arena *arena = (Arena *)cli->allocator.ctx;
-  VkrBundle bundle = {.cli = cli, .arena = arena, .root = cli->config.root};
+  VkrBundle bundle = {.cli = cli,
+                      .arena = arena,
+                      .mounts = {{.prefix = "", .directory = cli->config.root}},
+                      .mount_count = 1u};
   int code = VKR_BAKERY_EXIT_FAILED;
   VkrBundleItem *items = NULL;
 
@@ -757,7 +832,7 @@ int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
     const char *identity = vkr_bakery_json_cstr_value(arena, entry);
     char path[VKR_BAKERY_PATH_CAPACITY];
     if (!identity ||
-        !vkr_bakery_path_join(path, sizeof(path), bundle.root, identity)) {
+        !vkr_bakery_path_join(path, sizeof(path), cli->config.root, identity)) {
       continue;
     }
     if (vkr_bakery_is_directory(path)) {
@@ -766,11 +841,7 @@ int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
       (void)vkr_bundle_add(&bundle, identity, strlen(identity), true_v);
     }
   }
-  for (uint32_t i = 0u; i < bundle.files.count; ++i) {
-    char identity[VKR_PACK_IDENTITY_MAX];
-    snprintf(identity, sizeof(identity), "%s", bundle.files.items[i]);
-    vkr_bundle_expand(&bundle, identity);
-  }
+  vkr_bundle_close(&bundle);
   if (bundle.missing) {
     vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_BUNDLE_FAILED, cli->positional[0],
                           0u, 0u, "bundle inputs are missing", NULL);
@@ -778,24 +849,9 @@ int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
   }
 
   /* Hash every file; identical bytes become one chunk. */
-  items = calloc(bundle.files.count, sizeof(*items));
-  if (!items) {
-    goto cleanup;
-  }
   uint64_t input_bytes = 0u;
-  for (uint32_t i = 0u; i < bundle.files.count; ++i) {
-    char path[VKR_BAKERY_PATH_CAPACITY];
-    char hex[VKR_BAKERY_SHA256_HEX];
-    items[i].identity = bundle.files.items[i];
-    if (!vkr_bakery_path_join(path, sizeof(path), bundle.root,
-                              items[i].identity) ||
-        !vkr_bakery_hash_file(path, hex, &items[i].size) ||
-        !vkr_bundle_hex_digest(hex, items[i].sha256)) {
-      vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_IDX_UNREADABLE_SOURCE,
-                            items[i].identity, 0u, 0u, "cannot read", NULL);
-      goto cleanup;
-    }
-    input_bytes += items[i].size;
+  if (!vkr_bundle_hash(&bundle, &items, &input_bytes)) {
+    goto cleanup;
   }
   vkr_bakery_print("bundle %.*s: %u files, %.1f MiB\n", (int)name.length,
                    name.str, bundle.files.count,
@@ -847,8 +903,8 @@ int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
          module = module->next) {
       const char *identity = vkr_bakery_json_cstr_value(arena, module);
       char path[VKR_BAKERY_PATH_CAPACITY];
-      if (!identity ||
-          !vkr_bakery_path_join(path, sizeof(path), bundle.root, identity)) {
+      if (!identity || !vkr_bakery_path_join(path, sizeof(path),
+                                             cli->config.root, identity)) {
         continue;
       }
       VkrBakeryAction *library =
@@ -896,15 +952,10 @@ int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
   if (cli->shaders) {
     char destination[VKR_BAKERY_PATH_CAPACITY];
     if (!vkr_bakery_path_join(destination, sizeof(destination), cli->out,
-                              "shaders") ||
-        !vkr_bakery_make_directories(destination)) {
+                              "shaders")) {
       goto cleanup;
     }
-    VkrBundleCopy copy = {
-        .source = cli->shaders, .destination = destination, .ok = true_v};
-    if (!vkr_bakery_list_directory(cli->shaders, vkr_bundle_copy_visit,
-                                   &copy) ||
-        !copy.ok) {
+    if (!vkr_bundle_copy_tree(cli->shaders, destination)) {
       vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_BUNDLE_MISSING_RUNTIME,
                             cli->shaders, 0u, 0u,
                             "cannot copy the shader catalog", NULL);
@@ -957,6 +1008,6 @@ int vkr_bakery_cmd_bundle(VkrBakeryCli *cli) {
 
 cleanup:
   free(items);
-  vkr_bundle_set_free(&bundle.files);
+  vkr_bundle_free(&bundle);
   return code;
 }

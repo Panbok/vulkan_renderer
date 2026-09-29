@@ -44,6 +44,13 @@ void vkr_texture_transcode_cache_release(
 /** Content hash that names and validates a source's entries. */
 uint64_t vkr_texture_transcode_cache_source_hash(const uint8_t *source_data,
                                                  uint64_t source_size);
+/** Copies `path` as the process-wide cache root, which then holds
+ * `textures/`; NULL clears it. The root is, in order: this override,
+ * $VKR_ASSET_CACHE_ROOT, then `build/_asset_cache` below the content root.
+ * Set once before creating a renderer; a packaged game names a per-user
+ * directory, since its content root is its install folder. */
+void vkr_texture_transcode_cache_set_root(const char *path);
+
 /** Returns the deterministic cache path for diagnostics and focused tests:
  * entries are named by source content and target format, not by path. */
 bool8_t vkr_texture_transcode_cache_path(VkrAllocator *allocator,

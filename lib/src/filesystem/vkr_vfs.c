@@ -28,6 +28,9 @@ typedef struct VkrVfsState {
   VkrVfsPack packs[VKR_VFS_MAX_PACKS];
   uint32_t pack_count;
   char bundle_scene[VKR_PACK_IDENTITY_MAX];
+  /* The mounted bundle.json, malloc-owned until vkr_vfs_unmount_all. */
+  uint8_t *bundle_description;
+  uint64_t bundle_description_size;
   /* One fwrite per line; stdio locks the stream for concurrent loaders. */
   FILE *record;
 } VkrVfsState;
@@ -346,6 +349,11 @@ const char *vkr_vfs_bundle_scene(void) {
   return vkr_vfs.bundle_scene[0] ? vkr_vfs.bundle_scene : NULL;
 }
 
+String8 vkr_vfs_bundle_description(void) {
+  return (String8){.str = vkr_vfs.bundle_description,
+                   .length = vkr_vfs.bundle_description_size};
+}
+
 // =============================================================================
 // Mounting
 // =============================================================================
@@ -393,6 +401,9 @@ void vkr_vfs_unmount_all(void) {
     file_unmap(&vkr_vfs.packs[i].mapping);
   }
   vkr_vfs.pack_count = 0u;
+  free(vkr_vfs.bundle_description);
+  vkr_vfs.bundle_description = NULL;
+  vkr_vfs.bundle_description_size = 0u;
   if (vkr_vfs.record) {
     fclose(vkr_vfs.record);
     vkr_vfs.record = NULL;
@@ -422,7 +433,8 @@ vkr_internal uint8_t *vkr_vfs_read_description(const char *path,
 }
 
 /* `bundle.json` in `directory`: its scene becomes the default scene, its
- * `content/` directory the content root, and its archives mount in order. */
+ * `content/` directory the content root, and its archives mount in order.
+ * Only root members count; version 2 nests scene documents in `game`. */
 vkr_internal bool8_t vkr_vfs_mount_bundle(const char *directory) {
   char path[VKR_VFS_PATH_MAX];
   snprintf(path, sizeof(path), "%s/bundle.json", directory);
@@ -437,15 +449,20 @@ vkr_internal bool8_t vkr_vfs_mount_bundle(const char *directory) {
   bool8_t ok = vkr_vfs_set_content_root(root);
   VkrJsonReader reader = vkr_json_reader_create(bytes, size);
   String8 scene = {0};
-  if (ok && vkr_json_get_string(&reader, "scene", &scene) &&
+  if (ok && vkr_json_find_root_field(&reader, "scene") &&
+      vkr_json_parse_string(&reader, &scene) &&
       scene.length < sizeof(vkr_vfs.bundle_scene)) {
     MemCopy(vkr_vfs.bundle_scene, scene.str, scene.length);
     vkr_vfs.bundle_scene[scene.length] = 0;
   }
   vkr_json_reader_reset(&reader);
-  if (ok && !vkr_json_find_array(&reader, "packs")) {
+  if (ok && (!vkr_json_find_root_field(&reader, "packs") ||
+             reader.pos >= reader.length || reader.data[reader.pos] != '[')) {
     vkr_vfs_report("Bundle description %s lists no archives", path);
     ok = false_v;
+  }
+  if (ok) {
+    ++reader.pos; /* Past '['. */
   }
   while (ok) {
     vkr_json_skip_whitespace(&reader);
@@ -463,7 +480,12 @@ vkr_internal bool8_t vkr_vfs_mount_bundle(const char *directory) {
     }
     ++reader.pos;
   }
-  free(bytes);
+  if (ok) {
+    vkr_vfs.bundle_description = bytes;
+    vkr_vfs.bundle_description_size = size;
+  } else {
+    free(bytes);
+  }
   return ok && vkr_vfs.pack_count > 0u;
 }
 

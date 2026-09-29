@@ -288,6 +288,8 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
     return string8_lit("Content");
   case VKR_UI_DOCK_PANEL_BAKERY:
     return string8_lit("Bakery");
+  case VKR_UI_DOCK_PANEL_BUILD:
+    return string8_lit("Build");
   default:
     return string8_lit("Panel");
   }
@@ -527,6 +529,7 @@ VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
       [VKR_UI_DOCK_PANEL_CUSTOM] = 104.0f,
       [VKR_UI_DOCK_PANEL_BAKERY] = 112.0f,
       [VKR_UI_DOCK_PANEL_CONTENT] = 116.0f,
+      [VKR_UI_DOCK_PANEL_BUILD] = 98.0f,
   };
   float32_t total = 0.0f;
   float32_t preceding = 0.0f;
@@ -799,8 +802,8 @@ static String8 vkr_ui_dock_kind_name(VkrUiDockNodeKind kind) {
 
 static String8 vkr_ui_dock_panel_name(VkrUiDockPanelKind kind) {
   static const char *const names[VKR_UI_DOCK_PANEL_COUNT] = {
-      "scene_viewport", "hierarchy", "inspector", "console",
-      "toolbar",        "custom",    "bakery",    "content",
+      "scene_viewport", "hierarchy", "inspector", "console", "toolbar",
+      "custom",         "bakery",    "content",   "build",
   };
   return string8_create_from_cstr((const uint8_t *)names[kind],
                                   string_length(names[kind]));

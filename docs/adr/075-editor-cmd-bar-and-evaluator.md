@@ -36,10 +36,12 @@ A command that starts a Bakery job or a scene load holds the queue until that
 work settles, so the next statement reads its result without a timed `wait`:
 `scene.load`, `scene.reload`, `scene.open`, `scene.add`, `scene.create`,
 `scene.import`, `scene.instantiate`, `scene.primary`, `tab.new`, `tab.show`,
-`content.import`, `content.command` and `content.place`, and `scene.save`, so
+`content.import`, `content.command`, `content.place`, `build.game` and
+`build.run`, and `scene.save`, so
 a headless run cannot quit during a save. The hold ends when no
 project job, activation or Set primary swap runs and neither the primary scene
-nor an added scene is loading, and prints `[cmd] Settled after <s> s`. After
+nor an added scene is loading and no build runs, and prints `[cmd] Settled
+after <s> s`; a build hold then prints the build's result line. After
 600 s it reports an error and drops the queue. An unsaved-edits prompt does not
 hold the queue: a script saves or discards first.
 
@@ -65,8 +67,10 @@ dependable channel for scripts.
 | `select` | `<name>` | Select an entity: exact name, else the first containing it |
 | `frame` | | Frame the selection |
 | `visibility.toggle` | | Hide or show the selection |
-| `panel` | `<hierarchy\|inspector\|console\|bakery\|content> [on\|off\|toggle]` | Docked panels |
-| `window` | `<animation\|physics\|graphics\|draws\|memory\|help> [on\|off\|toggle]` | Floating windows |
+| `panel` | `<outliner\|details\|console\|bakery\|content\|build> [on\|off\|toggle]` | Docked panels |
+| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build> [on\|off\|toggle]` | Floating windows |
+| `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
+| `build.settings`, `build.open` | | Build Settings window; the last package's folder |
 | `layout.reset` | | Default dock layout |
 | `sim.play`, `sim.pause`, `sim.step`, `sim.stop` | | Simulation transport |
 | `render.start`, `render.stop` | | Scene rendering |

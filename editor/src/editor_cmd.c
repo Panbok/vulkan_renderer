@@ -49,21 +49,21 @@ typedef enum CmdArg {
 
 /* Enumerated argument words, in completion order and matching the value
  * tables below index for index. */
-static const char *const cmd_panels[] = {"outliner", "details", "console",
-                                         "bakery",   "content", NULL};
+static const char *const cmd_panels[] = {
+    "outliner", "details", "console", "bakery", "content", "build", NULL};
 static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_HIERARCHY, VKR_UI_DOCK_PANEL_INSPECTOR,
-    VKR_UI_DOCK_PANEL_CONSOLE, VKR_UI_DOCK_PANEL_BAKERY,
-    VKR_UI_DOCK_PANEL_CONTENT};
+    VKR_UI_DOCK_PANEL_CONSOLE,   VKR_UI_DOCK_PANEL_BAKERY,
+    VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD};
 
 static const char *const cmd_windows[] = {"animation", "physics", "preferences",
                                           "draws",     "memory",  "help",
-                                          "create",    NULL};
+                                          "create",    "build",   NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION, VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,  VKR_EDITOR_WINDOW_DRAWS,
     VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP,
-    VKR_EDITOR_WINDOW_CREATE};
+    VKR_EDITOR_WINDOW_CREATE,    VKR_EDITOR_WINDOW_BUILD};
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -296,6 +296,33 @@ static bool8_t cmd_run_command(CmdContext *ctx, const CmdDef *def,
     return false_v;
   }
   vkr_editor_command_execute(def->command, ctx->editor, ctx->frame);
+  return true_v;
+}
+
+/* `build.game [profile]` and `build.run [profile]`: select a profile by
+   name, then build; the queue holds until the package job settles. */
+static bool8_t cmd_run_build(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  String8 name = cmd_trim(arg);
+  /* A profile name with spaces is quoted, as in "Mac Shipping". */
+  if (name.length >= 2u && name.str[0] == '"' &&
+      name.str[name.length - 1u] == '"') {
+    name = (String8){.str = name.str + 1, .length = name.length - 2u};
+  }
+  if (name.length) {
+    char text[64];
+    snprintf(text, sizeof(text), "%.*s", (int)Min(name.length, 63u),
+             (const char *)name.str);
+    if (!vkr_editor_build_select_profile(ctx->editor->build, text)) {
+      snprintf(ctx->message, sizeof(ctx->message), "No build profile '%s'",
+               text);
+      return false_v;
+    }
+  }
+  if (!vkr_editor_build_start(ctx->editor->build, ctx->editor, def->value != 0u,
+                              ctx->message, sizeof(ctx->message))) {
+    return false_v;
+  }
+  ctx->editor->cmd_holding_build = true_v;
   return true_v;
 }
 
@@ -1092,6 +1119,16 @@ static const CmdDef cmd_defs[] = {
      "Show, hide or toggle a docked panel", cmd_run_panel, CMD_COUNT, 0u},
     {"window", CMD_ARG_WINDOW, "<window> [on|off|toggle]",
      "Show, hide or toggle a floating window", cmd_run_panel, CMD_COUNT, 0u},
+    {"build.game", CMD_ARG_TEXT, "[profile]",
+     "Package the project with its build profile (the selected one by "
+     "default)",
+     cmd_run_build, CMD_COUNT, 0u, .holds = true_v},
+    {"build.run", CMD_ARG_TEXT, "[profile]",
+     "Package the project, then run the game", cmd_run_build, CMD_COUNT, 1u,
+     .holds = true_v},
+    CMD_SIMPLE("build.settings", "Show or hide Build Settings",
+               CMD_BUILD_SETTINGS),
+    CMD_SIMPLE("build.open", "Open the last package's folder", CMD_BUILD_OPEN),
     CMD_SIMPLE("layout.reset", "Restore the default panel layout",
                CMD_RESET_LAYOUT),
     CMD_SIMPLE("sim.play", "Start the simulation", CMD_SIM_START),
@@ -1351,13 +1388,15 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
    * once, and the runtime starts requested loads after this build. */
   if (editor->cmd_holding) {
     const bool8_t busy = frame->scene_loading || frame->additive_loading ||
-                         vkr_editor_projects_busy(editor->projects);
+                         vkr_editor_projects_busy(editor->projects) ||
+                         vkr_editor_build_busy(editor->build);
     editor->cmd_hold_seconds += dt;
     if (busy && editor->cmd_hold_seconds < CMD_HOLD_LIMIT_SECONDS) {
       return;
     }
     editor->cmd_holding = false_v;
     if (busy) {
+      editor->cmd_holding_build = false_v;
       cmd_report(false_v, "Job or scene load timed out; dropped the remaining "
                           "commands");
       editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
@@ -1367,6 +1406,12 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     snprintf(text, sizeof(text), "Settled after %.2f s",
              editor->cmd_hold_seconds);
     cmd_report(true_v, text);
+    if (editor->cmd_holding_build) {
+      editor->cmd_holding_build = false_v;
+      bool8_t succeeded = false_v;
+      const char *result = vkr_editor_build_result(editor->build, &succeeded);
+      cmd_report(succeeded, result[0] ? result : "Build did not run");
+    }
   }
   /* Nobody can close a headless editor, so the end of its script does. The
    * quit request skips the unsaved-edits check that `quit` makes. */

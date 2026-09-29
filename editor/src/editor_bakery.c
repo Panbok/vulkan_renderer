@@ -34,14 +34,16 @@ typedef enum EditorBakeKind {
   EDITOR_BAKE_SHADERS,
   EDITOR_BAKE_KIND_COUNT,
   EDITOR_BAKE_PROJECT = EDITOR_BAKE_KIND_COUNT,
+  /* A project package (docs/proposals/project-packaging.md). */
+  EDITOR_BAKE_PACKAGE,
 } EditorBakeKind;
 
 static const char *const editor_bakery_kind_names[] = {
     "Mesh",           "Font",       "Texture", "Texture folder", "GGX DFG",
     "Charlie",        "Anisotropy", "Diffuse", "Reflection",     "Hull",
-    "Collision mesh", "Shaders",    "Project"};
-_Static_assert(ArrayCount(editor_bakery_kind_names) == EDITOR_BAKE_PROJECT + 1,
-               "Every bake kind and the project job need a display name");
+    "Collision mesh", "Shaders",    "Project", "Package"};
+_Static_assert(ArrayCount(editor_bakery_kind_names) == EDITOR_BAKE_PACKAGE + 1,
+               "Every bake kind and each project job need a display name");
 
 typedef enum EditorBakeryView {
   EDITOR_BAKERY_SETUP,
@@ -143,16 +145,17 @@ static bool8_t editor_bakery_is_static_table(EditorBakeKind kind) {
          kind == EDITOR_BAKE_ANISOTROPY_TABLE;
 }
 
-/* Cook, table and shader recipes stream vkr_bakery JSON events and are cached
- * by action key, so a rebuild of unchanged inputs needs an explicit Force.
- * Project jobs and scene bakes print a plain log and publish a result. */
+/* Cook, table and shader recipes and project packages stream vkr_bakery
+ * JSON events; recipes are cached by action key, so a rebuild of unchanged
+ * inputs needs an explicit Force. Project jobs and scene bakes print a plain
+ * log and publish a result. */
 static bool8_t editor_bakery_streams_events(EditorBakeKind kind) {
   return kind != EDITOR_BAKE_PROJECT && kind != EDITOR_BAKE_DIFFUSE_VOLUME &&
          kind != EDITOR_BAKE_REFLECTION_PROBE;
 }
 
 static bool8_t editor_bakery_supports_force(EditorBakeKind kind) {
-  return editor_bakery_streams_events(kind);
+  return editor_bakery_streams_events(kind) && kind != EDITOR_BAKE_PACKAGE;
 }
 
 /* Recipes whose source is fixed: renderer tables and the shader catalog. */
@@ -183,7 +186,14 @@ static void *editor_bakery_worker(void *argument) {
   const char *arguments[32];
   char manifest[EDITOR_BAKERY_PATH_CAPACITY + 20u];
   uint32_t count = 0u;
-  if (editor_bakery_streams_events(job->kind)) {
+  if (job->kind == EDITOR_BAKE_PACKAGE) {
+    /* A package stage per event, read by the Build panel. */
+    arguments[count++] = "bundle";
+    arguments[count++] = job->input;
+    arguments[count++] = "--profile";
+    arguments[count++] = job->output;
+    arguments[count++] = "--json";
+  } else if (editor_bakery_streams_events(job->kind)) {
     /* One vkr_bakery process per recipe; its JSON event stream on stdout
        drives the job's progress, action list, output and Console lines. */
     switch (job->kind) {
@@ -288,8 +298,10 @@ static void *editor_bakery_worker(void *argument) {
       .stderr_path = job->stderr_path,
       .timeout_ms = job->kind == EDITOR_BAKE_REFLECTION_PROBE
                         ? 35u * 60u * 1000u
-                        : 30u * 60u * 1000u,
-      .termination_grace_ms = 250u,
+                    : job->kind == EDITOR_BAKE_PACKAGE ? 0u
+                                                       : 30u * 60u * 1000u,
+      /* A cancelled package removes its staging folder before it exits. */
+      .termination_grace_ms = job->kind == EDITOR_BAKE_PACKAGE ? 5000u : 250u,
       .terminate_process_tree = true_v,
       .hidden = true_v,
       .is_cancelled = editor_bakery_is_cancelled,
@@ -1033,6 +1045,35 @@ uint64_t vkr_editor_bakery_project_start(VkrEditorBakery *bakery,
   return job->id;
 }
 
+uint64_t vkr_editor_bakery_package_start(VkrEditorBakery *bakery,
+                                         const char *project_directory,
+                                         const char *profile,
+                                         const char *events_path) {
+  if (!bakery || !project_directory || !profile || !events_path ||
+      !project_directory[0] || !profile[0] ||
+      strlen(project_directory) >= EDITOR_BAKERY_PATH_CAPACITY ||
+      strlen(profile) >= EDITOR_BAKERY_PATH_CAPACITY ||
+      strlen(events_path) + 12u >= EDITOR_BAKERY_PATH_CAPACITY) {
+    return 0;
+  }
+  const uint64_t id =
+      vkr_editor_bakery_project_start(bakery, project_directory, events_path);
+  for (uint32_t i = 0; id && i < bakery->job_count; ++i) {
+    EditorBakeJob *job = &bakery->jobs[i];
+    if (job->id != id) {
+      continue;
+    }
+    job->kind = EDITOR_BAKE_PACKAGE;
+    snprintf(job->output, sizeof(job->output), "%s", profile);
+    snprintf(job->stdout_path, sizeof(job->stdout_path), "%s", events_path);
+    snprintf(job->stderr_path, sizeof(job->stderr_path), "%s.stderr.log",
+             events_path);
+    editor_bakery_remove_log(job->stdout_path);
+    editor_bakery_remove_log(job->stderr_path);
+  }
+  return id;
+}
+
 VkrEditorProjectJobStatus
 vkr_editor_bakery_project_status(VkrEditorBakery *bakery, uint64_t job_id,
                                  String8 *log) {
@@ -1087,7 +1128,7 @@ static const VkrUiIcon editor_bakery_kind_icons[] = {
     VKR_UI_ICON_FOLDER,   VKR_UI_ICON_GRAPH,        VKR_UI_ICON_SPARKLE,
     VKR_UI_ICON_WAVES,    VKR_UI_ICON_SUN_DIM,      VKR_UI_ICON_PROBE,
     VKR_UI_ICON_COLLIDER, VKR_UI_ICON_BOUNDING_BOX, VKR_UI_ICON_CODE,
-    VKR_UI_ICON_PROJECT};
+    VKR_UI_ICON_PROJECT,  VKR_UI_ICON_EXPORT};
 _Static_assert(ArrayCount(editor_bakery_kind_icons) ==
                    ArrayCount(editor_bakery_kind_names),
                "Every bake kind needs an icon");
@@ -1683,6 +1724,23 @@ void vkr_editor_bakery_set_managed(VkrEditorBakery *bakery, bool8_t enabled,
     snprintf(bakery->lock_directory, sizeof(bakery->lock_directory), "%s",
              workspace);
   }
+}
+
+bool8_t vkr_editor_bakery_request_scene_bake(VkrEditorBakery *bakery,
+                                             bool8_t reflection,
+                                             bool8_t diffuse) {
+  if (!vkr_editor_bakery_scene_bake_available(bakery)) {
+    return false_v;
+  }
+  bakery->reflection = reflection;
+  bakery->diffuse = diffuse;
+  bakery->scene_bake_requested = true_v;
+  return true_v;
+}
+
+bool8_t vkr_editor_bakery_scene_bake_available(const VkrEditorBakery *bakery) {
+  return bakery && bakery->managed && bakery->writable_scene &&
+         !vkr_editor_bakery_busy(bakery);
 }
 
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,

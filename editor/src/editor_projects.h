@@ -149,5 +149,27 @@ bool8_t vkr_editor_projects_import_to(VkrEditorProjects *projects,
                                       const VkrSampleUiFrame *frame,
                                       const char *source, String8 target,
                                       String8 name);
+/* Build (docs/proposals/project-packaging.md). The preflight opens the
+   Save/Discard/Cancel prompt while any container has unsaved edits, then
+   drains the preference writer; call it each frame until it stops waiting. */
+typedef enum VkrEditorBuildPreflight {
+  VKR_EDITOR_BUILD_PREFLIGHT_WAITING,
+  VKR_EDITOR_BUILD_PREFLIGHT_READY,
+  VKR_EDITOR_BUILD_PREFLIGHT_CANCELLED,
+  VKR_EDITOR_BUILD_PREFLIGHT_UNAVAILABLE,
+} VkrEditorBuildPreflight;
+VkrEditorBuildPreflight
+vkr_editor_projects_build_preflight(VkrEditorProjects *projects,
+                                    VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame);
+/* The open project and its workspace; NULL and "" outside a project. The
+   project stays valid until another project opens. */
+struct VkrEditorProject;
+const struct VkrEditorProject *
+vkr_editor_projects_project(const VkrEditorProjects *projects);
+const char *
+vkr_editor_projects_workspace_root(const VkrEditorProjects *projects);
+bool8_t vkr_editor_projects_read_only(const VkrEditorProjects *projects);
+
 /* The Projects status line: the last outcome or problem. */
 const char *vkr_editor_projects_message(const VkrEditorProjects *projects);

@@ -2,6 +2,7 @@
 
 #include "editor_animation.h"
 #include "editor_bakery.h"
+#include "editor_build.h"
 #include "editor_console.h"
 #include "editor_content.h"
 #include "editor_details.h"
@@ -17,6 +18,10 @@ typedef enum VkrEditorMenu {
   VKR_EDITOR_MENU_EDIT,
   VKR_EDITOR_MENU_VIEW,
   VKR_EDITOR_MENU_SCENE,
+  /* Build the game (docs/proposals/project-packaging.md). */
+  VKR_EDITOR_MENU_BUILD,
+  /* Developer tools: Bakery recipes and renderer diagnostics. */
+  VKR_EDITOR_MENU_DEVELOP,
   VKR_EDITOR_MENU_HELP,
   VKR_EDITOR_MENU_COUNT,
 } VkrEditorMenu;
@@ -30,6 +35,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_PHYSICS,
   /* Create a scene or import an asset (ADR-076). */
   VKR_EDITOR_WINDOW_CREATE,
+  /* Game settings and build profiles. */
+  VKR_EDITOR_WINDOW_BUILD,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -138,6 +145,7 @@ typedef struct VkrEditorUi {
   VkrEditorProjects *projects;
   VkrEditorConsole console;
   VkrEditorBakery *bakery;
+  VkrEditorBuild *build;
   VkrEditorContent *content;
   VkrEditorScenePanels *scene_panels;
   VkrEditorPhysicsSettings *physics_settings;
@@ -212,6 +220,8 @@ typedef struct VkrEditorUi {
   float64_t cmd_wait_scene_seconds;
   /* A job-starting command holds the queue until its work settles. */
   bool8_t cmd_holding;
+  /* The hold is a build, whose result the queue reports when it settles. */
+  bool8_t cmd_holding_build;
   float64_t cmd_hold_seconds;
   /* Headless: quit once the queue has drained. */
   bool8_t cmd_quit_when_done;

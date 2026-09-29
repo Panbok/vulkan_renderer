@@ -32,6 +32,14 @@ typedef enum VkrEditorProjectJobStatus {
 uint64_t vkr_editor_bakery_project_start(VkrEditorBakery *bakery,
                                          const char *request_path,
                                          const char *result_path);
+/* A project package (docs/proposals/project-packaging.md) on the same worker:
+ * `vkr_bakery bundle <project_directory> --profile <profile> --json`, whose
+ * event lines go to `events_path`. Status and cancellation use the project
+ * job calls with the returned id. */
+uint64_t vkr_editor_bakery_package_start(VkrEditorBakery *bakery,
+                                         const char *project_directory,
+                                         const char *profile,
+                                         const char *events_path);
 VkrEditorProjectJobStatus
 vkr_editor_bakery_project_status(VkrEditorBakery *bakery, uint64_t job_id,
                                  String8 *log);
@@ -43,6 +51,12 @@ void vkr_editor_bakery_project_cancel(VkrEditorBakery *bakery, uint64_t job_id);
 void vkr_editor_bakery_set_managed(VkrEditorBakery *bakery, bool8_t enabled,
                                    bool8_t writable_scene,
                                    const char *workspace);
+/** Asks the open writable scene to bake its lighting, as the panel's Prepare
+ * does; the Scene menu offers it once Bakery leaves the main navigation. */
+bool8_t vkr_editor_bakery_request_scene_bake(VkrEditorBakery *bakery,
+                                             bool8_t reflection,
+                                             bool8_t diffuse);
+bool8_t vkr_editor_bakery_scene_bake_available(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
                                           bool8_t *reflection,
                                           bool8_t *diffuse);

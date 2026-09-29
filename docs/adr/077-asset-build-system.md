@@ -11,8 +11,9 @@ authority: adr
 Accepted (partial). Every phase of the
 [asset build system proposal](../proposals/asset-build-system.md) is
 implemented on macOS. The daemon has no Windows transport, the Windows script
-and bundle paths are unverified, bundles are built from repository scenes
-rather than managed projects, and script modules have no runtime loader yet.
+and bundle paths are unverified, and script modules have no runtime loader yet.
+Bundles of managed projects are
+[ADR-078](078-project-build-and-packaging.md).
 
 ## Context
 
@@ -133,8 +134,9 @@ from it.
   `Fast` speed and cooks at `Final`; UASTC has no fast encoder and ignores
   it. The editor sends `fast` on every project job, so
   textures only it shows take the faster encoder, while explicit and
-  command-line requests keep astcenc. A bundle of a managed project, which
-  does not exist yet, would rebuild `astc-fast` textures at the final speed. Preview keeps a 1,024-pixel mip floor: levels larger
+  command-line requests keep astcenc. A project package finalizes preview and
+  deferred assets at the final speed for a shipping profile but ships
+  already-final `astc-fast` textures as encoded (ADR-078). Preview keeps a 1,024-pixel mip floor: levels larger
   than that are not stored (`--max-extent`, part of the settings identity),
   and UASTC previews use its fastest level. `deferred` builds no texture: the
   cooker keeps material factors, resolves and copies no image, and a scene
@@ -678,8 +680,8 @@ the job object's totals.
 
 Unavailable: a Bistro diffuse bake (memory limit of the measurement host),
 native Vulkan execution of the catalog path (MoltenVK 1.2), the daemon and a
-Vulkan bundle on Windows, Windows script modules, a bundle of a managed
-project, a runtime that loads script modules, and an editor frame-time measurement with the daemon running; the
+Vulkan bundle on Windows, Windows script modules, a runtime that loads script
+modules, and an editor frame-time measurement with the daemon running; the
 editor-side cost is one non-blocking socket read per frame, but it is not
 measured. On Windows: extent-duplication clones (Windows 10 Pro cannot create
 ReFS or Dev Drive volumes; the NTFS path falls back as tested) and imports
@@ -713,6 +715,6 @@ has not loaded a BC texture.
 ## Revisit when
 
 A cooker becomes safe to run in-process with a measured benefit, the renderer
-gains pipeline recreation for shader hot reload, a shipped game needs managed
-project bundles or streamed archives, or a second consumer needs derived
+gains pipeline recreation for shader hot reload, a shipped game needs streamed
+archives, or a second consumer needs derived
 textures as actions.

@@ -31,6 +31,10 @@ typedef struct VkrBakeryCli {
   const char *socket;
   const char *app;
   const char *shaders;
+  /* Project packages: the game.json build profile and the player template
+     directory (docs/proposals/project-packaging.md). */
+  const char *profile;
+  const char *player_template;
   uint64_t idle_exit_seconds;
   uint64_t older_than_days;
   bool8_t watch;

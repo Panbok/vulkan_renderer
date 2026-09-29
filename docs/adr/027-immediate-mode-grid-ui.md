@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-09-29
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -92,7 +92,8 @@ line's width. Widgets request pointer shapes (I-beam for fields, hand for
 sliders, resize and grab cursors for splitters and tab drags) through
 `vkr_window_set_cursor`.
 
-The top bar hosts the brand, File/Edit/View/Scene/Help menus, save/undo/redo,
+The top bar hosts the brand, File/Edit/View/Scene/Build/Develop/Help menus
+(Build and Develop from [ADR-078](078-project-build-and-packaging.md)), save/undo/redo,
 Projects/Scenes, a play-state pill with unsaved-edit state, the Cmd field, and
 a centered transport group (play/pause, step, stop, Scene rendering, camera
 capture). Menus are anchored popups that switch on hover while one is open, and

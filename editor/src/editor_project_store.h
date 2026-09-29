@@ -292,3 +292,69 @@ uint32_t vkr_editor_project_world_meshes(const char *world_path,
 /** OS-local jobs directory for read-only workspace runtime projections. */
 bool8_t vkr_editor_project_local_jobs_directory(
     char out[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error);
+
+// Game settings and build profiles (docs/proposals/project-packaging.md):
+// game.json beside project.json. `vkr_bakery bundle <project>` reads the same
+// document and owns its validation; the editor edits and saves it. Unknown
+// members of the file and of its game object are preserved on save.
+#define VKR_EDITOR_GAME_VERSION 1u
+#define VKR_EDITOR_GAME_PROFILE_MAX 8u
+#define VKR_EDITOR_GAME_INCLUDE_MAX 16u
+#define VKR_EDITOR_GAME_TEXT_CAPACITY 129u
+#define VKR_EDITOR_GAME_EXECUTABLE_CAPACITY 65u
+#define VKR_EDITOR_GAME_GRAPHICS_CAPACITY 2048u
+
+typedef struct VkrEditorGameProfile {
+  char name[64];
+  char platform[32]; // "host" or the host's platform name.
+  char config[16];   // "development" or "shipping".
+  char output[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  char include[VKR_EDITOR_GAME_INCLUDE_MAX][256]; // Project-relative paths.
+  uint32_t include_count;
+  bool8_t bake_lighting;
+  bool8_t run_after_build;
+} VkrEditorGameProfile;
+
+typedef struct VkrEditorGame {
+  char name[VKR_EDITOR_GAME_TEXT_CAPACITY];
+  char version[33];
+  char company[VKR_EDITOR_GAME_TEXT_CAPACITY];
+  // A file name without separators or extension.
+  char executable[VKR_EDITOR_GAME_EXECUTABLE_CAPACITY];
+  char startup_scene[37];
+  // Included scene ids in their order; the World is always included.
+  char scenes[VKR_EDITOR_PROJECT_MAX_SCENES][37];
+  uint32_t scene_count;
+  uint32_t window_width;
+  uint32_t window_height;
+  // Graphics settings defaults, a JSON object the runtime's reader applies.
+  char graphics[VKR_EDITOR_GAME_GRAPHICS_CAPACITY];
+  VkrEditorGameProfile profiles[VKR_EDITOR_GAME_PROFILE_MAX];
+  uint32_t profile_count;
+} VkrEditorGame;
+
+// What a project without game.json packages: its scenes, starting with the
+// first, and one development profile for the host named after the project.
+void vkr_editor_game_default(const VkrEditorProject *project,
+                             VkrEditorGame *game);
+// One development profile for the host, named `name`.
+void vkr_editor_game_profile_default(const char *name,
+                                     VkrEditorGameProfile *profile);
+bool8_t vkr_editor_game_parse(String8 bytes, VkrEditorGame *game,
+                              VkrEditorProjectError *error);
+bool8_t vkr_editor_game_write(struct VkrJsonWriter *writer,
+                              const VkrEditorGame *game);
+// The first problem `vkr_bakery bundle` would report for these settings,
+// so the Build Settings window can show it before a build starts.
+bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
+                                 const VkrEditorProject *project,
+                                 VkrEditorProjectError *error);
+// Reads the project's game.json; a missing file yields the default and sets
+// *out_exists false.
+bool8_t vkr_editor_game_load(const VkrEditorProject *project,
+                             VkrAllocator *allocator, VkrEditorGame *game,
+                             bool8_t *out_exists, VkrEditorProjectError *error);
+// Atomically replaces game.json, keeping members this editor does not know.
+bool8_t vkr_editor_game_save(const VkrEditorProject *project,
+                             const VkrEditorGame *game, VkrAllocator *scratch,
+                             VkrEditorProjectError *error);

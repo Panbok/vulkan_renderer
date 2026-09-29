@@ -53,6 +53,7 @@ if(VKR_BUILD_TOOLS)
         vkr_bakery_assets.c
         vkr_bakery_bake.c
         vkr_bakery_bundle.c
+        vkr_bakery_package.c
         project/vkr_project_bake.c
         project/vkr_project_gc.c
         project/vkr_project_import.c

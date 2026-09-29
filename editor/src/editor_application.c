@@ -83,11 +83,12 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   if (!vkr_editor_console_init(&editor->ui.console, &ui->retained_allocator))
     goto cleanup;
   editor->ui.bakery = vkr_editor_bakery_create(&ui->retained_allocator);
+  editor->ui.build = vkr_editor_build_create(&ui->retained_allocator);
   editor->ui.scene_panels =
       vkr_editor_scene_panels_create(&ui->retained_allocator);
   editor->ui.physics_settings =
       vkr_editor_physics_settings_create(&ui->retained_allocator);
-  if (!editor->ui.bakery || !editor->ui.scene_panels ||
+  if (!editor->ui.bakery || !editor->ui.build || !editor->ui.scene_panels ||
       !editor->ui.physics_settings)
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
@@ -152,6 +153,8 @@ cleanup:
   editor_release_font(ui, &editor->ui.mono_font);
   editor_release_font(ui, &editor->ui.icon_font);
   editor_release_font(ui, &editor->ui.icon_fill_font);
+  vkr_editor_build_destroy(editor->ui.build);
+  editor->ui.build = NULL;
   vkr_editor_bakery_destroy(editor->ui.bakery);
   vkr_editor_animation_shutdown(&editor->ui.animation);
   vkr_editor_physics_settings_destroy(editor->ui.physics_settings);
@@ -277,6 +280,9 @@ static bool8_t editor_application_shutdown(void *state,
    */
   vkr_editor_content_destroy(editor->ui.content);
   editor->ui.content = NULL;
+  /* A running game stops with the editor; Bakery cancels a package job. */
+  vkr_editor_build_destroy(editor->ui.build);
+  editor->ui.build = NULL;
   vkr_editor_bakery_destroy(editor->ui.bakery);
   editor->ui.bakery = NULL;
   (void)vkr_editor_projects_destroy(editor->ui.projects, &editor->ui, dock);

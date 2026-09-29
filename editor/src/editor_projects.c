@@ -96,7 +96,16 @@ typedef enum ProjectResume {
   PROJECT_RESUME_UNLOAD,
   /* Make the added scene `swap_scene` primary. */
   PROJECT_RESUME_SET_PRIMARY,
+  /* Continue a Build's preflight (docs/proposals/project-packaging.md). */
+  PROJECT_RESUME_BUILD,
 } ProjectResume;
+
+/* A Build's preflight: none, waiting on the save prompt, or resolved. */
+typedef enum ProjectBuildPreflight {
+  PROJECT_BUILD_PREFLIGHT_NONE,
+  PROJECT_BUILD_PREFLIGHT_PROMPTING,
+  PROJECT_BUILD_PREFLIGHT_RESOLVED,
+} ProjectBuildPreflight;
 
 /* Set primary (ADR-076): the added scene is removed, opened as the primary,
    and the previous primary is added back beside it. */
@@ -313,6 +322,7 @@ struct VkrEditorProjects {
   bool8_t settings_restored;
   bool8_t discard_edits;
   ProjectResume resume_action;
+  ProjectBuildPreflight build_preflight;
   bool8_t closing;
   bool8_t awaiting_save;
   bool8_t rename_project;
@@ -688,8 +698,8 @@ static void project_queue_settings_save(VkrEditorProjects *projects,
       MemCopy(save->bytes + offset, views[i].str, views[i].length);
     }
     // A project created this session has no loaded document yet.
-    *destinations[i] = (String8){.str = save->bytes + offset,
-                                 .length = views[i].length};
+    *destinations[i] =
+        (String8){.str = save->bytes + offset, .length = views[i].length};
     offset += views[i].length;
   }
   save->error = (VkrEditorProjectError){0};
@@ -2929,7 +2939,7 @@ static void project_job_complete(VkrEditorProjects *projects,
     VkrJsonReader reader = vkr_json_reader_from_string(result);
     uint32_t imported = 0u;
     uint32_t id_capacity = 0u;
-    char (*ids)[37] = NULL;
+    char(*ids)[37] = NULL;
     if (vkr_json_find_array(&reader, "imported_assets")) {
       /* Each quoted identity and its separator take at least 38 bytes. */
       id_capacity = (uint32_t)Min(reader.length / 38u + 1u, 65536u);
@@ -5373,6 +5383,11 @@ static void project_build_confirm_form(VkrEditorProjects *projects,
       project_unload_scene(projects, editor, frame);
     } else if (!projects->closing && resume == PROJECT_RESUME_SET_PRIMARY) {
       project_set_primary_begin(projects, frame);
+    } else if (!projects->closing && resume == PROJECT_RESUME_BUILD) {
+      /* A build packages the saved files; Discard leaves the unsaved edits
+         in the editor rather than dropping them. */
+      projects->discard_edits = false_v;
+      projects->build_preflight = PROJECT_BUILD_PREFLIGHT_RESOLVED;
     } else if (!projects->closing && (projects->view == PROJECT_VIEW_SCENES ||
                                       resume == PROJECT_RESUME_JOB)) {
       project_start_job(projects, editor, frame, false_v);
@@ -6045,6 +6060,54 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
       projects->dropdown_opened = true_v;
     }
   }
+}
+
+VkrEditorBuildPreflight
+vkr_editor_projects_build_preflight(VkrEditorProjects *projects,
+                                    VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame) {
+  if (!projects || !projects->project || projects->creating_project) {
+    return VKR_EDITOR_BUILD_PREFLIGHT_UNAVAILABLE;
+  }
+  if (projects->build_preflight == PROJECT_BUILD_PREFLIGHT_PROMPTING) {
+    if (projects->view == PROJECT_VIEW_CONFIRM) {
+      return VKR_EDITOR_BUILD_PREFLIGHT_WAITING;
+    }
+    /* The prompt closed without Save or Discard. */
+    projects->build_preflight = PROJECT_BUILD_PREFLIGHT_NONE;
+    return VKR_EDITOR_BUILD_PREFLIGHT_CANCELLED;
+  }
+  if (projects->build_preflight == PROJECT_BUILD_PREFLIGHT_NONE &&
+      project_any_dirty(frame)) {
+    if (project_dialog_open(projects)) {
+      return VKR_EDITOR_BUILD_PREFLIGHT_WAITING;
+    }
+    projects->build_preflight = PROJECT_BUILD_PREFLIGHT_PROMPTING;
+    projects->resume_action = PROJECT_RESUME_BUILD;
+    projects->resume_view = projects->view;
+    projects->view = PROJECT_VIEW_CONFIRM;
+    return VKR_EDITOR_BUILD_PREFLIGHT_WAITING;
+  }
+  projects->build_preflight = PROJECT_BUILD_PREFLIGHT_NONE;
+  /* The preference writer drains, so project.json holds the viewport the
+     package starts from. */
+  return project_save_settings(projects, editor, frame->dock)
+             ? VKR_EDITOR_BUILD_PREFLIGHT_READY
+             : VKR_EDITOR_BUILD_PREFLIGHT_CANCELLED;
+}
+
+const VkrEditorProject *
+vkr_editor_projects_project(const VkrEditorProjects *projects) {
+  return projects && !projects->creating_project ? projects->project : NULL;
+}
+
+const char *
+vkr_editor_projects_workspace_root(const VkrEditorProjects *projects) {
+  return projects ? projects->workspace.root : "";
+}
+
+bool8_t vkr_editor_projects_read_only(const VkrEditorProjects *projects) {
+  return !projects || projects->read_only;
 }
 
 bool8_t vkr_editor_projects_flush(VkrEditorProjects *projects,

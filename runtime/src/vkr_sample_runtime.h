@@ -295,6 +295,13 @@ typedef struct VkrSampleRuntimeConfig {
   /* The editor owns startup selection and preference persistence in this mode.
    */
   bool8_t project_managed;
+  /** Graphics preferences file when $VKR_GRAPHICS_SETTINGS_PATH is unset;
+   * NULL keeps `<content root>.vkr-graphics-settings.json`. A packaged game
+   * names a per-user file. Ignored in project mode. */
+  const char *graphics_settings_path;
+  /** Graphics settings JSON applied over the backend defaults before the
+   * preferences file, such as a packaged game's `graphics`; may be empty. */
+  String8 graphics_defaults;
   VkrSamplePresentationConfig presentation;
   VkrSampleUiClient ui;
 } VkrSampleRuntimeConfig;
