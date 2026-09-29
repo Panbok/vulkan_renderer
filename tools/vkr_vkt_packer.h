@@ -41,6 +41,13 @@ VkrVktPackResult vkr_vkt_pack_image(const VkrVktSource *source,
                                     const char *texture_class,
                                     const char *output);
 
+// As vkr_vkt_pack_image for the sRGB base colour of an opaque material,
+// whose alpha no shader reads: alpha becomes one before filtering, so every
+// block encodes colour alone. Its settings identity differs from the plain
+// pack's, so callers name the two apart.
+VkrVktPackResult vkr_vkt_pack_opaque(const VkrVktSource *source,
+                                     const char *output);
+
 // Synchronously cook one sRGB cutout texture; cutoff/factor are finite
 // material values in [0, 1]. Scratch images are owned and released by the
 // cooker. A verified cache hit succeeds. Publication is atomic.
@@ -57,6 +64,18 @@ VkrVktPackResult vkr_vkt_pack_normal_roughness(
     const char *normal_source, const VkrVktSource *roughness_source,
     const char *normal_output, const char *roughness_output, float normal_scale,
     float roughness_factor);
+
+// Large blocks the in-process packs reuse rather than return to the system:
+// a freed block of a megabyte or more serves a later request of about its
+// size. The release names the requested size. Thread-safe.
+void *vkr_vkt_reused_allocate(size_t size);
+void vkr_vkt_reused_release(void *memory, size_t size);
+
+// The SHA-256 and byte size of `path` when this process's packs published
+// it, recorded while its bytes were fresh, so a caller that must hash its
+// outputs need not read them again. Returns nonzero when recorded.
+int vkr_vkt_output_digest(const char *path, unsigned char out_digest[32],
+                          unsigned long long *out_size);
 
 // Largest mip extent a preview-tier texture stores (the spec's mip floor).
 #define VKR_VKT_PREVIEW_MAX_EXTENT 1024u
@@ -77,11 +96,18 @@ typedef enum VkrVktEncoding {
   // Native ASTC 4x4 from Apple's system encoder: several times faster than
   // astcenc and a few dB below it, for textures only the editor shows.
   // Available on Apple platforms only.
-  VKR_VKT_ENCODING_ASTC_FAST = 2
+  VKR_VKT_ENCODING_ASTC_FAST = 2,
+  // Native BC7 (colour and data, bc7e) and BC5 (normals, rgbcx), for hosts
+  // whose GPUs sample BC. Built on x86-64 only.
+  VKR_VKT_ENCODING_BC = 3,
+  // BC with bc7e's fastest colour profile, for textures only the editor
+  // shows; data and normals encode as in VKR_VKT_ENCODING_BC.
+  VKR_VKT_ENCODING_BC_FAST = 4
 } VkrVktEncoding;
 
-// Parses "uastc", "astc" or "astc-fast". Returns 0 for any other name, and
-// for "astc-fast" where the system encoder is unavailable.
+// Parses "uastc", "astc", "astc-fast", "bc" or "bc-fast". Returns 0 for any
+// other name, for "astc-fast" where the system encoder is unavailable and for
+// the BC encodings where their encoders are not built.
 int vkr_vkt_parse_encoding(const char *name, VkrVktEncoding *out);
 
 // Process setting for the in-process packs above (UASTC by default).
@@ -89,11 +115,24 @@ void vkr_vkt_set_encoding(VkrVktEncoding encoding);
 VkrVktEncoding vkr_vkt_encoding(void);
 
 // File-name suffix that keeps in-process pack outputs of each setting apart:
-// "", ".preview", ".astc", ".astc.preview", ".astc-fast" or
-// ".astc-fast.preview".
+// "", ".preview", ".astc", ".astc.preview", ".astc-fast",
+// ".astc-fast.preview", ".bc", ".bc.preview", ".bc-fast" or
+// ".bc-fast.preview".
 const char *vkr_vkt_variant_suffix(void);
 
 int vkr_vkt_packer_main(int argc, char **argv);
+
+// FNV-1a-64 over a file's bytes from the standard offset basis, as the glTF
+// cook names paired bakes; pack identities record another basis. Returns 0
+// when the file cannot be read.
+int vkr_vkt_hash_file(const char *path, unsigned long long *out_hash);
+
+// While a scope is open, file hashes (vkr_vkt_hash_file and the packs' skip
+// checks) are memoized by path, size and modification time, so one cook reads
+// each source once. Open it only while sources cannot change; closing the
+// last scope forgets every hash. Scopes nest.
+void vkr_vkt_begin_file_hash_scope(void);
+void vkr_vkt_end_file_hash_scope(void);
 
 // Encodes tightly packed RGBA8 pixels (at most 65535 on a side) as a lossless
 // PNG with a fast deflate level, for intermediates the packer reads back.

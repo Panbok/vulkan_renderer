@@ -7,12 +7,15 @@ and derived bakes, marks its mesh record and reports `preview_assets`.
 and its materials and textures then match a scene imported at the final tier
 directly. These run with `texture_encoding: uastc`, as on a host without
 ASTC. With `texture_encoding: astc` preview and final imports hold native
-ASTC 4x4 textures under their own names. A `deferred` import names no
+ASTC 4x4 textures under their own names, and on x86-64 builds, where it is
+the default, `texture_encoding: bc` holds BC7 colours and data and BC5
+normals. A `deferred` import names no
 texture until `finalize_textures` adds final ones to the same asset, and a
 finalize given a `ready_log` records every material it rebuilt, with the
 published definition, before it exits. On
 macOS, `texture_encode_speed: fast` encodes ASTC with the system encoder
-under `-astc-fast` names and leaves UASTC imports unchanged.
+under `-astc-fast` names, BC turns into `-bc-fast` colours, and UASTC
+imports stay unchanged.
 """
 import argparse
 import base64
@@ -120,7 +123,9 @@ def main():
             request = {'version': 1, 'operation': 'create_scene', 'workspace_root': str(workspace),
                        'project_path': str(manifest), 'scene_id': str(uuid.uuid4()),
                        'scene_name': f'Model {tier}', 'models': [str(sources / 'model.gltf')],
-                       'bakes': {}, 'texture_encoding': encoding}
+                       'bakes': {}}
+            if encoding:
+                request['texture_encoding'] = encoding
             if tier:
                 request['texture_tier'] = tier
             if speed:
@@ -186,6 +191,41 @@ def main():
             assert fast_bakes and list(generated.glob('*.astc.vkt')), 'Fast pair bake is named apart'
             assert all(b'astc-4x4-system' in bake.read_bytes() for bake in fast_bakes)
             assert formats(astc_fast, record, references) <= {157, 158}
+
+        # Native BC, built on x86-64 only: BC7 colours and data (vkFormat 145
+        # unorm, 146 sRGB) and BC5 normals (141) under -bc names, with
+        # identities naming each class's encoder. It is the default encoding
+        # there, and the fast speed encodes colours with bc7e's fastest
+        # profile under -bc-fast names.
+        if platform.machine().lower() in ('amd64', 'x86_64'):
+            bc_final = create(None, 'bc')
+            record, bc_materials, references = scene_state(bc_final)
+            packed = [reference for reference in references if '-color-' in reference]
+            assert packed and all(reference.endswith('-bc.vkt') for reference in packed), packed
+            assert formats(bc_final, record, references) == {141, 145, 146}
+            mesh = Path(bc_final['scene_path']).parent / record['artifacts'][0]['path']
+            texture_bytes = [(mesh.parent / 'materials' / reference).read_bytes()
+                             for reference in references]
+            for profile in (b'bc7-bc7e-veryfast-v1', b'bc7-bc7e-default-v1', b'bc5-rgbcx-v1'):
+                assert any(profile in data for data in texture_bytes), profile
+            assert list(generated.glob('*.bc.vkt')), 'BC pair bake is named apart'
+            _, default_materials, _ = scene_state(create(None, None))
+            assert default_materials == bc_materials, 'BC is not the default encoding'
+            bc_fast = create(None, 'bc', 'fast')
+            record, _, references = scene_state(bc_fast)
+            packed = [reference for reference in references if '-color-' in reference]
+            assert packed and all(reference.endswith('-bc-fast.vkt') for reference in packed), packed
+            assert list(generated.glob('*.bc-fast.vkt')), 'Fast BC pair bake is named apart'
+            mesh = Path(bc_fast['scene_path']).parent / record['artifacts'][0]['path']
+            assert b'bc7-bc7e-ultrafast-v1' in (mesh.parent / 'materials' / packed[0]).read_bytes()
+            assert formats(bc_fast, record, references) == {141, 145, 146}
+        else:
+            bad = jobs.Job({'version': 1, 'operation': 'create_scene',
+                            'workspace_root': str(workspace), 'project_path': str(manifest),
+                            'scene_id': str(uuid.uuid4()), 'scene_name': 'No BC', 'models': [],
+                            'bakes': {}, 'texture_encoding': 'bc'},
+                           root / 'no-bc.json', bakery=args.bakery, environment=environment)
+            assert bad.execute() == 1, 'bc needs the x86-64 encoders'
 
         # Deferred: materials keep their factors and name no texture, and the
         # asset awaits finalization, which adds final ASTC textures.
@@ -269,8 +309,8 @@ def main():
                        rejected, bakery=args.bakery, environment=environment)
         assert bad.execute() == 1 and 'material_priority' in rejected.read_text()
     print('Texture tiers: preview import, preview naming, finalize to the final tier, '
-          'equality with a final import, native ASTC, fast encode speed, deferred scene, ready log and '
-          'project library imports passed')
+          'equality with a final import, native ASTC, native BC, fast encode speed, deferred scene, '
+          'ready log and project library imports passed')
 
 
 if __name__ == '__main__':

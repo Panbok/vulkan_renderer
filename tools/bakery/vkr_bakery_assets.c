@@ -266,22 +266,23 @@ vkr_internal bool8_t vkr_bakery_texture_plan(VkrBakeryGraph *graph,
   const char *encoding = vkr_bakery_recipe_string(recipe, "encoding", "uastc");
   VkrVktEncoding encoding_value = VKR_VKT_ENCODING_UASTC;
   const bool8_t encoding_ok = vkr_vkt_parse_encoding(encoding, &encoding_value);
-  const bool8_t astc = encoding_value != VKR_VKT_ENCODING_UASTC;
+  const bool8_t native = encoding_value != VKR_VKT_ENCODING_UASTC;
   if (!class_ok || (!preview && strcmp(tier, "final") != 0) || !encoding_ok ||
       (strcmp(shape, "2d") && strcmp(shape, "2d-array") &&
        strcmp(shape, "cube") && strcmp(shape, "cube-array"))) {
     vkr_bakery_plan_diag(graph, action, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
                          "class must be color-srgb|color-linear|normal-rg|"
                          "data-mask, shape 2d|2d-array|cube|cube-array, tier "
-                         "final|preview, encoding uastc|astc|astc-fast "
-                         "(astc-fast needs Apple's system encoder)");
+                         "final|preview, encoding uastc|astc|astc-fast|bc|"
+                         "bc-fast (astc-fast needs Apple's system encoder, bc "
+                         "an x86-64 build)");
     return false_v;
   }
   /* At the preview tier's mip floor, decoding, mips and writing outweigh
      the threaded block encode: one Bistro import's 185 encodes took 83 s of
      CPU in 70 s of summed wall time. Such actions share the cores, bounded
      by workers and the memory budget, instead of taking a machine slot. */
-  if (preview || astc) {
+  if (preview || native) {
     action->exclusive_cores = false_v;
   }
   /* Resolved values join the key so class inference is explicit. */
@@ -290,7 +291,7 @@ vkr_internal bool8_t vkr_bakery_texture_plan(VkrBakeryGraph *graph,
   vkr_bakery_json_set(arena, recipe, "shape",
                       vkr_bakery_json_cstr(arena, shape));
   vkr_bakery_json_set(arena, recipe, "tier", vkr_bakery_json_cstr(arena, tier));
-  if (astc) {
+  if (native) {
     vkr_bakery_json_set(arena, recipe, "encoding",
                         vkr_bakery_json_cstr(arena, encoding));
   } else {
@@ -326,8 +327,13 @@ vkr_internal bool8_t vkr_bakery_texture_plan(VkrBakeryGraph *graph,
   char default_output[VKR_BAKERY_PATH_CAPACITY];
   (void)snprintf(default_output, sizeof(default_output), "%s.vkt",
                  action->source);
-  vkr_bakery_action_label(graph, action, "%s %s %s %s", astc ? "ASTC" : "UASTC",
-                          astc ? "4x4" : level, texture_class, shape);
+  if (native) {
+    vkr_bakery_action_label(graph, action, "%s %s %s", encoding, texture_class,
+                            shape);
+  } else {
+    vkr_bakery_action_label(graph, action, "UASTC %s %s %s", level,
+                            texture_class, shape);
+  }
   return vkr_bakery_default_output(graph, action, "vkt", default_output);
 }
 

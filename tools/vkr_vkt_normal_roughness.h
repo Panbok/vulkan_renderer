@@ -33,9 +33,10 @@ vkr_vkt_material_moment(const uint8_t *normal, uint8_t roughness,
   return result;
 }
 
-static inline void vkr_vkt_encode_material_moment(VkrVktMaterialMoment moment,
-                                                  uint8_t *normal,
-                                                  uint8_t *roughness) {
+// Encodes the moment's mean normal and returns the variance its length
+// implies, which widens the roughness (vkr_vkt_encode_material_roughness).
+static inline double vkr_vkt_encode_material_normal(VkrVktMaterialMoment moment,
+                                                    uint8_t *normal) {
   const double length_squared = fmin(
       1.0, moment.x * moment.x + moment.y * moment.y + moment.z * moment.z);
   const double length = sqrt(length_squared);
@@ -56,6 +57,19 @@ static inline void vkr_vkt_encode_material_moment(VkrVktMaterialMoment moment,
   normal[2] = 0u;
   // Basis normal-RG contract carries source G through alpha.
   normal[3] = normal[1];
-  *roughness = (uint8_t)floor(
-      sqrt(sqrt(fmin(1.0, moment.roughness_fourth + variance))) * 255.0 + 0.5);
+  return variance;
+}
+
+static inline uint8_t vkr_vkt_encode_material_roughness(double roughness_fourth,
+                                                        double variance) {
+  return (uint8_t)floor(
+      sqrt(sqrt(fmin(1.0, roughness_fourth + variance))) * 255.0 + 0.5);
+}
+
+static inline void vkr_vkt_encode_material_moment(VkrVktMaterialMoment moment,
+                                                  uint8_t *normal,
+                                                  uint8_t *roughness) {
+  const double variance = vkr_vkt_encode_material_normal(moment, normal);
+  *roughness =
+      vkr_vkt_encode_material_roughness(moment.roughness_fourth, variance);
 }

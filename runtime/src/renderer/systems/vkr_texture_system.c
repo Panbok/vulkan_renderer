@@ -28,6 +28,9 @@
 #define VKR_TEXTURE_SYSTEM_ASYNC_DMEMORY_RESERVE MB(16)
 /* Vulkan VkFormat 97, recorded directly in KTX2 without a Vulkan dependency. */
 #define VKR_KTX2_VK_FORMAT_R16G16B16A16_SFLOAT 97u
+#define VKR_KTX2_VK_FORMAT_BC5_UNORM_BLOCK 141u
+#define VKR_KTX2_VK_FORMAT_BC7_UNORM_BLOCK 145u
+#define VKR_KTX2_VK_FORMAT_BC7_SRGB_BLOCK 146u
 #define VKR_KTX2_VK_FORMAT_ASTC_4x4_UNORM_BLOCK 157u
 #define VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK 158u
 
@@ -2534,18 +2537,65 @@ vkr_internal bool8_t vkr_texture_ktx2_transcode_upload(
   return vkr_texture_ktx2_copy_upload(decode, out_data_size, out_region_count);
 }
 
-/* Uploads a native ASTC 4x4 payload (a workspace import on an ASTC host)
- * without transcoding; the file already holds the device format, so the
- * transcode cache is not involved. A device without ASTC cannot sample it:
- * the asset must be rebuilt for this platform. */
-vkr_internal bool8_t
-vkr_texture_ktx2_decode_astc(VkrTextureKtx2Decode *decode) {
+/* Block formats a workspace import stores for its host (ADR-012): native
+ * ASTC 4x4 on ASTC hosts, BC7 and BC5 on BC hosts. */
+typedef struct VkrTextureNativeBlockFormat {
+  uint32_t vk_format;
+  VkrTextureFormat format;
+  const char *name;
+} VkrTextureNativeBlockFormat;
+
+vkr_global const VkrTextureNativeBlockFormat
+    vkr_texture_native_block_formats[] = {
+        {VKR_KTX2_VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+         VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM, "ASTC 4x4"},
+        {VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
+         VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB, "ASTC 4x4"},
+        {VKR_KTX2_VK_FORMAT_BC7_UNORM_BLOCK, VKR_TEXTURE_FORMAT_BC7_UNORM,
+         "BC7"},
+        {VKR_KTX2_VK_FORMAT_BC7_SRGB_BLOCK, VKR_TEXTURE_FORMAT_BC7_SRGB, "BC7"},
+        {VKR_KTX2_VK_FORMAT_BC5_UNORM_BLOCK, VKR_TEXTURE_FORMAT_BC5_UNORM,
+         "BC5"},
+};
+
+vkr_internal const VkrTextureNativeBlockFormat *
+vkr_texture_native_block_format(uint32_t vk_format) {
+  for (uint32_t i = 0; i < ArrayCount(vkr_texture_native_block_formats); ++i) {
+    if (vkr_texture_native_block_formats[i].vk_format == vk_format) {
+      return &vkr_texture_native_block_formats[i];
+    }
+  }
+  return NULL;
+}
+
+vkr_internal bool8_t vkr_texture_system_samples_format(
+    const VkrTextureSystem *system, VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return system->supports_texture_astc_4x4;
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+    return system->supports_texture_bc7;
+  case VKR_TEXTURE_FORMAT_BC5_UNORM:
+    return system->supports_texture_bc5;
+  default:
+    return false_v;
+  }
+}
+
+/* Uploads a native block payload without transcoding; the file already holds
+ * the device format, so the transcode cache is not involved. A device that
+ * cannot sample the format refuses it: the asset must be rebuilt for this
+ * platform. */
+vkr_internal bool8_t vkr_texture_ktx2_decode_native(
+    VkrTextureKtx2Decode *decode, const VkrTextureNativeBlockFormat *native) {
   ktxTexture *base_texture = decode->base_texture;
   VkrTextureDecodeResult *out_result = decode->out_result;
-  if (!decode->system->supports_texture_astc_4x4) {
-    log_error("Texture '%s' holds ASTC 4x4 blocks, which this device cannot "
+  if (!vkr_texture_system_samples_format(decode->system, native->format)) {
+    log_error("Texture '%s' holds %s blocks, which this device cannot "
               "sample; rebuild the asset on this platform",
-              decode->path_cstr);
+              decode->path_cstr, native->name);
     out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }
@@ -2554,10 +2604,7 @@ vkr_texture_ktx2_decode_astc(VkrTextureKtx2Decode *decode) {
   if (!vkr_texture_ktx2_copy_upload(decode, &data_size, &region_count)) {
     return false_v;
   }
-  const VkrTextureFormat format =
-      decode->ktx_texture->vkFormat == VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK
-          ? VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB
-          : VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+  const VkrTextureFormat format = native->format;
   out_result->upload_data = decode->upload_data;
   out_result->upload_data_size = data_size;
   out_result->upload_regions = decode->upload_regions;
@@ -2724,9 +2771,10 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
     goto cleanup;
   }
 
-  if (decode.ktx_texture->vkFormat == VKR_KTX2_VK_FORMAT_ASTC_4x4_UNORM_BLOCK ||
-      decode.ktx_texture->vkFormat == VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK) {
-    success = vkr_texture_ktx2_decode_astc(&decode);
+  const VkrTextureNativeBlockFormat *native =
+      vkr_texture_native_block_format(decode.ktx_texture->vkFormat);
+  if (native) {
+    success = vkr_texture_ktx2_decode_native(&decode, native);
   } else if (!ktxTexture2_NeedsTranscoding(decode.ktx_texture)) {
     success = vkr_texture_ktx2_decode_direct(&decode);
   } else {

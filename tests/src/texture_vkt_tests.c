@@ -175,12 +175,13 @@ static void test_texture_ktx2_rgba16f_cube_decode(void) {
   printf("  test_texture_ktx2_rgba16f_cube_decode PASSED\n");
 }
 
-/* Writes an 8x8 two-level ASTC 4x4 sRGB texture whose every 16-byte block
- * starts with its level and block index, so a wrong region offset or a
- * transcode of the payload changes the markers read back. */
-static bool8_t texture_vkt_test_write_astc(const char *path) {
+/* Writes an 8x8 two-level texture of 16-byte 4x4 blocks in `vk_format` whose
+ * every block starts with its level and block index, so a wrong region offset
+ * or a transcode of the payload changes the markers read back. */
+static bool8_t texture_vkt_test_write_blocks(const char *path,
+                                             uint32_t vk_format) {
   const ktxTextureCreateInfo create_info = {
-      .vkFormat = VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
+      .vkFormat = vk_format,
       .baseWidth = 8u,
       .baseHeight = 8u,
       .baseDepth = 1u,
@@ -216,58 +217,91 @@ static bool8_t texture_vkt_test_write_astc(const char *path) {
   return result == KTX_SUCCESS ? true_v : false_v;
 }
 
-/* A workspace import on an ASTC host stores native ASTC blocks; they upload
- * untouched, and a device without ASTC refuses them instead of misreading. */
-static void test_texture_ktx2_native_astc_decode(void) {
-  printf("  Running test_texture_ktx2_native_astc_decode...\n");
+/* A workspace import stores its host's native blocks: ASTC 4x4 on ASTC hosts,
+ * BC7 and BC5 on BC hosts. They upload untouched, and a device that cannot
+ * sample the format refuses them instead of misreading. */
+static void test_texture_ktx2_native_block_decode(void) {
+  printf("  Running test_texture_ktx2_native_block_decode...\n");
 
   char tmp_dir[1024];
   snprintf(tmp_dir, sizeof(tmp_dir), "%stests/tmp", PROJECT_SOURCE_DIR);
   assert(texture_vkt_test_make_dir(tmp_dir));
   char source_path[1024];
-  snprintf(source_path, sizeof(source_path), "%s/native-astc.vkt", tmp_dir);
-  remove(source_path);
-  assert(texture_vkt_test_write_astc(source_path));
+  snprintf(source_path, sizeof(source_path), "%s/native-blocks.vkt", tmp_dir);
 
+  const struct {
+    uint32_t vk_format;
+    VkrTextureFormat format;
+    VkrTextureSystem supported;
+  } cases[] = {
+      {VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
+       VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB,
+       {.supports_texture_astc_4x4 = true_v}},
+      {VK_FORMAT_BC7_SRGB_BLOCK,
+       VKR_TEXTURE_FORMAT_BC7_SRGB,
+       {.supports_texture_bc7 = true_v}},
+      {VK_FORMAT_BC7_UNORM_BLOCK,
+       VKR_TEXTURE_FORMAT_BC7_UNORM,
+       {.supports_texture_bc7 = true_v}},
+      {VK_FORMAT_BC5_UNORM_BLOCK,
+       VKR_TEXTURE_FORMAT_BC5_UNORM,
+       {.supports_texture_bc5 = true_v}},
+  };
   Arena *arena = arena_create(KB(64), KB(64));
   assert(arena);
   VkrAllocator allocator = {.ctx = arena};
   assert(vkr_allocator_arena(&allocator));
-  VkrTextureSystem system = {.supports_texture_astc_4x4 = true_v};
-  VkrTexturePreparedLoad prepared = {0};
-  VkrRendererError error = VKR_RENDERER_ERROR_UNKNOWN;
-  const String8 source = string8_lit("tests/tmp/native-astc.vkt");
-  assert(vkr_texture_system_prepare_load_from_file(
-      &system, source, VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared,
-      &error));
-  assert(error == VKR_RENDERER_ERROR_NONE);
-  assert(prepared.description.format == VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
-  assert(prepared.description.width == 8u && prepared.description.height == 8u);
-  assert(prepared.description.mip_levels == 2u);
-  assert(prepared.upload_is_compressed);
-  assert(prepared.upload_region_count == 2u);
-  assert(prepared.upload_data_size == 5u * 16u);
-  for (uint32_t level = 0u; level < 2u; ++level) {
-    const VkrTextureUploadRegion *region = &prepared.upload_regions[level];
-    assert(region->mip_level == level && region->array_layer == 0u);
-    assert(region->width == (level == 0u ? 8u : 4u));
-    assert(region->byte_size == (level == 0u ? 4u : 1u) * 16u);
-    const uint8_t *blocks = prepared.upload_data + region->byte_offset;
-    for (uint32_t block = 0u; block < region->byte_size / 16u; ++block) {
-      assert(blocks[block * 16u] == 0xa0u + level);
-      assert(blocks[block * 16u + 1u] == block);
-    }
-  }
-  vkr_texture_system_release_prepared_load(&prepared);
+  const String8 source = string8_lit("tests/tmp/native-blocks.vkt");
+  for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
+    remove(source_path);
+    assert(texture_vkt_test_write_blocks(source_path, cases[i].vk_format));
 
-  system.supports_texture_astc_4x4 = false_v;
-  assert(!vkr_texture_system_prepare_load_from_file(
-      &system, source, VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared,
-      &error));
-  vkr_texture_system_release_prepared_load(&prepared);
+    VkrTextureSystem system = cases[i].supported;
+    VkrTexturePreparedLoad prepared = {0};
+    VkrRendererError error = VKR_RENDERER_ERROR_UNKNOWN;
+    assert(vkr_texture_system_prepare_load_from_file(
+        &system, source, VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared,
+        &error));
+    assert(error == VKR_RENDERER_ERROR_NONE);
+    assert(prepared.description.format == cases[i].format);
+    assert(prepared.description.width == 8u &&
+           prepared.description.height == 8u);
+    assert(prepared.description.mip_levels == 2u);
+    assert(prepared.upload_is_compressed);
+    assert(prepared.upload_region_count == 2u);
+    assert(prepared.upload_data_size == 5u * 16u);
+    for (uint32_t level = 0u; level < 2u; ++level) {
+      const VkrTextureUploadRegion *region = &prepared.upload_regions[level];
+      assert(region->mip_level == level && region->array_layer == 0u);
+      assert(region->width == (level == 0u ? 8u : 4u));
+      assert(region->byte_size == (level == 0u ? 4u : 1u) * 16u);
+      const uint8_t *blocks = prepared.upload_data + region->byte_offset;
+      for (uint32_t block = 0u; block < region->byte_size / 16u; ++block) {
+        assert(blocks[block * 16u] == 0xa0u + level);
+        assert(blocks[block * 16u + 1u] == block);
+      }
+    }
+    vkr_texture_system_release_prepared_load(&prepared);
+
+    /* Every other native family is supported, this one is not. */
+    system = (VkrTextureSystem){.supports_texture_astc_4x4 = true_v,
+                                .supports_texture_bc7 = true_v,
+                                .supports_texture_bc5 = true_v};
+    if (cases[i].supported.supports_texture_astc_4x4) {
+      system.supports_texture_astc_4x4 = false_v;
+    } else if (cases[i].supported.supports_texture_bc7) {
+      system.supports_texture_bc7 = false_v;
+    } else {
+      system.supports_texture_bc5 = false_v;
+    }
+    assert(!vkr_texture_system_prepare_load_from_file(
+        &system, source, VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared,
+        &error));
+    vkr_texture_system_release_prepared_load(&prepared);
+  }
   arena_destroy(arena);
   remove(source_path);
-  printf("  test_texture_ktx2_native_astc_decode PASSED\n");
+  printf("  test_texture_ktx2_native_block_decode PASSED\n");
 }
 
 static void test_texture_vkt_path_detection(void) {
@@ -838,7 +872,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_vkt_container_detection();
   test_texture_query_colorspace_policy();
   test_texture_ktx2_rgba16f_cube_decode();
-  test_texture_ktx2_native_astc_decode();
+  test_texture_ktx2_native_block_decode();
   test_texture_source_only_bypasses_strict_vkt_policy();
   test_texture_transcode_target_policy();
   test_normal_rg_basis_channel_contract();

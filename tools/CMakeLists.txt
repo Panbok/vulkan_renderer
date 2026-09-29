@@ -157,6 +157,12 @@ if(APPLE)
     # AppleTextureEncoder (libate) encodes the "astc-fast" encoding.
     target_link_libraries(vkr_vkt_cooking PRIVATE ate)
 endif()
+# bc7e and rgbcx encode the "bc" and "bc-fast" encodings on x86-64.
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_bc7e.cmake")
+if(VKR_BC7E_AVAILABLE)
+    target_link_libraries(vkr_vkt_cooking PRIVATE vkr_bc7e)
+    target_compile_definitions(vkr_vkt_cooking PRIVATE VKR_VKT_HAS_BC7E=1)
+endif()
 
 target_link_libraries(vkr_asset_cooking PRIVATE vkr_vkt_cooking)
 
