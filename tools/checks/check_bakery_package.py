@@ -19,6 +19,7 @@ from pathlib import Path
 import signal
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -144,20 +145,31 @@ def main():
         assert built.returncode == 0, built.stdout + built.stderr
         assert not Path(str(out) + '.staging').exists()
 
-        description = json.loads((out / 'bundle.json').read_text())
+        # macOS packages are an application bundle with the runtime files in
+        # Contents/Resources; other hosts keep them at the top.
+        app = out / 'Fixture Game.app'
+        runtime_root = app / 'Contents' / 'Resources' if sys.platform == 'darwin' else out
+        description = json.loads((runtime_root / 'bundle.json').read_text())
         assert description['version'] == 2 and description['config'] == 'shipping'
         suffix = '.exe' if description['platform'].startswith('windows') else ''
-        assert (out / ('Fixture Game' + suffix)).is_file()
-        assert (out / 'shaders' / description['backend'] / 'shader_manifest.json').is_file()
-        assert not (out / 'shaders' / ('vulkan' if description['backend'] == 'metal' else 'metal')).exists()
+        if sys.platform == 'darwin':
+            assert (app / 'Contents' / 'MacOS' / 'Fixture Game').is_file()
+            assert 'CFBundleExecutable' in (app / 'Contents' / 'Info.plist').read_text()
+            signature = subprocess.run(['codesign', '--verify', '--strict', str(app)],
+                                       capture_output=True, text=True)
+            assert signature.returncode == 0, signature.stderr
+        else:
+            assert (out / ('Fixture Game' + suffix)).is_file()
+        assert (runtime_root / 'shaders' / description['backend'] / 'shader_manifest.json').is_file()
+        assert not (runtime_root / 'shaders' / ('vulkan' if description['backend'] == 'metal' else 'metal')).exists()
         assert description['packs'] == ['content/game.vkpak', 'content/engine.vkpak']
         entries = {}
         for pack in description['packs']:
-            pack_entries, _ = read_pack(out / pack)
+            pack_entries, _ = read_pack(runtime_root / pack)
             assert not set(entries) & set(pack_entries)
             entries.update(pack_entries)
         assert set(entries) == set(description['products'])
-        assert all(name.startswith('assets/') for name in read_pack(out / 'content/engine.vkpak')[0])
+        assert all(name.startswith('assets/') for name in read_pack(runtime_root / 'content/engine.vkpak')[0])
         for identity, (data, _) in entries.items():
             assert hashlib.sha256(data).hexdigest() == description['products'][identity], identity
 
@@ -206,13 +218,13 @@ def main():
         assert tree_digest(project) == workspace_before, 'a package build must not write the project'
 
         # An unchanged rebuild reuses both archives byte for byte.
-        archives_before = {name: jobs.digest(out / 'content' / name)
+        archives_before = {name: jobs.digest(runtime_root / 'content' / name)
                            for name in ('game.vkpak', 'engine.vkpak')}
         rebuilt = subprocess.run(command, capture_output=True, text=True, timeout=300)
         assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
         report = json.loads(latest_report(workspace).read_text())
         assert all(archive['reused'] for archive in report['package']['archives']), report
-        assert {name: jobs.digest(out / 'content' / name) for name in archives_before} == archives_before
+        assert {name: jobs.digest(runtime_root / 'content' / name) for name in archives_before} == archives_before
 
         # A failed stage keeps the earlier package.
         package_before = tree_digest(out)

@@ -8,6 +8,10 @@
  *   <out>/content/game.vkpak      `project/...` and `editor/...` identities
  *   <out>/content/engine.vkpak    `assets/...`: render graph, runtime fonts
  *
+ * On macOS the package is `<out>/<executable>.app`: the player in
+ * `Contents/MacOS`, an Info.plist, and the rest in `Contents/Resources`; the
+ * bundle is signed, ad hoc unless the profile names an identity.
+ *
  * Each stage is a `start`/`done` pair in the event stream with coded
  * diagnostics: Validate, Finalize, Bake, Lower, Pack, Stage runtime, Verify
  * and report. Project jobs run as child `vkr_bakery project` processes, so
@@ -89,6 +93,10 @@ typedef struct VkrPackage {
   const VkrBakeryJson *template_description;
   /* The bundle.json of the package the output folder holds, if any. */
   const VkrBakeryJson *previous;
+  /* Paths inside the package: the directory holding bundle.json, content and
+     shaders ("" or `<executable>.app/Contents/Resources`), and the player. */
+  char runtime_relative[VKR_BAKERY_PATH_CAPACITY];
+  char executable_relative[VKR_BAKERY_PATH_CAPACITY];
   const char *project_name;
   const char *profile_name;
   const char *config;
@@ -651,6 +659,30 @@ vkr_internal bool8_t vkr_package_select_profile(VkrPackage *package,
   return true_v;
 }
 
+/* `<base>/<runtime root>/<rest>`: where a package keeps bundle.json, content
+   and shaders. */
+vkr_internal bool8_t vkr_package_runtime_path(const VkrPackage *package,
+                                              const char *base,
+                                              const char *rest, char *out) {
+  char root[VKR_BAKERY_PATH_CAPACITY];
+  return vkr_bakery_path_join(root, sizeof(root), base,
+                              package->runtime_relative) &&
+         vkr_bakery_path_join(out, VKR_BAKERY_PATH_CAPACITY, root, rest);
+}
+
+/* Any `<name>.app/Contents/Resources/bundle.json`: a macOS package, perhaps
+   under an earlier executable name. */
+vkr_internal bool8_t vkr_package_visit_app(void *context, const char *name,
+                                           bool8_t is_directory) {
+  const char **found = context;
+  const uint64_t length = strlen(name);
+  if (is_directory && length > 4u && !strcmp(name + length - 4u, ".app")) {
+    *found = name;
+    return false_v;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_package_visit_any(void *context, const char *name,
                                            bool8_t is_directory) {
   (void)name;
@@ -676,12 +708,34 @@ vkr_internal bool8_t vkr_package_check_output(VkrPackage *package) {
                               roots[i]);
     }
   }
+#if defined(__APPLE__)
+  (void)snprintf(package->runtime_relative, sizeof(package->runtime_relative),
+                 "%s.app/Contents/Resources", package->executable);
+  (void)snprintf(
+      package->executable_relative, sizeof(package->executable_relative),
+      "%s.app/Contents/MacOS/%s", package->executable, package->executable);
+#else
+  (void)snprintf(package->executable_relative,
+                 sizeof(package->executable_relative),
+                 "%s" VKR_PACKAGE_EXECUTABLE_SUFFIX, package->executable);
+#endif
   char description[VKR_BAKERY_PATH_CAPACITY];
-  (void)vkr_bakery_path_join(description, sizeof(description), package->out,
-                             "bundle.json");
+  (void)vkr_package_runtime_path(package, package->out, "bundle.json",
+                                 description);
+  /* A macOS package under an earlier executable name is a package too. */
+  const char *app = NULL;
+  char other[VKR_BAKERY_PATH_CAPACITY] = {0};
+  if (vkr_bakery_is_directory(package->out)) {
+    (void)vkr_bakery_list_directory(package->out, vkr_package_visit_app, &app);
+  }
+  if (app) {
+    (void)snprintf(other, sizeof(other), "%s/%s/Contents/Resources/bundle.json",
+                   package->out, app);
+  }
   bool8_t empty = true_v;
   if (vkr_bakery_is_directory(package->out) &&
       !vkr_bakery_is_file(description) &&
+      !(other[0] && vkr_bakery_is_file(other)) &&
       (!vkr_bakery_list_directory(package->out, vkr_package_visit_any,
                                   &empty) ||
        !empty)) {
@@ -1136,9 +1190,9 @@ vkr_internal bool8_t vkr_package_reuse_archive(VkrPackage *package,
     }
   }
   char source[VKR_BAKERY_PATH_CAPACITY];
-  return vkr_bakery_path_join(
-             source, sizeof(source), package->out,
-             vkr_package_printf(package, "content/%s", name)) &&
+  return vkr_package_runtime_path(
+             package, package->out,
+             vkr_package_printf(package, "content/%s", name), source) &&
          vkr_bakery_is_file(source) &&
          vkr_bakery_clone_or_copy(source, destination);
 }
@@ -1323,8 +1377,8 @@ vkr_internal bool8_t vkr_package_pack(VkrPackage *package,
   VkrBakeryJson *archives = vkr_bakery_json_array(arena);
   bool8_t ok = game && engine_items;
   char directory[VKR_BAKERY_PATH_CAPACITY];
-  (void)vkr_bakery_path_join(directory, sizeof(directory), package->staging,
-                             "content");
+  (void)vkr_package_runtime_path(package, package->staging, "content",
+                                 directory);
   ok = ok && vkr_bakery_make_directories(directory);
   for (uint32_t p = 0u; ok && p < ArrayCount(packs); ++p) {
     char path[VKR_BAKERY_PATH_CAPACITY];
@@ -1475,6 +1529,92 @@ vkr_internal VkrBakeryJson *vkr_package_game_object(VkrPackage *package) {
   return game;
 }
 
+/* A name usable in a bundle identifier: letters, digits, '-' and '.'. */
+vkr_internal void vkr_package_identifier_part(const char *text, char *out,
+                                              uint32_t capacity) {
+  uint32_t length = 0u;
+  for (const char *c = text; c && *c && length + 1u < capacity; ++c) {
+    const char lower = (*c >= 'A' && *c <= 'Z') ? (char)(*c - 'A' + 'a') : *c;
+    const bool8_t kept = (lower >= 'a' && lower <= 'z') ||
+                         (lower >= '0' && lower <= '9') || lower == '-';
+    out[length++] = kept ? lower : '-';
+  }
+  out[length] = '\0';
+}
+
+/* The macOS application bundle around the staged package: an Info.plist,
+   then a signature over the executable and every resource. The profile's
+   `signing_identity` names a certificate; without one it signs ad hoc. */
+vkr_internal bool8_t vkr_package_stage_app(VkrPackage *package) {
+#if defined(__APPLE__)
+  const VkrBakeryJson *settings = vkr_bakery_json_get(package->game, "game");
+  const char *name = vkr_package_text(package, settings, "name");
+  const char *version = vkr_package_text(package, settings, "version");
+  const char *company = vkr_package_text(package, settings, "company");
+  char company_part[128];
+  char name_part[128];
+  vkr_package_identifier_part(company && company[0] ? company : "vkr",
+                              company_part, sizeof(company_part));
+  vkr_package_identifier_part(package->executable, name_part,
+                              sizeof(name_part));
+  char plist[4096];
+  const int written =
+      snprintf(plist, sizeof(plist),
+               "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+               "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+               "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+               "<plist version=\"1.0\">\n<dict>\n"
+               "  <key>CFBundleExecutable</key><string>%s</string>\n"
+               "  <key>CFBundleIdentifier</key><string>com.%s.%s</string>\n"
+               "  <key>CFBundleName</key><string>%s</string>\n"
+               "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+               "  <key>CFBundleShortVersionString</key><string>%s</string>\n"
+               "  <key>CFBundleVersion</key><string>%s</string>\n"
+               "  <key>NSHighResolutionCapable</key><true/>\n"
+               "</dict>\n</plist>\n",
+               package->executable, company_part, name_part,
+               name ? name : package->executable, version ? version : "0",
+               version ? version : "0");
+  char path[VKR_BAKERY_PATH_CAPACITY];
+  char app[VKR_BAKERY_PATH_CAPACITY];
+  if (written <= 0 || (uint32_t)written >= sizeof(plist) ||
+      (uint32_t)snprintf(app, sizeof(app), "%s/%s.app", package->staging,
+                         package->executable) >= sizeof(app) ||
+      !vkr_bakery_path_join(path, sizeof(path), app, "Contents/Info.plist") ||
+      !vkr_bakery_write_file_atomic(path, plist, (uint64_t)written)) {
+    return vkr_package_fail(package, app, "cannot write the Info.plist");
+  }
+  const char *identity =
+      vkr_package_text(package, package->profile, "signing_identity");
+  const char *arguments[] = {"--force", "--sign",
+                             identity && identity[0] ? identity : "-",
+                             "--timestamp=none", app};
+  const char *log =
+      vkr_package_printf(package, "%s/codesign.log", package->work);
+  const VkrPlatformProcessConfig config = {
+      .executable = "/usr/bin/codesign",
+      .arguments = arguments,
+      .argument_count = ArrayCount(arguments),
+      .stdout_path = log,
+      .stderr_path = log,
+      .termination_grace_ms = 2000u,
+      .hidden = true_v,
+      .is_cancelled = vkr_package_poll_job,
+      .cancel_context = package,
+  };
+  int32_t code = -1;
+  bool8_t timed_out = false_v;
+  if (!vkr_platform_process_run(&config, &code, &timed_out) || code != 0) {
+    return vkr_package_fail(
+        package, log, "codesign could not sign %s with %s", app,
+        identity && identity[0] ? identity : "an ad hoc signature");
+  }
+#else
+  (void)package;
+#endif
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
                                                const VkrBundleItem *items,
                                                uint32_t item_count) {
@@ -1482,10 +1622,15 @@ vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
   const char *executable = vkr_package_printf(
       package, "%s" VKR_PACKAGE_EXECUTABLE_SUFFIX, package->executable);
   char destination[VKR_BAKERY_PATH_CAPACITY];
+  char directory[VKR_BAKERY_PATH_CAPACITY];
   char shaders[VKR_BAKERY_PATH_CAPACITY];
   char catalog[VKR_BAKERY_PATH_CAPACITY];
   if (!vkr_bakery_path_join(destination, sizeof(destination), package->staging,
-                            executable) ||
+                            package->executable_relative)) {
+    return false_v;
+  }
+  vkr_bakery_path_parent(directory, sizeof(directory), destination);
+  if (!vkr_bakery_make_directories(directory) ||
       !vkr_bakery_clone_or_copy(package->player, destination)) {
     vkr_bakery_event_diag(
         package->stage_id, VKR_BAKERY_DIAG_BUNDLE_MISSING_RUNTIME,
@@ -1498,8 +1643,8 @@ vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
 #endif
   if (!vkr_bakery_path_join(catalog, sizeof(catalog), package->shaders,
                             VKR_PACKAGE_BACKEND) ||
-      !vkr_bakery_path_join(shaders, sizeof(shaders), package->staging,
-                            "shaders/" VKR_PACKAGE_BACKEND) ||
+      !vkr_package_runtime_path(package, package->staging,
+                                "shaders/" VKR_PACKAGE_BACKEND, shaders) ||
       !vkr_bundle_copy_tree(catalog, shaders)) {
     vkr_bakery_event_diag(package->stage_id,
                           VKR_BAKERY_DIAG_BUNDLE_MISSING_RUNTIME, catalog, 0u,
@@ -1545,9 +1690,10 @@ vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
   vkr_bakery_json_set(arena, description, "game",
                       vkr_package_game_object(package));
   char path[VKR_BAKERY_PATH_CAPACITY];
-  (void)vkr_bakery_path_join(path, sizeof(path), package->staging,
-                             "bundle.json");
-  return vkr_package_write_json(package, path, description);
+  (void)vkr_package_runtime_path(package, package->staging, "bundle.json",
+                                 path);
+  return vkr_package_write_json(package, path, description) &&
+         vkr_package_stage_app(package);
 }
 
 vkr_internal bool8_t vkr_package_verify(VkrPackage *package) {
@@ -1555,8 +1701,8 @@ vkr_internal bool8_t vkr_package_verify(VkrPackage *package) {
                                          "content/engine.vkpak"};
   for (uint32_t i = 0u; i < ArrayCount(archives); ++i) {
     char path[VKR_BAKERY_PATH_CAPACITY];
-    if (!vkr_bakery_path_join(path, sizeof(path), package->staging,
-                              archives[i]) ||
+    if (!vkr_package_runtime_path(package, package->staging, archives[i],
+                                  path) ||
         !vkr_bundle_verify(path)) {
       return vkr_package_fail(package, path, "the archive does not verify");
     }
@@ -1627,12 +1773,7 @@ vkr_internal void vkr_package_write_report(VkrPackage *package, bool8_t ok) {
                       vkr_bakery_json_cstr(arena, package->out));
   vkr_bakery_json_set(
       arena, report, "executable",
-      vkr_bakery_json_cstr(
-          arena,
-          package->executable
-              ? vkr_package_printf(package, "%s" VKR_PACKAGE_EXECUTABLE_SUFFIX,
-                                   package->executable)
-              : ""));
+      vkr_bakery_json_cstr(arena, package->executable_relative));
   vkr_bakery_json_set(arena, report, "stages", package->stages);
   vkr_bakery_json_set(arena, report, "warnings", package->warnings);
   vkr_bakery_json_set(arena, report, "package",

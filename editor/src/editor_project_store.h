@@ -311,6 +311,8 @@ typedef struct VkrEditorGameProfile {
   char output[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   char include[VKR_EDITOR_GAME_INCLUDE_MAX][256]; // Project-relative paths.
   uint32_t include_count;
+  // macOS code signing identity; empty signs the application ad hoc.
+  char signing_identity[128];
   bool8_t bake_lighting;
   bool8_t run_after_build;
 } VkrEditorGameProfile;

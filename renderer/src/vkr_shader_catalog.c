@@ -64,6 +64,13 @@ bool8_t vkr_shader_catalog_root(char *out, uint32_t capacity) {
           vkr_shader_catalog_has_manifest(bundled)) {
         return (uint32_t)snprintf(out, capacity, "%s", bundled) < capacity;
       }
+      /* A macOS application bundle keeps it in Contents/Resources. */
+      if ((uint32_t)snprintf(bundled, sizeof(bundled),
+                             "%s/../Resources/shaders",
+                             executable) < sizeof(bundled) &&
+          vkr_shader_catalog_has_manifest(bundled)) {
+        return (uint32_t)snprintf(out, capacity, "%s", bundled) < capacity;
+      }
     }
   }
 #if defined(VKR_SHADER_CATALOG_DEFAULT)

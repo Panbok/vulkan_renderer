@@ -50,7 +50,7 @@ runs seven stages. Each is a `start`/`done` event pair with coded diagnostics:
 | Bake | With `bake_lighting`, `bake_scene` with reflection and diffuse for each included scene. |
 | Lower | Lowers again only when an earlier stage published. |
 | Pack | Walks the closure over identity mounts: staged documents, `project/` to the project directory, `editor/` to the editor bundle, `assets/` to the template's engine resources. Rejects a document naming the workspace directory or the repository. Writes `content/game.vkpak` and `content/engine.vkpak` (`assets/...`); an archive whose entries all match the previous package's `products`, written by the same `archive_writer`, is cloned from it instead. |
-| Stage runtime | Copies the profile's player as `<executable>[.exe]` and only the host backend's shader catalog. Writes `bundle.json` version 2. |
+| Stage runtime | Copies the profile's player as `<executable>[.exe]` and only the host backend's shader catalog. Writes `bundle.json` version 2. On macOS the package is `<executable>.app`: the player in `Contents/MacOS`, an Info.plist (`com.<company>.<executable>`, the game version) and the rest in `Contents/Resources`, signed with `codesign` using the profile's `signing_identity`, else ad hoc. |
 | Verify and report | Validates and rehashes both archives, then renames `<out>.staging` over `<out>`. |
 
 Project jobs run as child `vkr_bakery project` processes, so publication keeps
@@ -81,7 +81,11 @@ a mesh's `.remap.json`.
 engine's UbuntuMono configuration), `window`, `graphics`, and `startup_camera`,
 the startup scene's editor viewport recall without selection. The
 [vfs](../../lib/src/filesystem/vkr_vfs.h) reads only root members, through
-`vkr_json_find_root_field`, and keeps the description for the player.
+`vkr_json_find_root_field`, and keeps the description for the player. It
+finds `bundle.json` beside the executable, or in `Contents/Resources` for an
+executable in a bundle's `Contents/MacOS`; the
+[shader catalog](../../renderer/src/vkr_shader_catalog.h) looks in
+`../Resources/shaders` the same way.
 
 **Template lookup.** `--template <dir>`, then `templates/player` beside the
 running `vkr_bakery`, as a distributed editor would ship it, then the build
@@ -180,6 +184,13 @@ queue and report the result
   1512x949 point window in its own Space below the notch; a windowed run is
   1280x752 with its title bar. The pause-menu switch was not exercised, since
   the run takes no input.
+- Application bundle: the Testbed package is `Testbed.app`, ad hoc signed
+  (`com.vkr.testbed`), and `codesign --verify --strict` passes; signing its
+  3 GB of resources took the Stage runtime stage to 15.5 s. Its inner player
+  under the repository-denying sandbox exits 0 with all 779 distinct reads in
+  the products, and `open -n Testbed.app` shows Bistro at the startup camera.
+  The check verifies the layout and signature on macOS. Not run: a Developer
+  ID identity, notarization and Gatekeeper on a downloaded copy.
 - Reuse: rebuilding the unchanged Testbed package logs `reused` for both
   archives, and `game.vkpak` keeps SHA-256 `0f80cf7b...`; the check asserts
   byte-identical reuse and that changed game content rewrites only the game

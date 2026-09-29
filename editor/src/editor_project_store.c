@@ -2996,6 +2996,9 @@ static bool8_t game_parse_profile(s_ProjectJson *json, uint32_t object,
                           sizeof(profile->config));
   (void)project_json_text(json, object, "output", profile->output,
                           sizeof(profile->output));
+  (void)project_json_text(json, object, "signing_identity",
+                          profile->signing_identity,
+                          sizeof(profile->signing_identity));
   (void)game_bool(json, object, "bake_lighting", &profile->bake_lighting);
   (void)game_bool(json, object, "run_after_build", &profile->run_after_build);
   const uint32_t include = project_json_field(json, object, "include");
@@ -3182,6 +3185,7 @@ bool8_t vkr_editor_game_write(VkrJsonWriter *writer,
          game_text(writer, "platform", profile->platform) &&
          game_text(writer, "config", profile->config) &&
          game_text(writer, "output", profile->output) &&
+         game_text(writer, "signing_identity", profile->signing_identity) &&
          vkr_json_writer_name(writer, string8_lit("include")) &&
          vkr_json_writer_begin_array(writer);
     for (uint32_t j = 0; ok && j < profile->include_count; ++j) {

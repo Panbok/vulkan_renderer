@@ -113,7 +113,9 @@ bool8_t vkr_vfs_set_content_root(const char *directory);
 bool8_t vkr_vfs_mount_pack(const char *path);
 /**
  * Mounts content for this process once, before loaders run:
- * - `$VKR_CONTENT` or a `bundle.json` beside the executable names a bundle:
+ * - `$VKR_CONTENT` or a `bundle.json` beside the executable (or, for an
+ *   executable in a macOS bundle's Contents/MacOS, in Contents/Resources)
+ *   names a bundle:
  *   its `content/` directory becomes the root and its archives mount.
  * - `$VKR_CONTENT_PACKS` (paths separated by the platform list separator)
  *   mounts archives over the current root.

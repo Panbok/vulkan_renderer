@@ -518,14 +518,31 @@ bool8_t vkr_vfs_mount_startup(void) {
     }
     if (separator) {
       *separator = 0;
-      char description[VKR_VFS_PATH_MAX];
-      snprintf(description, sizeof(description), "%s/bundle.json", executable);
-      const FilePath file = {
-          .path = string8_create_from_cstr((const uint8_t *)description,
-                                           strlen(description)),
-          .type = FILE_PATH_TYPE_ABSOLUTE};
-      if (file_exists(&file)) {
-        return vkr_vfs_mount_bundle(executable);
+      /* Beside the executable, or in a macOS application bundle's
+         Contents/Resources when it runs from Contents/MacOS. */
+      char directories[2][VKR_VFS_PATH_MAX];
+      uint32_t directory_count = 0u;
+      snprintf(directories[directory_count++], VKR_VFS_PATH_MAX, "%s",
+               executable);
+      const uint64_t length = strlen(executable);
+      const char suffix[] = "/Contents/MacOS";
+      if (length > sizeof(suffix) - 1u &&
+          !strcmp(executable + length - (sizeof(suffix) - 1u), suffix)) {
+        snprintf(directories[directory_count++], VKR_VFS_PATH_MAX,
+                 "%.*s/Contents/Resources",
+                 (int)(length - (sizeof(suffix) - 1u)), executable);
+      }
+      for (uint32_t i = 0u; i < directory_count; ++i) {
+        char description[VKR_VFS_PATH_MAX];
+        snprintf(description, sizeof(description), "%s/bundle.json",
+                 directories[i]);
+        const FilePath file = {
+            .path = string8_create_from_cstr((const uint8_t *)description,
+                                             strlen(description)),
+            .type = FILE_PATH_TYPE_ABSOLUTE};
+        if (file_exists(&file)) {
+          return vkr_vfs_mount_bundle(directories[i]);
+        }
       }
     }
   }

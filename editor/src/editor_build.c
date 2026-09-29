@@ -1211,6 +1211,20 @@ static void build_settings_target(VkrEditorBuild *build, VkrEditorUi *editor,
     *out_dialog = true_v;
   }
   *y += 30;
+#if defined(PLATFORM_APPLE)
+  build_label(ui, "signing.label", string8_lit("Signing identity"), 12, *y, 120,
+              true_v);
+  c = build_widget(132, *y, width - 144, 24);
+  vkr_editor_field_style(&c);
+  c.tooltip = string8_lit("A code signing certificate, such as \"Developer ID "
+                          "Application: Name (TEAM)\"; empty signs the "
+                          "application ad hoc, for this computer");
+  VkrUiTextEditBuffer signing = {(uint8_t *)profile->signing_identity,
+                                 (uint32_t)strlen(profile->signing_identity),
+                                 sizeof(profile->signing_identity)};
+  (void)vkr_ui_text_field(ui, string8_lit("signing.field"), &signing, &c);
+  *y += 30;
+#endif
   build_label(ui, "include.label", string8_lit("Extra includes"), 12, *y, 120,
               true_v);
   c = build_widget(132, *y, width - 144, 24);
@@ -1315,7 +1329,7 @@ void vkr_editor_build_settings_build(VkrEditorBuild *build, VkrEditorUi *editor,
     build_fields_load(build);
   }
   const float32_t footer = 84.0f;
-  const float32_t content_height = 590.0f + 28.0f * (project->scene_count + 1u);
+  const float32_t content_height = 620.0f + 28.0f * (project->scene_count + 1u);
   if (!ui->mouse_captured && ui->mouse_input_layer == ui->input_layer &&
       ui->mouse_x >= bounds.x && ui->mouse_x < bounds.x + bounds.width &&
       ui->mouse_y >= bounds.y &&

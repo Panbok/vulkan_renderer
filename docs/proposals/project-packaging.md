@@ -26,10 +26,10 @@ its evidence. This proposal keeps what remains.
 1. **Incremental packages.** Reuse unchanged chunks inside a changed archive,
    one archive per scene for streaming, and per-chunk compression. Compression
    changes `.vkpak` to version 2 and needs approval first.
-2. **Shipping polish.** Windows icon and
-   version resources; the macOS `.app` layout and signing; linking script module
-   archives once the [entity behavior](entity-behavior-system.md) runtime loads
-   them.
+2. **Shipping polish.** Windows icon and version resources; game icons in
+   the `.app`; notarization of a Developer ID signed `.app`; linking script
+   module archives once the [entity behavior](entity-behavior-system.md)
+   runtime loads them.
 3. **Editor distribution.** Install rules that lay out the editor,
    `vkr_bakery` and `templates/player` (players, engine resources, shader
    catalog and a relative `template.json`) as one folder.

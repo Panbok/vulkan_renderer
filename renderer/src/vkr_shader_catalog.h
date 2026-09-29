@@ -8,8 +8,9 @@
  * `metal/<library>.metallib` and one `shader_manifest.json` per backend.
  *
  * The root is, in order: the process override, $VKR_SHADER_CATALOG, a
- * `shaders` directory beside the executable (bundled games), then the build
- * tree catalog compiled into repository builds. */
+ * `shaders` directory beside the executable or in `../Resources` (bundled
+ * games, macOS application bundles), then the build tree catalog compiled
+ * into repository builds. */
 
 /** Copies `path` as the process-wide catalog root; NULL clears it. Set once
  * before creating a renderer. */
