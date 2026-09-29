@@ -3246,16 +3246,33 @@ bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
   return true_v;
 }
 
-static bool8_t game_path(const VkrEditorProject *project,
-                         char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
-  const char *slash = strrchr(project->manifest_path, '/');
-  if (!slash) {
+bool8_t
+vkr_editor_project_directory(const VkrEditorProject *project,
+                             char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
+  const char *separator = NULL;
+  for (const char *c = project ? project->manifest_path : ""; *c; ++c) {
+    if (*c == '/'
+#if defined(PLATFORM_WINDOWS)
+        || *c == '\\'
+#endif
+    ) {
+      separator = c;
+    }
+  }
+  if (!separator) {
     return false_v;
   }
-  const int32_t length =
-      snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%.*s/game.json",
-               (int)(slash - project->manifest_path), project->manifest_path);
+  const int32_t length = snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%.*s",
+                                  (int)(separator - project->manifest_path),
+                                  project->manifest_path);
   return length > 0 && (uint32_t)length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
+}
+
+static bool8_t game_path(const VkrEditorProject *project,
+                         char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
+  char directory[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  return vkr_editor_project_directory(project, directory) &&
+         project_join(out, directory, "game.json");
 }
 
 bool8_t vkr_editor_game_load(const VkrEditorProject *project,

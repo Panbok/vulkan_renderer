@@ -353,6 +353,11 @@ bool8_t vkr_editor_game_write(struct VkrJsonWriter *writer,
 bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
                                  const VkrEditorProject *project,
                                  VkrEditorProjectError *error);
+// The directory holding the project's project.json, without a trailing
+// separator. Windows resolves manifest paths with backslash separators.
+bool8_t
+vkr_editor_project_directory(const VkrEditorProject *project,
+                             char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]);
 // Reads the project's game.json; a missing file yields the default and sets
 // *out_exists false.
 bool8_t vkr_editor_game_load(const VkrEditorProject *project,

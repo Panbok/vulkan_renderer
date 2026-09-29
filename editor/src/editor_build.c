@@ -636,13 +636,10 @@ static bool8_t build_begin_job(VkrEditorBuild *build, VkrEditorUi *editor,
   const VkrEditorProject *project =
       vkr_editor_projects_project(editor->projects);
   const char *workspace = vkr_editor_projects_workspace_root(editor->projects);
-  const char *slash = project ? strrchr(project->manifest_path, '/') : NULL;
-  if (!slash) {
+  if (!vkr_editor_project_directory(project, build->project_directory)) {
     snprintf(build->result, sizeof(build->result), "No project is open.");
     return false_v;
   }
-  snprintf(build->project_directory, sizeof(build->project_directory), "%.*s",
-           (int)(slash - project->manifest_path), project->manifest_path);
   char directory[BUILD_PATH];
   snprintf(directory, sizeof(directory), "%s/logs/builds", workspace);
   String8 directory_text = build_text(directory);
