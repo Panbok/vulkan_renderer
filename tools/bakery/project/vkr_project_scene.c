@@ -1191,6 +1191,10 @@ bool8_t vkr_project_validate_semantics(VkrProjectJob *job,
 // Bundle dependency closures
 // =============================================================================
 
+vkr_internal bool8_t vkr_project_validate_resolved_dependencies(
+    VkrProjectJob *job, const char *owner, const char *path,
+    VkrBakeryJson *visited);
+
 vkr_internal bool8_t vkr_project_bundle_dependency(
     VkrProjectJob *job, const char *owner, const char *path, const char *value,
     bool8_t explicit_relative, VkrBakeryJson *visited) {
@@ -1222,26 +1226,37 @@ vkr_internal bool8_t vkr_project_bundle_dependency(
     return vkr_project_fail(job, "Bundle dependency is unavailable or escapes "
                                  "its owner");
   }
-  return vkr_project_validate_bundle_dependencies(job, owner, target, visited);
+  return vkr_project_validate_resolved_dependencies(job, owner, target,
+                                                    visited);
 }
 
 bool8_t vkr_project_validate_bundle_dependencies(VkrProjectJob *job,
                                                  const char *owner_value,
                                                  const char *path_value,
                                                  VkrBakeryJson *visited) {
-  Arena *arena = job->arena;
   char path[VKR_PROJECT_PATH];
   char owner[VKR_PROJECT_PATH];
   if (!vkr_project_resolve(path_value, true_v, path, sizeof(path))) {
     return vkr_project_fail(job, "[Errno 2] No such file or directory: '%s'",
                             path_value);
   }
+  (void)vkr_project_resolve(owner_value, false_v, owner, sizeof(owner));
+  return vkr_project_validate_resolved_dependencies(job, owner, path, visited);
+}
+
+/* The closure below `path`, with `path` and `owner` already resolved: each
+   dependency resolves once, rather than again as a path and again for the
+   unchanged owner, which on Windows cost a handle open, final-path query
+   and close each through every file-system filter. */
+vkr_internal bool8_t vkr_project_validate_resolved_dependencies(
+    VkrProjectJob *job, const char *owner, const char *path,
+    VkrBakeryJson *visited) {
+  Arena *arena = job->arena;
   if (vkr_bakery_json_get(visited, path)) {
     return true_v;
   }
   vkr_bakery_json_set(arena, visited, path,
                       vkr_bakery_json_bool(arena, true_v));
-  (void)vkr_project_resolve(owner_value, false_v, owner, sizeof(owner));
   if (!vkr_project_is_relative_to(path, owner)) {
     return vkr_project_fail(job, "Bundle dependency escapes its managed owner");
   }

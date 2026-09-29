@@ -443,14 +443,16 @@ uint32_t vkr_project_tier_arguments(const VkrProjectJob *job,
 }
 
 const char *vkr_project_texture_encoding_name(const VkrProjectJob *job) {
-  static const char *const names[3] = {"uastc", "astc", "astc-fast"};
+  static const char *const names[5] = {"uastc", "astc", "astc-fast", "bc",
+                                       "bc-fast"};
   return names[job->texture_encoding];
 }
 
 const char *vkr_project_texture_suffix(const VkrProjectJob *job) {
-  static const char *const suffixes[6] = {"",           "-preview",
-                                          "-astc",      "-astc-preview",
-                                          "-astc-fast", "-astc-fast-preview"};
+  static const char *const suffixes[10] = {
+      "",           "-preview",           "-astc", "-astc-preview",
+      "-astc-fast", "-astc-fast-preview", "-bc",   "-bc-preview",
+      "-bc-fast",   "-bc-fast-preview"};
   return suffixes[job->texture_encoding * 2u +
                   (job->texture_preview ? 1u : 0u)];
 }
@@ -1181,8 +1183,12 @@ bool8_t vkr_project_make_dirs(VkrProjectJob *job, const char *path) {
              : vkr_project_fail(job, "Cannot create directory %s", path);
 }
 
-bool8_t vkr_project_copy_file(VkrProjectJob *job, const char *source,
-                              const char *destination) {
+/* Copies `source` to `destination`; with `link`, a volume that cannot clone
+   hard links it instead of copying the bytes. */
+vkr_internal bool8_t vkr_project_place_file(VkrProjectJob *job,
+                                            const char *source,
+                                            const char *destination,
+                                            bool8_t link) {
   char resolved[VKR_PROJECT_PATH];
   VKR_PROJECT_TRY(vkr_project_source_file(job, source, resolved));
   VkrBakeryStat info;
@@ -1201,7 +1207,10 @@ bool8_t vkr_project_copy_file(VkrProjectJob *job, const char *source,
   VKR_PROJECT_TRY(vkr_project_digest(job, resolved, before));
   vkr_bakery_path_parent(parent, sizeof(parent), destination);
   VKR_PROJECT_TRY(vkr_project_make_dirs(job, parent));
-  if (!vkr_bakery_clone_or_copy(resolved, destination)) {
+  const bool8_t placed =
+      link ? vkr_bakery_clone_link_or_copy(resolved, destination)
+           : vkr_bakery_clone_or_copy(resolved, destination);
+  if (!placed) {
     return vkr_project_fail(job, "Cannot copy %s", resolved);
   }
   VkrBakeryStat source_after;
@@ -1222,10 +1231,17 @@ bool8_t vkr_project_copy_file(VkrProjectJob *job, const char *source,
   return true_v;
 }
 
-bool8_t vkr_project_copy_blob(VkrProjectJob *job, const char *source,
-                              const char *directory, char *out) {
-  char resolved[VKR_PROJECT_PATH];
-  VKR_PROJECT_TRY(vkr_project_source_file(job, source, resolved));
+bool8_t vkr_project_copy_file(VkrProjectJob *job, const char *source,
+                              const char *destination) {
+  return vkr_project_place_file(job, source, destination, false_v);
+}
+
+/* The content name of a blob: the digest of `resolved` and its lowercase
+   extension. Fails the job for an extension a managed name cannot hold. */
+vkr_internal bool8_t vkr_project_blob_name(VkrProjectJob *job,
+                                           const char *resolved,
+                                           char hash[VKR_BAKERY_SHA256_HEX],
+                                           char *name, uint32_t capacity) {
   char extension[32];
   vkr_project_suffix_lower(resolved, extension, sizeof(extension));
   bool8_t valid = strlen(extension) <= 16u;
@@ -1237,8 +1253,22 @@ bool8_t vkr_project_copy_blob(VkrProjectJob *job, const char *source,
     return vkr_project_fail(job, "Unsupported asset filename: %s",
                             vkr_bakery_path_name(resolved));
   }
-  char hash[VKR_BAKERY_SHA256_HEX];
   VKR_PROJECT_TRY(vkr_project_digest(job, resolved, hash));
+  return (uint32_t)snprintf(name, capacity, "%s%s", hash, extension) < capacity
+             ? true_v
+             : vkr_project_fail(job, "Path too long");
+}
+
+bool8_t vkr_project_copy_blob(VkrProjectJob *job, const char *source,
+                              const char *directory, char *out) {
+  char resolved[VKR_PROJECT_PATH];
+  VKR_PROJECT_TRY(vkr_project_source_file(job, source, resolved));
+  char hash[VKR_BAKERY_SHA256_HEX];
+  char name[128];
+  VKR_PROJECT_TRY(
+      vkr_project_blob_name(job, resolved, hash, name, sizeof(name)));
+  char extension[32];
+  vkr_project_suffix_lower(resolved, extension, sizeof(extension));
   if (!vkr_bakery_json_get(job->source_names, hash)) {
     char stem[512];
     vkr_project_stem(resolved, stem, sizeof(stem));
@@ -1251,15 +1281,213 @@ bool8_t vkr_project_copy_blob(VkrProjectJob *job, const char *source,
     vkr_bakery_json_set(job->arena, job->texture_seeds, hash,
                         vkr_bakery_json_cstr(job->arena, candidate));
   }
-  char name[128];
-  (void)snprintf(name, sizeof(name), "%s%s", hash, extension);
   if (!vkr_bakery_path_join(out, VKR_PROJECT_PATH, directory, name)) {
     return vkr_project_fail(job, "Path too long");
   }
+  /* A blob is named by its content and never rewritten. Where the volume
+     cannot clone, one the workspace already owns (a snapshot, a cached or
+     published build file, all published by rename) is hard linked rather
+     than copied; user files are always copied, since their editors may
+     rewrite them in place (ADR-077). */
   if (!vkr_project_exists(out)) {
-    VKR_PROJECT_TRY(vkr_project_copy_file(job, resolved, out));
+    VKR_PROJECT_TRY(vkr_project_place_file(
+        job, resolved, out,
+        vkr_project_is_relative_to(resolved, job->workspace)));
   }
   return true_v;
+}
+
+typedef struct VkrProjectBlobPlacement {
+  const char *source; /* Resolved source whose stat bounds the copy. */
+  const char *origin; /* File placed: the source or a workspace blob. */
+  char destination[VKR_PROJECT_PATH];
+  char hash[VKR_BAKERY_SHA256_HEX];
+  VkrBakeryStat before;
+  bool8_t link;
+  bool8_t placed;
+} VkrProjectBlobPlacement;
+
+typedef struct VkrProjectBlobPrefetch {
+  VkrProjectBlobPlacement *items;
+  uint32_t count;
+  VkrAtomicUint32 next;
+} VkrProjectBlobPrefetch;
+
+vkr_internal void *vkr_project_prefetch_worker(void *argument) {
+  VkrProjectBlobPrefetch *prefetch = argument;
+  for (;;) {
+    const uint32_t i = vkr_atomic_uint32_fetch_add(&prefetch->next, 1u,
+                                                   VKR_MEMORY_ORDER_RELAXED);
+    if (i >= prefetch->count) {
+      return NULL;
+    }
+    VkrProjectBlobPlacement *item = &prefetch->items[i];
+    item->placed =
+        item->link
+            ? vkr_bakery_clone_link_or_copy(item->origin, item->destination)
+            : vkr_bakery_clone_or_copy(item->origin, item->destination);
+  }
+}
+
+typedef struct VkrProjectSnapshotDirectories {
+  VkrProjectJob *job;
+  VkrProjectStrings *out;
+  const char *parent;
+  uint32_t depth;
+} VkrProjectSnapshotDirectories;
+
+/* Collects `<scene>/sources/<revision>/dependencies` below the project's
+   scenes: blob directories whose files the workspace owns. */
+vkr_internal bool8_t vkr_project_visit_snapshot_directory(void *context,
+                                                          const char *name,
+                                                          bool8_t directory) {
+  VkrProjectSnapshotDirectories *walk = context;
+  char path[VKR_PROJECT_PATH];
+  if (!directory ||
+      !vkr_bakery_path_join(path, sizeof(path), walk->parent, name)) {
+    return true_v;
+  }
+  if (walk->depth == 0u) {
+    char sources[VKR_PROJECT_PATH];
+    VkrProjectSnapshotDirectories revisions = {walk->job, walk->out, sources,
+                                               1u};
+    if (vkr_bakery_path_join(sources, sizeof(sources), path, "sources")) {
+      (void)vkr_bakery_list_directory(
+          sources, vkr_project_visit_snapshot_directory, &revisions);
+    }
+    return true_v;
+  }
+  char dependencies[VKR_PROJECT_PATH];
+  if (vkr_bakery_path_join(dependencies, sizeof(dependencies), path,
+                           "dependencies") &&
+      vkr_bakery_is_directory(dependencies)) {
+    (void)vkr_project_strings_push(walk->job, walk->out, dependencies);
+  }
+  return true_v;
+}
+
+bool8_t vkr_project_prefetch_blobs(VkrProjectJob *job,
+                                   const char *const *sources, uint32_t count,
+                                   const char *directory) {
+  VkrProjectBlobPlacement *items =
+      count ? (VkrProjectBlobPlacement *)calloc(count, sizeof(*items)) : NULL;
+  if (!items) {
+    return count == 0u;
+  }
+  /* A user file another snapshot of this project already holds is linked
+     from that workspace copy, so a re-import writes no bytes. */
+  VkrProjectStrings snapshots = {0};
+  char scenes[VKR_PROJECT_PATH];
+  if (vkr_bakery_path_join(scenes, sizeof(scenes), job->project_root,
+                           "scenes")) {
+    VkrProjectSnapshotDirectories walk = {job, &snapshots, scenes, 0u};
+    (void)vkr_bakery_list_directory(
+        scenes, vkr_project_visit_snapshot_directory, &walk);
+  }
+
+  uint32_t item_count = 0u;
+  uint64_t files = job->files_copied;
+  uint64_t bytes = job->bytes_copied;
+  for (uint32_t i = 0u; i < count; ++i) {
+    VkrProjectBlobPlacement *item = &items[item_count];
+    char name[128];
+    const bool8_t failed_before = job->failed;
+    if (!vkr_bakery_stat(sources[i], &item->before) || !item->before.exists ||
+        !vkr_project_blob_name(job, sources[i], item->hash, name,
+                               sizeof(name)) ||
+        !vkr_bakery_path_join(item->destination, sizeof(item->destination),
+                              directory, name)) {
+      /* vkr_project_copy_blob reports it; this pass only prefetches. */
+      vkr_project_forgive(job, failed_before);
+      continue;
+    }
+    bool8_t duplicate = vkr_project_exists(item->destination);
+    for (uint32_t j = 0u; j < item_count && !duplicate; ++j) {
+      duplicate = strcmp(items[j].destination, item->destination) == 0;
+    }
+    if (duplicate) {
+      continue;
+    }
+    files += 1u;
+    bytes += item->before.size;
+    if (files > VKR_PROJECT_MAX_IMPORT_FILES ||
+        bytes > VKR_PROJECT_MAX_IMPORT_BYTES) {
+      break;
+    }
+    item->source = sources[i];
+    item->origin = sources[i];
+    item->link = vkr_project_is_relative_to(sources[i], job->workspace);
+    for (uint32_t s = 0u; s < snapshots.count && !item->link; ++s) {
+      char existing[VKR_PROJECT_PATH];
+      if (vkr_bakery_path_join(existing, sizeof(existing), snapshots.items[s],
+                               name) &&
+          vkr_bakery_is_file(existing)) {
+        item->origin = vkr_project_strdup(job, existing);
+        item->link = item->origin != NULL;
+        item->origin = item->link ? item->origin : sources[i];
+      }
+    }
+    ++item_count;
+  }
+
+  bool8_t ok = item_count == 0u || vkr_project_make_dirs(job, directory);
+  VkrProjectBlobPrefetch prefetch = {.items = items, .count = item_count};
+  Arena *arena = ok && item_count > 1u ? arena_create(KB(64), KB(64)) : NULL;
+  VkrAllocator allocator = {.ctx = arena};
+  VkrThread workers[15] = {0};
+  uint32_t started = 0u;
+  if (arena && vkr_allocator_arena(&allocator)) {
+    const uint32_t extra = Min(Min(vkr_bakery_logical_cores(), item_count),
+                               (uint32_t)ArrayCount(workers) + 1u) -
+                           1u;
+    for (uint32_t i = 0u; i < extra; ++i) {
+      if (vkr_thread_create(&allocator, &workers[started],
+                            vkr_project_prefetch_worker, &prefetch)) {
+        ++started;
+      }
+    }
+  }
+  if (ok) {
+    (void)vkr_project_prefetch_worker(&prefetch);
+  }
+  for (uint32_t i = 0u; i < started; ++i) {
+    (void)vkr_thread_join(workers[i]);
+    (void)vkr_thread_destroy(&allocator, &workers[i]);
+  }
+  if (arena) {
+    arena_destroy(arena);
+  }
+
+  /* As vkr_project_place_file: a copy is the hashed bytes only when its
+     source kept its stat across the copy. */
+  for (uint32_t i = 0u; ok && i < item_count; ++i) {
+    const VkrProjectBlobPlacement *item = &items[i];
+    if (!item->placed) {
+      continue;
+    }
+    VkrBakeryStat after;
+    if (!vkr_bakery_stat(item->source, &after) || !after.exists ||
+        after.size != item->before.size ||
+        after.mtime_ns != item->before.mtime_ns ||
+        after.file_id != item->before.file_id ||
+        after.device != item->before.device) {
+      for (uint32_t j = i; j < item_count; ++j) {
+        if (items[j].placed) {
+          (void)vkr_bakery_remove_file(items[j].destination);
+        }
+      }
+      ok = vkr_project_fail(job, "Source changed while copying: %s",
+                            vkr_bakery_path_name(item->source));
+      break;
+    }
+    if (vkr_project_index(job)) {
+      vkr_bakery_index_record(job->index, item->destination, item->hash);
+    }
+    job->files_copied += 1u;
+    job->bytes_copied += item->before.size;
+  }
+  free(items);
+  return ok;
 }
 
 bool8_t vkr_project_mkdtemp(VkrProjectJob *job, const char *parent,

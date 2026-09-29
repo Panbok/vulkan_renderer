@@ -1,6 +1,7 @@
 #include "assets/mesh_loader_gltf.h"
 #include "assets/vkr_cgltf.h"
 #include "assets/vkr_gltf_material_conversion.h"
+#include "assets/vkr_image_decode.h"
 #include "assets/vkr_mesh_encode.h"
 #include "assets/vkr_meshoptimizer_bridge.h"
 #include "vkr_color_transfer.h"
@@ -699,30 +700,17 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_hash_pair_source(
                        vkr_mesh_loader_gltf_path_is_absolute(source_path)
                            ? FILE_PATH_TYPE_ABSOLUTE
                            : FILE_PATH_TYPE_RELATIVE);
-  FileMode read_mode = bitset8_create();
-  bitset8_set(&read_mode, FILE_MODE_READ);
-  bitset8_set(&read_mode, FILE_MODE_BINARY);
-  FileHandle file = {0};
-  if (file_open(&source_file, read_mode, &file) != FILE_ERROR_NONE) {
-    log_error("MeshLoader(glTF): failed to open paired source '%.*s'",
-              (int32_t)source_path.length, source_path.str);
-    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
-    return false_v;
-  }
-
-  uint8_t *source_bytes = NULL;
-  uint64_t source_size = 0u;
-  const FileError read_error = file_read_all(&file, info->scratch_allocator,
-                                             &source_bytes, &source_size);
-  file_close(&file);
-  if (read_error != FILE_ERROR_NONE || !source_bytes || source_size == 0u) {
+  /* The packer's memoized FNV-1a, which its skip checks of this pair then
+     reuse instead of reading the file again. */
+  unsigned long long hash = 0u;
+  if (!source_file.path.str ||
+      !vkr_vkt_hash_file((const char *)source_file.path.str, &hash)) {
     log_error("MeshLoader(glTF): failed to read paired source '%.*s'",
               (int32_t)source_path.length, source_path.str);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_FILE_NOT_FOUND);
     return false_v;
   }
-  *out_hash = vkr_mesh_loader_gltf_hash_bytes(VKR_FNV1A64_OFFSET_BASIS,
-                                              source_bytes, source_size);
+  *out_hash = (uint64_t)hash;
   return true_v;
 }
 
@@ -1277,8 +1265,42 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_read_texture_view(
   return true_v;
 }
 
+/* Releases a decoded image's pixels to the packer's reused blocks. */
+vkr_internal void
+vkr_mesh_loader_gltf_free_image(VkrMeshLoaderGltfDecodedImage *image) {
+  vkr_vkt_reused_release(image->pixels,
+                         (size_t)image->width * (size_t)image->height * 4u);
+  *image = (VkrMeshLoaderGltfDecodedImage){0};
+}
+
+vkr_internal uint8_t *vkr_mesh_loader_gltf_decoded_pixels(void *context,
+                                                          uint32_t width,
+                                                          uint32_t height) {
+  VkrMeshLoaderGltfDecodedImage *image = context;
+  vkr_mesh_loader_gltf_free_image(image);
+  image->pixels = vkr_vkt_reused_allocate((size_t)width * height * 4u);
+  image->width = image->pixels ? (int32_t)width : 0;
+  image->height = image->pixels ? (int32_t)height : 0;
+  return image->pixels;
+}
+
+vkr_internal void *vkr_mesh_loader_gltf_decode_scratch(void *context,
+                                                       size_t size) {
+  (void)context;
+  return vkr_vkt_reused_allocate(size);
+}
+
+vkr_internal void
+vkr_mesh_loader_gltf_release_scratch(void *context, void *memory, size_t size) {
+  (void)context;
+  vkr_vkt_reused_release(memory, size);
+}
+
 /* Decodes a source image read by vkr_mesh_loader_gltf_read_texture_view to
-   RGBA8. An empty source leaves `out_image` empty. */
+   RGBA8 in the packer's reused blocks, which a cook's many large sources
+   would otherwise take fresh from the system each time; release it with
+   vkr_mesh_loader_gltf_free_image. An empty source leaves `out_image`
+   empty. */
 vkr_internal bool8_t
 vkr_mesh_loader_gltf_decode_image(const VkrMeshLoaderGltfParseInfo *info,
                                   const VkrMeshLoaderGltfEncodedImage *encoded,
@@ -1288,11 +1310,15 @@ vkr_mesh_loader_gltf_decode_image(const VkrMeshLoaderGltfParseInfo *info,
     return true_v;
   }
 
-  int32_t channels = 0;
-  stbi_set_flip_vertically_on_load_thread(0);
-  out_image->pixels = stbi_load_from_memory(
-      encoded->bytes, (int32_t)encoded->size, &out_image->width,
-      &out_image->height, &channels, 4);
+  const VkrImageDecodeTarget target = {
+      .pixels = vkr_mesh_loader_gltf_decoded_pixels,
+      .allocate = vkr_mesh_loader_gltf_decode_scratch,
+      .release = vkr_mesh_loader_gltf_release_scratch,
+      .context = out_image,
+  };
+  if (!vkr_image_decode_rgba8_into(encoded->bytes, encoded->size, 0, &target)) {
+    vkr_mesh_loader_gltf_free_image(out_image);
+  }
   if (!out_image->pixels || out_image->width <= 0 || out_image->height <= 0) {
     log_error("MeshLoader(glTF): failed to decode spec-gloss source '%.*s'",
               (int32_t)encoded->path.length, encoded->path.str);
@@ -1301,6 +1327,17 @@ vkr_mesh_loader_gltf_decode_image(const VkrMeshLoaderGltfParseInfo *info,
   }
   return true_v;
 }
+
+/* One memo slot of the specular-glossiness conversion: the diffuse and
+   specular-glossiness texels, and the base-color and metallic-roughness
+   texels they convert to. */
+#define VKR_GLTF_CONVERSION_MEMO_BITS 12u
+#define VKR_GLTF_CONVERSION_MEMO_SLOTS (1u << VKR_GLTF_CONVERSION_MEMO_BITS)
+typedef struct VkrMeshLoaderGltfConversionMemo {
+  uint64_t key;
+  uint8_t texel[8];
+  bool8_t filled;
+} VkrMeshLoaderGltfConversionMemo;
 
 vkr_internal uint8_t vkr_mesh_loader_gltf_unorm8(float32_t value) {
   return (uint8_t)(Clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
@@ -1687,12 +1724,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
   if (!vkr_mesh_loader_gltf_decode_image(info, &diffuse_source, &diffuse) ||
       !vkr_mesh_loader_gltf_decode_image(info, &spec_gloss_source,
                                          &spec_gloss)) {
-    if (diffuse.pixels) {
-      stbi_image_free(diffuse.pixels);
-    }
-    if (spec_gloss.pixels) {
-      stbi_image_free(spec_gloss.pixels);
-    }
+    vkr_mesh_loader_gltf_free_image(&diffuse);
+    vkr_mesh_loader_gltf_free_image(&spec_gloss);
     return false_v;
   }
 
@@ -1701,12 +1734,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
 
   const uint64_t pixel_count = (uint64_t)width * (uint64_t)height;
   if (pixel_count == 0 || pixel_count > UINT64_MAX / 4u) {
-    if (diffuse.pixels) {
-      stbi_image_free(diffuse.pixels);
-    }
-    if (spec_gloss.pixels) {
-      stbi_image_free(spec_gloss.pixels);
-    }
+    vkr_mesh_loader_gltf_free_image(&diffuse);
+    vkr_mesh_loader_gltf_free_image(&spec_gloss);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
   }
@@ -1719,12 +1748,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
   uint8_t *metal_rough_pixels = (uint8_t *)vkr_allocator_alloc(
       pixel_allocator, pixel_count * 4u, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!base_pixels || !metal_rough_pixels) {
-    if (diffuse.pixels) {
-      stbi_image_free(diffuse.pixels);
-    }
-    if (spec_gloss.pixels) {
-      stbi_image_free(spec_gloss.pixels);
-    }
+    vkr_mesh_loader_gltf_free_image(&diffuse);
+    vkr_mesh_loader_gltf_free_image(&spec_gloss);
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
   }
@@ -1739,9 +1764,45 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
         (float32_t)i / (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX));
   }
 
+  /* When both images are read at their own size, a texel's output depends
+     only on its eight source bytes, and neighbouring texels often repeat
+     them: a direct-mapped memo skips the conversion's square roots and
+     divides for repeats, with the same bytes as computing them. */
+  const bool8_t memoized = diffuse.pixels && diffuse.width == width &&
+                           diffuse.height == height && spec_gloss.pixels &&
+                           spec_gloss.width == width &&
+                           spec_gloss.height == height;
+  VkrMeshLoaderGltfConversionMemo *memo =
+      memoized ? (VkrMeshLoaderGltfConversionMemo *)vkr_allocator_alloc(
+                     info->scratch_allocator,
+                     sizeof(*memo) * VKR_GLTF_CONVERSION_MEMO_SLOTS,
+                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE)
+               : NULL;
+  if (memo) {
+    MemZero(memo, sizeof(*memo) * VKR_GLTF_CONVERSION_MEMO_SLOTS);
+  }
+
   for (int32_t y = 0; y < height; ++y) {
     for (int32_t x = 0; x < width; ++x) {
       const uint64_t i = (uint64_t)y * (uint64_t)width + (uint64_t)x;
+      uint8_t *base = base_pixels + i * 4u;
+      uint8_t *metal_rough = metal_rough_pixels + i * 4u;
+      VkrMeshLoaderGltfConversionMemo *slot = NULL;
+      uint64_t key = 0u;
+      if (memo) {
+        uint32_t diffuse_bytes = 0u;
+        uint32_t spec_gloss_bytes = 0u;
+        MemCopy(&diffuse_bytes, diffuse.pixels + i * 4u, 4u);
+        MemCopy(&spec_gloss_bytes, spec_gloss.pixels + i * 4u, 4u);
+        key = (uint64_t)diffuse_bytes | ((uint64_t)spec_gloss_bytes << 32u);
+        slot = &memo[(key * 0x9e3779b97f4a7c15ull) >>
+                     (64u - VKR_GLTF_CONVERSION_MEMO_BITS)];
+        if (slot->filled && slot->key == key) {
+          MemCopy(base, slot->texel, 4u);
+          MemCopy(metal_rough, slot->texel + 4u, 4u);
+          continue;
+        }
+      }
       const float32_t u = ((float32_t)x + 0.5f) / (float32_t)width;
       const float32_t v = ((float32_t)y + 0.5f) / (float32_t)height;
       const Vec4 diffuse_texel =
@@ -1772,7 +1833,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
 
       const VkrGltfMetalRoughSample converted =
           vkr_gltf_convert_spec_gloss_sample(sample);
-      uint8_t *base = base_pixels + i * 4u;
       const uint32_t base_r =
           (uint32_t)(Clamp(converted.base_color.x, 0.0f, 1.0f) *
                          (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX +
@@ -1790,11 +1850,16 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
       base[2] = linear_to_srgb_lut[base_b];
       base[3] = vkr_mesh_loader_gltf_unorm8(converted.base_color.w);
 
-      uint8_t *metal_rough = metal_rough_pixels + i * 4u;
       metal_rough[0] = 255u;
       metal_rough[1] = vkr_mesh_loader_gltf_unorm8(converted.roughness);
       metal_rough[2] = vkr_mesh_loader_gltf_unorm8(converted.metallic);
       metal_rough[3] = 255u;
+      if (slot) {
+        slot->key = key;
+        slot->filled = true_v;
+        MemCopy(slot->texel, base, 4u);
+        MemCopy(slot->texel + 4u, metal_rough, 4u);
+      }
     }
   }
 
@@ -1814,8 +1879,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
   const float32_t metallic_factor =
       metal_rough_uniform ? (float32_t)metal_rough_pixels[2] / 255.0f : 1.0f;
   if (managed) {
-    stbi_image_free(diffuse.pixels);
-    stbi_image_free(spec_gloss.pixels);
+    vkr_mesh_loader_gltf_free_image(&diffuse);
+    vkr_mesh_loader_gltf_free_image(&spec_gloss);
     const uint64_t byte_count = pixel_count * 4u;
     *out_converted = (VkrMeshLoaderGltfConvertedSpecGloss){
         .textured = true_v,
@@ -1875,8 +1940,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
         &metal_rough_created);
   }
 
-  stbi_image_free(diffuse.pixels);
-  stbi_image_free(spec_gloss.pixels);
+  vkr_mesh_loader_gltf_free_image(&diffuse);
+  vkr_mesh_loader_gltf_free_image(&spec_gloss);
   if (!ok) {
     if (metal_rough_created) {
       vkr_mesh_loader_gltf_remove_content_texture(info, metal_rough_path);
@@ -1988,17 +2053,19 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_pixels(
 }
 
 /* Packs one converted image of a managed cook as a plain texture named by
-   its content hash and the process settings. */
+   its content hash and the process settings. The base colour of an opaque
+   material packs without alpha, under its own name. */
 vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_pack_converted(
     const VkrMeshLoaderGltfParseInfo *info, uint64_t source_hash,
     const VkrMeshLoaderGltfConvertedSpecGloss *converted, bool8_t base,
-    String8 *out_texture) {
+    bool8_t opaque, String8 *out_texture) {
   const String8 output_dir =
       vkr_mesh_loader_gltf_spec_gloss_output_dir(info, source_hash);
   const String8 output = string8_create_formatted(
       info->load_allocator, "%.*s/%s_%dx%d_%016llx%s.vkt",
       (int32_t)output_dir.length, output_dir.str,
-      base ? "basecolor" : "metalrough", converted->width, converted->height,
+      base ? (opaque ? "basecolor_opaque" : "basecolor") : "metalrough",
+      converted->width, converted->height,
       (unsigned long long)(base ? converted->base_hash
                                 : converted->metal_rough_hash),
       vkr_vkt_variant_suffix());
@@ -2008,8 +2075,11 @@ vkr_internal VkrVktPackResult vkr_mesh_loader_gltf_pack_converted(
   }
   const VkrVktSource source =
       vkr_mesh_loader_gltf_converted_source(converted, base);
-  const VkrVktPackResult result = vkr_vkt_pack_image(
-      &source, base ? "color-srgb" : "data-mask", (const char *)output.str);
+  const VkrVktPackResult result =
+      base && opaque
+          ? vkr_vkt_pack_opaque(&source, (const char *)output.str)
+          : vkr_vkt_pack_image(&source, base ? "color-srgb" : "data-mask",
+                               (const char *)output.str);
   if (result == VKR_VKT_PACK_STALE) {
     return result;
   }
@@ -2774,7 +2844,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
         return false_v;
       }
       packed = vkr_mesh_loader_gltf_pack_converted(
-          info, source_hash, &converted, i == 0u, plain_textures[i]);
+          info, source_hash, &converted, i == 0u,
+          material->alpha_mode == cgltf_alpha_mode_opaque, plain_textures[i]);
     }
     if (packed != VKR_VKT_PACK_SUCCESS) {
       return false_v;
@@ -2875,11 +2946,11 @@ typedef struct VkrMeshLoaderGltfMaterialJob {
 
 /* A final-tier UASTC paired bake encodes on every core, so a few materials at
    once keep the cores busy through its serial stretches while bounding
-   memory. At the preview tier's mip floor, or with the far cheaper ASTC
-   encoder, decoding and mips weigh as much as the block encode, so each core
-   takes a material. */
+   memory. At the preview tier's mip floor, or with the far cheaper native
+   encoders, decoding and mips weigh as much as the block encode, so each
+   logical core takes a material, up to the worker array's 16. */
 #define VKR_GLTF_MATERIAL_MAX_WORKERS 3u
-#define VKR_GLTF_MATERIAL_WIDE_MAX_WORKERS 8u
+#define VKR_GLTF_MATERIAL_WIDE_MAX_WORKERS 16u
 
 vkr_internal void *vkr_mesh_loader_gltf_material_worker(void *argument) {
   VkrMeshLoaderGltfMaterialJob *job = argument;
@@ -3086,12 +3157,16 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
                                       .order = order,
                                       .work = work,
                                       .count = count};
+  /* The workers' sources do not change during the cook, so each is read and
+     hashed once however many packs name it. */
+  vkr_vkt_begin_file_hash_scope();
   vkr_mesh_loader_gltf_run_workers(
       info, count,
       vkr_vkt_preview_tier() || vkr_vkt_encoding() != VKR_VKT_ENCODING_UASTC
           ? VKR_GLTF_MATERIAL_WIDE_MAX_WORKERS
           : VKR_GLTF_MATERIAL_MAX_WORKERS,
       vkr_mesh_loader_gltf_material_worker, &job);
+  vkr_vkt_end_file_hash_scope();
 
   /* Results publish in material order, as a serial cook would. */
   bool8_t ok = true_v;

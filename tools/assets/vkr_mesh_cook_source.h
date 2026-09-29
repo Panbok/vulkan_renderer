@@ -51,3 +51,15 @@ void vkr_mesh_cook_set_ready_log(const char *path);
 /** Later glTF cooks write these materials' files first, in this order.
  * Borrowed; NULL restores material order. */
 void vkr_mesh_cook_set_material_priority(const String8 *names, uint32_t count);
+
+/** Later managed cooks may hard link bundle dependencies whose absolute
+ * source lies below `root` where the volume cannot clone them. The caller
+ * guarantees that files there are never rewritten in place (see file_link).
+ * Borrowed until the process exits; NULL always copies. */
+void vkr_mesh_cook_set_link_root(const char *root);
+
+/** Later managed cooks write `path` with one line per bundle file whose
+ * SHA-256 they hold: the lowercase hex digest, the byte size and the path
+ * relative to the bundle root, separated by spaces. Borrowed until the
+ * process exits; NULL writes nothing. */
+void vkr_mesh_cook_set_digest_log(const char *path);

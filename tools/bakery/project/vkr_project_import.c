@@ -849,6 +849,13 @@ vkr_internal bool8_t vkr_project_snapshot_gltf(VkrProjectSnapshot *snapshot,
   }
   vkr_bakery_index_prefetch(vkr_project_index(job),
                             (const char *const *)sources.items, sources.count);
+  /* Copying, flushing and scanning each new file one at a time dominated a
+     Windows import; place the blobs the loop below names in parallel. */
+  char dependencies[VKR_PROJECT_PATH];
+  (void)snprintf(dependencies, sizeof(dependencies), "%s/dependencies",
+                 snapshot->directory);
+  VKR_PROJECT_TRY(vkr_project_prefetch_blobs(
+      job, (const char *const *)sources.items, sources.count, dependencies));
   bool8_t ok = true_v;
   for (uint32_t f = 0u; ok && f < ArrayCount(fields); ++f) {
     VkrBakeryJson *items = vkr_bakery_json_get(model, fields[f]);
@@ -1439,17 +1446,70 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
   return ok;
 }
 
+/* Records in the index the digests the cook reported for files of
+   `bundle` (vkr_mesh_cook_set_digest_log), each for the file as it stands
+   when its size still matches: the revision's textures are then not hashed
+   again. Malformed lines are skipped; those files are hashed as before. */
+vkr_internal void vkr_project_adopt_digests(VkrProjectJob *job,
+                                            const char *bundle,
+                                            const char *digests) {
+  VkrBakeryIndex *index = vkr_project_index(job);
+  uint8_t *data = NULL;
+  uint64_t length = 0u;
+  if (!index || !vkr_bakery_read_file(digests, MB(64), &data, &length)) {
+    return;
+  }
+  uint64_t start = 0u;
+  while (start < length) {
+    uint64_t end = start;
+    while (end < length && data[end] != '\n') {
+      ++end;
+    }
+    char line[VKR_PROJECT_PATH + 96];
+    const uint64_t line_length = end - start;
+    if (line_length < sizeof(line)) {
+      MemCopy(line, data + start, line_length);
+      line[line_length] = 0;
+      char hash[VKR_BAKERY_SHA256_HEX];
+      unsigned long long size = 0u;
+      int consumed = 0;
+      bool8_t valid =
+          sscanf(line, "%64s %llu %n", hash, &size, &consumed) == 2 &&
+          strlen(hash) == 64u && consumed > 0;
+      for (uint32_t c = 0u; valid && c < 64u; ++c) {
+        valid = (hash[c] >= '0' && hash[c] <= '9') ||
+                (hash[c] >= 'a' && hash[c] <= 'f');
+      }
+      const char *relative = line + consumed;
+      valid = valid && relative[0] && relative[0] != '/' &&
+              !strchr(relative, ':') && !strstr(relative, "..");
+      char path[VKR_PROJECT_PATH];
+      VkrBakeryStat info;
+      if (valid && vkr_bakery_path_join(path, sizeof(path), bundle, relative) &&
+          vkr_bakery_stat(path, &info) && info.exists && !info.is_directory &&
+          info.size == size) {
+        vkr_bakery_index_record(index, path, hash);
+      }
+    }
+    start = end + 1u;
+  }
+  free(data);
+}
+
 /* Cooks one model into `bundle` through `tool mesh` at the job's tier. */
 bool8_t vkr_project_cook_mesh(VkrProjectJob *job, const char *source,
                               const char *output, const char *bundle,
                               const char *import_id, const char *label) {
   VKR_PROJECT_TRY(vkr_project_make_dirs(job, job->generated_root));
-  const char *arguments[24] = {"--input",          source,
+  /* The workspace publishes every file by rename, so the cook may hard
+     link its files into the bundle where the volume cannot clone them. */
+  const char *arguments[26] = {"--input",          source,
                                "--output",         output,
                                "--bundle-root",    bundle,
                                "--import-id",      import_id,
-                               "--generated-root", job->generated_root};
-  uint32_t count = 10u + vkr_project_tier_arguments(job, arguments + 10u);
+                               "--generated-root", job->generated_root,
+                               "--link-root",      job->workspace};
+  uint32_t count = 12u + vkr_project_tier_arguments(job, arguments + 12u);
   /* The cook reports its artifact as `--inspect` would, sparing the
      validation that follows an inspection process. */
   char directory[VKR_PROJECT_PATH];
@@ -1461,6 +1521,9 @@ bool8_t vkr_project_cook_mesh(VkrProjectJob *job, const char *source,
   const char *report = vkr_project_printf(job, "%s/%s.json", directory, id);
   arguments[count++] = "--inspect-output";
   arguments[count++] = report;
+  const char *digests = vkr_project_printf(job, "%s/%s.digests", directory, id);
+  arguments[count++] = "--digest-output";
+  arguments[count++] = digests;
   if (job->ready_log) {
     arguments[count++] = "--ready-log";
     arguments[count++] = job->ready_log;
@@ -1488,6 +1551,10 @@ bool8_t vkr_project_cook_mesh(VkrProjectJob *job, const char *source,
   if (priority) {
     (void)vkr_bakery_remove_file(priority);
   }
+  if (cooked) {
+    vkr_project_adopt_digests(job, bundle, digests);
+  }
+  (void)vkr_bakery_remove_file(digests);
   VKR_PROJECT_TRY(cooked);
   const bool8_t adopted = vkr_project_adopt_inspection(job, output, report);
   (void)vkr_bakery_remove_file(report);
@@ -1728,6 +1795,20 @@ bool8_t vkr_project_index_bundle(VkrProjectJob *job, const char *bundle,
                  bundle);
   VkrProjectStrings textures;
   VKR_PROJECT_TRY(vkr_project_list(job, textures_directory, &textures));
+  /* Textures without a display name are named by their digest; hash them
+     together on the index's workers instead of one by one below. */
+  VkrProjectStrings unnamed = {0};
+  for (uint32_t i = 0u; i < textures.count; ++i) {
+    char path[VKR_PROJECT_PATH];
+    if (strchr(textures.items[i], '.') &&
+        vkr_bakery_path_join(path, sizeof(path), textures_directory,
+                             textures.items[i]) &&
+        !vkr_project_json_text(job->asset_names, path)) {
+      VKR_PROJECT_TRY(vkr_project_strings_push(job, &unnamed, path));
+    }
+  }
+  vkr_bakery_index_prefetch(vkr_project_index(job),
+                            (const char *const *)unnamed.items, unnamed.count);
   for (uint32_t i = 0u; i < textures.count; ++i) {
     /* glob('*.*'): names containing a dot, files and directories. */
     if (!strchr(textures.items[i], '.')) {

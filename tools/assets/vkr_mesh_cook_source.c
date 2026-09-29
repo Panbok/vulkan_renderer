@@ -9,16 +9,19 @@
 #include "containers/vector.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
+#include "core/vkr_hash.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
 #include "math/vec.h"
 #include "math/vkr_math.h"
+#include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 #include "vkr_geometry_data.h"
+#include "vkr_vkt_packer.h"
 Vector(Vec2);
 Vector(Vec3);
 Vector(VkrVertex3d);
@@ -74,6 +77,25 @@ typedef struct VkrMeshLoaderBundleHash {
   uint8_t digest[32];
 } VkrMeshLoaderBundleHash;
 
+/* An open-addressed index from paths to array positions: each slot holds a
+   position plus one, or zero when empty, and at most half are full. */
+typedef struct VkrMeshLoaderPathSlots {
+  uint32_t *slots;
+  uint32_t count; /* Zero or a power of two. */
+} VkrMeshLoaderPathSlots;
+
+/* A bundle file a pass names, placed with the rest of the pass by
+   vkr_mesh_loader_publish_bundle: a copy of `source`, or `bytes` written in
+   its stead, whose hash the placing worker records. */
+typedef struct VkrMeshLoaderBundleWrite {
+  String8 source;
+  String8 physical;
+  String8 bytes;
+  VkrMeshLoaderBundleHash hash;
+  bool8_t placed;
+} VkrMeshLoaderBundleWrite;
+Vector(VkrMeshLoaderBundleWrite);
+
 typedef struct VkrMeshLoaderState {
   VkrAllocator *load_allocator;
   VkrAllocator *scratch_allocator;
@@ -89,6 +111,7 @@ typedef struct VkrMeshLoaderState {
   Vector_uint32_t merged_indices;
   Vector_VkrMeshLoaderSubmeshRange merged_submeshes;
   Vector_VkrMeshSourceDependency source_dependencies;
+  VkrMeshLoaderPathSlots dependency_slots;
   VkrMeshLoaderBuffer merged_buffer;
   VkrMeshSource source;
   uint32_t current_bucket;
@@ -107,6 +130,10 @@ typedef struct VkrMeshLoaderState {
   VkrMeshLoaderBundleHash *bundle_hashes;
   uint32_t bundle_hash_count;
   uint32_t bundle_hash_capacity;
+  VkrMeshLoaderPathSlots bundle_hash_slots;
+  /* Placements named since the last vkr_mesh_loader_publish_bundle; content
+     names keep each physical path unique among them. */
+  Vector_VkrMeshLoaderBundleWrite bundle_writes;
 
   VkrRendererError *out_error;
 } VkrMeshLoaderState;
@@ -161,6 +188,10 @@ vkr_internal bool8_t vkr_mesh_cook_defer_textures = false_v;
 vkr_internal const char *vkr_mesh_cook_ready_log = NULL;
 vkr_internal const String8 *vkr_mesh_cook_material_priority = NULL;
 vkr_internal uint32_t vkr_mesh_cook_material_priority_count = 0u;
+/* Set by vkr_mesh_cook_set_link_root; borrowed from the caller. */
+vkr_internal const char *vkr_mesh_cook_link_root = NULL;
+/* Set by vkr_mesh_cook_set_digest_log; borrowed from the caller. */
+vkr_internal const char *vkr_mesh_cook_digest_log = NULL;
 
 vkr_internal String8 vkr_mesh_loader_get_extension(VkrAllocator *allocator,
                                                    String8 path) {
@@ -229,19 +260,98 @@ vkr_internal bool8_t vkr_mesh_loader_dependency_path_equals(String8 lhs,
 #endif
 }
 
+/* FNV-1a over the path's bytes with ASCII letters folded, so paths equal
+   under either comparison the cook uses share a key. */
+vkr_internal uint64_t vkr_mesh_loader_path_key(String8 path) {
+  uint64_t key = 14695981039346656037ull;
+  for (uint64_t i = 0; i < path.length; ++i) {
+    const uint8_t c = path.str[i];
+    key = (key ^ (c >= 'A' && c <= 'Z' ? c + 32u : c)) * 1099511628211ull;
+  }
+  return key;
+}
+
+/* Records array `position` under `key` in slots kept at most half full. */
+vkr_internal void vkr_mesh_loader_slots_insert(VkrMeshLoaderPathSlots *slots,
+                                               uint64_t key,
+                                               uint32_t position) {
+  uint32_t i = (uint32_t)key & (slots->count - 1u);
+  while (slots->slots[i]) {
+    i = (i + 1u) & (slots->count - 1u);
+  }
+  slots->slots[i] = position + 1u;
+}
+
+/* When indexing `position` would fill more than half of `slots`, replaces
+   them with twice as many empty ones from `allocator`; the caller then
+   places every earlier position again. */
+vkr_internal bool8_t vkr_mesh_loader_slots_grow(VkrAllocator *allocator,
+                                                VkrMeshLoaderPathSlots *slots,
+                                                uint32_t position,
+                                                bool8_t *out_rebuilt) {
+  *out_rebuilt = false_v;
+  if ((uint64_t)(position + 1u) * 2u <= slots->count) {
+    return true_v;
+  }
+  const uint32_t count = Max(slots->count * 2u, 256u);
+  uint32_t *grown = vkr_allocator_alloc(allocator, sizeof(*grown) * count,
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!grown) {
+    return false_v;
+  }
+  MemZero(grown, sizeof(*grown) * count);
+  *slots = (VkrMeshLoaderPathSlots){.slots = grown, .count = count};
+  *out_rebuilt = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_has_source_dependency(
+    const VkrMeshLoaderState *state, String8 path) {
+  const VkrMeshLoaderPathSlots *slots = &state->dependency_slots;
+  if (!slots->count) {
+    return false_v;
+  }
+  for (uint32_t i =
+           (uint32_t)vkr_mesh_loader_path_key(path) & (slots->count - 1u);
+       slots->slots[i]; i = (i + 1u) & (slots->count - 1u)) {
+    if (vkr_mesh_loader_dependency_path_equals(
+            state->source_dependencies.data[slots->slots[i] - 1u].path, path)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Appends `owned_path`, held by the load allocator and not yet a dependency.
+ */
+vkr_internal bool8_t vkr_mesh_loader_push_source_dependency(
+    VkrMeshLoaderState *state, String8 owned_path) {
+  const uint32_t position = (uint32_t)state->source_dependencies.length;
+  VkrMeshSourceDependency dependency = {.path = owned_path};
+  bool8_t rebuilt = false_v;
+  if (!vector_push_VkrMeshSourceDependency(&state->source_dependencies,
+                                           dependency) ||
+      !vkr_mesh_loader_slots_grow(state->load_allocator,
+                                  &state->dependency_slots, position,
+                                  &rebuilt)) {
+    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  for (uint32_t i = rebuilt ? 0u : position; i <= position; ++i) {
+    vkr_mesh_loader_slots_insert(
+        &state->dependency_slots,
+        vkr_mesh_loader_path_key(state->source_dependencies.data[i].path), i);
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_mesh_loader_capture_source_dependency(
     VkrMeshLoaderState *state, String8 path) {
   if (!state || !path.str || path.length == 0) {
     return false_v;
   }
-
-  for (uint64_t i = 0; i < state->source_dependencies.length; ++i) {
-    VkrMeshSourceDependency *existing =
-        vector_get_VkrMeshSourceDependency(&state->source_dependencies, i);
-    if (existing &&
-        vkr_mesh_loader_dependency_path_equals(existing->path, path)) {
-      return true_v;
-    }
+  if (vkr_mesh_loader_has_source_dependency(state, path)) {
+    return true_v;
   }
 
   String8 owned_path = string8_duplicate(state->load_allocator, &path);
@@ -257,14 +367,7 @@ vkr_internal bool8_t vkr_mesh_loader_capture_source_dependency(
   if (!file_exists(&file_path)) {
     return false_v;
   }
-
-  VkrMeshSourceDependency dependency = {.path = owned_path};
-  if (!vector_push_VkrMeshSourceDependency(&state->source_dependencies,
-                                           dependency)) {
-    *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-  return true_v;
+  return vkr_mesh_loader_push_source_dependency(state, owned_path);
 }
 
 vkr_internal bool8_t vkr_mesh_loader_collect_source_dependencies(
@@ -302,6 +405,7 @@ vkr_internal bool8_t vkr_mesh_loader_state_create(
       .merged_indices = {.allocator = load_allocator},
       .merged_submeshes = {.allocator = load_allocator},
       .source_dependencies = {.allocator = load_allocator},
+      .bundle_writes = {.allocator = load_allocator},
       .merged_buffer = {0},
       .current_bucket = 0,
       .source_path = {0},
@@ -1380,31 +1484,61 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
   return false_v;
 }
 
+/* Whether an absolute `source` lies below the link root, comparing either
+ * separator and with the host's case rules. */
+vkr_internal bool8_t vkr_mesh_loader_linkable(VkrAllocator *allocator,
+                                              String8 source) {
+  if (!vkr_mesh_cook_link_root || !vkr_mesh_cook_link_root[0] ||
+      !vkr_mesh_loader_path_is_absolute(source)) {
+    return false_v;
+  }
+  const String8 path = string8_create_formatted(
+      allocator, "%.*s", (int32_t)source.length, source.str);
+  const String8 root =
+      string8_create_formatted(allocator, "%s", vkr_mesh_cook_link_root);
+  if (!path.str || !root.str) {
+    return false_v;
+  }
+  for (uint64_t i = 0; i < path.length; ++i) {
+    path.str[i] = path.str[i] == '\\' ? '/' : path.str[i];
+  }
+  uint64_t root_length = root.length;
+  for (uint64_t i = 0; i < root_length; ++i) {
+    root.str[i] = root.str[i] == '\\' ? '/' : root.str[i];
+  }
+  while (root_length > 1u && root.str[root_length - 1u] == '/') {
+    root.str[--root_length] = 0;
+  }
+  return path.length > root_length && path.str[root_length] == '/' &&
+                 file_path_starts_with((const char *)path.str,
+                                       (const char *)root.str)
+             ? true_v
+             : false_v;
+}
+
 /* Content naming makes an existing blob the same bytes. A copy-on-write clone
- * shares the source's blocks where the file system can; otherwise the bytes
- * already read for naming are written. */
-/* Clones `source` to `physical`; without clone support the bytes are read
-   and written. */
-vkr_internal bool8_t vkr_mesh_loader_bundle_store(VkrMeshLoaderState *state,
+ * shares the source's blocks where the file system can; otherwise a source
+ * below the link root, which is never rewritten in place, is hard linked, and
+ * any other source's bytes are read and written. Paths live in `allocator`,
+ * which a publishing worker owns. */
+vkr_internal bool8_t vkr_mesh_loader_bundle_store(VkrAllocator *allocator,
                                                   String8 source,
                                                   String8 physical) {
   const String8 from_text = string8_create_formatted(
-      state->scratch_allocator, "%.*s", (int32_t)source.length, source.str);
+      allocator, "%.*s", (int32_t)source.length, source.str);
   const String8 to_text = string8_create_formatted(
-      state->scratch_allocator, "%.*s", (int32_t)physical.length, physical.str);
-  const String8 directory =
-      file_path_get_directory(state->scratch_allocator, physical);
+      allocator, "%.*s", (int32_t)physical.length, physical.str);
+  const String8 directory = file_path_get_directory(allocator, physical);
   if (!from_text.str || !to_text.str || !directory.str ||
-      !file_ensure_directory(state->scratch_allocator, &directory)) {
+      !file_ensure_directory(allocator, &directory)) {
     return false_v;
   }
   const FilePath from = file_path_create(
-      (const char *)from_text.str, state->scratch_allocator,
+      (const char *)from_text.str, allocator,
       vkr_mesh_loader_path_is_absolute(source) ? FILE_PATH_TYPE_ABSOLUTE
                                                : FILE_PATH_TYPE_RELATIVE);
-  const FilePath to =
-      file_path_create((const char *)to_text.str, state->scratch_allocator,
-                       FILE_PATH_TYPE_ABSOLUTE);
+  const FilePath to = file_path_create((const char *)to_text.str, allocator,
+                                       FILE_PATH_TYPE_ABSOLUTE);
   if (file_exists(&to)) {
     return true_v;
   }
@@ -1412,11 +1546,37 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_store(VkrMeshLoaderState *state,
   if (cloned == FILE_ERROR_NONE || cloned == FILE_ERROR_ALREADY_EXISTS) {
     return true_v;
   }
+  if (vkr_mesh_loader_linkable(allocator, source)) {
+    const FileError linked = file_link(&from, &to);
+    if (linked == FILE_ERROR_NONE || linked == FILE_ERROR_ALREADY_EXISTS) {
+      return true_v;
+    }
+  }
   String8 bytes = {0};
-  return vkr_mesh_loader_read_file_to_string(state->scratch_allocator, source,
-                                             &bytes, NULL) &&
-         vkr_mesh_cooked_write_atomic(state->scratch_allocator, physical,
-                                      bytes.str, bytes.length);
+  return vkr_mesh_loader_read_file_to_string(allocator, source, &bytes, NULL) &&
+         vkr_mesh_cooked_write_atomic(allocator, physical, bytes.str,
+                                      bytes.length);
+}
+
+/* Names `physical` for the next vkr_mesh_loader_publish_bundle: a copy of
+   `source`, or with `bytes`, those bytes, which the load allocator holds
+   until then. A path already named in the pass is the same content, placed
+   once. */
+vkr_internal bool8_t
+vkr_mesh_loader_queue_bundle_write(VkrMeshLoaderState *state, String8 source,
+                                   String8 physical, String8 bytes) {
+  for (uint64_t i = 0; i < state->bundle_writes.length; ++i) {
+    if (string8_equals(&state->bundle_writes.data[i].physical, &physical)) {
+      return true_v;
+    }
+  }
+  const VkrMeshLoaderBundleWrite write = {
+      .source = string8_duplicate(state->load_allocator, &source),
+      .physical = string8_duplicate(state->load_allocator, &physical),
+      .bytes = bytes,
+  };
+  return write.physical.str && (!source.length || write.source.str) &&
+         vector_push_VkrMeshLoaderBundleWrite(&state->bundle_writes, write);
 }
 
 /* SHA-256 and size of a file, resolved as file_path_create would; workers
@@ -1435,6 +1595,12 @@ vkr_internal bool8_t vkr_mesh_loader_hash_file(String8 path,
   MemCopy(cpath, root, root_length);
   MemCopy(cpath + root_length, path.str, path.length);
   cpath[root_length + path.length] = 0;
+  /* A texture this cook's packs published was hashed as it was written. */
+  unsigned long long published_size = 0u;
+  if (vkr_vkt_output_digest(cpath, out->digest, &published_size)) {
+    out->size = published_size;
+    return true_v;
+  }
   FilePath file = {
       .path = {.str = (uint8_t *)cpath, .length = root_length + path.length},
       .type = absolute ? FILE_PATH_TYPE_ABSOLUTE : FILE_PATH_TYPE_RELATIVE,
@@ -1452,13 +1618,41 @@ vkr_mesh_loader_bundle_name(const VkrMeshLoaderBundleHash *hash) {
   return name;
 }
 
+/* The recorded hash of `source`, or null. */
+vkr_internal VkrMeshLoaderBundleHash *
+vkr_mesh_loader_find_hash(const VkrMeshLoaderState *state, String8 source) {
+  const VkrMeshLoaderPathSlots *slots = &state->bundle_hash_slots;
+  if (!slots->count) {
+    return NULL;
+  }
+  for (uint32_t i =
+           (uint32_t)vkr_mesh_loader_path_key(source) & (slots->count - 1u);
+       slots->slots[i]; i = (i + 1u) & (slots->count - 1u)) {
+    VkrMeshLoaderBundleHash *entry =
+        &state->bundle_hashes[slots->slots[i] - 1u];
+    if (string8_equals(&entry->source, &source)) {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
 vkr_internal void
 vkr_mesh_loader_remember_hash(VkrMeshLoaderState *state, String8 source,
                               const VkrMeshLoaderBundleHash *hash) {
-  for (uint32_t i = 0; i < state->bundle_hash_count; ++i) {
-    if (string8_equals(&state->bundle_hashes[i].source, &source)) {
-      return;
-    }
+  if (vkr_mesh_loader_find_hash(state, source)) {
+    return;
+  }
+  bool8_t rebuilt = false_v;
+  if (!vkr_mesh_loader_slots_grow(state->load_allocator,
+                                  &state->bundle_hash_slots,
+                                  state->bundle_hash_count, &rebuilt)) {
+    return;
+  }
+  for (uint32_t i = 0; rebuilt && i < state->bundle_hash_count; ++i) {
+    vkr_mesh_loader_slots_insert(
+        &state->bundle_hash_slots,
+        vkr_mesh_loader_path_key(state->bundle_hashes[i].source), i);
   }
   if (state->bundle_hash_count == state->bundle_hash_capacity) {
     const uint32_t capacity =
@@ -1476,21 +1670,103 @@ vkr_mesh_loader_remember_hash(VkrMeshLoaderState *state, String8 source,
     state->bundle_hashes = grown;
     state->bundle_hash_capacity = capacity;
   }
-  VkrMeshLoaderBundleHash *entry =
-      &state->bundle_hashes[state->bundle_hash_count++];
+  const uint32_t position = state->bundle_hash_count++;
+  VkrMeshLoaderBundleHash *entry = &state->bundle_hashes[position];
   *entry = *hash;
   entry->source = string8_duplicate(state->load_allocator, &source);
+  vkr_mesh_loader_slots_insert(&state->bundle_hash_slots,
+                               vkr_mesh_loader_path_key(source), position);
 }
 
+/* A forgotten entry keeps its slot and position but matches no path. */
 vkr_internal void vkr_mesh_loader_forget_hash(VkrMeshLoaderState *state,
                                               String8 source) {
-  for (uint32_t i = 0; i < state->bundle_hash_count; ++i) {
-    if (string8_equals(&state->bundle_hashes[i].source, &source)) {
-      state->bundle_hashes[i] =
-          state->bundle_hashes[--state->bundle_hash_count];
-      return;
+  VkrMeshLoaderBundleHash *entry = vkr_mesh_loader_find_hash(state, source);
+  if (entry) {
+    entry->source = (String8){0};
+  }
+}
+
+typedef struct VkrMeshLoaderPublish {
+  VkrMeshLoaderBundleWrite *writes;
+  uint32_t count;
+  VkrAtomicUint32 next;
+} VkrMeshLoaderPublish;
+
+vkr_internal void *vkr_mesh_loader_publish_worker(void *argument) {
+  VkrMeshLoaderPublish *publish = argument;
+  Arena *arena = arena_create(GB(4), MB(1));
+  VkrAllocator scratch = {.ctx = arena};
+  const bool8_t ready = arena && vkr_allocator_arena(&scratch);
+  for (;;) {
+    const uint32_t index = vkr_atomic_uint32_fetch_add(
+        &publish->next, 1u, VKR_MEMORY_ORDER_RELAXED);
+    if (index >= publish->count) {
+      break;
+    }
+    VkrMeshLoaderBundleWrite *write = &publish->writes[index];
+    if (!ready) {
+      continue;
+    }
+
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&scratch);
+    if (write->bytes.str) {
+      VkrSha256 hash;
+      vkr_sha256_init(&hash);
+      vkr_sha256_update(&hash, write->bytes.str, write->bytes.length);
+      vkr_sha256_final(&hash, write->hash.digest);
+      write->hash.size = write->bytes.length;
+      write->placed = vkr_mesh_cooked_write_atomic(
+          &scratch, write->physical, write->bytes.str, write->bytes.length);
+    } else {
+      write->placed = vkr_mesh_loader_bundle_store(&scratch, write->source,
+                                                   write->physical);
+    }
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
+  }
+  if (arena) {
+    arena_destroy(arena);
+  }
+  return NULL;
+}
+
+/* Places every queued bundle file on worker threads: each flushed, renamed
+   and scanned file costs milliseconds, which a serial pass paid in turn.
+   Written bytes keep their hash for the dependencies that copy them. */
+vkr_internal bool8_t vkr_mesh_loader_publish_bundle(VkrMeshLoaderState *state) {
+  const uint32_t count = (uint32_t)state->bundle_writes.length;
+  if (!count) {
+    return true_v;
+  }
+  VkrMeshLoaderPublish publish = {.writes = state->bundle_writes.data,
+                                  .count = count};
+  VkrThread workers[15] = {0};
+  const uint32_t cores = Max(vkr_platform_get_logical_core_count(), 1u);
+  const uint32_t extra =
+      Min(Min(cores, count), (uint32_t)ArrayCount(workers) + 1u) - 1u;
+  uint32_t started = 0u;
+  for (uint32_t i = 0; i < extra; ++i) {
+    if (vkr_thread_create(state->load_allocator, &workers[started],
+                          vkr_mesh_loader_publish_worker, &publish)) {
+      ++started;
     }
   }
+  (void)vkr_mesh_loader_publish_worker(&publish);
+  for (uint32_t i = 0; i < started; ++i) {
+    (void)vkr_thread_join(workers[i]);
+    (void)vkr_thread_destroy(state->load_allocator, &workers[i]);
+  }
+
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrMeshLoaderBundleWrite *write = &state->bundle_writes.data[i];
+    ok = ok && write->placed;
+    if (write->placed && write->bytes.str) {
+      vkr_mesh_loader_remember_hash(state, write->physical, &write->hash);
+    }
+  }
+  state->bundle_writes.length = 0;
+  return ok;
 }
 
 typedef struct VkrMeshLoaderPrefetch {
@@ -1563,17 +1839,6 @@ vkr_mesh_loader_prefetch_bundle_hashes(VkrMeshLoaderState *state) {
   free(hashed);
 }
 
-/* The recorded hash of `source`, or null. */
-vkr_internal const VkrMeshLoaderBundleHash *
-vkr_mesh_loader_find_hash(const VkrMeshLoaderState *state, String8 source) {
-  for (uint32_t i = 0; i < state->bundle_hash_count; ++i) {
-    if (string8_equals(&state->bundle_hashes[i].source, &source)) {
-      return &state->bundle_hashes[i];
-    }
-  }
-  return NULL;
-}
-
 /* SHA-256 of a file's bytes, computed once per source path in one cook. */
 vkr_internal bool8_t vkr_mesh_loader_bundle_hash(VkrMeshLoaderState *state,
                                                  String8 source,
@@ -1621,8 +1886,8 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_copy(VkrMeshLoaderState *state,
           (int32_t)extension.length, extension.str);
       *out_physical = file_path_join(state->load_allocator, state->bundle_root,
                                      *out_reference);
-      ok = out_physical->str &&
-           vkr_mesh_loader_bundle_store(state, source, *out_physical);
+      ok = out_physical->str && vkr_mesh_loader_queue_bundle_write(
+                                    state, source, *out_physical, (String8){0});
       /* The copy holds the same bytes, so it is not hashed again when it
          is bundled as a dependency itself. */
       if (ok) {
@@ -1671,7 +1936,9 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_material(VkrMeshLoaderState *state,
           state->load_allocator, "%.*s=./../%.*s%.*s", (int32_t)equals,
           line.str, (int32_t)relative.length, relative.str,
           (int32_t)suffix.length, suffix.str);
-      if (!vkr_mesh_loader_capture_source_dependency(state, copied)) {
+      /* The pass's publish places the copy before the cook reads it. */
+      if (!vkr_mesh_loader_has_source_dependency(state, copied) &&
+          !vkr_mesh_loader_push_source_dependency(state, copied)) {
         return false_v;
       }
     }
@@ -1682,10 +1949,18 @@ vkr_internal bool8_t vkr_mesh_loader_bundle_material(VkrMeshLoaderState *state,
       return false_v;
     }
   }
-  /* The rewritten material is a dependency too; its old hash is stale. */
+  /* A material naming no texture, as every deferred-tier one does, already
+     holds these bytes; rewriting it would only flush them again, and its
+     recorded hash stands. */
+  if (rewritten.length != 0u && rewritten.length == content.length &&
+      MemCompare(rewritten.str, content.str, rewritten.length) == 0) {
+    return true_v;
+  }
+  /* The rewritten material is a dependency too; its old hash is stale until
+     the publish records the new one. */
   vkr_mesh_loader_forget_hash(state, physical);
-  return vkr_mesh_cooked_write_atomic(state->scratch_allocator, physical,
-                                      rewritten.str, rewritten.length);
+  return vkr_mesh_loader_queue_bundle_write(state, (String8){0}, physical,
+                                            rewritten);
 }
 
 vkr_internal const char *vkr_mesh_cook_dependency_list_path = NULL;
@@ -1702,6 +1977,50 @@ void vkr_mesh_cook_set_material_priority(const String8 *names, uint32_t count) {
 }
 void vkr_mesh_cook_set_dependency_list(const char *path) {
   vkr_mesh_cook_dependency_list_path = path;
+}
+void vkr_mesh_cook_set_link_root(const char *root) {
+  vkr_mesh_cook_link_root = root;
+}
+
+void vkr_mesh_cook_set_digest_log(const char *path) {
+  vkr_mesh_cook_digest_log = path;
+}
+
+/* Writes the digests the cook holds for files below the bundle root (see
+   vkr_mesh_cook_set_digest_log): the bakery would otherwise hash every
+   texture of the revision again. Best effort: a missing or partial log
+   only leaves the bakery hashing what it lacks. */
+vkr_internal void
+vkr_mesh_loader_write_digest_log(const VkrMeshLoaderState *state) {
+  FILE *log = file_fopen(vkr_mesh_cook_digest_log, "wb");
+  if (!log) {
+    return;
+  }
+  const String8 root = state->bundle_root;
+  for (uint32_t i = 0u; i < state->bundle_hash_count; ++i) {
+    const VkrMeshLoaderBundleHash *hash = &state->bundle_hashes[i];
+    String8 path = hash->source;
+    if (path.length <= root.length + 1u ||
+        MemCompare(path.str, root.str, root.length) != 0 ||
+        (path.str[root.length] != '/' && path.str[root.length] != '\\')) {
+      continue;
+    }
+    path = string8_substring(&path, root.length + 1u, path.length);
+    if (path.length > 2u && path.str[0] == '.' &&
+        (path.str[1] == '/' || path.str[1] == '\\')) {
+      path = string8_substring(&path, 2u, path.length);
+    }
+    char hex[65];
+    for (uint32_t b = 0u; b < 32u; ++b) {
+      (void)snprintf(hex + b * 2u, 3u, "%02x", hash->digest[b]);
+    }
+    (void)fprintf(log, "%s %llu ", hex, (unsigned long long)hash->size);
+    for (uint64_t c = 0u; c < path.length; ++c) {
+      (void)fputc(path.str[c] == '\\' ? '/' : path.str[c], log);
+    }
+    (void)fputc('\n', log);
+  }
+  (void)fclose(log);
 }
 
 vkr_internal bool8_t
@@ -1801,6 +2120,11 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
         return false_v;
       }
     }
+    /* The dependency pass below copies these textures and materials. */
+    if (!vkr_mesh_loader_publish_bundle(&state)) {
+      *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+      return false_v;
+    }
   }
   uint32_t dependency_count = (uint32_t)state.source_dependencies.length;
   String8 *dependency_paths = vkr_allocator_alloc(
@@ -1829,6 +2153,13 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
       *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
       return false_v;
     }
+  }
+  if (bundle_root.length && !vkr_mesh_loader_publish_bundle(&state)) {
+    *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+  if (bundle_root.length && vkr_mesh_cook_digest_log) {
+    vkr_mesh_loader_write_digest_log(&state);
   }
 
   VkrGeometryUploadRange *cooked_ranges =

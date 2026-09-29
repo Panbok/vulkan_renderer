@@ -48,6 +48,12 @@ bool8_t vkr_bakery_rename(const char *source, const char *destination,
 /** Replaces `destination` with a copy-on-write clone of `source` where the
  * volume supports it, otherwise a byte copy; the replacement is atomic. */
 bool8_t vkr_bakery_clone_or_copy(const char *source, const char *destination);
+/** As vkr_bakery_clone_or_copy, but where the volume cannot clone, hard links
+ * `source` before falling back to a byte copy. Only for sources that are never
+ * rewritten in place and are replaced only by rename (see file_link), since
+ * both names then share one file. */
+bool8_t vkr_bakery_clone_link_or_copy(const char *source,
+                                      const char *destination);
 
 bool8_t vkr_bakery_hash_file(const char *path,
                              char out_hex[VKR_BAKERY_SHA256_HEX],

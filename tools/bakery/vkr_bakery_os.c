@@ -455,7 +455,11 @@ vkr_internal bool8_t vkr_bakery_copy_bytes(const char *source,
   return ok;
 }
 
-bool8_t vkr_bakery_clone_or_copy(const char *source, const char *destination) {
+/* Places the clone, link or copy at a temporary name and renames it over
+ * `destination`, so the replacement is atomic. */
+vkr_internal bool8_t vkr_bakery_replace_with(const char *source,
+                                             const char *destination,
+                                             bool8_t allow_link) {
   char directory[VKR_BAKERY_PATH_CAPACITY];
   char temporary[VKR_BAKERY_PATH_CAPACITY];
   vkr_bakery_path_parent(directory, sizeof(directory), destination);
@@ -470,12 +474,22 @@ bool8_t vkr_bakery_clone_or_copy(const char *source, const char *destination) {
   FilePath to = {
       .path = {.str = (uint8_t *)temporary, .length = strlen(temporary)}};
   bool8_t ok = file_clone(&from, &to) == FILE_ERROR_NONE ||
+               (allow_link && file_link(&from, &to) == FILE_ERROR_NONE) ||
                vkr_bakery_copy_bytes(source, temporary);
   ok = ok && vkr_bakery_rename(temporary, destination, true_v);
   if (!ok) {
     (void)vkr_bakery_remove_file(temporary);
   }
   return ok;
+}
+
+bool8_t vkr_bakery_clone_or_copy(const char *source, const char *destination) {
+  return vkr_bakery_replace_with(source, destination, false_v);
+}
+
+bool8_t vkr_bakery_clone_link_or_copy(const char *source,
+                                      const char *destination) {
+  return vkr_bakery_replace_with(source, destination, true_v);
 }
 
 // =============================================================================

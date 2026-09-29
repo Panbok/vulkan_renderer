@@ -153,6 +153,45 @@ VkrBakeryIndex *vkr_bakery_index_open(const char *cache_dir) {
   return index;
 }
 
+/* A hard link, or a file moved within its volume, keeps its volume, file
+ * identity, size and modification time, so another path's entry with all
+ * four equal names the same bytes: a revision of linked files is indexed
+ * without reading them. Returns that entry's hash, or NULL. */
+vkr_internal const char *vkr_bakery_index_same_file(const VkrBakeryIndex *index,
+                                                    const VkrBakeryStat *info) {
+  if (!info->file_id) {
+    return NULL;
+  }
+  for (uint32_t i = 0u; i < index->capacity; ++i) {
+    const VkrBakeryIndexEntry *entry = &index->slots[i];
+    if (entry->path && entry->hash[0] && entry->file_id == info->file_id &&
+        entry->device == info->device && entry->size == info->size &&
+        entry->mtime_ns == info->mtime_ns) {
+      return entry->hash;
+    }
+  }
+  return NULL;
+}
+
+/* Gives `entry` the hash of the same file under another path, if any. */
+vkr_internal bool8_t vkr_bakery_index_adopt_same_file(
+    VkrBakeryIndex *index, VkrBakeryIndexEntry *entry,
+    const VkrBakeryStat *info) {
+  const char *hash = vkr_bakery_index_same_file(index, info);
+  if (!entry || !hash) {
+    return false_v;
+  }
+  char copied[VKR_BAKERY_KEY_SIZE];
+  MemCopy(copied, hash, VKR_BAKERY_KEY_SIZE);
+  entry->size = info->size;
+  entry->mtime_ns = info->mtime_ns;
+  entry->device = info->device;
+  entry->file_id = info->file_id;
+  MemCopy(entry->hash, copied, VKR_BAKERY_KEY_SIZE);
+  index->dirty = true_v;
+  return true_v;
+}
+
 bool8_t vkr_bakery_index_hash(VkrBakeryIndex *index, const char *path,
                               char out_hash[VKR_BAKERY_KEY_SIZE],
                               uint64_t *out_size) {
@@ -161,9 +200,10 @@ bool8_t vkr_bakery_index_hash(VkrBakeryIndex *index, const char *path,
     return false_v;
   }
   VkrBakeryIndexEntry *entry = vkr_bakery_index_put(index, path);
-  if (entry && entry->hash[0] && entry->size == info.size &&
-      entry->mtime_ns == info.mtime_ns && entry->device == info.device &&
-      entry->file_id == info.file_id) {
+  if ((entry && entry->hash[0] && entry->size == info.size &&
+       entry->mtime_ns == info.mtime_ns && entry->device == info.device &&
+       entry->file_id == info.file_id) ||
+      vkr_bakery_index_adopt_same_file(index, entry, &info)) {
     MemCopy(out_hash, entry->hash, VKR_BAKERY_KEY_SIZE);
     if (out_size) {
       *out_size = info.size;
@@ -232,10 +272,11 @@ void vkr_bakery_index_prefetch(VkrBakeryIndex *index, const char *const *paths,
         info.is_directory) {
       continue;
     }
-    const VkrBakeryIndexEntry *entry = vkr_bakery_index_put(index, paths[i]);
-    if (entry && entry->hash[0] && entry->size == info.size &&
-        entry->mtime_ns == info.mtime_ns && entry->device == info.device &&
-        entry->file_id == info.file_id) {
+    VkrBakeryIndexEntry *entry = vkr_bakery_index_put(index, paths[i]);
+    if ((entry && entry->hash[0] && entry->size == info.size &&
+         entry->mtime_ns == info.mtime_ns && entry->device == info.device &&
+         entry->file_id == info.file_id) ||
+        vkr_bakery_index_adopt_same_file(index, entry, &info)) {
       continue;
     }
     misses[miss_count++] =

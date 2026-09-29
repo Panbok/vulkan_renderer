@@ -177,8 +177,8 @@ bool8_t vkr_project_identifier(VkrProjectJob *job, const VkrBakeryJson *value,
  * entries); returns the count appended to `arguments`. */
 uint32_t vkr_project_tier_arguments(const VkrProjectJob *job,
                                     const char **arguments);
-/** Tool spelling of the job's texture encoding: "uastc", "astc" or
- * "astc-fast". */
+/** Tool spelling of the job's texture encoding: "uastc", "astc",
+ * "astc-fast", "bc" or "bc-fast". */
 const char *vkr_project_texture_encoding_name(const VkrProjectJob *job);
 /** After a finalize publishes `records`, appends a ready record for every
  * material of theirs the cook did not record, from its published file under
@@ -187,8 +187,8 @@ void vkr_project_record_ready_remaining(VkrProjectJob *job,
                                         VkrBakeryJson *const *records,
                                         uint32_t count, const char *root);
 /** Name suffix of job-packed textures at the job's tier and encoding: "",
- * "-preview", "-astc", "-astc-preview", "-astc-fast" or
- * "-astc-fast-preview". */
+ * "-preview", "-astc", "-astc-preview", "-astc-fast", "-astc-fast-preview",
+ * "-bc", "-bc-preview", "-bc-fast" or "-bc-fast-preview". */
 const char *vkr_project_texture_suffix(const VkrProjectJob *job);
 /** Records of `records` (an asset array) still at the preview or deferred
  * tier. */
@@ -270,6 +270,13 @@ bool8_t vkr_project_copy_file(VkrProjectJob *job, const char *source,
                               const char *destination);
 bool8_t vkr_project_copy_blob(VkrProjectJob *job, const char *source,
                               const char *directory, char *out);
+/** Places the blobs vkr_project_copy_blob would copy from `sources` (resolved
+ * paths, already hashed) into `directory` on parallel workers, so the later
+ * vkr_project_copy_blob calls find them. Sources it cannot name or place are
+ * left to those calls, which report their errors. */
+bool8_t vkr_project_prefetch_blobs(VkrProjectJob *job,
+                                   const char *const *sources, uint32_t count,
+                                   const char *directory);
 bool8_t vkr_project_mkdtemp(VkrProjectJob *job, const char *parent,
                             const char *prefix, char *out);
 bool8_t vkr_project_publish_directory(VkrProjectJob *job, const char *source,

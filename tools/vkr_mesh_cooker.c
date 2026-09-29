@@ -26,9 +26,10 @@ static void vkr_mesh_cooker_print_usage(const char *program) {
           "Usage: %s --input <mesh.obj|mesh.gltf|mesh.glb> "
           "--output <mesh.vkb> [--light-range <definition-name>=<meters>]... "
           "[--bundle-root <absolute-directory> --import-id <id> "
-          "[--generated-root <absolute-directory>]] "
+          "[--generated-root <absolute-directory>] "
+          "[--link-root <absolute-directory>]] "
           "[--texture-tier preview|deferred|final] "
-          "[--texture-encoding uastc|astc|astc-fast] "
+          "[--texture-encoding uastc|astc|astc-fast|bc|bc-fast] "
           "[--dependency-list <file>] [--ready-log <file>] "
           "[--material-priority <file>]\n",
           program, program, program);
@@ -361,6 +362,11 @@ VKR_TOOL_ENTRY(vkr_mesh_cooker_tool_main) {
       }
     } else if (strcmp(argv[i], "--generated-root") == 0 && i + 1 < argc) {
       generated_root = argv[++i];
+    } else if (strcmp(argv[i], "--digest-output") == 0 && i + 1 < argc) {
+      vkr_mesh_cook_set_digest_log(argv[++i]);
+    } else if (strcmp(argv[i], "--link-root") == 0 && i + 1 < argc) {
+      /* Bundle dependencies from below this root may be hard linked. */
+      vkr_mesh_cook_set_link_root(argv[++i]);
     } else if (strcmp(argv[i], "--texture-tier") == 0 && i + 1 < argc) {
       /* Derived textures encode at the preview tier under their own names;
          the deferred tier writes materials without textures. */
@@ -373,12 +379,13 @@ VKR_TOOL_ENTRY(vkr_mesh_cooker_tool_main) {
       vkr_vkt_set_preview_tier(strcmp(tier, "preview") == 0);
       vkr_mesh_cook_set_defer_textures(strcmp(tier, "deferred") == 0);
     } else if (strcmp(argv[i], "--texture-encoding") == 0 && i + 1 < argc) {
-      /* Derived textures as UASTC, or native ASTC 4x4 under ".astc" or
-         ".astc-fast" names. */
+      /* Derived textures as UASTC, or native ASTC 4x4 or BC7/BC5 under
+         ".astc", ".astc-fast", ".bc" or ".bc-fast" names. */
       VkrVktEncoding encoding = VKR_VKT_ENCODING_UASTC;
       if (!vkr_vkt_parse_encoding(argv[++i], &encoding)) {
-        fprintf(stderr, "--texture-encoding expects uastc, astc or astc-fast "
-                        "(astc-fast needs Apple's system encoder)\n");
+        fprintf(stderr, "--texture-encoding expects uastc, astc, astc-fast, "
+                        "bc or bc-fast (astc-fast needs Apple's system "
+                        "encoder, bc an x86-64 build)\n");
         return 2;
       }
       vkr_vkt_set_encoding(encoding);
