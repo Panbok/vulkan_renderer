@@ -40,7 +40,7 @@
 #define VKR_PACKAGE_LARGEST 16u
 /* Written to bundle.json; an archive is reused only from a package written by
    the same archive writer. Change it with any change to archive bytes. */
-#define VKR_PACKAGE_ARCHIVE_WRITER 1
+#define VKR_PACKAGE_ARCHIVE_WRITER 2
 
 #if defined(_WIN32)
 #define VKR_PACKAGE_PLATFORM "windows-x64"
@@ -672,12 +672,14 @@ vkr_internal bool8_t vkr_package_runtime_path(const VkrPackage *package,
 
 /* Any `<name>.app/Contents/Resources/bundle.json`: a macOS package, perhaps
    under an earlier executable name. */
+/* Copies the first `.app` directory's name into a VKR_BAKERY_PATH_CAPACITY
+ * buffer; the listing frees `name` after the visit. */
 vkr_internal bool8_t vkr_package_visit_app(void *context, const char *name,
                                            bool8_t is_directory) {
-  const char **found = context;
+  char *found = context;
   const uint64_t length = strlen(name);
   if (is_directory && length > 4u && !strcmp(name + length - 4u, ".app")) {
-    *found = name;
+    (void)snprintf(found, VKR_BAKERY_PATH_CAPACITY, "%s", name);
     return false_v;
   }
   return true_v;
@@ -723,12 +725,12 @@ vkr_internal bool8_t vkr_package_check_output(VkrPackage *package) {
   (void)vkr_package_runtime_path(package, package->out, "bundle.json",
                                  description);
   /* A macOS package under an earlier executable name is a package too. */
-  const char *app = NULL;
+  char app[VKR_BAKERY_PATH_CAPACITY] = {0};
   char other[VKR_BAKERY_PATH_CAPACITY] = {0};
   if (vkr_bakery_is_directory(package->out)) {
-    (void)vkr_bakery_list_directory(package->out, vkr_package_visit_app, &app);
+    (void)vkr_bakery_list_directory(package->out, vkr_package_visit_app, app);
   }
-  if (app) {
+  if (app[0]) {
     (void)snprintf(other, sizeof(other), "%s/%s/Contents/Resources/bundle.json",
                    package->out, app);
   }

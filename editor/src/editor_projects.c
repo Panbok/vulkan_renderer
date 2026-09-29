@@ -3766,6 +3766,79 @@ static void project_session_log(VkrEditorProjects *projects,
   }
 }
 
+/* Reports a failed or cancelled project job for the operation it ran; true
+ * when the update stops for this frame. */
+static bool8_t project_job_failed(VkrEditorProjects *projects,
+                                  VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  VkrEditorProjectJobStatus status) {
+  if (projects->job_inspect) {
+    /* The scene JSON could not be read; the form shows why. */
+    String8 result = {0};
+    projects->inspection = (ProjectInspection){0};
+    if (!project_read_file(projects->result_path, frame->ui->frame_allocator,
+                           &result) ||
+        !vkr_editor_project_json_string(
+            result, "error", projects->inspection.error,
+            sizeof(projects->inspection.error), NULL)) {
+      snprintf(projects->inspection.error, sizeof(projects->inspection.error),
+               "The scene JSON could not be inspected.");
+    }
+    projects->job_inspect = false_v;
+    projects->job_id = 0;
+    return true_v;
+  }
+  if (!strcmp(projects->operation, "add_entities") && projects->placing_asset) {
+    projects->job_id = 0;
+    projects->placing_asset = false_v;
+    projects->operation[0] = '\0';
+    snprintf(projects->message, sizeof(projects->message),
+             "Nothing was placed. Rebuild the asset or see Bakery for "
+             "details.");
+  } else if (!strcmp(projects->operation, "add_entities") &&
+             projects->job_imports_models) {
+    /* Nothing was added; the scene open before the import reopens. */
+    projects->job_id = 0;
+    projects->job_imports_models = false_v;
+    projects->operation[0] = '\0';
+    projects->view = PROJECT_VIEW_EDITOR;
+    snprintf(projects->message, sizeof(projects->message),
+             "%s. The model was not added; see Bakery for details.",
+             status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Import cancelled"
+                                                        : "Import failed");
+    vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
+                     projects->message);
+    if (projects->active_scene < projects->project->scene_count) {
+      projects->pending_scene = projects->active_scene;
+      project_start_job(projects, editor, frame, false_v);
+    }
+  } else if (!strcmp(projects->operation, "add_entities")) {
+    projects->job_id = 0;
+    projects->view = PROJECT_VIEW_ADD_ENTITY;
+    snprintf(projects->message, sizeof(projects->message),
+             "Entity was not added. Check the model and dependencies, or "
+             "light settings. See Bakery for details; correct the form or "
+             "cancel.");
+  } else if (!strcmp(projects->operation, "delete_scene")) {
+    snprintf(projects->message, sizeof(projects->message),
+             "Scene removed from project; file deletion is incomplete. "
+             "Retry to finish. See Bakery for details.");
+  } else if (projects->creating_project) {
+    snprintf(projects->message, sizeof(projects->message),
+             "%s. The project is saved without this scene; Back opens "
+             "it. See Bakery for the job output.",
+             status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Creation cancelled"
+                                                        : "Creation failed");
+  } else {
+    snprintf(projects->message, sizeof(projects->message),
+             "%s. Your source files and existing projects are unchanged. See "
+             "Bakery for the job output.",
+             status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Creation cancelled"
+                                                        : "Creation failed");
+  }
+  return false_v;
+}
+
 void vkr_editor_projects_update(VkrEditorProjects *projects,
                                 VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
@@ -3922,76 +3995,10 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       /* The runtime consumes this frame's selection after UI construction.
        * Its current scene/status snapshot still belongs to the old request. */
       return;
-    } else if (status == VKR_EDITOR_PROJECT_JOB_FAILED ||
-               status == VKR_EDITOR_PROJECT_JOB_CANCELLED) {
-      if (projects->job_inspect) {
-        /* The scene JSON could not be read; the form shows why. */
-        String8 result = {0};
-        projects->inspection = (ProjectInspection){0};
-        if (!project_read_file(projects->result_path,
-                               frame->ui->frame_allocator, &result) ||
-            !vkr_editor_project_json_string(
-                result, "error", projects->inspection.error,
-                sizeof(projects->inspection.error), NULL)) {
-          snprintf(projects->inspection.error,
-                   sizeof(projects->inspection.error),
-                   "The scene JSON could not be inspected.");
-        }
-        projects->job_inspect = false_v;
-        projects->job_id = 0;
-        return;
-      }
-      if (!strcmp(projects->operation, "add_entities") &&
-          projects->placing_asset) {
-        projects->job_id = 0;
-        projects->placing_asset = false_v;
-        projects->operation[0] = '\0';
-        snprintf(projects->message, sizeof(projects->message),
-                 "Nothing was placed. Rebuild the asset or see Bakery for "
-                 "details.");
-      } else if (!strcmp(projects->operation, "add_entities") &&
-                 projects->job_imports_models) {
-        /* Nothing was added; the scene open before the import reopens. */
-        projects->job_id = 0;
-        projects->job_imports_models = false_v;
-        projects->operation[0] = '\0';
-        projects->view = PROJECT_VIEW_EDITOR;
-        snprintf(projects->message, sizeof(projects->message),
-                 "%s. The model was not added; see Bakery for details.",
-                 status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Import cancelled"
-                                                            : "Import failed");
-        vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING,
-                         vkr_ui_theme()->warning, projects->message);
-        if (projects->active_scene < projects->project->scene_count) {
-          projects->pending_scene = projects->active_scene;
-          project_start_job(projects, editor, frame, false_v);
-        }
-      } else if (!strcmp(projects->operation, "add_entities")) {
-        projects->job_id = 0;
-        projects->view = PROJECT_VIEW_ADD_ENTITY;
-        snprintf(projects->message, sizeof(projects->message),
-                 "Entity was not added. Check the model and dependencies, or "
-                 "light settings. See Bakery for details; correct the form or "
-                 "cancel.");
-      } else if (!strcmp(projects->operation, "delete_scene")) {
-        snprintf(projects->message, sizeof(projects->message),
-                 "Scene removed from project; file deletion is incomplete. "
-                 "Retry to finish. See Bakery for details.");
-      } else if (projects->creating_project) {
-        snprintf(projects->message, sizeof(projects->message),
-                 "%s. The project is saved without this scene; Back opens "
-                 "it. See Bakery for the job output.",
-                 status == VKR_EDITOR_PROJECT_JOB_CANCELLED
-                     ? "Creation cancelled"
-                     : "Creation failed");
-      } else {
-        snprintf(
-            projects->message, sizeof(projects->message),
-            "%s. Your source files and existing projects are unchanged. See "
-            "Bakery for the job output.",
-            status == VKR_EDITOR_PROJECT_JOB_CANCELLED ? "Creation cancelled"
-                                                       : "Creation failed");
-      }
+    } else if ((status == VKR_EDITOR_PROJECT_JOB_FAILED ||
+                status == VKR_EDITOR_PROJECT_JOB_CANCELLED) &&
+               project_job_failed(projects, editor, frame, status)) {
+      return;
     }
   }
   if (projects->waiting_activation) {

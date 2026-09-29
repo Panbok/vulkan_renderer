@@ -16,11 +16,16 @@
  * only read the mount table and are safe from any thread. Archive bytes stay
  * mapped until vkr_vfs_unmount_all(). */
 
-/* ---- `.vkpak` version 1: little-endian, written by `vkr_bakery bundle` ----
- */
+/* ---- `.vkpak` version 2: little-endian, written by `vkr_bakery bundle` ----
+ * Version 1 archives, which store every chunk as its bytes, still read. */
 
 #define VKR_PACK_MAGIC "VKPK"
-#define VKR_PACK_VERSION 1u
+#define VKR_PACK_VERSION 2u
+#define VKR_PACK_VERSION_MIN 1u
+/** VkrPackChunk.flags (version 2): the stored bytes are one zstd frame. */
+#define VKR_PACK_CHUNK_ZSTD 1u
+/** Upper bound of a compressed chunk's decoded size. */
+#define VKR_PACK_MAX_DECODED_SIZE (1ull << 32)
 #define VKR_PACK_HEADER_SIZE 128u
 /* Chunks start on this boundary; mappable resources (meshes, textures and
  * volumes) on VKR_PACK_MAPPABLE_ALIGNMENT. */
@@ -44,14 +49,18 @@ typedef struct VkrPackHeader {
   uint8_t reserved[40];
 } VkrPackHeader;
 
-/** One stored product, sorted by `sha256`; bytes are stored once per hash. */
+/** One stored product, sorted by `sha256`, which hashes its decoded bytes;
+ * bytes are stored once per hash. `size` counts the stored bytes. A version 2
+ * chunk with VKR_PACK_CHUNK_ZSTD holds one zstd frame that decodes to
+ * `decoded_size` bytes; otherwise `decoded_size` is zero or `size`. Version 1
+ * chunks have no flags. */
 typedef struct VkrPackChunk {
   uint8_t sha256[32];
   uint64_t offset;
   uint64_t size;
   uint32_t alignment;
-  uint32_t reserved0;
-  uint64_t reserved1;
+  uint32_t flags;
+  uint64_t decoded_size;
 } VkrPackChunk;
 
 /** How the runtime reads an entry; informational for tools. */
@@ -98,7 +107,19 @@ bool8_t vkr_pack_validate(const uint8_t *data, uint64_t size, char *error,
 
 /* ---- Mounts ---- */
 
-/** Borrowed bytes of one mounted identity; valid until unmount. */
+/** Decodes one zstd frame of `source_size` bytes into exactly
+ * `destination_size` bytes; any thread. */
+typedef bool8_t (*VkrVfsDecompressor)(const uint8_t *source,
+                                      uint64_t source_size,
+                                      uint8_t *destination,
+                                      uint64_t destination_size);
+/** Installs the codec compressed chunks decode through, before content
+ * reads. The library links no codec: the runtime and tools install the zstd
+ * decoder they already link. Without one, a compressed entry does not open. */
+void vkr_vfs_set_decompressor(VkrVfsDecompressor decompressor);
+
+/** Borrowed bytes of one mounted identity; valid until unmount. A compressed
+ * entry decodes once, on its first open, into storage kept until unmount. */
 typedef struct VkrVfsView {
   const uint8_t *data;
   uint64_t size;

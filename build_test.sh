@@ -10,6 +10,9 @@ python3 "$(dirname "$0")/tools/checks/report_long_functions.py" --quiet \
 # Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
 VKR_BUILD_TARGET=vulkan_renderer_tester VKR_BUILD_LABEL="VKR CPU tests" \
   "$(dirname "$0")/build.sh" Debug
+# check_bakery_package.py packages a project with the Debug player template.
+VKR_BUILD_TARGET=vkr_player VKR_BUILD_LABEL="VKR player template" \
+  "$(dirname "$0")/build.sh" Debug
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 BUILD_DIR=build_debug

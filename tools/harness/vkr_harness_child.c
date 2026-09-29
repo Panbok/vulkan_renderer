@@ -1,3 +1,4 @@
+#include "core/vkr_content_codec.h"
 #include "core/vkr_subsystem_plan.h"
 /**
  * @file vkr_harness_child.c
@@ -2240,6 +2241,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   vkr_harness_timestamp_utc(provenance.started_at);
   /* $VKR_CONTENT_PACKS or $VKR_CONTENT serve the case's content from
      archives (ADR-077). */
+  vkr_content_codec_install();
   if (!vkr_vfs_mount_startup()) {
     vkr_harness_stderr("Cannot mount the requested content archives\n");
     return VKR_HARNESS_EXIT_ERROR;

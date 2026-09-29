@@ -3,6 +3,7 @@
 #include "container_test_allocator.h"
 
 #include "containers/str.h"
+#include "core/vkr_content_codec.h"
 #include "core/vkr_hash.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
@@ -24,6 +25,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+#include "ktx-software/external/basisu/zstd/zstd.h"
 
 vkr_global const char *FS_TEST_RELATIVE_DIR = "tests/tmp/fs_tests";
 vkr_global uint32_t g_fs_test_counter = 0;
@@ -793,8 +796,9 @@ vkr_internal void test_vfs_pack_mount(void) {
   MemCopy(catalog + sizeof(catalog_header) + sizeof(entries) + 16u,
           identities[1], 16u);
   MemCopy(image + table_offset, &chunk, sizeof(chunk));
+  /* Version 1 archives, which have no compressed chunks, still mount. */
   VkrPackHeader header = {
-      .version = VKR_PACK_VERSION,
+      .version = VKR_PACK_VERSION_MIN,
       .catalog_offset = catalog_offset,
       .catalog_size = catalog_size,
       .chunk_table_offset = table_offset,
@@ -881,6 +885,114 @@ vkr_internal void test_vfs_pack_mount(void) {
   printf("  test_vfs_pack_mount PASSED\n");
 }
 
+/* Writes a one-chunk table and the header, with its index hash, into an
+ * archive image. */
+vkr_internal void fs_test_seal_pack(uint8_t *image, VkrPackHeader *header,
+                                    const VkrPackChunk *chunk) {
+  MemCopy(image + header->chunk_table_offset, chunk, sizeof(*chunk));
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  vkr_sha256_update(&hash, image + header->catalog_offset,
+                    header->catalog_size);
+  vkr_sha256_update(&hash, image + header->chunk_table_offset, sizeof(*chunk));
+  vkr_sha256_final(&hash, header->index_sha256);
+  MemCopy(image, header, sizeof(*header));
+}
+
+/* A version 2 archive whose only chunk is a zstd frame: its entry stats and
+ * reads as the decoded bytes, and the validator rejects a compressed chunk in
+ * a version 1 archive or one without a decoded size. */
+vkr_internal void test_vfs_pack_compressed(void) {
+  printf("  Running test_vfs_pack_compressed...\n");
+  static const char identity[] = "assets/vfs/z.bin";
+  char text[2048];
+  for (uint32_t i = 0u; i < sizeof(text); ++i) {
+    text[i] = (char)('a' + i % 7u);
+  }
+
+  uint8_t image[4096] = {0};
+  const uint64_t chunk_offset = VKR_PACK_HEADER_SIZE;
+  const size_t stored_size =
+      ZSTD_compress(image + chunk_offset, 1024u, text, sizeof(text), 3);
+  assert(!ZSTD_isError(stored_size) && stored_size < sizeof(text));
+  const uint64_t catalog_offset =
+      chunk_offset + (stored_size + VKR_PACK_ALIGNMENT - 1u) /
+                         VKR_PACK_ALIGNMENT * VKR_PACK_ALIGNMENT;
+  const VkrPackCatalogHeader catalog_header = {.entry_count = 1u};
+  const VkrPackEntry entry = {.identity_length = 16u};
+  const uint64_t catalog_size = sizeof(catalog_header) + sizeof(entry) + 16u;
+  const uint64_t table_offset = catalog_offset + catalog_size;
+  VkrPackChunk chunk = {.offset = chunk_offset,
+                        .size = stored_size,
+                        .alignment = VKR_PACK_ALIGNMENT,
+                        .flags = VKR_PACK_CHUNK_ZSTD,
+                        .decoded_size = sizeof(text)};
+  vkr_sha256((const uint8_t *)text, sizeof(text), chunk.sha256);
+
+  uint8_t *catalog = image + catalog_offset;
+  MemCopy(catalog, &catalog_header, sizeof(catalog_header));
+  MemCopy(catalog + sizeof(catalog_header), &entry, sizeof(entry));
+  MemCopy(catalog + sizeof(catalog_header) + sizeof(entry), identity, 16u);
+  VkrPackHeader header = {
+      .version = VKR_PACK_VERSION,
+      .catalog_offset = catalog_offset,
+      .catalog_size = catalog_size,
+      .chunk_table_offset = table_offset,
+      .chunk_table_size = sizeof(chunk),
+      .total_size = table_offset + sizeof(chunk),
+  };
+  MemCopy(header.magic, VKR_PACK_MAGIC, 4u);
+  const uint64_t size = header.total_size;
+  char error[128];
+
+  header.version = 1u;
+  fs_test_seal_pack(image, &header, &chunk);
+  assert(!vkr_pack_validate(image, size, error, sizeof(error)));
+  header.version = VKR_PACK_VERSION;
+  chunk.decoded_size = 0u;
+  fs_test_seal_pack(image, &header, &chunk);
+  assert(!vkr_pack_validate(image, size, error, sizeof(error)));
+  chunk.decoded_size = sizeof(text);
+  fs_test_seal_pack(image, &header, &chunk);
+  assert(vkr_pack_validate(image, size, error, sizeof(error)));
+
+  char pack_path[1024];
+  snprintf(pack_path, sizeof(pack_path), "%s%s/vfs_%u.vkpak",
+           PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, g_fs_test_counter++);
+  FILE *file = fopen(pack_path, "wb");
+  assert(file && fwrite(image, 1u, size, file) == size);
+  fclose(file);
+  vkr_content_codec_install();
+  assert(vkr_vfs_mount_pack(pack_path));
+
+  Arena *arena = arena_create(KB(64), KB(64));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  FilePath path =
+      file_path_create(identity, &allocator, FILE_PATH_TYPE_RELATIVE);
+  FileStats stats = {0};
+  assert(file_stats(&path, &stats) == FILE_ERROR_NONE &&
+         stats.size == sizeof(text));
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  for (uint32_t open = 0u; open < 2u; ++open) {
+    FileHandle handle = {0};
+    assert(file_open(&path, mode, &handle) == FILE_ERROR_NONE);
+    uint8_t *bytes = NULL;
+    uint64_t count = 0u;
+    assert(file_read_all(&handle, &allocator, &bytes, &count) ==
+               FILE_ERROR_NONE &&
+           count == sizeof(text) && MemCompare(bytes, text, sizeof(text)) == 0);
+    file_close(&handle);
+  }
+
+  vkr_vfs_unmount_all();
+  arena_destroy(arena);
+  fs_test_remove_file(pack_path);
+  printf("  test_vfs_pack_compressed PASSED\n");
+}
+
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
   g_fs_test_counter = 0;
@@ -900,6 +1012,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_io_failures_release_owned_outputs();
   test_file_allocation_failures();
   test_vfs_pack_mount();
+  test_vfs_pack_compressed();
 
   printf("--- Filesystem Tests Completed ---\n");
   return true;

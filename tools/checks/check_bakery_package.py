@@ -170,12 +170,15 @@ def main():
             entries.update(pack_entries)
         assert set(entries) == set(description['products'])
         assert all(name.startswith('assets/') for name in read_pack(runtime_root / 'content/engine.vkpak')[0])
-        for identity, (data, _) in entries.items():
+        for identity, (data, _, _) in entries.items():
             assert hashlib.sha256(data).hexdigest() == description['products'][identity], identity
+        # Documents the runtime reads into memory store compressed; textures
+        # and meshes stay mappable (read_pack).
+        assert entries['assets/render_graphs/main.rendergraph.json'][2], 'the render graph stores compressed'
 
         # No archived document names the workspace, the repository or an
         # absolute path.
-        for identity, (data, _) in entries.items():
+        for identity, (data, _, _) in entries.items():
             if identity.endswith(('.json', '.mt', '.fontcfg')):
                 text = data.decode('utf-8')
                 assert str(root) not in text and str(REPOSITORY) not in text, identity

@@ -1,4 +1,5 @@
 #include "vkr_sample_runtime.h"
+#include "core/vkr_content_codec.h"
 #include "core/vkr_json.h"
 #include "core/vkr_subsystem_plan.h"
 #include "filesystem/filesystem.h"
@@ -5135,6 +5136,7 @@ vkr_internal void vkr_sample_runtime_log_device_information(
 int vkr_sample_runtime_run(int argc, char **argv,
                            const VkrSampleRuntimeConfig *runtime_config) {
   /* A bundle's content mounts before any path resolves (ADR-077). */
+  vkr_content_codec_install();
   if (!vkr_vfs_mount_startup()) {
     fprintf(stderr, "Cannot mount the bundled content\n");
     return 1;

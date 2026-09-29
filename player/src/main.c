@@ -1,6 +1,7 @@
 #include "player.h"
 
 #include "core/logger.h"
+#include "core/vkr_content_codec.h"
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
@@ -54,8 +55,8 @@ static void player_directory_name(const char *text, char *out,
   uint32_t length = 0u;
   for (const char *c = text; *c && length + 1u < capacity; ++c) {
     const bool8_t reserved = (uint8_t)*c < 0x20u || *c == '/' || *c == '\\' ||
-                             *c == ':' || *c == '*' || *c == '?' ||
-                             *c == '"' || *c == '<' || *c == '>' || *c == '|';
+                             *c == ':' || *c == '*' || *c == '?' || *c == '"' ||
+                             *c == '<' || *c == '>' || *c == '|';
     out[length++] = reserved ? '_' : *c;
   }
   while (length && (out[length - 1u] == ' ' || out[length - 1u] == '.')) {
@@ -76,11 +77,11 @@ static bool8_t player_user_directory(const VkrPlayer *player, const char *base,
   if (!name[0]) {
     snprintf(name, sizeof(name), "Game");
   }
-  const int written =
-      company[0] ? snprintf(out, VKR_PLAYER_PATH_CAPACITY, "%s/%s/%s%s", base,
-                            company, name, leaf)
-                 : snprintf(out, VKR_PLAYER_PATH_CAPACITY, "%s/%s%s", base,
-                            name, leaf);
+  const int written = company[0]
+                          ? snprintf(out, VKR_PLAYER_PATH_CAPACITY,
+                                     "%s/%s/%s%s", base, company, name, leaf)
+                          : snprintf(out, VKR_PLAYER_PATH_CAPACITY, "%s/%s%s",
+                                     base, name, leaf);
   if (written < 0 || (uint32_t)written >= VKR_PLAYER_PATH_CAPACITY) {
     return false_v;
   }
@@ -160,18 +161,17 @@ bool8_t vkr_player_load(VkrPlayer *player) {
     }
     return false_v;
   }
-  bool8_t ok =
-      player_text(game, "name", &allocator, player->name,
-                  sizeof(player->name)) &&
-      player_text(game, "company", &allocator, player->company,
-                  sizeof(player->company)) &&
-      player_content_path(game, "world", &allocator, player->world) &&
-      player_content_path(game, "world_overlay", &allocator,
-                          player->world_overlay) &&
-      player_content_path(game, "startup_scene", &allocator,
-                          player->startup_scene) &&
-      player_content_path(game, "startup_overlay", &allocator,
-                          player->startup_overlay);
+  bool8_t ok = player_text(game, "name", &allocator, player->name,
+                           sizeof(player->name)) &&
+               player_text(game, "company", &allocator, player->company,
+                           sizeof(player->company)) &&
+               player_content_path(game, "world", &allocator, player->world) &&
+               player_content_path(game, "world_overlay", &allocator,
+                                   player->world_overlay) &&
+               player_content_path(game, "startup_scene", &allocator,
+                                   player->startup_scene) &&
+               player_content_path(game, "startup_overlay", &allocator,
+                                   player->startup_overlay);
 
   VkrJsonReader window = game;
   VkrJsonReader window_object = {0};
@@ -191,11 +191,10 @@ bool8_t vkr_player_load(VkrPlayer *player) {
     }
     char mode[16];
     if (player_text(window_object, "mode", &allocator, mode, sizeof(mode))) {
-      player->window_mode = !strcmp(mode, "fullscreen")
-                                ? VKR_WINDOW_MODE_FULLSCREEN
-                            : !strcmp(mode, "borderless")
-                                ? VKR_WINDOW_MODE_BORDERLESS
-                                : VKR_WINDOW_MODE_WINDOWED;
+      player->window_mode =
+          !strcmp(mode, "fullscreen")   ? VKR_WINDOW_MODE_FULLSCREEN
+          : !strcmp(mode, "borderless") ? VKR_WINDOW_MODE_BORDERLESS
+                                        : VKR_WINDOW_MODE_WINDOWED;
     }
   }
   VkrJsonReader graphics = game;
@@ -240,6 +239,7 @@ bool8_t vkr_player_load(VkrPlayer *player) {
 
 VKR_MAIN(argc, argv) {
   /* The package mounts before any path resolves; the runtime keeps it. */
+  vkr_content_codec_install();
   if (!vkr_vfs_mount_startup()) {
     fprintf(stderr, "Cannot mount the game package\n");
     return 1;

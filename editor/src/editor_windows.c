@@ -1328,6 +1328,31 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
                                       vkr_editor_context_menu_rect(editor, ui));
 }
 
+/* The body panel below a floating window's header, and its bounds in
+ * pixels, for windows whose module lays out its own content. */
+static bool8_t editor_window_body_begin(VkrUiSystem *ui,
+                                        const VkrEditorWindowState *window,
+                                        String8 id, VkrUiRect *out_bounds) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiPanelConfig body = vkr_ui_panel_config_default();
+  body.placement.column = 0;
+  body.placement.row = 1;
+  body.style.padding_pt = (VkrUiEdges){0};
+  body.style.background_color = theme->panel;
+  body.style.corner_radius_pt =
+      (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
+  body.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, id, &body)) {
+    return false_v;
+  }
+  *out_bounds =
+      (VkrUiRect){window->position_pt.x * ui->content_scale,
+                  (window->position_pt.y + 30.0f) * ui->content_scale,
+                  window->size_pt.x * ui->content_scale,
+                  Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+  return true_v;
+}
+
 static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
                                 InputState *input, VkrEditorWindowKind kind,
                                 const VkrSampleUiFrame *frame) {
@@ -1534,77 +1559,33 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   }
 
   if (kind == VKR_EDITOR_WINDOW_GRAPHICS) {
-    VkrUiPanelConfig body = vkr_ui_panel_config_default();
-    body.placement.column = 0;
-    body.placement.row = 1;
-    body.style.padding_pt = (VkrUiEdges){0};
-    body.style.background_color = theme->panel;
-    body.style.corner_radius_pt =
-        (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
-    body.clip_children = true_v;
-    if (vkr_ui_panel_begin(ui, string8_lit("preferences.body"), &body)) {
-      const VkrUiRect bounds = {
-          window->position_pt.x * ui->content_scale,
-          (window->position_pt.y + 30.0f) * ui->content_scale,
-          window->size_pt.x * ui->content_scale,
-          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("preferences.body"),
+                                 &bounds)) {
       vkr_editor_graphics_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_ANIMATION) {
     vkr_editor_animation_build(editor, frame);
   } else if (kind == VKR_EDITOR_WINDOW_CREATE) {
-    VkrUiPanelConfig body = vkr_ui_panel_config_default();
-    body.placement.column = 0;
-    body.placement.row = 1;
-    body.style.padding_pt = (VkrUiEdges){0};
-    body.style.background_color = theme->panel;
-    body.style.corner_radius_pt =
-        (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
-    body.clip_children = true_v;
-    if (vkr_ui_panel_begin(ui, string8_lit("create.body"), &body)) {
-      const VkrUiRect bounds = {
-          window->position_pt.x * ui->content_scale,
-          (window->position_pt.y + 30.0f) * ui->content_scale,
-          window->size_pt.x * ui->content_scale,
-          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("create.body"),
+                                 &bounds)) {
       vkr_editor_projects_build_create_window(editor->projects, editor, frame,
                                               bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_BUILD) {
-    VkrUiPanelConfig body = vkr_ui_panel_config_default();
-    body.placement.column = 0;
-    body.placement.row = 1;
-    body.style.padding_pt = (VkrUiEdges){0};
-    body.style.background_color = theme->panel;
-    body.style.corner_radius_pt =
-        (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
-    body.clip_children = true_v;
-    if (vkr_ui_panel_begin(ui, string8_lit("build.body"), &body)) {
-      const VkrUiRect bounds = {
-          window->position_pt.x * ui->content_scale,
-          (window->position_pt.y + 30.0f) * ui->content_scale,
-          window->size_pt.x * ui->content_scale,
-          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("build.body"),
+                                 &bounds)) {
       vkr_editor_build_settings_build(editor->build, editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_PHYSICS) {
-    VkrUiPanelConfig body = vkr_ui_panel_config_default();
-    body.placement.column = 0;
-    body.placement.row = 1;
-    body.style.padding_pt = (VkrUiEdges){0};
-    body.style.background_color = theme->panel;
-    body.style.corner_radius_pt =
-        (Vec4){0.0f, 0.0f, theme->radius_large, theme->radius_large};
-    body.clip_children = true_v;
-    if (vkr_ui_panel_begin(ui, string8_lit("physics.settings.body"), &body)) {
-      const VkrUiRect bounds = {
-          window->position_pt.x * ui->content_scale,
-          (window->position_pt.y + 30.0f) * ui->content_scale,
-          window->size_pt.x * ui->content_scale,
-          Max(1.0f, window->size_pt.y - 30.0f) * ui->content_scale};
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(
+            ui, window, string8_lit("physics.settings.body"), &bounds)) {
       vkr_editor_physics_settings_build(editor->physics_settings, frame, bounds,
                                         editor->heading_font);
       (void)vkr_ui_panel_end(ui);

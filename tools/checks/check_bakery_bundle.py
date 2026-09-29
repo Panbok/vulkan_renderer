@@ -6,11 +6,13 @@ faces, the material names a texture through a query string, the texture ships
 as its `.vkt` sibling, a recipe includes a directory, and two identical files
 share one chunk. The `.vkpak` is parsed here from its documented layout, not
 through the runtime reader, and every entry is compared with its source.
+Compressed chunks decode through the `zstd` command-line tool.
 """
 import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -20,13 +22,26 @@ import project_jobs as jobs
 HEADER = struct.Struct('<4sIIIQQQQQ32s40s')
 CHUNK = struct.Struct('<32sQQIIQ')
 ENTRY = struct.Struct('<IIIIII')
+CHUNK_ZSTD = 1
+# Mesh, texture and volume entries stay mappable, never compressed.
+MAPPED_LOADERS = {2, 3, 8}
+
+
+def decode_zstd(stored, decoded_size):
+    tool = shutil.which('zstd')
+    assert tool, 'a compressed .vkpak chunk needs the zstd command-line tool'
+    decoded = subprocess.run([tool, '-d', '-c', '-q'], input=stored,
+                             capture_output=True, check=True).stdout
+    assert len(decoded) == decoded_size, (len(decoded), decoded_size)
+    return decoded
 
 
 def read_pack(path):
+    """Entries as identity -> (decoded bytes, loader, compressed)."""
     data = path.read_bytes()
     (magic, version, flags, _, catalog_offset, catalog_size, table_offset,
      table_size, total_size, index_sha, _) = HEADER.unpack_from(data, 0)
-    assert magic == b'VKPK' and version == 1 and flags == 0, (magic, version)
+    assert magic == b'VKPK' and version in (1, 2) and flags == 0, (magic, version)
     assert total_size == len(data)
     catalog = data[catalog_offset:catalog_offset + catalog_size]
     table = data[table_offset:table_offset + table_size]
@@ -34,17 +49,27 @@ def read_pack(path):
     chunks = [CHUNK.unpack_from(table, i * CHUNK.size)
               for i in range(table_size // CHUNK.size)]
     assert [c[0] for c in chunks] == sorted(c[0] for c in chunks)
-    for sha, offset, size, alignment, _, _ in chunks:
+    decoded = []
+    for sha, offset, size, alignment, chunk_flags, decoded_size in chunks:
         assert offset % alignment == 0
-        assert hashlib.sha256(data[offset:offset + size]).digest() == sha
+        stored = data[offset:offset + size]
+        if chunk_flags == CHUNK_ZSTD and version >= 2:
+            assert 0 < decoded_size and size < decoded_size, (size, decoded_size)
+            stored = decode_zstd(stored, decoded_size)
+        else:
+            assert chunk_flags == 0 and decoded_size in (0, size), chunk_flags
+            assert version >= 2 or decoded_size == 0
+        assert hashlib.sha256(stored).digest() == sha
+        decoded.append(stored)
     count = struct.unpack_from('<I', catalog, 0)[0]
     strings = catalog[8 + count * ENTRY.size:]
     entries = {}
     for i in range(count):
         offset, length, chunk, loader, _, _ = ENTRY.unpack_from(catalog, 8 + i * ENTRY.size)
         identity = strings[offset:offset + length].decode()
-        _, chunk_offset, chunk_size, _, _, _ = chunks[chunk]
-        entries[identity] = (data[chunk_offset:chunk_offset + chunk_size], loader)
+        compressed = chunks[chunk][4] == CHUNK_ZSTD
+        assert not (compressed and loader in MAPPED_LOADERS), identity
+        entries[identity] = (decoded[chunk], loader, compressed)
     assert list(entries) == sorted(entries, key=lambda text: text.encode())
     return entries, len(chunks)
 
@@ -76,8 +101,9 @@ def main():
         for face, text in faces.items():
             write(root, face, text)
             write(root, face + '.vkt', 'unused cooked face')
-        write(root, 'assets/fonts/ui.bin', 'same bytes')
-        write(root, 'assets/fonts/copy/ui.bin', 'same bytes')
+        # Repetitive enough to store compressed.
+        write(root, 'assets/fonts/ui.bin', 'same bytes ' * 400)
+        write(root, 'assets/fonts/copy/ui.bin', 'same bytes ' * 400)
         write(root, 'assets/unused.txt', 'not in the closure')
         recipe = root / 'room.bundle.json'
         recipe.write_text(json.dumps({'version': 1, 'name': 'room',
@@ -94,8 +120,10 @@ def main():
                     'assets/textures/brick.png.vkt', 'assets/fonts/ui.bin',
                     'assets/fonts/copy/ui.bin', *faces}
         assert set(entries) == expected, sorted(set(entries) ^ expected)
-        for identity, (data, _) in entries.items():
+        for identity, (data, _, _) in entries.items():
             assert data == (root / identity).read_bytes(), identity
+        assert entries['assets/fonts/ui.bin'][2], 'a compressible chunk is stored compressed'
+        assert not entries['assets/scenes/room.scene.json'][2], 'a small chunk is stored raw'
         assert chunk_count == len(entries) - 1, 'identical files share one chunk'
         assert entries['assets/scenes/room.scene.json'][1] == 1
         assert entries['assets/materials/wall.mt'][1] == 4
@@ -114,7 +142,8 @@ def main():
         assert any(event.get('ev') == 'diag' and event.get('source') ==
                    'assets/textures/sky_b.png' for event in diagnostics), failed.stdout
     print('Bakery bundle: closure, .vkt substitution, cubemap faces, directory includes, '
-          'chunk deduplication, catalog order, index hash and missing inputs passed')
+          'chunk deduplication, compression, catalog order, index hash and missing inputs '
+          'passed')
 
 
 if __name__ == '__main__':

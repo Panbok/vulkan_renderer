@@ -26,7 +26,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "zstd.h"
+
 #define VKR_BUNDLE_COPY_BLOCK (4u * 1024u * 1024u)
+/* Chunks the runtime reads into memory anyway are stored as zstd frames when
+ * that saves at least a tenth; mappable chunks stay raw. Smaller files and
+ * files beyond the compression limit are stored as their bytes. */
+#define VKR_BUNDLE_COMPRESS_MIN 256u
+#define VKR_BUNDLE_COMPRESS_MAX (256ull * 1024ull * 1024ull)
+#define VKR_BUNDLE_ZSTD_LEVEL 9
 
 // =============================================================================
 // Identity set
@@ -565,13 +573,57 @@ vkr_internal bool8_t vkr_bundle_copy(FILE *file, const char *path,
   return copied == size;
 }
 
-/* Writes the archive to `path` through a staging file. Chunks follow in
- * identity order; the catalog and chunk table follow them, and the header,
- * written last, points at both. */
 void vkr_bundle_sort(VkrBundleItem *items, uint32_t item_count) {
   qsort(items, item_count, sizeof(*items), vkr_bundle_compare_identity);
 }
 
+/* Compresses a file the runtime reads into memory. `*out_data` stays NULL
+ * when the chunk is stored raw; false when the file cannot be read. */
+vkr_internal bool8_t vkr_bundle_compress(const char *path, uint64_t size,
+                                         uint32_t loader, uint8_t **out_data,
+                                         uint64_t *out_size) {
+  *out_data = NULL;
+  *out_size = 0u;
+  if (loader == VKR_PACK_LOADER_MESH || loader == VKR_PACK_LOADER_TEXTURE ||
+      loader == VKR_PACK_LOADER_VOLUME || size < VKR_BUNDLE_COMPRESS_MIN ||
+      size > VKR_BUNDLE_COMPRESS_MAX) {
+    return true_v;
+  }
+  FILE *source = file_fopen(path, "rb");
+  if (!source) {
+    return false_v;
+  }
+  uint8_t *bytes = malloc((size_t)size);
+  const bool8_t read =
+      bytes && fread(bytes, 1u, (size_t)size, source) == (size_t)size;
+  fclose(source);
+  if (!read) {
+    free(bytes);
+    return false_v;
+  }
+
+  const size_t capacity = ZSTD_compressBound((size_t)size);
+  uint8_t *compressed = malloc(capacity);
+  bool8_t ok = compressed != NULL;
+  size_t compressed_size = 0u;
+  if (ok) {
+    compressed_size = ZSTD_compress(compressed, capacity, bytes, (size_t)size,
+                                    VKR_BUNDLE_ZSTD_LEVEL);
+    ok = !ZSTD_isError(compressed_size);
+  }
+  free(bytes);
+  if (ok && (uint64_t)compressed_size * 10u <= size * 9u) {
+    *out_data = compressed;
+    *out_size = compressed_size;
+    return true_v;
+  }
+  free(compressed);
+  return ok;
+}
+
+/* Writes the archive to `path` through a staging file. Chunks follow in
+ * identity order; the catalog and chunk table follow them, and the header,
+ * written last, points at both. */
 bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
                               VkrBundleItem *items, uint32_t item_count,
                               uint32_t *out_chunks, uint64_t *out_bytes) {
@@ -603,14 +655,33 @@ bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
     }
     const uint32_t alignment = vkr_bundle_alignment(item->identity);
     char source[VKR_BAKERY_PATH_CAPACITY];
-    ok = vkr_bundle_pad(file, &offset, alignment) &&
-         vkr_bundle_source(bundle, item->identity, source, sizeof(source)) &&
-         vkr_bundle_copy(file, source, item->size, block);
+    uint8_t *compressed = NULL;
+    uint64_t compressed_size = 0u;
+    ok = vkr_bundle_source(bundle, item->identity, source, sizeof(source)) &&
+         vkr_bundle_compress(source, item->size,
+                             vkr_bundle_loader(item->identity), &compressed,
+                             &compressed_size) &&
+         vkr_bundle_pad(file, &offset, alignment);
+    const bool8_t zstd = compressed != NULL;
+    const uint64_t stored_size = zstd ? compressed_size : item->size;
+    if (ok && zstd) {
+      ok = fwrite(compressed, 1u, (size_t)compressed_size, file) ==
+           (size_t)compressed_size;
+    } else if (ok) {
+      ok = vkr_bundle_copy(file, source, item->size, block);
+    }
+    free(compressed);
+
     chunks[chunk_count] = (VkrPackChunk){
-        .offset = offset, .size = item->size, .alignment = alignment};
+        .offset = offset,
+        .size = stored_size,
+        .alignment = alignment,
+        .flags = zstd ? VKR_PACK_CHUNK_ZSTD : 0u,
+        .decoded_size = item->size,
+    };
     MemCopy(chunks[chunk_count].sha256, item->sha256, 32u);
     item->chunk = chunk_count++;
-    offset += item->size;
+    offset += stored_size;
   }
 
   /* The table is sorted by hash; entries follow their chunks' new places. */
@@ -700,7 +771,7 @@ bool8_t vkr_bundle_write_pack(VkrBundle *bundle, const char *path,
 }
 
 /* Reads the archive back through the runtime's validator and rehashes every
- * chunk, so a writer defect cannot ship. */
+ * chunk's decoded bytes, so a writer defect cannot ship. */
 bool8_t vkr_bundle_verify(const char *path) {
   const FilePath file = {
       .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
@@ -722,9 +793,25 @@ bool8_t vkr_bundle_verify(const char *path) {
       (const VkrPackChunk *)(mapping.data + header.chunk_table_offset);
   const uint64_t count = header.chunk_table_size / sizeof(VkrPackChunk);
   for (uint64_t i = 0u; ok && i < count; ++i) {
+    const VkrPackChunk *chunk = &chunks[i];
+    const uint8_t *stored = mapping.data + chunk->offset;
     uint8_t digest[VKR_SHA256_DIGEST_SIZE];
-    vkr_sha256(mapping.data + chunks[i].offset, chunks[i].size, digest);
-    ok = MemCompare(digest, chunks[i].sha256, sizeof(digest)) == 0;
+    if (chunk->flags & VKR_PACK_CHUNK_ZSTD) {
+      uint8_t *decoded = malloc((size_t)chunk->decoded_size);
+      const size_t decoded_size =
+          decoded ? ZSTD_decompress(decoded, (size_t)chunk->decoded_size,
+                                    stored, (size_t)chunk->size)
+                  : 0u;
+      ok = decoded && !ZSTD_isError(decoded_size) &&
+           decoded_size == chunk->decoded_size;
+      if (ok) {
+        vkr_sha256(decoded, chunk->decoded_size, digest);
+      }
+      free(decoded);
+    } else {
+      vkr_sha256(stored, chunk->size, digest);
+    }
+    ok = ok && MemCompare(digest, chunk->sha256, sizeof(digest)) == 0;
   }
   file_unmap(&mapping);
   return ok;

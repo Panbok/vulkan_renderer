@@ -1,5 +1,6 @@
 #include "filesystem/vkr_vfs.h"
 
+#include "core/vkr_atomic.h"
 #include "core/vkr_hash.h"
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
@@ -19,6 +20,11 @@ typedef struct VkrVfsPack {
   const VkrPackChunk *chunks;
   const uint8_t *strings;
   uint32_t entry_count;
+  /* Per chunk, the decoded bytes of a compressed chunk once opened (malloc
+     storage as uintptr_t, zero until then); published by compare-exchange,
+     so any thread may decode. */
+  VkrAtomicUint64 *decoded;
+  uint64_t chunk_count;
 } VkrVfsPack;
 
 /* Written only while mounting at startup; read-only afterwards. */
@@ -36,6 +42,11 @@ typedef struct VkrVfsState {
 } VkrVfsState;
 
 vkr_global VkrVfsState vkr_vfs = {0};
+vkr_global VkrVfsDecompressor vkr_vfs_decompressor = NULL;
+
+void vkr_vfs_set_decompressor(VkrVfsDecompressor decompressor) {
+  vkr_vfs_decompressor = decompressor;
+}
 
 /* Mounting runs before the logger exists, so failures go to stderr. */
 vkr_internal void vkr_vfs_report(const char *format, ...) {
@@ -112,7 +123,8 @@ bool8_t vkr_pack_validate(const uint8_t *data, uint64_t size, char *error,
   if (MemCompare(header.magic, VKR_PACK_MAGIC, 4u) != 0) {
     return vkr_pack_fail(error, error_capacity, "not a .vkpak archive");
   }
-  if (header.version != VKR_PACK_VERSION || header.flags != 0u) {
+  if (header.version < VKR_PACK_VERSION_MIN ||
+      header.version > VKR_PACK_VERSION || header.flags != 0u) {
     return vkr_pack_fail(error, error_capacity,
                          "unsupported .vkpak version or flags");
   }
@@ -144,7 +156,17 @@ bool8_t vkr_pack_validate(const uint8_t *data, uint64_t size, char *error,
       (const VkrPackChunk *)(data + header.chunk_table_offset);
   for (uint64_t i = 0u; i < chunk_count; ++i) {
     const VkrPackChunk *chunk = &chunks[i];
-    if (!vkr_pack_range(chunk->offset, chunk->size, size) ||
+    const bool8_t compressed = (chunk->flags & VKR_PACK_CHUNK_ZSTD) != 0u;
+    const bool8_t flags_valid =
+        header.version == 1u
+            ? chunk->flags == 0u
+            : (chunk->flags & ~VKR_PACK_CHUNK_ZSTD) == 0u &&
+                  (compressed
+                       ? chunk->decoded_size > 0u &&
+                             chunk->decoded_size <= VKR_PACK_MAX_DECODED_SIZE
+                       : chunk->decoded_size == 0u ||
+                             chunk->decoded_size == chunk->size);
+    if (!vkr_pack_range(chunk->offset, chunk->size, size) || !flags_valid ||
         !chunk->alignment || (chunk->alignment & (chunk->alignment - 1u)) ||
         chunk->offset % chunk->alignment != 0u ||
         (i && MemCompare(chunks[i - 1u].sha256, chunk->sha256, 32u) >= 0)) {
@@ -295,8 +317,41 @@ vkr_internal bool8_t vkr_vfs_identity(String8 path, char *out,
   return length > 0u;
 }
 
+/* The decoded bytes of a compressed chunk, decoding it on first use. */
+vkr_internal const uint8_t *vkr_vfs_decoded(VkrVfsPack *pack, uint32_t index) {
+  VkrAtomicUint64 *slot = &pack->decoded[index];
+  uint64_t current = vkr_atomic_uint64_load(slot, VKR_MEMORY_ORDER_ACQUIRE);
+  if (current) {
+    return (const uint8_t *)(uintptr_t)current;
+  }
+  const VkrPackChunk *chunk = &pack->chunks[index];
+  if (!vkr_vfs_decompressor) {
+    vkr_vfs_report("A compressed content entry needs a decoder; none is "
+                   "installed");
+    return NULL;
+  }
+  uint8_t *decoded = malloc((size_t)chunk->decoded_size);
+  if (!decoded ||
+      !vkr_vfs_decompressor(pack->mapping.data + chunk->offset, chunk->size,
+                            decoded, chunk->decoded_size)) {
+    free(decoded);
+    vkr_vfs_report("A compressed content entry does not decode");
+    return NULL;
+  }
+  uint64_t expected = 0u;
+  if (!vkr_atomic_uint64_compare_exchange(
+          slot, &expected, (uint64_t)(uintptr_t)decoded,
+          VKR_MEMORY_ORDER_ACQ_REL, VKR_MEMORY_ORDER_ACQUIRE)) {
+    /* Another thread decoded it first. */
+    free(decoded);
+    return (const uint8_t *)(uintptr_t)expected;
+  }
+  return decoded;
+}
+
+/* `decode` false answers size and time without decoding, for stats. */
 vkr_internal bool8_t vkr_vfs_lookup(const char *identity, uint32_t length,
-                                    VkrVfsView *out_view) {
+                                    VkrVfsView *out_view, bool8_t decode) {
   for (uint32_t p = 0u; p < vkr_vfs.pack_count; ++p) {
     const VkrVfsPack *pack = &vkr_vfs.packs[p];
     uint32_t low = 0u;
@@ -309,9 +364,17 @@ vkr_internal bool8_t vkr_vfs_lookup(const char *identity, uint32_t length,
           (const uint8_t *)identity, length);
       if (order == 0) {
         const VkrPackChunk *chunk = &pack->chunks[entry->chunk];
+        const bool8_t compressed = (chunk->flags & VKR_PACK_CHUNK_ZSTD) != 0u;
+        const uint8_t *data = pack->mapping.data + chunk->offset;
+        if (compressed && decode) {
+          data = vkr_vfs_decoded((VkrVfsPack *)pack, entry->chunk);
+          if (!data) {
+            return false_v;
+          }
+        }
         *out_view = (VkrVfsView){
-            .data = pack->mapping.data + chunk->offset,
-            .size = chunk->size,
+            .data = compressed && !decode ? NULL : data,
+            .size = compressed ? chunk->decoded_size : chunk->size,
             .last_modified = pack->mapping.last_modified,
         };
         return true_v;
@@ -326,7 +389,8 @@ vkr_internal bool8_t vkr_vfs_lookup(const char *identity, uint32_t length,
   return false_v;
 }
 
-bool8_t vkr_vfs_find(String8 path, VkrVfsView *out_view) {
+vkr_internal bool8_t vkr_vfs_find_entry(String8 path, VkrVfsView *out_view,
+                                        bool8_t decode) {
   if (!out_view || (!vkr_vfs.pack_count && !vkr_vfs.record)) {
     return false_v;
   }
@@ -340,7 +404,11 @@ bool8_t vkr_vfs_find(String8 path, VkrVfsView *out_view) {
     (void)fwrite(identity, 1u, length + 1u, vkr_vfs.record);
     identity[length] = 0;
   }
-  return vkr_vfs_lookup(identity, length, out_view);
+  return vkr_vfs_lookup(identity, length, out_view, decode);
+}
+
+bool8_t vkr_vfs_find(String8 path, VkrVfsView *out_view) {
+  return vkr_vfs_find_entry(path, out_view, true_v);
 }
 
 uint32_t vkr_vfs_pack_count(void) { return vkr_vfs.pack_count; }
@@ -392,12 +460,26 @@ bool8_t vkr_vfs_mount_pack(const char *path) {
   pack.strings = (const uint8_t *)(pack.entries + pack.entry_count);
   pack.chunks =
       (const VkrPackChunk *)(pack.mapping.data + header.chunk_table_offset);
+  pack.chunk_count = header.chunk_table_size / sizeof(VkrPackChunk);
+  pack.decoded =
+      calloc(pack.chunk_count ? pack.chunk_count : 1u, sizeof(*pack.decoded));
+  if (!pack.decoded) {
+    file_unmap(&pack.mapping);
+    return false_v;
+  }
   vkr_vfs.packs[vkr_vfs.pack_count++] = pack;
   return true_v;
 }
 
 void vkr_vfs_unmount_all(void) {
   for (uint32_t i = 0u; i < vkr_vfs.pack_count; ++i) {
+    VkrVfsPack *pack = &vkr_vfs.packs[i];
+    for (uint64_t c = 0u; pack->decoded && c < pack->chunk_count; ++c) {
+      free((void *)(uintptr_t)vkr_atomic_uint64_load(&pack->decoded[c],
+                                                     VKR_MEMORY_ORDER_RELAXED));
+    }
+    free(pack->decoded);
+    pack->decoded = NULL;
     file_unmap(&vkr_vfs.packs[i].mapping);
   }
   vkr_vfs.pack_count = 0u;
@@ -606,7 +688,7 @@ bool8_t fs_vfs_open(const FilePath *path, FileMode mode,
 
 bool8_t fs_vfs_stats(const FilePath *path, FileStats *out_stats) {
   VkrVfsView view = {0};
-  if (!path || !vkr_vfs_find(path->path, &view)) {
+  if (!path || !vkr_vfs_find_entry(path->path, &view, false_v)) {
     return false_v;
   }
   if (out_stats) {

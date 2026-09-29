@@ -14,9 +14,10 @@ its evidence. This proposal keeps what remains.
 ## Current baseline
 
 - A package is `<executable>`, `bundle.json`, one backend's shader catalog and
-  two version 1 archives, `content/game.vkpak` and `content/engine.vkpak`
-  ([package](../../tools/bakery/vkr_bakery_package.c)). An unchanged archive is
-  cloned from the previous package; a changed one is rewritten in full.
+  two version 2 archives, `content/game.vkpak` and `content/engine.vkpak`
+  ([package](../../tools/bakery/vkr_bakery_package.c)). Chunks the runtime
+  reads into memory are zstd-compressed. An unchanged archive is cloned from
+  the previous package; a changed one is rewritten in full.
 - The bakery finds a player template beside itself in `templates/player`
   before the build tree's, but no install layout yet assembles a distributed
   editor with one.
@@ -24,8 +25,7 @@ its evidence. This proposal keeps what remains.
 ## Remaining work
 
 1. **Incremental packages.** Reuse unchanged chunks inside a changed archive,
-   one archive per scene for streaming, and per-chunk compression. Compression
-   changes `.vkpak` to version 2 and needs approval first.
+   and one archive per scene for streaming.
 2. **Shipping polish.** Windows icon and version resources; game icons in
    the `.app`; notarization of a Developer ID signed `.app`; linking script
    module archives once the [entity behavior](entity-behavior-system.md)

@@ -242,7 +242,14 @@ from it.
   directory does; the first archive holding it wins. Every read-only
   `file_open`, `file_fopen`, `file_exists` and `file_stats` below the root
   consults the mounts, so loaders keep their paths and validation; archive
-  entries read from mapped bytes. Mounting happens once at startup:
+  entries read from mapped bytes. Archives are `.vkpak` version 2: an entry
+  the runtime reads into memory is stored as one zstd frame when that saves at
+  least a tenth, while meshes, textures and volumes stay raw and mapped. A
+  chunk's SHA-256 names its decoded bytes. A compressed entry decodes on its
+  first open, through the decoder the process installs
+  ([codec](../../runtime/src/core/vkr_content_codec.h); the foundation library
+  links no codec), into memory kept until unmount. Version 1 archives still
+  mount. Mounting happens once at startup:
   `$VKR_CONTENT` or a `bundle.json` beside the executable mounts a bundle, and
   `$VKR_CONTENT_PACKS` overlays archives on the repository root.
   `$VKR_VFS_RECORD` appends every content read to a file. With a bundle

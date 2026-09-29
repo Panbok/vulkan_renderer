@@ -49,7 +49,7 @@ runs seven stages. Each is a `start`/`done` event pair with coded diagnostics:
 | Finalize | `finalize_textures` for a scene with preview or deferred assets (the job publishes the scene), and `finalize_project_assets` when project assets are. The returned inventory is lowered against without publishing `project.json`, which the editor owns. Shipping finalizes with the final encoder, development with the fast one. Fast-encoded final textures are not re-encoded; the report counts them. |
 | Bake | With `bake_lighting`, `bake_scene` with reflection and diffuse for each included scene. |
 | Lower | Lowers again only when an earlier stage published. |
-| Pack | Walks the closure over identity mounts: staged documents, `project/` to the project directory, `editor/` to the editor bundle, `assets/` to the template's engine resources. Rejects a document naming the workspace directory or the repository. Writes `content/game.vkpak` and `content/engine.vkpak` (`assets/...`); an archive whose entries all match the previous package's `products`, written by the same `archive_writer`, is cloned from it instead. |
+| Pack | Walks the closure over identity mounts: staged documents, `project/` to the project directory, `editor/` to the editor bundle, `assets/` to the template's engine resources. Rejects a document naming the workspace directory or the repository. Writes `content/game.vkpak` and `content/engine.vkpak` (`assets/...`), compressing the chunks the runtime reads into memory (ADR-077); an archive whose entries all match the previous package's `products`, written by the same `archive_writer`, is cloned from it instead. |
 | Stage runtime | Copies the profile's player as `<executable>[.exe]` and only the host backend's shader catalog. Writes `bundle.json` version 2. On macOS the package is `<executable>.app`: the player in `Contents/MacOS`, an Info.plist (`com.<company>.<executable>`, the game version) and the rest in `Contents/Resources`, signed with `codesign` using the profile's `signing_identity`, else ad hoc. |
 | Verify and report | Validates and rehashes both archives, then renames `<out>.staging` over `<out>`. |
 
@@ -147,8 +147,10 @@ queue and report the result
   workspace cleanup removes the revisions after 24 hours and the next build
   finalizes again from the cache. A command-line build never adopts, and the
   package's World keeps the revisions its document names.
-- Every package carries about 24 MiB of engine resources, most of it the CJK
-  fallback font.
+- Every package carries about 24 MiB of engine resources, 14 MiB stored, most
+  of it the CJK fallback font.
+- A compressed entry's decoded bytes stay resident until exit: about 28 MiB
+  for the Testbed package, most of it the CJK font.
 
 ## Evidence
 
@@ -197,6 +199,14 @@ queue and report the result
   archive. Hashing and verification still read every file, so an unchanged
   rebuild saves the 3 GB write rather than much time (19.5 s, then 18.0 s,
   single runs).
+- Compression: the version 2 Testbed package's `game.vkpak` is 3048.4 MiB,
+  down from 3051.8 MiB. Only 262 of its 772 chunks compress (4.43 MiB of
+  documents, materials and collision to 1.05 MiB): Bistro's bytes are mapped
+  textures and meshes, stored raw. `engine.vkpak` is 14.0 MiB, down from 23.4
+  MiB (8 of 9 chunks). The sandboxed player run exits 0 with the same 779
+  distinct reads, all products. The CPU test mounts a compressed entry and a
+  version 1 archive. The package check decodes every chunk with the `zstd`
+  tool and asserts that no mesh or texture is compressed.
 - Template lookup: a copied `vkr_bakery` with a `templates/player` beside it
   whose `engine_include` omits the CJK font packages 7 engine entries instead
   of 9, with a relative shader catalog.
@@ -227,6 +237,5 @@ queue and report the result
 
 ## Revisit when
 
-Packages need incremental or streamed archives, compression (`.vkpak` version 2)
-or cross-platform output; script modules load at runtime; or a second
+Packages need incremental or streamed archives, or cross-platform output; script modules load at runtime; or a second
 application boots from `bundle.json`.
