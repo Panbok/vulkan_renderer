@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-27
+updated: 2026-09-29
 authority: proposal
 ---
 # Asset build system specification
@@ -12,10 +12,13 @@ macOS and are recorded in [ADR-077](../adr/077-asset-build-system.md), which
 owns their contract, including where the daemon, Content state and bundles
 deviate from sections 10 and 11; sections 2 through 12 remain the
 specification that the unshipped work extends. Remaining scope: the daemon's
-Windows transport, Windows Vulkan bundles and script modules, bundles of
-managed projects, shader hot reload, and mesh-cooker derived textures as child
-`texture` actions (declined in ADR-077 until a second consumer needs them).
-Loading script modules belongs to the entity behavior proposal.
+Windows transport, Windows Vulkan bundles and script modules, shader hot
+reload, and mesh-cooker derived textures as child `texture` actions (declined
+in ADR-077 until a second consumer needs them). Loading script modules belongs
+to the entity behavior proposal. Bundles of managed projects, the game
+executable and the editor's Build workflow belong to the
+[project build and packaging proposal](project-packaging.md), which supersedes
+the `bundle <project>` form in sections 5 and 11.
 
 ## Handoff notes for the implementer
 
