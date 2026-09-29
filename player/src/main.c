@@ -189,6 +189,14 @@ bool8_t vkr_player_load(VkrPlayer *player) {
         vkr_json_parse_int(&field, &height) && height > 0) {
       player->window_height = (uint32_t)height;
     }
+    char mode[16];
+    if (player_text(window_object, "mode", &allocator, mode, sizeof(mode))) {
+      player->window_mode = !strcmp(mode, "fullscreen")
+                                ? VKR_WINDOW_MODE_FULLSCREEN
+                            : !strcmp(mode, "borderless")
+                                ? VKR_WINDOW_MODE_BORDERLESS
+                                : VKR_WINDOW_MODE_WINDOWED;
+    }
   }
   VkrJsonReader graphics = game;
   if (ok && vkr_json_find_root_field(&graphics, "graphics")) {
@@ -250,6 +258,7 @@ VKR_MAIN(argc, argv) {
   config.title = player.name[0] ? player.name : "Game";
   config.presentation.window_width_pt = player.window_width;
   config.presentation.window_height_pt = player.window_height;
+  config.presentation.window_mode = player.window_mode;
   config.graphics_settings_path =
       player.settings_path[0] ? player.settings_path : NULL;
   config.graphics_defaults = player.graphics;

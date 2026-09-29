@@ -327,6 +327,8 @@ typedef struct VkrEditorGame {
   uint32_t scene_count;
   uint32_t window_width;
   uint32_t window_height;
+  // "windowed", "fullscreen" or "borderless"; the size applies to a window.
+  char window_mode[16];
   // Graphics settings defaults, a JSON object the runtime's reader applies.
   char graphics[VKR_EDITOR_GAME_GRAPHICS_CAPACITY];
   VkrEditorGameProfile profiles[VKR_EDITOR_GAME_PROFILE_MAX];

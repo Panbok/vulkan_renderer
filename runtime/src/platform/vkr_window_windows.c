@@ -64,6 +64,11 @@ typedef struct PlatformState {
   int32_t drag_y;
   int32_t drag_width;
   int32_t drag_height;
+  /* Display mode. A covering mode keeps the windowed style and placement to
+     restore on leaving. */
+  VkrWindowMode mode;
+  LONG windowed_style;
+  WINDOWPLACEMENT windowed_placement;
 } PlatformState;
 
 // Forward declarations
@@ -1234,6 +1239,51 @@ void vkr_window_request_close(VkrWindow *window) {
       window ? (PlatformState *)window->platform_state : NULL;
   if (state && state->window)
     PostMessage(state->window, WM_CLOSE, 0, 0);
+}
+
+/* Both covering modes are a borderless popup over the window's monitor; the
+   renderer requests no exclusive fullscreen, so they differ only on macOS.
+   WM_SIZE reports the new client extent. */
+bool8_t vkr_window_set_mode(VkrWindow *window, VkrWindowMode mode) {
+  PlatformState *state =
+      window ? (PlatformState *)window->platform_state : NULL;
+  if (!state || !state->window || mode > VKR_WINDOW_MODE_BORDERLESS) {
+    return false_v;
+  }
+  const bool8_t covering = state->mode != VKR_WINDOW_MODE_WINDOWED;
+  const bool8_t cover = mode != VKR_WINDOW_MODE_WINDOWED;
+  if (cover && !covering) {
+    MONITORINFO monitor = {.cbSize = sizeof(monitor)};
+    state->windowed_placement.length = sizeof(state->windowed_placement);
+    if (!GetWindowPlacement(state->window, &state->windowed_placement) ||
+        !GetMonitorInfo(
+            MonitorFromWindow(state->window, MONITOR_DEFAULTTOPRIMARY),
+            &monitor)) {
+      return false_v;
+    }
+    state->windowed_style = GetWindowLong(state->window, GWL_STYLE);
+    SetWindowLong(state->window, GWL_STYLE,
+                  (state->windowed_style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+    SetWindowPos(state->window, HWND_TOP, monitor.rcMonitor.left,
+                 monitor.rcMonitor.top,
+                 monitor.rcMonitor.right - monitor.rcMonitor.left,
+                 monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+  } else if (!cover && covering) {
+    SetWindowLong(state->window, GWL_STYLE, state->windowed_style);
+    SetWindowPlacement(state->window, &state->windowed_placement);
+    SetWindowPos(state->window, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                     SWP_FRAMECHANGED);
+  }
+  state->mode = mode;
+  return true_v;
+}
+
+VkrWindowMode vkr_window_get_mode(const VkrWindow *window) {
+  const PlatformState *state =
+      window ? (const PlatformState *)window->platform_state : NULL;
+  return state ? state->mode : VKR_WINDOW_MODE_WINDOWED;
 }
 
 float32_t vkr_window_title_bar_inset(const VkrWindow *window) {

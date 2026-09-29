@@ -2947,6 +2947,7 @@ void vkr_editor_game_default(const VkrEditorProject *project,
             game->scene_count ? game->scenes[0] : "");
   game_copy(game->graphics, sizeof(game->graphics),
             PROJECT_GAME_DEFAULT_GRAPHICS);
+  game_copy(game->window_mode, sizeof(game->window_mode), "windowed");
   vkr_editor_game_profile_default(name, &game->profiles[0]);
   game->profile_count = 1u;
 }
@@ -3060,6 +3061,8 @@ bool8_t vkr_editor_game_parse(String8 bytes, VkrEditorGame *game,
   const uint32_t window = project_json_field(&json, settings, "window");
   float64_t number = 0.0;
   if (window != UINT32_MAX && json.tokens[window].kind == '{') {
+    (void)project_json_text(&json, window, "mode", game->window_mode,
+                            sizeof(game->window_mode));
     if (game_number(&json, window, "width", &number) && number > 0.0 &&
         number < 65536.0) {
       game->window_width = (uint32_t)number;
@@ -3159,7 +3162,7 @@ bool8_t vkr_editor_game_write(VkrJsonWriter *writer,
   ok = ok && vkr_json_writer_end_array(writer) &&
        vkr_json_writer_name(writer, string8_lit("window")) &&
        vkr_json_writer_begin_object(writer) &&
-       game_text(writer, "mode", "windowed") &&
+       game_text(writer, "mode", game->window_mode) &&
        vkr_json_writer_name(writer, string8_lit("width")) &&
        vkr_json_writer_u64(writer, game->window_width) &&
        vkr_json_writer_name(writer, string8_lit("height")) &&
@@ -3214,6 +3217,13 @@ bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
   if (game->window_width < 320u || game->window_height < 240u ||
       game->window_width > 16384u || game->window_height > 16384u) {
     return project_error(error, "The window must be 320x240 to 16384x16384");
+  }
+  if (strcmp(game->window_mode, "windowed") &&
+      strcmp(game->window_mode, "fullscreen") &&
+      strcmp(game->window_mode, "borderless")) {
+    return project_error(error,
+                         "The window mode must be windowed, fullscreen or "
+                         "borderless");
   }
   bool8_t startup = !game->scene_count;
   for (uint32_t i = 0; i < game->scene_count; ++i) {

@@ -78,6 +78,18 @@ typedef struct VkrWindowFileDrop {
   int32_t y;
 } VkrWindowFileDrop;
 
+/** How a window presents on its display. */
+typedef enum VkrWindowMode {
+  VKR_WINDOW_MODE_WINDOWED = 0,
+  /** The platform's fullscreen presentation: its own Space on macOS; on
+   * Windows a borderless window covering the monitor, since the renderer
+   * does not request exclusive fullscreen. */
+  VKR_WINDOW_MODE_FULLSCREEN,
+  /** A borderless window covering its display, with the menu bar and Dock
+   * hidden on macOS. */
+  VKR_WINDOW_MODE_BORDERLESS,
+} VkrWindowMode;
+
 typedef struct VkrWindow {
   void *platform_state;        /**< Opaque pointer to platform-specific window
                                   state. Managed internally. */
@@ -310,6 +322,12 @@ void vkr_window_minimize(VkrWindow *window);
 void vkr_window_toggle_maximize(VkrWindow *window);
 bool8_t vkr_window_is_maximized(const VkrWindow *window);
 void vkr_window_request_close(VkrWindow *window);
+
+/** Switches the window's display mode; leaving a covering mode restores the
+ * window's previous frame. Resize events report the new extent, and macOS
+ * fullscreen settles asynchronously. False for a window never created. */
+bool8_t vkr_window_set_mode(VkrWindow *window, VkrWindowMode mode);
+VkrWindowMode vkr_window_get_mode(const VkrWindow *window);
 
 /**
  * @brief Checks if the mouse is captured by the window.

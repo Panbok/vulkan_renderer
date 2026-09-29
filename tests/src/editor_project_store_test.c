@@ -375,6 +375,10 @@ static void project_test_game(const VkrEditorProject *project,
          game.profiles[0].include_count == 1u &&
          !strcmp(game.profiles[0].config, "shipping"));
   assert(vkr_editor_game_validate(&game, project, &error));
+  assert(!strcmp(game.window_mode, "windowed"));
+  snprintf(game.window_mode, sizeof(game.window_mode), "exclusive");
+  assert(!vkr_editor_game_validate(&game, project, &error));
+  snprintf(game.window_mode, sizeof(game.window_mode), "borderless");
   snprintf(game.version, sizeof(game.version), "2.0.0");
   assert(vkr_editor_game_save(project, &game, allocator, &error));
   String8 saved = {0};
@@ -393,6 +397,7 @@ static void project_test_game(const VkrEditorProject *project,
   assert(vkr_editor_project_json_member(settings, "graphics", &member, &error));
   assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
   assert(strstr(game.graphics, "\"vsync\":false") != NULL);
+  assert(!strcmp(game.window_mode, "borderless"));
   snprintf(game.startup_scene, sizeof(game.startup_scene), "%s",
            "00000000-0000-4000-8000-000000000000");
   game.scene_count = 0u;

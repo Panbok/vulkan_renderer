@@ -66,11 +66,13 @@ static VkrUiWidgetConfig player_button(uint32_t row) {
   return config;
 }
 
-/* The only player UI: Resume and Quit over the paused game. */
+/* The only player UI: Resume, the display mode and Quit over the paused
+   game. */
 static void player_ui_pause_menu(VkrPlayer *player,
                                  const VkrSampleUiFrame *frame) {
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack rows[] = {
+      {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
@@ -107,7 +109,24 @@ static void player_ui_pause_menu(VkrPlayer *player,
     player->paused = false_v;
     player->pause_changed = true_v;
   }
-  VkrUiWidgetConfig quit = player_button(2u);
+  /* Switches between the game's covering mode (fullscreen when it starts in
+     a window) and a window. */
+  const VkrWindowMode mode = vkr_window_get_mode(frame->window);
+  const VkrWindowMode covering = player->window_mode != VKR_WINDOW_MODE_WINDOWED
+                                     ? player->window_mode
+                                     : VKR_WINDOW_MODE_FULLSCREEN;
+  VkrUiWidgetConfig display = player_button(2u);
+  if (frame->window &&
+      vkr_ui_button(frame->ui, string8_lit("display"),
+                    mode == VKR_WINDOW_MODE_WINDOWED
+                        ? string8_lit("Fullscreen")
+                        : string8_lit("Windowed"),
+                    &display)) {
+    (void)vkr_window_set_mode(frame->window, mode == VKR_WINDOW_MODE_WINDOWED
+                                                 ? covering
+                                                 : VKR_WINDOW_MODE_WINDOWED);
+  }
+  VkrUiWidgetConfig quit = player_button(3u);
   if (vkr_ui_button(frame->ui, string8_lit("quit"), string8_lit("Quit"),
                     &quit) &&
       frame->quit_request) {

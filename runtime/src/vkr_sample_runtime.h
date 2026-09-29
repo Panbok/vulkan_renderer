@@ -285,6 +285,8 @@ typedef struct VkrSamplePresentationConfig {
    * runtime default size and position. */
   uint32_t window_width_pt;
   uint32_t window_height_pt;
+  /** Display mode entered once the window exists; headless ignores it. */
+  VkrWindowMode window_mode;
   /** No window: frames render into an offscreen target of the window size in
    * pixels at content scale 1, with no input and no presentation. */
   bool8_t headless;

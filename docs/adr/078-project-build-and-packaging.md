@@ -35,8 +35,9 @@ It saves through a staged file and merges members it does not own back under
 its own. Without a file, a project packages every scene, starts in the first,
 and has one development profile named after the project. The bundle command
 applies the same rules and owns validation: the name, an executable name without
-separator or extension, a windowed window of 320x240 to 16384x16384, and a
-startup scene among the included scenes. Only windowed mode exists.
+separator or extension, a window mode of `windowed`, `fullscreen` or
+`borderless` with a window size of 320x240 to 16384x16384, and a startup scene
+among the included scenes.
 
 **Command.** `vkr_bakery bundle <project directory> [--profile <name>] [--out
 <dir>] [--template <dir>]` ([package](../../tools/bakery/vkr_bakery_package.c))
@@ -90,7 +91,15 @@ they name. The [player](../../player/src/main.c) mounts the package, then opens
 the World and the startup scene with their overlays on its first frame through
 the same requests the editor issues. It registers the package fonts and applies
 the startup camera once the scene activates. A scene's player entity starts
-gameplay; Escape opens Resume/Quit. Graphics preferences read `game.graphics`
+gameplay; Escape opens Resume, a Fullscreen/Windowed switch and Quit. The
+player enters `game.window.mode` once its window exists through
+`vkr_window_set_mode` ([window](../../runtime/src/core/vkr_window.h)). On macOS,
+`fullscreen` is the native fullscreen Space, requested from the event pump once
+the application is active, and `borderless` is a frameless window over the whole
+screen with the menu bar and Dock hidden. On Windows both are a borderless popup
+over the monitor, since the renderer requests no exclusive fullscreen. Leaving
+either mode restores the previous frame, and resize events carry the new extent
+to the swapchain. Graphics preferences read `game.graphics`
 as defaults and live in `%APPDATA%/<company>/<name>/settings.json` or
 Application Support. The texture transcode cache moves to `%LOCALAPPDATA%` or
 `~/Library/Caches` through `vkr_texture_transcode_cache_set_root`; otherwise the
@@ -157,13 +166,21 @@ queue and report the result
 - Editor, headless, on an APFS clone of that workspace: `--exec 'build.game
   "Mac Shipping"'` settles in 24.8 s. Both archives, the executable and
   `bundle.json` equal a command-line build of the same profile.
-- Not run: Windows/Vulkan packaging, a copy to another volume, a package from a
+- Window modes, macOS: a fixture package with `borderless` opens a 1512x982
+  point window covering the display, and with `fullscreen` a frameless
+  1512x949 point window in its own Space below the notch; a windowed run is
+  1280x752 with its title bar. The pause-menu switch was not exercised, since
+  the run takes no input.
+- Not run: Windows/Vulkan packaging and window modes (the Windows code is not
+  compiled on this host), a copy to another volume, a package from a
   Debug tree (its players are Debug), and a timed build claim, which needs
   matched Release runs.
 
 ![Build settings and the Build tab after a build](../../assets/editor/build-settings.png)
 
 ![Packaged Bistro at its startup camera](../../assets/editor/packaged-bistro.png)
+
+![Build settings with the Display modes](../../assets/editor/build-settings-display.png)
 
 ## Alternatives considered
 
