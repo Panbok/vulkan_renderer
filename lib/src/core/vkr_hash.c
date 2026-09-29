@@ -12,6 +12,26 @@
 #include <arm_neon.h>
 #endif
 
+/* AMD Zen and Intel Goldmont, Ice Lake and later cores implement the x86 SHA
+ * extensions; other x86-64 cores keep the portable rounds. CPUID selects the
+ * path once, since a portable build (-march=x86-64-v3, /arch:AVX2) cannot
+ * assume the extensions. */
+#if defined(__x86_64__) || defined(_M_X64)
+#define VKR_SHA256_X86 1
+#include "core/vkr_atomic.h"
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#if defined(__clang__) || defined(__GNUC__)
+#define VKR_SHA256_X86_TARGET __attribute__((target("sha,ssse3,sse4.1")))
+#else
+#define VKR_SHA256_X86_TARGET
+#endif
+#endif
+
 static const uint32_t vkr_sha256_round_constants[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu,
     0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u, 0xd807aa98u, 0x12835b01u,
@@ -124,6 +144,121 @@ vkr_sha256_transform_blocks(VkrSha256 *hash, const uint8_t *blocks,
   }
   vst1q_u32(&hash->state[0], abcd);
   vst1q_u32(&hash->state[4], efgh);
+}
+#elif VKR_SHA256_X86
+/* Same FIPS 180-4 compression as vkr_sha256_transform. The x86 round
+ * instruction keeps the state as ABEF and CDGH and runs two rounds, taking
+ * its message words from the low half of the third operand. */
+VKR_SHA256_X86_TARGET vkr_internal void
+vkr_sha256_transform_blocks_x86(VkrSha256 *hash, const uint8_t *blocks,
+                                uint64_t count) {
+  const __m128i byte_swap =
+      _mm_set_epi64x(0x0c0d0e0f08090a0bll, 0x0405060700010203ll);
+  const __m128i dcba = _mm_shuffle_epi32(
+      _mm_loadu_si128((const __m128i *)&hash->state[0]), 0x1b);
+  const __m128i hgfe = _mm_shuffle_epi32(
+      _mm_loadu_si128((const __m128i *)&hash->state[4]), 0x1b);
+  __m128i abef = _mm_unpackhi_epi64(hgfe, dcba);
+  __m128i cdgh = _mm_unpacklo_epi64(hgfe, dcba);
+  for (uint64_t block = 0; block < count; ++block) {
+    const uint8_t *bytes = blocks + block * 64u;
+    const __m128i abef_saved = abef;
+    const __m128i cdgh_saved = cdgh;
+    __m128i message[4];
+    for (uint32_t i = 0; i < 4u; ++i) {
+      message[i] = _mm_shuffle_epi8(
+          _mm_loadu_si128((const __m128i *)(bytes + i * 16u)), byte_swap);
+    }
+#if defined(__clang__)
+#pragma clang loop unroll(full)
+#endif
+    for (uint32_t group = 0; group < 16u; ++group) {
+      const __m128i words = _mm_add_epi32(
+          message[group % 4u],
+          _mm_loadu_si128(
+              (const __m128i *)&vkr_sha256_round_constants[group * 4u]));
+      cdgh = _mm_sha256rnds2_epu32(cdgh, abef, words);
+      /* Words 16-63: the second schedule step completes the next group's
+       * words once the current group's are final. */
+      if (group >= 3u && group < 15u) {
+        __m128i *next = &message[(group + 1u) % 4u];
+        *next = _mm_add_epi32(*next,
+                              _mm_alignr_epi8(message[group % 4u],
+                                              message[(group + 3u) % 4u], 4));
+        *next = _mm_sha256msg2_epu32(*next, message[group % 4u]);
+      }
+      abef = _mm_sha256rnds2_epu32(abef, cdgh, _mm_shuffle_epi32(words, 0x0e));
+      if (group >= 1u && group < 13u) {
+        __m128i *previous = &message[(group + 3u) % 4u];
+        *previous = _mm_sha256msg1_epu32(*previous, message[group % 4u]);
+      }
+    }
+    abef = _mm_add_epi32(abef, abef_saved);
+    cdgh = _mm_add_epi32(cdgh, cdgh_saved);
+  }
+  /* ABEF and CDGH back to ABCD and EFGH in state order. */
+  _mm_storeu_si128((__m128i *)&hash->state[0],
+                   _mm_shuffle_epi32(_mm_unpackhi_epi64(cdgh, abef), 0x1b));
+  _mm_storeu_si128((__m128i *)&hash->state[4],
+                   _mm_shuffle_epi32(_mm_unpacklo_epi64(cdgh, abef), 0x1b));
+}
+
+vkr_internal bool8_t vkr_sha256_x86_supported(void) {
+  uint32_t leaf_1_ecx = 0u;
+  uint32_t leaf_7_ebx = 0u;
+#if defined(_MSC_VER)
+  int registers[4] = {0};
+  __cpuid(registers, 0);
+  if (registers[0] < 7) {
+    return false_v;
+  }
+  __cpuid(registers, 1);
+  leaf_1_ecx = (uint32_t)registers[2];
+  __cpuidex(registers, 7, 0);
+  leaf_7_ebx = (uint32_t)registers[1];
+#else
+  uint32_t eax = 0u;
+  uint32_t ebx = 0u;
+  uint32_t ecx = 0u;
+  uint32_t edx = 0u;
+  if (__get_cpuid_max(0u, NULL) < 7u) {
+    return false_v;
+  }
+  __cpuid(1, eax, ebx, ecx, edx);
+  leaf_1_ecx = ecx;
+  __cpuid_count(7, 0, eax, ebx, ecx, edx);
+  leaf_7_ebx = ebx;
+#endif
+  const uint32_t ssse3 = 1u << 9u;
+  const uint32_t sse41 = 1u << 19u;
+  const uint32_t sha = 1u << 29u;
+  return (leaf_1_ecx & (ssse3 | sse41)) == (ssse3 | sse41) &&
+                 (leaf_7_ebx & sha) != 0u
+             ? true_v
+             : false_v;
+}
+
+/* 0 until the first transform, then 1 for the portable rounds or 2 for the
+ * SHA extensions; racing first callers store the same value. */
+vkr_global VkrAtomicUint32 vkr_sha256_x86_path;
+
+vkr_internal void vkr_sha256_transform_blocks(VkrSha256 *hash,
+                                              const uint8_t *blocks,
+                                              uint64_t count) {
+  uint32_t path =
+      vkr_atomic_uint32_load(&vkr_sha256_x86_path, VKR_MEMORY_ORDER_RELAXED);
+  if (path == 0u) {
+    path = vkr_sha256_x86_supported() ? 2u : 1u;
+    vkr_atomic_uint32_store(&vkr_sha256_x86_path, path,
+                            VKR_MEMORY_ORDER_RELAXED);
+  }
+  if (path == 2u) {
+    vkr_sha256_transform_blocks_x86(hash, blocks, count);
+    return;
+  }
+  for (uint64_t block = 0; block < count; ++block) {
+    vkr_sha256_transform(hash, blocks + block * 64u);
+  }
 }
 #else
 vkr_internal void vkr_sha256_transform_blocks(VkrSha256 *hash,
