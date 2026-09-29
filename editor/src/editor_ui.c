@@ -200,6 +200,13 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                       .z_order = 7u,
                       .visible = false_v,
                   },
+              [VKR_EDITOR_WINDOW_BUILD] =
+                  {
+                      .position_pt = {300.0f, 70.0f},
+                      .size_pt = {640.0f, 640.0f},
+                      .z_order = 8u,
+                      .visible = false_v,
+                  },
           },
   };
 }
@@ -282,6 +289,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   editor->reduce_motion = frame->ui->reduce_motion;
   vkr_editor_animation_update(editor, frame);
   vkr_editor_bakery_update(editor->bakery);
+  vkr_editor_build_update(editor->build, editor, frame);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_cmd_update(editor, frame);
   vkr_editor_windows_register_input_layers(editor, frame->ui);
@@ -392,6 +400,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     vkr_editor_request_create(
         frame, content_action.object, vkr_editor_create_container(frame),
         content_action.dropped ? &content_action.drop_px : NULL);
+  vkr_editor_build_status_build(editor->build, editor, frame);
   vkr_editor_toasts_build(editor, frame);
   vkr_editor_cmd_suggestions_build(editor, frame);
   if (frame->scene_keyboard_focus) {

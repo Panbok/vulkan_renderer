@@ -30,7 +30,8 @@ decoding, not source import or artifact encoding. `vkr_runtime` builds on the
 renderer and format libraries. It supplies the reusable application host,
 standard scene runtime, runtime core services, and scene-facing systems.
 `vkr_sample_runtime` is an optional consumer that supplies sample control and
-presentation policy for the app and editor. `vkr_asset_cooking` is tool-only;
+presentation policy for the app, the editor and the packaged-game player
+(`vkr_player`, [ADR-078](adr/078-project-build-and-packaging.md)). `vkr_asset_cooking` is tool-only;
 it owns source import and cooked-artifact encoding and is not a runtime
 dependency. `vkr_physics` is an explicit C++17 Jolt adapter consumed by the C11
 scene runtime. It exposes C value/handle operations and owns no renderer state;
@@ -182,7 +183,9 @@ origin, projected with the packet's unjittered camera and Scene mapping.
 Details rows come from each component's type descriptor and apply through the
 edit journal.
 RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
-Console snapshots bounded structured logger history with a checkbox filter dropdown. In
+Console snapshots bounded structured logger history with a checkbox filter dropdown.
+The Build menu packages the open project and its Build tab shows the stages;
+Bakery sits under Develop. In
 legacy scene mode, Bakery runs twelve recipes—mesh, font, single texture, texture directory, GGX DFG, Charlie,
 anisotropy, diffuse volume, reflection probe, collision hull, collision mesh
 and shaders—as one cancellable
@@ -209,7 +212,13 @@ scene has unsaved edits. Relative asset paths resolve against one content root
 (the repository, or a bundle's `content/` directory), and mounted `.vkpak`
 archives serve identities below it through the ordinary filesystem calls;
 `vkr_bakery bundle` packs a scene's closure with the runtime and shader
-catalog into a directory that runs without the repository.
+catalog into a directory that runs without the repository. Given a managed
+project, it lowers the World and the included scenes to content identities,
+packs `game.vkpak` and `engine.vkpak`, stages the `vkr_player` template and
+publishes the package only after verification; the editor's Build menu runs
+it on Bakery's worker, and the player opens the World and startup scene
+through the requests the editor issues
+([ADR-078](adr/078-project-build-and-packaging.md)).
 [ADR-077](adr/077-asset-build-system.md) records the contract and its gaps.
 Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
 and Color and a clipped, scrollable right content area. The editor emits typed

@@ -20,7 +20,8 @@ vkr_internal const char *const vkr_project_cleanup_operations[] = {
 
 vkr_internal const char *const vkr_project_scene_optional[] = {
     "create_project", "delete_project",  "import_project_assets",
-    "inspect_scene",  "collect_garbage", "finalize_project_assets"};
+    "inspect_scene",  "collect_garbage", "finalize_project_assets",
+    "package_world"};
 
 vkr_internal bool8_t vkr_project_listed(const char *value,
                                         const char *const *items,
@@ -68,8 +69,17 @@ vkr_internal bool8_t vkr_project_job_init(VkrProjectJob *job) {
     return vkr_project_fail(job, "read_only must be boolean");
   }
   job->read_only = read_only && read_only->boolean;
+  const VkrBakeryJson *portable = vkr_bakery_json_get(job->request, "portable");
+  if (portable && portable->type != VKR_BAKERY_JSON_BOOL) {
+    return vkr_project_fail(job, "portable must be boolean");
+  }
+  job->portable = portable && portable->boolean;
+  if (job->portable && !job->read_only) {
+    return vkr_project_fail(job, "A portable preparation must be read-only");
+  }
   if (job->read_only) {
-    if (!job->operation || strcmp(job->operation, "prepare_scene") != 0) {
+    if (!job->operation || (strcmp(job->operation, "prepare_scene") != 0 &&
+                            strcmp(job->operation, "package_world") != 0)) {
       return vkr_project_fail(
           job, "Read-only workspace allows opening prepared scenes only");
     }
@@ -179,6 +189,19 @@ vkr_internal bool8_t vkr_project_job_init(VkrProjectJob *job) {
     }
   }
   job->material_priority = priority;
+  /* A package lowers against the project inventory its finalize stage
+     returned, which the editor publishes, not the job. */
+  const VkrBakeryJson *project_assets =
+      vkr_bakery_json_get(job->request, "project_assets");
+  if (project_assets && project_assets->type != VKR_BAKERY_JSON_ARRAY) {
+    return vkr_project_fail(job, "project_assets must be an asset array");
+  }
+  if (project_assets && !job->portable) {
+    return vkr_project_fail(job, "project_assets applies to portable jobs");
+  }
+  if (project_assets) {
+    job->pending_project_assets = vkr_bakery_json_clone(arena, project_assets);
+  }
   job->asset_scope = "scene";
   job->warnings = vkr_bakery_json_array(arena);
   job->assets = vkr_bakery_json_array(arena);
@@ -291,6 +314,9 @@ vkr_internal VkrBakeryJson *vkr_project_dispatch(VkrProjectJob *job) {
   if (strcmp(operation, "prepare_scene") == 0) {
     return vkr_project_prepare(
         job, vkr_project_json_text(job->request, "scene_path"));
+  }
+  if (strcmp(operation, "package_world") == 0) {
+    return vkr_project_package_world(job);
   }
   static const char *const edits[] = {
       "add_entities", "import_assets", "reimport_asset",   "rebuild_asset",

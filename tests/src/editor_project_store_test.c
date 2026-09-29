@@ -345,6 +345,65 @@ static void project_test_asset_labels(void) {
 
 /* Presets keep typed values: a written document reads back byte-equal, and
    records of unknown types or with values their type rejects are skipped. */
+/* game.json (docs/proposals/project-packaging.md): a missing file yields the
+   default, a save replaces what this editor owns and keeps the members
+   another tool wrote, and validation refuses an excluded startup scene. */
+static void project_test_game(const VkrEditorProject *project,
+                              VkrAllocator *allocator) {
+  static VkrEditorGame game;
+  VkrEditorProjectError error = {0};
+  bool8_t exists = true_v;
+  assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
+  assert(!exists && !strcmp(game.name, project->name) &&
+         !strcmp(game.executable, project->name) && game.profile_count == 1u &&
+         !strcmp(game.profiles[0].config, "development"));
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  const char *slash = strrchr(project->manifest_path, '/');
+  snprintf(path, sizeof(path), "%.*s/game.json",
+           (int)(slash - project->manifest_path), project->manifest_path);
+  project_test_write(
+      path, "{\"version\":1,\"tool\":{\"kept\":true},\"game\":{\"name\":"
+            "\"Arena\",\"future\":\"kept\",\"executable\":\"Arena\","
+            "\"scenes\":[],\"window\":{\"mode\":\"windowed\",\"width\":"
+            "1280,\"height\":720},\"graphics\":{\"version\":1,\"vsync\":"
+            "false}},\"profiles\":[{\"name\":\"Ship\",\"platform\":"
+            "\"host\",\"config\":\"shipping\",\"output\":\"/tmp/Arena\","
+            "\"include\":[\"docs\"],\"bake_lighting\":true}]}");
+  assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
+  assert(exists && !strcmp(game.name, "Arena") && game.window_width == 1280u &&
+         game.profile_count == 1u && game.profiles[0].bake_lighting &&
+         game.profiles[0].include_count == 1u &&
+         !strcmp(game.profiles[0].config, "shipping"));
+  assert(vkr_editor_game_validate(&game, project, &error));
+  snprintf(game.version, sizeof(game.version), "2.0.0");
+  assert(vkr_editor_game_save(project, &game, allocator, &error));
+  String8 saved = {0};
+  uint64_t fingerprint = 0u;
+  String8 member = {0};
+  String8 settings = {0};
+  assert(vkr_editor_project_json_read_file(path, allocator, &saved,
+                                           &fingerprint, &error));
+  assert(vkr_editor_project_json_member(saved, "tool", &member, &error));
+  assert(vkr_editor_project_json_member(saved, "game", &settings, &error));
+  assert(vkr_editor_project_json_member(settings, "future", &member, &error));
+  char text[32];
+  assert(vkr_editor_project_json_string(settings, "version", text, sizeof(text),
+                                        &error) &&
+         !strcmp(text, "2.0.0"));
+  assert(vkr_editor_project_json_member(settings, "graphics", &member, &error));
+  assert(vkr_editor_game_load(project, allocator, &game, &exists, &error));
+  assert(strstr(game.graphics, "\"vsync\":false") != NULL);
+  snprintf(game.startup_scene, sizeof(game.startup_scene), "%s",
+           "00000000-0000-4000-8000-000000000000");
+  game.scene_count = 0u;
+  assert(vkr_editor_game_validate(&game, project, &error));
+  snprintf(game.scenes[game.scene_count++], sizeof(game.scenes[0]), "%s",
+           "00000000-0000-4000-8000-000000000001");
+  assert(!vkr_editor_game_validate(&game, project, &error));
+  FilePath file = project_test_path(path);
+  assert(file_remove(&file) == FILE_ERROR_NONE);
+}
+
 static void project_test_presets(void) {
   VkrEditorPreset presets[4];
   MemZero(presets, sizeof(presets));
@@ -566,6 +625,7 @@ bool32_t run_editor_project_store_tests(void) {
       string8_lit("{\"version\":1,\"graphics\":{\"exposure\":1.75},\"future\":{"
                   "\"text\":\"日\",\"n\":9007199254740993}}");
   assert(vkr_editor_project_save(&s_project, &error));
+  project_test_game(&s_project, &allocator);
   visits = 0;
   assert(vkr_editor_workspace_visit(&workspace, project_test_visit, &visits,
                                     &error));

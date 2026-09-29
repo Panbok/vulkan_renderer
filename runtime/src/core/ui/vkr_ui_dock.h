@@ -38,6 +38,8 @@ typedef enum VkrUiDockPanelKind {
   VKR_UI_DOCK_PANEL_CUSTOM,
   VKR_UI_DOCK_PANEL_BAKERY,
   VKR_UI_DOCK_PANEL_CONTENT,
+  /* Project build progress and report (docs/proposals/project-packaging.md). */
+  VKR_UI_DOCK_PANEL_BUILD,
   VKR_UI_DOCK_PANEL_COUNT,
 } VkrUiDockPanelKind;
 

@@ -78,6 +78,10 @@ typedef struct VkrProjectJob {
   const char *scene_id; /* NULL when the operation has no scene. */
   const char *asset_scope;
   bool8_t read_only;
+  /* `portable`: a read-only preparation for a package
+     (docs/proposals/project-packaging.md). Lowered documents name content
+     identities, `project/...` and `editor/...`, instead of absolute paths. */
+  bool8_t portable;
   bool8_t final_owned;
   bool8_t cancelled;
   bool8_t failed;
@@ -226,6 +230,11 @@ bool8_t vkr_project_managed_reference(VkrProjectJob *job, const char *path,
                                       const char *owner, const char **out);
 bool8_t vkr_project_contained(VkrProjectJob *job, const char *root,
                               const char *value, bool8_t must_exist, char *out);
+/** Package content identity of a resolved path inside the project
+ * (`project/<path>`) or the editor bundle (`editor/<path>`). A path anywhere
+ * else cannot be packaged and fails the job. */
+bool8_t vkr_project_portable_identity(VkrProjectJob *job, const char *path,
+                                      char *out);
 bool8_t vkr_project_source_file(VkrProjectJob *job, const char *value,
                                 char *out);
 bool8_t vkr_project_legacy_source(VkrProjectJob *job, const char *value,
@@ -460,6 +469,10 @@ bool8_t vkr_project_validate_bundle_dependencies(VkrProjectJob *job,
                                                  VkrBakeryJson *visited);
 VkrBakeryJson *vkr_project_lower(VkrProjectJob *job, VkrBakeryJson *scene,
                                  const char *root, bool8_t publish_runtime);
+/** `package_world`: validates the project's root World for a package and
+ * places its document, byte-identical, and its portable overlay in the
+ * runtime directory. */
+VkrBakeryJson *vkr_project_package_world(VkrProjectJob *job);
 bool8_t vkr_project_remap_overlay(VkrProjectJob *job, const char *path,
                                   const char *expected, VkrBakeryJson *scene,
                                   const char *source_root, bool8_t managed);

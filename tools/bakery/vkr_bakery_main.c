@@ -70,9 +70,11 @@ vkr_internal const VkrBakeryCommand vkr_bakery_commands[] = {
      "Render a material thumbnail, or prune the workspace thumbnail cache."},
     {"bundle", vkr_bakery_cmd_bundle,
      "bundle <recipe.json> --out <dir> [--app <executable>] [--shaders "
-     "<catalog>] [--dry-run]",
+     "<catalog>] [--dry-run]\n"
+     "       vkr_bakery bundle <project directory> [--profile <name>] [--out "
+     "<dir>] [--template <dir>] [--dry-run]",
      "Pack a scene's content into a .vkpak bundle with the runtime and "
-     "shaders."},
+     "shaders, or package a managed project as a standalone game."},
 #endif
     {"tool", NULL, "tool <name> [arguments]",
      "Run a cooker's own command line (mesh, texture, font, ...)."},
@@ -252,6 +254,10 @@ vkr_internal int vkr_bakery_parse(int argc, char **argv, VkrBakeryCli *cli) {
       VKR_BAKERY_TAKE(cli->app);
     } else if (strcmp(argument, "--shaders") == 0) {
       VKR_BAKERY_TAKE(cli->shaders);
+    } else if (strcmp(argument, "--profile") == 0) {
+      VKR_BAKERY_TAKE(cli->profile);
+    } else if (strcmp(argument, "--template") == 0) {
+      VKR_BAKERY_TAKE(cli->player_template);
     } else if (strcmp(argument, "--jobs") == 0) {
       uint64_t jobs = 0u;
       if (!value || !vkr_bakery_parse_u64(value, &jobs) || jobs == 0u ||

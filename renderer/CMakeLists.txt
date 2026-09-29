@@ -41,6 +41,8 @@ vkr_require_declared_c_functions(renderer_lib)
 # the catalog at runtime (src/vkr_shader_catalog.c), so no shader path is
 # compiled into the library.
 set(VKR_SHADER_CATALOG_DIR "${CMAKE_BINARY_DIR}/shaders")
+# The player template names this catalog (player/CMakeLists.txt).
+set(VKR_SHADER_CATALOG_DIR "${VKR_SHADER_CATALOG_DIR}" PARENT_SCOPE)
 if(APPLE)
     set(VKR_SHADER_BACKENDS all)
 else()

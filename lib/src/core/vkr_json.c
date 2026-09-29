@@ -514,3 +514,106 @@ invalid:
                      VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return false_v;
 }
+
+bool8_t vkr_json_capture_composite(VkrJsonReader *reader, String8 *out_value) {
+  if (!reader || !out_value) {
+    return false_v;
+  }
+  vkr_json_skip_whitespace(reader);
+  const uint64_t start = reader->pos;
+  if (start >= reader->length ||
+      (reader->data[start] != '{' && reader->data[start] != '[')) {
+    return false_v;
+  }
+
+  uint8_t delimiters[64] = {0};
+  uint32_t delimiter_count = 0u;
+  bool8_t quoted = false_v;
+  bool8_t escaped = false_v;
+  while (reader->pos < reader->length) {
+    const uint8_t c = reader->data[reader->pos++];
+    if (quoted) {
+      if (escaped) {
+        escaped = false_v;
+      } else if (c == '\\') {
+        escaped = true_v;
+      } else if (c == '"') {
+        quoted = false_v;
+      }
+      continue;
+    }
+    if (c == '"') {
+      quoted = true_v;
+      continue;
+    }
+    if (c == '{' || c == '[') {
+      if (delimiter_count == ArrayCount(delimiters)) {
+        return false_v;
+      }
+      delimiters[delimiter_count++] = c == '{' ? '}' : ']';
+    } else if (c == '}' || c == ']') {
+      if (delimiter_count == 0u || delimiters[delimiter_count - 1u] != c) {
+        return false_v;
+      }
+      delimiter_count--;
+    }
+    if (delimiter_count == 0u) {
+      *out_value = (String8){.str = (uint8_t *)(reader->data + start),
+                             .length = reader->pos - start};
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_json_find_root_field(VkrJsonReader *reader, const char *name) {
+  VkrJsonReader cursor = *reader;
+  cursor.pos = 0u;
+  vkr_json_skip_whitespace(&cursor);
+  if (cursor.pos >= cursor.length || cursor.data[cursor.pos++] != '{') {
+    return false_v;
+  }
+  const uint64_t name_length = string_length(name);
+  for (;;) {
+    String8 key = {0};
+    if (!vkr_json_parse_string(&cursor, &key)) {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&cursor);
+    if (cursor.pos >= cursor.length || cursor.data[cursor.pos++] != ':') {
+      return false_v;
+    }
+    vkr_json_skip_whitespace(&cursor);
+    if (key.length == name_length &&
+        MemCompare(key.str, name, name_length) == 0) {
+      *reader = cursor;
+      return true_v;
+    }
+    if (cursor.pos >= cursor.length) {
+      return false_v;
+    }
+    const uint8_t c = cursor.data[cursor.pos];
+    String8 skipped = {0};
+    if (c == '{' || c == '[') {
+      if (!vkr_json_capture_composite(&cursor, &skipped)) {
+        return false_v;
+      }
+    } else if (c == '"') {
+      if (!vkr_json_parse_string(&cursor, &skipped)) {
+        return false_v;
+      }
+    } else {
+      while (cursor.pos < cursor.length && cursor.data[cursor.pos] != ',' &&
+             cursor.data[cursor.pos] != '}') {
+        ++cursor.pos;
+      }
+    }
+    vkr_json_skip_whitespace(&cursor);
+    if (cursor.pos >= cursor.length || cursor.data[cursor.pos] == '}') {
+      return false_v;
+    }
+    if (cursor.data[cursor.pos++] != ',') {
+      return false_v;
+    }
+  }
+}

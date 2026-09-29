@@ -452,114 +452,6 @@ vkr_internal bool8_t scene_json_parse_vec2(VkrJsonReader *reader,
   return true_v;
 }
 
-vkr_internal bool8_t scene_json_capture_composite(VkrJsonReader *reader,
-                                                  String8 *out_value) {
-  if (!reader || !out_value) {
-    return false_v;
-  }
-  vkr_json_skip_whitespace(reader);
-  const uint64_t start = reader->pos;
-  if (start >= reader->length ||
-      (reader->data[start] != '{' && reader->data[start] != '[')) {
-    return false_v;
-  }
-
-  uint8_t delimiters[64] = {0};
-  uint32_t delimiter_count = 0u;
-  bool8_t quoted = false_v;
-  bool8_t escaped = false_v;
-  while (reader->pos < reader->length) {
-    const uint8_t c = reader->data[reader->pos++];
-    if (quoted) {
-      if (escaped) {
-        escaped = false_v;
-      } else if (c == '\\') {
-        escaped = true_v;
-      } else if (c == '"') {
-        quoted = false_v;
-      }
-      continue;
-    }
-    if (c == '"') {
-      quoted = true_v;
-      continue;
-    }
-    if (c == '{' || c == '[') {
-      if (delimiter_count == ArrayCount(delimiters)) {
-        return false_v;
-      }
-      delimiters[delimiter_count++] = c == '{' ? '}' : ']';
-    } else if (c == '}' || c == ']') {
-      if (delimiter_count == 0u || delimiters[delimiter_count - 1u] != c) {
-        return false_v;
-      }
-      delimiter_count--;
-    }
-    if (delimiter_count == 0u) {
-      *out_value = (String8){.str = (uint8_t *)(reader->data + start),
-                             .length = reader->pos - start};
-      return true_v;
-    }
-  }
-  return false_v;
-}
-
-/* Position `reader` at the value of a member of the root object. Unlike
-   vkr_json_find_field this never matches a nested key, so world blocks are
-   not confused with the same names inside entity components. */
-vkr_internal bool8_t scene_json_find_root_field(VkrJsonReader *reader,
-                                                const char *name) {
-  VkrJsonReader cursor = *reader;
-  cursor.pos = 0u;
-  vkr_json_skip_whitespace(&cursor);
-  if (cursor.pos >= cursor.length || cursor.data[cursor.pos++] != '{') {
-    return false_v;
-  }
-  const uint64_t name_length = strlen(name);
-  for (;;) {
-    String8 key = {0};
-    if (!vkr_json_parse_string(&cursor, &key)) {
-      return false_v;
-    }
-    vkr_json_skip_whitespace(&cursor);
-    if (cursor.pos >= cursor.length || cursor.data[cursor.pos++] != ':') {
-      return false_v;
-    }
-    vkr_json_skip_whitespace(&cursor);
-    if (key.length == name_length &&
-        MemCompare(key.str, name, name_length) == 0) {
-      *reader = cursor;
-      return true_v;
-    }
-    if (cursor.pos >= cursor.length) {
-      return false_v;
-    }
-    const uint8_t c = cursor.data[cursor.pos];
-    String8 skipped = {0};
-    if (c == '{' || c == '[') {
-      if (!scene_json_capture_composite(&cursor, &skipped)) {
-        return false_v;
-      }
-    } else if (c == '"') {
-      if (!vkr_json_parse_string(&cursor, &skipped)) {
-        return false_v;
-      }
-    } else {
-      while (cursor.pos < cursor.length && cursor.data[cursor.pos] != ',' &&
-             cursor.data[cursor.pos] != '}') {
-        ++cursor.pos;
-      }
-    }
-    vkr_json_skip_whitespace(&cursor);
-    if (cursor.pos >= cursor.length || cursor.data[cursor.pos] == '}') {
-      return false_v;
-    }
-    if (cursor.data[cursor.pos++] != ',') {
-      return false_v;
-    }
-  }
-}
-
 vkr_internal bool8_t scene_json_parse_quat(VkrJsonReader *reader,
                                            VkrQuat *out_value) {
   float32_t values[4] = {0};
@@ -783,7 +675,7 @@ scene_loader_parse_environment_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader environment_reader = root;
-  if (!scene_json_find_root_field(&environment_reader, "environment")) {
+  if (!vkr_json_find_root_field(&environment_reader, "environment")) {
     return result;
   }
 
@@ -858,7 +750,7 @@ scene_loader_component_atmosphere(const VkrSceneLoaderAsyncPayload *payload) {
     }
     VkrJsonReader reader = vkr_json_reader_from_string(components);
     VkrJsonReader atmosphere = {0};
-    if (!scene_json_find_root_field(&reader, "atmosphere") ||
+    if (!vkr_json_find_root_field(&reader, "atmosphere") ||
         !vkr_json_enter_object(&reader, &atmosphere)) {
       continue;
     }
@@ -925,7 +817,7 @@ vkr_internal SceneAtmosphereImport scene_atmosphere_import_defaults(void) {
 vkr_internal bool8_t scene_loader_parse_cloud_import(String8 json,
                                                      VkrCloudSettings *out) {
   VkrJsonReader clouds_reader = vkr_json_reader_from_string(json);
-  if (!scene_json_find_root_field(&clouds_reader, "clouds") ||
+  if (!vkr_json_find_root_field(&clouds_reader, "clouds") ||
       scene_json_parse_null(&clouds_reader))
     return true_v;
 
@@ -981,7 +873,7 @@ scene_loader_parse_atmosphere_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader atmosphere_reader = root;
-  if (!scene_json_find_root_field(&atmosphere_reader, "atmosphere"))
+  if (!vkr_json_find_root_field(&atmosphere_reader, "atmosphere"))
     return result;
   result.has_block = true_v;
   if (scene_json_parse_null(&atmosphere_reader))
@@ -1112,7 +1004,7 @@ vkr_internal SceneFogImport scene_loader_parse_fog_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader fog_reader = root;
-  if (!scene_json_find_root_field(&fog_reader, "fog"))
+  if (!vkr_json_find_root_field(&fog_reader, "fog"))
     return result;
 
   result.has_block = true_v;
@@ -1186,7 +1078,7 @@ scene_loader_parse_froxel_fog_import(String8 json) {
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader fog_reader = root;
-  if (!scene_json_find_root_field(&fog_reader, "volumetric_fog"))
+  if (!vkr_json_find_root_field(&fog_reader, "volumetric_fog"))
     return result;
 
   if (scene_json_parse_null(&fog_reader))
@@ -1287,7 +1179,7 @@ scene_loader_parse_diffuse_volume_import(String8 json) {
   SceneDiffuseVolumeImport result = scene_diffuse_volume_import_defaults();
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader volume_reader = root;
-  if (!scene_json_find_root_field(&volume_reader, "diffuse_volume"))
+  if (!vkr_json_find_root_field(&volume_reader, "diffuse_volume"))
     return result;
 
   result.has_block = true_v;
@@ -1319,7 +1211,7 @@ scene_loader_parse_subsurface_import(String8 json) {
   SceneSubsurfaceImport result = scene_subsurface_import_defaults();
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader subsurface_reader = root;
-  if (!scene_json_find_root_field(&subsurface_reader, "subsurface"))
+  if (!vkr_json_find_root_field(&subsurface_reader, "subsurface"))
     return result;
 
   result.has_block = true_v;
@@ -1726,7 +1618,7 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
   VkrJsonReader probes_reader = root;
-  if (!scene_json_find_root_field(&probes_reader, "reflection_probes")) {
+  if (!vkr_json_find_root_field(&probes_reader, "reflection_probes")) {
     return 0;
   }
 
@@ -2441,8 +2333,8 @@ vkr_internal void scene_json_parse_mesh(const VkrJsonReader *entity_reader,
   if (vkr_json_find_field(&range_overrides_reader,
                           "gltf_light_range_overrides")) {
     out_entity->has_gltf_light_range_overrides = true_v;
-    if (!scene_json_capture_composite(
-            &range_overrides_reader, &out_entity->gltf_light_range_overrides)) {
+    if (!vkr_json_capture_composite(&range_overrides_reader,
+                                    &out_entity->gltf_light_range_overrides)) {
       out_entity->gltf_light_range_overrides_invalid = true_v;
     }
   }
@@ -2696,7 +2588,7 @@ scene_json_parse_point_light(const VkrJsonReader *entity_reader,
                              uint32_t entity_index,
                              SceneEntityImport *out_entity) {
   VkrJsonReader point_light_reader = *entity_reader;
-  if (!scene_json_find_root_field(&point_light_reader, "point_light")) {
+  if (!vkr_json_find_root_field(&point_light_reader, "point_light")) {
     return;
   }
 
@@ -2773,7 +2665,7 @@ vkr_internal bool8_t scene_json_parse_rectangle_light(
     const VkrJsonReader *entity_reader, uint32_t entity_index,
     SceneEntityImport *out_entity) {
   VkrJsonReader rectangle_reader = *entity_reader;
-  if (!scene_json_find_root_field(&rectangle_reader, "rectangle_light"))
+  if (!vkr_json_find_root_field(&rectangle_reader, "rectangle_light"))
     return true_v;
   if (scene_json_parse_null(&rectangle_reader))
     return true_v;
@@ -2823,7 +2715,7 @@ vkr_internal bool8_t scene_json_parse_directional_light(
     const VkrJsonReader *entity_reader, uint32_t entity_index,
     SceneEntityImport *out_entity) {
   VkrJsonReader dir_light_reader = *entity_reader;
-  if (!scene_json_find_root_field(&dir_light_reader, "directional_light")) {
+  if (!vkr_json_find_root_field(&dir_light_reader, "directional_light")) {
     return true_v;
   }
 
@@ -3027,7 +2919,7 @@ vkr_internal bool8_t scene_json_parse_components(
   if (!vkr_json_find_field(&reader, "components")) {
     return true_v;
   }
-  if (!scene_json_capture_composite(&reader, &out_entity->components_json) ||
+  if (!vkr_json_capture_composite(&reader, &out_entity->components_json) ||
       !scene_json_each_component(out_entity->components_json, entity_index,
                                  scene_json_component_unique, out_entity)) {
     log_error("Scene loader: entity %u has invalid components", entity_index);
@@ -3049,7 +2941,7 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
 
   scene_json_parse_name(entity_reader, out_entity);
   VkrJsonReader id_reader = *entity_reader;
-  if (scene_json_find_root_field(&id_reader, "id")) {
+  if (vkr_json_find_root_field(&id_reader, "id")) {
     String8 text = {0};
     if (!vkr_json_parse_string(&id_reader, &text) ||
         !vkr_scene_document_id_parse(text, &out_entity->document_id)) {

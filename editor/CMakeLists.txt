@@ -17,6 +17,7 @@ add_executable(vkr_editor
     src/editor_console.c
     src/editor_bakery.c
     src/editor_bakery_service.c
+    src/editor_build.c
     src/editor_scene_panels.c
     src/editor_details.c
     src/editor_labels.c
@@ -34,6 +35,11 @@ vkr_configure_application_target(vkr_editor)
 # preview runs through vkr_bakery; the harness and preview tool remain
 # separate renderer programs.
 add_dependencies(vkr_editor vkr_bakery vkr_harness vkr_asset_preview)
+# Build packages the open project with the player template beside
+# vkr_player (docs/proposals/project-packaging.md).
+if(TARGET vkr_player)
+    add_dependencies(vkr_editor vkr_player)
+endif()
 target_compile_definitions(vkr_editor PRIVATE
     VKR_EDITOR_ASSET_PREVIEW_PATH="$<TARGET_FILE:vkr_asset_preview>"
     VKR_EDITOR_BAKERY_PATH="$<TARGET_FILE:vkr_bakery>"

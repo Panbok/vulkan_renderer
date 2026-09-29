@@ -47,6 +47,13 @@ typedef enum EditorCommand {
   CMD_ZOOM_OUT,
   CMD_ZOOM_RESET,
   CMD_REDUCE_MOTION,
+  /* Build menu (docs/proposals/project-packaging.md). */
+  CMD_BUILD,
+  CMD_BUILD_RUN,
+  CMD_BUILD_SETTINGS,
+  CMD_BUILD_OPEN,
+  CMD_BUILD_LOG,
+  CMD_SCENE_BAKE,
   CMD_COUNT
 } EditorCommand;
 

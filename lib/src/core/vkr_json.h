@@ -216,3 +216,12 @@ bool8_t vkr_json_get_bool(VkrJsonReader *reader, const char *field_name,
 bool8_t vkr_json_parse_string_decoded(VkrJsonReader *reader,
                                       VkrAllocator *allocator,
                                       String8 *out_value);
+
+/** Captures the object or array at the reader's position, including its
+ * delimiters, as a view into the buffer, and advances past it. */
+bool8_t vkr_json_capture_composite(VkrJsonReader *reader, String8 *out_value);
+
+/** Positions `reader` at the value of a member of the object the reader's
+ * buffer holds. Unlike vkr_json_find_field this never matches a nested key,
+ * so a member is not confused with the same name inside a nested value. */
+bool8_t vkr_json_find_root_field(VkrJsonReader *reader, const char *name);

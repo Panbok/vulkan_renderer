@@ -684,6 +684,31 @@ bool8_t vkr_project_contained(VkrProjectJob *job, const char *root,
   return true_v;
 }
 
+bool8_t vkr_project_portable_identity(VkrProjectJob *job, const char *path,
+                                      char *out) {
+  char editor[VKR_PROJECT_PATH];
+  (void)snprintf(editor, sizeof(editor), "%s/editor/bundles/1", job->workspace);
+  const struct {
+    const char *owner;
+    const char *prefix;
+  } owners[] = {{job->project_root, "project"}, {editor, "editor"}};
+  for (uint32_t i = 0u; i < ArrayCount(owners); ++i) {
+    char root[VKR_PROJECT_PATH];
+    if (!vkr_project_resolve(owners[i].owner, false_v, root, sizeof(root)) ||
+        !vkr_project_is_relative_to(path, root) || strcmp(path, root) == 0) {
+      continue;
+    }
+    if ((uint32_t)snprintf(out, VKR_PROJECT_PATH, "%s/%s", owners[i].prefix,
+                           path + strlen(root) + 1u) >= VKR_PROJECT_PATH) {
+      break;
+    }
+    return true_v;
+  }
+  return vkr_project_fail(
+      job, "Cannot package %s: it is outside the project and editor bundle",
+      path);
+}
+
 bool8_t vkr_project_source_file(VkrProjectJob *job, const char *value,
                                 char *out) {
   char expanded[VKR_PROJECT_PATH];

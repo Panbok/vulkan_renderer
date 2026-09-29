@@ -2894,3 +2894,419 @@ bool8_t vkr_editor_presets_write(VkrJsonWriter *writer,
   return ok && vkr_json_writer_end_array(writer) &&
          vkr_json_writer_end_object(writer);
 }
+
+// =============================================================================
+// Game settings and build profiles (docs/proposals/project-packaging.md)
+// =============================================================================
+
+#define PROJECT_GAME_LIMIT (256u * 1024u)
+#define PROJECT_GAME_DEFAULT_GRAPHICS "{\"version\":1}"
+
+static void game_copy(char *out, uint32_t capacity, const char *text) {
+  snprintf(out, capacity, "%s", text ? text : "");
+}
+
+void vkr_editor_game_profile_default(const char *name,
+                                     VkrEditorGameProfile *profile) {
+  *profile = (VkrEditorGameProfile){0};
+  game_copy(profile->name, sizeof(profile->name), name);
+  game_copy(profile->platform, sizeof(profile->platform), "host");
+  game_copy(profile->config, sizeof(profile->config), "development");
+}
+
+static bool8_t game_executable_char(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || c == ' ' || c == '-' || c == '_';
+}
+
+void vkr_editor_game_default(const VkrEditorProject *project,
+                             VkrEditorGame *game) {
+  *game = (VkrEditorGame){.window_width = 1600u, .window_height = 900u};
+  const char *name = project && project->name[0] ? project->name : "Game";
+  game_copy(game->name, sizeof(game->name), name);
+  game_copy(game->version, sizeof(game->version), "0.1.0");
+  /* The project name without the characters an executable name refuses. */
+  uint32_t length = 0u;
+  for (const char *c = name; *c && length + 1u < sizeof(game->executable);
+       ++c) {
+    if (game_executable_char(*c) && (*c != ' ' || length)) {
+      game->executable[length++] = *c;
+    }
+  }
+  while (length && game->executable[length - 1u] == ' ') {
+    game->executable[--length] = '\0';
+  }
+  if (!length) {
+    game_copy(game->executable, sizeof(game->executable), "Game");
+  }
+  for (uint32_t i = 0; project && i < project->scene_count; ++i) {
+    game_copy(game->scenes[game->scene_count++], sizeof(game->scenes[0]),
+              project->scenes[i].id);
+  }
+  game_copy(game->startup_scene, sizeof(game->startup_scene),
+            game->scene_count ? game->scenes[0] : "");
+  game_copy(game->graphics, sizeof(game->graphics),
+            PROJECT_GAME_DEFAULT_GRAPHICS);
+  vkr_editor_game_profile_default(name, &game->profiles[0]);
+  game->profile_count = 1u;
+}
+
+static bool8_t game_number(s_ProjectJson *json, uint32_t object,
+                           const char *name, float64_t *out) {
+  const uint32_t field = project_json_field(json, object, name);
+  if (field == UINT32_MAX) {
+    return false_v;
+  }
+  const String8 view = project_json_view(json, field);
+  char text[64];
+  if (!view.length || view.length >= sizeof(text)) {
+    return false_v;
+  }
+  MemCopy(text, view.str, view.length);
+  text[view.length] = '\0';
+  char *end = NULL;
+  *out = strtod(text, &end);
+  return end == text + view.length && isfinite(*out);
+}
+
+static bool8_t game_bool(s_ProjectJson *json, uint32_t object, const char *name,
+                         bool8_t *out) {
+  const uint32_t field = project_json_field(json, object, name);
+  if (field == UINT32_MAX ||
+      (json->tokens[field].kind != 't' && json->tokens[field].kind != 'f')) {
+    return false_v;
+  }
+  *out = json->tokens[field].kind == 't';
+  return true_v;
+}
+
+static bool8_t game_parse_profile(s_ProjectJson *json, uint32_t object,
+                                  VkrEditorGameProfile *profile) {
+  vkr_editor_game_profile_default("", profile);
+  if (json->tokens[object].kind != '{' ||
+      !project_json_text(json, object, "name", profile->name,
+                         sizeof(profile->name)) ||
+      !profile->name[0]) {
+    return false_v;
+  }
+  (void)project_json_text(json, object, "platform", profile->platform,
+                          sizeof(profile->platform));
+  (void)project_json_text(json, object, "config", profile->config,
+                          sizeof(profile->config));
+  (void)project_json_text(json, object, "output", profile->output,
+                          sizeof(profile->output));
+  (void)game_bool(json, object, "bake_lighting", &profile->bake_lighting);
+  (void)game_bool(json, object, "run_after_build", &profile->run_after_build);
+  const uint32_t include = project_json_field(json, object, "include");
+  if (include != UINT32_MAX && json->tokens[include].kind == '[') {
+    for (uint32_t item = json->tokens[include].child;
+         item < json->tokens[include].next &&
+         profile->include_count < VKR_EDITOR_GAME_INCLUDE_MAX;
+         item = json->tokens[item].next) {
+      if (json->tokens[item].kind == '"' &&
+          project_json_decode(json, item,
+                              profile->include[profile->include_count],
+                              sizeof(profile->include[0]))) {
+        ++profile->include_count;
+      }
+    }
+  }
+  return true_v;
+}
+
+bool8_t vkr_editor_game_parse(String8 bytes, VkrEditorGame *game,
+                              VkrEditorProjectError *error) {
+  vkr_editor_game_default(NULL, game);
+  game->scene_count = 0u;
+  game->startup_scene[0] = '\0';
+  game->profile_count = 0u;
+  s_ProjectJson json = {0};
+  float64_t version = 0.0;
+  if (!project_json_parse(&json, bytes) || json.tokens[0].kind != '{' ||
+      !game_number(&json, 0, "version", &version) ||
+      version != (float64_t)VKR_EDITOR_GAME_VERSION) {
+    return project_json_finish(
+        &json, project_error(error, "game.json needs version %u",
+                             VKR_EDITOR_GAME_VERSION));
+  }
+  const uint32_t settings = project_json_field(&json, 0, "game");
+  if (settings == UINT32_MAX || json.tokens[settings].kind != '{') {
+    return project_json_finish(
+        &json, project_error(error, "game.json has no game object"));
+  }
+  (void)project_json_text(&json, settings, "name", game->name,
+                          sizeof(game->name));
+  (void)project_json_text(&json, settings, "version", game->version,
+                          sizeof(game->version));
+  (void)project_json_text(&json, settings, "company", game->company,
+                          sizeof(game->company));
+  (void)project_json_text(&json, settings, "executable", game->executable,
+                          sizeof(game->executable));
+  (void)project_json_text(&json, settings, "startup_scene", game->startup_scene,
+                          sizeof(game->startup_scene));
+  const uint32_t scenes = project_json_field(&json, settings, "scenes");
+  if (scenes != UINT32_MAX && json.tokens[scenes].kind == '[') {
+    for (uint32_t item = json.tokens[scenes].child;
+         item < json.tokens[scenes].next &&
+         game->scene_count < VKR_EDITOR_PROJECT_MAX_SCENES;
+         item = json.tokens[item].next) {
+      if (json.tokens[item].kind == '"' &&
+          project_json_decode(&json, item, game->scenes[game->scene_count],
+                              sizeof(game->scenes[0]))) {
+        ++game->scene_count;
+      }
+    }
+  }
+  const uint32_t window = project_json_field(&json, settings, "window");
+  float64_t number = 0.0;
+  if (window != UINT32_MAX && json.tokens[window].kind == '{') {
+    if (game_number(&json, window, "width", &number) && number > 0.0 &&
+        number < 65536.0) {
+      game->window_width = (uint32_t)number;
+    }
+    if (game_number(&json, window, "height", &number) && number > 0.0 &&
+        number < 65536.0) {
+      game->window_height = (uint32_t)number;
+    }
+  }
+  const uint32_t graphics = project_json_field(&json, settings, "graphics");
+  if (graphics != UINT32_MAX && json.tokens[graphics].kind == '{') {
+    const String8 view = project_json_view(&json, graphics);
+    if (view.length < sizeof(game->graphics)) {
+      MemCopy(game->graphics, view.str, view.length);
+      game->graphics[view.length] = '\0';
+    }
+  }
+  const uint32_t profiles = project_json_field(&json, 0, "profiles");
+  if (profiles != UINT32_MAX && json.tokens[profiles].kind == '[') {
+    for (uint32_t item = json.tokens[profiles].child;
+         item < json.tokens[profiles].next &&
+         game->profile_count < VKR_EDITOR_GAME_PROFILE_MAX;
+         item = json.tokens[item].next) {
+      if (game_parse_profile(&json, item,
+                             &game->profiles[game->profile_count])) {
+        ++game->profile_count;
+      }
+    }
+  }
+  if (!game->profile_count) {
+    vkr_editor_game_profile_default(game->name, &game->profiles[0]);
+    game->profile_count = 1u;
+  }
+  return project_json_finish(&json, true_v);
+}
+
+static bool8_t game_text(VkrJsonWriter *writer, const char *name,
+                         const char *value) {
+  return vkr_json_writer_name(writer, project_string(name)) &&
+         vkr_json_writer_string(writer, project_string(value));
+}
+
+/* Writes a JSON object this module parsed back out as raw members. */
+static bool8_t game_raw_object(VkrJsonWriter *writer, const char *text) {
+  s_ProjectJson json = {0};
+  bool8_t ok = project_json_parse(&json, project_string(text)) &&
+               json.tokens[0].kind == '{' &&
+               vkr_json_writer_begin_object(writer);
+  for (uint32_t key = ok ? json.tokens[0].child : 0u;
+       ok && key < json.tokens[0].next; key = json.tokens[key + 1].next) {
+    char name[256];
+    const s_ProjectJsonToken *value = &json.tokens[key + 1];
+    ok = project_json_decode(&json, key, name, sizeof(name)) &&
+         vkr_json_writer_name(writer, project_string(name));
+    if (!ok) {
+      break;
+    }
+    char scalar[64];
+    const String8 view = project_json_view(&json, key + 1);
+    if (value->kind == '"') {
+      char string[1024];
+      ok = project_json_decode(&json, key + 1, string, sizeof(string)) &&
+           vkr_json_writer_string(writer, project_string(string));
+    } else if (value->kind == 't' || value->kind == 'f') {
+      ok = vkr_json_writer_bool(writer, value->kind == 't');
+    } else if (value->kind != '{' && value->kind != '[' &&
+               view.length < sizeof(scalar)) {
+      MemCopy(scalar, view.str, view.length);
+      scalar[view.length] = '\0';
+      ok = vkr_json_writer_f64(writer, strtod(scalar, NULL));
+    } else {
+      /* Graphics settings are flat; nested values are not kept. */
+      ok = vkr_json_writer_null(writer);
+    }
+  }
+  ok = ok && vkr_json_writer_end_object(writer);
+  return project_json_finish(&json, ok);
+}
+
+bool8_t vkr_editor_game_write(VkrJsonWriter *writer,
+                              const VkrEditorGame *game) {
+  bool8_t ok = vkr_json_writer_begin_object(writer) &&
+               vkr_json_writer_name(writer, string8_lit("version")) &&
+               vkr_json_writer_u64(writer, VKR_EDITOR_GAME_VERSION) &&
+               vkr_json_writer_name(writer, string8_lit("game")) &&
+               vkr_json_writer_begin_object(writer) &&
+               game_text(writer, "name", game->name) &&
+               game_text(writer, "version", game->version) &&
+               game_text(writer, "company", game->company) &&
+               game_text(writer, "executable", game->executable) &&
+               game_text(writer, "startup_scene", game->startup_scene) &&
+               vkr_json_writer_name(writer, string8_lit("scenes")) &&
+               vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < game->scene_count; ++i) {
+    ok = vkr_json_writer_string(writer, project_string(game->scenes[i]));
+  }
+  ok = ok && vkr_json_writer_end_array(writer) &&
+       vkr_json_writer_name(writer, string8_lit("window")) &&
+       vkr_json_writer_begin_object(writer) &&
+       game_text(writer, "mode", "windowed") &&
+       vkr_json_writer_name(writer, string8_lit("width")) &&
+       vkr_json_writer_u64(writer, game->window_width) &&
+       vkr_json_writer_name(writer, string8_lit("height")) &&
+       vkr_json_writer_u64(writer, game->window_height) &&
+       vkr_json_writer_end_object(writer) &&
+       vkr_json_writer_name(writer, string8_lit("graphics")) &&
+       game_raw_object(writer, game->graphics[0]
+                                   ? game->graphics
+                                   : PROJECT_GAME_DEFAULT_GRAPHICS) &&
+       vkr_json_writer_end_object(writer) &&
+       vkr_json_writer_name(writer, string8_lit("profiles")) &&
+       vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < game->profile_count; ++i) {
+    const VkrEditorGameProfile *profile = &game->profiles[i];
+    ok = vkr_json_writer_begin_object(writer) &&
+         game_text(writer, "name", profile->name) &&
+         game_text(writer, "platform", profile->platform) &&
+         game_text(writer, "config", profile->config) &&
+         game_text(writer, "output", profile->output) &&
+         vkr_json_writer_name(writer, string8_lit("include")) &&
+         vkr_json_writer_begin_array(writer);
+    for (uint32_t j = 0; ok && j < profile->include_count; ++j) {
+      ok = vkr_json_writer_string(writer, project_string(profile->include[j]));
+    }
+    ok = ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_name(writer, string8_lit("bake_lighting")) &&
+         vkr_json_writer_bool(writer, profile->bake_lighting) &&
+         vkr_json_writer_name(writer, string8_lit("run_after_build")) &&
+         vkr_json_writer_bool(writer, profile->run_after_build) &&
+         vkr_json_writer_end_object(writer);
+  }
+  return ok && vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_end_object(writer);
+}
+
+bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
+                                 const VkrEditorProject *project,
+                                 VkrEditorProjectError *error) {
+  if (!game->name[0]) {
+    return project_error(error, "The game needs a name");
+  }
+  const uint64_t length = strlen(game->executable);
+  bool8_t executable = length && game->executable[0] != ' ' &&
+                       game->executable[length - 1u] != ' ';
+  for (uint64_t i = 0; executable && i < length; ++i) {
+    executable = game_executable_char(game->executable[i]);
+  }
+  if (!executable) {
+    return project_error(error, "The executable name takes letters, digits, "
+                                "spaces, '-' and '_', without an extension");
+  }
+  if (game->window_width < 320u || game->window_height < 240u ||
+      game->window_width > 16384u || game->window_height > 16384u) {
+    return project_error(error, "The window must be 320x240 to 16384x16384");
+  }
+  bool8_t startup = !game->scene_count;
+  for (uint32_t i = 0; i < game->scene_count; ++i) {
+    bool8_t listed = false_v;
+    for (uint32_t j = 0; project && j < project->scene_count; ++j) {
+      listed |= strcmp(game->scenes[i], project->scenes[j].id) == 0;
+    }
+    if (project && !listed) {
+      return project_error(error, "An included scene is not in the project");
+    }
+    startup |= strcmp(game->scenes[i], game->startup_scene) == 0;
+  }
+  if (!startup) {
+    return project_error(error, "The startup scene must be included");
+  }
+  return true_v;
+}
+
+static bool8_t game_path(const VkrEditorProject *project,
+                         char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
+  const char *slash = strrchr(project->manifest_path, '/');
+  if (!slash) {
+    return false_v;
+  }
+  const int32_t length =
+      snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%.*s/game.json",
+               (int)(slash - project->manifest_path), project->manifest_path);
+  return length > 0 && (uint32_t)length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
+}
+
+bool8_t vkr_editor_game_load(const VkrEditorProject *project,
+                             VkrAllocator *allocator, VkrEditorGame *game,
+                             bool8_t *out_exists,
+                             VkrEditorProjectError *error) {
+  *out_exists = false_v;
+  vkr_editor_game_default(project, game);
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!game_path(project, path)) {
+    return project_error(error, "The project path is too long for game.json");
+  }
+  FilePath file = project_path(path);
+  if (!file_exists(&file)) {
+    return true_v;
+  }
+  String8 bytes = {0};
+  if (!project_read(path, allocator, &bytes, error)) {
+    return false_v;
+  }
+  const bool8_t parsed = bytes.length <= PROJECT_GAME_LIMIT &&
+                         vkr_editor_game_parse(bytes, game, error);
+  vkr_allocator_free(allocator, bytes.str, bytes.length + 1,
+                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!parsed) {
+    vkr_editor_game_default(project, game);
+    return false_v;
+  }
+  *out_exists = true_v;
+  return true_v;
+}
+
+bool8_t vkr_editor_game_save(const VkrEditorProject *project,
+                             const VkrEditorGame *game, VkrAllocator *scratch,
+                             VkrEditorProjectError *error) {
+  char path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!game_path(project, path)) {
+    return project_error(error, "The project path is too long for game.json");
+  }
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return project_error(error, "No scratch memory to save game.json");
+  }
+  s_ProjectMemorySink sink = {.capacity = PROJECT_GAME_LIMIT};
+  sink.bytes = vkr_allocator_alloc(scratch, sink.capacity,
+                                   VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  VkrJsonWriter writer;
+  vkr_json_writer_init(&writer, project_memory_sink, &sink);
+  bool8_t ok = sink.bytes && vkr_editor_game_write(&writer, game) &&
+               vkr_json_writer_complete(&writer);
+  String8 document = {.str = sink.bytes, .length = sink.length};
+  /* Members another tool added survive: the previous file's objects merge
+     under the ones this editor owns. */
+  FilePath file = project_path(path);
+  String8 previous = {0};
+  if (ok && file_exists(&file) &&
+      project_read(path, scratch, &previous, NULL)) {
+    String8 merged = {0};
+    if (vkr_editor_project_json_merge_objects(scratch, previous, document,
+                                              &merged, NULL)) {
+      document = merged;
+    }
+  }
+  ok = ok ? project_publish_document(path, document, error)
+          : project_error(error, "game.json could not be written");
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  return ok;
+}
