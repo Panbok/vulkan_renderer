@@ -11,7 +11,11 @@ FpsPlayerSettings fps_player_settings_default(void) {
                              .jump_speed = 5.0f,
                              .magazine = 12,
                              .reserve = 120,
-                             .camera_mode = FPS_CAMERA_RIG_FIRST_PERSON};
+                             .camera_mode = FPS_CAMERA_RIG_FIRST_PERSON,
+                             .walk_speed = 1.5f,
+                             .acceleration = 14.0f,
+                             .turn_rate = 9.42477796f,
+                             .orient_to_movement = true_v};
 }
 
 static FpsPlayerState *player_state(FpsPlayer *player) {
@@ -30,20 +34,32 @@ static bool8_t player_fail(FpsPlayer *player, const char *message) {
 static bool8_t player_prepare_animation(FpsPlayer *player, const char **error) {
   const VkrScriptApi *api = player->api;
   VkrAnimationPlayer *current =
-      api->animation_player(player->scene, player->entity);
+      player->visual.u64 ? api->animation_player(player->scene, player->visual)
+                         : NULL;
   player->animation = (FpsPlayerAnimation){0};
+  player->locomotion = (FpsLocomotion){0};
+  player->locomotion_active = false_v;
+  player->pose_failed = false_v;
   player->weapon_reference_valid = false_v;
   if (!current) {
     return true_v;
   }
-  if (api->animation_graph(player->scene, player->entity)) {
+  if (api->animation_graph(player->scene, player->visual)) {
     if (error) {
       *error = "Player animation already has a graph owner";
     }
     return false_v;
   }
-  if (!fps_player_animation_initialize(&player->animation, api, current,
-                                       VKR_SCENE_SIMULATION_FIXED_DT, error)) {
+  // A bank with the mannequin's clip names moves with speed-synchronized
+  // locomotion; any other plays its named action clips.
+  if (fps_locomotion_supported(api, current)) {
+    if (!fps_locomotion_initialize(&player->locomotion, api, current, error)) {
+      return false_v;
+    }
+    player->locomotion_active = true_v;
+  } else if (!fps_player_animation_initialize(&player->animation, api, current,
+                                              VKR_SCENE_SIMULATION_FIXED_DT,
+                                              error)) {
     return false_v;
   }
   const VkrAnimationAsset *asset = api->animation_asset(current);
@@ -108,12 +124,20 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
                                    ? player->error
                                    : fps_input_error(&player->commands));
   }
-  if (api->animation_player(scene, player->entity) !=
-          player->animation.player ||
-      api->animation_graph(scene, player->entity)) {
+  if (player->pose_failed) {
+    return player_fail(player, player->error);
+  }
+  VkrAnimationPlayer *bound = player->locomotion_active
+                                  ? player->locomotion.player
+                                  : player->animation.player;
+  if ((player->visual.u64 &&
+       (api->animation_player(scene, player->visual) != bound ||
+        api->animation_graph(scene, player->visual))) ||
+      (!player->visual.u64 && bound)) {
     return player_fail(
         player, "Player animation binding changed; reset before resuming");
   }
+  player->previous_facing = player->facing;
   player->previous_foot = player->current_foot;
   if (state->weapon.reloading) {
     uint32_t transferred;
@@ -175,20 +199,53 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
   const float32_t length = sqrtf(forward * forward + right * right);
   const bool8_t crouch_requested =
       (state->held & (1u << FPS_ACTION_CROUCH)) != 0;
+  const bool8_t walk_requested = (state->held & (1u << FPS_ACTION_WALK)) != 0;
   const float32_t move_speed = motor.crouched || crouch_requested
                                    ? player->settings.crouch_speed
-                                   : player->settings.move_speed;
+                               : walk_requested ? player->settings.walk_speed
+                                                : player->settings.move_speed;
   const float32_t speed = length > 0 ? move_speed / length : 0;
+  const float32_t dt = (float32_t)VKR_SCENE_SIMULATION_FIXED_DT;
+  const Vec2 desired =
+      vec2_new((cosf(state->yaw) * forward - sinf(state->yaw) * right) * speed,
+               (sinf(state->yaw) * forward + cosf(state->yaw) * right) * speed);
+  // Third person turns the body towards its movement and eases speed
+  // changes; other views strafe with the camera at once.
+  const bool8_t orient = player->settings.orient_to_movement &&
+                         player->camera.mode == FPS_CAMERA_RIG_THIRD_PERSON;
+  if (orient && player->settings.acceleration > 0.0f) {
+    const Vec2 delta = vec2_new(desired.x - player->move_velocity.x,
+                                desired.y - player->move_velocity.y);
+    const float32_t distance = sqrtf(delta.x * delta.x + delta.y * delta.y);
+    /* Braking to a stop is a third quicker than speeding up. */
+    const float32_t braking = length > 0 ? 1.0f : 4.0f / 3.0f;
+    const float32_t step = player->settings.acceleration * braking * dt;
+    const float32_t take = distance > step ? step / distance : 1.0f;
+    player->move_velocity.x += delta.x * take;
+    player->move_velocity.y += delta.y * take;
+  } else {
+    player->move_velocity = desired;
+  }
+  if (orient) {
+    const Vec2 v = player->move_velocity;
+    if (v.x * v.x + v.y * v.y > 0.04f) {
+      const float32_t target = atan2f(v.y, v.x);
+      const float32_t turn =
+          remainderf(target - player->facing, 6.28318530718f);
+      const float32_t limit = player->settings.turn_rate * dt;
+      player->facing = remainderf(player->facing + Clamp(turn, -limit, limit),
+                                  6.28318530718f);
+    }
+  } else {
+    player->facing = state->yaw;
+  }
   const Vec3 gravity = api->gravity(scene);
   VkrPhysicsCharacterInput input = {
-      .velocity = {(cosf(state->yaw) * forward - sinf(state->yaw) * right) *
-                       speed,
-                   motor.velocity[1],
-                   (sinf(state->yaw) * forward + cosf(state->yaw) * right) *
-                       speed},
+      .velocity = {player->move_velocity.x, motor.velocity[1],
+                   player->move_velocity.y},
       .gravity = {gravity.x, gravity.y, gravity.z},
       .crouch = crouch_requested,
-      .dt = (float32_t)VKR_SCENE_SIMULATION_FIXED_DT};
+      .dt = dt};
   if (motor.ground == VKR_PHYSICS_CHARACTER_ON_GROUND) {
     input.velocity[1] = jump && !crouch_requested && !motor.crouched
                             ? player->settings.jump_speed
@@ -204,7 +261,19 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
   state->grounded = motor.ground == VKR_PHYSICS_CHARACTER_ON_GROUND;
   state->crouched = motor.crouched;
   player->camera.config.eye_height = state->crouched ? .9f : 1.6f;
-  if (player->animation.player) {
+  player->steps++;
+  if (player->locomotion_active) {
+    // Solved velocity in the body's frame: forward along the facing, right
+    // along (-sin, cos) as the camera rig defines it.
+    const float32_t c = cosf(player->facing);
+    const float32_t s = sinf(player->facing);
+    player->locomotion_input = (FpsLocomotionInput){
+        .forward = state->velocity.x * c + state->velocity.z * s,
+        .right = -state->velocity.x * s + state->velocity.z * c,
+        .up = state->velocity.y,
+        .grounded = state->grounded,
+        .crouched = state->crouched};
+  } else if (player->animation.player) {
     const FpsPlayerAnimationInput animation = player_animation_input(state);
     if (!fps_player_animation_update(&player->animation, &animation)) {
       return player_fail(player, "Player action animation failed");
@@ -257,6 +326,9 @@ void fps_player_reset(FpsPlayer *player) {
   player->camera.config.eye_height = 1.6f;
   player->render_yaw = player->spawn_yaw;
   player->render_pitch = 0;
+  player->facing = player->spawn_yaw;
+  player->previous_facing = player->spawn_yaw;
+  player->move_velocity = (Vec2){0};
   player->commands = (FpsInput){0};
   player->shot_pending = false_v;
   player->hit_pending = false_v;
@@ -273,7 +345,16 @@ void fps_player_reset(FpsPlayer *player) {
     state->grounded = motor.ground == VKR_PHYSICS_CHARACTER_ON_GROUND;
     state->crouched = motor.crouched;
   }
-  if (player->animation.player) {
+  player->steps = 0;
+  player->pose_time = 0.0;
+  player->locomotion_input = (FpsLocomotionInput){.grounded = state->grounded,
+                                                  .crouched = state->crouched};
+  if (player->locomotion_active) {
+    if (!fps_locomotion_reset(&player->locomotion)) {
+      player_fail(player, "Player locomotion reset failed");
+      player->commands.faulted = true_v;
+    }
+  } else if (player->animation.player) {
     const FpsPlayerAnimationInput animation = player_animation_input(state);
     if (!fps_player_animation_reset(&player->animation, &animation)) {
       player_fail(player, "Player animation reset failed");
@@ -329,6 +410,14 @@ void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event) {
       pressed = player->api->input_key_down(player->input, KEY_CONTROL) ||
                 player->api->input_key_down(player->input, KEY_LCONTROL) ||
                 player->api->input_key_down(player->input, KEY_RCONTROL);
+      break;
+    case KEY_SHIFT:
+    case KEY_LSHIFT:
+    case KEY_RSHIFT:
+      action = FPS_ACTION_WALK;
+      pressed = player->api->input_key_down(player->input, KEY_SHIFT) ||
+                player->api->input_key_down(player->input, KEY_LSHIFT) ||
+                player->api->input_key_down(player->input, KEY_RSHIFT);
       break;
     default:
       return;
@@ -409,6 +498,7 @@ bool8_t fps_player_attach(FpsPlayer *player, const FpsPlayerConfig *config,
                         .entity = config->entity,
                         .component = component,
                         .settings = config->settings,
+                        .visual = config->visual,
                         .weapon_bone = config->weapon_bone,
                         .instance_id = config->instance_id - 1,
                         .spawn_yaw = config->yaw,
@@ -536,4 +626,30 @@ bool8_t fps_player_camera(FpsPlayer *player, FpsCameraRigPose *pose) {
   return fps_camera_rig_evaluate(&player->camera, foot, player->render_yaw,
                                  player->render_pitch, player_camera_sweep,
                                  player, pose);
+}
+
+float32_t fps_player_render_facing(const FpsPlayer *player, float32_t alpha) {
+  const float32_t turn =
+      remainderf(player->facing - player->previous_facing, 6.28318530718f);
+  return player->previous_facing + turn * Clamp(alpha, 0.0f, 1.0f);
+}
+
+void fps_player_animate(FpsPlayer *player, float32_t alpha) {
+  if (!player->locomotion_active || !player->steps || player->pose_failed) {
+    return;
+  }
+  // The root renders `alpha` of the way through the latest tick.
+  const float64_t time =
+      ((float64_t)player->steps - 1.0 + (float64_t)Clamp(alpha, 0.0f, 1.0f)) *
+      VKR_SCENE_SIMULATION_FIXED_DT;
+  if (time <= player->pose_time) {
+    return;
+  }
+  const float64_t dt = time - player->pose_time;
+  player->pose_time = time;
+  if (!fps_locomotion_update(&player->locomotion, &player->locomotion_input,
+                             dt)) {
+    player_fail(player, "Player locomotion animation failed");
+    player->pose_failed = true_v;
+  }
 }

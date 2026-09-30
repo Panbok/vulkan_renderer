@@ -14,6 +14,7 @@ typedef enum FpsAction {
   FPS_ACTION_CAMERA,
   FPS_ACTION_LOOK,
   FPS_ACTION_CROUCH,
+  FPS_ACTION_WALK,
   FPS_ACTION_COUNT,
 } FpsAction;
 

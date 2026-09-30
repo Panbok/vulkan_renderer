@@ -6,7 +6,8 @@
  *   <out>/bundle.json             version 2, with a `game` object
  *   <out>/shaders/<backend>/...   the target backend's catalog only
  *   <out>/content/game.vkpak      `project/...` and `editor/...` identities
- *   <out>/content/engine.vkpak    `assets/...`: render graph, runtime fonts
+ *   <out>/content/engine.vkpak    `assets/...`: render graph, runtime fonts,
+ *                                  the default mannequin
  *
  * On macOS the package is `<out>/<executable>.app`: the player in
  * `Contents/MacOS`, an Info.plist, and the rest in `Contents/Resources`; the

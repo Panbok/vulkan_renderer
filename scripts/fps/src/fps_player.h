@@ -2,6 +2,7 @@
 
 #include "fps_camera_rig.h"
 #include "fps_input.h"
+#include "fps_locomotion.h"
 #include "fps_player_animation.h"
 #include "fps_weapon.h"
 #include "script/vkr_script.h"
@@ -14,6 +15,14 @@ typedef struct FpsPlayerSettings {
   uint32_t magazine;      // Rounds per magazine.
   uint32_t reserve;       // Reserve rounds at spawn and reset.
   uint32_t camera_mode;   // FpsCameraRigMode applied at attach.
+  float32_t walk_speed;   // Metres/second while Shift is held.
+  /* Third person with orient_to_movement: the body turns towards its
+   * movement at turn_rate (radians/second) and speed changes at
+   * acceleration (metres/second squared; zero is immediate). Other views
+   * strafe with the camera and change speed immediately. */
+  float32_t acceleration;
+  float32_t turn_rate;
+  bool8_t orient_to_movement;
 } FpsPlayerSettings;
 
 FpsPlayerSettings fps_player_settings_default(void);
@@ -44,6 +53,9 @@ typedef struct FpsPlayerConfig {
   Vec3 spawn_foot;
   bool8_t has_spawn;
   float32_t yaw;
+  /* Entity whose animation player poses the body: the player entity for an
+   * authored model, or the spawned model under it. Invalid for none. */
+  VkrEntityId visual;
   /* Weapon bone in the player's animation skeleton; UINT32_MAX for none. */
   uint32_t weapon_bone;
   /* Nonzero base of the weapon identities this player allocates. */
@@ -59,7 +71,19 @@ typedef struct FpsPlayer {
   FpsPlayerSettings settings;
   FpsInput commands;
   FpsCameraRig camera;
+  VkrEntityId visual;
   FpsPlayerAnimation animation;
+  /* Speed-synchronized locomotion for banks with the mannequin's clips;
+   * otherwise `animation` plays named action clips. Ticks record its input;
+   * presentation poses it at the interpolated root's time: `steps` ticks
+   * since reset, `pose_time` the seconds its pose reached. */
+  FpsLocomotion locomotion;
+  FpsLocomotionInput locomotion_input;
+  uint64_t steps;
+  float64_t pose_time;
+  bool8_t locomotion_active;
+  /* A presentation pose failed; the next tick reports `error`. */
+  bool8_t pose_failed;
   Mat4 weapon_reference_inverse;
   uint32_t weapon_bone;
   bool8_t weapon_reference_valid;
@@ -74,6 +98,12 @@ typedef struct FpsPlayer {
   float32_t spawn_yaw;
   float32_t render_yaw;
   float32_t render_pitch;
+  /* The body's yaw per tick, previous and current, for interpolation; the
+   * camera's look yaw is separate. */
+  float32_t previous_facing;
+  float32_t facing;
+  /* Commanded horizontal velocity (x, z) after acceleration. */
+  Vec2 move_velocity;
   Vec3 previous_foot;
   Vec3 current_foot;
   bool8_t clock_running;
@@ -107,3 +137,8 @@ void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event);
  * clock. */
 float64_t fps_player_frame(FpsPlayer *player, float64_t now, bool8_t active);
 bool8_t fps_player_camera(FpsPlayer *player, FpsCameraRigPose *pose);
+/* Interpolated body yaw for presentation, in the camera's yaw convention. */
+float32_t fps_player_render_facing(const FpsPlayer *player, float32_t alpha);
+/* Poses a locomotion body at `alpha` between the last two ticks, where the
+ * root renders. A failure faults the player; its next tick reports it. */
+void fps_player_animate(FpsPlayer *player, float32_t alpha);

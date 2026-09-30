@@ -4,6 +4,7 @@
 add_library(vkr_script_fps STATIC
     src/fps_camera_rig.c
     src/fps_input.c
+    src/fps_locomotion.c
     src/fps_module.c
     src/fps_player.c
     src/fps_player_animation.c

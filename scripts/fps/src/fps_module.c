@@ -2,6 +2,7 @@
  * or the resolved Player Start spawns a character with a hitscan rifle, and
  * an optional `fps_weapon` entity follows the player's animated hand. */
 #include "fps_module.h"
+#include "fps_mannequin.h"
 #include "fps_player.h"
 #include <float.h>
 #include <math.h>
@@ -67,6 +68,40 @@ static const VkrPropertyDesc s_player_properties[] = {
      .names = s_camera_mode_names,
      .offset = FPS_TYPE_OFFSET(FpsPlayerSettings, camera_mode),
      .kind = VKR_PROPERTY_ENUM},
+    {.name = "walk_speed",
+     .label = "Walk speed",
+     .tooltip = "Speed while Shift is held",
+     .unit = "m/s",
+     .offset = FPS_TYPE_OFFSET(FpsPlayerSettings, walk_speed),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 50.0f,
+     .step = 0.05f},
+    {.name = "orient_to_movement",
+     .label = "Orient to movement",
+     .tooltip = "In third person the body turns towards where it moves and "
+                "the camera orbits freely",
+     .group = "Third person",
+     .offset = FPS_TYPE_OFFSET(FpsPlayerSettings, orient_to_movement),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "acceleration",
+     .label = "Acceleration",
+     .tooltip = "Speed change while orienting to movement; 0 is immediate",
+     .unit = "m/s²",
+     .offset = FPS_TYPE_OFFSET(FpsPlayerSettings, acceleration),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 200.0f,
+     .step = 0.1f},
+    {.name = "turn_rate",
+     .label = "Turn rate",
+     .tooltip = "How fast the body turns towards its movement",
+     .unit = "°/s",
+     .offset = FPS_TYPE_OFFSET(FpsPlayerSettings, turn_rate),
+     .kind = VKR_PROPERTY_ANGLE,
+     .min = 0.0f,
+     .max = 3600.0f,
+     .step = 1.0f},
 };
 
 static void fps_player_defaults(void *value) {
@@ -114,13 +149,21 @@ static const VkrTypeDesc *const s_types[] = {&fps_player_type,
 
 typedef struct FpsModule {
   FpsPlayer player;
-  /* Hidden in first person: the authored player or the spawned capsule. */
+  /* Hidden in first person: the authored player's own model, or the body
+   * this session spawned (the mannequin, or a capsule-sized box when its
+   * content is missing). */
   VkrEntityId visual;
   VkrEntityId weapon;
-  /* The authored player's pose follows the motor and look through an
-   * evaluated transform; a spawned player's motor moves its root itself. */
+  /* The player entity was authored rather than spawned. Both follow the
+   * motor and the body's facing through an evaluated transform. */
   bool8_t authored;
+  /* The authored player entity is its own visual; its visibility returns
+   * at stop. */
+  bool8_t visual_authored;
   bool8_t visual_visible;
+  /* The player entity carrying the presentation override, authored or
+   * spawned; kept here because player shutdown clears the player. */
+  VkrEntityId entity;
   /* Entities this session created, destroyed at stop in reverse order. */
   VkrEntityId created[FPS_CREATED_MAX];
   uint32_t created_count;
@@ -218,26 +261,51 @@ static bool8_t fps_create_training_platform(const VkrScriptSession *session,
   return true_v;
 }
 
-/* A capsule-sized player spawned at the Player Start when no entity carries
- * `fps_player`. */
-static VkrEntityId fps_spawn_player(const VkrScriptSession *session,
-                                    FpsModule *module, Vec3 foot) {
+/* The default character's body under `parent`: the engine mannequin with
+ * its animation bank, or a capsule-sized box when that content is missing.
+ * Returns the body entity; its animation player, when it has one, drives
+ * locomotion. */
+static VkrEntityId fps_spawn_body(const VkrScriptSession *session,
+                                  FpsModule *module, VkrEntityId parent) {
   const VkrScriptApi *api = session->api;
   VkrScene *scene = session->scene;
-  const VkrEntityId root = fps_create(session, module, "Player", foot);
-  const VkrEntityId visual =
-      root.u64 ? fps_create(session, module, "PlayerBody", vec3_new(0, .9f, 0))
-               : VKR_ENTITY_ID_INVALID;
-  VkrSceneShapeConfig shape = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
-  shape.dimensions = vec3_new(.6f, 1.8f, .6f);
-  shape.color = vec4_new(.15f, .45f, .85f, 1);
-  if (!visual.u64 ||
-      !api->set_shape(scene, session->assets, visual, &shape, NULL)) {
+  VkrEntityId body = fps_create(session, module, "PlayerBody", vec3_zero());
+  if (!body.u64) {
     return VKR_ENTITY_ID_INVALID;
   }
-  api->set_parent(scene, visual, root);
+  api->set_parent(scene, body, parent);
+  const char *error = NULL;
+  if (!api->spawn_model(scene, session->assets, body, FPS_MANNEQUIN_MESH,
+                        FPS_MANNEQUIN_ANIMATION, &error)) {
+    char message[256];
+    snprintf(message, sizeof(message),
+             "Default mannequin unavailable (%s); the player uses a box",
+             error ? error : "unknown error");
+    api->log(LOG_LEVEL_WARN, message);
+    VkrSceneShapeConfig shape = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
+    shape.dimensions = vec3_new(.6f, 1.8f, .6f);
+    shape.color = vec4_new(.15f, .45f, .85f, 1);
+    if (!api->set_transform(scene, body, vec3_new(0, .9f, 0),
+                            vkr_quat_identity(), vec3_one()) ||
+        !api->set_shape(scene, session->assets, body, &shape, NULL)) {
+      return VKR_ENTITY_ID_INVALID;
+    }
+  }
   api->update_transforms(scene);
-  module->visual = visual;
+  return body;
+}
+
+/* A player spawned at the Player Start when no entity carries
+ * `fps_player`: a root the motor moves, with the default body. */
+static VkrEntityId fps_spawn_player(const VkrScriptSession *session,
+                                    FpsModule *module, Vec3 foot) {
+  const VkrEntityId root = fps_create(session, module, "Player", foot);
+  const VkrEntityId body =
+      root.u64 ? fps_spawn_body(session, module, root) : VKR_ENTITY_ID_INVALID;
+  if (!body.u64) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  module->visual = body;
   return root;
 }
 
@@ -249,8 +317,10 @@ static void fps_stop(const VkrScriptSession *session, void *state) {
   FpsModule *module = state;
   const VkrScriptApi *api = session->api;
   fps_player_shutdown(&module->player);
-  if (module->authored) {
-    api->set_evaluated_transform(session->scene, module->visual, NULL);
+  if (module->authored && module->entity.u64) {
+    api->set_evaluated_transform(session->scene, module->entity, NULL);
+  }
+  if (module->visual_authored) {
     api->set_visibility(session->scene, module->visual, module->visual_visible,
                         true_v);
   }
@@ -320,8 +390,20 @@ static VkrScriptStart fps_start(const VkrScriptSession *session, void *state,
       config.yaw = fps_matrix_yaw(&start);
     }
     module->authored = true_v;
-    module->visual = players[0];
-    module->visual_visible = api->entity_visible(scene, players[0]);
+    api->update_transforms(scene);
+    if (api->animation_player(scene, players[0]) ||
+        api->renders_mesh(scene, players[0])) {
+      // The authored model is the player's body.
+      module->visual = players[0];
+      module->visual_authored = true_v;
+      module->visual_visible = api->entity_visible(scene, players[0]);
+    } else {
+      module->visual = fps_spawn_body(session, module, players[0]);
+      if (!module->visual.u64) {
+        return fps_fail(session, module, "Player body allocation failed",
+                        error);
+      }
+    }
   } else {
     config.entity =
         fps_spawn_player(session, module, fps_matrix_position(&start));
@@ -330,11 +412,13 @@ static VkrScriptStart fps_start(const VkrScriptSession *session, void *state,
       return fps_fail(session, module, "Player spawn allocation failed", error);
     }
   }
+  config.visual = module->visual;
+  module->entity = config.entity;
   if (weapon_count) {
     const FpsWeaponBinding *binding =
         api->get_typed(scene, weapons[0], &fps_weapon_type);
     const VkrAnimationAsset *asset =
-        api->animation_asset(api->animation_player(scene, config.entity));
+        api->animation_asset(api->animation_player(scene, config.visual));
     if (!asset || binding->bone >= asset->node_count) {
       return fps_fail(session, module,
                       "The fps_weapon bone is outside the player's animation",
@@ -346,11 +430,10 @@ static VkrScriptStart fps_start(const VkrScriptSession *session, void *state,
 
   // Attachment acquires the presentation overrides the present hook updates.
   Mat4 pose;
-  if (module->authored &&
-      (!api->world_matrix(scene, config.entity, &pose) ||
-       !api->set_evaluated_transform(scene, config.entity, &pose) ||
-       (module->weapon.u64 &&
-        !api->set_evaluated_transform(scene, module->weapon, &pose)))) {
+  if (!api->world_matrix(scene, config.entity, &pose) ||
+      !api->set_evaluated_transform(scene, config.entity, &pose) ||
+      (module->weapon.u64 &&
+       !api->set_evaluated_transform(scene, module->weapon, &pose))) {
     return fps_fail(session, module, "Player presentation override failed",
                     error);
   }
@@ -358,9 +441,9 @@ static VkrScriptStart fps_start(const VkrScriptSession *session, void *state,
     return fps_fail(session, module, failure, error);
   }
   api->log(LOG_LEVEL_INFO,
-           "Gameplay ready: WASD move, mouse look, left click fire, R reload, "
-           "Space jump, Ctrl crouch, V camera mode, Backspace reset, "
-           "Tab/Escape release or capture mouse.");
+           "Gameplay ready: WASD move, Shift walk, mouse look, left click "
+           "fire, R reload, Space jump, Ctrl crouch, V camera mode, "
+           "Backspace reset, Tab/Escape release or capture mouse.");
   return VKR_SCRIPT_START_ACTIVE;
 }
 
@@ -414,18 +497,26 @@ static void fps_visuals(const VkrScriptSession *session, FpsModule *module,
           ? 1.0f
           : (float32_t)Min(1.0, api->physics_debt(scene) /
                                     VKR_SCENE_SIMULATION_FIXED_DT);
+  fps_player_animate(player, alpha);
   const Vec3 foot = vec3_add(
       player->previous_foot,
       vec3_scale(vec3_sub(player->current_foot, player->previous_foot), alpha));
-  const VkrQuat rotation = vkr_quat_from_axis_angle(
-      vec3_new(0, 1, 0), -player->render_yaw - 1.57079632679f);
+  // A body orienting to movement turns on its own; otherwise it follows the
+  // latest look.
+  const float32_t yaw =
+      player->settings.orient_to_movement &&
+              player->camera.mode == FPS_CAMERA_RIG_THIRD_PERSON
+          ? fps_player_render_facing(player, alpha)
+          : player->render_yaw;
+  const VkrQuat rotation =
+      vkr_quat_from_axis_angle(vec3_new(0, 1, 0), -yaw - 1.57079632679f);
   const Mat4 root = mat4_mul(mat4_translate(foot), vkr_quat_to_mat4(rotation));
   api->set_evaluated_transform(scene, player->entity, &root);
   if (!module->weapon.u64) {
     api->update_transforms(scene);
     return;
   }
-  VkrAnimationPlayer *animation = api->animation_player(scene, player->entity);
+  VkrAnimationPlayer *animation = api->animation_player(scene, player->visual);
   const VkrAnimationAsset *asset = api->animation_asset(animation);
   if (!asset || player->weapon_bone >= asset->node_count) {
     api->update_transforms(scene);
@@ -481,16 +572,14 @@ static void fps_present(const VkrScriptSession *session, void *state,
     view->camera_yaw_degrees = player->render_yaw * FPS_DEGREES_PER_RADIAN;
     view->camera_pitch_degrees = pose.pitch * FPS_DEGREES_PER_RADIAN;
   }
-  if (module->authored) {
-    fps_visuals(session, module, playing && have_pose ? &pose : NULL);
-  }
+  fps_visuals(session, module, playing && have_pose ? &pose : NULL);
   const FpsPlayerState *player_state =
       api->get_state(session->scene, player->entity, player->component);
   if (player_state) {
     snprintf(view->hud, sizeof(view->hud),
-             "Ammo %u / %u%s  Hits %llu\nWASD move | Mouse fire/look | R "
-             "reload\nSpace jump | Ctrl crouch | V camera\nTab mouse | "
-             "Backspace reset",
+             "Ammo %u / %u%s  Hits %llu\nWASD move | Shift walk | Mouse "
+             "fire/look\nR reload | Space jump | Ctrl crouch | V camera\nTab "
+             "mouse | Backspace reset",
              player_state->weapon.magazine_rounds, player_state->reserve_rounds,
              player_state->weapon.reloading ? "  Reloading" : "",
              (unsigned long long)player->hits);
@@ -505,7 +594,7 @@ static const VkrScriptModuleDesc s_module = {
     .type_count = ArrayCount(s_types),
     .state_size = sizeof(FpsModule),
     .state_align = AlignOf(FpsModule),
-    .state_version = 1,
+    .state_version = 2,
     .start = fps_start,
     .stop = fps_stop,
     .before_physics = fps_before_physics,
