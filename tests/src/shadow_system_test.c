@@ -240,10 +240,10 @@ vkr_internal void test_light_direction_change_invalidates_history(void) {
   // the same quantity; the history must restamp rather than blend.
   vkr_shadow_system_update(&system, &camera, true_v, light_b, NULL);
   assert(system.fit_history.valid);
-  assert(system.fit_history.light_direction.x == light_b.x);
-  assert(system.fit_history.light_direction.y == light_b.y);
-  assert(system.fit_history.light_direction.z == light_b.z);
   for (uint32_t i = 0u; i < config.cascade_count; ++i) {
+    assert(system.fit_history.light_directions[i].x == light_b.x);
+    assert(system.fit_history.light_directions[i].y == light_b.y);
+    assert(system.fit_history.light_directions[i].z == light_b.z);
     assert_fit_equal(&system.fit_history.cascades[i],
                      &reference.fit_history.cascades[i]);
   }
@@ -1321,6 +1321,76 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+/* Turns a unit light direction by an exact angle along a great circle. */
+vkr_internal Vec3 turn_light(Vec3 direction, float32_t degrees) {
+  const Vec3 perpendicular =
+      vec3_normalize(vec3_cross(direction, vec3_new(0.0f, 0.0f, 1.0f)));
+  const float32_t radians = degrees * (VKR_PI / 180.0f);
+  return vec3_add(vec3_scale(direction, vkr_cos_f32(radians)),
+                  vec3_scale(perpendicular, vkr_sin_f32(radians)));
+}
+
+vkr_internal void test_moving_light_keeps_cascades_within_tolerance(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(config.light_direction_tolerance_degrees == 0.025f);
+  assert(vkr_shadow_system_init(&system, &config));
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  const VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = cascade_mask(&system),
+  };
+  const Vec3 base = vec3_normalize(vec3_new(-0.4f, -1.0f, -0.3f));
+  VkrShadowFrameData frame = {0};
+
+  // Every cascade tolerates 0.01 degrees, so a moving light redraws nothing.
+  vkr_shadow_system_update(&system, &camera, true_v, turn_light(base, 0.01f),
+                           NULL);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+  vkr_shadow_system_discard_frame(&system);
+
+  // 0.03 degrees exceeds only cascade 0's 0.025; the others allow 0.05 and up.
+  const Vec3 turned = turn_light(base, 0.03f);
+  vkr_shadow_system_update(&system, &camera, true_v, turned, NULL);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == UINT32_C(1));
+  vkr_shadow_system_discard_frame(&system);
+
+  /* A light repeated for fewer than the settle count may be a slow simulation
+     step, so it keeps the tolerance; one that stays stopped is adopted
+     exactly by every cascade. */
+  for (uint32_t update = 1u; update < VKR_SHADOW_LIGHT_SETTLE_UPDATES;
+       ++update) {
+    vkr_shadow_system_update(&system, &camera, true_v, turned, NULL);
+    assert(system.cascade_light_directions[1].x == base.x);
+    assert(system.cascade_light_directions[1].y == base.y);
+    assert(system.cascade_light_directions[1].z == base.z);
+  }
+  vkr_shadow_system_update(&system, &camera, true_v, turned, NULL);
+  for (uint32_t i = 0u; i < config.cascade_count; ++i) {
+    assert(system.cascade_light_directions[i].x == turned.x);
+    assert(system.cascade_light_directions[i].y == turned.y);
+    assert(system.cascade_light_directions[i].z == turned.z);
+  }
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+
+  // A turn past every tolerance redraws at once while the light moves.
+  vkr_shadow_system_update(&system, &camera, true_v, turn_light(turned, 5.0f),
+                           NULL);
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_shutdown(&system);
+}
+
 vkr_internal void
 test_stale_dynamic_contents_render_once_after_caster_leaves(void) {
   VkrShadowSystem system = {0};
@@ -1701,6 +1771,9 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running test_light_direction_change_invalidates_history...\n");
   test_light_direction_change_invalidates_history();
   printf("  test_light_direction_change_invalidates_history PASSED\n");
+  printf("  Running test_moving_light_keeps_cascades_within_tolerance...\n");
+  test_moving_light_keeps_cascades_within_tolerance();
+  printf("  test_moving_light_keeps_cascades_within_tolerance PASSED\n");
   printf("  Running test_explicit_invalidation_clears_history...\n");
   test_explicit_invalidation_clears_history();
   printf("  test_explicit_invalidation_clears_history PASSED\n");

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-10-01
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -116,7 +116,15 @@ frames as rendering evidence.
 The child consumes pinned metrics snapshots, checks required sample validity,
 collects completed GPU timings by source serial, and records bounded events.
 Metal has both per-pass timestamp collection and submission feedback; unavailable
-or unsupported results remain explicit. A bounded completion drain after the
+or unsupported results remain explicit. A Metal graphics pass's interval starts
+after the vertex stage and ends after the fragment stage, so it includes the
+vertex and tiling work Apple GPUs run before fragment shading. Until 2026-10-01
+both stamps followed the fragment stage and graphics-pass rows omitted that
+work: in Bistro each shadow cascade read about 0.4 ms against about 2 ms of real
+cost, and the pass sum was 26.2 ms against 34.3 ms of whole-submission time.
+With the correction the sum is 34.24 ms against 33.26 ms with the sun up and
+24.86 ms against 24.44 ms at night. Compare graphics-pass rows only between
+reports on the same side of that change. A bounded completion drain after the
 measurement window does not turn missing results into valid zero durations.
 Work-volume and stability checks govern timing authority independently of
 execution success.

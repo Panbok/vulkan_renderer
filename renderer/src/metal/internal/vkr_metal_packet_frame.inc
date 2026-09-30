@@ -5086,9 +5086,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
     return false_v;
   }
   encoder.label = prepared->label;
+  /* Apple GPUs run a pass's vertex and tiling work before its fragment work.
+     The start stamp follows the earliest stage so the interval covers both;
+     one written after the fragment stage would begin once tiling had ended. */
   if (encoder_timing_pass)
     [encoder writeTimestampWithGranularity:MTL4TimestampGranularityPrecise
-                                afterStage:MTLRenderStageFragment
+                                afterStage:MTLRenderStageVertex
                                   intoHeap:renderer->active_command_slot
                                                ->timestamp_heap
                                    atIndex:(NSUInteger)prepared->index * 2u];

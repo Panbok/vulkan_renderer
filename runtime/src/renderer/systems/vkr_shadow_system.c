@@ -767,18 +767,33 @@ VkrShadowFit vkr_shadow_apply_fit_hysteresis(const VkrShadowFit *previous,
 }
 
 vkr_internal bool8_t vkr_shadow_fit_history_matches(
-    const VkrShadowFitHistory *history, Vec3 light_direction,
-    uint32_t cascade_count, uint32_t shadow_map_size,
-    uint32_t projection_convention, uint64_t enable_generation) {
+    const VkrShadowFitHistory *history, uint32_t cascade_count,
+    uint32_t shadow_map_size, uint32_t projection_convention,
+    uint64_t enable_generation) {
   // Any mismatch means the stored fit was framed by different rules, so it is
   // not a previous value of the same quantity and must not be blended with.
   return history->valid && history->cascade_count == cascade_count &&
          history->shadow_map_size == shadow_map_size &&
          history->projection_convention == projection_convention &&
-         history->enable_generation == enable_generation &&
-         history->light_direction.x == light_direction.x &&
-         history->light_direction.y == light_direction.y &&
-         history->light_direction.z == light_direction.z;
+         history->enable_generation == enable_generation;
+}
+
+vkr_internal bool8_t vkr_shadow_direction_equal(Vec3 a, Vec3 b) {
+  return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+/* Keeps a cascade's fitted direction while the moving light stays within the
+   cascade's tolerance. The sine of the angle is compared because the cosine of
+   a hundredth of a degree is not representable apart from one in float32. */
+vkr_internal Vec3 vkr_shadow_cascade_direction(Vec3 fitted, Vec3 light,
+                                               float32_t tolerance_degrees) {
+  const Vec3 a = vec3_normalize(fitted);
+  const Vec3 b = vec3_normalize(light);
+  const float32_t sin_tolerance =
+      vkr_sin_f32(tolerance_degrees * (VKR_PI / 180.0f));
+  const bool8_t within =
+      vec3_dot(a, b) > 0.0f && vec3_length(vec3_cross(a, b)) <= sin_tolerance;
+  return within ? fitted : light;
 }
 
 void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
@@ -1121,6 +1136,14 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
   }
 
   const bool8_t was_enabled = system->light_enabled;
+  system->light_unchanged_updates =
+      was_enabled && vkr_shadow_direction_equal(system->light_direction,
+                                                light_direction)
+          ? Min(system->light_unchanged_updates + 1u,
+                VKR_SHADOW_LIGHT_SETTLE_UPDATES)
+          : 0u;
+  const bool8_t light_settled =
+      system->light_unchanged_updates >= VKR_SHADOW_LIGHT_SETTLE_UPDATES;
   system->light_enabled = light_enabled;
   system->light_direction = light_direction;
 
@@ -1158,7 +1181,7 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
 
   uint32_t shadow_map_size =
       vkr_shadow_config_get_max_map_size(&system->config);
-  Mat4 light_view = vkr_shadow_compute_light_view(
+  const Mat4 light_view = vkr_shadow_compute_light_view(
       camera, &system->config.scene_bounds, light_direction,
       system->config.max_shadow_distance, shadow_map_size,
       system->config.anchor_snap_texels);
@@ -1174,17 +1197,39 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
   // invalidates stored fits instead of silently mixing conventions.
   const uint32_t projection_convention = 0u;
   VkrShadowFitHistory *history = &system->fit_history;
-  const bool8_t history_usable =
+  const bool8_t history_compatible =
       system->config.stabilize_cascades &&
-      vkr_shadow_fit_history_matches(history, light_direction, cascade_count,
-                                     shadow_map_size, projection_convention,
+      vkr_shadow_fit_history_matches(history, cascade_count, shadow_map_size,
+                                     projection_convention,
                                      system->enable_generation);
 
   for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
     VkrCascadeData *cascade = &system->cascades[i];
+    /* A moving light keeps each cascade's fitted direction within its
+       tolerance, so its fit, and therefore its retained depth, stays
+       reusable; a light that stops is adopted exactly. */
+    Vec3 cascade_direction = light_direction;
+    if (history_compatible && !light_settled) {
+      const float32_t tolerance =
+          system->config.light_direction_tolerance_degrees *
+          (float32_t)(1u << i);
+      cascade_direction = vkr_shadow_cascade_direction(
+          history->light_directions[i], light_direction, tolerance);
+    }
+    system->cascade_light_directions[i] = cascade_direction;
+    const bool8_t history_usable =
+        history_compatible &&
+        vkr_shadow_direction_equal(history->light_directions[i],
+                                   cascade_direction);
     cascade->previous_fit = cascade->fit;
     cascade->previous_fit_valid = history_usable;
-    cascade->light_view = light_view;
+    cascade->light_view =
+        vkr_shadow_direction_equal(cascade_direction, light_direction)
+            ? light_view
+            : vkr_shadow_compute_light_view(
+                  camera, &system->config.scene_bounds, cascade_direction,
+                  system->config.max_shadow_distance, shadow_map_size,
+                  system->config.anchor_snap_texels);
     float32_t split_near = system->cascade_splits[i];
     float32_t split_far = system->cascade_splits[i + 1];
 
@@ -1214,13 +1259,14 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
 
     VkrShadowFit fit = {0};
     vkr_shadow_compute_cascade_matrix(
-        &light_view, corners, shadow_map_size,
+        &cascade->light_view, corners, shadow_map_size,
         system->config.stabilize_cascades, guard_band,
         system->config.use_constant_cascade_size, &system->config.scene_bounds,
         z_extension, caster_bounds,
         history_usable ? &history->cascades[i] : NULL,
         &cascade->view_projection, &fit, &cascade->light_space_origin);
     history->cascades[i] = fit;
+    history->light_directions[i] = cascade_direction;
     cascade->fit = fit;
     cascade->world_units_per_texel = fit.world_units_per_texel;
     /* The clamped ortho pair, not the raw interval: this span is the divisor
@@ -1251,7 +1297,6 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     cascade->split_far = split_far;
   }
 
-  history->light_direction = light_direction;
   history->cascade_count = cascade_count;
   history->shadow_map_size = shadow_map_size;
   history->projection_convention = projection_convention;
@@ -1388,8 +1433,10 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
   out_data->sdsm_linear_near = system->sdsm_linear_near;
   out_data->sdsm_linear_far = system->sdsm_linear_far;
   const bool8_t image_valid = image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
-  const uint64_t light_signature =
-      vkr_shadow_light_signature(system->light_direction);
+  uint64_t light_signatures[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade)
+    light_signatures[cascade] =
+        vkr_shadow_light_signature(system->cascade_light_directions[cascade]);
   const uint64_t bias_signature =
       vkr_shadow_bias_signature(&system->config, shadow_depth_format);
 
@@ -1417,7 +1464,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
            history->last_submit_value <= desired[cascade]->last_submit_value) ||
           !vkr_shadow_submitted_signature_matches(
               history, candidates, retained_token.resource_generation,
-              bias_signature, light_signature))
+              bias_signature, light_signatures[cascade]))
         continue;
       const float32_t margin =
           vkr_shadow_rendered_fit_margin(history, &system->cascades[cascade]);
@@ -1474,7 +1521,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         history && desired[cascade] &&
         vkr_shadow_submitted_signature_matches(
             history, candidates, retained_token.resource_generation,
-            bias_signature, light_signature) &&
+            bias_signature, light_signatures[cascade]) &&
         vkr_shadow_rendered_descriptor_equal(history, desired[cascade]);
     const bool8_t dynamic_forced =
         dynamic_scan_failed || desired_dynamic_overlap[cascade];
@@ -1552,7 +1599,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         .caster_bounds_generation =
             candidates ? candidates->caster_bounds_generation : 0u,
         .bias_signature = bias_signature,
-        .light_signature = light_signature,
+        .light_signature = light_signatures[cascade],
         .resource_generation = retained_token.resource_generation,
     };
   }

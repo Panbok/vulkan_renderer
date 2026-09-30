@@ -54,7 +54,8 @@ typedef struct VkrShadowFit {
  */
 typedef struct VkrShadowFitHistory {
   VkrShadowFit cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
-  Vec3 light_direction;
+  /** Light direction each cascade's fit was framed with. */
+  Vec3 light_directions[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t cascade_count;
   uint32_t shadow_map_size;
   uint32_t projection_convention;
@@ -153,6 +154,8 @@ typedef struct VkrShadowCasterDepthBounds {
  * | use_constant_cascade_size | selects sphere-radius extent over corner AABB |
  * | stabilize_cascades | extent quantization and texel snapping |
  * | anchor_snap_texels | light-view anchor snap |
+ * | light_direction_tolerance_degrees | per-cascade retained light direction
+ *   in vkr_shadow_system_update() |
  * | scene_bounds | vkr_shadow_fit_relevant_caster_z(), off by default |
  * | depth_bias_constant_factor, _slope_factor, _clamp | raster depth bias, via
  *   VkrShadowConfigOverride, on both selected implementations |
@@ -218,9 +221,24 @@ typedef struct VkrShadowConfig {
   float32_t sdsm_max_contraction_fraction;
   bool8_t use_constant_cascade_size;
   float32_t anchor_snap_texels;
+  /** While the light keeps moving, cascade 0 keeps its fitted direction until
+      the light turns past this angle; each farther cascade doubles it. A light
+      that stops is adopted exactly once VKR_SHADOW_LIGHT_SETTLE_UPDATES pass.
+      Zero adopts every change.
+      Requires stabilize_cascades. */
+  float32_t light_direction_tolerance_degrees;
   bool8_t stabilize_cascades;
   VkrShadowSceneBounds scene_bounds;
 } VkrShadowConfig;
+
+/* A 24-minute day turns the sun about 0.004 degrees per 60 Hz frame, so
+ * cascade 0 refreshes about every six frames and cascade 3 about every fifty.
+ * A 15 m caster's shadow moves under 7 mm between cascade 0 refreshes. */
+#define VKR_SHADOW_LIGHT_DIRECTION_TOLERANCE_DEGREES_DEFAULT 0.025f
+/* A light unchanged for this many updates has stopped and is adopted exactly.
+ * More than one tolerates a simulation that turns the sun on every second to
+ * fourth rendered frame without settling between its steps. */
+#define VKR_SHADOW_LIGHT_SETTLE_UPDATES 4u
 
 /* Local-shadow faces per preset: five point lights for High, two for
  * Balanced. Each shadowed light adds its PCF to every pixel in its range, so
@@ -284,6 +302,8 @@ typedef struct VkrShadowConfig {
       .sdsm_temporal_blend = 0.85f,                                            \
       .sdsm_max_contraction_fraction = 0.10f,                                  \
       .anchor_snap_texels = 16.0f,                                             \
+      .light_direction_tolerance_degrees =                                     \
+          VKR_SHADOW_LIGHT_DIRECTION_TOLERANCE_DEGREES_DEFAULT,                \
       .stabilize_cascades = true_v,                                            \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
   })
@@ -321,6 +341,8 @@ typedef struct VkrShadowConfig {
       .shadow_distance_fade_range = 12.0f,                                     \
       .use_constant_cascade_size = true_v,                                     \
       .anchor_snap_texels = 8.0f,                                              \
+      .light_direction_tolerance_degrees =                                     \
+          VKR_SHADOW_LIGHT_DIRECTION_TOLERANCE_DEGREES_DEFAULT,                \
       .stabilize_cascades = true_v,                                            \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
   })
@@ -483,7 +505,14 @@ typedef struct VkrShadowSystem {
   VkrCascadeData cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t cascade_splits[VKR_SHADOW_CASCADE_COUNT_MAX + 1];
 
+  /** Latest input light direction. */
   Vec3 light_direction;
+  /** Consecutive updates with an unchanged direction, saturating at
+      VKR_SHADOW_LIGHT_SETTLE_UPDATES, where the light counts as stopped. */
+  uint32_t light_unchanged_updates;
+  /** Direction each cascade is fitted with this frame (see
+      light_direction_tolerance_degrees). */
+  Vec3 cascade_light_directions[VKR_SHADOW_CASCADE_COUNT_MAX];
   bool8_t light_enabled;
 
   /** Previous-frame fits, for the stabilization deadbands. */

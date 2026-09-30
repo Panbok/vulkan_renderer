@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -40,6 +40,19 @@ skinned meshes stay dynamic, and a dynamic caster that overlaps a cascade or
 local light redraws it every frame. Pending fits and
 content validity commit only after successful submit. Reused cascades publish
 the fit that actually produced their depth.
+
+Each cascade keeps the light direction its fit was framed with while a moving
+light stays within that cascade's tolerance: 0.025 degrees for cascade 0,
+doubling for each farther cascade, whose texels are larger. The fit, light view
+and light signature follow that direction, so a retained cascade stays reusable
+and its receivers sample the matrix that produced its depth. A cascade adopts a
+light that turns past its tolerance at once. A light whose direction stays
+unchanged for four consecutive updates has stopped and is adopted exactly by
+every cascade, so a stopped or static sun never keeps an approximate shadow;
+fewer repeats may be a simulation that turns the sun only every second to
+fourth rendered frame. The tolerance applies
+only with fit stabilization; zero adopts every change. Direct lighting still
+uses the exact direction.
 
 The optional proactive refresh scheduler selects low-margin cascades within a
 bounded budget; the production budget is zero. Converging stale image copies is
@@ -86,7 +99,15 @@ movement, alternating shadow sampling and preventing checked temporal scene
 signatures from matching. Converging them can add up to one render per stale
 image/cascade for each adopted fit, spread across normal completion-safe image
 reuse. Once the images agree, static frames omit those passes again. No new GPU
-storage, copies or waits are required. More aggressive fitting/bias/filter choices alter quality and must be
+storage, copies or waits are required.
+
+While the light moves, a cascade's shadow can lag the lit direction by up to
+its tolerance: under 7 mm for a 15 m caster in cascade 0 and 5.2 cm in cascade
+3 of four. At a 24-minute day, about 0.004 degrees per 60 Hz frame, cascade 0
+refreshes about every sixth frame and cascade 3 about every fiftieth instead of
+all four every frame, and each refresh also renders the other target images as
+they are reused. A light that turns past a cascade's tolerance every frame
+redraws it every frame, as before. More aggressive fitting/bias/filter choices alter quality and must be
 measured. Point/spot shadows use ADR-019's independent bounded pool; arbitrary indirect-light occlusion remains absent.
 
 ## Alternatives considered
@@ -106,6 +127,20 @@ near-contact region and every pixel outside the far-shadow region remain
 byte-identical; all three raw depth maps are identical. A focused Metal API
 validation run passes. These are output checks, not a performance comparison.
 Native Vulkan execution and bilateral image comparison remain unavailable.
+
+## Moving-light evidence
+
+Bistro with the atmosphere, Metal Release on the M1 Pro, 1280×720 offscreen,
+60 warmup and 600 measured frames, with a temporary diagnostic turning the sun
+0.0042 degrees per frame from the phase start. Single-process, non-authoritative
+runs. With the tolerance, whole-submission GPU time is 25.90 ms at p50 and
+35.80 ms at p95; the same binary with the tolerance forced to zero gives 33.49
+and 43.43 ms. Cascades 0-3 render in 200, 100, 50 and 24 of the 600 frames. At
+0.6 degrees per frame every step exceeds every tolerance and GPU time is
+unchanged, 33.26 ms with the sun up and 24.44 ms with it set. A CPU test turns a
+retained light by 0.01, 0.03 and 5 degrees and stops it: nothing, cascade 0,
+and every cascade render, and a light repeated four times is adopted exactly. The static
+Bistro snapshot is unchanged.
 
 ## Revisit when
 
