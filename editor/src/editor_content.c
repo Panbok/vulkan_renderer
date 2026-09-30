@@ -3788,7 +3788,8 @@ static void content_item_button(VkrEditorContent *content, VkrUiSystem *ui,
     content_click(content, ui, shown, grid_id);
   }
   content_context_probe(content, ui, string8_lit("item"), shown);
-  if (!folder || !tree->system) {
+  /* Scene folders are system folders that still drag, into the viewport. */
+  if (!folder || content_folder_draggable(tree)) {
     content_drag_begin(content, ui, shown, string8_lit("item"));
   }
 }
