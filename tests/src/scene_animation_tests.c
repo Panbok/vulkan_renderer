@@ -13,6 +13,7 @@
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <assert.h>
 #include <math.h>
@@ -355,6 +356,77 @@ static void scene_animation_test_async(VkrAllocator *allocator,
   assert(remove(wrong_path) == 0);
 }
 
+static uint32_t scene_animation_test_live(const VkrScene *scene) {
+  return scene->world->dir.living - scene->world->dir.free_count;
+}
+
+/* A runtime-spawned model owns its node entities, animation binding and
+ * mesh result: despawn and wrapper destruction release all of them, and a
+ * failed spawn leaves nothing behind. */
+static void scene_animation_test_spawn(VkrScene *scene, VkrAllocator *allocator,
+                                       VkrAllocator *scratch,
+                                       VkrArenaPool *pool) {
+  VkrRenderAssets assets = {.allocator = *allocator,
+                            .scratch_allocator = *scratch};
+  VkrSceneModelDesc desc = {.mesh_path = scene_animation_test_path(s_mesh_path),
+                            .animation_path =
+                                scene_animation_test_path(s_bank_path),
+                            .animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
+  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
+  const char *error = NULL;
+  const uint32_t pooled = pool->pool.allocated;
+  VkrEntityId wrapper = vkr_scene_create_entity(scene, &scene_error);
+  assert(wrapper.u64 != VKR_ENTITY_ID_INVALID.u64);
+  // Nodes parent to the wrapper's transform, so a bare entity is refused.
+  assert(!vkr_scene_spawn_model(scene, &assets, wrapper, &desc, &error));
+  assert(error);
+  assert(vkr_scene_set_transform(scene, wrapper, vec3_new(5, 0, 0),
+                                 vkr_quat_identity(), vec3_one()));
+  const uint32_t live = scene_animation_test_live(scene);
+
+  assert(vkr_scene_spawn_model(scene, &assets, wrapper, &desc, &error));
+  assert(!error);
+  VkrAnimationPlayer *player = vkr_scene_animation_get_player(scene, wrapper);
+  VkrEntityId node = vkr_scene_animation_node_entity(scene, wrapper, 0);
+  assert(player && vkr_scene_entity_alive(scene, node));
+  assert(scene_animation_test_live(scene) == live + 1);
+  assert(pool->pool.allocated == pooled + 1);
+  // The spawned bank plays on the scene clock like a loaded one.
+  vkr_scene_update(scene, 0.5);
+  assert(vkr_animation_player_time(player) == 0.5);
+  // One model per wrapper.
+  assert(!vkr_scene_spawn_model(scene, &assets, wrapper, &desc, &error));
+  assert(error);
+
+  vkr_scene_despawn_model(scene, wrapper);
+  assert(!vkr_scene_animation_get_player(scene, wrapper));
+  assert(!vkr_scene_entity_alive(scene, node));
+  assert(vkr_scene_entity_alive(scene, wrapper));
+  assert(scene_animation_test_live(scene) == live);
+  assert(pool->pool.allocated == pooled);
+
+  // Destroying the wrapper releases its model too.
+  assert(vkr_scene_spawn_model(scene, &assets, wrapper, &desc, &error));
+  node = vkr_scene_animation_node_entity(scene, wrapper, 0);
+  vkr_scene_destroy_entity(scene, wrapper);
+  assert(!vkr_scene_entity_alive(scene, node));
+  assert(scene_animation_test_live(scene) == live - 1);
+  assert(pool->pool.allocated == pooled);
+
+  // A bank cooked from another source fails the binding and leaves no nodes.
+  wrapper = vkr_scene_create_entity(scene, &scene_error);
+  assert(vkr_scene_set_transform(scene, wrapper, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  desc.animation_path = scene_animation_test_path(s_wrong_path);
+  error = NULL;
+  assert(!vkr_scene_spawn_model(scene, &assets, wrapper, &desc, &error));
+  assert(error);
+  assert(!vkr_scene_animation_get_player(scene, wrapper));
+  assert(scene_animation_test_live(scene) == live);
+  assert(pool->pool.allocated == pooled);
+  vkr_scene_destroy_entity(scene, wrapper);
+}
+
 bool32_t run_scene_animation_tests(void) {
   printf("Running scene animation lifecycle tests...\n");
   /* This metadata-only synthetic fixture isolates CPU binding ownership. It
@@ -613,6 +685,7 @@ bool32_t run_scene_animation_tests(void) {
   assert(vkr_scene_animation_attach(&scene, last_wrapper, &last_mesh,
                                     &last_bank, &last_node, 1, &config,
                                     &scratch, &error));
+  scene_animation_test_spawn(&scene, &allocator, &scratch, &pool);
   vkr_scene_shutdown(&scene, NULL);
   assert(pool.pool.allocated == 0);
   scene_animation_test_json(&allocator, &scratch, &pool);

@@ -3091,12 +3091,14 @@ bool8_t vkr_scene_physics_matrix_allowed(const VkrScene *scene,
   }
   Vec3 position, scale;
   VkrQuat rotation;
+  /* A new entity has no transform yet; it validates as a root, as
+     vkr_scene_set_transform does. */
   const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
       scene->world, entity, scene->comp_transform);
-  return transform &&
-         physics_decompose(local, &position, &rotation, &scale, NULL) &&
-         vkr_scene_physics_transform_validate(scene, entity, position, rotation,
-                                              scale, transform->parent, NULL);
+  return physics_decompose(local, &position, &rotation, &scale, NULL) &&
+         vkr_scene_physics_transform_validate(
+             scene, entity, position, rotation, scale,
+             transform ? transform->parent : VKR_ENTITY_ID_INVALID, NULL);
 }
 
 bool8_t vkr_scene_physics_raycast_query(VkrScene *scene, Vec3 origin,

@@ -2,6 +2,7 @@
 
 #include "filesystem/filesystem.h"
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <stdio.h>
 #include <string.h>
@@ -97,6 +98,52 @@ static bool8_t script_api_input_key_down(InputState *input, Keys key) {
   return input_is_key_down(input, key);
 }
 
+static bool8_t script_api_spawn_model(VkrScene *scene,
+                                      struct VkrRenderAssets *assets,
+                                      VkrEntityId entity, const char *mesh_path,
+                                      const char *animation_path,
+                                      const char **error) {
+  VkrSceneModelDesc desc = {.animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
+  if (mesh_path) {
+    desc.mesh_path =
+        string8_create_from_cstr((const uint8_t *)mesh_path, strlen(mesh_path));
+  }
+  if (animation_path) {
+    desc.animation_path = string8_create_from_cstr(
+        (const uint8_t *)animation_path, strlen(animation_path));
+  }
+  return vkr_scene_spawn_model(scene, assets, entity, &desc, error);
+}
+
+/* Deeper hierarchies answer from their first levels. */
+#define SCRIPT_MESH_DEPTH_MAX 64u
+
+static bool8_t script_subtree_renders_mesh(const VkrScene *scene,
+                                           VkrEntityId entity, uint32_t depth) {
+  if (vkr_entity_has_component(scene->world, entity,
+                               scene->comp_mesh_renderer) ||
+      vkr_entity_has_component(scene->world, entity, scene->comp_shape)) {
+    return true_v;
+  }
+  uint32_t count = 0;
+  const VkrEntityId *children =
+      depth < SCRIPT_MESH_DEPTH_MAX
+          ? vkr_scene_get_children(scene, entity, &count)
+          : NULL;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (script_subtree_renders_mesh(scene, children[i], depth + 1u)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+static bool8_t script_api_renders_mesh(const VkrScene *scene,
+                                       VkrEntityId entity) {
+  return scene && scene->world && vkr_scene_entity_alive(scene, entity) &&
+         script_subtree_renders_mesh(scene, entity, 0u);
+}
+
 static VkrScriptApi script_api_table(void) {
   return (VkrScriptApi){
       .version = VKR_SCRIPT_ABI_VERSION,
@@ -153,6 +200,10 @@ static VkrScriptApi script_api_table(void) {
       .animation_time = vkr_animation_player_time,
       .input_key_down = script_api_input_key_down,
       .physics_world_matrix = vkr_scene_physics_world_matrix,
+      .spawn_model = script_api_spawn_model,
+      .despawn_model = vkr_scene_despawn_model,
+      .animation_sample_blend = vkr_animation_player_sample_blend,
+      .renders_mesh = script_api_renders_mesh,
   };
 }
 

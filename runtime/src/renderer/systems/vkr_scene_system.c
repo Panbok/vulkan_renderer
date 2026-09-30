@@ -4,6 +4,7 @@
  */
 
 #include "vkr_scene_system.h"
+#include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
 #include <math.h>
@@ -1927,6 +1928,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   vkr_scene_physics_shutdown(scene);
   vkr_scene_collision_layers_shutdown(scene);
   vkr_scene_animation_shutdown(scene);
+  vkr_scene_models_shutdown(scene);
 
   // Send destroy messages for all text3d entities to world resources.
   // Must happen before ECS world destruction since we need to query components.
@@ -2314,6 +2316,7 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
     return;
   }
   vkr_scene_animation_entity_destroying(scene, entity);
+  vkr_scene_model_entity_destroying(scene, entity);
   /* Generated shape meshes and text slots belong to the entity. */
   scene_shape_release(scene, entity);
   scene_text_release(scene, entity);
@@ -2904,6 +2907,22 @@ bool8_t vkr_scene_track_instance(VkrScene *scene,
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
   return true_v;
+}
+
+bool8_t vkr_scene_untrack_instance(VkrScene *scene,
+                                   VkrMeshInstanceHandle instance) {
+  if (!scene) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < scene->owned_instance_count; ++i) {
+    if (scene->owned_instances[i].id == instance.id &&
+        scene->owned_instances[i].generation == instance.generation) {
+      scene->owned_instances[i] =
+          scene->owned_instances[--scene->owned_instance_count];
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 // ============================================================================

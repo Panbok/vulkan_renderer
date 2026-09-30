@@ -158,6 +158,25 @@ typedef struct VkrScriptApi {
    * start from it. */
   bool8_t (*physics_world_matrix)(VkrScene *scene, VkrEntityId entity,
                                   Mat4 *out);
+  /** Loads a cooked model (a .vkb and an optional .vka of the same source;
+   * bare paths resolve against the content root) and instantiates it under
+   * `entity`, which must carry no mesh. Call from start or stop, at a paused
+   * boundary. The scene owns the model until despawn_model, the entity's
+   * destruction or scene shutdown; its animation player is then
+   * animation_player(scene, entity). */
+  bool8_t (*spawn_model)(VkrScene *scene, struct VkrRenderAssets *assets,
+                         VkrEntityId entity, const char *mesh_path,
+                         const char *animation_path, const char **error);
+  void (*despawn_model)(VkrScene *scene, VkrEntityId entity);
+  /** Poses the player as a weighted blend of clip samples on caller-owned
+   * clocks (ADR-071). Pause the player first, or the scene's own clock
+   * replaces the pose on its next advance. */
+  bool8_t (*animation_sample_blend)(VkrAnimationPlayer *player,
+                                    const VkrAnimationSample *samples,
+                                    uint32_t count, bool8_t discontinuity);
+  /** True when the entity or one of its descendants carries a mesh or a
+   * shape, from the hierarchy as of the last update_transforms. */
+  bool8_t (*renders_mesh)(const VkrScene *scene, VkrEntityId entity);
 } VkrScriptApi;
 
 typedef enum VkrScriptSessionFlags {

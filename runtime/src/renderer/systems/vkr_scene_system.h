@@ -656,7 +656,9 @@ typedef struct VkrScene {
   bool8_t physics_disabled;
   VkrComponentTypeId comp_physics_body;
   VkrComponentTypeId comp_physics_collider;
-  VkrSceneAnimation *animations;  // Independently owned per-wrapper pose state.
+  VkrSceneAnimation *animations; // Independently owned per-wrapper pose state.
+  /** Runtime-spawned models (vkr_scene_model.h), newest first. */
+  struct VkrSceneModel *models;
   VkrWorld *world;                // ECS storage (authoritative scene state)
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets
@@ -1174,6 +1176,14 @@ SceneDirectionalLight *vkr_scene_get_directional_light(VkrScene *scene,
 bool8_t vkr_scene_track_instance(VkrScene *scene,
                                  VkrMeshInstanceHandle instance,
                                  VkrSceneError *out_error);
+
+/**
+ * @brief Stop owning a tracked mesh instance, for a caller that destroys it
+ * itself.
+ * @return true when the scene tracked the instance.
+ */
+bool8_t vkr_scene_untrack_instance(VkrScene *scene,
+                                   VkrMeshInstanceHandle instance);
 
 // ============================================================================
 // Text3D Component

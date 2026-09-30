@@ -193,6 +193,39 @@ static void test_player_start_resolution(VkrAllocator *allocator) {
   vkr_scene_shutdown(&world, NULL);
 }
 
+/* A placed model is the player's body when its entity or a descendant
+   carries a mesh or a shape; an empty entity is not. */
+static void test_renders_mesh(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 52, 16, NULL));
+  VkrScriptHost host;
+  vkr_script_host_init(&host, allocator);
+  const VkrEntityId root = vkr_scene_create_entity(&scene, NULL);
+  const VkrEntityId node = vkr_scene_create_entity(&scene, NULL);
+  const VkrEntityId empty = vkr_scene_create_entity(&scene, NULL);
+  const VkrEntityId cube = vkr_scene_create_entity(&scene, NULL);
+  const VkrEntityId entities[] = {root, node, empty, cube};
+  for (uint32_t i = 0; i < ArrayCount(entities); ++i) {
+    assert(vkr_scene_set_transform(&scene, entities[i], vec3_zero(),
+                                   vkr_quat_identity(), vec3_one()));
+  }
+  vkr_scene_set_parent(&scene, node, root);
+  assert(vkr_scene_set_mesh_renderer(
+      &scene, node, (VkrMeshInstanceHandle){.id = 1, .generation = 1}));
+  const SceneShape shape = {.type = SCENE_SHAPE_TYPE_CUBE,
+                            .dimensions = vec3_one(),
+                            .mesh_index = VKR_INVALID_ID};
+  assert(vkr_entity_add_component(scene.world, cube, scene.comp_shape, &shape));
+  vkr_scene_update_transforms(&scene);
+  assert(host.api.renders_mesh(&scene, root));
+  assert(host.api.renders_mesh(&scene, cube));
+  assert(host.api.renders_mesh(&scene, node));
+  assert(!host.api.renders_mesh(&scene, empty));
+  assert(!host.api.renders_mesh(&scene, VKR_ENTITY_ID_INVALID));
+  vkr_script_host_shutdown(&host);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 /* The authoring macros, read back through the descriptors they generate:
    member offsets, kinds, options, defaults and the module description. */
 static const char *const s_macro_modes[] = {"Walk", "Run", NULL};
@@ -265,6 +298,7 @@ bool32_t run_script_host_tests(void) {
   vkr_dmemory_allocator_create(&allocator);
   test_script_host_lifecycle(&allocator);
   test_player_start_resolution(&allocator);
+  test_renders_mesh(&allocator);
   test_script_authoring_macros();
   vkr_dmemory_allocator_destroy(&allocator);
   printf("Script host tests passed\n");
