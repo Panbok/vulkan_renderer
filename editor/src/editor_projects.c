@@ -3205,11 +3205,41 @@ static void project_job_complete(VkrEditorProjects *projects,
       projects->job_id = 0;
       return;
     }
-    projects->creating_project = false_v;
-    if (!projects->settings_restored) {
-      project_restore_settings(projects, editor, frame);
+    if (projects->creating_project) {
+      /* A starter scene opens inside its new project the way the chooser
+         opens a project: settings, Script modules and the root World
+         (ADR-076). Loading clears creating_project only after it skips
+         saving the previous project's settings into this one, and it
+         replaces the project storage, so the scene is found again by its
+         identity. */
+      project_refresh(projects);
+      char id[37];
+      snprintf(id, sizeof(id), "%s", projects->project->id);
+      if (!project_load(projects, id, editor, frame)) {
+        projects->job_id = 0;
+        projects->view = PROJECT_VIEW_CHOOSER;
+        return;
+      }
+      projects->pending_scene = UINT32_MAX;
+      for (uint32_t i = 0; i < projects->project->scene_count; ++i) {
+        if (!strcmp(projects->project->scenes[i].id, projects->scene_id)) {
+          projects->pending_scene = i;
+          break;
+        }
+      }
+      if (projects->pending_scene == UINT32_MAX) {
+        projects->job_id = 0;
+        projects->view = PROJECT_VIEW_SCENES;
+        snprintf(projects->message, sizeof(projects->message),
+                 "The starter scene is missing from the project manifest.");
+        return;
+      }
+    } else {
+      if (!projects->settings_restored) {
+        project_restore_settings(projects, editor, frame);
+      }
+      project_refresh(projects);
     }
-    project_refresh(projects);
   }
   if (unbuilt) {
     projects->job_id = 0;

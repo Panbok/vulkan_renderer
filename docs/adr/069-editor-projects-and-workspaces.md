@@ -35,7 +35,9 @@ fields; narrow dialogs stack the fields under the gallery. The view requests
 the previews as source textures while it is open and unloads them when it
 closes; a missing preview leaves the card's icon. Selecting a starter imports
 its source scene from `assets/templates` through the same managed scene job as
-a user import, then opens the published scene. The source GLBs and their static
+a user import, then opens the new project as the chooser does (settings,
+Script modules and its root World) and selects the published scene in it. The
+source GLBs and their static
 collision proxies are editor content;
 the [distribution install](../../editor/CMakeLists.txt) carries this closure.
 The import cooks scene geometry and copies the collision journal and its cooked
@@ -277,6 +279,10 @@ the selection between cards. Selecting FPS Arena, typing a name and clicking
 Create project finished both Bakery jobs and opened the project on its FPS
 Arena scene (427 nodes, Player Spawn bound to the FPS player). The four-column
 layout, the floating dialog over an open project and Vulkan were not exercised.
+Before that fix to the first open, a project created from a starter opened its
+scene without its World, so its viewport tab showed the runtime file name.
+Creating RPG Grounds the same way now opens it under the World (478 nodes) with
+an "RPG Grounds" tab.
 
 Publishing the manifest at creation passes the Release editor build and the CPU
 project-store suite. A native click-through of a failed first scene job remains
