@@ -138,8 +138,10 @@ typedef struct VkrHarnessChildContext {
   uint64_t scene_first_frame_index;
   /** Pass storage was sized from a frame rendered with the active scene. */
   bool8_t pass_catalog_ready;
-  uint64_t pending_pass_catalog_signature;
-  uint32_t pending_pass_catalog_count;
+  /* Name hashes of every pass the scene has produced before the catalog
+     freezes. */
+  uint64_t pending_pass_names[VKR_METRICS_MAX_SLOTS];
+  uint32_t pending_pass_name_count;
   uint32_t pass_catalog_stable_frames;
   /** Set once bootstrap/allocation frames are discarded and sampling begins. */
   bool8_t phase_started;
@@ -886,7 +888,10 @@ vkr_internal bool8_t vkr_harness_child_renderer_publications_ready(
  * Freeze the pass catalog only after timing completion reaches a packet built
  * from the requested scene. GPU timings are asynchronous, so merely waiting
  * one CPU frame can still expose the preceding boot graph and permanently
- * invalidate a different steady-state pass table.
+ * invalidate a different steady-state pass table. Retained shadow cascades
+ * and local shadow faces leave passes out frame to frame, so the set of names
+ * must settle for eight completed frames, not each frame's list; a pass that
+ * appears later joins the catalog by name.
  */
 vkr_internal bool8_t
 vkr_harness_child_prepare_pass_catalog(VkrStandardSceneRuntime *application) {
@@ -902,16 +907,27 @@ vkr_harness_child_prepare_pass_catalog(VkrStandardSceneRuntime *application) {
   if (passes->samples[0].gpu_source_frame_index <
       child->scene_first_frame_index)
     return true_v;
-  uint64_t signature = 1469598103934665603ull;
   bool8_t completed = true_v;
+  bool8_t grew = false_v;
   for (uint32_t pass = 0u; pass < passes->count; ++pass) {
     const char *name = passes->samples[pass].name;
+    uint64_t hash = 1469598103934665603ull;
     for (uint64_t i = 0u; name[i] != '\0'; ++i) {
-      signature ^= (uint8_t)name[i];
-      signature *= 1099511628211ull;
+      hash ^= (uint8_t)name[i];
+      hash *= 1099511628211ull;
     }
-    signature ^= 0xffu;
-    signature *= 1099511628211ull;
+    uint32_t known = 0u;
+    while (known < child->pending_pass_name_count &&
+           child->pending_pass_names[known] != hash)
+      known++;
+    if (known == child->pending_pass_name_count) {
+      if (child->pending_pass_name_count >= VKR_METRICS_MAX_SLOTS) {
+        vkr_harness_child_fail(application, "passes.unavailable");
+        return false_v;
+      }
+      child->pending_pass_names[child->pending_pass_name_count++] = hash;
+      grew = true_v;
+    }
     completed =
         completed &&
         (!application->metrics->config.pass_gpu_timings ||
@@ -919,12 +935,7 @@ vkr_harness_child_prepare_pass_catalog(VkrStandardSceneRuntime *application) {
          passes->samples[pass].gpu_unavailable_reason ==
              VKR_RENDERER_IMPL_GPU_TIMING_REASON_UNSUPPORTED_TIMESTAMP_SCOPE);
   }
-  signature ^= passes->count;
-  signature *= 1099511628211ull;
-  if (signature != child->pending_pass_catalog_signature ||
-      passes->count != child->pending_pass_catalog_count) {
-    child->pending_pass_catalog_signature = signature;
-    child->pending_pass_catalog_count = passes->count;
+  if (grew) {
     child->pass_catalog_stable_frames = completed ? 1u : 0u;
     return true_v;
   }

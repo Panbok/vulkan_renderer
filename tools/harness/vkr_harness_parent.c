@@ -276,18 +276,17 @@ vkr_harness_adopt_run_provenance(VkrHarnessProvenance *provenance,
 }
 
 /**
- * A later repetition must describe the same catalog and device as the first,
- * or its samples belong to a different observation.
+ * A later repetition must describe the same metric catalog and device as the
+ * first, or its samples belong to a different observation. Pass catalogs may
+ * differ in order and membership: retained shadow passes appear when they
+ * render, so aggregation merges them by name.
  */
 vkr_internal bool8_t vkr_harness_run_is_compatible(
     const VkrHarnessSampleSet *first, const VkrHarnessSampleSet *candidate) {
   return candidate->header.metric_count == first->header.metric_count &&
-         candidate->header.pass_count == first->header.pass_count &&
          MemCompare(first->metrics, candidate->metrics,
                     sizeof(*first->metrics) * first->header.metric_count) ==
              0 &&
-         MemCompare(first->passes, candidate->passes,
-                    sizeof(*first->passes) * first->header.pass_count) == 0 &&
          candidate->header.gpu_vendor_id == first->header.gpu_vendor_id &&
          candidate->header.gpu_device_id == first->header.gpu_device_id &&
          candidate->header.actual_present == first->header.actual_present &&
@@ -385,14 +384,48 @@ vkr_internal bool8_t vkr_harness_aggregate_runs(
     bool8_t *out_gpu_pass_complete, VkrHarnessError *error) {
   const uint32_t run_count = report->completed_repetitions;
   const uint32_t metric_count = runs[0].header.metric_count;
-  const uint32_t pass_count = runs[0].header.pass_count;
   const uint32_t measured = case_manifest->measure_frames;
   const uint64_t metric_values = (uint64_t)measured * metric_count;
-  const uint64_t pass_values = (uint64_t)measured * pass_count;
 
   /* The concatenated series exist only for the statistics below, so they are
      scoped; the results they produce come from the persistent arena. */
   Scratch scratch = scratch_create(arenas->transient);
+
+  /* The aggregate catalog is the first repetition's, followed by each name a
+     later repetition adds. pass_map[run * catalog_capacity + pass] is that
+     run's index for the pass, or UINT32_MAX where the run never produced it,
+     whose frames count as omitted. */
+  uint32_t catalog_capacity = 0u;
+  for (uint32_t run = 0; run < run_count; ++run)
+    catalog_capacity += runs[run].header.pass_count;
+  VkrHarnessSamplePass *catalog =
+      catalog_capacity > 0u
+          ? arena_alloc(arenas->transient, sizeof(*catalog) * catalog_capacity,
+                        ARENA_MEMORY_TAG_ARRAY)
+          : NULL;
+  uint32_t *pass_map =
+      catalog_capacity > 0u
+          ? arena_alloc(arenas->transient,
+                        sizeof(*pass_map) * catalog_capacity * run_count,
+                        ARENA_MEMORY_TAG_ARRAY)
+          : NULL;
+  uint32_t pass_count = 0u;
+  if (catalog_capacity > 0u && catalog && pass_map) {
+    MemSet(pass_map, 0xff, sizeof(*pass_map) * catalog_capacity * run_count);
+    for (uint32_t run = 0; run < run_count; ++run) {
+      for (uint32_t source = 0; source < runs[run].header.pass_count;
+           ++source) {
+        const char *name = runs[run].passes[source].name;
+        uint32_t pass = 0u;
+        while (pass < pass_count && !string_equals(catalog[pass].name, name))
+          pass++;
+        if (pass == pass_count)
+          catalog[pass_count++] = runs[run].passes[source];
+        pass_map[(uint64_t)run * catalog_capacity + pass] = source;
+      }
+    }
+  }
+  const uint64_t pass_values = (uint64_t)measured * pass_count;
   float64_t *values = arena_alloc(arenas->transient,
                                   sizeof(float64_t) * metric_values * run_count,
                                   ARENA_MEMORY_TAG_ARRAY);
@@ -411,6 +444,7 @@ vkr_internal bool8_t vkr_harness_aggregate_runs(
                              ARENA_MEMORY_TAG_ARRAY);
   }
   bool8_t ok = values && availability &&
+               (catalog_capacity == 0u || (catalog && pass_map)) &&
                (pass_values == 0u || (pass_cpu && pass_gpu && pass_flags));
   if (!ok) {
     vkr_harness_error_set(error, "aggregate.allocate", "$",
@@ -420,21 +454,34 @@ vkr_internal bool8_t vkr_harness_aggregate_runs(
     const uint64_t metric_source =
         (uint64_t)case_manifest->warmup_frames * metric_count;
     const uint64_t pass_source =
-        (uint64_t)case_manifest->warmup_frames * pass_count;
+        (uint64_t)case_manifest->warmup_frames * runs[run].header.pass_count;
     MemCopy(values + (uint64_t)run * metric_values,
             runs[run].values + metric_source,
             sizeof(float64_t) * metric_values);
     MemCopy(availability + (uint64_t)run * metric_values,
             runs[run].availability + metric_source, metric_values);
-    if (pass_values > 0u) {
-      MemCopy(pass_cpu + (uint64_t)run * pass_values,
-              runs[run].pass_cpu_ms + pass_source,
-              sizeof(float64_t) * pass_values);
-      MemCopy(pass_gpu + (uint64_t)run * pass_values,
-              runs[run].pass_gpu_ms + pass_source,
-              sizeof(float64_t) * pass_values);
-      MemCopy(pass_flags + (uint64_t)run * pass_values,
-              runs[run].pass_flags + pass_source, pass_values);
+    const uint32_t run_pass_count = runs[run].header.pass_count;
+    for (uint32_t frame = 0; pass_values > 0u && frame < measured; ++frame) {
+      const uint64_t source_row =
+          pass_source + (uint64_t)frame * run_pass_count;
+      const uint64_t target_row =
+          (uint64_t)run * pass_values + (uint64_t)frame * pass_count;
+      for (uint32_t pass = 0; pass < pass_count; ++pass) {
+        const uint32_t source =
+            pass_map[(uint64_t)run * catalog_capacity + pass];
+        if (source == UINT32_MAX) {
+          pass_cpu[target_row + pass] = 0.0;
+          pass_gpu[target_row + pass] = 0.0;
+          pass_flags[target_row + pass] = VKR_HARNESS_PASS_FLAG_OMITTED;
+          continue;
+        }
+        pass_cpu[target_row + pass] =
+            runs[run].pass_cpu_ms[source_row + source];
+        pass_gpu[target_row + pass] =
+            runs[run].pass_gpu_ms[source_row + source];
+        pass_flags[target_row + pass] =
+            runs[run].pass_flags[source_row + source];
+      }
     }
   }
   *out_gpu_pass_complete = ok && vkr_harness_gpu_pass_samples_complete(
@@ -448,8 +495,8 @@ vkr_internal bool8_t vkr_harness_aggregate_runs(
     ok = false_v;
   }
   if (ok && vkr_harness_compute_pass_results(
-                arenas, 0u, aggregate_frames, pass_count, runs[0].passes,
-                pass_cpu, pass_gpu, pass_flags, &report->passes, error)) {
+                arenas, 0u, aggregate_frames, pass_count, catalog, pass_cpu,
+                pass_gpu, pass_flags, &report->passes, error)) {
     report->pass_count = pass_count;
   } else {
     ok = false_v;
