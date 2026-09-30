@@ -258,8 +258,9 @@ one in a single undo entry that restores the replaced values
 button, detaches it. New script from an object's slot or menus makes the
 object wait for the module: once the new module loads, its first type
 becomes the object's script. Add component also lists the loaded script
-types under Scripts, with New script, and adds one beside any others. The
-Outliner shows scripted entities with a code icon and names each one's
+types under Scripts, with New script, and adds one beside any others.
+Scripts are tags on an object: its icon and kind in the Outliner, Details,
+Content and the Scene stay what the object is, and the Outliner names each
 script in a chip on its row. `create <type>` still makes an entity carrying
 a named script type.
 

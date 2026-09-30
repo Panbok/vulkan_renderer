@@ -43,7 +43,8 @@ typedef struct EditorLabelBuild {
   bool8_t empty;
 } EditorLabelBuild;
 
-/* Iconic components in icon priority order: lights, then world types. */
+/* Iconic components in icon priority order: lights, then world types.
+   Scripts are tags on an object and never give it an icon of their own. */
 static uint32_t editor_label_components(const VkrScene *scene,
                                         VkrComponentTypeId *ids) {
   uint32_t count = 0u;
@@ -51,7 +52,9 @@ static uint32_t editor_label_components(const VkrScene *scene,
   ids[count++] = scene->comp_point_light;
   ids[count++] = scene->comp_rectangle_light;
   for (uint32_t i = 0; i < scene->type_count; ++i) {
-    ids[count++] = scene->types[i].id;
+    if (!vkr_scene_world_type_registered(scene->types[i].type)) {
+      ids[count++] = scene->types[i].id;
+    }
   }
   return count;
 }
@@ -93,6 +96,7 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
        icon. */
     if (type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
         type == &vkr_scene_animation_type ||
+        vkr_scene_world_type_registered(type) ||
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;
     }

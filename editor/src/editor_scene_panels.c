@@ -1082,14 +1082,6 @@ VkrUiIcon vkr_editor_entity_icon(const VkrScene *scene, VkrEntityId entity,
                : VKR_UI_ICON_POINT_LIGHT;
   if (vkr_entity_get_component(world, entity, scene->comp_rectangle_light))
     return VKR_UI_ICON_RECT_LIGHT;
-  /* A scripted entity shows its behavior before its body or geometry. */
-  const VkrTypeDesc *script_type = NULL;
-  for (uint32_t i = 0; (script_type = vkr_scene_registered_type(i)); ++i) {
-    if (vkr_scene_get_typed(scene, entity, script_type)) {
-      *out_color = (Vec4){0.80f, 0.66f, 0.98f, 1.0f};
-      return VKR_UI_ICON_CODE;
-    }
-  }
   *out_color = physics;
   if (vkr_entity_get_component(world, entity, scene->comp_physics_body))
     return VKR_UI_ICON_RIGID_BODY;
@@ -1102,9 +1094,11 @@ VkrUiIcon vkr_editor_entity_icon(const VkrScene *scene, VkrEntityId entity,
     return VKR_UI_ICON_TEXT;
   if (vkr_entity_get_component(world, entity, scene->comp_shape))
     return VKR_UI_ICON_SHAPES;
+  /* Scripts are tags on an object, shown beside it, never its icon. */
   const VkrTypeDesc *world_type = NULL;
   for (uint32_t i = 0; (world_type = vkr_scene_world_type(i)); ++i) {
-    if (vkr_scene_get_typed(scene, entity, world_type)) {
+    if (!vkr_scene_world_type_registered(world_type) &&
+        vkr_scene_get_typed(scene, entity, world_type)) {
       *out_color = (Vec4){0.62f, 0.78f, 0.98f, 1.0f};
       return vkr_editor_world_type_icon(world_type);
     }
@@ -2879,7 +2873,9 @@ static bool8_t inspector_header(VkrEditorScenePanels *p,
   const VkrTypeDesc *world_type = NULL;
   for (uint32_t i = 0; !world_kind && (world_type = vkr_scene_world_type(i));
        ++i) {
-    if (vkr_scene_get_typed(f->scene, f->selected_entity, world_type))
+    /* The Script row names scripts; the kind is what the object is. */
+    if (!vkr_scene_world_type_registered(world_type) &&
+        vkr_scene_get_typed(f->scene, f->selected_entity, world_type))
       world_kind = world_type->label;
   }
   const char *kind =
