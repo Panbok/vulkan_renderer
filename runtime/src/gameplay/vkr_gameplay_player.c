@@ -415,7 +415,18 @@ bool8_t vkr_gameplay_player_attach(VkrGameplayPlayer *player, VkrScene *scene,
                                      .shoulder_height = 0,
                                      .sweep_radius = 0.2f,
                                      .pitch_limit = PLAYER_PITCH_LIMIT};
-  vkr_camera_rig_initialize(&player->camera, &camera);
+  const VkrCameraRigMode camera_mode =
+      scene->player_entity.u64 == entity.u64 &&
+              scene->player_camera_mode == VKR_SCENE_PLAYER_CAMERA_THIRD_PERSON
+          ? VKR_CAMERA_RIG_THIRD_PERSON
+          : VKR_CAMERA_RIG_FIRST_PERSON;
+  if (!vkr_camera_rig_initialize(&player->camera, &camera) ||
+      !vkr_camera_rig_set_mode(&player->camera, camera_mode, false_v)) {
+    if (error) {
+      *error = "Player camera initialization failed";
+    }
+    goto remove_motor;
+  }
   const VkrSceneSimulationCallbacks callbacks = {.before_physics =
                                                      player_before,
                                                  .after_physics = player_after,

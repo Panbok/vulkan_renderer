@@ -30,6 +30,11 @@ struct VkrRenderAssets;
 struct VkrMeshLoadDesc;
 typedef struct SceneChildIndexSlot SceneChildIndexSlot;
 
+typedef enum VkrScenePlayerCameraMode {
+  VKR_SCENE_PLAYER_CAMERA_FIRST_PERSON,
+  VKR_SCENE_PLAYER_CAMERA_THIRD_PERSON,
+} VkrScenePlayerCameraMode;
+
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -657,6 +662,7 @@ typedef struct VkrScene {
   // Optional authored player binding; invalid entity means no player.
   VkrEntityId player_entity;
   float32_t player_yaw; // Initial look yaw in radians.
+  VkrScenePlayerCameraMode player_camera_mode;
   VkrEntityId player_weapon_entity;
   uint32_t player_weapon_bone; // Source node in the player animation skeleton.
 

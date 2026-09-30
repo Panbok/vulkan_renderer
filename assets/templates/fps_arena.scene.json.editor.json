@@ -1,0 +1,83 @@
+{
+  "version": 2,
+  "overrides": [
+    {
+      "scene_entity": 0,
+      "gltf_node": -1,
+      "source_fingerprint": "9519295883d7928a",
+      "fields": 64,
+      "physics": {
+        "version": 2,
+        "present": true,
+        "motion": 0,
+        "layer": 1,
+        "mask": 65535,
+        "parameters": [
+          1,
+          0.7,
+          0,
+          1,
+          0.05,
+          0.05
+        ],
+        "enabled": true,
+        "sleep": true,
+        "continuous": false,
+        "sensor": false,
+        "attachment": {
+          "enabled": false,
+          "source": {
+            "scene_entity": 0,
+            "gltf_node": -1,
+            "fingerprint": "0000000000000000"
+          },
+          "node": 0,
+          "drive_bone": false,
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "joints": [],
+        "colliders": [
+          {
+            "id": "0000000000000001",
+            "shape": 4,
+            "enabled": true,
+            "position": [
+              0,
+              0,
+              0
+            ],
+            "rotation": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "dimensions": [
+              0.5,
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "scale": [
+              1,
+              1,
+              1
+            ],
+            "asset": "assets/templates/fps_arena_collision.vkc"
+          }
+        ]
+      }
+    }
+  ]
+}

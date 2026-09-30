@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-09-30
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -115,7 +115,9 @@ instead of blocking the frame; its picking range follows the additive ranges
 the added scenes and the view, and the Outliner shows the World loading until
 it activates. A new project's World is a
 blank level: directional light, sky atmosphere, volumetric clouds, height fog
-and post process. A new project has no scene.
+and post process. Project creation optionally imports Blank, FPS Arena or RPG
+Grounds as its first scene; No starter scene creates only the World.
+[ADR-069](069-editor-projects-and-workspaces.md) owns these template imports.
 
 The **primary scene** is world 0: the scene of the active viewport document.
 `scene.add` loads up to `VKR_SCENE_ADDITIVE_MAX` additive scenes as worlds 1

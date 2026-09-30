@@ -1,0 +1,1124 @@
+{
+  "generator": "vkr.default_scenes.v1",
+  "unit": "meter",
+  "authoring_up": "+Z",
+  "export_up": "+Y",
+  "coordinate_map": {
+    "blender_to_gltf": "[x, y, z] -> [x, z, -y]",
+    "gltf_to_blender": "[x, y, z] -> [x, -z, y]",
+    "blender_forward": "+Y",
+    "gltf_forward": "-Z"
+  },
+  "collision": "Structural meshes only; no guides, labels, targets, or spawn geometry",
+  "preserved_scene": "Scene",
+  "scenes": [
+    {
+      "key": "blank",
+      "scene": "VKR_Template_Blank",
+      "footprint_m": [
+        20,
+        20
+      ],
+      "visual_triangles": 2217,
+      "collision_triangles": 12,
+      "visual_meshes": 28,
+      "collision_meshes": 1,
+      "exports": {
+        "visual": "blank.glb",
+        "collision": "blank_collision.glb"
+      },
+      "overview_camera": "blank.overview_camera.0030",
+      "spawns": [
+        {
+          "name": "main",
+          "object": "blank.spawn_main.0029",
+          "position_blender_m": [
+            0,
+            -6,
+            0.04
+          ],
+          "forward_blender": [
+            0,
+            1,
+            0
+          ],
+          "position_gltf_m": [
+            0,
+            0.04,
+            6
+          ],
+          "forward_gltf": [
+            0,
+            0,
+            -1
+          ]
+        }
+      ],
+      "features": [
+        {
+          "kind": "ruler",
+          "name": "one_meter_reference",
+          "position_blender_m": [
+            -5,
+            -9,
+            0.017
+          ],
+          "axis": "X",
+          "length_m": 10,
+          "tick_m": 1,
+          "major_tick_m": 5
+        },
+        {
+          "kind": "origin",
+          "name": "world_origin",
+          "position_blender_m": [
+            0,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "key": "fps_arena",
+      "scene": "VKR_Template_FPS_Arena",
+      "footprint_m": [
+        48,
+        40
+      ],
+      "visual_triangles": 29556,
+      "collision_triangles": 1368,
+      "visual_meshes": 416,
+      "collision_meshes": 114,
+      "exports": {
+        "visual": "fps_arena.glb",
+        "collision": "fps_arena_collision.glb"
+      },
+      "overview_camera": "fps_arena.overview_camera.0421",
+      "spawns": [
+        {
+          "name": "blue",
+          "object": "fps_arena.spawn_blue.0014",
+          "position_blender_m": [
+            -19,
+            -7,
+            0.04
+          ],
+          "forward_blender": [
+            1,
+            0,
+            0
+          ],
+          "position_gltf_m": [
+            -19,
+            0.04,
+            7
+          ],
+          "forward_gltf": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "red",
+          "object": "fps_arena.spawn_red.0115",
+          "position_blender_m": [
+            19,
+            -7,
+            0.04
+          ],
+          "forward_blender": [
+            -1,
+            0,
+            0
+          ],
+          "position_gltf_m": [
+            19,
+            0.04,
+            7
+          ],
+          "forward_gltf": [
+            -1,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "main",
+          "object": "fps_arena.spawn_main.0289",
+          "position_blender_m": [
+            0,
+            -12.5,
+            0.04
+          ],
+          "forward_blender": [
+            0,
+            1,
+            0
+          ],
+          "position_gltf_m": [
+            0,
+            0.04,
+            12.5
+          ],
+          "forward_gltf": [
+            0,
+            0,
+            -1
+          ]
+        },
+        {
+          "name": "range",
+          "object": "fps_arena.spawn_range.0400",
+          "position_blender_m": [
+            -20,
+            16,
+            0.04
+          ],
+          "forward_blender": [
+            1,
+            0,
+            0
+          ],
+          "position_gltf_m": [
+            -20,
+            0.04,
+            -16
+          ],
+          "forward_gltf": [
+            1,
+            0,
+            0
+          ]
+        }
+      ],
+      "features": [
+        {
+          "kind": "platform",
+          "name": "blue_deck_3m",
+          "position_blender_m": [
+            -14,
+            5,
+            3
+          ],
+          "size_m": [
+            8,
+            6
+          ],
+          "top_height_m": 3
+        },
+        {
+          "kind": "stairs",
+          "name": "blue_stairs_0_to_3",
+          "position_blender_m": [
+            -13.5,
+            -4,
+            0
+          ],
+          "width_m": 3,
+          "run_m": 6,
+          "rise_m": 3,
+          "steps": 15,
+          "step_rise_m": 0.2,
+          "step_tread_m": 0.4,
+          "top_landing_overlap_m": 0.15,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "landing",
+          "name": "blue_upper_stair_bottom_landing",
+          "position_blender_m": [
+            -16.8,
+            2.75,
+            3
+          ],
+          "width_m": 2.0,
+          "length_m": 1.5,
+          "top_height_m": 3,
+          "supporting_platform": "blue_deck_3m"
+        },
+        {
+          "kind": "stairs",
+          "name": "blue_stairs_3_to_6",
+          "position_blender_m": [
+            -16.8,
+            3.5,
+            3
+          ],
+          "width_m": 2,
+          "run_m": 4.5,
+          "rise_m": 3,
+          "steps": 15,
+          "step_rise_m": 0.2,
+          "step_tread_m": 0.3,
+          "top_landing_overlap_m": 0.15,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "platform",
+          "name": "blue_lookout_6m",
+          "position_blender_m": [
+            -17,
+            9.5,
+            6
+          ],
+          "size_m": [
+            3.6,
+            3
+          ],
+          "top_height_m": 6
+        },
+        {
+          "kind": "landing",
+          "name": "blue_upper_stair_top_landing",
+          "position_blender_m": [
+            -16.8,
+            8.55,
+            6
+          ],
+          "width_m": 2.0,
+          "length_m": 1.1,
+          "top_height_m": 6,
+          "stair_overlap_m": 0.15,
+          "supporting_platform": "blue_lookout_6m"
+        },
+        {
+          "kind": "platform",
+          "name": "red_deck_3m",
+          "position_blender_m": [
+            14,
+            5,
+            3
+          ],
+          "size_m": [
+            8,
+            6
+          ],
+          "top_height_m": 3
+        },
+        {
+          "kind": "stairs",
+          "name": "red_stairs_0_to_3",
+          "position_blender_m": [
+            13.5,
+            -4,
+            0
+          ],
+          "width_m": 3,
+          "run_m": 6,
+          "rise_m": 3,
+          "steps": 15,
+          "step_rise_m": 0.2,
+          "step_tread_m": 0.4,
+          "top_landing_overlap_m": 0.15,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "landing",
+          "name": "red_upper_stair_bottom_landing",
+          "position_blender_m": [
+            16.8,
+            2.75,
+            3
+          ],
+          "width_m": 2.0,
+          "length_m": 1.5,
+          "top_height_m": 3,
+          "supporting_platform": "red_deck_3m"
+        },
+        {
+          "kind": "stairs",
+          "name": "red_stairs_3_to_6",
+          "position_blender_m": [
+            16.8,
+            3.5,
+            3
+          ],
+          "width_m": 2,
+          "run_m": 4.5,
+          "rise_m": 3,
+          "steps": 15,
+          "step_rise_m": 0.2,
+          "step_tread_m": 0.3,
+          "top_landing_overlap_m": 0.15,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "platform",
+          "name": "red_lookout_6m",
+          "position_blender_m": [
+            17,
+            9.5,
+            6
+          ],
+          "size_m": [
+            3.6,
+            3
+          ],
+          "top_height_m": 6
+        },
+        {
+          "kind": "landing",
+          "name": "red_upper_stair_top_landing",
+          "position_blender_m": [
+            16.8,
+            8.55,
+            6
+          ],
+          "width_m": 2.0,
+          "length_m": 1.1,
+          "top_height_m": 6,
+          "stair_overlap_m": 0.15,
+          "supporting_platform": "red_lookout_6m"
+        },
+        {
+          "kind": "platform",
+          "name": "center_bridge_3m",
+          "position_blender_m": [
+            0,
+            5,
+            3
+          ],
+          "size_m": [
+            20,
+            3
+          ],
+          "top_height_m": 3
+        },
+        {
+          "kind": "platform",
+          "name": "sky_bridge_6m",
+          "position_blender_m": [
+            0,
+            9.5,
+            6
+          ],
+          "size_m": [
+            30.8,
+            2
+          ],
+          "top_height_m": 6
+        },
+        {
+          "kind": "bridge_connection",
+          "name": "sky_bridge_lookout_joins",
+          "position_blender_m": [
+            0,
+            9.5,
+            6
+          ],
+          "end_overlap_m": 0.2,
+          "width_m": 2.0,
+          "top_height_m": 6
+        },
+        {
+          "kind": "ramp",
+          "name": "central_ramp_16deg",
+          "position_blender_m": [
+            0,
+            -7,
+            0
+          ],
+          "width_m": 4,
+          "run_m": 10.5,
+          "rise_m": 3,
+          "entry_height_m": 0.015,
+          "slope_degrees": 15.869693707036946,
+          "direction_blender": [
+            -0.0,
+            1.0,
+            0
+          ]
+        },
+        {
+          "kind": "cover",
+          "name": "cover_0.5m",
+          "position_blender_m": [
+            -7,
+            -4,
+            0
+          ],
+          "height_m": 0.5,
+          "size_m": [
+            2,
+            2
+          ]
+        },
+        {
+          "kind": "cover",
+          "name": "cover_1.0m",
+          "position_blender_m": [
+            -4,
+            -4,
+            0
+          ],
+          "height_m": 1,
+          "size_m": [
+            2,
+            2
+          ]
+        },
+        {
+          "kind": "cover",
+          "name": "cover_1.5m",
+          "position_blender_m": [
+            4,
+            -4,
+            0
+          ],
+          "height_m": 1.5,
+          "size_m": [
+            2,
+            2
+          ]
+        },
+        {
+          "kind": "cover",
+          "name": "cover_2.0m",
+          "position_blender_m": [
+            7,
+            -4,
+            0
+          ],
+          "height_m": 2,
+          "size_m": [
+            2,
+            2
+          ]
+        },
+        {
+          "kind": "clearance",
+          "name": "crouch_1_2m",
+          "position_blender_m": [
+            -7.5,
+            -9.5,
+            0
+          ],
+          "clear_width_m": 2,
+          "clear_height_m": 1.2,
+          "depth_m": 2
+        },
+        {
+          "kind": "clearance",
+          "name": "crouch_1_5m",
+          "position_blender_m": [
+            7.5,
+            -9.5,
+            0
+          ],
+          "clear_width_m": 2,
+          "clear_height_m": 1.5,
+          "depth_m": 2
+        },
+        {
+          "kind": "jump_gap",
+          "name": "jump_1m",
+          "position_blender_m": [
+            -12,
+            -16,
+            0.8
+          ],
+          "gap_m": 1,
+          "landing_length_m": 2.0,
+          "landing_width_m": 2.5,
+          "deck_height_m": 0.8
+        },
+        {
+          "kind": "jump_gap",
+          "name": "jump_2m",
+          "position_blender_m": [
+            -2,
+            -16,
+            0.8
+          ],
+          "gap_m": 2,
+          "landing_length_m": 2.0,
+          "landing_width_m": 2.5,
+          "deck_height_m": 0.8
+        },
+        {
+          "kind": "jump_gap",
+          "name": "jump_3m",
+          "position_blender_m": [
+            10,
+            -16,
+            0.8
+          ],
+          "gap_m": 3,
+          "landing_length_m": 2.0,
+          "landing_width_m": 2.5,
+          "deck_height_m": 0.8
+        },
+        {
+          "kind": "ruler",
+          "name": "south_distance_ruler",
+          "position_blender_m": [
+            -20,
+            -12.5,
+            0.018
+          ],
+          "axis": "X",
+          "length_m": 40,
+          "tick_m": 1,
+          "major_tick_m": 5
+        },
+        {
+          "kind": "ruler",
+          "name": "range_40m",
+          "position_blender_m": [
+            -20,
+            13.8,
+            0.029
+          ],
+          "axis": "X",
+          "length_m": 40,
+          "tick_m": 1,
+          "major_tick_m": 5
+        },
+        {
+          "kind": "target",
+          "name": "target_10m",
+          "position_blender_m": [
+            -10,
+            16,
+            0
+          ],
+          "height_m": 1.8,
+          "shoulder_width_m": 0.54,
+          "distance_from_range_spawn_m": 10
+        },
+        {
+          "kind": "target",
+          "name": "target_20m",
+          "position_blender_m": [
+            0,
+            16,
+            0
+          ],
+          "height_m": 1.8,
+          "shoulder_width_m": 0.54,
+          "distance_from_range_spawn_m": 20
+        },
+        {
+          "kind": "target",
+          "name": "target_30m",
+          "position_blender_m": [
+            10,
+            16,
+            0
+          ],
+          "height_m": 1.8,
+          "shoulder_width_m": 0.54,
+          "distance_from_range_spawn_m": 30
+        },
+        {
+          "kind": "target",
+          "name": "target_40m",
+          "position_blender_m": [
+            20,
+            16,
+            0
+          ],
+          "height_m": 1.8,
+          "shoulder_width_m": 0.54,
+          "distance_from_range_spawn_m": 40
+        }
+      ]
+    },
+    {
+      "key": "rpg_grounds",
+      "scene": "VKR_Template_RPG_Grounds",
+      "footprint_m": [
+        64,
+        64
+      ],
+      "visual_triangles": 34923,
+      "collision_triangles": 2940,
+      "visual_meshes": 462,
+      "collision_meshes": 197,
+      "exports": {
+        "visual": "rpg_grounds.glb",
+        "collision": "rpg_grounds_collision.glb"
+      },
+      "overview_camera": "rpg_grounds.overview_camera.0466",
+      "spawns": [
+        {
+          "name": "main",
+          "object": "rpg_grounds.spawn_main.0274",
+          "position_blender_m": [
+            0,
+            -23,
+            0.04
+          ],
+          "forward_blender": [
+            0,
+            1,
+            0
+          ],
+          "position_gltf_m": [
+            0,
+            0.04,
+            23
+          ],
+          "forward_gltf": [
+            0,
+            0,
+            -1
+          ]
+        },
+        {
+          "name": "courtyard",
+          "object": "rpg_grounds.spawn_courtyard.0278",
+          "position_blender_m": [
+            0,
+            1,
+            0.04
+          ],
+          "forward_blender": [
+            0,
+            1,
+            0
+          ],
+          "position_gltf_m": [
+            0,
+            0.04,
+            -1
+          ],
+          "forward_gltf": [
+            0,
+            0,
+            -1
+          ]
+        },
+        {
+          "name": "tower",
+          "object": "rpg_grounds.spawn_tower.0282",
+          "position_blender_m": [
+            0,
+            22,
+            6.04
+          ],
+          "forward_blender": [
+            0,
+            1,
+            0
+          ],
+          "position_gltf_m": [
+            0,
+            6.04,
+            -22
+          ],
+          "forward_gltf": [
+            0,
+            0,
+            -1
+          ]
+        }
+      ],
+      "features": [
+        {
+          "kind": "platform",
+          "name": "courtyard_wallwalk",
+          "position_blender_m": [
+            -10.5,
+            9,
+            3
+          ],
+          "size_m": [
+            3,
+            14
+          ],
+          "top_height_m": 3
+        },
+        {
+          "kind": "platform",
+          "name": "west_hall_roof",
+          "position_blender_m": [
+            -21.5,
+            -1,
+            3.25
+          ],
+          "size_m": [
+            8.6,
+            9.6
+          ],
+          "top_height_m": 3.25
+        },
+        {
+          "kind": "stairs",
+          "name": "west_hall_roof_stairs",
+          "position_blender_m": [
+            -24.5,
+            -12.0,
+            0
+          ],
+          "width_m": 2.6,
+          "run_m": 6.5,
+          "rise_m": 3.25,
+          "steps": 16,
+          "step_rise_m": 0.203125,
+          "step_tread_m": 0.40625,
+          "top_landing_overlap_m": 0.0,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "doorway",
+          "name": "west_hall_entry",
+          "position_blender_m": [
+            -21.5,
+            -5.5,
+            0.24
+          ],
+          "clear_width_m": 3.0,
+          "clear_height_m": 2.26,
+          "room_size_m": [
+            7.2,
+            8.2
+          ]
+        },
+        {
+          "kind": "platform",
+          "name": "courtyard_wallwalk",
+          "position_blender_m": [
+            10.5,
+            9,
+            3
+          ],
+          "size_m": [
+            3,
+            14
+          ],
+          "top_height_m": 3
+        },
+        {
+          "kind": "platform",
+          "name": "east_hall_roof",
+          "position_blender_m": [
+            21.5,
+            -1,
+            3.25
+          ],
+          "size_m": [
+            8.6,
+            9.6
+          ],
+          "top_height_m": 3.25
+        },
+        {
+          "kind": "stairs",
+          "name": "east_hall_roof_stairs",
+          "position_blender_m": [
+            24.5,
+            -12.0,
+            0
+          ],
+          "width_m": 2.6,
+          "run_m": 6.5,
+          "rise_m": 3.25,
+          "steps": 16,
+          "step_rise_m": 0.203125,
+          "step_tread_m": 0.40625,
+          "top_landing_overlap_m": 0.0,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "doorway",
+          "name": "east_hall_entry",
+          "position_blender_m": [
+            21.5,
+            -5.5,
+            0.24
+          ],
+          "clear_width_m": 3.0,
+          "clear_height_m": 2.26,
+          "room_size_m": [
+            7.2,
+            8.2
+          ]
+        },
+        {
+          "kind": "platform",
+          "name": "north_terrace_3m",
+          "position_blender_m": [
+            0,
+            13,
+            3
+          ],
+          "size_m": [
+            24,
+            6
+          ],
+          "top_height_m": 3
+        },
+        {
+          "kind": "stairs",
+          "name": "courtyard_stairs_0_to_3",
+          "position_blender_m": [
+            -7,
+            4,
+            0
+          ],
+          "width_m": 3,
+          "run_m": 6,
+          "rise_m": 3,
+          "steps": 15,
+          "step_rise_m": 0.2,
+          "step_tread_m": 0.4,
+          "top_landing_overlap_m": 0.0,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "ramp",
+          "name": "courtyard_ramp_14deg",
+          "position_blender_m": [
+            7,
+            -2,
+            0
+          ],
+          "width_m": 4,
+          "run_m": 12,
+          "rise_m": 3,
+          "entry_height_m": 0.015,
+          "slope_degrees": 13.968816868263627,
+          "direction_blender": [
+            -0.0,
+            1.0,
+            0
+          ]
+        },
+        {
+          "kind": "platform",
+          "name": "tower_deck_6m",
+          "position_blender_m": [
+            0,
+            23,
+            6
+          ],
+          "size_m": [
+            10,
+            8
+          ],
+          "top_height_m": 6
+        },
+        {
+          "kind": "stairs",
+          "name": "tower_stairs_3_to_6",
+          "position_blender_m": [
+            0,
+            13,
+            3
+          ],
+          "width_m": 3,
+          "run_m": 6,
+          "rise_m": 3,
+          "steps": 15,
+          "step_rise_m": 0.2,
+          "step_tread_m": 0.4,
+          "top_landing_overlap_m": 0.0,
+          "direction_blender": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "kind": "platform",
+          "name": "east_gallery_bridge_3_25m",
+          "position_blender_m": [
+            17.35,
+            4,
+            3.25
+          ],
+          "size_m": [
+            8.3,
+            2.8
+          ],
+          "top_height_m": 3.25
+        },
+        {
+          "kind": "ramp",
+          "name": "gallery_roof_transition",
+          "position_blender_m": [
+            12,
+            4,
+            3
+          ],
+          "width_m": 2.8,
+          "run_m": 1.2,
+          "rise_m": 0.25,
+          "entry_height_m": 0.015,
+          "slope_degrees": 11.08019922435508,
+          "direction_blender": [
+            1.0,
+            6.123233995736766e-17,
+            0
+          ]
+        },
+        {
+          "kind": "clearance",
+          "name": "main_courtyard_gate",
+          "position_blender_m": [
+            0,
+            -17,
+            0
+          ],
+          "clear_width_m": 8,
+          "clear_height_m": 3.3,
+          "depth_m": 1.5
+        },
+        {
+          "kind": "ruler",
+          "name": "approach_20m",
+          "position_blender_m": [
+            -3.8,
+            -26,
+            0.025
+          ],
+          "axis": "Y",
+          "length_m": 20,
+          "tick_m": 1,
+          "major_tick_m": 5
+        },
+        {
+          "kind": "ruler",
+          "name": "cross_path_50m",
+          "position_blender_m": [
+            -25,
+            -7,
+            0.025
+          ],
+          "axis": "X",
+          "length_m": 50,
+          "tick_m": 1,
+          "major_tick_m": 5
+        },
+        {
+          "kind": "clearance",
+          "name": "door_0.8_1.8",
+          "position_blender_m": [
+            -25,
+            -19,
+            0
+          ],
+          "clear_width_m": 0.8,
+          "clear_height_m": 1.8,
+          "depth_m": 1.2
+        },
+        {
+          "kind": "clearance",
+          "name": "door_1.0_2.0",
+          "position_blender_m": [
+            -20,
+            -19,
+            0
+          ],
+          "clear_width_m": 1.0,
+          "clear_height_m": 2.0,
+          "depth_m": 1.2
+        },
+        {
+          "kind": "clearance",
+          "name": "door_1.2_2.4",
+          "position_blender_m": [
+            -15,
+            -19,
+            0
+          ],
+          "clear_width_m": 1.2,
+          "clear_height_m": 2.4,
+          "depth_m": 1.2
+        },
+        {
+          "kind": "jump_gap",
+          "name": "rpg_jump_1m",
+          "position_blender_m": [
+            21,
+            -16,
+            1
+          ],
+          "gap_m": 1,
+          "landing_length_m": 2.0,
+          "landing_width_m": 2.6,
+          "deck_height_m": 1
+        },
+        {
+          "kind": "jump_gap",
+          "name": "rpg_jump_2m",
+          "position_blender_m": [
+            21,
+            -21,
+            1
+          ],
+          "gap_m": 2,
+          "landing_length_m": 2.0,
+          "landing_width_m": 2.6,
+          "deck_height_m": 1
+        },
+        {
+          "kind": "jump_gap",
+          "name": "rpg_jump_3m",
+          "position_blender_m": [
+            21,
+            -26,
+            1
+          ],
+          "gap_m": 3,
+          "landing_length_m": 2.0,
+          "landing_width_m": 2.6,
+          "deck_height_m": 1
+        },
+        {
+          "kind": "target",
+          "name": "landmark_target_west",
+          "position_blender_m": [
+            -24,
+            9,
+            0
+          ],
+          "height_m": 1.8,
+          "shoulder_width_m": 0.54
+        },
+        {
+          "kind": "target",
+          "name": "landmark_target_east",
+          "position_blender_m": [
+            24,
+            9,
+            0
+          ],
+          "height_m": 1.8,
+          "shoulder_width_m": 0.54
+        }
+      ]
+    }
+  ]
+}

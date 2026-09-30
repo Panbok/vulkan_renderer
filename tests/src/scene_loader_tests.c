@@ -1383,11 +1383,44 @@ vkr_internal void test_scene_loader_entity_components(void) {
   printf("  test_scene_loader_entity_components PASSED\n");
 }
 
+vkr_internal void test_scene_loader_player_camera_mode(void) {
+  const String8 accepted[] = {
+      string8_lit("{\"version\":2,\"entities\":[{\"player\":{\"yaw\":0}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"player\":{\"yaw\":0,"
+                  "\"camera_mode\":\"first_person\"}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"player\":{\"yaw\":0,"
+                  "\"camera_mode\":\"third_person\"}}]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(accepted); ++i) {
+    SceneLoaderTestContext ctx;
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, accepted[i]) == true_v);
+    assert(ctx.scene.player_entity.u64 != VKR_ENTITY_ID_INVALID.u64);
+    assert(ctx.scene.player_camera_mode ==
+           (i == 2 ? VKR_SCENE_PLAYER_CAMERA_THIRD_PERSON
+                   : VKR_SCENE_PLAYER_CAMERA_FIRST_PERSON));
+    scene_loader_test_context_shutdown(&ctx);
+  }
+  const String8 rejected[] = {
+      string8_lit("{\"version\":2,\"entities\":[{\"player\":{\"yaw\":0,"
+                  "\"camera_mode\":\"orbital\"}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"player\":{\"yaw\":0,"
+                  "\"camera_mode\":1}}]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    SceneLoaderTestContext ctx;
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+}
+
 bool32_t run_scene_loader_tests(void) {
   printf("--- Starting Scene Loader Tests ---\n");
 
   test_scene_derived_matrix_is_lossless_and_exclusive();
   test_scene_loader_entity_components();
+  test_scene_loader_player_camera_mode();
   test_scene_loader_registered_type();
   test_scene_loader_document_ids();
   test_scene_loader_legacy_atmosphere_sun();

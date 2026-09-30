@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-09-30
 authority: adr
 ---
 
@@ -27,8 +27,21 @@ The normal [editor application](../../editor/src/editor_application.c) starts
 with a Projects chooser and no world scene. The user selects a workspace directory;
 its `.vkreditor` child owns managed data. A machine-local locator remembers the
 chosen directory. Explicit `--scene` remains the legacy scene entry point.
-Creating or opening an empty project enters the editor without loading a scene
-or automatically opening the Scenes modal. Creating project resources is a
+The project creation form offers Blank, FPS Arena and RPG Grounds starter scenes,
+with Blank selected initially, plus No starter scene. Selecting a starter imports
+its source scene from `assets/templates` through the same managed scene job as
+a user import, then opens the published scene. The source GLBs and their static
+collision proxies are editor content;
+the [distribution install](../../editor/CMakeLists.txt) carries this closure.
+The import cooks scene geometry and copies the collision journal and its cooked
+proxy into the project. An empty Player Spawn entity binds the movement client.
+The templates author their own daytime
+sky light and sun with clouds disabled; other unoverridden World components
+retain the normal inheritance rules.
+Blank and FPS Arena start in first person; RPG Grounds starts in third person
+through its [player binding](073-native-gameplay-foundation.md).
+No starter scene enters the editor without loading a scene or automatically
+opening the Scenes modal. Creating project resources is a
 project job, not scene loading. Creation publishes `project.json` with default
 settings before that job starts; the job then imports the project font and the
 optional first scene. A failed or cancelled first job therefore leaves a listed
@@ -236,6 +249,19 @@ retirement owners; the browser retains at most 64 texture requests and prunes it
 generated disk cache through a bounded worker operation.
 
 ## Verification and limits
+
+On 2026-09-30, `./build_editor.bat Release` compiled the starter selector and
+`./build_test.bat` passed the Debug CPU suite and the 28 shared path cases.
+The managed import check in [check_default_templates.py](../../tools/checks/check_default_templates.py)
+passed for all three templates. Normal Release Vulkan on Windows (RX 6700 XT,
+Vulkan 1.4.315, AMD 26.6.3, graphics validation variables unset) loaded Blank,
+FPS Arena and RPG Grounds with 36, 427 and 472 entities, respectively, accepted
+their collision journals and advanced `sim.play` to one second without errors.
+Three native 1280 by 800 offscreen overview captures passed and were visually
+inspected. Their report SHA-256 prefixes are `2c86c88581b8` (Blank),
+`2df9ce52492a` (FPS Arena) and `ac62bda39dd0` (RPG Grounds). These captures are
+local evidence with no baseline comparison or timing authority. Manual keyboard
+traversal and launcher clicks were not tested; Metal was unavailable on Windows.
 
 Publishing the manifest at creation passes the Release editor build and the CPU
 project-store suite. A native click-through of a failed first scene job remains

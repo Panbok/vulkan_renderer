@@ -149,6 +149,7 @@ typedef struct SceneEntityImport {
   bool8_t has_matrix;
   bool8_t has_player;
   float32_t player_yaw;
+  VkrScenePlayerCameraMode player_camera_mode;
   bool8_t has_player_weapon;
   uint32_t player_weapon_bone;
   bool8_t has_mesh;
@@ -2203,6 +2204,20 @@ static bool8_t scene_json_parse_player(const VkrJsonReader *entity_reader,
         !scene_json_read_float_field(&player, "yaw", &out_entity->player_yaw) ||
         !isfinite(out_entity->player_yaw)) {
       return false_v;
+    }
+    VkrJsonReader camera = player;
+    if (vkr_json_find_field(&camera, "camera_mode")) {
+      String8 mode = {0};
+      if (!vkr_json_parse_string(&camera, &mode)) {
+        return false_v;
+      }
+      if (vkr_string8_equals_cstr_i(&mode, "first_person")) {
+        out_entity->player_camera_mode = VKR_SCENE_PLAYER_CAMERA_FIRST_PERSON;
+      } else if (vkr_string8_equals_cstr_i(&mode, "third_person")) {
+        out_entity->player_camera_mode = VKR_SCENE_PLAYER_CAMERA_THIRD_PERSON;
+      } else {
+        return false_v;
+      }
     }
     out_entity->has_player = true_v;
   }
@@ -4737,6 +4752,7 @@ vkr_internal bool8_t scene_loader_finalize_step(
       if (import->has_player) {
         scene->player_entity = entity;
         scene->player_yaw = import->player_yaw;
+        scene->player_camera_mode = import->player_camera_mode;
       }
       if (import->has_player_weapon) {
         scene->player_weapon_entity = entity;

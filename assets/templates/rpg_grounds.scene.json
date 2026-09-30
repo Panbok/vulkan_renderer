@@ -1,0 +1,64 @@
+{
+  "version": 2,
+  "source_identity": "ad701a20-91ec-4e71-9030-000000000003",
+  "entities": [
+    {
+      "name": "Template Collision"
+    },
+    {
+      "name": "RPG Grounds Geometry",
+      "mesh": {
+        "path": "./rpg_grounds.glb"
+      }
+    },
+    {
+      "name": "Player Spawn",
+      "transform": {
+        "pos": [
+          0,
+          0.04,
+          23
+        ]
+      },
+      "player": {
+        "yaw": -1.5707963267948966,
+        "camera_mode": "third_person"
+      }
+    },
+    {
+      "name": "Template Sun",
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 2.0,
+        "direction_local": [
+          -0.3512491557037775,
+          -0.8028552130372059,
+          -0.48171312782232345
+        ],
+        "atmosphere_sun": true
+      }
+    }
+  ],
+  "environment": {
+    "enabled": true,
+    "intensity": 1.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 1.0
+  },
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [
+      0.3512491557037775,
+      0.8028552130372059,
+      0.48171312782232345
+    ]
+  },
+  "clouds": {
+    "enabled": false
+  }
+}

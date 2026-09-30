@@ -106,3 +106,18 @@ foreach(resource IN LISTS VKR_ENGINE_FILES ITEMS
     install(FILES "${CMAKE_SOURCE_DIR}/${resource}"
         DESTINATION "content/${directory}" COMPONENT editor)
 endforeach()
+
+# Starter scenes are editor content. A created project's managed import owns
+# its copied scene geometry and collision closure; games carry only assets
+# referenced by that project.
+foreach(template blank fps_arena rpg_grounds)
+    install(FILES
+        "${CMAKE_SOURCE_DIR}/assets/templates/${template}.scene.json"
+        "${CMAKE_SOURCE_DIR}/assets/templates/${template}.scene.json.editor.json"
+        "${CMAKE_SOURCE_DIR}/assets/templates/${template}.glb"
+        "${CMAKE_SOURCE_DIR}/assets/templates/${template}_collision.glb"
+        "${CMAKE_SOURCE_DIR}/assets/templates/${template}_collision.vkc"
+        DESTINATION content/assets/templates COMPONENT editor)
+endforeach()
+install(FILES "${CMAKE_SOURCE_DIR}/assets/templates/measurements.json"
+    DESTINATION content/assets/templates COMPONENT editor)

@@ -300,6 +300,27 @@ static void test_player_unfocused_simulation(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+static void test_player_authored_camera_mode(VkrAllocator *allocator) {
+  VkrScene scene = {0};
+  assert(vkr_scene_init(&scene, allocator, 1, 8, NULL));
+  const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, entity, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  scene.player_entity = entity;
+  scene.player_camera_mode = VKR_SCENE_PLAYER_CAMERA_THIRD_PERSON;
+  vkr_scene_physics_set_paused(&scene, true_v);
+  InputState input = {0};
+  VkrGameplayPlayer player = {0};
+  assert(vkr_gameplay_player_attach(&player, &scene, &input, entity, 101, 0,
+                                    NULL));
+  VkrCameraRigPose pose = {0};
+  assert(vkr_gameplay_player_camera(&player, &pose));
+  assert(player.camera.mode == VKR_CAMERA_RIG_THIRD_PERSON);
+  assert(fabsf(pose.position.x + 4.0f) < 0.001f);
+  vkr_gameplay_player_shutdown(&player);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_gameplay_player_tests(void) {
   VkrDMemory memory;
   assert(vkr_dmemory_create(MB(4), MB(32), &memory));
@@ -308,6 +329,7 @@ bool32_t run_gameplay_player_tests(void) {
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
   test_player_unfocused_simulation(&allocator);
+  test_player_authored_camera_mode(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 44, 16, NULL));
   InputState input = {0};

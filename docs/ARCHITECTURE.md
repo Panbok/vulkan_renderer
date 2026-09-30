@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-29
+updated: 2026-09-30
 authority: architecture
 ---
 
@@ -250,12 +250,19 @@ Explicit saves and project transitions drain that worker before publication or
 workspace release, preserving durable writes and manifest conflict detection.
 Authored environment, lights, probes and overrides
 remain scene data. Explicit `--scene` retains legacy startup.
-Creating a project publishes no scene. Opening a project loads its World
+Creating a project selects Blank, FPS Arena or RPG Grounds, or No starter scene.
+Starter scenes import Blender GLBs through the managed asset owner with an
+explicitly authored static collision proxy and an empty Player Spawn entity.
+Their daytime sky light and sun override the World, with clouds disabled;
+their scene journal owns collision and their player binding starts editor
+simulation in first person (Blank/FPS Arena) or third person (RPG Grounds).
+No starter scene publishes only the project. Opening a project loads its World
 (`world.scene.json`, created as a blank level of sun, sky atmosphere, clouds,
 height fog and post process when missing) asynchronously, with a grid and the
 camera above the origin; imported models can be placed at its root, in a new
-scene or in a project scene ([ADR-076](adr/076-project-object-model.md)). Project resource preparation does not mark a scene as loading, and
-scene selection remains an explicit action. Creation publishes the project manifest
+scene or in a project scene ([ADR-076](adr/076-project-object-model.md)). Project
+resource preparation does not mark a scene as loading, and an explicitly
+selected starter scene opens after its creation job. Creation publishes the project manifest
 before its first job, so a failed first scene leaves the project listed.
 Successful write jobs remove unused cache entries, stale revisions, abandoned
 directories and old job logs; ADR-069 defines what stays reachable.

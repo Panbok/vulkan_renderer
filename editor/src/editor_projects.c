@@ -55,6 +55,44 @@ typedef enum ProjectCreateStep {
   PROJECT_CREATE_IMPORT,
 } ProjectCreateStep;
 
+typedef enum VkrEditorProjectTemplate {
+  PROJECT_TEMPLATE_BLANK,
+  PROJECT_TEMPLATE_FPS_ARENA,
+  PROJECT_TEMPLATE_RPG_GROUNDS,
+  PROJECT_TEMPLATE_NONE,
+  PROJECT_TEMPLATE_COUNT,
+} VkrEditorProjectTemplate;
+
+typedef struct s_EditorProjectTemplateInfo {
+  const char *name;
+  const char *file;
+  const char *detail;
+} VkrEditorProjectTemplateInfo;
+
+static const VkrEditorProjectTemplateInfo
+    project_templates[PROJECT_TEMPLATE_COUNT] = {
+        [PROJECT_TEMPLATE_BLANK] =
+            {.name = "Blank",
+             .file = "blank",
+             .detail =
+                 "A 20 m floor, origin markers and a playable spawn."},
+        [PROJECT_TEMPLATE_FPS_ARENA] =
+            {.name = "FPS Arena",
+             .file = "fps_arena",
+             .detail =
+                 "Cover, range markers, stairs, ramps and elevated routes."},
+        [PROJECT_TEMPLATE_RPG_GROUNDS] =
+            {.name = "RPG Grounds",
+             .file = "rpg_grounds",
+             .detail =
+                 "A third-person courtyard with terrain and vertical routes."},
+        [PROJECT_TEMPLATE_NONE] =
+            {.name = "No starter scene",
+             .file = "",
+             .detail =
+                 "Only the World; create or import scenes in the editor."},
+};
+
 /* Where imported models go (ADR-076): a new scene holding them, the World's
    root, a project scene, or only Content. Each placement shows the model in
    the viewport once its job finishes. */
@@ -195,6 +233,7 @@ struct VkrEditorProjects {
   char project_name[513];
   char scene_name[513];
   char source_scene[1024];
+  VkrEditorProjectTemplate project_template;
   char models[PROJECT_MODEL_COUNT][1024];
   uint32_t model_count;
   char font_source[1024];
@@ -2690,6 +2729,30 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
   if (!project_save_settings(projects, editor, frame->dock)) {
     return;
   }
+  if (projects->view == PROJECT_VIEW_CREATE && !projects->creating_project) {
+    const VkrEditorProjectTemplateInfo *template =
+        &project_templates[projects->project_template];
+    projects->include_scene =
+        projects->project_template != PROJECT_TEMPLATE_NONE;
+    projects->import_scene = projects->include_scene;
+    if (projects->include_scene) {
+      const int written =
+          snprintf(projects->source_scene, sizeof(projects->source_scene),
+                   "%s/assets/templates/%s.scene.json", vkr_content_root(),
+                   template->file);
+      const FilePath source = {.path = project_string(projects->source_scene),
+                               .type = FILE_PATH_TYPE_ABSOLUTE};
+      if (written <= 0 || (uint32_t)written >= sizeof(projects->source_scene) ||
+          !file_exists(&source)) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "%s template is unavailable in the editor content.",
+                 template->name);
+        return;
+      }
+      snprintf(projects->scene_name, sizeof(projects->scene_name), "%s",
+               template->name);
+    }
+  }
   if (!projects->discard_edits && project_any_dirty(frame)) {
     projects->resume_view = projects->view;
     projects->view = PROJECT_VIEW_CONFIRM;
@@ -4105,11 +4168,10 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   }
 }
 
-/* A new project starts with only its World (ADR-076); scenes are created or
-   imported later from the editor. */
+/* A new project chooses a starter scene beside its World (ADR-076). */
 static void project_begin_create(VkrEditorProjects *projects) {
   project_reset_scene_draft(projects);
-  projects->include_scene = false_v;
+  projects->project_template = PROJECT_TEMPLATE_BLANK;
   projects->project_name[0] = '\0';
   projects->project_font_source[0] = '\0';
   projects->creating_project = false_v;
@@ -5007,20 +5069,12 @@ static void project_build_create_form(VkrEditorProjects *projects,
                                       const VkrSampleUiFrame *frame,
                                       float32_t body_width) {
   VkrUiSystem *ui = frame->ui;
-  const VkrUiTrack one = {.unit = VKR_UI_TRACK_FR, .value = 1};
   const bool8_t creating = projects->view == PROJECT_VIEW_CREATE;
-  /* The scene form sits beside the project fields only when drafting one. */
-  const float32_t left =
-      creating && projects->include_scene && body_width >= 650
-          ? body_width * .35f
-          : 0;
   if (creating) {
-    project_label(ui, "project.name.label", "Project name", 12, 6,
-                  left ? left - 24 : body_width - 24);
+    const float32_t form_width = body_width - 24;
+    project_label(ui, "project.name.label", "Project name", 12, 6, form_width);
     project_field(ui, "project.name", projects->project_name,
-                  sizeof(projects->project_name), 12, 36,
-                  left ? left - 24 : body_width - 24);
-    const float32_t form_width = left ? left - 24 : body_width - 24;
+                  sizeof(projects->project_name), 12, 36, form_width);
     project_label(ui, "project.font.label",
                   "Default font / empty uses editor default", 12, 80,
                   form_width);
@@ -5033,35 +5087,44 @@ static void project_build_create_form(VkrEditorProjects *projects,
                      2, false_v, projects->project_font_source,
                      sizeof(projects->project_font_source));
     }
-    project_label(ui, "project.bootstrap",
-                  "Editor resources: reuse validated bundle", 12, 196,
+    project_label(ui, "project.template.label", "Starter scene", 12, 200,
                   form_width);
-    project_label(ui, "project.font.bake",
-                  "Project font: prepare once when changed", 12, 228,
-                  form_width);
+    const VkrUiTheme *theme = vkr_ui_theme();
+    float32_t y = 234;
+    for (uint32_t i = 0; i < PROJECT_TEMPLATE_COUNT; ++i) {
+      const VkrEditorProjectTemplateInfo *template = &project_templates[i];
+      const bool8_t selected =
+          projects->project_template == (VkrEditorProjectTemplate)i;
+      VkrUiWidgetConfig choice = project_widget(12, y, form_width, 66);
+      vkr_editor_toggle_style(&choice, selected);
+      choice.fill = true_v;
+      choice.disabled = projects->read_only || projects->job_id;
+      choice.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
+      choice.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
+      choice.style.border_color = selected ? theme->accent : theme->border;
+      choice.tooltip = project_string(template->detail);
+      (void)vkr_ui_push_id_u64(ui, i);
+      if (vkr_ui_button(ui, string8_lit("project.template"), (String8){0},
+                        &choice)) {
+        projects->project_template = (VkrEditorProjectTemplate)i;
+      }
+      project_label(ui, "project.template.name", template->name, 26, y + 6,
+                    form_width - 28);
+      project_label(ui, "project.template.detail", template->detail, 26, y + 34,
+                    form_width - 28);
+      (void)vkr_ui_pop_id(ui);
+      y += 78;
+    }
+    project_label(ui, "project.template.controls",
+                  "Start Simulation to play. WASD moves; Space jumps; Ctrl "
+                  "crouches; V changes camera.",
+                  12, y, form_width);
+    projects->form_height = y + 52;
+    return;
   }
   if (projects->include_scene) {
-    if (creating && !left) {
-      VkrUiPanelConfig form = vkr_ui_panel_config_default();
-      form.placement.column = 0;
-      form.placement.row = 0;
-      form.placement.margin_pt.top = 320;
-      form.columns = &one;
-      form.column_count = 1;
-      form.rows = &one;
-      form.row_count = 1;
-      if (vkr_ui_panel_begin(ui, string8_lit("narrow.scene"), &form)) {
-        projects->form_height =
-            320.0f +
-            project_build_scene_form(projects, frame, 12, body_width - 24);
-        (void)vkr_ui_panel_end(ui);
-      }
-    } else {
-      projects->form_height =
-          Max(creating ? 320.0f : 0.0f,
-              project_build_scene_form(projects, frame, left + 12,
-                                       body_width - left - 24));
-    }
+    projects->form_height =
+        project_build_scene_form(projects, frame, 12, body_width - 24);
   } else {
     projects->form_height = 320.0f;
   }

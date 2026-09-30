@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-22
+updated: 2026-09-30
 authority: adr
 ---
 
@@ -214,7 +214,17 @@ Ctrl holds crouch, V cycles camera modes, Tab/Escape captures/releases the mouse
 and Backspace
 resets the player and native scene. The HUD shows ammo, reload state and hits.
 An entity can declare `"player": {"yaw": -1.57079632679}` to bind the C client
-without creating the sample platform. One separate entity can declare
+without creating the sample platform. Its optional `camera_mode` is
+`"first_person"` (the default) or `"third_person"`; invalid names and non-string
+values fail loading. The client applies the authored mode when it attaches.
+Managed import and scene lowering preserve this binding, while scene Save
+writes the existing edit journal without replacing the source player fields.
+The [default project scenes](../../assets/templates/blank.scene.json) bind an
+empty Player Spawn entity to the movement client. Their separate static
+collision proxies belong to each template's scene journal. FPS Arena and
+Blank use first person; RPG Grounds uses third person. Start Simulation runs
+the same client and V still cycles camera modes.
+One separate entity can declare
 `"player_weapon": {"bone": 45}`; its bone index addresses the sole player's
 animation source. Both entities must be roots with unit scale. Parsing rejects
 duplicate bindings and a weapon without a player; attachment checks the loaded
@@ -236,6 +246,17 @@ presentation poses without advancing animation, simulation ticks or retained deb
 Removing an override restores the underlying authored/native pose. The runtime
 updates camera basis through `vkr_camera_set_pose()` and changes visibility only
 when its value changes.
+
+## Verification and limits
+
+On 2026-09-30, `./build_editor.bat Release` and `./build_test.bat` passed on
+Windows. The scene-loader CPU cases load absent and explicit first/third-person
+camera modes and reject an invalid name or a non-string mode. A gameplay CPU
+fixture confirms the authored third-person camera starts four metres behind
+its target. The [template verification](069-editor-projects-and-workspaces.md#verification-and-limits)
+also covers native Windows Vulkan rendering, accepted collision journals and
+one second of simulation for all three managed templates. Manual keyboard
+traversal was not tested, and Metal evidence remains unavailable on Windows.
 
 ## Consequences
 
