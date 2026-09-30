@@ -369,9 +369,9 @@ static void test_mat4_inverse_operations(void) {
     const Mat4 small_matrix = mat4_mul(
         mat4_translate(vec3_new(2.0f, -3.0f, 4.0f)),
         mat4_mul(mat4_euler_rotate_z(0.4f), mat4_scale(small_scales[i])));
-    assert(mat4_is_identity(mat4_mul(small_matrix,
-                                     mat4_inverse_affine(small_matrix)),
-                            0.001f) &&
+    assert(mat4_is_identity(
+               mat4_mul(small_matrix, mat4_inverse_affine(small_matrix)),
+               0.001f) &&
            "Affine inverse must accept small well-conditioned scales");
   }
 
