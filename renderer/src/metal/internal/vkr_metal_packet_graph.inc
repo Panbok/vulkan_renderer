@@ -2334,14 +2334,6 @@ vkr_internal bool8_t vkr_metal_packet_material_info_valid(
   return true_v;
 }
 
-vkr_internal void vkr_metal_packet_decode_half4(const void *source,
-                                                float32_t destination[4]) {
-  uint16_t encoded[4] = {0};
-  MemCopy(encoded, source, sizeof(encoded));
-  for (uint32_t i = 0; i < ArrayCount(encoded); ++i)
-    destination[i] = vkr_float16_to_float32(encoded[i]);
-}
-
 vkr_internal bool8_t vkr_metal_packet_capture_plan(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     uint64_t first_offset, VkrMetalPacketCapturePlan *plans,

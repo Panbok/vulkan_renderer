@@ -383,16 +383,6 @@ bool8_t vkr_metal_packet_renderer_drain(
       renderer->ibl_black_prefilter = (VkrMetalTextureResource){0};
     }
 
-    if (renderer->ibl_live) {
-      if (vkr_metal_memory_device_retire(renderer->memory,
-                                         renderer->ibl_prefilter.handle,
-                                         renderer->ibl_last_use_submit_value) !=
-          VKR_METAL_MEMORY_STATUS_OK)
-        return false_v;
-      renderer->ibl_live = false_v;
-      renderer->ibl_prefilter = (VkrMetalTextureResource){0};
-    }
-
     for (uint32_t i = 0; i < renderer->max_materials; ++i) {
       if (renderer->packet_materials[i].live &&
           !vkr_metal_packet_renderer_destroy_material(

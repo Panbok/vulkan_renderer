@@ -59,6 +59,10 @@ enum {
   VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS = 64,
   /* Cloud base volume, detail volume and weather map (ADR-074). */
   VKR_METAL_PACKET_CLOUD_NOISE_COUNT = 3,
+  /* Queued environment and probe bakes awaiting the frame's IBL.Bake pass. */
+  VKR_METAL_PACKET_PENDING_IBL_BAKE_MAX = 32,
+  /* Transmittance, multiple-scattering and source dispatches. */
+  VKR_METAL_PACKET_ATMOSPHERE_DISPATCH_COUNT = 3,
   /* Four address modes on three axes, two min/mag filters, one canonical
      non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
      on/off. Samplers remain alive with immutable material rows, so this cache
@@ -292,6 +296,9 @@ typedef struct VkrMetalPacketTexture {
   /** Published L2 coefficient slot projected from this source cubemap, or
       VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
+  /** GGX prefilter the latest queued bake writes from this source cubemap.
+      Global lighting samples it; invalid until a bake is queued. */
+  VkrTextureHandle ibl_prefilter;
   uint64_t atmosphere_completion_submit_value;
   VkrAtmosphereBakeStatus atmosphere_status;
   bool8_t atmosphere_bake_active;
@@ -381,11 +388,9 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t froxel_integrated_texture_id;
   uint64_t sky_gpu;
   uint64_t display_output_gpu;
-  /** Submission-local SH publication. Nonzero only after projection recording
-      succeeds; cancellation returns it to the pool and restores the prior
-      global slot. */
-  uint32_t ibl_sh_candidate_slot;
-  uint32_t ibl_sh_previous_slot;
+  /** True once IBL.Bake recorded a queued bake; submission publishes it and
+      cancellation returns its SH candidate to the pool. */
+  bool8_t ibl_bake_recorded;
   VkrMetalPacketTextUpload *text_uploads;
   VkrMetalPacketPreparedDraw *direct_draws;
   VkrMetalPacketPreparedDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
@@ -403,6 +408,27 @@ typedef struct VkrMetalPacketFrameUpload {
   bool8_t acquired;
 } VkrMetalPacketFrameUpload;
 
+/* A queued environment or probe bake. The publisher validates and queues it;
+   the next frame's IBL.Bake pass records it into the frame command buffer, and
+   that frame's submission publishes its SH candidate. Roots and the candidate
+   slot are valid only while recorded. */
+typedef struct VkrMetalPacketPendingIblBake {
+  VkrAtmosphereGpuParams params;
+  VkrTextureHandle source;
+  VkrTextureHandle prefilter;
+  VkrTextureHandle transmittance;
+  VkrTextureHandle multiple_scattering;
+  uint64_t atmosphere_roots[VKR_METAL_PACKET_ATMOSPHERE_DISPATCH_COUNT];
+  uint64_t prefilter_roots[VKR_METAL_PACKET_MAX_TEXTURE_MIPS];
+  uint64_t sh_root;
+  float32_t sh_deringing;
+  uint32_t sh_slot;
+  uint32_t prefilter_size;
+  uint32_t prefilter_mip_count;
+  bool8_t is_atmosphere;
+  bool8_t recorded;
+} VkrMetalPacketPendingIblBake;
+
 typedef struct VkrMetalPacketCapturePlan {
   id<MTLTexture> texture;
   VkrCaptureItemResult result;
@@ -413,7 +439,6 @@ typedef struct VkrMetalPacketCapturePlan {
 typedef struct VkrMetalPacketReadbackLayout {
   uint64_t shadow_depth;
   uint64_t picking;
-  uint64_t ibl_prefilter;
   uint64_t deferred_diagnostics;
   uint64_t deferred_diagnostics_size;
   uint64_t transmission_diagnostics;
@@ -425,18 +450,15 @@ typedef struct VkrMetalPacketReadbackLayout {
 } VkrMetalPacketReadbackLayout;
 
 vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
-    bool8_t ibl, bool8_t deferred_diagnostics, bool8_t transmission_diagnostics,
+    bool8_t deferred_diagnostics, bool8_t transmission_diagnostics,
     bool8_t sdsm, bool8_t exposure, uint32_t gpu_draw_view_count) {
   /* The final target can be RGBA8 or RGBA16F. Reserve an eight-byte pixel
      before the fixed diagnostic fields so the transfer stays valid across an
      extended-linear target transition. */
   const uint64_t shadow_depth_offset = 8u;
   const uint64_t picking_offset = shadow_depth_offset + sizeof(float32_t);
-  const uint64_t ibl_prefilter_offset = 16u;
-  const uint64_t probe_size =
-      ibl ? ibl_prefilter_offset + VKR_IBL_PREFILTER_MIP_COUNT * 8u
-          : ibl_prefilter_offset;
-  const uint64_t deferred_offset = vkr_metal_packet_align_up(probe_size, 16u);
+  const uint64_t fixed_size = 16u;
+  const uint64_t deferred_offset = vkr_metal_packet_align_up(fixed_size, 16u);
   const uint64_t deferred_bytes =
       deferred_diagnostics
           ? (uint64_t)gpu_draw_view_count * sizeof(VkrGpuDrawCompactionState)
@@ -457,11 +479,10 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
       exposure_bytes > 0u ? exposure_offset + exposure_bytes
       : deferred_diagnostics || transmission_diagnostics || sdsm_bytes > 0u
           ? sdsm_offset + sdsm_bytes
-          : probe_size;
+          : fixed_size;
   return (VkrMetalPacketReadbackLayout){
       .shadow_depth = shadow_depth_offset,
       .picking = picking_offset,
-      .ibl_prefilter = ibl_prefilter_offset,
       .deferred_diagnostics = deferred_offset,
       .deferred_diagnostics_size = deferred_bytes,
       .transmission_diagnostics = transmission_offset,
@@ -806,19 +827,17 @@ struct VkrMetalPacketRenderer {
   bool8_t frame_prepared;
   bool8_t pipeline_archive_warm;
   bool8_t pipeline_archive_written;
-  VkrMetalTextureResource ibl_prefilter;
   /* Immutable black cubemap for frames with local probes but no global IBL.
      It prevents an earlier scene's retained prefilter from becoming the
      residual outside a local probe's influence. */
   VkrMetalTextureResource ibl_black_prefilter;
   /** Published coefficient slot for the active global environment source. */
   uint32_t ibl_sh_slot;
-  VkrTextureHandle ibl_source;
-  uint64_t ibl_last_use_submit_value;
   uint64_t ibl_black_last_use_submit_value;
-  bool8_t ibl_live;
   bool8_t ibl_black_live;
-  bool8_t ibl_ready;
+  VkrMetalPacketPendingIblBake
+      pending_ibl_bakes[VKR_METAL_PACKET_PENDING_IBL_BAKE_MAX];
+  uint32_t pending_ibl_bake_count;
   /* Immutable RG16Float split-sum BRDF coefficients. Renderer lifetime;
      retirement waits for the last submitted frame root that references it. */
   VkrMetalTextureResource dfg_lut;

@@ -316,8 +316,6 @@ vkr_metal_packet_discard_unsubmitted_uses(VkrMetalPacketRenderer *renderer) {
     if (renderer->textures[i].last_use_submit_value > submitted)
       renderer->textures[i].last_use_submit_value = submitted;
   }
-  if (renderer->ibl_last_use_submit_value > submitted)
-    renderer->ibl_last_use_submit_value = submitted;
   if (renderer->ibl_black_last_use_submit_value > submitted)
     renderer->ibl_black_last_use_submit_value = submitted;
   if (renderer->ltc_last_use_submit_value > submitted)

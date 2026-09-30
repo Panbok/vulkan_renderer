@@ -240,10 +240,6 @@ typedef struct VkrMetalPacketResult {
   bool8_t has_shadow_depth;
   uint32_t picking_id;
   bool8_t has_picking_id;
-  float32_t ibl_prefilter[VKR_IBL_PREFILTER_MIP_COUNT][4];
-  uint32_t ibl_prefilter_size;
-  uint32_t ibl_prefilter_mip_count;
-  bool8_t has_ibl_convolution;
   uint32_t pipeline_count;
   uint32_t pass_timing_count;
   VkrMetalPacketPassTiming pass_timings[VKR_METAL_PACKET_MAX_PASS_TIMINGS];

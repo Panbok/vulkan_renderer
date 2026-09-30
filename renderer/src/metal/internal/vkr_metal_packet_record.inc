@@ -9,6 +9,98 @@ vkr_internal void vkr_metal_packet_record_dispatch(
       threadsPerThreadgroup:dispatch->group_size];
 }
 
+/* Records the bakes IBL.Bake prepared. An atmosphere bake writes its lookups,
+   source and source mips before its prefilter and SH projection read them. A
+   final barrier covers later passes in this encoder; the compute run's
+   producer barrier covers later encoders. */
+vkr_internal void
+vkr_metal_packet_record_ibl_bakes(VkrMetalPacketRenderer *renderer,
+                                  id<MTL4ComputeCommandEncoder> encoder)
+    API_AVAILABLE(macos(26.0)) {
+  /* A source can come from an earlier texture-upload submission, and Metal 4
+     does not order separate command buffers, so wait before reading it. */
+  [encoder barrierAfterQueueStages:MTLStageDispatch | MTLStageBlit
+                      beforeStages:MTLStageDispatch | MTLStageBlit
+                 visibilityOptions:MTL4VisibilityOptionDevice];
+  for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
+    const VkrMetalPacketPendingIblBake *job = &renderer->pending_ibl_bakes[i];
+    if (!job->recorded)
+      continue;
+    if (job->is_atmosphere) {
+      const VkrMetalPacketTexture *source =
+          vkr_metal_packet_resolve_texture(renderer, job->source);
+      id<MTLTexture> source_texture =
+          (id<MTLTexture>)source->resource.metal_texture;
+      [renderer->argument_table setAddress:job->atmosphere_roots[0] atIndex:0u];
+      [encoder
+          setComputePipelineState:renderer->atmosphere_transmittance_pipeline];
+      [encoder setArgumentTable:renderer->argument_table];
+      [encoder dispatchThreads:MTLSizeMake(VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
+                                           VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT,
+                                           1u)
+          threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+      [encoder barrierAfterEncoderStages:MTLStageDispatch
+                     beforeEncoderStages:MTLStageDispatch
+                       visibilityOptions:MTL4VisibilityOptionDevice];
+
+      [renderer->argument_table setAddress:job->atmosphere_roots[1] atIndex:0u];
+      [encoder setComputePipelineState:renderer->
+                                       atmosphere_multiple_scattering_pipeline];
+      [encoder setArgumentTable:renderer->argument_table];
+      [encoder
+           dispatchThreadgroups:MTLSizeMake(
+                                    VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
+                                    VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE, 1u)
+          threadsPerThreadgroup:
+              MTLSizeMake(1u, 1u,
+                          VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS)];
+      [encoder barrierAfterEncoderStages:MTLStageDispatch
+                     beforeEncoderStages:MTLStageDispatch
+                       visibilityOptions:MTL4VisibilityOptionDevice];
+
+      [renderer->argument_table setAddress:job->atmosphere_roots[2] atIndex:0u];
+      [encoder setComputePipelineState:renderer->atmosphere_source_pipeline];
+      [encoder setArgumentTable:renderer->argument_table];
+      [encoder dispatchThreads:MTLSizeMake(source_texture.width,
+                                           source_texture.height, 6u)
+          threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+      [encoder barrierAfterEncoderStages:MTLStageDispatch
+                     beforeEncoderStages:MTLStageBlit
+                       visibilityOptions:MTL4VisibilityOptionDevice];
+      if (source_texture.mipmapLevelCount > 1u)
+        [encoder generateMipmapsForTexture:source_texture];
+      [encoder barrierAfterEncoderStages:MTLStageBlit
+                     beforeEncoderStages:MTLStageDispatch
+                       visibilityOptions:MTL4VisibilityOptionDevice];
+    }
+
+    for (uint32_t mip = 0u; mip < job->prefilter_mip_count; ++mip) {
+      const uint32_t extent = Max(1u, job->prefilter_size >> mip);
+      const VkrMetalPacketDispatch dispatch = {
+          .pipeline = renderer->ibl_prefilter_pipeline,
+          .root = job->prefilter_roots[mip],
+          .threads = MTLSizeMake(extent, extent, 6u),
+          .group_size = MTLSizeMake(8u, 8u, 1u),
+      };
+      vkr_metal_packet_record_dispatch(renderer, encoder, &dispatch);
+    }
+    if (job->sh_root) {
+      [renderer->argument_table setAddress:job->sh_root atIndex:0u];
+      [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
+      [encoder setArgumentTable:renderer->argument_table];
+      /* One workgroup per destination slot; the kernel's fixed reduction is
+         what makes the result deterministic, so this must stay a single
+         group. */
+      [encoder dispatchThreadgroups:MTLSizeMake(1u, 1u, 1u)
+              threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    }
+  }
+  [encoder
+      barrierAfterEncoderStages:MTLStageDispatch
+            beforeEncoderStages:(MTLStages)(MTLStageDispatch | MTLStageBlit)
+              visibilityOptions:MTL4VisibilityOptionDevice];
+}
+
 vkr_internal void vkr_metal_packet_record_compute_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
@@ -68,27 +160,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     break;
   }
   case VKR_RG_EXECUTOR_IBL_BAKE:
-    for (uint32_t mip = 0u; mip < VKR_IBL_PREFILTER_MIP_COUNT; ++mip) {
-      const uint32_t extent = Max(1u, VKR_IBL_PREFILTER_SIZE >> mip);
-      const VkrMetalPacketDispatch dispatch = {
-          .pipeline = renderer->ibl_prefilter_pipeline,
-          .root = pass->ibl.prefilter_roots[mip],
-          .threads = MTLSizeMake(extent, extent, 6u),
-          .group_size = MTLSizeMake(8u, 8u, 1u),
-      };
-      vkr_metal_packet_record_dispatch(renderer, encoder, &dispatch);
-    }
-    if (pass->ibl.sh_root) {
-      [renderer->argument_table setAddress:pass->ibl.sh_root atIndex:0u];
-      [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
-      [encoder setArgumentTable:renderer->argument_table];
-      [encoder dispatchThreadgroups:MTLSizeMake(1u, 1u, 1u)
-              threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
-      [encoder barrierAfterEncoderStages:MTLStageDispatch
-                     beforeEncoderStages:(MTLStages)(MTLStageDispatch |
-                                                     MTLStageFragment)
-                       visibilityOptions:MTL4VisibilityOptionDevice];
-    }
+    vkr_metal_packet_record_ibl_bakes(renderer, encoder);
     break;
   case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
     [renderer->argument_table setAddress:pass->transmission.root atIndex:0u];

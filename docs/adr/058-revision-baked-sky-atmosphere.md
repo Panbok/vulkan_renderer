@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-09-30
 authority: adr
 ---
 
@@ -147,10 +147,17 @@ A revision prepares distinct candidate resources while the prior generation
 remains active. Submission does not establish readiness. The scene publishes
 source, prefilter, SH and lookups together only after native completion
 confirms the whole candidate. Failure retains the previous generation.
-Ordinary readiness queries do not wait. On Metal each upload is a separate
-command buffer, and Metal 4 does not order them, so
-the IBL bake waits on prior queue dispatch and blit work before reading its
-source. Vulkan records the bake in the frame command buffer and makes each
+Ordinary readiness queries do not wait. Publication only validates and
+queues a bake; neither backend submits or waits for its own command buffer.
+Both record queued bakes in the frame command buffer's `IBL.Bake` pass: the
+atmosphere lookups, source and source mips, then the GGX prefilter and SH
+projection. The frame's submission publishes each SH candidate, and a
+cancelled frame keeps the bake queued and returns its candidate. Global
+lighting samples the prefilter published with its source; there is no second,
+renderer-owned prefilter. Metal 4 does not order separate command buffers,
+so Metal's bake first waits on prior queue dispatch and blit work, which
+covers a source from a texture upload, and its compute run ends with a
+producer barrier before later graphics and compute stages. Vulkan makes each
 lookup write visible to later compute sampling in submission order. The SH
 pool's two environment entries cover the active tuple and its replacement
 candidate.
@@ -225,8 +232,9 @@ world scale but, like the runtime bake, does not use it.
 
 Stable settings add only the per-frame sky-view lookup, aerial-perspective
 volume and aerial application to ordinary frames; revisions pay the full sky
-and IBL bake and temporarily retain both generations. A moving sun costs at
-most one such bake every 0.25 seconds, and its sky light, which shapes
+and IBL bake, about 10 ms of GPU time in one frame on the M1 Pro at the
+256-texel source and prefilter, and temporarily retain both generations. A
+moving sun costs at most one such bake every 0.25 seconds, and its sky light, which shapes
 ambient light and reflections, trails the drawn sun by up to that interval
 plus one bake. Each frame slot holds a
 162 KiB sky-view lookup and a 256 KiB aerial volume. Global lighting and the
@@ -393,3 +401,25 @@ system, including the cloud layer of ADR-074: generation
 `sha256:74b6e5c517c668ed17354a0d3f1026bc0d0767b82b17666727fb9c1ca3f4c19c`,
 succeeded by the sun-entity generation above.
 The Bistro Vulkan text baseline and native Vulkan runs remain unavailable.
+
+Metal previously submitted each revision as two upload command buffers, whose
+command-slot acquisition blocked the CPU on in-flight frames, and then
+prefiltered the published source a second time into a renderer-owned cube in
+`IBL.Bake`. Moving both into the frame's `IBL.Bake` pass was measured on the
+Bistro atmosphere scene, Metal Release, M1 Pro, 1280×720 offscreen, 60 warmup
+and 240 measured frames, with `tools/profiles/local-offscreen-gpu-single.json`
+and a temporary diagnostic that turned the sun 0.002 radians per frame about
++Y. The runs are single-process and non-authoritative. Before, a revision
+cost 1.56 ms for lookups and source, 9.15 ms for the upload prefilter and SH,
+and 8.93 ms for the second prefilter, and the bake call held the CPU for a
+median 64 ms of command-slot waits. After, `IBL.Bake` records the whole
+revision in 10.2 ms (16 samples, 10.17-10.23 ms) with no CPU wait. With the
+sun moving, frame wall time p95 fell from 68.4 ms to 43.6 ms and its maximum
+from 71.1 ms to 45.0 ms; the median stayed 33.4 ms against 24.6 ms with a still
+sun. Most of that remaining gap is CPU time in `cpu.render_prepare` outside the
+bake and is not attributed; redrawn shadow cascades and temporal resolve add
+3.2 ms of GPU time per frame. The Bistro Metal text snapshot passes against
+generation `8d8439fc` with failed-pixel ratio 0 in every view, matching an
+unchanged-renderer control run view by view; the IBL single-probe snapshot
+matches exactly. Metal API validation of `atmosphere_bistro_local`, with a
+still and a moving sun, reports no diagnostics.

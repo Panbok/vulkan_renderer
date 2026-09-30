@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-05
+updated: 2026-09-30
 authority: proposal
 ---
 
@@ -13,13 +13,17 @@ same gap: bake work is explicitly barriered rather than graph-declared.
 ## Current implementation baseline
 
 The render graph describes typed compute dispatch in
-[vkr_render_graph.h](../../renderer/src/vkr_render_graph.h). Vulkan
-currently records IBL dispatches and image barriers directly in
-[vkr_vulkan_ibl.c](../../renderer/src/vulkan/vkr_vulkan_ibl.c), while its
-graph executor invokes that pending-work recorder from
-[vkr_vulkan_graph.c](../../renderer/src/vulkan/vkr_vulkan_graph.c).
-Publication already bounds pending bake jobs and carries their ownership in
+[vkr_render_graph.h](../../renderer/src/vkr_render_graph.h). Both backends
+queue bakes at publication and record them from the `IBL.Bake` executor with
+backend-owned dispatches and barriers. Vulkan records them in
+[vkr_vulkan_ibl.c](../../renderer/src/vulkan/vkr_vulkan_ibl.c), invoked from
+[vkr_vulkan_graph.c](../../renderer/src/vulkan/vkr_vulkan_graph.c), and bounds
+the queue in
 [vkr_vulkan_publisher.c](../../renderer/src/vulkan/vkr_vulkan_publisher.c).
+Metal queues them in
+[vkr_metal_packet_resources.inc](../../renderer/src/metal/internal/vkr_metal_packet_resources.inc)
+and records them in
+[vkr_metal_packet_record.inc](../../renderer/src/metal/internal/vkr_metal_packet_record.inc).
 
 ## Proposed gap
 

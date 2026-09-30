@@ -1912,19 +1912,11 @@ vkr_internal bool8_t vkr_metal_packet_create_ibl_targets(
   MTLTextureDescriptor *cube = [MTLTextureDescriptor new];
   cube.textureType = MTLTextureTypeCube;
   cube.pixelFormat = MTLPixelFormatRGBA16Float;
-  cube.width = VKR_IBL_PREFILTER_SIZE;
-  cube.height = VKR_IBL_PREFILTER_SIZE;
-  cube.mipmapLevelCount = VKR_IBL_PREFILTER_MIP_COUNT;
-  cube.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-  const bool8_t prefilter_created =
-      vkr_metal_memory_device_create_texture(
-          renderer->memory, cube, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-          &renderer->ibl_prefilter) == VKR_METAL_MEMORY_STATUS_OK;
   cube.width = 1u;
   cube.height = 1u;
   cube.mipmapLevelCount = 1u;
+  cube.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
   const bool8_t black_created =
-      prefilter_created &&
       vkr_metal_memory_device_create_texture(
           renderer->memory, cube, VKR_GPU_ALLOCATION_OWNER_TEXTURE,
           &renderer->ibl_black_prefilter) == VKR_METAL_MEMORY_STATUS_OK;
@@ -1961,15 +1953,10 @@ vkr_internal bool8_t vkr_metal_packet_create_ibl_targets(
     if (renderer->ibl_black_prefilter.metal_texture)
       (void)vkr_metal_memory_device_retire(
           renderer->memory, renderer->ibl_black_prefilter.handle, 0u);
-    if (renderer->ibl_prefilter.metal_texture)
-      (void)vkr_metal_memory_device_retire(renderer->memory,
-                                           renderer->ibl_prefilter.handle, 0);
     (void)vkr_metal_packet_collect_memory(renderer, 0, NULL);
-    renderer->ibl_prefilter = (VkrMetalTextureResource){0};
     renderer->ibl_black_prefilter = (VkrMetalTextureResource){0};
     return false_v;
   }
-  renderer->ibl_live = true_v;
   renderer->ibl_black_live = true_v;
   return true_v;
 }
@@ -2667,7 +2654,7 @@ vkr_internal bool8_t vkr_metal_packet_create_capacities(
     const VkrMetalPacketRendererConfig *config,
     VkrMetalPacketCreateCapacities *out_capacities) {
   const VkrMetalPacketReadbackLayout maximum_readback =
-      vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v, true_v,
+      vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v,
                                        VKR_SHADOW_CASCADE_COUNT_MAX);
   const uint64_t readback_prefix_size = vkr_metal_packet_align_up(
       maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);

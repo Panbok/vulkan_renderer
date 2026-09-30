@@ -130,10 +130,6 @@ typedef struct VkrMetalPacketPreparedPass {
       uint64_t idle_views[2];
     } gpu_encode;
     struct {
-      uint64_t prefilter_roots[VKR_IBL_PREFILTER_MIP_COUNT];
-      uint64_t sh_root;
-    } ibl;
-    struct {
       VkrMetalPacketDirectPass direct;
       VkrMetalPacketTextPass text;
     } world;
