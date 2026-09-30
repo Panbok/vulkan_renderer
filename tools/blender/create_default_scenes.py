@@ -233,7 +233,8 @@ class _World:
                             "position_gltf_m": [x, z, -y],
                             "forward_gltf": [forward[0], forward[2], -forward[1]]})
 
-    def ruler(self, name, start, length, axis="X", major=5, material="yellow"):
+    def ruler(self, name, start, length, axis="X", major=5, material="yellow",
+              label_offset=0.6):
         x, y, z = start
         for index in range(length + 1):
             is_major = index % major == 0
@@ -243,7 +244,7 @@ class _World:
             dimensions = (0.035, tick, 0.008) if axis == "X" else (tick, 0.035, 0.008)
             self.stripe(name + "_tick", (px, py, z), dimensions, material)
             if is_major:
-                self.label(str(index) + "m", (px, py - 0.6, z + 0.01),
+                self.label(str(index) + "m", (px, py - label_offset, z + 0.01),
                            size=0.25, material=material)
         dimensions = (length, 0.018, 0.006) if axis == "X" else (0.018, length, 0.006)
         center = (x + (length / 2 if axis == "X" else 0),
@@ -510,7 +511,8 @@ def _fps(materials):
     for gap, x in ((1, -12), (2, -2), (3, 10)):
         world.gap("jump_" + str(gap) + "m", x, -16, gap)
     world.spawn("main", (0, -12.5, 0.04))
-    world.ruler("south_distance_ruler", (-20, -12.5, 0.018), 40)
+    # Labels clear the 0.7m spawn ring that sits on the ruler at its 20m mark.
+    world.ruler("south_distance_ruler", (-20, -12.5, 0.018), 40, label_offset=0.95)
     # A separated 40m range, with shooter x=-20 and exact target distances.
     world.stripe("range_lane", (0, 16, 0.013), (46, 6, 0.014), "dark")
     world.outline("range_outline", (0, 16, 0.027), (45.9, 5.9), "edge")
