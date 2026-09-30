@@ -3493,6 +3493,17 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
         state->has_selection = false_v;
       }
     }
+    /* With the Select tool, pressing an object and dragging moves it in the
+       view plane, as the gizmo's center handle would; a click only
+       selects, and an unmoved drag records nothing. */
+    if (!context && update_selection && picked_entity_valid &&
+        application->gizmo_system.tool == VKR_GIZMO_MODE_NONE &&
+        input_is_button_down(state->input_state, BUTTON_LEFT) &&
+        vkr_standard_scene_runtime_begin_gizmo_drag(
+            application, VKR_GIZMO_HANDLE_TRANSLATE_FREE)) {
+      application->gizmo_system.mode = VKR_GIZMO_MODE_TRANSLATE;
+      vkr_standard_scene_runtime_update_gizmo_drag(application, &viewport_info);
+    }
     if (context) {
       state->context_ready = true_v;
       state->context_ready_purpose = state->context_pick_purpose;

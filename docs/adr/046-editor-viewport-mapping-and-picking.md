@@ -53,7 +53,8 @@ and overlapping handles use the same order for color and picking. This requires
 no extra scene-sized image. The active transform tool selects the handle family
 ([ADR-027](027-immediate-mode-grid-ui.md)): Move shows translation handles,
 Rotate shows rotation rings, Scale shows scale handles, and Select shows none,
-leaving the selection outline.
+leaving the selection outline. With Select, a press that picks an object while
+the button is still held starts the center handle's view-plane drag on it.
 
 ### Selection outline
 
