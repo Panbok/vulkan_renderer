@@ -1641,6 +1641,128 @@ vkr_internal void vkr_mesh_loader_gltf_spec_gloss_memo_write(
   }
 }
 
+/* Converts decoded spec-gloss images into metallic-roughness texels at the
+   combined extent. An image at that extent is read texel by texel; a smaller
+   one is sampled with its view. */
+vkr_internal void vkr_mesh_loader_gltf_convert_spec_gloss_pixels(
+    const VkrMeshLoaderGltfParseInfo *info,
+    VkrGltfSpecGlossSample factor_sample,
+    const VkrMeshLoaderGltfDecodedImage *diffuse,
+    const cgltf_texture_view *diffuse_view,
+    const VkrMeshLoaderGltfDecodedImage *spec_gloss,
+    const cgltf_texture_view *spec_gloss_view, int32_t width, int32_t height,
+    uint8_t *base_pixels, uint8_t *metal_rough_pixels) {
+  float32_t srgb_to_linear_lut[256];
+  uint8_t linear_to_srgb_lut[VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX + 1u];
+  for (uint32_t i = 0; i < 256u; ++i) {
+    srgb_to_linear_lut[i] = vkr_srgb_to_linear((float32_t)i / 255.0f);
+  }
+  for (uint32_t i = 0; i <= VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX; ++i) {
+    linear_to_srgb_lut[i] = vkr_mesh_loader_gltf_unorm8(vkr_linear_to_srgb(
+        (float32_t)i / (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX));
+  }
+
+  /* When both images are read at their own size, a texel's output depends
+     only on its eight source bytes, and neighbouring texels often repeat
+     them: a direct-mapped memo skips the conversion's square roots and
+     divides for repeats, with the same bytes as computing them. */
+  const bool8_t memoized = diffuse->pixels && diffuse->width == width &&
+                           diffuse->height == height && spec_gloss->pixels &&
+                           spec_gloss->width == width &&
+                           spec_gloss->height == height;
+  VkrMeshLoaderGltfConversionMemo *memo =
+      memoized ? (VkrMeshLoaderGltfConversionMemo *)vkr_allocator_alloc(
+                     info->scratch_allocator,
+                     sizeof(*memo) * VKR_GLTF_CONVERSION_MEMO_SLOTS,
+                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE)
+               : NULL;
+  if (memo) {
+    MemZero(memo, sizeof(*memo) * VKR_GLTF_CONVERSION_MEMO_SLOTS);
+  }
+
+  for (int32_t y = 0; y < height; ++y) {
+    for (int32_t x = 0; x < width; ++x) {
+      const uint64_t i = (uint64_t)y * (uint64_t)width + (uint64_t)x;
+      uint8_t *base = base_pixels + i * 4u;
+      uint8_t *metal_rough = metal_rough_pixels + i * 4u;
+      VkrMeshLoaderGltfConversionMemo *slot = NULL;
+      uint64_t key = 0u;
+      if (memo) {
+        uint32_t diffuse_bytes = 0u;
+        uint32_t spec_gloss_bytes = 0u;
+        MemCopy(&diffuse_bytes, diffuse->pixels + i * 4u, 4u);
+        MemCopy(&spec_gloss_bytes, spec_gloss->pixels + i * 4u, 4u);
+        key = (uint64_t)diffuse_bytes | ((uint64_t)spec_gloss_bytes << 32u);
+        slot = &memo[(key * 0x9e3779b97f4a7c15ull) >>
+                     (64u - VKR_GLTF_CONVERSION_MEMO_BITS)];
+        if (slot->filled && slot->key == key) {
+          MemCopy(base, slot->texel, 4u);
+          MemCopy(metal_rough, slot->texel + 4u, 4u);
+          continue;
+        }
+      }
+      const float32_t u = ((float32_t)x + 0.5f) / (float32_t)width;
+      const float32_t v = ((float32_t)y + 0.5f) / (float32_t)height;
+      const Vec4 diffuse_texel =
+          diffuse->pixels && diffuse->width == width &&
+                  diffuse->height == height
+              ? vkr_mesh_loader_gltf_decode_texel(diffuse->pixels,
+                                                  diffuse->width, x, y, true_v,
+                                                  srgb_to_linear_lut)
+              : vkr_mesh_loader_gltf_sample_image(diffuse, diffuse_view, u, v,
+                                                  true_v, srgb_to_linear_lut);
+      const Vec4 spec_gloss_texel =
+          spec_gloss->pixels && spec_gloss->width == width &&
+                  spec_gloss->height == height
+              ? vkr_mesh_loader_gltf_decode_texel(spec_gloss->pixels,
+                                                  spec_gloss->width, x, y,
+                                                  true_v, srgb_to_linear_lut)
+              : vkr_mesh_loader_gltf_sample_image(spec_gloss, spec_gloss_view,
+                                                  u, v, true_v,
+                                                  srgb_to_linear_lut);
+      VkrGltfSpecGlossSample sample = factor_sample;
+      sample.diffuse.x *= diffuse_texel.x;
+      sample.diffuse.y *= diffuse_texel.y;
+      sample.diffuse.z *= diffuse_texel.z;
+      sample.diffuse.w *= diffuse_texel.w;
+      sample.specular.x *= spec_gloss_texel.x;
+      sample.specular.y *= spec_gloss_texel.y;
+      sample.specular.z *= spec_gloss_texel.z;
+      sample.glossiness *= spec_gloss_texel.w;
+
+      const VkrGltfMetalRoughSample converted =
+          vkr_gltf_convert_spec_gloss_sample(sample);
+      const uint32_t base_r =
+          (uint32_t)(Clamp(converted.base_color.x, 0.0f, 1.0f) *
+                         (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX +
+                     0.5f);
+      const uint32_t base_g =
+          (uint32_t)(Clamp(converted.base_color.y, 0.0f, 1.0f) *
+                         (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX +
+                     0.5f);
+      const uint32_t base_b =
+          (uint32_t)(Clamp(converted.base_color.z, 0.0f, 1.0f) *
+                         (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX +
+                     0.5f);
+      base[0] = linear_to_srgb_lut[base_r];
+      base[1] = linear_to_srgb_lut[base_g];
+      base[2] = linear_to_srgb_lut[base_b];
+      base[3] = vkr_mesh_loader_gltf_unorm8(converted.base_color.w);
+
+      metal_rough[0] = 255u;
+      metal_rough[1] = vkr_mesh_loader_gltf_unorm8(converted.roughness);
+      metal_rough[2] = vkr_mesh_loader_gltf_unorm8(converted.metallic);
+      metal_rough[3] = 255u;
+      if (slot) {
+        slot->key = key;
+        slot->filled = true_v;
+        MemCopy(slot->texel, base, 4u);
+        MemCopy(slot->texel + 4u, metal_rough, 4u);
+      }
+    }
+  }
+}
+
 /* Decodes and converts one material's images; a repository cook publishes
    them as PNGs and a managed cook keeps the pixels. A managed cook first
    consults the memo when `use_memo` is set. Reads only the parse info's paths
@@ -1754,114 +1876,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_convert_spec_gloss_inner(
     return false_v;
   }
 
-  float32_t srgb_to_linear_lut[256];
-  uint8_t linear_to_srgb_lut[VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX + 1u];
-  for (uint32_t i = 0; i < 256u; ++i) {
-    srgb_to_linear_lut[i] = vkr_srgb_to_linear((float32_t)i / 255.0f);
-  }
-  for (uint32_t i = 0; i <= VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX; ++i) {
-    linear_to_srgb_lut[i] = vkr_mesh_loader_gltf_unorm8(vkr_linear_to_srgb(
-        (float32_t)i / (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX));
-  }
-
-  /* When both images are read at their own size, a texel's output depends
-     only on its eight source bytes, and neighbouring texels often repeat
-     them: a direct-mapped memo skips the conversion's square roots and
-     divides for repeats, with the same bytes as computing them. */
-  const bool8_t memoized = diffuse.pixels && diffuse.width == width &&
-                           diffuse.height == height && spec_gloss.pixels &&
-                           spec_gloss.width == width &&
-                           spec_gloss.height == height;
-  VkrMeshLoaderGltfConversionMemo *memo =
-      memoized ? (VkrMeshLoaderGltfConversionMemo *)vkr_allocator_alloc(
-                     info->scratch_allocator,
-                     sizeof(*memo) * VKR_GLTF_CONVERSION_MEMO_SLOTS,
-                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE)
-               : NULL;
-  if (memo) {
-    MemZero(memo, sizeof(*memo) * VKR_GLTF_CONVERSION_MEMO_SLOTS);
-  }
-
-  for (int32_t y = 0; y < height; ++y) {
-    for (int32_t x = 0; x < width; ++x) {
-      const uint64_t i = (uint64_t)y * (uint64_t)width + (uint64_t)x;
-      uint8_t *base = base_pixels + i * 4u;
-      uint8_t *metal_rough = metal_rough_pixels + i * 4u;
-      VkrMeshLoaderGltfConversionMemo *slot = NULL;
-      uint64_t key = 0u;
-      if (memo) {
-        uint32_t diffuse_bytes = 0u;
-        uint32_t spec_gloss_bytes = 0u;
-        MemCopy(&diffuse_bytes, diffuse.pixels + i * 4u, 4u);
-        MemCopy(&spec_gloss_bytes, spec_gloss.pixels + i * 4u, 4u);
-        key = (uint64_t)diffuse_bytes | ((uint64_t)spec_gloss_bytes << 32u);
-        slot = &memo[(key * 0x9e3779b97f4a7c15ull) >>
-                     (64u - VKR_GLTF_CONVERSION_MEMO_BITS)];
-        if (slot->filled && slot->key == key) {
-          MemCopy(base, slot->texel, 4u);
-          MemCopy(metal_rough, slot->texel + 4u, 4u);
-          continue;
-        }
-      }
-      const float32_t u = ((float32_t)x + 0.5f) / (float32_t)width;
-      const float32_t v = ((float32_t)y + 0.5f) / (float32_t)height;
-      const Vec4 diffuse_texel =
-          diffuse.pixels && diffuse.width == width && diffuse.height == height
-              ? vkr_mesh_loader_gltf_decode_texel(diffuse.pixels, diffuse.width,
-                                                  x, y, true_v,
-                                                  srgb_to_linear_lut)
-              : vkr_mesh_loader_gltf_sample_image(&diffuse, diffuse_view, u, v,
-                                                  true_v, srgb_to_linear_lut);
-      const Vec4 spec_gloss_texel =
-          spec_gloss.pixels && spec_gloss.width == width &&
-                  spec_gloss.height == height
-              ? vkr_mesh_loader_gltf_decode_texel(spec_gloss.pixels,
-                                                  spec_gloss.width, x, y,
-                                                  true_v, srgb_to_linear_lut)
-              : vkr_mesh_loader_gltf_sample_image(&spec_gloss, spec_gloss_view,
-                                                  u, v, true_v,
-                                                  srgb_to_linear_lut);
-      VkrGltfSpecGlossSample sample = factor_sample;
-      sample.diffuse.x *= diffuse_texel.x;
-      sample.diffuse.y *= diffuse_texel.y;
-      sample.diffuse.z *= diffuse_texel.z;
-      sample.diffuse.w *= diffuse_texel.w;
-      sample.specular.x *= spec_gloss_texel.x;
-      sample.specular.y *= spec_gloss_texel.y;
-      sample.specular.z *= spec_gloss_texel.z;
-      sample.glossiness *= spec_gloss_texel.w;
-
-      const VkrGltfMetalRoughSample converted =
-          vkr_gltf_convert_spec_gloss_sample(sample);
-      const uint32_t base_r =
-          (uint32_t)(Clamp(converted.base_color.x, 0.0f, 1.0f) *
-                         (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX +
-                     0.5f);
-      const uint32_t base_g =
-          (uint32_t)(Clamp(converted.base_color.y, 0.0f, 1.0f) *
-                         (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX +
-                     0.5f);
-      const uint32_t base_b =
-          (uint32_t)(Clamp(converted.base_color.z, 0.0f, 1.0f) *
-                         (float32_t)VKR_GLTF_LINEAR_TO_SRGB_LUT_MAX +
-                     0.5f);
-      base[0] = linear_to_srgb_lut[base_r];
-      base[1] = linear_to_srgb_lut[base_g];
-      base[2] = linear_to_srgb_lut[base_b];
-      base[3] = vkr_mesh_loader_gltf_unorm8(converted.base_color.w);
-
-      metal_rough[0] = 255u;
-      metal_rough[1] = vkr_mesh_loader_gltf_unorm8(converted.roughness);
-      metal_rough[2] = vkr_mesh_loader_gltf_unorm8(converted.metallic);
-      metal_rough[3] = 255u;
-      if (slot) {
-        slot->key = key;
-        slot->filled = true_v;
-        MemCopy(slot->texel, base, 4u);
-        MemCopy(slot->texel + 4u, metal_rough, 4u);
-      }
-    }
-  }
+  vkr_mesh_loader_gltf_convert_spec_gloss_pixels(
+      info, factor_sample, &diffuse, diffuse_view, &spec_gloss, spec_gloss_view,
+      width, height, base_pixels, metal_rough_pixels);
 
   const bool8_t base_uniform =
       vkr_mesh_loader_gltf_pixels_are_uniform(base_pixels, pixel_count);

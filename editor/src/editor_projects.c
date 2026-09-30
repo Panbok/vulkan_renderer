@@ -3033,6 +3033,126 @@ static void project_place_world_models(VkrEditorProjects *projects,
   log_info("Import: %s", projects->message);
 }
 
+/* Publishes the inventory an asset import grew, files the new assets into the
+   targeted Content folder and places requested World models. The open scene
+   never unloaded. */
+static void project_publish_imported_assets(VkrEditorProjects *projects,
+                                            VkrEditorUi *editor,
+                                            const VkrSampleUiFrame *frame,
+                                            String8 result) {
+  VkrEditorProjectError error = {0};
+  projects->job_id = 0;
+  projects->job_project_assets = false_v;
+  projects->operation[0] = '\0';
+  projects->view = PROJECT_VIEW_EDITOR;
+  if (!vkr_editor_project_save(projects->project, &error)) {
+    project_error(projects, &error);
+    return;
+  }
+  VkrJsonReader preview_reader = vkr_json_reader_from_string(result);
+  int32_t preview = 0;
+  if (vkr_json_get_int(&preview_reader, "preview_assets", &preview) &&
+      preview > 0) {
+    projects->finalize_project = true_v;
+    projects->finalize_failures = 0u;
+  }
+  /* File the new assets into the folder the import targeted. */
+  VkrJsonReader reader = vkr_json_reader_from_string(result);
+  uint32_t imported = 0u;
+  uint32_t id_capacity = 0u;
+  char(*ids)[37] = NULL;
+  if (vkr_json_find_array(&reader, "imported_assets")) {
+    /* Each quoted identity and its separator take at least 38 bytes. */
+    id_capacity = (uint32_t)Min(reader.length / 38u + 1u, 65536u);
+    ids = vkr_allocator_alloc(frame->ui->frame_allocator,
+                              sizeof(*ids) * id_capacity,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    while (vkr_json_next_array_element(&reader)) {
+      String8 id = {0};
+      char text[37];
+      if (!vkr_json_parse_string(&reader, &id) || id.length >= sizeof(text)) {
+        break;
+      }
+      MemCopy(text, id.str, id.length);
+      text[id.length] = '\0';
+      if (ids && imported < id_capacity) {
+        MemCopy(ids[imported], text, sizeof(text));
+      }
+      ++imported;
+      if (projects->import_folder[0]) {
+        (void)vkr_editor_content_file_into(editor->content, text,
+                                           projects->import_folder);
+      }
+    }
+  }
+  vkr_editor_content_refresh(editor->content);
+  snprintf(projects->message, sizeof(projects->message),
+           "Imported %u assets into Content%s%s.", imported,
+           projects->import_folder[0] ? "/" : "", projects->import_folder);
+  projects->import_source_count = 0u;
+  projects->job_imports_models = false_v;
+  if (projects->job_world_models) {
+    project_place_world_models(projects, editor, frame, ids,
+                               Min(imported, id_capacity));
+  }
+}
+
+/* Replaces the scene fonts with those the completed job published. A failure
+   reports its message, ends the job and returns false. */
+static bool8_t project_load_scene_fonts(VkrEditorProjects *projects,
+                                        const VkrSampleUiFrame *frame,
+                                        String8 result) {
+  VkrEditorProjectError error = {0};
+  projects->font_system = frame->ui->fonts;
+  for (uint32_t i = 0; i < projects->font_count; ++i) {
+    vkr_font_system_release_by_handle(projects->font_system,
+                                      projects->fonts[i]);
+  }
+  projects->font_count = 0;
+  VkrJsonReader font_reader = vkr_json_reader_from_string(result);
+  if (vkr_json_find_array(&font_reader, "fonts")) {
+    while (vkr_json_next_array_element(&font_reader)) {
+      VkrJsonReader entry;
+      if (!vkr_json_enter_object(&font_reader, &entry)) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "Malformed scene font result.");
+        projects->job_id = 0;
+        return false_v;
+      }
+      String8 object = string8_create((uint8_t *)entry.data, entry.length);
+      char name[128];
+      char config[1024];
+      VkrRendererError font_error = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_editor_project_json_string(object, "name", name, sizeof(name),
+                                          &error) ||
+          !vkr_editor_project_json_string(object, "config", config,
+                                          sizeof(config), &error) ||
+          !vkr_font_system_load_from_file(
+              frame->ui->fonts, project_string(name), project_string(config),
+              &font_error)) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "Project saved; cannot load scene font (%u).", font_error);
+        projects->job_id = 0;
+        return false_v;
+      }
+      if (projects->font_count == ArrayCount(projects->fonts)) {
+        snprintf(projects->message, sizeof(projects->message),
+                 "Too many scene fonts.");
+        projects->job_id = 0;
+        return false_v;
+      }
+      VkrFontHandle font = vkr_font_system_acquire(
+          frame->ui->fonts, project_string(name), true_v, &font_error);
+      if (font_error != VKR_RENDERER_ERROR_NONE) {
+        projects->job_id = 0;
+        return false_v;
+      }
+      projects->fonts[projects->font_count++] = font;
+    }
+  }
+  return true_v;
+}
+
 static void project_job_complete(VkrEditorProjects *projects,
                                  VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
@@ -3115,61 +3235,7 @@ static void project_job_complete(VkrEditorProjects *projects,
     return;
   }
   if (projects->job_project_assets) {
-    /* Publish the grown inventory; the open scene never unloaded. */
-    projects->job_id = 0;
-    projects->job_project_assets = false_v;
-    projects->operation[0] = '\0';
-    projects->view = PROJECT_VIEW_EDITOR;
-    if (!vkr_editor_project_save(projects->project, &error)) {
-      project_error(projects, &error);
-      return;
-    }
-    VkrJsonReader preview_reader = vkr_json_reader_from_string(result);
-    int32_t preview = 0;
-    if (vkr_json_get_int(&preview_reader, "preview_assets", &preview) &&
-        preview > 0) {
-      projects->finalize_project = true_v;
-      projects->finalize_failures = 0u;
-    }
-    /* File the new assets into the folder the import targeted. */
-    VkrJsonReader reader = vkr_json_reader_from_string(result);
-    uint32_t imported = 0u;
-    uint32_t id_capacity = 0u;
-    char(*ids)[37] = NULL;
-    if (vkr_json_find_array(&reader, "imported_assets")) {
-      /* Each quoted identity and its separator take at least 38 bytes. */
-      id_capacity = (uint32_t)Min(reader.length / 38u + 1u, 65536u);
-      ids = vkr_allocator_alloc(frame->ui->frame_allocator,
-                                sizeof(*ids) * id_capacity,
-                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      while (vkr_json_next_array_element(&reader)) {
-        String8 id = {0};
-        char text[37];
-        if (!vkr_json_parse_string(&reader, &id) || id.length >= sizeof(text)) {
-          break;
-        }
-        MemCopy(text, id.str, id.length);
-        text[id.length] = '\0';
-        if (ids && imported < id_capacity) {
-          MemCopy(ids[imported], text, sizeof(text));
-        }
-        ++imported;
-        if (projects->import_folder[0]) {
-          (void)vkr_editor_content_file_into(editor->content, text,
-                                             projects->import_folder);
-        }
-      }
-    }
-    vkr_editor_content_refresh(editor->content);
-    snprintf(projects->message, sizeof(projects->message),
-             "Imported %u assets into Content%s%s.", imported,
-             projects->import_folder[0] ? "/" : "", projects->import_folder);
-    projects->import_source_count = 0u;
-    projects->job_imports_models = false_v;
-    if (projects->job_world_models) {
-      project_place_world_models(projects, editor, frame, ids,
-                                 Min(imported, id_capacity));
-    }
+    project_publish_imported_assets(projects, editor, frame, result);
     return;
   }
   if (projects->job_creates_project) {
@@ -3249,52 +3315,8 @@ static void project_job_complete(VkrEditorProjects *projects,
         "Scene saved without prepared assets. Select it to prepare and open.");
     return;
   }
-  projects->font_system = frame->ui->fonts;
-  for (uint32_t i = 0; i < projects->font_count; ++i) {
-    vkr_font_system_release_by_handle(projects->font_system,
-                                      projects->fonts[i]);
-  }
-  projects->font_count = 0;
-  VkrJsonReader font_reader = vkr_json_reader_from_string(result);
-  if (vkr_json_find_array(&font_reader, "fonts")) {
-    while (vkr_json_next_array_element(&font_reader)) {
-      VkrJsonReader entry;
-      if (!vkr_json_enter_object(&font_reader, &entry)) {
-        snprintf(projects->message, sizeof(projects->message),
-                 "Malformed scene font result.");
-        projects->job_id = 0;
-        return;
-      }
-      String8 object = string8_create((uint8_t *)entry.data, entry.length);
-      char name[128];
-      char config[1024];
-      VkrRendererError font_error = VKR_RENDERER_ERROR_NONE;
-      if (!vkr_editor_project_json_string(object, "name", name, sizeof(name),
-                                          &error) ||
-          !vkr_editor_project_json_string(object, "config", config,
-                                          sizeof(config), &error) ||
-          !vkr_font_system_load_from_file(
-              frame->ui->fonts, project_string(name), project_string(config),
-              &font_error)) {
-        snprintf(projects->message, sizeof(projects->message),
-                 "Project saved; cannot load scene font (%u).", font_error);
-        projects->job_id = 0;
-        return;
-      }
-      if (projects->font_count == ArrayCount(projects->fonts)) {
-        snprintf(projects->message, sizeof(projects->message),
-                 "Too many scene fonts.");
-        projects->job_id = 0;
-        return;
-      }
-      VkrFontHandle font = vkr_font_system_acquire(
-          frame->ui->fonts, project_string(name), true_v, &font_error);
-      if (font_error != VKR_RENDERER_ERROR_NONE) {
-        projects->job_id = 0;
-        return;
-      }
-      projects->fonts[projects->font_count++] = font;
-    }
+  if (!project_load_scene_fonts(projects, frame, result)) {
+    return;
   }
   if (projects->additive_job) {
     /* The request borrows the added scene's own copies; the open scene's
