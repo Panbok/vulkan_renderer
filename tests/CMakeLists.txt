@@ -48,6 +48,14 @@ foreach(variant 1 2 3 4)
         "${CMAKE_SOURCE_DIR}/renderer/src")
     set_target_properties(vkr_test_reload_probe_${variant} PROPERTIES
         C_VISIBILITY_PRESET hidden)
+    # Reload closes these modules and opens their next generation. With
+    # ASan-instrumented images, AppleClang's runtime faulted inside its global
+    # lookup (GetGlobalsForAddress) after a reload and aborted the suite. The
+    # host under test stays instrumented.
+    if(APPLE)
+        target_compile_options(vkr_test_reload_probe_${variant} PRIVATE
+            -fno-sanitize=address)
+    endif()
     add_dependencies(vulkan_renderer_tester vkr_test_reload_probe_${variant})
     target_compile_definitions(vulkan_renderer_tester PRIVATE
         VKR_TEST_RELOAD_PROBE_${variant}="$<TARGET_FILE:vkr_test_reload_probe_${variant}>")
