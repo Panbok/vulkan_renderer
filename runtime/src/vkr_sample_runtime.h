@@ -76,6 +76,22 @@ typedef struct VkrSampleViewRequest {
   bool8_t apply;
 } VkrSampleViewRequest;
 
+/* Why the UI asked for a Scene pick; the answer carries it back. */
+typedef enum VkrSamplePickPurpose {
+  /* A right click: open the picked object's menu. */
+  VKR_SAMPLE_PICK_MENU = 0,
+  /* A Script asset dropped: attach it to the picked object. */
+  VKR_SAMPLE_PICK_SCRIPT_DROP,
+} VkrSamplePickPurpose;
+
+/* Pick the Scene at a window pixel; the result arrives in a later frame as
+ * the frame's context fields. */
+typedef struct VkrSamplePickRequest {
+  bool8_t request;
+  Vec2 position_px;
+  VkrSamplePickPurpose purpose;
+} VkrSamplePickRequest;
+
 /* Consumed after UI build. Paths are copied before the frame scratch expires.
  * Selection replaces the old scene only after the dirty-edit decision. */
 typedef struct VkrSampleSceneRequest {
@@ -229,11 +245,14 @@ typedef struct VkrSampleUiFrame {
    */
   bool8_t *scene_shortcuts_blocked;
   VkrEntityId selected_entity;
-  /* A right click in the Scene, once: the object it picked, or invalid for
-   * empty space, and the window pixel it happened at. */
+  /* A Scene pick's answer, once: a right click or a pick_request. The
+   * object it picked, or invalid for empty space, the window pixel and why
+   * it was asked. */
   bool8_t context_requested;
   VkrEntityId context_entity;
   Vec2 context_position_px;
+  VkrSamplePickPurpose context_purpose;
+  VkrSamplePickRequest *pick_request;
   uint64_t scene_generation;
   const VkrSceneEditState *edits;
   VkrSceneEditRequest *scene_edit;

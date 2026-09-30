@@ -1678,14 +1678,34 @@ void vkr_editor_content_set_scripts(VkrEditorContent *content,
   }
 }
 
-/* Each source of the project's script modules, in Scripts (ADR-079). */
+/* One Script asset per project module, in Scripts (ADR-079): it opens the
+   module's `<name>.c`, else its first C source, and drags onto objects to
+   attach its script. */
 static void content_read_scripts(VkrEditorContent *content) {
-  const uint32_t count = vkr_editor_scripts_file_count(content->scripts);
-  for (uint32_t i = 0; i < count && content_reserve(content); ++i) {
-    const VkrEditorScriptFile *file =
-        vkr_editor_scripts_file(content->scripts, i);
+  const uint32_t modules = vkr_editor_scripts_module_count(content->scripts);
+  const uint32_t files = vkr_editor_scripts_file_count(content->scripts);
+  for (uint32_t m = 0; m < modules && content_reserve(content); ++m) {
     const VkrEditorScriptModule *module =
-        vkr_editor_scripts_module(content->scripts, file->module);
+        vkr_editor_scripts_module(content->scripts, m);
+    /* New modules name their source after the module in lower case. */
+    char wanted[VKR_EDITOR_SCRIPT_NAME + 2u];
+    snprintf(wanted, sizeof(wanted), "%s.c", module->name);
+    for (char *c = wanted; *c; ++c) {
+      *c = (char)tolower((unsigned char)*c);
+    }
+    const VkrEditorScriptFile *source = NULL;
+    for (uint32_t f = 0; f < files; ++f) {
+      const VkrEditorScriptFile *file =
+          vkr_editor_scripts_file(content->scripts, f);
+      const size_t length = strlen(file->name);
+      if (file->module != m || length < 2u ||
+          strcmp(file->name + length - 2u, ".c")) {
+        continue;
+      }
+      if (!source || !strcmp(file->name, wanted)) {
+        source = file;
+      }
+    }
     ContentAsset *entry = &content->entries[content->count++];
     MemZero(entry, sizeof(*entry));
     entry->scope = 1u;
@@ -1693,11 +1713,14 @@ static void content_read_scripts(VkrEditorContent *content) {
     entry->kind = CONTENT_SCRIPT;
     snprintf(entry->id, sizeof(entry->id), "script-%016llx",
              (unsigned long long)content_hash(UINT64_C(14695981039346656037),
-                                              file->path, strlen(file->path)));
-    content_copy(entry->name, sizeof(entry->name), file->name);
-    content_copy(entry->path, sizeof(entry->path), file->path);
-    content_copy(entry->source, sizeof(entry->source), file->path);
-    content_copy(entry->role, sizeof(entry->role), module ? module->name : "");
+                                              module->directory,
+                                              strlen(module->directory)));
+    content_copy(entry->name, sizeof(entry->name), module->name);
+    content_copy(entry->path, sizeof(entry->path),
+                 source ? source->path : module->description);
+    content_copy(entry->source, sizeof(entry->source),
+                 source ? source->path : module->description);
+    content_copy(entry->role, sizeof(entry->role), module->name);
     content_copy(entry->type_folder, sizeof(entry->type_folder), "Scripts");
   }
 }
@@ -2668,7 +2691,8 @@ static void content_action(VkrEditorContent *content,
                            VkrEditorContentActionKind kind) {
   /* A read-only workspace still opens scenes and edits loaded objects; it
      cannot change project files. */
-  const bool8_t browsing = kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCENE ||
+  const bool8_t browsing = kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT ||
+                           kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCENE ||
                            kind == VKR_EDITOR_CONTENT_ACTION_ADD_SCENE ||
                            kind == VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY ||
                            kind == VKR_EDITOR_CONTENT_ACTION_FRAME_ENTITY ||
@@ -3525,6 +3549,14 @@ static String8 content_description(const VkrEditorContent *content,
         "it to the scene.",
         entry->name);
   }
+  if (entry->kind == CONTENT_SCRIPT) {
+    return string8_create_formatted(
+        ui->frame_allocator,
+        "%s\nScript\nDrag it onto an object in the viewport or Outliner to "
+        "attach it, or onto empty space to add an object running it. "
+        "Double-click to edit it.",
+        entry->name);
+  }
   const VkrEditorAssetLabel *label = content_entry_label(content, entry);
   const char *folder = content_item_folder(content, entry);
   const uint32_t folder_index = content_tree_find(content, folder);
@@ -3544,10 +3576,10 @@ static String8 content_description(const VkrEditorContent *content,
                              : "Ready");
 }
 
-/* Whether the viewport accepts a dropped item: object types and built
-   meshes. A scene folder dropped there opens. */
+/* Whether the viewport accepts a dropped item: object types, scripts and
+   built meshes. A scene folder dropped there opens. */
 static bool8_t content_viewport_accepts(const ContentAsset *entry) {
-  return entry->kind == CONTENT_OBJECT ||
+  return entry->kind == CONTENT_OBJECT || entry->kind == CONTENT_SCRIPT ||
          (entry->kind == CONTENT_MESH && !entry->missing && !entry->stale);
 }
 
@@ -3592,6 +3624,12 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui) {
       content->selected = shown;
       content_action(content, VKR_EDITOR_CONTENT_ACTION_PLACE_ASSET);
       content->action.drop_px = (Vec2){x, y};
+    } else if (over_viewport && entry->kind == CONTENT_SCRIPT) {
+      /* The editor picks under the drop to attach, else adds an object. */
+      content->selected = shown;
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT);
+      content->action.drop_px = (Vec2){x, y};
+      content->action.dropped = true_v;
     } else if (over_viewport) {
       content_activate(content, shown);
       content->action.drop_px = (Vec2){x, y};
@@ -3628,6 +3666,9 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui) {
   ghost.style.corner_radius_pt = (Vec4){10, 10, 10, 10};
   ghost.icon = folder ? dragged_folder->icon : content_icon(entry);
   ghost.icon_size_pt = 40.0f;
+  /* An icon-only label draws at its leading edge unless centered. */
+  ghost.center = true_v;
+  ghost.style.padding_pt = (VkrUiEdges){0};
   ghost.icon_color = vkr_ui_color_alpha(kind_color, accepted ? 0.9f : 0.6f);
   vkr_ui_label(ui, string8_lit("content.drag.ghost"), (String8){0}, &ghost);
 
@@ -4981,6 +5022,25 @@ bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
   *position_pt = content->menu_position_pt;
   *folder = content->menu_folder;
   return true_v;
+}
+
+bool8_t vkr_editor_content_dragged_script(const VkrEditorContent *content,
+                                          char *module, uint32_t capacity) {
+  if (!content || !content->dragging ||
+      content_shown_folder(content->drag_asset) ||
+      content->drag_asset >= content->count ||
+      content->entries[content->drag_asset].kind != CONTENT_SCRIPT) {
+    return false_v;
+  }
+  snprintf(module, capacity, "%s", content->entries[content->drag_asset].role);
+  return true_v;
+}
+
+void vkr_editor_content_end_drag(VkrEditorContent *content) {
+  if (content) {
+    content->dragging = false_v;
+    content->drag_asset = CONTENT_NONE;
+  }
 }
 
 VkrEntityId vkr_editor_content_menu_entity(const VkrEditorContent *content) {

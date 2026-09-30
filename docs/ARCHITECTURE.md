@@ -474,7 +474,8 @@ weapon primitive provides tick-based ammo, reload and independent firing locks
 with reservation before consumption. Gameplay lives in C script modules
 ([ADR-079](adr/079-c-script-modules.md)). A module calls the engine only
 through the `VkrScriptApi` table of the runtime script host, registers its
-component types, which an entity's Details script slot attaches, and runs on
+component types, which Content's Script assets attach to objects by drag or
+an entity's Details script slot, and runs on
 the scene clock; with no scene open, the World plays. The host is the
 scene's only simulation callback client and input observer. The editor session
 starts on the first run or step and ends at Reset.

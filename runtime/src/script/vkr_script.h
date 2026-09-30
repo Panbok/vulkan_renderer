@@ -29,6 +29,8 @@
 #include "renderer/systems/vkr_scene_physics.h"
 
 #define VKR_SCRIPT_ABI_VERSION 2u
+/* Component types one module may declare; the host refuses more. */
+#define VKR_SCRIPT_MODULE_TYPE_MAX 8u
 
 struct VkrRenderAssets;
 struct VkrAnimationGraphInstance;
@@ -265,3 +267,187 @@ typedef const VkrScriptModuleDesc *(*VkrScriptModuleEntry)(
 #else
 #define VKR_SCRIPT_EXPORT __attribute__((visibility("default")))
 #endif
+
+// =============================================================================
+// Authoring macros
+// =============================================================================
+
+/*
+ * Components and modules are declared once instead of as a struct, a
+ * property table, a defaults function, a type descriptor, a module
+ * description and an entry point written by hand:
+ *
+ *   #define DOOR_FIELDS                                                   \
+ *     VKR_FIELD(F32, speed, "Speed", 0.25f, .unit = "turns/s",           \
+ *               .min = -10.0f, .max = 10.0f)                             \
+ *     VKR_FIELD(BOOL, locked, "Locked", false_v)
+ *   VKR_SCRIPT_COMPONENT(Door, door, "Door", DOOR_FIELDS)
+ *
+ *   VKR_SCRIPT_MODULE(Door, DoorState, 1, (door),
+ *                     .start = door_start, .stop = door_stop)
+ *
+ * VKR_FIELD(kind, name, label, default, options...) is one property:
+ * `kind` is BOOL, I32, U32, F32, ANGLE (radians), VEC2, VEC3, VEC4, QUAT,
+ * COLOR, DIRECTION or ENUM (with `.names`); `default` is any expression of
+ * the member's type; options are VkrPropertyDesc designators such as `.unit`,
+ * `.min`, `.max`, `.step`, `.tooltip` or `.flags`.
+ *
+ * VKR_SCRIPT_COMPONENT(Type, name, label, FIELDS) declares `Type`, its
+ * descriptor `name_type()`, `name_get(session, entity)` returning the
+ * entity's `const Type *` or NULL, and `name_find(session, out, capacity)`
+ * returning how many entities carry it, at most `capacity`.
+ *
+ * VKR_SCRIPT_MODULE(Name, State, version, (a)(b), hooks...) defines the
+ * exported `vkr_script_module_Name`: its components, `State` as the session
+ * state with `version` as its state_version, and the hooks as designators.
+ */
+
+#include <stddef.h>
+
+/* Generated helpers a script may not call. */
+#if defined(_MSC_VER) && !defined(__clang__)
+#define VKR_SCRIPT_MAYBE_UNUSED
+#else
+#define VKR_SCRIPT_MAYBE_UNUSED __attribute__((unused))
+#endif
+
+#define VKR_SCRIPT_CTYPE_BOOL bool8_t
+#define VKR_SCRIPT_CTYPE_I32 int32_t
+#define VKR_SCRIPT_CTYPE_U32 uint32_t
+#define VKR_SCRIPT_CTYPE_F32 float32_t
+#define VKR_SCRIPT_CTYPE_ANGLE float32_t
+#define VKR_SCRIPT_CTYPE_VEC2 Vec2
+#define VKR_SCRIPT_CTYPE_VEC3 Vec3
+#define VKR_SCRIPT_CTYPE_VEC4 Vec4
+#define VKR_SCRIPT_CTYPE_QUAT Vec4
+#define VKR_SCRIPT_CTYPE_COLOR Vec3
+#define VKR_SCRIPT_CTYPE_DIRECTION Vec3
+#define VKR_SCRIPT_CTYPE_ENUM int32_t
+
+/* A field list is a sequence of parenthesized tuples. */
+#define VKR_FIELD(...) (__VA_ARGS__)
+
+#define VKR_SCRIPT_CAT_(a, b) VKR_SCRIPT_CAT2_(a, b)
+#define VKR_SCRIPT_CAT2_(a, b) a##b
+
+/* Each walk alternates two macros over the sequence so no macro expands
+   inside itself; the last one left pastes into an empty `_END`. A walk's
+   output is one macro argument, so it may hold commas only inside
+   parentheses: the walks emit statements and parenthesized literals. */
+#define VKR_SCRIPT_MEMBER_(kind_, name_, label_, value_, ...)                  \
+  VKR_SCRIPT_CTYPE_##kind_ name_;
+#define VKR_SCRIPT_MEMBERS_A_(...)                                             \
+  VKR_SCRIPT_MEMBER_(__VA_ARGS__) VKR_SCRIPT_MEMBERS_B_
+#define VKR_SCRIPT_MEMBERS_B_(...)                                             \
+  VKR_SCRIPT_MEMBER_(__VA_ARGS__) VKR_SCRIPT_MEMBERS_A_
+#define VKR_SCRIPT_MEMBERS_A__END
+#define VKR_SCRIPT_MEMBERS_B__END
+#define VKR_SCRIPT_MEMBERS_(fields)                                            \
+  VKR_SCRIPT_CAT_(VKR_SCRIPT_MEMBERS_A_ fields, _END)
+
+#define VKR_SCRIPT_PROPERTY_(kind_, name_, label_, value_, ...)                \
+  if (count < VKR_TYPE_PROPERTY_MAX) {                                         \
+    properties[count++] = ((VkrPropertyDesc){                                  \
+        .name = #name_,                                                        \
+        .label = label_,                                                       \
+        .offset = (uint32_t)offsetof(VkrScriptComponentThis, name_),           \
+        .kind = VKR_PROPERTY_##kind_,                                          \
+        __VA_ARGS__});                                                         \
+  }
+#define VKR_SCRIPT_PROPERTIES_A_(...)                                          \
+  VKR_SCRIPT_PROPERTY_(__VA_ARGS__) VKR_SCRIPT_PROPERTIES_B_
+#define VKR_SCRIPT_PROPERTIES_B_(...)                                          \
+  VKR_SCRIPT_PROPERTY_(__VA_ARGS__) VKR_SCRIPT_PROPERTIES_A_
+#define VKR_SCRIPT_PROPERTIES_A__END
+#define VKR_SCRIPT_PROPERTIES_B__END
+#define VKR_SCRIPT_PROPERTIES_(fields)                                         \
+  VKR_SCRIPT_CAT_(VKR_SCRIPT_PROPERTIES_A_ fields, _END)
+
+#define VKR_SCRIPT_DEFAULT_(kind_, name_, label_, value_, ...)                 \
+  component->name_ = (value_);
+#define VKR_SCRIPT_DEFAULTS_A_(...)                                            \
+  VKR_SCRIPT_DEFAULT_(__VA_ARGS__) VKR_SCRIPT_DEFAULTS_B_
+#define VKR_SCRIPT_DEFAULTS_B_(...)                                            \
+  VKR_SCRIPT_DEFAULT_(__VA_ARGS__) VKR_SCRIPT_DEFAULTS_A_
+#define VKR_SCRIPT_DEFAULTS_A__END
+#define VKR_SCRIPT_DEFAULTS_B__END
+#define VKR_SCRIPT_DEFAULTS_(fields)                                           \
+  VKR_SCRIPT_CAT_(VKR_SCRIPT_DEFAULTS_A_ fields, _END)
+
+#define VKR_SCRIPT_COMPONENT(Type_, id_, label_, fields_)                      \
+  typedef struct Type_ {                                                       \
+    VKR_SCRIPT_MEMBERS_(fields_)                                               \
+  } Type_;                                                                     \
+  static void id_##_defaults(void *value) {                                    \
+    Type_ *component = value;                                                  \
+    VKR_SCRIPT_DEFAULTS_(fields_)                                              \
+  }                                                                            \
+  /* Built on first use and stable for the process: the host maps it to        \
+     its registered copy. */                                                   \
+  VKR_SCRIPT_MAYBE_UNUSED static const VkrTypeDesc *id_##_type(void) {         \
+    typedef Type_ VkrScriptComponentThis;                                      \
+    static VkrPropertyDesc properties[VKR_TYPE_PROPERTY_MAX];                  \
+    static VkrTypeDesc type;                                                   \
+    if (!type.name) {                                                          \
+      uint32_t count = 0u;                                                     \
+      VKR_SCRIPT_PROPERTIES_(fields_)                                          \
+      type = (VkrTypeDesc){                                                    \
+          .name = #id_,                                                        \
+          .label = label_,                                                     \
+          .category = "Scripts",                                               \
+          .properties = properties,                                            \
+          .property_count = count,                                             \
+          .size = sizeof(Type_),                                               \
+          .align = _Alignof(Type_),                                            \
+          .defaults = id_##_defaults,                                          \
+      };                                                                       \
+    }                                                                          \
+    return &type;                                                              \
+  }                                                                            \
+  VKR_SCRIPT_MAYBE_UNUSED static inline const Type_ *id_##_get(                \
+      const VkrScriptSession *session, VkrEntityId entity) {                   \
+    return (const Type_ *)session->api->get_typed(session->scene, entity,      \
+                                                  id_##_type());               \
+  }                                                                            \
+  VKR_SCRIPT_MAYBE_UNUSED static inline uint32_t id_##_find(                   \
+      const VkrScriptSession *session, VkrEntityId *out, uint32_t capacity) {  \
+    const uint32_t found =                                                     \
+        session->api->find_typed(session->scene, id_##_type(), out, capacity); \
+    return found < capacity ? found : capacity;                                \
+  }
+
+#define VKR_SCRIPT_TYPE_(id_)                                                  \
+  if (count < VKR_SCRIPT_MODULE_TYPE_MAX) {                                    \
+    types[count] = id_##_type();                                               \
+  }                                                                            \
+  ++count;
+#define VKR_SCRIPT_TYPES_A_(id_) VKR_SCRIPT_TYPE_(id_) VKR_SCRIPT_TYPES_B_
+#define VKR_SCRIPT_TYPES_B_(id_) VKR_SCRIPT_TYPE_(id_) VKR_SCRIPT_TYPES_A_
+#define VKR_SCRIPT_TYPES_A__END
+#define VKR_SCRIPT_TYPES_B__END
+#define VKR_SCRIPT_TYPES_(components)                                          \
+  VKR_SCRIPT_CAT_(VKR_SCRIPT_TYPES_A_ components, _END)
+
+#define VKR_SCRIPT_MODULE(Name_, State_, version_, components_, ...)           \
+  VKR_SCRIPT_EXPORT const VkrScriptModuleDesc *vkr_script_module_##Name_(      \
+      const VkrScriptApi *api) {                                               \
+    if (!api || api->version != VKR_SCRIPT_ABI_VERSION ||                      \
+        api->size < sizeof(VkrScriptApi)) {                                    \
+      return NULL;                                                             \
+    }                                                                          \
+    /* More than VKR_SCRIPT_MODULE_TYPE_MAX types: the host refuses it. */     \
+    static const VkrTypeDesc *types[VKR_SCRIPT_MODULE_TYPE_MAX];               \
+    uint32_t count = 0u;                                                       \
+    VKR_SCRIPT_TYPES_(components_)                                             \
+    static VkrScriptModuleDesc desc;                                           \
+    desc = (VkrScriptModuleDesc){.abi_version = VKR_SCRIPT_ABI_VERSION,        \
+                                 .size = sizeof(VkrScriptModuleDesc),          \
+                                 .name = #Name_,                               \
+                                 .types = types,                               \
+                                 .type_count = count,                          \
+                                 .state_size = sizeof(State_),                 \
+                                 .state_align = _Alignof(State_),              \
+                                 .state_version = (version_),                  \
+                                 __VA_ARGS__};                                 \
+    return &desc;                                                              \
+  }

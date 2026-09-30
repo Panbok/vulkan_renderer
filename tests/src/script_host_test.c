@@ -193,6 +193,71 @@ static void test_player_start_resolution(VkrAllocator *allocator) {
   vkr_scene_shutdown(&world, NULL);
 }
 
+/* The authoring macros, read back through the descriptors they generate:
+   member offsets, kinds, options, defaults and the module description. */
+static const char *const s_macro_modes[] = {"Walk", "Run", NULL};
+
+#define MACRO_GATE_FIELDS                                                      \
+  VKR_FIELD(F32, speed, "Speed", 0.25f, .unit = "turns/s", .min = -10.0f,      \
+            .max = 10.0f)                                                      \
+  VKR_FIELD(BOOL, locked, "Locked", false_v)                                   \
+  VKR_FIELD(U32, count, "Count", 3u)                                           \
+  VKR_FIELD(I32, offset, "Offset", -2)                                         \
+  VKR_FIELD(VEC3, axis, "Axis", vec3_new(0.0f, 1.0f, 0.0f))                    \
+  VKR_FIELD(ENUM, mode, "Mode", 1, .names = s_macro_modes)
+VKR_SCRIPT_COMPONENT(MacroGate, macro_gate, "Macro gate", MACRO_GATE_FIELDS)
+
+#define MACRO_LAMP_FIELDS VKR_FIELD(F32, glow, "Glow", 1.0f)
+VKR_SCRIPT_COMPONENT(MacroLamp, macro_lamp, "Macro lamp", MACRO_LAMP_FIELDS)
+
+typedef struct MacroState {
+  uint32_t ticks;
+} MacroState;
+
+static VkrScriptStart macro_start(const VkrScriptSession *session, void *state,
+                                  const char **error) {
+  (void)session;
+  (void)state;
+  (void)error;
+  return VKR_SCRIPT_START_IDLE;
+}
+
+static void macro_stop(const VkrScriptSession *session, void *state) {
+  (void)session;
+  (void)state;
+}
+
+VKR_SCRIPT_MODULE(MacroProbe, MacroState, 3, (macro_gate)(macro_lamp),
+                  .start = macro_start, .stop = macro_stop)
+
+static void test_script_authoring_macros(void) {
+  VkrScriptApi api = {.version = VKR_SCRIPT_ABI_VERSION,
+                      .size = sizeof(VkrScriptApi)};
+  const VkrScriptModuleDesc *desc = vkr_script_module_MacroProbe(&api);
+  assert(desc && !strcmp(desc->name, "MacroProbe") && desc->type_count == 2u);
+  assert(desc->start == macro_start && desc->stop == macro_stop);
+  assert(desc->state_size == sizeof(MacroState) && desc->state_version == 3u);
+  const VkrTypeDesc *gate = desc->types[0];
+  assert(gate == macro_gate_type() && gate == macro_gate_type());
+  assert(!strcmp(gate->name, "macro_gate") && gate->property_count == 6u);
+  assert(gate->size == sizeof(MacroGate));
+  const VkrPropertyDesc *axis = &gate->properties[4];
+  assert(!strcmp(axis->name, "axis") && axis->kind == VKR_PROPERTY_VEC3 &&
+         axis->offset == offsetof(MacroGate, axis));
+  assert(gate->properties[0].max == 10.0f &&
+         !strcmp(gate->properties[0].unit, "turns/s"));
+  assert(gate->properties[5].names == s_macro_modes);
+  MacroGate value;
+  memset(&value, 0xff, sizeof(value));
+  gate->defaults(&value);
+  assert(value.speed == 0.25f && !value.locked && value.count == 3u &&
+         value.offset == -2 && value.axis.y == 1.0f && value.mode == 1);
+  assert(vkr_type_validate(gate, &value, NULL, 0u));
+  assert(desc->types[1]->property_count == 1u);
+  api.version = VKR_SCRIPT_ABI_VERSION + 1u;
+  assert(!vkr_script_module_MacroProbe(&api));
+}
+
 bool32_t run_script_host_tests(void) {
   VkrDMemory memory;
   assert(vkr_dmemory_create(MB(4), MB(32), &memory));
@@ -200,6 +265,7 @@ bool32_t run_script_host_tests(void) {
   vkr_dmemory_allocator_create(&allocator);
   test_script_host_lifecycle(&allocator);
   test_player_start_resolution(&allocator);
+  test_script_authoring_macros();
   vkr_dmemory_allocator_destroy(&allocator);
   printf("Script host tests passed\n");
   return true_v;

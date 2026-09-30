@@ -39,6 +39,10 @@ typedef enum VkrEditorContentActionKind {
      ask for a new script module (ADR-079). */
   VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT,
   VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT,
+  /* A Script asset (`name` is its module) dropped on the viewport at
+     `drop_px`: attach it to the object there, else add an object running
+     it. */
+  VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT,
 } VkrEditorContentActionKind;
 
 /* A Content context menu's commands (ADR-076). */
@@ -199,6 +203,11 @@ bool8_t vkr_editor_content_take_object_action(VkrEditorContent *content,
  * landed on empty space and asks for the shown folder's menu instead. */
 bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
                                      Vec2 *position_pt, bool8_t *folder);
+/** While a Script asset is dragged: true, with its module name. */
+bool8_t vkr_editor_content_dragged_script(const VkrEditorContent *content,
+                                          char *module, uint32_t capacity);
+/** Ends a drag another panel accepted. */
+void vkr_editor_content_end_drag(VkrEditorContent *content);
 /** The loaded object the open item menu acts on, or invalid. */
 VkrEntityId vkr_editor_content_menu_entity(const VkrEditorContent *content);
 /** The menu item's label for `command` ("Open scene", "Frame in viewport",

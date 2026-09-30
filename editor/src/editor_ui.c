@@ -395,7 +395,10 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   }
   /* A right click in the Scene opens the menu of the object it picked, or
      the creation menu over empty space. */
-  if (frame->context_requested) {
+  if (frame->context_requested &&
+      frame->context_purpose == VKR_SAMPLE_PICK_SCRIPT_DROP) {
+    vkr_editor_finish_script_drop(editor, frame);
+  } else if (frame->context_requested) {
     const float32_t scale = frame->ui->content_scale;
     const Vec2 point = {frame->context_position_px.x / scale,
                         frame->context_position_px.y / scale};
@@ -438,12 +441,14 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
               content_action.dropped ? &content_action.drop_px : NULL)) {
         vkr_editor_content_reveal_created(editor->content,
                                           frame->selected_entity);
-        vkr_editor_after_create(editor, frame, content_action.object);
       }
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT) {
       (void)vkr_editor_code_open(editor->code, editor, content_action.source);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
       vkr_editor_code_new_script(editor->code, editor);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
+      vkr_editor_drop_script(editor, frame, content_action.name,
+                             content_action.drop_px);
     }
   }
   vkr_editor_build_status_build(editor->build, editor, frame);

@@ -3752,6 +3752,9 @@ static void project_take_content_action(VkrEditorProjects *projects,
       (void)vkr_editor_code_open(editor->code, editor, content_action.source);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
       vkr_editor_code_new_script(editor->code, editor);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
+      vkr_editor_drop_script(editor, frame, content_action.name,
+                             content_action.drop_px);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
       /* Content shows the new object where it lives once it is selected. */
       if (vkr_editor_request_create(
@@ -3759,7 +3762,6 @@ static void project_take_content_action(VkrEditorProjects *projects,
               content_action.dropped ? &content_action.drop_px : NULL)) {
         vkr_editor_content_reveal_created(editor->content,
                                           frame->selected_entity);
-        vkr_editor_after_create(editor, frame, content_action.object);
       }
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_PLACE_ASSET) {
       project_place_asset(projects, editor, frame, &content_action);

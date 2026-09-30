@@ -53,6 +53,21 @@ bool8_t vkr_editor_open_entity_script(VkrEditorUi *editor,
    its current one; NULL removes it. */
 void vkr_editor_request_script(const VkrSampleUiFrame *frame,
                                VkrEntityId entity, const VkrTypeDesc *type);
+/* The loaded module's script type named `module`, or NULL. */
+const VkrTypeDesc *vkr_editor_module_script(const VkrSampleUiFrame *frame,
+                                            const char *module);
+/* Attach a script to an object as one more of its components; false with a
+   notice when it already runs it or cannot hold it. */
+bool8_t vkr_editor_attach_script(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity, const VkrTypeDesc *type);
+/* A Script asset dropped on the Scene at `drop_px`: attach it to the object
+   there once the pick answers, else add an object running it. */
+void vkr_editor_drop_script(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                            const char *module, Vec2 drop_px);
+/* The pick answer of a dropped Script asset. */
+void vkr_editor_finish_script_drop(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame);
 /* Focus the Details name field on its next build. */
 void vkr_editor_scene_panels_request_rename(VkrEditorScenePanels *panels);
 /* World id new objects go to: the selection's container, else the primary

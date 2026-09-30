@@ -12,7 +12,8 @@ Accepted (partial). Implemented:
 
 - the script ABI (version 2) and the runtime script host;
 - shared-library loading with hot reload that keeps state;
-- Script objects and the Player Start;
+- Script assets attached to objects, the authoring macros and the Player
+  Start;
 - project `Scripts/` modules built by Bakery and loaded before the project's
   documents;
 - the floating Script editor with highlighting, completion and diagnostics;
@@ -230,9 +231,18 @@ is an engine component whose entity's world transform is a spawn pose.
 character spawns there and every reset returns it there, while authored TRS
 keeps the designer's placement.
 
-### Script slot and Script objects
+### Scripts are assets attached to objects
 
-An entity's script is the first script module component it carries; there is
+A script is an asset, not an object of its own. Content's Scripts folder
+shows one Script asset per project module; double-clicking it opens the
+module's `<name>.c`. Dragging it onto an object, in the Scene or on an
+Outliner row, attaches the module's first component type to that object as
+one more of its components. Dropped on empty space in the Scene, it adds an
+object named after the script that runs it, placed where the pointer meets
+the ground. A Scene drop picks under the pointer as a right click does
+(`VkrSamplePickRequest`, answered through the frame's context fields).
+
+An entity's script slot is the first script component it carries; there is
 no separate slot component, so nothing can disagree with the component that
 holds the script's fields. Every placed entity shows a Script row in Details
 above its component sections, and right-click offers the same choices in a
@@ -244,23 +254,52 @@ Script submenu:
 
 Choosing a script adds its component with defaults, or replaces the current
 one in a single undo entry that restores the replaced values
-(`vkr_scene_edit_replace_component`). New script from an object's slot or
-menus makes the object wait for the module: once the new module loads, its
-first type becomes the object's script. The Outliner names each scripted
-object's script in a chip on its row. Add component also lists the loaded
-script types under Scripts, with New script, and adds one beside any others.
+(`vkr_scene_edit_replace_component`). Remove script, or the section's trash
+button, detaches it. New script from an object's slot or menus makes the
+object wait for the module: once the new module loads, its first type
+becomes the object's script. Add component also lists the loaded script
+types under Scripts, with New script, and adds one beside any others. The
+Outliner shows scripted entities with a code icon and names each one's
+script in a chip on its row. `create <type>` still makes an entity carrying
+a named script type.
 
-The Add menu and Content's System/Objects list one Script object: an empty
-entity named Script whose Script picker opens beside it in the Scene once it
-exists. Made while a placed object of the same container is selected, it
-becomes that object's child at its origin. It shows the empty-object icon until a script is chosen, then the code
-icon. `create <type>` still
-makes an entity carrying a named script type. The Outliner shows scripted
-entities with a code icon. Double-clicking a scripted object in Content or
-the Outliner opens its source: a project module's `<Name>.c`, or for a module linked into
-the editor, such as `fps`, `scripts/<name>/src/<name>_module.c` in this
+Double-clicking a scripted object in Content or the Outliner opens its
+source: a project module's `<Name>.c`, or for a module linked into the
+editor, such as `fps`, `scripts/<name>/src/<name>_module.c` in this
 repository with a notice that saved changes apply after a rebuild. An object
 whose script has no source shows a notice instead.
+
+### Authoring macros
+
+`vkr_script.h` declares a component and a module once, instead of a struct,
+a property table, a defaults function, a type descriptor, a module
+description and an entry point written by hand:
+
+```c
+#define DOOR_FIELDS                                                     \
+  VKR_FIELD(F32, speed, "Speed", 0.25f, .unit = "turns/s", .min = -10.0f, \
+            .max = 10.0f)                                                \
+  VKR_FIELD(BOOL, locked, "Locked", false_v)
+VKR_SCRIPT_COMPONENT(Door, door, "Door", DOOR_FIELDS)
+
+VKR_SCRIPT_MODULE(Door, DoorState, 1, (door), .start = door_start,
+                  .stop = door_stop)
+```
+
+- `VKR_FIELD(kind, name, label, default, options...)`: one property. The
+  kinds are `BOOL`, `I32`, `U32`, `F32`, `ANGLE` (radians), `VEC2`, `VEC3`,
+  `VEC4`, `QUAT`, `COLOR`, `DIRECTION` and `ENUM` (with `.names`). Options
+  are `VkrPropertyDesc` designators.
+- `VKR_SCRIPT_COMPONENT(Type, name, label, FIELDS)`: the `Type` struct,
+  `name_type()`, `name_get(session, entity)` and
+  `name_find(session, out, capacity)`.
+- `VKR_SCRIPT_MODULE(Name, State, version, (a)(b), hooks...)`: the exported
+  `vkr_script_module_Name` with its components, its state and its hooks.
+
+The macros walk the field sequence with two alternating macros, so a list has
+no length limit. Each descriptor is built once, on first use, in static
+storage the host maps to its registered copy. New modules start from a
+template written with them; hand-written modules keep working.
 
 ### The FPS module
 

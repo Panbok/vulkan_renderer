@@ -2724,10 +2724,13 @@ bool8_t vkr_ui_code_view(VkrUiSystem *system, String8 id_label,
 
   /* Copy lines, text and spans: drawing resolves after the caller's frame
      data may be gone. The hash drives retained tile damage. */
+  /* Spans hold a Vec4; each line's run starts at the span alignment. */
+  const uintptr_t span_align = AlignOf(VkrUiCodeSpan);
   uint64_t bytes = (uint64_t)view->line_count * sizeof(VkrUiCodeLine);
   for (uint32_t i = 0; i < view->line_count; ++i)
     bytes += view->lines[i].text.length +
-             (uint64_t)view->lines[i].span_count * sizeof(VkrUiCodeSpan) + 8u;
+             (uint64_t)view->lines[i].span_count * sizeof(VkrUiCodeSpan) +
+             span_align;
   uint8_t *storage = bytes ? vkr_allocator_alloc(system->frame_allocator, bytes,
                                                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
                            : NULL;
@@ -2752,13 +2755,20 @@ bool8_t vkr_ui_code_view(VkrUiSystem *system, String8 id_label,
     const VkrUiCodeLine *from = &view->lines[i];
     VkrUiCodeLine *line = &lines[i];
     *line = *from;
-    cursor = (uint8_t *)(((uintptr_t)cursor + 7u) & ~(uintptr_t)7u);
+    cursor =
+        (uint8_t *)(((uintptr_t)cursor + span_align - 1u) & ~(span_align - 1u));
     if (from->span_count && from->spans) {
       VkrUiCodeSpan *spans = (VkrUiCodeSpan *)cursor;
       MemCopy(spans, from->spans, from->span_count * sizeof(*spans));
       line->spans = spans;
       cursor += from->span_count * sizeof(*spans);
-      hash = vkr_ui_hash_bytes(hash, spans, from->span_count * sizeof(*spans));
+      /* Field by field: the padding before `color` is not part of it. */
+      for (uint32_t k = 0; k < from->span_count; ++k) {
+        hash = vkr_ui_hash_bytes(hash, &spans[k].start, sizeof(spans[k].start));
+        hash =
+            vkr_ui_hash_bytes(hash, &spans[k].length, sizeof(spans[k].length));
+        hash = vkr_ui_hash_bytes(hash, &spans[k].color, sizeof(float32_t) * 4u);
+      }
     } else {
       line->spans = NULL;
       line->span_count = 0u;

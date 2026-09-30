@@ -2060,9 +2060,10 @@ static void code_build_view(VkrEditorCode *code, VkrEditorUi *editor,
   VkrUiCodeLine *lines =
       vkr_allocator_alloc(ui->frame_allocator, sizeof(*lines) * Max(count, 1u),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrUiCodeSpan *spans = vkr_allocator_alloc(
+  /* Spans hold a Vec4, so they need its alignment. */
+  VkrUiCodeSpan *spans = vkr_allocator_alloc_aligned(
       ui->frame_allocator, sizeof(*spans) * CODE_SPAN_MAX * Max(count, 1u),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      AlignOf(VkrUiCodeSpan), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!lines || !spans) {
     return;
   }

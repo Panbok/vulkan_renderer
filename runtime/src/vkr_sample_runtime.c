@@ -236,15 +236,19 @@ typedef struct State {
   int32_t context_press_y;
   float64_t context_press_time;
   int32_t context_motion;
-  /* The click ended; its pick runs when the picker is free. */
+  /* The click ended, or the UI asked; its pick runs when the picker is
+     free, for this purpose. */
   bool8_t context_click_pending;
-  /* The pending pick answers a context click. */
+  VkrSamplePickPurpose context_purpose;
+  /* The pending pick answers a context click, for this purpose. */
   bool8_t context_pick;
+  VkrSamplePickPurpose context_pick_purpose;
   /* Published to the UI once: open the object menu for this entity, or the
      creation menu when none, at this window pixel. */
   bool8_t context_ready;
   VkrEntityId context_entity;
   Vec2 context_position_px;
+  VkrSamplePickPurpose context_ready_purpose;
 
   // Scene system demo
   VkrResourceHandleInfo scene_resource;
@@ -2658,6 +2662,7 @@ static void sample_track_context_click(VkrStandardSceneRuntime *application,
     if ((float32_t)state->context_motion <= reach &&
         vkr_platform_get_absolute_time() - state->context_press_time < 0.45) {
       state->context_click_pending = true_v;
+      state->context_purpose = VKR_SAMPLE_PICK_MENU;
     }
   }
 }
@@ -3325,6 +3330,7 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
       state->gizmo_drag.pick_position = press_info.position;
       state->gizmo_drag.released = false_v;
       state->context_pick = true_v;
+      state->context_pick_purpose = state->context_purpose;
     }
   }
 
@@ -3485,6 +3491,7 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
     }
     if (context) {
       state->context_ready = true_v;
+      state->context_ready_purpose = state->context_pick_purpose;
       state->context_entity =
           picked_entity_valid ? picked_entity : VKR_ENTITY_ID_INVALID;
       state->context_position_px = (Vec2){(float32_t)state->context_press_x,
@@ -3770,6 +3777,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleWorldRequest world_request;
   VkrSampleScriptRequest script_request;
   VkrSampleEditorStateRequest editor_state_request;
+  VkrSamplePickRequest pick_request;
   VkrSampleCloseResponse close_response;
   bool8_t quit;
   bool8_t scene_shortcuts_blocked;
@@ -3846,6 +3854,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .context_requested = state->context_ready,
       .context_entity = state->context_entity,
       .context_position_px = state->context_position_px,
+      .context_purpose = state->context_ready_purpose,
+      .pick_request = &requests->pick_request,
       .scene_generation = application->scene_generation,
       .edits = &state->edits,
       .scene_edit = &requests->scene_edit,
@@ -4881,6 +4891,13 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   sample_graphics_request(application, &requests.graphics_request);
   sample_editor_state_apply(application, &requests.editor_state_request);
   sample_view_apply(application, &requests.view_request);
+  /* A UI pick runs as a context click does, at the given pixel. */
+  if (requests.pick_request.request) {
+    state->context_click_pending = true_v;
+    state->context_purpose = requests.pick_request.purpose;
+    state->context_press_x = (int32_t)requests.pick_request.position_px.x;
+    state->context_press_y = (int32_t)requests.pick_request.position_px.y;
+  }
   if (requests.close_response != VKR_SAMPLE_CLOSE_NONE) {
     vkr_window_resolve_close(&application->host.window,
                              requests.close_response ==
