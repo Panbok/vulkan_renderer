@@ -182,11 +182,15 @@ perspective-only effects while preserving the user's perspective settings; see
 [ADR-046](adr/046-editor-viewport-mapping-and-picking.md).
 Scene focus routes Tab to camera capture; panel
 focus routes it to widgets. The Outliner reads the World and loaded scenes
-through a virtualized tree, and double-clicking a row frames its object;
-Details sends typed selection and edit requests to the runtime. Debug > Labels
-controls object icons: lights and placed objects draw above their origins,
-and abstract World objects (sun, sky, fog, post process) stack above the world
-origin, projected with the packet's unjittered camera and Scene mapping.
+through a virtualized tree, and double-clicking a row frames its object and
+opens its script; Details sends typed selection and edit requests to the
+runtime. Debug > Labels controls object icons: lights, scripted objects and
+other placed objects draw above their origins, including an empty-object icon
+for placed objects that nothing else draws or marks, and abstract World objects
+(sun, sky, fog, post process) stack above the world origin, projected with the
+packet's unjittered camera and Scene mapping. The selected object's icon fades
+and lets clicks through to the gizmo beneath it. A quick right click in the
+Scene opens the menu of the object under the pointer.
 Details rows come from each component's type descriptor and apply through the
 edit journal.
 RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.

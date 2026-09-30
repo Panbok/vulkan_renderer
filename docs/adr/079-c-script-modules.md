@@ -248,7 +248,9 @@ one in a single undo entry that restores the replaced values
 script types under Scripts, with New script, and adds one beside any others.
 
 The Add menu and Content's System/Objects list one Script object: an empty
-entity named Script whose slot then picks the behavior. `create <type>` still
+entity named Script whose Script picker opens beside it in the Scene once it
+exists. It shows the empty-object icon until a script is chosen, then the code
+icon. `create <type>` still
 makes an entity carrying a named script type. The Outliner shows scripted
 entities with a code icon. Double-clicking a scripted object in Content or
 the Outliner opens its source: a project module's `<Name>.c`, or for a module linked into

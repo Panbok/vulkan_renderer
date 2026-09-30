@@ -1791,6 +1791,59 @@ void vkr_editor_context_open(VkrEditorUi *editor, VkrEditorContextKind kind,
   editor->menu = VKR_EDITOR_MENU_NONE;
 }
 
+void vkr_editor_after_create(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             uint32_t kind) {
+  const char *word = vkr_editor_object_kind_word(kind);
+  if (word && !strcmp(word, "script")) {
+    editor->script_pick_frames = 120u;
+    editor->script_pick_previous = frame->selected_entity;
+  }
+}
+
+/* Opens the Script picker of a just-created Script object beside it in the
+   Scene, else at the pointer. */
+static void editor_script_pick_update(VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame) {
+  if (!editor->script_pick_frames) {
+    return;
+  }
+  --editor->script_pick_frames;
+  const VkrEntityId entity = frame->selected_entity;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, entity);
+  if (!entity.u64 || entity.u64 == editor->script_pick_previous.u64 || !scene ||
+      !vkr_scene_entity_alive(scene, entity)) {
+    return;
+  }
+  editor->script_pick_frames = 0u;
+  if (vkr_editor_entity_script(scene, entity) || editor->context_open) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  Vec2 point = {(float32_t)ui->mouse_x / ui->content_scale,
+                (float32_t)ui->mouse_y / ui->content_scale};
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  if (transform && frame->mapping_valid) {
+    /* A new root object's world matrix may not be evaluated yet. */
+    const Vec3 position = transform->parent.u64
+                              ? mat4_position(transform->world)
+                              : transform->position;
+    const Vec4 clip =
+        mat4_mul_vec4(frame->view_projection, vec3_to_vec4(position, 1.0f));
+    const Vec4 image = frame->mapping.image_rect_px;
+    if (clip.w > 0.000001f && fabsf(clip.x) <= clip.w &&
+        fabsf(clip.y) <= clip.w) {
+      point = (Vec2){(image.x + (clip.x / clip.w * 0.5f + 0.5f) * image.z) /
+                             ui->content_scale +
+                         24.0f,
+                     (image.y + (clip.y / clip.w * 0.5f + 0.5f) * image.w) /
+                         ui->content_scale};
+    }
+  }
+  vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_SCRIPT, point);
+  editor->context_entity = entity;
+}
+
 static void context_push(EditorContextItem *items, uint32_t *count,
                          EditorContextItem item) {
   if (*count < EDITOR_CONTEXT_ITEM_CAPACITY) {
@@ -2304,12 +2357,14 @@ static void editor_context_run(VkrEditorUi *editor,
         .action = VKR_SCENE_EDIT_DELETE, .entity = editor->context_entity};
     break;
   case CONTEXT_CREATE:
-    /* Content shows what its own menu created. */
     if (vkr_editor_request_create(frame, item->value, editor->context_container,
-                                  NULL) &&
-        kind == VKR_EDITOR_CONTEXT_CONTENT_FOLDER)
-      vkr_editor_content_reveal_created(editor->content,
-                                        frame->selected_entity);
+                                  NULL)) {
+      vkr_editor_after_create(editor, frame, item->value);
+      /* Content shows what its own menu created. */
+      if (kind == VKR_EDITOR_CONTEXT_CONTENT_FOLDER)
+        vkr_editor_content_reveal_created(editor->content,
+                                          frame->selected_entity);
+    }
     break;
   case CONTEXT_IMPORT_MODEL:
     vkr_editor_projects_add_entity(editor->projects, editor, frame);
@@ -2574,6 +2629,7 @@ static VkrUiRect context_sub_place(const VkrUiSystem *ui, VkrUiRect root,
 void vkr_editor_context_menu_build(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
+  editor_script_pick_update(editor, frame);
   if (!editor->context_open)
     return;
   EditorContextItem items[EDITOR_CONTEXT_ITEM_CAPACITY];

@@ -435,9 +435,11 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
       if (vkr_editor_request_create(
               frame, content_action.object, vkr_editor_create_container(frame),
-              content_action.dropped ? &content_action.drop_px : NULL))
+              content_action.dropped ? &content_action.drop_px : NULL)) {
         vkr_editor_content_reveal_created(editor->content,
                                           frame->selected_entity);
+        vkr_editor_after_create(editor, frame, content_action.object);
+      }
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT) {
       (void)vkr_editor_code_open(editor->code, editor, content_action.source);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {

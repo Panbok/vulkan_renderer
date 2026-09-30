@@ -206,6 +206,11 @@ typedef struct VkrEditorUi {
      moves, so the keyboard highlight survives a resting pointer. */
   int32_t context_mouse_x;
   int32_t context_mouse_y;
+  /* A Script object was requested: once a new object other than
+     `script_pick_previous` is selected, its Script picker opens. Frames
+     left to wait. */
+  uint32_t script_pick_frames;
+  VkrEntityId script_pick_previous;
   /* Mirrors of the UI system's interface zoom and reduced-motion setting,
    * kept for workspace persistence. */
   float32_t ui_scale;
