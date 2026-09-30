@@ -2411,7 +2411,6 @@ void vkr_editor_code_build(VkrEditorCode *code, VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame, VkrUiRect bounds) {
   VkrUiSystem *ui = frame->ui;
   code_poll_files(code);
-  CodeDocument *doc = code_active(code);
   const uint32_t problem_count = Min(
       CODE_PROBLEM_ROWS, vkr_editor_scripts_diagnostic_count(editor->scripts));
   VkrUiTrack rows[5];
@@ -2444,7 +2443,7 @@ void vkr_editor_code_build(VkrEditorCode *code, VkrEditorUi *editor,
     return;
   }
   code_build_tabs(code, editor, ui);
-  doc = code_active(code);
+  CodeDocument *doc = code_active(code);
   if (code->naming) {
     (void)naming_row;
     code_build_naming(code, editor, ui);

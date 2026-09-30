@@ -155,8 +155,8 @@ typedef enum VkrEditorContextKind {
   /* New folder, New script, Import, Create and Refresh for the shown Content
      folder. */
   VKR_EDITOR_CONTEXT_CONTENT_FOLDER,
-  /* The context entity's script slot (ADR-079): the project's script types,
-     None, New script and Edit script. */
+  /* The context entity's script slot (ADR-079): the loaded script types,
+     New script, Edit script and Remove script. */
   VKR_EDITOR_CONTEXT_SCRIPT,
 } VkrEditorContextKind;
 

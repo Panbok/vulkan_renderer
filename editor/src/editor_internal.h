@@ -167,7 +167,8 @@ void vkr_editor_window_set_visible(VkrEditorUi *editor,
  * runs one command per frame (see docs/editor-cmd.md). */
 /** Append `;`- or newline-separated commands; false when the queue is full. */
 bool8_t vkr_editor_cmd_enqueue(VkrEditorUi *editor, const char *script);
-/** Applies the next `ui.click` pointer step to the host's input. */
+/** Applies the next `ui.click`, `ui.drag` or `ui.key` step to the host's
+ * input. */
 void vkr_editor_cmd_pointer_input(VkrEditorUi *editor, InputState *input);
 /** Run due queued commands; call once per frame before panels build. */
 void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame);

@@ -60,7 +60,8 @@ typedef struct VkrSampleViewState {
   VkrSampleCameraView camera_view;
   VkrRenderMode render_mode;
   float32_t grid_spacing;
-  /* VkrGizmoMode tool filter; NONE moves and rotates. */
+  /* VkrGizmoMode tool: NONE (Select) shows no handles, and dragging an
+     object moves it; another mode shows that handle family. */
   uint32_t gizmo_tool;
   /* VkrGizmoSpace of move and rotate handles: world or local. */
   uint32_t gizmo_space;

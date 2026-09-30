@@ -3239,6 +3239,46 @@ vkr_internal void vkr_standard_scene_runtime_capture_gizmo_release(
   state->gizmo_drag.release_position = viewport_info->position;
 }
 
+/* A right click, or a UI pick request, picks like a left click that
+   selects, then answers through the frame's context fields. It replaces a
+   hover pick in flight. */
+static void sample_request_context_pick(VkrStandardSceneRuntime *application,
+                                        VkrPickingContext *picking) {
+  if (state->gizmo_hover_pending) {
+    vkr_picking_cancel(picking);
+    state->gizmo_hover_pending = false_v;
+  }
+  const VkrViewportHitInfo press_info =
+      vkr_standard_scene_runtime_get_viewport_hit_info(
+          application, state->context_press_x, state->context_press_y);
+  state->context_click_pending = false_v;
+  if (!vkr_picking_is_pending(picking) &&
+      vkr_standard_scene_runtime_request_picking(application, picking,
+                                                 &press_info)) {
+    state->gizmo_drag.pending_pick = true_v;
+    state->gizmo_drag.pending_select = true_v;
+    state->gizmo_drag.pick_position = press_info.position;
+    state->gizmo_drag.released = false_v;
+    state->context_pick = true_v;
+    state->context_pick_purpose = state->context_purpose;
+  }
+}
+
+/* With the Select tool, pressing an object and dragging moves it in the view
+   plane, as the gizmo's center handle would; a click only selects, and an
+   unmoved drag records nothing. */
+static void sample_begin_select_drag(VkrStandardSceneRuntime *application,
+                                     const VkrViewportHitInfo *viewport_info) {
+  if (application->gizmo_system.tool != VKR_GIZMO_MODE_NONE ||
+      !input_is_button_down(state->input_state, BUTTON_LEFT) ||
+      !vkr_standard_scene_runtime_begin_gizmo_drag(
+          application, VKR_GIZMO_HANDLE_TRANSLATE_FREE)) {
+    return;
+  }
+  application->gizmo_system.mode = VKR_GIZMO_MODE_TRANSLATE;
+  vkr_standard_scene_runtime_update_gizmo_drag(application, viewport_info);
+}
+
 vkr_internal void vkr_standard_scene_runtime_update_picking(
     VkrStandardSceneRuntime *application) {
   if (!application || !state || !state->input_state) {
@@ -3319,28 +3359,9 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
     }
   }
 
-  /* A right click picks like a left click that selects, then opens a
-     menu. It waits for a hover pick in flight. */
   if (state->context_click_pending && !state->gizmo_drag.active &&
       !state->gizmo_drag.pending_pick) {
-    if (state->gizmo_hover_pending) {
-      vkr_picking_cancel(picking);
-      state->gizmo_hover_pending = false_v;
-    }
-    const VkrViewportHitInfo press_info =
-        vkr_standard_scene_runtime_get_viewport_hit_info(
-            application, state->context_press_x, state->context_press_y);
-    state->context_click_pending = false_v;
-    if (!vkr_picking_is_pending(picking) &&
-        vkr_standard_scene_runtime_request_picking(application, picking,
-                                                   &press_info)) {
-      state->gizmo_drag.pending_pick = true_v;
-      state->gizmo_drag.pending_select = true_v;
-      state->gizmo_drag.pick_position = press_info.position;
-      state->gizmo_drag.released = false_v;
-      state->context_pick = true_v;
-      state->context_pick_purpose = state->context_purpose;
-    }
+    sample_request_context_pick(application, picking);
   }
 
   bool8_t mouse_moved = (mouse_x != prev_mouse_x || mouse_y != prev_mouse_y);
@@ -3498,16 +3519,8 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
         state->has_selection = false_v;
       }
     }
-    /* With the Select tool, pressing an object and dragging moves it in the
-       view plane, as the gizmo's center handle would; a click only
-       selects, and an unmoved drag records nothing. */
-    if (!context && update_selection && picked_entity_valid &&
-        application->gizmo_system.tool == VKR_GIZMO_MODE_NONE &&
-        input_is_button_down(state->input_state, BUTTON_LEFT) &&
-        vkr_standard_scene_runtime_begin_gizmo_drag(
-            application, VKR_GIZMO_HANDLE_TRANSLATE_FREE)) {
-      application->gizmo_system.mode = VKR_GIZMO_MODE_TRANSLATE;
-      vkr_standard_scene_runtime_update_gizmo_drag(application, &viewport_info);
+    if (!context && update_selection && picked_entity_valid) {
+      sample_begin_select_drag(application, &viewport_info);
     }
     if (context) {
       state->context_ready = true_v;

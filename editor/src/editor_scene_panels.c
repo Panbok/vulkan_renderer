@@ -1287,6 +1287,95 @@ static void hierarchy_toolbar(VkrEditorUi *editor,
   }
 }
 
+/* A click selects a row; a second one within 0.4 s frames the object in the
+   Scene and opens its script when it has one. */
+static void hierarchy_row_click(VkrEditorUi *editor, VkrEditorScenePanels *p,
+                                const VkrSampleUiFrame *frame,
+                                VkrEntityId entity) {
+  const float64_t now = vkr_platform_get_absolute_time();
+  const bool8_t twice =
+      p->click_entity.u64 == entity.u64 && now - p->click_time < 0.4;
+  *frame->scene_edit = (VkrSceneEditRequest){
+      .action = twice ? VKR_SCENE_EDIT_FRAME : VKR_SCENE_EDIT_SELECT,
+      .entity = entity};
+  if (twice) {
+    (void)vkr_editor_open_entity_script(editor, frame, entity);
+  }
+  p->click_entity = twice ? VKR_ENTITY_ID_INVALID : entity;
+  p->click_time = now;
+}
+
+/* A right click selects the row and opens its context menu. */
+static void hierarchy_row_menu(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame,
+                               VkrEntityId entity) {
+  VkrUiSystem *ui = frame->ui;
+  *frame->scene_edit =
+      (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT, .entity = entity};
+  vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_ENTITY,
+                          (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
+                                 (float32_t)ui->mouse_y / ui->content_scale});
+  editor->context_entity = entity;
+}
+
+/* A Script asset dragged from Content attaches to the row it is released
+   over; true while it would, so the row lights. */
+static bool8_t hierarchy_script_drop(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     VkrUiId node_id, VkrEntityId entity,
+                                     VkrUiRect list) {
+  VkrUiSystem *ui = frame->ui;
+  char module[VKR_EDITOR_SCRIPT_NAME];
+  VkrUiRect row = {0};
+  if (!vkr_editor_content_dragged_script(editor->content, module,
+                                         sizeof(module)) ||
+      !vkr_ui_widget_rect(ui, node_id, &row) || !in_rect(ui, row) ||
+      !in_rect(ui, list)) {
+    return false_v;
+  }
+  if (ui->mouse_released) {
+    vkr_editor_content_end_drag(editor->content);
+    (void)vkr_editor_attach_script(editor, frame, entity,
+                                   vkr_editor_module_script(frame, module));
+  }
+  return true_v;
+}
+
+/* A scripted object names its script in a chip ending at `right`, when the
+   row's `room` leaves the name 90 points; returns the width it took. */
+static float32_t hierarchy_script_chip(VkrUiSystem *ui, const VkrScene *scene,
+                                       VkrEntityId entity, float32_t right,
+                                       float32_t y, float32_t height,
+                                       float32_t room, bool8_t selected) {
+  const VkrTypeDesc *script = vkr_editor_entity_script(scene, entity);
+  const float32_t width =
+      script ? Min(120.0f, (float32_t)strlen(script->label) * 6.4f + 28.0f)
+             : 0.0f;
+  if (!script || room - width <= 90.0f) {
+    return 0.0f;
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const Vec4 script_color = {0.80f, 0.66f, 0.98f, 1.0f};
+  VkrUiWidgetConfig c =
+      widget_at(right - width + 8.0f, y + 4.0f, width - 4.0f, height - 8.0f);
+  c.placement.align = VKR_UI_ALIGN_START;
+  c.style.background_color = vkr_ui_color_alpha(
+      selected ? theme->text_on_accent : script_color, 0.16f);
+  c.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
+  c.style.padding_pt = (VkrUiEdges){1, 6, 1, 5};
+  c.style.font_size_pt = theme->font_caption;
+  c.style.text_color = selected ? theme->text_on_accent : script_color;
+  c.icon = VKR_UI_ICON_CODE;
+  c.icon_size_pt = 10.0f;
+  c.icon_color = c.style.text_color;
+  c.tooltip = string8_lit("The script this object runs");
+  vkr_ui_label(ui, string8_lit("node.script"),
+               string8_create_from_cstr((const uint8_t *)script->label,
+                                        strlen(script->label)),
+               &c);
+  return width + 4.0f;
+}
+
 void vkr_editor_hierarchy_build(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame, VkrUiRect rect,
                                 VkrFontHandle heading) {
@@ -1384,9 +1473,6 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
   list.row_count = 1;
   bool8_t navigated = false_v;
   VkrEntityId next_focus = VKR_ENTITY_ID_INVALID;
-  char dragged_module[VKR_EDITOR_SCRIPT_NAME];
-  const bool8_t dragged_script = vkr_editor_content_dragged_script(
-      editor->content, dragged_module, sizeof(dragged_module));
   if (page > 0 &&
       vkr_ui_scroll_area_begin(ui, string8_lit("hierarchy.rows"), &list)) {
     (void)vkr_ui_scroll_area_offset(ui, &p->hierarchy_scroll);
@@ -1427,18 +1513,8 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       const SceneVisibility *visibility = vkr_entity_get_component(
           row_scene->world, n->entity, row_scene->comp_visibility);
       const bool8_t hidden = visibility && !visibility->visible;
-      /* A Script asset dragged from Content attaches to the row it is
-         released over; the row lights while it would. */
-      VkrUiRect row_rect = {0};
-      const bool8_t script_over = dragged_script &&
-                                  vkr_ui_widget_rect(ui, node_id, &row_rect) &&
-                                  in_rect(ui, row_rect) && in_rect(ui, rect);
-      if (script_over && ui->mouse_released) {
-        vkr_editor_content_end_drag(editor->content);
-        (void)vkr_editor_attach_script(
-            editor, frame, n->entity,
-            vkr_editor_module_script(frame, dragged_module));
-      }
+      const bool8_t script_over =
+          hierarchy_script_drop(editor, frame, node_id, n->entity, rect);
       /* Full-width row: hover and selection fills. */
       c = widget_at(4, y, w - 8, row_h);
       c.style.corner_radius_pt =
@@ -1453,32 +1529,12 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       if (!name.length)
         name = string8_lit("(unnamed)");
       c.tooltip = name;
-      if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c)) {
-        /* A second click within 0.4 s frames the object in the Scene and
-           opens its script when it has one. */
-        const float64_t now = vkr_platform_get_absolute_time();
-        const bool8_t twice =
-            p->click_entity.u64 == n->entity.u64 && now - p->click_time < 0.4;
-        *frame->scene_edit = (VkrSceneEditRequest){
-            .action = twice ? VKR_SCENE_EDIT_FRAME : VKR_SCENE_EDIT_SELECT,
-            .entity = n->entity};
-        if (twice)
-          (void)vkr_editor_open_entity_script(editor, frame, n->entity);
-        p->click_entity = twice ? VKR_ENTITY_ID_INVALID : n->entity;
-        p->click_time = now;
-      }
+      if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c))
+        hierarchy_row_click(editor, p, frame, n->entity);
       const bool8_t row_hot = ui->hot_id == node_id;
-      /* Right click selects the row and opens its context menu. */
       if (row_hot && !ui->mouse_captured &&
-          input_button_just_pressed(frame->input, BUTTON_RIGHT)) {
-        *frame->scene_edit = (VkrSceneEditRequest){
-            .action = VKR_SCENE_EDIT_SELECT, .entity = n->entity};
-        vkr_editor_context_open(
-            editor, VKR_EDITOR_CONTEXT_ENTITY,
-            (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
-                   (float32_t)ui->mouse_y / ui->content_scale});
-        editor->context_entity = n->entity;
-      }
+          input_button_just_pressed(frame->input, BUTTON_RIGHT))
+        hierarchy_row_menu(editor, frame, n->entity);
       if (n->child != NO_ROW) {
         c = widget_at(6 + indent, y + 3, 18, 18);
         vkr_editor_ghost_style(&c);
@@ -1501,18 +1557,10 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       /* Names use the eye button's space on rows that do not show it. */
       const bool8_t show_eye = visibility && (row_hot || hidden || selected);
       const float32_t trailing = show_eye || n->cooking ? 58.0f : 36.0f;
-      /* A scripted object names its script in a chip before the eye. */
-      const VkrTypeDesc *row_script =
-          vkr_editor_entity_script(row_scene, n->entity);
-      const float32_t chip_w =
-          row_script
-              ? Min(120.0f, (float32_t)strlen(row_script->label) * 6.4f + 28.0f)
-              : 0.0f;
-      const bool8_t show_chip =
-          row_script && w - trailing - indent - chip_w > 90.0f;
-      c = widget_at(26 + indent, y,
-                    Max(10.0f, w - trailing - indent -
-                                   (show_chip ? chip_w + 4.0f : 0.0f)),
+      const float32_t chip =
+          hierarchy_script_chip(ui, row_scene, n->entity, w - trailing, y,
+                                row_h, w - trailing - indent, selected);
+      c = widget_at(26 + indent, y, Max(10.0f, w - trailing - indent - chip),
                     row_h);
       c.placement.align = VKR_UI_ALIGN_START;
       c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
@@ -1538,27 +1586,6 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       }
       vkr_ui_label(ui, string8_lit("node.label"),
                    (String8){.str = name.str, .length = preview_length}, &c);
-      if (show_chip) {
-        const Vec4 script_color = {0.80f, 0.66f, 0.98f, 1.0f};
-        c = widget_at(w - trailing - chip_w + 8.0f, y + 4.0f, chip_w - 4.0f,
-                      row_h - 8.0f);
-        c.placement.align = VKR_UI_ALIGN_START;
-        c.style.background_color = vkr_ui_color_alpha(
-            selected ? theme->text_on_accent : script_color, 0.16f);
-        c.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
-        c.style.padding_pt = (VkrUiEdges){1, 6, 1, 5};
-        c.style.font_size_pt = theme->font_caption;
-        c.style.text_color = selected ? theme->text_on_accent : script_color;
-        c.icon = VKR_UI_ICON_CODE;
-        c.icon_size_pt = 10.0f;
-        c.icon_color = c.style.text_color;
-        c.tooltip = string8_lit("The script this object runs");
-        vkr_ui_label(
-            ui, string8_lit("node.script"),
-            string8_create_from_cstr((const uint8_t *)row_script->label,
-                                     strlen(row_script->label)),
-            &c);
-      }
       if (n->cooking && !show_eye) {
         c = widget_at(w - 32, y + 2, 20, 20);
         c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
