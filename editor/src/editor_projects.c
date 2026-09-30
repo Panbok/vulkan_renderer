@@ -22,6 +22,7 @@
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,8 +66,13 @@ typedef enum VkrEditorProjectTemplate {
 
 typedef struct s_EditorProjectTemplateInfo {
   const char *name;
+  /* Base name of the scene in assets/templates and of its preview PNG in
+     assets/templates/previews; empty for No starter scene. */
   const char *file;
   const char *detail;
+  const char *camera;
+  VkrUiIcon camera_icon;
+  const char *footprint;
 } VkrEditorProjectTemplateInfo;
 
 static const VkrEditorProjectTemplateInfo
@@ -74,24 +80,43 @@ static const VkrEditorProjectTemplateInfo
         [PROJECT_TEMPLATE_BLANK] =
             {.name = "Blank",
              .file = "blank",
-             .detail =
-                 "A 20 m floor, origin markers and a playable spawn."},
+             .detail = "A 20 m floor, origin markers and a playable spawn.",
+             .camera = "First person",
+             .camera_icon = VKR_UI_ICON_CROSSHAIR,
+             .footprint = "20 x 20 m"},
         [PROJECT_TEMPLATE_FPS_ARENA] =
             {.name = "FPS Arena",
              .file = "fps_arena",
              .detail =
-                 "Cover, range markers, stairs, ramps and elevated routes."},
+                 "Cover, range markers, stairs, ramps and elevated routes.",
+             .camera = "First person",
+             .camera_icon = VKR_UI_ICON_CROSSHAIR,
+             .footprint = "48 x 40 m"},
         [PROJECT_TEMPLATE_RPG_GROUNDS] =
             {.name = "RPG Grounds",
              .file = "rpg_grounds",
              .detail =
-                 "A third-person courtyard with terrain and vertical routes."},
+                 "A third-person courtyard with terrain and vertical routes.",
+             .camera = "Third person",
+             .camera_icon = VKR_UI_ICON_PERSON_WALK,
+             .footprint = "64 x 64 m"},
         [PROJECT_TEMPLATE_NONE] =
             {.name = "No starter scene",
              .file = "",
-             .detail =
-                 "Only the World; create or import scenes in the editor."},
+             .detail = "Only the World; create or import scenes in the editor.",
+             .camera = "",
+             .footprint = ""},
 };
+
+/* A template's preview image while the Create project view is open. Its
+   texture request is released when the view closes. */
+typedef struct ProjectTemplatePreview {
+  char request_path[1100];
+  VkrResourceHandleInfo request;
+  VkrTextureHandle texture;
+  bool8_t requested;
+  bool8_t failed;
+} ProjectTemplatePreview;
 
 /* Where imported models go (ADR-076): a new scene holding them, the World's
    root, a project scene, or only Content. Each placement shows the model in
@@ -234,6 +259,8 @@ struct VkrEditorProjects {
   char scene_name[513];
   char source_scene[1024];
   VkrEditorProjectTemplate project_template;
+  ProjectTemplatePreview template_previews[PROJECT_TEMPLATE_COUNT];
+  bool8_t template_previews_held;
   char models[PROJECT_MODEL_COUNT][1024];
   uint32_t model_count;
   char font_source[1024];
@@ -419,6 +446,74 @@ struct VkrEditorProjects {
 
 static String8 project_string(const char *value) {
   return string8_create_from_cstr((const uint8_t *)value, strlen(value));
+}
+
+/* Previews are rendered at this size by
+   tools/blender/render_default_asset_previews.py; vkr_ui_image letterboxes
+   any other aspect. */
+static const Vec2 project_template_preview_size = {1280.0f, 800.0f};
+
+static void project_release_template_previews(VkrEditorProjects *projects) {
+  if (!projects->template_previews_held) {
+    return;
+  }
+  for (uint32_t i = 0; i < PROJECT_TEMPLATE_COUNT; ++i) {
+    ProjectTemplatePreview *preview = &projects->template_previews[i];
+    if (preview->request.request_id) {
+      vkr_resource_system_unload(&preview->request,
+                                 project_string(preview->request_path));
+    }
+    MemZero(preview, sizeof(*preview));
+  }
+  projects->template_previews_held = false_v;
+}
+
+/* Requests a template's preview once and returns its texture after the load
+   resolves. A missing or undecodable preview leaves the card's icon. */
+static VkrTextureHandle
+project_template_preview(VkrEditorProjects *projects, VkrUiSystem *ui,
+                         VkrEditorProjectTemplate index) {
+  const VkrEditorProjectTemplateInfo *template = &project_templates[index];
+  ProjectTemplatePreview *preview = &projects->template_previews[index];
+  if (!template->file[0] || preview->failed) {
+    return (VkrTextureHandle){0};
+  }
+  if (!preview->requested) {
+    preview->requested = true_v;
+    projects->template_previews_held = true_v;
+    const int written =
+        snprintf(preview->request_path, sizeof(preview->request_path),
+                 "%s/assets/templates/previews/%s.png?cs=srgb&source=only",
+                 vkr_content_root(), template->file);
+    if (written <= 0 || (uint32_t)written >= sizeof(preview->request_path)) {
+      preview->failed = true_v;
+      return (VkrTextureHandle){0};
+    }
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_resource_system_load(
+            VKR_RESOURCE_TYPE_TEXTURE, project_string(preview->request_path),
+            ui->frame_allocator, &preview->request, &error)) {
+      preview->failed = true_v;
+      log_warn("Cannot queue the %s template preview (%u).", template->name,
+               (uint32_t)error);
+      return (VkrTextureHandle){0};
+    }
+  }
+  VkrResourceHandleInfo resolved = {0};
+  if (vkr_resource_system_try_get_resolved(&preview->request, &resolved)) {
+    preview->texture = resolved.as.texture;
+    return preview->texture;
+  }
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrResourceLoadState state =
+      vkr_resource_system_get_state(&preview->request, &error);
+  if (state == VKR_RESOURCE_LOAD_STATE_FAILED ||
+      state == VKR_RESOURCE_LOAD_STATE_CANCELED) {
+    preview->failed = true_v;
+    log_warn("Cannot load the %s template preview (%u).", template->name,
+             (uint32_t)error);
+  }
+  return (VkrTextureHandle){0};
 }
 
 static bool8_t project_buffer_write(void *context, const uint8_t *bytes,
@@ -3381,6 +3476,7 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
     vkr_allocator_release_global_accounting(&projects->project_allocator);
     arena_destroy(projects->project_arena);
   }
+  project_release_template_previews(projects);
   vkr_editor_workspace_lease_release(&projects->lease);
   if (projects->settings_save) {
     vkr_allocator_free(projects->allocator, projects->settings_save,
@@ -3960,6 +4056,9 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
     projects->defaults_captured = true_v;
   }
   projects->dialog_closed = false_v;
+  if (projects->view != PROJECT_VIEW_CREATE) {
+    project_release_template_previews(projects);
+  }
   project_session_log(projects, frame);
   if (frame->close_requested && !projects->closing) {
     if (!project_any_dirty(frame) && !projects->job_id &&
@@ -5095,61 +5194,236 @@ static void project_build_dropdown(VkrEditorProjects *projects,
   (void)vkr_ui_panel_end(ui);
 }
 
-static void project_build_create_form(VkrEditorProjects *projects,
-                                      const VkrSampleUiFrame *frame,
-                                      float32_t body_width) {
+/* A template's picture: its preview, or its icon while the preview loads or
+   when it has none. */
+static void project_template_picture(VkrEditorProjects *projects,
+                                     VkrUiSystem *ui,
+                                     VkrEditorProjectTemplate index,
+                                     const char *id, float32_t x, float32_t y,
+                                     float32_t width, float32_t height,
+                                     bool8_t selected) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrTextureHandle texture =
+      project_template_preview(projects, ui, index);
+  VkrUiWidgetConfig picture = project_widget(x, y, width, height);
+  picture.style.padding_pt = (VkrUiEdges){0};
+  picture.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  if (texture.id) {
+    vkr_ui_image(ui, project_string(id),
+                 (VkrUiTextureRef){texture.id, texture.generation},
+                 project_template_preview_size, &picture);
+    return;
+  }
+  picture.style.background_color = theme->window;
+  picture.icon =
+      index == PROJECT_TEMPLATE_NONE ? VKR_UI_ICON_WORLD : VKR_UI_ICON_SCENE;
+  picture.icon_size_pt = Min(48.0f, height * .4f);
+  picture.icon_color = selected ? theme->accent_hover : theme->text_secondary;
+  picture.center = true_v;
+  vkr_ui_label(ui, project_string(id), (String8){0}, &picture);
+}
+
+/* One gallery card: picture over name. Returns its height. */
+static float32_t project_template_card(VkrEditorProjects *projects,
+                                       VkrUiSystem *ui,
+                                       VkrEditorProjectTemplate index,
+                                       float32_t x, float32_t y,
+                                       float32_t width) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrEditorProjectTemplateInfo *template = &project_templates[index];
+  const bool8_t selected = projects->project_template == index;
+  const float32_t inset = 6.0f;
+  const float32_t picture_width = width - inset * 2.0f;
+  const float32_t picture_height = picture_width *
+                                   project_template_preview_size.y /
+                                   project_template_preview_size.x;
+  const float32_t height = picture_height + inset + 38.0f;
+  VkrUiWidgetConfig card = project_widget(x, y, width, height);
+  vkr_editor_toggle_style(&card, selected);
+  card.disabled = projects->read_only || projects->job_id;
+  card.style.corner_radius_pt =
+      (Vec4){theme->radius_large, theme->radius_large, theme->radius_large,
+             theme->radius_large};
+  card.style.border_pt =
+      selected ? (VkrUiEdges){2, 2, 2, 2} : (VkrUiEdges){1, 1, 1, 1};
+  card.style.border_color = selected ? theme->accent : theme->border;
+  card.tooltip = project_string(template->detail);
+  (void)vkr_ui_push_id_u64(ui, index);
+  if (vkr_ui_button(ui, string8_lit("project.template"), (String8){0}, &card)) {
+    projects->project_template = index;
+  }
+  project_template_picture(projects, ui, index, "project.template.picture",
+                           x + inset, y + inset, picture_width, picture_height,
+                           selected);
+  VkrUiWidgetConfig name = project_widget(
+      x + inset, y + inset + picture_height + 4.0f, picture_width, 28.0f);
+  name.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
+  name.style.font_size_pt = theme->font_emphasis;
+  name.style.text_color = selected ? theme->text : theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("project.template.name"),
+               project_string(template->name), &name);
+  (void)vkr_ui_pop_id(ui);
+  return height;
+}
+
+/* Wrapped secondary text. Returns the height it reserves. */
+static float32_t project_note(VkrUiSystem *ui, const char *id, const char *text,
+                              float32_t x, float32_t y, float32_t width,
+                              float32_t height) {
+  VkrUiWidgetConfig note = project_widget(x, y, width, height);
+  note.style.padding_pt = (VkrUiEdges){2, 10, 2, 10};
+  note.style.text_color = vkr_ui_theme()->text_secondary;
+  note.text.layout.word_wrap = true_v;
+  note.text.layout.max_width = Max(1.0f, width - 20.0f);
+  vkr_ui_label(ui, project_string(id), project_string(text), &note);
+  return height;
+}
+
+/* The selected template's summary and the project fields from `top`. Returns
+   the column's bottom. */
+static float32_t project_build_template_details(VkrEditorProjects *projects,
+                                                VkrEditorUi *editor,
+                                                const VkrSampleUiFrame *frame,
+                                                float32_t x, float32_t top,
+                                                float32_t width,
+                                                bool8_t show_picture) {
   VkrUiSystem *ui = frame->ui;
-  const bool8_t creating = projects->view == PROJECT_VIEW_CREATE;
-  if (creating) {
-    const float32_t form_width = body_width - 24;
-    project_label(ui, "project.name.label", "Project name", 12, 6, form_width);
-    project_field(ui, "project.name", projects->project_name,
-                  sizeof(projects->project_name), 12, 36, form_width);
-    project_label(ui, "project.font.label",
-                  "Default font / empty uses editor default", 12, 80,
-                  form_width);
-    project_field(ui, "project.font", projects->project_font_source,
-                  sizeof(projects->project_font_source), 12, 114, form_width);
-    if (project_button(ui, "project.font.browse", "Choose default font", 12,
-                       150, form_width, false_v)) {
-      static const char *const extensions[] = {"ttf", "otf"};
-      project_browse(projects, frame, "Choose project default font", extensions,
-                     2, false_v, projects->project_font_source,
-                     sizeof(projects->project_font_source));
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrEditorProjectTemplateInfo *template =
+      &project_templates[projects->project_template];
+  float32_t y = top;
+  if (show_picture) {
+    const float32_t picture_height = width * project_template_preview_size.y /
+                                     project_template_preview_size.x;
+    project_template_picture(projects, ui, projects->project_template,
+                             "project.template.selected", x, y, width,
+                             picture_height, true_v);
+    y += picture_height + 12.0f;
+  }
+  VkrUiWidgetConfig title = project_widget(x, y, width, 34);
+  title.style.padding_pt = (VkrUiEdges){2, 10, 2, 10};
+  title.style.font_size_pt = theme->font_title;
+  title.text.font = editor->heading_font;
+  vkr_ui_label(ui, string8_lit("project.template.title"),
+               project_string(template->name), &title);
+  y += 36.0f;
+  y += project_note(ui, "project.template.detail", template->detail, x, y,
+                    width, 44.0f);
+  if (template->camera[0]) {
+    const float32_t tag_width = (width - 8.0f) * .5f;
+    VkrUiWidgetConfig camera = project_widget(x, y, tag_width, 26);
+    camera.style.padding_pt = (VkrUiEdges){3, 10, 3, 10};
+    camera.style.text_color = theme->text_secondary;
+    camera.icon = template->camera_icon;
+    camera.icon_size_pt = 14.0f;
+    camera.icon_color = theme->accent_hover;
+    vkr_ui_label(ui, string8_lit("project.template.camera"),
+                 project_string(template->camera), &camera);
+    VkrUiWidgetConfig footprint = camera;
+    footprint.placement.margin_pt.left = x + tag_width + 8.0f;
+    footprint.icon = VKR_UI_ICON_RULER;
+    vkr_ui_label(ui, string8_lit("project.template.footprint"),
+                 project_string(template->footprint), &footprint);
+    y += 30.0f;
+    y += project_note(ui, "project.template.controls",
+                      "Start Simulation to play. WASD moves; Space jumps; "
+                      "Ctrl crouches; V changes camera.",
+                      x, y, width, 44.0f);
+  }
+  y += 10.0f;
+  project_label(ui, "project.name.label", "Project name", x, y, width);
+  project_field(ui, "project.name", projects->project_name,
+                sizeof(projects->project_name), x, y + 30.0f, width);
+  y += 74.0f;
+  project_label(ui, "project.font.label",
+                "Default font / empty uses editor default", x, y, width);
+  project_field(ui, "project.font", projects->project_font_source,
+                sizeof(projects->project_font_source), x, y + 30.0f, width);
+  if (project_button(ui, "project.font.browse", "Choose default font", x,
+                     y + 66.0f, width, false_v)) {
+    static const char *const extensions[] = {"ttf", "otf"};
+    project_browse(projects, frame, "Choose project default font", extensions,
+                   2, false_v, projects->project_font_source,
+                   sizeof(projects->project_font_source));
+  }
+  return y + 100.0f;
+}
+
+/* Create project, like an engine launcher's New Project page: a gallery of
+   starter templates beside the selected template's summary and the project
+   fields. Narrow bodies stack the gallery above the fields. */
+static void project_build_template_form(VkrEditorProjects *projects,
+                                        VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        float32_t body_width,
+                                        float32_t body_height) {
+  VkrUiSystem *ui = frame->ui;
+  const float32_t gap = 12.0f;
+  const bool8_t wide = body_width >= 760.0f;
+  const float32_t details_width =
+      wide ? vkr_clamp_f32(body_width * .34f, 280.0f, 400.0f) : 0.0f;
+  const float32_t gallery_width =
+      wide ? body_width - 24.0f - details_width - 24.0f : body_width - 24.0f;
+  const uint32_t columns = gallery_width >= 4.0f * 200.0f + 3.0f * gap ? 4u
+                           : gallery_width >= 2.0f * 150.0f + gap      ? 2u
+                                                                       : 1u;
+  /* Wide bodies fit every row of cards in the body's height; each card adds
+     44 points of inset and name to its picture. */
+  const uint32_t rows = (PROJECT_TEMPLATE_COUNT + columns - 1) / columns;
+  const float32_t fit_picture =
+      (body_height - 36.0f - gap * (float32_t)(rows - 1)) / (float32_t)rows -
+      44.0f;
+  const float32_t fit_width = fit_picture * project_template_preview_size.x /
+                                  project_template_preview_size.y +
+                              12.0f;
+  float32_t card_width =
+      (gallery_width - gap * (float32_t)(columns - 1)) / (float32_t)columns;
+  if (wide) {
+    card_width = Max(140.0f, Min(card_width, fit_width));
+  }
+  VkrUiWidgetConfig heading =
+      vkr_editor_section_label_config(editor->heading_font);
+  heading.placement = project_widget(12, 6, gallery_width, 24).placement;
+  heading.style.min_size_pt = (Vec2){gallery_width, 24};
+  heading.style.max_size_pt = heading.style.min_size_pt;
+  vkr_ui_label(ui, string8_lit("project.template.label"),
+               string8_lit("TEMPLATES"), &heading);
+  float32_t y = 36.0f;
+  float32_t row_height = 0.0f;
+  for (uint32_t i = 0; i < PROJECT_TEMPLATE_COUNT; ++i) {
+    const uint32_t column = i % columns;
+    if (i && column == 0) {
+      y += row_height + gap;
+      row_height = 0.0f;
     }
-    project_label(ui, "project.template.label", "Starter scene", 12, 200,
-                  form_width);
-    const VkrUiTheme *theme = vkr_ui_theme();
-    float32_t y = 234;
-    for (uint32_t i = 0; i < PROJECT_TEMPLATE_COUNT; ++i) {
-      const VkrEditorProjectTemplateInfo *template = &project_templates[i];
-      const bool8_t selected =
-          projects->project_template == (VkrEditorProjectTemplate)i;
-      VkrUiWidgetConfig choice = project_widget(12, y, form_width, 66);
-      vkr_editor_toggle_style(&choice, selected);
-      choice.fill = true_v;
-      choice.disabled = projects->read_only || projects->job_id;
-      choice.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
-      choice.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-      choice.style.border_color = selected ? theme->accent : theme->border;
-      choice.tooltip = project_string(template->detail);
-      (void)vkr_ui_push_id_u64(ui, i);
-      if (vkr_ui_button(ui, string8_lit("project.template"), (String8){0},
-                        &choice)) {
-        projects->project_template = (VkrEditorProjectTemplate)i;
-      }
-      project_label(ui, "project.template.name", template->name, 26, y + 6,
-                    form_width - 28);
-      project_label(ui, "project.template.detail", template->detail, 26, y + 34,
-                    form_width - 28);
-      (void)vkr_ui_pop_id(ui);
-      y += 78;
-    }
-    project_label(ui, "project.template.controls",
-                  "Start Simulation to play. WASD moves; Space jumps; Ctrl "
-                  "crouches; V changes camera.",
-                  12, y, form_width);
-    projects->form_height = y + 52;
+    const float32_t x = 12.0f + (card_width + gap) * (float32_t)column;
+    row_height =
+        Max(row_height,
+            project_template_card(projects, ui, (VkrEditorProjectTemplate)i, x,
+                                  y, card_width));
+  }
+  const float32_t gallery_height = y + row_height;
+  /* Large two-column cards and the stacked layout already show the selected
+     preview; small cards repeat it above the details. */
+  const float32_t details_bottom =
+      wide ? project_build_template_details(projects, editor, frame,
+                                            body_width - 12.0f - details_width,
+                                            6.0f, details_width, columns > 2)
+           : project_build_template_details(projects, editor, frame, 12.0f,
+                                            gallery_height + 20.0f,
+                                            body_width - 24.0f, false_v);
+  projects->form_height = Max(gallery_height, details_bottom) + 12.0f;
+}
+
+static void project_build_create_form(VkrEditorProjects *projects,
+                                      VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      float32_t body_width,
+                                      float32_t body_height) {
+  if (projects->view == PROJECT_VIEW_CREATE) {
+    project_build_template_form(projects, editor, frame, body_width,
+                                body_height);
     return;
   }
   if (projects->include_scene) {
@@ -5646,6 +5920,10 @@ static Vec2 project_dialog_size(const VkrEditorProjects *projects,
     body = 550.0f;
     break;
   case PROJECT_VIEW_CREATE:
+    /* Room for the template gallery beside the project fields. */
+    width = 1040.0f;
+    body = projects->form_height + 24.0f;
+    break;
   case PROJECT_VIEW_ADD_SCENE:
     width = 720.0f;
     body = projects->form_height + 24.0f;
@@ -5845,7 +6123,12 @@ static void project_build_view(VkrEditorProjects *projects, VkrEditorUi *editor,
       project_build_entity_form(projects, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_CREATE ||
                projects->view == PROJECT_VIEW_ADD_SCENE) {
-      project_build_create_form(projects, frame, body_width);
+      /* The largest body this view can have, not this frame's fitted height,
+         so the cards never size the dialog that sizes them. */
+      const float32_t body_height =
+          (launcher ? total_height : total_height - 40.0f) - 160.0f - 36.0f;
+      project_build_create_form(projects, editor, frame, body_width,
+                                body_height);
     } else if (projects->view == PROJECT_VIEW_RENAME) {
       project_build_rename_form(projects, frame, body_width);
     } else if (projects->view == PROJECT_VIEW_DELETE_PROJECT) {

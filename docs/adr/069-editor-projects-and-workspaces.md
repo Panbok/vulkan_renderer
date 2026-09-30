@@ -28,7 +28,12 @@ with a Projects chooser and no world scene. The user selects a workspace directo
 its `.vkreditor` child owns managed data. A machine-local locator remembers the
 chosen directory. Explicit `--scene` remains the legacy scene entry point.
 The project creation form offers Blank, FPS Arena and RPG Grounds starter scenes,
-with Blank selected initially, plus No starter scene. Selecting a starter imports
+with Blank selected initially, plus No starter scene. They form a gallery of
+cards showing each template's preview from `assets/templates/previews`, beside
+the selected template's description, camera mode, footprint and the project
+fields; narrow dialogs stack the fields under the gallery. The view requests
+the previews as source textures while it is open and unloads them when it
+closes; a missing preview leaves the card's icon. Selecting a starter imports
 its source scene from `assets/templates` through the same managed scene job as
 a user import, then opens the published scene. The source GLBs and their static
 collision proxies are editor content;
@@ -263,6 +268,15 @@ inspected. Their report SHA-256 prefixes are `2c86c88581b8` (Blank),
 `2df9ce52492a` (FPS Arena) and `ac62bda39dd0` (RPG Grounds). These captures are
 local evidence with no baseline comparison or timing authority. Manual keyboard
 traversal and launcher clicks were not tested; Metal was unavailable on Windows.
+
+Also on 2026-09-30, `./build_editor.sh Release` compiled the template gallery
+without warnings on macOS (Apple M1, Metal). In an isolated windowed launcher,
+clicks opened Create project, showed the three previews and the No starter
+scene icon without scrolling at the default 1000 by 640 point window, and moved
+the selection between cards. Selecting FPS Arena, typing a name and clicking
+Create project finished both Bakery jobs and opened the project on its FPS
+Arena scene (427 nodes, Player Spawn bound to the FPS player). The four-column
+layout, the floating dialog over an open project and Vulkan were not exercised.
 
 Publishing the manifest at creation passes the Release editor build and the CPU
 project-store suite. A native click-through of a failed first scene job remains
