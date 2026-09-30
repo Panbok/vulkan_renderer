@@ -180,6 +180,9 @@ typedef struct VkrStandardSceneRuntime {
   /* Editor selection whose meshes are outlined over the Scene image; the
    * sample runtime publishes it each frame. */
   VkrEntityId selection_outline_entity;
+  /* The container owning it: the primary scene, the World or an added
+     scene; NULL uses the primary scene. */
+  const VkrScene *selection_outline_scene;
   /** Resolve UI anchors against the camera and viewport used by this packet. */
   void (*project_ui)(struct VkrStandardSceneRuntime *,
                      const VkrViewportMapping *);

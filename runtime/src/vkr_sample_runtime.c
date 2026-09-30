@@ -3135,6 +3135,10 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
   /* The outline follows the selection even where the gizmo cannot edit. */
   application->selection_outline_entity =
       state->has_selection ? state->selected_entity : VKR_ENTITY_ID_INVALID;
+  application->selection_outline_scene =
+      state->has_selection
+          ? sample_entity_container(application, state->selected_entity, NULL)
+          : NULL;
   if (application->gizmo_system.initialized) {
     if (!state->has_selection) {
       vkr_gizmo_system_clear_target(&application->gizmo_system);

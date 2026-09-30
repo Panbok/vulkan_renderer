@@ -91,6 +91,7 @@ dependable channel for scripts.
 | `script.attach`, `script.edit` | `<type\|none>`, | Set the selection's script slot to a loaded script type or remove it (undoable, one entry); open the selection's script source |
 | `ui.click`, `ui.drag`, `ui.key` | `<x> <y> [count] [right]`, `<x0> <y0> <x1> <y1>`, `<key>` | Synthetic input in window points, one step per frame before the UI reads input: a left, double or right click; a left drag that holds while a pick resolves; or an `up`, `down`, `left`, `right`, `enter`, `escape` or `tab` key. The queue holds until the steps ran |
 | `component.add`, `component.remove` | `<type>` | Add or remove a live world component, or `physics_body`, on the selection (undoable); World-only types only on World objects |
+| `physics.motion` | `<static\|kinematic\|dynamic>` | Set the selection's physics body motion (undoable) |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |
 | `scene.open`, `scene.create` | `<name>` | Open a project scene (the scene already loading or open stays as it is), or create an empty one and open it |
 | `scene.add`, `scene.remove` | `<name\|path>`, `<slot\|name> [discard]` | Load a project scene or scene file beside the primary one, or unload it |
@@ -138,7 +139,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 
 | Root | Members (read) | Writable |
 | --- | --- | --- |
-| `sel`, `entity("name")` | `name`, `position`, `rotation` (degrees, XYZ), `scale`, `visible`, `light`, `id` | all but `light`, `id` |
+| `sel`, `entity("name")` | `name`, `position`, `rotation` (degrees, XYZ), `scale`, `visible`, `light`, `id`, `world_position` (the evaluated pose, which simulation moves) | all but `light`, `id`, `world_position` |
 | `.light` | `kind`, `color`, `intensity` (radiance for rectangles), `range`, `enabled`, `inner`, `outer` (degrees) | all but `kind` |
 | `.<component>` | Descriptor properties of a component the entity carries, by type name (`sel.post_process.exposure_compensation_ev`, `sel.point_light.intensity`) | visible, non-read-only properties |
 | `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `camera_speed`, `tool` | all |

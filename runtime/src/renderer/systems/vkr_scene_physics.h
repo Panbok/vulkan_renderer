@@ -189,7 +189,8 @@ bool8_t vkr_scene_physics_prepare(VkrScene *scene, VkrEntityId entity,
                                   const VkrScenePhysicsSnapshot *snapshot,
                                   VkrScenePhysicsPrepared **prepared,
                                   const char **error);
-/* Finalize the future body/joint graph after all owner preparations. */
+/* Finalize the future body/joint graph after all owner preparations. With
+ * nothing prepared there is nothing to finalize and it returns true. */
 bool8_t vkr_scene_physics_prepare_complete(VkrScene *scene, const char **error);
 void vkr_scene_physics_commit(VkrScenePhysicsPrepared *prepared);
 void vkr_scene_physics_discard(VkrScenePhysicsPrepared *prepared);

@@ -767,9 +767,11 @@ static const char s_template[] =
     "  }\n"
     "}\n"
     "\n"
-    "static bool8_t {name}_before_physics(const VkrScriptSession *session,\n"
-    "                                  void *state, uint64_t tick,\n"
-    "                                  const char **error) {\n"
+    "/* After each physics tick: the spin decorates the object's pose, the\n"
+    " * simulated one when a rigid body drives it, else its pose at start. */\n"
+    "static bool8_t {name}_after_physics(const VkrScriptSession *session,\n"
+    "                                 void *state, uint64_t tick,\n"
+    "                                 const char **error) {\n"
     "  (void)tick;\n"
     "  (void)error;\n"
     "  {Name}State *module = state;\n"
@@ -782,7 +784,11 @@ static const char s_template[] =
     "    module->angles[i] += settings->speed * 6.2831853f * step;\n"
     "    const Mat4 spin = vkr_quat_to_mat4(\n"
     "        vkr_quat_from_axis_angle(vec3_new(0, 1, 0), module->angles[i]));\n"
-    "    const Mat4 pose = mat4_mul(module->rest[i], spin);\n"
+    "    Mat4 base = module->rest[i];\n"
+    "    (void)session->api->physics_world_matrix(session->scene,\n"
+    "                                             module->entities[i], "
+    "&base);\n"
+    "    const Mat4 pose = mat4_mul(base, spin);\n"
     "    session->api->set_evaluated_transform(session->scene,\n"
     "                                          module->entities[i], &pose);\n"
     "  }\n"
@@ -792,7 +798,7 @@ static const char s_template[] =
     "VKR_SCRIPT_MODULE({Name}, {Name}State, 1, ({name}), .start = "
     "{name}_start,\n"
     "                  .stop = {name}_stop,\n"
-    "                  .before_physics = {name}_before_physics)\n";
+    "                  .after_physics = {name}_after_physics)\n";
 
 /* The template with {Name}, {name} and {NAME} replaced. */
 static bool8_t scripts_expand(const char *name, const char *lower,

@@ -127,8 +127,8 @@ project settings. Toasts announce saved scene edits and finished Bakery work.
 A header pinned to the Scene groups the current camera view, rendering mode and
 grid controls in dropdowns, with the Select/Move/Rotate/Scale tools (Q/W/E/R), a
 World/Local axes toggle and a camera-speed popup on its right. The gizmo shows
-only the active tool's handle family; Select shows the move and rotate
-handles. Move and rotate follow the world axes or, in Local, the object's;
+only the active tool's handle family; Select shows no handles, only the
+selection outline. Move and rotate follow the world axes or, in Local, the object's;
 scale handles always follow the object's axes. F frames the selection. An orientation
 gizmo in the Scene's lower-left corner draws the camera's axes and requests the
 matching view when an axis cap is clicked. Narrow Scene panes replace the view

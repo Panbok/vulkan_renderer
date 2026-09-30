@@ -88,8 +88,11 @@ typedef struct Eval {
 } Eval;
 
 /* Member names by value kind, for errors and completion. */
+/* `world_position` reads the evaluated pose, which simulation moves;
+   `position` is the authored local value. */
 static const char *const eval_entity_members[] = {
-    "name", "position", "rotation", "scale", "visible", "light", "id", NULL};
+    "name",  "position", "rotation",       "scale", "visible",
+    "light", "id",       "world_position", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
 static const char *const eval_view_members[] = {
     "camera",       "mode", "grid",        "grid_spacing",
@@ -586,6 +589,18 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
     case 6:
       *out = eval_number(base->entity.parts.index);
       return true_v;
+    case 7: {
+      const VkrScene *scene =
+          vkr_editor_entity_scene(eval->frame, base->entity);
+      const SceneTransform *transform =
+          scene ? vkr_entity_get_component(scene->world, base->entity,
+                                           scene->comp_transform)
+                : NULL;
+      if (!transform)
+        return eval_fail(eval, "'%s' has no placement", values.name);
+      *out = eval_vec(mat4_position(transform->world));
+      return true_v;
+    }
     default: {
       const VkrTypeDesc *type =
           eval_component_named(eval, base->entity, &values, name);

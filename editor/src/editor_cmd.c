@@ -1322,6 +1322,46 @@ static bool8_t cmd_run_script_edit(CmdContext *ctx, const CmdDef *def,
   return true_v;
 }
 
+/* physics.motion <static|kinematic|dynamic> sets the selection's body
+   motion, the way Details' Physics section does (undoable). */
+static bool8_t cmd_run_physics_motion(CmdContext *ctx, const CmdDef *def,
+                                      String8 arg) {
+  (void)def;
+  static const struct {
+    const char *name;
+    VkrPhysicsMotion motion;
+  } motions[] = {{"static", VKR_PHYSICS_STATIC},
+                 {"kinematic", VKR_PHYSICS_KINEMATIC},
+                 {"dynamic", VKR_PHYSICS_DYNAMIC}};
+  const String8 word = cmd_unquote(arg);
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  VkrSceneEditValues values;
+  if (!vkr_scene_edit_read(vkr_editor_entity_scene(ctx->frame, entity), entity,
+                           &values) ||
+      !values.physics.present) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "The selection has no physics body");
+    return false_v;
+  }
+  for (uint32_t i = 0; i < ArrayCount(motions); ++i) {
+    if (strlen(motions[i].name) == word.length &&
+        !MemCompare(motions[i].name, word.str, word.length)) {
+      values.physics.body.motion = motions[i].motion;
+      values.fields = VKR_SCENE_EDIT_PHYSICS;
+      *ctx->frame->scene_edit = (VkrSceneEditRequest){
+          .action = VKR_SCENE_EDIT_APPLY, .entity = entity, .values = values};
+      snprintf(ctx->message, sizeof(ctx->message), "Body %s", motions[i].name);
+      return true_v;
+    }
+  }
+  snprintf(ctx->message, sizeof(ctx->message),
+           "physics.motion needs static, kinematic or dynamic");
+  return false_v;
+}
+
 /* preset.save <type> saves the selection's component as a preset;
    preset.apply <name> applies a preset to the selection's component of its
    type (ADR-076). */
@@ -1547,6 +1587,9 @@ static const CmdDef cmd_defs[] = {
      CMD_COUNT, 0u},
     {"delete", CMD_ARG_TEXT, "[name]", "Delete the selection or a named object",
      cmd_run_delete, CMD_COUNT, 0u},
+    {"physics.motion", CMD_ARG_TEXT, "<static|kinematic|dynamic>",
+     "Set the selection's physics body motion (undoable)",
+     cmd_run_physics_motion, CMD_COUNT, 0u},
     {"component.add", CMD_ARG_COMPONENT, "<type>",
      "Add a component to the selection", cmd_run_component, CMD_COUNT, 0u},
     {"component.remove", CMD_ARG_COMPONENT, "<type>",

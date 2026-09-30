@@ -150,6 +150,14 @@ typedef struct VkrScriptApi {
 
   /* Keyboard state; ordered transitions arrive through the input hook. */
   bool8_t (*input_key_down)(InputState *input, Keys key);
+
+  /* Appended members: a module checks `size` before using them. */
+  /** The simulated rigid-body pose driving the entity; false when no body
+   * drives it. A presentation override set with set_evaluated_transform
+   * replaces this pose, so a script that decorates a physics object should
+   * start from it. */
+  bool8_t (*physics_world_matrix)(VkrScene *scene, VkrEntityId entity,
+                                  Mat4 *out);
 } VkrScriptApi;
 
 typedef enum VkrScriptSessionFlags {

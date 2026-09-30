@@ -1622,7 +1622,11 @@ static bool8_t physics_stage_body_joints(VkrScene *scene,
 
 bool8_t vkr_scene_physics_prepare_complete(VkrScene *scene,
                                            const char **error) {
-  if (!scene || !scene->physics || scene->physics->prepared_complete) {
+  /* With nothing prepared there is no graph to finalize, and staging one
+     would leave it complete with no commit to publish it, refusing every
+     later edit. */
+  if (!scene || !scene->physics || scene->physics->prepared_complete ||
+      !scene->physics->prepared) {
     return true_v;
   }
   VkrScenePhysics *physics = scene->physics;

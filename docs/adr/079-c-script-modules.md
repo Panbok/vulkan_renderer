@@ -302,6 +302,13 @@ no length limit. Each descriptor is built once, on first use, in static
 storage the host maps to its registered copy. New modules start from a
 template written with them; hand-written modules keep working.
 
+A presentation override (`set_evaluated_transform`) replaces the rigid-body
+pose, so a script that decorates a physics object starts from
+`physics_world_matrix`, appended to `VkrScriptApi`. The template spins its
+objects on top of that simulated pose after each tick, so a body running it
+still falls; modules made from the earlier template spin on their start pose
+and hold a body in place.
+
 ### The FPS module
 
 [`scripts/fps`](../../scripts/fps/src/fps_module.c) is the former

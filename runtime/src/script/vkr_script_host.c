@@ -152,6 +152,7 @@ static VkrScriptApi script_api_table(void) {
       .animation_duration = vkr_animation_player_duration,
       .animation_time = vkr_animation_player_time,
       .input_key_down = script_api_input_key_down,
+      .physics_world_matrix = vkr_scene_physics_world_matrix,
   };
 }
 

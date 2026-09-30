@@ -233,8 +233,8 @@ typedef struct VkrGizmoSystem {
   float32_t pixel_scale;
   VkrGizmoMode mode;
   VkrGizmoSpace space;
-  /* Editor tool filter: NONE draws and picks every handle family; another
-   * mode limits handles to that family. */
+  /* Editor tool: NONE (Select) draws and picks no handles; another mode
+   * shows that family. */
   VkrGizmoMode tool;
 
   VkrEntityId selected_entity;

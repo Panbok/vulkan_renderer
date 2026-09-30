@@ -51,16 +51,18 @@ testing and culling and consume the same ordered handles: hovered and active
 handles draw last. Visible handles therefore take priority over scene surfaces
 and overlapping handles use the same order for color and picking. This requires
 no extra scene-sized image. The active transform tool selects the handle family
-([ADR-027](027-immediate-mode-grid-ui.md)): Move shows translation arrows,
-Rotate shows rotation rings, Scale shows scale cubes, and Select shows all
-three. All scale cubes perform uniform scaling.
+([ADR-027](027-immediate-mode-grid-ui.md)): Move shows translation handles,
+Rotate shows rotation rings, Scale shows scale handles, and Select shows none,
+leaving the selection outline.
 
 ### Selection outline
 
 The selected entity and its descendants draw an orange outline 2 points wide
 (1 to 8 physical pixels) around their combined silhouette. The runtime walks
-the selection's children and borrows up to 1,024 `VkrEditorOverlayDraw`
-records, one per mesh submesh, through `VkrEditorPassPayload.selection_draws`.
+the selection's children in the container that owns it (the primary scene,
+the World or an added scene) and borrows up to 1,024 `VkrEditorOverlayDraw`
+records, one per mesh or shape submesh, through
+`VkrEditorPassPayload.selection_draws`.
 A larger selection outlines its first 1,024 submeshes in depth-first order, and
 skinned meshes outline their bind pose. Packet validation rejects a larger
 count or a width outside 1 to 8 pixels. `Editor.SelectionMask`

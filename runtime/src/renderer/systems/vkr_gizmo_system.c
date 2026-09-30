@@ -240,8 +240,10 @@ uint32_t vkr_gizmo_system_build_draws(
     const VkrGizmoSystem *system, Mat4 view, Mat4 projection,
     const VkrViewportMapping *mapping,
     VkrEditorOverlayDraw out_draws[VKR_EDITOR_OVERLAY_DRAW_MAX]) {
+  /* The Select tool shows the selection outline and no handles. */
   if (!system || !system->initialized || !system->visible || !mapping ||
-      !out_draws || system->mode < VKR_GIZMO_MODE_TRANSLATE ||
+      !out_draws || system->tool == VKR_GIZMO_MODE_NONE ||
+      system->mode < VKR_GIZMO_MODE_TRANSLATE ||
       system->mode > VKR_GIZMO_MODE_SCALE || mapping->image_rect_px.w <= 0.0f)
     return 0u;
   const Vec4 center =
@@ -273,10 +275,7 @@ uint32_t vkr_gizmo_system_build_draws(
   for (uint32_t index = 0; index < VKR_GIZMO_GEOMETRY_COUNT; ++index) {
     const GizmoShape *shape = &g_gizmo_shapes[index];
     const VkrGizmoMode mode = vkr_gizmo_handle_mode(shape->handle);
-    /* The Select tool moves and rotates; the others show their family. */
-    const bool8_t shown = tool == VKR_GIZMO_MODE_NONE
-                              ? mode != VKR_GIZMO_MODE_SCALE
-                              : mode == tool;
+    const bool8_t shown = mode == tool;
     if (!shown || (active != VKR_GIZMO_HANDLE_NONE && shape->handle != active))
       continue;
     Vec3 mirror = vec3_one();
