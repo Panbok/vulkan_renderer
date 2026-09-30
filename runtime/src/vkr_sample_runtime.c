@@ -2275,7 +2275,11 @@ static void sample_orthographic_input(VkrStandardSceneRuntime *application,
     camera->top_clip *= ratio;
     camera->projection_dirty = true_v;
   }
-  if (!captured && hovered && input_button_just_pressed(input, BUTTON_RIGHT) &&
+  /* A headless run has no window to capture; synthetic right clicks still
+     reach the context click. */
+  if (!captured && hovered &&
+      vkr_standard_scene_runtime_is_windowed(application) &&
+      input_button_just_pressed(input, BUTTON_RIGHT) &&
       input_is_button_down(input, BUTTON_RIGHT)) {
     vkr_window_set_mouse_capture(&application->host.window, true_v);
     state->free_camera_held = true_v;
@@ -2481,6 +2485,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_update_camera_capture(
   }
 
   if (application->editor_viewport.enabled &&
+      vkr_standard_scene_runtime_is_windowed(application) &&
       !vkr_window_is_mouse_captured(&application->host.window) &&
       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
       !application->ui_capture.mouse && !application->ui_capture.text &&
@@ -5100,6 +5105,12 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
              "Saved settings were invalid. Defaults are in use.");
   sample_graphics_apply_live(application, &state->graphics.settings);
   state->stats_arena = arena_create(KB(1), KB(1));
+  /* A headless run has no window to initialize input; synthetic input
+     (Cmd ui.*) still dispatches through the host's events. */
+  if (!application->host.window.input_state.event_manager) {
+    application->host.window.input_state =
+        input_init(&application->host.events);
+  }
   state->input_state = &application->host.window.input_state;
   state->view_state = (VkrSampleViewState){
       .camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE,
