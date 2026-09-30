@@ -40,6 +40,8 @@ typedef struct VkrStandardSceneRuntimeEditorViewport {
   bool8_t enabled;
   bool8_t scene_only;
   bool8_t simulation_running;
+  /* A script session drives the camera; the free-camera controller rests. */
+  bool8_t scripts_own_camera;
   bool8_t scene_rendering_stopped;
   bool8_t scene_backdrop_blur;
   VkrRendererError scene_error;
@@ -178,6 +180,9 @@ typedef struct VkrStandardSceneRuntime {
   /* Editor selection whose meshes are outlined over the Scene image; the
    * sample runtime publishes it each frame. */
   VkrEntityId selection_outline_entity;
+  /* The container owning it: the primary scene, the World or an added
+     scene; NULL uses the primary scene. */
+  const VkrScene *selection_outline_scene;
   /** Resolve UI anchors against the camera and viewport used by this packet. */
   void (*project_ui)(struct VkrStandardSceneRuntime *,
                      const VkrViewportMapping *);

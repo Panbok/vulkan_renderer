@@ -7,6 +7,7 @@
 #include "editor_internal.h"
 #include "editor_project_store.h"
 #include "editor_scene_panels.h"
+#include "editor_scripts.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
 #include "renderer/systems/vkr_render_assets.h"
@@ -59,6 +60,8 @@ typedef enum ContentKind {
   /* A creatable object kind, in System/Objects. */
   CONTENT_OBJECT,
   CONTENT_PRESET,
+  /* A project script source (ADR-079). */
+  CONTENT_SCRIPT,
   CONTENT_OTHER,
   CONTENT_KIND_COUNT
 } ContentKind;
@@ -198,6 +201,9 @@ struct VkrEditorContent {
   uint8_t rename[513];
   uint32_t rename_length;
   char rename_asset[37];
+  /* The project's script modules and the file list listed last. */
+  const VkrEditorScripts *scripts;
+  uint64_t scripts_revision;
   /* Double-click and drag of one item or folder (ADR-076). */
   uint32_t click_asset;
   float64_t click_time;
@@ -212,8 +218,14 @@ struct VkrEditorContent {
      context menu it opens (ADR-076). */
   bool8_t right_pressed;
   bool8_t menu_requested;
+  /* The press landed on the shown folder's empty space, not an item. */
+  bool8_t menu_folder;
   uint32_t menu_item;
   Vec2 menu_position_pt;
+  /* An object created from Content is revealed once it becomes the
+     selection; frames left to wait for it. */
+  VkrEntityId reveal_previous;
+  uint32_t reveal_frames;
   /* The item whose name is being edited in place. */
   uint32_t renaming;
   uint8_t rename_draft[513];
@@ -291,18 +303,21 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui);
 static const char *content_cooking_status(bool8_t loading);
 
 static const char *const content_kinds[] = {
-    "Texture", "Material",  "Mesh",   "Font",        "Environment", "Scene",
-    "Probe",   "Animation", "Object", "Object type", "Preset",      "Other"};
+    "Texture", "Material", "Mesh",      "Font",   "Environment",
+    "Scene",   "Probe",    "Animation", "Object", "Object type",
+    "Preset",  "Script",   "Other"};
 static const VkrUiIcon content_icons[] = {
     VKR_UI_ICON_TEXTURE, VKR_UI_ICON_MATERIAL,    VKR_UI_ICON_MESH,
     VKR_UI_ICON_FONT,    VKR_UI_ICON_ENVIRONMENT, VKR_UI_ICON_SCENE,
     VKR_UI_ICON_PROBE,   VKR_UI_ICON_ANIMATION,   VKR_UI_ICON_EMPTY,
-    VKR_UI_ICON_SHAPES,  VKR_UI_ICON_SPARKLE,     VKR_UI_ICON_FILE};
+    VKR_UI_ICON_SHAPES,  VKR_UI_ICON_SPARKLE,     VKR_UI_ICON_CODE,
+    VKR_UI_ICON_FILE};
 /* The type folder each kind of asset lists in by default (ADR-076); NULL
    for items that are not assets. */
 static const char *const content_type_folders[] = {
-    "Textures", "Materials",  "Meshes", "Fonts", "Environments", NULL,
-    "Probes",   "Animations", NULL,     NULL,    NULL,           "Other"};
+    "Textures", "Materials", "Meshes",     "Fonts", "Environments",
+    NULL,       "Probes",    "Animations", NULL,    NULL,
+    NULL,       "Scripts",   "Other"};
 static const char *const content_scopes[] = {"Scene", "Project", "Editor",
                                              "Built-in"};
 /* Folders the editor provides: System and its three, and the project's
@@ -1507,10 +1522,13 @@ static void content_tree_build(VkrEditorContent *content) {
 static bool8_t content_matches(const char *text, const uint8_t *query,
                                uint32_t length);
 
-/* The built-in items: one object per creatable kind, in System/Objects. */
+/* The built-in items: one object per listed kind, in System/Objects. */
 static void content_read_builtins(VkrEditorContent *content) {
   const uint32_t kinds = vkr_editor_object_kind_count();
   for (uint32_t i = 0; i < kinds && content_reserve(content); ++i) {
+    if (!vkr_editor_object_kind_listed(i)) {
+      continue;
+    }
     ContentAsset *entry = &content->entries[content->count++];
     MemZero(entry, sizeof(*entry));
     entry->scope = CONTENT_SCOPE_BUILTIN;
@@ -1652,6 +1670,61 @@ static void content_poll_changes(VkrEditorContent *content) {
   }
 }
 
+void vkr_editor_content_set_scripts(VkrEditorContent *content,
+                                    const VkrEditorScripts *scripts) {
+  if (content) {
+    content->scripts = scripts;
+    content->scripts_revision = UINT64_MAX;
+  }
+}
+
+/* One Script asset per project module, in Scripts (ADR-079): it opens the
+   module's `<name>.c`, else its first C source, and drags onto objects to
+   attach its script. */
+static void content_read_scripts(VkrEditorContent *content) {
+  const uint32_t modules = vkr_editor_scripts_module_count(content->scripts);
+  const uint32_t files = vkr_editor_scripts_file_count(content->scripts);
+  for (uint32_t m = 0; m < modules && content_reserve(content); ++m) {
+    const VkrEditorScriptModule *module =
+        vkr_editor_scripts_module(content->scripts, m);
+    /* New modules name their source after the module in lower case. */
+    char wanted[VKR_EDITOR_SCRIPT_NAME + 2u];
+    snprintf(wanted, sizeof(wanted), "%s.c", module->name);
+    for (char *c = wanted; *c; ++c) {
+      *c = (char)tolower((unsigned char)*c);
+    }
+    const VkrEditorScriptFile *source = NULL;
+    for (uint32_t f = 0; f < files; ++f) {
+      const VkrEditorScriptFile *file =
+          vkr_editor_scripts_file(content->scripts, f);
+      const size_t length = strlen(file->name);
+      if (file->module != m || length < 2u ||
+          strcmp(file->name + length - 2u, ".c")) {
+        continue;
+      }
+      if (!source || !strcmp(file->name, wanted)) {
+        source = file;
+      }
+    }
+    ContentAsset *entry = &content->entries[content->count++];
+    MemZero(entry, sizeof(*entry));
+    entry->scope = 1u;
+    entry->label = CONTENT_NONE;
+    entry->kind = CONTENT_SCRIPT;
+    snprintf(entry->id, sizeof(entry->id), "script-%016llx",
+             (unsigned long long)content_hash(UINT64_C(14695981039346656037),
+                                              module->directory,
+                                              strlen(module->directory)));
+    content_copy(entry->name, sizeof(entry->name), module->name);
+    content_copy(entry->path, sizeof(entry->path),
+                 source ? source->path : module->description);
+    content_copy(entry->source, sizeof(entry->source),
+                 source ? source->path : module->description);
+    content_copy(entry->role, sizeof(entry->role), module->name);
+    content_copy(entry->type_folder, sizeof(entry->type_folder), "Scripts");
+  }
+}
+
 void vkr_editor_content_set_service(VkrEditorContent *content,
                                     EditorBakeryService *service) {
   if (!content || content->service == service) {
@@ -1693,6 +1766,8 @@ void vkr_editor_content_refresh(VkrEditorContent *content) {
              content->project);
     snprintf(manifest, sizeof(manifest), "%s/project.json", root);
     content_read_inventory(content, root, manifest, 1, "");
+    content_read_scripts(content);
+    content->scripts_revision = vkr_editor_scripts_revision(content->scripts);
     const uint32_t first_scene = content->count;
     content_read_scenes(content, root, manifest);
     /* Every scene's own assets list in its folder. */
@@ -1858,6 +1933,9 @@ static void content_mark_cooking_objects(VkrEditorContent *content,
   }
 }
 
+static void content_reveal_created(VkrEditorContent *content,
+                                   const VkrSampleUiFrame *frame);
+
 void vkr_editor_content_sync_objects(
     VkrEditorContent *content, const VkrSampleUiFrame *frame,
     const char *const scene_ids[1 + VKR_SCENE_ADDITIVE_MAX]) {
@@ -1873,6 +1951,7 @@ void vkr_editor_content_sync_objects(
   content_visit_objects(content, frame, scene_ids, content_object_hash, &key);
   if (key == content->objects_key) {
     content_mark_cooking_objects(content, frame, false_v);
+    content_reveal_created(content, frame);
     return;
   }
   content->objects_key = key;
@@ -1895,6 +1974,7 @@ void vkr_editor_content_sync_objects(
   }
   content_mark_cooking_objects(content, frame, true_v);
   content->filter_dirty = true_v;
+  content_reveal_created(content, frame);
 }
 
 void vkr_editor_content_set_project(VkrEditorContent *content,
@@ -2042,6 +2122,11 @@ void vkr_editor_content_update(VkrEditorContent *content) {
   ++content->frame;
   content->uploads_this_frame = 0;
   content_poll_changes(content);
+  if (content->scripts && content->project[0] &&
+      content->scripts_revision !=
+          vkr_editor_scripts_revision(content->scripts)) {
+    vkr_editor_content_refresh(content);
+  }
   if (content->worker &&
       vkr_atomic_bool_load(&content->complete, VKR_MEMORY_ORDER_ACQUIRE)) {
     (void)vkr_thread_join(content->worker);
@@ -2606,12 +2691,14 @@ static void content_action(VkrEditorContent *content,
                            VkrEditorContentActionKind kind) {
   /* A read-only workspace still opens scenes and edits loaded objects; it
      cannot change project files. */
-  const bool8_t browsing = kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCENE ||
+  const bool8_t browsing = kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT ||
+                           kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCENE ||
                            kind == VKR_EDITOR_CONTENT_ACTION_ADD_SCENE ||
                            kind == VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY ||
                            kind == VKR_EDITOR_CONTENT_ACTION_FRAME_ENTITY ||
                            kind == VKR_EDITOR_CONTENT_ACTION_RENAME_ENTITY ||
-                           kind == VKR_EDITOR_CONTENT_ACTION_DELETE_ENTITY;
+                           kind == VKR_EDITOR_CONTENT_ACTION_DELETE_ENTITY ||
+                           kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT;
   if (content->read_only && !browsing) {
     return;
   }
@@ -2753,8 +2840,11 @@ static void content_activate(VkrEditorContent *content, uint32_t shown) {
   const ContentKind kind = content->entries[shown].kind;
   if (kind == CONTENT_ENTITY) {
     content_action(content, VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY);
+    content->action.activated = true_v;
   } else if (kind == CONTENT_OBJECT) {
     content_action(content, VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT);
+  } else if (kind == CONTENT_SCRIPT) {
+    content_action(content, VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT);
   }
 }
 
@@ -2892,7 +2982,8 @@ static const Vec4 content_type_colors[CONTENT_KIND_COUNT] = {
     {0.96f, 0.78f, 0.42f, 1}, {0.50f, 0.68f, 0.98f, 1},
     {0.42f, 0.84f, 0.86f, 1}, {0.86f, 0.56f, 0.72f, 1},
     {0.46f, 0.80f, 0.98f, 1}, {0.98f, 0.82f, 0.46f, 1},
-    {0.92f, 0.62f, 0.94f, 1}, {0.66f, 0.70f, 0.76f, 1},
+    {0.92f, 0.62f, 0.94f, 1}, {0.80f, 0.66f, 0.98f, 1},
+    {0.66f, 0.70f, 0.76f, 1},
 };
 static const Vec4 content_folder_color = {0.96f, 0.78f, 0.42f, 1.0f};
 
@@ -3088,6 +3179,7 @@ static void content_context_probe(VkrEditorContent *content, VkrUiSystem *ui,
   content->right_pressed = false_v;
   content_select(content, shown);
   content->menu_requested = true_v;
+  content->menu_folder = false_v;
   content->menu_item = shown;
   content->menu_position_pt =
       (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
@@ -3248,7 +3340,7 @@ static void content_build_navigation(VkrEditorContent *content,
   }
   columns[column_count - 1u] = (VkrUiTrack){1, VKR_UI_TRACK_FR};
   VkrUiPanelConfig navigation = vkr_ui_panel_config_default();
-  navigation.placement.column = 3;
+  navigation.placement.column = 4;
   navigation.placement.row = 0;
   navigation.columns = columns;
   navigation.column_count = column_count;
@@ -3317,8 +3409,9 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
   const VkrUiTrack toolbar_rows[] = {{28, VKR_UI_TRACK_PX},
                                      {28, VKR_UI_TRACK_PX}};
   const VkrUiTrack toolbar_columns[] = {
-      {82, VKR_UI_TRACK_PX}, {32, VKR_UI_TRACK_PX},  {32, VKR_UI_TRACK_PX},
-      {1, VKR_UI_TRACK_FR},  {100, VKR_UI_TRACK_PX}, {44, VKR_UI_TRACK_PX}};
+      {82, VKR_UI_TRACK_PX}, {32, VKR_UI_TRACK_PX}, {32, VKR_UI_TRACK_PX},
+      {32, VKR_UI_TRACK_PX}, {1, VKR_UI_TRACK_FR},  {100, VKR_UI_TRACK_PX},
+      {44, VKR_UI_TRACK_PX}};
   VkrUiPanelConfig tools = vkr_ui_panel_config_default();
   tools.placement.column = 0;
   tools.placement.row = 0;
@@ -3350,13 +3443,20 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
   if (vkr_ui_button(ui, string8_lit("new-folder"), (String8){0}, &folder)) {
     content_new_folder(content, content->folder);
   }
+  VkrUiWidgetConfig script = vkr_editor_icon_button_config(
+      2, 0, VKR_UI_ICON_CODE,
+      string8_lit("New script module in Scripts (ADR-079)"));
+  script.disabled = content->read_only || !content->project[0];
+  if (vkr_ui_button(ui, string8_lit("new-script"), (String8){0}, &script)) {
+    content_action(content, VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT);
+  }
   VkrUiWidgetConfig refresh = vkr_editor_icon_button_config(
-      2, 0, VKR_UI_ICON_REFRESH, string8_lit("Refresh asset inventories"));
+      3, 0, VKR_UI_ICON_REFRESH, string8_lit("Refresh asset inventories"));
   if (vkr_ui_button(ui, string8_lit("refresh"), (String8){0}, &refresh)) {
     vkr_editor_content_refresh(content);
   }
   content_build_navigation(content, ui);
-  VkrUiWidgetConfig details = content_widget(4, 0);
+  VkrUiWidgetConfig details = content_widget(5, 0);
   vkr_editor_ghost_style(&details);
   details.icon = VKR_UI_ICON_SIDEBAR;
   details.icon_size_pt = 14;
@@ -3368,7 +3468,7 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
     content->details_hidden = !content->details_hidden;
   }
   VkrUiWidgetConfig size = vkr_editor_icon_button_config(
-      5, 0,
+      6, 0,
       content->size == CONTENT_SIZE_LIST ? VKR_UI_ICON_GRID
       : content->size == 128             ? VKR_UI_ICON_ZOOM_IN
                                          : VKR_UI_ICON_LIST,
@@ -3386,7 +3486,7 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
   VkrUiPlacement search = VKR_UI_PLACEMENT_DEFAULT;
   search.column = 0;
   search.row = 1;
-  search.column_span = 4;
+  search.column_span = 5;
   if (vkr_editor_search_field(
           ui, string8_lit("search"), &query, search,
           string8_lit("Search this folder"),
@@ -3397,7 +3497,7 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
     content->filter_dirty = true_v;
     content->first_row = 0;
   }
-  VkrUiWidgetConfig tag = content_widget(4, 1);
+  VkrUiWidgetConfig tag = content_widget(5, 1);
   vkr_editor_ghost_style(&tag);
   tag.icon = VKR_UI_ICON_TAG;
   tag.icon_size_pt = 13;
@@ -3412,7 +3512,7 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
     content->filter_dirty = true_v;
   }
   VkrUiWidgetConfig sort = vkr_editor_icon_button_config(
-      5, 1,
+      6, 1,
       content->reverse_sort ? VKR_UI_ICON_SORT_DESCENDING
                             : VKR_UI_ICON_SORT_ASCENDING,
       content->reverse_sort ? string8_lit("Sorted Z to A")
@@ -3449,6 +3549,14 @@ static String8 content_description(const VkrEditorContent *content,
         "it to the scene.",
         entry->name);
   }
+  if (entry->kind == CONTENT_SCRIPT) {
+    return string8_create_formatted(
+        ui->frame_allocator,
+        "%s\nScript\nDrag it onto an object in the viewport or Outliner to "
+        "attach it, or onto empty space to add an object running it. "
+        "Double-click to edit it.",
+        entry->name);
+  }
   const VkrEditorAssetLabel *label = content_entry_label(content, entry);
   const char *folder = content_item_folder(content, entry);
   const uint32_t folder_index = content_tree_find(content, folder);
@@ -3468,10 +3576,10 @@ static String8 content_description(const VkrEditorContent *content,
                              : "Ready");
 }
 
-/* Whether the viewport accepts a dropped item: object types and built
-   meshes. A scene folder dropped there opens. */
+/* Whether the viewport accepts a dropped item: object types, scripts and
+   built meshes. A scene folder dropped there opens. */
 static bool8_t content_viewport_accepts(const ContentAsset *entry) {
-  return entry->kind == CONTENT_OBJECT ||
+  return entry->kind == CONTENT_OBJECT || entry->kind == CONTENT_SCRIPT ||
          (entry->kind == CONTENT_MESH && !entry->missing && !entry->stale);
 }
 
@@ -3516,6 +3624,12 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui) {
       content->selected = shown;
       content_action(content, VKR_EDITOR_CONTENT_ACTION_PLACE_ASSET);
       content->action.drop_px = (Vec2){x, y};
+    } else if (over_viewport && entry->kind == CONTENT_SCRIPT) {
+      /* The editor picks under the drop to attach, else adds an object. */
+      content->selected = shown;
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT);
+      content->action.drop_px = (Vec2){x, y};
+      content->action.dropped = true_v;
     } else if (over_viewport) {
       content_activate(content, shown);
       content->action.drop_px = (Vec2){x, y};
@@ -3552,6 +3666,9 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui) {
   ghost.style.corner_radius_pt = (Vec4){10, 10, 10, 10};
   ghost.icon = folder ? dragged_folder->icon : content_icon(entry);
   ghost.icon_size_pt = 40.0f;
+  /* An icon-only label draws at its leading edge unless centered. */
+  ghost.center = true_v;
+  ghost.style.padding_pt = (VkrUiEdges){0};
   ghost.icon_color = vkr_ui_color_alpha(kind_color, accepted ? 0.9f : 0.6f);
   vkr_ui_label(ui, string8_lit("content.drag.ghost"), (String8){0}, &ghost);
 
@@ -3712,7 +3829,8 @@ static void content_item_button(VkrEditorContent *content, VkrUiSystem *ui,
     content_click(content, ui, shown, grid_id);
   }
   content_context_probe(content, ui, string8_lit("item"), shown);
-  if (!folder || !tree->system) {
+  /* Scene folders are system folders that still drag, into the viewport. */
+  if (!folder || content_folder_draggable(tree)) {
     content_drag_begin(content, ui, shown, string8_lit("item"));
   }
 }
@@ -4376,7 +4494,8 @@ static bool8_t content_menu_enabled(const VkrEditorContent *content,
   case VKR_EDITOR_CONTENT_COMMAND_RENAME:
     return content_renamable(content, shown);
   default:
-    return writable &&
+    /* Script sources are files of their module, not inventory assets. */
+    return writable && entry->kind != CONTENT_SCRIPT &&
            (entry->kind == CONTENT_ENTITY || entry->kind == CONTENT_PRESET ||
             (entry->scope <= 1u && entry->kind != CONTENT_SCENE));
   }
@@ -4428,6 +4547,8 @@ static void content_menu_run(VkrEditorContent *content, uint32_t shown,
   case VKR_EDITOR_CONTENT_COMMAND_OPEN:
     if (object) {
       content_action(content, VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY);
+    } else if (entry->kind == CONTENT_SCRIPT) {
+      content_action(content, VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT);
     } else {
       content->details_hidden = false_v;
     }
@@ -4847,6 +4968,15 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
   }
   content_build_grid(content, ui, columns, rows, max_first, card_width,
                      card_height, grid_id, grid_area);
+  /* A right press on empty space asks for the shown folder's menu. */
+  if (content->right_pressed && content_pointer_inside(ui, grid_area)) {
+    content->right_pressed = false_v;
+    content->menu_requested = true_v;
+    content->menu_folder = true_v;
+    content->menu_position_pt =
+        (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
+               (float32_t)ui->mouse_y / ui->content_scale};
+  }
   content_build_inspector(content, ui, inspector_height, show_details);
   (void)vkr_ui_panel_end(ui);
   VkrUiWidgetConfig footer = content_widget(0, 2);
@@ -4884,13 +5014,118 @@ bool8_t vkr_editor_content_take_object_action(VkrEditorContent *content,
 }
 
 bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
-                                     Vec2 *position_pt) {
+                                     Vec2 *position_pt, bool8_t *folder) {
   if (!content || !content->menu_requested) {
     return false_v;
   }
   content->menu_requested = false_v;
   *position_pt = content->menu_position_pt;
+  *folder = content->menu_folder;
   return true_v;
+}
+
+bool8_t vkr_editor_content_dragged_script(const VkrEditorContent *content,
+                                          char *module, uint32_t capacity) {
+  if (!content || !content->dragging ||
+      content_shown_folder(content->drag_asset) ||
+      content->drag_asset >= content->count ||
+      content->entries[content->drag_asset].kind != CONTENT_SCRIPT) {
+    return false_v;
+  }
+  snprintf(module, capacity, "%s", content->entries[content->drag_asset].role);
+  return true_v;
+}
+
+void vkr_editor_content_end_drag(VkrEditorContent *content) {
+  if (content) {
+    content->dragging = false_v;
+    content->drag_asset = CONTENT_NONE;
+  }
+}
+
+VkrEntityId vkr_editor_content_menu_entity(const VkrEditorContent *content) {
+  if (!content || content->menu_folder ||
+      content_shown_folder(content->menu_item) ||
+      content->menu_item >= content->count ||
+      content->entries[content->menu_item].kind != CONTENT_ENTITY) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  return content->entries[content->menu_item].entity;
+}
+
+bool8_t
+vkr_editor_content_folder_available(const VkrEditorContent *content,
+                                    VkrEditorContentFolderCommand command) {
+  if (!content) {
+    return false_v;
+  }
+  const bool8_t project = !content->read_only && content->project[0];
+  switch (command) {
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_FOLDER:
+    return project && content_project_folder(content->folder);
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_SCRIPT:
+  case VKR_EDITOR_CONTENT_FOLDER_IMPORT:
+    return project;
+  default:
+    return true_v;
+  }
+}
+
+void vkr_editor_content_folder_command(VkrEditorContent *content,
+                                       VkrEditorContentFolderCommand command) {
+  if (!vkr_editor_content_folder_available(content, command)) {
+    return;
+  }
+  switch (command) {
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_FOLDER:
+    (void)content_new_folder(content, content->folder);
+    break;
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_SCRIPT:
+    content_action(content, VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT);
+    break;
+  case VKR_EDITOR_CONTENT_FOLDER_IMPORT:
+    content_action(content, VKR_EDITOR_CONTENT_ACTION_IMPORT);
+    break;
+  default:
+    vkr_editor_content_refresh(content);
+    break;
+  }
+}
+
+void vkr_editor_content_reveal_created(VkrEditorContent *content,
+                                       VkrEntityId selection) {
+  if (content) {
+    content->reveal_previous = selection;
+    content->reveal_frames = 120u;
+  }
+}
+
+/* Opens the folder of the object an earlier creation selected, once its
+   entry exists. */
+static void content_reveal_created(VkrEditorContent *content,
+                                   const VkrSampleUiFrame *frame) {
+  if (!content->reveal_frames) {
+    return;
+  }
+  --content->reveal_frames;
+  const VkrEntityId selected = frame->selected_entity;
+  if (!selected.u64 || selected.u64 == content->reveal_previous.u64) {
+    return;
+  }
+  for (uint32_t i = content->asset_count; i < content->count; ++i) {
+    if (content->entries[i].entity.u64 == selected.u64) {
+      content->reveal_frames = 0u;
+      content->query[0] = 0;
+      content->query_length = 0;
+      content->tag_filter[0] = '\0';
+      content_open_folder(content,
+                          content_item_folder(content, &content->entries[i]));
+      content_select(content, i);
+      content->reveal_selection = true_v;
+      content->filter_dirty = true_v;
+      return;
+    }
+  }
 }
 
 const char *vkr_editor_content_menu_label(const VkrEditorContent *content,
@@ -4912,6 +5147,7 @@ const char *vkr_editor_content_menu_label(const VkrEditorContent *content,
   case VKR_EDITOR_CONTENT_COMMAND_OPEN:
     return scene                    ? "Open scene"
            : kind == CONTENT_ENTITY ? "Select"
+           : kind == CONTENT_SCRIPT ? "Edit script"
            : folder                 ? "Open"
                                     : "Show details";
   case VKR_EDITOR_CONTENT_COMMAND_PLACE:

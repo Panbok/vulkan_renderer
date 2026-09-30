@@ -476,7 +476,7 @@ typedef struct VkrEditorOverlayDraw {
   uint32_t object_id;
 } VkrEditorOverlayDraw;
 
-#define VKR_EDITOR_OVERLAY_DRAW_MAX 9u
+#define VKR_EDITOR_OVERLAY_DRAW_MAX 16u
 /** Selection outline mask draws: the selected entity and its descendants.
     A larger selection outlines only its first draws. */
 #define VKR_EDITOR_SELECTION_DRAW_MAX 1024u

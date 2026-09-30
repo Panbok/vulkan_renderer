@@ -54,6 +54,8 @@ typedef enum EditorCommand {
   CMD_BUILD_OPEN,
   CMD_BUILD_LOG,
   CMD_SCENE_BAKE,
+  /* The Script editor window (ADR-079). */
+  CMD_SCRIPT_EDITOR,
   CMD_COUNT
 } EditorCommand;
 
@@ -137,9 +139,14 @@ void vkr_editor_toast(VkrEditorUi *editor, VkrUiIcon icon, Vec4 color,
 void vkr_editor_toasts_build(VkrEditorUi *editor,
                              const VkrSampleUiFrame *frame);
 
-/* Entity context menu opened from a Hierarchy row. */
+/* Right-click menus (VkrEditorContextKind): open one of `kind` at a point;
+   the caller then sets the target it acts on, such as `context_entity`. */
+void vkr_editor_context_open(VkrEditorUi *editor, VkrEditorContextKind kind,
+                             Vec2 position_pt);
 VkrUiRect vkr_editor_context_menu_rect(const VkrEditorUi *editor,
                                        const VkrUiSystem *ui);
+/* The open submenu's pixels, or an empty rect. */
+VkrUiRect vkr_editor_context_submenu_rect(const VkrEditorUi *editor);
 void vkr_editor_context_menu_build(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame);
 /* Toggle an entity's own visibility through the undoable edit journal. */
@@ -160,6 +167,9 @@ void vkr_editor_window_set_visible(VkrEditorUi *editor,
  * runs one command per frame (see docs/editor-cmd.md). */
 /** Append `;`- or newline-separated commands; false when the queue is full. */
 bool8_t vkr_editor_cmd_enqueue(VkrEditorUi *editor, const char *script);
+/** Applies the next `ui.click`, `ui.drag` or `ui.key` step to the host's
+ * input. */
+void vkr_editor_cmd_pointer_input(VkrEditorUi *editor, InputState *input);
 /** Run due queued commands; call once per frame before panels build. */
 void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
 /** The top-bar field, in `column` of the navigation bar grid. */

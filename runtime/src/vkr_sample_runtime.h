@@ -8,6 +8,7 @@
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_ui_system.h"
+#include "script/vkr_script_host.h"
 #include "vkr_graphics_settings.h"
 #include "vkr_renderer.h"
 
@@ -59,8 +60,11 @@ typedef struct VkrSampleViewState {
   VkrSampleCameraView camera_view;
   VkrRenderMode render_mode;
   float32_t grid_spacing;
-  /* VkrGizmoMode tool filter; NONE shows every transform handle. */
+  /* VkrGizmoMode tool: NONE (Select) shows no handles, and dragging an
+     object moves it; another mode shows that handle family. */
   uint32_t gizmo_tool;
+  /* VkrGizmoSpace of move and rotate handles: world or local. */
+  uint32_t gizmo_space;
   /* Free-camera flight speed in world units per second. */
   float32_t camera_speed;
   bool8_t grid_enabled;
@@ -72,6 +76,22 @@ typedef struct VkrSampleViewRequest {
   VkrSampleViewState value;
   bool8_t apply;
 } VkrSampleViewRequest;
+
+/* Why the UI asked for a Scene pick; the answer carries it back. */
+typedef enum VkrSamplePickPurpose {
+  /* A right click: open the picked object's menu. */
+  VKR_SAMPLE_PICK_MENU = 0,
+  /* A Script asset dropped: attach it to the picked object. */
+  VKR_SAMPLE_PICK_SCRIPT_DROP,
+} VkrSamplePickPurpose;
+
+/* Pick the Scene at a window pixel; the result arrives in a later frame as
+ * the frame's context fields. */
+typedef struct VkrSamplePickRequest {
+  bool8_t request;
+  Vec2 position_px;
+  VkrSamplePickPurpose purpose;
+} VkrSamplePickRequest;
 
 /* Consumed after UI build. Paths are copied before the frame scratch expires.
  * Selection replaces the old scene only after the dirty-edit decision. */
@@ -184,6 +204,30 @@ typedef struct VkrSampleWorldRequest {
   bool8_t reload;
 } VkrSampleWorldRequest;
 
+#define VKR_SAMPLE_SCRIPT_LOAD_MAX 8u
+
+typedef struct VkrSampleScriptLoad {
+  char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
+  char path[VKR_SCRIPT_PATH_CAPACITY];
+} VkrSampleScriptLoad;
+
+/** Script library requests (ADR-079), applied after the UI build and before
+ * scene and World requests, so a project's component types register before
+ * its documents load. Retiring comes before the loads. */
+typedef struct VkrSampleScriptRequest {
+  bool8_t retire_libraries;
+  uint32_t load_count;
+  VkrSampleScriptLoad loads[VKR_SAMPLE_SCRIPT_LOAD_MAX];
+} VkrSampleScriptRequest;
+
+/** Outcome of one applied load; `serial` increases with every load. */
+typedef struct VkrSampleScriptResult {
+  uint64_t serial;
+  char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
+  VkrScriptReload result;
+  char message[256];
+} VkrSampleScriptResult;
+
 typedef struct VkrSampleUiFrame {
   VkrUiSystem *ui;
   VkrWindow *window;
@@ -202,6 +246,14 @@ typedef struct VkrSampleUiFrame {
    */
   bool8_t *scene_shortcuts_blocked;
   VkrEntityId selected_entity;
+  /* A Scene pick's answer, once: a right click or a pick_request. The
+   * object it picked, or invalid for empty space, the window pixel and why
+   * it was asked. */
+  bool8_t context_requested;
+  VkrEntityId context_entity;
+  Vec2 context_position_px;
+  VkrSamplePickPurpose context_purpose;
+  VkrSamplePickRequest *pick_request;
   uint64_t scene_generation;
   const VkrSceneEditState *edits;
   VkrSceneEditRequest *scene_edit;
@@ -237,6 +289,8 @@ typedef struct VkrSampleUiFrame {
   bool8_t *modal;
   float64_t simulation_time;
   bool8_t simulation_running;
+  /** Script modules drive the Scene camera and HUD this frame. */
+  bool8_t scripts_running;
   bool8_t scene_rendering_stopped;
   VkrRendererError scene_error;
   float32_t scene_output_scale;
@@ -248,6 +302,12 @@ typedef struct VkrSampleUiFrame {
   uint32_t texture_demanded_missing_count;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
+  VkrSampleScriptRequest *script_request;
+  /** The latest applied loads, most recent last; borrowed for the build. */
+  const VkrSampleScriptResult *script_results;
+  uint32_t script_result_count;
+  /** Registered modules and the session; read-only. */
+  const VkrScriptHost *scripts;
   VkrSampleViewState view_state;
   VkrSampleViewRequest *view_request;
   VkrSamplePhysicsRequest *physics_request;
@@ -266,6 +326,9 @@ typedef struct VkrSampleUiClient {
   void *state;
   bool8_t (*initialize)(void *state, VkrUiDockTree *dock, VkrUiSystem *ui);
   void (*handle_input)(void *state, const InputState *input);
+  /** Optional: adds synthetic input, such as scripted pointer clicks, at the
+   * start of a frame, before the UI and scene read input. */
+  void (*feed_input)(void *state, InputState *input);
   VkrUiDockInputCapture (*build)(void *state, const VkrSampleUiFrame *frame);
   /** Managed editor publication; absent callbacks retain legacy sidecar saves.
    */
@@ -306,6 +369,10 @@ typedef struct VkrSampleRuntimeConfig {
   String8 graphics_defaults;
   VkrSamplePresentationConfig presentation;
   VkrSampleUiClient ui;
+  /** C script modules linked into the executable (ADR-079), registered in
+   * order before any scene loads. */
+  const VkrScriptModuleEntry *script_modules;
+  uint32_t script_module_count;
 } VkrSampleRuntimeConfig;
 
 VkrSampleRuntimeConfig vkr_sample_runtime_config_default(void);

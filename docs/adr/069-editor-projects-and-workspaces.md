@@ -34,12 +34,13 @@ a user import, then opens the published scene. The source GLBs and their static
 collision proxies are editor content;
 the [distribution install](../../editor/CMakeLists.txt) carries this closure.
 The import cooks scene geometry and copies the collision journal and its cooked
-proxy into the project. An empty Player Spawn entity binds the movement client.
+proxy into the project. An empty Player Spawn entity carries a Player Start
+and the FPS module's `fps_player` component.
 The templates author their own daytime
 sky light and sun with clouds disabled; other unoverridden World components
 retain the normal inheritance rules.
 Blank and FPS Arena start in first person; RPG Grounds starts in third person
-through its [player binding](073-native-gameplay-foundation.md).
+through that component's [camera mode](073-native-gameplay-foundation.md).
 No starter scene enters the editor without loading a scene or automatically
 opening the Scenes modal. Creating project resources is a
 project job, not scene loading. Creation publishes `project.json` with default

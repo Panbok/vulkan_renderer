@@ -25,6 +25,10 @@
  * bodies and detaches it; destroy the set after every member shut down. */
 VkrScenePhysicsSet *vkr_scene_physics_set_create(VkrAllocator *allocator);
 void vkr_scene_physics_set_destroy(VkrScenePhysicsSet *set);
+/* Makes a set member the driver while the set has none, as when the root
+ * World is played without a scene; a scene attached later as driver takes
+ * over. The member already hosts its own physics then, so nothing moves. */
+void vkr_scene_physics_drive(VkrScene *scene);
 bool8_t vkr_scene_physics_attach(VkrScene *scene, VkrScenePhysicsSet *set,
                                  bool8_t driver, const char **error);
 /* Members of the scene's set, or the scene alone; returns the count. */
@@ -36,13 +40,15 @@ bool8_t vkr_scene_physics_layers_owner(const VkrScene *scene);
 uint32_t vkr_scene_physics_simulated_body_count(const VkrScene *scene);
 
 /* One character per root entity with unit scale and no rigid body. Creation
- * copies settings but takes foot_position/entity_id from the authored entity.
+ * copies settings but takes entity_id from the entity and foot_position from
+ * `spawn_foot`, or from the authored root pose when it is NULL, such as a
+ * player spawned at a Player Start (ADR-079). Authored TRS stays unchanged.
  * Create/destroy require pause and no active callbacks/prepared edits. Reset
- * transactionally rebuilds native characters from authored root poses while
+ * transactionally rebuilds native characters at the same spawn while
  * preserving entity identity. Scene shutdown releases all native characters. */
 bool8_t vkr_scene_character_create(VkrScene *scene, VkrEntityId entity,
                                    const VkrPhysicsCharacterDesc *settings,
-                                   const char **error);
+                                   const Vec3 *spawn_foot, const char **error);
 bool8_t vkr_scene_character_destroy(VkrScene *scene, VkrEntityId entity,
                                     const char **error);
 /* Call once from before_physics per tick. Input dt must match the scene fixed
@@ -183,7 +189,8 @@ bool8_t vkr_scene_physics_prepare(VkrScene *scene, VkrEntityId entity,
                                   const VkrScenePhysicsSnapshot *snapshot,
                                   VkrScenePhysicsPrepared **prepared,
                                   const char **error);
-/* Finalize the future body/joint graph after all owner preparations. */
+/* Finalize the future body/joint graph after all owner preparations. With
+ * nothing prepared there is nothing to finalize and it returns true. */
 bool8_t vkr_scene_physics_prepare_complete(VkrScene *scene, const char **error);
 void vkr_scene_physics_commit(VkrScenePhysicsPrepared *prepared);
 void vkr_scene_physics_discard(VkrScenePhysicsPrepared *prepared);

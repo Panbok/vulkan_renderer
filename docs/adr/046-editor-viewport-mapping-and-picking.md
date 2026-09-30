@@ -28,11 +28,19 @@ Picking requests use mapped scene coordinates. Picking IDs distinguish scene
 entities and gizmo handles. Scene-only mode uses the complete drawable mapping
 while preserving the dock tree.
 
-The application borrows up to nine `VkrEditorOverlayDraw` records through packet
-submission. The gizmo system owns their published geometry references; native
-frame upload storage owns prepared roots until GPU completion. Handles use a
-world-axis model scaled to 150 displayed pixels per unit, independent of camera
-distance and internal render scale. Both native pipelines use the unjittered
+The application borrows up to sixteen `VkrEditorOverlayDraw` records through
+packet submission. The gizmo system owns their published geometry references;
+native frame upload storage owns prepared roots until GPU completion. Handles
+use a model scaled to the gizmo size in points (110 by default) times the UI
+content scale per unit, independent of camera distance and internal render
+scale, and rotated by the target's world rotation for scale handles and local
+space. Translate has three arrows, three plane squares that sit in the
+quadrant facing the camera and a center handle; rotate has three rings; scale
+has three shaft-and-cube handles that each stretch one scale component and a
+uniform center cube. Draws run far to near with the hovered and dragged
+handles last, so nearer handles draw over and pick before farther ones. An axis
+seen end-on and a plane seen edge-on are left out, and while a handle is
+dragged only that handle draws. Both native pipelines use the unjittered
 camera projection. Color is opaque, unlit linear RGB, drawn after tonemapping
 into the retained Scene image. It does not enter lighting, shadows or temporal
 history.
@@ -43,16 +51,19 @@ testing and culling and consume the same ordered handles: hovered and active
 handles draw last. Visible handles therefore take priority over scene surfaces
 and overlapping handles use the same order for color and picking. This requires
 no extra scene-sized image. The active transform tool selects the handle family
-([ADR-027](027-immediate-mode-grid-ui.md)): Move shows translation arrows,
-Rotate shows rotation rings, Scale shows scale cubes, and Select shows all
-three. All scale cubes perform uniform scaling.
+([ADR-027](027-immediate-mode-grid-ui.md)): Move shows translation handles,
+Rotate shows rotation rings, Scale shows scale handles, and Select shows none,
+leaving the selection outline. With Select, a press that picks an object while
+the button is still held starts the center handle's view-plane drag on it.
 
 ### Selection outline
 
 The selected entity and its descendants draw an orange outline 2 points wide
 (1 to 8 physical pixels) around their combined silhouette. The runtime walks
-the selection's children and borrows up to 1,024 `VkrEditorOverlayDraw`
-records, one per mesh submesh, through `VkrEditorPassPayload.selection_draws`.
+the selection's children in the container that owns it (the primary scene,
+the World or an added scene) and borrows up to 1,024 `VkrEditorOverlayDraw`
+records, one per mesh or shape submesh, through
+`VkrEditorPassPayload.selection_draws`.
 A larger selection outlines its first 1,024 submeshes in depth-first order, and
 skinned meshes outline their bind pose. Packet validation rejects a larger
 count or a width outside 1 to 8 pixels. `Editor.SelectionMask`

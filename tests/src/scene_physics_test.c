@@ -272,6 +272,23 @@ static void physics_test_world_gravity(VkrAllocator *allocator) {
   vkr_scene_shutdown(&root, NULL);
 }
 
+/* An edit journal finalizes the graph after every edit, physics or not. A
+   finalize with nothing prepared must not leave the graph finalized, or the
+   next body edit is refused. */
+static void physics_test_empty_finalize(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 7, 16, NULL));
+  const char *error = NULL;
+  const VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  const VkrEntityId first = physics_test_entity(&scene, vec3_new(0, 5, 0));
+  assert(vkr_scene_physics_apply(&scene, first, &config, &error));
+  assert(vkr_scene_physics_prepare_complete(&scene, &error));
+  const VkrEntityId second = physics_test_entity(&scene, vec3_new(3, 5, 0));
+  assert(vkr_scene_physics_apply(&scene, second, &config, &error));
+  assert(vkr_scene_physics_body_count(&scene) == 2u);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
   physics_test_descriptors();
@@ -280,6 +297,7 @@ bool32_t run_scene_physics_tests(void) {
   VkrAllocator allocator = {.ctx = &memory};
   vkr_dmemory_allocator_create(&allocator);
   physics_test_world_gravity(&allocator);
+  physics_test_empty_finalize(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));
   VkrEntityId owner = physics_test_entity(&scene, vec3_new(0, 10, 0));

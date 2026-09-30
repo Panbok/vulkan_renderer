@@ -420,6 +420,73 @@ static bool8_t scene_world_singleton(const VkrScene *scene,
   return gather.best.u64 != 0u;
 }
 
+bool8_t vkr_scene_sync_world_types(VkrScene *scene) {
+  if (!scene || !scene->world) {
+    return false_v;
+  }
+  const VkrTypeDesc *type = NULL;
+  for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
+    if (vkr_scene_type_id(scene, type) != VKR_COMPONENT_TYPE_INVALID) {
+      continue;
+    }
+    const VkrComponentTypeId id = vkr_entity_register_component_once(
+        scene->world, type->name, type->size, type->align);
+    if (id == VKR_COMPONENT_TYPE_INVALID ||
+        scene->type_count == VKR_SCENE_TYPE_MAX) {
+      return false_v;
+    }
+    scene->types[scene->type_count++] =
+        (VkrSceneComponentType){.type = type, .id = id};
+  }
+  return true_v;
+}
+
+uint32_t vkr_scene_find_typed(const VkrScene *scene, const VkrTypeDesc *type,
+                              VkrEntityId *out_entities, uint32_t capacity) {
+  const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
+  if (id == VKR_COMPONENT_TYPE_INVALID) {
+    return 0u;
+  }
+  const VkrWorld *world = scene->world;
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
+    if (!world->dir.records[i].chunk) {
+      continue;
+    }
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    if (!vkr_entity_get_component(world, entity, id)) {
+      continue;
+    }
+    if (count < capacity) {
+      out_entities[count] = entity;
+    }
+    count++;
+  }
+  return count;
+}
+
+bool8_t vkr_scene_player_start(const VkrScene *scene, Mat4 *out_world) {
+  if (!scene || !out_world) {
+    return false_v;
+  }
+  ScenePlayerStart value;
+  SceneWorldGather gather = {.type = &vkr_scene_player_start_type,
+                             .best_value = (uint8_t *)&value};
+  const VkrScene *owner = scene;
+  scene_world_gather(owner, &gather);
+  if (!gather.best_enabled && scene->world_root && scene->world_root != scene) {
+    owner = scene->world_root;
+    scene_world_gather(owner, &gather);
+  }
+  if (!gather.best_enabled) {
+    return false_v;
+  }
+  const SceneTransform *transform = vkr_entity_get_component(
+      owner->world, gather.best, owner->comp_transform);
+  *out_world = transform ? transform->world : mat4_identity();
+  return true_v;
+}
+
 /* Lower the resolved state into the runtime products. Comparisons run
  * against the runtime's current inputs, so a state that already matches, as
  * after loading, queues no work. */
@@ -2255,12 +2322,6 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
       scene->world_revision++;
       break;
     }
-  }
-  if (scene->player_entity.u64 == entity.u64) {
-    scene->player_entity = VKR_ENTITY_ID_INVALID;
-  }
-  if (scene->player_weapon_entity.u64 == entity.u64) {
-    scene->player_weapon_entity = VKR_ENTITY_ID_INVALID;
   }
 
   VkrEntityId old_parent = VKR_ENTITY_ID_INVALID;

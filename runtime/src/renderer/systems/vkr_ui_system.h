@@ -283,6 +283,57 @@ typedef struct VkrUiTextEditBuffer {
   uint32_t capacity;
 } VkrUiTextEditBuffer;
 
+/** One colored byte range of a code line; bytes outside every span use the
+ * view's text color. */
+typedef struct VkrUiCodeSpan {
+  uint32_t start;
+  uint32_t length;
+  Vec4 color;
+} VkrUiCodeSpan;
+
+/** One visible line of a code view. Byte offsets index `text`. */
+typedef struct VkrUiCodeLine {
+  /** The line without its break; a tab advances to the next four columns. */
+  String8 text;
+  const VkrUiCodeSpan *spans;
+  uint32_t span_count;
+  /** Gutter line number; zero draws none. */
+  uint32_t number;
+  /** Selected bytes [start, end); an end past the text also marks the line
+   * break. Equal values select nothing. */
+  uint32_t selection_start;
+  uint32_t selection_end;
+  /** Caret byte offset, or UINT32_MAX for no caret on this line. */
+  uint32_t caret;
+  /** Underlined bytes [start, end), such as a diagnostic; equal values draw
+   * none. */
+  uint32_t underline_start;
+  uint32_t underline_end;
+  Vec4 underline_color;
+  /** Gutter marker, such as a compiler error; zero alpha draws none. */
+  Vec4 marker_color;
+  /** Highlights the caret's line. */
+  bool8_t current;
+} VkrUiCodeLine;
+
+/** A monospace code viewport: visible lines from the top of the widget. */
+typedef struct VkrUiCodeView {
+  const VkrUiCodeLine *lines;
+  uint32_t line_count;
+  /** Monospace font; invalid uses the default font. */
+  VkrFontHandle font;
+  float32_t font_size_pt;
+  float32_t line_height_pt;
+  float32_t gutter_width_pt;
+  /** Horizontal text scroll in points. */
+  float32_t scroll_x_pt;
+  Vec4 text_color;
+  Vec4 gutter_text_color;
+  Vec4 selection_color;
+  Vec4 current_line_color;
+  Vec4 caret_color;
+} VkrUiCodeView;
+
 VkrUiPanelConfig vkr_ui_panel_config_default(void);
 VkrUiWidgetConfig vkr_ui_widget_config_default(void);
 
@@ -475,6 +526,18 @@ bool8_t vkr_ui_scroll_area_end(VkrUiSystem *system);
 bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
                           VkrUiTextEditBuffer *buffer,
                           const VkrUiWidgetConfig *config);
+/** Glyph advance (x) of a monospace `font` at `font_size_pt`, and the font's
+ * line box (y), in points. */
+Vec2 vkr_ui_code_cell_size(VkrUiSystem *system, VkrFontHandle font,
+                           float32_t font_size_pt);
+/** Draws `view` inside the widget, clipped to it, copying its lines. A press
+ * focuses the widget as text, so shortcuts and keyboard navigation leave keys
+ * to the caller, which owns the buffer, caret, selection, scrolling and all
+ * editing. Writes the widget's id to `out_id` for focus checks and returns
+ * whether it has keyboard focus. */
+bool8_t vkr_ui_code_view(VkrUiSystem *system, String8 id_label,
+                         const VkrUiCodeView *view,
+                         const VkrUiWidgetConfig *config, VkrUiId *out_id);
 
 /** Set an authored widget's left/top margins and fixed size in points before
  * draw preparation. Input keeps using the preceding presented bounds. */

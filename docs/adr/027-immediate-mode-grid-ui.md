@@ -125,9 +125,12 @@ geometry, and Reduce motion disables eased transitions; both persist with the
 project settings. Toasts announce saved scene edits and finished Bakery work.
 
 A header pinned to the Scene groups the current camera view, rendering mode and
-grid controls in dropdowns, with the Select/Move/Rotate/Scale tools (Q/W/E/R) and
-a camera-speed popup on its right. The gizmo shows only the active tool's
-handle family; Select shows all of them. F frames the selection. An orientation
+grid controls in dropdowns, with the Select/Move/Rotate/Scale tools (Q/W/E/R), a
+World/Local axes toggle and a camera-speed popup on its right. The gizmo shows
+only the active tool's handle family; Select shows no handles, only the
+selection outline, and dragging an object with it moves the object in the view
+plane as one undo entry. Move and rotate follow the world axes or, in Local, the object's;
+scale handles always follow the object's axes. F frames the selection. An orientation
 gizmo in the Scene's lower-left corner draws the camera's axes and requests the
 matching view when an axis cap is clicked. Narrow Scene panes replace the view
 groups with a Viewport overflow menu. This grouping follows the user-requested
@@ -192,9 +195,19 @@ Hierarchy caches scene structure and expanded/search-matching rows when their
 inputs change, then emits only its visible window. Display slots are bounded;
 selection uses generation-bearing entity IDs rather than row positions. Rows
 show a caret, a type icon and a visibility toggle; right-click opens Frame,
-Hide/Show and Copy name. One context-menu table serves every opener:
+Hide/Show, Rename, Copy name, Script and Add component submenus, Detach and
+Delete; a double-click frames the object and opens its script. A right click
+in the Scene that neither moves the pointer nor flies the camera within
+0.45 s picks under the pointer, selects the object and opens the same menu,
+or the creation menu over empty space; a longer or moving right press flies
+the camera as before. One context-menu table serves every opener:
 right-clicking a dock tab offers Close and Reset layout, and right-clicking the
-Console offers Copy selected and Clear. Inspector
+Console offers Copy selected and Clear. Menus hold up to 48 rows of items,
+separators and headings and one level of submenus, which open beside their
+row on hover, click or Right and flip left at the screen edge. While a menu is
+open it owns the keyboard: Up and Down move over enabled items, Right or Enter
+opens a submenu, Left and Escape leave it, Enter acts and Escape closes.
+Inspector
 borrows selected component values and sends a typed edit request after validation.
 It edits name, visibility, local TRS and light values in collapsible sections;
 X/Y/Z and R/G/B tags and scalar labels scrub their values by dragging. Edits

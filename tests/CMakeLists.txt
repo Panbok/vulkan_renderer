@@ -35,7 +35,23 @@ target_compile_definitions(vulkan_renderer_tester PRIVATE
 
 # The harness core exports renderer_lib transitively.
 find_package(Vulkan REQUIRED)
-target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_harness_core vkr_collision_cooking ktx Vulkan::Vulkan)
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_script_fps vkr_harness_core vkr_collision_cooking ktx Vulkan::Vulkan)
+
+# Script modules the host reload tests load (ADR-079): one source, four
+# variants, linked as MODULE libraries so an engine symbol fails the link.
+foreach(variant 1 2 3 4)
+    add_library(vkr_test_reload_probe_${variant} MODULE scripts/reload_probe.c)
+    target_compile_definitions(vkr_test_reload_probe_${variant} PRIVATE
+        RELOAD_VARIANT=${variant})
+    target_include_directories(vkr_test_reload_probe_${variant} PRIVATE
+        "${CMAKE_SOURCE_DIR}/runtime/src" "${CMAKE_SOURCE_DIR}/lib/src"
+        "${CMAKE_SOURCE_DIR}/renderer/src")
+    set_target_properties(vkr_test_reload_probe_${variant} PROPERTIES
+        C_VISIBILITY_PRESET hidden)
+    add_dependencies(vulkan_renderer_tester vkr_test_reload_probe_${variant})
+    target_compile_definitions(vulkan_renderer_tester PRIVATE
+        VKR_TEST_RELOAD_PROBE_${variant}="$<TARGET_FILE:vkr_test_reload_probe_${variant}>")
+endforeach()
 
 target_include_directories(vulkan_renderer_tester
     PRIVATE

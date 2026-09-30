@@ -1,6 +1,8 @@
 #include "editor_physics.h"
+#include "editor_internal.h"
 #include "editor_ui.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -144,18 +146,102 @@ static void physics_shape(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
 }
 
+/* A capsule standing on `foot`, as the player's character will, with a
+ * line toward the start's -Z facing. */
+static void physics_player_start(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity, uint32_t capacity) {
+  const VkrPhysicsCharacterDesc character = vkr_physics_character_default();
+  const float32_t radius = character.radius;
+  const float32_t half = character.half_height;
+  const Vec3 center = {0.0f, half + radius, 0.0f};
+  const Vec4 color = {0.35f, 0.68f, 1.0f, 1.0f};
+  for (uint32_t side = 0; side < 4; ++side) {
+    const float32_t angle = (float32_t)side * 1.57079632679f;
+    const Vec3 edge = {radius * cosf(angle), 0.0f, radius * sinf(angle)};
+    physics_line(editor, frame, entity,
+                 vec3_add(center, vec3_new(edge.x, -half, edge.z)),
+                 vec3_add(center, vec3_new(edge.x, half, edge.z)), color,
+                 capacity);
+  }
+  for (uint32_t circle = 0; circle < 4; ++circle) {
+    for (uint32_t segment = 0; segment < 24; ++segment) {
+      Vec3 points[2];
+      for (uint32_t endpoint = 0; endpoint < 2; ++endpoint) {
+        const uint32_t sample = (segment + endpoint) % 24u;
+        const float32_t angle = (float32_t)sample * (6.28318530718f / 24.0f);
+        const float32_t x = radius * cosf(angle);
+        const float32_t y = radius * sinf(angle);
+        Vec3 p = circle == 0   ? (Vec3){x, y, 0}
+                 : circle == 1 ? (Vec3){0, y, x}
+                               : (Vec3){x, 0, y};
+        if (circle < 2) {
+          p.y += segment < 12 ? half : -half;
+        } else {
+          p.y = circle == 2 ? half : -half;
+        }
+        points[endpoint] = vec3_add(center, p);
+      }
+      physics_line(editor, frame, entity, points[0], points[1], color,
+                   capacity);
+    }
+  }
+  /* Facing: the player looks along the start's -Z. */
+  const Vec3 eye = {0.0f, half * 2.0f + radius * 0.6f, 0.0f};
+  const Vec3 tip = vec3_add(eye, vec3_new(0.0f, 0.0f, -0.8f));
+  physics_line(editor, frame, entity, eye, tip, color, capacity);
+  physics_line(editor, frame, entity, tip,
+               vec3_add(tip, vec3_new(0.18f, 0.0f, 0.18f)), color, capacity);
+  physics_line(editor, frame, entity, tip,
+               vec3_add(tip, vec3_new(-0.18f, 0.0f, 0.18f)), color, capacity);
+}
+
+/* Player Starts of every loaded container, while not playing. */
+static void physics_player_starts(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  uint32_t capacity) {
+  const VkrScene *scenes[2] = {frame->scene, frame->world};
+  for (uint32_t c = 0; c < ArrayCount(scenes); ++c) {
+    VkrEntityId starts[16];
+    const uint32_t count =
+        scenes[c]
+            ? vkr_scene_find_typed(scenes[c], &vkr_scene_player_start_type,
+                                   starts, ArrayCount(starts))
+            : 0u;
+    for (uint32_t i = 0; i < Min(count, (uint32_t)ArrayCount(starts)); ++i) {
+      if (vkr_scene_entity_visible(scenes[c], starts[i])) {
+        physics_player_start(editor, frame, starts[i], capacity);
+      }
+    }
+  }
+}
+
+static uint32_t physics_player_start_count(const VkrSampleUiFrame *frame) {
+  return (frame->scene
+              ? vkr_scene_find_typed(frame->scene, &vkr_scene_player_start_type,
+                                     NULL, 0u)
+              : 0u) +
+         (frame->world
+              ? vkr_scene_find_typed(frame->world, &vkr_scene_player_start_type,
+                                     NULL, 0u)
+              : 0u);
+}
+
 void vkr_editor_physics_build(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame) {
   editor->physics_line_count = 0;
   editor->physics_lines = NULL;
   editor->physics_lines_truncated = false_v;
   editor->physics_scene_generation = frame->scene_generation;
-  if (!frame->scene || !frame->mapping_valid ||
+  if ((!frame->scene && !frame->world) || !frame->mapping_valid ||
       frame->scene_rendering_stopped) {
     return;
   }
-  const uint32_t bodies = vkr_scene_physics_body_count(frame->scene);
-  if (!bodies) {
+  const uint32_t bodies =
+      frame->scene ? vkr_scene_physics_body_count(frame->scene) : 0u;
+  const uint32_t starts =
+      frame->scripts_running ? 0u : physics_player_start_count(frame);
+  if (!bodies && !starts) {
     return;
   }
   VkrUiSystem *ui = frame->ui;
@@ -184,13 +270,18 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
                 PHYSICS_RESERVED_NODES
           : 0u;
   const uint32_t capacity = Min(PHYSICS_LINE_MAX, available);
-  if (frame->collision_display && !capacity) {
+  if ((frame->collision_display || starts) && !capacity) {
     editor->physics_lines_truncated = true_v;
   }
-  if (frame->collision_display && capacity) {
+  if ((frame->collision_display || starts) && capacity) {
     editor->physics_lines = vkr_allocator_alloc(
         ui->frame_allocator, capacity * sizeof(*editor->physics_lines),
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (editor->physics_lines && starts) {
+    physics_player_starts(editor, frame, capacity);
+  }
+  if (frame->collision_display && capacity && bodies) {
     if (editor->physics_lines) {
       const VkrEntityId selected =
           vkr_scene_physics_owner(frame->scene, frame->selected_entity);
@@ -228,6 +319,10 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     } else {
       editor->physics_lines_truncated = true_v;
     }
+  }
+  if (!bodies) {
+    (void)vkr_ui_panel_end(ui);
+    return;
   }
   char status[192];
   char debt[48] = {0};
@@ -322,7 +417,7 @@ static float32_t physics_clip_distance(Vec4 p, uint32_t plane) {
 
 void vkr_editor_physics_project(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
-  if (!frame->scene || frame->scene_rendering_stopped ||
+  if ((!frame->scene && !frame->world) || frame->scene_rendering_stopped ||
       editor->physics_scene_generation != frame->scene_generation ||
       !editor->physics_line_count) {
     return;
@@ -334,8 +429,11 @@ void vkr_editor_physics_project(VkrEditorUi *editor,
                                            image.z / scale, image.w / scale});
   for (uint32_t i = 0; i < editor->physics_line_count; ++i) {
     const VkrEditorPhysicsLine *line = &editor->physics_lines[i];
-    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
-        frame->scene->world, line->entity, frame->scene->comp_transform);
+    const VkrScene *scene = vkr_editor_entity_scene(frame, line->entity);
+    const SceneTransform *transform =
+        scene ? vkr_entity_get_component_if_alive_const(
+                    scene->world, line->entity, scene->comp_transform)
+              : NULL;
     Vec2 points[4] = {{0}, {0}, {0}, {0}};
     if (transform) {
       const Mat4 mvp = mat4_mul(frame->view_projection, transform->world);

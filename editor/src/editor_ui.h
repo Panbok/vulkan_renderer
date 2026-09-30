@@ -3,11 +3,13 @@
 #include "editor_animation.h"
 #include "editor_bakery.h"
 #include "editor_build.h"
+#include "editor_code.h"
 #include "editor_console.h"
 #include "editor_content.h"
 #include "editor_details.h"
 #include "editor_physics_settings.h"
 #include "editor_scene_panels.h"
+#include "editor_scripts.h"
 #include "vkr_sample_runtime.h"
 
 typedef struct VkrEditorProjects VkrEditorProjects;
@@ -37,6 +39,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_CREATE,
   /* Game settings and build profiles. */
   VKR_EDITOR_WINDOW_BUILD,
+  /* Project script sources (ADR-079). */
+  VKR_EDITOR_WINDOW_SCRIPT,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -47,7 +51,21 @@ typedef struct VkrEditorWindowState {
   bool8_t visible;
   bool8_t dragging;
   Vec2 drag_grab_pt;
+  /* Windows with a corner grip: the grip is held. */
+  bool8_t resizable;
+  bool8_t resizing;
 } VkrEditorWindowState;
+
+/* Empty objects one container shows icons for, cached until its structure
+   changes. */
+#define VKR_EDITOR_LABEL_EMPTY_MAX 256u
+typedef struct VkrEditorLabelEmpties {
+  const struct VkrScene *scene;
+  uint64_t generation;
+  uint64_t revision;
+  uint32_t count;
+  VkrEntityId entities[VKR_EDITOR_LABEL_EMPTY_MAX];
+} VkrEditorLabelEmpties;
 
 typedef struct VkrEditorLabelAnchor {
   VkrUiId widget;
@@ -134,6 +152,12 @@ typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_PRESET,
   /* Open, Put into viewport, Rename and Delete for a Content item. */
   VKR_EDITOR_CONTEXT_CONTENT,
+  /* New folder, New script, Import, Create and Refresh for the shown Content
+     folder. */
+  VKR_EDITOR_CONTEXT_CONTENT_FOLDER,
+  /* The context entity's script slot (ADR-079): the loaded script types,
+     New script, Edit script and Remove script. */
+  VKR_EDITOR_CONTEXT_SCRIPT,
 } VkrEditorContextKind;
 
 typedef struct VkrEditorUi {
@@ -147,6 +171,9 @@ typedef struct VkrEditorUi {
   VkrEditorBakery *bakery;
   VkrEditorBuild *build;
   VkrEditorContent *content;
+  /* Project script modules and the Script editor window (ADR-079). */
+  struct VkrEditorScripts *scripts;
+  struct VkrEditorCode *code;
   VkrEditorScenePanels *scene_panels;
   VkrEditorPhysicsSettings *physics_settings;
   VkrEditorMenu menu;
@@ -173,8 +200,31 @@ typedef struct VkrEditorUi {
   VkrEditorViewportTab viewport_tabs[VKR_EDITOR_VIEWPORT_TAB_MAX];
   uint32_t viewport_tab_count;
   uint32_t viewport_tab_active;
-  /* Rows the open menu showed last build; sizes its input region. */
+  /* Rows the open menu showed last build and its laid-out height, which
+     size its input region. */
   uint32_t context_count;
+  float32_t context_height_pt;
+  /* Keyboard-highlighted row of the menu, or -1. */
+  int32_t context_cursor;
+  /* One submenu, opened from row `context_sub_row`, beside the menu. */
+  bool8_t context_sub_open;
+  bool8_t context_sub_focused;
+  VkrEditorContextKind context_sub_kind;
+  uint32_t context_sub_row;
+  int32_t context_sub_cursor;
+  VkrUiRect context_sub_rect_px;
+  /* Pointer position last build; hover follows the pointer only once it
+     moves, so the keyboard highlight survives a resting pointer. */
+  int32_t context_mouse_x;
+  int32_t context_mouse_y;
+  /* "New script" from an object's menu: once the module named
+     `script_attach_module` loads, its first type becomes that object's
+     script. An empty name waits for the Script editor to name it. */
+  VkrEntityId script_attach_entity;
+  char script_attach_module[48];
+  /* A Script asset dropped on the Scene: the type it attaches while the
+     pick under the drop runs. */
+  const VkrTypeDesc *script_drop_type;
   /* Mirrors of the UI system's interface zoom and reduced-motion setting,
    * kept for workspace persistence. */
   float32_t ui_scale;
@@ -187,6 +237,9 @@ typedef struct VkrEditorUi {
   bool8_t labels_directional;
   bool8_t labels_spot;
   bool8_t labels_point;
+  /* Empty objects of the primary scene, the World and each added scene, in
+     the labels' container order. */
+  VkrEditorLabelEmpties label_empties[2u + VKR_SCENE_ADDITIVE_MAX];
   /* Frame-scratch records, consumed before UI geometry preparation. */
   VkrEditorLabelAnchor *label_anchors;
   uint32_t label_anchor_count;
@@ -225,6 +278,12 @@ typedef struct VkrEditorUi {
   float64_t cmd_hold_seconds;
   /* Headless: quit once the queue has drained. */
   bool8_t cmd_quit_when_done;
+  /* `ui.click`, `ui.drag` and `ui.key` input steps, one per frame:
+   * {kind, x px, y px, button or key} with kind 0 move, 1 press, 2 release,
+   * 3 key press, 4 key release. The queue holds until they run. */
+  int32_t cmd_pointer_steps[32][4];
+  uint32_t cmd_pointer_count;
+  uint32_t cmd_pointer_next;
   VkrFontHandle heading_font;
   /* Inter body text, Phosphor icon atlases and the monospace Console face. */
   VkrFontHandle text_font;

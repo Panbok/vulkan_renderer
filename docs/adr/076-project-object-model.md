@@ -67,9 +67,9 @@ material, submeshes, vertices, triangles, bounds, load state, shadow
 mobility) generated from `vkr_scene_mesh_info_type`, which describes a view
 of the mesh instance, not a component.
 
-Modules outside the renderer, such as script or gameplay modules, register
-their own component descriptors with `vkr_scene_register_world_type` before
-any scene initializes. A registered type joins the world types, so
+Modules outside the renderer, such as script modules
+([ADR-079](079-c-script-modules.md)), register their own component descriptors
+with `vkr_scene_register_world_type` before any scene initializes. A registered type joins the world types, so
 documents, overlays, Details, Add component, presets and Cmd paths accept it
 and scenes store it generically; its behavior belongs to its module.
 
@@ -91,8 +91,9 @@ create, delete, reparent, add component and remove component. Undo and redo
 recreate deleted entities and remap their IDs. The edit overlay (version 4)
 records authoritative `components`, created entities, deleted records and
 parents, and per-scene settings. New objects come from built-in **object
-kinds** (empty, four light kinds and one per live world type); the runtime
-places them in front of the camera.
+kinds** (empty, four light kinds, one per live world type and the Player Start),
+grouped under headings in menus; Cmd `create` also accepts each registered
+script component type. The runtime places them in front of the camera.
 
 ### Containers: the root World, a primary scene and additive scenes
 
@@ -214,8 +215,13 @@ moves it. While an item is dragged, a translucent card with its icon and a
 name chip follows the pointer, highlighted where a drop takes effect. The
 card is a root overlay in the root's single cell.
 
-A right-click opens the item's menu. A scene folder adds Load scene, which
-loads the scene into the viewport, before the four common commands:
+A right-click on empty space opens the shown folder's menu: New folder, New
+script, Import, a Create submenu of the object kinds grouped under headings,
+and Refresh. An object created from Content, by that submenu, a drop or a
+double-click, is then revealed: Content opens its folder and selects it. A
+right-click on an item opens the item's menu; a loaded object's menu adds the
+Outliner's Script and Add component submenus. A scene folder adds Load scene,
+which loads the scene into the viewport, before the four common commands:
 
 | Item | Open | Put into viewport | Rename | Delete |
 |---|---|---|---|---|
@@ -227,8 +233,10 @@ loads the scene into the viewport, before the four common commands:
 | Content root | Open | Show the World in a document | — | — |
 
 Rename edits the name in place: Enter or leaving the field commits and Escape
-cancels. Double-click opens a folder or scene folder, selects an object, or
-adds an object kind. Dropping on the viewport loads a scene folder, adds an
+cancels. Double-click opens a folder or scene folder, selects an object and
+opens its script when it has one, opens a Script asset's source, or adds an
+object kind. A Script asset dragged onto an object in the viewport or the
+Outliner attaches its script to it ([ADR-079](079-c-script-modules.md)). Dropping on the viewport loads a scene folder, adds an
 object kind where the pointer meets the ground plane (else 8 m along its
 ray), or places a built mesh on the ground plane under the pointer. Loading
 the scene that is already loading or open does nothing, from Content, the

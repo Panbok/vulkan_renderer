@@ -24,6 +24,8 @@ typedef enum VkrSceneEditAction {
   /* Structure (ADR-076): values.component_type names the component. */
   VKR_SCENE_EDIT_ADD_COMPONENT,
   VKR_SCENE_EDIT_REMOVE_COMPONENT,
+  /* Replace `replaced_type` with values.component_type in one undo entry. */
+  VKR_SCENE_EDIT_REPLACE_COMPONENT,
   /* Create under `parent`, or at the root of `container`, from `values`. */
   VKR_SCENE_EDIT_CREATE,
   VKR_SCENE_EDIT_DELETE,
@@ -79,6 +81,8 @@ typedef struct VkrSceneEditRequest {
    * World. */
   uint16_t container;
   VkrSceneSettings scene_settings;
+  /* REPLACE_COMPONENT: the component type that leaves. */
+  const VkrTypeDesc *replaced_type;
 } VkrSceneEditRequest;
 
 typedef enum VkrSceneEditEntryKind {
@@ -194,6 +198,13 @@ bool8_t vkr_scene_edit_add_component(VkrSceneEditState *state, VkrScene *scene,
 bool8_t vkr_scene_edit_remove_component(VkrSceneEditState *state,
                                         VkrScene *scene, VkrEntityId entity,
                                         const VkrTypeDesc *type);
+/** Replace the entity's `replaced` component with `type` holding `value`, or
+ * its defaults when NULL, as one undo entry; `type` must be absent. */
+bool8_t vkr_scene_edit_replace_component(VkrSceneEditState *state,
+                                         VkrScene *scene, VkrEntityId entity,
+                                         const VkrTypeDesc *replaced,
+                                         const VkrTypeDesc *type,
+                                         const void *value);
 /** Create an entity with a transform, visibility and the name, transform,
  * visibility, light and world component fields of `values`, under `parent`
  * or at the root. Returns the entity, or invalid with a status message. */

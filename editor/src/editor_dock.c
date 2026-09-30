@@ -222,12 +222,11 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
         /* Right click opens the tab's menu. */
         if (ui->hot_id == select_id && !ui->mouse_captured &&
             input_button_just_pressed(frame->input, BUTTON_RIGHT)) {
-          editor->context_open = true_v;
-          editor->context_kind = VKR_EDITOR_CONTEXT_DOCK_TAB;
-          editor->context_panel = (uint32_t)dock_tab.panel_kind;
-          editor->context_position_pt =
+          vkr_editor_context_open(
+              editor, VKR_EDITOR_CONTEXT_DOCK_TAB,
               (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
-                     (float32_t)ui->mouse_y / ui->content_scale};
+                     (float32_t)ui->mouse_y / ui->content_scale});
+          editor->context_panel = (uint32_t)dock_tab.panel_kind;
         }
         if (closable) {
           VkrUiWidgetConfig close = vkr_editor_icon_button_config(
@@ -278,9 +277,8 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
                                  editor->mono_font);
         if (editor->console.context_requested) {
           editor->console.context_requested = false_v;
-          editor->context_open = true_v;
-          editor->context_kind = VKR_EDITOR_CONTEXT_CONSOLE;
-          editor->context_position_pt = editor->console.context_position_pt;
+          vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_CONSOLE,
+                                  editor->console.context_position_pt);
         }
         break;
       case VKR_UI_DOCK_PANEL_CONTENT:

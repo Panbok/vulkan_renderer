@@ -13,25 +13,116 @@
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_render_assets.h"
 
-#define ARROW_LENGTH 1.0f
-#define ARROW_HEAD_LENGTH 0.25f
-#define ARROW_SHAFT_RADIUS 0.03f
-#define ARROW_HEAD_RADIUS 0.09f
-#define CUBE_SIZE 0.1f
-#define CUBE_OFFSET (ARROW_LENGTH + CUBE_SIZE * 0.5f)
-#define RING_RADIUS 0.65f
-#define RING_THICKNESS 0.02f
+/* Unit gizmo: one unit spans `screen_size` window pixels. Handles start
+   beyond the center handles so every one keeps a clear pick area. */
+#define HANDLE_START 0.18f
+#define ARROW_SHAFT_END 0.80f
+#define ARROW_SHAFT_RADIUS 0.022f
+#define ARROW_HEAD_LENGTH 0.28f
+#define ARROW_HEAD_RADIUS 0.075f
+#define PLANE_OFFSET 0.34f
+#define PLANE_SIZE 0.2f
+#define PLANE_THICKNESS 0.012f
+#define RING_RADIUS 1.18f
+#define RING_THICKNESS 0.022f
+#define SCALE_SHAFT_END 0.86f
+#define SCALE_SHAFT_RADIUS 0.018f
+#define SCALE_CUBE_SIZE 0.13f
+#define SCALE_CUBE_OFFSET (SCALE_SHAFT_END + SCALE_CUBE_SIZE * 0.5f)
+#define CENTER_SPHERE_RADIUS 0.085f
+#define CENTER_CUBE_SIZE 0.15f
 #define ARROW_SEGMENTS 24
-#define RING_SEGMENTS 48
+#define RING_SEGMENTS 64
 #define RING_SIDES 12
+#define SPHERE_SEGMENTS 16
 
-vkr_internal const VkrGizmoHandle g_gizmo_submesh_handles[] = {
-    VKR_GIZMO_HANDLE_TRANSLATE_X, VKR_GIZMO_HANDLE_TRANSLATE_Y,
-    VKR_GIZMO_HANDLE_TRANSLATE_Z, VKR_GIZMO_HANDLE_ROTATE_X,
-    VKR_GIZMO_HANDLE_ROTATE_Y,    VKR_GIZMO_HANDLE_ROTATE_Z,
-    VKR_GIZMO_HANDLE_SCALE_X,     VKR_GIZMO_HANDLE_SCALE_Y,
-    VKR_GIZMO_HANDLE_SCALE_Z,
+typedef enum GizmoShapeKind {
+  GIZMO_SHAPE_ARROW,
+  GIZMO_SHAPE_PLANE,
+  GIZMO_SHAPE_RING,
+  GIZMO_SHAPE_SCALE_SHAFT,
+  GIZMO_SHAPE_SCALE_CUBE,
+  GIZMO_SHAPE_CENTER,
+} GizmoShapeKind;
+
+/* One published mesh: the handle it picks as and the axis it runs along or,
+   for a plane, its normal; 3 for the center. */
+typedef struct GizmoShape {
+  VkrGizmoHandle handle;
+  GizmoShapeKind kind;
+  uint32_t axis;
+} GizmoShape;
+
+vkr_internal const GizmoShape g_gizmo_shapes[VKR_GIZMO_GEOMETRY_COUNT] = {
+    {VKR_GIZMO_HANDLE_TRANSLATE_X, GIZMO_SHAPE_ARROW, 0},
+    {VKR_GIZMO_HANDLE_TRANSLATE_Y, GIZMO_SHAPE_ARROW, 1},
+    {VKR_GIZMO_HANDLE_TRANSLATE_Z, GIZMO_SHAPE_ARROW, 2},
+    {VKR_GIZMO_HANDLE_TRANSLATE_YZ, GIZMO_SHAPE_PLANE, 0},
+    {VKR_GIZMO_HANDLE_TRANSLATE_XZ, GIZMO_SHAPE_PLANE, 1},
+    {VKR_GIZMO_HANDLE_TRANSLATE_XY, GIZMO_SHAPE_PLANE, 2},
+    {VKR_GIZMO_HANDLE_TRANSLATE_FREE, GIZMO_SHAPE_CENTER, 3},
+    {VKR_GIZMO_HANDLE_ROTATE_X, GIZMO_SHAPE_RING, 0},
+    {VKR_GIZMO_HANDLE_ROTATE_Y, GIZMO_SHAPE_RING, 1},
+    {VKR_GIZMO_HANDLE_ROTATE_Z, GIZMO_SHAPE_RING, 2},
+    {VKR_GIZMO_HANDLE_SCALE_X, GIZMO_SHAPE_SCALE_SHAFT, 0},
+    {VKR_GIZMO_HANDLE_SCALE_Y, GIZMO_SHAPE_SCALE_SHAFT, 1},
+    {VKR_GIZMO_HANDLE_SCALE_Z, GIZMO_SHAPE_SCALE_SHAFT, 2},
+    {VKR_GIZMO_HANDLE_SCALE_X, GIZMO_SHAPE_SCALE_CUBE, 0},
+    {VKR_GIZMO_HANDLE_SCALE_Y, GIZMO_SHAPE_SCALE_CUBE, 1},
+    {VKR_GIZMO_HANDLE_SCALE_Z, GIZMO_SHAPE_SCALE_CUBE, 2},
+    {VKR_GIZMO_HANDLE_SCALE_UNIFORM, GIZMO_SHAPE_CENTER, 3},
 };
+
+/* The mesh of shape `index` in gizmo units, before orientation. */
+vkr_internal VkrGeometryHandle gizmo_create_shape(VkrGeometrySystem *geometry,
+                                                  uint32_t index,
+                                                  VkrRendererError *error) {
+  const GizmoShape *shape = &g_gizmo_shapes[index];
+  const Vec3 axes[] = {vec3_right(), vec3_up(), vec3_back()};
+  const Vec3 axis = shape->axis < 3u ? axes[shape->axis] : vec3_zero();
+  char name[GEOMETRY_NAME_MAX_LENGTH];
+  string_format(name, sizeof(name), "gizmo_shape_%u", index);
+  switch (shape->kind) {
+  case GIZMO_SHAPE_ARROW:
+    return vkr_geometry_system_create_arrow(
+        geometry, ARROW_SHAFT_END - HANDLE_START, ARROW_SHAFT_RADIUS,
+        ARROW_HEAD_LENGTH, ARROW_HEAD_RADIUS, ARROW_SEGMENTS, axis,
+        vec3_scale(axis, HANDLE_START), name, error);
+  case GIZMO_SHAPE_PLANE: {
+    /* A thin square in the two other axes' quadrant; closed, so it shows
+       from both sides. */
+    Vec3 size = vec3_new(PLANE_SIZE, PLANE_SIZE, PLANE_SIZE);
+    Vec3 center = vec3_new(PLANE_OFFSET, PLANE_OFFSET, PLANE_OFFSET);
+    size.elements[shape->axis] = PLANE_THICKNESS;
+    center.elements[shape->axis] = 0.0f;
+    return vkr_geometry_system_create_box(geometry, center, size.x, size.y,
+                                          size.z, true_v, name, error);
+  }
+  case GIZMO_SHAPE_RING:
+    return vkr_geometry_system_create_torus(
+        geometry, RING_RADIUS, RING_THICKNESS, RING_SEGMENTS, RING_SIDES, axis,
+        vec3_zero(), name, error);
+  case GIZMO_SHAPE_SCALE_SHAFT:
+    return vkr_geometry_system_create_cylinder(
+        geometry, SCALE_SHAFT_RADIUS, SCALE_SHAFT_END - HANDLE_START,
+        ARROW_SEGMENTS, axis, vec3_scale(axis, HANDLE_START), true_v, true_v,
+        name, error);
+  case GIZMO_SHAPE_SCALE_CUBE:
+    return vkr_geometry_system_create_box(
+        geometry, vec3_scale(axis, SCALE_CUBE_OFFSET), SCALE_CUBE_SIZE,
+        SCALE_CUBE_SIZE, SCALE_CUBE_SIZE, true_v, name, error);
+  case GIZMO_SHAPE_CENTER:
+    if (shape->handle == VKR_GIZMO_HANDLE_SCALE_UNIFORM) {
+      return vkr_geometry_system_create_box(
+          geometry, vec3_zero(), CENTER_CUBE_SIZE, CENTER_CUBE_SIZE,
+          CENTER_CUBE_SIZE, true_v, name, error);
+    }
+    return vkr_geometry_system_create_sphere(
+        geometry, CENTER_SPHERE_RADIUS, SPHERE_SEGMENTS, SPHERE_SEGMENTS,
+        vec3_up(), vec3_zero(), name, error);
+  }
+  return VKR_GEOMETRY_HANDLE_INVALID;
+}
 
 bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
                               struct VkrRenderAssets *assets,
@@ -54,53 +145,15 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
   system->active_handle = VKR_GIZMO_HANDLE_NONE;
   system->visible = false_v;
 
-  const Vec3 axes[] = {vec3_right(), vec3_up(), vec3_back()};
-  vkr_local_persist const char *axis_names[] = {"x", "y", "z"};
-  uint32_t geom_index = 0;
-  VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
-
-  for (uint32_t axis_index = 0; axis_index < ArrayCount(axes); ++axis_index) {
-    char name[GEOMETRY_NAME_MAX_LENGTH];
-    string_format(name, sizeof(name), "gizmo_arrow_%s", axis_names[axis_index]);
-    system->geometries[geom_index] = vkr_geometry_system_create_arrow(
-        &assets->geometry_system, ARROW_LENGTH - ARROW_HEAD_LENGTH,
-        ARROW_SHAFT_RADIUS, ARROW_HEAD_LENGTH, ARROW_HEAD_RADIUS,
-        ARROW_SEGMENTS, axes[axis_index], vec3_zero(), name, &geom_err);
-    if (system->geometries[geom_index].id == 0) {
-      String8 err = vkr_renderer_get_error_string(geom_err);
-      log_error("Gizmo arrow create failed: %s", string8_cstr(&err));
+  for (uint32_t i = 0; i < VKR_GIZMO_GEOMETRY_COUNT; ++i) {
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    system->geometries[i] =
+        gizmo_create_shape(&assets->geometry_system, i, &error);
+    if (system->geometries[i].id == 0) {
+      String8 message = vkr_renderer_get_error_string(error);
+      log_error("Gizmo shape %u create failed: %s", i, string8_cstr(&message));
       goto gizmo_geometry_cleanup;
     }
-    geom_index++;
-  }
-
-  for (uint32_t axis_index = 0; axis_index < ArrayCount(axes); ++axis_index) {
-    char name[GEOMETRY_NAME_MAX_LENGTH];
-    string_format(name, sizeof(name), "gizmo_ring_%s", axis_names[axis_index]);
-    system->geometries[geom_index] = vkr_geometry_system_create_torus(
-        &assets->geometry_system, RING_RADIUS, RING_THICKNESS, RING_SEGMENTS,
-        RING_SIDES, axes[axis_index], vec3_zero(), name, &geom_err);
-    if (system->geometries[geom_index].id == 0) {
-      String8 err = vkr_renderer_get_error_string(geom_err);
-      log_error("Gizmo ring create failed: %s", string8_cstr(&err));
-      goto gizmo_geometry_cleanup;
-    }
-    geom_index++;
-  }
-
-  for (uint32_t axis_index = 0; axis_index < ArrayCount(axes); ++axis_index) {
-    char name[GEOMETRY_NAME_MAX_LENGTH];
-    string_format(name, sizeof(name), "gizmo_scale_%s", axis_names[axis_index]);
-    Vec3 center = vec3_scale(axes[axis_index], CUBE_OFFSET);
-    system->geometries[geom_index] = vkr_geometry_system_create_box(
-        &assets->geometry_system, center, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE,
-        true_v, name, &geom_err);
-    if (system->geometries[geom_index].id == 0) {
-      String8 err = vkr_renderer_get_error_string(geom_err);
-      log_error("Gizmo cube create failed: %s", string8_cstr(&err));
-      goto gizmo_geometry_cleanup;
-    }
-    geom_index++;
   }
 
   system->initialized = true_v;
@@ -161,12 +214,36 @@ void vkr_gizmo_system_set_active_handle(VkrGizmoSystem *system,
   system->active_handle = handle;
 }
 
+Vec3 vkr_gizmo_system_axis(const VkrGizmoSystem *system, VkrGizmoMode mode,
+                           uint32_t axis) {
+  const Vec3 axes[] = {vec3_right(), vec3_up(), vec3_back()};
+  if (!system || axis >= ArrayCount(axes)) {
+    return vec3_zero();
+  }
+  const bool8_t local =
+      mode == VKR_GIZMO_MODE_SCALE || system->space == VKR_GIZMO_SPACE_LOCAL;
+  return local ? vec3_normalize(
+                     vkr_quat_rotate_vec3(system->orientation, axes[axis]))
+               : axes[axis];
+}
+
+typedef struct GizmoDraw {
+  uint32_t shape;
+  /* View-space depth of the handle's middle; larger is farther. */
+  float32_t depth;
+  /* 0 for ordinary handles, 1 hovered, 2 dragged: drawn last. */
+  uint32_t rank;
+  Vec3 mirror;
+} GizmoDraw;
+
 uint32_t vkr_gizmo_system_build_draws(
     const VkrGizmoSystem *system, Mat4 view, Mat4 projection,
     const VkrViewportMapping *mapping,
     VkrEditorOverlayDraw out_draws[VKR_EDITOR_OVERLAY_DRAW_MAX]) {
+  /* The Select tool shows the selection outline and no handles. */
   if (!system || !system->initialized || !system->visible || !mapping ||
-      !out_draws || system->mode < VKR_GIZMO_MODE_TRANSLATE ||
+      !out_draws || system->tool == VKR_GIZMO_MODE_NONE ||
+      system->mode < VKR_GIZMO_MODE_TRANSLATE ||
       system->mode > VKR_GIZMO_MODE_SCALE || mapping->image_rect_px.w <= 0.0f)
     return 0u;
   const Vec4 center =
@@ -177,54 +254,115 @@ uint32_t vkr_gizmo_system_build_draws(
   if (!isfinite(clip.w) || clip.w <= VKR_FLOAT_EPSILON || clip.z < 0.0f ||
       clip.z > clip.w || projection_y <= VKR_FLOAT_EPSILON)
     return 0u;
-  const float32_t scale = 2.0f * system->config.screen_size * clip.w /
-                          (projection_y * mapping->image_rect_px.w);
+  const float32_t pixels =
+      system->config.screen_size *
+      (system->pixel_scale > 0.0f ? system->pixel_scale : 1.0f);
+  const float32_t scale =
+      2.0f * pixels * clip.w / (projection_y * mapping->image_rect_px.w);
   if (!isfinite(scale) || scale <= 0.0f)
     return 0u;
-  const Mat4 model = mat4_mul(mat4_translate(system->position),
-                              mat4_scale(vec3_new(scale, scale, scale)));
-  const Vec4 colors[3] = {vec4_new(1.0f, 0.08f, 0.08f, 1.0f),
-                          vec4_new(0.08f, 1.0f, 0.08f, 1.0f),
-                          vec4_new(0.08f, 0.25f, 1.0f, 1.0f)};
-  uint32_t order[VKR_EDITOR_OVERLAY_DRAW_MAX];
+  /* The view ray through the center, in view space: toward the center for
+     perspective, straight ahead for orthographic. */
+  const bool8_t orthographic = fabsf(projection.elements[11]) < 0.5f;
+  const Vec3 center_view = vec3_new(center.x, center.y, center.z);
+  const Vec3 ray = orthographic || vec3_length(center_view) < VKR_FLOAT_EPSILON
+                       ? vec3_new(0.0f, 0.0f, -1.0f)
+                       : vec3_normalize(center_view);
+  const VkrGizmoMode tool = system->tool;
+  const VkrGizmoHandle active = system->active_handle;
+  GizmoDraw draws[VKR_GIZMO_GEOMETRY_COUNT];
   uint32_t count = 0u;
-  for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
-       ++shape) {
-    const VkrGizmoHandle handle = g_gizmo_submesh_handles[shape];
-    if (system->tool != VKR_GIZMO_MODE_NONE &&
-        vkr_gizmo_handle_mode(handle) != system->tool)
+  for (uint32_t index = 0; index < VKR_GIZMO_GEOMETRY_COUNT; ++index) {
+    const GizmoShape *shape = &g_gizmo_shapes[index];
+    const VkrGizmoMode mode = vkr_gizmo_handle_mode(shape->handle);
+    const bool8_t shown = mode == tool;
+    if (!shown || (active != VKR_GIZMO_HANDLE_NONE && shape->handle != active))
       continue;
-    if (handle != system->hot_handle && handle != system->active_handle)
-      order[count++] = shape;
+    Vec3 mirror = vec3_one();
+    Vec3 middle = vec3_zero();
+    if (shape->axis < 3u) {
+      const Vec3 axis = vkr_gizmo_system_axis(system, mode, shape->axis);
+      const Vec4 axis_view4 =
+          mat4_mul_vec4(view, vec4_new(axis.x, axis.y, axis.z, 0.0f));
+      const float32_t facing = fabsf(
+          vec3_dot(vec3_new(axis_view4.x, axis_view4.y, axis_view4.z), ray));
+      /* An axis seen end-on and a plane seen edge-on cannot be dragged
+         precisely; the dragged handle stays. */
+      if (shape->handle != active &&
+          (shape->kind == GIZMO_SHAPE_PLANE  ? facing < 0.2f
+           : shape->kind == GIZMO_SHAPE_RING ? false_v
+                                             : facing > 0.97f))
+        continue;
+      if (shape->kind == GIZMO_SHAPE_PLANE) {
+        /* The square sits in the quadrant facing the camera. */
+        for (uint32_t other = 0; other < 3u; ++other) {
+          if (other == shape->axis)
+            continue;
+          const Vec3 in_plane = vkr_gizmo_system_axis(system, mode, other);
+          const Vec4 in_view = mat4_mul_vec4(
+              view, vec4_new(in_plane.x, in_plane.y, in_plane.z, 0.0f));
+          const float32_t toward =
+              -vec3_dot(vec3_new(in_view.x, in_view.y, in_view.z), ray);
+          mirror.elements[other] = toward < 0.0f ? -1.0f : 1.0f;
+          middle = vec3_add(
+              middle,
+              vec3_scale(in_plane, PLANE_OFFSET * mirror.elements[other]));
+        }
+      } else if (shape->kind != GIZMO_SHAPE_RING) {
+        middle = vec3_scale(axis, 0.6f);
+      }
+    }
+    const Vec3 point = vec3_add(system->position, vec3_scale(middle, scale));
+    const Vec4 point_view =
+        mat4_mul_vec4(view, vec4_new(point.x, point.y, point.z, 1.0f));
+    draws[count++] = (GizmoDraw){
+        .shape = index,
+        /* Rings wrap everything else and draw first. */
+        .depth = shape->kind == GIZMO_SHAPE_RING ? 1.0e30f : -point_view.z,
+        .rank = shape->handle == active               ? 2u
+                : shape->handle == system->hot_handle ? 1u
+                                                      : 0u,
+        .mirror = mirror,
+    };
   }
-  for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
-       ++shape) {
-    if (g_gizmo_submesh_handles[shape] == system->hot_handle &&
-        system->hot_handle != system->active_handle &&
-        (system->tool == VKR_GIZMO_MODE_NONE ||
-         vkr_gizmo_handle_mode(system->hot_handle) == system->tool))
-      order[count++] = shape;
+  /* Far to near, hovered then dragged last: insertion sort of a few. */
+  for (uint32_t i = 1; i < count; ++i) {
+    const GizmoDraw key = draws[i];
+    uint32_t j = i;
+    while (j > 0 &&
+           (draws[j - 1].rank > key.rank || (draws[j - 1].rank == key.rank &&
+                                             draws[j - 1].depth < key.depth))) {
+      draws[j] = draws[j - 1];
+      --j;
+    }
+    draws[j] = key;
   }
-  for (uint32_t shape = 0; shape < ArrayCount(g_gizmo_submesh_handles);
-       ++shape) {
-    if (g_gizmo_submesh_handles[shape] == system->active_handle &&
-        (system->tool == VKR_GIZMO_MODE_NONE ||
-         vkr_gizmo_handle_mode(system->active_handle) == system->tool))
-      order[count++] = shape;
-  }
+  /* Linear values: red, green and blue axes, a light center, a yellow
+     hover and an orange drag once the output encodes them as sRGB. */
+  const Vec4 axis_colors[4] = {
+      vec4_new(0.86f, 0.045f, 0.06f, 1.0f), vec4_new(0.24f, 0.66f, 0.03f, 1.0f),
+      vec4_new(0.03f, 0.22f, 0.94f, 1.0f), vec4_new(0.78f, 0.79f, 0.83f, 1.0f)};
+  const Vec4 hot_color = vec4_new(1.0f, 0.72f, 0.03f, 1.0f);
+  const Vec4 active_color = vec4_new(1.0f, 0.34f, 0.01f, 1.0f);
+  count = Min(count, VKR_EDITOR_OVERLAY_DRAW_MAX);
   for (uint32_t i = 0; i < count; ++i) {
-    const uint32_t shape = order[i];
-    const VkrGizmoHandle handle = g_gizmo_submesh_handles[shape];
-    const Vec4 color =
-        handle == system->active_handle ? vec4_new(1.0f, 0.65f, 0.02f, 1.0f)
-        : handle == system->hot_handle  ? vec4_new(1.0f, 1.0f, 0.3f, 1.0f)
-                                        : colors[shape % 3u];
+    const GizmoShape *shape = &g_gizmo_shapes[draws[i].shape];
+    const VkrGizmoMode mode = vkr_gizmo_handle_mode(shape->handle);
+    const bool8_t oriented =
+        mode == VKR_GIZMO_MODE_SCALE || system->space == VKR_GIZMO_SPACE_LOCAL;
+    const Mat4 model =
+        mat4_mul(mat4_mul(mat4_translate(system->position),
+                          oriented ? vkr_quat_to_mat4(system->orientation)
+                                   : mat4_identity()),
+                 mat4_scale(vec3_scale(draws[i].mirror, scale)));
     out_draws[i] = (VkrEditorOverlayDraw){
-        .geometry = system->geometries[shape],
+        .geometry = system->geometries[draws[i].shape],
         .submesh_index = 0u,
         .model = model,
-        .color = color,
-        .object_id = vkr_gizmo_encode_picking_id(handle),
+        .color = draws[i].rank == 2u   ? active_color
+                 : draws[i].rank == 1u ? hot_color
+                                       : axis_colors[shape->axis],
+        .object_id = vkr_gizmo_encode_picking_id(shape->handle),
     };
   }
   return count;

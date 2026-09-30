@@ -27,6 +27,49 @@ uint32_t vkr_editor_object_kind_count(void);
 const char *vkr_editor_object_kind_word(uint32_t kind);
 const char *vkr_editor_object_kind_label(uint32_t kind);
 VkrUiIcon vkr_editor_object_kind_icon(uint32_t kind);
+/* Menu heading of a kind, such as "Lights". */
+const char *vkr_editor_object_kind_group(uint32_t kind);
+/* Menus and Content list the built-in kinds; the per-script kinds that
+   follow them stay for Cmd `create`. */
+bool8_t vkr_editor_object_kind_listed(uint32_t kind);
+
+/* Script slot (ADR-079): an entity's script is the first script module
+   component it carries, or NULL. */
+const VkrTypeDesc *vkr_editor_entity_script(const VkrScene *scene,
+                                            VkrEntityId entity);
+/* Component types of the loaded script modules, in module order. */
+uint32_t vkr_editor_script_types(const VkrSampleUiFrame *frame,
+                                 const VkrTypeDesc **out, uint32_t capacity);
+/* The project source defining a script type: its module's `<Name>.c`. */
+bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 const VkrTypeDesc *type, char *out,
+                                 uint32_t capacity);
+/* Opens the entity's script source in the Script editor. */
+bool8_t vkr_editor_open_entity_script(VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      VkrEntityId entity);
+/* Request one undoable edit giving the entity `type` as its script, replacing
+   its current one; NULL removes it. */
+void vkr_editor_request_script(const VkrSampleUiFrame *frame,
+                               VkrEntityId entity, const VkrTypeDesc *type);
+/* The loaded module's script type named `module`, or NULL. */
+const VkrTypeDesc *vkr_editor_module_script(const VkrSampleUiFrame *frame,
+                                            const char *module);
+/* Attach a script to an object as one more of its components; false with a
+   notice when it already runs it or cannot hold it. */
+bool8_t vkr_editor_attach_script(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity, const VkrTypeDesc *type);
+/* A Script asset dropped on the Scene at `drop_px`: attach it to the object
+   there once the pick answers, else add an object running it. */
+void vkr_editor_drop_script(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                            const char *module, Vec2 drop_px);
+/* The pick answer of a dropped Script asset. */
+void vkr_editor_finish_script_drop(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame);
+/* Focus the Details name field on its next build. */
+void vkr_editor_scene_panels_request_rename(VkrEditorScenePanels *panels);
 /* World id new objects go to: the selection's container, else the primary
    scene, else the World; UINT16_MAX when nothing is loaded. */
 uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame);

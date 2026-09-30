@@ -904,11 +904,14 @@ vkr_internal bool8_t vkr_package_place(VkrPackage *package, const char *path,
   return true_v;
 }
 
+/* A Player Start or an entity with the FPS player script (ADR-079). */
 vkr_internal bool8_t vkr_package_has_player(const VkrBakeryJson *document) {
   const VkrBakeryJson *entities = vkr_bakery_json_get(document, "entities");
   for (const VkrBakeryJson *entity = entities ? entities->first : NULL; entity;
        entity = entity->next) {
-    if (vkr_bakery_json_get(entity, "player")) {
+    const VkrBakeryJson *components = vkr_bakery_json_get(entity, "components");
+    if (components && (vkr_bakery_json_get(components, "player_start") ||
+                       vkr_bakery_json_get(components, "fps_player"))) {
       return true_v;
     }
   }
@@ -1984,8 +1987,8 @@ int vkr_bakery_bundle_project(VkrBakeryCli *cli, const char *project) {
   if (ok && package->startup < package->scene_count &&
       !package->scenes[package->startup].has_player) {
     vkr_package_warn(package,
-                     "the startup scene has no player; the game starts with "
-                     "a free camera");
+                     "the startup scene has no Player Start; the game starts "
+                     "with a free camera");
   }
   const bool8_t opened = package->workspace[0] && package->out[0];
   vkr_package_stage_end(package, ok, NULL);

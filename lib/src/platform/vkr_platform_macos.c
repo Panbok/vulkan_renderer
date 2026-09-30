@@ -4,6 +4,7 @@
 
 #include "containers/str.h"
 
+#include <dlfcn.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
@@ -576,4 +577,32 @@ void vkr_platform_console_write(const char *message, uint8_t colour) {
 }
 
 void vkr_platform_shutdown() { timebase_initialized = false; }
+
+bool8_t vkr_platform_library_open(const char *path, VkrPlatformLibrary *out,
+                                  char *error, uint32_t error_capacity) {
+  *out = (VkrPlatformLibrary){0};
+  out->handle = path ? dlopen(path, RTLD_NOW | RTLD_LOCAL) : NULL;
+  if (!out->handle) {
+    const char *message = path ? dlerror() : "no library path";
+    if (error && error_capacity) {
+      snprintf(error, error_capacity, "%s",
+               message ? message : "dlopen failed");
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+void *vkr_platform_library_symbol(const VkrPlatformLibrary *library,
+                                  const char *name) {
+  return library && library->handle ? dlsym(library->handle, name) : NULL;
+}
+
+void vkr_platform_library_close(VkrPlatformLibrary *library) {
+  if (library && library->handle) {
+    dlclose(library->handle);
+    library->handle = NULL;
+  }
+}
+
 #endif

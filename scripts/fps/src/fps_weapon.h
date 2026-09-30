@@ -2,76 +2,76 @@
 
 #include "defines.h"
 
-#define VKR_WEAPON_MAX_BLOCKS 8u
+#define FPS_WEAPON_MAX_BLOCKS 8u
 
-typedef struct VkrWeaponConfig {
+typedef struct FpsWeaponConfig {
   uint32_t magazine_capacity;
   uint64_t fire_interval_ticks;
   uint64_t reload_ticks;
-} VkrWeaponConfig;
+} FpsWeaponConfig;
 
-typedef struct VkrWeaponShot {
+typedef struct FpsWeaponShot {
   uint64_t instance_id;
   uint64_t sequence;
   uint64_t tick;
-} VkrWeaponShot;
+} FpsWeaponShot;
 
-typedef struct VkrWeaponReloadToken {
+typedef struct FpsWeaponReloadToken {
   uint64_t instance_id;
   uint64_t sequence;
-} VkrWeaponReloadToken;
+} FpsWeaponReloadToken;
 
-typedef struct VkrWeaponBlockToken {
+typedef struct FpsWeaponBlockToken {
   uint64_t instance_id;
   uint64_t sequence;
-} VkrWeaponBlockToken;
+} FpsWeaponBlockToken;
 
-typedef enum VkrWeaponResult {
-  VKR_WEAPON_OK,
-  VKR_WEAPON_INVALID,
-  VKR_WEAPON_BLOCKED,
-  VKR_WEAPON_RELOADING,
-  VKR_WEAPON_COOLDOWN,
-  VKR_WEAPON_EMPTY,
-  VKR_WEAPON_CAPACITY,
-  VKR_WEAPON_FULL,
-  VKR_WEAPON_NO_RESERVE,
-  VKR_WEAPON_NOT_READY,
-  VKR_WEAPON_STALE_ACTION,
-  VKR_WEAPON_LIMIT,
-} VkrWeaponResult;
+typedef enum FpsWeaponResult {
+  FPS_WEAPON_OK,
+  FPS_WEAPON_INVALID,
+  FPS_WEAPON_BLOCKED,
+  FPS_WEAPON_RELOADING,
+  FPS_WEAPON_COOLDOWN,
+  FPS_WEAPON_EMPTY,
+  FPS_WEAPON_CAPACITY,
+  FPS_WEAPON_FULL,
+  FPS_WEAPON_NO_RESERVE,
+  FPS_WEAPON_NOT_READY,
+  FPS_WEAPON_STALE_ACTION,
+  FPS_WEAPON_LIMIT,
+} FpsWeaponResult;
 
 /* Caller-owned value storage, with no borrowed pointers or allocations. Treat
  * fields as read-only after initialization. One simulation owner serializes all
  * operations; ticks come from that owner's common simulation clock. Output and
  * sink storage must be disjoint from weapon storage. */
-typedef struct VkrWeaponState {
-  VkrWeaponConfig config;
+typedef struct FpsWeaponState {
+  FpsWeaponConfig config;
   uint64_t instance_id;
   uint64_t shot_sequence;
   uint64_t next_fire_tick;
   uint64_t reload_sequence;
   uint64_t reload_complete_tick;
   uint64_t block_sequence;
-  uint64_t blocks[VKR_WEAPON_MAX_BLOCKS];
+  uint64_t blocks[FPS_WEAPON_MAX_BLOCKS];
   uint32_t magazine_rounds;
   bool8_t reloading;
-} VkrWeaponState;
+} FpsWeaponState;
 
 /* Copies validated configuration. Capacity and durations must be nonzero.
  * instance_id must be nonzero and unique while any token/shot from an earlier
  * initialization can remain in flight, including after slot reuse/scene reset.
  * Failure preserves the destination. Destruction only ends the caller's value
  * lifetime; the caller cancels external timers/routes before releasing it. */
-bool8_t vkr_weapon_initialize(VkrWeaponState *weapon,
-                              const VkrWeaponConfig *config,
+bool8_t fps_weapon_initialize(FpsWeaponState *weapon,
+                              const FpsWeaponConfig *config,
                               uint32_t magazine_rounds, uint64_t instance_id);
 
 /* The sink reserves every required shot resource/fact atomically. False means
  * no reservation escaped; true means later publication cannot fail. The shot
  * pointer is borrowed only for this call. The sink must not reenter or mutate
  * this weapon, invoke gameplay consumers, or retain the borrowed pointer. */
-typedef bool8_t (*VkrWeaponReserveShot)(const VkrWeaponShot *shot,
+typedef bool8_t (*FpsWeaponReserveShot)(const FpsWeaponShot *shot,
                                         void *context);
 
 /* Eligibility and integer overflow are checked before calling the sink. Only
@@ -80,9 +80,9 @@ typedef bool8_t (*VkrWeaponReserveShot)(const VkrWeaponShot *shot,
  * belong to the caller. Held-fire input must call once per eligible tick;
  * this primitive owns neither trigger intent nor an independent update clock.
  */
-VkrWeaponResult vkr_weapon_try_fire(VkrWeaponState *weapon, uint64_t tick,
-                                    VkrWeaponReserveShot reserve_shot,
-                                    void *context, VkrWeaponShot *shot);
+FpsWeaponResult fps_weapon_try_fire(FpsWeaponState *weapon, uint64_t tick,
+                                    FpsWeaponReserveShot reserve_shot,
+                                    void *context, FpsWeaponShot *shot);
 
 /* Start only checks current reserve availability; it does not spend/reserve it.
  * Completion revalidates the inventory value and transfers at most the missing
@@ -90,23 +90,23 @@ VkrWeaponResult vkr_weapon_try_fire(VkrWeaponState *weapon, uint64_t tick,
  * reserve_rounds must not alias weapon storage. Zero reserve at completion ends
  * the reload successfully with zero transfer. Outputs change only on success.
  */
-VkrWeaponResult vkr_weapon_reload_start(VkrWeaponState *weapon, uint64_t tick,
+FpsWeaponResult fps_weapon_reload_start(FpsWeaponState *weapon, uint64_t tick,
                                         uint32_t available_reserve,
-                                        VkrWeaponReloadToken *token);
-VkrWeaponResult vkr_weapon_reload_complete(VkrWeaponState *weapon,
-                                           VkrWeaponReloadToken token,
+                                        FpsWeaponReloadToken *token);
+FpsWeaponResult fps_weapon_reload_complete(FpsWeaponState *weapon,
+                                           FpsWeaponReloadToken token,
                                            uint64_t tick,
                                            uint32_t *reserve_rounds,
                                            uint32_t *transferred);
-bool8_t vkr_weapon_reload_cancel(VkrWeaponState *weapon,
-                                 VkrWeaponReloadToken token);
+bool8_t fps_weapon_reload_cancel(FpsWeaponState *weapon,
+                                 FpsWeaponReloadToken token);
 
 /* Each successful acquisition owns one independent firing-only lock. Releasing
  * a stale token cannot clear another lock. Sequences never wrap. Reload remains
  * independent: death/unequip callers explicitly cancel it with its token. The
  * input owner must cancel held-fire intent and require fresh activation when a
  * firing lock is acquired. Output changes only on successful acquisition. */
-VkrWeaponResult vkr_weapon_block_acquire(VkrWeaponState *weapon,
-                                         VkrWeaponBlockToken *token);
-bool8_t vkr_weapon_block_release(VkrWeaponState *weapon,
-                                 VkrWeaponBlockToken token);
+FpsWeaponResult fps_weapon_block_acquire(FpsWeaponState *weapon,
+                                         FpsWeaponBlockToken *token);
+bool8_t fps_weapon_block_release(FpsWeaponState *weapon,
+                                 FpsWeaponBlockToken token);

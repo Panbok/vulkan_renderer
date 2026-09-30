@@ -11,7 +11,8 @@ authority: adr
 Accepted (partial). Every phase of the
 [asset build system proposal](../proposals/asset-build-system.md) is
 implemented on macOS. The daemon has no Windows transport, the Windows script
-and bundle paths are unverified, and script modules have no runtime loader yet.
+and bundle paths are unverified, and no executable loads a script module's
+library yet; the script ABI is [ADR-079](079-c-script-modules.md).
 Bundles of managed projects are
 [ADR-078](078-project-build-and-packaging.md).
 
@@ -287,10 +288,11 @@ from it.
   or under `--out`. Compiler errors and warnings become `VKR-SCRIPT-0100` and
   `0101` with file, line and column; a missing compiler is `VKR-SCRIPT-0102`.
   A bundle recipe's `scripts` ship their archives under `<out>/scripts/` and
-  in `bundle.json`. Loading, the script ABI and linking archives into the
-  runtime belong to the
-  [entity behavior proposal](../proposals/entity-behavior-system.md); these
-  producers only compile, cache, diagnose and publish. Windows uses
+  in `bundle.json`. The module ABI and runtime host are
+  [ADR-079](079-c-script-modules.md); loading libraries and linking archives
+  into a packaged player belong to the
+  [script modules proposal](../proposals/script-modules.md). These producers
+  only compile, cache, diagnose and publish. Windows uses
   `clang-cl`, `lld-link` and `llvm-lib`.
 
 ## Consequences

@@ -207,6 +207,14 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                       .z_order = 8u,
                       .visible = false_v,
                   },
+              [VKR_EDITOR_WINDOW_SCRIPT] =
+                  {
+                      .position_pt = {240.0f, 80.0f},
+                      .size_pt = {860.0f, 620.0f},
+                      .z_order = 9u,
+                      .visible = false_v,
+                      .resizable = true_v,
+                  },
           },
   };
 }
@@ -289,6 +297,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   editor->reduce_motion = frame->ui->reduce_motion;
   vkr_editor_animation_update(editor, frame);
   vkr_editor_bakery_update(editor->bakery);
+  vkr_editor_scripts_update(editor->scripts,
+                            vkr_editor_bakery_service(editor->bakery), frame);
   vkr_editor_build_update(editor->build, editor, frame);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_cmd_update(editor, frame);
@@ -368,15 +378,39 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                &frame->text);
   vkr_editor_windows_build_floating(editor, frame->ui, frame->input, frame);
   vkr_editor_windows_build_menu(editor, frame->ui, frame);
-  /* A right click on a Content item opens its menu. */
+  /* A right click on a Content item opens its menu; on empty space, the
+     shown folder's menu. */
   Vec2 content_menu_pt;
+  bool8_t content_menu_folder = false_v;
   if (editor->content &&
-      vkr_editor_content_take_menu(editor->content, &content_menu_pt)) {
-    editor->context_open = true_v;
-    editor->context_kind = VKR_EDITOR_CONTEXT_CONTENT;
-    editor->context_count = 0u;
-    editor->context_position_pt = content_menu_pt;
-    editor->menu = VKR_EDITOR_MENU_NONE;
+      vkr_editor_content_take_menu(editor->content, &content_menu_pt,
+                                   &content_menu_folder)) {
+    vkr_editor_context_open(editor,
+                            content_menu_folder
+                                ? VKR_EDITOR_CONTEXT_CONTENT_FOLDER
+                                : VKR_EDITOR_CONTEXT_CONTENT,
+                            content_menu_pt);
+    editor->context_container = vkr_editor_create_container(frame);
+    editor->context_entity = vkr_editor_content_menu_entity(editor->content);
+  }
+  /* A right click in the Scene opens the menu of the object it picked, or
+     the creation menu over empty space. */
+  if (frame->context_requested &&
+      frame->context_purpose == VKR_SAMPLE_PICK_SCRIPT_DROP) {
+    vkr_editor_finish_script_drop(editor, frame);
+  } else if (frame->context_requested) {
+    const float32_t scale = frame->ui->content_scale;
+    const Vec2 point = {frame->context_position_px.x / scale,
+                        frame->context_position_px.y / scale};
+    const VkrScene *scene =
+        vkr_editor_entity_scene(frame, frame->context_entity);
+    if (scene && vkr_scene_entity_alive(scene, frame->context_entity)) {
+      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_ENTITY, point);
+      editor->context_entity = frame->context_entity;
+    } else {
+      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_CREATE, point);
+      editor->context_container = vkr_editor_create_container(frame);
+    }
   }
   vkr_editor_context_menu_build(editor, frame);
   /* A dragged Content item draws above every panel and drops on the Scene. */
@@ -392,14 +426,31 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
      types act too; Projects owns the rest. */
   VkrEditorContentAction content_action;
   if (editor->content &&
-      vkr_editor_content_take_object_action(editor->content, &content_action))
+      vkr_editor_content_take_object_action(editor->content, &content_action)) {
     vkr_editor_apply_content_object(frame, &content_action);
+    /* Double-clicking a scripted object opens its script. */
+    if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY &&
+        content_action.activated)
+      (void)vkr_editor_open_entity_script(editor, frame, content_action.entity);
+  }
   if (!frame->world && editor->content &&
-      vkr_editor_content_take_action(editor->content, &content_action) &&
-      content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT)
-    vkr_editor_request_create(
-        frame, content_action.object, vkr_editor_create_container(frame),
-        content_action.dropped ? &content_action.drop_px : NULL);
+      vkr_editor_content_take_action(editor->content, &content_action)) {
+    if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
+      if (vkr_editor_request_create(
+              frame, content_action.object, vkr_editor_create_container(frame),
+              content_action.dropped ? &content_action.drop_px : NULL)) {
+        vkr_editor_content_reveal_created(editor->content,
+                                          frame->selected_entity);
+      }
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_OPEN_SCRIPT) {
+      (void)vkr_editor_code_open(editor->code, editor, content_action.source);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT) {
+      vkr_editor_code_new_script(editor->code, editor);
+    } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_DROP_SCRIPT) {
+      vkr_editor_drop_script(editor, frame, content_action.name,
+                             content_action.drop_px);
+    }
+  }
   vkr_editor_build_status_build(editor->build, editor, frame);
   vkr_editor_toasts_build(editor, frame);
   vkr_editor_cmd_suggestions_build(editor, frame);

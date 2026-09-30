@@ -37,6 +37,30 @@
 #define VKR_SCRIPT_DRIVER "xcrun"
 #endif
 
+#if !defined(VKR_BAKERY_SCRIPT_SDK_DIRS)
+#define VKR_BAKERY_SCRIPT_SDK_DIRS ""
+#endif
+
+/* The engine header directories every script compiles against (ADR-079),
+ * `|`-separated in the build definition. They join each object's recipe, so
+ * moving the engine rebuilds. */
+vkr_internal VkrBakeryJson *vkr_script_sdk_roots(Arena *arena) {
+  VkrBakeryJson *roots = vkr_bakery_json_array(arena);
+  const char *cursor = VKR_BAKERY_SCRIPT_SDK_DIRS;
+  while (*cursor) {
+    const char *end = strchr(cursor, '|');
+    const size_t length = end ? (size_t)(end - cursor) : strlen(cursor);
+    char directory[VKR_BAKERY_PATH_CAPACITY];
+    if (length && length < sizeof(directory)) {
+      MemCopy(directory, cursor, length);
+      directory[length] = '\0';
+      vkr_bakery_json_append(roots, vkr_bakery_json_cstr(arena, directory));
+    }
+    cursor += length + (end ? 1u : 0u);
+  }
+  return roots;
+}
+
 /* The compiler's version line keys every script action, so a toolchain
  * update rebuilds. Planning runs on the main thread; the probe runs once. */
 vkr_internal const char *vkr_script_compiler_version(VkrBakeryGraph *graph) {
@@ -90,8 +114,8 @@ vkr_internal const char *vkr_script_compiler_version(VkrBakeryGraph *graph) {
 // =============================================================================
 
 vkr_internal const char *const vkr_script_object_fields[] = {
-    "module",        "language", "standard", "defines",
-    "include_roots", "compiler", NULL};
+    "module",        "language", "standard",  "defines",
+    "include_roots", "compiler", "sdk_roots", NULL};
 
 vkr_internal bool8_t vkr_script_object_plan(VkrBakeryGraph *graph,
                                             VkrBakeryAction *action) {
@@ -127,6 +151,7 @@ vkr_internal bool8_t vkr_script_object_run(VkrBakeryTask *task) {
   arguments[count++] = "/O2";
   arguments[count++] = "/W3";
   arguments[count++] = standard;
+  const char *system_flag = "/imsvc";
 #else
   (void)snprintf(standard, sizeof(standard), "-std=%s",
                  vkr_bakery_recipe_string(recipe, "standard", "c11"));
@@ -139,6 +164,7 @@ vkr_internal bool8_t vkr_script_object_run(VkrBakeryTask *task) {
   arguments[count++] = "-fvisibility=hidden";
   arguments[count++] = "-Wall";
   arguments[count++] = "-fno-color-diagnostics";
+  const char *system_flag = "-isystem";
 #endif
   const VkrBakeryJson *define_object = vkr_bakery_json_get(recipe, "defines");
   for (const VkrBakeryJson *define = define_object ? define_object->first
@@ -169,6 +195,14 @@ vkr_internal bool8_t vkr_script_object_run(VkrBakeryTask *task) {
     (void)snprintf(includes[include_count], sizeof(includes[0]), "-I%s",
                    absolute);
     arguments[count++] = includes[include_count++];
+  }
+  /* Engine headers are system includes: their own warnings are not the
+     script's diagnostics. */
+  const VkrBakeryJson *sdk = vkr_bakery_json_get(recipe, "sdk_roots");
+  for (const VkrBakeryJson *root = sdk ? sdk->first : NULL;
+       root && count + 2u < ArrayCount(arguments); root = root->next) {
+    arguments[count++] = system_flag;
+    arguments[count++] = (const char *)root->string.str;
   }
 #if defined(_WIN32)
   (void)snprintf(depfile_argument, sizeof(depfile_argument), "/clang:-MF%s",
@@ -514,6 +548,8 @@ VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
                                 : vkr_bakery_json_object(arena));
     vkr_bakery_json_set(arena, recipe, "include_roots",
                         vkr_bakery_json_clone(arena, roots));
+    vkr_bakery_json_set(arena, recipe, "sdk_roots",
+                        vkr_script_sdk_roots(arena));
     vkr_bakery_json_set(arena, recipe, "compiler",
                         vkr_bakery_json_cstr(arena, compiler));
     VkrBakeryAction *object = vkr_bakery_graph_add(

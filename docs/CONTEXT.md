@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-09-30
 authority: context
 ---
 # Project vocabulary
@@ -84,8 +84,14 @@ below are starting points for checking a definition, not alternate API specs.
 | Scene extraction | Conversion of scene/ECS state into renderable candidates and typed frame payloads. | [vkr_scene_system.c](../runtime/src/renderer/systems/vkr_scene_system.c), [vkr_standard_scene_runtime.h](../runtime/src/application/vkr_standard_scene_runtime.h) |
 | Character motor | Scene-owned Jolt CharacterVirtual capsule, stepped from C before physics and published as evaluated root translation. | [ADR-073](adr/073-native-gameplay-foundation.md) |
 | Evaluated transform | Transient world-matrix override used for gameplay presentation; separate from authored TRS and removed with its owning entity/client. | [ADR-073](adr/073-native-gameplay-foundation.md) |
-| Player animation controller | C playback owner mapping accepted actions and motor state to interruptible named clips; the scene advances animation time. | [vkr_player_animation.h](../runtime/src/gameplay/vkr_player_animation.h) |
-| Camera rig | Caller-owned first/third-person or shoulder pose calculation with optional obstruction sweep; target pose and look are supplied separately. | [vkr_camera_rig.h](../runtime/src/gameplay/vkr_camera_rig.h) |
+| Player animation controller | FPS module playback owner mapping accepted actions and motor state to interruptible named clips; the scene advances animation time. | [fps_player_animation.h](../scripts/fps/src/fps_player_animation.h) |
+| Camera rig | FPS module first/third-person or shoulder pose calculation with optional obstruction sweep; target pose and look are supplied separately. | [fps_camera_rig.h](../scripts/fps/src/fps_camera_rig.h) |
+| Script module | Game code built with a project that calls the engine only through `VkrScriptApi` and describes its component types, state and hooks. | [vkr_script.h](../runtime/src/script/vkr_script.h), [ADR-079](adr/079-c-script-modules.md) |
+| Script host | Runtime owner of the API table, registered modules and the one session run on the active scene's clock. | [vkr_script_host.h](../runtime/src/script/vkr_script_host.h) |
+| Script object | An object kind creating an entity with one registered script component; the same component attaches through Add component. | [ADR-079](adr/079-c-script-modules.md) |
+| Hot reload | Swapping a script library's code between frames while the session keeps its state; a changed state version restarts the session and a changed component layout is refused. | [vkr_script_host.h](../runtime/src/script/vkr_script_host.h) |
+| Script editor | The editor's floating window for script sources, with highlighting, completion and compiler diagnostics. | [editor_code.c](../editor/src/editor_code.c) |
+| Player Start | Engine component whose entity's world transform is the spawn pose the scene resolves for a game's player. | [vkr_scene_types.c](../runtime/src/renderer/systems/vkr_scene_types.c) |
 | Scene simulation | Scene-owned fixed clock and optional C hooks around native animation/physics; distinct from display-frame callbacks. | [ADR-073](adr/073-native-gameplay-foundation.md) |
 | Physics body | Entity owning motion, mass/material settings, sensor role and collision membership/mask; runtime state is separate from authored TRS. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h), [ADR-072](adr/072-entity-collision-and-rigid-body-physics.md) |
 | Collider child | Direct child of one physics body, with stable authored ID, primitive/cooked geometry, local pose, positive scale and enable state; enabled children form one compound. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h) |

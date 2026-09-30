@@ -60,10 +60,12 @@ def main():
         runtime = jobs.load_json(runtime_path)
         managed_path = Path(result['scene_path'])
         managed = jobs.read_managed_scene(managed_path)
-        players = [e for e in runtime['entities'] if 'player' in e]
+        players = [e for e in runtime['entities']
+                   if 'fps_player' in e.get('components', {})]
         assert len(players) == 1
         player = players[0]
-        assert player['player']['camera_mode'] == mode
+        assert player['components']['fps_player']['camera_mode'] == mode
+        assert player['components']['player_start']['enabled'] is True
         assert player['name'] == 'Player Spawn'
         assert 'mesh' not in player and 'animation' not in player
         meshes = [e for e in runtime['entities'] if 'mesh' in e]

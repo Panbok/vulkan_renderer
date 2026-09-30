@@ -20,9 +20,13 @@
           6
         ]
       },
-      "player": {
-        "yaw": -1.5707963267948966,
-        "camera_mode": "first_person"
+      "components": {
+        "player_start": {
+          "enabled": true
+        },
+        "fps_player": {
+          "camera_mode": "first_person"
+        }
       }
     },
     {

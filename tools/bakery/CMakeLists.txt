@@ -35,8 +35,10 @@ else()
     # BCryptGenRandom seeds project identifiers.
     target_link_libraries(vkr_bakery PRIVATE psapi bcrypt)
 endif()
+# Script modules include the engine headers from this source tree (ADR-079).
 target_compile_definitions(vkr_bakery PRIVATE
-    VKR_BAKERY_SLANGC_DEFAULT="${VKR_SLANGC_EXECUTABLE}")
+    VKR_BAKERY_SLANGC_DEFAULT="${VKR_SLANGC_EXECUTABLE}"
+    VKR_BAKERY_SCRIPT_SDK_DIRS="${CMAKE_SOURCE_DIR}/runtime/src|${CMAKE_SOURCE_DIR}/lib/src|${CMAKE_SOURCE_DIR}/renderer/src")
 
 # Producer identities: each group lists the sources whose change can alter that
 # producer's output bytes. Toolchain versions for shaders live in recipes.

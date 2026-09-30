@@ -47,12 +47,19 @@ typedef enum VkrGizmoHandle {
   VKR_GIZMO_HANDLE_ROTATE_Y = 6,
   VKR_GIZMO_HANDLE_ROTATE_Z = 7,
 
-  // Scale cubes aligned to axes (uniform scaling in current UX).
+  // Scale handles along the object's axes, and the uniform center cube.
   VKR_GIZMO_HANDLE_SCALE_X = 8,
   VKR_GIZMO_HANDLE_SCALE_Y = 9,
   VKR_GIZMO_HANDLE_SCALE_Z = 10,
   VKR_GIZMO_HANDLE_SCALE_UNIFORM = 11,
+
+  // Translation in the plane of two axes, named by those axes.
+  VKR_GIZMO_HANDLE_TRANSLATE_XY = 12,
+  VKR_GIZMO_HANDLE_TRANSLATE_XZ = 13,
+  VKR_GIZMO_HANDLE_TRANSLATE_YZ = 14,
 } VkrGizmoHandle;
+
+#define VKR_GIZMO_HANDLE_MAX VKR_GIZMO_HANDLE_TRANSLATE_YZ
 
 /**
  * @brief Encode a gizmo handle into a picking object id.
@@ -75,7 +82,7 @@ vkr_gizmo_decode_picking_id(uint32_t object_id) {
   if (!decoded.valid || decoded.kind != VKR_PICKING_ID_KIND_GIZMO) {
     return VKR_GIZMO_HANDLE_NONE;
   }
-  if (decoded.value > VKR_GIZMO_HANDLE_SCALE_UNIFORM) {
+  if (decoded.value > VKR_GIZMO_HANDLE_MAX) {
     return VKR_GIZMO_HANDLE_NONE;
   }
   return (VkrGizmoHandle)decoded.value;
@@ -92,6 +99,9 @@ vkr_internal INLINE VkrGizmoMode vkr_gizmo_handle_mode(VkrGizmoHandle handle) {
   case VKR_GIZMO_HANDLE_TRANSLATE_Y:
   case VKR_GIZMO_HANDLE_TRANSLATE_Z:
   case VKR_GIZMO_HANDLE_TRANSLATE_FREE:
+  case VKR_GIZMO_HANDLE_TRANSLATE_XY:
+  case VKR_GIZMO_HANDLE_TRANSLATE_XZ:
+  case VKR_GIZMO_HANDLE_TRANSLATE_YZ:
     return VKR_GIZMO_MODE_TRANSLATE;
   case VKR_GIZMO_HANDLE_ROTATE_X:
   case VKR_GIZMO_HANDLE_ROTATE_Y:
@@ -166,6 +176,24 @@ vkr_internal INLINE int32_t vkr_gizmo_handle_axis_index(VkrGizmoHandle handle) {
 }
 
 /**
+ * @brief Returns the normal axis index of a plane translation handle.
+ * @return 0=X (the YZ plane), 1=Y (XZ), 2=Z (XY), or -1 for other handles.
+ */
+vkr_internal INLINE int32_t
+vkr_gizmo_handle_plane_normal_index(VkrGizmoHandle handle) {
+  switch (handle) {
+  case VKR_GIZMO_HANDLE_TRANSLATE_YZ:
+    return 0;
+  case VKR_GIZMO_HANDLE_TRANSLATE_XZ:
+    return 1;
+  case VKR_GIZMO_HANDLE_TRANSLATE_XY:
+    return 2;
+  default:
+    return -1;
+  }
+}
+
+/**
  * @brief Returns true for screen-plane translation handles.
  */
 vkr_internal INLINE bool8_t
@@ -174,47 +202,52 @@ vkr_gizmo_handle_is_free_translate(VkrGizmoHandle handle) {
 }
 
 /**
- * @brief Returns true for uniform scale handles (including axis cubes).
- *
- * Current UX treats all scale cubes as uniform scaling rather than per-axis.
+ * @brief Returns true for the uniform scale handle; axis handles scale one
+ * component of the object's scale.
  */
 vkr_internal INLINE bool8_t
 vkr_gizmo_handle_is_uniform_scale(VkrGizmoHandle handle) {
-  return handle == VKR_GIZMO_HANDLE_SCALE_UNIFORM ||
-         handle == VKR_GIZMO_HANDLE_SCALE_X ||
-         handle == VKR_GIZMO_HANDLE_SCALE_Y ||
-         handle == VKR_GIZMO_HANDLE_SCALE_Z;
+  return handle == VKR_GIZMO_HANDLE_SCALE_UNIFORM;
 }
 
 /**
  * @brief Gizmo runtime configuration.
  */
 typedef struct VkrGizmoConfig {
-  float32_t screen_size; /**< Desired gizmo size in screen pixels. */
+  float32_t screen_size; /**< Length of one gizmo unit in points. */
 } VkrGizmoConfig;
 
-#define VKR_GIZMO_CONFIG_DEFAULT ((VkrGizmoConfig){.screen_size = 150.0f})
+#define VKR_GIZMO_CONFIG_DEFAULT ((VkrGizmoConfig){.screen_size = 110.0f})
+
+/* Published handle meshes: arrows, plane squares, rings, scale shafts and
+   cubes, and the two center handles. */
+#define VKR_GIZMO_GEOMETRY_COUNT 17u
 
 /**
  * @brief Runtime state for the gizmo system.
  */
 typedef struct VkrGizmoSystem {
   VkrGizmoConfig config;
+  /* Window pixels per point, such as 2 on a Retina display; zero counts as
+   * one. */
+  float32_t pixel_scale;
   VkrGizmoMode mode;
   VkrGizmoSpace space;
-  /* Editor tool filter: NONE draws and picks every handle family; another
-   * mode limits handles to that family. */
+  /* Editor tool: NONE (Select) draws and picks no handles; another mode
+   * shows that family. */
   VkrGizmoMode tool;
 
   VkrEntityId selected_entity;
   Vec3 position;
+  /* The target's world rotation. Scale handles always follow it; translate
+   * and rotate handles follow it in local space. */
   VkrQuat orientation;
   VkrGizmoHandle hot_handle;
   VkrGizmoHandle active_handle;
 
   /* Owned geometry references; released before the asset publisher shuts down.
    */
-  VkrGeometryHandle geometries[VKR_EDITOR_OVERLAY_DRAW_MAX];
+  VkrGeometryHandle geometries[VKR_GIZMO_GEOMETRY_COUNT];
   bool8_t visible;
   bool8_t initialized;
 } VkrGizmoSystem;
@@ -222,7 +255,8 @@ typedef struct VkrGizmoSystem {
 /**
  * @brief Initialize gizmo resources.
  *
- * The geometry system publishes nine independently owned handle shapes.
+ * The geometry system publishes VKR_GIZMO_GEOMETRY_COUNT independently owned
+ * handle shapes.
  * @param system Gizmo system to initialize.
  * @param assets Published asset owner.
  * @param config Optional config override (NULL uses defaults).
@@ -272,9 +306,18 @@ void vkr_gizmo_system_set_hot_handle(VkrGizmoSystem *system,
 void vkr_gizmo_system_set_active_handle(VkrGizmoSystem *system,
                                         VkrGizmoHandle handle);
 
-/* Builds borrowed frame records in caller storage. Size is measured in
- * displayed window pixels, independent of scene render scale. Matrices are
- * unjittered. */
+/* World axis `axis` (0..2) of a handle family under the system's space:
+ * rotated by the target orientation for scale handles and in local space. */
+Vec3 vkr_gizmo_system_axis(const VkrGizmoSystem *system, VkrGizmoMode mode,
+                           uint32_t axis);
+
+/* Builds borrowed frame records in caller storage. One gizmo unit spans
+ * screen_size × pixel_scale displayed window pixels, independent of scene
+ * render scale. Matrices are unjittered. Draws run far to near with the hovered
+ * and dragged handles last, so nearer handles draw over and pick before farther
+ * ones; axes seen end-on and planes seen edge-on are left out, and plane
+ * squares sit on the camera's side. While a handle is dragged only that handle
+ * draws. */
 uint32_t vkr_gizmo_system_build_draws(
     const VkrGizmoSystem *system, Mat4 view, Mat4 projection,
     const VkrViewportMapping *mapping,

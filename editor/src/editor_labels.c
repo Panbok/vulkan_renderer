@@ -37,9 +37,12 @@ typedef struct EditorLabelBuild {
   VkrComponentTypeId component;
   uint32_t capacity;
   uint32_t stacked;
+  /* The entity being built is an empty object. */
+  bool8_t empty;
 } EditorLabelBuild;
 
-/* Iconic components in icon priority order: lights, then world types. */
+/* Iconic components in icon priority order: lights, then world types.
+   Scripts are tags on an object and never give it an icon of their own. */
 static uint32_t editor_label_components(const VkrScene *scene,
                                         VkrComponentTypeId *ids) {
   uint32_t count = 0u;
@@ -47,7 +50,9 @@ static uint32_t editor_label_components(const VkrScene *scene,
   ids[count++] = scene->comp_point_light;
   ids[count++] = scene->comp_rectangle_light;
   for (uint32_t i = 0; i < scene->type_count; ++i) {
-    ids[count++] = scene->types[i].id;
+    if (!vkr_scene_world_type_registered(scene->types[i].type)) {
+      ids[count++] = scene->types[i].id;
+    }
   }
   return count;
 }
@@ -89,11 +94,13 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
        icon. */
     if (type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
         type == &vkr_scene_animation_type ||
+        vkr_scene_world_type_registered(type) ||
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;
     }
-    const bool8_t placed = type == &vkr_scene_fog_box_type ||
-                           type == &vkr_scene_reflection_probe_type;
+    /* Only one-per-frame settings are abstract and stack at the origin;
+       fog boxes, probes, Player Starts and scripts mark their position. */
+    const bool8_t placed = !(type->flags & VKR_TYPE_FLAG_SINGLETON);
     *out =
         (EditorLabelKind){vkr_editor_world_type_icon(type),
                           (Vec4){0.62f, 0.78f, 0.98f, 1.0f}, true_v, !placed};
@@ -107,17 +114,21 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
   const VkrSampleUiFrame *frame = build->frame;
   const VkrScene *scene = build->scene;
   VkrUiSystem *ui = frame->ui;
-  EditorLabelKind kind;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  EditorLabelKind kind = {VKR_UI_ICON_EMPTY, theme->text_secondary, true_v,
+                          false_v};
   if (editor->label_anchor_count >= build->capacity ||
-      !editor_label_kind(editor, scene, entity, &kind)) {
+      (!build->empty && !editor_label_kind(editor, scene, entity, &kind))) {
     return;
   }
   const bool8_t placed =
       !kind.abstract &&
       vkr_entity_get_component(scene->world, entity, scene->comp_transform);
-  const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t size = EDITOR_LABEL_SIZE_PT;
   const bool8_t selected = entity.u64 == frame->selected_entity.u64;
+  /* A selected placed object keeps a faint icon that clicks through to the
+     transform gizmo's center handles beneath it. */
+  const bool8_t under_gizmo = selected && placed;
   const bool8_t hidden = !vkr_scene_entity_visible(scene, entity);
   VkrUiWidgetConfig label = vkr_ui_widget_config_default();
   label.placement = VKR_UI_PLACEMENT_DEFAULT;
@@ -143,9 +154,16 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
                                              : kind.tint;
   label.tooltip = vkr_scene_get_name(scene, entity);
   (void)vkr_ui_push_id_u64(ui, entity.u64);
-  if (vkr_ui_button(ui, string8_lit("object"), (String8){0}, &label))
+  if (under_gizmo) {
+    label.style.background_color = vkr_ui_color_alpha(theme->accent, 0.35f);
+    label.style.border_color = vkr_ui_color_alpha(theme->text_on_accent, 0.3f);
+    label.icon_color = vkr_ui_color_alpha(label.icon_color, 0.55f);
+    label.tooltip = (String8){0};
+    vkr_ui_label(ui, string8_lit("object"), (String8){0}, &label);
+  } else if (vkr_ui_button(ui, string8_lit("object"), (String8){0}, &label)) {
     *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT,
                                                .entity = entity};
+  }
   editor->label_anchors[editor->label_anchor_count++] = (VkrEditorLabelAnchor){
       .widget =
           vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("object")),
@@ -189,6 +207,59 @@ static void editor_count_chunk(const VkrArchetype *arch, VkrChunk *chunk,
   *(uint32_t *)user += vkr_entity_chunk_count(chunk);
 }
 
+/* Placed objects that nothing draws or marks, such as an Empty: no
+   geometry, light, physics body, iconic component or child. They get an empty
+   icon so they can be found and picked. Writes up to VKR_EDITOR_LABEL_EMPTY_MAX
+   into `out` and returns how many. */
+static uint32_t editor_label_empties(const VkrScene *scene,
+                                     VkrAllocator *scratch, VkrEntityId *out) {
+  VkrWorld *world = scene->world;
+  const uint32_t indices = world->dir.living;
+  uint8_t *parents = indices
+                         ? vkr_allocator_alloc(scratch, indices,
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                         : NULL;
+  if (!parents) {
+    return 0u;
+  }
+  MemZero(parents, indices);
+  for (uint32_t i = 0; i < indices; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    const SceneTransform *transform =
+        vkr_entity_is_alive(world, entity)
+            ? vkr_entity_get_component(world, entity, scene->comp_transform)
+            : NULL;
+    if (transform && transform->parent.u64 &&
+        transform->parent.parts.index < indices) {
+      parents[transform->parent.parts.index] = 1u;
+    }
+  }
+  VkrComponentTypeId ids[3 + VKR_SCENE_TYPE_MAX];
+  const uint32_t iconic = editor_label_components(scene, ids);
+  const VkrComponentTypeId drawn[] = {
+      scene->comp_mesh_renderer, scene->comp_text3d, scene->comp_shape,
+      scene->comp_physics_body, scene->comp_physics_collider};
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < indices && count < VKR_EDITOR_LABEL_EMPTY_MAX; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    if (parents[i] || !vkr_entity_is_alive(world, entity) ||
+        !vkr_entity_has_component(world, entity, scene->comp_transform)) {
+      continue;
+    }
+    bool8_t marked = false_v;
+    for (uint32_t c = 0; c < ArrayCount(drawn) && !marked; ++c) {
+      marked = vkr_entity_has_component(world, entity, drawn[c]);
+    }
+    for (uint32_t c = 0; c < iconic && !marked; ++c) {
+      marked = vkr_entity_has_component(world, entity, ids[c]);
+    }
+    if (!marked) {
+      out[count++] = entity;
+    }
+  }
+  return count;
+}
+
 /* Visit each iconic component's query; `build` notes the component. */
 static void editor_label_visit(const VkrScene *scene, VkrChunkFn visit,
                                void *user, EditorLabelBuild *build) {
@@ -223,6 +294,19 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
   for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
     if (scenes[i]) {
       editor_label_visit(scenes[i], editor_count_chunk, &capacity, NULL);
+      /* The scan walks every entity; it reruns only when the container's
+         structure changes. */
+      VkrEditorLabelEmpties *cache = &editor->label_empties[i];
+      if (cache->scene != scenes[i] ||
+          cache->generation != frame->scene_generation ||
+          cache->revision != scenes[i]->structure_revision) {
+        cache->scene = scenes[i];
+        cache->generation = frame->scene_generation;
+        cache->revision = scenes[i]->structure_revision;
+        cache->count = editor_label_empties(scenes[i], ui->frame_allocator,
+                                            cache->entities);
+      }
+      capacity += cache->count;
     }
   }
   if (!capacity)
@@ -269,6 +353,14 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
       build.scene = scenes[i];
       (void)vkr_ui_push_id_u64(ui, 0x1ab0u + i);
       editor_label_visit(scenes[i], editor_label_chunk, &build, &build);
+      build.empty = true_v;
+      const VkrEditorLabelEmpties *cache = &editor->label_empties[i];
+      for (uint32_t e = 0; e < cache->count; ++e) {
+        if (vkr_scene_entity_alive(scenes[i], cache->entities[e])) {
+          editor_label_build(&build, cache->entities[e]);
+        }
+      }
+      build.empty = false_v;
       (void)vkr_ui_pop_id(ui);
     }
   }

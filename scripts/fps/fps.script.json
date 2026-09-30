@@ -1,0 +1,13 @@
+{
+  "language": "c",
+  "sources": [
+    "src/fps_camera_rig.c",
+    "src/fps_input.c",
+    "src/fps_module.c",
+    "src/fps_player.c",
+    "src/fps_player_animation.c",
+    "src/fps_weapon.c"
+  ],
+  "include_roots": ["src"],
+  "standard": "c11"
+}

@@ -1139,7 +1139,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_prepare_ui_payload(
 vkr_internal void vkr_standard_scene_runtime_prepare_selection_outline(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
-  const VkrScene *scene = draw->active_scene;
+  /* The selection may live in the World or an added scene. */
+  const VkrScene *scene = application->selection_outline_scene
+                              ? application->selection_outline_scene
+                              : draw->active_scene;
   const VkrEntityId selected = application->selection_outline_entity;
   if (!scene || !selected.u64 || !vkr_scene_entity_alive(scene, selected))
     return;
@@ -1163,6 +1166,24 @@ vkr_internal void vkr_standard_scene_runtime_prepare_selection_outline(
     for (uint32_t i = 0u;
          i < child_count && depth < VKR_EDITOR_SELECTION_DRAW_MAX; ++i)
       stack[depth++] = children[i];
+    /* Shapes draw from a generated mesh slot. */
+    const SceneShape *shape =
+        vkr_entity_get_component(scene->world, entity, scene->comp_shape);
+    const VkrMesh *slot = shape && shape->mesh_index != VKR_INVALID_ID
+                              ? vkr_mesh_manager_get(meshes, shape->mesh_index)
+                              : NULL;
+    if (slot && slot->visible &&
+        slot->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
+      for (uint64_t s = 0u;
+           s < slot->submeshes.length && count < VKR_EDITOR_SELECTION_DRAW_MAX;
+           ++s) {
+        draws[count++] = (VkrEditorOverlayDraw){
+            .geometry = slot->submeshes.data[s].geometry,
+            .submesh_index = (uint32_t)s,
+            .model = slot->model,
+        };
+      }
+    }
     const SceneMeshRenderer *renderer = vkr_entity_get_component(
         scene->world, entity, scene->comp_mesh_renderer);
     VkrMeshInstance *instance =
@@ -1607,6 +1628,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
 
   VkrEditorOverlayDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
   if (draw.has_editor && !draw.scene_stopped) {
+    application->gizmo_system.pixel_scale =
+        application->ui_system.content_scale;
     draw.editor_payload.overlay_draw_count = vkr_gizmo_system_build_draws(
         &application->gizmo_system, application->globals.view,
         application->globals.projection, &draw.editor_mapping, overlay_draws);
@@ -1702,9 +1725,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   if (camera &&
       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
       !application->config->disable_camera_controller &&
-      !(application->active_scene &&
-        application->active_scene->player_entity.u64 &&
-        application->editor_viewport.simulation_running)) {
+      !application->editor_viewport.scripts_own_camera) {
     vkr_camera_controller_update(&application->camera_controller, delta,
                                  application->ui_capture.mouse ||
                                      application->ui_capture.keyboard);

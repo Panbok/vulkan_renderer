@@ -32,12 +32,13 @@ static void test_app_ui_client_owns_visibility(void) {
 static void test_gizmo_display_size(void) {
   VkrGizmoSystem gizmo = {
       .mode = VKR_GIZMO_MODE_TRANSLATE,
+      .tool = VKR_GIZMO_MODE_TRANSLATE,
       .initialized = true_v,
       .visible = true_v,
       .config = {.screen_size = 150.0f},
       .orientation = vkr_quat_identity(),
   };
-  for (uint32_t i = 0u; i < VKR_EDITOR_OVERLAY_DRAW_MAX; ++i)
+  for (uint32_t i = 0u; i < VKR_GIZMO_GEOMETRY_COUNT; ++i)
     gizmo.geometries[i] = (VkrGeometryHandle){.id = i + 1u, .generation = 1u};
   const Mat4 projection =
       mat4_perspective(vkr_to_radians(60.0f), 4.0f / 3.0f, 0.1f, 100.0f);
@@ -54,7 +55,10 @@ static void test_gizmo_display_size(void) {
         gizmo.position = vec3_new(0.0f, 0.0f, -depths[depth]);
         const uint32_t count = vkr_gizmo_system_build_draws(
             &gizmo, mat4_identity(), projection, &mapping, draws);
-        assert(count == 9u);
+        /* Looking down -Z: the Z arrow is end-on and the XZ and YZ squares
+           edge-on, so the Move tool shows two arrows, one square and the
+           center. */
+        assert(count == 4u);
         const Mat4 mvp = mat4_mul(projection, draws[0].model);
         const Vec4 origin = mat4_mul_vec4(mvp, vec4_new(0, 0, 0, 1));
         const Vec4 tip = mat4_mul_vec4(mvp, vec4_new(0, 1, 0, 1));
@@ -71,6 +75,11 @@ static void test_gizmo_display_size(void) {
   assert(vkr_gizmo_system_build_draws(&gizmo, mat4_identity(), projection,
                                       &mapping, draws) == 0u);
   gizmo.position.z = -3;
+  /* The Select tool draws no handles. */
+  gizmo.tool = VKR_GIZMO_MODE_NONE;
+  assert(vkr_gizmo_system_build_draws(&gizmo, mat4_identity(), projection,
+                                      &mapping, draws) == 0u);
+  gizmo.tool = VKR_GIZMO_MODE_TRANSLATE;
   gizmo.visible = false_v;
   assert(vkr_gizmo_system_build_draws(&gizmo, mat4_identity(), projection,
                                       &mapping, draws) == 0u);

@@ -5,6 +5,7 @@
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
+#include "fps_module.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_entry.h"
 #include "platform/vkr_platform.h"
@@ -237,5 +238,10 @@ VKR_MAIN(argc, argv) {
       player.settings_path[0] ? player.settings_path : NULL;
   config.graphics_defaults = player.graphics;
   config.ui = vkr_player_ui_client(&player);
+  /* Until players load a project's script library, every package runs the
+     FPS module linked here (ADR-079). */
+  static const VkrScriptModuleEntry script_modules[] = {vkr_script_module_fps};
+  config.script_modules = script_modules;
+  config.script_module_count = ArrayCount(script_modules);
   return vkr_sample_runtime_run(argc, argv, &config);
 }
