@@ -211,6 +211,11 @@ typedef struct VkrEditorUi {
      left to wait. */
   uint32_t script_pick_frames;
   VkrEntityId script_pick_previous;
+  /* "New script" from an object's menu: once the module named
+     `script_attach_module` loads, its first type becomes that object's
+     script. An empty name waits for the Script editor to name it. */
+  VkrEntityId script_attach_entity;
+  char script_attach_module[48];
   /* Mirrors of the UI system's interface zoom and reduced-motion setting,
    * kept for workspace persistence. */
   float32_t ui_scale;

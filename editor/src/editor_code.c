@@ -1835,18 +1835,33 @@ static void code_reveal(CodeDocument *doc, uint32_t visible_lines,
   }
 }
 
+/* A text button filling its cell with room around its label, centered on
+   the row. */
+static VkrUiWidgetConfig code_button(uint32_t column, uint32_t row) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig config =
+      vkr_editor_text_config(theme->font_body, theme->text);
+  config.placement.column = column;
+  config.placement.row = row;
+  config.placement.justify = VKR_UI_ALIGN_STRETCH;
+  config.placement.align = VKR_UI_ALIGN_CENTER;
+  config.style.min_size_pt.y = theme->control_height;
+  config.style.padding_pt = (VkrUiEdges){4, 10, 4, 10};
+  config.icon_size_pt = 12.0f;
+  return config;
+}
+
 static void code_build_tabs(VkrEditorCode *code, VkrEditorUi *editor,
                             VkrUiSystem *ui) {
   const VkrUiTheme *theme = vkr_ui_theme();
-  VkrUiTrack columns[CODE_DOCUMENT_MAX * 2u + 4u];
+  VkrUiTrack columns[CODE_DOCUMENT_MAX + 3u];
   uint32_t column_count = 0u;
   for (uint32_t i = 0; i < code->document_count; ++i) {
     columns[column_count++] = (VkrUiTrack){0, VKR_UI_TRACK_AUTO};
-    columns[column_count++] = (VkrUiTrack){22, VKR_UI_TRACK_PX};
   }
   columns[column_count++] = (VkrUiTrack){1, VKR_UI_TRACK_FR};
-  columns[column_count++] = (VkrUiTrack){104, VKR_UI_TRACK_PX};
-  columns[column_count++] = (VkrUiTrack){72, VKR_UI_TRACK_PX};
+  columns[column_count++] = (VkrUiTrack){112, VKR_UI_TRACK_PX};
+  columns[column_count++] = (VkrUiTrack){80, VKR_UI_TRACK_PX};
   const VkrUiTrack row = {1, VKR_UI_TRACK_FR};
   VkrUiPanelConfig bar = vkr_ui_panel_config_default();
   bar.placement.column = 0u;
@@ -1855,8 +1870,9 @@ static void code_build_tabs(VkrEditorCode *code, VkrEditorUi *editor,
   bar.column_count = column_count;
   bar.rows = &row;
   bar.row_count = 1u;
-  bar.style.padding_pt = (VkrUiEdges){3, 6, 3, 6};
-  bar.style.gap_pt = 2.0f;
+  /* Tabs rest on the bar's lower edge; the buttons sit centered. */
+  bar.style.padding_pt = (VkrUiEdges){5, 8, 0, 8};
+  bar.style.gap_pt = 4.0f;
   bar.style.background_color = theme->header;
   if (!vkr_ui_panel_begin(ui, string8_lit("code.tabs"), &bar)) {
     return;
@@ -1864,14 +1880,27 @@ static void code_build_tabs(VkrEditorCode *code, VkrEditorUi *editor,
   uint32_t close = UINT32_MAX;
   for (uint32_t i = 0; i < code->document_count; ++i) {
     const CodeDocument *doc = code->documents[i];
+    const bool8_t active = i == code->active;
     (void)vkr_ui_push_id_u64(ui, i);
-    VkrUiWidgetConfig tab =
-        vkr_editor_text_config(theme->font_body, theme->text);
-    tab.placement.column = i * 2u;
+    /* One chip per file, as the dock's tabs: the name, then its close
+       button inside the chip's right edge. */
+    VkrUiWidgetConfig tab = vkr_ui_widget_config_default();
+    tab.placement.column = i;
     tab.placement.row = 0u;
-    vkr_editor_toggle_style(&tab, i == code->active);
+    tab.placement.justify = VKR_UI_ALIGN_STRETCH;
+    tab.placement.align = VKR_UI_ALIGN_STRETCH;
+    tab.fill = true_v;
+    tab.style.font_size_pt = theme->font_body;
+    tab.style.padding_pt = (VkrUiEdges){4, 32, 4, 10};
+    tab.style.corner_radius_pt = (Vec4){5, 5, 0, 0};
+    tab.style.background_color = active ? theme->panel : (Vec4){0};
+    tab.style.hover_background_color = active ? theme->panel : theme->row_hover;
+    tab.style.border_pt = active ? (VkrUiEdges){2, 0, 0, 0} : (VkrUiEdges){0};
+    tab.style.border_color = theme->accent;
+    tab.style.text_color = active ? theme->text : theme->text_secondary;
     tab.icon = VKR_UI_ICON_CODE;
-    tab.icon_size_pt = 12.0f;
+    tab.icon_size_pt = 13.0f;
+    tab.icon_color = (Vec4){0.80f, 0.66f, 0.98f, active ? 1.0f : 0.7f};
     tab.tooltip =
         string8_create_from_cstr((const uint8_t *)doc->path, strlen(doc->path));
     const String8 label =
@@ -1882,21 +1911,25 @@ static void code_build_tabs(VkrEditorCode *code, VkrEditorUi *editor,
       code->completion.open = false_v;
     }
     VkrUiWidgetConfig x = vkr_editor_icon_button_config(
-        i * 2u + 1u, 0u, VKR_UI_ICON_CLOSE,
+        i, 0u, VKR_UI_ICON_CLOSE,
         doc->dirty ? string8_lit("Close, discarding unsaved changes")
                    : string8_lit("Close"));
+    x.placement.justify = VKR_UI_ALIGN_END;
+    x.placement.align = VKR_UI_ALIGN_CENTER;
+    x.placement.margin_pt.right = 6.0f;
+    x.style.min_size_pt = x.style.max_size_pt = (Vec2){18.0f, 18.0f};
+    x.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+    x.icon_size_pt = 11.0f;
+    x.icon_color = active ? theme->text_secondary : theme->text_disabled;
     if (vkr_ui_button(ui, string8_lit("close"), (String8){0}, &x)) {
       close = i;
     }
     (void)vkr_ui_pop_id(ui);
   }
-  VkrUiWidgetConfig create =
-      vkr_editor_text_config(theme->font_body, theme->text);
-  create.placement.column = column_count - 2u;
-  create.placement.row = 0u;
+  VkrUiWidgetConfig create = code_button(column_count - 2u, 0u);
+  create.placement.margin_pt.bottom = 5.0f;
   vkr_editor_ghost_style(&create);
   create.icon = VKR_UI_ICON_ADD;
-  create.icon_size_pt = 12.0f;
   create.disabled = !vkr_editor_scripts_project_open(editor->scripts);
   create.tooltip = string8_lit("Create a script module in Scripts/");
   if (vkr_ui_button(ui, string8_lit("new"), string8_lit("New script"),
@@ -1905,10 +1938,8 @@ static void code_build_tabs(VkrEditorCode *code, VkrEditorUi *editor,
     code->naming_focus = true_v;
   }
   CodeDocument *active = code_active(code);
-  VkrUiWidgetConfig save =
-      vkr_editor_text_config(theme->font_body, theme->text);
-  save.placement.column = column_count - 1u;
-  save.placement.row = 0u;
+  VkrUiWidgetConfig save = code_button(column_count - 1u, 0u);
+  save.placement.margin_pt.bottom = 5.0f;
   vkr_editor_primary_style(&save, VKR_FONT_HANDLE_INVALID);
   save.icon = VKR_UI_ICON_SAVE;
   save.icon_size_pt = 12.0f;
@@ -1929,8 +1960,8 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack columns[] = {{96, VKR_UI_TRACK_PX},
                                 {1, VKR_UI_TRACK_FR},
-                                {72, VKR_UI_TRACK_PX},
-                                {72, VKR_UI_TRACK_PX}};
+                                {84, VKR_UI_TRACK_PX},
+                                {84, VKR_UI_TRACK_PX}};
   const VkrUiTrack row = {1, VKR_UI_TRACK_FR};
   VkrUiPanelConfig bar = vkr_ui_panel_config_default();
   bar.placement.column = 0u;
@@ -1939,8 +1970,8 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
   bar.column_count = ArrayCount(columns);
   bar.rows = &row;
   bar.row_count = 1u;
-  bar.style.padding_pt = (VkrUiEdges){3, 8, 3, 8};
-  bar.style.gap_pt = 6.0f;
+  bar.style.padding_pt = (VkrUiEdges){5, 10, 5, 10};
+  bar.style.gap_pt = 8.0f;
   bar.style.background_color = theme->panel;
   if (!vkr_ui_panel_begin(ui, string8_lit("code.naming"), &bar)) {
     return;
@@ -1960,17 +1991,13 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
     ui->focused_is_text = true_v;
     code->naming_focus = false_v;
   }
-  VkrUiWidgetConfig field =
-      vkr_editor_text_config(theme->font_body, theme->text);
-  field.placement.column = 1u;
-  field.placement.row = 0u;
+  VkrUiWidgetConfig field = code_button(1u, 0u);
   vkr_editor_field_style(&field);
+  field.style.padding_pt = (VkrUiEdges){4, 8, 4, 8};
   field.tooltip = string8_lit("Letters, digits and underscores, such as Door");
   (void)vkr_ui_text_field(ui, string8_lit("name"), &name, &field);
   code->name_length = name.length;
-  VkrUiWidgetConfig ok = vkr_editor_text_config(theme->font_body, theme->text);
-  ok.placement.column = 2u;
-  ok.placement.row = 0u;
+  VkrUiWidgetConfig ok = code_button(2u, 0u);
   vkr_editor_primary_style(&ok, VKR_FONT_HANDLE_INVALID);
   ok.disabled = !code->name_length;
   const bool8_t enter =
@@ -1984,6 +2011,12 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
     char error[160];
     if (vkr_editor_scripts_create_module(editor->scripts, name_text, path,
                                          sizeof(path), error, sizeof(error))) {
+      /* An object waiting for a new script gets this one once it loads. */
+      if (editor->script_attach_entity.u64 &&
+          !editor->script_attach_module[0]) {
+        snprintf(editor->script_attach_module,
+                 sizeof(editor->script_attach_module), "%s", name_text);
+      }
       code->naming = false_v;
       code->name_length = 0u;
       snprintf(code->status, sizeof(code->status), "Created %s; building it",
@@ -1993,14 +2026,14 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
       snprintf(code->status, sizeof(code->status), "%s", error);
     }
   }
-  VkrUiWidgetConfig cancel =
-      vkr_editor_text_config(theme->font_body, theme->text);
-  cancel.placement.column = 3u;
-  cancel.placement.row = 0u;
+  VkrUiWidgetConfig cancel = code_button(3u, 0u);
   vkr_editor_ghost_style(&cancel);
   if (vkr_ui_button(ui, string8_lit("cancel"), string8_lit("Cancel"),
                     &cancel)) {
     code->naming = false_v;
+    if (!editor->script_attach_module[0]) {
+      editor->script_attach_entity = VKR_ENTITY_ID_INVALID;
+    }
   }
   (void)vkr_ui_panel_end(ui);
 }
@@ -2173,10 +2206,16 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
   /* Opaque, so the code below never reads through the list. */
   popup.style.background_color = theme->popup;
   popup.style.background_color.w = 1.0f;
-  popup.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+  popup.style.padding_pt = (VkrUiEdges){5, 5, 5, 5};
   popup.style.gap_pt = 0.0f;
-  const Vec2 size = {detail ? 460.0f : 300.0f,
-                     (float32_t)rows * CODE_ROW_PT + 6.0f};
+  /* Wide enough for the longest name or the signature, within bounds. */
+  size_t longest = detail ? strlen(detail) : 0u;
+  for (uint32_t i = 0; i < completion->count; ++i) {
+    longest = Max(longest, strlen(completion->items[i].name));
+  }
+  const Vec2 size = {
+      vkr_clamp_f32((float32_t)longest * cell.x + 58.0f, 220.0f, 520.0f),
+      (float32_t)rows * CODE_ROW_PT + 10.0f};
   if (y_pt + size.y > body.height / scale - 24.0f &&
       y_pt - CODE_LINE_PT - size.y >= 0.0f) {
     y_pt -= CODE_LINE_PT + size.y;
@@ -2202,22 +2241,50 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
   };
   for (uint32_t i = 0; i < completion->count; ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
+    /* Each kind keeps its highlighting color on the icon. */
+    static const Vec4 kind_colors[] = {
+        [CODE_SYMBOL_KEYWORD] = {0.80f, 0.55f, 0.95f, 1.0f},
+        [CODE_SYMBOL_TYPE] = {0.40f, 0.78f, 0.95f, 1.0f},
+        [CODE_SYMBOL_FUNCTION] = {0.95f, 0.80f, 0.45f, 1.0f},
+        [CODE_SYMBOL_MEMBER] = {0.62f, 0.78f, 0.98f, 1.0f},
+        [CODE_SYMBOL_CONSTANT] = {0.55f, 0.85f, 0.60f, 1.0f},
+        [CODE_SYMBOL_LOCAL] = {0.80f, 0.82f, 0.86f, 1.0f},
+    };
     VkrUiWidgetConfig row =
         vkr_editor_text_config(theme->font_body, theme->text);
     row.placement.column = 0u;
     row.placement.row = i;
+    row.placement.justify = VKR_UI_ALIGN_STRETCH;
+    row.placement.align = VKR_UI_ALIGN_STRETCH;
+    row.fill = true_v;
     vkr_editor_ghost_style(&row);
+    row.style.padding_pt = (VkrUiEdges){2, 8, 2, 6};
+    row.style.text_color = theme->text;
     row.text.font = editor->mono_font;
     row.icon = icons[completion->items[i].kind];
     row.icon_size_pt = 11.0f;
+    row.icon_color = kind_colors[completion->items[i].kind];
     if (i == completion->selected) {
       row.style.background_color = vkr_ui_color_alpha(theme->accent, 0.45f);
+      row.style.hover_background_color = row.style.background_color;
     }
-    if (vkr_ui_button(
-            ui, string8_lit("item"),
-            string8_create_from_cstr((const uint8_t *)completion->items[i].name,
-                                     strlen(completion->items[i].name)),
-            &row)) {
+    /* The row takes the click; its name reads from the leading edge. */
+    VkrUiWidgetConfig hit = row;
+    hit.icon = VKR_UI_ICON_NONE;
+    const bool8_t clicked =
+        vkr_ui_button(ui, string8_lit("item"), (String8){0}, &hit);
+    VkrUiWidgetConfig name = row;
+    name.placement.justify = VKR_UI_ALIGN_START;
+    name.placement.align = VKR_UI_ALIGN_CENTER;
+    name.fill = false_v;
+    name.style.background_color = (Vec4){0};
+    name.style.hover_background_color = VKR_UI_COLOR_NONE;
+    vkr_ui_label(
+        ui, string8_lit("name"),
+        string8_create_from_cstr((const uint8_t *)completion->items[i].name,
+                                 strlen(completion->items[i].name)),
+        &name);
+    if (clicked) {
       completion->selected = i;
       code_accept_completion(code, doc);
       ui->focused_id = code->view_id;
@@ -2230,7 +2297,8 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
     hint.placement.column = 0u;
     hint.placement.row = completion->count;
     hint.text.font = editor->mono_font;
-    hint.placement.margin_pt.left = 6.0f;
+    hint.placement.align = VKR_UI_ALIGN_CENTER;
+    hint.placement.margin_pt.left = 8.0f;
     vkr_ui_label(
         ui, string8_lit("detail"),
         string8_create_from_cstr((const uint8_t *)detail, strlen(detail)),
@@ -2256,7 +2324,7 @@ static void code_build_problems(VkrEditorCode *code, VkrEditorUi *editor,
   panel.rows = tracks;
   panel.row_count = shown;
   panel.style.background_color = theme->panel;
-  panel.style.padding_pt = (VkrUiEdges){2, 6, 2, 6};
+  panel.style.padding_pt = (VkrUiEdges){4, 8, 4, 8};
   if (!vkr_ui_panel_begin(ui, string8_lit("code.problems"), &panel)) {
     return;
   }
@@ -2269,7 +2337,11 @@ static void code_build_problems(VkrEditorCode *code, VkrEditorUi *editor,
         theme->font_caption, diagnostic->error ? theme->error : theme->warning);
     item.placement.column = 0u;
     item.placement.row = r++;
+    item.placement.justify = VKR_UI_ALIGN_STRETCH;
+    item.placement.align = VKR_UI_ALIGN_STRETCH;
+    item.fill = true_v;
     vkr_editor_ghost_style(&item);
+    item.style.padding_pt = (VkrUiEdges){3, 8, 3, 8};
     item.style.text_color = diagnostic->error ? theme->error : theme->warning;
     item.icon = VKR_UI_ICON_WARNING_FILL;
     item.icon_size_pt = 11.0f;
@@ -2330,7 +2402,7 @@ static void code_build_status(VkrEditorCode *code, VkrEditorUi *editor,
   status.placement.column = 0u;
   status.placement.row = row;
   status.placement.align = VKR_UI_ALIGN_CENTER;
-  status.placement.margin_pt = (VkrUiEdges){0, 8, 0, 8};
+  status.placement.margin_pt = (VkrUiEdges){0, 10, 0, 10};
   vkr_ui_label(ui, string8_lit("code.status"), text, &status);
 }
 
@@ -2343,20 +2415,20 @@ void vkr_editor_code_build(VkrEditorCode *code, VkrEditorUi *editor,
       CODE_PROBLEM_ROWS, vkr_editor_scripts_diagnostic_count(editor->scripts));
   VkrUiTrack rows[5];
   uint32_t row_count = 0u;
-  rows[row_count++] = (VkrUiTrack){32, VKR_UI_TRACK_PX};
+  rows[row_count++] = (VkrUiTrack){38, VKR_UI_TRACK_PX};
   const uint32_t naming_row = row_count;
   if (code->naming) {
-    rows[row_count++] = (VkrUiTrack){34, VKR_UI_TRACK_PX};
+    rows[row_count++] = (VkrUiTrack){40, VKR_UI_TRACK_PX};
   }
   const uint32_t view_row = row_count;
   rows[row_count++] = (VkrUiTrack){1, VKR_UI_TRACK_FR};
   const uint32_t problem_row = row_count;
   if (problem_count) {
     rows[row_count++] = (VkrUiTrack){
-        (float32_t)problem_count * CODE_ROW_PT + 4.0f, VKR_UI_TRACK_PX};
+        (float32_t)problem_count * CODE_ROW_PT + 8.0f, VKR_UI_TRACK_PX};
   }
   const uint32_t status_row = row_count;
-  rows[row_count++] = (VkrUiTrack){22, VKR_UI_TRACK_PX};
+  rows[row_count++] = (VkrUiTrack){26, VKR_UI_TRACK_PX};
   const VkrUiTrack column = {1, VKR_UI_TRACK_FR};
   VkrUiPanelConfig layout = vkr_ui_panel_config_default();
   layout.placement.column = 0u;

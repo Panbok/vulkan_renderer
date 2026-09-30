@@ -149,8 +149,8 @@ VkrUiRect vkr_editor_context_menu_rect(const VkrEditorUi *editor,
 VkrUiRect vkr_editor_context_submenu_rect(const VkrEditorUi *editor);
 /* After a creation request of object kind `kind`: a Script object opens its
    Script picker once it exists, so it gets its behavior in one step. */
-void vkr_editor_after_create(VkrEditorUi *editor,
-                             const VkrSampleUiFrame *frame, uint32_t kind);
+void vkr_editor_after_create(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             uint32_t kind);
 void vkr_editor_context_menu_build(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame);
 /* Toggle an entity's own visibility through the undoable edit journal. */

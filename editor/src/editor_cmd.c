@@ -665,6 +665,13 @@ static bool8_t cmd_run_script_new(CmdContext *ctx, const CmdDef *def,
                                         sizeof(ctx->message))) {
     return false_v;
   }
+  /* As the Script editor's Create: an object waiting on "New script" gets
+     this module's script once it loads. */
+  VkrEditorUi *editor = ctx->editor;
+  if (editor->script_attach_entity.u64 && !editor->script_attach_module[0]) {
+    snprintf(editor->script_attach_module, sizeof(editor->script_attach_module),
+             "%s", text);
+  }
   (void)vkr_editor_code_open(ctx->editor->code, ctx->editor, path);
   snprintf(ctx->message, sizeof(ctx->message), "Created %s", path);
   return true_v;

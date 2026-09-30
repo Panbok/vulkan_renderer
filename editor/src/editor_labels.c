@@ -213,10 +213,10 @@ static uint32_t editor_label_empties(const VkrScene *scene,
                                      VkrAllocator *scratch, VkrEntityId *out) {
   VkrWorld *world = scene->world;
   const uint32_t indices = world->dir.living;
-  uint8_t *parents =
-      indices ? vkr_allocator_alloc(scratch, indices,
-                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
-              : NULL;
+  uint8_t *parents = indices
+                         ? vkr_allocator_alloc(scratch, indices,
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                         : NULL;
   if (!parents) {
     return 0u;
   }

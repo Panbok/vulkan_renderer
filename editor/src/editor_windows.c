@@ -1800,6 +1800,34 @@ void vkr_editor_after_create(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
 }
 
+/* Attaches a module made by "New script" to the object that asked for it
+   once the module's types load. */
+static void editor_script_attach_update(VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame) {
+  const VkrEntityId entity = editor->script_attach_entity;
+  if (!entity.u64) {
+    return;
+  }
+  const VkrScene *scene = vkr_editor_entity_scene(frame, entity);
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+    editor->script_attach_entity = VKR_ENTITY_ID_INVALID;
+    return;
+  }
+  if (!editor->script_attach_module[0] ||
+      frame->scene_edit->action != VKR_SCENE_EDIT_NONE) {
+    return;
+  }
+  const VkrScriptModule *module =
+      frame->scripts
+          ? vkr_script_host_module(frame->scripts, editor->script_attach_module)
+          : NULL;
+  if (!module || module->retired || !module->type_count) {
+    return;
+  }
+  editor->script_attach_entity = VKR_ENTITY_ID_INVALID;
+  vkr_editor_request_script(frame, entity, module->types[0]);
+}
+
 /* Opens the Script picker of a just-created Script object beside it in the
    Scene, else at the pointer. */
 static void editor_script_pick_update(VkrEditorUi *editor,
@@ -2429,6 +2457,9 @@ static void editor_context_run(VkrEditorUi *editor,
     break;
   }
   case CONTEXT_SCRIPT_NEW:
+    /* The new module's script attaches to the object once it loads. */
+    editor->script_attach_entity = editor->context_entity;
+    editor->script_attach_module[0] = '\0';
     vkr_editor_code_new_script(editor->code, editor);
     break;
   case CONTEXT_SCRIPT_EDIT:
@@ -2630,6 +2661,7 @@ void vkr_editor_context_menu_build(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   editor_script_pick_update(editor, frame);
+  editor_script_attach_update(editor, frame);
   if (!editor->context_open)
     return;
   EditorContextItem items[EDITOR_CONTEXT_ITEM_CAPACITY];

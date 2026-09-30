@@ -244,12 +244,16 @@ Script submenu:
 
 Choosing a script adds its component with defaults, or replaces the current
 one in a single undo entry that restores the replaced values
-(`vkr_scene_edit_replace_component`). Add component also lists the loaded
+(`vkr_scene_edit_replace_component`). New script from an object's slot or
+menus makes the object wait for the module: once the new module loads, its
+first type becomes the object's script. The Outliner names each scripted
+object's script in a chip on its row. Add component also lists the loaded
 script types under Scripts, with New script, and adds one beside any others.
 
 The Add menu and Content's System/Objects list one Script object: an empty
 entity named Script whose Script picker opens beside it in the Scene once it
-exists. It shows the empty-object icon until a script is chosen, then the code
+exists. Made while a placed object of the same container is selected, it
+becomes that object's child at its origin. It shows the empty-object icon until a script is chosen, then the code
 icon. `create <type>` still
 makes an entity carrying a named script type. The Outliner shows scripted
 entities with a code icon. Double-clicking a scripted object in Content or

@@ -2631,8 +2631,7 @@ static void sample_track_context_click(VkrStandardSceneRuntime *application,
     state->context_armed =
         hit.has_target_coords && !application->ui_capture.mouse &&
         application->ui_system.mouse_input_layer == 0u &&
-        !vkr_standard_scene_runtime_editor_scene_rendering_stopped(
-            application);
+        !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application);
     state->context_press_x = x;
     state->context_press_y = y;
     state->context_press_time = vkr_platform_get_absolute_time();

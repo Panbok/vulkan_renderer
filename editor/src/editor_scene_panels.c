@@ -745,8 +745,7 @@ bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
       snprintf(linked, sizeof(linked), "%s/scripts/%s/src/%s_module.c",
                VKR_EDITOR_SCRIPT_SDK_ROOT, module_name, module_name);
   const FilePath path = {
-      .path = string8_create_from_cstr((const uint8_t *)linked,
-                                       strlen(linked)),
+      .path = string8_create_from_cstr((const uint8_t *)linked, strlen(linked)),
       .type = FILE_PATH_TYPE_ABSOLUTE};
   if (length > 0 && (uint32_t)length < sizeof(linked) && file_exists(&path)) {
     snprintf(out, capacity, "%s", linked);
@@ -864,8 +863,25 @@ bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
     vkr_type_defaults(object->type, values.component);
     values.fields |= VKR_SCENE_EDIT_COMPONENT;
   }
+  /* A Script object made while a placed object of the same container is
+     selected attaches to it as a child at its origin. */
+  VkrEntityId parent = VKR_ENTITY_ID_INVALID;
+  const VkrScene *selected_scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
+  if (!strcmp(object->word, "script") && selected_scene &&
+      vkr_scene_entity_alive(selected_scene, frame->selected_entity) &&
+      frame->selected_entity.parts.world == container &&
+      vkr_entity_get_component(selected_scene->world, frame->selected_entity,
+                               selected_scene->comp_transform)) {
+    parent = frame->selected_entity;
+    values.fields |= VKR_SCENE_EDIT_TRANSFORM;
+    values.position = vec3_zero();
+    values.rotation = vkr_quat_identity();
+    values.scale = vec3_one();
+  }
   Vec3 position;
-  if (drop_px && vkr_editor_viewport_drop_point(frame, *drop_px, &position)) {
+  if (!parent.u64 && drop_px &&
+      vkr_editor_viewport_drop_point(frame, *drop_px, &position)) {
     values.fields |= VKR_SCENE_EDIT_TRANSFORM;
     values.position = position;
     values.rotation = vkr_quat_identity();
@@ -873,6 +889,7 @@ bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
   }
   *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_CREATE,
                                              .values = values,
+                                             .parent = parent,
                                              .container = container};
   return true_v;
 }
@@ -1402,10 +1419,20 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       Vec4 icon_color;
       /* Names use the eye button's space on rows that do not show it. */
       const bool8_t show_eye = visibility && (row_hot || hidden || selected);
-      c = widget_at(
-          26 + indent, y,
-          Max(10.0f, w - (show_eye || n->cooking ? 58.0f : 36.0f) - indent),
-          row_h);
+      const float32_t trailing = show_eye || n->cooking ? 58.0f : 36.0f;
+      /* A scripted object names its script in a chip before the eye. */
+      const VkrTypeDesc *row_script =
+          vkr_editor_entity_script(row_scene, n->entity);
+      const float32_t chip_w =
+          row_script
+              ? Min(120.0f, (float32_t)strlen(row_script->label) * 6.4f + 28.0f)
+              : 0.0f;
+      const bool8_t show_chip =
+          row_script && w - trailing - indent - chip_w > 90.0f;
+      c = widget_at(26 + indent, y,
+                    Max(10.0f, w - trailing - indent -
+                                   (show_chip ? chip_w + 4.0f : 0.0f)),
+                    row_h);
       c.placement.align = VKR_UI_ALIGN_START;
       c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
       c.style.text_color = hidden     ? theme->text_disabled
@@ -1430,6 +1457,27 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       }
       vkr_ui_label(ui, string8_lit("node.label"),
                    (String8){.str = name.str, .length = preview_length}, &c);
+      if (show_chip) {
+        const Vec4 script_color = {0.80f, 0.66f, 0.98f, 1.0f};
+        c = widget_at(w - trailing - chip_w + 8.0f, y + 4.0f, chip_w - 4.0f,
+                      row_h - 8.0f);
+        c.placement.align = VKR_UI_ALIGN_START;
+        c.style.background_color = vkr_ui_color_alpha(
+            selected ? theme->text_on_accent : script_color, 0.16f);
+        c.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
+        c.style.padding_pt = (VkrUiEdges){1, 6, 1, 5};
+        c.style.font_size_pt = theme->font_caption;
+        c.style.text_color = selected ? theme->text_on_accent : script_color;
+        c.icon = VKR_UI_ICON_CODE;
+        c.icon_size_pt = 10.0f;
+        c.icon_color = c.style.text_color;
+        c.tooltip = string8_lit("The script this object runs");
+        vkr_ui_label(
+            ui, string8_lit("node.script"),
+            string8_create_from_cstr((const uint8_t *)row_script->label,
+                                     strlen(row_script->label)),
+            &c);
+      }
       if (n->cooking && !show_eye) {
         c = widget_at(w - 32, y + 2, 20, 20);
         c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
