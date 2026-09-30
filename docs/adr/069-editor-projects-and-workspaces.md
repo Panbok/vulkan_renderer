@@ -44,8 +44,10 @@ The import cooks scene geometry and copies the collision journal and its cooked
 proxy into the project. An empty Player Spawn entity carries a Player Start
 and the FPS module's `fps_player` component.
 The templates author their own daytime
-sky light and sun with clouds disabled; other unoverridden World components
-retain the normal inheritance rules.
+sky light and sun. Their cloud layer is disabled, and a disabled singleton
+does not resolve, so the World's clouds show while the scene inherits the
+World ([ADR-076](076-project-object-model.md)); other unoverridden World
+components retain the same inheritance rules.
 Blank and FPS Arena start in first person; RPG Grounds starts in third person
 through that component's [camera mode](073-native-gameplay-foundation.md).
 No starter scene enters the editor without loading a scene or automatically

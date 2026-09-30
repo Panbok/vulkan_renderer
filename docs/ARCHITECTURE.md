@@ -264,7 +264,8 @@ remain scene data. Explicit `--scene` retains legacy startup.
 Creating a project selects Blank, FPS Arena or RPG Grounds, or No starter scene.
 Starter scenes import Blender GLBs through the managed asset owner with an
 explicitly authored static collision proxy and an empty Player Spawn entity.
-Their daytime sky light and sun override the World, with clouds disabled;
+Their daytime sky light and sun override the World. Their disabled cloud layer
+does not resolve, so the World's clouds show while the scene inherits the World;
 their scene journal owns collision and their `fps_player` camera mode starts
 editor simulation in first person (Blank/FPS Arena) or third person (RPG Grounds).
 No starter scene publishes only the project. Opening a project loads its World
