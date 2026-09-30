@@ -551,7 +551,8 @@ def _rpg(materials):
     world.floor("earth")
     world.stripe("main_stone_path", (0, -7, 0.012), (6, 49, 0.014), "stone")
     world.stripe("cross_stone_path", (0, -4, 0.012), (58, 5, 0.014), "stone")
-    world.stripe("courtyard_paving", (0, 3, 0.012), (19, 14, 0.014), "floor")
+    # Paving sits 1cm below the crossing paths; coplanar tops z-fight in depth.
+    world.stripe("courtyard_paving", (0, 3, 0.005), (19, 14, 0.008), "floor")
     world.outline("courtyard_meter_border", (0, 3, 0.028), (18.7, 13.7), "stone_light", 0.05)
     for sign in (-1, 1):
         world.box("edge_retaining_wall", (sign * 31.75, 0, 0.55), (0.5, 64, 1.1), "stone")
