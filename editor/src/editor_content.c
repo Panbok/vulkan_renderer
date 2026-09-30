@@ -4983,6 +4983,16 @@ bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
   return true_v;
 }
 
+VkrEntityId vkr_editor_content_menu_entity(const VkrEditorContent *content) {
+  if (!content || content->menu_folder ||
+      content_shown_folder(content->menu_item) ||
+      content->menu_item >= content->count ||
+      content->entries[content->menu_item].kind != CONTENT_ENTITY) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  return content->entries[content->menu_item].entity;
+}
+
 bool8_t
 vkr_editor_content_folder_available(const VkrEditorContent *content,
                                     VkrEditorContentFolderCommand command) {

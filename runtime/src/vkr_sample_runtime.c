@@ -229,6 +229,22 @@ typedef struct State {
 
   bool8_t free_camera_use_gamepad;
   bool8_t free_camera_held;
+  /* A right press in the Scene that may end as a click: where and when it
+     began and how far the pointer moved while it flew the camera. */
+  bool8_t context_armed;
+  int32_t context_press_x;
+  int32_t context_press_y;
+  float64_t context_press_time;
+  int32_t context_motion;
+  /* The click ended; its pick runs when the picker is free. */
+  bool8_t context_click_pending;
+  /* The pending pick answers a context click. */
+  bool8_t context_pick;
+  /* Published to the UI once: open the object menu for this entity, or the
+     creation menu when none, at this window pixel. */
+  bool8_t context_ready;
+  VkrEntityId context_entity;
+  Vec2 context_position_px;
 
   // Scene system demo
   VkrResourceHandleInfo scene_resource;
@@ -1059,6 +1075,7 @@ vkr_internal void vkr_standard_scene_runtime_clear_gizmo_handles(
 vkr_internal void vkr_standard_scene_runtime_cancel_gizmo_pick(
     VkrStandardSceneRuntime *application) {
   vkr_picking_cancel(&application->picking);
+  state->context_pick = false_v;
   state->gizmo_hover_pending = false_v;
   state->gizmo_drag.pending_pick = false_v;
   state->gizmo_drag.pending_select = false_v;
@@ -2596,6 +2613,56 @@ vkr_internal void vkr_standard_scene_runtime_apply_free_camera_input(
   }
 }
 
+/* A right press in the Scene flies the camera; released within a moment
+ * without flying, it is a click that opens the menu of the object under the
+ * pointer, as in Unreal. */
+static void sample_track_context_click(VkrStandardSceneRuntime *application,
+                                       InputState *input) {
+  if (!application->editor_viewport.enabled) {
+    return;
+  }
+  if (input_button_just_pressed(input, BUTTON_RIGHT) &&
+      input_is_button_down(input, BUTTON_RIGHT)) {
+    int32_t x = 0;
+    int32_t y = 0;
+    input_get_button_press_position(input, BUTTON_RIGHT, &x, &y);
+    const VkrViewportHitInfo hit =
+        vkr_standard_scene_runtime_get_viewport_hit_info(application, x, y);
+    state->context_armed =
+        hit.has_target_coords && !application->ui_capture.mouse &&
+        application->ui_system.mouse_input_layer == 0u &&
+        !vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+            application);
+    state->context_press_x = x;
+    state->context_press_y = y;
+    state->context_press_time = vkr_platform_get_absolute_time();
+    state->context_motion = 0;
+    return;
+  }
+  if (!state->context_armed) {
+    return;
+  }
+  int32_t dx = 0;
+  int32_t dy = 0;
+  input_get_mouse_delta(input, &dx, &dy);
+  state->context_motion += abs(dx) + abs(dy);
+  static const Keys flight[] = {KEY_W, KEY_A, KEY_S, KEY_D, KEY_Q, KEY_E};
+  for (uint32_t i = 0; i < ArrayCount(flight); ++i) {
+    if (input_is_key_down(input, flight[i])) {
+      state->context_armed = false_v;
+      return;
+    }
+  }
+  if (input_button_just_released(input, BUTTON_RIGHT)) {
+    state->context_armed = false_v;
+    const float32_t reach = 6.0f * application->ui_system.content_scale;
+    if ((float32_t)state->context_motion <= reach &&
+        vkr_platform_get_absolute_time() - state->context_press_time < 0.45) {
+      state->context_click_pending = true_v;
+    }
+  }
+}
+
 vkr_internal void
 vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
                                         float64_t delta_time) {
@@ -2610,6 +2677,11 @@ vkr_standard_scene_runtime_handle_input(VkrStandardSceneRuntime *application,
 
   if (!vkr_standard_scene_runtime_handle_hotkeys(application, input_state)) {
     return;
+  }
+
+  if (!(vkr_script_host_active(&state->scripts) &&
+        application->editor_viewport.simulation_running)) {
+    sample_track_context_click(application, input_state);
   }
 
   if (application->editor_viewport.enabled &&
@@ -3180,6 +3252,7 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
     state->gizmo_hover_pending = false_v;
     state->gizmo_drag.pending_pick = false_v;
     state->gizmo_drag.pending_select = false_v;
+    state->context_pick = false_v;
     return;
   }
 
@@ -3233,6 +3306,29 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
     }
   }
 
+  /* A right click picks like a left click that selects, then opens a
+     menu. It waits for a hover pick in flight. */
+  if (state->context_click_pending && !state->gizmo_drag.active &&
+      !state->gizmo_drag.pending_pick) {
+    if (state->gizmo_hover_pending) {
+      vkr_picking_cancel(picking);
+      state->gizmo_hover_pending = false_v;
+    }
+    const VkrViewportHitInfo press_info =
+        vkr_standard_scene_runtime_get_viewport_hit_info(
+            application, state->context_press_x, state->context_press_y);
+    state->context_click_pending = false_v;
+    if (!vkr_picking_is_pending(picking) &&
+        vkr_standard_scene_runtime_request_picking(application, picking,
+                                                   &press_info)) {
+      state->gizmo_drag.pending_pick = true_v;
+      state->gizmo_drag.pending_select = true_v;
+      state->gizmo_drag.pick_position = press_info.position;
+      state->gizmo_drag.released = false_v;
+      state->context_pick = true_v;
+    }
+  }
+
   bool8_t mouse_moved = (mouse_x != prev_mouse_x || mouse_y != prev_mouse_y);
   if (!state->gizmo_drag.active && !state->gizmo_drag.pending_pick &&
       !state->gizmo_hover_pending && !vkr_picking_is_pending(picking) &&
@@ -3249,6 +3345,8 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
 
   if (state->gizmo_drag.pending_pick && !vkr_picking_is_pending(picking)) {
     state->gizmo_drag.pending_pick = false_v;
+    const bool8_t context = state->context_pick;
+    state->context_pick = false_v;
 
     VkrAllocator *frame_alloc = &application->frame_allocator;
     String8 picked_text = {0};
@@ -3330,7 +3428,12 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
         vkr_gizmo_system_set_hot_handle(&application->gizmo_system, handle);
         bool8_t drag_button_down =
             input_is_button_down(state->input_state, BUTTON_LEFT);
-        if ((drag_button_down || state->gizmo_drag.released) &&
+        /* A right click on a handle opens the selection's menu. */
+        if (context && state->has_selection) {
+          picked_entity = state->selected_entity;
+          picked_entity_valid = true_v;
+        }
+        if (!context && (drag_button_down || state->gizmo_drag.released) &&
             handle != VKR_GIZMO_HANDLE_NONE) {
           if (vkr_standard_scene_runtime_begin_gizmo_drag(application,
                                                           handle)) {
@@ -3380,6 +3483,13 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
         state->selected_entity = VKR_ENTITY_ID_INVALID;
         state->has_selection = false_v;
       }
+    }
+    if (context) {
+      state->context_ready = true_v;
+      state->context_entity =
+          picked_entity_valid ? picked_entity : VKR_ENTITY_ID_INVALID;
+      state->context_position_px = (Vec2){(float32_t)state->context_press_x,
+                                          (float32_t)state->context_press_y};
     }
 
     if (picked_text.length > 0 &&
@@ -3734,6 +3844,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scene_shortcuts_blocked = &requests->scene_shortcuts_blocked,
       .scene = application->active_scene,
       .selected_entity = state->selected_entity,
+      .context_requested = state->context_ready,
+      .context_entity = state->context_entity,
+      .context_position_px = state->context_position_px,
       .scene_generation = application->scene_generation,
       .edits = &state->edits,
       .scene_edit = &requests->scene_edit,
@@ -3775,6 +3888,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
         application, application->ui_system.target_width,
         application->ui_system.target_height, &frame.mapping);
   }
+  /* The UI sees a context click once. */
+  state->context_ready = false_v;
   return state->ui.build(state->ui.state, &frame);
 }
 

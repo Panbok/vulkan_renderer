@@ -199,6 +199,8 @@ bool8_t vkr_editor_content_take_object_action(VkrEditorContent *content,
  * landed on empty space and asks for the shown folder's menu instead. */
 bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
                                      Vec2 *position_pt, bool8_t *folder);
+/** The loaded object the open item menu acts on, or invalid. */
+VkrEntityId vkr_editor_content_menu_entity(const VkrEditorContent *content);
 /** The menu item's label for `command` ("Open scene", "Frame in viewport",
  * ...) and whether it applies; running it acts on the menu's item. */
 const char *vkr_editor_content_menu_label(const VkrEditorContent *content,

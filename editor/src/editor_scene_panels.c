@@ -6,6 +6,7 @@
 #include "editor_project_store.h"
 #include "editor_projects.h"
 #include "editor_scripts.h"
+#include "filesystem/filesystem.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_types.h"
@@ -709,14 +710,15 @@ bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
       }
     }
   }
-  if (!module_name || !editor->scripts) {
+  if (!module_name) {
     return false_v;
   }
   /* The module's `<Name>.c`, else its first C source. */
   const char *found = NULL;
   char wanted[VKR_EDITOR_SCRIPT_NAME + 2u];
   snprintf(wanted, sizeof(wanted), "%s.c", module_name);
-  const uint32_t files = vkr_editor_scripts_file_count(editor->scripts);
+  const uint32_t files =
+      editor->scripts ? vkr_editor_scripts_file_count(editor->scripts) : 0u;
   for (uint32_t i = 0; i < files; ++i) {
     const VkrEditorScriptFile *file =
         vkr_editor_scripts_file(editor->scripts, i);
@@ -731,11 +733,27 @@ bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
       found = file->path;
     }
   }
-  if (!found) {
-    return false_v;
+  if (found) {
+    snprintf(out, capacity, "%s", found);
+    return true_v;
   }
-  snprintf(out, capacity, "%s", found);
-  return true_v;
+  /* A module linked into the editor, such as the FPS sample, keeps its
+     sources in this repository's scripts/<name>/src. */
+#if defined(VKR_EDITOR_SCRIPT_SDK_ROOT)
+  char linked[VKR_EDITOR_SCRIPT_PATH];
+  const int32_t length =
+      snprintf(linked, sizeof(linked), "%s/scripts/%s/src/%s_module.c",
+               VKR_EDITOR_SCRIPT_SDK_ROOT, module_name, module_name);
+  const FilePath path = {
+      .path = string8_create_from_cstr((const uint8_t *)linked,
+                                       strlen(linked)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (length > 0 && (uint32_t)length < sizeof(linked) && file_exists(&path)) {
+    snprintf(out, capacity, "%s", linked);
+    return true_v;
+  }
+#endif
+  return false_v;
 }
 
 bool8_t vkr_editor_open_entity_script(VkrEditorUi *editor,
@@ -744,9 +762,28 @@ bool8_t vkr_editor_open_entity_script(VkrEditorUi *editor,
   char path[VKR_EDITOR_SCRIPT_PATH];
   const VkrTypeDesc *type =
       vkr_editor_entity_script(vkr_editor_entity_scene(frame, entity), entity);
-  return type &&
-         vkr_editor_script_source(editor, frame, type, path, sizeof(path)) &&
-         vkr_editor_code_open(editor->code, editor, path);
+  if (!type) {
+    return false_v;
+  }
+  if (vkr_editor_script_source(editor, frame, type, path, sizeof(path)) &&
+      vkr_editor_code_open(editor->code, editor, path)) {
+    /* A linked module's edits apply once the editor is rebuilt. */
+    if (!vkr_editor_scripts_module_of(editor->scripts, path)) {
+      char text[160];
+      snprintf(text, sizeof(text),
+               "%s is built into the editor; saved changes apply after a "
+               "rebuild",
+               type->label);
+      vkr_editor_toast(editor, VKR_UI_ICON_INFO_FILL, vkr_ui_theme()->accent,
+                       text);
+    }
+    return true_v;
+  }
+  char text[160];
+  snprintf(text, sizeof(text), "%s has no source to open", type->label);
+  vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
+                   text);
+  return false_v;
 }
 
 void vkr_editor_scene_panels_request_rename(VkrEditorScenePanels *panels) {
@@ -1319,13 +1356,16 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
         name = string8_lit("(unnamed)");
       c.tooltip = name;
       if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c)) {
-        /* A second click within 0.4 s frames the object in the Scene. */
+        /* A second click within 0.4 s frames the object in the Scene and
+           opens its script when it has one. */
         const float64_t now = vkr_platform_get_absolute_time();
         const bool8_t twice =
             p->click_entity.u64 == n->entity.u64 && now - p->click_time < 0.4;
         *frame->scene_edit = (VkrSceneEditRequest){
             .action = twice ? VKR_SCENE_EDIT_FRAME : VKR_SCENE_EDIT_SELECT,
             .entity = n->entity};
+        if (twice)
+          (void)vkr_editor_open_entity_script(editor, frame, n->entity);
         p->click_entity = twice ? VKR_ENTITY_ID_INVALID : n->entity;
         p->click_time = now;
       }

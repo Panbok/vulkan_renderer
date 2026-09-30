@@ -195,7 +195,11 @@ inputs change, then emits only its visible window. Display slots are bounded;
 selection uses generation-bearing entity IDs rather than row positions. Rows
 show a caret, a type icon and a visibility toggle; right-click opens Frame,
 Hide/Show, Rename, Copy name, Script and Add component submenus, Detach and
-Delete. One context-menu table serves every opener:
+Delete; a double-click frames the object and opens its script. A right click
+in the Scene that neither moves the pointer nor flies the camera within
+0.45 s picks under the pointer, selects the object and opens the same menu,
+or the creation menu over empty space; a longer or moving right press flies
+the camera as before. One context-menu table serves every opener:
 right-clicking a dock tab offers Close and Reset layout, and right-clicking the
 Console offers Copy selected and Clear. Menus hold up to 48 rows of items,
 separators and headings and one level of submenus, which open beside their

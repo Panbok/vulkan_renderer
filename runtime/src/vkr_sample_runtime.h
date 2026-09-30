@@ -229,6 +229,11 @@ typedef struct VkrSampleUiFrame {
    */
   bool8_t *scene_shortcuts_blocked;
   VkrEntityId selected_entity;
+  /* A right click in the Scene, once: the object it picked, or invalid for
+   * empty space, and the window pixel it happened at. */
+  bool8_t context_requested;
+  VkrEntityId context_entity;
+  Vec2 context_position_px;
   uint64_t scene_generation;
   const VkrSceneEditState *edits;
   VkrSceneEditRequest *scene_edit;

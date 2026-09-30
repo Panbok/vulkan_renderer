@@ -391,6 +391,23 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                 : VKR_EDITOR_CONTEXT_CONTENT,
                             content_menu_pt);
     editor->context_container = vkr_editor_create_container(frame);
+    editor->context_entity = vkr_editor_content_menu_entity(editor->content);
+  }
+  /* A right click in the Scene opens the menu of the object it picked, or
+     the creation menu over empty space. */
+  if (frame->context_requested) {
+    const float32_t scale = frame->ui->content_scale;
+    const Vec2 point = {frame->context_position_px.x / scale,
+                        frame->context_position_px.y / scale};
+    const VkrScene *scene =
+        vkr_editor_entity_scene(frame, frame->context_entity);
+    if (scene && vkr_scene_entity_alive(scene, frame->context_entity)) {
+      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_ENTITY, point);
+      editor->context_entity = frame->context_entity;
+    } else {
+      vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_CREATE, point);
+      editor->context_container = vkr_editor_create_container(frame);
+    }
   }
   vkr_editor_context_menu_build(editor, frame);
   /* A dragged Content item draws above every panel and drops on the Scene. */

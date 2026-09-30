@@ -1865,9 +1865,10 @@ static uint32_t editor_context_create_items(VkrEditorUi *editor,
 }
 
 /* Live world component types the context entity's container may hold and the
-   entity does not carry yet, grouped by category, and a physics body when it
-   has none. Scripts have their own slot. */
-static uint32_t editor_context_component_items(const VkrEditorUi *editor,
+   entity does not carry yet: a physics body when it has none, the loaded
+   scripts, then the rest grouped by category. */
+static uint32_t editor_context_component_items(VkrEditorUi *editor,
+                                               const VkrSampleUiFrame *frame,
                                                const VkrScene *scene,
                                                EditorContextItem *items) {
   uint32_t count = 0u;
@@ -1892,6 +1893,32 @@ static uint32_t editor_context_component_items(const VkrEditorUi *editor,
       eligible[eligible_count++] = i;
     }
   }
+  /* Scripts first: the loaded modules' types the entity does not carry, and
+     a new module. */
+  const VkrTypeDesc *scripts[EDITOR_CONTEXT_SCRIPT_MAX];
+  const uint32_t script_count =
+      vkr_editor_script_types(frame, scripts, ArrayCount(scripts));
+  context_separator(items, &count);
+  context_header(items, &count, "Scripts");
+  for (uint32_t i = 0; i < script_count; ++i) {
+    if (vkr_scene_get_typed(scene, editor->context_entity, scripts[i])) {
+      continue;
+    }
+    for (uint32_t w = 0; (type = vkr_scene_world_type(w)); ++w) {
+      if (type == scripts[i]) {
+        context_push(items, &count,
+                     (EditorContextItem){scripts[i]->label, VKR_UI_ICON_CODE,
+                                         NULL,
+                                         !vkr_scene_type_allowed(scene, type),
+                                         CONTEXT_ADD_COMPONENT, w});
+      }
+    }
+  }
+  context_push(
+      items, &count,
+      (EditorContextItem){"New script...", VKR_UI_ICON_ADD, NULL,
+                          !vkr_editor_scripts_project_open(editor->scripts),
+                          CONTEXT_SCRIPT_NEW});
   /* Each category once, in the order it first appears. */
   for (uint32_t i = 0; i < eligible_count; ++i) {
     const char *category = vkr_scene_world_type(eligible[i])->category;
@@ -2079,8 +2106,9 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
   case VKR_EDITOR_CONTEXT_CREATE:
     return editor_context_create_items(editor, frame, items);
   case VKR_EDITOR_CONTEXT_ADD_COMPONENT:
-    return entity_alive ? editor_context_component_items(editor, scene, items)
-                        : 0u;
+    return entity_alive
+               ? editor_context_component_items(editor, frame, scene, items)
+               : 0u;
   case VKR_EDITOR_CONTEXT_SCRIPT:
     return entity_alive
                ? editor_context_script_items(editor, frame, scene, items)
@@ -2132,6 +2160,29 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
                               !vkr_editor_content_menu_available(
                                   editor->content, (VkrEditorContentCommand)i),
                               CONTEXT_CONTENT_COMMAND, i});
+      /* A loaded object takes scripts and components here as in the
+         Outliner. */
+      if (i == VKR_EDITOR_CONTENT_COMMAND_PLACE && entity_alive) {
+        context_separator(items, &count);
+        if (vkr_entity_get_component(scene->world, editor->context_entity,
+                                     scene->comp_transform)) {
+          const VkrTypeDesc *script =
+              vkr_editor_entity_script(scene, editor->context_entity);
+          context_push(
+              items, &count,
+              (EditorContextItem){.label = "Script",
+                                  .icon = VKR_UI_ICON_CODE,
+                                  .shortcut = script ? script->label : NULL,
+                                  .opens = true_v,
+                                  .submenu = VKR_EDITOR_CONTEXT_SCRIPT});
+        }
+        context_push(
+            items, &count,
+            (EditorContextItem){.label = "Add component",
+                                .icon = VKR_UI_ICON_PUZZLE,
+                                .opens = true_v,
+                                .submenu = VKR_EDITOR_CONTEXT_ADD_COMPONENT});
+      }
     }
     return count;
   }

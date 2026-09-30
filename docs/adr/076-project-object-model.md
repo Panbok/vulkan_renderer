@@ -217,7 +217,8 @@ A right-click on empty space opens the shown folder's menu: New folder, New
 script, Import, a Create submenu of the object kinds grouped under headings,
 and Refresh. An object created from Content, by that submenu, a drop or a
 double-click, is then revealed: Content opens its folder and selects it. A
-right-click on an item opens the item's menu. A scene folder adds Load scene,
+right-click on an item opens the item's menu; a loaded object's menu adds the
+Outliner's Script and Add component submenus. A scene folder adds Load scene,
 which loads the scene into the viewport, before the four common commands:
 
 | Item | Open | Put into viewport | Rename | Delete |

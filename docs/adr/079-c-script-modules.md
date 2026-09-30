@@ -244,14 +244,17 @@ Script submenu:
 
 Choosing a script adds its component with defaults, or replaces the current
 one in a single undo entry that restores the replaced values
-(`vkr_scene_edit_replace_component`). Add component leaves script types to
-the slot.
+(`vkr_scene_edit_replace_component`). Add component also lists the loaded
+script types under Scripts, with New script, and adds one beside any others.
 
 The Add menu and Content's System/Objects list one Script object: an empty
 entity named Script whose slot then picks the behavior. `create <type>` still
-makes an entity carrying a named script type. Double-clicking a scripted
-object in Content opens its source. The Outliner shows scripted entities with
-a code icon.
+makes an entity carrying a named script type. The Outliner shows scripted
+entities with a code icon. Double-clicking a scripted object in Content or
+the Outliner opens its source: a project module's `<Name>.c`, or for a module linked into
+the editor, such as `fps`, `scripts/<name>/src/<name>_module.c` in this
+repository with a notice that saved changes apply after a rebuild. An object
+whose script has no source shows a notice instead.
 
 ### The FPS module
 
