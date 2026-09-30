@@ -211,13 +211,15 @@ class _World:
     def spawn(self, name, position, forward=(0, 1, 0), material="mint"):
         x, y, z = position
         surface = z - 0.04
-        self.cylinder("spawn_" + name + "_disk", (x, y, surface + 0.012), 0.7, 0.012,
+        # Ground paths, rulers and their labels reach 0.029m; keep 8mm+ between
+        # visible layers so the marker never z-fights them or itself at distance.
+        self.cylinder("spawn_" + name + "_disk", (x, y, surface + 0.034), 0.7, 0.008,
                       material, sides=24, collision=False)
-        self.cylinder("spawn_" + name + "_center", (x, y, surface + 0.022), 0.52, 0.008,
+        self.cylinder("spawn_" + name + "_center", (x, y, surface + 0.042), 0.52, 0.008,
                       "dark", sides=24, collision=False)
         arrow = self.mesh("spawn_" + name + "_arrow",
                           [(-0.15, -0.2, 0), (0.15, -0.2, 0), (0, 0.32, 0)],
-                          [(0, 1, 2)], material, (x, y, surface + 0.028), False)
+                          [(0, 1, 2)], material, (x, y, surface + 0.054), False)
         arrow.rotation_euler.z = math.atan2(-forward[0], forward[1])
         marker = self.object("spawn_" + name, None, position, collision=False)
         marker.empty_display_type = "ARROWS"
