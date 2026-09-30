@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-09-30
 authority: adr
 ---
 
@@ -99,7 +99,8 @@ to the template. The engine resource list lives in
 `vkr_player_shipping` (errors only, no developer UI) are prebuilt in every tree
 under `<build>/player`. So are `template.json` and `engine/assets`, which hold
 the render graph and runtime fonts of the former Bistro recipe with the files
-they name. On macOS the template's `lib/` holds the Vulkan loader, which the
+they name, and the default mannequin with its credits notice
+([ADR-080](080-default-mannequin-character.md)). On macOS the template's `lib/` holds the Vulkan loader, which the
 players link as `@rpath/libvulkan.1.dylib`; a package copies it into
 `Contents/Frameworks` and signs it before the application, and the players'
 rpath lists `@executable_path/../Frameworks`. Before, a package loaded the

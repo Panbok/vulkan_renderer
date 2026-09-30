@@ -154,9 +154,11 @@ bounded generation-bearing C handles. Scene records associate a character with
 an existing root entity at unit scale. Cold creation/destruction require pause;
 a before-physics hook supplies velocity/gravity and steps each motor at most once
 per tick. The native controller handles solid-body contacts, slopes, stairs and
-ground following; the client currently supplies direct five-metre/second movement
-and grounded jumping. Acceleration, jump buffering, coyote time and root motion
-remain policy work. Characters have no native inner-body proxy: rays, sensors and
+ground following; the client supplies five-metre/second movement (1.5 m/s
+while Shift is held) and grounded jumping. In third person it turns the body
+towards its movement with an acceleration and a turn rate
+([ADR-080](080-default-mannequin-character.md)); other views move at once.
+Jump buffering, coyote time and root motion remain policy work. Characters have no native inner-body proxy: rays, sensors and
 ordinary body-contact callbacks do not treat them as targets; character/character
 collision and damageable character proxies remain unimplemented.
 
@@ -177,11 +179,16 @@ and radians-based look. It clamps pitch and optionally retracts a sphere sweep
 against obstruction. The player supplies interpolated motor position and latest
 render look separately from authoritative tick aim. Switching modes is immediate;
 transition smoothing, view-specific arms/shadows and shoulder aim convergence
-remain future work. The fallback sample uses a cube child; authored scenes hide
-the player model in first person and show a camera-mounted weapon. Other views
-attach that weapon to the player's evaluated animation bone.
+remain future work. A spawned player's body is the default mannequin, or a box
+when the mannequin cannot load ([ADR-080](080-default-mannequin-character.md)).
+First person hides the player's body and shows a camera-mounted weapon. Other
+views attach that weapon to the player's evaluated animation bone.
 
 ### Character action animation
+
+A bank with the default mannequin's clip names is driven by the
+speed-synchronized locomotion controller of
+[ADR-080](080-default-mannequin-character.md) instead of the controller below.
 
 [FpsPlayerAnimation](../../scripts/fps/src/fps_player_animation.h) is a
 caller-owned C playback controller borrowing the scene's animation player. Cold
@@ -225,7 +232,10 @@ and the player applies the mode when it attaches. One separate entity carrying
 weapon. Both entities must be roots with unit scale. The module rejects
 duplicate players or weapons and a weapon without a player, and attachment
 checks the loaded animation and motor constraints. Without an `fps_player`, a
-Player Start spawns a capsule player ([ADR-079](079-c-script-modules.md)).
+Player Start spawns a player ([ADR-079](079-c-script-modules.md)) whose body is
+the default mannequin ([ADR-080](080-default-mannequin-character.md)). An
+`fps_player` with no animation, mesh or shape of its own, such as the templates'
+Player Spawn, gets the mannequin as well.
 The [default project scenes](../../assets/templates/blank.scene.json) give an
 empty Player Spawn entity both a Player Start and an `fps_player`. Their
 separate static collision proxies belong to each template's scene journal.

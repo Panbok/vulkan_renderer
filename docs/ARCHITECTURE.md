@@ -496,13 +496,21 @@ version changed, and compiler diagnostics mark the editor's gutter. The FPS
 module, linked into the app, editor and
 player, uses ordered input, a Jolt character capsule and a first/third-person
 or shoulder camera rig. The player is an `fps_player` entity, or a capsule
-spawned at the resolved Player Start. `--gameplay` adds a training platform in
-Bistro, and an `fps_weapon` entity follows the player's animated hand.
+spawned at the resolved Player Start. Its body is its own animation, mesh or
+shape, else the default mannequin, which `vkr_scene_spawn_model` instantiates
+from the engine content ([ADR-080](adr/080-default-mannequin-character.md)).
+`--gameplay` adds a training platform in Bistro, and an `fps_weapon` entity
+follows the player's animated hand.
 Transient evaluated world matrices turn the avatar and attach its weapon without
 changing authored TRS; presentation propagation does not consume simulation debt.
-Editor pause and saved recall preserve the editing camera. The player selects
-named locomotion, airborne, stance and weapon clips through an interruptible C
-playback controller; animation still advances only on the scene clock. Ctrl
+Editor pause and saved recall preserve the editing camera. A bank with the
+mannequin's clip names is posed by a speed-synchronized locomotion controller:
+one footfall phase advanced by distance over the blended stride, direction and
+gait blends, crouch and jump states, posed per presented frame at the
+interpolated root's time through `animation_sample_blend`. In third person the
+body turns towards its movement with acceleration. Other banks select named
+locomotion, airborne, stance and weapon clips through an interruptible C
+playback controller whose animation advances on the scene clock. Ctrl
 requests a prebuilt crouch capsule and clearance-checked standing. Adjacent
 same-tick mouse look samples coalesce without crossing discrete actions, and
 simulation faults preserve specific diagnostics. Losing gameplay input focus

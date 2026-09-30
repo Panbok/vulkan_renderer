@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-27
+updated: 2026-09-30
 authority: adr
 ---
 
@@ -105,6 +105,11 @@ palette sizes and source-index-to-entity mapping. This initial binding requires 
 version 18 mesh with skin definitions. Rigid-only version 17 assets do not yet carry
 the matching animation identity. Binding against modified source rest matrices is
 rejected; the authored wrapper remains the placement transform.
+
+[`vkr_scene_spawn_model`](../../runtime/src/renderer/systems/vkr_scene_model.h)
+makes the same binding at runtime: it instantiates a cooked mesh's source nodes
+under a live wrapper and attaches its bank, and the scene releases them with
+the wrapper ([ADR-080](080-default-mannequin-character.md)).
 
 Scene-owned mappings retain full entity generations, not ECS component pointers.
 The scene advances each player after authored transform propagation. Deleting the

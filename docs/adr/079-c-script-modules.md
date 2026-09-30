@@ -304,7 +304,9 @@ template written with them; hand-written modules keep working.
 
 A presentation override (`set_evaluated_transform`) replaces the rigid-body
 pose, so a script that decorates a physics object starts from
-`physics_world_matrix`, appended to `VkrScriptApi`. The template spins its
+`physics_world_matrix`, appended to `VkrScriptApi`. `spawn_model`,
+`despawn_model`, `animation_sample_blend` and `renders_mesh` follow it for
+the default mannequin ([ADR-080](080-default-mannequin-character.md)). The template spins its
 objects on top of that simulated pose after each tick, so a body running it
 still falls; modules made from the earlier template spin on their start pose
 and hold a body in place.
@@ -315,15 +317,21 @@ and hold a body in place.
 `runtime/src/gameplay` client, now called through the API table. It receives
 input through its `input` hook. It registers two component types:
 
-- `fps_player`: move, crouch and jump speed, magazine and reserve.
+- `fps_player`: move, walk, crouch and jump speed, magazine and reserve,
+  camera mode, and the third-person orient-to-movement, acceleration and turn
+  rate.
 - `fps_weapon`: the animation bone that holds the weapon.
 
 At start:
 
 - **Authored player.** An `fps_player` entity becomes the player. With a
-  Player Start, its motor spawns at the start's position and yaw.
+  Player Start, its motor spawns at the start's position and yaw. Its own
+  animation, mesh or shape is its body; without one it gets the default
+  mannequin.
 - **Spawned player.** Without an `fps_player` entity, a Player Start spawns a
-  capsule player, which the module destroys at stop.
+  capsule player with the default mannequin as its body
+  ([ADR-080](080-default-mannequin-character.md)). The module destroys both at
+  stop.
 - **Idle.** With neither, the module is idle.
 - **Sample content.** `--gameplay` adds the Bistro training platform with a
   Player Start on it.
