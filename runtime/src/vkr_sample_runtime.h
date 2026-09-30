@@ -60,8 +60,10 @@ typedef struct VkrSampleViewState {
   VkrSampleCameraView camera_view;
   VkrRenderMode render_mode;
   float32_t grid_spacing;
-  /* VkrGizmoMode tool filter; NONE shows every transform handle. */
+  /* VkrGizmoMode tool filter; NONE moves and rotates. */
   uint32_t gizmo_tool;
+  /* VkrGizmoSpace of move and rotate handles: world or local. */
+  uint32_t gizmo_space;
   /* Free-camera flight speed in world units per second. */
   float32_t camera_speed;
   bool8_t grid_enabled;
@@ -299,6 +301,9 @@ typedef struct VkrSampleUiClient {
   void *state;
   bool8_t (*initialize)(void *state, VkrUiDockTree *dock, VkrUiSystem *ui);
   void (*handle_input)(void *state, const InputState *input);
+  /** Optional: adds synthetic input, such as scripted pointer clicks, at the
+   * start of a frame, before the UI and scene read input. */
+  void (*feed_input)(void *state, InputState *input);
   VkrUiDockInputCapture (*build)(void *state, const VkrSampleUiFrame *frame);
   /** Managed editor publication; absent callbacks retain legacy sidecar saves.
    */

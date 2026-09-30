@@ -213,8 +213,12 @@ moves it. While an item is dragged, a translucent card with its icon and a
 name chip follows the pointer, highlighted where a drop takes effect. The
 card is a root overlay in the root's single cell.
 
-A right-click opens the item's menu. A scene folder adds Load scene, which
-loads the scene into the viewport, before the four common commands:
+A right-click on empty space opens the shown folder's menu: New folder, New
+script, Import, a Create submenu of the object kinds grouped under headings,
+and Refresh. An object created from Content, by that submenu, a drop or a
+double-click, is then revealed: Content opens its folder and selects it. A
+right-click on an item opens the item's menu. A scene folder adds Load scene,
+which loads the scene into the viewport, before the four common commands:
 
 | Item | Open | Put into viewport | Rename | Delete |
 |---|---|---|---|---|
@@ -226,8 +230,8 @@ loads the scene into the viewport, before the four common commands:
 | Content root | Open | Show the World in a document | — | — |
 
 Rename edits the name in place: Enter or leaving the field commits and Escape
-cancels. Double-click opens a folder or scene folder, selects an object, or
-adds an object kind. Dropping on the viewport loads a scene folder, adds an
+cancels. Double-click opens a folder or scene folder, selects an object and
+opens its script when it has one, or adds an object kind. Dropping on the viewport loads a scene folder, adds an
 object kind where the pointer meets the ground plane (else 8 m along its
 ray), or places a built mesh on the ground plane under the pointer. Loading
 the scene that is already loading or open does nothing, from Content, the

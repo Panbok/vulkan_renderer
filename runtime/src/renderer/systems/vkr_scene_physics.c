@@ -919,6 +919,12 @@ bool8_t vkr_scene_physics_attach(VkrScene *scene, VkrScenePhysicsSet *set,
   return true_v;
 }
 
+void vkr_scene_physics_drive(VkrScene *scene) {
+  if (scene && scene->physics_set && !scene->physics_set->driver) {
+    scene->physics_set->driver = scene;
+  }
+}
+
 uint32_t vkr_scene_physics_set_members(const VkrScene *scene,
                                        VkrScene **members, uint32_t capacity) {
   if (!scene || !capacity) {

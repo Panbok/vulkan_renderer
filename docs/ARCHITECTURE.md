@@ -346,7 +346,9 @@ workspace scene paths separate from the installation's bootstrap working
 directory. A focused Metal material-preview run produced and validated a 256×256
 sphere PNG; this establishes that preview path, not Vulkan pixel parity.
 
-Transform editing is available through Details and world-axis gizmos. Gizmo
+Transform editing is available through Details and gizmos with axis, plane
+and center handles in world or local space; scale handles stretch one axis of
+the object. Gizmo
 gestures use normalized displayed-image coordinates so internal resolution
 changes preserve active edits and delayed releases. The application submits a
 bounded geometry overlay to both backends after tonemapping;
@@ -468,7 +470,8 @@ weapon primitive provides tick-based ammo, reload and independent firing locks
 with reservation before consumption. Gameplay lives in C script modules
 ([ADR-079](adr/079-c-script-modules.md)). A module calls the engine only
 through the `VkrScriptApi` table of the runtime script host, registers its
-component types as Script objects and runs on the scene clock. The host is the
+component types, which an entity's Details script slot attaches, and runs on
+the scene clock; with no scene open, the World plays. The host is the
 scene's only simulation callback client and input observer. The editor session
 starts on the first run or step and ends at Reset.
 

@@ -95,6 +95,8 @@ typedef struct GizmoDragState {
   Vec3 start_scale;
   VkrQuat start_rotation;
   float32_t start_radius;
+  /* Axis handles: the start hit's signed distance along `axis`. */
+  float32_t start_distance;
   bool8_t uses_text_pivot;
   Vec3 text_pivot_local;
   Vec2 pick_position;
@@ -283,7 +285,8 @@ static void sample_script_request(VkrStandardSceneRuntime *application,
 static void sample_physics_attach(VkrStandardSceneRuntime *application,
                                   VkrScene *scene, bool8_t driver);
 vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application);
-vkr_internal void sample_world_update(VkrStandardSceneRuntime *application);
+vkr_internal void sample_world_update(VkrStandardSceneRuntime *application,
+                                      bool8_t advance);
 static bool8_t sample_additive_dirty(uint32_t slot);
 vkr_internal void sample_additive_remove(VkrStandardSceneRuntime *application,
                                          uint32_t slot);
@@ -1177,9 +1180,58 @@ vkr_internal void vkr_standard_scene_runtime_sync_world_text_transform(
       application, text->text_index, (String8){0}, &text_transform);
 }
 
+/* The loaded container holding `entity`, by its world id (ADR-076): the
+ * primary scene, the root World or an added scene; and its edit journal. */
+static VkrScene *sample_entity_container(VkrStandardSceneRuntime *application,
+                                         VkrEntityId entity,
+                                         VkrSceneEditState **out_edits) {
+  VkrScene *scene = NULL;
+  VkrSceneEditState *edits = NULL;
+  const uint32_t world = entity.parts.world;
+  if (world == VKR_SCENE_WORLD_ROOT_ID) {
+    scene = application->world_scene;
+    edits = &state->world_edits;
+  } else if (world == 0u) {
+    scene = application->active_scene;
+    edits = &state->edits;
+  } else if (world <= VKR_SCENE_ADDITIVE_MAX &&
+             state->additive_handles[world - 1u]) {
+    scene = vkr_scene_handle_get_scene(state->additive_handles[world - 1u]);
+    edits = &state->additive_edits[world - 1u];
+  }
+  if (out_edits) {
+    *out_edits = scene ? edits : NULL;
+  }
+  return scene;
+}
+
+/* The container Play simulates: the primary scene once it is ready, else the
+ * root World when no scene is open or loading (ADR-079). */
+static VkrScene *sample_simulated_scene(VkrStandardSceneRuntime *application,
+                                        VkrSceneHandle *out_handle) {
+  VkrSceneHandle handle = NULL;
+  if (state->scene_resource.as.scene && application->active_scene) {
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    if (vkr_resource_system_get_state(&state->scene_resource, &error) ==
+        VKR_RESOURCE_LOAD_STATE_READY) {
+      handle = state->scene_resource.as.scene;
+    }
+  } else if (!state->scene_resource.as.scene &&
+             !state->scene_resource.request_id && state->world_handle &&
+             !state->world_pending) {
+    handle = state->world_handle;
+  }
+  if (out_handle) {
+    *out_handle = handle;
+  }
+  return handle ? vkr_scene_handle_get_scene(handle) : NULL;
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
     VkrStandardSceneRuntime *application) {
-  VkrScene *scene = application->active_scene;
+  VkrSceneEditState *edits = NULL;
+  VkrScene *scene =
+      sample_entity_container(application, state->gizmo_edit_entity, &edits);
   if (!scene) {
     return false_v;
   }
@@ -1187,7 +1239,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
     const char *error = NULL;
     if (!vkr_scene_physics_apply(scene, state->gizmo_edit_entity,
                                  &state->gizmo_before.physics, &error)) {
-      snprintf(state->edits.status, sizeof(state->edits.status),
+      snprintf(edits->status, sizeof(edits->status),
                "Could not restore collider drag: %s",
                error ? error : "allocation failed");
       return false_v;
@@ -1196,7 +1248,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
     if (!vkr_scene_set_transform(
             scene, state->gizmo_drag.entity, state->gizmo_before.position,
             state->gizmo_before.rotation, state->gizmo_before.scale)) {
-      snprintf(state->edits.status, sizeof(state->edits.status),
+      snprintf(edits->status, sizeof(edits->status),
                "Could not restore the authored transform.");
       return false_v;
     }
@@ -1209,7 +1261,12 @@ vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
 vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
     VkrStandardSceneRuntime *application, Vec3 position, VkrQuat rotation,
     Vec3 scale) {
-  VkrScene *scene = application->active_scene;
+  VkrSceneEditState *edits = NULL;
+  VkrScene *scene =
+      sample_entity_container(application, state->gizmo_drag.entity, &edits);
+  if (!scene) {
+    return false_v;
+  }
   if (state->gizmo_before.fields & VKR_SCENE_EDIT_PHYSICS) {
     VkrScenePhysicsSnapshot snapshot = state->gizmo_before.physics;
     for (uint32_t i = 0; i < snapshot.collider_count; ++i) {
@@ -1223,7 +1280,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
       const char *error = NULL;
       if (!vkr_scene_physics_apply(scene, state->gizmo_edit_entity, &snapshot,
                                    &error)) {
-        snprintf(state->edits.status, sizeof(state->edits.status), "%s",
+        snprintf(edits->status, sizeof(edits->status), "%s",
                  error ? error : "Collider edit failed.");
         return false_v;
       }
@@ -1240,7 +1297,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
                                             transform->parent, &error) ||
       !vkr_scene_set_transform(scene, state->gizmo_drag.entity, position,
                                rotation, scale)) {
-    snprintf(state->edits.status, sizeof(state->edits.status), "%s",
+    snprintf(edits->status, sizeof(edits->status), "%s",
              error ? error : "Transform edit failed.");
     return false_v;
   }
@@ -1251,7 +1308,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
 
 vkr_internal void vkr_standard_scene_runtime_cancel_gizmo_edit(
     VkrStandardSceneRuntime *application) {
-  VkrScene *scene = application->active_scene;
+  VkrScene *scene =
+      sample_entity_container(application, state->gizmo_edit_entity, NULL);
   if (state->gizmo_edit_pending && scene &&
       !vkr_standard_scene_runtime_restore_gizmo_edit(application)) {
     state->gizmo_drag.active = false_v;
@@ -1360,7 +1418,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
     return false_v;
   }
 
-  VkrScene *scene = vkr_scene_handle_get_scene(state->scene_resource.as.scene);
+  VkrScene *scene =
+      sample_entity_container(application, state->selected_entity, NULL);
   if (!scene) {
     return false_v;
   }
@@ -1393,27 +1452,28 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
     return false_v;
   }
 
-  Vec3 axis = vec3_zero();
-  bool8_t has_axis = vkr_gizmo_handle_axis(handle, &axis);
+  /* Axes follow the gizmo's space; scale axes are always the object's. */
+  const int32_t axis_index = vkr_gizmo_handle_axis_index(handle);
+  const int32_t plane_index = vkr_gizmo_handle_plane_normal_index(handle);
+  bool8_t has_axis = axis_index >= 0;
+  Vec3 axis = has_axis ? vkr_gizmo_system_axis(&application->gizmo_system, mode,
+                                               (uint32_t)axis_index)
+                       : vec3_zero();
   Vec3 plane_normal;
-
-  if (mode == VKR_GIZMO_MODE_SCALE) {
-    axis = vec3_zero();
-    has_axis = false_v;
-  }
 
   if (mode == VKR_GIZMO_MODE_ROTATE) {
     if (!has_axis) {
       axis = vec3_normalize(camera->forward);
     }
     plane_normal = axis;
+  } else if (plane_index >= 0) {
+    plane_normal = vkr_gizmo_system_axis(&application->gizmo_system, mode,
+                                         (uint32_t)plane_index);
+  } else if (!has_axis) {
+    plane_normal = vec3_normalize(camera->forward);
   } else {
-    if (!has_axis) {
-      plane_normal = vec3_normalize(camera->forward);
-    } else {
-      plane_normal =
-          vkr_standard_scene_runtime_gizmo_axis_plane_normal(camera, axis);
-    }
+    plane_normal =
+        vkr_standard_scene_runtime_gizmo_axis_plane_normal(camera, axis);
   }
 
   Vec3 world_position = mat4_position(transform->world);
@@ -1466,6 +1526,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
   state->gizmo_drag.start_scale = transform->scale;
   state->gizmo_drag.start_rotation = transform->rotation;
   state->gizmo_drag.start_radius = vec3_length(offset);
+  state->gizmo_drag.start_distance = vec3_dot(offset, axis);
   state->gizmo_drag.uses_text_pivot = has_text_pivot;
   state->gizmo_drag.text_pivot_local = pivot_local;
   return true_v;
@@ -1479,7 +1540,8 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
     return;
   }
 
-  VkrScene *scene = vkr_scene_handle_get_scene(state->scene_resource.as.scene);
+  VkrScene *scene =
+      sample_entity_container(application, state->gizmo_drag.entity, NULL);
   if (!scene) {
     vkr_standard_scene_runtime_cancel_gizmo_edit(application);
     return;
@@ -1528,7 +1590,9 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
 
   if (state->gizmo_drag.mode == VKR_GIZMO_MODE_TRANSLATE) {
     Vec3 new_pivot;
-    if (vkr_gizmo_handle_is_free_translate(state->gizmo_drag.handle)) {
+    /* Free and plane handles move within their drag plane. */
+    if (vkr_gizmo_handle_is_free_translate(state->gizmo_drag.handle) ||
+        vkr_gizmo_handle_plane_normal_index(state->gizmo_drag.handle) >= 0) {
       new_pivot = vec3_add(state->gizmo_drag.start_world_position, delta);
     } else {
       float32_t dist = vec3_dot(delta, state->gizmo_drag.axis);
@@ -1553,7 +1617,22 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
   } else if (state->gizmo_drag.mode == VKR_GIZMO_MODE_SCALE) {
     Vec3 new_scale = state->gizmo_drag.start_scale;
     const Vec3 offset = vec3_sub(hit, state->gizmo_drag.start_world_position);
-    if (state->gizmo_drag.start_radius > VKR_FLOAT_EPSILON) {
+    const int32_t axis_index =
+        vkr_gizmo_handle_axis_index(state->gizmo_drag.handle);
+    if (axis_index >= 0) {
+      /* One component follows the pointer's distance along its axis. */
+      const float32_t start_distance = state->gizmo_drag.start_distance;
+      if (fabsf(start_distance) > VKR_FLOAT_EPSILON) {
+        const float32_t start = new_scale.elements[axis_index];
+        const float32_t factor =
+            vec3_dot(offset, state->gizmo_drag.axis) / start_distance;
+        float32_t next = start * factor;
+        if (fabsf(next) < 0.001f) {
+          next = start < 0.0f ? -0.001f : 0.001f;
+        }
+        new_scale.elements[axis_index] = next;
+      }
+    } else if (state->gizmo_drag.start_radius > VKR_FLOAT_EPSILON) {
       const float32_t radius = vec3_length(offset);
       const Vec3 start = state->gizmo_drag.start_scale;
       const float32_t smallest =
@@ -2798,9 +2877,14 @@ static void sample_scripts_start(VkrStandardSceneRuntime *application) {
   const uint32_t flags = state->gameplay_enabled
                              ? VKR_SCRIPT_SESSION_SAMPLE_CONTENT
                              : VKR_SCRIPT_SESSION_NONE;
-  if (!vkr_script_host_start(&state->scripts, application->active_scene,
-                             state->input_state, &application->assets, flags,
-                             &error)) {
+  VkrScene *scene = sample_simulated_scene(application, NULL);
+  /* A World played alone steps the shared physics itself. */
+  if (scene && scene == application->world_scene) {
+    vkr_scene_physics_drive(scene);
+  }
+  if (!scene ||
+      !vkr_script_host_start(&state->scripts, scene, state->input_state,
+                             &application->assets, flags, &error)) {
     application->editor_viewport.simulation_running = false_v;
     snprintf(state->scene_status, sizeof(state->scene_status),
              "Scripts failed to start: %s", error ? error : "unknown error");
@@ -2874,6 +2958,69 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
   state->script_camera_active = false_v;
 }
 
+/* Advances the simulated container, running the script session on it. */
+static void sample_simulate(VkrStandardSceneRuntime *application,
+                            VkrScene *scene, VkrSceneHandle handle,
+                            float64_t delta_time) {
+  if (!state->scripts.started && !state->script_start_attempted &&
+      application->editor_viewport.simulation_running) {
+    sample_scripts_start(application);
+  }
+  if (!scene->simulation.faulted) {
+    vkr_scene_physics_set_paused(
+        scene, !application->editor_viewport.simulation_running);
+  }
+  if (!vkr_script_host_active(&state->scripts)) {
+    vkr_scene_handle_update_and_sync(handle, &application->assets, delta_time);
+    return;
+  }
+  VkrScriptFrame frame = {
+      .now = vkr_platform_get_absolute_time(),
+      .scene_delta = delta_time,
+      .input_focused =
+          !state->modal && !application->ui_capture.keyboard &&
+          !application->ui_capture.mouse &&
+          state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
+          vkr_window_is_mouse_captured(&application->host.window),
+      .simulation_running = application->editor_viewport.simulation_running,
+      .camera_available =
+          state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
+  vkr_script_host_frame(&state->scripts, &frame);
+  vkr_scene_handle_update(handle, frame.scene_delta);
+  if (scene->physics_paused &&
+      application->editor_viewport.simulation_running) {
+    application->editor_viewport.simulation_running = false_v;
+    vkr_window_set_mouse_capture(&application->host.window, false_v);
+    const char *reason = vkr_scene_physics_error(scene);
+    snprintf(state->scene_status, sizeof(state->scene_status),
+             "Simulation stopped: %s", reason ? reason : "paused");
+    log_error("%s", state->scene_status);
+  }
+  frame.simulation_running = application->editor_viewport.simulation_running;
+  vkr_script_host_present(&state->scripts, &frame, &state->script_view);
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (camera && !frame.simulation_running && state->script_camera_active) {
+    vkr_camera_set_pose(camera, state->editor_camera_position,
+                        state->editor_camera_yaw, state->editor_camera_pitch);
+    state->script_camera_active = false_v;
+  }
+  if (camera && state->script_view.camera_valid) {
+    if (!state->script_camera_active) {
+      state->editor_camera_position = camera->position;
+      state->editor_camera_yaw = camera->yaw;
+      state->editor_camera_pitch = camera->pitch;
+      state->script_camera_active = true_v;
+    }
+    vkr_camera_set_pose(camera, state->script_view.camera_position,
+                        state->script_view.camera_yaw_degrees,
+                        state->script_view.camera_pitch_degrees);
+  }
+  application->editor_viewport.scripts_own_camera =
+      state->script_view.camera_valid;
+  vkr_scene_handle_sync(handle, &application->assets);
+}
+
 /**
  * @brief Update scene system each frame.
  */
@@ -2885,79 +3032,12 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
   }
 
   (void)vkr_standard_scene_runtime_try_activate_scene_resource(application);
-  if (!state->scene_resource.as.scene || !application->active_scene) {
-    /* Opened alone, the World still streams and renders its models. */
-    sample_world_update(application);
-    return;
+  VkrSceneHandle simulated_handle = NULL;
+  VkrScene *simulated = sample_simulated_scene(application, &simulated_handle);
+  if (simulated) {
+    sample_simulate(application, simulated, simulated_handle, delta_time);
   }
-
-  VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
-  if (vkr_resource_system_get_state(&state->scene_resource, &state_error) !=
-      VKR_RESOURCE_LOAD_STATE_READY) {
-    sample_world_update(application);
-    return;
-  }
-
-  if (!state->scripts.started && !state->script_start_attempted &&
-      application->editor_viewport.simulation_running) {
-    sample_scripts_start(application);
-  }
-  if (vkr_script_host_active(&state->scripts)) {
-    VkrScene *scene = application->active_scene;
-    if (!scene->simulation.faulted) {
-      vkr_scene_physics_set_paused(
-          scene, !application->editor_viewport.simulation_running);
-    }
-    VkrScriptFrame frame = {
-        .now = vkr_platform_get_absolute_time(),
-        .scene_delta = delta_time,
-        .input_focused =
-            !state->modal && !application->ui_capture.keyboard &&
-            !application->ui_capture.mouse &&
-            state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE &&
-            vkr_window_is_mouse_captured(&application->host.window),
-        .simulation_running = application->editor_viewport.simulation_running,
-        .camera_available =
-            state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
-    vkr_script_host_frame(&state->scripts, &frame);
-    vkr_scene_handle_update(state->scene_resource.as.scene, frame.scene_delta);
-    if (scene->physics_paused &&
-        application->editor_viewport.simulation_running) {
-      application->editor_viewport.simulation_running = false_v;
-      vkr_window_set_mouse_capture(&application->host.window, false_v);
-      const char *reason = vkr_scene_physics_error(scene);
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "Simulation stopped: %s", reason ? reason : "paused");
-      log_error("%s", state->scene_status);
-    }
-    frame.simulation_running = application->editor_viewport.simulation_running;
-    vkr_script_host_present(&state->scripts, &frame, &state->script_view);
-    VkrCamera *camera = vkr_camera_registry_get_by_handle(
-        &application->camera_system, application->active_camera);
-    if (camera && !frame.simulation_running && state->script_camera_active) {
-      vkr_camera_set_pose(camera, state->editor_camera_position,
-                          state->editor_camera_yaw, state->editor_camera_pitch);
-      state->script_camera_active = false_v;
-    }
-    if (camera && state->script_view.camera_valid) {
-      if (!state->script_camera_active) {
-        state->editor_camera_position = camera->position;
-        state->editor_camera_yaw = camera->yaw;
-        state->editor_camera_pitch = camera->pitch;
-        state->script_camera_active = true_v;
-      }
-      vkr_camera_set_pose(camera, state->script_view.camera_position,
-                          state->script_view.camera_yaw_degrees,
-                          state->script_view.camera_pitch_degrees);
-    }
-    application->editor_viewport.scripts_own_camera =
-        state->script_view.camera_valid;
-    vkr_scene_handle_sync(state->scene_resource.as.scene, &application->assets);
-  } else {
-    vkr_scene_handle_update_and_sync(state->scene_resource.as.scene,
-                                     &application->assets, delta_time);
-  }
-  sample_world_update(application);
+  sample_world_update(application, simulated_handle != state->world_handle);
   /* Additive scenes render beside the active scene; their simulation and
      physics stay paused (ADR-076). */
   sample_additive_poll(application);
@@ -2986,22 +3066,14 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
     }
 
     VkrScene *scene =
-        vkr_scene_handle_get_scene(state->scene_resource.as.scene);
+        sample_entity_container(application, state->selected_entity, NULL);
     SceneTransform *transform =
         scene ? vkr_scene_get_transform(scene, state->selected_entity) : NULL;
     if (!transform) {
       /* Unplaced entities such as fog or the sky stay selected for Details;
          only a destroyed entity loses the selection. */
-      const uint32_t additive = sample_additive_slot(state->selected_entity);
       const bool8_t alive =
-          (scene && vkr_scene_entity_alive(scene, state->selected_entity)) ||
-          (application->world_scene &&
-           vkr_scene_entity_alive(application->world_scene,
-                                  state->selected_entity)) ||
-          (additive < VKR_SCENE_ADDITIVE_MAX &&
-           vkr_scene_entity_alive(
-               vkr_scene_handle_get_scene(state->additive_handles[additive]),
-               state->selected_entity));
+          scene && vkr_scene_entity_alive(scene, state->selected_entity);
       if (!alive) {
         vkr_standard_scene_runtime_clear_gizmo_selection(application);
       } else {
@@ -3032,16 +3104,19 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
       }
     }
 
-    vkr_gizmo_system_set_target(&application->gizmo_system,
-                                state->selected_entity, world_position,
-                                vkr_quat_identity());
+    /* Local and scale handles follow the object's world rotation. */
+    vkr_gizmo_system_set_target(
+        &application->gizmo_system, state->selected_entity, world_position,
+        vkr_quat_normalize(vkr_quat_mul(parent_rotation, transform->rotation)));
   }
 }
 
 vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
     VkrStandardSceneRuntime *application) {
   if (state->gizmo_edit_pending) {
-    VkrScene *scene = application->active_scene;
+    VkrSceneEditState *edits = NULL;
+    VkrScene *scene =
+        sample_entity_container(application, state->gizmo_edit_entity, &edits);
     VkrSceneEditValues after;
     if (scene && vkr_scene_edit_read(scene, state->gizmo_edit_entity, &after)) {
       after.fields = state->gizmo_before.fields;
@@ -3055,7 +3130,7 @@ vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
                     MemCompare(&state->gizmo_before.rotation, &after.rotation,
                                sizeof(after.rotation)) != 0;
       if (changed &&
-          !vkr_scene_edit_record_external(&state->edits, scene,
+          !vkr_scene_edit_record_external(edits, scene,
                                           state->gizmo_edit_entity,
                                           &state->gizmo_before, &after) &&
           !vkr_standard_scene_runtime_restore_gizmo_edit(application)) {
@@ -3480,8 +3555,9 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
   if ((uint32_t)next.camera_view >= VKR_SAMPLE_CAMERA_VIEW_COUNT ||
       (uint32_t)next.render_mode >= VKR_RENDER_MODE_COUNT ||
       !isfinite(next.grid_spacing) || next.grid_spacing <= 0.0f ||
-      next.gizmo_tool > VKR_GIZMO_MODE_SCALE || !isfinite(next.camera_speed) ||
-      next.camera_speed <= 0.0f) {
+      next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
+      next.gizmo_space > VKR_GIZMO_SPACE_LOCAL ||
+      !isfinite(next.camera_speed) || next.camera_speed <= 0.0f) {
     return;
   }
   next.grid_spacing = vkr_clamp_f32(next.grid_spacing, 0.001f, 10000.0f);
@@ -3489,6 +3565,7 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   application->gizmo_system.tool = (VkrGizmoMode)next.gizmo_tool;
+  application->gizmo_system.space = (VkrGizmoSpace)next.gizmo_space;
   if (camera)
     camera->speed = next.camera_speed;
   if (camera && next.camera_view != state->view_state.camera_view) {
@@ -3853,7 +3930,8 @@ vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
 /* Activates a World load that resolved or reports one that failed, then
    keeps the World's transforms and render products current; it has no
    simulation of its own (ADR-076). */
-vkr_internal void sample_world_update(VkrStandardSceneRuntime *application) {
+vkr_internal void sample_world_update(VkrStandardSceneRuntime *application,
+                                      bool8_t advance) {
   if (state->world_pending) {
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
     const VkrResourceLoadState load =
@@ -3875,7 +3953,8 @@ vkr_internal void sample_world_update(VkrStandardSceneRuntime *application) {
       sample_world_activate(application, resolved.as.scene);
     }
   }
-  if (state->world_handle) {
+  /* A simulated World advanced already. */
+  if (state->world_handle && advance) {
     vkr_scene_handle_update_and_sync(state->world_handle, &application->assets,
                                      0.0);
   }
@@ -4194,6 +4273,7 @@ static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
   const VkrSceneEditAction action = request->action;
   if (action != VKR_SCENE_EDIT_ADD_COMPONENT &&
       action != VKR_SCENE_EDIT_REMOVE_COMPONENT &&
+      action != VKR_SCENE_EDIT_REPLACE_COMPONENT &&
       action != VKR_SCENE_EDIT_CREATE && action != VKR_SCENE_EDIT_DELETE &&
       action != VKR_SCENE_EDIT_REPARENT &&
       action != VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS) {
@@ -4227,6 +4307,11 @@ static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
   case VKR_SCENE_EDIT_REMOVE_COMPONENT:
     (void)vkr_scene_edit_remove_component(edits, scene, request->entity,
                                           request->values.component_type);
+    break;
+  case VKR_SCENE_EDIT_REPLACE_COMPONENT:
+    (void)vkr_scene_edit_replace_component(
+        edits, scene, request->entity, request->replaced_type,
+        request->values.component_type, request->values.component);
     break;
   case VKR_SCENE_EDIT_CREATE: {
     /* A root object without a placement appears in front of the camera. */
@@ -4492,14 +4577,13 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
   case VKR_SAMPLE_TRANSPORT_STEP_SIMULATION: {
     const char *error = NULL;
     /* Stepping from a reset boundary starts the session, as running does. */
-    if (!application->editor_viewport.simulation_running &&
-        application->active_scene && !state->scripts.started &&
-        !state->script_start_attempted) {
+    VkrScene *simulated = sample_simulated_scene(application, NULL);
+    if (!application->editor_viewport.simulation_running && simulated &&
+        !state->scripts.started && !state->script_start_attempted) {
       sample_scripts_start(application);
     }
-    if (!application->editor_viewport.simulation_running &&
-        application->active_scene &&
-        !vkr_scene_physics_step(application->active_scene, &error)) {
+    if (!application->editor_viewport.simulation_running && simulated &&
+        !vkr_scene_physics_step(simulated, &error)) {
       snprintf(state->scene_status, sizeof(state->scene_status), "%s",
                error ? error : "Physics step failed.");
     }
@@ -4512,9 +4596,9 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
        a new one from the authored scene. */
     sample_scripts_stop(application);
     vkr_window_set_mouse_capture(&application->host.window, false_v);
-    vkr_scene_physics_set_paused(application->active_scene, true_v);
-    if (application->active_scene &&
-        !vkr_scene_physics_reset(application->active_scene, &error)) {
+    VkrScene *simulated = sample_simulated_scene(application, NULL);
+    vkr_scene_physics_set_paused(simulated, true_v);
+    if (simulated && !vkr_scene_physics_reset(simulated, &error)) {
       snprintf(state->scene_status, sizeof(state->scene_status), "%s",
                error ? error : "Physics reset failed.");
     } else {
@@ -4524,11 +4608,10 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
   }
   case VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS: {
     const char *error = NULL;
-    if (application->active_scene &&
+    VkrScene *simulated = sample_simulated_scene(application, NULL);
+    if (simulated &&
         !vkr_scene_physics_set_disabled(
-            application->active_scene,
-            !vkr_scene_physics_is_disabled(application->active_scene),
-            &error)) {
+            simulated, !vkr_scene_physics_is_disabled(simulated), &error)) {
       snprintf(state->scene_status, sizeof(state->scene_status), "%s",
                error ? error : "Physics override failed.");
     }
@@ -4577,9 +4660,13 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       !application->ui_system.initialized) {
     return;
   }
+  /* Scripted input joins the platform's before anything reads this frame. */
+  if (state->ui.feed_input) {
+    state->ui.feed_input(state->ui.state, state->input_state);
+  }
 
   vkr_scene_physics_set_paused(
-      application->active_scene,
+      sample_simulated_scene(application, NULL),
       !application->editor_viewport.simulation_running);
 
   if (application->editor_viewport.enabled) {
@@ -4658,6 +4745,11 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   };
   state->view_state.render_mode = application->globals.render_mode;
   state->view_state.gizmo_tool = (uint32_t)application->gizmo_system.tool;
+  /* View-aligned axes are reserved; they show as world. */
+  state->view_state.gizmo_space =
+      application->gizmo_system.space == VKR_GIZMO_SPACE_LOCAL
+          ? VKR_GIZMO_SPACE_LOCAL
+          : VKR_GIZMO_SPACE_WORLD;
   {
     const VkrCamera *camera = vkr_camera_registry_get_by_handle(
         &application->camera_system, application->active_camera);
@@ -4730,7 +4822,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   vkr_standard_scene_runtime_apply_transport_action(application,
                                                     requests.transport_action);
   vkr_scene_physics_set_paused(
-      application->active_scene,
+      sample_simulated_scene(application, NULL),
       !application->editor_viewport.simulation_running);
   if (requests.physics_request.set_body_disabled && application->active_scene) {
     const char *error = NULL;
@@ -5280,7 +5372,7 @@ bool8_t vkr_sample_runtime_preferences_write_json(
   return sample_preferences_valid(value) &&
          vkr_json_writer_begin_object(writer) &&
          vkr_json_writer_name(writer, string8_lit("version")) &&
-         vkr_json_writer_u64(writer, 1) &&
+         vkr_json_writer_u64(writer, 2) &&
          SAMPLE_JSON_UINT("filter_mode", filter_mode) &&
          SAMPLE_JSON_UINT("gizmo_mode", gizmo_mode) &&
          SAMPLE_JSON_UINT("gizmo_space", gizmo_space) &&
@@ -5327,7 +5419,8 @@ vkr_sample_runtime_preferences_read_json(String8 json,
   }
   VkrSampleRuntimePreferences candidate = {0};
   uint32_t version;
-  if (!sample_read_uint(json, "version", &version) || version != 1 ||
+  if (!sample_read_uint(json, "version", &version) || version < 1 ||
+      version > 2 ||
       !sample_read_uint(json, "filter_mode", &candidate.filter_mode) ||
       !sample_read_uint(json, "gizmo_mode", &candidate.gizmo_mode) ||
       !sample_read_uint(json, "gizmo_space", &candidate.gizmo_space) ||
@@ -5345,6 +5438,10 @@ vkr_sample_runtime_preferences_read_json(String8 json,
                         &candidate.pass_gpu_timings) ||
       !sample_preferences_valid(&candidate)) {
     return false_v;
+  }
+  /* Version 1 measured the gizmo in window pixels; version 2 in points. */
+  if (version == 1) {
+    candidate.gizmo_size = VKR_GIZMO_CONFIG_DEFAULT.screen_size;
   }
   *value = candidate;
   return true_v;

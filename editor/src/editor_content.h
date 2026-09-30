@@ -69,6 +69,9 @@ typedef struct VkrEditorContentAction {
   /* A REBUILD the browser queued because the asset's source changed on disk,
      not a click; it runs only while the scene has no unsaved edits. */
   bool8_t automatic;
+  /* A SELECT_ENTITY from a double-click or Enter, which also opens the
+     object's script. */
+  bool8_t activated;
 } VkrEditorContentAction;
 
 /** UI/render-thread owner. Freeable allocator and assets must outlive it.
@@ -192,9 +195,10 @@ bool8_t vkr_editor_content_take_action(VkrEditorContent *content,
 bool8_t vkr_editor_content_take_object_action(VkrEditorContent *content,
                                               VkrEditorContentAction *action);
 /** A right click on an item selected it and asks for its context menu; true
- * once, with the pointer position in points. */
+ * once, with the pointer position in points. `folder` is true when the click
+ * landed on empty space and asks for the shown folder's menu instead. */
 bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
-                                     Vec2 *position_pt);
+                                     Vec2 *position_pt, bool8_t *folder);
 /** The menu item's label for `command` ("Open scene", "Frame in viewport",
  * ...) and whether it applies; running it acts on the menu's item. */
 const char *vkr_editor_content_menu_label(const VkrEditorContent *content,
@@ -203,6 +207,22 @@ bool8_t vkr_editor_content_menu_available(const VkrEditorContent *content,
                                           VkrEditorContentCommand command);
 void vkr_editor_content_menu_command(VkrEditorContent *content,
                                      VkrEditorContentCommand command);
+/** Commands of the shown folder's menu. */
+typedef enum VkrEditorContentFolderCommand {
+  VKR_EDITOR_CONTENT_FOLDER_NEW_FOLDER,
+  VKR_EDITOR_CONTENT_FOLDER_NEW_SCRIPT,
+  VKR_EDITOR_CONTENT_FOLDER_IMPORT,
+  VKR_EDITOR_CONTENT_FOLDER_REFRESH,
+} VkrEditorContentFolderCommand;
+bool8_t
+vkr_editor_content_folder_available(const VkrEditorContent *content,
+                                    VkrEditorContentFolderCommand command);
+void vkr_editor_content_folder_command(VkrEditorContent *content,
+                                       VkrEditorContentFolderCommand command);
+/** After a creation Content asked for: once a new object other than
+ * `selection` is selected, open its folder and select it there. */
+void vkr_editor_content_reveal_created(VkrEditorContent *content,
+                                       VkrEntityId selection);
 /** Run a context menu command on an item named by id or name, or a folder
  * named by path or shown name; false when it does not apply. */
 bool8_t vkr_editor_content_command(VkrEditorContent *content, String8 item,

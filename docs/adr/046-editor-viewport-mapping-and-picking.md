@@ -28,11 +28,19 @@ Picking requests use mapped scene coordinates. Picking IDs distinguish scene
 entities and gizmo handles. Scene-only mode uses the complete drawable mapping
 while preserving the dock tree.
 
-The application borrows up to nine `VkrEditorOverlayDraw` records through packet
-submission. The gizmo system owns their published geometry references; native
-frame upload storage owns prepared roots until GPU completion. Handles use a
-world-axis model scaled to 150 displayed pixels per unit, independent of camera
-distance and internal render scale. Both native pipelines use the unjittered
+The application borrows up to sixteen `VkrEditorOverlayDraw` records through
+packet submission. The gizmo system owns their published geometry references;
+native frame upload storage owns prepared roots until GPU completion. Handles
+use a model scaled to the gizmo size in points (110 by default) times the UI
+content scale per unit, independent of camera distance and internal render
+scale, and rotated by the target's world rotation for scale handles and local
+space. Translate has three arrows, three plane squares that sit in the
+quadrant facing the camera and a center handle; rotate has three rings; scale
+has three shaft-and-cube handles that each stretch one scale component and a
+uniform center cube. Draws run far to near with the hovered and dragged
+handles last, so nearer handles draw over and pick before farther ones. An axis
+seen end-on and a plane seen edge-on are left out, and while a handle is
+dragged only that handle draws. Both native pipelines use the unjittered
 camera projection. Color is opaque, unlit linear RGB, drawn after tonemapping
 into the retained Scene image. It does not enter lighting, shadows or temporal
 history.

@@ -139,8 +139,9 @@ static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
   char text[4][48];
   view_chip_text(&frame->view_state, editor->grid_spacing, text);
   const float32_t available = Max(0.0f, scene.z - VIEW_INSET_PT * 2.0f);
+  /* The tools, then the World/Local space toggle. */
   const float32_t right_width =
-      VIEW_CHIP_HEIGHT_PT * (float32_t)ArrayCount(view_tools) + 6.0f;
+      VIEW_CHIP_HEIGHT_PT * (float32_t)(ArrayCount(view_tools) + 1u) + 6.0f;
   for (uint32_t pass = 0; pass < 2; ++pass) {
     layout.compact = pass == 1;
     float32_t width = 6.0f;
@@ -523,6 +524,7 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
         {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
         {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
         {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
+        {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
         {.value = 10.0f, .unit = VKR_UI_TRACK_PX},
         {.value = layout.chips[3], .unit = VKR_UI_TRACK_PX},
     };
@@ -558,8 +560,30 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
         }
         (void)vkr_ui_pop_id(ui);
       }
+      /* Move and rotate follow the world axes or the object's own; scale
+         always uses the object's. */
+      const bool8_t local =
+          frame->view_state.gizmo_space == VKR_GIZMO_SPACE_LOCAL;
+      VkrUiWidgetConfig space = vkr_editor_icon_button_config(
+          ArrayCount(view_tools), 0,
+          local ? VKR_UI_ICON_LOCAL : VKR_UI_ICON_WORLD,
+          local ? string8_lit("Local axes: move and rotate along the "
+                              "object's axes (click for world)")
+                : string8_lit("World axes: move and rotate along the world's "
+                              "axes (click for local)"));
+      space.style.min_size_pt = space.style.max_size_pt =
+          (Vec2){VIEW_CHIP_HEIGHT_PT, VIEW_CHIP_HEIGHT_PT};
+      space.icon_color = local ? theme->accent_hover : theme->text_secondary;
+      vkr_editor_toggle_style(&space, local);
+      space.disabled = disabled;
+      if (vkr_ui_button(ui, string8_lit("space"), (String8){0}, &space)) {
+        VkrSampleViewState next = frame->view_state;
+        next.gizmo_space =
+            local ? VKR_GIZMO_SPACE_WORLD : VKR_GIZMO_SPACE_LOCAL;
+        view_request(frame, next);
+      }
       VkrUiPanelConfig divider = vkr_ui_panel_config_default();
-      divider.placement.column = 4;
+      divider.placement.column = ArrayCount(view_tools) + 1u;
       divider.placement.row = 0;
       divider.placement.justify = VKR_UI_ALIGN_CENTER;
       divider.placement.margin_pt = (VkrUiEdges){5, 0, 5, 0};
@@ -568,11 +592,11 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
       divider.style.background_color = theme->border_strong;
       if (vkr_ui_panel_begin(ui, string8_lit("divider"), &divider))
         (void)vkr_ui_panel_end(ui);
-      (void)view_chip(editor, ui, "speed", 5, VKR_UI_ICON_SPEED, text[3],
-                      editor->view_popup == VIEW_POPUP_SPEED, false_v, disabled,
-                      layout.compact,
-                      "Free-camera flight speed (units per second)",
-                      VIEW_POPUP_SPEED);
+      (void)view_chip(
+          editor, ui, "speed", ArrayCount(view_tools) + 2u, VKR_UI_ICON_SPEED,
+          text[3], editor->view_popup == VIEW_POPUP_SPEED, false_v, disabled,
+          layout.compact, "Free-camera flight speed (units per second)",
+          VIEW_POPUP_SPEED);
       (void)vkr_ui_panel_end(ui);
     }
   }

@@ -180,6 +180,11 @@ static void editor_application_handle_input(void *state,
   (void)input;
 }
 
+static void editor_application_feed_input(void *state, InputState *input) {
+  VkrEditorApplication *editor = state;
+  vkr_editor_cmd_pointer_input(&editor->ui, input);
+}
+
 /* The launcher's window-colored background alone, holding world input. */
 static void editor_application_build_backdrop(const VkrSampleUiFrame *frame) {
   const VkrUiTrack one = {.unit = VKR_UI_TRACK_FR, .value = 1};
@@ -403,6 +408,7 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .state = editor,
       .initialize = editor_application_initialize,
       .handle_input = editor_application_handle_input,
+      .feed_input = editor_application_feed_input,
       .build = editor_application_build,
       .save_scene_edits =
           editor->project_managed ? editor_application_save_scene : NULL,

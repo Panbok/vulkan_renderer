@@ -689,6 +689,144 @@ static bool8_t cmd_run_script_open(CmdContext *ctx, const CmdDef *def,
   return false_v;
 }
 
+/* Synthetic pointer input at a window position in points: moves there, then
+ * clicks `count` times (two makes a double click) with the left button, or
+ * once with the right. For scripted checks of mouse-only interactions. */
+static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
+                                String8 arg) {
+  (void)def;
+  char text[64] = {0};
+  MemCopy(text, arg.str, Min(arg.length, (uint64_t)sizeof(text) - 1u));
+  float32_t x = 0.0f;
+  float32_t y = 0.0f;
+  int32_t count = 1;
+  char button[16] = {0};
+  const int32_t read = sscanf(text, "%f %f %d %15s", &x, &y, &count, button);
+  const bool8_t right = !strcmp(button, "right");
+  if (read < 2 || count < 1 || count > 3 || !isfinite(x) || !isfinite(y)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "ui.click needs <x> <y> [count] [right] in points");
+    return false_v;
+  }
+  VkrEditorUi *editor = ctx->editor;
+  const float32_t scale = ctx->frame->ui->content_scale;
+  const int32_t px = (int32_t)(x * scale);
+  const int32_t py = (int32_t)(y * scale);
+  editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
+  int32_t(*steps)[4] = editor->cmd_pointer_steps;
+  steps[editor->cmd_pointer_count][0] = 0;
+  steps[editor->cmd_pointer_count][1] = px;
+  steps[editor->cmd_pointer_count++][2] = py;
+  steps[editor->cmd_pointer_count][0] = 0;
+  steps[editor->cmd_pointer_count][1] = px;
+  steps[editor->cmd_pointer_count++][2] = py;
+  for (int32_t i = 0; i < (right ? 1 : count); ++i) {
+    for (int32_t phase = 1; phase <= 2; ++phase) {
+      int32_t *step = steps[editor->cmd_pointer_count++];
+      step[0] = phase;
+      step[1] = px;
+      step[2] = py;
+      step[3] = right ? BUTTON_RIGHT : BUTTON_LEFT;
+    }
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "%s at (%.0f, %.0f)",
+           right        ? "Right click"
+           : count == 2 ? "Double click"
+                        : "Click",
+           x, y);
+  return true_v;
+}
+
+/* ui.drag <x0> <y0> <x1> <y1>: presses at the start, holds while a pick
+ * resolves, moves to the end over several frames and releases, as a
+ * left-button drag would. */
+static bool8_t cmd_run_ui_drag(CmdContext *ctx, const CmdDef *def,
+                               String8 arg) {
+  (void)def;
+  char text[96] = {0};
+  MemCopy(text, arg.str, Min(arg.length, (uint64_t)sizeof(text) - 1u));
+  float32_t from_x = 0.0f;
+  float32_t from_y = 0.0f;
+  float32_t to_x = 0.0f;
+  float32_t to_y = 0.0f;
+  if (sscanf(text, "%f %f %f %f", &from_x, &from_y, &to_x, &to_y) != 4 ||
+      !isfinite(from_x) || !isfinite(from_y) || !isfinite(to_x) ||
+      !isfinite(to_y)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "ui.drag needs <x0> <y0> <x1> <y1> in points");
+    return false_v;
+  }
+  VkrEditorUi *editor = ctx->editor;
+  const float32_t scale = ctx->frame->ui->content_scale;
+  enum { HOLD_FRAMES = 8, MOVE_FRAMES = 16 };
+  editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
+  int32_t(*steps)[4] = editor->cmd_pointer_steps;
+  for (int32_t i = 0; i < 2 + 1 + HOLD_FRAMES + MOVE_FRAMES + 1; ++i) {
+    const int32_t moved = Max(0, i - 2 - 1 - HOLD_FRAMES + 1);
+    const float32_t t = (float32_t)Min(moved, MOVE_FRAMES) / MOVE_FRAMES;
+    int32_t *step = steps[editor->cmd_pointer_count++];
+    step[0] = i == 2 ? 1 : i == 2 + 1 + HOLD_FRAMES + MOVE_FRAMES ? 2 : 0;
+    step[1] = (int32_t)((from_x + (to_x - from_x) * t) * scale);
+    step[2] = (int32_t)((from_y + (to_y - from_y) * t) * scale);
+    step[3] = BUTTON_LEFT;
+  }
+  snprintf(ctx->message, sizeof(ctx->message),
+           "Drag from (%.0f, %.0f) to (%.0f, %.0f)", from_x, from_y, to_x,
+           to_y);
+  return true_v;
+}
+
+/* ui.key <up|down|left|right|enter|escape|tab> presses and releases a key
+ * on separate frames, for scripted checks of keyboard navigation. */
+static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  (void)def;
+  static const struct {
+    const char *name;
+    Keys key;
+  } keys[] = {{"up", KEY_UP},       {"down", KEY_DOWN},
+              {"left", KEY_LEFT},   {"right", KEY_RIGHT},
+              {"enter", KEY_ENTER}, {"escape", KEY_ESCAPE},
+              {"tab", KEY_TAB}};
+  const String8 word = cmd_unquote(arg);
+  VkrEditorUi *editor = ctx->editor;
+  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
+    if (strlen(keys[i].name) != word.length ||
+        MemCompare(keys[i].name, word.str, word.length)) {
+      continue;
+    }
+    editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
+    for (int32_t phase = 3; phase <= 4; ++phase) {
+      int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
+      step[0] = phase;
+      step[3] = (int32_t)keys[i].key;
+    }
+    snprintf(ctx->message, sizeof(ctx->message), "Key %s", keys[i].name);
+    return true_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message),
+           "ui.key needs up, down, left, right, enter, escape or tab");
+  return false_v;
+}
+
+void vkr_editor_cmd_pointer_input(VkrEditorUi *editor, InputState *input) {
+  /* One step per frame, after the host advanced input and before the UI
+   * reads it, so each press and release is its own edge. */
+  if (editor->cmd_pointer_next >= editor->cmd_pointer_count) {
+    return;
+  }
+  const int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_next++];
+  if (step[0] == 0) {
+    input_process_mouse_move(input, step[1], step[2]);
+  } else if (step[0] >= 3) {
+    input_process_key(input, (Keys)step[3], step[0] == 3);
+  } else {
+    input_process_button(input, (Buttons)step[3], step[0] == 1);
+  }
+  if (editor->cmd_pointer_next == editor->cmd_pointer_count) {
+    editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
+  }
+}
+
 static bool8_t cmd_run_script_goto(CmdContext *ctx, const CmdDef *def,
                                    String8 arg) {
   (void)def;
@@ -1125,6 +1263,58 @@ static bool8_t cmd_run_component(CmdContext *ctx, const CmdDef *def,
   return true_v;
 }
 
+/* script.attach <type|none> gives the selection one of the loaded script
+   types as its script, the way Details' script slot does (ADR-079). */
+static bool8_t cmd_run_script_attach(CmdContext *ctx, const CmdDef *def,
+                                     String8 arg) {
+  (void)def;
+  const String8 word = cmd_unquote(arg);
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  const VkrTypeDesc *type = NULL;
+  const String8 none = string8_lit("none");
+  if (!string8_equals(&word, &none)) {
+    const VkrTypeDesc *types[32];
+    const uint32_t count =
+        vkr_editor_script_types(ctx->frame, types, ArrayCount(types));
+    for (uint32_t i = 0; i < count && !type; ++i) {
+      if (strlen(types[i]->name) == word.length &&
+          !MemCompare(types[i]->name, word.str, word.length)) {
+        type = types[i];
+      }
+    }
+    if (!type) {
+      snprintf(ctx->message, sizeof(ctx->message), "No script type '%.*s'",
+               (int)word.length, word.str);
+      return false_v;
+    }
+  }
+  vkr_editor_request_script(ctx->frame, entity, type);
+  snprintf(ctx->message, sizeof(ctx->message), "Script %s",
+           type ? type->label : "removed");
+  return true_v;
+}
+
+/* script.edit opens the selection's script source. */
+static bool8_t cmd_run_script_edit(CmdContext *ctx, const CmdDef *def,
+                                   String8 arg) {
+  (void)def;
+  (void)arg;
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  if (!vkr_editor_open_entity_script(ctx->editor, ctx->frame, entity)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "The selection has no script with a project source");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Opened the script");
+  return true_v;
+}
+
 /* preset.save <type> saves the selection's component as a preset;
    preset.apply <name> applies a preset to the selection's component of its
    type (ADR-076). */
@@ -1321,6 +1511,20 @@ static const CmdDef cmd_defs[] = {
      CMD_COUNT, 0u},
     {"script.open", CMD_ARG_TEXT, "<file>",
      "Open a script source in the Script editor", cmd_run_script_open,
+     CMD_COUNT, 0u},
+    {"script.attach", CMD_ARG_TEXT, "<type|none>",
+     "Set the selection's script to a loaded script type, or remove it",
+     cmd_run_script_attach, CMD_COUNT, 0u},
+    {"script.edit", CMD_ARG_NONE, "", "Open the selection's script source",
+     cmd_run_script_edit, CMD_COUNT, 0u},
+    {"ui.click", CMD_ARG_TEXT, "<x> <y> [count] [right]",
+     "Click the window at a point, as the mouse would", cmd_run_ui_click,
+     CMD_COUNT, 0u},
+    {"ui.key", CMD_ARG_TEXT, "<key>",
+     "Press and release a navigation key, as the keyboard would",
+     cmd_run_ui_key, CMD_COUNT, 0u},
+    {"ui.drag", CMD_ARG_TEXT, "<x0> <y0> <x1> <y1>",
+     "Drag with the left button between two window points", cmd_run_ui_drag,
      CMD_COUNT, 0u},
     {"script.goto", CMD_ARG_TEXT, "<line>",
      "Move the Script editor's caret to a line", cmd_run_script_goto, CMD_COUNT,
@@ -1542,6 +1746,10 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       }
       return;
     }
+  }
+  /* Pointer steps apply in the input callback; the queue waits for them. */
+  if (editor->cmd_pointer_next < editor->cmd_pointer_count) {
+    return;
   }
   /* The hold's work shows from the next frame: runners start project jobs at
    * once, and the runtime starts requested loads after this build. */

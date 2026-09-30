@@ -124,6 +124,9 @@ registers linked modules from `VkrSampleRuntimeConfig`. It applies each
 frame's `VkrSampleScriptRequest` (retire, then loads) after the UI build and
 before scene and World requests, and publishes per-load results.
 
+- **Simulated scene.** The open primary scene once it is ready; with no
+  scene open or loading, the root World, so a World-only project plays. The
+  transport, Step, Reset and the physics toggle act on the same scene.
 - **Start.** The session starts the first time simulation runs or steps from
   a reset boundary. The app and player start it once the scene is ready.
 - **Reset.** The transport Reset stops the session and resets physics
@@ -205,7 +208,8 @@ The text is drawn by a new UI primitive,
   leave keys to the caller.
 
 **Cmd** gains `script.new`, `script.open`, `script.goto`, `script.type`,
-`script.save` and `script.status`, and a `script` window
+`script.save`, `script.status`, `script.attach <type|none>` and `script.edit`,
+and a `script` window
 ([ADR-075](075-editor-cmd-bar-and-evaluator.md)). Object words refresh when a
 module registers more types.
 
@@ -217,18 +221,37 @@ is an engine component whose entity's world transform is a spawn pose.
 - **Property.** One `enabled` property.
 - **Resolution.** `vkr_scene_player_start` resolves the scene's first
   enabled, visible start in entity order, then the root World's.
-- **Editor.** A Player Start object with a walking-person icon.
+- **Editor.** A Player Start object with a walking-person icon at its
+  position. Outside Play, every visible start in the scene and the World
+  draws the capsule the character spawns as, from
+  `vkr_physics_character_default`, with its -Z facing.
 
 `vkr_scene_character_create` takes an optional explicit foot position. The
 character spawns there and every reset returns it there, while authored TRS
 keeps the designer's placement.
 
-### Script objects
+### Script slot and Script objects
 
-Each registered module component type is also an object kind. The Add menu,
-Content's System/Objects and `create <type>` make a new entity carrying that
-script. Add component attaches the same script to an existing entity. The
-Outliner shows scripted entities with a code icon.
+An entity's script is the first script module component it carries; there is
+no separate slot component, so nothing can disagree with the component that
+holds the script's fields. Every placed entity shows a Script row in Details
+above its component sections, and right-click offers the same choices in a
+Script submenu:
+
+- the component types of the loaded, unretired modules, the current one
+  checked;
+- New script, Edit script (the module's `<Name>.c`) and Remove script.
+
+Choosing a script adds its component with defaults, or replaces the current
+one in a single undo entry that restores the replaced values
+(`vkr_scene_edit_replace_component`). Add component leaves script types to
+the slot.
+
+The Add menu and Content's System/Objects list one Script object: an empty
+entity named Script whose slot then picks the behavior. `create <type>` still
+makes an entity carrying a named script type. Double-clicking a scripted
+object in Content opens its source. The Outliner shows scripted entities with
+a code icon.
 
 ### The FPS module
 
@@ -325,6 +348,31 @@ macOS 26.6.2, Apple M1 Pro, Release, Metal, 2026-09-29 and 2026-09-30:
   - `create door` worked.
   - A `door` component saved with `speed` 1.5 read 1.5 after reopening, so
     the type registered before the World loaded.
+
+Editor feedback round, macOS 26.6.2, Apple M1 Pro, 2026-09-30:
+
+- `./build_editor.sh Release`, and `vulkan_renderer_tester` and `vkr_player`
+  in Debug, build with no compiler warnings.
+- `build_release/tests/vulkan_renderer_tester` passes all 88 suites. The Debug
+  (AddressSanitizer) tester passes every suite except `run_script_reload_tests`,
+  where ASan faults describing a global of the newly loaded probe after the
+  restart closed earlier copies. The suite passes under
+  `ASAN_OPTIONS=report_globals=0`; neither the host nor the probe changed.
+- Managed project with a World-only Door script, headless and windowed:
+  - `create script; script.attach door`, undo, redo, `script.attach none` and
+    undo each left exactly the expected component. With a second module
+    `Spin`, `script.attach spin` on Door replaced `door`; undo restored `door`
+    and redo `spin`.
+  - `script.edit` opened the module source. The Details picker and the
+    Outliner's Script submenu listed FPS player, FPS weapon, Spin and Door
+    with Door checked; `ui.key` Down five times, Right and Down moved into
+    the submenu.
+  - A World Player Start at (4, 1, 2) spawned `Player` there on Play with no
+    scene open; its capsule drew at the start.
+  - Placing Point Light from System/Objects switched Content to the World's
+    folder with the light selected.
+- Bistro Play: `Player` spawned at (2, 1, 3), the body was hidden and stop
+  returned the scene to 5,990 entities.
 
 Unavailable:
 

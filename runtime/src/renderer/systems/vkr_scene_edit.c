@@ -766,6 +766,8 @@ typedef struct EditObject {
 typedef enum EditStructureOp {
   EDIT_STRUCTURE_ADD_COMPONENT,
   EDIT_STRUCTURE_REMOVE_COMPONENT,
+  /* `replaced` and its bytes before; `type` and `component` after. */
+  EDIT_STRUCTURE_REPLACE_COMPONENT,
   EDIT_STRUCTURE_CREATE,
   EDIT_STRUCTURE_DELETE,
   EDIT_STRUCTURE_REPARENT,
@@ -778,9 +780,11 @@ typedef struct EditStructure {
   Vec3 position[2];
   VkrQuat rotation[2];
   Vec3 scale[2];
-  /* ADD_COMPONENT and REMOVE_COMPONENT. */
+  /* ADD_COMPONENT, REMOVE_COMPONENT and REPLACE_COMPONENT. */
   const VkrTypeDesc *type;
   _Alignas(16) uint8_t component[VKR_TYPE_VALUE_MAX];
+  const VkrTypeDesc *replaced;
+  _Alignas(16) uint8_t replaced_component[VKR_TYPE_VALUE_MAX];
   /* CREATE and DELETE. */
   EditObject object;
 } EditStructure;
@@ -1186,6 +1190,52 @@ bool8_t vkr_scene_edit_remove_component(VkrSceneEditState *s, VkrScene *scene,
   return true_v;
 }
 
+bool8_t vkr_scene_edit_replace_component(VkrSceneEditState *s, VkrScene *scene,
+                                         VkrEntityId entity,
+                                         const VkrTypeDesc *replaced,
+                                         const VkrTypeDesc *type,
+                                         const void *value) {
+  const void *current = edit_world_type(replaced)
+                            ? vkr_scene_get_typed(scene, entity, replaced)
+                            : NULL;
+  if (!current || !edit_world_type(type) || type == replaced) {
+    snprintf(s->status, sizeof(s->status), "No such component.");
+    return false_v;
+  }
+  if (vkr_scene_get_typed(scene, entity, type)) {
+    snprintf(s->status, sizeof(s->status), "The object already has %s.",
+             type->label);
+    return false_v;
+  }
+  EditStructure *structure = &s_edit_structure;
+  MemZero(structure, sizeof(*structure));
+  structure->op = EDIT_STRUCTURE_REPLACE_COMPONENT;
+  structure->replaced = replaced;
+  MemCopy(structure->replaced_component, current, replaced->size);
+  structure->type = type;
+  if (value) {
+    MemCopy(structure->component, value, type->size);
+  } else {
+    vkr_type_defaults(type, structure->component);
+  }
+  char error[160] = {0};
+  if (!vkr_type_validate(type, structure->component, error, sizeof(error)) ||
+      !vkr_scene_set_typed(scene, entity, type, structure->component)) {
+    snprintf(s->status, sizeof(s->status), "%s",
+             error[0] ? error : "The component could not be added.");
+    return false_v;
+  }
+  if (!edit_structure_append(s, entity, structure)) {
+    (void)vkr_scene_remove_typed(scene, entity, type);
+    return false_v;
+  }
+  /* Removal cannot fail once the component exists. */
+  (void)vkr_scene_remove_typed(scene, entity, replaced);
+  snprintf(s->status, sizeof(s->status), "Replaced %s with %s.",
+           replaced->label, type->label);
+  return true_v;
+}
+
 /* Snapshot of a new entity described by edit values. */
 static bool8_t edit_object_from_values(const VkrSceneEditValues *v,
                                        EditObject *o) {
@@ -1368,6 +1418,17 @@ static bool8_t edit_structure_write(VkrSceneEditState *s, VkrScene *scene,
     return present ? vkr_scene_set_typed(scene, entity, structure->type,
                                          structure->component)
                    : vkr_scene_remove_typed(scene, entity, structure->type);
+  }
+  case EDIT_STRUCTURE_REPLACE_COMPONENT: {
+    const VkrTypeDesc *add = after ? structure->type : structure->replaced;
+    const VkrTypeDesc *remove = after ? structure->replaced : structure->type;
+    if (!vkr_scene_set_typed(scene, entity, add,
+                             after ? structure->component
+                                   : structure->replaced_component)) {
+      return false_v;
+    }
+    (void)vkr_scene_remove_typed(scene, entity, remove);
+    return true_v;
   }
   case EDIT_STRUCTURE_CREATE:
   case EDIT_STRUCTURE_DELETE: {

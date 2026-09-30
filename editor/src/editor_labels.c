@@ -92,8 +92,9 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;
     }
-    const bool8_t placed = type == &vkr_scene_fog_box_type ||
-                           type == &vkr_scene_reflection_probe_type;
+    /* Only one-per-frame settings are abstract and stack at the origin;
+       fog boxes, probes, Player Starts and scripts mark their position. */
+    const bool8_t placed = !(type->flags & VKR_TYPE_FLAG_SINGLETON);
     *out =
         (EditorLabelKind){vkr_editor_world_type_icon(type),
                           (Vec4){0.62f, 0.78f, 0.98f, 1.0f}, true_v, !placed};
@@ -118,6 +119,11 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
   const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t size = EDITOR_LABEL_SIZE_PT;
   const bool8_t selected = entity.u64 == frame->selected_entity.u64;
+  /* The transform gizmo marks a selected placed object; its icon would
+     cover the gizmo's center handles. */
+  if (selected && placed) {
+    return;
+  }
   const bool8_t hidden = !vkr_scene_entity_visible(scene, entity);
   VkrUiWidgetConfig label = vkr_ui_widget_config_default();
   label.placement = VKR_UI_PLACEMENT_DEFAULT;

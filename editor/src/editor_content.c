@@ -218,8 +218,14 @@ struct VkrEditorContent {
      context menu it opens (ADR-076). */
   bool8_t right_pressed;
   bool8_t menu_requested;
+  /* The press landed on the shown folder's empty space, not an item. */
+  bool8_t menu_folder;
   uint32_t menu_item;
   Vec2 menu_position_pt;
+  /* An object created from Content is revealed once it becomes the
+     selection; frames left to wait for it. */
+  VkrEntityId reveal_previous;
+  uint32_t reveal_frames;
   /* The item whose name is being edited in place. */
   uint32_t renaming;
   uint8_t rename_draft[513];
@@ -1516,10 +1522,13 @@ static void content_tree_build(VkrEditorContent *content) {
 static bool8_t content_matches(const char *text, const uint8_t *query,
                                uint32_t length);
 
-/* The built-in items: one object per creatable kind, in System/Objects. */
+/* The built-in items: one object per listed kind, in System/Objects. */
 static void content_read_builtins(VkrEditorContent *content) {
   const uint32_t kinds = vkr_editor_object_kind_count();
   for (uint32_t i = 0; i < kinds && content_reserve(content); ++i) {
+    if (!vkr_editor_object_kind_listed(i)) {
+      continue;
+    }
     ContentAsset *entry = &content->entries[content->count++];
     MemZero(entry, sizeof(*entry));
     entry->scope = CONTENT_SCOPE_BUILTIN;
@@ -1901,6 +1910,9 @@ static void content_mark_cooking_objects(VkrEditorContent *content,
   }
 }
 
+static void content_reveal_created(VkrEditorContent *content,
+                                   const VkrSampleUiFrame *frame);
+
 void vkr_editor_content_sync_objects(
     VkrEditorContent *content, const VkrSampleUiFrame *frame,
     const char *const scene_ids[1 + VKR_SCENE_ADDITIVE_MAX]) {
@@ -1916,6 +1928,7 @@ void vkr_editor_content_sync_objects(
   content_visit_objects(content, frame, scene_ids, content_object_hash, &key);
   if (key == content->objects_key) {
     content_mark_cooking_objects(content, frame, false_v);
+    content_reveal_created(content, frame);
     return;
   }
   content->objects_key = key;
@@ -1938,6 +1951,7 @@ void vkr_editor_content_sync_objects(
   }
   content_mark_cooking_objects(content, frame, true_v);
   content->filter_dirty = true_v;
+  content_reveal_created(content, frame);
 }
 
 void vkr_editor_content_set_project(VkrEditorContent *content,
@@ -2802,6 +2816,7 @@ static void content_activate(VkrEditorContent *content, uint32_t shown) {
   const ContentKind kind = content->entries[shown].kind;
   if (kind == CONTENT_ENTITY) {
     content_action(content, VKR_EDITOR_CONTENT_ACTION_SELECT_ENTITY);
+    content->action.activated = true_v;
   } else if (kind == CONTENT_OBJECT) {
     content_action(content, VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT);
   } else if (kind == CONTENT_SCRIPT) {
@@ -3140,6 +3155,7 @@ static void content_context_probe(VkrEditorContent *content, VkrUiSystem *ui,
   content->right_pressed = false_v;
   content_select(content, shown);
   content->menu_requested = true_v;
+  content->menu_folder = false_v;
   content->menu_item = shown;
   content->menu_position_pt =
       (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
@@ -4910,6 +4926,15 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
   }
   content_build_grid(content, ui, columns, rows, max_first, card_width,
                      card_height, grid_id, grid_area);
+  /* A right press on empty space asks for the shown folder's menu. */
+  if (content->right_pressed && content_pointer_inside(ui, grid_area)) {
+    content->right_pressed = false_v;
+    content->menu_requested = true_v;
+    content->menu_folder = true_v;
+    content->menu_position_pt =
+        (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
+               (float32_t)ui->mouse_y / ui->content_scale};
+  }
   content_build_inspector(content, ui, inspector_height, show_details);
   (void)vkr_ui_panel_end(ui);
   VkrUiWidgetConfig footer = content_widget(0, 2);
@@ -4947,13 +4972,89 @@ bool8_t vkr_editor_content_take_object_action(VkrEditorContent *content,
 }
 
 bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
-                                     Vec2 *position_pt) {
+                                     Vec2 *position_pt, bool8_t *folder) {
   if (!content || !content->menu_requested) {
     return false_v;
   }
   content->menu_requested = false_v;
   *position_pt = content->menu_position_pt;
+  *folder = content->menu_folder;
   return true_v;
+}
+
+bool8_t
+vkr_editor_content_folder_available(const VkrEditorContent *content,
+                                    VkrEditorContentFolderCommand command) {
+  if (!content) {
+    return false_v;
+  }
+  const bool8_t project = !content->read_only && content->project[0];
+  switch (command) {
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_FOLDER:
+    return project && content_project_folder(content->folder);
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_SCRIPT:
+  case VKR_EDITOR_CONTENT_FOLDER_IMPORT:
+    return project;
+  default:
+    return true_v;
+  }
+}
+
+void vkr_editor_content_folder_command(VkrEditorContent *content,
+                                       VkrEditorContentFolderCommand command) {
+  if (!vkr_editor_content_folder_available(content, command)) {
+    return;
+  }
+  switch (command) {
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_FOLDER:
+    (void)content_new_folder(content, content->folder);
+    break;
+  case VKR_EDITOR_CONTENT_FOLDER_NEW_SCRIPT:
+    content_action(content, VKR_EDITOR_CONTENT_ACTION_NEW_SCRIPT);
+    break;
+  case VKR_EDITOR_CONTENT_FOLDER_IMPORT:
+    content_action(content, VKR_EDITOR_CONTENT_ACTION_IMPORT);
+    break;
+  default:
+    vkr_editor_content_refresh(content);
+    break;
+  }
+}
+
+void vkr_editor_content_reveal_created(VkrEditorContent *content,
+                                       VkrEntityId selection) {
+  if (content) {
+    content->reveal_previous = selection;
+    content->reveal_frames = 120u;
+  }
+}
+
+/* Opens the folder of the object an earlier creation selected, once its
+   entry exists. */
+static void content_reveal_created(VkrEditorContent *content,
+                                   const VkrSampleUiFrame *frame) {
+  if (!content->reveal_frames) {
+    return;
+  }
+  --content->reveal_frames;
+  const VkrEntityId selected = frame->selected_entity;
+  if (!selected.u64 || selected.u64 == content->reveal_previous.u64) {
+    return;
+  }
+  for (uint32_t i = content->asset_count; i < content->count; ++i) {
+    if (content->entries[i].entity.u64 == selected.u64) {
+      content->reveal_frames = 0u;
+      content->query[0] = 0;
+      content->query_length = 0;
+      content->tag_filter[0] = '\0';
+      content_open_folder(content,
+                          content_item_folder(content, &content->entries[i]));
+      content_select(content, i);
+      content->reveal_selection = true_v;
+      content->filter_dirty = true_v;
+      return;
+    }
+  }
 }
 
 const char *vkr_editor_content_menu_label(const VkrEditorContent *content,

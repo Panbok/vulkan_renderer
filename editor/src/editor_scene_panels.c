@@ -5,6 +5,7 @@
 #include "editor_internal.h"
 #include "editor_project_store.h"
 #include "editor_projects.h"
+#include "editor_scripts.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_types.h"
@@ -57,6 +58,11 @@ struct VkrEditorScenePanels {
   bool8_t physics_dragging;
   /* Component type whose Presets button was pressed this build. */
   const VkrTypeDesc *preset_menu;
+  /* The script slot's picker was pressed this build, below this point. */
+  bool8_t script_menu;
+  Vec2 script_menu_pt;
+  /* The Details name field takes focus on its next build. */
+  bool8_t rename_request;
   /* The physics settings' collision matrix button opens its window once
      the sections are built. */
   bool8_t open_collision_layers;
@@ -568,42 +574,48 @@ typedef struct EditorObjectKind {
   /* Light or live world component type; NULL for an empty object. */
   const VkrTypeDesc *type;
   bool8_t spot;
+  /* Menu heading the kind is listed under. */
+  const char *group;
 } EditorObjectKind;
 
-/* Labels match the names the loader gives legacy world blocks. */
+/* Labels match the names the loader gives legacy world blocks. A Script is
+   an empty object whose Details script slot picks its behavior. */
 static const EditorObjectKind s_object_kinds[] = {
-    {"empty", "Empty", VKR_UI_ICON_EMPTY, NULL, false_v},
+    {"empty", "Empty", VKR_UI_ICON_EMPTY, NULL, false_v, "Basic"},
+    {"cube", "Cube", VKR_UI_ICON_SHAPES, &vkr_scene_shape_type, false_v,
+     "Basic"},
+    {"text", "Text", VKR_UI_ICON_TEXT, &vkr_scene_text_type, false_v, "Basic"},
     {"point_light", "Point Light", VKR_UI_ICON_POINT_LIGHT,
-     &vkr_scene_point_light_type, false_v},
+     &vkr_scene_point_light_type, false_v, "Lights"},
     {"spot_light", "Spot Light", VKR_UI_ICON_SPOT_LIGHT,
-     &vkr_scene_point_light_type, true_v},
+     &vkr_scene_point_light_type, true_v, "Lights"},
     {"rect_light", "Rect Light", VKR_UI_ICON_RECT_LIGHT,
-     &vkr_scene_rectangle_light_type, false_v},
+     &vkr_scene_rectangle_light_type, false_v, "Lights"},
     {"directional_light", "Directional Light", VKR_UI_ICON_DIRECTIONAL_LIGHT,
-     &vkr_scene_directional_light_type, false_v},
-    {"atmosphere", "Sky Atmosphere", VKR_UI_ICON_PLANET,
-     &vkr_scene_atmosphere_type, false_v},
-    {"clouds", "Volumetric Clouds", VKR_UI_ICON_CLOUD, &vkr_scene_clouds_type,
-     false_v},
-    {"fog", "Height Fog", VKR_UI_ICON_FOG, &vkr_scene_fog_type, false_v},
-    {"volumetric_fog", "Volumetric Fog", VKR_UI_ICON_FOG,
-     &vkr_scene_froxel_fog_type, false_v},
-    {"fog_density_box", "Fog Density Box", VKR_UI_ICON_BOUNDING_BOX,
-     &vkr_scene_fog_box_type, false_v},
-    {"post_process", "Post Process", VKR_UI_ICON_PALETTE,
-     &vkr_scene_post_process_type, false_v},
-    {"physics_settings", "Physics Settings", VKR_UI_ICON_PHYSICS,
-     &vkr_scene_physics_settings_type, false_v},
-    {"animation_settings", "Animation Settings", VKR_UI_ICON_ANIMATION,
-     &vkr_scene_animation_settings_type, false_v},
-    {"cube", "Cube", VKR_UI_ICON_SHAPES, &vkr_scene_shape_type, false_v},
-    {"text", "Text", VKR_UI_ICON_TEXT, &vkr_scene_text_type, false_v},
+     &vkr_scene_directional_light_type, false_v, "Lights"},
+    {"script", "Script", VKR_UI_ICON_CODE, NULL, false_v, "Gameplay"},
     {"player_start", "Player Start", VKR_UI_ICON_PERSON_WALK,
-     &vkr_scene_player_start_type, false_v},
+     &vkr_scene_player_start_type, false_v, "Gameplay"},
+    {"atmosphere", "Sky Atmosphere", VKR_UI_ICON_PLANET,
+     &vkr_scene_atmosphere_type, false_v, "Environment"},
+    {"clouds", "Volumetric Clouds", VKR_UI_ICON_CLOUD, &vkr_scene_clouds_type,
+     false_v, "Environment"},
+    {"fog", "Height Fog", VKR_UI_ICON_FOG, &vkr_scene_fog_type, false_v,
+     "Environment"},
+    {"volumetric_fog", "Volumetric Fog", VKR_UI_ICON_FOG,
+     &vkr_scene_froxel_fog_type, false_v, "Environment"},
+    {"fog_density_box", "Fog Density Box", VKR_UI_ICON_BOUNDING_BOX,
+     &vkr_scene_fog_box_type, false_v, "Environment"},
+    {"post_process", "Post Process", VKR_UI_ICON_PALETTE,
+     &vkr_scene_post_process_type, false_v, "Environment"},
+    {"physics_settings", "Physics Settings", VKR_UI_ICON_PHYSICS,
+     &vkr_scene_physics_settings_type, false_v, "Settings"},
+    {"animation_settings", "Animation Settings", VKR_UI_ICON_ANIMATION,
+     &vkr_scene_animation_settings_type, false_v, "Settings"},
 };
 
-/* Built-in kinds, then one Script object per component type a script module
- * registered (ADR-079); the object is a new entity carrying that script. */
+/* Built-in kinds, then one unlisted kind per component type a script module
+   registered (ADR-079), so Cmd can still create an entity carrying it. */
 static bool8_t editor_object_kind(uint32_t kind, EditorObjectKind *out) {
   if (kind < ArrayCount(s_object_kinds)) {
     *out = s_object_kinds[kind];
@@ -617,7 +629,8 @@ static bool8_t editor_object_kind(uint32_t kind, EditorObjectKind *out) {
   *out = (EditorObjectKind){.word = type->name,
                             .label = type->label,
                             .icon = VKR_UI_ICON_CODE,
-                            .type = type};
+                            .type = type,
+                            .group = "Scripts"};
   return true_v;
 }
 
@@ -627,6 +640,10 @@ uint32_t vkr_editor_object_kind_count(void) {
     ++count;
   }
   return count;
+}
+
+bool8_t vkr_editor_object_kind_listed(uint32_t kind) {
+  return kind < ArrayCount(s_object_kinds);
 }
 
 const char *vkr_editor_object_kind_word(uint32_t kind) {
@@ -639,9 +656,127 @@ const char *vkr_editor_object_kind_label(uint32_t kind) {
   return editor_object_kind(kind, &object) ? object.label : NULL;
 }
 
+const char *vkr_editor_object_kind_group(uint32_t kind) {
+  EditorObjectKind object;
+  return editor_object_kind(kind, &object) ? object.group : NULL;
+}
+
 VkrUiIcon vkr_editor_object_kind_icon(uint32_t kind) {
   EditorObjectKind object;
   return editor_object_kind(kind, &object) ? object.icon : VKR_UI_ICON_NONE;
+}
+
+// ---- Script slot (ADR-079) ----
+
+const VkrTypeDesc *vkr_editor_entity_script(const VkrScene *scene,
+                                            VkrEntityId entity) {
+  const VkrTypeDesc *type = NULL;
+  for (uint32_t i = 0; scene && (type = vkr_scene_registered_type(i)); ++i) {
+    if (vkr_scene_get_typed(scene, entity, type)) {
+      return type;
+    }
+  }
+  return NULL;
+}
+
+uint32_t vkr_editor_script_types(const VkrSampleUiFrame *frame,
+                                 const VkrTypeDesc **out, uint32_t capacity) {
+  uint32_t count = 0u;
+  const VkrScriptHost *host = frame->scripts;
+  for (uint32_t m = 0; host && m < host->module_count; ++m) {
+    const VkrScriptModule *module = &host->modules[m];
+    for (uint32_t t = 0; !module->retired && t < module->type_count; ++t) {
+      if (count < capacity) {
+        out[count] = module->types[t];
+      }
+      ++count;
+    }
+  }
+  return Min(count, capacity);
+}
+
+bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 const VkrTypeDesc *type, char *out,
+                                 uint32_t capacity) {
+  const VkrScriptHost *host = frame->scripts;
+  const char *module_name = NULL;
+  for (uint32_t m = 0; host && type && !module_name && m < host->module_count;
+       ++m) {
+    for (uint32_t t = 0; t < host->modules[m].type_count; ++t) {
+      if (host->modules[m].types[t] == type) {
+        module_name = host->modules[m].name;
+      }
+    }
+  }
+  if (!module_name || !editor->scripts) {
+    return false_v;
+  }
+  /* The module's `<Name>.c`, else its first C source. */
+  const char *found = NULL;
+  char wanted[VKR_EDITOR_SCRIPT_NAME + 2u];
+  snprintf(wanted, sizeof(wanted), "%s.c", module_name);
+  const uint32_t files = vkr_editor_scripts_file_count(editor->scripts);
+  for (uint32_t i = 0; i < files; ++i) {
+    const VkrEditorScriptFile *file =
+        vkr_editor_scripts_file(editor->scripts, i);
+    const VkrEditorScriptModule *module =
+        vkr_editor_scripts_module(editor->scripts, file->module);
+    const size_t length = strlen(file->name);
+    if (!module || strcmp(module->name, module_name) || length < 2u ||
+        strcmp(file->name + length - 2u, ".c")) {
+      continue;
+    }
+    if (!found || !strcmp(file->name, wanted)) {
+      found = file->path;
+    }
+  }
+  if (!found) {
+    return false_v;
+  }
+  snprintf(out, capacity, "%s", found);
+  return true_v;
+}
+
+bool8_t vkr_editor_open_entity_script(VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      VkrEntityId entity) {
+  char path[VKR_EDITOR_SCRIPT_PATH];
+  const VkrTypeDesc *type =
+      vkr_editor_entity_script(vkr_editor_entity_scene(frame, entity), entity);
+  return type &&
+         vkr_editor_script_source(editor, frame, type, path, sizeof(path)) &&
+         vkr_editor_code_open(editor->code, editor, path);
+}
+
+void vkr_editor_scene_panels_request_rename(VkrEditorScenePanels *panels) {
+  if (panels) {
+    panels->rename_request = true_v;
+  }
+}
+
+void vkr_editor_request_script(const VkrSampleUiFrame *frame,
+                               VkrEntityId entity, const VkrTypeDesc *type) {
+  const VkrScene *scene = vkr_editor_entity_scene(frame, entity);
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+    return;
+  }
+  const VkrTypeDesc *current = vkr_editor_entity_script(scene, entity);
+  if (current == type) {
+    return;
+  }
+  VkrSceneEditRequest request = {.entity = entity};
+  if (!type) {
+    request.action = VKR_SCENE_EDIT_REMOVE_COMPONENT;
+    request.values.component_type = current;
+  } else {
+    request.action = current ? VKR_SCENE_EDIT_REPLACE_COMPONENT
+                             : VKR_SCENE_EDIT_ADD_COMPONENT;
+    request.replaced_type = current;
+    request.values.component_type = type;
+    vkr_type_defaults(type, request.values.component);
+  }
+  *frame->scene_edit = request;
 }
 
 uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame) {
@@ -1025,14 +1160,11 @@ static void hierarchy_toolbar(VkrEditorUi *editor,
     const uint16_t container = vkr_editor_create_container(frame);
     add.disabled = container == UINT16_MAX;
     if (vkr_ui_button(ui, string8_lit("hierarchy.add"), (String8){0}, &add)) {
-      editor->context_open = true_v;
-      editor->context_kind = VKR_EDITOR_CONTEXT_CREATE;
-      editor->context_container = container;
-      editor->context_count = 0u;
-      editor->context_position_pt =
+      vkr_editor_context_open(
+          editor, VKR_EDITOR_CONTEXT_CREATE,
           (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
-                 (float32_t)ui->mouse_y / ui->content_scale};
-      editor->menu = VKR_EDITOR_MENU_NONE;
+                 (float32_t)ui->mouse_y / ui->content_scale});
+      editor->context_container = container;
     }
     (void)vkr_ui_panel_end(ui);
   }
@@ -1203,13 +1335,11 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
           input_button_just_pressed(frame->input, BUTTON_RIGHT)) {
         *frame->scene_edit = (VkrSceneEditRequest){
             .action = VKR_SCENE_EDIT_SELECT, .entity = n->entity};
-        editor->context_open = true_v;
-        editor->context_kind = VKR_EDITOR_CONTEXT_ENTITY;
-        editor->context_entity = n->entity;
-        editor->context_position_pt =
+        vkr_editor_context_open(
+            editor, VKR_EDITOR_CONTEXT_ENTITY,
             (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
-                   (float32_t)ui->mouse_y / ui->content_scale};
-        editor->menu = VKR_EDITOR_MENU_NONE;
+                   (float32_t)ui->mouse_y / ui->content_scale});
+        editor->context_entity = n->entity;
       }
       if (n->child != NO_ROW) {
         c = widget_at(6 + indent, y + 3, 18, 18);
@@ -2530,6 +2660,15 @@ static bool8_t inspector_header(VkrEditorScenePanels *p,
   if (p->long_name)
     name = (VkrUiTextEditBuffer){p->long_name, p->long_name_capacity - 1u,
                                  p->long_name_capacity};
+  if (p->rename_request) {
+    p->rename_request = false_v;
+    if (!c.read_only) {
+      ui->focused_id =
+          vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("name"));
+      ui->focused_is_text = true_v;
+      (void)vkr_ui_keyboard_layer_set(ui, 0u);
+    }
+  }
   if (c.read_only && !p->long_name) {
     vkr_ui_label(ui, string8_lit("name.unavailable"),
                  string8_lit("Original name unavailable"), &c);
@@ -2879,6 +3018,78 @@ static bool8_t inspector_world_sections(VkrEditorScenePanels *p,
   return focused;
 }
 
+/* Script slot (ADR-079): a picker naming the entity's script, which opens
+   the project's script types, and a button opening its source. */
+static void inspector_script_row(VkrEditorUi *editor, VkrEditorScenePanels *p,
+                                 const VkrSampleUiFrame *f, float32_t w,
+                                 float32_t *y) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = f->ui;
+  const VkrTypeDesc *script =
+      vkr_editor_entity_script(f->scene, f->selected_entity);
+  VkrUiWidgetConfig label =
+      widget_at(INSPECTOR_PAD_PT, *y + 6.0f, 60.0f, 26.0f);
+  label.placement.align = VKR_UI_ALIGN_START;
+  label.style.font_size_pt = theme->font_body;
+  label.style.text_color = theme->text_secondary;
+  label.style.padding_pt = (VkrUiEdges){5, 2, 5, 0};
+  vkr_ui_label(ui, string8_lit("script.label"), string8_lit("Script"), &label);
+  char source[VKR_EDITOR_SCRIPT_PATH];
+  const bool8_t editable =
+      script &&
+      vkr_editor_script_source(editor, f, script, source, sizeof(source));
+  const float32_t picker_x = INSPECTOR_PAD_PT + 64.0f;
+  const float32_t picker_w =
+      Max(40.0f, w - picker_x - INSPECTOR_PAD_PT - 32.0f);
+  VkrUiWidgetConfig picker = widget_at(picker_x, *y + 6.0f, picker_w, 26.0f);
+  vkr_editor_field_style(&picker);
+  picker.placement.align = VKR_UI_ALIGN_START;
+  picker.style.padding_pt = (VkrUiEdges){4, 8, 4, 8};
+  picker.style.text_color = script ? theme->text : theme->text_secondary;
+  picker.icon = VKR_UI_ICON_CODE;
+  picker.icon_size_pt = 13.0f;
+  picker.icon_color =
+      script ? (Vec4){0.80f, 0.66f, 0.98f, 1.0f} : theme->text_secondary;
+  picker.tooltip = string8_lit("Choose the script this object runs, or make a "
+                               "new one");
+  const char *name = script ? script->label : "None";
+  /* The button takes the click; its name reads from the leading edge. */
+  VkrUiWidgetConfig hit = picker;
+  hit.icon = VKR_UI_ICON_NONE;
+  if (vkr_ui_button(ui, string8_lit("script.pick"), (String8){0}, &hit)) {
+    p->script_menu = true_v;
+    p->script_menu_pt = (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
+                               (float32_t)ui->mouse_y / ui->content_scale};
+  }
+  VkrUiWidgetConfig text = picker;
+  text.style.background_color = (Vec4){0};
+  text.style.border_pt = (VkrUiEdges){0};
+  text.style.min_size_pt = text.style.max_size_pt =
+      (Vec2){picker_w - 26.0f, 26.0f};
+  vkr_ui_label(ui, string8_lit("script.name"),
+               string8_create((uint8_t *)name, strlen(name)), &text);
+  VkrUiWidgetConfig chevron =
+      widget_at(picker_x + picker_w - 22.0f, *y + 6.0f, 20.0f, 26.0f);
+  chevron.style.background_color = (Vec4){0};
+  chevron.icon = VKR_UI_ICON_CHEVRON_DOWN;
+  chevron.icon_size_pt = 11.0f;
+  chevron.icon_color = theme->text_secondary;
+  chevron.style.padding_pt = (VkrUiEdges){0};
+  vkr_ui_label(ui, string8_lit("script.chevron"), (String8){0}, &chevron);
+  VkrUiWidgetConfig edit = vkr_editor_icon_button_config(
+      0, 0, VKR_UI_ICON_PENCIL_LINE,
+      editable ? string8_lit("Edit this script's source")
+               : string8_lit("No project source for this script"));
+  edit.placement =
+      widget_at(w - INSPECTOR_PAD_PT - 28.0f, *y + 6.0f, 28.0f, 26.0f)
+          .placement;
+  edit.disabled = !editable;
+  if (vkr_ui_button(ui, string8_lit("script.edit"), (String8){0}, &edit)) {
+    (void)vkr_editor_code_open(editor->code, editor, source);
+  }
+  *y += 36.0f;
+}
+
 /* Opens the list of live component types the selection can take. */
 static void inspector_add_component(VkrEditorUi *editor,
                                     const VkrSampleUiFrame *f, float32_t w,
@@ -2893,14 +3104,10 @@ static void inspector_add_component(VkrEditorUi *editor,
                           "object");
   if (vkr_ui_button(ui, string8_lit("component.add"),
                     string8_lit("Add component"), &c)) {
-    editor->context_open = true_v;
-    editor->context_kind = VKR_EDITOR_CONTEXT_ADD_COMPONENT;
+    vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_ADD_COMPONENT,
+                            (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
+                                   (float32_t)ui->mouse_y / ui->content_scale});
     editor->context_entity = f->selected_entity;
-    editor->context_count = 0u;
-    editor->context_position_pt =
-        (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
-               (float32_t)ui->mouse_y / ui->content_scale};
-    editor->menu = VKR_EDITOR_MENU_NONE;
   }
   *y += 40.0f;
 }
@@ -3118,6 +3325,10 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
         p, f, frame->scene ? frame->scene : frame->world, w, &y, heading,
         &lights, &component_edit);
   inspector_mesh_section(p, f, w, &y, heading);
+  /* Placed objects carry a script slot above the script's own section;
+     world settings do not. */
+  if (tr)
+    inspector_script_row(editor, p, f, w, &y);
   field_focus |=
       inspector_world_sections(p, f, frame->scene ? frame->scene : frame->world,
                                w, &y, heading, &component_edit);
@@ -3136,16 +3347,18 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
     p->open_collision_layers = false_v;
     vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_PHYSICS, true_v);
   }
+  if (p->script_menu) {
+    p->script_menu = false_v;
+    vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_SCRIPT,
+                            p->script_menu_pt);
+    editor->context_entity = f->selected_entity;
+  }
   if (p->preset_menu) {
-    editor->context_open = true_v;
-    editor->context_kind = VKR_EDITOR_CONTEXT_PRESET;
+    vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_PRESET,
+                            (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
+                                   (float32_t)ui->mouse_y / ui->content_scale});
     editor->context_entity = f->selected_entity;
     editor->context_type = p->preset_menu;
-    editor->context_count = 0u;
-    editor->context_position_pt =
-        (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
-               (float32_t)ui->mouse_y / ui->content_scale};
-    editor->menu = VKR_EDITOR_MENU_NONE;
     p->preset_menu = NULL;
   }
   inspector_debug_section(p, f, w, &y, heading, tr);

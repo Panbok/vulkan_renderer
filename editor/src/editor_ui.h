@@ -141,6 +141,12 @@ typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_PRESET,
   /* Open, Put into viewport, Rename and Delete for a Content item. */
   VKR_EDITOR_CONTEXT_CONTENT,
+  /* New folder, New script, Import, Create and Refresh for the shown Content
+     folder. */
+  VKR_EDITOR_CONTEXT_CONTENT_FOLDER,
+  /* The context entity's script slot (ADR-079): the project's script types,
+     None, New script and Edit script. */
+  VKR_EDITOR_CONTEXT_SCRIPT,
 } VkrEditorContextKind;
 
 typedef struct VkrEditorUi {
@@ -183,8 +189,23 @@ typedef struct VkrEditorUi {
   VkrEditorViewportTab viewport_tabs[VKR_EDITOR_VIEWPORT_TAB_MAX];
   uint32_t viewport_tab_count;
   uint32_t viewport_tab_active;
-  /* Rows the open menu showed last build; sizes its input region. */
+  /* Rows the open menu showed last build and its laid-out height, which
+     size its input region. */
   uint32_t context_count;
+  float32_t context_height_pt;
+  /* Keyboard-highlighted row of the menu, or -1. */
+  int32_t context_cursor;
+  /* One submenu, opened from row `context_sub_row`, beside the menu. */
+  bool8_t context_sub_open;
+  bool8_t context_sub_focused;
+  VkrEditorContextKind context_sub_kind;
+  uint32_t context_sub_row;
+  int32_t context_sub_cursor;
+  VkrUiRect context_sub_rect_px;
+  /* Pointer position last build; hover follows the pointer only once it
+     moves, so the keyboard highlight survives a resting pointer. */
+  int32_t context_mouse_x;
+  int32_t context_mouse_y;
   /* Mirrors of the UI system's interface zoom and reduced-motion setting,
    * kept for workspace persistence. */
   float32_t ui_scale;
@@ -235,6 +256,12 @@ typedef struct VkrEditorUi {
   float64_t cmd_hold_seconds;
   /* Headless: quit once the queue has drained. */
   bool8_t cmd_quit_when_done;
+  /* `ui.click`, `ui.drag` and `ui.key` input steps, one per frame:
+   * {kind, x px, y px, button or key} with kind 0 move, 1 press, 2 release,
+   * 3 key press, 4 key release. The queue holds until they run. */
+  int32_t cmd_pointer_steps[32][4];
+  uint32_t cmd_pointer_count;
+  uint32_t cmd_pointer_next;
   VkrFontHandle heading_font;
   /* Inter body text, Phosphor icon atlases and the monospace Console face. */
   VkrFontHandle text_font;

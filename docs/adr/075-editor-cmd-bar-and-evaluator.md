@@ -88,6 +88,8 @@ dependable channel for scripts.
 | `script.new`, `script.open` | `<Name>`, `<file>` | Create a script module from the template in the open Scripts folder and open it, or open a listed source in the Script editor ([ADR-079](079-c-script-modules.md)) |
 | `script.goto`, `script.type` | `<line>`, `<text>` | Move the Script editor's caret to a line, or type ASCII text at it as the keyboard would, completion included |
 | `script.save`, `script.status` | | Save the active Script editor tab, which rebuilds and hot reloads its module; report each module's build and load state and the diagnostic count |
+| `script.attach`, `script.edit` | `<type\|none>`, | Set the selection's script slot to a loaded script type or remove it (undoable, one entry); open the selection's script source |
+| `ui.click`, `ui.drag`, `ui.key` | `<x> <y> [count] [right]`, `<x0> <y0> <x1> <y1>`, `<key>` | Synthetic input in window points, one step per frame before the UI reads input: a left, double or right click; a left drag that holds while a pick resolves; or an `up`, `down`, `left`, `right`, `enter`, `escape` or `tab` key. The queue holds until the steps ran |
 | `component.add`, `component.remove` | `<type>` | Add or remove a live world component, or `physics_body`, on the selection (undoable); World-only types only on World objects |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |
 | `scene.open`, `scene.create` | `<name>` | Open a project scene (the scene already loading or open stays as it is), or create an empty one and open it |

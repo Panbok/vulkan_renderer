@@ -3,6 +3,7 @@
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_sample_runtime.h"
@@ -213,7 +214,7 @@ static void project_test_runtime_settings(void) {
   // dropped on save. Large source fingerprints must survive beyond f64
   // precision.
   String8 fixture =
-      string8_lit("{\"version\":1,\"filter_mode\":0,\"gizmo_mode\":1,"
+      string8_lit("{\"version\":2,\"filter_mode\":0,\"gizmo_mode\":1,"
                   "\"gizmo_space\":0,\"gizmo_size\":150,\"camera_speed\":3.25,"
                   "\"camera_sensitivity\":0.5,\"move_multiplier\":4,"
                   "\"rotation_multiplier\":2,\"ibl_debug_mode\":2,"
@@ -235,6 +236,19 @@ static void project_test_runtime_settings(void) {
   assert(restored.gizmo_size == 150 && restored.ibl_debug_scalar == 0.75f);
   assert(!vkr_sample_runtime_preferences_read_json(
       string8_lit("{\"version\":99}"), &restored));
+  /* A version 1 gizmo size counted window pixels; it resets to the point
+     default instead of doubling on a Retina display. */
+  VkrSampleRuntimePreferences migrated;
+  assert(vkr_sample_runtime_preferences_read_json(
+      string8_lit("{\"version\":1,\"filter_mode\":0,\"gizmo_mode\":1,"
+                  "\"gizmo_space\":0,\"gizmo_size\":150,"
+                  "\"camera_speed\":3.25,\"camera_sensitivity\":0.5,"
+                  "\"move_multiplier\":4,\"rotation_multiplier\":2,"
+                  "\"ibl_debug_mode\":2,\"ibl_debug_scalar\":0.75,"
+                  "\"pass_gpu_timings\":true}"),
+      &migrated));
+  assert(migrated.gizmo_size == VKR_GIZMO_CONFIG_DEFAULT.screen_size &&
+         migrated.camera_speed == 3.25f);
   assert(restored.camera_speed == 3.25f);
   VkrSampleSceneRecall recall = {
       .camera_valid = true_v,

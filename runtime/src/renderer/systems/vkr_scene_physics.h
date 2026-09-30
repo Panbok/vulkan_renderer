@@ -25,6 +25,10 @@
  * bodies and detaches it; destroy the set after every member shut down. */
 VkrScenePhysicsSet *vkr_scene_physics_set_create(VkrAllocator *allocator);
 void vkr_scene_physics_set_destroy(VkrScenePhysicsSet *set);
+/* Makes a set member the driver while the set has none, as when the root
+ * World is played without a scene; a scene attached later as driver takes
+ * over. The member already hosts its own physics then, so nothing moves. */
+void vkr_scene_physics_drive(VkrScene *scene);
 bool8_t vkr_scene_physics_attach(VkrScene *scene, VkrScenePhysicsSet *set,
                                  bool8_t driver, const char **error);
 /* Members of the scene's set, or the scene alone; returns the count. */

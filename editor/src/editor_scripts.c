@@ -717,7 +717,7 @@ void vkr_editor_scripts_update(VkrEditorScripts *scripts,
 static const char s_template[] =
     "/* {Name}: a C script module (ADR-079). Save to rebuild and hot reload.\n"
     " * The `{name}` component spins each entity carrying it; add it from\n"
-    " * Details > Add component or Add > {Name}. */\n"
+    " * Details > Script, or right-click an object > Script. */\n"
     "#include \"script/vkr_script.h\"\n"
     "\n"
     "#include <stddef.h>\n"

@@ -1607,6 +1607,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
 
   VkrEditorOverlayDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
   if (draw.has_editor && !draw.scene_stopped) {
+    application->gizmo_system.pixel_scale =
+        application->ui_system.content_scale;
     draw.editor_payload.overlay_draw_count = vkr_gizmo_system_build_draws(
         &application->gizmo_system, application->globals.view,
         application->globals.projection, &draw.editor_mapping, overlay_draws);
