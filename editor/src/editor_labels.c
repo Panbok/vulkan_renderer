@@ -6,8 +6,6 @@
 
 #define EDITOR_LABEL_SIZE_PT 26.0f
 #define EDITOR_LABEL_GAP_PT 4.0f
-/* Empty objects shown per container. */
-#define EDITOR_LABEL_EMPTY_MAX 256u
 
 /* Readable tint from a linear light color: normalized, display-encoded and
  * lifted toward white so dim or saturated lights stay legible. */
@@ -209,10 +207,10 @@ static void editor_count_chunk(const VkrArchetype *arch, VkrChunk *chunk,
   *(uint32_t *)user += vkr_entity_chunk_count(chunk);
 }
 
-/* Placed objects that nothing draws or marks, such as a new Script object
-   before it has a script: no geometry, light, physics body, iconic component
-   or child. They get an empty icon so they can be found and picked. Writes
-   up to EDITOR_LABEL_EMPTY_MAX into `out` and returns how many. */
+/* Placed objects that nothing draws or marks, such as an Empty: no
+   geometry, light, physics body, iconic component or child. They get an empty
+   icon so they can be found and picked. Writes up to VKR_EDITOR_LABEL_EMPTY_MAX
+   into `out` and returns how many. */
 static uint32_t editor_label_empties(const VkrScene *scene,
                                      VkrAllocator *scratch, VkrEntityId *out) {
   VkrWorld *world = scene->world;
@@ -242,7 +240,7 @@ static uint32_t editor_label_empties(const VkrScene *scene,
       scene->comp_mesh_renderer, scene->comp_text3d, scene->comp_shape,
       scene->comp_physics_body, scene->comp_physics_collider};
   uint32_t count = 0u;
-  for (uint32_t i = 0; i < indices && count < EDITOR_LABEL_EMPTY_MAX; ++i) {
+  for (uint32_t i = 0; i < indices && count < VKR_EDITOR_LABEL_EMPTY_MAX; ++i) {
     const VkrEntityId entity = vkr_entity_id_from_index(world, i);
     if (parents[i] || !vkr_entity_is_alive(world, entity) ||
         !vkr_entity_has_component(world, entity, scene->comp_transform)) {
@@ -293,19 +291,22 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
     return;
   VkrUiSystem *ui = frame->ui;
   uint32_t capacity = 0;
-  VkrEntityId *empties[ArrayCount(scenes)] = {0};
-  uint32_t empty_counts[ArrayCount(scenes)] = {0};
   for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
     if (scenes[i]) {
       editor_label_visit(scenes[i], editor_count_chunk, &capacity, NULL);
-      empties[i] = vkr_allocator_alloc(
-          ui->frame_allocator, sizeof(VkrEntityId) * EDITOR_LABEL_EMPTY_MAX,
-          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      empty_counts[i] =
-          empties[i]
-              ? editor_label_empties(scenes[i], ui->frame_allocator, empties[i])
-              : 0u;
-      capacity += empty_counts[i];
+      /* The scan walks every entity; it reruns only when the container's
+         structure changes. */
+      VkrEditorLabelEmpties *cache = &editor->label_empties[i];
+      if (cache->scene != scenes[i] ||
+          cache->generation != frame->scene_generation ||
+          cache->revision != scenes[i]->structure_revision) {
+        cache->scene = scenes[i];
+        cache->generation = frame->scene_generation;
+        cache->revision = scenes[i]->structure_revision;
+        cache->count = editor_label_empties(scenes[i], ui->frame_allocator,
+                                            cache->entities);
+      }
+      capacity += cache->count;
     }
   }
   if (!capacity)
@@ -353,8 +354,11 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
       (void)vkr_ui_push_id_u64(ui, 0x1ab0u + i);
       editor_label_visit(scenes[i], editor_label_chunk, &build, &build);
       build.empty = true_v;
-      for (uint32_t e = 0; e < empty_counts[i]; ++e) {
-        editor_label_build(&build, empties[i][e]);
+      const VkrEditorLabelEmpties *cache = &editor->label_empties[i];
+      for (uint32_t e = 0; e < cache->count; ++e) {
+        if (vkr_scene_entity_alive(scenes[i], cache->entities[e])) {
+          editor_label_build(&build, cache->entities[e]);
+        }
       }
       build.empty = false_v;
       (void)vkr_ui_pop_id(ui);

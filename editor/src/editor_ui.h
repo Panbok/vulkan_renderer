@@ -56,6 +56,17 @@ typedef struct VkrEditorWindowState {
   bool8_t resizing;
 } VkrEditorWindowState;
 
+/* Empty objects one container shows icons for, cached until its structure
+   changes. */
+#define VKR_EDITOR_LABEL_EMPTY_MAX 256u
+typedef struct VkrEditorLabelEmpties {
+  const struct VkrScene *scene;
+  uint64_t generation;
+  uint64_t revision;
+  uint32_t count;
+  VkrEntityId entities[VKR_EDITOR_LABEL_EMPTY_MAX];
+} VkrEditorLabelEmpties;
+
 typedef struct VkrEditorLabelAnchor {
   VkrUiId widget;
   VkrEntityId entity;
@@ -226,6 +237,9 @@ typedef struct VkrEditorUi {
   bool8_t labels_directional;
   bool8_t labels_spot;
   bool8_t labels_point;
+  /* Empty objects of the primary scene, the World and each added scene, in
+     the labels' container order. */
+  VkrEditorLabelEmpties label_empties[2u + VKR_SCENE_ADDITIVE_MAX];
   /* Frame-scratch records, consumed before UI geometry preparation. */
   VkrEditorLabelAnchor *label_anchors;
   uint32_t label_anchor_count;
