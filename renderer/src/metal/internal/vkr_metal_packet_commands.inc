@@ -218,6 +218,25 @@ vkr_metal_packet_find_completed_timing(const VkrMetalPacketRenderer *renderer,
   return NULL;
 }
 
+/* Commit feedback reports a submission's GPU interval after its completion
+   signal. A slot about to be reused waits, bounded, for its record so the
+   frame reusing it publishes that submission's result rather than its own
+   unfinished one; without the wait a late handler leaves that frame without
+   GPU pass timings. Only frames timing both passes and the submission wait:
+   dynamic resolution alone tolerates a late sample. */
+vkr_internal void vkr_metal_packet_wait_commit_feedback(
+    const VkrMetalPacketCommitFeedbackRecord *record) {
+  const CFTimeInterval deadline =
+      CACurrentMediaTime() +
+      (CFTimeInterval)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
+  while (!vkr_atomic_bool_load(&record->feedback_ready,
+                               VKR_MEMORY_ORDER_ACQUIRE) &&
+         CACurrentMediaTime() < deadline) {
+    dispatch_sync(vkr_metal_packet_feedback_queue(), ^{
+                  });
+  }
+}
+
 vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketCommandSlot *slot,
     bool8_t upload_path) {
@@ -236,6 +255,9 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   }
   vkr_metal_packet_collect_picking_results(renderer,
                                            renderer->completion.signaledValue);
+  if (slot->commit_feedback && slot->pass_timing_requested &&
+      slot->result_pending && !slot->result_collected)
+    vkr_metal_packet_wait_commit_feedback(slot->commit_feedback);
   vkr_metal_packet_cache_slot_result(renderer, slot);
   vkr_capture_ring_collect(&renderer->capture_ring,
                            renderer->completion.signaledValue);

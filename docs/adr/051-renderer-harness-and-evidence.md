@@ -124,7 +124,20 @@ work: in Bistro each shadow cascade read about 0.4 ms against about 2 ms of real
 cost, and the pass sum was 26.2 ms against 34.3 ms of whole-submission time.
 With the correction the sum is 34.24 ms against 33.26 ms with the sun up and
 24.86 ms against 24.44 ms at night. Compare graphics-pass rows only between
-reports on the same side of that change. A bounded completion drain after the
+reports on the same side of that change.
+
+The pass catalog freezes once the set of pass names from the requested scene
+stays unchanged for eight completed frames. Retained shadow cascades and local
+shadow faces leave passes out frame to frame, so a per-frame list may never
+repeat; a pass that first appears later joins the catalog by name, with its
+earlier frames omitted. Repetitions merge their catalogs by name, and a pass a
+repetition never produced counts as omitted in its frames. Metal hands
+completed results to the renderer in submission order, and a pass-timed frame
+that also carries submission feedback waits at slot reuse for that feedback,
+so enabling both timings no longer leaves a frame without GPU pass rows. In
+three 600-frame Bistro repetitions with a moving sun and both timings, every
+frame had complete pass coverage and 1800 of 1800 submission samples were
+valid; before, most such runs lost one frame's pass timings. A bounded completion drain after the
 measurement window does not turn missing results into valid zero durations.
 Work-volume and stability checks govern timing authority independently of
 execution success.

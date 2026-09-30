@@ -65,6 +65,29 @@ bool8_t vkr_metal_packet_renderer_submit_result_poll_next(
     }
     if (!next)
       return false_v;
+    /* Commit feedback caches a result when its handler runs, which can follow
+       a later frame's. Results leave in submission order, so an earlier frame
+       still awaiting its slot or its feedback holds back every later one;
+       the consumer would otherwise step past it for good. */
+    for (uint32_t i = 0; i < renderer->command_slot_count; ++i) {
+      const VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
+      if (slot->result_pending && !slot->result_collected &&
+          slot->submit_value > after_submit_value &&
+          slot->submit_value < next->submit_value)
+        return false_v;
+    }
+    for (uint32_t i = 0; renderer->commit_feedback_records &&
+                         i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY;
+         ++i) {
+      const VkrMetalPacketCommitFeedbackRecord *record =
+          &renderer->commit_feedback_records[i];
+      if (record->in_use &&
+          vkr_atomic_bool_load(&record->result_ready,
+                               VKR_MEMORY_ORDER_ACQUIRE) &&
+          record->result.submit_value > after_submit_value &&
+          record->result.submit_value < next->submit_value)
+        return false_v;
+    }
     *out_result = *next;
     return true_v;
   }
