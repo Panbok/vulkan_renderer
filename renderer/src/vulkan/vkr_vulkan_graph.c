@@ -1208,11 +1208,14 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
       /* The face draws into its own atlas square and clears only that
          square, since the atlas is loaded rather than cleared. */
-      const uint32_t face = pass->desc.repeat_index;
+      const uint32_t render_slot = pass->desc.repeat_index;
       if (!packet->input.local_shadow ||
-          face >= packet->input.local_shadow->view_count)
+          render_slot >= packet->input.local_shadow->render_count)
         return false_v;
-      const Vec4 rect = packet->input.local_shadow->views[face].atlas_rect;
+      const Vec4 rect =
+          packet->input.local_shadow
+              ->views[packet->input.local_shadow->render_views[render_slot]]
+              .atlas_rect;
       const float32_t atlas = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
       const uint32_t x = (uint32_t)(rect.x * atlas);
       const uint32_t y = (uint32_t)(rect.y * atlas);
@@ -1568,9 +1571,9 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
     switch (kind) {
     case VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY:
       bytes += (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
-                          renderer->prepared_frame.local_shadow_view_count +
+                          renderer->prepared_frame.local_shadow_render_count +
                           renderer->prepared_frame
-                              .local_shadow_transmission_view_count) *
+                              .local_shadow_transmission_render_count) *
                (sizeof(Mat4) + VKR_FRUSTUM_PLANE_COUNT * sizeof(Vec4));
       break;
     case VKR_RG_EXECUTOR_PICKING:

@@ -673,30 +673,30 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
   /* A cancelled render never promotes its speculative face descriptor. */
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(1));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(1));
   vkr_shadow_system_discard_frame(&system);
   assert(system.local_history[0][0].last_submit_value == 0u);
 
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(1));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(1));
   vkr_shadow_system_commit_frame(&system, 31u);
   assert(system.local_history[0][0].last_submit_value == 31u);
 
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == 0u);
+  assert(vkr_local_shadow_render_view_mask(&local) == 0u);
 
   /* History is per physical image even when the native token is valid. */
   vkr_shadow_system_resolve_local_shadows(&system, 1u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(1));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(1));
   vkr_shadow_system_discard_frame(&system);
 
   payload.static_generation++;
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(1));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(1));
   vkr_shadow_system_discard_frame(&system);
   payload.static_generation--;
 
@@ -712,7 +712,7 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
   payload.dynamic_generation++;
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(1));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(1));
   vkr_shadow_system_discard_frame(&system);
 
   /* Ambiguous identities may still render, but cannot retain an image layer. */
@@ -721,11 +721,11 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
   light.render_id = 0u;
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(1));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(1));
   vkr_shadow_system_commit_frame(&system, 32u);
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(1));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(1));
   vkr_shadow_system_discard_frame(&system);
   vkr_shadow_system_shutdown(&system);
 }
@@ -751,11 +751,11 @@ vkr_internal void test_local_shadow_transmission_cache_is_atomic(void) {
 
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(0x3f));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(0x3f));
   vkr_shadow_system_commit_frame(&system, 31u);
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == 0u);
+  assert(vkr_local_shadow_render_view_mask(&local) == 0u);
 
   /* Losing any prefix image invalidates the complete point-light group. */
   for (uint32_t i = 0u; i < ArrayCount(valid.transmission_resource_generations);
@@ -764,7 +764,7 @@ vkr_internal void test_local_shadow_transmission_cache_is_atomic(void) {
     changed.transmission_resource_generations[i]++;
     vkr_shadow_system_resolve_local_shadows(&system, 0u, changed, &payload,
                                             &light, 1u, &camera, &local);
-    assert(local.render_mask == UINT32_C(0x3f));
+    assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(0x3f));
     vkr_shadow_system_discard_frame(&system);
   }
   for (uint32_t face = 0u; face < 6u; ++face) {
@@ -772,29 +772,29 @@ vkr_internal void test_local_shadow_transmission_cache_is_atomic(void) {
     incomplete.transmission_valid_layer_mask &= ~(UINT32_C(1) << face);
     vkr_shadow_system_resolve_local_shadows(&system, 0u, incomplete, &payload,
                                             &light, 1u, &camera, &local);
-    assert(local.render_mask == UINT32_C(0x3f));
+    assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(0x3f));
     vkr_shadow_system_discard_frame(&system);
   }
 
   /* Cancelled replacements leave the last submitted pool reusable. */
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == 0u);
+  assert(vkr_local_shadow_render_view_mask(&local) == 0u);
   payload.publication_generation++;
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(0x3f));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(0x3f));
   vkr_shadow_system_discard_frame(&system);
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(0x3f));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(0x3f));
   vkr_shadow_system_commit_frame(&system, 32u);
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == 0u);
+  assert(vkr_local_shadow_render_view_mask(&local) == 0u);
   vkr_shadow_system_resolve_local_shadows(&system, 1u, valid, &payload, &light,
                                           1u, &camera, &local);
-  assert(local.render_mask == UINT32_C(0x3f));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(0x3f));
   vkr_shadow_system_discard_frame(&system);
   vkr_shadow_system_shutdown(&system);
 }
@@ -1122,7 +1122,7 @@ vkr_internal void test_local_shadow_layout_keeps_retained_lights(void) {
   VkrLocalShadowPassPayload local = {0};
   vkr_shadow_system_resolve_local_shadows(&system, 0u, valid, &payload, lights,
                                           ArrayCount(lights), &start, &local);
-  assert(local.render_mask == UINT32_C(0xfff));
+  assert(vkr_local_shadow_render_view_mask(&local) == UINT32_C(0xfff));
   assert(local.light_first_view[0] != 0u && local.light_first_view[1] != 0u);
   assert(local.light_first_view[2] == 0u);
   const uint32_t retained_first = local.light_first_view[0];
@@ -1142,12 +1142,13 @@ vkr_internal void test_local_shadow_layout_keeps_retained_lights(void) {
     if (local.light_first_view[2] != 0u || frames == 60u)
       break;
     assert(local.light_first_view[1] == released_first);
-    assert(local.render_mask == 0u);
+    assert(vkr_local_shadow_render_view_mask(&local) == 0u);
     vkr_shadow_system_commit_frame(&system, submit_value++);
   }
   assert(local.light_first_view[1] == 0u);
   assert(local.light_first_view[2] == released_first);
-  assert(local.render_mask == UINT32_C(0x3f) << (released_first - 1u));
+  assert(vkr_local_shadow_render_view_mask(&local) ==
+         UINT32_C(0x3f) << (released_first - 1u));
   vkr_shadow_system_discard_frame(&system);
   vkr_shadow_system_shutdown(&system);
 }

@@ -142,13 +142,17 @@ cancelled or fails. Replacing the retained graph image clears its valid contents
 so the next selected group renders before it can be reused. Local shadows do not
 use directional fit retention or SDSM.
 
-On Metal, a reused face's opaque and transmission culling views reject every
-candidate, skip their indirect-command reset and encoding, and get no frame
-root; no pass executes them. The per-view command reset had cost about 0.8 ms
-per frame for three cached point lights in the Bistro street view. Vulkan has no
-per-view reset; its cull root carries the reused faces as a 64-bit mask, and
-classification and encoding return before touching a reused face's opaque or
-transmission view, whose zeroed draw state leaves it empty.
+The payload separates the views receivers sample from the faces drawn this
+submission. Each drawn face takes a render slot, at most 64 per frame; slot i
+owns opaque culling view i, transmission culling view i and the repeated
+`Shadow.Local.*` passes of index i, and names the view it draws. The graph
+resolves a slot's attachment to that view's atlas layer and transmission layer
+through the `${local_shadow_render_atlas_layer}` and
+`${local_shadow_render_view}` slice tokens. A reused face has no culling view,
+so culling and indirect-command work scale with drawn faces only. On Metal, a
+per-view command reset for reused faces had cost about 0.8 ms per frame for
+three cached point lights in the Bistro street view before reused faces had
+culling views removed.
 
 Local transmitting shadows retain two ordered surface crossings at 512², capped
 by the configured opaque-map extent. Each array keeps at most the texels of 32

@@ -989,10 +989,11 @@ vkr_internal void vkr_metal_packet_current_shadow_tokens(
   if (packet->input.shadow)
     out_shadow->valid_layer_mask |= packet->input.shadow->cascade_render_mask;
   if (packet->input.local_shadow) {
-    out_local_shadow->valid_layer_mask |= packet->input.local_shadow->render_mask;
+    out_local_shadow->valid_layer_mask |=
+        vkr_local_shadow_render_layer_mask(packet->input.local_shadow);
     if (renderer->prepared_frame.local_shadow_transmission_view_count > 0u)
       out_local_shadow->transmission_valid_layer_mask |=
-          packet->input.local_shadow->render_mask;
+          vkr_local_shadow_render_view_mask(packet->input.local_shadow);
   }
 }
 
@@ -2854,9 +2855,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
         transmission
             ? sizeof(VkrMetalPacketTransmissionDiagnostics)
             : (uint64_t)(1u + renderer->prepared_frame.shadow_cascade_count +
-                         renderer->prepared_frame.local_shadow_view_count +
+                         renderer->prepared_frame.local_shadow_render_count +
                          renderer->prepared_frame
-                             .local_shadow_transmission_view_count) *
+                             .local_shadow_transmission_render_count) *
                   sizeof(VkrGpuDrawCompactionState);
     if (!candidates || !instances || !state || (sdsm_enabled && !sdsm) ||
         state_bytes > state->resource.length)

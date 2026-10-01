@@ -251,7 +251,8 @@ enum {
 
 enum {
   VKR_VULKAN_DEFERRED_VIEW_COUNT_MAX =
-      1 + VKR_SHADOW_CASCADE_COUNT_MAX + 2 * VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      1 + VKR_SHADOW_CASCADE_COUNT_MAX +
+      2 * VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
   /* The final target can be RGBA8 or RGBA16F. A tightly packed 1x1 image
    * copy therefore occupies eight bytes in the extended-linear case. */
   VKR_VULKAN_READBACK_COLOR_SIZE = 8,
@@ -539,11 +540,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   uint32_t transmission_required_flags;
   uint32_t local_shadow_excluded_flags;
   uint32_t reserved;
-  /** Local faces, by index within the light views, whose retained depth is
-   * reused this frame. Their opaque and transmission views classify nothing,
-   * since no pass draws them. */
-  uint32_t reused_local_faces[2];
-  uint32_t reserved_tail[2];
+  uint32_t reserved_tail[4];
 } VkrVulkanCullRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
@@ -1649,8 +1646,6 @@ _Static_assert(sizeof(VkrVulkanPushConstants) == 16u,
                "Push-constant ABI drift");
 _Static_assert(sizeof(VkrVulkanCullRoot) == 208u,
                "Deferred cull-root ABI size drift");
-_Static_assert(offsetof(VkrVulkanCullRoot, reused_local_faces) == 192u,
-               "Deferred cull-root reused-face ABI drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, view_projections) == 48u,
                "Deferred cull-root address ABI drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, hzb_textures) == 80u,
@@ -2338,8 +2333,9 @@ typedef struct VkrVulkanFrameSlot {
   uint64_t local_shadow_views;
   uint64_t local_shadow_transmission;
   uint32_t shadow_cascade_count;
-  uint32_t local_shadow_view_count;
-  uint32_t local_shadow_transmission_view_count;
+  /** Local-shadow culling views read back: one per render slot each. */
+  uint32_t local_shadow_render_count;
+  uint32_t local_shadow_transmission_render_count;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
   uint32_t prefilter_texture;

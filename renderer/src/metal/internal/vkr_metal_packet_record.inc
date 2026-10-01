@@ -128,10 +128,6 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
       for (uint32_t view = 0u; view < group->view_count; ++view) {
-        const uint32_t absolute_view = group->first_view + view;
-        if ((pass->gpu_encode.idle_views[absolute_view / 64u] &
-             (UINT64_C(1) << (absolute_view % 64u))) != 0u)
-          continue;
         [encoder resetCommandsInBuffer:group->commands
                              withRange:NSMakeRange(
                                            (uint64_t)view *

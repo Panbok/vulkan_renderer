@@ -1091,8 +1091,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
       transmission
           ? 1u
           : 1u + renderer->prepared_frame.shadow_cascade_count +
-                renderer->prepared_frame.local_shadow_view_count +
-                renderer->prepared_frame.local_shadow_transmission_view_count;
+                renderer->prepared_frame.local_shadow_render_count +
+                renderer->prepared_frame.local_shadow_transmission_render_count;
   if (candidate_count == 0u)
     return true_v;
   uint64_t root_gpu = 0u;
@@ -1198,20 +1198,20 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
       (VkrMetalPacketDrawRoot *)(upload->root_cpu + draw_roots_offset);
   upload->root_cursor += draw_root_slots;
   for (uint32_t view = 0u; view < view_count; ++view) {
-    if (!transmission &&
-        vkr_metal_packet_gpu_draw_view_idle(renderer, packet, view)) {
-      draw_roots[view] = (VkrMetalPacketDrawRoot){0};
-      continue;
-    }
     const bool8_t camera_view = view == 0u;
     const uint32_t first_local_view =
         1u + renderer->prepared_frame.shadow_cascade_count;
     const uint32_t first_transmission_view =
-        first_local_view + renderer->prepared_frame.local_shadow_view_count;
+        first_local_view + renderer->prepared_frame.local_shadow_render_count;
     const bool8_t local_view = view >= first_local_view;
     const bool8_t transmission_view = view >= first_transmission_view;
+    /* Local culling views follow render slots; each draws one view. */
     const uint32_t local_face =
-        view - (transmission_view ? first_transmission_view : first_local_view);
+        local_view
+            ? packet->input.local_shadow->render_views
+                  [view - (transmission_view ? first_transmission_view
+                                             : first_local_view)]
+            : 0u;
     const uint32_t shadow_map_size =
         transmission_view
             ? renderer->prepared_frame.local_shadow_transmission_map_size
@@ -1288,13 +1288,6 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     return false_v;
   prepared->gpu_encode.group_count = encode_group_count;
   prepared->gpu_encode.candidate_count = candidate_count;
-  prepared->gpu_encode.idle_views[0] = 0u;
-  prepared->gpu_encode.idle_views[1] = 0u;
-  for (uint32_t view = 0u; !transmission && view < view_count; ++view) {
-    if (vkr_metal_packet_gpu_draw_view_idle(renderer, packet, view))
-      prepared->gpu_encode.idle_views[view / 64u] |= UINT64_C(1)
-                                                     << (view % 64u);
-  }
   for (uint32_t group = 0u; group < encode_group_count; ++group) {
     const uint32_t first_view = group * encode_group_size;
     const uint32_t group_view_count =
@@ -4082,15 +4075,17 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   }
   if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW) {
     /* The face draws into its own atlas square and clears only that square,
-       even without casters, since the atlas is loaded rather than cleared. */
-    const uint32_t face = pass->desc.repeat_index;
+       even without casters, since the atlas is loaded rather than cleared.
+       Render slot i draws with culling view i. */
+    const uint32_t slot = pass->desc.repeat_index;
     if (!packet->input.local_shadow ||
-        face >= packet->input.local_shadow->view_count)
+        slot >= packet->input.local_shadow->render_count)
       return false_v;
+    const uint32_t face = packet->input.local_shadow->render_views[slot];
     if (packet->input.world && renderer->gpu_draw_count > 0u &&
         !vkr_metal_packet_prepare_gpu_shadow(
             renderer, pass, packet, prepared,
-            1u + renderer->prepared_frame.shadow_cascade_count + face, NULL,
+            1u + renderer->prepared_frame.shadow_cascade_count + slot, NULL,
             (uint32_t)target.width, (uint32_t)target.height, result))
       return false_v;
     const Vec4 rect = packet->input.local_shadow->views[face].atlas_rect;
@@ -4111,7 +4106,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     const uint32_t layer =
         (uint32_t)kind - VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0;
     const uint32_t view = 1u + renderer->prepared_frame.shadow_cascade_count +
-                          renderer->prepared_frame.local_shadow_view_count +
+                          renderer->prepared_frame.local_shadow_render_count +
                           pass->desc.repeat_index;
     if (!vkr_metal_packet_prepare_gpu_shadow(renderer, pass, packet, prepared,
                                              view, NULL, (uint32_t)target.width,
@@ -4897,8 +4892,8 @@ vkr_internal void vkr_metal_packet_plan_frame_submission(
       renderer->prepared_frame.sdsm_enabled,
       renderer->prepared_frame.exposure_automatic,
       1u + renderer->prepared_frame.shadow_cascade_count +
-          renderer->prepared_frame.local_shadow_view_count +
-          renderer->prepared_frame.local_shadow_transmission_view_count);
+          renderer->prepared_frame.local_shadow_render_count +
+          renderer->prepared_frame.local_shadow_transmission_render_count);
 }
 
 /* Plans capture copies after the readback prefix and reserves their capture
@@ -5605,8 +5600,8 @@ vkr_internal void vkr_metal_packet_record_slot_readbacks(
       renderer->prepared_frame.shadow_cascade_count;
   command_slot->gpu_draw_view_count =
       1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_view_count +
-      renderer->prepared_frame.local_shadow_transmission_view_count;
+      renderer->prepared_frame.local_shadow_render_count +
+      renderer->prepared_frame.local_shadow_transmission_render_count;
   if (submission->deferred_diagnostics) {
     command_slot->gpu_draw_diagnostics_readback =
         (const uint8_t *)submission->readback.cpu_address +

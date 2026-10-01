@@ -118,15 +118,23 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     ? Min(packet->input.shadow->cascade_count,
                                           VKR_SHADOW_CASCADE_COUNT_MAX)
                                     : 0u;
-  frame->local_shadow_view_count =
-      packet->input.local_shadow ? packet->input.local_shadow->view_count : 0u;
-  frame->local_shadow_transmission_view_count =
+  const VkrLocalShadowPassPayload *local_shadow = packet->input.local_shadow;
+  const bool8_t local_shadow_transmission =
       packet->input.world &&
-              packet->input.world->transmission_gpu_candidate_count > 0u
-          ? frame->local_shadow_view_count
-          : 0u;
-  frame->local_shadow_render_mask =
-      packet->input.local_shadow ? packet->input.local_shadow->render_mask : 0u;
+      packet->input.world->transmission_gpu_candidate_count > 0u;
+  frame->local_shadow_view_count = local_shadow ? local_shadow->view_count : 0u;
+  frame->local_shadow_transmission_view_count =
+      local_shadow_transmission ? frame->local_shadow_view_count : 0u;
+  frame->local_shadow_render_count =
+      local_shadow ? local_shadow->render_count : 0u;
+  frame->local_shadow_transmission_render_count =
+      local_shadow_transmission ? frame->local_shadow_render_count : 0u;
+  for (uint32_t slot = 0u; slot < frame->local_shadow_render_count; ++slot) {
+    const uint32_t view = local_shadow->render_views[slot];
+    frame->local_shadow_render_views[slot] = view;
+    frame->local_shadow_render_atlas_layers[slot] =
+        (uint32_t)local_shadow->views[view].atlas_rect.w;
+  }
   frame->local_shadow_atlas_clear_mask =
       packet->input.local_shadow ? packet->input.local_shadow->atlas_clear_mask
                                  : 0u;

@@ -606,10 +606,20 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
                         "invalid local shadow capacity or owners");
     const uint64_t view_mask =
         vkr_local_shadow_view_bits(0u, local->view_count);
-    if ((local->render_mask & ~view_mask) != 0u)
+    if (local->render_count > VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.local_shadow.render_mask",
-                        "contains a bit outside view_count");
+                        "packet.local_shadow.render_count",
+                        "exceeds the render slots");
+    uint64_t rendered_views = 0u;
+    for (uint32_t slot = 0u; slot < local->render_count; ++slot) {
+      const uint32_t view = local->render_views[slot];
+      if (view >= local->view_count ||
+          (rendered_views & vkr_local_shadow_view_bits(view, 1u)) != 0u)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.local_shadow.render_views",
+                          "requires distinct views inside view_count");
+      rendered_views |= vkr_local_shadow_view_bits(view, 1u);
+    }
     if ((local->atlas_clear_mask &
          ~((UINT32_C(1) << VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT) - 1u)) != 0u)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
@@ -687,9 +697,9 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
                           "requires an aligned power-of-two atlas square");
       if ((local->atlas_clear_mask &
            (UINT32_C(1) << (uint32_t)view->atlas_rect.w)) != 0u &&
-          (local->render_mask & (UINT64_C(1) << i)) == 0u)
+          (rendered_views & vkr_local_shadow_view_bits(i, 1u)) == 0u)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.local_shadow.render_mask",
+                          "packet.local_shadow.render_views",
                           "must redraw every face of a cleared atlas layer");
       const uint32_t cells = face_size / VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
       const uint32_t cell_x =

@@ -1789,8 +1789,9 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .lighting_layers_enabled = true_v,
       .local_shadow_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_transmission_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
-      .local_shadow_render_mask =
-          vkr_local_shadow_view_bits(0u, VKR_LOCAL_SHADOW_FACE_COUNT_MAX),
+      .local_shadow_render_count = VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+      .local_shadow_transmission_render_count =
+          VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_atlas_clear_mask = 1u,
       .local_shadow_map_layer_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
@@ -1823,6 +1824,9 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .motion_blur_enabled = true_v,
       .editor_overlay_enabled = true_v,
   };
+  for (uint32_t slot = 0u; slot < VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX;
+       ++slot)
+    frame.local_shadow_render_views[slot] = slot;
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length == VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT);

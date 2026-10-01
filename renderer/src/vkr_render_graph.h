@@ -4,6 +4,7 @@
 #include "containers/vector.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
+#include "vkr_gpu_abi.h"
 #include "vkr_renderer.h"
 
 // Forward declarations for stateless render packet access.
@@ -652,11 +653,21 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t shadow_cascade_count;
   /** Bits of repeated shadow passes that must be instantiated this frame. */
   uint32_t shadow_cascade_render_mask;
+  /** Local shadow views receivers sample. */
   uint32_t local_shadow_view_count;
-  /** Additional main-stream views selecting only refractive shadow casters. */
+  /** Views receivers sample in the transmission arrays; zero without
+   * refractive casters. */
   uint32_t local_shadow_transmission_view_count;
-  /** Bits of repeated local-shadow passes that must be instantiated. */
-  uint64_t local_shadow_render_mask;
+  /** Faces drawn this frame, one opaque culling view and pass each. */
+  uint32_t local_shadow_render_count;
+  /** Additional main-stream culling views selecting only refractive shadow
+   * casters, one per drawn face; zero without refractive casters. */
+  uint32_t local_shadow_transmission_render_count;
+  /** Per render slot: the view it draws, which is also its transmission
+   * array layer, and its atlas layer. */
+  uint32_t local_shadow_render_views[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
+  uint32_t
+      local_shadow_render_atlas_layers[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
   /** Atlas layers cleared whole before local-shadow faces draw. */
   uint32_t local_shadow_atlas_clear_mask;
   uint32_t local_shadow_map_size;

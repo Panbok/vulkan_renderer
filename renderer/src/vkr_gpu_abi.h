@@ -237,8 +237,11 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t state_flags;
 } VkrGpuVisibleDrawRow;
 
-/* Local shadow views per frame; view masks are 64-bit. */
+/* Local shadow views receivers can sample in one frame. */
 #define VKR_LOCAL_SHADOW_FACE_COUNT_MAX 64u
+/* Faces drawn in one frame. Each render slot owns a culling view and its
+ * repeated graph passes, so slot masks are 64-bit. */
+#define VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX 64u
 /* The map size is the largest face; faces shrink with screen coverage. */
 #define VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT 1024u
 #define VKR_LOCAL_SHADOW_MAP_SIZE_MAX 1024u
@@ -261,6 +264,8 @@ typedef struct VkrGpuVisibleDrawRow {
 
 _Static_assert(VKR_LOCAL_SHADOW_FACE_COUNT_MAX <= 64u,
                "local shadow view masks are 64-bit");
+_Static_assert(VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX <= 64u,
+               "local shadow render slot masks are 64-bit");
 
 /** Bits of `count` consecutive local shadow views starting at `first`; the
  * whole word when they cover all 64 bits. */

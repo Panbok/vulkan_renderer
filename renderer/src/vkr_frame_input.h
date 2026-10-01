@@ -25,7 +25,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 50u
+#define VKR_FRAME_INPUT_VERSION 51u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -404,13 +404,34 @@ typedef struct VkrLocalShadowPassPayload {
   uint32_t map_size;
   uint32_t face_budget;
   /** Atlas layers without retained contents, cleared whole before any face
-   * draws; every face of such a layer is in `render_mask`. */
+   * draws; every face of such a layer is in `render_views`. */
   uint32_t atlas_clear_mask;
-  /** Bits of views that require a depth redraw this submission. */
-  uint64_t render_mask;
+  /** Faces drawn this submission. Render slot i draws view render_views[i]
+   * with culling view i; receivers sample every view. */
+  uint32_t render_count;
+  uint32_t render_views[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
   uint32_t light_first_view[VKR_MAX_SCENE_POINT_LIGHTS];
   VkrLocalShadowView views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
 } VkrLocalShadowPassPayload;
+
+/** Bits of the views drawn this submission. */
+static inline uint64_t
+vkr_local_shadow_render_view_mask(const VkrLocalShadowPassPayload *payload) {
+  uint64_t mask = 0u;
+  for (uint32_t slot = 0u; payload && slot < payload->render_count; ++slot)
+    mask |= vkr_local_shadow_view_bits(payload->render_views[slot], 1u);
+  return mask;
+}
+
+/** Bits of the atlas layers that faces draw into this submission. */
+static inline uint64_t
+vkr_local_shadow_render_layer_mask(const VkrLocalShadowPassPayload *payload) {
+  uint64_t mask = 0u;
+  for (uint32_t slot = 0u; payload && slot < payload->render_count; ++slot)
+    mask |= vkr_local_shadow_view_bits(
+        (uint32_t)payload->views[payload->render_views[slot]].atlas_rect.w, 1u);
+  return mask;
+}
 
 void vkr_local_shadow_prepare(const VkrPointLight *lights, uint32_t light_count,
                               uint32_t face_budget, uint32_t map_size,

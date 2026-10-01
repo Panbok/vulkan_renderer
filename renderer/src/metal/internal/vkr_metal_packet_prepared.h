@@ -125,9 +125,6 @@ typedef struct VkrMetalPacketPreparedPass {
           groups[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
       uint32_t group_count;
       uint32_t candidate_count;
-      /** Views that draw nothing this submission; their command ranges are
-       * neither reset nor encoded, and no pass executes them. */
-      uint64_t idle_views[2];
     } gpu_encode;
     struct {
       VkrMetalPacketDirectPass direct;

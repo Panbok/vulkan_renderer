@@ -2245,6 +2245,16 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "local_shadow_render_count")) {
+    *out_count = frame->local_shadow_render_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "local_shadow_transmission_render_count")) {
+    *out_count = frame->local_shadow_transmission_render_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "shadow_cascade_count")) {
     *out_count = frame->shadow_cascade_count;
     return true_v;
@@ -2310,12 +2320,6 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
                                 "shadow_cascade_render_mask")) {
     *out_enabled = repeat_index < 32u && (frame->shadow_cascade_render_mask &
                                           (UINT32_C(1) << repeat_index)) != 0u;
-    return true_v;
-  }
-  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
-                                "local_shadow_render_mask")) {
-    *out_enabled = repeat_index < 64u && (frame->local_shadow_render_mask &
-                                          (UINT64_C(1) << repeat_index)) != 0u;
     return true_v;
   }
   log_error("RenderGraph JSON: unknown repeat condition mask source '%.*s'",
@@ -2565,8 +2569,9 @@ vkr_internal void vkr_rg_release_name(VkrAllocator *allocator, String8 name,
   }
 }
 
-vkr_internal uint32_t vkr_rg_resolve_index(const VkrRgJsonIndex *index,
-                                           uint32_t fallback) {
+vkr_internal uint32_t
+vkr_rg_resolve_index(const VkrRgJsonIndex *index, uint32_t fallback,
+                     const VkrRenderGraphFrameInfo *frame) {
   if (!index || !index->is_set) {
     return 0;
   }
@@ -2582,29 +2587,43 @@ vkr_internal uint32_t vkr_rg_resolve_index(const VkrRgJsonIndex *index,
       vkr_string8_equals_cstr_i(&index->token, "i+1")) {
     return fallback == UINT32_MAX ? UINT32_MAX : fallback + 1u;
   }
+  /* A local-shadow render slot draws one view: its transmission layer is the
+   * view index and its depth goes to that view's atlas layer. */
+  if (vkr_string8_equals_cstr_i(&index->token, "${local_shadow_render_view}")) {
+    return frame && fallback < frame->local_shadow_render_count
+               ? frame->local_shadow_render_views[fallback]
+               : UINT32_MAX;
+  }
+  if (vkr_string8_equals_cstr_i(&index->token,
+                                "${local_shadow_render_atlas_layer}")) {
+    return frame && fallback < frame->local_shadow_render_count
+               ? frame->local_shadow_render_atlas_layers[fallback]
+               : UINT32_MAX;
+  }
 
   log_error("RenderGraph JSON: unknown index token '%.*s'",
             (int)index->token.length, index->token.str);
   return 0;
 }
 
-vkr_internal bool8_t vkr_rg_json_apply_slice(const VkrRgJsonAttachment *att,
-                                             uint32_t fallback,
-                                             VkrRgAttachmentDesc *out_desc) {
+vkr_internal bool8_t vkr_rg_json_apply_slice(
+    const VkrRgJsonAttachment *att, uint32_t fallback,
+    const VkrRenderGraphFrameInfo *frame, VkrRgAttachmentDesc *out_desc) {
   if (!att || !out_desc || !att->has_slice) {
     return true_v;
   }
 
   if (att->slice_mip_level.is_set) {
     out_desc->slice.mip_level =
-        vkr_rg_resolve_index(&att->slice_mip_level, fallback);
+        vkr_rg_resolve_index(&att->slice_mip_level, fallback, frame);
   }
   if (att->slice_base_layer.is_set) {
     out_desc->slice.base_layer =
-        vkr_rg_resolve_index(&att->slice_base_layer, fallback);
+        vkr_rg_resolve_index(&att->slice_base_layer, fallback, frame);
   }
   if (att->slice_layer_count.is_set) {
-    uint32_t count = vkr_rg_resolve_index(&att->slice_layer_count, fallback);
+    uint32_t count =
+        vkr_rg_resolve_index(&att->slice_layer_count, fallback, frame);
     if (count == 0) {
       return false_v;
     }
@@ -2630,23 +2649,24 @@ vkr_internal uint32_t vkr_rg_json_mip_levels(const VkrRgJsonImageDesc *image,
   return Max(levels, 1u);
 }
 
-vkr_internal bool8_t
-vkr_rg_json_resolve_use_slice(const VkrRgJsonResourceUse *use,
-                              uint32_t fallback, VkrRgImageSlice *out_slice) {
+vkr_internal bool8_t vkr_rg_json_resolve_use_slice(
+    const VkrRgJsonResourceUse *use, uint32_t fallback,
+    const VkrRenderGraphFrameInfo *frame, VkrRgImageSlice *out_slice) {
   *out_slice = VKR_RG_IMAGE_SLICE_DEFAULT;
   if (!use->has_slice)
     return true_v;
   if (use->slice_base_mip.is_set)
-    out_slice->mip_level = vkr_rg_resolve_index(&use->slice_base_mip, fallback);
+    out_slice->mip_level =
+        vkr_rg_resolve_index(&use->slice_base_mip, fallback, frame);
   if (use->slice_mip_count.is_set)
     out_slice->mip_count =
-        vkr_rg_resolve_index(&use->slice_mip_count, fallback);
+        vkr_rg_resolve_index(&use->slice_mip_count, fallback, frame);
   if (use->slice_base_layer.is_set)
     out_slice->base_layer =
-        vkr_rg_resolve_index(&use->slice_base_layer, fallback);
+        vkr_rg_resolve_index(&use->slice_base_layer, fallback, frame);
   if (use->slice_layer_count.is_set)
     out_slice->layer_count =
-        vkr_rg_resolve_index(&use->slice_layer_count, fallback);
+        vkr_rg_resolve_index(&use->slice_layer_count, fallback, frame);
   return out_slice->mip_count > 0u && out_slice->layer_count > 0u;
 }
 
@@ -2789,8 +2809,8 @@ vkr_internal bool8_t vkr_rg_json_create_buffer(
       break;
     case VKR_RG_JSON_DRAW_COUNT_VIEWS:
       count = 1u + frame->shadow_cascade_count +
-              frame->local_shadow_view_count +
-              frame->local_shadow_transmission_view_count;
+              frame->local_shadow_render_count +
+              frame->local_shadow_transmission_render_count;
       break;
     case VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS:
     case VKR_RG_JSON_DRAW_COUNT_VISIBLE:
@@ -2813,8 +2833,8 @@ vkr_internal bool8_t vkr_rg_json_create_buffer(
     desc.size = (uint64_t)count * resource->buffer.bytes_per_element;
     if (resource->buffer.draw_count_source == VKR_RG_JSON_DRAW_COUNT_VIEW_ROWS)
       desc.size *= 1u + frame->shadow_cascade_count +
-                   frame->local_shadow_view_count +
-                   frame->local_shadow_transmission_view_count;
+                   frame->local_shadow_render_count +
+                   frame->local_shadow_transmission_render_count;
   } else {
     desc.size = resource->buffer.size;
   }
@@ -2877,7 +2897,8 @@ vkr_internal bool8_t vkr_rg_json_build_resources(
 
 vkr_internal bool8_t vkr_rg_json_add_pass_attachments(
     VkrRenderGraph *rg, VkrRgPassBuilder *pb, const VkrRgJsonPass *pass,
-    VkrAllocator *frame_allocator, uint32_t r) {
+    const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator,
+    uint32_t r) {
   for (uint64_t c = 0; c < pass->attachments.colors.length; ++c) {
     VkrRgJsonAttachment *att =
         vector_get_VkrRgJsonAttachment(&pass->attachments.colors, c);
@@ -2903,7 +2924,7 @@ vkr_internal bool8_t vkr_rg_json_add_pass_attachments(
     if (att->has_clear) {
       desc.clear_value = att->clear_value;
     }
-    if (!vkr_rg_json_apply_slice(att, r, &desc)) {
+    if (!vkr_rg_json_apply_slice(att, r, frame, &desc)) {
       log_error("RenderGraph JSON: attachment slice layer_count must be >= 1");
       return false_v;
     }
@@ -2938,7 +2959,7 @@ vkr_internal bool8_t vkr_rg_json_add_pass_attachments(
     if (att->has_clear) {
       desc.clear_value = att->clear_value;
     }
-    if (!vkr_rg_json_apply_slice(att, r, &desc)) {
+    if (!vkr_rg_json_apply_slice(att, r, frame, &desc)) {
       log_error("RenderGraph JSON: attachment slice layer_count must be >= 1");
       return false_v;
     }
@@ -2985,12 +3006,12 @@ vkr_internal bool8_t vkr_rg_json_add_pass_reads(
         }
 
         uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-        uint32_t array_index =
-            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        uint32_t array_index = vkr_rg_resolve_index(
+            &use->array_index, use_repeat > 1 ? ur : r, frame);
         if (use->has_slice) {
           VkrRgImageSlice slice = {0};
           if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
-                                             &slice))
+                                             frame, &slice))
             return false_v;
           if (!vkr_rg_pass_read_image_slice_at_stages(
                   pb, handle, (VkrRgImageAccessFlags)use->image_access,
@@ -3016,8 +3037,8 @@ vkr_internal bool8_t vkr_rg_json_add_pass_reads(
         }
 
         uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-        uint32_t array_index =
-            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        uint32_t array_index = vkr_rg_resolve_index(
+            &use->array_index, use_repeat > 1 ? ur : r, frame);
         if (!vkr_rg_pass_read_buffer(pb, handle,
                                      (VkrRgBufferAccessFlags)use->buffer_access,
                                      binding, array_index)) {
@@ -3062,12 +3083,12 @@ vkr_internal bool8_t vkr_rg_json_add_pass_writes(
         }
 
         uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-        uint32_t array_index =
-            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        uint32_t array_index = vkr_rg_resolve_index(
+            &use->array_index, use_repeat > 1 ? ur : r, frame);
         if (use->has_slice) {
           VkrRgImageSlice slice = {0};
           if (!vkr_rg_json_resolve_use_slice(use, use_repeat > 1 ? ur : r,
-                                             &slice))
+                                             frame, &slice))
             return false_v;
           if (!vkr_rg_pass_write_image_slice_at_stages(
                   pb, handle, (VkrRgImageAccessFlags)use->image_access,
@@ -3093,8 +3114,8 @@ vkr_internal bool8_t vkr_rg_json_add_pass_writes(
         }
 
         uint32_t binding = use->binding.is_set ? use->binding.value : 0;
-        uint32_t array_index =
-            vkr_rg_resolve_index(&use->array_index, use_repeat > 1 ? ur : r);
+        uint32_t array_index = vkr_rg_resolve_index(
+            &use->array_index, use_repeat > 1 ? ur : r, frame);
         if (!vkr_rg_pass_write_buffer(
                 pb, handle, (VkrRgBufferAccessFlags)use->buffer_access, binding,
                 array_index)) {
@@ -3170,8 +3191,8 @@ vkr_internal bool8_t vkr_rg_json_build_passes(
 
       graph_pass->desc.repeat_index = r;
 
-      if (!vkr_rg_json_add_pass_attachments(rg, &pb, pass, frame_allocator,
-                                            r)) {
+      if (!vkr_rg_json_add_pass_attachments(rg, &pb, pass, frame,
+                                            frame_allocator, r)) {
         return false_v;
       }
 

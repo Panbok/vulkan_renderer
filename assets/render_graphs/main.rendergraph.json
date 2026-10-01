@@ -2403,8 +2403,7 @@
       "type": "graphics",
       "domain": "SHADOW",
       "repeat": {
-        "count_source": "local_shadow_view_count",
-        "condition_mask_source": "local_shadow_render_mask"
+        "count_source": "local_shadow_render_count"
       },
       "reads": [
         {
@@ -2440,7 +2439,7 @@
           "load": "LOAD",
           "store": "STORE",
           "slice": {
-            "base_layer": 0,
+            "base_layer": "${local_shadow_render_atlas_layer}",
             "layer_count": 1
           }
         }
@@ -2453,8 +2452,7 @@
       "type": "graphics",
       "domain": "SHADOW",
       "repeat": {
-        "count_source": "local_shadow_transmission_view_count",
-        "condition_mask_source": "local_shadow_render_mask"
+        "count_source": "local_shadow_transmission_render_count"
       },
       "reads": [
         {
@@ -2494,7 +2492,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": "${i}",
+            "base_layer": "${local_shadow_render_view}",
             "layer_count": 1
           }
         },
@@ -2512,7 +2510,7 @@
               ]
             },
             "slice": {
-              "base_layer": "${i}",
+              "base_layer": "${local_shadow_render_view}",
               "layer_count": 1
             }
           }
@@ -2526,8 +2524,7 @@
       "type": "graphics",
       "domain": "SHADOW",
       "repeat": {
-        "count_source": "local_shadow_transmission_view_count",
-        "condition_mask_source": "local_shadow_render_mask"
+        "count_source": "local_shadow_transmission_render_count"
       },
       "reads": [
         {
@@ -2555,7 +2552,7 @@
           "access": "SAMPLED",
           "binding": 10,
           "subresource": {
-            "base_layer": "${i}",
+            "base_layer": "${local_shadow_render_view}",
             "layer_count": 1
           }
         },
@@ -2564,7 +2561,7 @@
           "access": "SAMPLED",
           "binding": 11,
           "subresource": {
-            "base_layer": "${i}",
+            "base_layer": "${local_shadow_render_view}",
             "layer_count": 1
           }
         },
@@ -2585,7 +2582,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": "${i}",
+            "base_layer": "${local_shadow_render_view}",
             "layer_count": 1
           }
         },
@@ -2603,7 +2600,7 @@
               ]
             },
             "slice": {
-              "base_layer": "${i}",
+              "base_layer": "${local_shadow_render_view}",
               "layer_count": 1
             }
           }
@@ -2617,8 +2614,7 @@
       "type": "graphics",
       "domain": "SHADOW",
       "repeat": {
-        "count_source": "local_shadow_transmission_view_count",
-        "condition_mask_source": "local_shadow_render_mask"
+        "count_source": "local_shadow_transmission_render_count"
       },
       "reads": [
         {
@@ -2646,7 +2642,7 @@
           "access": "SAMPLED",
           "binding": 10,
           "subresource": {
-            "base_layer": "${i}",
+            "base_layer": "${local_shadow_render_view}",
             "layer_count": 1
           }
         },
@@ -2667,7 +2663,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": "${i}",
+            "base_layer": "${local_shadow_render_view}",
             "layer_count": 1
           }
         }

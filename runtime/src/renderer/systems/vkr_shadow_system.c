@@ -1763,9 +1763,8 @@ void vkr_shadow_system_resolve_local_shadows(
 
     for (uint32_t face = 0u; face < face_count; ++face) {
       const uint32_t view_index = view_start + face;
-      const uint64_t bit = UINT64_C(1) << view_index;
-      out_payload->render_mask |= bit;
-      pending->render_mask |= bit;
+      out_payload->render_views[out_payload->render_count++] = view_index;
+      pending->render_mask |= UINT64_C(1) << view_index;
       pending->faces[view_index] = (VkrLocalShadowFaceHistory){
           .view = out_payload->views[view_index],
           .static_generation = candidates->static_generation,

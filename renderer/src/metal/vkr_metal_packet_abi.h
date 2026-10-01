@@ -300,9 +300,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
 enum {
-  /* Camera, directional cascades, then opaque and transmitting local faces. */
+  /* Camera, directional cascades, then opaque and transmitting local render
+     slots. */
   VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX =
-      1u + VKR_SHADOW_CASCADE_COUNT_MAX + 2u * VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      1u + VKR_SHADOW_CASCADE_COUNT_MAX +
+      2u * VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
 };
 
 /** One frustum and routing policy in the bounded multi-view cull set. */

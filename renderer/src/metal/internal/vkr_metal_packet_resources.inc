@@ -1722,28 +1722,6 @@ vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle);
 
-_Static_assert(VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX <= 128u,
-              "Idle culling views fit a 128-bit mask");
-
-/* A local-shadow face that reuses its cached depth draws nothing this
-   submission. Its opaque and transmission culling views therefore skip
-   classification, command reset and encoding; no pass executes them. */
-vkr_internal bool8_t
-vkr_metal_packet_gpu_draw_view_idle(const VkrMetalPacketRenderer *renderer,
-                                    const VkrPreparedFrame *packet,
-                                    uint32_t view) {
-  const uint32_t first_local_view =
-      1u + renderer->prepared_frame.shadow_cascade_count;
-  const uint32_t local_view_count =
-      renderer->prepared_frame.local_shadow_view_count;
-  if (!packet->input.local_shadow || local_view_count == 0u ||
-      view < first_local_view)
-    return false_v;
-  const uint32_t face = (view - first_local_view) % local_view_count;
-  return (packet->input.local_shadow->render_mask & (UINT64_C(1) << face)) ==
-         0u;
-}
-
 vkr_internal void vkr_metal_packet_pack_gpu_draw_view(
     VkrMetalPacketGpuDrawView *out_view, const VkrFrustum *frustum,
     uint32_t required_candidate_flags, bool8_t hzb_enabled,
@@ -2277,8 +2255,8 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
           renderer, plan->source_gpu_draw_count,
           plan->source_transmission_gpu_draw_count,
           1u + renderer->prepared_frame.shadow_cascade_count +
-              renderer->prepared_frame.local_shadow_view_count +
-              renderer->prepared_frame.local_shadow_transmission_view_count,
+              renderer->prepared_frame.local_shadow_render_count +
+              renderer->prepared_frame.local_shadow_transmission_render_count,
           out_error))
     return false_v;
   const uint64_t direct_run_count =
@@ -2327,8 +2305,8 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
     plan->root_count += direct_auxiliary_root_cells;
   const uint32_t frame_root_gpu_draw_view_count =
       1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_view_count +
-      renderer->prepared_frame.local_shadow_transmission_view_count;
+      renderer->prepared_frame.local_shadow_render_count +
+      renderer->prepared_frame.local_shadow_transmission_render_count;
   {
     const uint32_t gpu_draw_icb_group_count =
         (frame_root_gpu_draw_view_count +
@@ -2354,8 +2332,8 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
              : 0u);
   plan->root_count +=
       renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_view_count +
-      2u * renderer->prepared_frame.local_shadow_transmission_view_count;
+      renderer->prepared_frame.local_shadow_render_count +
+      2u * renderer->prepared_frame.local_shadow_transmission_render_count;
   if (packet->input.picking && packet->input.picking->pending)
     plan->root_count += 1u;
   plan->root_count += plan->ui_batch_count;
@@ -2532,8 +2510,8 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       AlignOf(VkrMetalPacketSky));
   plan->gpu_draw_view_count =
       1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_view_count +
-      renderer->prepared_frame.local_shadow_transmission_view_count;
+      renderer->prepared_frame.local_shadow_render_count +
+      renderer->prepared_frame.local_shadow_transmission_render_count;
   plan->gpu_draw_icb_group_count =
       plan->gpu_draw_view_count > 0u
           ? (plan->gpu_draw_view_count +
@@ -3204,29 +3182,30 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
           &views[cascade + 1u], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v, renderer->frustum_enabled);
     }
-    for (uint32_t face = 0u; face < plan->local_shadow_view_count; ++face) {
+    /* Only drawn faces have culling views; reused faces have none. */
+    const uint32_t first_local_view =
+        1u + renderer->prepared_frame.shadow_cascade_count;
+    const uint32_t render_count =
+        renderer->prepared_frame.local_shadow_render_count;
+    for (uint32_t slot = 0u; slot < render_count; ++slot) {
       const VkrFrustum frustum = vkr_frustum_from_matrix(
-          packet->input.local_shadow->views[face].light_view_projection);
+          packet->input.local_shadow
+              ->views[packet->input.local_shadow->render_views[slot]]
+              .light_view_projection);
       vkr_metal_packet_pack_gpu_draw_view(
-          &views[1u + renderer->prepared_frame.shadow_cascade_count + face],
-          &frustum, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER, false_v,
+          &views[first_local_view + slot], &frustum,
+          VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER, false_v,
           renderer->frustum_enabled);
-      if (plan->local_shadow_transmission_view_count > 0u) {
-        views[1u + renderer->prepared_frame.shadow_cascade_count + face]
-            .excluded_candidate_flags =
+      if (renderer->prepared_frame.local_shadow_transmission_render_count >
+          0u) {
+        views[first_local_view + slot].excluded_candidate_flags =
             VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION;
         vkr_metal_packet_pack_gpu_draw_view(
-            &views[1u + renderer->prepared_frame.shadow_cascade_count +
-                   plan->local_shadow_view_count + face],
-            &frustum,
+            &views[first_local_view + render_count + slot], &frustum,
             VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
                 VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION,
             false_v, renderer->frustum_enabled);
       }
-    }
-    for (uint32_t view = 0u; view < plan->gpu_draw_view_count; ++view) {
-      if (vkr_metal_packet_gpu_draw_view_idle(renderer, packet, view))
-        views[view].excluded_candidate_flags = UINT32_MAX;
     }
     upload->gpu_draw_views_gpu = gpu + plan->gpu_draw_views_offset;
   }

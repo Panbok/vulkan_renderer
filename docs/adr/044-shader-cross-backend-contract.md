@@ -409,9 +409,9 @@ directional caster semantics are unchanged. Public frame-input version is 45.
 The Metal frame root is 544 bytes with a 48-byte sampling record and a 32-byte
 per-view material record; its draw root remains 48 bytes. Vulkan's frame root is
 624 bytes, with the sampling pointer at byte 608, a 32-byte sampling record,
-an 80-byte shadow raster root and a 208-byte cull root whose 64-bit
-`reused_local_faces` mask at byte 192 skips classification and encoding for
-reused local faces. The shared local-view
+an 80-byte shadow raster root and a 208-byte cull root. Local cull views exist
+only for faces drawn this submission, one per render slot, so the cull root
+carries no reused-face mask; bytes 192 to 207 are reserved. The shared local-view
 record remains 112 bytes. Native assertions and reflection pin these layouts.
 The dedicated MSL shadow vertex consumes buffer 0 and the frame root's existing
 row-vector matrix convention; instance matrices remain column-major.

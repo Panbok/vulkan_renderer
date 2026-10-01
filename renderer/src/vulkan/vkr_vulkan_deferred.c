@@ -354,8 +354,8 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
   VkrVulkanPreparedReadback *prepared = &slot->deferred_readback;
   prepared->count = 0u;
   slot->shadow_cascade_count = 0u;
-  slot->local_shadow_view_count = 0u;
-  slot->local_shadow_transmission_view_count = 0u;
+  slot->local_shadow_render_count = 0u;
+  slot->local_shadow_transmission_render_count = 0u;
   // UI-only frames have no Scene producers. Clear prior slot readbacks before
   // returning so reused slots cannot copy stale Scene statistics.
   if (!renderer->graph->packet->scene_rendering)
@@ -372,16 +372,17 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
        (!slot->exposure_histogram || !slot->exposure_state_output)))
     return false_v;
   slot->shadow_cascade_count = renderer->prepared_frame.shadow_cascade_count;
-  slot->local_shadow_view_count =
-      renderer->prepared_frame.local_shadow_view_count;
-  slot->local_shadow_transmission_view_count =
-      renderer->prepared_frame.local_shadow_transmission_view_count;
+  slot->local_shadow_render_count =
+      renderer->prepared_frame.local_shadow_render_count;
+  slot->local_shadow_transmission_render_count =
+      renderer->prepared_frame.local_shadow_transmission_render_count;
   const VkBufferCopy copies[] = {
       {.dstOffset = VKR_VULKAN_READBACK_DRAW_STATE_OFFSET,
-       .size = (1u + renderer->prepared_frame.shadow_cascade_count +
-                renderer->prepared_frame.local_shadow_view_count +
-                renderer->prepared_frame.local_shadow_transmission_view_count) *
-               sizeof(VkrGpuDrawCompactionState)},
+       .size =
+           (1u + renderer->prepared_frame.shadow_cascade_count +
+            renderer->prepared_frame.local_shadow_render_count +
+            renderer->prepared_frame.local_shadow_transmission_render_count) *
+           sizeof(VkrGpuDrawCompactionState)},
       {.dstOffset = VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET,
        .size = sizeof(VkrGpuTransmissionDiagnostics)},
       {.dstOffset = VKR_VULKAN_READBACK_SDSM_STATE_OFFSET,
@@ -505,8 +506,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       transmission
           ? 1u
           : 1u + renderer->prepared_frame.shadow_cascade_count +
-                renderer->prepared_frame.local_shadow_view_count +
-                renderer->prepared_frame.local_shadow_transmission_view_count;
+                renderer->prepared_frame.local_shadow_render_count +
+                renderer->prepared_frame.local_shadow_transmission_render_count;
   uint64_t views_address = 0u;
   uint64_t planes_address = 0u;
   Mat4 *views = NULL;
@@ -532,12 +533,15 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
     for (uint32_t i = 1u; i < view_count; ++i) {
       const uint32_t cascade_count =
           renderer->prepared_frame.shadow_cascade_count;
+      /* Opaque then transmission culling views, one per render slot. */
       views[i] =
           i <= cascade_count
               ? packet->input.shadow->cascades[i - 1u].light_view_projection
               : packet->input.local_shadow
-                    ->views[(i - 1u - cascade_count) %
-                            renderer->prepared_frame.local_shadow_view_count]
+                    ->views[packet->input.local_shadow
+                                ->render_views[(i - 1u - cascade_count) %
+                                               renderer->prepared_frame
+                                                   .local_shadow_render_count]]
                     .light_view_projection;
       const VkrFrustum shadow = vkr_frustum_from_matrix(views[i]);
       for (uint32_t plane = 0u; plane < VKR_FRUSTUM_PLANE_COUNT; ++plane) {
@@ -554,14 +558,6 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       transmission
           ? renderer->prepared_frame.transmission_gpu_draw_visible_capacity
           : renderer->prepared_frame.gpu_draw_visible_capacity;
-  const VkrLocalShadowPassPayload *local_shadow =
-      renderer->graph->packet->input.local_shadow;
-  const uint64_t reused_local_faces =
-      !transmission && local_shadow
-          ? vkr_local_shadow_view_bits(
-                0u, renderer->prepared_frame.local_shadow_view_count) &
-                ~local_shadow->render_mask
-          : 0u;
   *out_root = (VkrVulkanCullRoot){
       .candidates = candidates ? candidates->buffer.address : 0u,
       .classifications = classifications ? classifications->buffer.address : 0u,
@@ -586,16 +582,14 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
           1u + renderer->prepared_frame.shadow_cascade_count,
       .transmission_first_view =
           1u + renderer->prepared_frame.shadow_cascade_count +
-          renderer->prepared_frame.local_shadow_view_count,
+          renderer->prepared_frame.local_shadow_render_count,
       .transmission_required_flags =
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION,
       .local_shadow_excluded_flags =
-          renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+          renderer->prepared_frame.local_shadow_transmission_render_count > 0u
               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
               : 0u,
-      .reused_local_faces = {(uint32_t)reused_local_faces,
-                             (uint32_t)(reused_local_faces >> 32u)},
   };
   for (uint32_t mip = 0u; mip < VKR_VULKAN_TEXTURE_MIP_MAX; ++mip)
     out_root->hzb_textures[mip] = UINT32_MAX;
@@ -1101,7 +1095,8 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   if (!visible || !states || !commands)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
-  /* Local faces share one atlas layer, so their repeat index names the view. */
+  /* A local face's repeat index is its render slot and culling view; the
+     slot names the view it draws. */
   const uint32_t layer =
       local_shadow ? pass->desc.repeat_index
                    : pass->desc.depth_attachment.desc.slice.base_layer;
@@ -1112,7 +1107,9 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
              : 0u;
   const Mat4 view_projection =
       local_shadow
-          ? packet->input.local_shadow->views[layer].light_view_projection
+          ? packet->input.local_shadow
+                ->views[packet->input.local_shadow->render_views[layer]]
+                .light_view_projection
       : shadow ? packet->input.shadow->cascades[layer].light_view_projection
                : mat4_mul(packet->temporal.jittered_projection,
                           packet->input.globals.view);
@@ -1213,14 +1210,19 @@ bool8_t vkr_vk_prepare_local_shadow_transmission(
   VkrVulkanGraphBufferInstance *instances =
       vkr_vk_deferred_buffer(renderer, pass, 9u);
   const VkrPreparedFrame *packet = renderer->graph->packet;
+  /* Render slot i culls with transmission view i and writes the transmission
+     layer of the view it draws. */
+  const uint32_t render_slot = pass->desc.repeat_index;
   const uint32_t layer = pass->desc.depth_attachment.desc.slice.base_layer;
   if (!visible || !states || !commands || !instances ||
       !packet->input.local_shadow ||
-      layer >= renderer->prepared_frame.local_shadow_transmission_view_count)
+      render_slot >=
+          renderer->prepared_frame.local_shadow_transmission_render_count ||
+      layer != packet->input.local_shadow->render_views[render_slot])
     return false_v;
   const uint32_t view_index =
       1u + renderer->prepared_frame.shadow_cascade_count +
-      renderer->prepared_frame.local_shadow_view_count + layer;
+      renderer->prepared_frame.local_shadow_render_count + render_slot;
   const VkrLocalShadowView *view = &packet->input.local_shadow->views[layer];
   const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
       packet, renderer->prepared_frame.viewport_width,
@@ -2655,8 +2657,13 @@ vkr_internal uint32_t vkr_vk_froxel_shadow_valid_mask(
 vkr_internal uint64_t vkr_vk_froxel_local_shadow_valid_mask(
     const VkrPreparedFrame *packet, uint64_t retained_mask) {
   return retained_mask |
-         (packet->input.local_shadow ? packet->input.local_shadow->render_mask
-                                     : 0u);
+         vkr_local_shadow_render_layer_mask(packet->input.local_shadow);
+}
+
+vkr_internal uint64_t vkr_vk_froxel_local_shadow_transmission_valid_mask(
+    const VkrPreparedFrame *packet, uint64_t retained_mask) {
+  return retained_mask |
+         vkr_local_shadow_render_view_mask(packet->input.local_shadow);
 }
 
 vkr_internal bool8_t vkr_vk_prepare_froxel_history(
@@ -2698,7 +2705,7 @@ vkr_internal bool8_t vkr_vk_prepare_froxel_history(
           packet, local_shadow_token.valid_layer_mask);
   const uint64_t transmission_valid_mask =
       renderer->prepared_frame.local_shadow_transmission_view_count > 0u
-          ? vkr_vk_froxel_local_shadow_valid_mask(
+          ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
           : 0u;
   VkrVulkanGraphImageInstance *selected = NULL;
@@ -2925,7 +2932,7 @@ void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
           packet, local_shadow_token.valid_layer_mask);
   const uint64_t transmission_valid_mask =
       renderer->prepared_frame.local_shadow_transmission_view_count > 0u
-          ? vkr_vk_froxel_local_shadow_valid_mask(
+          ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
           : 0u;
   VkrVulkanFroxelHistory *history = &renderer->froxel_histories[current];
@@ -3195,7 +3202,7 @@ vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
           packet, local_shadow_token.valid_layer_mask);
   const uint64_t transmission_valid_mask =
       renderer->prepared_frame.local_shadow_transmission_view_count > 0u
-          ? vkr_vk_froxel_local_shadow_valid_mask(
+          ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
           : 0u;
   if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE ||
@@ -3554,7 +3561,7 @@ void vkr_vk_mark_ssgi_submitted(VkrVulkanRenderer *renderer,
           packet, local_shadow_token.valid_layer_mask),
       .local_shadow_transmission_valid_layer_mask =
           renderer->prepared_frame.local_shadow_transmission_view_count > 0u
-              ? vkr_vk_froxel_local_shadow_valid_mask(
+              ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                     packet, local_shadow_token.transmission_valid_layer_mask)
               : 0u,
       .valid = true_v,
