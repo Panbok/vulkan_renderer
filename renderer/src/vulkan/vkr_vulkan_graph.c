@@ -569,9 +569,13 @@ vkr_global const char *const s_vk_local_shadow_transmission_names
         "local_shadow_transmission_overflow",
 };
 
-vkr_internal VkrVulkanGraphImage *vkr_vk_retained_local_shadow_image(
-    VkrVulkanRenderer *renderer, uint32_t image_index, const char *name,
-    uint32_t extent, uint32_t layers, VkrTextureFormat format) {
+/* Every frame in flight shares one local-shadow atlas and one set of
+   transmission arrays, so each has a single instance. `layers` zero accepts
+   any layer count up to the atlas maximum. */
+vkr_internal VkrVulkanGraphImage *
+vkr_vk_retained_local_shadow_image(VkrVulkanRenderer *renderer,
+                                   const char *name, uint32_t extent,
+                                   uint32_t layers, VkrTextureFormat format) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
         vector_get_VkrRgImage(&renderer->graph->images, i);
@@ -580,15 +584,16 @@ vkr_internal VkrVulkanGraphImage *vkr_vk_retained_local_shadow_image(
     VkrVulkanGraphImage *slot = &renderer->graph_images[i];
     if (!slot->live || slot->graph_generation == 0u ||
         slot->graph_generation != image->generation ||
-        slot->instance_count != renderer->targets.image_count ||
-        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
+        slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
         slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
         slot->desc.type != VKR_TEXTURE_TYPE_2D || slot->desc.width != extent ||
         slot->desc.height != extent || slot->desc.format != format ||
-        slot->desc.layers != layers ||
-        !slot->instances[image_index].image.handle)
+        (layers != 0u
+             ? slot->desc.layers != layers
+             : slot->desc.layers > VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX) ||
+        !slot->instances[0].image.handle)
       return NULL;
-    const VkrVulkanImage *physical = &slot->instances[image_index].image;
+    const VkrVulkanImage *physical = &slot->instances[0].image;
     if (physical->width != extent || physical->height != extent ||
         physical->depth != 1u || physical->mip_levels != 1u ||
         physical->array_layers != slot->desc.layers ||
@@ -599,10 +604,10 @@ vkr_internal VkrVulkanGraphImage *vkr_vk_retained_local_shadow_image(
   return NULL;
 }
 
-vkr_internal uint64_t vkr_vk_retained_local_shadow_valid_mask(
-    const VkrVulkanGraphImage *image, uint32_t image_index) {
+vkr_internal uint64_t
+vkr_vk_retained_local_shadow_valid_mask(const VkrVulkanGraphImage *image) {
   uint64_t mask = 0u;
-  const VkrVulkanGraphImageInstance *instance = &image->instances[image_index];
+  const VkrVulkanGraphImageInstance *instance = &image->instances[0];
   for (uint32_t layer = 0u; layer < Min(image->desc.layers, 64u); ++layer) {
     if (instance->retained_states[layer].content_valid)
       mask |= UINT64_C(1) << layer;
@@ -611,17 +616,16 @@ vkr_internal uint64_t vkr_vk_retained_local_shadow_valid_mask(
 }
 
 void vkr_vulkan_renderer_retained_local_shadow_token(
-    VkrVulkanRenderer *renderer, uint32_t image_index,
-    VkrRetainedLocalShadowToken *out_token) {
+    VkrVulkanRenderer *renderer, VkrRetainedLocalShadowToken *out_token) {
   *out_token = (VkrRetainedLocalShadowToken){0};
   VkrVulkanGraphImage *opaque = vkr_vk_retained_local_shadow_image(
-      renderer, image_index, "local_shadow_map", VKR_LOCAL_SHADOW_ATLAS_SIZE,
-      VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT,
+      renderer, "local_shadow_map", VKR_LOCAL_SHADOW_ATLAS_SIZE, 0u,
       renderer->prepared_frame.shadow_depth_format);
   if (opaque) {
     out_token->resource_generation = opaque->graph_generation;
+    out_token->atlas_layer_count = opaque->desc.layers;
     out_token->valid_layer_mask =
-        vkr_vk_retained_local_shadow_valid_mask(opaque, image_index);
+        vkr_vk_retained_local_shadow_valid_mask(opaque);
   }
   const uint32_t extent =
       renderer->prepared_frame.local_shadow_transmission_map_size;
@@ -629,14 +633,14 @@ void vkr_vulkan_renderer_retained_local_shadow_token(
   uint64_t valid_mask = UINT64_MAX;
   for (uint32_t i = 0u; i < VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT; ++i) {
     VkrVulkanGraphImage *image = vkr_vk_retained_local_shadow_image(
-        renderer, image_index, s_vk_local_shadow_transmission_names[i], extent,
+        renderer, s_vk_local_shadow_transmission_names[i], extent,
         renderer->prepared_frame.local_shadow_map_layer_count,
         i == 1u || i == 3u ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
                            : VKR_TEXTURE_FORMAT_D32_SFLOAT);
     if (!image)
       return;
     generations[i] = image->graph_generation;
-    valid_mask &= vkr_vk_retained_local_shadow_valid_mask(image, image_index);
+    valid_mask &= vkr_vk_retained_local_shadow_valid_mask(image);
   }
   MemCopy(out_token->transmission_resource_generations, generations,
           sizeof(generations));
@@ -648,23 +652,20 @@ vkr_vk_prepare_local_shadow_transmission_sampling(VkrVulkanRenderer *renderer) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   slot->local_shadow_transmission = 0u;
-  if (renderer->prepared_frame.local_shadow_transmission_view_count == 0u)
+  if (renderer->prepared_frame.local_shadow_transmission_layer_count == 0u)
     return true_v;
   const uint32_t extent =
       renderer->prepared_frame.local_shadow_transmission_map_size;
   uint32_t indices[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
   for (uint32_t i = 0u; i < VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT; ++i) {
     VkrVulkanGraphImage *image = vkr_vk_retained_local_shadow_image(
-        renderer, renderer->prepared_frame.image_index,
-        s_vk_local_shadow_transmission_names[i], extent,
+        renderer, s_vk_local_shadow_transmission_names[i], extent,
         renderer->prepared_frame.local_shadow_map_layer_count,
         i == 1u || i == 3u ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
                            : VKR_TEXTURE_FORMAT_D32_SFLOAT);
-    if (!image || !image->instances[renderer->prepared_frame.image_index]
-                       .has_sampled_slot)
+    if (!image || !image->instances[0].has_sampled_slot)
       return false_v;
-    indices[i] = image->instances[renderer->prepared_frame.image_index]
-                     .sampled_slot.index;
+    indices[i] = image->instances[0].sampled_slot.index;
   }
   VkrVulkanLocalShadowTransmission *maps = vkr_vk_frame_upload_allocate(
       slot, sizeof(*maps), _Alignof(VkrVulkanLocalShadowTransmission),

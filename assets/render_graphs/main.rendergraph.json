@@ -53,7 +53,7 @@
         "mode": "square",
         "size_source": "local_shadow_atlas_size"
       },
-      "layers": 1,
+      "layers_source": "local_shadow_atlas_layer_count",
       "format": "D32_SFLOAT",
       "usage": [
         "DEPTH_STENCIL_ATTACHMENT",
@@ -62,7 +62,6 @@
       ],
       "flags": [
         "RETAINED",
-        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -83,7 +82,6 @@
       ],
       "flags": [
         "RETAINED",
-        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -104,7 +102,6 @@
       ],
       "flags": [
         "RETAINED",
-        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -125,7 +122,6 @@
       ],
       "flags": [
         "RETAINED",
-        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -146,7 +142,6 @@
       ],
       "flags": [
         "RETAINED",
-        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -167,7 +162,6 @@
       ],
       "flags": [
         "RETAINED",
-        "PER_IMAGE",
         "RESIZABLE"
       ]
     },
@@ -2376,10 +2370,14 @@
       "execute": "pass.shadow.cascade"
     },
     {
-      "name": "Shadow.Local.Clear",
+      "name": "Shadow.Local.Clear.${i}",
       "condition": "scene_rendering && local_shadow_atlas_clear",
       "type": "graphics",
       "domain": "SHADOW",
+      "repeat": {
+        "count_source": "local_shadow_atlas_layer_count",
+        "condition_mask_source": "local_shadow_atlas_clear_mask"
+      },
       "attachments": {
         "depth": {
           "image": "local_shadow_map",
@@ -2390,7 +2388,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": 0,
+            "base_layer": "${i}",
             "layer_count": 1
           }
         }
@@ -2492,7 +2490,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": "${local_shadow_render_view}",
+            "base_layer": "${local_shadow_render_transmission_layer}",
             "layer_count": 1
           }
         },
@@ -2510,7 +2508,7 @@
               ]
             },
             "slice": {
-              "base_layer": "${local_shadow_render_view}",
+              "base_layer": "${local_shadow_render_transmission_layer}",
               "layer_count": 1
             }
           }
@@ -2552,7 +2550,7 @@
           "access": "SAMPLED",
           "binding": 10,
           "subresource": {
-            "base_layer": "${local_shadow_render_view}",
+            "base_layer": "${local_shadow_render_transmission_layer}",
             "layer_count": 1
           }
         },
@@ -2561,7 +2559,7 @@
           "access": "SAMPLED",
           "binding": 11,
           "subresource": {
-            "base_layer": "${local_shadow_render_view}",
+            "base_layer": "${local_shadow_render_transmission_layer}",
             "layer_count": 1
           }
         },
@@ -2582,7 +2580,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": "${local_shadow_render_view}",
+            "base_layer": "${local_shadow_render_transmission_layer}",
             "layer_count": 1
           }
         },
@@ -2600,7 +2598,7 @@
               ]
             },
             "slice": {
-              "base_layer": "${local_shadow_render_view}",
+              "base_layer": "${local_shadow_render_transmission_layer}",
               "layer_count": 1
             }
           }
@@ -2642,7 +2640,7 @@
           "access": "SAMPLED",
           "binding": 10,
           "subresource": {
-            "base_layer": "${local_shadow_render_view}",
+            "base_layer": "${local_shadow_render_transmission_layer}",
             "layer_count": 1
           }
         },
@@ -2663,7 +2661,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": "${local_shadow_render_view}",
+            "base_layer": "${local_shadow_render_transmission_layer}",
             "layer_count": 1
           }
         }
@@ -3877,7 +3875,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -3890,7 +3888,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -3903,7 +3901,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -3916,7 +3914,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -3929,7 +3927,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4031,7 +4029,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4044,7 +4042,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4057,7 +4055,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4070,7 +4068,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4083,7 +4081,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4221,7 +4219,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4234,7 +4232,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4247,7 +4245,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4260,7 +4258,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4273,7 +4271,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4411,7 +4409,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4424,7 +4422,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4437,7 +4435,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4450,7 +4448,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4463,7 +4461,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4601,7 +4599,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4614,7 +4612,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4627,7 +4625,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4640,7 +4638,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -4653,7 +4651,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -5667,7 +5665,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -5680,7 +5678,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -5693,7 +5691,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -5706,7 +5704,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -5719,7 +5717,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6351,7 +6349,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6364,7 +6362,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6377,7 +6375,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6390,7 +6388,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6403,7 +6401,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6535,7 +6533,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6548,7 +6546,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6561,7 +6559,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6574,7 +6572,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6587,7 +6585,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6816,7 +6814,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6829,7 +6827,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6842,7 +6840,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6855,7 +6853,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6868,7 +6866,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -6993,7 +6991,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7006,7 +7004,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7019,7 +7017,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7032,7 +7030,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7045,7 +7043,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7274,7 +7272,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7287,7 +7285,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7300,7 +7298,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7313,7 +7311,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7326,7 +7324,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7451,7 +7449,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7464,7 +7462,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7477,7 +7475,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7490,7 +7488,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7503,7 +7501,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7737,7 +7735,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7750,7 +7748,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7763,7 +7761,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7776,7 +7774,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7789,7 +7787,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7929,7 +7927,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7942,7 +7940,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7955,7 +7953,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7968,7 +7966,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -7981,7 +7979,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8113,7 +8111,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8126,7 +8124,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8139,7 +8137,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8152,7 +8150,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8165,7 +8163,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8275,7 +8273,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8288,7 +8286,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8301,7 +8299,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8314,7 +8312,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8327,7 +8325,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8437,7 +8435,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8450,7 +8448,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8463,7 +8461,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8476,7 +8474,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8489,7 +8487,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8604,7 +8602,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8617,7 +8615,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8630,7 +8628,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8643,7 +8641,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8656,7 +8654,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8783,7 +8781,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8796,7 +8794,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8809,7 +8807,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8822,7 +8820,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8835,7 +8833,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8945,7 +8943,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8958,7 +8956,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8971,7 +8969,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8984,7 +8982,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -8997,7 +8995,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9107,7 +9105,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9120,7 +9118,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9133,7 +9131,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9146,7 +9144,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9159,7 +9157,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9274,7 +9272,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9287,7 +9285,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9300,7 +9298,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9313,7 +9311,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9326,7 +9324,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9768,7 +9766,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9781,7 +9779,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9794,7 +9792,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9807,7 +9805,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9820,7 +9818,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9912,7 +9910,7 @@
           "binding": 40,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9925,7 +9923,7 @@
           "binding": 41,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9938,7 +9936,7 @@
           "binding": 42,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9951,7 +9949,7 @@
           "binding": 43,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",
@@ -9964,7 +9962,7 @@
           "binding": 44,
           "when": "local_shadow_transmission_active",
           "repeat": {
-            "count_source": "local_shadow_transmission_view_count"
+            "count_source": "local_shadow_transmission_layer_count"
           },
           "subresource": {
             "base_layer": "${i}",

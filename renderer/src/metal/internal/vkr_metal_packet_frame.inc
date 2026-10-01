@@ -1253,7 +1253,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
           .transmission_materials =
               vkr_metal_material_table_device_transmission_gpu_address(
                   renderer->materials),
-          .face = local_face,
+          .face = vkr_local_shadow_render_transmission_layer(
+              packet->input.local_shadow, view - first_transmission_view),
           .light_position =
               packet->input.local_shadow->views[local_face].light_position_near,
       };

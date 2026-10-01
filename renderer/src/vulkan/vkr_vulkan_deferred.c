@@ -587,7 +587,7 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION,
       .local_shadow_excluded_flags =
-          renderer->prepared_frame.local_shadow_transmission_render_count > 0u
+          renderer->prepared_frame.local_shadow_refractive_casters
               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
               : 0u,
   };
@@ -1218,12 +1218,15 @@ bool8_t vkr_vk_prepare_local_shadow_transmission(
       !packet->input.local_shadow ||
       render_slot >=
           renderer->prepared_frame.local_shadow_transmission_render_count ||
-      layer != packet->input.local_shadow->render_views[render_slot])
+      layer != vkr_local_shadow_render_transmission_layer(
+                   packet->input.local_shadow, render_slot))
     return false_v;
   const uint32_t view_index =
       1u + renderer->prepared_frame.shadow_cascade_count +
       renderer->prepared_frame.local_shadow_render_count + render_slot;
-  const VkrLocalShadowView *view = &packet->input.local_shadow->views[layer];
+  const VkrLocalShadowView *view =
+      &packet->input.local_shadow
+           ->views[packet->input.local_shadow->render_views[render_slot]];
   const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
       packet, renderer->prepared_frame.viewport_width,
       renderer->prepared_frame.viewport_height);
@@ -2663,7 +2666,7 @@ vkr_internal uint64_t vkr_vk_froxel_local_shadow_valid_mask(
 vkr_internal uint64_t vkr_vk_froxel_local_shadow_transmission_valid_mask(
     const VkrPreparedFrame *packet, uint64_t retained_mask) {
   return retained_mask |
-         vkr_local_shadow_render_view_mask(packet->input.local_shadow);
+         vkr_local_shadow_render_transmission_mask(packet->input.local_shadow);
 }
 
 vkr_internal bool8_t vkr_vk_prepare_froxel_history(
@@ -2696,15 +2699,15 @@ vkr_internal bool8_t vkr_vk_prepare_froxel_history(
   VkrRetainedLocalShadowToken local_shadow_token;
   vkr_vulkan_renderer_retained_shadow_token(
       renderer, renderer->prepared_frame.image_index, &shadow_token);
-  vkr_vulkan_renderer_retained_local_shadow_token(
-      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(renderer,
+                                                  &local_shadow_token);
   const uint32_t shadow_valid_mask =
       vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
   const uint64_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
   const uint64_t transmission_valid_mask =
-      renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+      renderer->prepared_frame.local_shadow_transmission_layer_count > 0u
           ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
           : 0u;
@@ -2923,15 +2926,15 @@ void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
   VkrRetainedLocalShadowToken local_shadow_token;
   vkr_vulkan_renderer_retained_shadow_token(
       renderer, renderer->prepared_frame.image_index, &shadow_token);
-  vkr_vulkan_renderer_retained_local_shadow_token(
-      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(renderer,
+                                                  &local_shadow_token);
   const uint32_t shadow_valid_mask =
       vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
   const uint64_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
   const uint64_t transmission_valid_mask =
-      renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+      renderer->prepared_frame.local_shadow_transmission_layer_count > 0u
           ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
           : 0u;
@@ -3193,15 +3196,15 @@ vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
   VkrRetainedLocalShadowToken local_shadow_token;
   vkr_vulkan_renderer_retained_shadow_token(
       renderer, renderer->prepared_frame.image_index, &shadow_token);
-  vkr_vulkan_renderer_retained_local_shadow_token(
-      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(renderer,
+                                                  &local_shadow_token);
   const uint32_t shadow_valid_mask =
       vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
   const uint64_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
   const uint64_t transmission_valid_mask =
-      renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+      renderer->prepared_frame.local_shadow_transmission_layer_count > 0u
           ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
           : 0u;
@@ -3545,8 +3548,8 @@ void vkr_vk_mark_ssgi_submitted(VkrVulkanRenderer *renderer,
   VkrRetainedLocalShadowToken local_shadow_token;
   vkr_vulkan_renderer_retained_shadow_token(
       renderer, renderer->prepared_frame.image_index, &shadow_token);
-  vkr_vulkan_renderer_retained_local_shadow_token(
-      renderer, renderer->prepared_frame.image_index, &local_shadow_token);
+  vkr_vulkan_renderer_retained_local_shadow_token(renderer,
+                                                  &local_shadow_token);
   renderer->ssgi_histories[current] = (VkrVulkanSsgiHistory){
       .producer_submit_value = submit_value,
       .frame_index = packet->input.frame.frame_index,
@@ -3560,7 +3563,7 @@ void vkr_vk_mark_ssgi_submitted(VkrVulkanRenderer *renderer,
       .local_shadow_valid_layer_mask = vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask),
       .local_shadow_transmission_valid_layer_mask =
-          renderer->prepared_frame.local_shadow_transmission_view_count > 0u
+          renderer->prepared_frame.local_shadow_transmission_layer_count > 0u
               ? vkr_vk_froxel_local_shadow_transmission_valid_mask(
                     packet, local_shadow_token.transmission_valid_layer_mask)
               : 0u,

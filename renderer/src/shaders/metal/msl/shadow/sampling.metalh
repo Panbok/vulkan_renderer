@@ -301,26 +301,31 @@ float3 vkr_metal_packet_shadow_debug_color(uint mode,
 }
 
 // Depth and cumulative color are read from the same discrete texel. Filtering
-// happens only after the receiver has selected its crossing prefix.
+// happens only after the receiver has selected its crossing prefix. `layer`
+// is the face's transmission layer plus one; zero leaves refractive casters
+// unshadowed for the face.
 static float3 vkr_metal_local_shadow_transmission_tap(
-    constant VkrMetalPacketLocalShadowTransmission &maps, uint face, float2 uv,
-    float receiver_depth) {
-  uint2 extent(maps.depth0.get_width(), maps.depth0.get_height());
+    constant VkrMetalPacketLocalShadowTransmission *maps, uint layer,
+    float2 uv, float receiver_depth) {
+  if (!maps || layer == 0u)
+    return float3(1.0f);
+  uint face = layer - 1u;
+  uint2 extent(maps->depth0.get_width(), maps->depth0.get_height());
   uint2 pixel = min(uint2(saturate(uv) * float2(extent)), extent - 1u);
   // Crossings are peeled in order from the light, so a receiver in front of
   // the first one has no transmission prefix.
-  float depth0 = maps.depth0.read(pixel, face);
+  float depth0 = maps->depth0.read(pixel, face);
   if (receiver_depth <= depth0)
     return float3(1.0f);
-  float2 depths(depth0, maps.depth1.read(pixel, face));
+  float2 depths(depth0, maps->depth1.read(pixel, face));
   uint prefix = vkr_local_shadow_transmission_prefix_index(
-      receiver_depth, depths, maps.overflow.read(pixel, face));
+      receiver_depth, depths, maps->overflow.read(pixel, face));
   if (prefix == 0u)
     return float3(1.0f);
   if (prefix == 1u)
-    return maps.color0.read(pixel, face).rgb;
+    return maps->color0.read(pixel, face).rgb;
   if (prefix == 2u)
-    return maps.color1.read(pixel, face).rgb;
+    return maps->color1.read(pixel, face).rgb;
   return float3(0.0f);
 }
 
@@ -371,10 +376,10 @@ vkr_metal_packet_local_shadow_sample(constant VkrMetalPacketFrameRoot *root,
                                   uv),
         uint(view.atlas_rect.w), projected.z);
     float3 transmission =
-        opaque > 0.0 && root->local_shadow_transmission
+        opaque > 0.0
             ? vkr_metal_local_shadow_transmission_tap(
-                  *root->local_shadow_transmission, first_view + face, uv,
-                  projected.z)
+                  root->local_shadow_transmission,
+                  uint(view.shadow_params.y), uv, projected.z)
             : float3(1.0f);
     return vkr_local_shadow_apply_strength(opaque * transmission, strength);
   }
@@ -420,10 +425,10 @@ vkr_metal_packet_local_shadow_sample(constant VkrMetalPacketFrameRoot *root,
         uint(tap_view.atlas_rect.w), reference);
     // An opaque-occluded tap contributes zero whatever its transmission.
     float3 transmission =
-        opaque > 0.0 && root->local_shadow_transmission
+        opaque > 0.0
             ? vkr_metal_local_shadow_transmission_tap(
-                  *root->local_shadow_transmission, first_view + tap_face,
-                  tap_uv, reference)
+                  root->local_shadow_transmission,
+                  uint(tap_view.shadow_params.y), tap_uv, reference)
             : float3(1.0f);
     sum += opaque * transmission;
   }
@@ -469,10 +474,10 @@ vkr_metal_packet_local_shadow_one_tap(constant VkrMetalPacketFrameRoot *root,
       vkr_metal_shadow_compare_sampler,
       vkr_local_shadow_atlas_uv(view.atlas_rect, view.projection_params.y, uv),
       uint(view.atlas_rect.w), projected.z);
-  float3 transmission = opaque > 0.0f && root->local_shadow_transmission
-                            ? vkr_metal_local_shadow_transmission_tap(
-                                  *root->local_shadow_transmission,
-                                  first_view + face, uv, projected.z)
-                            : float3(1.0f);
+  float3 transmission =
+      opaque > 0.0f ? vkr_metal_local_shadow_transmission_tap(
+                          root->local_shadow_transmission,
+                          uint(view.shadow_params.y), uv, projected.z)
+                    : float3(1.0f);
   return vkr_local_shadow_apply_strength(opaque * transmission, strength);
 }

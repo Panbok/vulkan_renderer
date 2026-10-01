@@ -370,8 +370,7 @@ void vkr_metal_packet_renderer_retained_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);
 void vkr_metal_packet_renderer_retained_local_shadow_token(
-    VkrMetalPacketRenderer *renderer, uint32_t image_index,
-    VkrRetainedLocalShadowToken *out_token);
+    VkrMetalPacketRenderer *renderer, VkrRetainedLocalShadowToken *out_token);
 
 /** Releases a prepared drawable and command slot that were not submitted. */
 bool8_t

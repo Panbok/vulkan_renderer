@@ -237,22 +237,30 @@ typedef struct VkrGpuVisibleDrawRow {
   uint32_t state_flags;
 } VkrGpuVisibleDrawRow;
 
-/* Local shadow views receivers can sample in one frame. */
-#define VKR_LOCAL_SHADOW_FACE_COUNT_MAX 64u
+/* Local shadow views receivers can sample in one frame: six faces of every
+ * light of the scene table, which the persistent cache keeps resident. */
+#define VKR_LOCAL_SHADOW_FACE_COUNT_MAX 768u
 /* Faces drawn in one frame. Each render slot owns a culling view and its
- * repeated graph passes, so slot masks are 64-bit. */
+ * repeated graph passes, so slot masks are 64-bit. The configured face budget
+ * bounds the slots drawn per frame and the transmission layers. */
 #define VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX 64u
-/* The map size is the largest face; faces shrink with screen coverage. */
+/* The map size is the largest face; a light's face side follows its range. */
 #define VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT 1024u
 #define VKR_LOCAL_SHADOW_MAP_SIZE_MAX 1024u
 #define VKR_LOCAL_SHADOW_FACE_SIZE_MIN 128u
-/* Every local shadow face occupies a square of this depth atlas. */
+/* Face texels per metre of light range, before rounding to a power of two:
+ * a 7.5 m light takes 512 squared and a 15 m light 1024 squared. */
+#define VKR_LOCAL_SHADOW_TEXELS_PER_RANGE_METRE 64.0f
+/* Every local shadow face occupies a square of one layer of this depth atlas.
+ * The cache sizes the layer count to its resident faces; the atlas clear mask
+ * is 32-bit. */
 #define VKR_LOCAL_SHADOW_ATLAS_SIZE 4096u
-#define VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT 1u
+#define VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX 32u
 #define VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX 512u
-/* Texels per transmission array: 32 faces at 512 squared. Larger face budgets
- * take smaller transmission maps, so the pool's memory does not grow with the
- * opaque face budget. */
+/* Texels per transmission array: 32 faces at 512 squared. The arrays hold one
+ * layer per face of the face budget, for the most important lights; larger
+ * budgets take smaller transmission maps, so the pool's memory does not grow
+ * with the budget. */
 #define VKR_LOCAL_SHADOW_TRANSMISSION_TEXEL_BUDGET (32u * 512u * 512u)
 /* Layers of the screen-space shadow mask: the k-th shadowed light in range of
  * a pixel, in light order, stores its visibility in layer k. Receivers filter
@@ -262,13 +270,12 @@ typedef struct VkrGpuVisibleDrawRow {
 /* Frames before the contact-shadow march pattern repeats under TAA. */
 #define VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD 64u
 
-_Static_assert(VKR_LOCAL_SHADOW_FACE_COUNT_MAX <= 64u,
-               "local shadow view masks are 64-bit");
 _Static_assert(VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX <= 64u,
-               "local shadow render slot masks are 64-bit");
+               "local shadow render slot and transmission layer masks are "
+               "64-bit");
 
-/** Bits of `count` consecutive local shadow views starting at `first`; the
- * whole word when they cover all 64 bits. */
+/** Bits of `count` consecutive render slots or layers starting at `first`;
+ * the whole word when they cover all 64 bits. */
 static inline uint64_t vkr_local_shadow_view_bits(uint32_t first,
                                                   uint32_t count) {
   if (count == 0u || first >= 64u)
@@ -299,8 +306,10 @@ typedef struct VkrLocalShadowView {
   Vec4 light_direction_far;
   Vec4 projection_params; /* tan(half FOV), inverse size, bias, normal offset */
   /** x: shadow strength in [0, 1], shared by every face of the light; receivers
-   * blend visibility toward one as it falls. y is zero. z: one when the light
-   * takes one filtered tap and no contact shadows, else zero. w is zero. */
+   * blend visibility toward one as it falls. y: the face's transmission array
+   * layer plus one, or zero when refractive casters do not attenuate it. z:
+   * one when the light takes one filtered tap and no contact shadows, else
+   * zero. w is zero. */
   Vec4 shadow_params;
   /** The face's square in the atlas: xy is its top-left corner and z its side
    * in atlas UV, w the atlas layer. projection_params.y is one face texel. */

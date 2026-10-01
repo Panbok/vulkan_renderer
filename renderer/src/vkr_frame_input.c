@@ -566,7 +566,8 @@ vkr_internal VkrRendererError vkr_frame_input_validate_animation_preview(
  * map size, aligned to its own size inside one atlas layer, and its texel
  * size matches that side. Returns the side in texels, or zero. */
 vkr_internal uint32_t vkr_frame_input_local_shadow_face_size(
-    const VkrLocalShadowView *view, uint32_t map_size) {
+    const VkrLocalShadowView *view, uint32_t map_size,
+    uint32_t atlas_layer_count) {
   const float32_t atlas = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
   const Vec4 rect = view->atlas_rect;
   if (!isfinite(rect.x) || !isfinite(rect.y) || !isfinite(rect.z) ||
@@ -582,165 +583,189 @@ vkr_internal uint32_t vkr_frame_input_local_shadow_face_size(
   if ((size & (size - 1u)) != 0u || !(x >= 0.0f) || !(y >= 0.0f) ||
       x != floorf(x) || y != floorf(y) || (uint32_t)x % size != 0u ||
       (uint32_t)y % size != 0u || x + side > atlas || y + side > atlas ||
-      !(rect.w >= 0.0f) ||
-      rect.w >= (float32_t)VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT ||
+      !(rect.w >= 0.0f) || rect.w >= (float32_t)atlas_layer_count ||
       rect.w != floorf(rect.w) || view->projection_params.y != 1.0f / side)
     return 0u;
   return size;
 }
 
+/* Bit `index` of a resident-view set. */
+vkr_internal bool8_t vkr_frame_input_view_set_test_and_set(uint64_t *set,
+                                                           uint32_t index) {
+  const uint64_t bit = UINT64_C(1) << (index % 64u);
+  const bool8_t was_set = (set[index / 64u] & bit) != 0u;
+  set[index / 64u] |= bit;
+  return was_set;
+}
+
 vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
     const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
   const VkrLocalShadowPassPayload *local = packet->local_shadow;
-  if (local) {
-    if (!packet->world || packet->world->gpu_shadow_candidate_count == 0u ||
-        !packet->lighting || !packet->lighting->point_lights ||
-        packet->lighting->point_light_count > VKR_MAX_SCENE_POINT_LIGHTS ||
-        !local->view_count || local->view_count > local->face_budget ||
-        local->face_budget > VKR_LOCAL_SHADOW_FACE_COUNT_MAX ||
-        local->map_size < VKR_LOCAL_SHADOW_FACE_SIZE_MIN ||
-        local->map_size > VKR_LOCAL_SHADOW_MAP_SIZE_MAX ||
-        (local->map_size & (local->map_size - 1u)) != 0u)
+  if (!local)
+    return VKR_RENDERER_ERROR_NONE;
+  if (!packet->world || packet->world->gpu_shadow_candidate_count == 0u ||
+      !packet->lighting || !packet->lighting->point_lights ||
+      packet->lighting->point_light_count > VKR_MAX_SCENE_POINT_LIGHTS ||
+      !local->view_count ||
+      local->view_count > VKR_LOCAL_SHADOW_FACE_COUNT_MAX ||
+      !local->face_budget ||
+      local->face_budget > VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX ||
+      local->map_size < VKR_LOCAL_SHADOW_FACE_SIZE_MIN ||
+      local->map_size > VKR_LOCAL_SHADOW_MAP_SIZE_MAX ||
+      (local->map_size & (local->map_size - 1u)) != 0u ||
+      !local->atlas_layer_count ||
+      local->atlas_layer_count > VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.local_shadow",
+                      "invalid local shadow capacity or owners");
+  if ((local->atlas_clear_mask & ~(uint32_t)vkr_local_shadow_view_bits(
+                                     0u, local->atlas_layer_count)) != 0u)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.local_shadow.atlas_clear_mask",
+                      "contains a bit outside the atlas layers");
+  if (local->render_count > local->face_budget ||
+      local->transmission_render_count > local->render_count ||
+      local->transmission_layer_count > local->face_budget ||
+      (!local->refractive_casters && local->transmission_layer_count != 0u) ||
+      (local->transmission_render_count != 0u &&
+       local->transmission_layer_count == 0u))
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.local_shadow.render_count",
+                      "exceeds the face budget or transmission layers");
+  uint64_t rendered_views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX / 64u] = {0};
+  for (uint32_t slot = 0u; slot < local->render_count; ++slot) {
+    const uint32_t view = local->render_views[slot];
+    if (view >= local->view_count ||
+        vkr_frame_input_view_set_test_and_set(rendered_views, view))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.local_shadow",
-                        "invalid local shadow capacity or owners");
-    const uint64_t view_mask =
-        vkr_local_shadow_view_bits(0u, local->view_count);
-    if (local->render_count > VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX)
+                        "packet.local_shadow.render_views",
+                        "requires distinct views inside view_count");
+    if (slot < local->transmission_render_count &&
+        local->views[view].shadow_params.y == 0.0f)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.local_shadow.render_count",
-                        "exceeds the render slots");
-    uint64_t rendered_views = 0u;
-    for (uint32_t slot = 0u; slot < local->render_count; ++slot) {
-      const uint32_t view = local->render_views[slot];
-      if (view >= local->view_count ||
-          (rendered_views & vkr_local_shadow_view_bits(view, 1u)) != 0u)
-        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.local_shadow.render_views",
-                          "requires distinct views inside view_count");
-      rendered_views |= vkr_local_shadow_view_bits(view, 1u);
-    }
-    if ((local->atlas_clear_mask &
-         ~((UINT32_C(1) << VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT) - 1u)) != 0u)
+                        "packet.local_shadow.render_views",
+                        "transmission slots require a transmission layer");
+  }
+
+  /* Views are the faces of shadowed lights, each face owned exactly once. */
+  uint64_t owned_views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX / 64u] = {0};
+  uint32_t owned_count = 0u;
+  static const Vec3 face_directions[6] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                          {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+  for (uint32_t i = 0; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i) {
+    const uint32_t first = local->light_first_view[i];
+    if (!first)
+      continue;
+    if (i >= packet->lighting->point_light_count)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.local_shadow.atlas_clear_mask",
-                        "contains a bit outside the atlas layers");
-    /* Ranges follow retained layer ownership rather than light order;
-     * together they cover every view exactly once. */
-    uint64_t owned_views = 0u;
-    for (uint32_t i = 0; i < VKR_MAX_SCENE_POINT_LIGHTS; ++i) {
-      const uint32_t first = local->light_first_view[i];
-      if (!first)
-        continue;
-      if (i >= packet->lighting->point_light_count)
-        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.local_shadow.light_first_view",
-                          "references a missing light");
-      const uint32_t count = packet->lighting->point_lights[i].kind ==
-                                     VKR_POINT_LIGHT_KIND_GLTF_SPOT
-                                 ? 1u
-                                 : 6u;
-      const uint32_t first_view = first - 1u;
-      if (first_view >= local->view_count ||
-          count > local->view_count - first_view)
-        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.local_shadow.light_first_view",
-                          "requires complete light views");
-      const uint64_t light_views =
-          vkr_local_shadow_view_bits(first_view, count);
-      if ((owned_views & light_views) != 0u)
+                        "packet.local_shadow.light_first_view",
+                        "references a missing light");
+    const VkrPointLight *light = &packet->lighting->point_lights[i];
+    const uint32_t count =
+        light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
+    const uint32_t first_view = first - 1u;
+    if (first_view >= local->view_count ||
+        count > local->view_count - first_view)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.local_shadow.light_first_view",
+                        "requires complete light views");
+    for (uint32_t face = 0; face < count; ++face) {
+      if (vkr_frame_input_view_set_test_and_set(owned_views, first_view + face))
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.local_shadow.light_first_view",
                           "requires disjoint light views");
-      owned_views |= light_views;
-      const VkrPointLight *light = &packet->lighting->point_lights[i];
-      static const Vec3 face_directions[6] = {
-          {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
-      for (uint32_t face = 0; face < count; ++face) {
-        const VkrLocalShadowView *view = &local->views[first_view + face];
-        const Vec4 position = view->light_position_near;
-        const Vec4 direction = view->light_direction_far;
-        const float32_t length_squared = direction.x * direction.x +
-                                         direction.y * direction.y +
-                                         direction.z * direction.z;
-        if (position.x != light->position.x ||
-            position.y != light->position.y ||
-            position.z != light->position.z || !isfinite(position.x) ||
-            !isfinite(position.y) || !isfinite(position.z) ||
-            !isfinite(length_squared) ||
-            fabsf(length_squared - 1.0f) > 0.0001f ||
-            (count == 6u && (direction.x != face_directions[face].x ||
-                             direction.y != face_directions[face].y ||
-                             direction.z != face_directions[face].z)))
-          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                            "packet.local_shadow.views",
-                            "requires the owning light position and normalized "
-                            "face direction");
-      }
+      const VkrLocalShadowView *view = &local->views[first_view + face];
+      const Vec4 position = view->light_position_near;
+      const Vec4 direction = view->light_direction_far;
+      const float32_t length_squared = direction.x * direction.x +
+                                       direction.y * direction.y +
+                                       direction.z * direction.z;
+      if (position.x != light->position.x || position.y != light->position.y ||
+          position.z != light->position.z || !isfinite(position.x) ||
+          !isfinite(position.y) || !isfinite(position.z) ||
+          !isfinite(length_squared) || fabsf(length_squared - 1.0f) > 0.0001f ||
+          (count == 6u && (direction.x != face_directions[face].x ||
+                           direction.y != face_directions[face].y ||
+                           direction.z != face_directions[face].z)))
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.local_shadow.views",
+                          "requires the owning light position and normalized "
+                          "face direction");
     }
-    if (owned_views != view_mask)
+    owned_count += count;
+  }
+  if (owned_count != local->view_count)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.local_shadow.view_count",
+                      "contains unowned views");
+
+  /* Faces render into their squares with a load, so overlapping squares
+   * would overwrite each other's depth; transmission layers are likewise
+   * owned by one face each. */
+  uint32_t atlas_cells[VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX]
+                      [VKR_LOCAL_SHADOW_ATLAS_SIZE /
+                       VKR_LOCAL_SHADOW_FACE_SIZE_MIN] = {{0}};
+  uint64_t transmission_layers = 0u;
+  for (uint32_t i = 0; i < local->view_count; ++i) {
+    const VkrLocalShadowView *view = &local->views[i];
+    const uint32_t face_size = vkr_frame_input_local_shadow_face_size(
+        view, local->map_size, local->atlas_layer_count);
+    if (!face_size)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                        "packet.local_shadow.view_count",
-                        "contains unowned views");
-    /* Faces render into their squares with a load, so overlapping squares
-     * would overwrite each other's depth. */
-    uint32_t atlas_cells[VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT]
-                        [VKR_LOCAL_SHADOW_ATLAS_SIZE /
-                         VKR_LOCAL_SHADOW_FACE_SIZE_MIN] = {{0}};
-    for (uint32_t i = 0; i < local->view_count; ++i) {
-      const VkrLocalShadowView *view = &local->views[i];
-      const uint32_t face_size =
-          vkr_frame_input_local_shadow_face_size(view, local->map_size);
-      if (!face_size)
+                        "packet.local_shadow.views",
+                        "requires an aligned power-of-two atlas square");
+    const uint32_t cells = face_size / VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
+    const uint32_t cell_x = (uint32_t)(view->atlas_rect.x *
+                                       (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE) /
+                            VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
+    const uint32_t cell_y = (uint32_t)(view->atlas_rect.y *
+                                       (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE) /
+                            VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
+    const uint32_t bits = (uint32_t)(((UINT64_C(1) << cells) - 1u) << cell_x);
+    uint32_t *rows = atlas_cells[(uint32_t)view->atlas_rect.w];
+    for (uint32_t row = cell_y; row < cell_y + cells; ++row) {
+      if ((rows[row] & bits) != 0u)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.local_shadow.views",
-                          "requires an aligned power-of-two atlas square");
-      if ((local->atlas_clear_mask &
-           (UINT32_C(1) << (uint32_t)view->atlas_rect.w)) != 0u &&
-          (rendered_views & vkr_local_shadow_view_bits(i, 1u)) == 0u)
-        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.local_shadow.render_views",
-                          "must redraw every face of a cleared atlas layer");
-      const uint32_t cells = face_size / VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
-      const uint32_t cell_x =
-          (uint32_t)(view->atlas_rect.x *
-                     (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE) /
-          VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
-      const uint32_t cell_y =
-          (uint32_t)(view->atlas_rect.y *
-                     (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE) /
-          VKR_LOCAL_SHADOW_FACE_SIZE_MIN;
-      const uint32_t bits = (uint32_t)(((UINT64_C(1) << cells) - 1u) << cell_x);
-      uint32_t *rows = atlas_cells[(uint32_t)view->atlas_rect.w];
-      for (uint32_t row = cell_y; row < cell_y + cells; ++row) {
-        if ((rows[row] & bits) != 0u)
-          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                            "packet.local_shadow.views",
-                            "requires disjoint atlas squares");
-        rows[row] |= bits;
-      }
-      for (uint32_t j = 0; j < 16u; ++j)
-        if (!isfinite(view->light_view_projection.elements[j]))
-          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                            "packet.local_shadow.views",
-                            "requires finite projection matrices");
-      if (!isfinite(view->light_position_near.w) ||
-          view->light_position_near.w <= 0.0f ||
-          !isfinite(view->light_direction_far.w) ||
-          view->light_direction_far.w <= view->light_position_near.w ||
-          !isfinite(view->projection_params.x) ||
-          view->projection_params.x <= 0.0f ||
-          !isfinite(view->projection_params.z) ||
-          view->projection_params.z < 0.0f ||
-          !isfinite(view->projection_params.w) ||
-          view->projection_params.w < 0.0f ||
-          !(view->shadow_params.x >= 0.0f && view->shadow_params.x <= 1.0f) ||
-          view->shadow_params.y != 0.0f ||
-          (view->shadow_params.z != 0.0f && view->shadow_params.z != 1.0f))
-        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.local_shadow.views",
-                          "invalid projection, texel bias units or strength");
+                          "requires disjoint atlas squares");
+      rows[row] |= bits;
     }
+    const float32_t transmission = view->shadow_params.y;
+    if (!(transmission >= 0.0f) ||
+        transmission > (float32_t)local->transmission_layer_count ||
+        transmission != floorf(transmission))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.local_shadow.views",
+                        "requires a transmission layer inside the arrays");
+    if (transmission != 0.0f) {
+      const uint64_t layer_bit =
+          vkr_local_shadow_view_bits((uint32_t)transmission - 1u, 1u);
+      if ((transmission_layers & layer_bit) != 0u)
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.local_shadow.views",
+                          "requires distinct transmission layers");
+      transmission_layers |= layer_bit;
+    }
+    for (uint32_t j = 0; j < 16u; ++j)
+      if (!isfinite(view->light_view_projection.elements[j]))
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.local_shadow.views",
+                          "requires finite projection matrices");
+    if (!isfinite(view->light_position_near.w) ||
+        view->light_position_near.w <= 0.0f ||
+        !isfinite(view->light_direction_far.w) ||
+        view->light_direction_far.w <= view->light_position_near.w ||
+        !isfinite(view->projection_params.x) ||
+        view->projection_params.x <= 0.0f ||
+        !isfinite(view->projection_params.z) ||
+        view->projection_params.z < 0.0f ||
+        !isfinite(view->projection_params.w) ||
+        view->projection_params.w < 0.0f ||
+        !(view->shadow_params.x >= 0.0f && view->shadow_params.x <= 1.0f) ||
+        (view->shadow_params.z != 0.0f && view->shadow_params.z != 1.0f))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.local_shadow.views",
+                        "invalid projection, texel bias units or strength");
   }
   return VKR_RENDERER_ERROR_NONE;
 }

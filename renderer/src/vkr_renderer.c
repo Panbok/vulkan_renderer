@@ -1988,8 +1988,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   vkr_metal_packet_renderer_retained_shadow_token(
       renderer->metal_renderer, frame.image_index, &out_setup->retained_shadow);
   vkr_metal_packet_renderer_retained_local_shadow_token(
-      renderer->metal_renderer, frame.image_index,
-      &out_setup->retained_local_shadow);
+      renderer->metal_renderer, &out_setup->retained_local_shadow);
   return VKR_RENDERER_ERROR_NONE;
 #else
   if (renderer->frame_active) {
@@ -2048,7 +2047,8 @@ VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
   if (!renderer || !out_frame || !config || config->shadow_map_size == 0u ||
       config->shadow_cascade_count == 0u ||
       config->shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX ||
-      config->local_shadow_face_budget > VKR_LOCAL_SHADOW_FACE_COUNT_MAX ||
+      config->local_shadow_face_budget >
+          VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX ||
       (config->local_shadow_face_budget != 0u &&
        config->local_shadow_map_size == 0u))
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;

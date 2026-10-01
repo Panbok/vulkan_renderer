@@ -204,8 +204,7 @@ void vkr_vulkan_renderer_retained_shadow_token(
     VkrVulkanRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token);
 void vkr_vulkan_renderer_retained_local_shadow_token(
-    VkrVulkanRenderer *renderer, uint32_t image_index,
-    VkrRetainedLocalShadowToken *out_token);
+    VkrVulkanRenderer *renderer, VkrRetainedLocalShadowToken *out_token);
 bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                           const VkrPreparedFrame *packet,
                                           VkrVulkanResult *out_result);

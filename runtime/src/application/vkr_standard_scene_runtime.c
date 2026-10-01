@@ -682,8 +682,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_scene_frame(
       .local_shadow_face_budget =
           application->shadow_system.initialized
               ? Min(application->shadow_system.config.local_shadow_face_budget,
-                    VKR_LOCAL_SHADOW_FACE_COUNT_MAX)
-              : VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+                    VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX)
+              : VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
   };
   application->assets.material_system.texture_stream_memory_recovery_enabled =
       application->editor_viewport.enabled ||
@@ -821,10 +821,6 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         .view = application->globals.view,
         .position = application->globals.view_position,
         .delta_seconds = (float32_t)delta,
-        .focal_pixels = application->globals.projection.m33 == 0.0f
-                            ? 0.5f * (float32_t)setup->window_height *
-                                  fabsf(application->globals.projection.m11)
-                            : 0.0f,
         .frame_index = application->renderer.frame_number,
     };
     application->shadow_system.light_contribution_ranking_disabled =
@@ -833,9 +829,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         &application->shadow_system,
         &application->renderer.timing_result.local_light_contribution);
     vkr_shadow_system_resolve_local_shadows(
-        &application->shadow_system, setup->image_index,
-        setup->retained_local_shadow, &draw->world_payload,
-        application->lighting_system.point_lights,
+        &application->shadow_system, setup->retained_local_shadow,
+        &draw->world_payload, application->lighting_system.point_lights,
         application->lighting_system.point_light_count, &camera,
         &draw->local_shadow_payload);
   }

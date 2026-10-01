@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-02
 authority: adr
 ---
 
@@ -328,8 +328,10 @@ This local Metal evidence does not close the bilateral UNALIGNED state.
 
 Local shadow views use a shared 144-byte record: matrix at byte 0, light
 position/near plane at 64, direction/far plane at 80, perspective footprint
-and texel bias parameters at 96, the light's shadow strength (y zero)
-at 112, and the face's atlas square and layer at 128. `shadow_params.z` of
+and texel bias parameters at 96, the light's shadow strength and the face's
+transmission layer plus one (zero without one) at 112, and the face's atlas
+square and layer at 128. Both receivers read transmission from that layer,
+not from the view index. `shadow_params.z` of
 one selects a single hardware-filtered tap and no contact shadows on both
 backends. Both receivers map face
 UVs into the square through the shared `vkr_local_shadow_atlas_uv`. Both receivers read the strength from the light's first view, skip
@@ -351,7 +353,7 @@ view-projection, extent and the contact-shadow noise index (byte 120 on Metal,
 Metal and 168 on Vulkan; the roots are 240 and 208 bytes. Vulkan's appends the
 per-light contribution counters at byte 192 (null when not measured), into
 which the deferred punctual loop adds, per wave and light, the pixels'
-unshadowed contribution for local-shadow selection (ADR-019); Metal measures
+unshadowed contribution for local-shadow priority (ADR-019); Metal measures
 none and keeps distance ranking, a capability boundary rather than a parity
 gap in shading. Mask layers are
 per-pixel slots: the k-th shadowed light in range of a pixel, in light

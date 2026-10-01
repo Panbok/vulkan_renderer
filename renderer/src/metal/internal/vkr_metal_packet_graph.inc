@@ -978,8 +978,8 @@ vkr_internal void vkr_metal_packet_current_shadow_tokens(
     VkrRetainedLocalShadowToken *out_local_shadow) {
   vkr_metal_packet_renderer_retained_shadow_token(
       renderer, renderer->prepared_frame.image_index, out_shadow);
-  vkr_metal_packet_renderer_retained_local_shadow_token(
-      renderer, renderer->prepared_frame.image_index, out_local_shadow);
+  vkr_metal_packet_renderer_retained_local_shadow_token(renderer,
+                                                        out_local_shadow);
   const VkrPreparedFrame *packet = renderer->graph->packet;
   if (!packet)
     return;
@@ -991,9 +991,9 @@ vkr_internal void vkr_metal_packet_current_shadow_tokens(
   if (packet->input.local_shadow) {
     out_local_shadow->valid_layer_mask |=
         vkr_local_shadow_render_layer_mask(packet->input.local_shadow);
-    if (renderer->prepared_frame.local_shadow_transmission_view_count > 0u)
+    if (renderer->prepared_frame.local_shadow_transmission_layer_count > 0u)
       out_local_shadow->transmission_valid_layer_mask |=
-          vkr_local_shadow_render_view_mask(packet->input.local_shadow);
+          vkr_local_shadow_render_transmission_mask(packet->input.local_shadow);
   }
 }
 
@@ -1710,8 +1710,7 @@ void vkr_metal_packet_renderer_retained_shadow_token(
 }
 
 void vkr_metal_packet_renderer_retained_local_shadow_token(
-    VkrMetalPacketRenderer *renderer, uint32_t image_index,
-    VkrRetainedLocalShadowToken *out_token) {
+    VkrMetalPacketRenderer *renderer, VkrRetainedLocalShadowToken *out_token) {
   *out_token = (VkrRetainedLocalShadowToken){0};
   const char *names[] = {"local_shadow_map",
                          "local_shadow_transmission_depth0",
@@ -1733,25 +1732,26 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
         break;
       }
     }
+    /* Every frame in flight shares one atlas and one set of transmission
+     * arrays; the atlas reports its own layer count. */
     const uint32_t extent =
         resource == 0u
             ? VKR_LOCAL_SHADOW_ATLAS_SIZE
             : renderer->prepared_frame.local_shadow_transmission_map_size;
-    const uint32_t layers =
-        resource == 0u ? VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT
-                       : renderer->prepared_frame.local_shadow_map_layer_count;
     const VkrTextureFormat format = resource == 2u || resource == 4u
                                         ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
                                         : VKR_TEXTURE_FORMAT_D32_SFLOAT;
     if (!slot || !slot->live || slot->graph_generation == 0u ||
-        slot->instance_count != renderer->command_slot_count ||
-        image_index >= slot->instance_count || slot->desc.mip_levels != 1u ||
+        slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
         slot->desc.samples != VKR_SAMPLE_COUNT_1 ||
         slot->desc.type != VKR_TEXTURE_TYPE_2D || slot->desc.width != extent ||
         slot->desc.height != extent || slot->desc.format != format ||
-        slot->desc.layers != layers)
+        (resource == 0u
+             ? slot->desc.layers > VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX
+             : slot->desc.layers !=
+                   renderer->prepared_frame.local_shadow_map_layer_count))
       return;
-    const VkrMetalPacketImageInstance *instance = &slot->instances[image_index];
+    const VkrMetalPacketImageInstance *instance = &slot->instances[0];
     if (!instance->live || !instance->resource.metal_texture)
       return;
     uint64_t valid_layers = 0u;
@@ -1761,6 +1761,7 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
     }
     if (resource == 0u) {
       out_token->resource_generation = slot->graph_generation;
+      out_token->atlas_layer_count = slot->desc.layers;
       out_token->valid_layer_mask = valid_layers;
     } else {
       generations[resource - 1u] = slot->graph_generation;

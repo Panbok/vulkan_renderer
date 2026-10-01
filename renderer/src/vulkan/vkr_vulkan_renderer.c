@@ -601,7 +601,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   vkr_vulkan_renderer_retained_shadow_token(renderer, slot->image_index,
                                             &out_setup->retained_shadow);
   vkr_vulkan_renderer_retained_local_shadow_token(
-      renderer, slot->image_index, &out_setup->retained_local_shadow);
+      renderer, &out_setup->retained_local_shadow);
   return true_v;
 }
 

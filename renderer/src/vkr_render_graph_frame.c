@@ -119,30 +119,35 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                           VKR_SHADOW_CASCADE_COUNT_MAX)
                                     : 0u;
   const VkrLocalShadowPassPayload *local_shadow = packet->input.local_shadow;
-  const bool8_t local_shadow_transmission =
-      packet->input.world &&
-      packet->input.world->transmission_gpu_candidate_count > 0u;
   frame->local_shadow_view_count = local_shadow ? local_shadow->view_count : 0u;
-  frame->local_shadow_transmission_view_count =
-      local_shadow_transmission ? frame->local_shadow_view_count : 0u;
+  frame->local_shadow_refractive_casters =
+      local_shadow && local_shadow->refractive_casters;
+  frame->local_shadow_transmission_layer_count =
+      frame->local_shadow_refractive_casters
+          ? local_shadow->transmission_layer_count
+          : 0u;
   frame->local_shadow_render_count =
       local_shadow ? local_shadow->render_count : 0u;
   frame->local_shadow_transmission_render_count =
-      local_shadow_transmission ? frame->local_shadow_render_count : 0u;
+      frame->local_shadow_transmission_layer_count > 0u
+          ? local_shadow->transmission_render_count
+          : 0u;
   for (uint32_t slot = 0u; slot < frame->local_shadow_render_count; ++slot) {
-    const uint32_t view = local_shadow->render_views[slot];
-    frame->local_shadow_render_views[slot] = view;
     frame->local_shadow_render_atlas_layers[slot] =
-        (uint32_t)local_shadow->views[view].atlas_rect.w;
+        vkr_local_shadow_render_atlas_layer(local_shadow, slot);
+    frame->local_shadow_render_transmission_layers[slot] =
+        slot < frame->local_shadow_transmission_render_count
+            ? vkr_local_shadow_render_transmission_layer(local_shadow, slot)
+            : 0u;
   }
   frame->local_shadow_atlas_clear_mask =
-      packet->input.local_shadow ? packet->input.local_shadow->atlas_clear_mask
-                                 : 0u;
-  frame->local_shadow_map_size = packet->input.local_shadow
-                                     ? packet->input.local_shadow->map_size
-                                     : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
+      local_shadow ? local_shadow->atlas_clear_mask : 0u;
+  frame->local_shadow_atlas_layer_count =
+      local_shadow ? Max(local_shadow->atlas_layer_count, 1u) : 1u;
+  frame->local_shadow_map_size =
+      local_shadow ? local_shadow->map_size : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
   frame->local_shadow_map_layer_count =
-      packet->input.local_shadow ? packet->input.local_shadow->face_budget : 1u;
+      local_shadow ? Max(local_shadow->face_budget, 1u) : 1u;
   frame->local_shadow_transmission_map_size =
       vkr_local_shadow_transmission_map_size(
           frame->local_shadow_map_size, frame->local_shadow_map_layer_count);

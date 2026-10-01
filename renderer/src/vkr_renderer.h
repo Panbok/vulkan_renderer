@@ -1005,19 +1005,22 @@ typedef struct VkrRetainedShadowToken {
   uint32_t valid_layer_mask;
 } VkrRetainedShadowToken;
 
-/** Proven retained state for the selected physical local-shadow-map image. */
+/** Proven retained state of the local-shadow cache, which every frame in
+ * flight shares: one atlas and one set of transmission arrays. */
 #define VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT 5u
 
 typedef struct VkrRetainedLocalShadowToken {
   uint64_t resource_generation;
+  /** Layers of the live atlas image; a different count is a new image. */
+  uint32_t atlas_layer_count;
   /** Atlas layers with retained content; a face also needs matching history
    * for its square. */
   uint64_t valid_layer_mask;
   /** depth0, color0, depth1, color1, and first-overflow depth, respectively. */
   uint64_t transmission_resource_generations
       [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
-  /** Faces whose content is valid in every transmission attachment for this
-   * physical image. */
+  /** Transmission layers whose content is valid in every transmission
+   * attachment. */
   uint64_t transmission_valid_layer_mask;
 } VkrRetainedLocalShadowToken;
 

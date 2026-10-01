@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-01
+updated: 2026-10-02
 authority: proposal
 ---
 # Local shadow architecture
@@ -25,12 +25,20 @@ light passes through walls. Within 15 m of those cameras are 40 to 51 lamps.
 
 ## Current baseline
 
-Implemented per ADR-019: one 4096² D32 atlas per physical target image holding
-up to 64 faces; static faces reused across frames; per-frame selection by
-measured visible contribution on Vulkan and by distance on Metal; a
-`Shadow.LocalMask` pass writing per-pixel overlap slots that deferred lighting
-reads, with inline filtering past eight lights or for forward and transmission
-shading.
+Since 2026-10-02 the phase 1 cache is implemented per ADR-019: every
+shadow-casting light is resident in one shared multi-layer 4096² D32 atlas,
+with face sizes fixed by range; invalid and stale faces redraw by importance
+within the preset's face budget per frame, and a transmission pool of one layer
+per budgeted face serves the most important lights. Importance is measured
+visible contribution on Vulkan and distance on Metal. The `Shadow.LocalMask`
+pass writes per-pixel overlap slots that deferred lighting reads, with inline
+filtering past eight lights or for forward and transmission shading. Phase 1
+still lacks the bounded per-pixel filtering with a distance fade, Metal
+contribution measurement, the measured format and face-size choice, and its
+evidence gates.
+
+The measurements below predate the cache: one 4096² D32 atlas per physical
+target image holding up to 64 faces, selected per frame.
 
 Measured on the Windows host (AMD Radeon RX 6700 XT, RDNA2, driver 26.6.3,
 Ryzen 5 2600), Vulkan Release, 1280x720, non-authoritative local profiles,
@@ -89,8 +97,9 @@ implementation behind a contract, never the contract a consumer reads.
    indirection is the seam through which a later phase allocates partial faces.
    The pool is shared by all frames in flight: static contents are written
    only when invalid and read by every frame, so they need no per-image copy.
-   Rewriting a face while an earlier frame may still sample it needs either a
-   completion wait before the write or a second square for the new contents.
+   A face rewritten while an earlier frame may still sample it is ordered
+   behind that frame by the graph's retained state on the one queue, so it
+   needs neither a completion wait nor a second square.
 3. **Moving lights and moving casters.** The implemented per-frame selection,
    crossfade and redraw become the budget for lights that move and for static
    lights whose faces a moving caster touches. Contribution ranking orders

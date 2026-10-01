@@ -2074,7 +2074,7 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE:
     return frame->local_shadow_view_count > 0u;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_TRANSMISSION_ACTIVE:
-    return frame->local_shadow_transmission_view_count > 0u;
+    return frame->local_shadow_transmission_layer_count > 0u;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_ATLAS_CLEAR:
     return frame->local_shadow_view_count > 0u &&
            frame->local_shadow_atlas_clear_mask != 0u;
@@ -2235,13 +2235,13 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
   }
 
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
-                                "local_shadow_view_count")) {
-    *out_count = frame->local_shadow_view_count;
+                                "local_shadow_transmission_layer_count")) {
+    *out_count = frame->local_shadow_transmission_layer_count;
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
-                                "local_shadow_transmission_view_count")) {
-    *out_count = frame->local_shadow_transmission_view_count;
+                                "local_shadow_atlas_layer_count")) {
+    *out_count = frame->local_shadow_atlas_layer_count;
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
@@ -2319,6 +2319,12 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
   if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
                                 "shadow_cascade_render_mask")) {
     *out_enabled = repeat_index < 32u && (frame->shadow_cascade_render_mask &
+                                          (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "local_shadow_atlas_clear_mask")) {
+    *out_enabled = repeat_index < 32u && (frame->local_shadow_atlas_clear_mask &
                                           (UINT32_C(1) << repeat_index)) != 0u;
     return true_v;
   }
@@ -2437,6 +2443,11 @@ vkr_internal bool8_t vkr_rg_json_resolve_layers(
     if (vkr_string8_equals_cstr_i(&desc->layers_source,
                                   "local_shadow_map_layer_count")) {
       *out_layers = Max(frame->local_shadow_map_layer_count, 1u);
+      return true_v;
+    }
+    if (vkr_string8_equals_cstr_i(&desc->layers_source,
+                                  "local_shadow_atlas_layer_count")) {
+      *out_layers = Max(frame->local_shadow_atlas_layer_count, 1u);
       return true_v;
     }
     if (vkr_string8_equals_cstr_i(&desc->layers_source,
@@ -2587,11 +2598,12 @@ vkr_rg_resolve_index(const VkrRgJsonIndex *index, uint32_t fallback,
       vkr_string8_equals_cstr_i(&index->token, "i+1")) {
     return fallback == UINT32_MAX ? UINT32_MAX : fallback + 1u;
   }
-  /* A local-shadow render slot draws one view: its transmission layer is the
-   * view index and its depth goes to that view's atlas layer. */
-  if (vkr_string8_equals_cstr_i(&index->token, "${local_shadow_render_view}")) {
-    return frame && fallback < frame->local_shadow_render_count
-               ? frame->local_shadow_render_views[fallback]
+  /* A local-shadow render slot draws one face: its depth goes to the face's
+   * atlas layer and its crossings to the face's transmission layer. */
+  if (vkr_string8_equals_cstr_i(&index->token,
+                                "${local_shadow_render_transmission_layer}")) {
+    return frame && fallback < frame->local_shadow_transmission_render_count
+               ? frame->local_shadow_render_transmission_layers[fallback]
                : UINT32_MAX;
   }
   if (vkr_string8_equals_cstr_i(&index->token,

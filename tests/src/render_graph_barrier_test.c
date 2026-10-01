@@ -1788,12 +1788,15 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .anisotropy_enabled = true_v,
       .lighting_layers_enabled = true_v,
       .local_shadow_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
-      .local_shadow_transmission_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      .local_shadow_transmission_layer_count =
+          VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+      .local_shadow_refractive_casters = true_v,
       .local_shadow_render_count = VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_transmission_render_count =
           VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_atlas_clear_mask = 1u,
-      .local_shadow_map_layer_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+      .local_shadow_atlas_layer_count = 1u,
+      .local_shadow_map_layer_count = VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
       .hzb_reduce_pass_count = 14u,
       .transmission_rough_mip_pass_count = 5u,
@@ -1826,7 +1829,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   };
   for (uint32_t slot = 0u; slot < VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX;
        ++slot)
-    frame.local_shadow_render_views[slot] = slot;
+    frame.local_shadow_render_transmission_layers[slot] = slot;
   assert(vkr_rg_begin_frame(runtime, &frame));
   assert(vkr_rg_build_from_json(runtime, &graph, &frame));
   assert(runtime->passes.length == VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT);
@@ -1836,8 +1839,8 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
     const VkrRgBuffer *buffer = &runtime->buffers.data[i];
     if (vkr_string8_equals_cstr(&buffer->name, "gpu_draw_compaction_state")) {
       const uint64_t view_count = 1u + frame.shadow_cascade_count +
-                                  frame.local_shadow_view_count +
-                                  frame.local_shadow_transmission_view_count;
+                                  frame.local_shadow_render_count +
+                                  frame.local_shadow_transmission_render_count;
       assert(buffer->desc.size ==
              view_count * sizeof(VkrGpuDrawCompactionState));
       found_compaction_state = true_v;

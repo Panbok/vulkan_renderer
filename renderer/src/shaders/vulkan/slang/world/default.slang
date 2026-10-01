@@ -801,14 +801,17 @@ float3 packet_box_project(float3 direction, float3 world_position,
 }
 
 // Gate discrete crossing depths before selecting their cumulative RGB prefix.
+// `encoded_layer` is the face's transmission layer plus one; zero leaves
+// refractive casters unshadowed for the face.
 float3 packet_local_shadow_transmission(VkrVulkanPacketFrameRoot *frame,
-                                        float2 uv, uint layer, float receiver_depth)
+                                        float2 uv, uint encoded_layer,
+                                        float receiver_depth)
 {
-    if (frame.local_shadow_transmission == nullptr)
+    if (frame.local_shadow_transmission == nullptr || encoded_layer == 0u)
         return 1.0f;
     VkrVulkanLocalShadowTransmission maps = frame.local_shadow_transmission[0];
     uint2 pixel = min(uint2(saturate(uv) * float(maps.extent)), maps.extent - 1u);
-    int4 address = int4(pixel, layer, 0u);
+    int4 address = int4(pixel, encoded_layer - 1u, 0u);
     // Crossings are peeled in order from the light, so a receiver in front of
     // the first one has no transmission prefix.
     float depth0 = g_depth_array_textures[maps.depth0_texture].Load(address);
@@ -874,8 +877,8 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                        data.atlas_rect.w),
                 reference);
         float3 transmission = opaque > 0.0f
-            ? packet_local_shadow_transmission(frame, uv, first_view + face,
-                                               reference)
+            ? packet_local_shadow_transmission(
+                  frame, uv, uint(data.shadow_params.y), reference)
             : 1.0f;
         return vkr_local_shadow_apply_strength(opaque * transmission, strength);
     }
@@ -936,7 +939,9 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
         // An opaque-occluded tap contributes zero whatever its transmission.
         if (opaque > 0.0f)
             visibility += opaque * packet_local_shadow_transmission(
-                frame, tap_uv, tap_view, reference);
+                frame, tap_uv,
+                uint(frame.local_shadow_views[tap_view].shadow_params.y),
+                reference);
     }
     return vkr_local_shadow_apply_strength(visibility / 9.0f, strength);
 }
@@ -983,8 +988,8 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
                data.atlas_rect.w),
         projected.z);
     float3 transmission = opaque > 0.0f
-        ? packet_local_shadow_transmission(frame, uv, first_view + face,
-                                           projected.z)
+        ? packet_local_shadow_transmission(
+              frame, uv, uint(data.shadow_params.y), projected.z)
         : 1.0f;
     return vkr_local_shadow_apply_strength(opaque * transmission, strength);
 }

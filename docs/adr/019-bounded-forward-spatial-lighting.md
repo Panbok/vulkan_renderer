@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-02
 authority: adr
 ---
 
@@ -39,108 +39,94 @@ default for finite positive ranges and supported spot angles. Unlimited-range
 lights and spots with a 90-degree outer half-angle remain unshadowed, preserving
 valid glTF imports without inventing a range or changing the authored cone.
 Saved editor overrides can disable shadows; scene-authored JSON lights remain
-opt-in. The High preset budgets 30 faces (five point lights) with faces up to
-1024 squared, and Balanced 12 (two) up to 512 squared. Ultra is High with 60
-faces (ten point lights), for GPUs measured to afford the extra filtering.
-The Ultra shadow quality setting, chosen by the Epic preset, selects it on
-Vulkan and High on Metal; the harness selects it with `shadow_preset: "ultra"`. Every face is a square
-of one 4096-squared D32 atlas. Its side is the smallest power of two, from 128
-to the preset's largest face, that reaches the light's range-sphere radius on
-screen: half the output height times the projection's vertical scale, times
-range over the larger of camera distance and range. A face grows as soon as it
-needs more texels and shrinks only once it has twice what it needs, so a camera
-near a size boundary does not resize and redraw it every frame. When the faces
-exceed the atlas, the lowest-importance lights shrink first; power-of-two
-squares that fit by area always pack. A light whose size is unchanged keeps
-its squares; the others take the first free aligned squares in descending size,
-and fragmentation repacks every face. The pool holds up to 64 faces, so view
-masks are 64-bit.
+opt-in.
+
+Local shadows are a persistent cache, phase 1 of the
+[local shadow architecture](../proposals/local-shadow-architecture.md). Every
+shadow-casting light of the scene table is resident: a spot owns one
+perspective face and a point six, in +X, -X, +Y, -Y, +Z, -Z order. Each face
+is a square of one shared 4096-squared D32 atlas array that every frame in
+flight samples. A face's side follows only its light's range: the power of two
+nearest the range times 64 texels per metre, from 128 to the preset's largest
+face, so a 7.5 m Bistro lamp takes 512 squared and the 15 m lamp 1024 squared
+under High, and camera motion never resizes a face. The atlas takes as many
+layers as its resident faces need, at most 32; the lowest-importance lights
+shrink only if they would exceed that. Squares pack in descending size by layer
+and first free aligned cell; power-of-two squares that fit by area always pack.
+A light whose size and layer count are unchanged keeps its squares.
+
+A face's content is invalid when no successful submission drew it into its
+current square with its current projection in the current atlas image, or its
+layer was cleared, and stale when the static-world or publication generation
+changed since it was drawn, a dynamic caster's bounds reach the light, the
+dynamic-bounds scan is unavailable, or an asset publication is in flight.
+Stale content keeps showing while it waits to redraw. The preset's face budget
+bounds the faces drawn per frame: High 30, Balanced 12 and Ultra 60. Complete
+lights draw in that budget, invalid lights first, then lights waiting for
+transmission layers, then stale ones, each by importance. A light is shadowed
+once every face is valid; its strength then rises from zero over 0.25 s, or at
+once on the first resolve, a budget change and a renderer camera cut (the TAA
+rule: more than 10 m or 60 degrees of turn), since the image has no history to
+keep. A resident light whose content stays valid never fades out, so its
+shadow cannot switch off while the camera moves. Shadowed lights require a
+finite positive range, and shadowed spot outer half angles must be below 90
+degrees.
+
+Importance orders the fill and the filter. It is luminance times intensity
+times range squared over the squared camera distance, held constant within a
+tenth of the range, so the nearest of several overlapping lights wins. Distance
+cannot tell a lamp lighting the street from one enclosed in a building, so
+where the renderer measures it, importance is instead each light's visible
+contribution: deferred lighting sums, over the pixels it shades, the light's
+unshadowed luminance at the surface after pre-exposure, x, compressed per pixel
+to x / (1 + x), with one atomic per wave per light into a per-frame-slot
+counter array. The readback reaches the cache two to three frames later as a
+`VkrLocalLightContributionSample` keyed by render id. Shadowing never changes
+the measure. A sample is used only when it is at most eight frames old and
+comes from no earlier than the last snap; otherwise, and on Metal, which does
+not measure contribution, distance ranks. Vulkan measures it as a capability:
+it shares no ABI with Metal, and `VKR_LOCAL_SHADOW_FEEDBACK=0` restores distance
+ranking for diagnosis.
 
 Each shadowed light adds its filtering to every pixel in its range. The three
-most important selected lights take the nine-tap filter and contact shadows;
+most important shadowed lights take the nine-tap filter and contact shadows;
 the others take one hardware-filtered comparison tap and no contact shadows,
-flagged by `shadow_params.z`. A light that had the full filter keeps the 15%
+flagged by `shadow_params.z`. A light that had the full filter keeps a 15%
 incumbent preference for it, so its filter does not flip while scores cross.
-On the M1 development host at 1280x720 in the Bistro street view, five
-full-filter lights cost 3.0 ms more `Shadow.LocalMask` time and 3.8 ms more
-frame time than three, and four cost 1.5 ms and 2.2 ms more. Five lights with
-two reduced cost 0.6 ms more mask time and 0.95 ms more frame time than
-three, because forward and transmission shading also filter the extra
-lights. With only three shadowed lights, the nearest won and shadows switched
-on only close to the camera. Preferring lights whose range reaches the view
-frustum did not help: Bistro's 7.5 to 15 m ranges reach the frustum from
-behind the camera, and on-screen selections across the snapshot views rose by
-about 4%.
+Before the cache, on the M1 development host at 1280x720 in the Bistro street
+view, five full-filter lights cost 3.0 ms more `Shadow.LocalMask` time and
+3.8 ms more frame time than three, and four cost 1.5 ms and 2.2 ms more; five
+lights with two reduced cost 0.6 ms more mask time and 0.95 ms more frame time
+than three, because forward and transmission shading also filter the extra
+lights.
 
-A spot uses one perspective view and a point uses six in +X, -X, +Y, -Y, +Z, -Z order. Importance is luminance times intensity times
-range squared over the squared camera distance, held constant within a tenth of
-the range, so the nearest of several overlapping lights wins. Selection takes
-the complete light groups with the highest total importance, with a 15%
-preference for incumbents (50% under contribution ranking) to limit churn; requests that do not fit remain
-unshadowed. Only the face budget bounds the shadowed light count; the
-screen-space shadow mask described below bounds lights overlapping one pixel.
+Application preparation owns the fixed frame-local view payload. Its views are
+the faces of the shadowed lights, rebuilt each frame; `light_first_view` names
+a light's contiguous faces, and view indices need not persist because history
+belongs to the cache light, keyed by render id. Each view carries its atlas
+square and layer, and frame validation rejects squares that are unaligned, out
+of range or overlapping. GPU culling tables size storage from the current
+camera, directional, opaque local and transmitting local view count and retain
+grown capacity. Opaque local faces exclude refractive casters whenever the
+scene has them; transmitting views select them; directional caster
+classification is unchanged.
 
-Distance cannot tell a lamp lighting the street from one enclosed in a
-building, so with 72 Bistro lamps the budget churned and shadows faded in and
-out while the camera moved. Where the renderer measures it, importance is
-instead each light's visible contribution: deferred lighting sums, over the
-pixels it shades, the light's unshadowed luminance at the surface after
-pre-exposure, x, compressed per pixel to x / (1 + x), with one atomic per wave
-per light into a per-frame-slot counter array. The readback reaches selection
-two to three frames later as a `VkrLocalLightContributionSample` keyed by
-render id. A light that measures zero takes no faces and, if shadowed, fades
-out; light that would leak through a wall counts, so the lights whose shadows
-matter most on screen win the budget. Shadowing never changes the measure, so
-selection cannot oscillate on its own output. A sample is used only when it is
-at most eight frames old and comes from no earlier than the selection's last
-snap; otherwise, and on Metal, which does not measure contribution, distance
-ranks as before. Vulkan measures it as a capability: it shares no ABI with
-Metal, and `VKR_LOCAL_SHADOW_FEEDBACK=0` restores distance ranking for
-diagnosis.
-
-Each selected light carries a shadow strength, and receivers blend its
-visibility toward one as strength falls. A selection change crossfades: a light
-that loses its place keeps its layers while its strength falls to zero over
-0.25 s, and a newcomer takes free layers at zero strength and rises over the
-same time, so no shadow switches on or off within a frame. Settled lights stay
-at full strength, so co-located lights of similar brightness keep their shadows.
-The first selection, a budget change and a renderer camera cut (the TAA rule:
-more than 10 m or 60 degrees of turn) snap the desired set to full strength,
-since the image has no history to keep. The budget and map size can
-be reduced through `VkrShadowConfig`. Shadowed lights require a finite positive
-range, and shadowed spot outer half angles must be below 90 degrees.
-
-Application preparation owns the fixed frame-local view payload. Each physical
-target image owns its local depth atlas through the existing graph resource and
-GPU-completion lifecycle. Each view record carries its atlas square, and frame
-validation rejects squares that are unaligned, out of range or overlapping. Local-shadow selection remains bounded by the configured
-face budget: a spot owns one view and a point owns six contiguous views. A light
-that stays selected keeps its layers; a newcomer takes the lowest free range, and
-the layout is compacted in layer order only when a newcomer does not fit or a
-layer would stay unowned. Light ranges therefore follow layer ownership rather
-than light order, and together cover every view once. Views index the
-transmission arrays; the atlas square is independent of the view index. GPU culling tables size storage from the
-current camera, directional, opaque local and transmitting local view count
-and retain grown capacity. Opaque local views exclude refractive casters while
-transmitting views select them; directional caster classification is unchanged.
-
-Static local-shadow reuse is accepted per physical target image and atlas
-square. The renderer supplies a retained-resource generation and the valid
-atlas layers before selection. Face passes load the atlas and clear only their
-own square, so a `Shadow.Local.Clear` pass clears the whole atlas first when it
-has no retained contents, and every face then redraws. A selected light group is reusable only when every required
-face has committed content for that image and its cached record matches the
-resource generation, light identity and type, face index within the light, face
-projection and atlas square, static-world generation, and publication
-generation. Shadow
-strength is receiver-side and never forces a redraw. Any dynamic caster whose
-bounds overlap the light, an unavailable dynamic-bounds scan, or an active asset
-publication forces the complete group to render. The dynamic scan is bounded by
-`reuse_dynamic_scan_budget`; exceeding it forces rendering. Pending history is
-published only after submission succeeds and is discarded when the frame is
-cancelled or fails. Replacing the retained graph image clears its valid contents,
-so the next selected group renders before it can be reused. Local shadows do not
-use directional fit retention or SDSM.
+The atlas and the transmission arrays are single retained graph images, not
+one per target image. A frame that redraws a face an earlier frame in flight
+still samples is ordered behind it by the graph's retained state: the first
+use of an image in a frame waits on the previous submission's terminal
+access, through queue-scoped barriers on Metal and pipeline barriers on the
+one Vulkan queue. The renderer supplies the atlas generation, layer count and
+valid layers before the resolve. Face passes load the atlas and clear only
+their own square, so `Shadow.Local.Clear.${i}` clears each layer without
+retained content first; faces of a cleared layer that this frame does not draw
+lose their content. An image created by a frame has generation zero in that
+frame's history and is adopted when the next frame sees its generation. Shadow
+strength, filter and transmission layer are receiver-side and never force a
+redraw. The dynamic scan is bounded by `reuse_dynamic_scan_budget`; exceeding
+it marks every face stale. Pending history is committed only after submission
+succeeds and is discarded when the frame is cancelled or fails. Local shadows
+do not use directional fit retention or SDSM.
 
 The payload separates the views receivers sample from the faces drawn this
 submission. Each drawn face takes a render slot, at most 64 per frame; slot i
@@ -155,9 +141,15 @@ three cached point lights in the Bistro street view before reused faces had
 culling views removed.
 
 Local transmitting shadows retain two ordered surface crossings at 512², capped
-by the configured opaque-map extent. Each array keeps at most the texels of 32
-faces at 512², so a larger face budget halves the crossing size instead of
-growing the pool: Ultra's 60 faces take 256². Each crossing stores D32 depth and
+by the configured opaque-map extent, in transmission arrays of one layer per
+face of the face budget. The most important lights, a light that holds layers
+weighted by the incumbent preference, hold a layer for every face; refractive
+casters do not shadow the other lights' faces, whose opaque maps exclude them.
+`VkrLocalShadowView.shadow_params.y` is the face's layer plus one, or zero. A
+light takes layers only in a frame that draws it, the lowest free first, so the
+layers below the first never-drawn one are the ones receivers read. Each array
+keeps at most the texels of 32 faces at 512², so a larger face budget halves
+the crossing size instead of growing the pool: Ultra's 60 layers take 256². Each crossing stores D32 depth and
 RGBA16F cumulative RGB transmission. A third depth-only crossing blocks
 receivers beyond capacity. Receivers before a crossing do not inherit its
 attenuation. Each PCF tap selects its depth-gated prefix, multiplies it by
@@ -173,12 +165,13 @@ length after directional instance scaling. Rays remain straight and do not
 produce refracted caustics. Thin-sheet diffuse transmission remains an opaque
 shadow caster. This local-light model does not change directional shadows.
 
-The five transmission arrays share the opaque pool's per-image graph owner,
-retirement and submission lifecycle. A group refreshes all six resources
-together. Reuse requires matching generations for all five transmission images
-and valid contents for every required face. An incomplete or replaced prefix
-pool forces a complete group redraw; cancelled work never promotes history.
-Scenes with no refractive candidates allocate no transmission pool or views.
+The five transmission arrays share the atlas's single graph owner, retirement
+and submission lifecycle. A light with layers draws its opaque faces and all
+its crossings together. Its transmission is valid only with matching
+generations for all five arrays and valid contents in each of its layers; an
+incomplete or replaced prefix pool redraws the complete light, which keeps its
+opaque shadow meanwhile. Cancelled work never promotes history. Scenes with no
+refractive candidates allocate no transmission pool or views.
 
 A scene reflection probe may name one saved source cubemap with
 `reflection_probes[].cubemap.path`. The direct path and legacy
@@ -274,17 +267,22 @@ only and does not establish arbitrary wall or furniture occlusion.
 ## Consequences
 
 Lighting is bounded and independent of draw partitioning. Unshadowed lights and probe bounds can still leak illumination through geometry.
-The D32 atlas uses 64 MiB per physical target image whatever the face count,
-before culling and upload buffers. A selected local group redraws whenever its retained content
-or reuse predicates are invalid; rendering cost scales with those groups and
-caster overlap. The shadow mask adds 32 bytes per pixel while local shadows are
-active, about 28 MiB per physical image at 1280x720. With refractive casters,
-the transmission pool adds up to 224 MiB per physical image (32 faces at 512²
-or 64 at 256²), or 672 MiB across three images, excluding allocation
-alignment and culling buffers. High's 30 faces take 210 MiB per image and
-Ultra's 60 take 105 MiB. Each refreshed face adds two material/depth passes
-and one overflow-depth pass. Static reuse avoids those raster passes while the
-pool remains valid. These are storage and pass budgets, not a timing claim.
+Every resident face costs atlas memory whether or not it is on screen: each
+4096-squared D32 layer is 64 MiB, one image for all frames in flight. Bistro's
+71 lamps of 7.5 m take 426 faces at 512 squared and its 15 m lamp six at 1024
+squared under High, eight layers or 512 MiB; the per-image atlas it replaces
+took 64 MiB per target image. These are storage figures from the layout, not
+a measured allocation. A face redraws whenever its content is invalid or
+stale, within the face budget per frame; after the fill, cost scales with
+dynamic-caster overlap and moved lights. A scene load draws its faces over
+several frames: 432 Bistro faces take 15 frames under High. The shadow mask
+adds 32 bytes per pixel while local shadows are active, about 28 MiB per
+physical image at 1280x720. With refractive casters, the single transmission
+pool adds up to 224 MiB (32 layers at 512² or 64 at 256²), excluding
+allocation alignment and culling buffers: High's 30 layers take 210 MiB and
+Ultra's 60 take 105 MiB. Each light drawn with transmission layers adds two
+material/depth passes and one overflow-depth pass per face. These are storage
+and pass budgets, not a timing claim.
 
 Saved probes consume a source cubemap plus a runtime prefilter cubemap and SH
 slot. Their offline artifact is valid only with its matching sidecar provenance;
@@ -305,8 +303,10 @@ boundary to prevent leaks.
 
 ## Revisit when
 
-The [local shadow architecture](../proposals/local-shadow-architecture.md)
-proposal replaces per-frame selection for static lights. Scene scale exceeds
+The remaining phases of the
+[local shadow architecture](../proposals/local-shadow-architecture.md) land:
+mask filtering bounded by a distance fade, Metal contribution measurement,
+measured cache format and face size, residency for open worlds. Scene scale exceeds
 these capacities, stored probe source requirements change,
 or local-light transport requires more crossings, refracted caustics, or a
 different memory or raster budget.
@@ -396,3 +396,16 @@ Ultra's average crossfading share from 1.3% and its 95th percentile from
 4.9%. Against High with distance ranking, Ultra with contribution ranking
 leaves 13% of visible local light unshadowed instead of 43% and crossfades
 0.9% of it on average instead of 1.4%.
+
+On 2026-10-02 the cache replaced per-frame selection. On the M1 Pro, Metal
+Release, `local_shadow_cache_bistro_metal_validation` (Bistro indoor camera,
+High preset, 40 warmup frames) under the serial windowed Metal validation
+profile with `MTL_DEBUG_LAYER=1` reported `Metal API Validation Enabled`, no
+messages, and `lighting.local_shadow.lights` of 72 with none fading: every
+Bistro lamp shadowed after the fill. The Bistro Metal text snapshot ran
+without errors; its views show every lamp's shadow, so they no longer match
+the accepted baseline, which predates the cache. CPU tests cover reuse,
+invalid and stale content, cleared and replaced pools, transmission layers,
+the fill within the budget, the fade-in and camera cuts. All 104 Vulkan
+modules pass `spirv-val`; native Vulkan execution and matched timings remain
+unmeasured.

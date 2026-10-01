@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-01
+updated: 2026-10-02
 authority: architecture
 ---
 
@@ -876,16 +876,16 @@ baker transport and native-evidence limits.
 Scene-captured reflection probes persist as portable one-mip RGBA16F KTX2 assets.
 The offline baker captures six scene-linear views and records source provenance;
 normal scene loading uploads the cube and prepares SH/prefilter once. Ready local
-probes work without a global environment. Local-shadow selection maximizes
-camera-distance-weighted importance with 15% incumbent preference under a
-30-face (High, five point lights) or 12-face (Balanced) budget. Lights past the
-three most important take a single filtered tap and no contact shadows. Faces are squares of one
-4096-squared depth atlas, sized from 128 up to 1024 (High) or 512 (Balanced)
-by the light's size on screen. Selection
-changes crossfade shadow strength over 0.25 s, so shadows do not pop, and
-retained lights keep their layers. Per-target maps reuse submitted static
-contents only while revisions and complete light groups match; overlapping
-dynamic casters force their groups to redraw.
+probes work without a global environment. Local shadows are a persistent
+cache: every shadow-casting light keeps its faces resident in one 4096-squared
+depth atlas array that all frames in flight share, with face sizes fixed by
+light range and layers sized to the resident faces. Faces whose content is
+invalid or stale redraw by importance within the preset's per-frame face
+budget (High 30, Balanced 12, Ultra 60); a light's shadow fades in once its
+faces are valid and does not switch off while they stay valid. Dynamic casters
+and publications mark the faces they may reach stale. Lights past the three
+most important take a single filtered tap and no contact shadows. The most
+important lights also hold transmission layers for refractive casters.
 [ADR-019](adr/019-bounded-forward-spatial-lighting.md) owns these policies.
 
 The global environment source and GGX prefilter use cubemaps. Diffuse

@@ -11,10 +11,13 @@ vkr_application_metrics_snapshot(const VkrRenderAssets *assets,
                                  const VkrShadowSystem *shadow) {
   const VkrMaterialTextureStreamStats texture_streams =
       vkr_material_system_get_texture_stream_stats(&assets->material_system);
-  const VkrLocalShadowSelection *local = &shadow->local_selection;
+  const VkrLocalShadowCache *local = &shadow->local_cache;
+  uint64_t local_shadowed = 0u;
   uint64_t local_fading = 0u;
-  for (uint32_t i = 0u; local->valid && i < local->group_count; ++i) {
-    if (local->groups[i].strength < 1.0f)
+  for (uint32_t i = 0u; i < local->light_count; ++i) {
+    if (local->lights[i].strength > 0.0f)
+      ++local_shadowed;
+    if (local->lights[i].strength > 0.0f && local->lights[i].strength < 1.0f)
       ++local_fading;
   }
   /* Weight each light's shadow state by its measured visible contribution. */
@@ -25,9 +28,9 @@ vkr_application_metrics_snapshot(const VkrRenderAssets *assets,
   for (uint32_t i = 0u; measured->valid && i < measured->light_count; ++i) {
     const float64_t contribution = (float64_t)measured->contribution[i];
     float32_t strength = 0.0f;
-    for (uint32_t j = 0u; local->valid && j < local->group_count; ++j) {
-      if (local->groups[j].render_id == measured->render_ids[i])
-        strength = local->groups[j].strength;
+    for (uint32_t j = 0u; j < local->light_count; ++j) {
+      if (local->lights[j].render_id == measured->render_ids[i])
+        strength = local->lights[j].strength;
     }
     total += contribution;
     unshadowed += contribution * (1.0 - (float64_t)strength);
@@ -40,7 +43,7 @@ vkr_application_metrics_snapshot(const VkrRenderAssets *assets,
       .ui_tile_count = ui->tile_count,
       .lighting_point_selected = lighting->point_light_count,
       .lighting_point_dropped = lighting->point_light_dropped_count,
-      .lighting_local_shadow_lights = local->valid ? local->group_count : 0u,
+      .lighting_local_shadow_lights = local_shadowed,
       .lighting_local_shadow_fading = local_fading,
       .lighting_local_shadow_unshadowed_ratio =
           total > 0.0 ? unshadowed / total : 0.0,

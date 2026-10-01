@@ -655,23 +655,27 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t shadow_cascade_render_mask;
   /** Local shadow views receivers sample. */
   uint32_t local_shadow_view_count;
-  /** Views receivers sample in the transmission arrays; zero without
-   * refractive casters. */
-  uint32_t local_shadow_transmission_view_count;
+  /** Transmission array layers receivers sample; zero without refractive
+   * casters or before any transmission layer is drawn. */
+  uint32_t local_shadow_transmission_layer_count;
+  /** Opaque local faces exclude refractive casters. */
+  bool8_t local_shadow_refractive_casters;
   /** Faces drawn this frame, one opaque culling view and pass each. */
   uint32_t local_shadow_render_count;
-  /** Additional main-stream culling views selecting only refractive shadow
-   * casters, one per drawn face; zero without refractive casters. */
+  /** The first render slots also draw transmission layers, with one
+   * main-stream culling view each selecting only refractive casters. */
   uint32_t local_shadow_transmission_render_count;
-  /** Per render slot: the view it draws, which is also its transmission
-   * array layer, and its atlas layer. */
-  uint32_t local_shadow_render_views[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
+  /** Per render slot: the atlas layer and transmission layer it draws. */
   uint32_t
       local_shadow_render_atlas_layers[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
+  uint32_t local_shadow_render_transmission_layers
+      [VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
   /** Atlas layers cleared whole before local-shadow faces draw. */
   uint32_t local_shadow_atlas_clear_mask;
+  uint32_t local_shadow_atlas_layer_count;
   uint32_t local_shadow_map_size;
   uint32_t local_shadow_transmission_map_size;
+  /** Transmission array layers: the configured face budget. */
   uint32_t local_shadow_map_layer_count;
 } VkrRenderGraphFrameInfo;
 

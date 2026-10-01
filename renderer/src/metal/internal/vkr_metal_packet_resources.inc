@@ -2140,7 +2140,7 @@ typedef struct VkrMetalPacketUploadPlan {
   uint32_t local_shadow_view_count;
   uint64_t local_shadow_views_offset;
   uint64_t local_shadow_views_bytes;
-  uint32_t local_shadow_transmission_view_count;
+  uint32_t local_shadow_transmission_layer_count;
   uint64_t local_shadow_transmission_offset;
   uint32_t ibl_probe_count;
   uint64_t ibl_probes_offset;
@@ -2461,13 +2461,13 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       AlignOf(VkrLocalShadowView));
   plan->local_shadow_views_bytes =
       (uint64_t)plan->local_shadow_view_count * sizeof(VkrLocalShadowView);
-  plan->local_shadow_transmission_view_count =
-      renderer->prepared_frame.local_shadow_transmission_view_count;
+  plan->local_shadow_transmission_layer_count =
+      renderer->prepared_frame.local_shadow_transmission_layer_count;
   plan->local_shadow_transmission_offset = vkr_metal_packet_align_up(
       plan->local_shadow_views_offset + plan->local_shadow_views_bytes,
       AlignOf(VkrMetalPacketLocalShadowTransmission));
   const uint64_t local_shadow_transmission_bytes =
-      plan->local_shadow_transmission_view_count > 0u
+      plan->local_shadow_transmission_layer_count > 0u
           ? sizeof(VkrMetalPacketLocalShadowTransmission)
           : 0u;
   plan->ibl_probe_count =
@@ -2911,7 +2911,7 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
     upload->local_shadow_views_gpu = gpu + plan->local_shadow_views_offset;
     upload->local_shadow_texture_id = local_shadow_texture.gpuResourceID._impl;
   }
-  if (plan->local_shadow_transmission_view_count > 0u) {
+  if (plan->local_shadow_transmission_layer_count > 0u) {
     VkrMetalPacketLocalShadowTransmission *maps =
         (VkrMetalPacketLocalShadowTransmission
              *)(cpu + plan->local_shadow_transmission_offset);
@@ -3196,10 +3196,13 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
           &views[first_local_view + slot], &frustum,
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER, false_v,
           renderer->frustum_enabled);
-      if (renderer->prepared_frame.local_shadow_transmission_render_count >
-          0u) {
+      /* Opaque faces leave refractive casters to the transmission layers,
+         which only the first render slots draw. */
+      if (renderer->prepared_frame.local_shadow_refractive_casters)
         views[first_local_view + slot].excluded_candidate_flags =
             VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION;
+      if (slot <
+          renderer->prepared_frame.local_shadow_transmission_render_count) {
         vkr_metal_packet_pack_gpu_draw_view(
             &views[first_local_view + render_count + slot], &frustum,
             VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER |

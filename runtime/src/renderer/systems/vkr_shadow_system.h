@@ -434,78 +434,91 @@ typedef struct VkrShadowPendingHistory {
   bool8_t active;
 } VkrShadowPendingHistory;
 
-/** One complete local-light group in the compact shadow-map layout. */
-typedef struct VkrLocalShadowSelectionGroup {
-  uint32_t render_id;
-  uint32_t light_kind;
-  uint32_t face_count;
-  /** Zero-based first layer; kept while the light stays selected. */
-  uint32_t first_view;
-  /** Shadow strength in [0, 1]; a group enters and leaves at zero. */
-  float32_t strength;
-  /** Side in texels of every face of the light. */
-  uint32_t face_size;
-  /** The light takes one filtered tap and no contact shadows. */
-  bool8_t reduced;
-  /** Each face's atlas corner in VKR_LOCAL_SHADOW_FACE_SIZE_MIN cells,
-   * x | y << 8. */
-  uint32_t face_cells[6];
-} VkrLocalShadowSelectionGroup;
-
-/**
- * CPU-owned membership, compact layout, atlas placement and crossfade state
- * for local shadow faces. A light that stays selected keeps its layers and,
- * while its face size holds, its atlas squares; a newcomer takes free layers
- * and squares, and the layout is compacted only when layers would otherwise
- * stay unowned. Retained-image validity belongs to the later native-token
- * cache.
- */
-typedef struct VkrLocalShadowSelection {
-  VkrLocalShadowSelectionGroup groups[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
-  /** Camera of the previous selection, for camera-cut detection. */
-  Mat4 camera_view;
-  Vec3 camera_position;
-  uint32_t group_count;
-  uint32_t face_count;
-  uint32_t face_budget;
-  /** Feedback from earlier frames describes a view the last snap left. */
-  uint64_t feedback_after_frame;
-  bool8_t valid;
-} VkrLocalShadowSelection;
-
-/** Camera state that drives local-shadow selection, face sizes and the
- * crossfade. */
+/** Camera state that drives local-shadow priority and the fade-in. */
 typedef struct VkrLocalShadowCamera {
   Mat4 view;
   Vec3 position;
-  /** Seconds since the previous selection; bounds each strength step. */
+  /** Seconds since the previous resolve; bounds each strength step. */
   float32_t delta_seconds;
-  /** Vertical focal length in output pixels, half the height times
-   * projection.m11; zero without perspective gives every face the map size. */
-  float32_t focal_pixels;
-  /** Frame index of this selection, on the counter that stamps
+  /** Frame index of this resolve, on the counter that stamps
    * VkrLocalLightContributionSample::source_frame_index. */
   uint64_t frame_index;
 } VkrLocalShadowCamera;
 
+/** Committed depth content of one cached face. */
 typedef struct VkrLocalShadowFaceHistory {
+  /** Projection and atlas square the content was drawn with. */
   VkrLocalShadowView view;
   uint64_t static_generation;
   uint64_t publication_generation;
   uint64_t resource_generation;
   uint64_t transmission_resource_generations
       [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
+  /** Nonzero once a successful submission committed the content. */
   uint64_t last_submit_value;
-  uint32_t render_id;
-  uint32_t light_kind;
-  uint32_t face_in_group;
+  /** Transmission layer + 1 drawn with the face; zero without one. */
+  uint32_t transmission_layer;
+  /** No dynamic caster or pending publication could reach the content. */
   bool8_t static_only_contents;
 } VkrLocalShadowFaceHistory;
 
+/** One resident light of the local-shadow cache. */
+typedef struct VkrLocalShadowCacheLight {
+  uint32_t render_id;
+  uint32_t light_kind;
+  uint32_t face_count;
+  /** Side in texels of every face, fixed by the light's range. */
+  uint32_t face_size;
+  /** Each face's atlas square: cell x | cell y << 8 | layer << 16, in
+   * VKR_LOCAL_SHADOW_FACE_SIZE_MIN cells. */
+  uint32_t face_cells[6];
+  /** Each face's transmission layer + 1; zero without one. A light holds
+   * layers for all its faces or none. */
+  uint32_t transmission_layers[6];
+  /** Shadow strength in [0, 1]; rises from zero once every face is valid. */
+  float32_t strength;
+  /** The light takes one filtered tap and no contact shadows. */
+  bool8_t reduced;
+  VkrLocalShadowFaceHistory faces[6];
+} VkrLocalShadowCacheLight;
+
+/**
+ * CPU state of the persistent local-shadow cache. Every shadow-casting light
+ * of the scene table is resident with fixed atlas squares in one atlas that
+ * all frames in flight share; a face draws when its content is invalid or
+ * stale, in priority order, within the face budget per frame. The view table
+ * a frame publishes is rebuilt from it each frame.
+ */
+typedef struct VkrLocalShadowCache {
+  VkrLocalShadowCacheLight lights[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t light_count;
+  uint32_t atlas_layer_count;
+  uint32_t face_budget;
+  /** Transmission layers drawn since the arrays were created; every layer
+   * below it holds drawn content. */
+  uint32_t transmission_layer_count;
+  uint64_t transmission_resource_generation;
+  /** Camera of the previous resolve, for camera-cut detection. */
+  Mat4 camera_view;
+  Vec3 camera_position;
+  /** Feedback from earlier frames describes a view the last snap left. */
+  uint64_t feedback_after_frame;
+  bool8_t valid;
+} VkrLocalShadowCache;
+
+typedef struct VkrLocalShadowPendingFace {
+  uint32_t light;
+  uint32_t face;
+  VkrLocalShadowFaceHistory history;
+} VkrLocalShadowPendingFace;
+
+/** Faces drawn and atlas layers cleared by the frame in flight, committed to
+ * the cache only after its submission succeeds. */
 typedef struct VkrLocalShadowPendingHistory {
-  VkrLocalShadowFaceHistory faces[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
-  uint32_t image_index;
-  uint64_t render_mask;
+  VkrLocalShadowPendingFace faces[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
+  uint32_t face_count;
+  uint32_t cleared_layer_mask;
+  uint32_t transmission_layer_count;
   bool8_t active;
 } VkrLocalShadowPendingHistory;
 
@@ -541,10 +554,10 @@ typedef struct VkrShadowSystem {
                                          [VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowPendingHistory pending_history;
 
-  /** Local-light membership and compact face layout. */
-  VkrLocalShadowSelection local_selection;
-  VkrLocalShadowFaceHistory local_history[VKR_SHADOW_TARGET_IMAGE_COUNT_MAX]
-                                         [VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
+  /** Resident local-light faces shared by every frame in flight. */
+  VkrLocalShadowCache local_cache;
+  /** Holds the next cache state while a resolve reads the current one. */
+  VkrLocalShadowCache local_cache_scratch;
   VkrLocalShadowPendingHistory pending_local_history;
   /** Newest measured light contribution; invalid on backends without it. */
   VkrLocalLightContributionSample light_contribution;
@@ -589,18 +602,13 @@ void vkr_shadow_system_set_light_contribution_sample(
     VkrShadowSystem *system, const VkrLocalLightContributionSample *sample);
 
 /**
- * Selects complete local-light shadow groups and fills the current frame's
- * payload. `face_budget` is capped at the supported maximum, never raised.
+ * Resolves the local-shadow cache for the frame: keeps every shadow-casting
+ * light resident, schedules the faces whose content is invalid or stale in
+ * priority order within the face budget, and fills the frame's payload. The
+ * drawn faces commit with vkr_shadow_system_commit_frame().
  */
-void vkr_shadow_system_resolve_local_selection(
-    VkrShadowSystem *system, const struct VkrPointLight *lights,
-    uint32_t light_count, const VkrLocalShadowCamera *camera,
-    uint32_t face_budget, uint32_t map_size,
-    struct VkrLocalShadowPassPayload *out_payload);
-
 void vkr_shadow_system_resolve_local_shadows(
-    VkrShadowSystem *system, uint32_t image_index,
-    VkrRetainedLocalShadowToken retained_token,
+    VkrShadowSystem *system, VkrRetainedLocalShadowToken retained_token,
     const struct VkrWorldPassPayload *candidates,
     const struct VkrPointLight *lights, uint32_t light_count,
     const VkrLocalShadowCamera *camera,
