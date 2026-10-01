@@ -540,6 +540,9 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t skinning_enabled;
   uint32_t skinning_vertex_capacity;
   bool8_t animation_preview_enabled;
+  /** Without the editor: the UI pass has draws, or no scene pass writes the
+   * swapchain before it. */
+  bool8_t ui_fullscreen_enabled;
   bool8_t post_transform_cache_enabled;
   bool8_t clearcoat_enabled;
   bool8_t sheen_enabled;

@@ -11732,7 +11732,7 @@
       "name": "UI.Fullscreen",
       "type": "graphics",
       "domain": "UI",
-      "condition": "!editor_enabled",
+      "condition": "ui_fullscreen_enabled",
       "attachments": {
         "color": [
           {

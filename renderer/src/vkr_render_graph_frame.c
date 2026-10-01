@@ -30,6 +30,12 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->skinning_vertex_capacity =
       vkr_render_graph_draw_capacity(skinning_vertices);
   frame->animation_preview_enabled = packet->input.animation_preview != NULL;
+  /* Over a tonemapped scene, an empty UI pass would only load and store the
+     swapchain. Without a scene it is the only swapchain writer and stays. */
+  frame->ui_fullscreen_enabled =
+      !frame->editor_enabled &&
+      (!frame->scene_rendering ||
+       (packet->input.ui && packet->input.ui->draw_list.batch_count > 0u));
   const uint32_t material_features = !world ? 0u
                                      : world->opaque_material_features_valid
                                          ? world->opaque_material_features

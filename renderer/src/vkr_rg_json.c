@@ -26,6 +26,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"skinning_enabled", VKR_RG_JSON_CONDITION_SKINNING_ENABLED},
     {"animation_preview_enabled",
      VKR_RG_JSON_CONDITION_ANIMATION_PREVIEW_ENABLED},
+    {"ui_fullscreen_enabled", VKR_RG_JSON_CONDITION_UI_FULLSCREEN_ENABLED},
     {"post_transform_cache_enabled",
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE},
     {"post_transform_cache_enabled && editor_enabled",
@@ -2029,6 +2030,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->skinning_enabled;
   case VKR_RG_JSON_CONDITION_ANIMATION_PREVIEW_ENABLED:
     return frame->animation_preview_enabled;
+  case VKR_RG_JSON_CONDITION_UI_FULLSCREEN_ENABLED:
+    return frame->ui_fullscreen_enabled;
   case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE:
     return frame->post_transform_cache_enabled;
   case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_EDITOR:
