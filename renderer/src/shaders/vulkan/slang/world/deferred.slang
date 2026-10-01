@@ -217,12 +217,15 @@ struct VkrVkLightingRoot
     uint anisotropy_texture;
     // Nonzero when the layered kernel also runs and owns tiles with layer data.
     uint layered_tiles;
-    // Shadow.LocalMask output: one RGBA8 layer per shadowed light.
+    // Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot.
     uint local_shadow_mask_texture;
     uint visible_rows_reserved2;
     VkrGpuVisibleDrawRow* visible_rows;
     uint subsurface_source_texture;
     uint subsurface_profile_count;
+    // Per-light visible contribution counters, or null when not measured.
+    uint *light_contribution;
+    uint2 light_contribution_padding;
 };
 
 // Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
@@ -1916,7 +1919,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy,
         true, clearcoat_active, clearcoat, sheen_active, sheen,
         sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
-        root.local_shadow_mask_texture, thread_id.xy);
+        root.local_shadow_mask_texture, thread_id.xy, root.light_contribution);
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
@@ -3655,7 +3658,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
             surface.metallic, surface.roughness, f0, energy, diffuse_enabled,
             clearcoat_active, clearcoat, sheen_active, sheen,
             sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
-            0u, uint2(0u, 0u));
+            0u, uint2(0u, 0u), nullptr);
         analytic_diffuse += punctual.diffuse;
         analytic_specular += punctual.specular;
         VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(

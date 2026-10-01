@@ -98,6 +98,10 @@ bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
     return uint(tag * 255.0f + 0.5f) == light_index + 1u;
 }
 
+// Fixed-point units per fully lit pixel in the per-light contribution
+// counters; matches the host's VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE.
+#define VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE 256u
+
 // Contact shadows march VKR_LOCAL_SHADOW_CONTACT_STEPS depth-buffer samples
 // along at most VKR_LOCAL_SHADOW_CONTACT_LENGTH metres toward a shadowed light.
 // They recover occlusion near contacts that the shadow map's filter radius,

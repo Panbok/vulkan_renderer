@@ -24,6 +24,28 @@ _Static_assert(VKR_MAX_SCENE_POINT_LIGHTS ==
                    VKR_POINT_LIGHT_GRID_MASK_WORDS * 32u,
                "The light-grid mask must represent the complete scene table");
 
+/* Fixed-point units per fully lit pixel in a light-contribution sample. A
+ * 4K frame of fully lit pixels stays below 2^31. */
+#define VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE 256u
+
+/**
+ * Visible contribution of each punctual light, measured by deferred lighting
+ * in the source frame: over its shaded pixels, the light's unshadowed
+ * luminance at the surface after pre-exposure, x, compressed per pixel to
+ * x / (1 + x), summed and scaled by VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE. Lights
+ * behind walls or out of view measure zero; light that would leak through
+ * geometry counts, and shadowing never changes the measure. Entries follow the
+ * source frame's light table, identified by render id.
+ */
+typedef struct VkrLocalLightContributionSample {
+  uint64_t submit_value;
+  uint64_t source_frame_index;
+  uint32_t light_count;
+  uint32_t render_ids[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t contribution[VKR_MAX_SCENE_POINT_LIGHTS];
+  bool8_t valid;
+} VkrLocalLightContributionSample;
+
 typedef struct VkrPointLight {
   Vec3 position;
   Vec3 color;

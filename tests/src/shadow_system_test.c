@@ -978,6 +978,79 @@ vkr_internal void test_local_shadow_high_budget_reduces_least_important(void) {
 /* The Ultra budget shadows ten point lights, more than the screen-space mask
  * has layers: the mask bounds lights overlapping a pixel, not lights shadowed.
  * Their views cover all sixty faces exactly once. */
+/* Measured contribution, not distance, ranks lights once a sample from after
+ * the last snap arrives: the nearest light lights nothing on screen (it sits
+ * behind a wall), so a farther light that does takes the only group and the
+ * near one fades out instead of switching off. Older or stale samples leave
+ * distance in charge. */
+vkr_internal void test_local_shadow_feedback_ranks_visible_contribution(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.local_shadow_face_budget = 6u;
+  assert(vkr_shadow_system_init(&system, &config));
+  const VkrPointLight lights[2] = {
+      local_shadow_test_light(10u, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f,
+                              vec3_new(2.0f, 0.0f, 0.0f)),
+      local_shadow_test_light(20u, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f,
+                              vec3_new(9.0f, 0.0f, 0.0f)),
+  };
+  VkrLocalShadowCamera camera = local_shadow_camera(vec3_zero());
+  camera.frame_index = 100u;
+  VkrLocalShadowPassPayload local = {0};
+  vkr_shadow_system_resolve_local_selection(&system, lights, 2u, &camera, 6u,
+                                            1024u, &local);
+  assert(local.light_first_view[0] != 0u && local.light_first_view[1] == 0u);
+
+  /* A sample from before the first selection's snap describes another view. */
+  VkrLocalLightContributionSample sample = {
+      .submit_value = 1u,
+      .source_frame_index = 99u,
+      .light_count = 2u,
+      .render_ids = {10u, 20u},
+      .contribution = {0u, 4000u},
+      .valid = true_v,
+  };
+  vkr_shadow_system_set_light_contribution_sample(&system, &sample);
+  camera.frame_index = 101u;
+  vkr_shadow_system_resolve_local_selection(&system, lights, 2u, &camera, 6u,
+                                            1024u, &local);
+  assert(local.light_first_view[0] != 0u && local.light_first_view[1] == 0u);
+
+  /* A sample from after it moves the shadow to the light that lights the
+   * screen; the near light fades out over its crossfade. */
+  sample.submit_value = 2u;
+  sample.source_frame_index = 101u;
+  vkr_shadow_system_set_light_contribution_sample(&system, &sample);
+  uint32_t frames = 0u;
+  do {
+    /* Each frame's readback reports the frame two before it. */
+    camera.frame_index = 102u + frames;
+    sample.submit_value = 2u + frames;
+    sample.source_frame_index = Max(camera.frame_index - 2u, 101u);
+    vkr_shadow_system_set_light_contribution_sample(&system, &sample);
+    vkr_shadow_system_resolve_local_selection(&system, lights, 2u, &camera, 6u,
+                                              1024u, &local);
+    if (local.light_first_view[0] != 0u)
+      assert(local.views[local.light_first_view[0] - 1u].shadow_params.x <
+             1.0f);
+    ++frames;
+  } while (local.light_first_view[1] == 0u && frames < 60u);
+  assert(local.light_first_view[0] == 0u);
+  assert(local.light_first_view[1] != 0u);
+  assert(frames > 1u);
+
+  /* A sample older than VKR_LOCAL_SHADOW_FEEDBACK_MAX_AGE frames no longer
+   * describes the view: distance ranks again and the near light returns. */
+  camera.frame_index = 102u + frames + 8u;
+  for (uint32_t i = 0u; i < 60u && local.light_first_view[0] == 0u; ++i) {
+    camera.frame_index += 1u;
+    vkr_shadow_system_resolve_local_selection(&system, lights, 2u, &camera, 6u,
+                                              1024u, &local);
+  }
+  assert(local.light_first_view[0] != 0u);
+  vkr_shadow_system_shutdown(&system);
+}
+
 vkr_internal void test_local_shadow_ultra_budget_exceeds_mask_layers(void) {
   VkrShadowSystem system = {0};
   const VkrShadowConfig config = vkr_shadow_config_ultra();
@@ -1841,6 +1914,7 @@ bool32_t run_shadow_system_tests(void) {
   test_local_shadow_face_size_follows_screen_size();
   test_local_shadow_high_budget_reduces_least_important();
   test_local_shadow_ultra_budget_exceeds_mask_layers();
+  test_local_shadow_feedback_ranks_visible_contribution();
   test_local_shadow_transmission_pool_is_bounded();
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();

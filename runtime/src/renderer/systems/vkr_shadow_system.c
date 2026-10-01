@@ -100,9 +100,21 @@ void vkr_shadow_system_resolve_local_selection(
                              out_payload);
     return;
   }
-  vkr_local_shadow_prepare_selection(&system->local_selection, lights,
-                                     light_count, camera, face_budget, map_size,
-                                     out_payload);
+  vkr_local_shadow_prepare_selection(
+      &system->local_selection, lights, light_count, camera,
+      system->light_contribution_ranking_disabled ? NULL
+                                                  : &system->light_contribution,
+      face_budget, map_size, out_payload);
+}
+
+void vkr_shadow_system_set_light_contribution_sample(
+    VkrShadowSystem *system, const VkrLocalLightContributionSample *sample) {
+  if (!system || !sample || !sample->valid ||
+      sample->light_count > VKR_MAX_SCENE_POINT_LIGHTS ||
+      (system->light_contribution.valid &&
+       sample->submit_value <= system->light_contribution.submit_value))
+    return;
+  system->light_contribution = *sample;
 }
 
 vkr_internal void vkr_shadow_sdsm_use_fixed(VkrShadowSystem *system,
@@ -1681,6 +1693,8 @@ void vkr_shadow_system_resolve_local_shadows(
 
   vkr_local_shadow_prepare_selection(
       &system->local_selection, lights, light_count, camera,
+      system->light_contribution_ranking_disabled ? NULL
+                                                  : &system->light_contribution,
       system->config.local_shadow_face_budget,
       system->config.local_shadow_map_size, out_payload);
   system->pending_local_history = (VkrLocalShadowPendingHistory){0};

@@ -958,6 +958,12 @@ vkr_internal void vkr_vk_reset_slot_requests(VkrVulkanRenderer *renderer,
   slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;
   slot->exposure_requested = renderer->prepared_frame.exposure_automatic;
   slot->shadow_depth_range = (VkrShadowDepthRangeSample){0};
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  slot->light_contribution_requested =
+      packet->scene_rendering && packet->input.lighting &&
+      packet->input.lighting->point_light_count > 0u;
+  slot->light_contribution_written = false_v;
+  slot->light_contribution_source = (VkrLocalLightContributionSample){0};
   slot->transmission_coverage_requested =
       renderer->prepared_frame.transmission_pending &&
       (renderer->prepared_frame.transmission_compact_enabled ||
@@ -988,6 +994,22 @@ vkr_internal void vkr_vk_set_shadow_depth_source(VkrVulkanFrameSlot *slot,
         .submit_value = signal_value,
     };
   }
+}
+
+/* Records the light table whose contribution this submission measures, so the
+ * shadow system can match counters to lights by render id. */
+vkr_internal void vkr_vk_set_light_contribution_source(
+    VkrVulkanFrameSlot *slot, const VkrPreparedFrame *packet,
+    uint64_t signal_value) {
+  if (!slot->light_contribution_written)
+    return;
+  VkrLocalLightContributionSample *source = &slot->light_contribution_source;
+  source->submit_value = signal_value;
+  source->source_frame_index = packet->input.frame.frame_index;
+  source->light_count = Min(packet->input.lighting->point_light_count,
+                            VKR_MAX_SCENE_POINT_LIGHTS);
+  for (uint32_t i = 0u; i < source->light_count; ++i)
+    source->render_ids[i] = packet->input.lighting->point_lights[i].render_id;
 }
 
 vkr_internal VkResult vkr_vk_queue_submit_frame(VkrVulkanRenderer *renderer,
@@ -1380,6 +1402,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   }
   const uint64_t signal_value = renderer->submit_value + 1u;
   vkr_vk_set_shadow_depth_source(slot, packet, signal_value);
+  vkr_vk_set_light_contribution_source(slot, packet, signal_value);
   const VkResult submit_result =
       vkr_vk_queue_submit_frame(renderer, slot, signal_value);
   if (submit_result != VK_SUCCESS) {
@@ -1429,6 +1452,18 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                 sizeof(*out_result->pass_timings));
   }
   return true_v;
+}
+
+vkr_internal void vkr_vk_decode_light_contribution(
+    const VkrVulkanFrameSlot *slot, const uint8_t *readback,
+    VkrLocalLightContributionSample *out_sample) {
+  *out_sample = slot->light_contribution_source;
+  if (!slot->light_contribution_written)
+    return;
+  MemCopy(out_sample->contribution,
+          readback + VKR_VULKAN_READBACK_LIGHT_CONTRIBUTION_OFFSET,
+          sizeof(out_sample->contribution));
+  out_sample->valid = true_v;
 }
 
 vkr_internal void
@@ -1521,6 +1556,8 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       .has_transmission_coverage = best->transmission_coverage_requested,
   };
   vkr_vk_decode_sdsm_result(best, color, &out_result->shadow_depth_range);
+  vkr_vk_decode_light_contribution(best, color,
+                                   &out_result->local_light_contribution);
   if (best->exposure_requested) {
     MemCopy(&out_result->exposure.state,
             color + VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,

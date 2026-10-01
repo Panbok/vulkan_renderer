@@ -468,6 +468,8 @@ typedef struct VkrLocalShadowSelection {
   uint32_t group_count;
   uint32_t face_count;
   uint32_t face_budget;
+  /** Feedback from earlier frames describes a view the last snap left. */
+  uint64_t feedback_after_frame;
   bool8_t valid;
 } VkrLocalShadowSelection;
 
@@ -481,6 +483,9 @@ typedef struct VkrLocalShadowCamera {
   /** Vertical focal length in output pixels, half the height times
    * projection.m11; zero without perspective gives every face the map size. */
   float32_t focal_pixels;
+  /** Frame index of this selection, on the counter that stamps
+   * VkrLocalLightContributionSample::source_frame_index. */
+  uint64_t frame_index;
 } VkrLocalShadowCamera;
 
 typedef struct VkrLocalShadowFaceHistory {
@@ -541,6 +546,10 @@ typedef struct VkrShadowSystem {
   VkrLocalShadowFaceHistory local_history[VKR_SHADOW_TARGET_IMAGE_COUNT_MAX]
                                          [VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
   VkrLocalShadowPendingHistory pending_local_history;
+  /** Newest measured light contribution; invalid on backends without it. */
+  VkrLocalLightContributionSample light_contribution;
+  /** Diagnostic: rank by distance even when contribution is measured. */
+  bool8_t light_contribution_ranking_disabled;
 
   VkrShadowDepthRangeSample pending_sdsm_sample;
   float32_t sdsm_linear_near;
@@ -571,6 +580,13 @@ void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system);
 void vkr_shadow_system_set_depth_range_sample(
     VkrShadowSystem *system, const VkrShadowDepthRangeSample *sample,
     uint64_t current_frame_index, uint64_t current_scene_generation);
+
+/**
+ * Keeps the newest valid light-contribution sample for local-shadow selection.
+ * Older, repeated or invalid samples are ignored.
+ */
+void vkr_shadow_system_set_light_contribution_sample(
+    VkrShadowSystem *system, const VkrLocalLightContributionSample *sample);
 
 /**
  * Selects complete local-light shadow groups and fills the current frame's

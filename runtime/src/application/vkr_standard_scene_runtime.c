@@ -7,6 +7,8 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 vkr_internal bool8_t vkr_standard_scene_runtime_register_duration_metric(
     VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
@@ -361,6 +363,9 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
     goto cleanup;
   }
   renderer_ready = true_v;
+  const char *local_shadow_feedback = getenv("VKR_LOCAL_SHADOW_FEEDBACK");
+  application->disable_local_shadow_feedback =
+      local_shadow_feedback && strcmp(local_shadow_feedback, "0") == 0;
   vkr_atomic_uint64_store(&application->pending_resize_mailbox, 0u,
                           VKR_MEMORY_ORDER_RELAXED);
   if (windowed && !event_manager_subscribe(
@@ -820,7 +825,13 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
                             ? 0.5f * (float32_t)setup->window_height *
                                   fabsf(application->globals.projection.m11)
                             : 0.0f,
+        .frame_index = application->renderer.frame_number,
     };
+    application->shadow_system.light_contribution_ranking_disabled =
+        application->disable_local_shadow_feedback;
+    vkr_shadow_system_set_light_contribution_sample(
+        &application->shadow_system,
+        &application->renderer.timing_result.local_light_contribution);
     vkr_shadow_system_resolve_local_shadows(
         &application->shadow_system, setup->image_index,
         setup->retained_local_shadow, &draw->world_payload,
@@ -1665,7 +1676,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   VkrRendererMetricsCollectContext metrics_context = {
       .application = vkr_application_metrics_snapshot(
           &application->assets, &application->ui_system,
-          &application->lighting_system),
+          &application->lighting_system, &application->shadow_system),
       .renderer = &application->renderer,
       .frame_metrics = &metrics,
       .visibility = &application->visibility_stats,

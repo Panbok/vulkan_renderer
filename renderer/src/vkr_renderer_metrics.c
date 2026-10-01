@@ -391,6 +391,16 @@ vkr_internal bool8_t vkr_renderer_metrics_register_workload(
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(lighting_point_dropped, "lighting.point.dropped",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_local_shadow_lights, "lighting.local_shadow.lights",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_local_shadow_fading, "lighting.local_shadow.fading",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(lighting_local_shadow_unshadowed_ratio,
+                   "lighting.local_shadow.unshadowed_ratio",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_F64(lighting_local_shadow_fading_ratio,
+                   "lighting.local_shadow.fading_ratio", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_RATIO);
   VKR_REGISTER_U64(lighting_point_grid_cells, "lighting.point.grid.cells",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(lighting_point_grid_references,
@@ -2002,6 +2012,14 @@ void vkr_renderer_metrics_collect(
               context->application.lighting_point_selected);
   VKR_SET_U64(lighting_point_dropped,
               context->application.lighting_point_dropped);
+  VKR_SET_U64(lighting_local_shadow_lights,
+              context->application.lighting_local_shadow_lights);
+  VKR_SET_U64(lighting_local_shadow_fading,
+              context->application.lighting_local_shadow_fading);
+  VKR_SET_F64(lighting_local_shadow_unshadowed_ratio,
+              context->application.lighting_local_shadow_unshadowed_ratio);
+  VKR_SET_F64(lighting_local_shadow_fading_ratio,
+              context->application.lighting_local_shadow_fading_ratio);
   VKR_SET_U64(lighting_point_grid_cells,
               context->application.lighting_point_grid_cells);
   VKR_SET_U64(lighting_point_grid_references,

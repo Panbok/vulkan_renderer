@@ -1336,6 +1336,9 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                subsurface_source_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, subsurface_profile_count),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, light_contribution),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                               light_contribution_padding),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_atmosphere_fields[] = {

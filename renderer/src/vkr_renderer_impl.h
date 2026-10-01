@@ -2,6 +2,7 @@
 #include "vkr_gpu_abi.h"
 
 #include "vkr_exposure.h"
+#include "vkr_lighting.h"
 #include "vkr_renderer.h"
 #include "vkr_shadow.h"
 
@@ -266,6 +267,8 @@ typedef struct VkrRendererImplSubmitResult {
   uint32_t shadow_gpu_overflow_count[VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT];
   bool8_t hzb_history_valid;
   VkrShadowDepthRangeSample shadow_depth_range;
+  /** Valid only when the backend measured it; Metal does not. */
+  VkrLocalLightContributionSample local_light_contribution;
   bool8_t has_gpu_draw_diagnostics;
   VkrExposureDebugSample exposure;
   uint32_t transmission_covered_pixels[5];

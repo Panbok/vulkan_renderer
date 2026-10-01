@@ -1522,6 +1522,14 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
                               VKR_GPU_ALLOCATION_OWNER_READBACK, readback_size,
                               VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                               &slot->readback) ||
+        !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
+                              VKR_GPU_ALLOCATION_OWNER_READBACK,
+                              VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE,
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              &slot->light_contribution) ||
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
                               VKR_GPU_ALLOCATION_OWNER_STAGING,
                               VKR_VULKAN_FRAME_UPLOAD_INITIAL_SIZE,
@@ -1547,6 +1555,7 @@ void vkr_vk_destroy_frame_slots(VkrVulkanRenderer *renderer) {
     vkr_vk_destroy_buffer(renderer, &slot->frame_upload);
     vkr_vk_destroy_buffer(renderer, &slot->candidate_upload);
     vkr_vk_destroy_buffer(renderer, &slot->capture_readback);
+    vkr_vk_destroy_buffer(renderer, &slot->light_contribution);
     vkr_vk_destroy_buffer(renderer, &slot->readback);
     if (slot->timestamp_pool)
       vkDestroyQueryPool(device, slot->timestamp_pool, NULL);

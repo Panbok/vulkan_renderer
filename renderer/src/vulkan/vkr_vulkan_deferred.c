@@ -298,6 +298,10 @@ bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
   prepared->instances = instances->buffer.handle;
   prepared->state = state->buffer.handle;
   prepared->sdsm = sdsm ? sdsm->buffer.handle : VK_NULL_HANDLE;
+  prepared->light_contribution =
+      !transmission && slot->light_contribution_requested
+          ? slot->light_contribution.handle
+          : VK_NULL_HANDLE;
   if (transmission) {
     slot->transmission_gpu_compaction_state = state;
     slot->transmission_gpu_candidate_instances = instances->buffer.address;
@@ -386,14 +390,24 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
        .size = sizeof(VkrExposureGpuHistogram)},
       {.dstOffset = VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,
        .size = sizeof(VkrExposureGpuState)},
+      {.dstOffset = VKR_VULKAN_READBACK_LIGHT_CONTRIBUTION_OFFSET,
+       .size = VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE},
   };
-  VkrVulkanGraphBufferInstance *sources[] = {
-      opaque,
-      transmission,
-      slot->sdsm_requested ? slot->sdsm_reduce_state : NULL,
-      slot->exposure_requested ? slot->exposure_histogram : NULL,
-      slot->exposure_requested ? slot->exposure_state_output : NULL,
+  const VkBuffer sources[] = {
+      opaque->buffer.handle,
+      transmission ? transmission->buffer.handle : VK_NULL_HANDLE,
+      slot->sdsm_requested ? slot->sdsm_reduce_state->buffer.handle
+                           : VK_NULL_HANDLE,
+      slot->exposure_requested ? slot->exposure_histogram->buffer.handle
+                               : VK_NULL_HANDLE,
+      slot->exposure_requested ? slot->exposure_state_output->buffer.handle
+                               : VK_NULL_HANDLE,
+      slot->light_contribution_written ? slot->light_contribution.handle
+                                       : VK_NULL_HANDLE,
   };
+  _Static_assert(ArrayCount(sources) == ArrayCount(copies) &&
+                     ArrayCount(sources) == ArrayCount(prepared->copies),
+                 "every readback source has one copy");
   for (uint32_t i = 0u; i < ArrayCount(sources); ++i) {
     if (!sources[i])
       continue;
@@ -406,7 +420,7 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
         .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = sources[i]->buffer.handle,
+        .buffer = sources[i],
         .size = VK_WHOLE_SIZE,
     };
   }
@@ -1544,6 +1558,9 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   if (renderer->prepared_frame.subsurface_enabled &&
       !vkr_vk_deferred_storage_index(renderer, pass, 14u, &subsurface_source))
     return false_v;
+  /* Deferred lighting measures every frame it shades; the readback publishes
+   * the counters only for such frames. */
+  slot->light_contribution_written = slot->light_contribution_requested;
   const VkrVulkanLightingRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1575,6 +1592,9 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
           renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u,
       .local_shadow_mask_texture = local_shadow_mask,
       .visible_rows = visible->buffer.address,
+      .light_contribution = slot->light_contribution_requested
+                                ? slot->light_contribution.address
+                                : 0u,
       .subsurface_source_texture = subsurface_source,
       .subsurface_profile_count =
           renderer->prepared_frame.subsurface_enabled &&
@@ -4621,5 +4641,29 @@ void vkr_vk_record_prepared_upload(VkCommandBuffer command,
     vkCmdFillBuffer(command, prepared->sdsm, 0u, sizeof(uint32_t), UINT32_MAX);
     vkCmdFillBuffer(command, prepared->sdsm, sizeof(uint32_t),
                     VKR_VULKAN_SDSM_STATE_SIZE - sizeof(uint32_t), 0u);
+  }
+  if (prepared->light_contribution) {
+    /* The graph does not track this slot-owned buffer, so its clear orders
+     * itself before deferred lighting's atomics. */
+    vkCmdFillBuffer(command, prepared->light_contribution, 0u,
+                    VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE, 0u);
+    const VkBufferMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = prepared->light_contribution,
+        .size = VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE,
+    };
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1u,
+        .pBufferMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(command, &dependency);
   }
 }

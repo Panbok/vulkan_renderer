@@ -213,6 +213,10 @@ typedef struct VkrStandardSceneRuntime {
   /* Optional user quality gates; zero preserves scene-authored rendering. */
   bool8_t disable_directional_shadows;
   bool8_t disable_local_shadows;
+  /* Diagnostic: VKR_LOCAL_SHADOW_FEEDBACK=0 ranks local shadows by distance
+   * even where the renderer measures visible light contribution; the
+   * measurement continues for metrics. */
+  bool8_t disable_local_shadow_feedback;
   bool8_t disable_soft_shadows;
   bool8_t disable_fog;
   bool8_t disable_volumetric_fog;

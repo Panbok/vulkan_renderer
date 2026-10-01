@@ -9,10 +9,17 @@
 /* A selected light keeps its layers until a competitor outscores it by this
  * factor, which limits selection churn and cached-face redraws. */
 #define VKR_LOCAL_SHADOW_INCUMBENT_BONUS 1.15f
+/* Measured contribution moves continuously with the view, so lights of similar
+ * contribution trade places often; a selected light keeps its shadow until a
+ * competitor contributes this much more. */
+#define VKR_LOCAL_SHADOW_FEEDBACK_INCUMBENT_BONUS 1.5f
 /* Seconds for a shadow to fade fully in or out when the selection changes. */
 #define VKR_LOCAL_SHADOW_FADE_SECONDS 0.25f
 /* Camera distances below this fraction of a light's range score alike. */
 #define VKR_LOCAL_SHADOW_NEAR_RANGE_FRACTION 0.1f
+/* Frames after which measured light contribution no longer describes the
+ * view, so selection falls back to distance. Readback lags two to three. */
+#define VKR_LOCAL_SHADOW_FEEDBACK_MAX_AGE 8u
 /* Lights past this many, by importance, take a single filtered tap and no
  * contact shadows, so a larger budget shadows more lights at a small cost. */
 #define VKR_LOCAL_SHADOW_FULL_FILTER_LIGHT_COUNT 3u
@@ -372,7 +379,7 @@ vkr_internal void vkr_local_shadow_sort_candidates_by_render_id(
  * selected candidate indices in that order. */
 vkr_internal uint32_t vkr_local_shadow_knapsack(
     const VkrLocalShadowCandidate *candidates, uint32_t candidate_count,
-    uint32_t face_budget, uint32_t *out_selected) {
+    uint32_t face_budget, float32_t incumbent_bonus, uint32_t *out_selected) {
   float32_t score[VKR_MAX_SCENE_POINT_LIGHTS + 1u]
                  [VKR_LOCAL_SHADOW_FACE_COUNT_MAX + 1u];
   uint8_t take[VKR_MAX_SCENE_POINT_LIGHTS + 1u]
@@ -383,7 +390,7 @@ vkr_internal uint32_t vkr_local_shadow_knapsack(
     const VkrLocalShadowCandidate *candidate = &candidates[i];
     const float32_t candidate_score =
         candidate->incumbent_first_view != 0u
-            ? candidate->score * VKR_LOCAL_SHADOW_INCUMBENT_BONUS
+            ? candidate->score * incumbent_bonus
             : candidate->score;
     for (uint32_t budget = 0u; budget <= face_budget; ++budget) {
       score[i + 1u][budget] = score[i][budget];
@@ -486,12 +493,26 @@ vkr_internal uint32_t vkr_local_shadow_place(
   return face_count;
 }
 
-void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
-                                        const VkrPointLight *lights,
-                                        uint32_t light_count,
-                                        const VkrLocalShadowCamera *camera,
-                                        uint32_t face_budget, uint32_t map_size,
-                                        VkrLocalShadowPassPayload *out) {
+/* Measured contribution of the light with `render_id`; the table is usually
+ * unchanged between the sample's frame and this one. */
+vkr_internal float32_t
+vkr_local_shadow_feedback_score(const VkrLocalLightContributionSample *feedback,
+                                uint32_t light_index, uint32_t render_id) {
+  if (light_index < feedback->light_count &&
+      feedback->render_ids[light_index] == render_id)
+    return (float32_t)feedback->contribution[light_index];
+  for (uint32_t i = 0u; i < feedback->light_count; ++i) {
+    if (feedback->render_ids[i] == render_id)
+      return (float32_t)feedback->contribution[i];
+  }
+  return 0.0f;
+}
+
+void vkr_local_shadow_prepare_selection(
+    VkrLocalShadowSelection *selection, const VkrPointLight *lights,
+    uint32_t light_count, const VkrLocalShadowCamera *camera,
+    const VkrLocalLightContributionSample *feedback, uint32_t face_budget,
+    uint32_t map_size, VkrLocalShadowPassPayload *out) {
   MemZero(out, sizeof(*out));
   out->face_budget = Min(face_budget, VKR_LOCAL_SHADOW_FACE_COUNT_MAX);
   out->map_size = map_size;
@@ -504,9 +525,34 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
     return;
   }
 
-  /* Importance follows the light's apparent influence: its range sphere's
-   * solid angle outside the range and, inside it, inverse-square proximity, so
-   * the nearest of several overlapping lights wins. */
+  /* A first selection, a budget change or a camera cut has no continuity to
+   * keep, so the desired lights take their layers at full strength. Otherwise
+   * a light losing its place keeps its layers while its shadow fades out, and
+   * a newcomer enters at zero strength once its faces fit the budget. */
+  const bool8_t snap =
+      !selection->valid || selection->face_budget != out->face_budget ||
+      !isfinite(camera->delta_seconds) || camera->delta_seconds < 0.0f ||
+      vkr_temporal_is_camera_cut(selection->camera_position,
+                                 selection->camera_view, camera->position,
+                                 camera->view);
+
+  /* Measured contribution ranks lights by what they light on screen, through
+   * walls included, so lights out of view or enclosed take no faces. It lags
+   * the view by a few frames; until a sample from after the last snap arrives,
+   * and wherever it is unavailable, distance ranks instead. */
+  const uint64_t feedback_after_frame =
+      snap ? camera->frame_index : selection->feedback_after_frame;
+  const bool8_t use_feedback =
+      feedback && feedback->valid &&
+      feedback->source_frame_index >= feedback_after_frame &&
+      feedback->source_frame_index <= camera->frame_index &&
+      camera->frame_index - feedback->source_frame_index <=
+          VKR_LOCAL_SHADOW_FEEDBACK_MAX_AGE;
+
+  /* Without feedback, importance follows the light's apparent influence: its
+   * range sphere's solid angle outside the range and, inside it,
+   * inverse-square proximity, so the nearest of several overlapping lights
+   * wins. */
   VkrLocalShadowCandidate candidates[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
   uint32_t candidate_count = 0u;
   for (uint32_t i = 0u; i < Min(light_count, VKR_MAX_SCENE_POINT_LIGHTS); ++i) {
@@ -526,14 +572,16 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
                                 light->color.y * 0.7152f +
                                 light->color.z * 0.0722f;
     const float32_t score =
-        Max(luminance, 0.0f) * Max(light->intensity, 0.0f) * range_squared /
-        Max(distance_squared, near_distance * near_distance);
+        use_feedback
+            ? vkr_local_shadow_feedback_score(feedback, i, light->render_id)
+            : Max(luminance, 0.0f) * Max(light->intensity, 0.0f) *
+                  range_squared /
+                  Max(distance_squared, near_distance * near_distance);
     if (!isfinite(distance_squared) || !isfinite(range_squared) ||
-        !isfinite(score) || score <= 0.0f) {
+        !isfinite(score) || score < 0.0f)
       continue;
-    }
 
-    VkrLocalShadowCandidate *candidate = &candidates[candidate_count++];
+    VkrLocalShadowCandidate *candidate = &candidates[candidate_count];
     *candidate = (VkrLocalShadowCandidate){
         .light_index = i,
         .render_id = light->render_id,
@@ -544,6 +592,11 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
     };
     const VkrLocalShadowSelectionGroup *incumbent =
         vkr_local_shadow_incumbent(selection, candidate);
+    /* A light that lights nothing is no candidate; a shadowed one stays to
+     * fade out. */
+    if (score == 0.0f && !incumbent)
+      continue;
+    ++candidate_count;
     if (incumbent) {
       candidate->incumbent_first_view = incumbent->first_view + 1u;
       candidate->strength = incumbent->strength;
@@ -557,20 +610,13 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
 
   uint32_t desired[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
   const uint32_t desired_count = vkr_local_shadow_knapsack(
-      candidates, candidate_count, out->face_budget, desired);
+      candidates, candidate_count, out->face_budget,
+      use_feedback ? VKR_LOCAL_SHADOW_FEEDBACK_INCUMBENT_BONUS
+                   : VKR_LOCAL_SHADOW_INCUMBENT_BONUS,
+      desired);
   for (uint32_t i = 0u; i < desired_count; ++i)
     candidates[desired[i]].desired = true_v;
 
-  /* A first selection, a budget change or a camera cut has no continuity to
-   * keep, so the desired lights take their layers at full strength. Otherwise
-   * a light losing its place keeps its layers while its shadow fades out, and
-   * a newcomer enters at zero strength once its faces fit the budget. */
-  const bool8_t snap =
-      !selection->valid || selection->face_budget != out->face_budget ||
-      !isfinite(camera->delta_seconds) || camera->delta_seconds < 0.0f ||
-      vkr_temporal_is_camera_cut(selection->camera_position,
-                                 selection->camera_view, camera->position,
-                                 camera->view);
   const float32_t step =
       snap ? 1.0f
            : Min(camera->delta_seconds / VKR_LOCAL_SHADOW_FADE_SECONDS, 1.0f);
@@ -680,6 +726,7 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
       .camera_position = camera->position,
       .face_budget = out->face_budget,
       .face_count = out->view_count,
+      .feedback_after_frame = feedback_after_frame,
       .valid = true_v,
   };
   for (uint32_t i = 0u; i < selected_count; ++i) {

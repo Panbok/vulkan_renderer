@@ -1616,6 +1616,7 @@ vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
       .transmission_coverage_valid = source.has_transmission_coverage,
       .hzb_history_valid = source.hzb_history_valid,
       .shadow_depth_range = source.shadow_depth_range,
+      .local_light_contribution = source.local_light_contribution,
       .has_gpu_draw_diagnostics = source.has_gpu_draw_diagnostics,
       .exposure = source.exposure,
       .pass_timing_count = source.pass_timing_count,

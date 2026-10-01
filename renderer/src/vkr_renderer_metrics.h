@@ -95,6 +95,10 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId lighting_ibl_probes_packed;
   VkrMetricId lighting_point_selected;
   VkrMetricId lighting_point_dropped;
+  VkrMetricId lighting_local_shadow_lights;
+  VkrMetricId lighting_local_shadow_fading;
+  VkrMetricId lighting_local_shadow_unshadowed_ratio;
+  VkrMetricId lighting_local_shadow_fading_ratio;
   VkrMetricId lighting_point_grid_cells;
   VkrMetricId lighting_point_grid_references;
   VkrMetricId lighting_point_grid_max_lights_per_cell;
@@ -345,6 +349,14 @@ typedef struct VkrApplicationMetricsSnapshot {
   uint64_t ui_tile_count;
   uint64_t lighting_point_selected;
   uint64_t lighting_point_dropped;
+  /** Local lights shadowed this frame, and those crossfading in or out. */
+  uint64_t lighting_local_shadow_lights;
+  uint64_t lighting_local_shadow_fading;
+  /** Shares of measured visible local light, weighted by contribution, whose
+   * shadow is missing or partial (one minus strength), and whose shadow is
+   * crossfading; zero without a measurement. */
+  float64_t lighting_local_shadow_unshadowed_ratio;
+  float64_t lighting_local_shadow_fading_ratio;
   uint64_t lighting_point_grid_cells;
   uint64_t lighting_point_grid_references;
   uint64_t lighting_point_grid_max_lights_per_cell;

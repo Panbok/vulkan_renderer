@@ -267,8 +267,13 @@ enum {
       VKR_VULKAN_READBACK_SDSM_STATE_OFFSET + VKR_VULKAN_SDSM_STATE_SIZE,
   VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET =
       VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET + sizeof(VkrExposureGpuState),
-  VKR_VULKAN_READBACK_SIZE = VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET +
-                             sizeof(VkrExposureGpuHistogram),
+  VKR_VULKAN_READBACK_LIGHT_CONTRIBUTION_OFFSET =
+      VKR_VULKAN_READBACK_EXPOSURE_HISTOGRAM_OFFSET +
+      sizeof(VkrExposureGpuHistogram),
+  VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE =
+      VKR_MAX_SCENE_POINT_LIGHTS * sizeof(uint32_t),
+  VKR_VULKAN_READBACK_SIZE = VKR_VULKAN_READBACK_LIGHT_CONTRIBUTION_OFFSET +
+                             VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE,
 };
 
 typedef enum VkrVulkanPacketPipeline {
@@ -708,12 +713,16 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t anisotropy_texture;
   /* Nonzero when the layered kernel also runs and owns layered tiles. */
   uint32_t layered_tiles;
-  /* Shadow.LocalMask output: one RGBA8 layer per shadowed light. */
+  /* Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot. */
   uint32_t local_shadow_mask_texture;
   uint32_t visible_rows_padding;
   uint64_t visible_rows;
   uint32_t subsurface_source_texture;
   uint32_t subsurface_profile_count;
+  /** Per-light contribution counters (VkrLocalLightContributionSample), or
+   * zero when this frame does not measure them. */
+  uint64_t light_contribution;
+  uint64_t light_contribution_padding;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        184u &&
@@ -1685,8 +1694,10 @@ _Static_assert(
         offsetof(VkrVulkanTemporalResolveRoot, history_pre_exposure_scale) ==
             144u,
     "Temporal resolve-root scene/jitter ABI drift");
-_Static_assert(sizeof(VkrVulkanLightingRoot) == 192u,
+_Static_assert(sizeof(VkrVulkanLightingRoot) == 208u,
                "Deferred lighting-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanLightingRoot, light_contribution) == 192u,
+               "Deferred lighting-root contribution ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
                "Deferred lighting-root matrix ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, sky_radiance) == 128u,
@@ -2213,6 +2224,8 @@ typedef struct VkrVulkanPreparedUpload {
   VkBuffer instances;
   VkBuffer state;
   VkBuffer sdsm;
+  /** Cleared before deferred lighting accumulates into it, or null. */
+  VkBuffer light_contribution;
   VkBufferCopy candidate_copies[2];
   VkBufferCopy instance_copies[2];
   uint32_t copy_count;
@@ -2228,8 +2241,8 @@ typedef struct VkrVulkanPreparedCaptureCopy {
 } VkrVulkanPreparedCaptureCopy;
 
 typedef struct VkrVulkanPreparedReadback {
-  VkBufferMemoryBarrier2 barriers[5];
-  VkBufferCopy copies[5];
+  VkBufferMemoryBarrier2 barriers[6];
+  VkBufferCopy copies[6];
   uint32_t count;
 } VkrVulkanPreparedReadback;
 
@@ -2264,6 +2277,15 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanGraphBufferInstance *exposure_state_input;
   VkrVulkanGraphBufferInstance *exposure_state_output;
   VkrShadowDepthRangeSample shadow_depth_range;
+  /** Device-local per-light contribution counters. The upload pass clears
+   * them, deferred lighting adds into them, and the deferred readback copies
+   * them out after this slot's submission. */
+  VkrVulkanBuffer light_contribution;
+  /** This submission's light identities; the readback fills contribution. */
+  VkrLocalLightContributionSample light_contribution_source;
+  bool8_t light_contribution_requested;
+  /** Deferred lighting bound the counters, so zero means unlit. */
+  bool8_t light_contribution_written;
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;

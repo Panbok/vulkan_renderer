@@ -1021,7 +1021,9 @@ float3 packet_local_shadow_mask(VkrVulkanPacketFrameRoot *frame,
 
 // UseMask selects the base visibility source at compile time: forward and
 // transmission shading filter the shadow maps inline, while deferred lighting
-// reads the mask for `pixel` from `mask_texture`.
+// reads the mask for `pixel` from `mask_texture`. Deferred lighting also adds
+// each light's visible contribution to `light_contribution` when it is not
+// null (VkrLocalLightContributionSample).
 VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
                                       VkrVulkanPacketFrameRoot *frame,
                                       float3 world_position, float3 normal,
@@ -1033,7 +1035,8 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
                                       bool sheen_active, VkrSheenLayer sheen,
                                       float sheen_normalization,
                                       inout float3 coat_result, inout float3 sheen_result,
-                                      uint mask_texture, uint2 pixel)
+                                      uint mask_texture, uint2 pixel,
+                                      uint *light_contribution)
 {
     VkrVulkanDirectResult result;
     result.irradiance = 0.0f;
@@ -1074,6 +1077,25 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
             uint kind = term.kind;
             float3 light_direction = term.direction;
             float attenuation = term.attenuation * term.cone;
+            // `light_index` is wave-uniform, so the wave adds its pixels'
+            // unshadowed contribution with one atomic. Shadowing never
+            // changes the measure, so selection cannot feed back on itself.
+            if (UseMask && light_contribution != nullptr)
+            {
+                float lit = vkr_exposure_luminance(p1.rgb) * p2.x * attenuation *
+                            saturate(dot(normal, light_direction)) *
+                            frame.pre_exposure;
+                float wave_lit = WaveActiveSum(lit / (1.0f + lit));
+                if (WaveIsFirstLane())
+                {
+                    uint ignored;
+                    InterlockedAdd(light_contribution[light_index],
+                                   uint(wave_lit *
+                                            float(VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE) +
+                                        0.5f),
+                                   ignored);
+                }
+            }
             float3 shadow_normal =
                 vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy);
             float3 visibility;
@@ -1728,7 +1750,7 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
         frame, input.world_position, normal, view, base.rgb, metallic,
         roughness, f0, energy, true, clearcoat_active, clearcoat,
         sheen_active, sheen, sheen_ltc.energy_normalization,
-        clearcoat_direct, sheen_direct, 0u, uint2(0u, 0u));
+        clearcoat_direct, sheen_direct, 0u, uint2(0u, 0u), nullptr);
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
     VkrVulkanDirectResult rectangles = packet_layered_rectangle_lights(
