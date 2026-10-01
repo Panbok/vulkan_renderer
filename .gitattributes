@@ -1,3 +1,5 @@
 
 # Unified patches retain leading spaces on empty context lines.
-vendor/*.patch whitespace=-blank-at-eol,-blank-at-eof
+# They also keep LF on checkout: `git apply` rejects CRLF copies of patches
+# whose targets are LF, and core.autocrlf would otherwise convert them.
+vendor/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
