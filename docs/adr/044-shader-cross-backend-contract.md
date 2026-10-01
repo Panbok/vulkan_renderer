@@ -71,9 +71,13 @@ Pre-exposure ([ADR-081](081-physical-night-sky.md)) is **UNALIGNED**.
 - **Metal evidence.** Bistro output passes at forced P = 1, 8 and 1/64, and a
   focused API validation run is clean.
 - **Vulkan evidence.** All production modules pass `spirv-val`, and their
-  compiled offsets match the C roots.
-- **Missing gates.** Native Vulkan execution and a bilateral comparison are
-  unavailable on this host.
+  compiled offsets match the C roots. On Windows (RX 6700 XT, AMD 26.6.3),
+  Release `local-offscreen` snapshots of the night (P = 1), moonlit-sky
+  (P = 2^18), starry-sky (P = 2^19) and moonlit-cloud (P = 2^17) cases pass
+  with finite HDR captures, and the night and moonlit-cloud cases run clean
+  under Debug Vulkan validation with synchronization checks.
+- **Missing gates.** A same-revision bilateral comparison: no Metal capture of
+  these cases is published.
 
 ## Moon and star evidence state
 
@@ -94,9 +98,10 @@ atmosphere, aerial perspective and volumetric cloud domains.
   moonlit-sky, moonlit-cloud and starry-sky Bistro cases render, and focused
   API validation runs are clean.
 - **Vulkan evidence.** All production modules pass `spirv-val`, and their
-  compiled atmosphere and sky offsets match the C asserts.
-- **Missing gates.** Native Vulkan execution and a bilateral comparison are
-  unavailable on this host.
+  compiled atmosphere and sky offsets match the C asserts. The Windows runs
+  under Pre-exposure render the moon disc and glow, the moonlit clouds and the
+  star field natively, with clean Debug Vulkan validation.
+- **Missing gates.** A same-revision bilateral comparison.
 
 ## Editor inspection views
 
@@ -123,8 +128,10 @@ temporal reconstruction and GTAO. Orthographic frames have a separate per-frame 
 capability boundary recorded in
 [ADR-046](046-editor-viewport-mapping-and-picking.md).
 
-These modes are **UNALIGNED** pending native Vulkan validation and matched native
-Metal/Vulkan captures. The Release editor build compiles both production shader
+These modes are **UNALIGNED** pending matched native Metal/Vulkan captures. On
+Windows (RX 6700 XT), the Release Vulkan snapshot `smoke.bistro.editor.views`
+passes and captures all four channels, and the same case runs clean under Debug
+Vulkan validation. The Release editor build compiles both production shader
 paths. On Apple M1 Pro, the Release Metal snapshot
 `smoke.bistro.editor.views` (orthographic top view, `local-offscreen`) passes and
 captures final color, detail lighting, lighting only and wireframe. That capture
@@ -442,8 +449,9 @@ pinned layouts: Metal roots carry offset vertex/decode pointers, while Vulkan
 roots carry base addresses and explicit vertex/decode indices. Opaque linear color is written after tonemapping;
 picking writes the supplied integer ID with identical primitive order and no
 depth test or culling. This new domain is **UNALIGNED** until same-revision native
-Metal/Vulkan captures and reflection checks pass; native Vulkan is unavailable
-on the current macOS host.
+Metal/Vulkan captures and reflection checks pass. The Windows Vulkan editor picks
+Bistro meshes by viewport click and draws the move, rotate and scale gizmos with
+clean Debug Vulkan validation.
 
 The selection outline ([ADR-046](046-editor-viewport-mapping-and-picking.md#selection-outline))
 reuses the overlay vertex path to write opaque white into an R8 mask, then
@@ -452,9 +460,10 @@ outline roots are 48 bytes: Metal carries a read-access texture reference,
 Vulkan a bindless texture index, and each pins its layout by static assertion;
 Vulkan also checks the reflected fragment root. The outline color goes through
 the UI display-output transform. Metal renders it in the Release Bistro editor;
-Vulkan SPIR-V compiles, passes `spirv-val` and matches the host offsets, but
-native Vulkan did not run because the host device is MoltenVK 1.2. The domain
-is **UNALIGNED** until a native Vulkan run and a same-revision comparison pass.
+Vulkan SPIR-V compiles, passes `spirv-val` and matches the host offsets. The
+Windows Release Vulkan editor draws the outline around a picked Bistro mesh, and
+Debug Vulkan validation is clean. The domain is **UNALIGNED** until a
+same-revision comparison passes.
 
 The editor ground grid (ADR-027) is one full-screen pass over the Scene image
 reading the opaque depth at binding 0. The shared kernel owns line coverage,

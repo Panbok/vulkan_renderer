@@ -9,8 +9,8 @@ authority: adr
 ## Status
 
 Accepted and implemented: pre-exposure, the moon as a second atmosphere light
-and the procedural star field. Native Vulkan execution remains unavailable on
-the development host.
+and the procedural star field. Native Vulkan runs on Windows; a same-revision
+Metal/Vulkan comparison remains pending.
 
 ## Context
 
@@ -313,9 +313,12 @@ degrees per frame for 1440 measured frames.
   (`sha256:26e9cf1b…`) and starry-sky (`sha256:606f6e70…`) cases keep their
   key light, and the Bistro text baseline passes (`sha256:feac04ef…`).
 
-Native Vulkan execution and the Windows-only FSR SDK build are unavailable on
-this host, so the affected shader domains are UNALIGNED in
-[ADR-044](044-shader-cross-backend-contract.md).
+On Windows (RX 6700 XT), the night, moonlit-sky, starry-sky and moonlit-cloud
+cases render natively on Vulkan with the expected pre-exposure and clean Debug
+validation. Without a same-revision Metal comparison, the affected shader
+domains stay UNALIGNED in [ADR-044](044-shader-cross-backend-contract.md).
+The four cases leave their backend unpinned, so each machine runs its native
+backend.
 
 ## Alternatives considered
 

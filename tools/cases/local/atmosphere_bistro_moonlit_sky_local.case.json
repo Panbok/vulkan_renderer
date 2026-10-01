@@ -26,7 +26,6 @@
     "editor": false,
     "skybox": true,
     "text_fixture": false,
-    "backend": "metal",
     "render_scale": 1,
     "upscaler": "spatial",
     "taa_enabled": true,
