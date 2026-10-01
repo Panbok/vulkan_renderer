@@ -108,8 +108,6 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t tonemap_enabled;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
-  /** Post-TAA spatial cleanup in the final fullscreen draw. */
-  bool8_t fxaa_enabled;
   /** Enables P19 transmission compaction; production defaults on. */
   bool8_t transmission_compact_enabled;
   /** Diagnostic rollback for P14 while retaining the deferred graph. */

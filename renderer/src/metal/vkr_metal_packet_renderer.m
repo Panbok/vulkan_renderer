@@ -834,7 +834,6 @@ struct VkrMetalPacketRenderer {
   bool8_t metalfx_dynamic_resolution_enabled;
   bool8_t deferred_candidate_drop_logged;
   bool8_t convert_vulkan_clip_y;
-  bool8_t fxaa_enabled;
   bool8_t transmission_compact_enabled;
   bool8_t hzb_enabled;
   bool8_t frustum_enabled;

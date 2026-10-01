@@ -2784,7 +2784,6 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
           ? config->dynamic_resolution.max_scale
           : config->render_scale;
   renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
-  renderer->fxaa_enabled = config->fxaa_enabled;
   renderer->synchronous_validation_readback =
       config->synchronous_validation_readback;
 }

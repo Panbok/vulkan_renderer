@@ -9,6 +9,8 @@
 typedef struct VkrPreparedFrame {
   VkrFrameInput input;
   bool8_t scene_rendering;
+  /** FXAA filters the final draw: enabled and no temporal reconstruction. */
+  bool8_t fxaa_enabled;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   uint32_t editor_image_width;

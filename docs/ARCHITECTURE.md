@@ -1108,7 +1108,10 @@ subpixel blend is strongest. UI, editor recomposition, diagnostic views and
 temporal histories are excluded. FSR's SDK sharpener remains disabled.
 When FXAA or sharpening filters the final draw, an output-size RGBA16F
 display-linear image is prepared first, so the display transform runs once per
-pixel rather than per filter sample; MetalFX temporal frames omit FXAA.
+pixel rather than per filter sample. FXAA filters only frames without temporal
+reconstruction: portable TAA, MetalFX and FSR frames omit it. On the M1 Pro
+Bistro production case that removed 1.26 ms per frame
+([ADR-043](adr/043-presentation-dpi-and-color-transfer.md)).
 `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic per-sample reference path. The
 final draw applies the physical output scale once; ADR-043 records the output
 difference, cost observations and open native gates.

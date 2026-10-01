@@ -672,8 +672,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       .inverse_pre_exposure = 1.0f / packet->exposure.pre_exposure,
       .flags =
           (!editor_rect && renderer->tonemap_enabled ? 1u : 0u) |
-          (!editor_rect && !prepare_display_linear && renderer->fxaa_enabled &&
-                   !renderer->prepared_frame.metalfx_enabled
+          (!editor_rect && !prepare_display_linear && packet->fxaa_enabled
                ? 2u
                : 0u) |
           (packet->input.globals.display_transform ==

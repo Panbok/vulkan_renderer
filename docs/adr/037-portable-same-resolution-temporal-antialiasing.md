@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-09
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -138,7 +138,8 @@ Extent, scene, camera and source discontinuities
 reset accumulation. Invalid history uses a one-sample passthrough.
 
 Exposure is applied after temporal resolve, so changing exposure does not change
-stored history radiance. Output-space FXAA can run in the existing final draw.
+stored history radiance. Output-space FXAA does not run on frames this resolve
+reconstructs; it remains for frames with TAA disabled (ADR-043).
 Deferred lighting applies bounded normal-footprint roughness filtering before
 temporal accumulation. The portable resolve works at the internal Scene extent;
 ADR-040 selects a separate MetalFX consumer when enabled.

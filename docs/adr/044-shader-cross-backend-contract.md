@@ -946,6 +946,10 @@ driver's 32-residency-set assertion, so it cannot check the removed bounds.
 
 The display-linear post target is now the default whenever FXAA or sharpening
 filters the final draw ([ADR-043](043-presentation-dpi-and-color-transfer.md)).
+FXAA now filters only frames without temporal reconstruction; the frontend
+decides it once per frame and both backends read that value. Metal captures
+confirm FXAA is skipped under portable TAA and kept with TAA disabled; the
+Vulkan path compiles but has no native execution evidence.
 Both native shader paths existed before; the Metal default was captured and
 timed, while the Vulkan path has compiled SPIR-V but no native execution.
 With `VKR_POST_TRANSFORM_CACHE=0` the tracked Bistro Metal text baseline passes

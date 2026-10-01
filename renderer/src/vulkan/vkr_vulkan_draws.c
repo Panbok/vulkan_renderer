@@ -1856,7 +1856,8 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
   const float32_t image_sharpness =
       prepare_display_linear ? 0.0f : requested_sharpness;
   root->transmission_sampler =
-      (composite || renderer->config.fxaa_enabled || requested_sharpness > 0.0f)
+      (composite || renderer->graph->packet->fxaa_enabled ||
+       requested_sharpness > 0.0f)
           ? renderer->transmission_sampler_slot
           : 0u;
   root->exposure_state = exposure_state ? exposure_state : manual_state_address;
@@ -1866,7 +1867,7 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
       .root = root_address,
       .material_index = 0u,
       .flags = flags | (!composite && !prepare_display_linear &&
-                                renderer->config.fxaa_enabled
+                                renderer->graph->packet->fxaa_enabled
                             ? VKR_VULKAN_FULLSCREEN_FXAA
                             : 0u),
   };

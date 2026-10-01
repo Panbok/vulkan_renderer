@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-24
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -62,7 +62,13 @@ MetalTools report-decoding crash. Native Vulkan execution is unavailable.
 
 Direct mode tonemaps to the target. Editor mode tonemaps/composites the Scene
 rectangle and draws native-resolution UI afterward. Output-space FXAA stays in
-the final draw, with offsets expressed in output pixels. HDR/intermediate and
+the final draw, with offsets expressed in output pixels. It filters only frames
+without temporal reconstruction; portable TAA, MetalFX and FSR frames omit it.
+On the M1 Pro, `bistro_metal_production_040` (0.4 render scale, portable TAA)
+ran at 17.54 ms per frame with FXAA and 16.27 ms without, and an orbit frame
+changed by more than 8/255 in 2,044 of 921,600 pixels (non-authoritative
+`local-windowed-gpu-single` runs, 2026-10-01). Frames with TAA disabled keep
+FXAA. HDR/intermediate and
 final-color captures are different contracts and must be compared accordingly.
 
 The user-approved `VkrFrameGlobals.image_sharpness` control applies to FSR,
@@ -92,8 +98,8 @@ require matched static and moving captures.
 ## Display-linear preparation
 
 Default scene rendering filters an output-resolution RGBA16F intermediate
-whenever the final draw filters: FXAA outside MetalFX temporal frames, or
-nonzero sharpening. `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic reference
+whenever the final draw filters: FXAA on frames without temporal
+reconstruction, or nonzero sharpening. `VKR_POST_TRANSFORM_CACHE=0` keeps the analytic reference
 path, which transforms every filter sample; unset, empty and other values
 select the intermediate. A preparation draw applies exposure, grading, AgX or
 ACES, and the scene-relative extended-linear mapping once per output pixel. It

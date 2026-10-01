@@ -431,7 +431,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .srgb_output = true_v,
       .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
       .convert_vulkan_clip_y = true_v,
-      .fxaa_enabled = renderer->fxaa_enabled,
       .transmission_compact_enabled =
           !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
@@ -515,7 +514,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .max_graph_buffers = 128u,
       .max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
-      .fxaa_enabled = renderer->fxaa_enabled,
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
       .fsr31_enabled = renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31,
@@ -893,12 +891,16 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.input = *packet;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
-  /* The display-linear target only pays off when the final pass filters:
-     FXAA, which MetalFX temporal frames omit, or sharpening. */
-  const bool8_t metalfx_frame =
-      rf->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL && !orthographic;
-  const bool8_t output_filtered = (rf->fxaa_enabled && !metalfx_frame) ||
-                                  packet->globals.image_sharpness > 0.0f;
+  /* Portable TAA, MetalFX and FSR all reconstruct edges temporally, so FXAA
+     filters only frames without temporal reconstruction. */
+  const bool8_t temporal_frame =
+      rf->temporal_enabled &&
+      packet->globals.render_mode != VKR_RENDER_MODE_INDIRECT_DIFFUSE &&
+      packet->globals.render_mode != VKR_RENDER_MODE_WIREFRAME && !orthographic;
+  prepared->frame.fxaa_enabled = rf->fxaa_enabled && !temporal_frame;
+  /* The display-linear target only pays off when the final pass filters. */
+  const bool8_t output_filtered =
+      prepared->frame.fxaa_enabled || packet->globals.image_sharpness > 0.0f;
   prepared->frame.post_transform_cache_enabled =
       rf->post_transform_cache_enabled && output_filtered &&
       prepared->frame.scene_rendering &&
@@ -1045,8 +1047,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
             rf->submitted_ssgi_enabled != prepared->frame.ssgi_enabled)
                ? VKR_TEMPORAL_RESET_SCENE_CHANGE
                : 0u),
-      .enabled = rf->temporal_enabled && !indirect_diffuse_only && !wireframe &&
-                 !orthographic,
+      .enabled = temporal_frame,
   };
   prepared->frame.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);
