@@ -384,11 +384,26 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_windows_build_menu(editor, frame->ui, frame);
   /* A right click on a Content item opens its menu; on empty space, the
      shown folder's menu. */
+  /* A right-clicked text field takes the click before the panel under it. */
+  VkrUiId text_field = VKR_UI_ID_NONE;
+  Vec2 text_menu_px = {0};
+  VkrUiTextFieldState text_state = {0};
+  const bool8_t text_menu = vkr_ui_text_context_take(
+      frame->ui, &text_field, &text_menu_px, &text_state);
+  if (text_menu) {
+    const float32_t scale = frame->ui->content_scale;
+    vkr_editor_context_open(
+        editor, VKR_EDITOR_CONTEXT_TEXT,
+        (Vec2){text_menu_px.x / scale, text_menu_px.y / scale});
+    editor->context_text_field = text_field;
+    editor->context_text_state = text_state;
+  }
   Vec2 content_menu_pt;
   bool8_t content_menu_folder = false_v;
   if (editor->content &&
       vkr_editor_content_take_menu(editor->content, &content_menu_pt,
-                                   &content_menu_folder)) {
+                                   &content_menu_folder) &&
+      !text_menu) {
     vkr_editor_context_open(editor,
                             content_menu_folder
                                 ? VKR_EDITOR_CONTEXT_CONTENT_FOLDER
@@ -402,7 +417,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   if (frame->context_requested &&
       frame->context_purpose == VKR_SAMPLE_PICK_SCRIPT_DROP) {
     vkr_editor_finish_script_drop(editor, frame);
-  } else if (frame->context_requested) {
+  } else if (frame->context_requested && !text_menu) {
     const float32_t scale = frame->ui->content_scale;
     const Vec2 point = {frame->context_position_px.x / scale,
                         frame->context_position_px.y / scale};

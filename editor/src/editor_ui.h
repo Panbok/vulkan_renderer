@@ -181,6 +181,9 @@ typedef enum VkrEditorContextKind {
   /* The context entity's script slot (ADR-079): the loaded script types,
      New script, Edit script and Remove script. */
   VKR_EDITOR_CONTEXT_SCRIPT,
+  /* Undo, Redo, Cut, Copy, Paste, Delete and Select All for the text field
+     `context_text_field`. */
+  VKR_EDITOR_CONTEXT_TEXT,
 } VkrEditorContextKind;
 
 typedef struct VkrEditorUi {
@@ -220,6 +223,9 @@ typedef struct VkrEditorUi {
   uint16_t context_container;
   /* Component type a preset menu acts on. */
   const VkrTypeDesc *context_type;
+  /* Text field a text menu acts on, and what it could offer when opened. */
+  VkrUiId context_text_field;
+  VkrUiTextFieldState context_text_state;
   VkrEditorViewportTab viewport_tabs[VKR_EDITOR_VIEWPORT_TAB_MAX];
   uint32_t viewport_tab_count;
   uint32_t viewport_tab_active;

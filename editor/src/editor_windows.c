@@ -1746,6 +1746,8 @@ typedef enum EditorContextAction {
   CONTEXT_SCRIPT_SET,
   CONTEXT_SCRIPT_NEW,
   CONTEXT_SCRIPT_EDIT,
+  /* A text field's command; `value` is its VkrUiTextCommand. */
+  CONTEXT_TEXT_COMMAND,
 } EditorContextAction;
 
 typedef enum EditorContextRow {
@@ -2250,6 +2252,56 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
                                      VKR_EDITOR_CONTENT_FOLDER_REFRESH});
     return count;
   }
+  case VKR_EDITOR_CONTEXT_TEXT: {
+    /* Native text-field menu with platform shortcut hints. */
+#if defined(PLATFORM_APPLE)
+#define CONTEXT_TEXT_KEY(key) "\xe2\x8c\x98" key
+#else
+#define CONTEXT_TEXT_KEY(key) "Ctrl+" key
+#endif
+    const VkrUiTextFieldState *state = &editor->context_text_state;
+    const bool8_t editable = !state->read_only;
+    uint32_t count = 0u;
+    context_push(
+        items, &count,
+        (EditorContextItem){"Undo", VKR_UI_ICON_UNDO, CONTEXT_TEXT_KEY("Z"),
+                            !editable || !state->can_undo, CONTEXT_TEXT_COMMAND,
+                            VKR_UI_TEXT_COMMAND_UNDO});
+    context_push(items, &count,
+                 (EditorContextItem){
+                     "Redo", VKR_UI_ICON_REDO, CONTEXT_TEXT_KEY("Shift+Z"),
+                     !editable || !state->can_redo, CONTEXT_TEXT_COMMAND,
+                     VKR_UI_TEXT_COMMAND_REDO});
+    context_separator(items, &count);
+    context_push(
+        items, &count,
+        (EditorContextItem){"Cut", VKR_UI_ICON_COPY, CONTEXT_TEXT_KEY("X"),
+                            !editable || !state->has_selection,
+                            CONTEXT_TEXT_COMMAND, VKR_UI_TEXT_COMMAND_CUT});
+    context_push(
+        items, &count,
+        (EditorContextItem){"Copy", VKR_UI_ICON_DUPLICATE,
+                            CONTEXT_TEXT_KEY("C"), !state->has_selection,
+                            CONTEXT_TEXT_COMMAND, VKR_UI_TEXT_COMMAND_COPY});
+    context_push(items, &count,
+                 (EditorContextItem){"Paste", VKR_UI_ICON_PASTE,
+                                     CONTEXT_TEXT_KEY("V"), !editable,
+                                     CONTEXT_TEXT_COMMAND,
+                                     VKR_UI_TEXT_COMMAND_PASTE});
+    context_push(items, &count,
+                 (EditorContextItem){"Delete", VKR_UI_ICON_TRASH, NULL,
+                                     !editable || !state->has_selection,
+                                     CONTEXT_TEXT_COMMAND,
+                                     VKR_UI_TEXT_COMMAND_DELETE});
+    context_separator(items, &count);
+    context_push(items, &count,
+                 (EditorContextItem){"Select All", VKR_UI_ICON_SELECTION,
+                                     CONTEXT_TEXT_KEY("A"), !state->has_text,
+                                     CONTEXT_TEXT_COMMAND,
+                                     VKR_UI_TEXT_COMMAND_SELECT_ALL});
+#undef CONTEXT_TEXT_KEY
+    return count;
+  }
   case VKR_EDITOR_CONTEXT_CONSOLE: {
     uint32_t count = 0u;
     context_push(items, &count,
@@ -2379,6 +2431,10 @@ static void editor_context_run(VkrEditorUi *editor,
     break;
   case CONTEXT_CONSOLE_COPY:
     vkr_editor_console_copy_selection(&editor->console, frame->ui);
+    break;
+  case CONTEXT_TEXT_COMMAND:
+    vkr_ui_text_field_command(frame->ui, editor->context_text_field,
+                              (VkrUiTextCommand)item->value);
     break;
   case CONTEXT_CONSOLE_CLEAR:
     vkr_editor_console_clear(&editor->console);

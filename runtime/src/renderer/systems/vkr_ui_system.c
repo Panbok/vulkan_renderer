@@ -45,6 +45,11 @@ struct VkrUiRetainedState {
   float32_t focus_t;
   bool8_t text_live;
   bool8_t text_dragging;
+  /* Text fields: the last build was read-only; the last press, for double
+     and triple clicks. */
+  bool8_t text_read_only;
+  uint8_t text_clicks;
+  float64_t text_click_time;
   /* Scroll areas: the thumb is held, grabbed this far below its top edge. */
   bool8_t scroll_dragging;
   float32_t scroll_grab_offset;
@@ -1442,6 +1447,371 @@ vkr_internal uint32_t vkr_ui_text_mouse_cursor(const VkrUiText *text,
   return best;
 }
 
+/* Native text-editing conventions: words move with Option (Control
+   elsewhere) and lines with Command on macOS. */
+vkr_internal bool8_t vkr_ui_word_modifier(uint8_t modifiers) {
+#if defined(PLATFORM_APPLE)
+  return (modifiers & VKR_INPUT_MOD_ALT) != 0;
+#else
+  return (modifiers & VKR_INPUT_MOD_CONTROL) != 0;
+#endif
+}
+
+vkr_internal bool8_t vkr_ui_line_modifier(uint8_t modifiers) {
+#if defined(PLATFORM_APPLE)
+  return (modifiers & VKR_INPUT_MOD_SUPER) != 0;
+#else
+  (void)modifiers;
+  return false_v;
+#endif
+}
+
+/* Word bytes: letters, digits, underscore and any non-ASCII byte. */
+vkr_internal bool8_t vkr_ui_text_word_byte(uint8_t byte) {
+  return byte >= 0x80u || byte == '_' || (byte >= '0' && byte <= '9') ||
+         (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z');
+}
+
+vkr_internal uint32_t vkr_ui_text_word_left(const uint8_t *data,
+                                            uint32_t cursor) {
+  while (cursor > 0u && !vkr_ui_text_word_byte(data[cursor - 1u]))
+    cursor = vkr_ui_utf8_previous(data, cursor);
+  while (cursor > 0u && vkr_ui_text_word_byte(data[cursor - 1u]))
+    cursor = vkr_ui_utf8_previous(data, cursor);
+  return cursor;
+}
+
+vkr_internal uint32_t vkr_ui_text_word_right(const uint8_t *data,
+                                             uint32_t length, uint32_t cursor) {
+  while (cursor < length && !vkr_ui_text_word_byte(data[cursor]))
+    cursor = vkr_ui_utf8_next(data, length, cursor);
+  while (cursor < length && vkr_ui_text_word_byte(data[cursor]))
+    cursor = vkr_ui_utf8_next(data, length, cursor);
+  return cursor;
+}
+
+vkr_internal uint32_t vkr_ui_text_line_start(const uint8_t *data,
+                                             uint32_t cursor) {
+  while (cursor > 0u && data[cursor - 1u] != '\n')
+    --cursor;
+  return cursor;
+}
+
+vkr_internal uint32_t vkr_ui_text_line_end(const uint8_t *data, uint32_t length,
+                                           uint32_t cursor) {
+  while (cursor < length && data[cursor] != '\n')
+    ++cursor;
+  return cursor;
+}
+
+/* Kinds of edit for undo coalescing. */
+enum {
+  VKR_UI_TEXT_EDIT_OTHER = 0,
+  VKR_UI_TEXT_EDIT_TYPE,
+  VKR_UI_TEXT_EDIT_ERASE,
+};
+
+vkr_internal void vkr_ui_text_snapshot_push(VkrUiTextSnapshot *stack,
+                                            uint32_t *count,
+                                            const VkrUiTextEditBuffer *buffer,
+                                            uint32_t cursor) {
+  if (*count == VKR_UI_TEXT_UNDO_DEPTH) {
+    MemCopy(stack, stack + 1, sizeof(*stack) * (VKR_UI_TEXT_UNDO_DEPTH - 1u));
+    --*count;
+  }
+  VkrUiTextSnapshot *snapshot = &stack[(*count)++];
+  snapshot->length = buffer->length;
+  snapshot->cursor = cursor;
+  MemCopy(snapshot->data, buffer->data, buffer->length);
+}
+
+/* Before an edit: remember the text unless it continues the last edit of
+   the same kind at the same caret within a second. */
+vkr_internal void vkr_ui_text_checkpoint(VkrUiSystem *system,
+                                         const VkrUiTextEditBuffer *buffer,
+                                         const VkrUiRetainedState *retained,
+                                         uint32_t kind) {
+  if (buffer->capacity > VKR_UI_TEXT_UNDO_BYTES)
+    return;
+  const bool8_t continues = kind != VKR_UI_TEXT_EDIT_OTHER &&
+                            kind == system->text_edit_kind &&
+                            retained->text_cursor == system->text_edit_cursor &&
+                            retained->text_cursor == retained->text_selection &&
+                            system->time_seconds - system->text_edit_time < 1.0;
+  if (!continues)
+    vkr_ui_text_snapshot_push(system->text_undo, &system->text_undo_count,
+                              buffer, retained->text_cursor);
+  system->text_redo_count = 0u;
+  system->text_edit_kind = kind;
+  system->text_edit_time = system->time_seconds;
+}
+
+/* Undo or redo: the current text moves to the other stack. */
+vkr_internal bool8_t vkr_ui_text_history_step(VkrUiSystem *system,
+                                              VkrUiTextEditBuffer *buffer,
+                                              VkrUiRetainedState *retained,
+                                              bool8_t redo) {
+  VkrUiTextSnapshot *from = redo ? system->text_redo : system->text_undo;
+  uint32_t *from_count =
+      redo ? &system->text_redo_count : &system->text_undo_count;
+  if (!*from_count || buffer->capacity > VKR_UI_TEXT_UNDO_BYTES)
+    return false_v;
+  vkr_ui_text_snapshot_push(redo ? system->text_undo : system->text_redo,
+                            redo ? &system->text_undo_count
+                                 : &system->text_redo_count,
+                            buffer, retained->text_cursor);
+  const VkrUiTextSnapshot *snapshot = &from[--*from_count];
+  MemCopy(buffer->data, snapshot->data, snapshot->length);
+  buffer->length = snapshot->length;
+  buffer->data[buffer->length] = 0u;
+  retained->text_cursor = Min(snapshot->cursor, buffer->length);
+  retained->text_selection = retained->text_cursor;
+  system->text_edit_kind = VKR_UI_TEXT_EDIT_OTHER;
+  return true_v;
+}
+
+/* Paste the clipboard over the selection, as typed characters. */
+vkr_internal bool8_t vkr_ui_text_paste(VkrUiSystem *system,
+                                       VkrUiTextEditBuffer *buffer,
+                                       VkrUiRetainedState *retained) {
+  // This bounded paste copy expires with the caller's frame scratch.
+  uint8_t *paste =
+      vkr_allocator_alloc(system->frame_allocator, buffer->capacity,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t length = 0u;
+  if (!paste ||
+      !vkr_platform_clipboard_read_text(paste, buffer->capacity, &length) ||
+      !length)
+    return false_v;
+  vkr_ui_text_checkpoint(system, buffer, retained, VKR_UI_TEXT_EDIT_OTHER);
+  bool8_t changed = false_v;
+  for (uint32_t offset = 0u; offset < length;) {
+    const VkrCodepoint cp = vkr_utf8_decode(paste + offset, length - offset);
+    if (cp.byte_length == 0u)
+      break;
+    if (cp.value >= 0x20u && cp.value != 0x7fu) {
+      if (!vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
+                                   &retained->text_selection, cp.value))
+        break;
+      changed = true_v;
+    }
+    offset += cp.byte_length;
+  }
+  return changed;
+}
+
+/* Erase [begin, end) as one undoable step of `kind`. */
+vkr_internal bool8_t vkr_ui_text_erase(VkrUiSystem *system,
+                                       VkrUiTextEditBuffer *buffer,
+                                       VkrUiRetainedState *retained,
+                                       uint32_t begin, uint32_t end,
+                                       uint32_t kind) {
+  if (begin >= end)
+    return false_v;
+  vkr_ui_text_checkpoint(system, buffer, retained, kind);
+  vkr_ui_text_edit_erase(buffer, begin, end);
+  retained->text_cursor = begin;
+  retained->text_selection = begin;
+  return true_v;
+}
+
+/* Keyboard and queued-command editing of a focused field. Returns whether the
+   text changed; `moved` reports caret moves without edits. */
+vkr_internal bool8_t vkr_ui_text_field_keys(
+    VkrUiSystem *system, VkrUiFrameNode *node, VkrUiTextEditBuffer *buffer,
+    bool8_t read_only, VkrUiTextCommand command, bool8_t *out_moved) {
+  VkrUiRetainedState *retained = node->retained;
+  InputState *input = system->input;
+  bool8_t changed = false_v;
+  uint32_t selection_begin =
+      Min(retained->text_cursor, retained->text_selection);
+  uint32_t selection_end = Max(retained->text_cursor, retained->text_selection);
+  static const Keys shortcut_keys[] = {KEY_A, KEY_C, KEY_X,
+                                       KEY_V, KEY_Z, KEY_Y};
+  bool8_t shortcut = false_v;
+  for (uint32_t i = 0; i < ArrayCount(shortcut_keys); ++i)
+    shortcut |= input_key_shortcut_modifier(input, shortcut_keys[i]);
+  const bool8_t shortcut_shift =
+      (input_key_press_modifiers(input, KEY_Z) & VKR_INPUT_MOD_SHIFT) != 0;
+#define VKR_UI_SHORTCUT(key)                                                   \
+  (input_key_shortcut_modifier(input, key) && vkr_ui_key_pressed(system, key))
+  if (VKR_UI_SHORTCUT(KEY_Z))
+    command =
+        shortcut_shift ? VKR_UI_TEXT_COMMAND_REDO : VKR_UI_TEXT_COMMAND_UNDO;
+  else if (VKR_UI_SHORTCUT(KEY_Y))
+    command = VKR_UI_TEXT_COMMAND_REDO;
+  else if (VKR_UI_SHORTCUT(KEY_A))
+    command = VKR_UI_TEXT_COMMAND_SELECT_ALL;
+  else if (VKR_UI_SHORTCUT(KEY_C))
+    command = VKR_UI_TEXT_COMMAND_COPY;
+  else if (VKR_UI_SHORTCUT(KEY_X))
+    command = VKR_UI_TEXT_COMMAND_CUT;
+  else if (VKR_UI_SHORTCUT(KEY_V))
+    command = VKR_UI_TEXT_COMMAND_PASTE;
+#undef VKR_UI_SHORTCUT
+  switch (command) {
+  case VKR_UI_TEXT_COMMAND_SELECT_ALL:
+    retained->text_selection = 0u;
+    retained->text_cursor = buffer->length;
+    retained->text_dragging = false_v;
+    break;
+  case VKR_UI_TEXT_COMMAND_COPY:
+  case VKR_UI_TEXT_COMMAND_CUT:
+    if (selection_end > selection_begin &&
+        vkr_platform_clipboard_write_text(buffer->data + selection_begin,
+                                          selection_end - selection_begin) &&
+        !read_only && command == VKR_UI_TEXT_COMMAND_CUT)
+      changed |= vkr_ui_text_erase(system, buffer, retained, selection_begin,
+                                   selection_end, VKR_UI_TEXT_EDIT_OTHER);
+    break;
+  case VKR_UI_TEXT_COMMAND_PASTE:
+    if (!read_only)
+      changed |= vkr_ui_text_paste(system, buffer, retained);
+    break;
+  case VKR_UI_TEXT_COMMAND_DELETE:
+    if (!read_only)
+      changed |= vkr_ui_text_erase(system, buffer, retained, selection_begin,
+                                   selection_end, VKR_UI_TEXT_EDIT_OTHER);
+    break;
+  case VKR_UI_TEXT_COMMAND_UNDO:
+  case VKR_UI_TEXT_COMMAND_REDO:
+    if (!read_only)
+      changed |= vkr_ui_text_history_step(system, buffer, retained,
+                                          command == VKR_UI_TEXT_COMMAND_REDO);
+    break;
+  case VKR_UI_TEXT_COMMAND_NONE:
+    break;
+  }
+  if (!read_only && !shortcut) {
+    uint32_t character_count = 0u;
+    const uint32_t *characters = input_get_characters(input, &character_count);
+    for (uint32_t i = 0u; i < character_count; ++i) {
+      if (characters[i] < 0x20u || characters[i] == 0x7fu)
+        continue;
+      vkr_ui_text_checkpoint(system, buffer, retained, VKR_UI_TEXT_EDIT_TYPE);
+      if (vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
+                                  &retained->text_selection, characters[i])) {
+        changed = true_v;
+        system->text_edit_cursor = retained->text_cursor;
+      }
+    }
+  }
+  selection_begin = Min(retained->text_cursor, retained->text_selection);
+  selection_end = Max(retained->text_cursor, retained->text_selection);
+  const uint8_t *data = buffer->data;
+  if (!read_only && vkr_ui_key_repeat(system, KEY_BACKSPACE)) {
+    /* Option deletes the previous word, Command back to the line start. */
+    const uint8_t modifiers = input_key_press_modifiers(input, KEY_BACKSPACE);
+    if (selection_begin == selection_end)
+      selection_begin = vkr_ui_line_modifier(modifiers)
+                            ? vkr_ui_text_line_start(data, selection_begin)
+                        : vkr_ui_word_modifier(modifiers)
+                            ? vkr_ui_text_word_left(data, selection_begin)
+                            : vkr_ui_utf8_previous(data, selection_begin);
+    if (vkr_ui_text_erase(system, buffer, retained, selection_begin,
+                          selection_end, VKR_UI_TEXT_EDIT_ERASE)) {
+      changed = true_v;
+      system->text_edit_cursor = retained->text_cursor;
+    }
+  } else if (!read_only && vkr_ui_key_repeat(system, KEY_DELETE)) {
+    const uint8_t modifiers = input_key_press_modifiers(input, KEY_DELETE);
+    if (selection_begin == selection_end)
+      selection_end =
+          vkr_ui_line_modifier(modifiers)
+              ? vkr_ui_text_line_end(data, buffer->length, selection_end)
+          : vkr_ui_word_modifier(modifiers)
+              ? vkr_ui_text_word_right(data, buffer->length, selection_end)
+              : vkr_ui_utf8_next(data, buffer->length, selection_end);
+    changed |= vkr_ui_text_erase(system, buffer, retained, selection_begin,
+                                 selection_end, VKR_UI_TEXT_EDIT_OTHER);
+  }
+  selection_begin = Min(retained->text_cursor, retained->text_selection);
+  selection_end = Max(retained->text_cursor, retained->text_selection);
+  bool8_t shift = vkr_ui_shift_down(system);
+  bool8_t moved = false_v;
+  const Keys horizontal[2] = {KEY_LEFT, KEY_RIGHT};
+  for (uint32_t side = 0u; side < 2u; ++side) {
+    if (!vkr_ui_key_repeat(system, horizontal[side]))
+      continue;
+    const uint8_t modifiers =
+        input_key_press_modifiers(input, horizontal[side]);
+    shift = (modifiers & VKR_INPUT_MOD_SHIFT) != 0;
+    const uint32_t cursor = retained->text_cursor;
+    if (vkr_ui_line_modifier(modifiers))
+      retained->text_cursor =
+          side ? vkr_ui_text_line_end(data, buffer->length, cursor)
+               : vkr_ui_text_line_start(data, cursor);
+    else if (vkr_ui_word_modifier(modifiers))
+      retained->text_cursor =
+          side ? vkr_ui_text_word_right(data, buffer->length, cursor)
+               : vkr_ui_text_word_left(data, cursor);
+    else if (!shift && selection_begin != selection_end)
+      retained->text_cursor = side ? selection_end : selection_begin;
+    else
+      retained->text_cursor =
+          side ? vkr_ui_utf8_next(data, buffer->length, cursor)
+               : vkr_ui_utf8_previous(data, cursor);
+    moved = true_v;
+  }
+  const int32_t vertical = (int32_t)vkr_ui_key_repeat(system, KEY_DOWN) -
+                           (int32_t)vkr_ui_key_repeat(system, KEY_UP);
+  if (vertical) {
+    const Keys key = vertical > 0 ? KEY_DOWN : KEY_UP;
+    const uint8_t modifiers = input_key_press_modifiers(input, key);
+    shift = (modifiers & VKR_INPUT_MOD_SHIFT) != 0;
+    if (vkr_ui_line_modifier(modifiers) ||
+        retained->text.layout.line_count <= 1u) {
+      /* Command, or a single line: to the text's start or end. */
+      retained->text_cursor = vertical > 0 ? buffer->length : 0u;
+    } else {
+      Vec2 target =
+          vkr_ui_text_cursor_position(&retained->text, retained->text_cursor);
+      target.y += ((float32_t)vertical + 0.5f) *
+                  vkr_ui_text_line_height(&retained->text);
+      retained->text_cursor = vkr_ui_text_mouse_cursor(&retained->text, target);
+    }
+    moved = true_v;
+  }
+  if (vkr_ui_key_pressed(system, KEY_HOME)) {
+    shift =
+        (input_key_press_modifiers(input, KEY_HOME) & VKR_INPUT_MOD_SHIFT) != 0;
+    retained->text_cursor = 0u;
+    moved = true_v;
+  }
+  if (vkr_ui_key_pressed(system, KEY_END)) {
+    shift =
+        (input_key_press_modifiers(input, KEY_END) & VKR_INPUT_MOD_SHIFT) != 0;
+    retained->text_cursor = buffer->length;
+    moved = true_v;
+  }
+  if (moved && !shift)
+    retained->text_selection = retained->text_cursor;
+  *out_moved = moved;
+  return changed;
+}
+
+/* The word, or run of spaces or punctuation, around a byte offset. */
+vkr_internal void vkr_ui_text_select_word(const VkrUiTextEditBuffer *buffer,
+                                          VkrUiRetainedState *retained) {
+  const uint8_t *data = buffer->data;
+  uint32_t at = Min(retained->text_cursor, buffer->length);
+  if (at == buffer->length && at > 0u)
+    at = vkr_ui_utf8_previous(data, at);
+  if (at >= buffer->length)
+    return;
+  const bool8_t word = vkr_ui_text_word_byte(data[at]);
+  uint32_t begin = at;
+  uint32_t end = at;
+  while (begin > 0u && vkr_ui_text_word_byte(data[begin - 1u]) == word &&
+         data[begin - 1u] != '\n')
+    begin = vkr_ui_utf8_previous(data, begin);
+  while (end < buffer->length && vkr_ui_text_word_byte(data[end]) == word &&
+         data[end] != '\n')
+    end = vkr_ui_utf8_next(data, buffer->length, end);
+  retained->text_selection = begin;
+  retained->text_cursor = end;
+}
+
 bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
                           VkrUiTextEditBuffer *buffer,
                           const VkrUiWidgetConfig *source_config) {
@@ -1479,7 +1849,16 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
     return false_v;
   (void)vkr_ui_interact(system, node, true_v);
   VkrUiRetainedState *retained = node->retained;
+  retained->text_read_only = config->read_only;
   const uint32_t previous_cursor = retained->text_cursor;
+  /* A queued command focuses its field. */
+  VkrUiTextCommand command = VKR_UI_TEXT_COMMAND_NONE;
+  if (system->text_command_id == id && !node->disabled) {
+    command = system->text_command;
+    system->text_command_id = VKR_UI_ID_NONE;
+    system->text_command = VKR_UI_TEXT_COMMAND_NONE;
+    system->focused_id = id;
+  }
   if (!node->disabled && !system->mouse_captured &&
       node->input_layer == system->keyboard_input_layer) {
     const VkrUiRect box =
@@ -1495,9 +1874,23 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
             (float32_t)press_y - box.y + retained->scroll_offset.y};
         retained->text_cursor =
             vkr_ui_text_mouse_cursor(&retained->text, anchor);
-        if (!vkr_ui_shift_down(system))
-          retained->text_selection = retained->text_cursor;
-        retained->text_dragging = true_v;
+        /* Presses close together count up: two select a word, three the
+           whole text. */
+        const bool8_t again =
+            system->time_seconds - retained->text_click_time < 0.4;
+        retained->text_clicks =
+            again ? (uint8_t)Min(retained->text_clicks + 1u, 3u) : 1u;
+        retained->text_click_time = system->time_seconds;
+        if (retained->text_clicks == 2u) {
+          vkr_ui_text_select_word(buffer, retained);
+        } else if (retained->text_clicks == 3u) {
+          retained->text_selection = 0u;
+          retained->text_cursor = buffer->length;
+        } else {
+          if (!vkr_ui_shift_down(system))
+            retained->text_selection = retained->text_cursor;
+          retained->text_dragging = true_v;
+        }
       }
     }
     if (retained->text_dragging) {
@@ -1515,6 +1908,24 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
             vkr_ui_text_mouse_cursor(&retained->text, endpoint);
       }
     }
+    /* A right click focuses the field and asks its owner for the context
+       menu; outside the selection it first moves the caret there. */
+    if (node->hovered && system->mouse_input_layer == node->input_layer &&
+        input_button_just_pressed(system->input, BUTTON_RIGHT)) {
+      system->focused_id = id;
+      const Vec2 point = {
+          (float32_t)system->mouse_x - box.x + retained->scroll_offset.x,
+          (float32_t)system->mouse_y - box.y + retained->scroll_offset.y};
+      const uint32_t at = vkr_ui_text_mouse_cursor(&retained->text, point);
+      if (at < Min(retained->text_cursor, retained->text_selection) ||
+          at > Max(retained->text_cursor, retained->text_selection)) {
+        retained->text_cursor = at;
+        retained->text_selection = at;
+      }
+      system->text_context_id = id;
+      system->text_context_px =
+          (Vec2){(float32_t)system->mouse_x, (float32_t)system->mouse_y};
+    }
   }
   if (system->mouse_released || system->mouse_captured || node->disabled)
     retained->text_dragging = false_v;
@@ -1528,144 +1939,32 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
          (buffer->data[retained->text_selection] & 0xc0u) == 0x80u)
     --retained->text_selection;
   bool8_t changed = false_v;
-  if (vkr_ui_keyboard_eligible(system, node) && system->focused_id == id) {
+  if (system->focused_id == id && system->text_undo_owner != id) {
+    /* Each field starts its own history when it takes focus. */
+    system->text_undo_owner = id;
+    system->text_undo_count = 0u;
+    system->text_redo_count = 0u;
+    system->text_edit_kind = VKR_UI_TEXT_EDIT_OTHER;
+  }
+  if ((vkr_ui_keyboard_eligible(system, node) || command) &&
+      system->focused_id == id) {
     system->focused_is_text = true_v;
-    uint32_t selection_begin =
-        Min(retained->text_cursor, retained->text_selection);
-    uint32_t selection_end =
-        Max(retained->text_cursor, retained->text_selection);
-    const bool8_t shortcut =
-        input_key_shortcut_modifier(system->input, KEY_A) ||
-        input_key_shortcut_modifier(system->input, KEY_C) ||
-        input_key_shortcut_modifier(system->input, KEY_X) ||
-        input_key_shortcut_modifier(system->input, KEY_V);
-    if (input_key_shortcut_modifier(system->input, KEY_A) &&
-        vkr_ui_key_pressed(system, KEY_A)) {
-      retained->text_selection = 0u;
-      retained->text_cursor = buffer->length;
-      retained->text_dragging = false_v;
-    } else if ((input_key_shortcut_modifier(system->input, KEY_C) &&
-                vkr_ui_key_pressed(system, KEY_C)) ||
-               (input_key_shortcut_modifier(system->input, KEY_X) &&
-                vkr_ui_key_pressed(system, KEY_X))) {
-      if (selection_end > selection_begin &&
-          vkr_platform_clipboard_write_text(buffer->data + selection_begin,
-                                            selection_end - selection_begin) &&
-          !config->read_only &&
-          input_key_shortcut_modifier(system->input, KEY_X) &&
-          vkr_ui_key_pressed(system, KEY_X)) {
-        vkr_ui_text_edit_erase(buffer, selection_begin, selection_end);
-        retained->text_cursor = selection_begin;
-        retained->text_selection = selection_begin;
-        changed = true_v;
-      }
-    } else if (!config->read_only &&
-               input_key_shortcut_modifier(system->input, KEY_V) &&
-               vkr_ui_key_pressed(system, KEY_V)) {
-      // This bounded paste copy expires with the caller's frame scratch.
-      uint8_t *paste =
-          vkr_allocator_alloc(system->frame_allocator, buffer->capacity,
-                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      uint32_t length = 0u;
-      if (paste &&
-          vkr_platform_clipboard_read_text(paste, buffer->capacity, &length)) {
-        for (uint32_t offset = 0u; offset < length;) {
-          const VkrCodepoint cp =
-              vkr_utf8_decode(paste + offset, length - offset);
-          if (cp.byte_length == 0u)
-            break;
-          if (cp.value >= 0x20u && cp.value != 0x7fu) {
-            if (!vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
-                                         &retained->text_selection, cp.value))
-              break;
-            changed = true_v;
-          }
-          offset += cp.byte_length;
-        }
-      }
-    }
-    if (!config->read_only && !shortcut) {
-      uint32_t character_count = 0u;
-      const uint32_t *characters =
-          input_get_characters(system->input, &character_count);
-      for (uint32_t i = 0u; i < character_count; ++i)
-        changed |=
-            vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
-                                    &retained->text_selection, characters[i]);
-    }
-    selection_begin = Min(retained->text_cursor, retained->text_selection);
-    selection_end = Max(retained->text_cursor, retained->text_selection);
-    if (!config->read_only && vkr_ui_key_repeat(system, KEY_BACKSPACE)) {
-      if (selection_begin == selection_end)
-        selection_begin = vkr_ui_utf8_previous(buffer->data, selection_begin);
-      const uint32_t old_length = buffer->length;
-      vkr_ui_text_edit_erase(buffer, selection_begin, selection_end);
-      retained->text_cursor = selection_begin;
-      retained->text_selection = selection_begin;
-      changed |= buffer->length != old_length;
-    } else if (!config->read_only && vkr_ui_key_repeat(system, KEY_DELETE)) {
-      if (selection_begin == selection_end)
-        selection_end =
-            vkr_ui_utf8_next(buffer->data, buffer->length, selection_end);
-      const uint32_t old_length = buffer->length;
-      vkr_ui_text_edit_erase(buffer, selection_begin, selection_end);
-      retained->text_cursor = selection_begin;
-      retained->text_selection = selection_begin;
-      changed |= buffer->length != old_length;
-    }
-    bool8_t shift = vkr_ui_shift_down(system);
     bool8_t moved = false_v;
-    if (vkr_ui_key_repeat(system, KEY_LEFT)) {
-      shift = (input_key_press_modifiers(system->input, KEY_LEFT) &
-               VKR_INPUT_MOD_SHIFT) != 0;
-      retained->text_cursor =
-          !shift && selection_begin != selection_end
-              ? selection_begin
-              : vkr_ui_utf8_previous(buffer->data, retained->text_cursor);
-      moved = true_v;
-    }
-    if (vkr_ui_key_repeat(system, KEY_RIGHT)) {
-      shift = (input_key_press_modifiers(system->input, KEY_RIGHT) &
-               VKR_INPUT_MOD_SHIFT) != 0;
-      retained->text_cursor =
-          !shift && selection_begin != selection_end
-              ? selection_end
-              : vkr_ui_utf8_next(buffer->data, buffer->length,
-                                 retained->text_cursor);
-      moved = true_v;
-    }
-    const int32_t vertical = (int32_t)vkr_ui_key_repeat(system, KEY_DOWN) -
-                             (int32_t)vkr_ui_key_repeat(system, KEY_UP);
-    if (vertical && retained->text.layout.line_count > 1u) {
-      shift = (input_key_press_modifiers(system->input,
-                                         vertical > 0 ? KEY_DOWN : KEY_UP) &
-               VKR_INPUT_MOD_SHIFT) != 0;
-      Vec2 target =
-          vkr_ui_text_cursor_position(&retained->text, retained->text_cursor);
-      target.y += ((float32_t)vertical + 0.5f) *
-                  vkr_ui_text_line_height(&retained->text);
-      retained->text_cursor = vkr_ui_text_mouse_cursor(&retained->text, target);
-      moved = true_v;
-    }
-    if (vkr_ui_key_pressed(system, KEY_HOME)) {
-      shift = (input_key_press_modifiers(system->input, KEY_HOME) &
-               VKR_INPUT_MOD_SHIFT) != 0;
-      retained->text_cursor = 0u;
-      moved = true_v;
-    }
-    if (vkr_ui_key_pressed(system, KEY_END)) {
-      shift = (input_key_press_modifiers(system->input, KEY_END) &
-               VKR_INPUT_MOD_SHIFT) != 0;
-      retained->text_cursor = buffer->length;
-      moved = true_v;
-    }
-    if (moved && !shift)
-      retained->text_selection = retained->text_cursor;
+    changed = vkr_ui_text_field_keys(system, node, buffer, config->read_only,
+                                     command, &moved);
     // Typing or keyboard navigation takes ownership of the caret. A later
     // mouse-up must not reselect text at the old pointer position.
     if (changed || moved)
       retained->text_dragging = false_v;
   }
+  if (system->text_context_id == id)
+    system->text_context_state = (VkrUiTextFieldState){
+        .has_text = buffer->length > 0u,
+        .has_selection = retained->text_cursor != retained->text_selection,
+        .read_only = config->read_only,
+        .can_undo = system->text_undo_owner == id && system->text_undo_count,
+        .can_redo = system->text_undo_owner == id && system->text_redo_count,
+    };
   const String8 content = {.str = buffer->data, .length = buffer->length};
   if (changed && !vkr_ui_text_prepare(system, node, content, &config->text))
     return false_v;
@@ -1697,6 +1996,25 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
   retained->scroll_offset.y = Min(retained->scroll_offset.y,
                                   Max(0.0f, text->bounds.size.y - box.height));
   return changed;
+}
+
+void vkr_ui_text_field_command(VkrUiSystem *system, VkrUiId id,
+                               VkrUiTextCommand command) {
+  if (system && id != VKR_UI_ID_NONE) {
+    system->text_command_id = id;
+    system->text_command = command;
+  }
+}
+
+bool8_t vkr_ui_text_context_take(VkrUiSystem *system, VkrUiId *out_id,
+                                 Vec2 *out_px, VkrUiTextFieldState *out_state) {
+  if (!system || system->text_context_id == VKR_UI_ID_NONE)
+    return false_v;
+  *out_id = system->text_context_id;
+  *out_px = system->text_context_px;
+  *out_state = system->text_context_state;
+  system->text_context_id = VKR_UI_ID_NONE;
+  return true_v;
 }
 
 vkr_internal VkrUiTrack vkr_ui_track_resolve_points(VkrUiTrack track,
@@ -1835,12 +2153,16 @@ vkr_internal VkrUiGridItem vkr_ui_grid_item_from_node(VkrUiSystem *system,
       (child->kind == VKR_UI_NODE_LABEL || child->kind == VKR_UI_NODE_BUTTON ||
        child->kind == VKR_UI_NODE_CHECKBOX ||
        child->kind == VKR_UI_NODE_TEXT_FIELD);
+  /* Like a native input, a field keeps its cell's width instead of growing
+     with what is typed; its height stays its content's. */
+  const bool8_t content_width =
+      text_widget && child->kind != VKR_UI_NODE_TEXT_FIELD;
   return (VkrUiGridItem){
       .column = placement.column,
       .row = placement.row,
       .column_span = Min(placement.column_span, columns),
       .row_span = Min(placement.row_span, rows),
-      .justify = text_widget && placement.justify == VKR_UI_ALIGN_STRETCH
+      .justify = content_width && placement.justify == VKR_UI_ALIGN_STRETCH
                      ? VKR_UI_ALIGN_START
                      : placement.justify,
       .align = text_widget && placement.align == VKR_UI_ALIGN_STRETCH

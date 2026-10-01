@@ -286,6 +286,39 @@ typedef struct VkrUiWidgetConfig {
   String8 tooltip;
 } VkrUiWidgetConfig;
 
+/** Editing commands a text field accepts from outside its keyboard input,
+ * such as a context menu. */
+typedef enum VkrUiTextCommand {
+  VKR_UI_TEXT_COMMAND_NONE = 0,
+  VKR_UI_TEXT_COMMAND_UNDO,
+  VKR_UI_TEXT_COMMAND_REDO,
+  VKR_UI_TEXT_COMMAND_CUT,
+  VKR_UI_TEXT_COMMAND_COPY,
+  VKR_UI_TEXT_COMMAND_PASTE,
+  VKR_UI_TEXT_COMMAND_DELETE,
+  VKR_UI_TEXT_COMMAND_SELECT_ALL,
+} VkrUiTextCommand;
+
+/** What a text field's context menu can offer. */
+typedef struct VkrUiTextFieldState {
+  bool8_t has_text;
+  bool8_t has_selection;
+  bool8_t read_only;
+  bool8_t can_undo;
+  bool8_t can_redo;
+} VkrUiTextFieldState;
+
+/* The focused field keeps this many undo and redo steps; longer fields keep
+ * none. */
+#define VKR_UI_TEXT_UNDO_DEPTH 24u
+#define VKR_UI_TEXT_UNDO_BYTES 256u
+
+typedef struct VkrUiTextSnapshot {
+  uint32_t length;
+  uint32_t cursor;
+  uint8_t data[VKR_UI_TEXT_UNDO_BYTES];
+} VkrUiTextSnapshot;
+
 typedef struct VkrUiTextEditBuffer {
   uint8_t *data;
   uint32_t length;
@@ -432,6 +465,24 @@ typedef struct VkrUiSystem {
   VkrWindowCursor cursor;
   /** Accumulated UI time, used for the caret blink. */
   float64_t time_seconds;
+  /** Undo history of the focused text field `text_undo_owner`. Typing within
+   * a second at the caret coalesces into one step. */
+  VkrUiId text_undo_owner;
+  VkrUiTextSnapshot text_undo[VKR_UI_TEXT_UNDO_DEPTH];
+  VkrUiTextSnapshot text_redo[VKR_UI_TEXT_UNDO_DEPTH];
+  uint32_t text_undo_count;
+  uint32_t text_redo_count;
+  uint32_t text_edit_kind;
+  uint32_t text_edit_cursor;
+  float64_t text_edit_time;
+  /** A text field right-clicked this frame, the pointer in pixels and the
+   * field's state then; taken by vkr_ui_text_context_take. */
+  VkrUiId text_context_id;
+  Vec2 text_context_px;
+  VkrUiTextFieldState text_context_state;
+  /** One command queued for a field by vkr_ui_text_field_command. */
+  VkrUiId text_command_id;
+  VkrUiTextCommand text_command;
 
   uint32_t offscreen_width;
   uint32_t offscreen_height;
@@ -564,6 +615,15 @@ VkrUiInputCapture vkr_ui_system_capture(const VkrUiSystem *system);
  * Popups use it to anchor beneath the control that opened them. */
 bool8_t vkr_ui_widget_rect(const VkrUiSystem *system, VkrUiId id,
                            VkrUiRect *out_rect);
+
+/** Queue `command` for text field `id`; it applies, and the field takes
+ * keyboard focus, during the field's next build. */
+void vkr_ui_text_field_command(VkrUiSystem *system, VkrUiId id,
+                               VkrUiTextCommand command);
+/** The text field right-clicked since the last call, with the pointer in
+ * pixels and what its menu can offer; false when none was. */
+bool8_t vkr_ui_text_context_take(VkrUiSystem *system, VkrUiId *out_id,
+                                 Vec2 *out_px, VkrUiTextFieldState *out_state);
 
 /** Place a text field's caret (collapsing its selection) at a byte offset,
  * for callers that replace the buffer, such as autocomplete. */

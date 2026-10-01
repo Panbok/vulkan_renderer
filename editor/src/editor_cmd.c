@@ -783,18 +783,55 @@ static bool8_t cmd_run_ui_drag(CmdContext *ctx, const CmdDef *def,
   return true_v;
 }
 
-/* ui.key <up|down|left|right|enter|escape|tab> presses and releases a key
- * on separate frames, for scripted checks of keyboard navigation. */
+/* ui.key [cmd+|alt+|ctrl+|shift+]<key> presses the modifiers, then presses
+ * and releases the key and releases the modifiers, one edge per frame, for
+ * scripted checks of keyboard navigation and editing shortcuts. */
 static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
   (void)def;
   static const struct {
     const char *name;
     Keys key;
-  } keys[] = {{"up", KEY_UP},       {"down", KEY_DOWN},
-              {"left", KEY_LEFT},   {"right", KEY_RIGHT},
-              {"enter", KEY_ENTER}, {"escape", KEY_ESCAPE},
-              {"tab", KEY_TAB}};
-  const String8 word = cmd_unquote(arg);
+  } keys[] = {{"up", KEY_UP},
+              {"down", KEY_DOWN},
+              {"left", KEY_LEFT},
+              {"right", KEY_RIGHT},
+              {"enter", KEY_ENTER},
+              {"escape", KEY_ESCAPE},
+              {"tab", KEY_TAB},
+              {"backspace", KEY_BACKSPACE},
+              {"delete", KEY_DELETE},
+              {"home", KEY_HOME},
+              {"end", KEY_END},
+              {"a", KEY_A},
+              {"c", KEY_C},
+              {"v", KEY_V},
+              {"x", KEY_X},
+              {"y", KEY_Y},
+              {"z", KEY_Z}};
+  static const struct {
+    const char *prefix;
+    Keys key;
+  } modifiers[] = {{"cmd+", KEY_LWIN},
+                   {"alt+", KEY_LMENU},
+                   {"ctrl+", KEY_LCONTROL},
+                   {"shift+", KEY_LSHIFT}};
+  String8 word = cmd_unquote(arg);
+  Keys held[ArrayCount(modifiers)];
+  uint32_t held_count = 0u;
+  for (bool8_t found = true_v; found;) {
+    found = false_v;
+    for (uint32_t m = 0; m < ArrayCount(modifiers); ++m) {
+      const uint64_t length = strlen(modifiers[m].prefix);
+      if (word.length > length &&
+          !MemCompare(modifiers[m].prefix, word.str, length) &&
+          held_count < ArrayCount(held)) {
+        held[held_count++] = modifiers[m].key;
+        word.str += length;
+        word.length -= length;
+        found = true_v;
+      }
+    }
+  }
   VkrEditorUi *editor = ctx->editor;
   for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
     if (strlen(keys[i].name) != word.length ||
@@ -802,17 +839,54 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
       continue;
     }
     editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
+    for (uint32_t m = 0; m < held_count; ++m) {
+      int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
+      step[0] = 3;
+      step[3] = (int32_t)held[m];
+    }
     for (int32_t phase = 3; phase <= 4; ++phase) {
       int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
       step[0] = phase;
       step[3] = (int32_t)keys[i].key;
     }
-    snprintf(ctx->message, sizeof(ctx->message), "Key %s", keys[i].name);
+    for (uint32_t m = 0; m < held_count; ++m) {
+      int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
+      step[0] = 4;
+      step[3] = (int32_t)held[m];
+    }
+    snprintf(ctx->message, sizeof(ctx->message), "Key %.*s",
+             (int32_t)arg.length, (const char *)arg.str);
     return true_v;
   }
   snprintf(ctx->message, sizeof(ctx->message),
-           "ui.key needs up, down, left, right, enter, escape or tab");
+           "ui.key needs [cmd+|alt+|ctrl+|shift+] and up, down, left, right, "
+           "enter, escape, tab, backspace, delete, home, end, a, c, v, x, y "
+           "or z");
   return false_v;
+}
+
+/* ui.type <text> commits up to 32 ASCII characters to the focused field, one
+ * per frame, as the keyboard's text input would. */
+static bool8_t cmd_run_ui_type(CmdContext *ctx, const CmdDef *def,
+                               String8 arg) {
+  (void)def;
+  const String8 text = cmd_unquote(arg);
+  VkrEditorUi *editor = ctx->editor;
+  if (!text.length || text.length > ArrayCount(editor->cmd_pointer_steps)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "ui.type needs 1 to %u characters",
+             (uint32_t)ArrayCount(editor->cmd_pointer_steps));
+    return false_v;
+  }
+  editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
+  for (uint64_t i = 0; i < text.length; ++i) {
+    int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
+    step[0] = 5;
+    step[3] = (int32_t)text.str[i];
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Typed %u characters",
+           (uint32_t)text.length);
+  return true_v;
 }
 
 void vkr_editor_cmd_pointer_input(VkrEditorUi *editor, InputState *input) {
@@ -824,6 +898,8 @@ void vkr_editor_cmd_pointer_input(VkrEditorUi *editor, InputState *input) {
   const int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_next++];
   if (step[0] == 0) {
     input_process_mouse_move(input, step[1], step[2]);
+  } else if (step[0] == 5) {
+    (void)input_process_char(input, (uint32_t)step[3]);
   } else if (step[0] >= 3) {
     input_process_key(input, (Keys)step[3], step[0] == 3);
   } else {
@@ -1567,9 +1643,12 @@ static const CmdDef cmd_defs[] = {
     {"ui.click", CMD_ARG_TEXT, "<x> <y> [count] [right]",
      "Click the window at a point, as the mouse would", cmd_run_ui_click,
      CMD_COUNT, 0u},
-    {"ui.key", CMD_ARG_TEXT, "<key>",
-     "Press and release a navigation key, as the keyboard would",
+    {"ui.key", CMD_ARG_TEXT, "[cmd+|alt+|ctrl+|shift+]<key>",
+     "Press and release a key with modifiers, as the keyboard would",
      cmd_run_ui_key, CMD_COUNT, 0u},
+    {"ui.type", CMD_ARG_TEXT, "<text>",
+     "Type characters into the focused field, as the keyboard would",
+     cmd_run_ui_type, CMD_COUNT, 0u},
     {"ui.drag", CMD_ARG_TEXT, "<x0> <y0> <x1> <y1>",
      "Drag with the left button between two window points", cmd_run_ui_drag,
      CMD_COUNT, 0u},

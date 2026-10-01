@@ -57,8 +57,11 @@ presentation extent; editor output is the Scene image extent.
 
 Text labels, buttons, checkboxes and text fields size to measured content plus
 padding and borders. A caller's explicit minimum applies on each axis; a stretch
-track does not enlarge the text box by itself. Text fields have no implicit
-120-by-24-point minimum. Panels and scroll containers still fill their tracks;
+track does not enlarge the text box by itself, except that a text field placed
+with horizontal STRETCH fills its cell's width, as a native input keeps its
+width while text is typed; its height stays its content's. Text fields have no implicit 120-by-24-point minimum. A button with a
+`trailing_icon`, such as a dropdown's caret, measures the icon into its content
+and reads from its leading edge, as does a button with `leading` set. Panels and scroll containers still fill their tracks;
 intentional fixed interaction regions, including Console detail, declare their
 minimum dimensions. Maximum dimensions bound overflow and wrapping.
 
@@ -203,7 +206,13 @@ moves to the declared bounds. Tab then reaches the visible child controls. A
 focused container keeps its border visible without moving its children's layout.
 Keyboard scope follows floating input layers, including popups. Text fields
 support UTF-8 clipboard input, mouse and keyboard selection, Cmd/Ctrl A/C/X/V,
-read-only selection, and caret scrolling. Text drags retain their press anchor
+read-only selection, and caret scrolling. They follow native conventions:
+Option (Control elsewhere) moves and deletes by word, Command moves and deletes
+to the line's ends on macOS, double- and triple-click select a word and the
+whole text, and Cmd/Ctrl Z, Shift+Z or Y undo and redo up to 24 steps in the
+focused field, with typing at the caret within a second coalesced. A right
+click opens Undo, Redo, Cut, Copy, Paste, Delete and Select All in the editor's
+context menu, which applies them through `vkr_ui_text_field_command`. Text drags retain their press anchor
 through the final movement; keyboard editing ends the prior mouse selection.
 The controls do not provide a native
 VoiceOver or Windows UI Automation tree.

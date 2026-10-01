@@ -579,6 +579,9 @@ vkr_internal void test_ui_text_widgets_size_to_content(void) {
   enum { LABEL, BUTTON, FIELD, CHECKBOX, DEFAULT_FIELD, PANEL, SCROLL };
   // The fixture's A advances 6pt at 10pt/em; its line is 12.5pt high.
   // Padding adds 6x4pt, borders add 2x2pt, and a field reserves a 1pt caret.
+  // A stretched field fills its cell's width, as a native input does (a
+  // 1000pt expectation clamps to the 200pt root); a placed one keeps its
+  // content width.
   const struct {
     uint32_t kind;
     const char *content;
@@ -590,13 +593,20 @@ vkr_internal void test_ui_text_widgets_size_to_content(void) {
   } cases[] = {
       {.kind = LABEL, .content = "A", .expected = {14, 18.5f}},
       {.kind = BUTTON, .content = "AA", .expected = {20, 18.5f}},
-      {.kind = FIELD, .content = "A", .expected = {15, 18.5f}},
-      {.kind = FIELD, .content = "", .expected = {9, 18.5f}},
+      {.kind = FIELD, .content = "A", .expected = {1000, 18.5f}},
+      {.kind = FIELD, .content = "", .expected = {1000, 18.5f}},
+      {.kind = FIELD,
+       .content = "A",
+       .expected = {15, 18.5f},
+       .align_end = true_v},
       {.kind = LABEL,
        .content = "A",
        .minimum = {40, 0},
        .expected = {40, 18.5f}},
-      {.kind = FIELD, .content = "A", .minimum = {0, 30}, .expected = {15, 30}},
+      {.kind = FIELD,
+       .content = "A",
+       .minimum = {0, 30},
+       .expected = {1000, 30}},
       {.kind = BUTTON,
        .content = "A",
        .minimum = {40, 0},
@@ -619,7 +629,7 @@ vkr_internal void test_ui_text_widgets_size_to_content(void) {
        .content = "A",
        .expected = {14, 18.5f},
        .align_end = true_v},
-      {.kind = DEFAULT_FIELD, .content = "", .expected = {13, 25.5f}},
+      {.kind = DEFAULT_FIELD, .content = "", .expected = {1000, 25.5f}},
       {.kind = PANEL, .content = "", .expected = {200, 100}},
       {.kind = SCROLL, .content = "", .expected = {200, 100}},
   };
@@ -692,7 +702,7 @@ vkr_internal void test_ui_text_widgets_size_to_content(void) {
       const float32_t width = Min(200.0f, cases[i].expected.x * scales[scale]);
       const float32_t height = Min(100.0f, cases[i].expected.y * scales[scale]);
       assert_f32_eq(maximum.x - minimum.x, width, 0.001f,
-                    "text boxes take only content/minimum width");
+                    "text boxes take content/minimum width; fields fill");
       assert_f32_eq(maximum.y - minimum.y, height, 0.001f,
                     "text boxes take only content/minimum height");
       assert_f32_eq(minimum.x, cases[i].align_end ? (200 - width) * 0.5f : 0,

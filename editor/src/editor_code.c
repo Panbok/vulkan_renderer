@@ -1985,11 +1985,15 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
   VkrUiTextEditBuffer name = {.data = code->name_text,
                               .length = code->name_length,
                               .capacity = sizeof(code->name_text)};
+  /* The new field takes the keyboard on the window's layer, which a click
+     elsewhere (such as Content's New script) left on another; the request
+     holds until the field owns it. */
+  const VkrUiId name_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("name"));
   if (code->naming_focus) {
-    ui->focused_id =
-        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("name"));
+    ui->focused_id = name_id;
     ui->focused_is_text = true_v;
-    code->naming_focus = false_v;
+    (void)vkr_ui_keyboard_layer_set(ui, ui->input_layer);
   }
   VkrUiWidgetConfig field = code_button(1u, 0u);
   vkr_editor_field_style(&field);
@@ -1997,6 +2001,11 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
   field.tooltip = string8_lit("Letters, digits and underscores, such as Door");
   (void)vkr_ui_text_field(ui, string8_lit("name"), &name, &field);
   code->name_length = name.length;
+  if (code->naming_focus && ui->focused_id == name_id &&
+      ui->keyboard_input_layer == ui->input_layer &&
+      vkr_ui_widget_rect(ui, name_id, &(VkrUiRect){0})) {
+    code->naming_focus = false_v;
+  }
   VkrUiWidgetConfig ok = code_button(2u, 0u);
   vkr_editor_primary_style(&ok, VKR_FONT_HANDLE_INVALID);
   ok.disabled = !code->name_length;
