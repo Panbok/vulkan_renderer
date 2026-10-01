@@ -261,9 +261,10 @@ vkr_internal void vkr_mesh_compute_local_bounds(VkrMesh *mesh) {
       continue;
     }
 
-    // Submesh bounds store center + min/max extents (relative to center).
-    Vec3 geo_min = vec3_add(submesh->center, submesh->min_extents);
-    Vec3 geo_max = vec3_add(submesh->center, submesh->max_extents);
+    // Submesh extents are absolute local-space bounds; center is their
+    // midpoint, as cooking and range validation define them.
+    Vec3 geo_min = submesh->min_extents;
+    Vec3 geo_max = submesh->max_extents;
 
     // Union with current bounds
     union_min.x = vkr_min_f32(union_min.x, geo_min.x);
@@ -1463,8 +1464,8 @@ vkr_internal bool8_t vkr_mesh_manager_acquire_merged_geometry(
 
   for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
     const VkrGeometryUploadRange *range = &mesh_result->submeshes.data[i];
-    Vec3 range_min = vec3_add(range->center, range->min_extents);
-    Vec3 range_max = vec3_add(range->center, range->max_extents);
+    Vec3 range_min = range->min_extents;
+    Vec3 range_max = range->max_extents;
     union_min.x = vkr_min_f32(union_min.x, range_min.x);
     union_min.y = vkr_min_f32(union_min.y, range_min.y);
     union_min.z = vkr_min_f32(union_min.z, range_min.z);
@@ -2766,8 +2767,8 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
 
     built_count++;
 
-    Vec3 sub_min = vec3_add(submesh->center, submesh->min_extents);
-    Vec3 sub_max = vec3_add(submesh->center, submesh->max_extents);
+    Vec3 sub_min = submesh->min_extents;
+    Vec3 sub_max = submesh->max_extents;
     bounds_union_min.x = vkr_min_f32(bounds_union_min.x, sub_min.x);
     bounds_union_min.y = vkr_min_f32(bounds_union_min.y, sub_min.y);
     bounds_union_min.z = vkr_min_f32(bounds_union_min.z, sub_min.z);
@@ -3029,8 +3030,8 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     built_count++;
 
     // Update asset bounds
-    Vec3 sub_min = vec3_add(submesh->center, submesh->min_extents);
-    Vec3 sub_max = vec3_add(submesh->center, submesh->max_extents);
+    Vec3 sub_min = submesh->min_extents;
+    Vec3 sub_max = submesh->max_extents;
     bounds_union_min.x = vkr_min_f32(bounds_union_min.x, sub_min.x);
     bounds_union_min.y = vkr_min_f32(bounds_union_min.y, sub_min.y);
     bounds_union_min.z = vkr_min_f32(bounds_union_min.z, sub_min.z);
