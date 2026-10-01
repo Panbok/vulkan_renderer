@@ -111,6 +111,10 @@ bool8_t vkr_editor_entity_mesh_from(const VkrSampleUiFrame *frame,
    finalize (ADR-077); it stays locked against deletion and reparenting. */
 bool8_t vkr_editor_scene_panels_cooking(const VkrEditorScenePanels *panels,
                                         VkrEntityId entity);
+/* The Outliner turned viewport icons off for `entity` or an ancestor. */
+bool8_t vkr_editor_scene_panels_icons_off(const VkrEditorScenePanels *panels,
+                                          const VkrSampleUiFrame *frame,
+                                          VkrEntityId entity);
 
 bool8_t vkr_editor_scene_panels_write_json(const VkrEditorScenePanels *panels,
                                            VkrJsonWriter *writer);

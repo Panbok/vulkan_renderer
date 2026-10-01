@@ -25,6 +25,9 @@
   (PHYSICS_JOINT_BASE + VKR_SCENE_PHYSICS_MAX_JOINTS * 22u)
 #define NO_ROW UINT32_MAX
 #define TREE_VISIBLE_SLOTS 96u
+/* Rows of pinned objects and their expanded descendants, drawn above the
+   tree. */
+#define TREE_PINNED_ROW_MAX 64u
 
 /* Hierarchy containers (ADR-076): the root World, the active scene, then
    additive scenes by slot. */
@@ -44,6 +47,12 @@ typedef struct EditorTreeNode {
   bool8_t header;
   bool8_t expanded;
   bool8_t match;
+  /* Pinned to the Outliner's top with its subtree. */
+  bool8_t pinned;
+  /* The object and its descendants show no viewport icon; `icons_hidden`
+     is the row's own toggle, `icons_off` includes an ancestor's. */
+  bool8_t icons_hidden;
+  bool8_t icons_off;
   /* Its model's textures encode in a background finalize (ADR-077). */
   bool8_t cooking;
 } EditorTreeNode;
@@ -77,6 +86,9 @@ struct VkrEditorScenePanels {
   /* Nodes the last rebuild laid out: headers and directory slots. */
   uint32_t node_total;
   uint32_t row_count;
+  uint32_t pinned_rows[TREE_PINNED_ROW_MAX];
+  uint32_t pinned_depths[TREE_PINNED_ROW_MAX];
+  uint32_t pinned_row_count;
   uint32_t live_count;
   uint32_t selected_row;
   uint64_t generation;
@@ -353,13 +365,14 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
     for (uint32_t i = slots; i-- > 0;) {
       EditorTreeNode *n = &p->nodes[base + 1u + i];
       VkrEntityId id = vkr_entity_id_from_index(s->world, i);
-      bool8_t expanded =
-          !new_scene && n->entity.u64 == id.u64 ? n->expanded : false_v;
+      const bool8_t kept = !new_scene && n->entity.u64 == id.u64;
       *n = (EditorTreeNode){.parent = NO_ROW,
                             .child = NO_ROW,
                             .next = NO_ROW,
                             .container = (uint8_t)containers[c].kind,
-                            .expanded = expanded};
+                            .expanded = kept && n->expanded,
+                            .pinned = kept && n->pinned,
+                            .icons_hidden = kept && n->icons_hidden};
       // Directory capacity includes vacant slots. A reconstructed generation
       // alone does not prove liveness; occupied records own the live entities.
       if (!s->world->dir.records[i].chunk)
@@ -417,6 +430,40 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
       if (p->nodes[parent].header)
         p->container_collapsed[p->nodes[parent].container] = false_v;
       parent = p->nodes[parent].parent;
+    }
+  }
+  /* An object's icons stay off while any ancestor turns them off. */
+  for (uint32_t i = 0; i < capacity; ++i) {
+    EditorTreeNode *n = &p->nodes[i];
+    uint32_t at = i;
+    n->icons_off = false_v;
+    while (n->entity.u64 && at != NO_ROW && !p->nodes[at].header &&
+           !n->icons_off) {
+      n->icons_off = p->nodes[at].icons_hidden;
+      at = p->nodes[at].parent;
+    }
+  }
+  /* Pinned objects, in tree order, each followed by its expanded subtree. */
+  p->pinned_row_count = 0;
+  for (uint32_t i = 0; i < capacity; ++i) {
+    if (!p->nodes[i].pinned || !p->nodes[i].entity.u64)
+      continue;
+    uint32_t at = i;
+    uint32_t level = 0;
+    while (at != NO_ROW && p->pinned_row_count < TREE_PINNED_ROW_MAX) {
+      p->pinned_rows[p->pinned_row_count] = at;
+      p->pinned_depths[p->pinned_row_count++] = level;
+      const EditorTreeNode *n = &p->nodes[at];
+      if (n->child != NO_ROW && n->expanded) {
+        at = n->child;
+        ++level;
+        continue;
+      }
+      while (at != i && p->nodes[at].next == NO_ROW) {
+        at = p->nodes[at].parent;
+        --level;
+      }
+      at = at == i ? NO_ROW : p->nodes[at].next;
     }
   }
   p->row_count = 0;
@@ -501,6 +548,18 @@ static void tree_mark_cooking(VkrEditorScenePanels *p,
   }
 }
 
+bool8_t vkr_editor_scene_panels_icons_off(const VkrEditorScenePanels *panels,
+                                          const VkrSampleUiFrame *frame,
+                                          VkrEntityId entity) {
+  TreeContainer containers[TREE_CONTAINER_COUNT];
+  uint32_t total = 0u;
+  const uint32_t node = tree_node_index(
+      containers, tree_containers(frame, containers, &total), entity);
+  return node != NO_ROW && node < panels->capacity &&
+         panels->nodes[node].entity.u64 == entity.u64 &&
+         panels->nodes[node].icons_off;
+}
+
 bool8_t vkr_editor_scene_panels_cooking(const VkrEditorScenePanels *panels,
                                         VkrEntityId entity) {
   for (uint32_t i = 0u; panels && entity.u64 && i < panels->node_total; ++i) {
@@ -525,9 +584,14 @@ static bool8_t tree_additive_changed(const VkrEditorScenePanels *p,
 }
 
 #define HIERARCHY_ROW_PT 24.0f
-#define HIERARCHY_INDENT_PT 16.0f
-#define HIERARCHY_LIST_TOP_PT 40.0f
+#define HIERARCHY_INDENT_PT 14.0f
+/* The search toolbar above the column header. */
+#define HIERARCHY_TOOLS_PT 40.0f
+#define HIERARCHY_HEADER_PT 24.0f
 #define HIERARCHY_FOOTER_PT 22.0f
+#define HIERARCHY_TOGGLE_PT 20.0f
+/* Pinned rows shown before the pinned block scrolls no further. */
+#define HIERARCHY_PINNED_ROWS_SHOWN 8u
 
 /* Type icon and category hue for a hierarchy row, Godot-style: lights amber,
  * geometry blue, physics green, groups neutral. */
@@ -1150,17 +1214,113 @@ static String8 hierarchy_container_name(VkrEditorUi *editor,
   return name.length ? name : string8_lit("Scene");
 }
 
+/* Outliner table columns: three toggles (visibility, viewport icons, pin),
+   the item label and, when the panel is wide enough, the type. */
+typedef struct HierarchyColumns {
+  float32_t width;
+  float32_t name_x;
+  /* Zero hides the Type column. */
+  float32_t type_x;
+  float32_t type_w;
+} HierarchyColumns;
+
+static HierarchyColumns hierarchy_columns(float32_t w) {
+  HierarchyColumns cols = {.width = w,
+                           .name_x = 6.0f + HIERARCHY_TOGGLE_PT * 3.0f + 4.0f};
+  if (w >= 250.0f) {
+    cols.type_w = vkr_clamp_f32(w * 0.3f, 72.0f, 150.0f);
+    cols.type_x = w - 6.0f - cols.type_w;
+  }
+  return cols;
+}
+
+/* Right edge of the label column. */
+static float32_t hierarchy_name_right(HierarchyColumns cols) {
+  return cols.type_x > 0.0f ? cols.type_x - 6.0f : cols.width - 8.0f;
+}
+
+/* One toggle cell of a row: a ghost icon button centered in its column. */
+static bool8_t hierarchy_toggle(VkrUiSystem *ui, String8 id, uint32_t column,
+                                float32_t y, VkrUiIcon icon, Vec4 color,
+                                String8 tooltip) {
+  VkrUiWidgetConfig c =
+      widget_at(6.0f + HIERARCHY_TOGGLE_PT * (float32_t)column,
+                y + (HIERARCHY_ROW_PT - HIERARCHY_TOGGLE_PT) * 0.5f,
+                HIERARCHY_TOGGLE_PT, HIERARCHY_TOGGLE_PT);
+  vkr_editor_ghost_style(&c);
+  c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+  c.icon = icon;
+  c.icon_size_pt = 13.0f;
+  c.icon_color = color;
+  c.tooltip = tooltip;
+  return vkr_ui_button(ui, id, (String8){0}, &c);
+}
+
+/* Type column text for an entity, matching its Outliner icon. */
+static String8 hierarchy_type_label(const VkrScene *scene, VkrEntityId entity,
+                                    bool8_t has_child) {
+  VkrWorld *world = scene->world;
+  if (vkr_entity_get_component(world, entity, scene->comp_directional_light))
+    return string8_lit("Directional Light");
+  const ScenePointLight *point =
+      vkr_entity_get_component(world, entity, scene->comp_point_light);
+  if (point)
+    return point->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
+               ? string8_lit("Spot Light")
+               : string8_lit("Point Light");
+  if (vkr_entity_get_component(world, entity, scene->comp_rectangle_light))
+    return string8_lit("Rect Light");
+  if (vkr_entity_get_component(world, entity, scene->comp_physics_body))
+    return string8_lit("Rigid Body");
+  if (vkr_entity_get_component(world, entity, scene->comp_physics_collider))
+    return string8_lit("Collider");
+  if (vkr_entity_get_component(world, entity, scene->comp_mesh_renderer))
+    return vkr_scene_get_typed(scene, entity, &vkr_scene_animation_type)
+               ? string8_lit("Animated Mesh")
+               : string8_lit("Static Mesh");
+  if (vkr_entity_get_component(world, entity, scene->comp_text3d))
+    return string8_lit("Text");
+  if (vkr_entity_get_component(world, entity, scene->comp_shape))
+    return string8_lit("Shape");
+  const VkrTypeDesc *type = NULL;
+  for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
+    if (!vkr_scene_world_type_registered(type) &&
+        vkr_scene_get_typed(scene, entity, type))
+      return string8_create_from_cstr((const uint8_t *)type->label,
+                                      strlen(type->label));
+  }
+  return has_child ? string8_lit("Group") : string8_lit("Empty");
+}
+
+/* Type column cell: secondary text from the column's leading edge. */
+static void hierarchy_type_cell(VkrUiSystem *ui, HierarchyColumns cols,
+                                float32_t y, String8 text, bool8_t selected) {
+  if (cols.type_x <= 0.0f || !text.length)
+    return;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig c =
+      widget_at(cols.type_x, y, cols.type_w, HIERARCHY_ROW_PT);
+  c.placement.align = VKR_UI_ALIGN_START;
+  c.style.padding_pt = (VkrUiEdges){4, 4, 4, 0};
+  c.style.font_size_pt = theme->font_caption;
+  c.style.text_color = selected ? theme->text_on_accent : theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("node.type"), text, &c);
+}
+
 /* Container header: caret, icon and name; clicking folds the container. */
 static void hierarchy_container_row(VkrEditorUi *editor,
                                     VkrEditorScenePanels *p,
                                     const VkrSampleUiFrame *frame,
-                                    EditorTreeNode *n, float32_t w, float32_t y,
-                                    float32_t row_h, VkrFontHandle heading) {
+                                    EditorTreeNode *n, HierarchyColumns cols,
+                                    float32_t y, VkrFontHandle heading) {
   const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = frame->ui;
+  const float32_t w = cols.width;
+  const float32_t row_h = HIERARCHY_ROW_PT;
   const float32_t indent =
-      Min(n->depth * HIERARCHY_INDENT_PT, Max(0.0f, w - 90));
-  VkrUiWidgetConfig c = widget_at(4 + indent, y, w - 8 - indent, row_h);
+      Min(n->depth * HIERARCHY_INDENT_PT, Max(0.0f, w - cols.name_x - 90.0f));
+  const float32_t x = cols.name_x - 20.0f + indent;
+  VkrUiWidgetConfig c = widget_at(4, y, w - 8, row_h);
   c.style.corner_radius_pt =
       (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
   c.style.background_color = theme->header;
@@ -1173,14 +1333,20 @@ static void hierarchy_container_row(VkrEditorUi *editor,
     p->container_collapsed[n->container] = n->expanded;
     p->rebuild = true_v;
   }
-  c = widget_at(8 + indent, y + 3, 18, 18);
-  c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+  c = widget_at(x, y + 3, 18, 18);
+  c.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
   c.icon = n->expanded || p->search[0] ? VKR_UI_ICON_DISCLOSURE_OPEN
                                        : VKR_UI_ICON_DISCLOSURE_CLOSED;
   c.icon_size_pt = 10.0f;
   c.icon_color = theme->text_secondary;
   vkr_ui_label(ui, string8_lit("container.caret"), (String8){0}, &c);
-  c = widget_at(26 + indent, y, Max(10.0f, w - 90.0f - indent), row_h);
+  /* Buttons share the row's trailing edge; the name stops before them. */
+  const uint32_t buttons = n->container >= TREE_CONTAINER_ADDITIVE ? 3u
+                           : !world && frame->world                ? 1u
+                                                                   : 0u;
+  c = widget_at(x + 18.0f, y,
+                Max(10.0f, w - x - 18.0f - 8.0f - 26.0f * (float32_t)buttons),
+                row_h);
   c.placement.align = VKR_UI_ALIGN_START;
   c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
   c.style.text_color = theme->text;
@@ -1202,7 +1368,10 @@ static void hierarchy_container_row(VkrEditorUi *editor,
                               "click to use only its own")
                 : string8_lit("Uses only its own objects; click to inherit "
                               "the World's"));
-    c.placement = widget_at(w - 58, y + 2, 20, 20).placement;
+    c.placement = widget_at(w - 32, y + 2, 20, 20).placement;
+    c.style.min_size_pt = c.style.max_size_pt = (Vec2){20, 20};
+    c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+    c.icon_size_pt = 13.0f;
     c.icon_color = inherit ? theme->accent_hover : theme->text_disabled;
     if (vkr_ui_button(ui, string8_lit("container.inherit"), (String8){0}, &c)) {
       VkrSceneEditRequest request = {
@@ -1227,6 +1396,9 @@ static void hierarchy_container_row(VkrEditorUi *editor,
           string8_lit("Set primary: edit this scene in the viewport and keep "
                       "the current one beside it"));
       c.placement = widget_at(w - 84, y + 2, 20, 20).placement;
+      c.style.min_size_pt = c.style.max_size_pt = (Vec2){20, 20};
+      c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+      c.icon_size_pt = 13.0f;
       c.disabled = !vkr_editor_projects_switch_ready(editor->projects);
       if (vkr_ui_button(ui, string8_lit("container.primary"), (String8){0}, &c))
         (void)vkr_editor_projects_set_primary(editor->projects, editor, frame,
@@ -1236,7 +1408,10 @@ static void hierarchy_container_row(VkrEditorUi *editor,
                                       string8_lit("Remove this scene from the "
                                                   "world (unsaved edits "
                                                   "block it)"));
-    c.placement = widget_at(w - 32, y + 2, 20, 20).placement;
+    c.placement = widget_at(w - 58, y + 2, 20, 20).placement;
+    c.style.min_size_pt = c.style.max_size_pt = (Vec2){20, 20};
+    c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+    c.icon_size_pt = 13.0f;
     if (vkr_ui_button(ui, string8_lit("container.remove"), (String8){0}, &c))
       *frame->scene_request =
           (VkrSampleSceneRequest){.remove = true_v, .container = container};
@@ -1376,6 +1551,249 @@ static float32_t hierarchy_script_chip(VkrUiSystem *ui, const VkrScene *scene,
   return width + 4.0f;
 }
 
+/* One object row: the toggles, caret, icon and name, script chip and type.
+   `node_id` is the row button's id; returns whether the pointer is on it. */
+static bool8_t hierarchy_entity_row(
+    VkrEditorUi *editor, VkrEditorScenePanels *p, const VkrSampleUiFrame *frame,
+    EditorTreeNode *n, uint32_t depth, HierarchyColumns cols, float32_t y,
+    bool8_t selected, VkrUiId node_id, VkrUiRect list, float64_t now) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = frame->ui;
+  const float32_t w = cols.width;
+  const float32_t row_h = HIERARCHY_ROW_PT;
+  const VkrScene *row_scene = tree_node_scene(frame, n);
+  const SceneVisibility *visibility = vkr_entity_get_component(
+      row_scene->world, n->entity, row_scene->comp_visibility);
+  const bool8_t hidden = visibility && !visibility->visible;
+  const bool8_t script_over =
+      hierarchy_script_drop(editor, frame, node_id, n->entity, list);
+  /* Full-width row: hover and selection fills. */
+  VkrUiWidgetConfig c = widget_at(4, y, w - 8, row_h);
+  c.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  c.style.background_color =
+      script_over ? vkr_ui_color_alpha(theme->accent, 0.35f)
+      : selected  ? theme->selection
+      : n->pinned ? vkr_ui_color_alpha(theme->accent, 0.08f)
+                  : (Vec4){0};
+  c.style.hover_background_color =
+      selected ? theme->selection : theme->row_hover;
+  String8 name = vkr_scene_get_name(row_scene, n->entity);
+  if (!name.length)
+    name = string8_lit("(unnamed)");
+  c.tooltip = name;
+  if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c))
+    hierarchy_row_click(editor, p, frame, n->entity);
+  const bool8_t row_hot = ui->hot_id == node_id;
+  if (row_hot && !ui->mouse_captured &&
+      input_button_just_pressed(frame->input, BUTTON_RIGHT))
+    hierarchy_row_menu(editor, frame, n->entity);
+
+  /* Toggle columns. Idle toggles stay faint until the row is hovered. */
+  const Vec4 idle = vkr_ui_color_alpha(selected ? theme->text_on_accent
+                                                : theme->text_secondary,
+                                       row_hot || selected ? 0.9f : 0.4f);
+  const Vec4 off = selected ? theme->text_on_accent : theme->text;
+  if (visibility &&
+      hierarchy_toggle(ui, string8_lit("visibility"), 0, y,
+                       hidden ? VKR_UI_ICON_EYE_SLASH : VKR_UI_ICON_EYE,
+                       hidden ? off : idle,
+                       hidden ? string8_lit("Show in the Scene (undoable)")
+                              : string8_lit("Hide in the Scene (undoable)")))
+    vkr_editor_toggle_visibility(frame, n->entity);
+  const bool8_t inherited_icons = n->icons_off && !n->icons_hidden;
+  Vec4 icons_color = n->icons_hidden ? off : idle;
+  if (inherited_icons)
+    icons_color = vkr_ui_color_alpha(off, 0.35f);
+  if (hierarchy_toggle(
+          ui, string8_lit("icons"), 1, y,
+          n->icons_off ? VKR_UI_ICON_SELECTION : VKR_UI_ICON_TAG, icons_color,
+          inherited_icons ? string8_lit("Viewport icons are off for a parent")
+          : n->icons_hidden
+              ? string8_lit("Show viewport icons for this object and its "
+                            "children")
+              : string8_lit("Hide viewport icons for this object and its "
+                            "children"))) {
+    n->icons_hidden = !n->icons_hidden;
+    p->rebuild = true_v;
+  }
+  if ((n->pinned || row_hot || selected) &&
+      hierarchy_toggle(
+          ui, string8_lit("pin"), 2, y, VKR_UI_ICON_PIN,
+          n->pinned ? (selected ? theme->text_on_accent : theme->accent_hover)
+                    : idle,
+          n->pinned ? string8_lit("Unpin")
+                    : string8_lit("Pin to the top of the "
+                                  "Outliner with its children"))) {
+    n->pinned = !n->pinned;
+    p->rebuild = true_v;
+  }
+
+  /* Label column: caret, icon and name, then the script chip. */
+  const float32_t right = hierarchy_name_right(cols);
+  const float32_t indent =
+      Min(depth * HIERARCHY_INDENT_PT, Max(0.0f, right - cols.name_x - 90.0f));
+  const float32_t x = cols.name_x + indent;
+  if (n->child != NO_ROW) {
+    c = widget_at(x - 2.0f, y + 3, 18, 18);
+    vkr_editor_ghost_style(&c);
+    c.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
+    c.icon = n->expanded || p->search[0] ? VKR_UI_ICON_DISCLOSURE_OPEN
+                                         : VKR_UI_ICON_DISCLOSURE_CLOSED;
+    c.icon_size_pt = 10.0f;
+    c.icon_color = selected ? theme->text : theme->text_secondary;
+    c.tooltip = string8_lit("Expand or collapse (Left/Right arrows)");
+    if (vkr_ui_button(ui, string8_lit("expand"), (String8){0}, &c)) {
+      n->expanded = !n->expanded;
+      p->rebuild = true_v;
+    }
+  }
+  uint64_t preview_length = Min(name.length, 160u);
+  while (preview_length < name.length && preview_length &&
+         (name.str[preview_length] & 0xc0u) == 0x80u)
+    --preview_length;
+  const float32_t lock = n->cooking ? 22.0f : 0.0f;
+  const float32_t chip =
+      hierarchy_script_chip(ui, row_scene, n->entity, right - lock, y, row_h,
+                            right - lock - x - 18.0f, selected);
+  Vec4 icon_color;
+  c = widget_at(x + 16.0f, y, Max(10.0f, right - lock - chip - x - 16.0f),
+                row_h);
+  c.placement.align = VKR_UI_ALIGN_START;
+  c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
+  c.style.text_color = hidden     ? theme->text_disabled
+                       : selected ? theme->text_on_accent
+                                  : theme->text;
+  c.icon = vkr_editor_entity_icon(row_scene, n->entity, n->child != NO_ROW,
+                                  &icon_color);
+  c.icon_size_pt = 14.0f;
+  c.icon_color = selected ? theme->text_on_accent : icon_color;
+  if (hidden)
+    c.icon_color.w = 0.45f;
+  c.tooltip = (String8){0};
+  if (n->cooking) {
+    /* A pulsing spinner: its textures are still encoding. */
+    c.icon = VKR_UI_ICON_SPINNER;
+    c.icon_color = vkr_ui_color_alpha(
+        selected ? theme->text_on_accent : theme->accent_hover,
+        0.55f + 0.45f * sinf((float32_t)now * 4.0f));
+    c.tooltip = string8_lit(
+        "Cooking full-quality textures in the background; locked until "
+        "they are ready");
+  }
+  vkr_ui_label(ui, string8_lit("node.label"),
+               (String8){.str = name.str, .length = preview_length}, &c);
+  if (n->cooking) {
+    c = widget_at(right - 20.0f, y + 2, 20, 20);
+    c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
+    c.icon = VKR_UI_ICON_LOCK;
+    c.icon_size_pt = 12.0f;
+    c.icon_color = selected ? theme->text_on_accent : theme->text_secondary;
+    vkr_ui_label(ui, string8_lit("cooking"), (String8){0}, &c);
+  }
+  hierarchy_type_cell(
+      ui, cols, y,
+      hierarchy_type_label(row_scene, n->entity, n->child != NO_ROW), selected);
+  return row_hot;
+}
+
+/* Column header: toggle glyphs, then Item Label and Type. */
+static void hierarchy_column_header(VkrUiSystem *ui, HierarchyColumns cols,
+                                    float32_t y, VkrFontHandle heading) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig bar = widget_at(0, y, cols.width, HIERARCHY_HEADER_PT);
+  bar.style.background_color = theme->header;
+  bar.style.border_pt = (VkrUiEdges){0, 0, 1, 0};
+  bar.style.border_color = theme->separator;
+  vkr_ui_label(ui, string8_lit("columns"), (String8){0}, &bar);
+  static const struct {
+    VkrUiIcon icon;
+    const char *tooltip;
+  } toggles[] = {
+      {VKR_UI_ICON_EYE, "Visibility in the Scene"},
+      {VKR_UI_ICON_TAG, "Viewport icons of the object and its children"},
+      {VKR_UI_ICON_PIN, "Pinned to the top of the Outliner"},
+  };
+  for (uint32_t i = 0; i < ArrayCount(toggles); ++i) {
+    VkrUiWidgetConfig c =
+        widget_at(6.0f + HIERARCHY_TOGGLE_PT * (float32_t)i,
+                  y + (HIERARCHY_HEADER_PT - HIERARCHY_TOGGLE_PT) * 0.5f,
+                  HIERARCHY_TOGGLE_PT, HIERARCHY_TOGGLE_PT);
+    c.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
+    c.icon = toggles[i].icon;
+    c.icon_size_pt = 12.0f;
+    c.icon_color = theme->text_secondary;
+    c.tooltip = string8_create_from_cstr((const uint8_t *)toggles[i].tooltip,
+                                         strlen(toggles[i].tooltip));
+    (void)vkr_ui_push_id_u64(ui, i);
+    vkr_ui_label(ui, string8_lit("column.toggle"), (String8){0}, &c);
+    (void)vkr_ui_pop_id(ui);
+  }
+  const float32_t right = hierarchy_name_right(cols);
+  VkrUiWidgetConfig c = widget_at(
+      cols.name_x, y, Max(10.0f, right - cols.name_x), HIERARCHY_HEADER_PT);
+  c.placement.align = VKR_UI_ALIGN_START;
+  c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
+  c.style.font_size_pt = theme->font_caption;
+  c.style.text_color = theme->text_secondary;
+  c.text.font = heading;
+  vkr_ui_label(ui, string8_lit("column.label"), string8_lit("Item Label"), &c);
+  if (cols.type_x > 0.0f) {
+    VkrUiWidgetConfig divider =
+        widget_at(cols.type_x - 4.0f, y + 5.0f, 1.0f, HIERARCHY_HEADER_PT - 10);
+    divider.style.background_color = theme->separator;
+    vkr_ui_label(ui, string8_lit("column.divider"), (String8){0}, &divider);
+    c = widget_at(cols.type_x, y, cols.type_w, HIERARCHY_HEADER_PT);
+    c.placement.align = VKR_UI_ALIGN_START;
+    c.style.padding_pt = (VkrUiEdges){4, 4, 4, 0};
+    c.style.font_size_pt = theme->font_caption;
+    c.style.text_color = theme->text_secondary;
+    c.text.font = heading;
+    vkr_ui_label(ui, string8_lit("column.type"), string8_lit("Type"), &c);
+  }
+}
+
+/* Pinned objects above the tree, each with its expanded subtree; returns
+   the height used. */
+static float32_t hierarchy_pinned_build(VkrEditorUi *editor,
+                                        VkrEditorScenePanels *p,
+                                        const VkrSampleUiFrame *frame,
+                                        HierarchyColumns cols, float32_t top,
+                                        float32_t limit, VkrUiRect list,
+                                        float64_t now) {
+  if (!p->pinned_row_count || limit < HIERARCHY_ROW_PT * 2.0f)
+    return 0.0f;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = frame->ui;
+  const uint32_t shown = Min(
+      p->pinned_row_count, Min(HIERARCHY_PINNED_ROWS_SHOWN,
+                               (uint32_t)((limit - 6.0f) / HIERARCHY_ROW_PT)));
+  const float32_t height = (float32_t)shown * HIERARCHY_ROW_PT + 6.0f;
+  VkrUiPanelConfig block = vkr_ui_panel_config_default();
+  VkrUiWidgetConfig area = widget_at(0, top, cols.width, height);
+  block.placement = area.placement;
+  block.style.min_size_pt = block.style.max_size_pt = area.style.min_size_pt;
+  block.style.background_color = vkr_ui_color_alpha(theme->accent, 0.05f);
+  block.style.border_pt = (VkrUiEdges){0, 0, 1, 0};
+  block.style.border_color = theme->separator;
+  block.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("hierarchy.pinned"), &block))
+    return height;
+  for (uint32_t i = 0; i < shown; ++i) {
+    EditorTreeNode *n = &p->nodes[p->pinned_rows[i]];
+    (void)vkr_ui_push_id_u64(ui, 0x9100u + i);
+    const VkrUiId node_id =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("node"));
+    (void)hierarchy_entity_row(editor, p, frame, n, p->pinned_depths[i], cols,
+                               3.0f + (float32_t)i * HIERARCHY_ROW_PT,
+                               n->entity.u64 == frame->selected_entity.u64,
+                               node_id, list, now);
+    (void)vkr_ui_pop_id(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+  return height;
+}
+
 void vkr_editor_hierarchy_build(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame, VkrUiRect rect,
                                 VkrFontHandle heading) {
@@ -1440,9 +1858,15 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
     p->cooking_key = cooking_key;
     p->cooking_marked_at = marked_at;
   }
+  const HierarchyColumns cols = hierarchy_columns(w);
+  hierarchy_column_header(ui, cols, HIERARCHY_TOOLS_PT, heading);
+  const float32_t pinned_top = HIERARCHY_TOOLS_PT + HIERARCHY_HEADER_PT;
+  const float32_t pinned_h = hierarchy_pinned_build(
+      editor, p, frame, cols, pinned_top,
+      (h - pinned_top - HIERARCHY_FOOTER_PT) * 0.4f, rect, marked_at);
+  const float32_t list_top = pinned_top + pinned_h;
   const float32_t row_h = HIERARCHY_ROW_PT;
-  float32_t page =
-      Max(0.0f, h - HIERARCHY_LIST_TOP_PT - HIERARCHY_FOOTER_PT - 2.0f);
+  float32_t page = Max(0.0f, h - list_top - HIERARCHY_FOOTER_PT - 2.0f);
   const uint32_t selected_row = p->selected_row;
   if (frame->selected_entity.u64 != p->revealed.u64) {
     if (selected_row != NO_ROW) {
@@ -1459,7 +1883,7 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
   p->hierarchy_scroll = vkr_clamp_f32(p->hierarchy_scroll, 0,
                                       Max(0.0f, p->row_count * row_h - page));
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
-  c = widget_at(0, HIERARCHY_LIST_TOP_PT, w, page);
+  c = widget_at(0, list_top, w, page);
   list.placement = c.placement;
   list.style.min_size_pt = c.style.min_size_pt;
   list.style.max_size_pt = c.style.max_size_pt;
@@ -1485,8 +1909,6 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
       const uint32_t slot = row - first;
       const float32_t y = row * row_h;
       const float32_t visible_y = y - p->hierarchy_scroll;
-      const float32_t indent =
-          Min(n->depth * HIERARCHY_INDENT_PT, Max(0.0f, w - 90));
       (void)vkr_ui_push_id_u64(ui, slot);
       const VkrUiId node_id =
           vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("node"));
@@ -1504,110 +1926,12 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
         p->pending_focus = VKR_ENTITY_ID_INVALID;
       }
       if (n->header) {
-        hierarchy_container_row(editor, p, frame, n, w, y, row_h, heading);
+        hierarchy_container_row(editor, p, frame, n, cols, y, heading);
         (void)vkr_ui_pop_id(ui);
         continue;
       }
-      const VkrScene *row_scene = tree_node_scene(frame, n);
-      const bool8_t selected = selected_row == row;
-      const SceneVisibility *visibility = vkr_entity_get_component(
-          row_scene->world, n->entity, row_scene->comp_visibility);
-      const bool8_t hidden = visibility && !visibility->visible;
-      const bool8_t script_over =
-          hierarchy_script_drop(editor, frame, node_id, n->entity, rect);
-      /* Full-width row: hover and selection fills. */
-      c = widget_at(4, y, w - 8, row_h);
-      c.style.corner_radius_pt =
-          (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
-      c.style.background_color = script_over
-                                     ? vkr_ui_color_alpha(theme->accent, 0.35f)
-                                 : selected ? theme->selection
-                                            : (Vec4){0};
-      c.style.hover_background_color =
-          selected ? theme->selection : theme->row_hover;
-      String8 name = vkr_scene_get_name(row_scene, n->entity);
-      if (!name.length)
-        name = string8_lit("(unnamed)");
-      c.tooltip = name;
-      if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c))
-        hierarchy_row_click(editor, p, frame, n->entity);
-      const bool8_t row_hot = ui->hot_id == node_id;
-      if (row_hot && !ui->mouse_captured &&
-          input_button_just_pressed(frame->input, BUTTON_RIGHT))
-        hierarchy_row_menu(editor, frame, n->entity);
-      if (n->child != NO_ROW) {
-        c = widget_at(6 + indent, y + 3, 18, 18);
-        vkr_editor_ghost_style(&c);
-        c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
-        c.icon = n->expanded || p->search[0] ? VKR_UI_ICON_DISCLOSURE_OPEN
-                                             : VKR_UI_ICON_DISCLOSURE_CLOSED;
-        c.icon_size_pt = 10.0f;
-        c.icon_color = selected ? theme->text : theme->text_secondary;
-        c.tooltip = string8_lit("Expand or collapse (Left/Right arrows)");
-        if (vkr_ui_button(ui, string8_lit("expand"), (String8){0}, &c)) {
-          n->expanded = !n->expanded;
-          p->rebuild = true_v;
-        }
-      }
-      uint64_t preview_length = Min(name.length, 160u);
-      while (preview_length < name.length && preview_length &&
-             (name.str[preview_length] & 0xc0u) == 0x80u)
-        --preview_length;
-      Vec4 icon_color;
-      /* Names use the eye button's space on rows that do not show it. */
-      const bool8_t show_eye = visibility && (row_hot || hidden || selected);
-      const float32_t trailing = show_eye || n->cooking ? 58.0f : 36.0f;
-      const float32_t chip =
-          hierarchy_script_chip(ui, row_scene, n->entity, w - trailing, y,
-                                row_h, w - trailing - indent, selected);
-      c = widget_at(26 + indent, y, Max(10.0f, w - trailing - indent - chip),
-                    row_h);
-      c.placement.align = VKR_UI_ALIGN_START;
-      c.style.padding_pt = (VkrUiEdges){4, 4, 4, 2};
-      c.style.text_color = hidden     ? theme->text_disabled
-                           : selected ? theme->text_on_accent
-                                      : theme->text;
-      c.icon = vkr_editor_entity_icon(row_scene, n->entity, n->child != NO_ROW,
-                                      &icon_color);
-      c.icon_size_pt = 14.0f;
-      c.icon_color = selected ? theme->text_on_accent : icon_color;
-      if (hidden)
-        c.icon_color.w = 0.45f;
-      c.tooltip = (String8){0};
-      if (n->cooking) {
-        /* A pulsing spinner: its textures are still encoding. */
-        c.icon = VKR_UI_ICON_SPINNER;
-        c.icon_color = vkr_ui_color_alpha(
-            selected ? theme->text_on_accent : theme->accent_hover,
-            0.55f + 0.45f * sinf((float32_t)marked_at * 4.0f));
-        c.tooltip = string8_lit(
-            "Cooking full-quality textures in the background; locked until "
-            "they are ready");
-      }
-      vkr_ui_label(ui, string8_lit("node.label"),
-                   (String8){.str = name.str, .length = preview_length}, &c);
-      if (n->cooking && !show_eye) {
-        c = widget_at(w - 32, y + 2, 20, 20);
-        c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
-        c.icon = VKR_UI_ICON_LOCK;
-        c.icon_size_pt = 12.0f;
-        c.icon_color = selected ? theme->text_on_accent : theme->text_secondary;
-        vkr_ui_label(ui, string8_lit("cooking"), (String8){0}, &c);
-      }
-      if (show_eye) {
-        c = widget_at(w - 32, y + 2, 20, 20);
-        vkr_editor_ghost_style(&c);
-        c.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
-        c.icon = hidden ? VKR_UI_ICON_EYE_SLASH : VKR_UI_ICON_EYE;
-        c.icon_size_pt = 13.0f;
-        c.icon_color = hidden     ? theme->text_disabled
-                       : selected ? theme->text_on_accent
-                                  : theme->text_secondary;
-        c.tooltip = hidden ? string8_lit("Show (undoable)")
-                           : string8_lit("Hide (undoable)");
-        if (vkr_ui_button(ui, string8_lit("visibility"), (String8){0}, &c))
-          vkr_editor_toggle_visibility(frame, n->entity);
-      }
+      (void)hierarchy_entity_row(editor, p, frame, n, n->depth, cols, y,
+                                 selected_row == row, node_id, rect, marked_at);
       if (!navigated && !ui->mouse_captured && visible_y + row_h > 0 &&
           visible_y < page && ui->focused_id == node_id &&
           ui->keyboard_input_layer == ui->input_layer) {
@@ -3651,6 +3975,35 @@ bool8_t vkr_editor_scene_panels_read_json(VkrEditorScenePanels *panels,
   return true_v;
 }
 
+/* Per-row flags the scene state saves by object identity. */
+typedef enum PanelFlag {
+  PANEL_FLAG_EXPANDED,
+  PANEL_FLAG_PINNED,
+  PANEL_FLAG_ICONS_HIDDEN,
+} PanelFlag;
+
+static bool8_t *panel_flag(EditorTreeNode *node, PanelFlag flag) {
+  return flag == PANEL_FLAG_PINNED         ? &node->pinned
+         : flag == PANEL_FLAG_ICONS_HIDDEN ? &node->icons_hidden
+                                           : &node->expanded;
+}
+
+/* Identities of the primary scene's rows with `flag` set. */
+static bool8_t panels_write_flags(const VkrEditorScenePanels *panels,
+                                  const VkrSampleUiFrame *frame, PanelFlag flag,
+                                  VkrJsonWriter *writer) {
+  for (uint32_t i = 0; i < panels->capacity; ++i) {
+    EditorTreeNode *node = &panels->nodes[i];
+    VkrSampleEntityIdentity identity;
+    if (*panel_flag(node, flag) &&
+        vkr_sample_entity_identity(frame->scene, node->entity, &identity) &&
+        !vkr_sample_entity_identity_write_json(&identity, writer)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 bool8_t
 vkr_editor_scene_panels_write_scene_json(const VkrEditorScenePanels *panels,
                                          const VkrSampleUiFrame *frame,
@@ -3666,22 +4019,26 @@ vkr_editor_scene_panels_write_scene_json(const VkrEditorScenePanels *panels,
       !vkr_json_writer_begin_array(writer)) {
     return false_v;
   }
-  for (uint32_t i = 0; i < panels->capacity; ++i) {
-    const EditorTreeNode *node = &panels->nodes[i];
-    VkrSampleEntityIdentity identity;
-    if (node->expanded &&
-        vkr_sample_entity_identity(frame->scene, node->entity, &identity) &&
-        !vkr_sample_entity_identity_write_json(&identity, writer)) {
-      return false_v;
-    }
+  if (!panels_write_flags(panels, frame, PANEL_FLAG_EXPANDED, writer) ||
+      !vkr_json_writer_end_array(writer)) {
+    return false_v;
   }
-  return vkr_json_writer_end_array(writer) &&
+  /* Pins and hidden viewport icons are optional members. */
+  return vkr_json_writer_name(writer, string8_lit("pinned")) &&
+         vkr_json_writer_begin_array(writer) &&
+         panels_write_flags(panels, frame, PANEL_FLAG_PINNED, writer) &&
+         vkr_json_writer_end_array(writer) &&
+         vkr_json_writer_name(writer, string8_lit("icons_hidden")) &&
+         vkr_json_writer_begin_array(writer) &&
+         panels_write_flags(panels, frame, PANEL_FLAG_ICONS_HIDDEN, writer) &&
+         vkr_json_writer_end_array(writer) &&
          vkr_json_writer_end_object(writer);
 }
 
-static bool8_t panels_restore_expansion(VkrEditorScenePanels *panels,
-                                        const VkrSampleUiFrame *frame,
-                                        String8 array, bool8_t apply) {
+static bool8_t panels_restore_flags(VkrEditorScenePanels *panels,
+                                    const VkrSampleUiFrame *frame,
+                                    String8 array, PanelFlag flag,
+                                    bool8_t apply) {
   VkrJsonReader reader = vkr_json_reader_from_string(array);
   vkr_json_skip_whitespace(&reader);
   if (reader.pos >= reader.length || reader.data[reader.pos++] != '[') {
@@ -3714,7 +4071,7 @@ static bool8_t panels_restore_expansion(VkrEditorScenePanels *panels,
       const uint32_t node = tree_node_index(
           containers, tree_containers(frame, containers, &total), entity);
       if (node != NO_ROW && node < panels->capacity) {
-        panels->nodes[node].expanded = true_v;
+        *panel_flag(&panels->nodes[node], flag) = true_v;
       }
     }
     vkr_json_skip_whitespace(&reader);
@@ -3739,20 +4096,34 @@ bool8_t vkr_editor_scene_panels_read_scene_json(VkrEditorScenePanels *panels,
   VkrJsonReader reader = vkr_json_reader_from_string(json);
   int32_t version;
   float32_t scroll;
-  String8 expanded;
+  String8 arrays[3] = {{0}};
+  static const char *const members[3] = {"expanded", "pinned", "icons_hidden"};
   if (!vkr_json_get_int(&reader, "version", &version) || version != 1 ||
       !vkr_json_get_float(&reader, "hierarchy_scroll", &scroll) ||
       !isfinite(scroll) || scroll < 0 ||
-      !vkr_editor_project_json_member(json, "expanded", &expanded, NULL) ||
-      !rebuild_tree(panels, frame) ||
-      !panels_restore_expansion(panels, frame, expanded, false_v)) {
+      !vkr_editor_project_json_member(json, "expanded", &arrays[0], NULL) ||
+      !rebuild_tree(panels, frame)) {
     return false_v;
+  }
+  for (uint32_t f = 1; f < ArrayCount(members); ++f) {
+    if (!vkr_editor_project_json_member(json, members[f], &arrays[f], NULL))
+      arrays[f] = string8_lit("[]");
+  }
+  for (uint32_t f = 0; f < ArrayCount(members); ++f) {
+    if (!panels_restore_flags(panels, frame, arrays[f], (PanelFlag)f,
+                              false_v)) {
+      return false_v;
+    }
   }
   for (uint32_t i = 0; i < panels->capacity; ++i) {
     panels->nodes[i].expanded = false_v;
+    panels->nodes[i].pinned = false_v;
+    panels->nodes[i].icons_hidden = false_v;
   }
-  if (!panels_restore_expansion(panels, frame, expanded, true_v)) {
-    return false_v;
+  for (uint32_t f = 0; f < ArrayCount(members); ++f) {
+    if (!panels_restore_flags(panels, frame, arrays[f], (PanelFlag)f, true_v)) {
+      return false_v;
+    }
   }
   panels->hierarchy_scroll = scroll;
   panels->rebuild = true_v;

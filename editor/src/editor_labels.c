@@ -119,6 +119,7 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
                           false_v};
   if (editor->label_anchor_count >= build->capacity ||
       (build->empty && !editor->labels_empty) ||
+      vkr_editor_scene_panels_icons_off(editor->scene_panels, frame, entity) ||
       (!build->empty && !editor_label_kind(editor, scene, entity, &kind))) {
     return;
   }

@@ -279,8 +279,13 @@ information for World and added-scene objects through the entity's own
 container.
 
 The Outliner lists the World's entities with each loaded scene nested below
-it. Each scene row has an inherit toggle, and double-clicking a row frames
-its object. Details below it is generated from descriptors. The viewport panel
+it, as a tree table under a column header: toggle columns for Scene
+visibility (undoable), viewport icons and pinning, then Item Label and, when
+the panel is wide enough, Type. Turning an object's viewport icons off hides
+its own and its descendants' icons; pinned objects and their expanded subtrees
+stay in a block above the tree. Pins and hidden icons are editor state saved
+with the primary scene's expansion. Each scene row has an inherit toggle, and
+double-clicking a row frames its object. Details below it is generated from descriptors. The viewport panel
 carries document tabs, each showing the World or one project scene. Only the
 active tab renders, and switching tabs loads its scene.
 
