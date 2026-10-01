@@ -26,6 +26,8 @@ typedef struct VkrLocalShadowCacheInput {
   bool8_t refractive_casters;
   uint32_t face_budget;
   uint32_t map_size;
+  /** Camera distance at which shadows have faded out; positive. */
+  float32_t fade_distance;
 } VkrLocalShadowCacheInput;
 
 /* `scratch` holds the next cache state while the previous one is read. */

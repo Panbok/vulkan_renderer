@@ -62,6 +62,7 @@ static void local_shadow_resolve(const VkrPointLight *lights,
       .publication_generation = 1u,
       .face_budget = face_budget,
       .map_size = map_size,
+      .fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,
   };
   vkr_local_shadow_cache_resolve(&s_test_cache, &s_test_cache_scratch, &input,
                                  &s_test_pending, out);

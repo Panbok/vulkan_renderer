@@ -15,7 +15,11 @@ vkr_application_metrics_snapshot(const VkrRenderAssets *assets,
   uint64_t local_shadowed = 0u;
   uint64_t local_fading = 0u;
   for (uint32_t i = 0u; i < local->light_count; ++i) {
-    if (local->lights[i].strength > 0.0f)
+    /* Strength rises after a fill; distance fades it by design and is not a
+     * crossfade. */
+    const float32_t strength =
+        local->lights[i].strength * local->lights[i].distance_fade;
+    if (strength > 0.0f)
       ++local_shadowed;
     if (local->lights[i].strength > 0.0f && local->lights[i].strength < 1.0f)
       ++local_fading;
@@ -28,13 +32,16 @@ vkr_application_metrics_snapshot(const VkrRenderAssets *assets,
   for (uint32_t i = 0u; measured->valid && i < measured->light_count; ++i) {
     const float64_t contribution = (float64_t)measured->contribution[i];
     float32_t strength = 0.0f;
+    float32_t fill = 0.0f;
     for (uint32_t j = 0u; j < local->light_count; ++j) {
-      if (local->lights[j].render_id == measured->render_ids[i])
-        strength = local->lights[j].strength;
+      if (local->lights[j].render_id == measured->render_ids[i]) {
+        strength = local->lights[j].strength * local->lights[j].distance_fade;
+        fill = local->lights[j].strength;
+      }
     }
     total += contribution;
     unshadowed += contribution * (1.0 - (float64_t)strength);
-    if (strength > 0.0f && strength < 1.0f)
+    if (fill > 0.0f && fill < 1.0f)
       fading += contribution;
   }
   return (VkrApplicationMetricsSnapshot){

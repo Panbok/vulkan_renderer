@@ -781,6 +781,7 @@ vkr_internal void test_local_shadow_transmission_layers(void) {
 vkr_internal void test_local_shadow_cache_fills_every_light(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = vkr_shadow_config_ultra();
+  config.local_shadow_fade_distance = 1000.0f;
   assert(vkr_shadow_system_init(&system, &config));
   assert(config.local_shadow_face_budget == 60u);
 
@@ -825,6 +826,7 @@ vkr_internal void test_local_shadow_camera_cut_snaps(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   config.local_shadow_face_budget = 6u;
+  config.local_shadow_fade_distance = 1000.0f;
   assert(vkr_shadow_system_init(&system, &config));
 
   VkrWorldPassPayload payload = retained_static_payload();
@@ -926,6 +928,39 @@ vkr_internal void test_local_shadow_feedback_orders_fill(void) {
   vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, lights, 2u,
                                           &camera, &local);
   assert(local.light_first_view[0] != 0u && local.light_first_view[1] == 0u);
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* A shadow fades out over the last VKR_LOCAL_SHADOW_FADE_BAND_METRES before
+ * the fade distance: past it the light is not shadowed, so pixels never
+ * filter it, yet its faces stay valid and fade back in without a redraw. */
+vkr_internal void test_local_shadow_distance_fade(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.local_shadow_face_budget = 6u;
+  config.local_shadow_fade_distance = 20.0f;
+  assert(vkr_shadow_system_init(&system, &config));
+  VkrWorldPassPayload payload = retained_static_payload();
+  const VkrPointLight light = local_shadow_test_light(
+      10u, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f, vec3_zero());
+  const VkrRetainedLocalShadowToken valid = local_shadow_valid_token();
+  VkrLocalShadowPassPayload local = {0};
+  VkrLocalShadowCamera camera = local_shadow_camera(vec3_new(1.0f, 0, 0));
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local_shadow_strength(&local, 0u) == 1.0f);
+  vkr_shadow_system_commit_frame(&system, 31u);
+
+  const float32_t distances[] = {17.5f, 25.0f, 15.0f};
+  const float32_t expected[] = {0.5f, 0.0f, 1.0f};
+  for (uint32_t i = 0u; i < ArrayCount(distances); ++i) {
+    camera = local_shadow_camera(vec3_new(distances[i], 0, 0));
+    vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light,
+                                            1u, &camera, &local);
+    assert(local.render_count == 0u);
+    assert(fabsf(local_shadow_strength(&local, 0u) - expected[i]) < 1e-5f);
+    assert((local.light_first_view[0] != 0u) == (expected[i] > 0.0f));
+  }
   vkr_shadow_system_shutdown(&system);
 }
 
@@ -1702,6 +1737,7 @@ bool32_t run_shadow_system_tests(void) {
   test_local_shadow_camera_cut_snaps();
   test_local_shadow_reduces_least_important();
   test_local_shadow_feedback_orders_fill();
+  test_local_shadow_distance_fade();
   test_local_shadow_transmission_pool_is_bounded();
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();

@@ -366,6 +366,11 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
   const char *local_shadow_feedback = getenv("VKR_LOCAL_SHADOW_FEEDBACK");
   application->disable_local_shadow_feedback =
       local_shadow_feedback && strcmp(local_shadow_feedback, "0") == 0;
+  const char *local_shadow_fade = getenv("VKR_LOCAL_SHADOW_FADE_DISTANCE");
+  const float32_t fade_distance =
+      local_shadow_fade ? strtof(local_shadow_fade, NULL) : 0.0f;
+  application->local_shadow_fade_distance_override =
+      isfinite(fade_distance) && fade_distance > 0.0f ? fade_distance : 0.0f;
   vkr_atomic_uint64_store(&application->pending_resize_mailbox, 0u,
                           VKR_MEMORY_ORDER_RELAXED);
   if (windowed && !event_manager_subscribe(
@@ -825,6 +830,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     };
     application->shadow_system.light_contribution_ranking_disabled =
         application->disable_local_shadow_feedback;
+    if (application->local_shadow_fade_distance_override > 0.0f)
+      application->shadow_system.config.local_shadow_fade_distance =
+          application->local_shadow_fade_distance_override;
     vkr_shadow_system_set_light_contribution_sample(
         &application->shadow_system,
         &application->renderer.timing_result.local_light_contribution);

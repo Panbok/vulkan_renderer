@@ -1035,6 +1035,9 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
   if (system->config.shadow_map_size == 0) {
     system->config.shadow_map_size = VKR_SHADOW_MAP_SIZE_DEFAULT;
   }
+  if (!(system->config.local_shadow_fade_distance > 0.0f))
+    system->config.local_shadow_fade_distance =
+        VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT;
   system->config.cascade_split_lambda =
       vkr_clamp_f32(system->config.cascade_split_lambda, 0.0f, 1.0f);
   if (system->config.cascade_guard_band_texels < 0.0f) {
@@ -1663,6 +1666,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .refractive_casters = candidates->transmission_gpu_candidate_count > 0u,
       .face_budget = system->config.local_shadow_face_budget,
       .map_size = system->config.local_shadow_map_size,
+      .fade_distance = system->config.local_shadow_fade_distance,
   };
   vkr_local_shadow_cache_resolve(&system->local_cache,
                                  &system->local_cache_scratch, &input,

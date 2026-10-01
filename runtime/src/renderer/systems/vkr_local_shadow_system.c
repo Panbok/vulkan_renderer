@@ -56,6 +56,8 @@ typedef struct VkrLocalShadowCandidate {
   float32_t half_fov;
   /** Viewer importance without incumbent bonuses. */
   float32_t score;
+  /** Camera-distance fade of the light's shadow in [0, 1]. */
+  float32_t distance_fade;
   /** Index + 1 of the matching previous cache light; zero for a newcomer. */
   uint32_t previous;
   uint32_t face_size;
@@ -474,6 +476,12 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
       continue;
     const Vec3 delta = vec3_sub(light->position, camera->position);
     const float32_t distance_squared = vec3_length_squared(delta);
+    /* Shadows fade out with camera distance, which bounds the shadowed lights
+     * a pixel filters; a faded light stays resident and fades back in. */
+    float32_t distance_fade = (input->fade_distance - sqrtf(distance_squared)) /
+                              VKR_LOCAL_SHADOW_FADE_BAND_METRES;
+    distance_fade =
+        isfinite(distance_fade) ? Clamp(distance_fade, 0.0f, 1.0f) : 0.0f;
     const float32_t near_distance =
         light->range * VKR_LOCAL_SHADOW_NEAR_RANGE_FRACTION;
     const float32_t luminance = light->color.x * 0.2126f +
@@ -494,6 +502,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
         .face_count = face_count,
         .half_fov = half_fov,
         .score = score,
+        .distance_fade = distance_fade,
         .face_size =
             vkr_local_shadow_face_size_for_range(light->range, input->map_size),
     };
@@ -632,20 +641,23 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
 
   /* Faces draw in complete lights within the face budget: invalid lights,
    * then lights waiting for transmission, then stale content, each by
-   * importance. */
+   * importance, lights whose shadow has faded out by distance last. */
   for (uint32_t i = 0u; i < candidate_count; ++i)
     keys[i] = candidates[i].score;
   vkr_local_shadow_order_by_key(keys, candidate_count, order);
   uint32_t render_faces = 0u;
-  for (uint32_t render_class = VKR_LOCAL_SHADOW_RENDER_INVALID;
-       render_class <= VKR_LOCAL_SHADOW_RENDER_STALE; ++render_class) {
-    for (uint32_t i = 0u; i < candidate_count; ++i) {
-      VkrLocalShadowCandidate *candidate = &candidates[order[i]];
-      if (candidate->render_class != render_class ||
-          render_faces + candidate->face_count > face_budget)
-        continue;
-      candidate->render = true_v;
-      render_faces += candidate->face_count;
+  for (uint32_t faded = 0u; faded < 2u; ++faded) {
+    for (uint32_t render_class = VKR_LOCAL_SHADOW_RENDER_INVALID;
+         render_class <= VKR_LOCAL_SHADOW_RENDER_STALE; ++render_class) {
+      for (uint32_t i = 0u; i < candidate_count; ++i) {
+        VkrLocalShadowCandidate *candidate = &candidates[order[i]];
+        if (candidate->render_class != render_class ||
+            (candidate->distance_fade <= 0.0f) != (faded != 0u) ||
+            render_faces + candidate->face_count > face_budget)
+          continue;
+        candidate->render = true_v;
+        render_faces += candidate->face_count;
+      }
     }
   }
 
@@ -690,8 +702,9 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
     strengths[i] =
         shown ? Min((previous ? previous->strength : 0.0f) + step, 1.0f) : 0.0f;
     const bool8_t incumbent_full =
-        previous && previous->strength > 0.0f && !previous->reduced;
-    keys[i] = !shown ? -FLT_MAX
+        previous && previous->strength * previous->distance_fade > 0.0f &&
+        !previous->reduced;
+    keys[i] = !shown || candidate->distance_fade <= 0.0f ? -FLT_MAX
               : incumbent_full
                   ? candidate->score * VKR_LOCAL_SHADOW_INCUMBENT_BONUS
                   : candidate->score;
@@ -724,6 +737,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
         .face_count = candidate->face_count,
         .face_size = candidate->face_size,
         .strength = strengths[i],
+        .distance_fade = candidate->distance_fade,
         .reduced = reduced[i],
     };
     MemCopy(entry->face_cells, candidate->face_cells,
@@ -732,7 +746,10 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
             sizeof(entry->transmission_layers));
     if (previous)
       MemCopy(entry->faces, previous->faces, sizeof(entry->faces));
-    if (strengths[i] <= 0.0f && !candidate->render)
+    /* A drawn light is a view whatever its strength, since render slots name
+     * views; receivers skip a light at zero strength. */
+    const float32_t strength = strengths[i] * candidate->distance_fade;
+    if (strength <= 0.0f && !candidate->render)
       continue;
 
     /* Receivers sample transmission only once its layers hold this light. */
@@ -740,7 +757,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
       MemZero(candidate->transmission_layers,
               sizeof(candidate->transmission_layers));
     const uint32_t first_view = out->view_count;
-    vkr_local_shadow_write_views(light, candidate, strengths[i], reduced[i],
+    vkr_local_shadow_write_views(light, candidate, strength, reduced[i],
                                  &out->views[first_view]);
     out->light_first_view[candidate->light_index] = first_view + 1u;
     out->view_count += candidate->face_count;

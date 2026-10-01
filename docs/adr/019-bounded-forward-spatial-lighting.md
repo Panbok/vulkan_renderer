@@ -67,8 +67,13 @@ transmission layers, then stale ones, each by importance. A light is shadowed
 once every face is valid; its strength then rises from zero over 0.25 s, or at
 once on the first resolve, a budget change and a renderer camera cut (the TAA
 rule: more than 10 m or 60 degrees of turn), since the image has no history to
-keep. A resident light whose content stays valid never fades out, so its
-shadow cannot switch off while the camera moves. Shadowed lights require a
+keep. A resident light whose content stays valid never fades out with time, so
+its shadow cannot switch off while the camera moves. Receivers instead see that
+strength times a fade by camera distance, from one to zero over the last 5 m
+before `VkrShadowConfig.local_shadow_fade_distance`, 30 m by default: a light
+past it is not shadowed, so no pixel filters it, yet it stays resident and its
+shadow returns continuously as the camera approaches. Faded lights draw last.
+`VKR_LOCAL_SHADOW_FADE_DISTANCE` overrides the distance for diagnosis. Shadowed lights require a
 finite positive range, and shadowed spot outer half angles must be below 90
 degrees.
 
@@ -409,3 +414,20 @@ invalid and stale content, cleared and replaced pools, transmission layers,
 the fill within the budget, the fade-in and camera cuts. All 104 Vulkan
 modules pass `spirv-val`; native Vulkan execution and matched timings remain
 unmeasured.
+
+The same day on the M1 Pro, Metal Release at 1280x720 with the High preset,
+`local_shadow_cache_bistro_metal_indoor` (owner camera 1) and
+`local_shadow_cache_bistro_metal_street` ran once each under
+`local-offscreen-gpu-single`, 60 warmup and 120 measured frames, with
+`VKR_LOCAL_SHADOW_FADE_DISTANCE` varied. Indoors, frame wall time was 12.9 ms
+median without local shadows (fade 0.001 m) and 16.2 to 16.4 ms with 40, 61 or
+72 lamps shadowed (fade 15 m, 30 m, 1000 m); `Shadow.LocalMask` took 2.8 to
+3.0 ms and `Lighting.Deferred` 3.6 ms against 3.4 ms. In the street view,
+frame time was 12.2 ms without local shadows and 19.0 to 19.2 ms with 41, 56
+or 72 lamps (fade 20 m, 30 m, 1000 m), where local shadows added 5.1 ms of
+mask, 1.7 ms of `World.Blend`, 1.0 ms of deferred lighting and 0.65 ms of
+transmission shading. The fade distance does not change the cost in either
+view: nearby lights covering many pixels dominate. Faces of 256 squared
+instead of 512 lowered street mask time from 5.09 to 4.92 ms and left the
+indoor view unchanged. These are single local observations, not matched speed
+claims.

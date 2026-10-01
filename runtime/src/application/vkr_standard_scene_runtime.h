@@ -217,6 +217,9 @@ typedef struct VkrStandardSceneRuntime {
    * even where the renderer measures visible light contribution; the
    * measurement continues for metrics. */
   bool8_t disable_local_shadow_feedback;
+  /** Diagnostic local-shadow fade distance from
+   * VKR_LOCAL_SHADOW_FADE_DISTANCE; zero keeps the configured one. */
+  float32_t local_shadow_fade_distance_override;
   bool8_t disable_soft_shadows;
   bool8_t disable_fog;
   bool8_t disable_volumetric_fog;

@@ -145,6 +145,8 @@ typedef struct VkrShadowCasterDepthBounds {
  *
  * | Field | Consumer |
  * |---|---|
+ * | local_shadow_face_budget, local_shadow_map_size,
+ *   local_shadow_fade_distance | vkr_local_shadow_cache_resolve() |
  * | cascade_count | split/matrix loop; packet cascade count |
  * | shadow_map_size | texel size and snapping in the cascade fit |
  * | cascade_split_lambda | vkr_shadow_compute_cascade_splits() |
@@ -178,8 +180,12 @@ typedef struct VkrShadowCasterDepthBounds {
  */
 typedef struct VkrShadowConfig {
   uint32_t local_shadow_face_budget;
-  /** Largest local shadow face; faces shrink with the light's screen size. */
+  /** Largest local shadow face; a light's faces follow its range. */
   uint32_t local_shadow_map_size;
+  /** Camera distance in metres at which a light's local shadow has faded out,
+   * over the last VKR_LOCAL_SHADOW_FADE_BAND_METRES; lights past it are not
+   * filtered. Bounds the shadowed lights a pixel filters. */
+  float32_t local_shadow_fade_distance;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
   float32_t cascade_split_lambda;
@@ -245,6 +251,10 @@ typedef struct VkrShadowConfig {
  * range, so the budget, not the 64-face capacity, bounds that cost; lights
  * past the three most important take a single filtered tap. */
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA 60u
+/* Camera distance at which local shadows have faded out, and the width of the
+ * fade before it. */
+#define VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT 30.0f
+#define VKR_LOCAL_SHADOW_FADE_BAND_METRES 5.0f
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH 30u
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED 12u
 
@@ -273,6 +283,7 @@ typedef struct VkrShadowConfig {
   ((VkrShadowConfig){                                                          \
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH,           \
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
+      .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .cascade_count = 4,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.80f,                                           \
@@ -321,6 +332,7 @@ typedef struct VkrShadowConfig {
   ((VkrShadowConfig){                                                          \
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED,       \
       .local_shadow_map_size = 512u,                                           \
+      .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
       .cascade_count = 3,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.75f,                                           \
@@ -475,8 +487,10 @@ typedef struct VkrLocalShadowCacheLight {
   /** Each face's transmission layer + 1; zero without one. A light holds
    * layers for all its faces or none. */
   uint32_t transmission_layers[6];
-  /** Shadow strength in [0, 1]; rises from zero once every face is valid. */
+  /** Fill strength in [0, 1]; rises from zero once every face is valid. */
   float32_t strength;
+  /** Camera-distance fade in [0, 1]; receivers see strength times it. */
+  float32_t distance_fade;
   /** The light takes one filtered tap and no contact shadows. */
   bool8_t reduced;
   VkrLocalShadowFaceHistory faces[6];
