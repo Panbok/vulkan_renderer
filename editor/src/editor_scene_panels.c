@@ -3017,15 +3017,19 @@ static void inspector_preset_button(VkrEditorScenePanels *p, VkrUiSystem *ui,
   }
 }
 
-/* One directional light is the sun (ADR-058); another enabled one says which
-   light is, and offers to become the sun where setting its Atmosphere sun
-   flag is enough: a scene's own flagged light outranks the World's. */
+/* One directional light is the sun (ADR-058) and at most one the moon
+   (ADR-081); another enabled one says which light is, and a sun candidate
+   offers to become the sun where setting its Atmosphere sun flag is enough:
+   a scene's own flagged light outranks the World's. */
 static void inspector_sun_note(VkrEditorScenePanels *p,
                                const VkrSampleUiFrame *f,
                                const VkrScene *resolver, float32_t w,
                                float32_t *y, InspectorComponentEdit *edit) {
   const SceneDirectionalLight *light = &p->values.directional_light;
-  const VkrSceneSun *sun = resolver ? &resolver->sun : NULL;
+  const bool8_t moon_light = light->atmosphere_moon;
+  const VkrSceneSun *sun = !resolver    ? NULL
+                           : moon_light ? &resolver->moon
+                                        : &resolver->sun;
   if (!light->enabled || !sun ||
       (sun->found && sun->owner == f->scene &&
        sun->entity.u64 == f->selected_entity.u64)) {
@@ -3042,15 +3046,21 @@ static void inspector_sun_note(VkrEditorScenePanels *p,
   note.icon = VKR_UI_ICON_INFO_FILL;
   note.icon_size_pt = 12.0f;
   note.icon_color = theme->warning;
-  vkr_ui_label(ui, string8_lit("sun.inactive"),
-               name.length
-                   ? string8_create_formatted(ui->frame_allocator,
-                                              "Inactive: %.*s is the sun",
-                                              (int)name.length, name.str)
-                   : string8_lit("Inactive: another light is the sun"),
-               &note);
+  const char *role = moon_light ? "moon" : "sun";
+  String8 status = string8_lit("Inactive: another light is the sun");
+  if (name.length) {
+    status = string8_create_formatted(ui->frame_allocator,
+                                      "Inactive: %.*s is the %s",
+                                      (int)name.length, name.str, role);
+  } else if (moon_light && !resolver->atmosphere.authored_settings.enabled) {
+    status = string8_lit("Inactive: only an atmosphere has a moon");
+  } else if (moon_light) {
+    status = string8_lit("Inactive: another light is the moon");
+  }
+  vkr_ui_label(ui, string8_lit("sun.inactive"), status, &note);
   *y += INSPECTOR_ROW_PT;
-  const bool8_t flag_wins = resolver->atmosphere.authored_settings.enabled &&
+  const bool8_t flag_wins = !moon_light &&
+                            resolver->atmosphere.authored_settings.enabled &&
                             !light->atmosphere_sun && f->scene == resolver &&
                             (!sun->found || sun->owner != resolver);
   if (!flag_wins || edit->type) {

@@ -44,6 +44,7 @@ struct EntityImport {
   float32_t directional_sun_angular_diameter_degrees =
       VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
   bool8_t directional_atmosphere_sun = true_v;
+  bool8_t directional_atmosphere_moon = false_v;
   bool has_rectangle_light = false;
   VkrBakeSceneLight rectangle_light = {};
 };
@@ -434,12 +435,14 @@ bool parse_directional_light(const VkrJsonReader *entity, EntityImport *out) {
   float32_t diameter =
       VKR_DIRECTIONAL_LIGHT_DEFAULT_SUN_ANGULAR_DIAMETER_DEGREES;
   bool8_t atmosphere_sun = true_v;
+  bool8_t atmosphere_moon = false_v;
   if (!finite_vec3(light.color) || !finite_vec3(light.direction) ||
       !std::isfinite(light.intensity) ||
       !read_optional_float(&object, "temperature_kelvin", &temperature) ||
       !read_optional_float(&object, "sun_angular_diameter_degrees",
                            &diameter) ||
-      !read_optional_bool(&object, "atmosphere_sun", &atmosphere_sun))
+      !read_optional_bool(&object, "atmosphere_sun", &atmosphere_sun) ||
+      !read_optional_bool(&object, "atmosphere_moon", &atmosphere_moon))
     return false;
   if (temperature != 0.0f &&
       (temperature < VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K ||
@@ -453,6 +456,7 @@ bool parse_directional_light(const VkrJsonReader *entity, EntityImport *out) {
   out->has_directional_light = true;
   out->directional_sun_angular_diameter_degrees = diameter;
   out->directional_atmosphere_sun = atmosphere_sun;
+  out->directional_atmosphere_moon = atmosphere_moon;
   return true;
 }
 
@@ -690,19 +694,34 @@ bool parse_atmosphere(const std::vector<uint8_t> &bytes,
   return vkr_atmosphere_settings_valid(&validation);
 }
 
-/* Mirrors vkr_scene_sync_sun for a scene with one atmosphere sun light: the
-   first enabled one drives an enabled atmosphere's sun through its local
-   rotation, and an unusable light keeps the authored sun. Only a light is a
-   sun (ADR-058): without one the sky has none, unless a legacy atmosphere
-   block authors it, for which the runtime loader generates that light. */
+/* Mirrors vkr_scene_sync_sun for a scene with one atmosphere sun light and
+   at most one moon light: the first enabled one of each drives an enabled
+   atmosphere's sun or moon through its local rotation, and an unusable light
+   keeps the authored one. Only a light is a sun (ADR-058): without one the
+   sky has none, unless a legacy atmosphere block authors it, for which the
+   runtime loader generates that light. A moon light is never the sun, and
+   without one the sky has no moon (ADR-081). */
 void apply_sun_light(const std::vector<EntityImport> &entities,
                      bool authored_sun, VkrAtmosphereSettings *settings) {
   if (!settings->enabled)
     return;
+  settings->lunar_irradiance = vec3_zero();
   for (const EntityImport &entity : entities) {
     const VkrBakeSceneLight &light = entity.directional_light;
     if (!entity.has_directional_light || !light.enabled ||
-        !entity.directional_atmosphere_sun)
+        !entity.directional_atmosphere_moon)
+      continue;
+    (void)vkr_atmosphere_apply_moon_light(
+        settings, vkr_quat_rotate_vec3(entity.rotation, light.direction),
+        vec3_scale(light.color, light.intensity),
+        entity.directional_sun_angular_diameter_degrees);
+    break;
+  }
+  for (const EntityImport &entity : entities) {
+    const VkrBakeSceneLight &light = entity.directional_light;
+    if (!entity.has_directional_light || !light.enabled ||
+        !entity.directional_atmosphere_sun ||
+        entity.directional_atmosphere_moon)
       continue;
     (void)vkr_atmosphere_apply_sun_light(
         settings, vkr_quat_rotate_vec3(entity.rotation, light.direction),
@@ -1120,12 +1139,10 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       }
     }
     if (scene->atmosphere.enabled) {
-      const Vec3 sun = vec3_new(scene->atmosphere.params.sun.x,
-                                scene->atmosphere.params.sun.y,
-                                scene->atmosphere.params.sun.z);
+      const Vec3 key = scene->atmosphere.key_light_direction;
       scene->lights.push_back((VkrBakeSceneLight){
           .kind = VkrBakeSceneLightKind::Directional,
-          .direction = vec3_new(-sun.x, -sun.y, -sun.z),
+          .direction = vec3_new(-key.x, -key.y, -key.z),
           .color = scene->atmosphere.observer_irradiance,
           .intensity = 1.0f,
           .enabled = true_v,

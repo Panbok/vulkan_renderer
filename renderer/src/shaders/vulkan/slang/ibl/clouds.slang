@@ -170,6 +170,13 @@ float4 vk_cloud_march(VkrVulkanCloudTraceRoot *root, float3 direction,
     float3 origin = float3(0.0f, camera_radius, 0.0f);
     float3 sun = params.atmosphere.sun.xyz;
     float cosine = dot(direction, sun);
+    // The moon lights the layer while it is the key light; a sun below the
+    // observer's horizon may still light the layer above, at twilight.
+    float3 moon = params.atmosphere.moon.xyz;
+    float moon_cosine = dot(direction, moon);
+    bool sun_lights = !vkr_atmosphere_light_dark(params.atmosphere.solar);
+    bool moon_lights = params.key_light.w > 0.0f &&
+                       !vkr_atmosphere_light_dark(params.atmosphere.lunar);
     float3 ambient = packet_sky_ambient(root.frame);
     float step_km = (segment.end_km - segment.start_km) /
                     float(VKR_CLOUD_PRIMARY_STEPS);
@@ -193,21 +200,36 @@ float4 vk_cloud_march(VkrVulkanCloudTraceRoot *root, float3 direction,
             vkr_cloud_distance_fade(clouds, distance);
         if (density <= 0.0f)
             continue;
-        float3 sun_irradiance = float3(0.0f);
-        if (!vkr_atmosphere_sun_occluded(params.atmosphere, position, sun))
+        // An occluded light contributes nothing, so its light march is
+        // skipped.
+        float3 source = float3(0.0f);
+        if (sun_lights &&
+            !vkr_atmosphere_sun_occluded(params.atmosphere, position, sun))
         {
-            sun_irradiance =
+            float3 sun_irradiance =
                 params.atmosphere.solar.rgb *
                 vk_atmosphere_lookup_transmittance(sky.transmittance_texture,
                                                    sky.sampler,
                                                    params.atmosphere, position,
                                                    sun);
-        }
-        float3 source =
-            vkr_cloud_sun_scattering(
+            source = vkr_cloud_sun_scattering(
                 sun_irradiance, cosine,
-                vk_cloud_light_depth(sky, params, position, sun)) +
-            vkr_cloud_ambient(ambient, sample.height_fraction);
+                vk_cloud_light_depth(sky, params, position, sun));
+        }
+        if (moon_lights &&
+            !vkr_atmosphere_sun_occluded(params.atmosphere, position, moon))
+        {
+            float3 moon_irradiance =
+                params.atmosphere.lunar.rgb *
+                vk_atmosphere_lookup_transmittance(sky.transmittance_texture,
+                                                   sky.sampler,
+                                                   params.atmosphere, position,
+                                                   moon);
+            source += vkr_cloud_sun_scattering(
+                moon_irradiance, moon_cosine,
+                vk_cloud_light_depth(sky, params, position, moon));
+        }
+        source += vkr_cloud_ambient(ambient, sample.height_fraction);
         state = vkr_cloud_integrate_step(state, density * clouds.layer.z,
                                          step_km, source, distance);
         if (state.transmittance < VKR_CLOUD_TRANSMITTANCE_CUTOFF)

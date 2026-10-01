@@ -120,9 +120,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSky {
   uint64_t cloud_detail_noise_texture_id;
   uint64_t cloud_weather_texture_id;
 } VkrMetalPacketSky;
-_Static_assert(sizeof(VkrMetalPacketSky) == 416u, "Metal sky record ABI drift");
+_Static_assert(sizeof(VkrMetalPacketSky) == 464u, "Metal sky record ABI drift");
 _Static_assert(offsetof(VkrMetalPacketSky, aerial_perspective_texture_id) ==
-                   352u,
+                   400u,
                "Metal sky aerial-perspective offset drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
@@ -1236,22 +1236,22 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketAtmosphereRoot {
   uint32_t reserved;
 } VkrMetalPacketAtmosphereRoot;
 
-_Static_assert(sizeof(VkrMetalPacketAtmosphereRoot) == 192u,
+_Static_assert(sizeof(VkrMetalPacketAtmosphereRoot) == 224u,
                "Metal atmosphere root ABI drift");
 _Static_assert(_Alignof(VkrMetalPacketAtmosphereRoot) == 16u,
                "Metal atmosphere root alignment drift");
 _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
-                        transmittance_sample_texture_id) == 128u,
+                        transmittance_sample_texture_id) == 160u,
                "Metal atmosphere transmittance sample offset drift");
 _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
-                        multiple_scattering_sample_texture_id) == 144u,
+                        multiple_scattering_sample_texture_id) == 176u,
                "Metal atmosphere multiple-scattering sample offset drift");
 _Static_assert(offsetof(VkrMetalPacketAtmosphereRoot,
-                        source_storage_texture_id) == 160u,
+                        source_storage_texture_id) == 192u,
                "Metal atmosphere source offset drift");
-_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, extent) == 168u,
+_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, extent) == 200u,
                "Metal atmosphere extent offset drift");
-_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, face_size) == 176u,
+_Static_assert(offsetof(VkrMetalPacketAtmosphereRoot, face_size) == 208u,
                "Metal atmosphere face-size offset drift");
 
 /** Mirrors VkrMetalPacketShProjectRoot in metal/msl/ibl/sh_projection.metal.

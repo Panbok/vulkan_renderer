@@ -263,6 +263,12 @@ static const VkrPropertyDesc s_directional_light_properties[] = {
      .tooltip = "Drives the atmosphere's sun direction and color",
      .offset = TYPE_OFFSET(SceneDirectionalLight, atmosphere_sun),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "atmosphere_moon",
+     .label = "Atmosphere moon",
+     .tooltip = "Drives the atmosphere's moon, its night light; a moon is "
+                "never the sun",
+     .offset = TYPE_OFFSET(SceneDirectionalLight, atmosphere_moon),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "color",
      .label = "Color",
      .tooltip = "Linear RGB color",
@@ -324,6 +330,27 @@ static bool8_t directional_light_validate(const void *value, char *error,
   return true_v;
 }
 
+/* A moon light is never the sun, so its sun flag has no effect, and its disc
+   is the moon's. */
+static VkrPropertyState directional_light_state(const void *value,
+                                                uint32_t property,
+                                                const void *context) {
+  (void)context;
+  const SceneDirectionalLight *light = value;
+  const uint32_t offset = s_directional_light_properties[property].offset;
+  VkrPropertyState state = {0};
+  if (!light->atmosphere_moon) {
+    return state;
+  }
+  if (offset == offsetof(SceneDirectionalLight, atmosphere_sun)) {
+    state.flags |= VKR_PROPERTY_STATE_DISABLED;
+  } else if (offset ==
+             offsetof(SceneDirectionalLight, sun_angular_diameter_degrees)) {
+    state.label = string8_lit("Moon diameter");
+  }
+  return state;
+}
+
 static void directional_light_defaults(void *value) {
   *(SceneDirectionalLight *)value = (SceneDirectionalLight){
       .color = vec3_one(),
@@ -345,6 +372,7 @@ const VkrTypeDesc vkr_scene_directional_light_type = {
     .align = AlignOf(SceneDirectionalLight),
     .defaults = directional_light_defaults,
     .validate = directional_light_validate,
+    .state = directional_light_state,
 };
 
 /* ---- Rectangle lights ---- */

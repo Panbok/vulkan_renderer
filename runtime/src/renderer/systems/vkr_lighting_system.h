@@ -63,12 +63,13 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
 void vkr_lighting_system_append_scene(VkrLightingSystem *system,
                                       const VkrScene *scene);
 
-/** Lights with the frame's atmosphere sun: `settings` pairs the published
- * medium with the scene's current sun, and `irradiance` is that sun
- * attenuated to the observer. */
-void vkr_lighting_system_apply_atmosphere_sun(
-    VkrLightingSystem *system, const VkrAtmosphereSettings *settings,
-    Vec3 irradiance);
+/** Lights with the frame's atmosphere key light, the sun or the moon
+ * (ADR-081): `toward_light` points from the observer toward it, `irradiance`
+ * is its light attenuated to the observer and the diameter sizes the shadow
+ * penumbra. */
+void vkr_lighting_system_apply_atmosphere_light(
+    VkrLightingSystem *system, Vec3 toward_light, Vec3 irradiance,
+    float32_t angular_diameter_degrees);
 
 /** Rebuilds the conservative world-space lookup from point_lights. Public for
  * deterministic CPU coverage tests; scene sync calls it automatically. */

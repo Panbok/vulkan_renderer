@@ -6,6 +6,8 @@ VkrAtmosphereSettings vkr_atmosphere_settings_defaults(void) {
   return (VkrAtmosphereSettings){
       .sun_direction = {.x = 0.0f, .y = 0.70710678f, .z = -0.70710678f},
       .solar_irradiance = {.x = 1.474f, .y = 1.8504f, .z = 1.91198f},
+      .moon_direction = {.x = 0.0f, .y = -0.70710678f, .z = 0.70710678f},
+      .moon_angular_diameter_degrees = VKR_ATMOSPHERE_MOON_DIAMETER_DEFAULT,
       .ground_albedo = {.x = 0.3f, .y = 0.3f, .z = 0.3f},
       .sun_angular_diameter_degrees = 0.53f,
       .sun_glow = VKR_ATMOSPHERE_SUN_GLOW_DEFAULT,
@@ -24,11 +26,20 @@ bool8_t vkr_atmosphere_settings_valid(const VkrAtmosphereSettings *settings) {
     return true_v;
   const Vec3 sun = settings->sun_direction;
   const Vec3 solar = settings->solar_irradiance;
+  const Vec3 moon = settings->moon_direction;
+  const Vec3 lunar = settings->lunar_irradiance;
   const Vec3 ground = settings->ground_albedo;
   return isfinite(sun.x) && isfinite(sun.y) && isfinite(sun.z) &&
          (sun.x != 0.0f || sun.y != 0.0f || sun.z != 0.0f) &&
          isfinite(solar.x) && solar.x >= 0.0f && isfinite(solar.y) &&
          solar.y >= 0.0f && isfinite(solar.z) && solar.z >= 0.0f &&
+         isfinite(moon.x) && isfinite(moon.y) && isfinite(moon.z) &&
+         (moon.x != 0.0f || moon.y != 0.0f || moon.z != 0.0f) &&
+         isfinite(lunar.x) && lunar.x >= 0.0f && isfinite(lunar.y) &&
+         lunar.y >= 0.0f && isfinite(lunar.z) && lunar.z >= 0.0f &&
+         isfinite(settings->moon_angular_diameter_degrees) &&
+         settings->moon_angular_diameter_degrees >= 1e-16f &&
+         settings->moon_angular_diameter_degrees <= 5.0f &&
          isfinite(ground.x) && ground.x >= 0.0f && ground.x <= 1.0f &&
          isfinite(ground.y) && ground.y >= 0.0f && ground.y <= 1.0f &&
          isfinite(ground.z) && ground.z >= 0.0f && ground.z <= 1.0f &&
@@ -153,12 +164,15 @@ vkr_atmosphere_apply_sun_authoring(VkrAtmosphereSettings *settings,
 
 VkrAtmosphereSettings
 vkr_atmosphere_with_sun(const VkrAtmosphereSettings *medium,
-                        const VkrAtmosphereSettings *sun) {
+                        const VkrAtmosphereSettings *lights) {
   VkrAtmosphereSettings lit = *medium;
-  lit.sun_direction = sun->sun_direction;
-  lit.solar_irradiance = sun->solar_irradiance;
-  lit.sun_angular_diameter_degrees = sun->sun_angular_diameter_degrees;
-  lit.sun_glow = sun->sun_glow;
+  lit.sun_direction = lights->sun_direction;
+  lit.solar_irradiance = lights->solar_irradiance;
+  lit.sun_angular_diameter_degrees = lights->sun_angular_diameter_degrees;
+  lit.sun_glow = lights->sun_glow;
+  lit.moon_direction = lights->moon_direction;
+  lit.lunar_irradiance = lights->lunar_irradiance;
+  lit.moon_angular_diameter_degrees = lights->moon_angular_diameter_degrees;
   return lit;
 }
 
@@ -181,26 +195,82 @@ bool8_t vkr_atmosphere_apply_sun_light(VkrAtmosphereSettings *settings,
   return true_v;
 }
 
+bool8_t
+vkr_atmosphere_apply_moon_light(VkrAtmosphereSettings *settings,
+                                Vec3 light_direction, Vec3 irradiance,
+                                float32_t moon_angular_diameter_degrees) {
+  VkrAtmosphereSettings lit = *settings;
+  lit.moon_direction = vec3_negate(light_direction);
+  lit.lunar_irradiance = irradiance;
+  if (moon_angular_diameter_degrees > 0.0f &&
+      moon_angular_diameter_degrees <= 5.0f) {
+    lit.moon_angular_diameter_degrees = moon_angular_diameter_degrees;
+  }
+
+  if (!vkr_atmosphere_settings_valid(&lit)) {
+    return false_v;
+  }
+
+  *settings = lit;
+  return true_v;
+}
+
+float32_t vkr_atmosphere_moon_lit_fraction(Vec3 moon_direction,
+                                           Vec3 sun_direction) {
+  return Clamp(0.5f - 0.5f * vec3_dot(moon_direction, sun_direction), 0.0f,
+               1.0f);
+}
+
+/* A unit direction toward a body, its disc's cosine radius and projected solid
+   angle pi*sin(radius)^2, and its irradiance limited so the visual disc fits
+   scene-linear RGBA16F. Atmospheric in-scatter retains headroom. */
+typedef struct VkrAtmosphereBody {
+  Vec4 direction;
+  Vec4 irradiance;
+} VkrAtmosphereBody;
+
+vkr_internal VkrAtmosphereBody vkr_atmosphere_body(Vec3 direction,
+                                                   Vec3 irradiance,
+                                                   float32_t diameter_degrees) {
+  const float64_t x = direction.x;
+  const float64_t y = direction.y;
+  const float64_t z = direction.z;
+  const float64_t length = sqrt(x * x + y * y + z * z);
+  const float64_t radius = diameter_degrees * 3.14159265358979323846 / 360.0;
+  const float32_t projected_solid_angle =
+      (float32_t)(3.14159265358979323846 * sin(radius) * sin(radius));
+  const float32_t irradiance_limit = 60000.0f * projected_solid_angle;
+  const float32_t peak = Max(irradiance.x, Max(irradiance.y, irradiance.z));
+  const float32_t calibration =
+      peak > irradiance_limit ? irradiance_limit / peak : 1.0f;
+  return (VkrAtmosphereBody){
+      .direction = {(float32_t)(x / length), (float32_t)(y / length),
+                    (float32_t)(z / length), (float32_t)cos(radius)},
+      .irradiance = {irradiance.x * calibration, irradiance.y * calibration,
+                     irradiance.z * calibration, projected_solid_angle},
+  };
+}
+
 VkrAtmosphereGpuParams
 vkr_atmosphere_prepare(const VkrAtmosphereSettings *settings) {
   if (!settings->enabled)
     return (VkrAtmosphereGpuParams){0};
-  const float64_t x = settings->sun_direction.x;
-  const float64_t y = settings->sun_direction.y;
-  const float64_t z = settings->sun_direction.z;
-  const float64_t length = sqrt(x * x + y * y + z * z);
-  const float64_t radius =
-      settings->sun_angular_diameter_degrees * 3.14159265358979323846 / 360.0;
-  const float32_t projected_solid_angle =
-      (float32_t)(3.14159265358979323846 * sin(radius) * sin(radius));
-  /* Normalize the solar calibration once so both direct light and the visual
-     disc fit scene-linear RGBA16F. Atmospheric in-scatter retains headroom. */
-  const float32_t irradiance_limit = 60000.0f * projected_solid_angle;
-  const float32_t peak =
-      Max(settings->solar_irradiance.x,
-          Max(settings->solar_irradiance.y, settings->solar_irradiance.z));
-  const float32_t calibration =
-      peak > irradiance_limit ? irradiance_limit / peak : 1.0f;
+  /* Normalize each light's calibration once so both direct light and the
+     visual disc fit scene-linear RGBA16F. */
+  const VkrAtmosphereBody sun =
+      vkr_atmosphere_body(settings->sun_direction, settings->solar_irradiance,
+                          settings->sun_angular_diameter_degrees);
+  VkrAtmosphereBody moon =
+      vkr_atmosphere_body(settings->moon_direction, settings->lunar_irradiance,
+                          settings->moon_angular_diameter_degrees);
+  /* The moon's disc shows the sunlit part of a sphere, so its irradiance
+     scales with the lit fraction; the full moon gives the authored value. */
+  const float32_t lit_fraction = vkr_atmosphere_moon_lit_fraction(
+      vec3_new(moon.direction.x, moon.direction.y, moon.direction.z),
+      vec3_new(sun.direction.x, sun.direction.y, sun.direction.z));
+  moon.irradiance.x *= lit_fraction;
+  moon.irradiance.y *= lit_fraction;
+  moon.irradiance.z *= lit_fraction;
   return (VkrAtmosphereGpuParams){
       .planet = {6360.0f, 6460.0f, settings->observer_altitude_m * 0.001f,
                  settings->mie_anisotropy},
@@ -218,12 +288,10 @@ vkr_atmosphere_prepare(const VkrAtmosphereSettings *settings) {
                 0.000085f * settings->ozone_density_scale, 25.0f},
       .ground = {settings->ground_albedo.x, settings->ground_albedo.y,
                  settings->ground_albedo.z, 15.0f},
-      .sun = {(float32_t)(x / length), (float32_t)(y / length),
-              (float32_t)(z / length), (float32_t)cos(radius)},
-      .solar = {settings->solar_irradiance.x * calibration,
-                settings->solar_irradiance.y * calibration,
-                settings->solar_irradiance.z * calibration,
-                projected_solid_angle},
+      .sun = sun.direction,
+      .solar = sun.irradiance,
+      .moon = moon.direction,
+      .lunar = moon.irradiance,
   };
 }
 
@@ -238,16 +306,23 @@ vkr_atmosphere_dark_depression_degrees(const VkrAtmosphereGpuParams *params) {
                      (180.0 / 3.14159265358979323846));
 }
 
-bool8_t vkr_atmosphere_bake_dark(const VkrAtmosphereGpuParams *params) {
-  if (params->solar.x <= 0.0f && params->solar.y <= 0.0f &&
-      params->solar.z <= 0.0f)
+/* True when a light with this irradiance and direction lights nothing a bake
+   reaches. */
+vkr_internal bool8_t vkr_atmosphere_light_dark(
+    const VkrAtmosphereGpuParams *params, Vec4 direction, Vec4 irradiance) {
+  if (irradiance.x <= 0.0f && irradiance.y <= 0.0f && irradiance.z <= 0.0f)
     return true_v;
   const float64_t elevation_degrees =
-      asin(Clamp((float64_t)params->sun.y, -1.0, 1.0)) *
+      asin(Clamp((float64_t)direction.y, -1.0, 1.0)) *
       (180.0 / 3.14159265358979323846);
   return -elevation_degrees >= vkr_atmosphere_dark_depression_degrees(params)
              ? true_v
              : false_v;
+}
+
+bool8_t vkr_atmosphere_bake_dark(const VkrAtmosphereGpuParams *params) {
+  return vkr_atmosphere_light_dark(params, params->sun, params->solar) &&
+         vkr_atmosphere_light_dark(params, params->moon, params->lunar);
 }
 
 VkrSkyGpuParams
@@ -267,6 +342,11 @@ vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
                  1.0f / (float32_t)VKR_ATMOSPHERE_AERIAL_SIZE,
                  aerial_perspective ? 1.0f : 0.0f},
   };
+  /* The key light is chosen at the authored observer, as the direct light is,
+     so cascades and cloud shadows follow the same light. */
+  const bool8_t moon_key = vkr_atmosphere_moon_is_key(&sky.atmosphere);
+  const Vec4 key = moon_key ? sky.atmosphere.moon : sky.atmosphere.sun;
+  sky.key_light = (Vec4){key.x, key.y, key.z, moon_key ? 1.0f : 0.0f};
   /* The camera stands on the planet directly below its world position, so
      only its height changes the atmosphere it looks through. */
   const float32_t altitude_m =
@@ -279,10 +359,9 @@ vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
     const Vec3 camera_km =
         vec3_new(camera_position.x * km_per_unit, sky.atmosphere.planet.z,
                  camera_position.z * km_per_unit);
-    const Vec3 sun = vec3_new(sky.atmosphere.sun.x, sky.atmosphere.sun.y,
-                              sky.atmosphere.sun.z);
-    sky.clouds = vkr_cloud_prepare(clouds, sky.atmosphere.planet.x, camera_km,
-                                   sun, cloud_wind_offset_m);
+    sky.clouds =
+        vkr_cloud_prepare(clouds, sky.atmosphere.planet.x, camera_km,
+                          vec3_new(key.x, key.y, key.z), cloud_wind_offset_m);
   }
   return sky;
 }
@@ -397,14 +476,45 @@ Vec3 vkr_atmosphere_transmittance(const VkrAtmosphereGpuParams *params,
       expf(-Min(optical_depth.z, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH)));
 }
 
-Vec3 vkr_atmosphere_observer_irradiance(const VkrAtmosphereGpuParams *params) {
+/* A light's irradiance attenuated to the observer altitude, or zero below its
+   horizon. */
+vkr_internal Vec3 vkr_atmosphere_observer_light(
+    const VkrAtmosphereGpuParams *params, Vec4 direction, Vec4 irradiance) {
   const Vec3 observer =
       vec3_new(0.0f, params->planet.x + params->planet.z, 0.0f);
-  const Vec3 sun = vec3_new(params->sun.x, params->sun.y, params->sun.z);
-  if (vkr_atmosphere_sun_occluded(params, observer, sun)) {
+  const Vec3 toward = vec3_new(direction.x, direction.y, direction.z);
+  if ((irradiance.x <= 0.0f && irradiance.y <= 0.0f && irradiance.z <= 0.0f) ||
+      vkr_atmosphere_sun_occluded(params, observer, toward)) {
     return vec3_zero();
   }
 
-  return vec3_mul(vec3_new(params->solar.x, params->solar.y, params->solar.z),
-                  vkr_atmosphere_transmittance(params, observer, sun));
+  return vec3_mul(vec3_new(irradiance.x, irradiance.y, irradiance.z),
+                  vkr_atmosphere_transmittance(params, observer, toward));
+}
+
+Vec3 vkr_atmosphere_observer_irradiance(const VkrAtmosphereGpuParams *params) {
+  return vkr_atmosphere_observer_light(params, params->sun, params->solar);
+}
+
+Vec3 vkr_atmosphere_observer_lunar_irradiance(
+    const VkrAtmosphereGpuParams *params) {
+  return vkr_atmosphere_observer_light(params, params->moon, params->lunar);
+}
+
+bool8_t vkr_atmosphere_moon_is_key(const VkrAtmosphereGpuParams *params) {
+  const Vec3 observer =
+      vec3_new(0.0f, params->planet.x + params->planet.z, 0.0f);
+  const bool8_t sun_lights =
+      (params->solar.x > 0.0f || params->solar.y > 0.0f ||
+       params->solar.z > 0.0f) &&
+      !vkr_atmosphere_sun_occluded(
+          params, observer,
+          vec3_new(params->sun.x, params->sun.y, params->sun.z));
+  const bool8_t moon_lights =
+      (params->lunar.x > 0.0f || params->lunar.y > 0.0f ||
+       params->lunar.z > 0.0f) &&
+      !vkr_atmosphere_sun_occluded(
+          params, observer,
+          vec3_new(params->moon.x, params->moon.y, params->moon.z));
+  return !sun_lights && moon_lights;
 }

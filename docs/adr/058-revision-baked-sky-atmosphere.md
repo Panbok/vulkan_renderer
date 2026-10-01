@@ -72,7 +72,9 @@ at the atmosphere top, no point a bake reaches is sunlit once the sun is
 acos(R / r_observer) + 4D below the horizon, 40.4 degrees at sea level and
 50.5 at 100 km (`vkr_atmosphere_dark_depression_degrees`). While both the
 latest request and the current sun are dark, a turning sun requests nothing;
-the sun that crosses into or out of the dark gets its own bake. Each generation owns a 256×64
+the sun that crosses into or out of the dark gets its own bake. With a moon,
+the atmosphere's second light ([ADR-081](081-physical-night-sky.md)), a bake
+is black, and skipped, only while both lights are dark. Each generation owns a 256×64
 transmittance and a 32×32 multiple-scattering RGBA16F lookup texture, 136 KiB
 together. The runtime
 creates them beside the candidate source and prefilter, and they publish and
@@ -174,19 +176,20 @@ Frame input version 50 carries a sky payload: the published generation's
 medium lit by the scene's current sun and its lookup textures, or the constant
 radiance, and the published cloud layer of
 [ADR-074](074-volumetric-cloud-layer.md). The renderer prepares a
-352-byte sky record per frame slot, and every native frame root addresses it.
+400-byte sky record per frame slot, and every native frame root addresses it.
 The camera stands on the planet below its world position, at the observer
 altitude plus its world height times `atmosphere.metres_per_world_unit`,
 clamped to the altitude domain. The scale defaults to one and does not
 participate in the bake.
 
 Every frame with a published atmosphere builds two graph-declared transient
-images from the generation's lookups. A 192×108 RGBA16F sky-view lookup follows
+images from the generation's lookups. A 384×108 RGBA16F sky-view image holds
+two 192×108 tables, one per atmosphere light (ADR-081). Each table follows
 Hillaire's 2020 non-linear parameterization around the camera: V spans zenith
 to horizon and horizon to nadir, each squared toward the horizon, and U is
-`sqrt((1 − cos φ) / 2)` of the azimuth φ from the sun. It stores the same
-32-sample integral as the source cube, including the sunlit ground below the
-horizon. A 32×32×32 RGBA16F aerial-perspective volume stores in-scatter and
+`sqrt((1 − cos φ) / 2)` of the azimuth φ from its light. Each stores the same
+32-sample integral as the source cube for its light alone, including the lit
+ground below the horizon. A 32×32×32 RGBA16F aerial-perspective volume stores in-scatter and
 mean transmittance along camera froxels at Hillaire's squared slice depths of
 4 km per slice; one thread marches each column with two segments per slice.
 Below the first texel's depth, aerial perspective fades linearly to identity at
@@ -243,7 +246,7 @@ and IBL bake, about 3.5 ms of GPU time in one frame on the M1 Pro at the
 moving sun costs at most one such bake every 0.25 seconds, and its sky light, which shapes
 ambient light and reflections, trails the drawn sun by up to that interval
 plus one bake. Each frame slot holds a
-162 KiB sky-view lookup and a 256 KiB aerial volume. Global lighting and the
+324 KiB sky-view image and a 256 KiB aerial volume. Global lighting and the
 direct sun stay at the authored altitude while the visible sky and aerial
 perspective follow the camera. Aerial perspective uses a gray transmittance,
 and its froxels are coarse: within a few hundred metres at unit scale it is a

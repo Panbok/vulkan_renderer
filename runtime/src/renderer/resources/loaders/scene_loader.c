@@ -71,6 +71,7 @@ typedef struct SceneDirectionalLightImport {
   float32_t temperature_kelvin;
   bool8_t enabled;
   bool8_t atmosphere_sun;
+  bool8_t atmosphere_moon;
 } SceneDirectionalLightImport;
 
 /* Sky-light controls for the global environment. The source is resolved after
@@ -2659,6 +2660,16 @@ vkr_internal bool8_t scene_json_parse_directional_light(
     return false_v;
   }
 
+  VkrJsonReader atmosphere_moon_reader = dir_light_obj;
+  if (vkr_json_find_field(&atmosphere_moon_reader, "atmosphere_moon") &&
+      !vkr_json_parse_bool(&atmosphere_moon_reader,
+                           &out_entity->directional_light.atmosphere_moon)) {
+    log_error("Scene loader: entity %u directional_light atmosphere_moon must "
+              "be a boolean",
+              entity_index);
+    return false_v;
+  }
+
   Vec3 color;
   if (scene_json_read_vec3_field(&dir_light_obj, "color", &color)) {
     out_entity->directional_light.color = color;
@@ -3590,6 +3601,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .temperature_kelvin = light_import->temperature_kelvin,
         .enabled = light_import->enabled,
         .atmosphere_sun = light_import->atmosphere_sun,
+        .atmosphere_moon = light_import->atmosphere_moon,
     };
 
     if (!vkr_scene_set_directional_light(scene, entity, &light)) {
@@ -4045,22 +4057,29 @@ vkr_internal bool8_t scene_loader_prepare_payload(
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
-  /* One atmosphere sun light drives an enabled atmosphere (ADR-058); the
-     renderer lights with only one, so more are ambiguous authoring. */
+  /* One atmosphere sun light and one moon light drive an enabled atmosphere
+     (ADR-058, ADR-081); the renderer uses only one of each, so more are
+     ambiguous authoring. A moon light is never the sun. */
   if (payload->atmosphere_import.settings.enabled) {
     uint32_t suns = 0u;
+    uint32_t moons = 0u;
     for (uint32_t index = 0; index < payload->entity_count; ++index) {
       const SceneDirectionalLightImport *light =
           &payload->imports[index].directional_light;
-      suns += payload->imports[index].has_directional_light && light->enabled &&
-                      light->atmosphere_sun
-                  ? 1u
-                  : 0u;
+      const bool8_t lit =
+          payload->imports[index].has_directional_light && light->enabled;
+      suns += lit && light->atmosphere_sun && !light->atmosphere_moon ? 1u : 0u;
+      moons += lit && light->atmosphere_moon ? 1u : 0u;
     }
     if (suns > 1u) {
       log_warn("Scene loader: %u enabled atmosphere sun lights; only the "
                "renderer's sun light drives $.atmosphere",
                suns);
+    }
+    if (moons > 1u) {
+      log_warn("Scene loader: %u enabled atmosphere moon lights; only the "
+               "renderer's moon light drives $.atmosphere",
+               moons);
     }
   }
   payload->environment_import =
@@ -4298,7 +4317,8 @@ vkr_internal bool8_t scene_loader_legacy_sun(
                                        vkr_entity_id_from_index(world, i),
                                        scene->comp_directional_light)
             : NULL;
-    if (existing && existing->enabled && existing->atmosphere_sun) {
+    if (existing && existing->enabled && existing->atmosphere_sun &&
+        !existing->atmosphere_moon) {
       return true_v;
     }
   }

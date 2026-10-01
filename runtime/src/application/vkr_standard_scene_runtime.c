@@ -1758,11 +1758,11 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     }
     if (render_scene->atmosphere.active_revision &&
         render_scene->atmosphere.active_settings.enabled) {
-      const VkrAtmosphereSettings frame =
-          vkr_scene_atmosphere_frame_settings(render_scene);
-      vkr_lighting_system_apply_atmosphere_sun(
-          &application->lighting_system, &frame,
-          vkr_scene_atmosphere_frame_irradiance(render_scene));
+      const VkrSceneKeyLight key =
+          vkr_scene_atmosphere_frame_key_light(render_scene);
+      vkr_lighting_system_apply_atmosphere_light(&application->lighting_system,
+                                                 key.toward, key.irradiance,
+                                                 key.angular_diameter_degrees);
     }
   }
 

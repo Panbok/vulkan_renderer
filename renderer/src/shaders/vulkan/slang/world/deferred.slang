@@ -1486,16 +1486,24 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
         mul(root.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
     float3 direction = -packet_view_direction(root.frame, far_world);
     // The sky-view lookup already integrates to the top of the atmosphere, so
-    // sky pixels take no aerial perspective. The disc and its glow are
-    // analytic. Pass-root
-    // descriptor indices are dynamically uniform; see
-    // packet_directional_shadow.
+    // sky pixels take no aerial perspective. Its sun and moon tables add; the
+    // discs and their glows are analytic. Pass-root descriptor indices are
+    // dynamically uniform; see packet_directional_shadow.
     VkrVulkanSky *sky = root.frame.sky;
     VkrAtmosphereParams params = sky.params.atmosphere;
     float3 radiance = g_textures[root.sky_view_texture]
         .SampleLevel(g_samplers[root.sky_sampler],
-                     vkr_sky_view_uv(params, direction), 0.0f)
+                     vkr_sky_view_uv(params, direction, params.sun.xyz,
+                                     VKR_ATMOSPHERE_SKY_VIEW_SUN_TABLE),
+                     0.0f)
         .rgb;
+    if (!vkr_atmosphere_light_dark(params.lunar))
+        radiance += g_textures[root.sky_view_texture]
+            .SampleLevel(g_samplers[root.sky_sampler],
+                         vkr_sky_view_uv(params, direction, params.moon.xyz,
+                                         VKR_ATMOSPHERE_SKY_VIEW_MOON_TABLE),
+                         0.0f)
+            .rgb;
     float3 disc = float3(0.0f);
     if (!vkr_sky_view_hits_ground(params, direction.y))
     {
@@ -1506,9 +1514,14 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
                              direction.y),
                          0.0f)
             .rgb;
-        disc = vkr_atmosphere_sun_disc(params, direction, view_transmittance);
-        radiance +=
-            vkr_atmosphere_sun_glow(params, direction, view_transmittance);
+        disc = vkr_atmosphere_sun_disc(params, direction, view_transmittance) +
+               vkr_atmosphere_moon_disc(params, direction, view_transmittance);
+        radiance += vkr_atmosphere_light_glow(params, direction, params.sun,
+                                              params.solar,
+                                              view_transmittance) +
+                    vkr_atmosphere_light_glow(params, direction, params.moon,
+                                              params.lunar,
+                                              view_transmittance);
     }
     // The cloud trace shares screen coordinates with this pass; clouds carry
     // aerial perspective at their own depth. The disc follows the cloud's

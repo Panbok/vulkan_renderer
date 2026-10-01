@@ -67,9 +67,40 @@ static bool32_t test_bake_is_black_at_the_dark_depression(void) {
   return true_v;
 }
 
+/* The moon is the night's second atmosphere light (ADR-081): a sky whose sun
+ * is past the dark depression must still bake while the moon lights it, and
+ * is black only once the moon is past the bound too. */
+static bool32_t test_moon_keeps_a_dark_sun_bake(void) {
+  printf("  Running test_moon_keeps_a_dark_sun_bake...\n");
+  const VkrAtmosphereSettings observer = dark_test_settings(0.0f, 0.0f);
+  const VkrAtmosphereGpuParams observer_params =
+      vkr_atmosphere_prepare(&observer);
+  const float32_t depression =
+      vkr_atmosphere_dark_depression_degrees(&observer_params) + 0.01f;
+  VkrAtmosphereSettings night = dark_test_settings(0.0f, depression);
+  const float64_t radians = 3.14159265358979323846 / 180.0;
+  // A full moon opposite the sun's azimuth, 30 degrees up.
+  night.moon_direction =
+      vec3_new((float32_t)-cos(30.0 * radians), (float32_t)sin(30.0 * radians),
+               0.0f);
+  night.lunar_irradiance = vec3_new(4.5e-6f, 4.5e-6f, 4.5e-6f);
+  const VkrAtmosphereGpuParams moonlit = vkr_atmosphere_prepare(&night);
+  assert(!vkr_atmosphere_bake_dark(&moonlit));
+  assert(dark_test_peak_radiance(&night) > 0.0f);
+
+  night.moon_direction = vec3_new((float32_t)-cos(depression * radians),
+                                  (float32_t)-sin(depression * radians), 0.0f);
+  const VkrAtmosphereGpuParams moonless = vkr_atmosphere_prepare(&night);
+  assert(vkr_atmosphere_bake_dark(&moonless));
+  assert(dark_test_peak_radiance(&night) == 0.0f);
+  printf("  test_moon_keeps_a_dark_sun_bake PASSED\n");
+  return true_v;
+}
+
 bool32_t run_atmosphere_bake_dark_tests(void) {
   printf("--- Running atmosphere dark-bake tests... ---\n");
-  const bool32_t passed = test_bake_is_black_at_the_dark_depression();
+  const bool32_t passed = test_bake_is_black_at_the_dark_depression() &&
+                          test_moon_keeps_a_dark_sun_bake();
   printf("--- Atmosphere dark-bake tests completed. ---\n");
   return passed;
 }

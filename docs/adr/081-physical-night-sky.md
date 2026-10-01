@@ -8,8 +8,8 @@ authority: adr
 
 ## Status
 
-Accepted. Pre-exposure is implemented. The moon as a second atmosphere light
-and the procedural star field are pending.
+Accepted. Pre-exposure and the moon as a second atmosphere light are
+implemented. The procedural star field is pending.
 
 ## Context
 
@@ -83,6 +83,60 @@ force P = 1. `VKR_PRE_EXPOSURE_FORCE_STOPS=<k>` forces an exponent for
 diagnosis. Captures record P in their sidecar as `pre_exposure`, and the
 harness preview of a scene-referred HDR channel divides by it.
 
+### The moon
+
+A directional light whose `atmosphere_moon` flag is set is the moon, the
+atmosphere's second light, as UE5's atmosphere light index 1 is.
+
+- **Flag and precedence.** The flag defaults to false. A moon light is never
+  the sun, even with its default `atmosphere_sun`, so flagging a light as the
+  moon takes one edit. Without an enabled atmosphere there is no moon.
+- **Choosing the moon.** Among enabled, visible moon lights the sun's rule
+  applies: the lowest render id, else the first found. A scene without its own
+  moon uses the World's while it inherits the World. The loader warns about
+  more than one.
+- **Light values.** The light's colour, tinted by its temperature, times its
+  intensity is the full moon's top-of-atmosphere irradiance. Its diameter
+  sizes the disc and the shadow penumbra; Details labels it Moon diameter and
+  disables the sun flag.
+- **Phase.** The moon's irradiance is scaled by its lit fraction,
+  (1 − cos θ) / 2, where θ is its angle from the sun. A physical full moon is
+  about 2.5 × 10^-6 of the sun, which the night cases author as 4.5 × 10^-6
+  beside the default sun's luminance of 1.77.
+
+Both lights shape the sky:
+
+- **Scattering.** The source-cube bake and the aerial-perspective volume
+  integrate both lights in one march. Each light adds its own single
+  scattering, multiple-scattering lookup and lit ground. The lookups are per
+  unit irradiance, so the moon reuses them.
+- **Sky view.** The sky-view image holds a sun-relative and a moon-relative
+  table side by side. Each is lit by its own light alone and parameterized
+  around that light's azimuth, so the moon's halo keeps the resolution the sun
+  has. A light without irradiance leaves its table black, and the background
+  skips sampling it.
+- **Disc.** The background adds the moon disc and its glow. The disc shows the
+  sunlit half of a sphere: a view ray reaches the surface point whose normal
+  faces the observer, which is lit when that normal faces the sun. Lit points
+  share the full-moon radiance, so the disc integrates to the phase-scaled
+  irradiance, and a 0.05 cosine ramp antialiases the terminator. A moon less
+  than 10^-4 lit is not drawn.
+
+The renderer still lights with one directional light. It is the key light:
+
+- **The sun** while it lights the observer.
+- **Otherwise the moon,** while the moon is above the horizon.
+
+The key light drives direct lighting, cascaded shadows, fog in-scatter and
+the cloud shadow map. The cloud trace adds the moon only while it is the key
+light, and still lights high cloud with a sun just below the horizon. A sample
+the planet hides from a light skips that light's march.
+
+Sky-light bakes are skipped only while both lights are past the dark
+depression. The offline diffuse baker applies the same moon, both-light source
+and key light. Its recipe hash covers the moon only when the moon has
+irradiance, so the hashes of moonless bakes are unchanged.
+
 ## Consequences
 
 - **Precision.** Night scenes keep RGBA16F precision.
@@ -126,6 +180,38 @@ Metal Release, M1 Pro:
     match the C roots for TAA (144), SSR temporal (496), SSGI temporal (360),
     froxel inject (44), cloud trace (120) and FSR stabilize (40).
 
+Moon evidence (Metal Release, M1 Pro):
+
+- **Day output.** The Bistro atmosphere day case
+  (`tools/cases/local/atmosphere_bistro_local.case.json`) was captured before
+  the moon (`sha256:00618d07…`) and after it (`sha256:8ddd6b2c…`).
+  - The mean HDR luminance ratio is 0.999999, with a largest pixel difference
+    of 0.0236.
+  - A repeat run at the same build (`sha256:a7a8e5ac…`) differs by up to
+    0.026, so the change is within run-to-run noise.
+- **Night street.** `tools/cases/local/atmosphere_bistro_night_local.case.json`
+  (`sha256:571a138f…`): the street lamps still set the exposure, now 10.8.
+  - Moonlit sky pixels that were zero now meter, which raises the exposure.
+  - The moon disc is drawn, at a peak HDR radiance of 0.055.
+  - HDR elsewhere matches the moonless run to a 1.000066 mean ratio.
+- **Moonlit sky.**
+  `tools/cases/local/atmosphere_bistro_moonlit_sky_local.case.json`
+  (`sha256:5fd71c85…`) uses manual exposure 2^18, so P = 2^18.
+  - It shows a dark blue sky with the moon's Mie halo and glow.
+  - Lamp-lit surfaces saturate below the RGBA16F maximum. There are no
+    non-finite values before or after TAA and bloom.
+- **Moonlit clouds.** `tools/cases/local/clouds_bistro_night_local.case.json`
+  (`sha256:e2f1e388…`) shows moonlit clouds and the moon-projected cloud
+  shadows.
+- **Validation.**
+  - One Metal API validation process on that case reports no errors
+    (`sha256:fb668b06…`).
+  - CPU tests check that a moon keeps a dark-sun bake from being skipped,
+    against the independent CPU baker, and that the moon is never the sun and
+    is the key light only while the sun is below the horizon.
+  - All 102 SPIR-V modules pass `spirv-val`, and the compiled atmosphere root
+    (208 bytes) and sky record (448 bytes) offsets match the C asserts.
+
 Native Vulkan execution and the Windows-only FSR SDK build are unavailable on
 this host, so the affected shader domains are UNALIGNED in
 [ADR-044](044-shader-cross-backend-contract.md).
@@ -147,6 +233,10 @@ exposure-relative quantity other than those listed here is not scale-free.
 ## Implementation
 
 [`vkr_exposure.c`](../../renderer/src/vkr_exposure.c),
+[`vkr_atmosphere.c`](../../renderer/src/vkr_atmosphere.c),
+[`atmosphere_kernel.slangh`](../../renderer/src/shaders/shared/atmosphere_kernel.slangh),
+[`vkr_scene_system.c`](../../runtime/src/renderer/systems/vkr_scene_system.c),
+[`vkr_bake_atmosphere.cpp`](../../tools/bake/vkr_bake_atmosphere.cpp),
 [`vkr_packet_constants.c`](../../renderer/src/vkr_packet_constants.c),
 [`vkr_bloom.c`](../../renderer/src/vkr_bloom.c),
 [`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),

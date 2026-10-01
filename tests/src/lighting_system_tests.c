@@ -596,6 +596,82 @@ static bool32_t test_dark_sun_requests_no_revision(void) {
   return true_v;
 }
 
+/* The moon is the atmosphere's second light (ADR-081). A moon light is never
+ * the sun, even with its default sun flag, and it becomes the direct light
+ * only while the sun is below the observer's horizon. */
+static bool32_t test_moon_light_lights_the_night(void) {
+  printf("  Running test_moon_light_lights_the_night...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 33u, 8u, &error));
+  VkrAtmosphereSettings authored = vkr_atmosphere_settings_defaults();
+  authored.enabled = true_v;
+  const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
+  assert(vkr_scene_request_atmosphere(&scene, &authored, &clouds, 0.0f));
+
+  VkrEntityId sun = vkr_scene_create_entity(&scene, &error);
+  assert(sun.u64 != VKR_ENTITY_ID_INVALID.u64);
+  SceneDirectionalLight sun_light = {
+      .color = vkr_atmosphere_settings_defaults().solar_irradiance,
+      .intensity = 1.0f,
+      .direction_local = lighting_test_light_below_horizon(20.0f),
+      .enabled = true_v,
+      .atmosphere_sun = true_v,
+  };
+  assert(vkr_scene_set_directional_light(&scene, sun, &sun_light));
+  VkrEntityId moon = vkr_scene_create_entity(&scene, &error);
+  assert(moon.u64 != VKR_ENTITY_ID_INVALID.u64);
+  const SceneDirectionalLight moon_light = {
+      .color = vec3_one(),
+      .intensity = 4.5e-6f,
+      .direction_local = vec3_new(0.0f, -0.5f, 0.8660254f),
+      .sun_angular_diameter_degrees = 0.52f,
+      .enabled = true_v,
+      .atmosphere_sun = true_v,
+      .atmosphere_moon = true_v,
+  };
+  assert(vkr_scene_set_directional_light(&scene, moon, &moon_light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(scene.sun.found && scene.sun.entity.u64 == sun.u64);
+  assert(scene.moon.found && scene.moon.entity.u64 == moon.u64);
+  VkrSceneAtmosphere *atmosphere = &scene.atmosphere;
+  const VkrAtmosphereSettings *requested = &atmosphere->requested_settings;
+  assert(lighting_test_vec3_near(requested->moon_direction,
+                                 vec3_new(0.0f, 0.5f, -0.8660254f)));
+  assert(fabsf(requested->lunar_irradiance.x - 4.5e-6f) < 1e-12f &&
+         fabsf(requested->lunar_irradiance.z - 4.5e-6f) < 1e-12f);
+  assert(requested->moon_angular_diameter_degrees == 0.52f);
+
+  // Published, the night's direct light is the moon, attenuated by the air.
+  atmosphere->active_settings = atmosphere->requested_settings;
+  atmosphere->active_revision = atmosphere->requested_revision;
+  atmosphere->candidate_revision = 0u;
+  VkrSceneKeyLight key = vkr_scene_atmosphere_frame_key_light(&scene);
+  assert(key.moon);
+  assert(lighting_test_vec3_near(key.toward, requested->moon_direction));
+  assert(key.irradiance.x > 0.0f && key.irradiance.x < 4.5e-6f);
+  assert(key.angular_diameter_degrees == 0.52f);
+
+  // Once the sun rises it is the direct light again.
+  sun_light.direction_local = vec3_new(0.0f, -0.5f, -0.8660254f);
+  assert(vkr_scene_set_directional_light(&scene, sun, &sun_light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  key = vkr_scene_atmosphere_frame_key_light(&scene);
+  assert(!key.moon);
+  assert(lighting_test_vec3_near(key.toward, vec3_new(0.0f, 0.5f, 0.8660254f)));
+  assert(key.irradiance.y > 0.1f);
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_moon_light_lights_the_night PASSED\n");
+  return true_v;
+}
+
 bool32_t run_lighting_system_tests(void) {
   printf("--- Running Lighting System tests... ---\n");
   bool32_t passed = true_v;
@@ -609,6 +685,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_world_sun_light_is_fallback();
   passed &= test_sun_refresh_follows_moving_light();
   passed &= test_dark_sun_requests_no_revision();
+  passed &= test_moon_light_lights_the_night();
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();

@@ -7,12 +7,15 @@ extern "C" {
 }
 
 /* Scene-owned, immutable atmosphere source. The temporary LUTs used to build
-   it do not escape this module. RGB intentionally excludes the solar disc;
-   `observer_irradiance` is the matching direct-light value. */
+   it do not escape this module. RGB intentionally excludes the solar and
+   lunar discs; `observer_irradiance` is the matching direct-light value of the
+   key light, the sun while it lights the observer, else the moon (ADR-081),
+   toward `key_light_direction`. */
 struct VkrBakeAtmosphere {
   bool8_t enabled = false_v;
   VkrAtmosphereGpuParams params = {};
   Vec3 observer_irradiance = {};
+  Vec3 key_light_direction = {};
   std::vector<Vec3> source_rgb;
 };
 

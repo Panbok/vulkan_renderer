@@ -15,6 +15,15 @@
 #define VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH 80.0f
 #define VKR_ATMOSPHERE_SKY_VIEW_WIDTH 192u
 #define VKR_ATMOSPHERE_SKY_VIEW_HEIGHT 108u
+// The sky-view image holds one table per atmosphere light side by side: the
+// sun-relative table on the left, the moon-relative one on the right.
+#define VKR_ATMOSPHERE_SKY_VIEW_TABLES 2u
+#define VKR_ATMOSPHERE_SKY_VIEW_SUN_TABLE 0u
+#define VKR_ATMOSPHERE_SKY_VIEW_MOON_TABLE 1u
+// A moon less lit than this shows no disc; its disc radiance divides by it.
+#define VKR_ATMOSPHERE_MOON_LIT_FRACTION_MIN 1e-4f
+// Cosine-of-incidence width over which the lunar terminator antialiases.
+#define VKR_ATMOSPHERE_MOON_TERMINATOR_WIDTH 0.05f
 #define VKR_ATMOSPHERE_AERIAL_SIZE 32u
 #define VKR_ATMOSPHERE_AERIAL_STEPS_PER_SLICE 2u
 #define VKR_ATMOSPHERE_DISC_RADIANCE_MAX 60000.0f
@@ -42,6 +51,8 @@
 // All distance-valued members are kilometres. `sun.xyz` points from a point in
 // the atmosphere toward the sun. `solar.w` is pi*sin(radius)^2, the projected
 // disc solid angle used to convert irradiance into visual disc radiance.
+// `moon` and `lunar` describe the second light the same way; `lunar.rgb` is
+// already scaled by the lit fraction of the moon's phase (ADR-081).
 struct VkrAtmosphereParams {
   float4 planet;         // bottom radius, top radius, observer altitude, Mie g.
   float4 rayleigh;       // beta RGB, scale height.
@@ -51,6 +62,8 @@ struct VkrAtmosphereParams {
   float4 ground;         // albedo RGB, ozone half-width.
   float4 sun;            // normalized toward-sun direction, cos(radius).
   float4 solar;          // top-of-atmosphere irradiance RGB, projected angle.
+  float4 moon;           // normalized toward-moon direction, cos(radius).
+  float4 lunar;          // phase-scaled irradiance RGB, projected angle.
 };
 
 // Matches the 64-byte VkrCloudGpuParams C record (ADR-074). Radii are
@@ -62,10 +75,12 @@ struct VkrCloudParams {
   float4 shadow; // shadow-map centre X/Z, 1/extent, extent.
 };
 
-// Matches the 352-byte VkrSkyGpuParams C record. `atmosphere.planet.z` is the
+// Matches the 400-byte VkrSkyGpuParams C record. `atmosphere.planet.z` is the
 // camera altitude. The unjittered packet view-projection and its inverse only
 // map world positions to aerial-perspective froxels, so both backends share
-// them regardless of their raster clip convention.
+// them regardless of their raster clip convention. `key_light` points toward
+// the light that drives direct lighting and cloud shadows; `w` is 1 when it
+// is the moon.
 struct VkrSkyParams {
   VkrAtmosphereParams atmosphere;
 #if defined(__METAL_VERSION__)
@@ -78,7 +93,13 @@ struct VkrSkyParams {
   float4 camera_position; // world units; w: kilometres per world unit.
   float4 aerial;          // km per slice, slice count, 1/count, 1 if applied.
   VkrCloudParams clouds;
+  float4 key_light;
 };
+
+// True when a light carries no irradiance, so its scattering is zero.
+bool vkr_atmosphere_light_dark(float4 irradiance) {
+  return max(irradiance.x, max(irradiance.y, irradiance.z)) <= 0.0f;
+}
 
 struct VkrAtmosphereMedium {
   float3 rayleigh_scattering;
@@ -325,8 +346,10 @@ float3 vkr_sky_view_direction(float view_zenith_cosine,
                 view_zenith_sine * azimuth_sine);
 }
 
-// Filtered texture coordinate for a normalized world view direction.
-float2 vkr_sky_view_uv(VkrAtmosphereParams params, float3 direction) {
+// Filtered coordinate in the table around `light`, a direction toward the sun
+// or the moon, for a normalized world view direction.
+float2 vkr_sky_view_uv(VkrAtmosphereParams params, float3 direction,
+                       float3 light, uint table) {
   float radius = params.planet.x + params.planet.z;
   float ground_angle = vkr_sky_view_ground_angle(params, radius);
   float zenith_horizon_angle = VKR_ATMOSPHERE_PI - ground_angle;
@@ -342,21 +365,25 @@ float2 vkr_sky_view_uv(VkrAtmosphereParams params, float3 direction) {
         0.0f));
     v = 0.5f + 0.5f * saturate(below_horizon);
   }
-  // Sun and view azimuths are measured in the horizontal plane. At the zenith
-  // either one is undefined and the sky does not depend on it.
+  // Light and view azimuths are measured in the horizontal plane. At the
+  // zenith either one is undefined and the sky does not depend on it.
   float2 view_horizontal = direction.xz;
-  float2 sun_horizontal = params.sun.xz;
+  float2 light_horizontal = light.xz;
   float light_view_cosine = 1.0f;
   float horizontal_squared = dot(view_horizontal, view_horizontal) *
-                             dot(sun_horizontal, sun_horizontal);
+                             dot(light_horizontal, light_horizontal);
   if (horizontal_squared > 1e-12f)
-    light_view_cosine = clamp(dot(view_horizontal, sun_horizontal) *
+    light_view_cosine = clamp(dot(view_horizontal, light_horizontal) *
                                   rsqrt(horizontal_squared),
                               -1.0f, 1.0f);
   float u = sqrt(saturate(0.5f - 0.5f * light_view_cosine));
   float2 extent = float2(float(VKR_ATMOSPHERE_SKY_VIEW_WIDTH),
                          float(VKR_ATMOSPHERE_SKY_VIEW_HEIGHT));
-  return float2(u, v) * (extent - 1.0f) / extent + 0.5f / extent;
+  // Texel centres of the first and last columns bound the table, so linear
+  // filtering never reads the neighbouring table.
+  float2 uv = float2(u, v) * (extent - 1.0f) / extent + 0.5f / extent;
+  return float2((uv.x + float(table)) / float(VKR_ATMOSPHERE_SKY_VIEW_TABLES),
+                uv.y);
 }
 
 // Visible solar disc radiance along a view direction, or zero outside the
@@ -383,28 +410,64 @@ float3 vkr_atmosphere_sun_disc(VkrAtmosphereParams params, float3 direction,
                                   max(peak, VKR_ATMOSPHERE_DISC_RADIANCE_MAX));
 }
 
-// Visible glow around the sun: `glow * E / theta^2` with theta in degrees,
+// Visible moon disc radiance along a view direction, or zero outside it. The
+// disc shows the sunlit half of a sphere: a view ray reaches the lunar surface
+// point whose normal faces the observer, which is lit when that normal faces
+// the sun. Lit points share one radiance, so the disc integrates to the
+// lit-fraction irradiance `lunar.rgb`. The moon shows almost no limb
+// darkening, and a narrow ramp antialiases the terminator.
+float3 vkr_atmosphere_moon_disc(VkrAtmosphereParams params, float3 direction,
+                                float3 view_transmittance) {
+  float3 moon = params.moon.xyz;
+  float lit_fraction = saturate(0.5f - 0.5f * dot(moon, params.sun.xyz));
+  if (vkr_atmosphere_light_dark(params.lunar) ||
+      lit_fraction <= VKR_ATMOSPHERE_MOON_LIT_FRACTION_MIN)
+    return float3(0.0f);
+  float sin_radius_squared = params.lunar.w / VKR_ATMOSPHERE_PI;
+  float3 offset = cross(direction, moon);
+  float sin_angle_squared = dot(offset, offset);
+  if (dot(direction, moon) <= 0.0f || sin_angle_squared >= sin_radius_squared)
+    return float3(0.0f);
+  float3 lateral = (direction - moon * dot(direction, moon)) *
+                   rsqrt(sin_radius_squared);
+  float3 normal =
+      lateral - moon * sqrt(max(1.0f - dot(lateral, lateral), 0.0f));
+  float lit = saturate(dot(normal, params.sun.xyz) /
+                           VKR_ATMOSPHERE_MOON_TERMINATOR_WIDTH +
+                       0.5f);
+  float3 radiance = params.lunar.rgb / (params.lunar.w * lit_fraction) * lit *
+                    view_transmittance;
+  float peak = max(radiance.x, max(radiance.y, radiance.z));
+  return radiance * min(1.0f, VKR_ATMOSPHERE_DISC_RADIANCE_MAX /
+                                  max(peak, VKR_ATMOSPHERE_DISC_RADIANCE_MAX));
+}
+
+// Visible glow around a light: `glow * E / theta^2` with theta in degrees,
 // after Stiles and Holladay's veiling-glare formula, whose human-eye
 // coefficient is about 10, faded smoothly to zero 25 degrees out, where the
 // atmosphere's own forward scattering already brightens the sky. E is the
 // top-of-atmosphere irradiance attenuated along the view ray, so the glow
 // reddens and fades with the disc near the horizon, and it vanishes once the
-// sun sets. The chord between the view and sun directions measures theta: it
-// stays precise at the disc's radius, where the glow stops growing. It changes
-// only the drawn sky, never lighting.
-float3 vkr_atmosphere_sun_glow(VkrAtmosphereParams params, float3 direction,
-                               float3 view_transmittance) {
+// light sets. The chord between the view and light directions measures theta:
+// it stays precise at the disc's radius, where the glow stops growing. It
+// changes only the drawn sky, never lighting. `light` and `irradiance` are
+// the sun's `sun` and `solar` or the moon's `moon` and `lunar`, so the moon's
+// glow follows its phase-scaled irradiance.
+float3 vkr_atmosphere_light_glow(VkrAtmosphereParams params, float3 direction,
+                                 float4 light, float4 irradiance,
+                                 float3 view_transmittance) {
   float glow = params.mie_extinction.w;
-  if (glow <= 0.0f || vkr_sky_view_hits_ground(params, params.sun.y))
+  if (glow <= 0.0f || vkr_atmosphere_light_dark(irradiance) ||
+      vkr_sky_view_hits_ground(params, light.y))
     return float3(0.0f);
-  float3 offset = direction - params.sun.xyz;
+  float3 offset = direction - light.xyz;
   float chord_squared = dot(offset, offset);
   if (chord_squared >= VKR_ATMOSPHERE_GLOW_CHORD_SQUARED_LIMIT)
     return float3(0.0f);
   float fade = 1.0f - chord_squared / VKR_ATMOSPHERE_GLOW_CHORD_SQUARED_LIMIT;
   float angle_squared =
-      max(chord_squared, params.solar.w / VKR_ATMOSPHERE_PI);
-  float3 radiance = params.solar.rgb * view_transmittance *
+      max(chord_squared, irradiance.w / VKR_ATMOSPHERE_PI);
+  float3 radiance = irradiance.rgb * view_transmittance *
                     (glow * VKR_ATMOSPHERE_RADIANS_PER_DEGREE_SQUARED *
                      fade * fade / angle_squared);
   float peak = max(radiance.x, max(radiance.y, radiance.z));

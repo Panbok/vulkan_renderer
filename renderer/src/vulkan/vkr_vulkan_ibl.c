@@ -74,6 +74,9 @@ vkr_internal bool8_t vkr_vk_prepare_atmosphere_dispatch(
   root->params.solar.x *= pre_exposure;
   root->params.solar.y *= pre_exposure;
   root->params.solar.z *= pre_exposure;
+  root->params.lunar.x *= pre_exposure;
+  root->params.lunar.y *= pre_exposure;
+  root->params.lunar.z *= pre_exposure;
   prepared->root_address = root_address;
   prepared->pipelines[0] = renderer->atmosphere_pipelines[pipeline];
   prepared->groups[0][0] = (width + 7u) / 8u;

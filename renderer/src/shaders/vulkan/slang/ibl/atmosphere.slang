@@ -64,57 +64,107 @@ float3 vk_atmosphere_trans_sample(VkrVulkanAtmosphereRoot *root, float3 p,
                                             root.sampler, root.params, p, d);
 }
 
-// Single scattering from the attenuated sun plus the multiple-scattering
+// One atmosphere light seen along a view ray: the direction toward it, its
+// top-of-atmosphere irradiance and the ray's phase terms. A light without
+// irradiance is inactive and contributes nothing.
+struct VkrVkAtmosphereLight {
+  float3 direction;
+  float3 irradiance;
+  float rayleigh_phase;
+  float mie_phase;
+  bool active;
+};
+
+VkrVkAtmosphereLight vk_atmosphere_light(VkrAtmosphereParams params,
+                                         float3 view_direction,
+                                         float3 direction, float4 irradiance) {
+  VkrVkAtmosphereLight light;
+  float phase_cosine = dot(view_direction, direction);
+  light.direction = direction;
+  light.irradiance = irradiance.rgb;
+  light.rayleigh_phase = vkr_atmosphere_rayleigh_phase(phase_cosine);
+  light.mie_phase = vkr_atmosphere_mie_phase(params.planet.w, phase_cosine);
+  light.active = !vkr_atmosphere_light_dark(irradiance);
+  return light;
+}
+
+VkrVkAtmosphereLight vk_atmosphere_no_light() {
+  VkrVkAtmosphereLight light;
+  light.direction = float3(0, 1, 0);
+  light.irradiance = 0;
+  light.rayleigh_phase = 0;
+  light.mie_phase = 0;
+  light.active = false;
+  return light;
+}
+
+// Single scattering from one attenuated light plus the multiple-scattering
 // lookup, per unit length, at one sample of a view ray.
 float3 vk_atmosphere_source(uint transmittance, uint multiple_scattering,
                             uint sampler, VkrAtmosphereParams params,
-                            VkrAtmosphereMedium m, float3 p, float3 sun,
-                            float rayleigh_phase, float mie_phase) {
-  float3 ts = vkr_atmosphere_sun_occluded(params, p, sun)
+                            VkrAtmosphereMedium m, float3 p,
+                            VkrVkAtmosphereLight light) {
+  if (!light.active)
+    return 0;
+  float3 ts = vkr_atmosphere_sun_occluded(params, p, light.direction)
                   ? 0
                   : vk_atmosphere_lookup_transmittance(transmittance, sampler,
-                                                       params, p, sun);
+                                                       params, p,
+                                                       light.direction);
   float3 ms = vk_atmosphere_lookup_multiple(multiple_scattering, sampler,
-                                            params, p, sun);
-  return params.solar.rgb *
-         (ts * (m.rayleigh_scattering * rayleigh_phase +
-                m.mie_scattering * mie_phase) +
+                                            params, p, light.direction);
+  return light.irradiance *
+         (ts * (m.rayleigh_scattering * light.rayleigh_phase +
+                m.mie_scattering * light.mie_phase) +
           ms * m.scattering);
 }
 
-// Radiance reaching `o` along `d`: atmospheric in-scatter and, below the
-// horizon, the sunlit Lambertian ground through the path's transmittance, the
-// same first-order term the multiple-scattering lookup uses. The source cube
-// and the sky-view lookup both store this integral.
+// One light's first-order Lambertian ground radiance at `surface`.
+float3 vk_atmosphere_ground(uint transmittance, uint sampler,
+                            VkrAtmosphereParams params, float3 surface,
+                            float3 up, VkrVkAtmosphereLight light) {
+  if (!light.active)
+    return 0;
+  float3 ts = vkr_atmosphere_sun_occluded(params, surface, light.direction)
+                  ? 0
+                  : vk_atmosphere_lookup_transmittance(
+                        transmittance, sampler, params, surface,
+                        light.direction);
+  return light.irradiance * ts * params.ground.rgb *
+         max(dot(up, light.direction), 0) / VKR_ATMOSPHERE_PI;
+}
+
+// Radiance reaching `o` along `d`: atmospheric in-scatter of both lights and,
+// below the horizon, the lit Lambertian ground through the path's
+// transmittance, the same first-order term the multiple-scattering lookup
+// uses. The source cube and each sky-view table store this integral.
 float3 vk_atmosphere_scattered_radiance(uint transmittance,
                                         uint multiple_scattering, uint sampler,
                                         VkrAtmosphereParams params, float3 o,
-                                        float3 d, float3 sun) {
+                                        float3 d, VkrVkAtmosphereLight first,
+                                        VkrVkAtmosphereLight second) {
   bool ground = false;
   float distance = vkr_atmosphere_segment_limit(params, o, d, ground);
   float step = distance / float(VKR_ATMOSPHERE_SOURCE_SAMPLES);
-  float c = dot(d, sun);
-  float pr = vkr_atmosphere_rayleigh_phase(c);
-  float pm = vkr_atmosphere_mie_phase(params.planet.w, c);
   float3 t = 1, l = 0;
   for (uint i = 0; i < VKR_ATMOSPHERE_SOURCE_SAMPLES; ++i) {
     float3 p = o + d * ((float(i) + .5f) * step);
     VkrAtmosphereMedium m = vkr_atmosphere_medium(params, p);
     float3 source = vk_atmosphere_source(transmittance, multiple_scattering,
-                                         sampler, params, m, p, sun, pr, pm);
+                                         sampler, params, m, p, first) +
+                    vk_atmosphere_source(transmittance, multiple_scattering,
+                                         sampler, params, m, p, second);
     l += t * vkr_atmosphere_segment_source_integral(source, m.extinction, step);
     t *= exp(-min(m.extinction * step, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH));
   }
   if (ground) {
     float3 gp = o + d * distance,
            up = vkr_atmosphere_safe_normalize(gp, float3(0, 1, 0));
-    float3 ts = vkr_atmosphere_sun_occluded(params, gp + up * 1e-3f, sun)
-                    ? 0
-                    : vk_atmosphere_lookup_transmittance(
-                          transmittance, sampler, params, gp + up * 1e-3f,
-                          sun);
-    l += t * params.solar.rgb * ts * params.ground.rgb * max(dot(up, sun), 0) /
-         VKR_ATMOSPHERE_PI;
+    float3 surface = gp + up * 1e-3f;
+    l += t * (vk_atmosphere_ground(transmittance, sampler, params, surface,
+                                   up, first) +
+              vk_atmosphere_ground(transmittance, sampler, params, surface,
+                                   up, second));
   }
   return l;
 }
@@ -203,8 +253,13 @@ atmosphere_multiple_scattering_compute(uint3 gid : SV_GroupID,
              float3(0, 1, 0));
   float3 l = vk_atmosphere_scattered_radiance(
       root.transmittance_sample, root.multiple_scattering_sample, root.sampler,
-      root.params, o, d, root.params.sun.xyz);
-  // The source excludes the sun disc; the visible sky draws it analytically.
+      root.params, o, d,
+      vk_atmosphere_light(root.params, d, root.params.sun.xyz,
+                          root.params.solar),
+      vk_atmosphere_light(root.params, d, root.params.moon.xyz,
+                          root.params.lunar));
+  // The source excludes the sun and moon discs; the visible sky draws them
+  // analytically.
   g_storage_images[root.source_storage][id] =
       float4(vkr_atmosphere_source_radiance(l), 0);
 }
@@ -223,28 +278,44 @@ struct VkrVulkanSkyBuildPush {
 };
 [[vk::push_constant]] ConstantBuffer<VkrVulkanSkyBuildPush> g_sky_build_push;
 
-// One texel per sky-view direction around the current camera altitude.
+// One texel per sky-view direction around the current camera altitude. The
+// left table is lit by the sun and the right by the moon, each around its own
+// light's azimuth; a light without irradiance leaves its table black.
 [shader("compute")][numthreads(8, 8, 1)] void
 sky_view_compute(uint3 id : SV_DispatchThreadID) {
   VkrVulkanSkyBuildRoot *root = g_sky_build_push.root;
-  if (id.x >= VKR_ATMOSPHERE_SKY_VIEW_WIDTH ||
+  if (id.x >= VKR_ATMOSPHERE_SKY_VIEW_WIDTH * VKR_ATMOSPHERE_SKY_VIEW_TABLES ||
       id.y >= VKR_ATMOSPHERE_SKY_VIEW_HEIGHT)
     return;
   VkrVulkanSky *sky = root.sky;
   VkrAtmosphereParams params = sky.params.atmosphere;
-  float2 unit = float2(id.xy) / float2(VKR_ATMOSPHERE_SKY_VIEW_WIDTH - 1u,
+  uint table = id.x / VKR_ATMOSPHERE_SKY_VIEW_WIDTH;
+  float4 light =
+      table == VKR_ATMOSPHERE_SKY_VIEW_MOON_TABLE ? params.moon : params.sun;
+  float4 irradiance = table == VKR_ATMOSPHERE_SKY_VIEW_MOON_TABLE
+                          ? params.lunar
+                          : params.solar;
+  if (vkr_atmosphere_light_dark(irradiance)) {
+    g_storage_2d[root.output_texture][id.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    return;
+  }
+  uint2 texel = uint2(id.x % VKR_ATMOSPHERE_SKY_VIEW_WIDTH, id.y);
+  float2 unit = float2(texel) / float2(VKR_ATMOSPHERE_SKY_VIEW_WIDTH - 1u,
                                        VKR_ATMOSPHERE_SKY_VIEW_HEIGHT - 1u);
   float view_zenith_cosine, light_view_cosine;
   vkr_sky_view_angles(params, unit, view_zenith_cosine, light_view_cosine);
-  float sun_zenith_cosine = clamp(params.sun.y, -1.0f, 1.0f);
-  float3 sun = float3(
-      sqrt(max(1.0f - sun_zenith_cosine * sun_zenith_cosine, 0.0f)),
-      sun_zenith_cosine, 0.0f);
+  float light_zenith_cosine = clamp(light.y, -1.0f, 1.0f);
+  float3 local_light = float3(
+      sqrt(max(1.0f - light_zenith_cosine * light_zenith_cosine, 0.0f)),
+      light_zenith_cosine, 0.0f);
   float3 origin = float3(0.0f, params.planet.x + params.planet.z, 0.0f);
+  float3 direction =
+      vkr_sky_view_direction(view_zenith_cosine, light_view_cosine);
   float3 radiance = vk_atmosphere_scattered_radiance(
       sky.transmittance_texture, sky.multiple_scattering_texture, sky.sampler,
-      params, origin,
-      vkr_sky_view_direction(view_zenith_cosine, light_view_cosine), sun);
+      params, origin, direction,
+      vk_atmosphere_light(params, direction, local_light, irradiance),
+      vk_atmosphere_no_light());
   g_storage_2d[root.output_texture][id.xy] =
       float4(vkr_atmosphere_source_radiance(radiance), 1.0f);
 }
@@ -268,13 +339,13 @@ aerial_perspective_compute(uint3 id : SV_DispatchThreadID) {
       ray_point.xyz / ray_point.w - frame.camera_position.xyz,
       float3(0.0f, 0.0f, -1.0f));
   float3 origin = float3(0.0f, params.planet.x + params.planet.z, 0.0f);
-  float3 sun = params.sun.xyz;
+  VkrVkAtmosphereLight sun =
+      vk_atmosphere_light(params, direction, params.sun.xyz, params.solar);
+  VkrVkAtmosphereLight moon =
+      vk_atmosphere_light(params, direction, params.moon.xyz, params.lunar);
   bool hits_ground = false;
   float limit =
       vkr_atmosphere_segment_limit(params, origin, direction, hits_ground);
-  float phase_cosine = dot(direction, sun);
-  float rayleigh_phase = vkr_atmosphere_rayleigh_phase(phase_cosine);
-  float mie_phase = vkr_atmosphere_mie_phase(params.planet.w, phase_cosine);
   float3 throughput = 1.0f, radiance = 0.0f;
   float travelled = 0.0f;
   for (uint slice = 0u; slice < VKR_ATMOSPHERE_AERIAL_SIZE; ++slice) {
@@ -286,9 +357,13 @@ aerial_perspective_compute(uint3 id : SV_DispatchThreadID) {
       float3 p =
           origin + direction * (travelled + (float(index) + 0.5f) * step);
       VkrAtmosphereMedium medium = vkr_atmosphere_medium(params, p);
-      float3 source = vk_atmosphere_source(
-          sky.transmittance_texture, sky.multiple_scattering_texture,
-          sky.sampler, params, medium, p, sun, rayleigh_phase, mie_phase);
+      float3 source =
+          vk_atmosphere_source(sky.transmittance_texture,
+                               sky.multiple_scattering_texture, sky.sampler,
+                               params, medium, p, sun) +
+          vk_atmosphere_source(sky.transmittance_texture,
+                               sky.multiple_scattering_texture, sky.sampler,
+                               params, medium, p, moon);
       radiance += throughput * vkr_atmosphere_segment_source_integral(
                                    source, medium.extinction, step);
       throughput *= exp(

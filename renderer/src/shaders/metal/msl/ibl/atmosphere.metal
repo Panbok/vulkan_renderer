@@ -11,9 +11,9 @@ struct alignas(16) VkrMetalPacketAtmosphereRoot {
 };
 
 // Metal resource references occupy eight bytes. Five references follow the
-// 128-byte parameter record, so the scalar tail starts at byte 168 and the
-// root rounds to 192 bytes.
-static_assert(sizeof(VkrMetalPacketAtmosphereRoot) == 192u,
+// 160-byte parameter record, so the scalar tail starts at byte 200 and the
+// root rounds to 224 bytes.
+static_assert(sizeof(VkrMetalPacketAtmosphereRoot) == 224u,
               "Metal atmosphere root ABI");
 
 static float3
@@ -60,49 +60,103 @@ static float3 vkr_metal_atmosphere_lookup_multiple(
       .rgb;
 }
 
-// Single scattering from the attenuated sun plus the multiple-scattering
+// One atmosphere light seen along a view ray: the direction toward it, its
+// top-of-atmosphere irradiance and the ray's phase terms. A light without
+// irradiance is inactive and contributes nothing.
+struct VkrMetalAtmosphereLight {
+  float3 direction;
+  float3 irradiance;
+  float rayleigh_phase;
+  float mie_phase;
+  bool active;
+};
+
+static VkrMetalAtmosphereLight
+vkr_metal_atmosphere_light(VkrAtmosphereParams params, float3 view_direction,
+                           float3 direction, float4 irradiance) {
+  VkrMetalAtmosphereLight light;
+  float phase_cosine = dot(view_direction, direction);
+  light.direction = direction;
+  light.irradiance = irradiance.rgb;
+  light.rayleigh_phase = vkr_atmosphere_rayleigh_phase(phase_cosine);
+  light.mie_phase = vkr_atmosphere_mie_phase(params.planet.w, phase_cosine);
+  light.active = !vkr_atmosphere_light_dark(irradiance);
+  return light;
+}
+
+static VkrMetalAtmosphereLight vkr_metal_atmosphere_no_light() {
+  VkrMetalAtmosphereLight light;
+  light.direction = float3(0.0f, 1.0f, 0.0f);
+  light.irradiance = float3(0.0f);
+  light.rayleigh_phase = 0.0f;
+  light.mie_phase = 0.0f;
+  light.active = false;
+  return light;
+}
+
+// Single scattering from one attenuated light plus the multiple-scattering
 // lookup, per unit length, at one sample of a view ray.
 static float3 vkr_metal_atmosphere_source(
     texture2d<float, access::sample> transmittance,
     texture2d<float, access::sample> multiple_scattering,
     VkrAtmosphereParams params, VkrAtmosphereMedium medium, float3 position,
-    float3 sun_direction, float rayleigh_phase, float mie_phase) {
-  float3 sun_transmittance =
-      vkr_atmosphere_sun_occluded(params, position, sun_direction)
+    VkrMetalAtmosphereLight light) {
+  if (!light.active)
+    return float3(0.0f);
+  float3 light_transmittance =
+      vkr_atmosphere_sun_occluded(params, position, light.direction)
           ? float3(0.0f)
-          : vkr_metal_atmosphere_lookup_transmittance(transmittance, params,
-                                                      position, sun_direction);
+          : vkr_metal_atmosphere_lookup_transmittance(
+                transmittance, params, position, light.direction);
   float3 multi = vkr_metal_atmosphere_lookup_multiple(
-      multiple_scattering, params, position, sun_direction);
-  return params.solar.rgb *
-         (sun_transmittance * (medium.rayleigh_scattering * rayleigh_phase +
-                               medium.mie_scattering * mie_phase) +
+      multiple_scattering, params, position, light.direction);
+  return light.irradiance *
+         (light_transmittance *
+              (medium.rayleigh_scattering * light.rayleigh_phase +
+               medium.mie_scattering * light.mie_phase) +
           multi * medium.scattering);
 }
 
-// Radiance reaching `origin` along `direction`: atmospheric in-scatter and,
-// below the horizon, the sunlit Lambertian ground through the path's
-// transmittance, the same first-order term the multiple-scattering lookup
-// uses. The source cube and the sky-view lookup both store this integral.
+// One light's first-order Lambertian ground radiance at `surface`.
+static float3 vkr_metal_atmosphere_ground(
+    texture2d<float, access::sample> transmittance,
+    VkrAtmosphereParams params, float3 surface, float3 ground_up,
+    VkrMetalAtmosphereLight light) {
+  if (!light.active)
+    return float3(0.0f);
+  float3 to_light =
+      vkr_atmosphere_sun_occluded(params, surface, light.direction)
+          ? float3(0.0f)
+          : vkr_metal_atmosphere_lookup_transmittance(transmittance, params,
+                                                      surface,
+                                                      light.direction);
+  return light.irradiance * to_light * params.ground.rgb *
+         max(dot(ground_up, light.direction), 0.0f) / VKR_ATMOSPHERE_PI;
+}
+
+// Radiance reaching `origin` along `direction`: atmospheric in-scatter of
+// both lights and, below the horizon, the lit Lambertian ground through the
+// path's transmittance, the same first-order term the multiple-scattering
+// lookup uses. The source cube and each sky-view table store this integral.
 static float3 vkr_metal_atmosphere_scattered_radiance(
     texture2d<float, access::sample> transmittance,
     texture2d<float, access::sample> multiple_scattering,
     VkrAtmosphereParams params, float3 origin, float3 direction,
-    float3 sun_direction) {
+    VkrMetalAtmosphereLight first, VkrMetalAtmosphereLight second) {
   bool hits_ground = false;
   float distance =
       vkr_atmosphere_segment_limit(params, origin, direction, hits_ground);
   float step = distance / float(VKR_ATMOSPHERE_SOURCE_SAMPLES);
   float3 throughput = float3(1.0f), radiance = float3(0.0f);
-  float phase_cosine = dot(direction, sun_direction);
-  float rayleigh_phase = vkr_atmosphere_rayleigh_phase(phase_cosine);
-  float mie_phase = vkr_atmosphere_mie_phase(params.planet.w, phase_cosine);
   for (uint index = 0u; index < VKR_ATMOSPHERE_SOURCE_SAMPLES; ++index) {
     float3 p = origin + direction * ((float(index) + 0.5f) * step);
     VkrAtmosphereMedium medium = vkr_atmosphere_medium(params, p);
-    float3 source = vkr_metal_atmosphere_source(
-        transmittance, multiple_scattering, params, medium, p, sun_direction,
-        rayleigh_phase, mie_phase);
+    float3 source = vkr_metal_atmosphere_source(transmittance,
+                                                multiple_scattering, params,
+                                                medium, p, first) +
+                    vkr_metal_atmosphere_source(transmittance,
+                                                multiple_scattering, params,
+                                                medium, p, second);
     radiance += throughput * vkr_atmosphere_segment_source_integral(
                                  source, medium.extinction, step);
     throughput *=
@@ -113,13 +167,12 @@ static float3 vkr_metal_atmosphere_scattered_radiance(
     float3 ground_up = vkr_atmosphere_safe_normalize(ground_position,
                                                      float3(0.0f, 1.0f, 0.0f));
     float3 surface = ground_position + ground_up * 1e-3f;
-    float3 to_sun =
-        vkr_atmosphere_sun_occluded(params, surface, sun_direction)
-            ? float3(0.0f)
-            : vkr_metal_atmosphere_lookup_transmittance(transmittance, params,
-                                                        surface, sun_direction);
-    radiance += throughput * params.solar.rgb * to_sun * params.ground.rgb *
-                max(dot(ground_up, sun_direction), 0.0f) / VKR_ATMOSPHERE_PI;
+    radiance += throughput * (vkr_metal_atmosphere_ground(
+                                  transmittance, params, surface, ground_up,
+                                  first) +
+                              vkr_metal_atmosphere_ground(
+                                  transmittance, params, surface, ground_up,
+                                  second));
   }
   return radiance;
 }
@@ -239,8 +292,13 @@ kernel void vkr_metal_packet_atmosphere_source_compute(
       float3(0.0f, 1.0f, 0.0f));
   float3 radiance = vkr_metal_atmosphere_scattered_radiance(
       root.transmittance_sample, root.multiple_scattering_sample, root.params,
-      origin, direction, root.params.sun.xyz);
-  // The source excludes the sun disc; the visible sky draws it analytically.
+      origin, direction,
+      vkr_metal_atmosphere_light(root.params, direction, root.params.sun.xyz,
+                                 root.params.solar),
+      vkr_metal_atmosphere_light(root.params, direction, root.params.moon.xyz,
+                                 root.params.lunar));
+  // The source excludes the sun and moon discs; the visible sky draws them
+  // analytically.
   root.source_storage.write(
       float4(vkr_atmosphere_source_radiance(radiance), 0.0f), position_id.xy,
       position_id.z);
@@ -254,27 +312,43 @@ struct alignas(16) VkrMetalPacketSkyViewRoot {
 static_assert(sizeof(VkrMetalPacketSkyViewRoot) == 16u,
               "Metal sky-view root ABI");
 
-// One texel per sky-view direction around the current camera altitude.
+// One texel per sky-view direction around the current camera altitude. The
+// left table is lit by the sun and the right by the moon, each around its own
+// light's azimuth; a light without irradiance leaves its table black.
 kernel void vkr_metal_packet_sky_view_compute(
     constant VkrMetalPacketSkyViewRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
-  if (pixel.x >= VKR_ATMOSPHERE_SKY_VIEW_WIDTH ||
+  if (pixel.x >= VKR_ATMOSPHERE_SKY_VIEW_WIDTH * VKR_ATMOSPHERE_SKY_VIEW_TABLES ||
       pixel.y >= VKR_ATMOSPHERE_SKY_VIEW_HEIGHT)
     return;
   constant VkrMetalPacketSky &sky = *root.sky;
   VkrAtmosphereParams params = sky.params.atmosphere;
-  float2 unit = float2(pixel) / float2(VKR_ATMOSPHERE_SKY_VIEW_WIDTH - 1u,
+  uint table = pixel.x / VKR_ATMOSPHERE_SKY_VIEW_WIDTH;
+  float4 light = table == VKR_ATMOSPHERE_SKY_VIEW_MOON_TABLE ? params.moon
+                                                             : params.sun;
+  float4 irradiance = table == VKR_ATMOSPHERE_SKY_VIEW_MOON_TABLE
+                          ? params.lunar
+                          : params.solar;
+  if (vkr_atmosphere_light_dark(irradiance)) {
+    root.output.write(float4(0.0f, 0.0f, 0.0f, 1.0f), pixel);
+    return;
+  }
+  uint2 texel = uint2(pixel.x % VKR_ATMOSPHERE_SKY_VIEW_WIDTH, pixel.y);
+  float2 unit = float2(texel) / float2(VKR_ATMOSPHERE_SKY_VIEW_WIDTH - 1u,
                                        VKR_ATMOSPHERE_SKY_VIEW_HEIGHT - 1u);
   float view_zenith_cosine, light_view_cosine;
   vkr_sky_view_angles(params, unit, view_zenith_cosine, light_view_cosine);
-  float sun_zenith_cosine = clamp(params.sun.y, -1.0f, 1.0f);
-  float3 sun = float3(
-      sqrt(max(1.0f - sun_zenith_cosine * sun_zenith_cosine, 0.0f)),
-      sun_zenith_cosine, 0.0f);
+  float light_zenith_cosine = clamp(light.y, -1.0f, 1.0f);
+  float3 local_light = float3(
+      sqrt(max(1.0f - light_zenith_cosine * light_zenith_cosine, 0.0f)),
+      light_zenith_cosine, 0.0f);
   float3 origin = float3(0.0f, params.planet.x + params.planet.z, 0.0f);
+  float3 direction =
+      vkr_sky_view_direction(view_zenith_cosine, light_view_cosine);
   float3 radiance = vkr_metal_atmosphere_scattered_radiance(
-      sky.transmittance, sky.multiple_scattering, params, origin,
-      vkr_sky_view_direction(view_zenith_cosine, light_view_cosine), sun);
+      sky.transmittance, sky.multiple_scattering, params, origin, direction,
+      vkr_metal_atmosphere_light(params, direction, local_light, irradiance),
+      vkr_metal_atmosphere_no_light());
   root.output.write(float4(vkr_atmosphere_source_radiance(radiance), 1.0f),
                     pixel);
 }
@@ -305,13 +379,13 @@ kernel void vkr_metal_packet_aerial_perspective_compute(
       ray_point.xyz / ray_point.w - frame.camera_position.xyz,
       float3(0.0f, 0.0f, -1.0f));
   float3 origin = float3(0.0f, params.planet.x + params.planet.z, 0.0f);
-  float3 sun = params.sun.xyz;
+  VkrMetalAtmosphereLight sun = vkr_metal_atmosphere_light(
+      params, direction, params.sun.xyz, params.solar);
+  VkrMetalAtmosphereLight moon = vkr_metal_atmosphere_light(
+      params, direction, params.moon.xyz, params.lunar);
   bool hits_ground = false;
   float limit =
       vkr_atmosphere_segment_limit(params, origin, direction, hits_ground);
-  float phase_cosine = dot(direction, sun);
-  float rayleigh_phase = vkr_atmosphere_rayleigh_phase(phase_cosine);
-  float mie_phase = vkr_atmosphere_mie_phase(params.planet.w, phase_cosine);
   float3 throughput = float3(1.0f), radiance = float3(0.0f);
   float travelled = 0.0f;
   for (uint slice = 0u; slice < VKR_ATMOSPHERE_AERIAL_SIZE; ++slice) {
@@ -322,9 +396,13 @@ kernel void vkr_metal_packet_aerial_perspective_compute(
          ++index) {
       float3 p = origin + direction * (travelled + (float(index) + 0.5f) * step);
       VkrAtmosphereMedium medium = vkr_atmosphere_medium(params, p);
-      float3 source = vkr_metal_atmosphere_source(
-          sky.transmittance, sky.multiple_scattering, params, medium, p, sun,
-          rayleigh_phase, mie_phase);
+      float3 source =
+          vkr_metal_atmosphere_source(sky.transmittance,
+                                      sky.multiple_scattering, params, medium,
+                                      p, sun) +
+          vkr_metal_atmosphere_source(sky.transmittance,
+                                      sky.multiple_scattering, params, medium,
+                                      p, moon);
       radiance += throughput * vkr_atmosphere_segment_source_integral(
                                    source, medium.extinction, step);
       throughput *= exp(

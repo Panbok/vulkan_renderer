@@ -367,25 +367,21 @@ void vkr_lighting_system_append_scene(VkrLightingSystem *system,
   system->dirty = true_v;
 }
 
-void vkr_lighting_system_apply_atmosphere_sun(
-    VkrLightingSystem *system, const VkrAtmosphereSettings *settings,
-    Vec3 irradiance) {
-  if (!system || !settings)
+void vkr_lighting_system_apply_atmosphere_light(
+    VkrLightingSystem *system, Vec3 toward_light, Vec3 irradiance,
+    float32_t angular_diameter_degrees) {
+  if (!system)
     return;
 
-  /* Atmosphere sun_direction points from the observer toward the sun. The
-     directional-light record points along incoming light, which shaders negate
-     when forming their surface-to-light vector. */
-  /* A sky without a sun light has no sun to light with. */
+  /* The directional-light record points along incoming light, which shaders
+     negate when forming their surface-to-light vector. A sky with neither a
+     lit sun nor a lit moon has no light to light with. */
   system->directional.enabled =
       irradiance.x > 0.0f || irradiance.y > 0.0f || irradiance.z > 0.0f;
-  system->directional.direction =
-      vec3_new(-settings->sun_direction.x, -settings->sun_direction.y,
-               -settings->sun_direction.z);
+  system->directional.direction = vec3_negate(toward_light);
   system->directional.color = irradiance;
   system->directional.intensity = 1.0f;
-  system->directional.sun_angular_diameter_degrees =
-      settings->sun_angular_diameter_degrees;
+  system->directional.sun_angular_diameter_degrees = angular_diameter_degrees;
   system->dirty = true_v;
 }
 

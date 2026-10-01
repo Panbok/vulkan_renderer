@@ -269,6 +269,9 @@ typedef struct SceneDirectionalLight {
   /** Drives an enabled atmosphere's sun (ADR-058). Scene-authored lights
       default to true; lights imported from glTF default to false. */
   bool8_t atmosphere_sun;
+  /** Drives an enabled atmosphere's moon, its second light (ADR-081), and
+      takes precedence: a moon light is never the sun. Defaults to false. */
+  bool8_t atmosphere_moon;
 } SceneDirectionalLight;
 
 /** The enabled directional light the renderer lights with: the lowest render
@@ -282,9 +285,19 @@ typedef struct VkrSceneSunLight {
   float32_t sun_angular_diameter_degrees;
 } VkrSceneSunLight;
 
-/** The scene's sun light, resolved once per frame by vkr_scene_sync_sun.
- * `tint_kelvin` and `tint` memoize the temperature tint, which integrates the
- * blackbody spectrum. */
+/** The frame's direct light: the sun while it lights the observer, else the
+ * moon (ADR-081), with its irradiance attenuated to the observer altitude. */
+typedef struct VkrSceneKeyLight {
+  /** Unit direction from the observer toward the light. */
+  Vec3 toward;
+  Vec3 irradiance;
+  float32_t angular_diameter_degrees;
+  bool8_t moon;
+} VkrSceneKeyLight;
+
+/** The scene's sun or moon light, resolved once per frame by
+ * vkr_scene_sync_sun. `tint_kelvin` and `tint` memoize the temperature tint,
+ * which integrates the blackbody spectrum. */
 typedef struct VkrSceneSun {
   VkrSceneSunLight light;
   /* The light that is the sun and its container: this scene or the World it
@@ -472,9 +485,9 @@ typedef struct VkrSceneAtmosphere {
   VkrCloudSettings active_clouds;
   /** Seconds since the sun last requested a revision. */
   float64_t sun_refresh_elapsed;
-  /** The frame's observer irradiance, memoized by its prepared parameters. */
+  /** The frame's key light, memoized by its prepared parameters. */
   VkrAtmosphereGpuParams frame_params;
-  Vec3 frame_irradiance;
+  VkrSceneKeyLight frame_key_light;
   VkrSceneEnvironment retired_environment;
   VkrTextureHandle candidate_source_cubemap;
   VkrTextureHandle candidate_prefilter_cubemap;
@@ -736,6 +749,9 @@ typedef struct VkrScene {
   VkrSceneEnvironment environment;
   VkrSceneAtmosphere atmosphere;
   VkrSceneSun sun;
+  /** The atmosphere's moon light; never found without an enabled
+      atmosphere. */
+  VkrSceneSun moon;
   /** Descriptor-typed component types registered with the ECS (ADR-076). */
   VkrSceneComponentType types[VKR_SCENE_TYPE_MAX];
   uint32_t type_count;
@@ -857,10 +873,11 @@ bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
     this many seconds; the drawn sun and direct light follow every frame. */
 #define VKR_SCENE_SUN_REFRESH_SECONDS 0.25
 
-/** Resolves `scene->sun` and makes an enabled atmosphere follow it: the
-    light's world direction, tinted colour times intensity and disc diameter
-    replace the authored sun in `live_settings`. Without an atmosphere sun
-    light the authored sun applies. A sun that differs from the requested
+/** Resolves `scene->sun` and `scene->moon` and makes an enabled atmosphere
+    follow them: each light's world direction, tinted colour times intensity
+    and disc diameter replace the authored sun or moon in `live_settings`.
+    Without an atmosphere sun light the sky has no sun, and without a moon
+    light no moon. A sun or moon that differs from the requested
     revision queues a new one immediately while nothing is published or the
     latest request has not started baking, otherwise once
     VKR_SCENE_SUN_REFRESH_SECONDS have passed since the last. Call once per
@@ -874,8 +891,8 @@ void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds);
 VkrAtmosphereSettings
 vkr_scene_atmosphere_frame_settings(const VkrScene *scene);
 
-/** The frame's sun attenuated to the observer altitude: the direct light. */
-Vec3 vkr_scene_atmosphere_frame_irradiance(VkrScene *scene);
+/** The frame's key light, memoized by the frame's prepared parameters. */
+VkrSceneKeyLight vkr_scene_atmosphere_frame_key_light(VkrScene *scene);
 
 /**
  * @brief Update scene transforms and prepare for renderer sync.

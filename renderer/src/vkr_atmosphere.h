@@ -14,6 +14,9 @@
  * volume spans the view frustum with squared slice spacing. */
 #define VKR_ATMOSPHERE_SKY_VIEW_WIDTH 192u
 #define VKR_ATMOSPHERE_SKY_VIEW_HEIGHT 108u
+/** The sky-view image holds a sun-relative and a moon-relative table side by
+ * side, each VKR_ATMOSPHERE_SKY_VIEW_WIDTH wide (ADR-081). */
+#define VKR_ATMOSPHERE_SKY_VIEW_TABLES 2u
 #define VKR_ATMOSPHERE_AERIAL_SIZE 32u
 #define VKR_ATMOSPHERE_AERIAL_KM_PER_SLICE 4.0f
 
@@ -35,16 +38,22 @@
 #define VKR_ATMOSPHERE_SUN_GLOW_MAX 100.0f
 
 /** Earth atmosphere baked at a fixed observer altitude, in metres.
- * Density multipliers are in [0,100], solar diameter in [1e-16,5] degrees,
- * altitude in [0,100000] metres, Mie anisotropy in [-.95,.95] and the sun
- * glow in [0,100]. The camera-dependent sky places the camera at the observer
- * altitude plus its world height times `metres_per_world_unit`. The sun
- * direction, irradiance, disc diameter and glow form the sun; the rest is the
- * medium, which the revision bake alone depends on. */
+ * Density multipliers are in [0,100], solar and lunar diameters in
+ * [1e-16,5] degrees, altitude in [0,100000] metres, Mie anisotropy in
+ * [-.95,.95] and the sun glow in [0,100]. The camera-dependent sky places the
+ * camera at the observer altitude plus its world height times
+ * `metres_per_world_unit`. The sun direction, irradiance, disc diameter and
+ * glow form the sun, and the moon fields the second atmosphere light
+ * (ADR-081); the rest is the medium, which the revision bake alone depends
+ * on. `lunar_irradiance` is the full moon's top-of-atmosphere irradiance:
+ * the lit fraction its angle from the sun leaves scales it at preparation. */
 typedef struct VkrAtmosphereSettings {
   bool8_t enabled;
   Vec3 sun_direction;
   Vec3 solar_irradiance;
+  Vec3 moon_direction;
+  Vec3 lunar_irradiance;
+  float32_t moon_angular_diameter_degrees;
   Vec3 ground_albedo;
   float32_t observer_altitude_m;
   float32_t sun_angular_diameter_degrees;
@@ -57,7 +66,8 @@ typedef struct VkrAtmosphereSettings {
 } VkrAtmosphereSettings;
 
 /** Shared bake constants. Lengths are kilometres; extinction is per kilometre.
- */
+ * `moon` and `lunar` mirror `sun` and `solar` for the second light; `lunar`
+ * holds the phase-scaled irradiance, zero when there is no moon. */
 typedef struct VkrAtmosphereGpuParams {
   Vec4 planet;
   Vec4 rayleigh;
@@ -67,10 +77,15 @@ typedef struct VkrAtmosphereGpuParams {
   Vec4 ground;
   Vec4 sun;
   Vec4 solar;
+  Vec4 moon;
+  Vec4 lunar;
 } VkrAtmosphereGpuParams;
 
-_Static_assert(sizeof(VkrAtmosphereGpuParams) == 128u,
+_Static_assert(sizeof(VkrAtmosphereGpuParams) == 160u,
                "Atmosphere parameter ABI size drift");
+
+/** Default angular diameter of the moon's disc, in degrees. */
+#define VKR_ATMOSPHERE_MOON_DIAMETER_DEFAULT 0.52f
 
 /** Deferred background selected by the frame's sky payload. */
 typedef enum VkrSkyMode {
@@ -87,7 +102,9 @@ typedef enum VkrSkyMode {
  * froxels, so the raster clip convention does not matter. `camera_position.w`
  * is kilometres per world unit. `aerial` holds kilometres per slice, the
  * slice count, its reciprocal, and 1 when aerial perspective applies.
- * `clouds` is zero unless the cloud layer renders this frame. */
+ * `clouds` is zero unless the cloud layer renders this frame. `key_light`
+ * points toward the light that drives direct lighting, cascaded and cloud
+ * shadows; `w` is 1 when it is the moon. */
 typedef struct VkrSkyGpuParams {
   VkrAtmosphereGpuParams atmosphere;
   Mat4 view_projection;
@@ -95,9 +112,10 @@ typedef struct VkrSkyGpuParams {
   Vec4 camera_position;
   Vec4 aerial;
   VkrCloudGpuParams clouds;
+  Vec4 key_light;
 } VkrSkyGpuParams;
 
-_Static_assert(sizeof(VkrSkyGpuParams) == 352u, "Sky parameter ABI size drift");
+_Static_assert(sizeof(VkrSkyGpuParams) == 400u, "Sky parameter ABI size drift");
 
 typedef enum VkrAtmosphereBakeStatus {
   VKR_ATMOSPHERE_BAKE_PENDING = 0,
@@ -132,12 +150,13 @@ bool8_t
 vkr_atmosphere_apply_sun_authoring(VkrAtmosphereSettings *settings,
                                    const VkrAtmosphereSunAuthoring *authoring);
 
-/** Returns `medium` lit by the sun of `sun`: direction, irradiance, disc and
- * glow. The frame's sky pairs the published medium, which its lookups baked,
- * with the scene's current sun. */
+/** Returns `medium` lit by the lights of `lights`: the sun's direction,
+ * irradiance, disc and glow, and the moon's direction, irradiance and disc.
+ * The frame's sky pairs the published medium, which its lookups baked, with
+ * the scene's current lights. */
 VkrAtmosphereSettings
 vkr_atmosphere_with_sun(const VkrAtmosphereSettings *medium,
-                        const VkrAtmosphereSettings *sun);
+                        const VkrAtmosphereSettings *lights);
 
 /** Makes a directional light the sun. `light_direction` points along incoming
  * light and `irradiance`, the light's colour times intensity, becomes the
@@ -147,6 +166,19 @@ vkr_atmosphere_with_sun(const VkrAtmosphereSettings *medium,
 bool8_t vkr_atmosphere_apply_sun_light(VkrAtmosphereSettings *settings,
                                        Vec3 light_direction, Vec3 irradiance,
                                        float32_t sun_angular_diameter_degrees);
+/** Makes a directional light the moon, as `vkr_atmosphere_apply_sun_light`
+ * does the sun. `irradiance` is the full moon's; zero removes the moon. */
+bool8_t
+vkr_atmosphere_apply_moon_light(VkrAtmosphereSettings *settings,
+                                Vec3 light_direction, Vec3 irradiance,
+                                float32_t moon_angular_diameter_degrees);
+
+/** Fraction of the moon's disc the sun lights, seen from the observer:
+ * (1 - cos(angle between the moon and the sun)) / 2. Both are unit
+ * directions toward the bodies. */
+float32_t vkr_atmosphere_moon_lit_fraction(Vec3 moon_direction,
+                                           Vec3 sun_direction);
+
 VkrAtmosphereGpuParams
 vkr_atmosphere_prepare(const VkrAtmosphereSettings *settings);
 
@@ -182,6 +214,15 @@ Vec3 vkr_atmosphere_transmittance(const VkrAtmosphereGpuParams *params,
  * altitude, or zero below the horizon. */
 Vec3 vkr_atmosphere_observer_irradiance(const VkrAtmosphereGpuParams *params);
 
+/** The moon's phase-scaled irradiance attenuated to the observer altitude, or
+ * zero below the horizon. */
+Vec3 vkr_atmosphere_observer_lunar_irradiance(
+    const VkrAtmosphereGpuParams *params);
+
+/** True when the direct light is the moon: the sun is below the observer's
+ * horizon or has no irradiance, and the moon has some (ADR-081). */
+bool8_t vkr_atmosphere_moon_is_key(const VkrAtmosphereGpuParams *params);
+
 /** Sun depression, in degrees below the observer's horizon, beyond which no
  * point a bake reaches is sunlit. With D = acos(R / R_top), the horizon dip at
  * the atmosphere top, a view ray reaches at most acos(R / r_observer) + D
@@ -191,9 +232,9 @@ Vec3 vkr_atmosphere_observer_irradiance(const VkrAtmosphereGpuParams *params);
 float32_t
 vkr_atmosphere_dark_depression_degrees(const VkrAtmosphereGpuParams *params);
 
-/** True when a bake of `params` is black for every sun direction a change
- * could reach while it stays true: no solar irradiance, or a sun beyond the
- * dark depression. */
+/** True when a bake of `params` is black for every light direction a change
+ * could reach while it stays true: each of the sun and the moon has no
+ * irradiance or lies beyond the dark depression. */
 bool8_t vkr_atmosphere_bake_dark(const VkrAtmosphereGpuParams *params);
 
 /** Prepares the camera-dependent sky from validated enabled settings. The

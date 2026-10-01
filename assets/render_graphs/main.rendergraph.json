@@ -1597,7 +1597,7 @@
       "condition": "scene_rendering && atmosphere_enabled",
       "extent": {
         "mode": "fixed",
-        "width": 192,
+        "width": 384,
         "height": 108
       },
       "format": "R16G16B16A16_SFLOAT",

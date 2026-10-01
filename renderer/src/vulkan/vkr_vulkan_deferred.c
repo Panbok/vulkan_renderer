@@ -2346,7 +2346,8 @@ bool8_t vkr_vk_prepare_sky(VkrVulkanRenderer *renderer,
                     : VKR_VULKAN_DEFERRED_PIPELINE_AERIAL_PERSPECTIVE];
   /* Aerial perspective marches one froxel column per thread. */
   const uint32_t width =
-      sky_view ? VKR_ATMOSPHERE_SKY_VIEW_WIDTH : VKR_ATMOSPHERE_AERIAL_SIZE;
+      sky_view ? VKR_ATMOSPHERE_SKY_VIEW_WIDTH * VKR_ATMOSPHERE_SKY_VIEW_TABLES
+               : VKR_ATMOSPHERE_AERIAL_SIZE;
   const uint32_t height =
       sky_view ? VKR_ATMOSPHERE_SKY_VIEW_HEIGHT : VKR_ATMOSPHERE_AERIAL_SIZE;
   prepared->groups[0][0] = (width + 7u) / 8u;

@@ -164,6 +164,13 @@ static float4 vkr_metal_cloud_march(
   float3 origin = float3(0.0f, camera_radius, 0.0f);
   float3 sun = params.atmosphere.sun.xyz;
   float cosine = dot(direction, sun);
+  // The moon lights the layer while it is the key light; a sun below the
+  // observer's horizon may still light the layer above, at twilight.
+  float3 moon = params.atmosphere.moon.xyz;
+  float moon_cosine = dot(direction, moon);
+  bool sun_lights = !vkr_atmosphere_light_dark(params.atmosphere.solar);
+  bool moon_lights = params.key_light.w > 0.0f &&
+                     !vkr_atmosphere_light_dark(params.atmosphere.lunar);
   float3 ambient = vkr_metal_packet_sky_ambient(root.frame);
   float step_km = (segment.end_km - segment.start_km) /
                   float(VKR_CLOUD_PRIMARY_STEPS);
@@ -186,18 +193,29 @@ static float4 vkr_metal_cloud_march(
         vkr_cloud_distance_fade(clouds, distance);
     if (density <= 0.0f)
       continue;
-    float3 sun_irradiance = float3(0.0f);
-    if (!vkr_atmosphere_sun_occluded(params.atmosphere, position, sun)) {
-      sun_irradiance =
+    // An occluded light contributes nothing, so its light march is skipped.
+    float3 source = float3(0.0f);
+    if (sun_lights &&
+        !vkr_atmosphere_sun_occluded(params.atmosphere, position, sun)) {
+      float3 sun_irradiance =
           params.atmosphere.solar.rgb *
           vkr_metal_atmosphere_lookup_transmittance(
               sky.transmittance, params.atmosphere, position, sun);
+      source = vkr_cloud_sun_scattering(
+          sun_irradiance, cosine,
+          vkr_metal_cloud_light_depth(sky, params, position, sun));
     }
-    float3 source =
-        vkr_cloud_sun_scattering(
-            sun_irradiance, cosine,
-            vkr_metal_cloud_light_depth(sky, params, position, sun)) +
-        vkr_cloud_ambient(ambient, sample.height_fraction);
+    if (moon_lights &&
+        !vkr_atmosphere_sun_occluded(params.atmosphere, position, moon)) {
+      float3 moon_irradiance =
+          params.atmosphere.lunar.rgb *
+          vkr_metal_atmosphere_lookup_transmittance(
+              sky.transmittance, params.atmosphere, position, moon);
+      source += vkr_cloud_sun_scattering(
+          moon_irradiance, moon_cosine,
+          vkr_metal_cloud_light_depth(sky, params, position, moon));
+    }
+    source += vkr_cloud_ambient(ambient, sample.height_fraction);
     state = vkr_cloud_integrate_step(state, density * clouds.layer.z, step_km,
                                      source, distance);
     if (state.transmittance < VKR_CLOUD_TRANSMITTANCE_CUTOFF)

@@ -1692,7 +1692,8 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !json_floats(w, "directional_temperature_kelvin",
                      &p->temperature_kelvin, 1) ||
         !WRITE_BOOL("directional_enabled", p->enabled) ||
-        !WRITE_BOOL("directional_atmosphere_sun", p->atmosphere_sun))
+        !WRITE_BOOL("directional_atmosphere_sun", p->atmosphere_sun) ||
+        !WRITE_BOOL("directional_atmosphere_moon", p->atmosphere_moon))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT) {
@@ -2625,7 +2626,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "components",
                                "deleted",
                                "parent",
-                               "id"};
+                               "id",
+                               "directional_atmosphere_moon"};
   MemZero(v, sizeof(*v));
   MemZero(extra, sizeof(*extra));
   components->count = 0u;
@@ -2780,6 +2782,9 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
       ok = edit_json_int(j, 1, UINT32_MAX, &integer);
       extra->id = (uint32_t)integer;
       break;
+    case 32:
+      ok = edit_json_bool(j, &v->directional_light.atmosphere_moon);
+      break;
     }
     if (!ok)
       return false_v;
@@ -2809,6 +2814,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     required |= seen & (1u << 26u); /* Old journals use the light's colour. */
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
     required |= seen & (1u << 27u); /* Old journals keep the scene default. */
+  if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT)
+    required |= seen & (1ull << 32u); /* Old journals have no moon. */
   if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
     required |= seen & (1u << 19u); /* Old journals default shadows off. */
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)

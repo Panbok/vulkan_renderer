@@ -793,6 +793,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
       bake_params.solar.x *= packet->exposure.pre_exposure;
       bake_params.solar.y *= packet->exposure.pre_exposure;
       bake_params.solar.z *= packet->exposure.pre_exposure;
+      bake_params.lunar.x *= packet->exposure.pre_exposure;
+      bake_params.lunar.y *= packet->exposure.pre_exposure;
+      bake_params.lunar.z *= packet->exposure.pre_exposure;
       source->radiance_stops = packet->exposure.pre_exposure_stops;
       /* Transmittance, then multiple scattering, then the source cube; the
          source dispatch reads only the face size. */
@@ -2363,7 +2366,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_sky(
       sky_view ? renderer->sky_view_pipeline
                : renderer->aerial_perspective_pipeline;
   const MTLSize extent =
-      sky_view ? MTLSizeMake(VKR_ATMOSPHERE_SKY_VIEW_WIDTH,
+      sky_view ? MTLSizeMake(VKR_ATMOSPHERE_SKY_VIEW_WIDTH *
+                                 VKR_ATMOSPHERE_SKY_VIEW_TABLES,
                              VKR_ATMOSPHERE_SKY_VIEW_HEIGHT, 1u)
                : MTLSizeMake(VKR_ATMOSPHERE_AERIAL_SIZE,
                              VKR_ATMOSPHERE_AERIAL_SIZE,

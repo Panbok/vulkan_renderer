@@ -898,11 +898,15 @@ irradiance and disc. The drawn sky, direct light and shadows follow it every
 frame, with the direct light's attenuated irradiance integrated on the CPU;
 the sky light re-bakes at most every 0.25 seconds while it moves. A
 view-attenuated 1/theta^2 glow, `atmosphere.sun_glow`, makes the physical
-disc read as a sun without changing lighting. Every frame builds a 192×108
-sky-view lookup and a 32³ aerial-perspective volume from the published lookups
-at the camera's altitude; the deferred background samples the lookup and adds
-an analytic limb-darkened sun disc, and aerial perspective attenuates
-surfaces before fog. Isolated fixtures and previews may instead author a
+disc read as a sun without changing lighting. A light flagged
+`atmosphere_moon` is the atmosphere's second light, a phase-scaled moon that is
+never the sun; the direct light, its shadows and the cloud shadow map follow
+the moon while the sun is below the horizon
+([ADR-081](adr/081-physical-night-sky.md)). Every frame builds a 384×108
+sky-view image, a sun table beside a moon table, and a 32³ aerial-perspective
+volume from the published lookups at the camera's altitude. The deferred
+background samples both tables and adds an analytic limb-darkened sun disc and
+a phase-shaded moon disc. Aerial perspective attenuates surfaces before fog. Isolated fixtures and previews may instead author a
 uniform constant source, uploaded as a one-texel-per-face cube and shown as a
 uniform background. The scene `environment` block is the sky light: its enable
 flag, intensities and SH window apply to either source, and a disabled sky

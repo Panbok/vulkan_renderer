@@ -65,9 +65,10 @@ VkrCloudSettings vkr_cloud_settings_defaults(void);
 bool8_t vkr_cloud_settings_valid(const VkrCloudSettings *settings);
 
 /** Prepares enabled, validated settings. `camera_km` is the camera's world
- * position in kilometres with its altitude in `y`; `sun` points toward the sun
- * and `bottom_radius_km` is the planet radius. The shadow map centre snaps to
- * its texel grid so a moving camera does not shimmer the shadows. */
+ * position in kilometres with its altitude in `y`; `sun` points toward the
+ * sky's key light, the sun or the moon (ADR-081), and `bottom_radius_km` is
+ * the planet radius. The shadow map centre snaps to its texel grid so a
+ * moving camera does not shimmer the shadows. */
 VkrCloudGpuParams vkr_cloud_prepare(const VkrCloudSettings *settings,
                                     float32_t bottom_radius_km, Vec3 camera_km,
                                     Vec3 sun, Vec2 wind_offset_m);

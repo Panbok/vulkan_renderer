@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -81,7 +81,10 @@ snapped to its 15.6 m texels. The planar march takes 16 climbing steps through
 the base shape without detail erosion and holds the sun's elevation sine at
 0.1 or more. Surfaces below the layer sample the map where their own sun ray
 enters the base; surfaces above the base use their own column, and surfaces
-outside the map are unshadowed.
+outside the map are unshadowed. The map follows the sky's key light, the light
+that drives direct lighting ([ADR-081](081-physical-night-sky.md)). At night
+that light is the moon, so the map, its centre and every sun term above use
+the moon's ray instead.
 
 `Clouds.Trace` marches a half-resolution history instance. A texel traces when
 any full-resolution pixel within one pixel of its 2x2 footprint shows sky, so
@@ -95,7 +98,10 @@ fade over the last third, and stops below 1% transmittance.
 At each sample the base shape, weather and coverage set the density, and the
 detail volume erodes its edges. Sunlight is the top-of-atmosphere irradiance
 times the atmosphere's transmittance lookup and a five-step doubling light
-march through the layer. A forward (g = 0.8) and backward (g = -0.3, weight
+march through the layer. A sample the planet hides from the sun skips that
+march. While the moon is the key light, the moon lights the layer the same
+way, with its phase-scaled irradiance and its own light march. The sun still
+lights high cloud after it sets at the observer, which gives twilight colour. A forward (g = 0.8) and backward (g = -0.3, weight
 0.3) Henyey-Greenstein mix scatters it over four multiple-scattering octaves
 that scale light extinction by 0.25, scattering by 0.5 and eccentricity by 0.5
 each. The sky light's L2 SH average, dimmed toward the layer base, supplies

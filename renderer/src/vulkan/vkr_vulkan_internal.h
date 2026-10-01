@@ -929,8 +929,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSky {
   uint32_t cloud_noise_sampler;
   uint32_t reserved[2];
 } VkrVulkanSky;
-_Static_assert(sizeof(VkrVulkanSky) == 400u, "Vulkan sky record ABI drift");
-_Static_assert(offsetof(VkrVulkanSky, cloud_radiance_texture) == 368u,
+_Static_assert(sizeof(VkrVulkanSky) == 448u, "Vulkan sky record ABI drift");
+_Static_assert(offsetof(VkrVulkanSky, cloud_radiance_texture) == 416u,
                "Vulkan sky cloud slot offset drift");
 
 /** Per-frame sky-view lookup and aerial-perspective volume builders. */
@@ -1813,13 +1813,13 @@ _Static_assert(sizeof(VkrVulkanTransmissionCompactRoot) == 96u,
 _Static_assert(sizeof(VkrVulkanTransmissionCoverageRoot) == 32u,
                "Deferred transmission-coverage root ABI drift");
 _Static_assert(sizeof(VkrVulkanIblRoot) == 32u, "IBL-root ABI drift");
-_Static_assert(sizeof(VkrVulkanAtmosphereRoot) == 176u,
+_Static_assert(sizeof(VkrVulkanAtmosphereRoot) == 208u,
                "Atmosphere-root ABI drift");
 _Static_assert(offsetof(VkrVulkanAtmosphereRoot, transmittance_sample) ==
-                       128u &&
-                   offsetof(VkrVulkanAtmosphereRoot, source_storage) == 144u &&
-                   offsetof(VkrVulkanAtmosphereRoot, extent) == 152u &&
-                   offsetof(VkrVulkanAtmosphereRoot, face_size) == 160u,
+                       160u &&
+                   offsetof(VkrVulkanAtmosphereRoot, source_storage) == 176u &&
+                   offsetof(VkrVulkanAtmosphereRoot, extent) == 184u &&
+                   offsetof(VkrVulkanAtmosphereRoot, face_size) == 192u,
                "Atmosphere-root field ABI drift");
 _Static_assert(sizeof(VkrVulkanIblShRoot) == 48u, "IBL SH-root ABI drift");
 _Static_assert(offsetof(VkrVulkanIblShRoot, destination) == 0u,

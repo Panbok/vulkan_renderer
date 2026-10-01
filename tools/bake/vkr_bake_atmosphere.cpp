@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 
@@ -278,8 +279,27 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
                       multi_uv(p, length(position), dot(up, direction)));
   };
   const Vec3 observer = make3(0, p.planet.x + p.planet.z, 0);
-  const Vec3 sun = make3(p.sun.x, p.sun.y, p.sun.z);
-  out->observer_irradiance = vkr_atmosphere_observer_irradiance(&p);
+  const bool moon_key = vkr_atmosphere_moon_is_key(&p);
+  const Vec4 key = moon_key ? p.moon : p.sun;
+  out->key_light_direction = make3(key.x, key.y, key.z);
+  out->observer_irradiance =
+      moon_key ? vkr_atmosphere_observer_lunar_irradiance(&p)
+               : vkr_atmosphere_observer_irradiance(&p);
+  /* Both atmosphere lights scatter, as in the runtime source bake; a light
+     without irradiance contributes nothing. */
+  struct BakeLight {
+    Vec3 direction;
+    Vec3 irradiance;
+  };
+  BakeLight lights[2] = {};
+  uint32_t light_count = 0u;
+  const Vec4 bodies[2][2] = {{p.sun, p.solar}, {p.moon, p.lunar}};
+  for (const auto &body : bodies) {
+    if (body[1].x <= 0.0f && body[1].y <= 0.0f && body[1].z <= 0.0f)
+      continue;
+    lights[light_count++] = {make3(body[0].x, body[0].y, body[0].z),
+                             make3(body[1].x, body[1].y, body[1].z)};
+  }
   out->source_rgb.resize((size_t)6u * k_source_size * k_source_size);
   for (uint32_t face = 0; face < 6; ++face)
     for (uint32_t y = 0; y < k_source_size; ++y)
@@ -291,42 +311,53 @@ bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
         const float distance =
             vkr_atmosphere_segment_limit(&p, observer, direction, &ground);
         const float step = distance / k_source_samples;
-        const float cosine = dot(direction, sun);
-        const float pr = rayleigh_phase(cosine),
-                    pm = mie_phase(p.planet.w, cosine);
+        float pr[2] = {}, pm[2] = {};
+        for (uint32_t light = 0; light < light_count; ++light) {
+          const float cosine = dot(direction, lights[light].direction);
+          pr[light] = rayleigh_phase(cosine);
+          pm[light] = mie_phase(p.planet.w, cosine);
+        }
         Vec3 t = one(), l = zero();
         for (uint32_t i = 0; i < k_source_samples; ++i) {
           const Vec3 position =
               add(observer, scale(direction, ((float)i + .5f) * step));
           const VkrAtmosphereMedium m = vkr_atmosphere_medium(&p, position);
-          const Vec3 ts = vkr_atmosphere_sun_occluded(&p, position, sun)
-                              ? zero()
-                              : trans_sample(position, sun);
-          const Vec3 ms = multi_sample(position, sun);
-          const Vec3 source =
-              mul(make3(p.solar.x, p.solar.y, p.solar.z),
-                  add(mul(ts, add(scale(m.rayleigh_scattering, pr),
-                                  scale(m.mie_scattering, pm))),
-                      mul(ms, m.scattering)));
+          Vec3 source = zero();
+          for (uint32_t light = 0; light < light_count; ++light) {
+            const Vec3 toward = lights[light].direction;
+            const Vec3 ts = vkr_atmosphere_sun_occluded(&p, position, toward)
+                                ? zero()
+                                : trans_sample(position, toward);
+            const Vec3 ms = multi_sample(position, toward);
+            source = add(
+                source,
+                mul(lights[light].irradiance,
+                    add(mul(ts, add(scale(m.rayleigh_scattering, pr[light]),
+                                    scale(m.mie_scattering, pm[light]))),
+                        mul(ms, m.scattering))));
+          }
           l = add(l,
                   mul(t, segment_source_integral(source, m.extinction, step)));
           t = mul(t, exp3(scale(
                          min3(scale(m.extinction, step), k_max_optical_depth),
                          -1.0f)));
         }
-        // Below-horizon rays see the sunlit Lambertian ground, matching the
+        // Below-horizon rays see the lit Lambertian ground, matching the
         // runtime source bake and the multiple-scattering term above.
         if (ground) {
           const Vec3 ground_point = add(observer, scale(direction, distance));
           const Vec3 up = normalized(ground_point, make3(0, 1, 0));
           const Vec3 surface = add(ground_point, scale(up, 1.0e-3f));
-          const Vec3 ts = vkr_atmosphere_sun_occluded(&p, surface, sun)
-                              ? zero()
-                              : trans_sample(surface, sun);
-          const Vec3 sunlit =
-              mul(mul(make3(p.solar.x, p.solar.y, p.solar.z), ts),
-                  make3(p.ground.x, p.ground.y, p.ground.z));
-          l = add(l, scale(mul(t, sunlit), std::max(dot(up, sun), 0.0f) / k_pi));
+          for (uint32_t light = 0; light < light_count; ++light) {
+            const Vec3 toward = lights[light].direction;
+            const Vec3 ts = vkr_atmosphere_sun_occluded(&p, surface, toward)
+                                ? zero()
+                                : trans_sample(surface, toward);
+            const Vec3 lit = mul(mul(lights[light].irradiance, ts),
+                                 make3(p.ground.x, p.ground.y, p.ground.z));
+            l = add(l, scale(mul(t, lit),
+                             std::max(dot(up, toward), 0.0f) / k_pi));
+          }
         }
         out->source_rgb[((size_t)face * k_source_size + y) * k_source_size +
                         x] = source_radiance(clamp_nonnegative(l));
@@ -362,5 +393,9 @@ uint64_t vkr_bake_atmosphere_recipe_hash(const VkrBakeAtmosphere *atmosphere) {
   uint64_t hash = UINT64_C(1469598103934665603);
   hash = fnv1a(hash, &VKR_BAKE_ATMOSPHERE_MODEL_VERSION,
                sizeof(VKR_BAKE_ATMOSPHERE_MODEL_VERSION));
-  return fnv1a(hash, &atmosphere->params, sizeof(atmosphere->params));
+  /* A moonless sky hashes as it did before the moon existed (ADR-081). */
+  const VkrAtmosphereGpuParams &p = atmosphere->params;
+  const bool moon = p.lunar.x > 0.0f || p.lunar.y > 0.0f || p.lunar.z > 0.0f;
+  return fnv1a(hash, &p,
+               moon ? sizeof(p) : offsetof(VkrAtmosphereGpuParams, moon));
 }

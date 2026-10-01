@@ -110,6 +110,11 @@ vkr_internal void vkr_project_apply_wrapper(VkrProjectJob *job,
     vkr_bakery_json_set(arena, light, "atmosphere_sun",
                         sun ? vkr_bakery_json_clone(arena, sun)
                             : vkr_bakery_json_bool(arena, true_v));
+    const VkrBakeryJson *moon =
+        vkr_bakery_json_get(edit, "directional_atmosphere_moon");
+    vkr_bakery_json_set(arena, light, "atmosphere_moon",
+                        moon ? vkr_bakery_json_clone(arena, moon)
+                             : vkr_bakery_json_bool(arena, false_v));
     vkr_bakery_json_set(arena, entity, "directional_light", light);
   }
   if (fields & 32) {

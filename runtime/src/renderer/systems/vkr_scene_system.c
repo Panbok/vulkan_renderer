@@ -178,8 +178,8 @@ void vkr_scene_reset_diffuse_volume(VkrScene *scene,
   };
 }
 
-/* Requests carry the unit sun direction the bake uses, so later comparisons
-   see exactly what was queued. */
+/* Requests carry the unit sun and moon directions the bake uses, so later
+   comparisons see exactly what was queued. */
 vkr_internal VkrAtmosphereSettings
 scene_normalized_atmosphere(const VkrAtmosphereSettings *settings) {
   VkrAtmosphereSettings normalized = *settings;
@@ -187,6 +187,8 @@ scene_normalized_atmosphere(const VkrAtmosphereSettings *settings) {
     const VkrAtmosphereGpuParams params = vkr_atmosphere_prepare(settings);
     normalized.sun_direction =
         vec3_new(params.sun.x, params.sun.y, params.sun.z);
+    normalized.moon_direction =
+        vec3_new(params.moon.x, params.moon.y, params.moon.z);
   }
   return normalized;
 }
@@ -1988,15 +1990,27 @@ typedef struct SceneSunLightSearch {
   bool8_t best_has_render_id;
   bool8_t found;
   bool8_t atmosphere_sun_only;
+  /** Searches moon lights instead of suns (ADR-081). */
+  bool8_t moon;
 } SceneSunLightSearch;
+
+/* A moon light is never the sun, so flagging the default sun as the moon
+   needs no second edit. */
+vkr_internal bool8_t scene_light_matches(const SceneSunLightSearch *search,
+                                         const SceneDirectionalLight *light) {
+  if (search->moon) {
+    return light->atmosphere_moon;
+  }
+  return !light->atmosphere_moon &&
+         (!search->atmosphere_sun_only || light->atmosphere_sun);
+}
 
 /* Keep `light` when it is an enabled, visible candidate that beats the
    current one: the lowest render id, else the first found. */
 vkr_internal void scene_sun_consider(SceneSunLightSearch *search,
                                      VkrEntityId entity,
                                      const SceneDirectionalLight *light) {
-  if (!light->enabled ||
-      (search->atmosphere_sun_only && !light->atmosphere_sun) ||
+  if (!light->enabled || !scene_light_matches(search, light) ||
       !vkr_scene_entity_visible(search->scene, entity)) {
     return;
   }
@@ -2052,16 +2066,19 @@ vkr_internal void scene_find_world_sun(SceneSunLightSearch *search) {
   }
 }
 
-vkr_internal void scene_resolve_sun(VkrScene *scene) {
-  VkrSceneSun *sun = &scene->sun;
+/* Resolves the sun, or with `moon` the moon, into `sun`. */
+vkr_internal void scene_resolve_sun(VkrScene *scene, VkrSceneSun *sun,
+                                    bool8_t moon) {
   // Imported lights, such as a glTF file's own sun, must not take the sky.
   SceneSunLightSearch search = {
       .scene = scene,
       .atmosphere_sun_only = scene->atmosphere.authored_settings.enabled,
+      .moon = moon,
   };
   vkr_entity_query_compiled_each_chunk(&scene->query_directional_light,
                                        scene_find_sun_light_cb, &search);
-  /* A scene without its own sun uses the World's while it inherits it. */
+  /* A scene without its own sun or moon uses the World's while it inherits
+     it. */
   if (!search.found && scene->world_fallback) {
     search.scene = scene->world_fallback;
     scene_find_world_sun(&search);
@@ -2097,15 +2114,20 @@ vkr_internal void scene_resolve_sun(VkrScene *scene) {
   };
 }
 
-/* The bake depends on the sun's direction and irradiance; its diameter sets
-   the irradiance calibration. The glow only changes the drawn sky. */
+/* The bake depends on each light's direction and irradiance; its diameter
+   sets the irradiance calibration. The glow only changes the drawn sky. */
 vkr_internal bool8_t scene_atmosphere_sun_matches(
     const VkrAtmosphereSettings *a, const VkrAtmosphereSettings *b) {
   return MemCompare(&a->sun_direction, &b->sun_direction,
                     sizeof(float32_t) * 3u) == 0 &&
          MemCompare(&a->solar_irradiance, &b->solar_irradiance,
                     sizeof(float32_t) * 3u) == 0 &&
-         a->sun_angular_diameter_degrees == b->sun_angular_diameter_degrees;
+         a->sun_angular_diameter_degrees == b->sun_angular_diameter_degrees &&
+         MemCompare(&a->moon_direction, &b->moon_direction,
+                    sizeof(float32_t) * 3u) == 0 &&
+         MemCompare(&a->lunar_irradiance, &b->lunar_irradiance,
+                    sizeof(float32_t) * 3u) == 0 &&
+         a->moon_angular_diameter_degrees == b->moon_angular_diameter_degrees;
 }
 
 vkr_internal bool8_t
@@ -2120,15 +2142,17 @@ void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
   }
 
   scene->sun.found = false_v;
+  scene->moon.found = false_v;
   if (!scene_compile_queries(scene)) {
     return;
   }
 
-  scene_resolve_sun(scene);
+  scene_resolve_sun(scene, &scene->sun, false_v);
   VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
   if (!atmosphere->authored_settings.enabled) {
     return;
   }
+  scene_resolve_sun(scene, &scene->moon, true_v);
 
   /* Only a directional light is a sun (ADR-058): without one the sky has
      no sun. An unusable light, such as one pointing nowhere, keeps the
@@ -2141,6 +2165,16 @@ void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
                  &effective, light->direction,
                  vec3_scale(light->color, light->intensity),
                  light->sun_angular_diameter_degrees)) {
+    return;
+  }
+  /* The moon follows the same rules; without a moon light there is none. */
+  const VkrSceneSunLight *moon = &scene->moon.light;
+  if (!scene->moon.found) {
+    effective.lunar_irradiance = vec3_zero();
+  } else if (!vkr_atmosphere_apply_moon_light(
+                 &effective, moon->direction,
+                 vec3_scale(moon->color, moon->intensity),
+                 moon->sun_angular_diameter_degrees)) {
     return;
   }
 
@@ -2184,16 +2218,24 @@ vkr_scene_atmosphere_frame_settings(const VkrScene *scene) {
                                  &scene->atmosphere.live_settings);
 }
 
-Vec3 vkr_scene_atmosphere_frame_irradiance(VkrScene *scene) {
+VkrSceneKeyLight vkr_scene_atmosphere_frame_key_light(VkrScene *scene) {
   VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
   const VkrAtmosphereSettings frame =
       vkr_scene_atmosphere_frame_settings(scene);
   const VkrAtmosphereGpuParams params = vkr_atmosphere_prepare(&frame);
   if (MemCompare(&params, &atmosphere->frame_params, sizeof(params)) != 0) {
     atmosphere->frame_params = params;
-    atmosphere->frame_irradiance = vkr_atmosphere_observer_irradiance(&params);
+    const bool8_t moon = vkr_atmosphere_moon_is_key(&params);
+    atmosphere->frame_key_light = (VkrSceneKeyLight){
+        .toward = moon ? frame.moon_direction : frame.sun_direction,
+        .irradiance = moon ? vkr_atmosphere_observer_lunar_irradiance(&params)
+                           : vkr_atmosphere_observer_irradiance(&params),
+        .angular_diameter_degrees = moon ? frame.moon_angular_diameter_degrees
+                                         : frame.sun_angular_diameter_degrees,
+        .moon = moon,
+    };
   }
-  return atmosphere->frame_irradiance;
+  return atmosphere->frame_key_light;
 }
 
 void vkr_scene_update_transforms(VkrScene *scene) {

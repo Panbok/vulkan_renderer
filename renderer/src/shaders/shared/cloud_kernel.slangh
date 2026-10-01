@@ -470,11 +470,12 @@ float3 vkr_cloud_view_direction(VkrSkyParams sky, float2 uv)
     return ray * rsqrt(max(dot(ray, ray), 1e-20f));
 }
 
-// Horizontal kilometres travelled per kilometre of climb toward the sun.
+// Horizontal kilometres travelled per kilometre of climb toward the key
+// light, the sun or the moon that drives direct lighting (ADR-081).
 float2 vkr_cloud_shadow_slope(VkrSkyParams sky)
 {
-    float3 sun = sky.atmosphere.sun.xyz;
-    return float2(sun.x, sun.z) / max(sun.y, VKR_CLOUD_SHADOW_SUN_Y_MIN);
+    float3 light = sky.key_light.xyz;
+    return float2(light.x, light.z) / max(light.y, VKR_CLOUD_SHADOW_SUN_Y_MIN);
 }
 
 // World X/Z kilometres where a shadow texel's sun ray enters the layer base.
