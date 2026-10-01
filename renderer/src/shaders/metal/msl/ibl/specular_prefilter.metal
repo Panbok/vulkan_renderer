@@ -21,6 +21,14 @@ vkr_metal_packet_ibl_prefilter(uint3 position [[thread_position_in_grid]],
                                  filter::linear, mip_filter::linear);
   float2 uv = (float2(position.xy) + 0.5) / float(target_size);
   float3 normal = normalize(vkr_metal_packet_cube_direction(position.z, uv));
+  /* A mirror lobe's samples all read the normal at mip zero, so one fetch is
+     the whole integral. */
+  if (root->roughness <= VKR_IBL_PREFILTER_MIRROR_ROUGHNESS) {
+    root->target.write(
+        float4(root->source.sample(cube_sampler, normal, level(0.0)).rgb, 1.0),
+        position.xy, position.z, root->target_mip);
+    return;
+  }
   float3 view = normal;
   float3 color = 0.0;
   float total_weight = 0.0;
@@ -41,9 +49,7 @@ vkr_metal_packet_ibl_prefilter(uint3 position [[thread_position_in_grid]],
     float texel_solid_angle =
         4.0 * vkr_metal_packet_pi /
         max(6.0 * root->source_face_size * root->source_face_size, 1.0);
-    float lod = root->roughness <= 0.001
-                    ? 0.0
-                    : 0.5 * log2(4.0 * sample_solid_angle / texel_solid_angle);
+    float lod = 0.5 * log2(4.0 * sample_solid_angle / texel_solid_angle);
     lod = clamp(lod, 0.0, max(root->source_mip_count - 1.0, 0.0));
     color += root->source.sample(cube_sampler, light, level(lod)).rgb * no_l;
     total_weight += no_l;

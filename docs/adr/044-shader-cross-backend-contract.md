@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-26
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -438,7 +438,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Rectangle LTC (UNALIGNED) | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Analytic fog (UNALIGNED) | `shared/fog_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/post/fog.metal`, `world/lighting.metalh` | `vulkan/slang/post/fog.slang`, `world/default.slang` |
 | Froxel volumetric fog (UNALIGNED) | `shared/froxel_fog_kernel.slangh`, `fog_kernel.slangh`, `punctual_light_kernel.slangh` | `metal/msl/post/froxel_fog.metal` | `vulkan/slang/post/froxel_fog.slang` |
-| IBL and SH | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
+| IBL and SH (UNALIGNED) | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Sky atmosphere and aerial perspective (UNALIGNED) | `shared/atmosphere_kernel.slangh` | `metal/msl/ibl/atmosphere.metal`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/fog.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/atmosphere.slang`, `world/default.slang`, `deferred.slang`, `post/fog.slang`, `post/froxel_fog.slang` |
 | Volumetric clouds (UNALIGNED) | `shared/cloud_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/clouds.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
 | Opaque SSR (UNALIGNED) | `shared/ssr_kernel.slangh` | `metal/msl/post/ssr.metal` | `vulkan/slang/world/deferred.slang` |
@@ -486,9 +486,13 @@ identity/count, independent of workgroup-local invocation numbering.
 
 Direct lighting and IBL sampling PDFs share the GGX distribution. Its factored
 denominator preserves the narrow supported specular lobe instead of flooring
-the squared denominator. The zero-roughness prefilter retains its explicit
-source-mip-zero behavior. Changes to the distribution and importance-sampling PDF
-must remain consistent.
+the squared denominator. At or below `VKR_IBL_PREFILTER_MIRROR_ROUGHNESS`
+(0.001, in `ggx_kernel.slangh`), the prefilter mip is a mirror: both backends
+write one source-mip-zero fetch at the texel's normal, the value every one of
+its 256 importance samples took. Changes to the distribution and
+importance-sampling PDF must remain consistent. The Vulkan entry passes
+`spirv-val` with the branch at the shared threshold; native Vulkan execution
+remains unavailable, so IBL stays **UNALIGNED**.
 
 The new material energy record uses correlated Smith visibility and one shared
 RG16F DFG lookup per surface in both native implementations. Metal adds the

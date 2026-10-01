@@ -124,6 +124,16 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
         return;
     float2 uv = (float2(position.xy) + 0.5f) / float(root.target_size);
     float3 normal = normalize(cube_direction(position.z, uv));
+    // A mirror lobe's samples all read the normal at mip zero, so one fetch
+    // is the whole integral.
+    if (root.roughness <= VKR_IBL_PREFILTER_MIRROR_ROUGHNESS)
+    {
+        g_storage_images[root.target_texture][position] = float4(
+            g_cube_textures[root.source_texture].SampleLevel(
+                g_samplers[root.source_sampler], normal, 0.0f).rgb,
+            1.0f);
+        return;
+    }
     float3 view = normal;
     float3 color = 0.0f;
     float total_weight = 0.0f;
@@ -145,10 +155,8 @@ void ibl_prefilter(uint3 position : SV_DispatchThreadID)
         float texel_solid_angle = 4.0f * vkr_pi /
             max(6.0f * float(root.source_face_size * root.source_face_size),
                 1.0f);
-        float lod = root.roughness <= 0.001f
-                        ? 0.0f
-                        : 0.5f * log2(4.0f * sample_solid_angle /
-                                      texel_solid_angle);
+        float lod = 0.5f * log2(4.0f * sample_solid_angle /
+                                texel_solid_angle);
         lod = clamp(lod, 0.0f, float(max(root.source_mip_count, 1u) - 1u));
         color += g_cube_textures[root.source_texture].SampleLevel(
             g_samplers[root.source_sampler], light, lod).rgb * no_l;

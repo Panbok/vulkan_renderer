@@ -110,6 +110,10 @@ float vkr_ggx_filter_roughness(float roughness, float normal_variance)
 }
 
 
+// At or below this roughness the IBL prefilter treats its GGX lobe as a
+// mirror: every importance sample is the normal, read at source mip zero.
+#define VKR_IBL_PREFILTER_MIRROR_ROUGHNESS 0.001f
+
 // Shared GGX normal distribution for direct lighting and the IBL sampling PDF.
 float vkr_ggx_distribution(float no_h, float roughness)
 {
