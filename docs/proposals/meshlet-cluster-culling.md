@@ -127,47 +127,63 @@ by up to 0.1–0.2 ms, before any added culling cost. These are upper bounds;
 in-frustum triangles also pay rasterization. Local transmission shadows and
 cascades were not estimated.
 
-## Proposed change
+## Step 1 result: cook-time chunks rejected
 
-### Step 1: cook-time spatial chunks
+The cooker split splittable static glTF ranges above 4,096 triangles into
+spatial chunks of about 1,024 triangles (meshoptimizer meshlets grouped by
+`meshopt_partitionClusters`). Chunks kept their source range's quantization
+bounds, so packed vertices and camera depth stayed bit-identical. Bistro went
+from 2,909 to 5,468 candidates, and the cook took 204 s with a 3.6 GB peak.
+The change was reverted; its patch is not retained in the repository.
 
-Split large primitives at cook time into spatially coherent index ranges of
-roughly 800–2,000 triangles, using meshoptimizer clusters and
-`meshopt_partitionClusters`. Each chunk becomes an ordinary cooked range with
-its own bounds and decode record, so the existing candidate, culling, indirect
-draw and visibility-identity paths apply unchanged: resolve already reads
-`indices[visible.first_index + primitive_id * 3]` from the draw's own range.
-The cost is a new compatible artifact version, a Bistro recook and roughly
-2–6× more candidates in classify, encode and publication.
+Matched back-to-back runs with the same binary, case and profile as run A
+(unsplit report `4fc14822d60b6bd1870032fc2b66436038eeca4b330679592ce834aa134bccee`,
+chunked report `87c75a0d28e5f4f5f1a4b9e2b5c5317875030ded31744f3d5e3e9c05e93aa852`):
 
-### Step 2: compute cluster culling, only if Step 1 falls short
+| Per frame | Unsplit | Chunked |
+|---|---|---|
+| `VBuffer.Opaque` | 1.564 ms | 1.730 ms |
+| `Shadow.Local.<n>` depth | 1.209 ms | 1.014 ms |
+| `Shadow.Cascade.*` | 0.449 ms | 0.523 ms |
+| `Cull.Encode` + `Cull.Classify` | 0.336 ms | 0.474 ms |
+| GPU pass sum | 17.85 ms | 18.25 ms |
+| Visible camera draws | 1,788 | 3,459 |
 
-If matched measurements leave a material local-shadow or camera cost, add
-per-cluster frustum and HZB tests after instance culling on both backends with
-the same semantics:
+Local shadow depth fell 16%, not the 55% the triangle estimate implied, and
+the extra draws cost more in the camera, cascade and culling passes than local
+shadows saved. At this granularity per-draw cost, not submitted triangles,
+bounds the geometry passes on M1 Pro.
 
-- Cook meshlets: local vertex remap, 8-bit local triangle indices and bounds.
-  Publish meshlet rows beside geometry rows with the same generation and
-  completion-gated retirement.
-- A compute pass tests the clusters of each visible row and compacts survivors
-  per bucket; raster uses the existing ICB / indirect-count path.
-- Deformed instances (nonzero `deformation_address`) keep candidate-level
-  culling because cooked bounds do not cover their deformed positions.
+Chunking also exposed a contract: deferred specular antialiasing, SSR, SSGI and
+subsurface treat "neighbor has the same visible row" as "same surface" when
+estimating normal variance (`gpu_draws.metal`, `deferred.slang`, `ssr.metal`,
+`ssgi.*`, `subsurface.*`). Chunk seams follow creases, so those passes lost
+their variance there and final color changed in about 3% of pixels of a Bistro
+night view. Any finer-than-range draw unit must keep a surface identity those
+passes can compare.
 
-Mesh shaders (Metal object/mesh on Apple7+, with direct-only dispatch on M1;
-optional `VK_EXT_mesh_shader` on Vulkan) are not proposed for Bistro: the
-cone-culling gain they would carry is 2–3%. Reconsider them only with a
-workload whose estimate shows grouped back-facing or occluded clusters.
+The investigation found and fixed a separate defect: cooked range extents are
+absolute, but mesh-level bound unions read them as center-relative, which
+shifted mesh bounds and inflated directional cascade depth ranges.
+
+## Remaining option
+
+Compute cluster culling only pays if surviving clusters are compacted into a
+few draws per bucket (for example a compacted index buffer), so draw count does
+not grow with cluster count. It must also keep the range-relative
+`primitive_id` mapping and the same-surface identity above on both backends.
+That is a substantially larger change than Step 1, and the reachable saving is
+bounded by about 1 ms of local shadow depth plus 0.1–0.2 ms of camera raster in
+this workload. Mesh shaders remain out of scope for Bistro (cone culling 2–3%).
+Pixel-bound passes (`Lighting.Deferred`, `Shadow.LocalMask`,
+`Temporal.Resolve`, tonemap and UI) cost more and are the better targets.
 
 ## Decision boundaries
 
-- Chunk size and which primitives to split: a fixed triangle target, or only
-  ranges whose bounds are large relative to local-light ranges.
-- Candidate capacity and classify/encode cost at 2–6× today's candidate count.
-- For Step 2: visibility identity. Cluster raster must either preserve the
-  range-relative `primitive_id` mapping or change the visibility ID encoding in
-  every consumer on both backends in the same change, plus an overflow policy
-  for compacted cluster capacity.
+- Whether a compacted-cluster path is worth its visibility-identity and ABI
+  changes for this saving.
+- Draw-count budgets: any finer culling unit must be measured against per-draw
+  cost in `VBuffer.Opaque`, cascades and `Cull.*`, not only triangles.
 
 ## Evidence needed
 
