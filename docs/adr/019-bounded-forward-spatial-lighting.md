@@ -438,3 +438,15 @@ Metal measured contribution from 2026-10-02. With `MTL_DEBUG_LAYER=1`,
 `lighting.local_shadow.unshadowed_ratio` and `fading_ratio` of 0 at the default
 30 m fade; with `VKR_LOCAL_SHADOW_FADE_DISTANCE=10` the unshadowed ratio rose to
 0.99 with 12 lamps shadowed, which shows the measure reaches the metrics.
+
+`local_shadow_cache_bistro_metal_indoor_walk` walks through the five owner
+indoor cameras in 11 s at 1280x720 with the High preset. On the M1 Pro, Metal
+Release, one run each under `local-offscreen-gpu-single`:
+`lighting.local_shadow.fading_ratio` stayed 0 on every frame, and with
+`VKR_LOCAL_SHADOW_FADE_DISTANCE=1000` so did `unshadowed_ratio`; at the default
+30 m fade the lamps past it left a mean of 0.4% and at most 5.8% of the visible
+local light unshadowed. Frame wall time was 20.4 ms median (25.1 ms p95) with
+every lamp shadowed against 14.6 ms (18.2 ms p95) without local shadows, with
+`Shadow.LocalMask` at 4.0 ms. Giving every light the single-tap filter lowered
+the median to 18.5 ms and the mask to 2.6 ms. The M1 Pro does not hold 60 FPS
+in this walk with any measured choice.
