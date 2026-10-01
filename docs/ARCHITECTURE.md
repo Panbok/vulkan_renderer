@@ -1353,6 +1353,8 @@ These are limits of current code or retained acceptance, not scheduled promises:
   [ADR-068](adr/068-profiled-surface-diffusion.md).
 - Arbitrary indirect-light occlusion outside valid baked-volume
   coverage, meshlets, automatic mesh LOD and shader hot reload are absent.
+  [Meshlet cluster culling](proposals/meshlet-cluster-culling.md) records the
+  measured geometry-bound cost and the evaluation plan.
 - Native source exists for both backends, but same-revision crossed transmission,
   visibility/packed geometry, punctual lighting, shadow-transition, tonemap,
   UI/text color/coverage/picking and mixed-DPI evidence remains incomplete.
