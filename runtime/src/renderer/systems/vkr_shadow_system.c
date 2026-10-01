@@ -1373,7 +1373,7 @@ void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
   VkrLocalShadowPendingHistory *local = &system->pending_local_history;
   if (local->active && local->image_index < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX) {
     for (uint32_t face = 0u; face < VKR_LOCAL_SHADOW_FACE_COUNT_MAX; ++face) {
-      if ((local->render_mask & (UINT32_C(1) << face)) == 0u)
+      if ((local->render_mask & (UINT64_C(1) << face)) == 0u)
         continue;
       local->faces[face].last_submit_value = submit_value;
       system->local_history[local->image_index][face] = local->faces[face];
@@ -1645,8 +1645,8 @@ vkr_internal bool8_t vkr_shadow_local_face_reusable(
     const VkrWorldPassPayload *candidates, const VkrPointLight *light,
     uint32_t face_in_group, uint32_t face_index,
     const VkrLocalShadowView *view) {
-  const uint32_t bit = UINT32_C(1) << face_index;
-  const uint32_t atlas_layer_bit = UINT32_C(1) << (uint32_t)view->atlas_rect.w;
+  const uint64_t bit = UINT64_C(1) << face_index;
+  const uint64_t atlas_layer_bit = UINT64_C(1) << (uint32_t)view->atlas_rect.w;
   return selection->valid &&
          (retained_token.valid_layer_mask & atlas_layer_bit) != 0u &&
          retained_token.resource_generation != 0u &&
@@ -1689,8 +1689,8 @@ void vkr_shadow_system_resolve_local_shadows(
   /* A layer without retained contents invalidates every face on it, so each
    * redraws after the layer is cleared. */
   out_payload->atlas_clear_mask =
-      ~retained_token.valid_layer_mask &
-      ((UINT32_C(1) << VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT) - 1u);
+      (uint32_t)(~retained_token.valid_layer_mask &
+                 ((UINT64_C(1) << VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT) - 1u));
 
   const uint32_t shadow_count = candidates->gpu_shadow_candidate_count;
   const uint32_t static_count =
@@ -1749,7 +1749,7 @@ void vkr_shadow_system_resolve_local_shadows(
 
     for (uint32_t face = 0u; face < face_count; ++face) {
       const uint32_t view_index = view_start + face;
-      const uint32_t bit = UINT32_C(1) << view_index;
+      const uint64_t bit = UINT64_C(1) << view_index;
       out_payload->render_mask |= bit;
       pending->render_mask |= bit;
       pending->faces[view_index] = (VkrLocalShadowFaceHistory){

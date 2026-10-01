@@ -133,10 +133,11 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->local_shadow_map_size = packet->input.local_shadow
                                      ? packet->input.local_shadow->map_size
                                      : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT;
-  frame->local_shadow_transmission_map_size = Min(
-      frame->local_shadow_map_size, VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
   frame->local_shadow_map_layer_count =
       packet->input.local_shadow ? packet->input.local_shadow->face_budget : 1u;
+  frame->local_shadow_transmission_map_size =
+      vkr_local_shadow_transmission_map_size(
+          frame->local_shadow_map_size, frame->local_shadow_map_layer_count);
   frame->shadow_cascade_render_mask =
       packet->input.shadow ? packet->input.shadow->cascade_render_mask : 0u;
 

@@ -238,11 +238,12 @@ vkr_internal uint32_t vkr_local_shadow_hysteresis_face_size(
   return Min(incumbent_size, map_size);
 }
 
-vkr_internal void vkr_local_shadow_write(
-    const VkrPointLight *light, uint32_t light_index, uint32_t first_view,
-    uint32_t face_count, float32_t half_fov, uint32_t face_size,
-    const uint32_t *face_cells, float32_t strength, uint32_t mask_layer,
-    bool8_t reduced, VkrLocalShadowPassPayload *out) {
+vkr_internal void
+vkr_local_shadow_write(const VkrPointLight *light, uint32_t light_index,
+                       uint32_t first_view, uint32_t face_count,
+                       float32_t half_fov, uint32_t face_size,
+                       const uint32_t *face_cells, float32_t strength,
+                       bool8_t reduced, VkrLocalShadowPassPayload *out) {
   const float32_t near_clip = Min(0.05f, light->range * 0.01f);
   const Mat4 projection =
       mat4_perspective(2.0f * half_fov, 1.0f, near_clip, light->range);
@@ -265,8 +266,7 @@ vkr_internal void vkr_local_shadow_write(
                                 light->range},
         .projection_params = {tanf(half_fov), 1.0f / (float32_t)face_size, 1.0f,
                               2.0f},
-        .shadow_params = {strength, (float32_t)mask_layer,
-                          reduced ? 1.0f : 0.0f, 0.0f},
+        .shadow_params = {strength, 0.0f, reduced ? 1.0f : 0.0f, 0.0f},
         .atlas_rect = {(float32_t)(face_cells[face] & 0xFFu) * cell_uv,
                        (float32_t)(face_cells[face] >> 8u) * cell_uv,
                        (float32_t)face_size /
@@ -289,14 +289,14 @@ void vkr_local_shadow_prepare(const VkrPointLight *lights, uint32_t light_count,
       !vkr_local_shadow_map_size_valid(map_size))
     return;
 
-  uint32_t light_indices[VKR_LOCAL_SHADOW_MASK_LAYER_COUNT] = {0};
-  uint32_t face_counts[VKR_LOCAL_SHADOW_MASK_LAYER_COUNT] = {0};
-  float32_t half_fovs[VKR_LOCAL_SHADOW_MASK_LAYER_COUNT] = {0};
+  /* Every shadowed light takes at least one face, so the face capacity bounds
+   * the light count. */
+  uint32_t light_indices[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
+  uint32_t face_counts[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
+  float32_t half_fovs[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
   uint32_t shadowed_count = 0u;
   uint32_t view_count = 0u;
-  for (uint32_t i = 0u; i < Min(light_count, VKR_MAX_SCENE_POINT_LIGHTS) &&
-                        shadowed_count < VKR_LOCAL_SHADOW_MASK_LAYER_COUNT;
-       ++i) {
+  for (uint32_t i = 0u; i < Min(light_count, VKR_MAX_SCENE_POINT_LIGHTS); ++i) {
     uint32_t face_count;
     float32_t half_fov;
     if (!vkr_local_shadow_light_valid(&lights[i], &face_count, &half_fov) ||
@@ -310,9 +310,9 @@ void vkr_local_shadow_prepare(const VkrPointLight *lights, uint32_t light_count,
   }
 
   /* Without a camera every light scores alike, so later lights shrink first. */
-  float32_t scores[VKR_LOCAL_SHADOW_MASK_LAYER_COUNT] = {0};
-  uint32_t face_sizes[VKR_LOCAL_SHADOW_MASK_LAYER_COUNT] = {0};
-  uint32_t face_cells[VKR_LOCAL_SHADOW_MASK_LAYER_COUNT][6] = {{0}};
+  float32_t scores[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
+  uint32_t face_sizes[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
+  uint32_t face_cells[VKR_LOCAL_SHADOW_FACE_COUNT_MAX][6] = {{0}};
   for (uint32_t i = 0u; i < shadowed_count; ++i) {
     scores[i] = (float32_t)(shadowed_count - i);
     face_sizes[i] = map_size;
@@ -323,7 +323,7 @@ void vkr_local_shadow_prepare(const VkrPointLight *lights, uint32_t light_count,
   for (uint32_t i = 0u; i < shadowed_count; ++i) {
     vkr_local_shadow_write(&lights[light_indices[i]], light_indices[i],
                            out->view_count, face_counts[i], half_fovs[i],
-                           face_sizes[i], face_cells[i], 1.0f, i,
+                           face_sizes[i], face_cells[i], 1.0f,
                            i >= VKR_LOCAL_SHADOW_FULL_FILTER_LIGHT_COUNT, out);
     out->view_count += face_counts[i];
   }
@@ -423,30 +423,6 @@ vkr_internal uint32_t vkr_local_shadow_knapsack(
   return selected_count;
 }
 
-/* Keeps the highest-scoring desired lights when more than the mask has layers
- * for, preserving render-id order. Only budgets of many one-face spots reach
- * the limit. */
-vkr_internal uint32_t
-vkr_local_shadow_limit_to_mask(const VkrLocalShadowCandidate *candidates,
-                               uint32_t *desired, uint32_t desired_count) {
-  while (desired_count > VKR_LOCAL_SHADOW_MASK_LAYER_COUNT) {
-    uint32_t weakest = 0u;
-    for (uint32_t i = 1u; i < desired_count; ++i) {
-      if (candidates[desired[i]].score < candidates[desired[weakest]].score)
-        weakest = i;
-    }
-    for (uint32_t i = weakest + 1u; i < desired_count; ++i)
-      desired[i - 1u] = desired[i];
-    --desired_count;
-  }
-  return desired_count;
-}
-
-vkr_internal uint64_t vkr_local_shadow_layer_bits(uint32_t first_view,
-                                                  uint32_t face_count) {
-  return ((UINT64_C(1) << face_count) - 1u) << first_view;
-}
-
 /* An incumbent keeps its layers so its cached faces stay valid; a newcomer
  * takes the lowest free range. When a newcomer does not fit or layers stay
  * unowned, groups are compacted in their current layer order, which moves only
@@ -466,7 +442,7 @@ vkr_internal uint32_t vkr_local_shadow_place(
     if (first_view + candidate->face_count > face_budget)
       continue;
     const uint64_t bits =
-        vkr_local_shadow_layer_bits(first_view, candidate->face_count);
+        vkr_local_shadow_view_bits(first_view, candidate->face_count);
     if ((used & bits) != 0u)
       continue;
     out_first_view[i] = first_view;
@@ -480,7 +456,7 @@ vkr_internal uint32_t vkr_local_shadow_place(
     const uint32_t count = candidates[selected[i]].face_count;
     for (uint32_t first_view = 0u; first_view + count <= face_budget;
          ++first_view) {
-      const uint64_t bits = vkr_local_shadow_layer_bits(first_view, count);
+      const uint64_t bits = vkr_local_shadow_view_bits(first_view, count);
       if ((used & bits) == 0u) {
         out_first_view[i] = first_view;
         used |= bits;
@@ -489,7 +465,7 @@ vkr_internal uint32_t vkr_local_shadow_place(
     }
     placed = placed && out_first_view[i] != UINT32_MAX;
   }
-  if (placed && used == vkr_local_shadow_layer_bits(0u, face_count))
+  if (placed && used == vkr_local_shadow_view_bits(0u, face_count))
     return face_count;
 
   uint32_t order[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
@@ -580,10 +556,8 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
   vkr_local_shadow_sort_candidates_by_render_id(candidates, candidate_count);
 
   uint32_t desired[VKR_LOCAL_SHADOW_FACE_COUNT_MAX] = {0};
-  const uint32_t desired_count = vkr_local_shadow_limit_to_mask(
-      candidates, desired,
-      vkr_local_shadow_knapsack(candidates, candidate_count, out->face_budget,
-                                desired));
+  const uint32_t desired_count = vkr_local_shadow_knapsack(
+      candidates, candidate_count, out->face_budget, desired);
   for (uint32_t i = 0u; i < desired_count; ++i)
     candidates[desired[i]].desired = true_v;
 
@@ -640,9 +614,7 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
       }
       newcomers[insert] = index;
     }
-    for (uint32_t i = 0u; i < newcomer_count &&
-                          selected_count < VKR_LOCAL_SHADOW_MASK_LAYER_COUNT;
-         ++i) {
+    for (uint32_t i = 0u; i < newcomer_count; ++i) {
       const VkrLocalShadowCandidate *candidate = &candidates[newcomers[i]];
       if (used_faces + candidate->face_count > out->face_budget)
         continue;
@@ -715,7 +687,7 @@ void vkr_local_shadow_prepare_selection(VkrLocalShadowSelection *selection,
     vkr_local_shadow_write(
         &lights[candidate->light_index], candidate->light_index, first_views[i],
         candidate->face_count, candidate->half_fov, face_sizes[i],
-        face_cells[i], strengths[i], i, reduced[i], out);
+        face_cells[i], strengths[i], reduced[i], out);
 
     /* Identity drives reuse, layer retention and the crossfade, so a zero or
      * duplicated render id disables them for the next frame. */

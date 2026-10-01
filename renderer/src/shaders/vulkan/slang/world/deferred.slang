@@ -68,6 +68,10 @@ struct VkrVkCullRoot
     uint transmission_required_flags;
     uint local_shadow_excluded_flags;
     uint reserved;
+    // Local faces, by index within the light views, whose retained depth is
+    // reused this frame.
+    uint reused_local_faces[2];
+    uint reserved_tail[2];
 };
 
 struct VkrVkRasterRoot
@@ -625,6 +629,20 @@ static bool vkr_vk_candidate_occluded(VkrVkCullRoot *root,
     return true;
 }
 
+// A reused local face keeps its retained depth and no pass draws its opaque
+// or transmission view, so neither classifies or encodes candidates. Their
+// zeroed draw state leaves both views empty.
+static bool vkr_vk_cull_view_reused(VkrVkCullRoot *root, uint view_index)
+{
+    if (view_index < root.local_shadow_first_view)
+        return false;
+    uint face = view_index >= root.transmission_first_view
+                    ? view_index - root.transmission_first_view
+                    : view_index - root.local_shadow_first_view;
+    return face < 64u &&
+           (root.reused_local_faces[face >> 5u] & (1u << (face & 31u))) != 0u;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
@@ -632,7 +650,9 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     VkrVkCullRoot *root = vkr_vk_cull_root();
     uint candidate_index = thread_id.x;
     uint view_index = thread_id.y;
-    if (candidate_index >= root.candidate_count || view_index >= root.view_count)
+    if (candidate_index >= root.candidate_count ||
+        view_index >= root.view_count ||
+        vkr_vk_cull_view_reused(root, view_index))
         return;
     VkrGpuCandidateDrawRow candidate = root.candidates[candidate_index];
     uint required_flags = view_index == 0u ? root.camera_required_flags
@@ -708,7 +728,9 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     VkrVkCullRoot *root = vkr_vk_cull_root();
     uint candidate_index = thread_id.x;
     uint view_index = thread_id.y;
-    if (candidate_index >= root.candidate_count || view_index >= root.view_count)
+    if (candidate_index >= root.candidate_count ||
+        view_index >= root.view_count ||
+        vkr_vk_cull_view_reused(root, view_index))
         return;
     uint classification_index =
         view_index * root.candidate_capacity + candidate_index;
@@ -1652,6 +1674,9 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
                   .material_diffuse_transmission.w;
     uint4 point_mask = packet_point_light_mask(frame, world);
     uint point_count = min(frame.point_light_count, 128u);
+    // Slot of the next shadowed light this pixel stores; lighting counts the
+    // same lights in the same order.
+    uint slot = 0u;
     for (uint word = 0u; word < 4u; ++word)
     {
         uint remaining = WaveActiveBitOr(point_mask[word]);
@@ -1668,7 +1693,9 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
                 continue;
             VkrPunctualLightTerm term = vkr_punctual_light_term(
                 light.p0, light.p1, light.p2, light.p3, world);
-            if (!term.in_range || term.cone <= 0.0f)
+            // Lighting filters lights past the last slot inline.
+            if (!term.in_range || term.cone <= 0.0f ||
+                slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
                 continue;
             bool back_lit = diffuse_transmission > 0.0f &&
                             dot(normal, term.direction) < 0.0f;
@@ -1692,9 +1719,9 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
                 visibility *= vkr_local_shadow_apply_strength(
                     float3(contact), view.shadow_params.x);
             }
-            g_storage_images[root.mask_texture]
-                            [uint3(thread_id.xy, uint(view.shadow_params.y))] =
-                float4(visibility, 1.0f);
+            g_storage_images[root.mask_texture][uint3(thread_id.xy, slot)] =
+                float4(visibility, vkr_local_shadow_mask_tag(light_index));
+            ++slot;
         }
     }
 }

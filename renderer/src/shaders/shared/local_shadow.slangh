@@ -11,7 +11,7 @@ struct VkrLocalShadowView {
     float4 light_direction_far;
     float4 projection_params;
     // x: shadow strength in [0, 1], shared by every face of the light.
-    // y: the light's Shadow.LocalMask layer.
+    // y: zero.
     // z: one when the light takes a single filtered tap and no contact
     // shadows.
     float4 shadow_params;
@@ -76,6 +76,26 @@ float3 vkr_local_shadow_direction(uint face, float2 uv) {
     float3 r = cross(f, u);
     float2 p = uv * 2.0f - 1.0f;
     return f + r * p.x - u * p.y;
+}
+
+// Shadow.LocalMask stores the k-th shadowed, in-range light of a pixel, in
+// light traversal order, in layer k, so the layer count bounds the shadowed
+// lights overlapping one pixel rather than the shadowed lights in the frame.
+// Matches VKR_LOCAL_SHADOW_MASK_LAYER_COUNT and the graph's mask layers.
+#define VKR_LOCAL_SHADOW_MASK_SLOT_COUNT 8u
+
+// Alpha tags each stored slot with its light, index plus one over 255, which
+// RGBA8 unorm stores exactly for the 128-light table. A receiver whose slot
+// tag names another light, because the slot overflowed or a range or cone
+// test differed at a boundary, filters that light inline instead.
+float vkr_local_shadow_mask_tag(uint light_index)
+{
+    return float(light_index + 1u) / 255.0f;
+}
+
+bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
+{
+    return uint(tag * 255.0f + 0.5f) == light_index + 1u;
 }
 
 // Contact shadows march VKR_LOCAL_SHADOW_CONTACT_STEPS depth-buffer samples

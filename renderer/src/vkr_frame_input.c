@@ -604,8 +604,9 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow",
                         "invalid local shadow capacity or owners");
-    const uint64_t view_mask = (UINT64_C(1) << local->view_count) - 1u;
-    if (((uint64_t)local->render_mask & ~view_mask) != 0u)
+    const uint64_t view_mask =
+        vkr_local_shadow_view_bits(0u, local->view_count);
+    if ((local->render_mask & ~view_mask) != 0u)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow.render_mask",
                         "contains a bit outside view_count");
@@ -635,7 +636,8 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.local_shadow.light_first_view",
                           "requires complete light views");
-      const uint64_t light_views = ((UINT64_C(1) << count) - 1u) << first_view;
+      const uint64_t light_views =
+          vkr_local_shadow_view_bits(first_view, count);
       if ((owned_views & light_views) != 0u)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.local_shadow.light_first_view",
@@ -685,7 +687,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
                           "requires an aligned power-of-two atlas square");
       if ((local->atlas_clear_mask &
            (UINT32_C(1) << (uint32_t)view->atlas_rect.w)) != 0u &&
-          (local->render_mask & (UINT32_C(1) << i)) == 0u)
+          (local->render_mask & (UINT64_C(1) << i)) == 0u)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.local_shadow.render_mask",
                           "must redraw every face of a cleared atlas layer");
@@ -723,10 +725,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
           !isfinite(view->projection_params.w) ||
           view->projection_params.w < 0.0f ||
           !(view->shadow_params.x >= 0.0f && view->shadow_params.x <= 1.0f) ||
-          !(view->shadow_params.y >= 0.0f &&
-            view->shadow_params.y <
-                (float32_t)VKR_LOCAL_SHADOW_MASK_LAYER_COUNT) ||
-          view->shadow_params.y != floorf(view->shadow_params.y) ||
+          view->shadow_params.y != 0.0f ||
           (view->shadow_params.z != 0.0f && view->shadow_params.z != 1.0f))
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.local_shadow.views",

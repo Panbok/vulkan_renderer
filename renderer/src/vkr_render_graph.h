@@ -656,7 +656,7 @@ typedef struct VkrRenderGraphFrameInfo {
   /** Additional main-stream views selecting only refractive shadow casters. */
   uint32_t local_shadow_transmission_view_count;
   /** Bits of repeated local-shadow passes that must be instantiated. */
-  uint32_t local_shadow_render_mask;
+  uint64_t local_shadow_render_mask;
   /** Atlas layers cleared whole before local-shadow faces draw. */
   uint32_t local_shadow_atlas_clear_mask;
   uint32_t local_shadow_map_size;

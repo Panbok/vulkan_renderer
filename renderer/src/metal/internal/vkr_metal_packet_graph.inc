@@ -1719,7 +1719,7 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
                          "local_shadow_transmission_color1",
                          "local_shadow_transmission_overflow"};
   uint64_t generations[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT] = {0};
-  uint32_t transmission_valid = UINT32_MAX;
+  uint64_t transmission_valid = UINT64_MAX;
   for (uint32_t resource = 0u; resource < ArrayCount(names); ++resource) {
     VkrMetalPacketImage *slot = NULL;
     for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
@@ -1733,9 +1733,9 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
       }
     }
     const uint32_t extent =
-        resource == 0u ? VKR_LOCAL_SHADOW_ATLAS_SIZE
-                       : MIN(renderer->prepared_frame.local_shadow_map_size,
-                             VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
+        resource == 0u
+            ? VKR_LOCAL_SHADOW_ATLAS_SIZE
+            : renderer->prepared_frame.local_shadow_transmission_map_size;
     const uint32_t layers =
         resource == 0u ? VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT
                        : renderer->prepared_frame.local_shadow_map_layer_count;
@@ -1753,10 +1753,10 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
     const VkrMetalPacketImageInstance *instance = &slot->instances[image_index];
     if (!instance->live || !instance->resource.metal_texture)
       return;
-    uint32_t valid_layers = 0u;
-    for (uint32_t layer = 0u; layer < MIN(slot->desc.layers, 32u); ++layer) {
+    uint64_t valid_layers = 0u;
+    for (uint32_t layer = 0u; layer < MIN(slot->desc.layers, 64u); ++layer) {
       if (instance->retained_states[layer].content_valid)
-        valid_layers |= UINT32_C(1) << layer;
+        valid_layers |= UINT64_C(1) << layer;
     }
     if (resource == 0u) {
       out_token->resource_generation = slot->graph_generation;

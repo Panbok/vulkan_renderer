@@ -1740,7 +1740,7 @@ vkr_metal_packet_gpu_draw_view_idle(const VkrMetalPacketRenderer *renderer,
       view < first_local_view)
     return false_v;
   const uint32_t face = (view - first_local_view) % local_view_count;
-  return (packet->input.local_shadow->render_mask & (UINT32_C(1) << face)) ==
+  return (packet->input.local_shadow->render_mask & (UINT64_C(1) << face)) ==
          0u;
 }
 

@@ -531,6 +531,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   uint32_t transmission_required_flags;
   uint32_t local_shadow_excluded_flags;
   uint32_t reserved;
+  /** Local faces, by index within the light views, whose retained depth is
+   * reused this frame. Their opaque and transmission views classify nothing,
+   * since no pass draws them. */
+  uint32_t reused_local_faces[2];
+  uint32_t reserved_tail[2];
 } VkrVulkanCullRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
@@ -1627,8 +1632,10 @@ _Static_assert(offsetof(VkrVulkanTransmissionMaterialGpuRow,
                "Vulkan transmission material sampler ABI drift");
 _Static_assert(sizeof(VkrVulkanPushConstants) == 16u,
                "Push-constant ABI drift");
-_Static_assert(sizeof(VkrVulkanCullRoot) == 192u,
+_Static_assert(sizeof(VkrVulkanCullRoot) == 208u,
                "Deferred cull-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanCullRoot, reused_local_faces) == 192u,
+               "Deferred cull-root reused-face ABI drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, view_projections) == 48u,
                "Deferred cull-root address ABI drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, hzb_textures) == 80u,
@@ -2668,10 +2675,10 @@ typedef struct VkrVulkanFroxelHistory {
   uint32_t shadow_generation;
   uint32_t local_shadow_generation;
   uint32_t shadow_valid_layer_mask;
-  uint32_t local_shadow_valid_layer_mask;
+  uint64_t local_shadow_valid_layer_mask;
   uint64_t local_shadow_transmission_generations
       [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
-  uint32_t local_shadow_transmission_valid_layer_mask;
+  uint64_t local_shadow_transmission_valid_layer_mask;
   bool8_t valid;
 } VkrVulkanFroxelHistory;
 
@@ -2695,10 +2702,10 @@ typedef struct VkrVulkanSsgiHistory {
   uint32_t shadow_generation;
   uint32_t local_shadow_generation;
   uint32_t shadow_valid_layer_mask;
-  uint32_t local_shadow_valid_layer_mask;
+  uint64_t local_shadow_valid_layer_mask;
   uint64_t local_shadow_transmission_generations
       [VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
-  uint32_t local_shadow_transmission_valid_layer_mask;
+  uint64_t local_shadow_transmission_valid_layer_mask;
   bool8_t valid;
 } VkrVulkanSsgiHistory;
 

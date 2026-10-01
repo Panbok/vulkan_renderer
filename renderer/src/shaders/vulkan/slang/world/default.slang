@@ -996,16 +996,27 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
 // product, so the paths shade identically. Without `diffuse_enabled` the base
 // contributes specular only, as for fully transmissive surfaces.
 // Visibility Shadow.LocalMask stored for one shadowed light at this pixel.
+// `slot` counts the pixel's shadowed, in-range lights in traversal order, as
+// the mask pass does; a slot past the mask or tagged for another light falls
+// back to inline filtering with `shadow_normal`.
 float3 packet_local_shadow_mask(VkrVulkanPacketFrameRoot *frame,
-                                VkrGpuPointLightRow light, uint mask_texture,
-                                uint2 pixel)
+                                VkrGpuPointLightRow light, uint light_index,
+                                uint kind, float3 world_position,
+                                float3 shadow_normal, uint mask_texture,
+                                uint2 pixel, inout uint slot)
 {
-    uint encoded_view = uint(light.p3.w);
-    if (encoded_view == 0u)
+    if (uint(light.p3.w) == 0u)
         return 1.0f;
-    uint layer = uint(
-        frame.local_shadow_views[encoded_view - 1u].shadow_params.y);
-    return g_storage_images[mask_texture][uint3(pixel, layer)].rgb;
+    uint layer = slot;
+    ++slot;
+    if (layer < VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+    {
+        float4 stored = g_storage_images[mask_texture][uint3(pixel, layer)];
+        if (vkr_local_shadow_mask_tag_matches(stored.a, light_index))
+            return stored.rgb;
+    }
+    return packet_local_shadow(frame, light, kind, world_position,
+                               shadow_normal);
 }
 
 // UseMask selects the base visibility source at compile time: forward and
@@ -1032,6 +1043,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
     float3 sheen_sum = 0.0f;
     uint4 point_mask = packet_point_light_mask(frame, world_position);
     uint point_count = min(frame.point_light_count, 128u);
+    uint mask_slot = 0u;
     for (uint word = 0u; word < 4u; ++word)
     {
         // The mask comes from a per-pixel cluster cell, so lanes straddling a
@@ -1062,15 +1074,16 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
             uint kind = term.kind;
             float3 light_direction = term.direction;
             float attenuation = term.attenuation * term.cone;
+            float3 shadow_normal =
+                vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy);
             float3 visibility;
             if (UseMask)
-                visibility = packet_local_shadow_mask(frame, light,
-                                                      mask_texture, pixel);
+                visibility = packet_local_shadow_mask(
+                    frame, light, light_index, kind, world_position,
+                    shadow_normal, mask_texture, pixel, mask_slot);
             else
                 visibility = packet_local_shadow(frame, light, kind,
-                    world_position,
-                    vkr_ggx_diffuse_shadow_normal(normal, light_direction,
-                                                  energy));
+                                                 world_position, shadow_normal);
             if (diffuse_enabled)
             {
                 VkrVulkanDirectResult direct = packet_direct(
@@ -1093,8 +1106,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
             if (coat_active)
             {
                 float3 coat_visibility = visibility;
-                if (any(coat.normal != vkr_ggx_diffuse_shadow_normal(
-                        normal, light_direction, energy)))
+                if (any(coat.normal != shadow_normal))
                 {
                     coat_visibility = packet_local_shadow(
                         frame, light, kind, world_position, coat.normal);

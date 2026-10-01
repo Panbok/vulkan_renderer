@@ -2314,8 +2314,8 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
   }
   if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
                                 "local_shadow_render_mask")) {
-    *out_enabled = repeat_index < 32u && (frame->local_shadow_render_mask &
-                                          (UINT32_C(1) << repeat_index)) != 0u;
+    *out_enabled = repeat_index < 64u && (frame->local_shadow_render_mask &
+                                          (UINT64_C(1) << repeat_index)) != 0u;
     return true_v;
   }
   log_error("RenderGraph JSON: unknown repeat condition mask source '%.*s'",

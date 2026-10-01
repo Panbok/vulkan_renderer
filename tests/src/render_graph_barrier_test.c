@@ -1726,10 +1726,10 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
 vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   printf("  Running test_main_graph_fits_runtime_pass_capacity...\n");
   enum {
-    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 282u,
-    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 269u,
-    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 269u,
-    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 268u,
+    VKR_MAIN_GRAPH_NO_TAA_FULL_PASS_COUNT = 410u,
+    VKR_MAIN_GRAPH_METALFX_FULL_PASS_COUNT = 397u,
+    VKR_MAIN_GRAPH_FSR31_FULL_PASS_COUNT = 397u,
+    VKR_MAIN_GRAPH_NO_TAA_1280_FULL_PASS_COUNT = 396u,
   };
   Arena *arena = arena_create(MB(16), MB(2));
   VkrAllocator allocator = {.ctx = arena};
@@ -1790,7 +1790,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
       .local_shadow_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_transmission_view_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_render_mask =
-          (uint32_t)((UINT64_C(1) << VKR_LOCAL_SHADOW_FACE_COUNT_MAX) - 1u),
+          vkr_local_shadow_view_bits(0u, VKR_LOCAL_SHADOW_FACE_COUNT_MAX),
       .local_shadow_atlas_clear_mask = 1u,
       .local_shadow_map_layer_count = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,

@@ -402,11 +402,12 @@ uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketFrameRoot *root,
 //
 // LocalShadow supplies the base visibility of one shadowed light: forward and
 // transmission shading filter the shadow maps inline, while deferred lighting
-// reads the visibility Shadow.LocalMask stored for its pixel.
+// reads the visibility Shadow.LocalMask stored for its pixel. It is called once
+// per in-range light in traversal order and may keep per-pixel state.
 struct VkrMetalInlineLocalShadow {
   float3 operator()(constant VkrMetalPacketFrameRoot *frame,
-                    uint first_view_encoded, uint kind, float3 world_position,
-                    float3 normal) const {
+                    uint first_view_encoded, uint, uint kind,
+                    float3 world_position, float3 normal) const {
     return vkr_metal_packet_local_shadow_sample(frame, first_view_encoded, kind,
                                                 world_position, normal);
   }
@@ -457,8 +458,8 @@ void vkr_metal_packet_punctual_layered(
                       dot(normal, light_direction) < 0.0f;
       float3 shadow_normal = back_lit ? -normal : normal;
       float3 base_attenuation =
-          attenuation * local_shadow(frame, uint(p3.w), kind, world_position,
-                                     shadow_normal);
+          attenuation * local_shadow(frame, uint(p3.w), light_index, kind,
+                                     world_position, shadow_normal);
       float3 coat_attenuation = base_attenuation;
       if (coat_active && any(coat.normal != shadow_normal)) {
         coat_attenuation =

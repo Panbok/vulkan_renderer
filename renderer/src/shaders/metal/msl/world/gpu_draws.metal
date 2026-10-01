@@ -1126,7 +1126,7 @@ struct VkrMetalPacketDeferredLightingRoot {
   texture2d<float, access::read> clearcoat;
   texture2d<float, access::read> sheen;
   texture2d<float, access::read> anisotropy;
-  // One RGBA8 layer of local-shadow visibility per shadowed light.
+  // RGBA8 local-shadow visibility, one layer per overlap slot of a pixel.
   texture2d_array<float, access::read_write> local_shadow_mask;
   device VkrGpuVisibleDrawRow *visible_rows;
   texture2d<float, access::write> subsurface_source;
@@ -1240,18 +1240,28 @@ vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
 }
 
 // Deferred lighting reads each shadowed light's visibility from the mask that
-// Shadow.LocalMask stored for this pixel, in the light's mask layer.
+// Shadow.LocalMask stored for this pixel. `slot` counts the pixel's shadowed,
+// in-range lights in traversal order, as the mask pass does; a slot past the
+// mask or tagged for another light falls back to inline filtering.
 struct VkrMetalDeferredShadowMask {
   constant VkrMetalPacketDeferredLightingRoot *root;
   uint2 pixel;
+  uint slot;
 
   float3 operator()(constant VkrMetalPacketFrameRoot *frame,
-                    uint first_view_encoded, uint, float3, float3) const {
+                    uint first_view_encoded, uint light_index, uint kind,
+                    float3 world_position, float3 normal) {
     if (first_view_encoded == 0u)
       return float3(1.0f);
-    uint layer = uint(
-        frame->local_shadow_views[first_view_encoded - 1u].shadow_params.y);
-    return root->local_shadow_mask.read(pixel, layer).rgb;
+    uint layer = slot;
+    ++slot;
+    if (layer < VKR_LOCAL_SHADOW_MASK_SLOT_COUNT) {
+      float4 stored = root->local_shadow_mask.read(pixel, layer);
+      if (vkr_local_shadow_mask_tag_matches(stored.a, light_index))
+        return stored.rgb;
+    }
+    return vkr_metal_packet_local_shadow_sample(frame, first_view_encoded, kind,
+                                                world_position, normal);
   }
 };
 
@@ -1260,7 +1270,7 @@ struct VkrMetalPacketLocalShadowMaskRoot {
   texture2d<uint, access::read> vbuffer;
   texture2d<float, access::read> depth;
   texture2d<float, access::read> normal;
-  // One RGBA8 layer of local-shadow visibility per shadowed light.
+  // RGBA8 local-shadow visibility, one layer per overlap slot of a pixel.
   texture2d_array<float, access::write> mask;
   device VkrGpuVisibleDrawRow *visible_rows;
   float4x4 inverse_view_projection;
@@ -1342,6 +1352,9 @@ kernel void vkr_metal_packet_local_shadow_mask(
                 .material_diffuse_transmission.w;
   uint4 point_mask = vkr_metal_packet_point_light_mask(frame, world_position);
   uint point_count = min(frame->point_light_count, 128u);
+  // Slot of the next shadowed light this pixel stores; lighting counts the
+  // same lights in the same order.
+  uint slot = 0u;
   for (uint word = 0u; word < 4u; ++word) {
     uint remaining = simd_or(point_mask[word]);
     while (remaining != 0u) {
@@ -1358,7 +1371,9 @@ kernel void vkr_metal_packet_local_shadow_mask(
         continue;
       VkrPunctualLightTerm term = vkr_punctual_light_term(
           light.p0, light.p1, light.p2, p3, world_position);
-      if (!term.in_range || term.cone <= 0.0f)
+      // Lighting filters lights past the last slot inline.
+      if (!term.in_range || term.cone <= 0.0f ||
+          slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
         continue;
       bool back_lit = diffuse_transmission > 0.0f &&
                       dot(normal, term.direction) < 0.0f;
@@ -1381,8 +1396,9 @@ kernel void vkr_metal_packet_local_shadow_mask(
         visibility *= vkr_local_shadow_apply_strength(
             float3(contact), view.shadow_params.x);
       }
-      root.mask.write(float4(visibility, 1.0f), pixel,
-                      uint(view.shadow_params.y));
+      root.mask.write(float4(visibility, vkr_local_shadow_mask_tag(light_index)),
+                      pixel, slot);
+      ++slot;
     }
   }
 }
@@ -1563,7 +1579,7 @@ static void vkr_metal_packet_deferred_shade(
       f0, energy, clearcoat_active, clearcoat, sheen_active, sheen,
       sheen_normalization, diffuse_irradiance, analytic_diffuse,
       analytic_specular, clearcoat_direct, sheen_direct,
-      VkrMetalDeferredShadowMask{&root, pixel});
+      VkrMetalDeferredShadowMask{&root, pixel, 0u});
   VkrMetalPacketDirectResult rectangles =
       vkr_metal_packet_layered_rectangle_lights<true>(
           frame, world_position, normal, view, diffuse_albedo, 0.0f,

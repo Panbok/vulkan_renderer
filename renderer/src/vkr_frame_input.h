@@ -403,11 +403,11 @@ typedef struct VkrLocalShadowPassPayload {
   uint32_t view_count;
   uint32_t map_size;
   uint32_t face_budget;
-  /** Bits of views that require a depth redraw this submission. */
-  uint32_t render_mask;
   /** Atlas layers without retained contents, cleared whole before any face
    * draws; every face of such a layer is in `render_mask`. */
   uint32_t atlas_clear_mask;
+  /** Bits of views that require a depth redraw this submission. */
+  uint64_t render_mask;
   uint32_t light_first_view[VKR_MAX_SCENE_POINT_LIGHTS];
   VkrLocalShadowView views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
 } VkrLocalShadowPassPayload;

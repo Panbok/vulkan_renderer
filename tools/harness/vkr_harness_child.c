@@ -1494,6 +1494,8 @@ vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
   VkrShadowConfig config =
       string_equals(case_manifest->renderer.shadow_preset, "balanced")
           ? VKR_SHADOW_CONFIG_BALANCED
+      : string_equals(case_manifest->renderer.shadow_preset, "ultra")
+          ? vkr_shadow_config_ultra()
           : VKR_SHADOW_CONFIG_DEFAULT;
   config.cascade_count = case_manifest->renderer.shadow_cascades;
   config.pcf_sample_count = case_manifest->renderer.shadow_pcf_samples;

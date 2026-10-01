@@ -975,6 +975,56 @@ vkr_internal void test_local_shadow_high_budget_reduces_least_important(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+/* The Ultra budget shadows ten point lights, more than the screen-space mask
+ * has layers: the mask bounds lights overlapping a pixel, not lights shadowed.
+ * Their views cover all sixty faces exactly once. */
+vkr_internal void test_local_shadow_ultra_budget_exceeds_mask_layers(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = vkr_shadow_config_ultra();
+  assert(vkr_shadow_system_init(&system, &config));
+  assert(config.local_shadow_face_budget == 60u);
+  VkrPointLight lights[10];
+  _Static_assert(ArrayCount(lights) > VKR_LOCAL_SHADOW_MASK_LAYER_COUNT,
+                 "the test must exceed the mask layers");
+  for (uint32_t i = 0u; i < ArrayCount(lights); ++i)
+    lights[i] = local_shadow_test_light(
+        10u + i, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f - 5.0f * (float32_t)i,
+        vec3_new(4.0f * (float32_t)i, 0, 0));
+  const VkrLocalShadowCamera camera = local_shadow_camera(vec3_zero());
+  VkrLocalShadowPassPayload local = {0};
+  vkr_shadow_system_resolve_local_selection(
+      &system, lights, ArrayCount(lights), &camera,
+      config.local_shadow_face_budget, config.local_shadow_map_size, &local);
+  assert(local.view_count == 60u);
+  uint64_t owned_views = 0u;
+  for (uint32_t i = 0u; i < ArrayCount(lights); ++i) {
+    assert(local.light_first_view[i] != 0u);
+    const uint64_t light_views =
+        vkr_local_shadow_view_bits(local.light_first_view[i] - 1u, 6u);
+    assert((owned_views & light_views) == 0u);
+    owned_views |= light_views;
+    assert(local.views[local.light_first_view[i] - 1u].shadow_params.y ==
+           0.0f);
+  }
+  assert(owned_views == vkr_local_shadow_view_bits(0u, 60u));
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* The transmission pool keeps the texels of 32 faces at 512 squared: larger
+ * face budgets take smaller transmission maps instead of more memory. */
+vkr_internal void test_local_shadow_transmission_pool_is_bounded(void) {
+  assert(vkr_local_shadow_transmission_map_size(
+             1024u, VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH) == 512u);
+  assert(vkr_local_shadow_transmission_map_size(
+             512u, VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED) == 512u);
+  assert(vkr_local_shadow_transmission_map_size(
+             1024u, VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA) == 256u);
+  assert(vkr_local_shadow_transmission_map_size(
+             1024u, VKR_LOCAL_SHADOW_FACE_COUNT_MAX) == 256u);
+  assert(vkr_local_shadow_view_bits(0u, 64u) == UINT64_MAX);
+  assert(vkr_local_shadow_view_bits(58u, 6u) == UINT64_C(0x3f) << 58u);
+}
+
 vkr_internal void test_local_shadow_layout_keeps_retained_lights(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -1790,6 +1840,8 @@ bool32_t run_shadow_system_tests(void) {
   test_local_shadow_layout_keeps_retained_lights();
   test_local_shadow_face_size_follows_screen_size();
   test_local_shadow_high_budget_reduces_least_important();
+  test_local_shadow_ultra_budget_exceeds_mask_layers();
+  test_local_shadow_transmission_pool_is_bounded();
   test_retained_history_reuses_per_image_and_commits_only_on_submit();
   test_retained_history_guard_contains_small_motion_not_large_motion();
   test_dynamic_overlap_and_publication_fail_closed();

@@ -540,6 +540,14 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
       transmission
           ? renderer->prepared_frame.transmission_gpu_draw_visible_capacity
           : renderer->prepared_frame.gpu_draw_visible_capacity;
+  const VkrLocalShadowPassPayload *local_shadow =
+      renderer->graph->packet->input.local_shadow;
+  const uint64_t reused_local_faces =
+      !transmission && local_shadow
+          ? vkr_local_shadow_view_bits(
+                0u, renderer->prepared_frame.local_shadow_view_count) &
+                ~local_shadow->render_mask
+          : 0u;
   *out_root = (VkrVulkanCullRoot){
       .candidates = candidates ? candidates->buffer.address : 0u,
       .classifications = classifications ? classifications->buffer.address : 0u,
@@ -572,6 +580,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
           renderer->prepared_frame.local_shadow_transmission_view_count > 0u
               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
               : 0u,
+      .reused_local_faces = {(uint32_t)reused_local_faces,
+                             (uint32_t)(reused_local_faces >> 32u)},
   };
   for (uint32_t mip = 0u; mip < VKR_VULKAN_TEXTURE_MIP_MAX; ++mip)
     out_root->hzb_textures[mip] = UINT32_MAX;
@@ -2622,8 +2632,8 @@ vkr_internal uint32_t vkr_vk_froxel_shadow_valid_mask(
                                : 0u);
 }
 
-vkr_internal uint32_t vkr_vk_froxel_local_shadow_valid_mask(
-    const VkrPreparedFrame *packet, uint32_t retained_mask) {
+vkr_internal uint64_t vkr_vk_froxel_local_shadow_valid_mask(
+    const VkrPreparedFrame *packet, uint64_t retained_mask) {
   return retained_mask |
          (packet->input.local_shadow ? packet->input.local_shadow->render_mask
                                      : 0u);
@@ -2663,10 +2673,10 @@ vkr_internal bool8_t vkr_vk_prepare_froxel_history(
       renderer, renderer->prepared_frame.image_index, &local_shadow_token);
   const uint32_t shadow_valid_mask =
       vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
-  const uint32_t local_shadow_valid_mask =
+  const uint64_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
-  const uint32_t transmission_valid_mask =
+  const uint64_t transmission_valid_mask =
       renderer->prepared_frame.local_shadow_transmission_view_count > 0u
           ? vkr_vk_froxel_local_shadow_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
@@ -2890,10 +2900,10 @@ void vkr_vk_mark_froxel_submitted(VkrVulkanRenderer *renderer,
       renderer, renderer->prepared_frame.image_index, &local_shadow_token);
   const uint32_t shadow_valid_mask =
       vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
-  const uint32_t local_shadow_valid_mask =
+  const uint64_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
-  const uint32_t transmission_valid_mask =
+  const uint64_t transmission_valid_mask =
       renderer->prepared_frame.local_shadow_transmission_view_count > 0u
           ? vkr_vk_froxel_local_shadow_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)
@@ -3160,10 +3170,10 @@ vkr_internal bool8_t vkr_vk_prepare_ssgi_history(
       renderer, renderer->prepared_frame.image_index, &local_shadow_token);
   const uint32_t shadow_valid_mask =
       vkr_vk_froxel_shadow_valid_mask(packet, shadow_token.valid_layer_mask);
-  const uint32_t local_shadow_valid_mask =
+  const uint64_t local_shadow_valid_mask =
       vkr_vk_froxel_local_shadow_valid_mask(
           packet, local_shadow_token.valid_layer_mask);
-  const uint32_t transmission_valid_mask =
+  const uint64_t transmission_valid_mask =
       renderer->prepared_frame.local_shadow_transmission_view_count > 0u
           ? vkr_vk_froxel_local_shadow_valid_mask(
                 packet, local_shadow_token.transmission_valid_layer_mask)

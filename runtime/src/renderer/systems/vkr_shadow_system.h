@@ -240,10 +240,11 @@ typedef struct VkrShadowConfig {
  * fourth rendered frame without settling between its steps. */
 #define VKR_SHADOW_LIGHT_SETTLE_UPDATES 4u
 
-/* Local-shadow faces per preset: five point lights for High, two for
- * Balanced. Each shadowed light adds its PCF to every pixel in its range, so
- * the budget, not the 32-face capacity, bounds that cost; lights past the
- * three most important take a single filtered tap. */
+/* Local-shadow faces per preset: ten point lights for Ultra, five for High,
+ * two for Balanced. Each shadowed light adds its PCF to every pixel in its
+ * range, so the budget, not the 64-face capacity, bounds that cost; lights
+ * past the three most important take a single filtered tap. */
+#define VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA 60u
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH 30u
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED 12u
 
@@ -351,6 +352,14 @@ typedef struct VkrShadowConfig {
  * @brief Project-wide default.
  */
 #define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_HIGH
+
+/** High with the Ultra local-shadow face budget, for GPUs measured to afford
+ * the extra per-pixel filtering. */
+static inline VkrShadowConfig vkr_shadow_config_ultra(void) {
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_HIGH;
+  config.local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA;
+  return config;
+}
 
 vkr_internal INLINE uint32_t
 vkr_shadow_config_get_max_map_size(const VkrShadowConfig *config) {
@@ -491,7 +500,7 @@ typedef struct VkrLocalShadowFaceHistory {
 typedef struct VkrLocalShadowPendingHistory {
   VkrLocalShadowFaceHistory faces[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];
   uint32_t image_index;
-  uint32_t render_mask;
+  uint64_t render_mask;
   bool8_t active;
 } VkrLocalShadowPendingHistory;
 

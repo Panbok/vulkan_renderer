@@ -747,7 +747,8 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
   const bool8_t preset_valid =
       string_equals(renderer->shadow_preset, "default") ||
       string_equals(renderer->shadow_preset, "balanced") ||
-      string_equals(renderer->shadow_preset, "high");
+      string_equals(renderer->shadow_preset, "high") ||
+      string_equals(renderer->shadow_preset, "ultra");
   const bool8_t mode_valid =
       string_equals(renderer->render_mode, "default") ||
       string_equals(renderer->render_mode, "lighting") ||

@@ -599,13 +599,13 @@ vkr_internal VkrVulkanGraphImage *vkr_vk_retained_local_shadow_image(
   return NULL;
 }
 
-vkr_internal uint32_t vkr_vk_retained_local_shadow_valid_mask(
+vkr_internal uint64_t vkr_vk_retained_local_shadow_valid_mask(
     const VkrVulkanGraphImage *image, uint32_t image_index) {
-  uint32_t mask = 0u;
+  uint64_t mask = 0u;
   const VkrVulkanGraphImageInstance *instance = &image->instances[image_index];
-  for (uint32_t layer = 0u; layer < image->desc.layers; ++layer) {
+  for (uint32_t layer = 0u; layer < Min(image->desc.layers, 64u); ++layer) {
     if (instance->retained_states[layer].content_valid)
-      mask |= UINT32_C(1) << layer;
+      mask |= UINT64_C(1) << layer;
   }
   return mask;
 }
@@ -623,10 +623,10 @@ void vkr_vulkan_renderer_retained_local_shadow_token(
     out_token->valid_layer_mask =
         vkr_vk_retained_local_shadow_valid_mask(opaque, image_index);
   }
-  const uint32_t extent = Min(renderer->prepared_frame.local_shadow_map_size,
-                              VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX);
+  const uint32_t extent =
+      renderer->prepared_frame.local_shadow_transmission_map_size;
   uint64_t generations[VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT];
-  uint32_t valid_mask = UINT32_MAX;
+  uint64_t valid_mask = UINT64_MAX;
   for (uint32_t i = 0u; i < VKR_LOCAL_SHADOW_TRANSMISSION_RESOURCE_COUNT; ++i) {
     VkrVulkanGraphImage *image = vkr_vk_retained_local_shadow_image(
         renderer, image_index, s_vk_local_shadow_transmission_names[i], extent,
