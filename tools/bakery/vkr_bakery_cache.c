@@ -4,6 +4,7 @@
 
 #include "vkr_bakery_buffer.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,39 @@ vkr_internal void vkr_bakery_touch(const char *path) {
 #endif
 }
 
+/* A discovered prerequisite under the build root is recorded relative to it,
+ * so a record matches another checkout only when that checkout's own file
+ * hashes the same. An absolute path would rehash the recording checkout's
+ * file and hand another checkout products built from different sources. A
+ * prerequisite outside the root keeps its absolute path. */
+vkr_internal void vkr_bakery_depfile_record_path(const VkrBakeryConfig *config,
+                                                 const char *path, char *out,
+                                                 uint32_t capacity) {
+  if (vkr_bakery_path_relative(config->root, path, out, capacity)) {
+    return;
+  }
+#if !defined(_WIN32)
+  /* Compilers name prerequisites by resolved paths; a root reached through a
+   * symbolic link is compared in its resolved form too. */
+  char resolved[PATH_MAX];
+  if (realpath(config->root, resolved) &&
+      vkr_bakery_path_relative(resolved, path, out, capacity)) {
+    return;
+  }
+#endif
+  (void)snprintf(out, capacity, "%s", path);
+}
+
+/* The file a recorded depfile entry names in the current checkout. */
+vkr_internal bool8_t vkr_bakery_depfile_resolve(const VkrBakeryConfig *config,
+                                                const char *entry, char *out,
+                                                uint32_t capacity) {
+  if (vkr_bakery_path_is_absolute(entry)) {
+    return (uint32_t)snprintf(out, capacity, "%s", entry) < capacity;
+  }
+  return vkr_bakery_path_join(out, capacity, config->root, entry);
+}
+
 vkr_internal bool8_t vkr_bakery_depfile_matches(VkrBakeryGraph *graph,
                                                 const VkrBakeryJson *depfile) {
   for (const VkrBakeryJson *entry = depfile ? depfile->first : NULL; entry;
@@ -111,9 +145,12 @@ vkr_internal bool8_t vkr_bakery_depfile_matches(VkrBakeryGraph *graph,
         hash->type != VKR_BAKERY_JSON_STRING) {
       return false_v;
     }
+    char resolved[VKR_BAKERY_PATH_CAPACITY];
     char current[VKR_BAKERY_KEY_SIZE];
-    if (!vkr_bakery_index_hash(graph->index, (const char *)path->string.str,
-                               current, NULL) ||
+    if (!vkr_bakery_depfile_resolve(graph->config,
+                                    (const char *)path->string.str, resolved,
+                                    sizeof(resolved)) ||
+        !vkr_bakery_index_hash(graph->index, resolved, current, NULL) ||
         !vkr_bakery_json_is_string(hash, current)) {
       return false_v;
     }
@@ -273,9 +310,11 @@ bool8_t vkr_bakery_cache_store(const VkrBakeryConfig *config,
     if (!vkr_bakery_hash_file(action->discovered[i], hash, NULL)) {
       continue; /* A vanished include cannot validate a later lookup. */
     }
+    char recorded[VKR_BAKERY_PATH_CAPACITY];
+    vkr_bakery_depfile_record_path(config, action->discovered[i], recorded,
+                                   sizeof(recorded));
     VkrBakeryJson *entry = vkr_bakery_json_array(scratch);
-    vkr_bakery_json_append(
-        entry, vkr_bakery_json_cstr(scratch, action->discovered[i]));
+    vkr_bakery_json_append(entry, vkr_bakery_json_cstr(scratch, recorded));
     vkr_bakery_json_append(entry, vkr_bakery_json_cstr(scratch, hash));
     vkr_bakery_json_append(depfile, entry);
   }

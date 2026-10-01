@@ -447,6 +447,8 @@ vkr_internal bool8_t vkr_bakery_resolve_key(VkrBakeryGraph *graph,
   Arena *arena = graph->arena;
   const uint64_t mark = arena_pos(arena);
   VkrBakeryJson *key = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, key, "format",
+                      vkr_bakery_json_int(arena, VKR_BAKERY_KEY_FORMAT));
   vkr_bakery_json_set(arena, key, "producer",
                       vkr_bakery_json_cstr(arena, action->producer->id));
   vkr_bakery_json_set(arena, key, "version",

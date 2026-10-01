@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-29
+updated: 2026-10-01
 authority: proposal
 ---
 # Asset build system specification
@@ -284,6 +284,14 @@ Action result record:
  "diagnostics":[],"wall_ms":5970,"cpu_ms":30240,"peak_rss_mib":1210,
  "created":"2026-09-27T10:12:09Z","last_used":"2026-09-27T10:12:09Z"}
 ```
+
+Depfile paths under the build root are recorded relative to it and resolved
+against the current root on lookup; only prerequisites outside the root stay
+absolute. Two checkouts sharing one cache therefore reuse a product only when
+their own files hash the same: absolute paths once let a second checkout rehash
+the first checkout's includes and reuse SPIR-V built from different sources.
+Each action key hashes `VKR_BAKERY_KEY_FORMAT`, which left records of the
+absolute format unreachable.
 
 Publication is atomic: write to a sibling temporary, `fsync`, rename, as
 `tools/vkr_atomic_file.h` does today. A product is verified by rehashing on

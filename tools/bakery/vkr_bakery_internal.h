@@ -19,6 +19,11 @@
 #define VKR_BAKERY_MAX_OUTPUTS 8u
 #define VKR_BAKERY_KEY_SIZE VKR_BAKERY_SHA256_HEX
 #define VKR_BAKERY_CACHE_VERSION "1"
+/* Hashed into every action key. Format 2 records depfile prerequisites under
+ * the build root relative to it; format 1 records stored absolute paths, which
+ * let another checkout reuse products built from different sources, so their
+ * keys are left unreachable. */
+#define VKR_BAKERY_KEY_FORMAT 2
 
 #if !defined(VKR_BAKERY_WITH_COOKERS)
 #define VKR_BAKERY_WITH_COOKERS 0
