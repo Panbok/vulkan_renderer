@@ -928,9 +928,13 @@ void vkr_editor_finish_script_drop(VkrEditorUi *editor,
   for (uint32_t kind = 0; kind < vkr_editor_object_kind_count(); ++kind) {
     EditorObjectKind object;
     if (editor_object_kind(kind, &object) && object.type == type) {
-      (void)vkr_editor_request_create(frame, kind,
-                                      vkr_editor_create_container(frame),
-                                      &frame->context_position_px);
+      VkrEditorDropPose pose;
+      (void)vkr_editor_request_create(
+          frame, kind, vkr_editor_create_container(frame),
+          vkr_editor_viewport_place(editor, frame, frame->context_position_px,
+                                    &pose)
+              ? &pose
+              : NULL);
       return;
     }
   }
@@ -980,7 +984,8 @@ uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame) {
 }
 
 bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
-                                  uint16_t container, const Vec2 *drop_px) {
+                                  uint16_t container,
+                                  const VkrEditorDropPose *pose) {
   EditorObjectKind kind_value;
   if (!editor_object_kind(kind, &kind_value)) {
     return false_v;
@@ -1014,11 +1019,10 @@ bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
     vkr_type_defaults(object->type, values.component);
     values.fields |= VKR_SCENE_EDIT_COMPONENT;
   }
-  Vec3 position;
-  if (drop_px && vkr_editor_viewport_drop_point(frame, *drop_px, &position)) {
+  if (pose) {
     values.fields |= VKR_SCENE_EDIT_TRANSFORM;
-    values.position = position;
-    values.rotation = vkr_quat_identity();
+    values.position = pose->position;
+    values.rotation = pose->rotation;
     values.scale = vec3_one();
   }
   *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_CREATE,

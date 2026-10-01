@@ -300,6 +300,7 @@ struct VkrEditorProjects {
   char place_scope[8];
   char place_name[128];
   Vec3 place_position;
+  VkrQuat place_rotation;
   uint32_t added_scene_entity;
   bool8_t select_added_entity;
   uint32_t active_scene;
@@ -644,6 +645,15 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
                         editor->labels_environment) &&
       project_json_bool(&writer, "labels_markers", editor->labels_markers) &&
       project_json_bool(&writer, "labels_empty", editor->labels_empty) &&
+      project_json_number(&writer, "place_target",
+                          (float64_t)editor->placement.target) &&
+      project_json_bool(&writer, "place_align",
+                        editor->placement.align_to_normal) &&
+      project_json_bool(&writer, "place_centers",
+                        editor->placement.cell_centers) &&
+      project_json_number(&writer, "place_offset", editor->placement.offset) &&
+      project_json_number(&writer, "place_yaw",
+                          editor->placement.yaw_degrees) &&
       project_json_bool(&writer, "console_follow",
                         editor->console.follow_tail) &&
       project_json_bool(&writer, "console_verbose",
@@ -916,6 +926,27 @@ static void project_restore_settings(VkrEditorProjects *projects,
   panels.pos = 0;
   (void)vkr_json_get_bool(&panels, "labels_empty", &editor->labels_empty);
   panels.pos = 0;
+  {
+    VkrEditorPlacement place = defaults.placement;
+    float32_t target = (float32_t)place.target;
+    (void)vkr_json_get_float(&panels, "place_target", &target);
+    panels.pos = 0;
+    (void)vkr_json_get_bool(&panels, "place_align", &place.align_to_normal);
+    panels.pos = 0;
+    (void)vkr_json_get_bool(&panels, "place_centers", &place.cell_centers);
+    panels.pos = 0;
+    (void)vkr_json_get_float(&panels, "place_offset", &place.offset);
+    panels.pos = 0;
+    (void)vkr_json_get_float(&panels, "place_yaw", &place.yaw_degrees);
+    panels.pos = 0;
+    if (target >= 0.0f && target < (float32_t)VKR_EDITOR_SNAP_COUNT)
+      place.target = (VkrEditorSnapTarget)target;
+    if (isfinite(place.offset) && isfinite(place.yaw_degrees)) {
+      place.offset = vkr_clamp_f32(place.offset, -2.0f, 2.0f);
+      place.yaw_degrees = vkr_clamp_f32(place.yaw_degrees, 0.0f, 360.0f);
+      editor->placement = place;
+    }
+  }
   (void)vkr_json_get_bool(&panels, "console_follow",
                           &editor->console.follow_tail);
   panels.pos = 0;
@@ -1530,8 +1561,10 @@ static bool8_t project_write_placed_asset(const VkrEditorProjects *projects,
          project_json_vec3(writer, "pos", projects->place_position) &&
          vkr_json_writer_name(writer, string8_lit("rot")) &&
          vkr_json_writer_begin_array(writer) &&
-         vkr_json_writer_f64(writer, 0.0) && vkr_json_writer_f64(writer, 0.0) &&
-         vkr_json_writer_f64(writer, 0.0) && vkr_json_writer_f64(writer, 1.0) &&
+         vkr_json_writer_f64(writer, projects->place_rotation.x) &&
+         vkr_json_writer_f64(writer, projects->place_rotation.y) &&
+         vkr_json_writer_f64(writer, projects->place_rotation.z) &&
+         vkr_json_writer_f64(writer, projects->place_rotation.w) &&
          vkr_json_writer_end_array(writer) &&
          project_json_vec3(writer, "scale", vec3_new(1.0f, 1.0f, 1.0f)) &&
          vkr_json_writer_end_object(writer) &&
@@ -3702,14 +3735,15 @@ static void project_place_asset(VkrEditorProjects *projects,
              "Open a scene to place meshes in it.");
     return;
   }
-  Vec3 position = vec3_new(0.0f, 0.0f, 0.0f);
-  (void)vkr_editor_viewport_drop_point(frame, action->drop_px, &position);
+  VkrEditorDropPose pose = {.rotation = vkr_quat_identity()};
+  (void)vkr_editor_viewport_place(editor, frame, action->drop_px, &pose);
   project_reset_scene_draft(projects);
   projects->adding_model = false_v;
   projects->light_count = 0;
   projects->placing_asset = true_v;
   projects->place_prefab = false_v;
-  projects->place_position = position;
+  projects->place_position = pose.position;
+  projects->place_rotation = pose.rotation;
   snprintf(projects->place_asset, sizeof(projects->place_asset), "%s",
            action->asset_id);
   snprintf(projects->place_scope, sizeof(projects->place_scope), "%s",
@@ -3982,9 +4016,13 @@ static void project_take_content_action(VkrEditorProjects *projects,
                              content_action.drop_px);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
       /* Content shows the new object where it lives once it is selected. */
-      if (vkr_editor_request_create(
-              frame, content_action.object, vkr_editor_create_container(frame),
-              content_action.dropped ? &content_action.drop_px : NULL)) {
+      VkrEditorDropPose pose;
+      const bool8_t placed = content_action.dropped &&
+                             vkr_editor_viewport_place(
+                                 editor, frame, content_action.drop_px, &pose);
+      if (vkr_editor_request_create(frame, content_action.object,
+                                    vkr_editor_create_container(frame),
+                                    placed ? &pose : NULL)) {
         vkr_editor_content_reveal_created(editor->content,
                                           frame->selected_entity);
       }
@@ -7284,6 +7322,7 @@ bool8_t vkr_editor_projects_instantiate_scene(VkrEditorProjects *projects,
   projects->placing_asset = true_v;
   projects->place_prefab = true_v;
   projects->place_position = position;
+  projects->place_rotation = vkr_quat_identity();
   snprintf(projects->place_asset, sizeof(projects->place_asset), "%s",
            projects->project->scenes[scene].id);
   /* The job names the instance after the scene. */

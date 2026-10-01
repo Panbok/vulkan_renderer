@@ -2,6 +2,7 @@
 #include "editor_projects.h"
 
 #include "renderer/systems/vkr_gizmo_system.h"
+#include "renderer/systems/vkr_scene_physics.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -16,8 +17,10 @@ enum {
   VIEW_POPUP_GRID,
   VIEW_POPUP_SHOW,
   VIEW_POPUP_QUALITY,
-  /* The compact header's camera speed slider. */
+  /* The camera speed slider. */
   VIEW_POPUP_SPEED,
+  /* Where spawned objects land. */
+  VIEW_POPUP_SNAP,
   VIEW_POPUP_COUNT,
 };
 
@@ -105,6 +108,9 @@ static const struct {
     {"Collision of all bodies", VIEW_SHOW_COLLISION, 2},
     {"Physics simulation", VIEW_SHOW_PHYSICS, 0},
 };
+
+static const char *const view_snap_targets[VKR_EDITOR_SNAP_COUNT] = {
+    "Free", "Surface", "Grid"};
 
 /* Grid popup: the toggles, then cell size halving and doubling. */
 static const char *const view_grid_rows[] = {
@@ -255,7 +261,8 @@ typedef struct ViewHeaderLayout {
   Vec4 left;
   Vec4 right;
   float32_t chips[VIEW_LEFT_CHIPS];
-  /* Width of the camera speed chip on the right. */
+  /* Widths of the snapping and camera speed chips on the right. */
+  float32_t snap;
   float32_t speed;
   bool8_t compact;
   bool8_t show_right;
@@ -284,7 +291,10 @@ static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
     char speed[24];
     view_speed_text(frame->view_state.camera_speed, speed);
     layout.speed = view_chip_width(frame->ui, speed, false_v);
-    const float32_t right = right_width + 10.0f + layout.speed + 2.0f * 2.0f;
+    layout.snap = view_chip_width(
+        frame->ui, view_snap_targets[editor->placement.target], layout.compact);
+    const float32_t right =
+        right_width + 10.0f + layout.snap + layout.speed + 2.0f * 3.0f;
     layout.show_right = width + right + 12.0f <= available;
     layout.left = (Vec4){scene.x + VIEW_INSET_PT, scene.y + VIEW_INSET_PT,
                          Min(width, available), VIEW_CHIP_HEIGHT_PT + 6.0f};
@@ -427,6 +437,41 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
                   .disabled = !frame->graphics->dynamic_resolution_available ||
                               !settings.temporal_upscaling};
     snprintf(dynamic->text, sizeof(dynamic->text), "Dynamic resolution");
+    break;
+  }
+  case VIEW_POPUP_SNAP: {
+    const VkrEditorPlacement *place = &editor->placement;
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "Place new objects");
+    static const char *const targets[VKR_EDITOR_SNAP_COUNT] = {
+        "Free, on the ground plane", "On surfaces", "On the grid"};
+    for (uint32_t i = 0; i < VKR_EDITOR_SNAP_COUNT; ++i) {
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){.checked = (uint32_t)place->target == i};
+      snprintf(row->text, sizeof(row->text), "%s", targets[i]);
+    }
+    ViewRow *centers = &rows[count++];
+    *centers = (ViewRow){.checked = place->cell_centers,
+                         .disabled = place->target != VKR_EDITOR_SNAP_GRID};
+    snprintf(centers->text, sizeof(centers->text), "Snap to cell centers");
+    ViewRow *align = &rows[count++];
+    *align = (ViewRow){.checked = place->align_to_normal,
+                       .disabled = place->target != VKR_EDITOR_SNAP_SURFACE};
+    snprintf(align->text, sizeof(align->text), "Align to surface normal");
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "Rotation  %.0f\xc2\xb0",
+             (double)place->yaw_degrees);
+    rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
+                              .value = place->yaw_degrees,
+                              .minimum = 0.0f,
+                              .maximum = 360.0f};
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "Offset  %.2f m",
+             (double)place->offset);
+    rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
+                              .value = place->offset,
+                              .minimum = -2.0f,
+                              .maximum = 2.0f};
     break;
   }
   case VIEW_POPUP_SPEED: {
@@ -706,6 +751,16 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
   case VIEW_POPUP_SHOW:
     view_show_activate(editor, frame, index, next);
     return true_v;
+  case VIEW_POPUP_SNAP:
+    /* Rows: header, the targets, cell centers, normal alignment. */
+    if (index >= 1 && index <= VKR_EDITOR_SNAP_COUNT) {
+      editor->placement.target = (VkrEditorSnapTarget)(index - 1u);
+    } else if (index == VKR_EDITOR_SNAP_COUNT + 1u) {
+      editor->placement.cell_centers = !editor->placement.cell_centers;
+    } else if (index == VKR_EDITOR_SNAP_COUNT + 2u) {
+      editor->placement.align_to_normal = !editor->placement.align_to_normal;
+    }
+    return true_v;
   case VIEW_POPUP_QUALITY: {
     VkrGraphicsSettings settings = view_graphics(editor, frame);
     /* Rows: header, the presets, Custom, header, slider, dynamic. */
@@ -730,8 +785,16 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
 /* A slider row moved to `value`; `done` ends the gesture. Render scale
    applies once, when the drag ends, since each change resizes targets. */
 static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
-                             uint32_t popup, float32_t value, bool8_t done,
-                             VkrSampleViewState *next) {
+                             uint32_t popup, uint32_t index, float32_t value,
+                             bool8_t done, VkrSampleViewState *next) {
+  if (popup == VIEW_POPUP_SNAP) {
+    /* Rotation in 15 degree steps, offset in centimetres. */
+    if (index == VKR_EDITOR_SNAP_COUNT + 4u)
+      editor->placement.yaw_degrees = roundf(value / 15.0f) * 15.0f;
+    else
+      editor->placement.offset = roundf(value * 100.0f) / 100.0f;
+    return;
+  }
   if (popup == VIEW_POPUP_SPEED) {
     next->camera_speed = view_speed_value(value);
     return;
@@ -798,6 +861,9 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       item.style.min_size_pt = (Vec2){10.0f, 16.0f};
       item.tooltip = popup == VIEW_POPUP_SPEED
                          ? string8_lit("Free-camera flight speed")
+                     : popup == VIEW_POPUP_SNAP
+                         ? string8_lit("How a placed object turns and sits "
+                                       "relative to its snap point")
                          : string8_lit("Share of the output resolution the "
                                        "Scene renders before upscaling");
       float32_t value = row->value;
@@ -808,7 +874,7 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       const bool8_t held = ui->active_id == slider_id;
       if (moved || (!held && editor->view_scale_draft > 0.0f &&
                     popup == VIEW_POPUP_QUALITY)) {
-        view_popup_slide(editor, frame, popup, value, !held, &next);
+        view_popup_slide(editor, frame, popup, i, value, !held, &next);
         changed |= popup == VIEW_POPUP_SPEED;
       }
     } else {
@@ -931,6 +997,7 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
         {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
         {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
         {.value = 10.0f, .unit = VKR_UI_TRACK_PX},
+        {.value = layout.snap, .unit = VKR_UI_TRACK_PX},
         {.value = layout.speed, .unit = VKR_UI_TRACK_PX},
     };
     VkrUiPanelConfig right = view_panel(layout.right);
@@ -997,7 +1064,16 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
       divider.style.background_color = theme->border_strong;
       if (vkr_ui_panel_begin(ui, string8_lit("divider"), &divider))
         (void)vkr_ui_panel_end(ui);
-      view_speed_build(editor, frame, ArrayCount(view_tools) + 2u, disabled);
+      (void)view_chip(editor, ui, "snap", ArrayCount(view_tools) + 2u,
+                      VKR_UI_ICON_SNAP,
+                      view_snap_targets[editor->placement.target],
+                      editor->view_popup == VIEW_POPUP_SNAP,
+                      editor->placement.target != VKR_EDITOR_SNAP_FREE,
+                      disabled, layout.compact,
+                      "Where new objects land: surfaces, the grid or the "
+                      "ground plane",
+                      VIEW_POPUP_SNAP);
+      view_speed_build(editor, frame, ArrayCount(view_tools) + 3u, disabled);
       (void)vkr_ui_panel_end(ui);
     }
   }
@@ -1235,33 +1311,89 @@ static bool8_t viewport_unproject(const VkrSampleUiFrame *frame, Vec2 pixel,
   return isfinite(out->x) && isfinite(out->y) && isfinite(out->z);
 }
 
-bool8_t vkr_editor_viewport_drop_point(const VkrSampleUiFrame *frame,
-                                       Vec2 pixel, Vec3 *out) {
-  Vec3 origin = {0};
+/* The ray under a viewport pixel: perspective rays leave the eye;
+   orthographic rays run through two depths of the pixel. */
+static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
+                            Vec3 *origin, Vec3 *direction) {
   Vec3 target = {0};
   if (!frame->mapping_valid ||
       !viewport_unproject(frame, pixel, 0.5f, &target)) {
     return false_v;
   }
-  /* Perspective rays leave the eye; orthographic rays run through two
-     depths of the pixel. */
-  if (!grid_eye(frame, &origin) &&
-      !viewport_unproject(frame, pixel, 0.25f, &origin)) {
+  if (!grid_eye(frame, origin) &&
+      !viewport_unproject(frame, pixel, 0.25f, origin)) {
     return false_v;
   }
-  const Vec3 ray = vec3_sub(target, origin);
+  const Vec3 ray = vec3_sub(target, *origin);
   const float32_t length = vec3_length(ray);
   if (!isfinite(length) || length < 1e-6f) {
     return false_v;
   }
-  const Vec3 direction = vec3_scale(ray, 1.0f / length);
+  *direction = vec3_scale(ray, 1.0f / length);
+  return true_v;
+}
+
+/* Rotation turning +Y onto `normal`, then `yaw` radians about it. */
+static VkrQuat place_orientation(Vec3 normal, float32_t yaw) {
+  const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
+  const float32_t cosine = vkr_clamp_f32(vec3_dot(up, normal), -1.0f, 1.0f);
+  VkrQuat tilt = vkr_quat_identity();
+  if (cosine < 0.9999f) {
+    const Vec3 axis = cosine > -0.9999f ? vec3_normalize(vec3_cross(up, normal))
+                                        : vec3_new(1.0f, 0.0f, 0.0f);
+    tilt = vkr_quat_from_axis_angle(axis, acosf(cosine));
+  }
+  return vkr_quat_normalize(
+      vkr_quat_mul(tilt, vkr_quat_from_axis_angle(up, yaw)));
+}
+
+bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame, Vec2 pixel,
+                                  VkrEditorDropPose *out) {
+  const VkrEditorPlacement *placement = &editor->placement;
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  if (!viewport_ray(frame, pixel, &origin, &direction)) {
+    return false_v;
+  }
+  const float32_t yaw = placement->yaw_degrees * (VKR_PI / 180.0f);
+  Vec3 normal = vec3_new(0.0f, 1.0f, 0.0f);
+  /* Collision surfaces answer the ray; physics queries take a mutable scene
+     but change none of its state. */
+  VkrPhysicsRayHit hit = {0};
+  if (placement->target == VKR_EDITOR_SNAP_SURFACE && frame->scene &&
+      vkr_scene_physics_raycast((VkrScene *)frame->scene, origin,
+                                vec3_scale(direction, 1000.0f), &hit)) {
+    const Vec3 surface_normal =
+        vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+    if (placement->align_to_normal && vec3_length(surface_normal) > 0.5f) {
+      normal = vec3_normalize(surface_normal);
+    }
+    out->position =
+        vec3_add(vec3_new(hit.position[0], hit.position[1], hit.position[2]),
+                 vec3_scale(vec3_normalize(surface_normal), placement->offset));
+    out->rotation = place_orientation(normal, yaw);
+    return true_v;
+  }
+  /* The ground plane through the grid's origin. */
   const float32_t t =
       fabsf(direction.y) > 1e-4f ? -origin.y / direction.y : -1.0f;
   const bool8_t ground = t > 0.0f && t < 500.0f;
-  *out = vec3_add(origin, vec3_scale(direction, ground ? t : 8.0f));
+  Vec3 position = vec3_add(origin, vec3_scale(direction, ground ? t : 8.0f));
   if (ground) {
-    out->y = 0.0f;
+    position.y = 0.0f;
+    if (placement->target == VKR_EDITOR_SNAP_GRID) {
+      const float32_t cell = frame->view_state.grid_spacing > 0.0f
+                                 ? frame->view_state.grid_spacing
+                                 : 1.0f;
+      const float32_t shift = placement->cell_centers ? 0.5f : 0.0f;
+      position.x = (floorf(position.x / cell - shift + 0.5f) + shift) * cell;
+      position.z = (floorf(position.z / cell - shift + 0.5f) + shift) * cell;
+    }
+    position.y += placement->offset;
   }
+  out->position = position;
+  out->rotation = place_orientation(normal, yaw);
   return true_v;
 }
 

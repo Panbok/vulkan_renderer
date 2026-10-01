@@ -5383,6 +5383,11 @@ bool8_t vkr_editor_content_place(VkrEditorContent *content, String8 item,
     content->selected_folder[0] = '\0';
     if (entry->kind != CONTENT_MESH) {
       content_activate(content, i);
+      /* An object kind lands at the drop, as a dragged one does. */
+      if (content->action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
+        content->action.dropped = true_v;
+        content->action.drop_px = drop_px;
+      }
       return content->action.kind != VKR_EDITOR_CONTENT_ACTION_NONE;
     }
     content_action(content, VKR_EDITOR_CONTENT_ACTION_PLACE_ASSET);

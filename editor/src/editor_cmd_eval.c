@@ -95,8 +95,12 @@ static const char *const eval_entity_members[] = {
     "light", "id",       "world_position", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
 static const char *const eval_view_members[] = {
-    "camera", "mode",        "grid",         "grid_spacing", "camera_speed",
-    "tool",   "grid_labels", "grid_through", "collision",    NULL};
+    "camera",       "mode",         "grid",        "grid_spacing",
+    "camera_speed", "tool",         "grid_labels", "grid_through",
+    "collision",    "snap",         "snap_offset", "snap_yaw",
+    "snap_align",   "snap_centers", NULL};
+static const char *const eval_snap_targets[] = {"free", "surface", "grid",
+                                                NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
 static const char *const eval_scene_members[] = {"loaded", "entities", "added",
@@ -665,6 +669,22 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         return true_v;
       case 8:
         *out = eval_number(view->collision_display);
+        return true_v;
+      case 9:
+        *out = eval_string("%s",
+                           eval_snap_targets[eval->editor->placement.target]);
+        return true_v;
+      case 10:
+        *out = eval_number(eval->editor->placement.offset);
+        return true_v;
+      case 11:
+        *out = eval_number(eval->editor->placement.yaw_degrees);
+        return true_v;
+      case 12:
+        *out = eval_bool(eval->editor->placement.align_to_normal);
+        return true_v;
+      case 13:
+        *out = eval_bool(eval->editor->placement.cell_centers);
         return true_v;
       case 5:
         for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
@@ -1335,6 +1355,37 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
   }
   if (object != EVAL_OBJECT_VIEW)
     return eval_fail(eval, "That value is read-only");
+  /* Snapping is editor state; it needs no view request. */
+  const int32_t snap_member = eval_word_index(eval_view_members, member);
+  if (snap_member >= 9) {
+    VkrEditorPlacement *place = &eval->editor->placement;
+    if (snap_member == 9) {
+      if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
+        return false_v;
+      const int32_t target = eval_word_index(
+          eval_snap_targets, (String8){.str = (uint8_t *)value->text,
+                                       .length = strlen(value->text)});
+      if (target < 0)
+        return eval_fail(eval, "Unknown snap '%s'", value->text);
+      place->target = (VkrEditorSnapTarget)target;
+    } else if (snap_member == 10 || snap_member == 11) {
+      if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
+        return false_v;
+      if (snap_member == 10)
+        place->offset = vkr_clamp_f32((float32_t)value->number, -2.0f, 2.0f);
+      else
+        place->yaw_degrees =
+            vkr_clamp_f32((float32_t)value->number, 0.0f, 360.0f);
+    } else {
+      if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))
+        return false_v;
+      if (snap_member == 12)
+        place->align_to_normal = value->number != 0.0;
+      else
+        place->cell_centers = value->number != 0.0;
+    }
+    return true_v;
+  }
   if (!frame->view_request)
     return eval_fail(eval, "The Scene view is not available");
   if (frame->view_request->apply)

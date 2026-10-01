@@ -126,8 +126,9 @@ project settings. Toasts announce saved scene edits and finished Bakery work.
 
 A header pinned to the Scene groups the current camera view, rendering mode,
 grid, Show and Scalability controls in dropdowns, with the
-Select/Move/Rotate/Scale tools (Q/W/E/R), a World/Local axes toggle and a camera
-speed chip on its right. The speed chip shows the speed; its dropdown holds a
+Select/Move/Rotate/Scale tools (Q/W/E/R), a World/Local axes toggle, the
+Snapping chip (where spawned objects land; [ADR-076](076-project-object-model.md))
+and a camera speed chip on its right. The speed chip shows the speed; its dropdown holds a
 logarithmic 0.1-100 units-per-second slider, and the wheel over the chip steps
 it. Show toggles geometry kinds (static meshes, animated meshes, shapes), object
 icon categories, the grid and its depth test, collision display and the session

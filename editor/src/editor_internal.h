@@ -102,10 +102,11 @@ bool8_t vkr_editor_viewport_tab_new(VkrEditorUi *editor,
 bool8_t vkr_editor_viewport_tab_show(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      uint32_t tab);
-/* Where a pixel of the viewport meets the ground plane, else a point 8 m
-   along its ray; false without a valid view. */
-bool8_t vkr_editor_viewport_drop_point(const VkrSampleUiFrame *frame,
-                                       Vec2 pixel, Vec3 *out);
+/* Where an object spawned at a viewport pixel lands under the Snapping
+   settings; false without a valid view. */
+bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame, Vec2 pixel,
+                                  VkrEditorDropPose *out);
 /* Viewport document tabs drawn in `strip`, the Scene tab bar's free space. */
 void vkr_editor_viewport_tabs_build(VkrEditorUi *editor,
                                     const VkrSampleUiFrame *frame,

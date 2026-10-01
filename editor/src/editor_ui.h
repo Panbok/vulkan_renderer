@@ -93,6 +93,35 @@ typedef struct VkrEditorGridLine {
   bool8_t top_label;
 } VkrEditorGridLine;
 
+/* Where objects spawned in the Scene land (the Snapping menu). */
+typedef enum VkrEditorSnapTarget {
+  /* The ground plane under the pointer, else 8 m along its ray. */
+  VKR_EDITOR_SNAP_FREE = 0,
+  /* The first collision surface under the pointer, else the ground plane. */
+  VKR_EDITOR_SNAP_SURFACE,
+  /* The nearest grid point on the ground plane. */
+  VKR_EDITOR_SNAP_GRID,
+  VKR_EDITOR_SNAP_COUNT,
+} VkrEditorSnapTarget;
+
+typedef struct VkrEditorPlacement {
+  VkrEditorSnapTarget target;
+  /* Surface snaps turn the object's up axis to the surface normal. */
+  bool8_t align_to_normal;
+  /* Grid snaps take cell centers instead of line crossings. */
+  bool8_t cell_centers;
+  /* Distance from the surface or grid along its normal, world units. */
+  float32_t offset;
+  /* Turn about the snap normal, degrees. */
+  float32_t yaw_degrees;
+} VkrEditorPlacement;
+
+/* A spawned object's world pose. */
+typedef struct VkrEditorDropPose {
+  Vec3 position;
+  VkrQuat rotation;
+} VkrEditorDropPose;
+
 /* Cmd evaluator value; objects name editor data roots (view, ui, sim, scene)
  * and lights address an entity's light component. */
 typedef enum VkrEditorCmdValueKind {
@@ -236,6 +265,7 @@ typedef struct VkrEditorUi {
   bool8_t labels_environment;
   bool8_t labels_markers;
   bool8_t labels_empty;
+  VkrEditorPlacement placement;
   /* Empty objects of the primary scene, the World and each added scene, in
      the labels' container order. */
   VkrEditorLabelEmpties label_empties[2u + VKR_SCENE_ADDITIVE_MAX];

@@ -155,6 +155,7 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_environment = true_v,
       .labels_markers = true_v,
       .labels_empty = true_v,
+      .placement = {.target = VKR_EDITOR_SNAP_SURFACE},
       .windows =
           {
               [VKR_EDITOR_WINDOW_PHYSICS] = {.position_pt = {180.0f, 80.0f},
@@ -439,9 +440,13 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   if (!frame->world && editor->content &&
       vkr_editor_content_take_action(editor->content, &content_action)) {
     if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
-      if (vkr_editor_request_create(
-              frame, content_action.object, vkr_editor_create_container(frame),
-              content_action.dropped ? &content_action.drop_px : NULL)) {
+      VkrEditorDropPose pose;
+      const bool8_t placed = content_action.dropped &&
+                             vkr_editor_viewport_place(
+                                 editor, frame, content_action.drop_px, &pose);
+      if (vkr_editor_request_create(frame, content_action.object,
+                                    vkr_editor_create_container(frame),
+                                    placed ? &pose : NULL)) {
         vkr_editor_content_reveal_created(editor->content,
                                           frame->selected_entity);
       }

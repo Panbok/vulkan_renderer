@@ -142,11 +142,11 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `sel`, `entity("name")` | `name`, `position`, `rotation` (degrees, XYZ), `scale`, `visible`, `light`, `id`, `world_position` (the evaluated pose, which simulation moves) | all but `light`, `id`, `world_position` |
 | `.light` | `kind`, `color`, `intensity` (radiance for rectangles), `range`, `enabled`, `inner`, `outer` (degrees) | all but `kind` |
 | `.<component>` | Descriptor properties of a component the entity carries, by type name (`sel.post_process.exposure_compensation_ev`, `sel.point_light.intensity`) | visible, non-read-only properties |
-| `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `camera_speed`, `tool` | all |
+| `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `grid_through`, `collision` (0 off, 1 selected, 2 all), `camera_speed`, `tool`, `snap` (`free`, `surface`, `grid`), `snap_offset`, `snap_yaw`, `snap_align`, `snap_centers` | all |
 | `ui` | `zoom`, `reduce_motion` | all |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
-| `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures` | none |
+| `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent) | none |
 
 Scene writes read the entity with `vkr_scene_edit_read`, change one component,
 validate it and submit an `APPLY` edit, so they undo, save and reject invalid

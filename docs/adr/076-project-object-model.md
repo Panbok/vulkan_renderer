@@ -237,8 +237,13 @@ cancels. Double-click opens a folder or scene folder, selects an object and
 opens its script when it has one, opens a Script asset's source, or adds an
 object kind. A Script asset dragged onto an object in the viewport or the
 Outliner attaches its script to it ([ADR-079](079-c-script-modules.md)). Dropping on the viewport loads a scene folder, adds an
-object kind where the pointer meets the ground plane (else 8 m along its
-ray), or places a built mesh on the ground plane under the pointer. Loading
+object kind or places a built mesh under the pointer by the Scene's Snapping
+settings: on the first collision surface (Surface, the default, falling back
+to the ground plane), on the nearest grid crossing or cell center (Grid), or
+where the pointer meets the ground plane (Free, else 8 m along its ray). An
+offset moves the object along the snap normal, a 15-degree-step yaw turns it
+about that normal, and surface snaps can turn its up axis to the surface
+normal. The settings persist with the project's editor settings. Loading
 the scene that is already loading or open does nothing, from Content, the
 Scenes view or `scene.open`.
 The placed entity references the existing asset by scope and ID; nothing is

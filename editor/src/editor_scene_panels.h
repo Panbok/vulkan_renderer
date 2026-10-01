@@ -81,10 +81,12 @@ uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame);
 struct VkrEditorContentAction;
 void vkr_editor_apply_content_object(
     const VkrSampleUiFrame *frame, const struct VkrEditorContentAction *action);
-/* A non-NULL `drop_px` places the object where that viewport pixel meets
-   the scene; otherwise it appears in front of the camera. */
+/* A non-NULL `pose` places the object there (vkr_editor_viewport_place);
+   otherwise it appears in front of the camera. */
+struct VkrEditorDropPose;
 bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
-                                  uint16_t container, const Vec2 *drop_px);
+                                  uint16_t container,
+                                  const struct VkrEditorDropPose *pose);
 
 /* Current value of an entity's component: a light from its edit values, a
    world component from its typed storage. False when the entity lacks it. */
