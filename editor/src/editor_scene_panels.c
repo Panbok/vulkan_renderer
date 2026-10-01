@@ -583,6 +583,8 @@ static bool8_t tree_additive_changed(const VkrEditorScenePanels *p,
   return revision != p->additive_structure_revision;
 }
 
+#define INSPECTOR_ROW_PT VKR_EDITOR_DETAILS_ROW_PT
+#define INSPECTOR_PAD_PT VKR_EDITOR_DETAILS_PAD_PT
 #define HIERARCHY_ROW_PT 24.0f
 #define HIERARCHY_INDENT_PT 14.0f
 /* The search toolbar above the column header. */
@@ -2180,7 +2182,7 @@ static bool8_t physics_number_widget(VkrEditorScenePanels *p, VkrUiSystem *ui,
                                      const char *label, uint32_t index,
                                      bool8_t disabled) {
   (void)vkr_ui_push_id_u64(ui, index);
-  VkrUiWidgetConfig c = widget_at(5, *y, w * 0.53f - 6, 24);
+  VkrUiWidgetConfig c = widget_at(INSPECTOR_PAD_PT, *y, w * 0.53f - 11, 24);
   vkr_ui_label(ui, string8_lit("label"),
                string8_create((uint8_t *)label, strlen(label)), &c);
   c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
@@ -2353,7 +2355,8 @@ static void physics_layer_widgets(VkrEditorScenePanels *p,
   VkrScenePhysicsSnapshot *body = &p->values.physics;
   VkrSceneCollisionLayers settings;
   vkr_scene_collision_layers_read(f->scene, &settings);
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   if (inspector_button(ui, string8_lit("layers.expand"),
                        p->show_collision_layers
                            ? string8_lit("Hide layers and presets")
@@ -2367,7 +2370,7 @@ static void physics_layer_widgets(VkrEditorScenePanels *p,
   }
   if (settings.preset_count) {
     p->preset_index = Min(p->preset_index, settings.preset_count - 1u);
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     if (inspector_button(
             ui, string8_lit("preset.next"),
             string8_create_formatted(ui->frame_allocator, "Preset: %s (next)",
@@ -2376,7 +2379,7 @@ static void physics_layer_widgets(VkrEditorScenePanels *p,
       p->preset_index = (p->preset_index + 1u) % settings.preset_count;
     }
     *y += 26;
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     c.disabled = disabled;
     if (inspector_button(ui, string8_lit("preset.apply"),
                          string8_lit("Copy preset to draft"), &c) &&
@@ -2397,7 +2400,8 @@ static void physics_layer_widgets(VkrEditorScenePanels *p,
       (void)vkr_ui_push_id_u64(ui, mask);
       uint16_t *bits = mask ? &body->collision_mask : &body->collision_layer;
       bool8_t checked = (*bits & (1u << i)) != 0;
-      c = widget_at(5 + mask * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
+      c = widget_at(INSPECTOR_PAD_PT + mask * (w - INSPECTOR_PAD_PT * 2) / 2,
+                    *y, (w - INSPECTOR_PAD_PT * 2) / 2 - 2, 24);
       c.disabled = disabled;
       if (vkr_ui_checkbox(ui, string8_lit("layer.bit"),
                           string8_create_formatted(ui->frame_allocator, "%s %s",
@@ -2422,7 +2426,8 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
   VkrUiSystem *ui = f->ui;
   VkrScenePhysicsAttachment *attachment = &p->values.physics.attachment;
   bool8_t focused = false_v;
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   if (inspector_button(ui, string8_lit("attachment.expand"),
                        p->show_attachment ? string8_lit("Hide bone attachment")
                                           : string8_lit("Bone attachment"),
@@ -2436,7 +2441,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
   (void)vkr_ui_push_id_label(ui, string8_lit("attachment"));
   VkrEntityId wrapper =
       physics_source_entity(f->scene, &attachment->animation_source);
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.disabled = disabled;
   if (vkr_ui_checkbox(ui, string8_lit("enabled"),
                       string8_lit("Attach to evaluated bone"),
@@ -2456,7 +2461,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
     p->changed = true_v;
   }
   *y += 26;
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.disabled = disabled;
   const String8 wrapper_name = wrapper.u64
                                    ? vkr_scene_get_name(f->scene, wrapper)
@@ -2482,7 +2487,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
   const String8 name = asset && attachment->source_node < asset->node_count
                            ? asset->nodes[attachment->source_node].name
                            : string8_lit("Missing bone");
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   vkr_ui_label(ui, string8_lit("bone.name"),
                string8_create_formatted(ui->frame_allocator, "Bone %u: %.*s",
                                         attachment->source_node,
@@ -2490,7 +2495,8 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
                &c);
   *y += 26;
   for (uint32_t next = 0; next < 2; ++next) {
-    c = widget_at(5 + next * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
+    c = widget_at(INSPECTOR_PAD_PT + next * (w - INSPECTOR_PAD_PT * 2) / 2, *y,
+                  (w - INSPECTOR_PAD_PT * 2) / 2 - 2, 24);
     c.disabled = disabled || !asset || !asset->node_count;
     (void)vkr_ui_push_id_u64(ui, next);
     if (inspector_button(ui, string8_lit("bone.choose"),
@@ -2506,7 +2512,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
     (void)vkr_ui_pop_id(ui);
   }
   *y += 26;
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.disabled = disabled || !asset;
   c.tooltip =
       string8_lit("Search bones by name; up to 16 matching nodes are shown.");
@@ -2528,7 +2534,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
     if (!contains(asset->nodes[i].name, p->bone_filter)) {
       continue;
     }
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     c.disabled = disabled;
     (void)vkr_ui_push_id_u64(ui, i);
     if (inspector_button(ui, string8_lit("bone.match"), asset->nodes[i].name,
@@ -2540,7 +2546,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
     *y += 26;
     matches++;
   }
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.disabled = disabled;
   p->changed |=
       vkr_ui_checkbox(ui, string8_lit("drive"),
@@ -2564,7 +2570,8 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
   VkrUiSystem *ui = f->ui;
   VkrScenePhysicsSnapshot *body = &p->values.physics;
   bool8_t focused = false_v;
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   if (inspector_button(ui, string8_lit("joints.expand"),
                        string8_create_formatted(
                            ui->frame_allocator, "%s joints (%u)",
@@ -2578,7 +2585,7 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
   }
   const VkrEntityId next_target = physics_next_reference(
       f->scene, VKR_ENTITY_ID_INVALID, f->selected_entity, false_v);
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.disabled = disabled || body->joint_count == VKR_SCENE_PHYSICS_MAX_JOINTS ||
                !next_target.u64;
   if (inspector_button(ui, string8_lit("joint.add"),
@@ -2619,7 +2626,7 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
   for (uint32_t i = 0; i < body->joint_count; ++i) {
     VkrSceneJointConfig *joint = &body->joints[i];
     (void)vkr_ui_push_id_u64(ui, joint->authored_id);
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     c.disabled = disabled;
     p->changed |= vkr_ui_checkbox(
         ui, string8_lit("joint.enabled"),
@@ -2642,12 +2649,12 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
     }
     if (!target_available || !target_has_shape ||
         vkr_scene_physics_body_is_disabled(f->scene, resolved_target)) {
-      c = widget_at(5, *y, w - 10, 24);
+      c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
       vkr_ui_label(ui, string8_lit("joint.suspended"),
                    string8_lit("Suspended: target body unavailable"), &c);
       *y += 26;
     }
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     if (inspector_button(ui, string8_lit("joint.open"),
                          p->open_joint == joint->authored_id
                              ? string8_lit("Hide joint settings")
@@ -2661,7 +2668,7 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
       (void)vkr_ui_pop_id(ui);
       continue;
     }
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     c.disabled = disabled;
     if (inspector_button(ui, string8_lit("joint.type"),
                          string8_create_formatted(ui->frame_allocator,
@@ -2683,7 +2690,7 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
     const String8 target_name =
         target_entity.u64 ? vkr_scene_get_name(f->scene, target_entity)
                           : string8_lit("Missing target");
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     c.disabled = disabled;
     if (inspector_button(
             ui, string8_lit("joint.target"),
@@ -2726,7 +2733,7 @@ static bool8_t physics_joint_widgets(VkrEditorScenePanels *p,
       focused |= physics_number_widget(
           p, ui, w, y, labels[j], PHYSICS_JOINT_BASE + i * 22u + j, disabled);
     }
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     c.disabled = disabled;
     bool8_t removed = false_v;
     if (inspector_button(ui, string8_lit("joint.remove"),
@@ -2755,7 +2762,8 @@ static void physics_ragdoll_widgets(VkrEditorScenePanels *p,
     return;
   }
   VkrUiSystem *ui = f->ui;
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   vkr_ui_label(ui, string8_lit("ragdoll.title"),
                string8_lit("Ragdoll from skin joints"), &c);
   *y += 26;
@@ -2765,7 +2773,8 @@ static void physics_ragdoll_widgets(VkrEditorScenePanels *p,
     if (i == 2) {
       *y += 26;
     }
-    c = widget_at(5 + (i % 2u) * (w - 10) / 2, *y, (w - 10) / 2 - 2, 24);
+    c = widget_at(INSPECTOR_PAD_PT + (i % 2u) * (w - INSPECTOR_PAD_PT * 2) / 2,
+                  *y, (w - INSPECTOR_PAD_PT * 2) / 2 - 2, 24);
     c.disabled = p->changed || !vkr_scene_physics_is_paused(f->scene);
     (void)vkr_ui_push_id_u64(ui, i);
     if (inspector_button(
@@ -2822,7 +2831,8 @@ static bool8_t physics_body_widgets(VkrEditorScenePanels *p,
   bool8_t focused = false_v;
   const bool8_t muted =
       vkr_scene_physics_body_is_disabled(f->scene, f->selected_entity);
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.disabled = !f->physics_request;
   c.tooltip = string8_lit("Temporary simulation/query mute. Not saved; "
                           "authored Body enabled is unchanged.");
@@ -2856,7 +2866,8 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
     VkrSceneColliderConfig *shape = &body->colliders[i];
     (void)vkr_ui_push_id_u64(ui, shape->authored_id);
     const bool8_t open = p->open_collider == shape->authored_id;
-    VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+    VkrUiWidgetConfig c =
+        widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     vkr_editor_ghost_style(&c);
     c.icon = open ? VKR_UI_ICON_CHEVRON_DOWN : VKR_UI_ICON_CHEVRON_RIGHT;
     c.icon_size_pt = 11.0f;
@@ -2877,7 +2888,7 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
     focused |= physics_details(p, f, w, y, &vkr_scene_physics_collider_type,
                                shape, disabled);
     if (shape->shape < VKR_PHYSICS_CONVEX_HULL) {
-      c = widget_at(5, *y, w - 10, 24);
+      c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
       c.disabled = disabled;
       if (inspector_button(ui, string8_lit("fit"),
                            string8_lit("Fit loaded bounds (approx.)"), &c) &&
@@ -2886,7 +2897,7 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
       }
       *y += 26;
     }
-    c = widget_at(5, *y, (w - 10) / 2 - 3, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, (w - INSPECTOR_PAD_PT * 2) / 2 - 3, 24);
     c.disabled =
         disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
     if (inspector_button(ui, string8_lit("duplicate"), string8_lit("Duplicate"),
@@ -2922,11 +2933,12 @@ static void physics_impulse_widgets(VkrEditorScenePanels *p,
                                     float32_t *y) {
   VkrUiSystem *ui = f->ui;
   VkrScenePhysicsSnapshot *body = &p->values.physics;
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   vkr_ui_label(ui, string8_lit("impulse.title"),
                string8_lit("Test impulse (N s; unsaved)"), &c);
   *y += 26;
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   (void)vkr_ui_checkbox(ui, string8_lit("impulse.at.point"),
                         string8_lit("Apply at world point"),
                         &p->impulse_at_point, &c);
@@ -2935,7 +2947,7 @@ static void physics_impulse_widgets(VkrEditorScenePanels *p,
                           "World point X", "World point Y", "World point Z"};
   for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
     (void)vkr_ui_push_id_u64(ui, i);
-    c = widget_at(5, *y, w * 0.53f - 6, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w * 0.53f - 11, 24);
     vkr_ui_label(ui, string8_lit("impulse.label"),
                  string8_create((uint8_t *)labels[i], strlen(labels[i])), &c);
     c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
@@ -2951,7 +2963,7 @@ static void physics_impulse_widgets(VkrEditorScenePanels *p,
     (void)vkr_ui_pop_id(ui);
     *y += 26;
   }
-  c = widget_at(5, *y, w - 10, 24);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.disabled = p->changed || !body->body.enabled;
   if (inspector_button(ui, string8_lit("impulse.apply"),
                        string8_lit("Apply test impulse"), &c)) {
@@ -2985,7 +2997,8 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
   const bool8_t paused = vkr_scene_physics_is_paused(f->scene);
   bool8_t focused = false_v;
   (void)vkr_ui_push_id_label(ui, string8_lit("physics"));
-  VkrUiWidgetConfig c = widget_at(5, *y, w - 10, 24);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
   c.text.font = heading;
   vkr_ui_label(ui, string8_lit("title"), string8_lit("Physics body (m, kg, s)"),
                &c);
@@ -2993,7 +3006,7 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
   const SceneTransform *transform = vkr_entity_get_component(
       f->scene->world, f->selected_entity, f->scene->comp_transform);
   const bool8_t eligible = transform && transform->trs_editable;
-  c = widget_at(5, *y, w - 10, 44);
+  c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 44);
   const char *error = NULL;
   (void)vkr_scene_physics_validate(f->scene, f->selected_entity, body, &error);
   uint32_t enabled_colliders = 0;
@@ -3022,7 +3035,8 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
     if (i == 3) {
       *y += 26;
     }
-    c = widget_at(5 + (i % 3u) * (w - 10) / 3, *y, (w - 10) / 3 - 3, 24);
+    c = widget_at(INSPECTOR_PAD_PT + (i % 3u) * (w - INSPECTOR_PAD_PT * 2) / 3,
+                  *y, (w - INSPECTOR_PAD_PT * 2) / 3 - 3, 24);
     c.disabled =
         disabled || body->collider_count == VKR_SCENE_PHYSICS_MAX_COLLIDERS;
     (void)vkr_ui_push_id_u64(ui, i);
@@ -3056,7 +3070,7 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
   *y += 26;
   focused |= physics_collider_widgets(p, f, w, y, disabled, shapes);
   if (body->present) {
-    c = widget_at(5, *y, w - 10, 24);
+    c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
     c.disabled = disabled;
     if (inspector_button(ui, string8_lit("remove.body"),
                          string8_lit("Remove body and colliders"), &c)) {
@@ -3107,9 +3121,6 @@ typedef enum InspectorSection {
   INSPECTOR_SECTION_MESH,
 } InspectorSection;
 
-#define INSPECTOR_ROW_PT VKR_EDITOR_DETAILS_ROW_PT
-#define INSPECTOR_PAD_PT VKR_EDITOR_DETAILS_PAD_PT
-
 /* Collapsible section header; returns true while the section is expanded. */
 static bool8_t inspector_section(VkrEditorScenePanels *p, VkrUiSystem *ui,
                                  float32_t w, float32_t *y,
@@ -3130,17 +3141,27 @@ static void inspector_checkbox_row(VkrEditorScenePanels *p, VkrUiSystem *ui,
                                    const char *label, bool8_t *value,
                                    bool8_t disabled, String8 tooltip) {
   const VkrUiTheme *theme = vkr_ui_theme();
-  VkrUiWidgetConfig c = widget_at(
-      INSPECTOR_PAD_PT, *y + 2, w - INSPECTOR_PAD_PT * 2, INSPECTOR_ROW_PT - 4);
+  const float32_t label_w = vkr_editor_details_label_width(w);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT, *y, label_w - 4.0f, INSPECTOR_ROW_PT - 2);
   c.placement.align = VKR_UI_ALIGN_START;
-  c.style.padding_pt = (VkrUiEdges){3, 2, 3, 0};
-  c.style.text_color = theme->text;
+  c.style.padding_pt = (VkrUiEdges){5, 2, 5, 2};
+  c.style.text_color = theme->text_secondary;
   c.style.font_size_pt = theme->font_body;
+  c.tooltip = tooltip;
+  (void)vkr_ui_push_id_label(ui, id);
+  vkr_ui_label(ui, string8_lit("label"),
+               string8_create((uint8_t *)label, strlen(label)), &c);
+  c = widget_at(INSPECTOR_PAD_PT + label_w, *y + 2, INSPECTOR_ROW_PT - 4,
+                INSPECTOR_ROW_PT - 4);
+  c.placement.align = VKR_UI_ALIGN_START;
+  c.style.padding_pt = (VkrUiEdges){3, 0, 3, 0};
   c.disabled = disabled;
   c.tooltip = tooltip;
-  p->changed |= vkr_ui_checkbox(
-      ui, id, string8_create((uint8_t *)label, strlen(label)), value, &c);
-  *y += INSPECTOR_ROW_PT;
+  p->changed |=
+      vkr_ui_checkbox(ui, string8_lit("check"), (String8){0}, value, &c);
+  (void)vkr_ui_pop_id(ui);
+  *y += INSPECTOR_ROW_PT + 2;
 }
 
 /* Entity card: type icon, editable name and visibility controls. */
@@ -3157,19 +3178,23 @@ static bool8_t inspector_header(VkrEditorScenePanels *p,
   Vec4 icon_color;
   const VkrUiIcon icon = vkr_editor_entity_icon(
       f->scene, f->selected_entity, node && node->child != NO_ROW, &icon_color);
-  VkrUiWidgetConfig badge = widget_at(INSPECTOR_PAD_PT, *y + 2, 30, 30);
+  /* One 26-point row: type badge, name field and visibility toggle. */
+  const float32_t card = INSPECTOR_ROW_PT;
+  VkrUiWidgetConfig badge = widget_at(INSPECTOR_PAD_PT, *y + 4, card, card);
   badge.style.background_color = vkr_ui_color_alpha(icon_color, 0.16f);
-  badge.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
-  badge.style.padding_pt = (VkrUiEdges){6, 6, 6, 6};
+  badge.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  badge.style.padding_pt = (VkrUiEdges){5, 5, 5, 5};
   badge.icon = icon;
-  badge.icon_size_pt = 18.0f;
+  badge.icon_size_pt = 15.0f;
   badge.icon_color = icon_color;
   vkr_ui_label(ui, string8_lit("badge"), (String8){0}, &badge);
 
-  VkrUiWidgetConfig c = widget_at(INSPECTOR_PAD_PT + 38, *y + 3,
-                                  w - INSPECTOR_PAD_PT * 2 - 70, 28);
+  VkrUiWidgetConfig c =
+      widget_at(INSPECTOR_PAD_PT + card + 6, *y + 4,
+                w - INSPECTOR_PAD_PT * 2 - card * 2 - 12, card);
   c.read_only = !(p->values.fields & VKR_SCENE_EDIT_NAME);
-  c.style.font_size_pt = theme->font_emphasis;
+  c.style.font_size_pt = theme->font_body;
   c.style.padding_pt = (VkrUiEdges){4, 7, 4, 7};
   /* Entity names are user content: the Regular face covers Latin Extended,
    * Greek and Cyrillic, while headings cover Latin-1 only. */
@@ -3208,17 +3233,21 @@ static bool8_t inspector_header(VkrEditorScenePanels *p,
       p->values.visibility.visible ? string8_lit("Visible (click to hide)")
                                    : string8_lit("Hidden (click to show)"));
   eye.placement =
-      widget_at(w - INSPECTOR_PAD_PT - 26, *y + 4, 26, 26).placement;
+      widget_at(w - INSPECTOR_PAD_PT - card, *y + 4, card, card).placement;
+  eye.style.min_size_pt = eye.style.max_size_pt = (Vec2){card, card};
+  eye.style.padding_pt = (VkrUiEdges){5, 5, 5, 5};
+  eye.icon_size_pt = 15.0f;
+  eye.icon_color = p->values.visibility.visible ? theme->text_secondary
+                                                : theme->text_disabled;
   eye.disabled = !can_hide;
-  vkr_editor_toggle_style(&eye, p->values.visibility.visible);
   if (can_hide &&
       vkr_ui_button(ui, string8_lit("visibility"), (String8){0}, &eye)) {
     p->values.visibility.visible = !p->values.visibility.visible;
     p->changed = true_v;
   }
-  *y += 38;
+  *y += card + 6;
   VkrUiWidgetConfig subtitle =
-      widget_at(INSPECTOR_PAD_PT + 38, *y - 4, w - INSPECTOR_PAD_PT * 2, 18);
+      widget_at(INSPECTOR_PAD_PT + card + 6, *y, w - INSPECTOR_PAD_PT * 2, 16);
   subtitle.placement.align = VKR_UI_ALIGN_START;
   subtitle.style.font_size_pt = theme->font_caption;
   subtitle.style.text_color = theme->text_secondary;
@@ -3247,11 +3276,11 @@ static bool8_t inspector_header(VkrEditorScenePanels *p,
   vkr_ui_label(ui, string8_lit("kind"),
                string8_create_formatted(ui->frame_allocator, "%s", kind),
                &subtitle);
-  *y += 16;
+  *y += 20;
   /* Unplaced world entities have no visibility to inherit. */
   if (can_hide)
     inspector_checkbox_row(p, ui, w, y, string8_lit("inherit"),
-                           "Inherit parent visibility",
+                           "Inherit visibility",
                            &p->values.visibility.inherit_parent, false_v,
                            string8_lit("Hidden when any ancestor is hidden"));
   return field_focus;
@@ -3331,16 +3360,11 @@ static bool8_t inspector_transform_section(VkrEditorScenePanels *p,
    points; the menu opens once the Details build finishes. */
 static void inspector_preset_button(VkrEditorScenePanels *p, VkrUiSystem *ui,
                                     float32_t right, float32_t header_y,
-                                    float32_t height, const VkrTypeDesc *type) {
-  VkrUiWidgetConfig presets =
-      widget_at(right - 26.0f, header_y + 2.0f, 26.0f, Max(18.0f, height - 4));
-  vkr_editor_ghost_style(&presets);
-  presets.icon = VKR_UI_ICON_SPARKLE;
-  presets.icon_size_pt = 13.0f;
-  presets.icon_color = vkr_ui_theme()->text_secondary;
-  presets.tooltip = string8_lit("Presets: save these values or apply saved "
-                                "ones (undoable)");
-  if (vkr_ui_button(ui, string8_lit("presets"), (String8){0}, &presets)) {
+                                    const VkrTypeDesc *type) {
+  if (vkr_editor_details_section_action(
+          ui, string8_lit("presets"), right, header_y, VKR_UI_ICON_SPARKLE,
+          string8_lit("Presets: save these values or apply saved ones "
+                      "(undoable)"))) {
     p->preset_menu = type;
   }
 }
@@ -3434,7 +3458,7 @@ static bool8_t inspector_light_section(VkrEditorScenePanels *p,
   const bool8_t expanded =
       inspector_section(p, f->ui, w, y, INSPECTOR_SECTION_LIGHT, icon,
                         (Vec4){0.98f, 0.78f, 0.36f, 1.0f}, title, heading);
-  inspector_preset_button(p, f->ui, w - 8.0f, header_y, *y - header_y, type);
+  inspector_preset_button(p, f->ui, w - 8.0f, header_y, type);
   if (!expanded)
     return false_v;
   if (lights->directional && !lights->point && !lights->rectangle) {
@@ -3488,15 +3512,10 @@ static bool8_t inspector_world_sections(VkrEditorScenePanels *p,
     /* Live components can be removed and hold presets; load-baked ones keep
      * their document block. */
     if (vkr_scene_world_type_live(type)) {
-      inspector_preset_button(p, ui, w - 36.0f, header_y, *y - header_y, type);
-      VkrUiWidgetConfig remove = widget_at(w - 34.0f, header_y + 2.0f, 26.0f,
-                                           Max(18.0f, *y - header_y - 4.0f));
-      vkr_editor_ghost_style(&remove);
-      remove.icon = VKR_UI_ICON_TRASH;
-      remove.icon_size_pt = 13.0f;
-      remove.icon_color = theme->text_secondary;
-      remove.tooltip = string8_lit("Remove this component (undoable)");
-      if (vkr_ui_button(ui, string8_lit("remove"), (String8){0}, &remove)) {
+      inspector_preset_button(p, ui, w - 34.0f, header_y, type);
+      if (vkr_editor_details_section_action(
+              ui, string8_lit("remove"), w - 8.0f, header_y, VKR_UI_ICON_TRASH,
+              string8_lit("Remove this component (undoable)"))) {
         VkrSceneEditRequest request = {.action =
                                            VKR_SCENE_EDIT_REMOVE_COMPONENT,
                                        .entity = f->selected_entity};
@@ -3563,21 +3582,22 @@ static void inspector_script_row(VkrEditorUi *editor, VkrEditorScenePanels *p,
   VkrUiSystem *ui = f->ui;
   const VkrTypeDesc *script =
       vkr_editor_entity_script(f->scene, f->selected_entity);
+  const float32_t label_w = vkr_editor_details_label_width(w);
   VkrUiWidgetConfig label =
-      widget_at(INSPECTOR_PAD_PT, *y + 6.0f, 60.0f, 26.0f);
+      widget_at(INSPECTOR_PAD_PT, *y + 4.0f, label_w - 4.0f, 26.0f);
   label.placement.align = VKR_UI_ALIGN_START;
   label.style.font_size_pt = theme->font_body;
   label.style.text_color = theme->text_secondary;
-  label.style.padding_pt = (VkrUiEdges){5, 2, 5, 0};
+  label.style.padding_pt = (VkrUiEdges){5, 2, 5, 2};
   vkr_ui_label(ui, string8_lit("script.label"), string8_lit("Script"), &label);
   char source[VKR_EDITOR_SCRIPT_PATH];
   const bool8_t editable =
       script &&
       vkr_editor_script_source(editor, f, script, source, sizeof(source));
-  const float32_t picker_x = INSPECTOR_PAD_PT + 64.0f;
+  const float32_t picker_x = INSPECTOR_PAD_PT + label_w;
   const float32_t picker_w =
       Max(40.0f, w - picker_x - INSPECTOR_PAD_PT - 32.0f);
-  VkrUiWidgetConfig picker = widget_at(picker_x, *y + 6.0f, picker_w, 26.0f);
+  VkrUiWidgetConfig picker = widget_at(picker_x, *y + 4.0f, picker_w, 26.0f);
   vkr_editor_field_style(&picker);
   picker.placement.align = VKR_UI_ALIGN_START;
   picker.style.padding_pt = (VkrUiEdges){4, 8, 4, 8};
@@ -3601,13 +3621,13 @@ static void inspector_script_row(VkrEditorUi *editor, VkrEditorScenePanels *p,
       editable ? string8_lit("Edit this script's source")
                : string8_lit("No project source for this script"));
   edit.placement =
-      widget_at(w - INSPECTOR_PAD_PT - 28.0f, *y + 6.0f, 28.0f, 26.0f)
+      widget_at(w - INSPECTOR_PAD_PT - 26.0f, *y + 4.0f, 26.0f, 26.0f)
           .placement;
   edit.disabled = !editable;
   if (vkr_ui_button(ui, string8_lit("script.edit"), (String8){0}, &edit)) {
     (void)vkr_editor_code_open(editor->code, editor, source);
   }
-  *y += 36.0f;
+  *y += 32.0f;
 }
 
 /* Opens the list of live component types the selection can take. */
@@ -3858,7 +3878,7 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
       p, ui, w, &y, INSPECTOR_SECTION_PHYSICS, VKR_UI_ICON_PHYSICS,
       (Vec4){0.45f, 0.84f, 0.56f, 1.0f}, "Physics", heading);
   if (p->values.physics.present)
-    inspector_preset_button(p, ui, w - 8.0f, physics_y, y - physics_y,
+    inspector_preset_button(p, ui, w - 8.0f, physics_y,
                             &vkr_scene_physics_body_type);
   if (physics_open)
     field_focus |= physics_inspector_build(p, f, w, &y, heading);

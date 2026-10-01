@@ -39,6 +39,10 @@ VkrUiWidgetConfig vkr_editor_details_widget(float32_t x, float32_t y,
   return config;
 }
 
+float32_t vkr_editor_details_label_width(float32_t width) {
+  return vkr_clamp_f32(width * 0.36f, 72.0f, 132.0f);
+}
+
 static String8 details_cstr(const char *text) {
   return text ? string8_create((uint8_t *)text, strlen(text)) : (String8){0};
 }
@@ -426,7 +430,7 @@ static bool8_t details_scalar_row(DetailsBuild *build, uint32_t index,
   const VkrPropertyDesc *property = &build->type->properties[index];
   VkrUiSystem *ui = build->ui;
   const float32_t w = build->width;
-  const float32_t label_w = Min(118.0f, w * 0.36f);
+  const float32_t label_w = vkr_editor_details_label_width(w);
   const float32_t left = DETAILS_PAD_PT + label_w;
   const float32_t available = Max(60.0f, w - left - DETAILS_PAD_PT);
   float64_t low = 0.0;
@@ -511,9 +515,9 @@ static void details_vector_row(DetailsBuild *build, uint32_t index,
   }
   /* Narrow panels move the label above the fields so each axis keeps a
    * readable width. */
-  const bool8_t stacked = w < 300.0f;
+  const bool8_t stacked = w < 260.0f;
   const float32_t label_w =
-      stacked ? w - DETAILS_PAD_PT * 2.0f : Min(92.0f, w * 0.3f);
+      stacked ? w - DETAILS_PAD_PT * 2.0f : vkr_editor_details_label_width(w);
   const float32_t left = DETAILS_PAD_PT + (stacked ? 0.0f : label_w);
   const float32_t available = Max(60.0f, w - left - DETAILS_PAD_PT);
   const float32_t cell = available / (float32_t)count;
@@ -550,27 +554,28 @@ static void details_vector_row(DetailsBuild *build, uint32_t index,
   *y += DETAILS_ROW_PT + 2.0f;
 }
 
+/* A label in the label column and a checkbox at the value column's start,
+   like every other row. */
 static void details_bool_row(DetailsBuild *build, uint32_t index, String8 label,
                              float32_t *y, bool8_t read_only, String8 tooltip) {
-  const VkrUiTheme *theme = vkr_ui_theme();
   const VkrPropertyDesc *property = &build->type->properties[index];
-  VkrUiWidgetConfig config = vkr_editor_details_widget(
-      DETAILS_PAD_PT, *y + 2.0f, build->width - DETAILS_PAD_PT * 2.0f,
-      DETAILS_ROW_PT - 4.0f);
+  const float32_t label_w = vkr_editor_details_label_width(build->width);
+  details_label(build, index, 0u, label, *y, label_w - 4.0f, false_v, tooltip);
+  VkrUiWidgetConfig config =
+      vkr_editor_details_widget(DETAILS_PAD_PT + label_w, *y + 2.0f,
+                                DETAILS_ROW_PT - 4.0f, DETAILS_ROW_PT - 4.0f);
   config.placement.align = VKR_UI_ALIGN_START;
-  config.style.padding_pt = (VkrUiEdges){3, 2, 3, 0};
-  config.style.text_color = theme->text;
-  config.style.font_size_pt = theme->font_body;
+  config.style.padding_pt = (VkrUiEdges){3, 0, 3, 0};
   config.disabled = read_only;
   config.tooltip = tooltip;
   bool8_t *target = (bool8_t *)((uint8_t *)build->value + property->offset);
   bool8_t checked = *target;
-  if (vkr_ui_checkbox(build->ui, string8_lit("check"), label, &checked,
+  if (vkr_ui_checkbox(build->ui, string8_lit("check"), (String8){0}, &checked,
                       &config) &&
       !read_only) {
     *target = checked ? true_v : false_v;
   }
-  *y += DETAILS_ROW_PT;
+  *y += DETAILS_ROW_PT + 2.0f;
 }
 
 /* Named choices as a segmented control; read-only choices show the name. */
@@ -581,7 +586,7 @@ static void details_choice_row(DetailsBuild *build, uint32_t index,
   const VkrPropertyDesc *property = &build->type->properties[index];
   VkrUiSystem *ui = build->ui;
   const float32_t w = build->width;
-  const float32_t label_w = Min(118.0f, w * 0.36f);
+  const float32_t label_w = vkr_editor_details_label_width(w);
   const float32_t left = DETAILS_PAD_PT + label_w;
   const float32_t available = Max(60.0f, w - left - DETAILS_PAD_PT);
   const uint32_t count = vkr_property_enum_count(property);
@@ -644,7 +649,7 @@ static void details_string_row(DetailsBuild *build, uint32_t index,
                                String8 label, float32_t *y, bool8_t read_only,
                                String8 tooltip) {
   const float32_t w = build->width;
-  const float32_t label_w = Min(118.0f, w * 0.36f);
+  const float32_t label_w = vkr_editor_details_label_width(w);
   const float32_t left = DETAILS_PAD_PT + label_w;
   details_label(build, index, 0u, label, *y, label_w - 4.0f, false_v, tooltip);
   details_text_field(build, index, 0u, left, *y,
@@ -774,8 +779,9 @@ bool8_t vkr_editor_details_section(VkrUiSystem *ui, String8 id, float32_t width,
                                    VkrFontHandle heading, bool8_t *collapsed) {
   const VkrUiTheme *theme = vkr_ui_theme();
   const bool8_t expanded = !*collapsed;
-  *y += 4.0f;
-  VkrUiWidgetConfig header = vkr_editor_details_widget(0, *y, width, 28.0f);
+  *y += VKR_EDITOR_DETAILS_SECTION_GAP_PT;
+  const float32_t bar = VKR_EDITOR_DETAILS_SECTION_PT;
+  VkrUiWidgetConfig header = vkr_editor_details_widget(0, *y, width, bar);
   header.style.background_color = theme->header;
   header.style.hover_background_color = theme->raised;
   header.style.border_pt = (VkrUiEdges){1, 0, 1, 0};
@@ -787,7 +793,7 @@ bool8_t vkr_editor_details_section(VkrUiSystem *ui, String8 id, float32_t width,
     *collapsed = expanded;
   }
   VkrUiWidgetConfig caret =
-      vkr_editor_details_widget(DETAILS_PAD_PT - 2.0f, *y, 14.0f, 28.0f);
+      vkr_editor_details_widget(DETAILS_PAD_PT - 2.0f, *y, 14.0f, bar);
   caret.placement.align = VKR_UI_ALIGN_START;
   caret.style.padding_pt = (VkrUiEdges){9, 0, 9, 0};
   caret.icon =
@@ -795,8 +801,9 @@ bool8_t vkr_editor_details_section(VkrUiSystem *ui, String8 id, float32_t width,
   caret.icon_size_pt = 10.0f;
   caret.icon_color = theme->text_secondary;
   vkr_ui_label(ui, string8_lit("caret"), (String8){0}, &caret);
+  /* The title leaves room for header actions on the right. */
   VkrUiWidgetConfig label = vkr_editor_details_widget(
-      DETAILS_PAD_PT + 14.0f, *y, width - DETAILS_PAD_PT - 20.0f, 28.0f);
+      DETAILS_PAD_PT + 14.0f, *y, width - DETAILS_PAD_PT - 74.0f, bar);
   label.placement.align = VKR_UI_ALIGN_START;
   label.style.padding_pt = (VkrUiEdges){6, 4, 6, 2};
   label.style.font_size_pt = theme->font_body;
@@ -807,8 +814,26 @@ bool8_t vkr_editor_details_section(VkrUiSystem *ui, String8 id, float32_t width,
   label.icon_color = icon_color;
   vkr_ui_label(ui, string8_lit("title"), title, &label);
   (void)vkr_ui_pop_id(ui);
-  *y += 32.0f;
+  *y += bar + 4.0f;
   return expanded;
+}
+
+bool8_t vkr_editor_details_section_action(VkrUiSystem *ui, String8 id,
+                                          float32_t right, float32_t section_y,
+                                          VkrUiIcon icon, String8 tooltip) {
+  const float32_t size = VKR_EDITOR_DETAILS_ACTION_PT;
+  VkrUiWidgetConfig action = vkr_editor_details_widget(
+      right - size,
+      section_y + VKR_EDITOR_DETAILS_SECTION_GAP_PT +
+          (VKR_EDITOR_DETAILS_SECTION_PT - size) * 0.5f,
+      size, size);
+  vkr_editor_ghost_style(&action);
+  action.style.padding_pt = (VkrUiEdges){4, 4, 4, 4};
+  action.icon = icon;
+  action.icon_size_pt = 13.0f;
+  action.icon_color = vkr_ui_theme()->text_secondary;
+  action.tooltip = tooltip;
+  return vkr_ui_button(ui, id, (String8){0}, &action);
 }
 
 void vkr_editor_details_error(VkrEditorDetails *details, VkrUiSystem *ui,

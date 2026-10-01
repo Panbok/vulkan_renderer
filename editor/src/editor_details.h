@@ -11,6 +11,11 @@
 
 #define VKR_EDITOR_DETAILS_ROW_PT 26.0f
 #define VKR_EDITOR_DETAILS_PAD_PT 10.0f
+/* Section headers: a gap above, then the header bar. */
+#define VKR_EDITOR_DETAILS_SECTION_GAP_PT 4.0f
+#define VKR_EDITOR_DETAILS_SECTION_PT 28.0f
+/* Icon actions on a section header. */
+#define VKR_EDITOR_DETAILS_ACTION_PT 22.0f
 #define VKR_EDITOR_DETAILS_TEXT_CAPACITY 96u
 
 /* Caller-owned editing state, reused across frames by one panel. At most one
@@ -62,6 +67,13 @@ vkr_editor_details_type(VkrEditorDetails *details, VkrUiSystem *ui,
                         const void *context, bool8_t read_only);
 
 /* Collapsible section header; returns true while expanded. */
+/* Width of the label column every row shares, for a panel `width` wide. */
+float32_t vkr_editor_details_label_width(float32_t width);
+/* An icon action on the header of a section that started at `section_y`,
+   its right edge at `right` points; true when clicked. */
+bool8_t vkr_editor_details_section_action(VkrUiSystem *ui, String8 id,
+                                          float32_t right, float32_t section_y,
+                                          VkrUiIcon icon, String8 tooltip);
 bool8_t vkr_editor_details_section(VkrUiSystem *ui, String8 id, float32_t width,
                                    float32_t *y, VkrUiIcon icon,
                                    Vec4 icon_color, String8 title,
