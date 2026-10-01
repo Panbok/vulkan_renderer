@@ -1,5 +1,6 @@
 #include "lighting_system_tests.h"
 
+#include "math/vkr_math.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_lighting_system.h"
@@ -525,6 +526,76 @@ static bool32_t test_sun_refresh_follows_moving_light(void) {
   return true_v;
 }
 
+/* Light travelling away from a sun `depression_degrees` below the horizon. */
+static Vec3 lighting_test_light_below_horizon(float32_t depression_degrees) {
+  const float32_t radians = depression_degrees * (VKR_PI / 180.0f);
+  return vec3_new(0.0f, vkr_sin_f32(radians), -vkr_cos_f32(radians));
+}
+
+/* Past the dark depression the bake is black (ADR-058), so a sun that keeps
+ * turning through the night requests no revision, while the turn back into
+ * the lit range does. A light without irradiance is dark in any direction. */
+static bool32_t test_dark_sun_requests_no_revision(void) {
+  printf("  Running test_dark_sun_requests_no_revision...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 32u, 8u, &error));
+  VkrAtmosphereSettings authored = vkr_atmosphere_settings_defaults();
+  authored.enabled = true_v;
+  const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
+  assert(vkr_scene_request_atmosphere(&scene, &authored, &clouds, 0.0f));
+  const VkrAtmosphereGpuParams sea_level = vkr_atmosphere_prepare(&authored);
+  const float32_t dark = vkr_atmosphere_dark_depression_degrees(&sea_level);
+  assert(dark > 40.0f && dark < 41.0f);
+
+  VkrEntityId sun = vkr_scene_create_entity(&scene, &error);
+  assert(sun.u64 != VKR_ENTITY_ID_INVALID.u64);
+  SceneDirectionalLight light = {
+      .color = vkr_atmosphere_settings_defaults().solar_irradiance,
+      .intensity = 1.0f,
+      .direction_local = lighting_test_light_below_horizon(dark + 10.0f),
+      .enabled = true_v,
+      .atmosphere_sun = true_v,
+  };
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 0.0);
+  VkrSceneAtmosphere *atmosphere = &scene.atmosphere;
+  atmosphere->active_settings = atmosphere->requested_settings;
+  atmosphere->active_revision = atmosphere->requested_revision;
+  atmosphere->candidate_revision = 0u;
+  const uint64_t revision = atmosphere->requested_revision;
+
+  // Deeper into the night: the sky light is already black.
+  light.direction_local = lighting_test_light_below_horizon(dark + 20.0f);
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 1.0);
+  assert(atmosphere->requested_revision == revision);
+
+  // A light without irradiance bakes black whichever way it points.
+  light.intensity = 0.0f;
+  light.direction_local = lighting_test_light_below_horizon(-30.0f);
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 1.0);
+  assert(atmosphere->requested_revision == revision);
+
+  // Inside the dark depression the sky can scatter light again.
+  light.intensity = 1.0f;
+  light.direction_local = lighting_test_light_below_horizon(dark - 2.0f);
+  assert(vkr_scene_set_directional_light(&scene, sun, &light));
+  vkr_scene_sync_sun(&scene, 1.0);
+  assert(atmosphere->requested_revision == revision + 1u);
+
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_dark_sun_requests_no_revision PASSED\n");
+  return true_v;
+}
+
 bool32_t run_lighting_system_tests(void) {
   printf("--- Running Lighting System tests... ---\n");
   bool32_t passed = true_v;
@@ -537,6 +608,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_sun_light_drives_atmosphere_sun();
   passed &= test_world_sun_light_is_fallback();
   passed &= test_sun_refresh_follows_moving_light();
+  passed &= test_dark_sun_requests_no_revision();
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();

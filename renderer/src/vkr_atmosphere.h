@@ -182,6 +182,20 @@ Vec3 vkr_atmosphere_transmittance(const VkrAtmosphereGpuParams *params,
  * altitude, or zero below the horizon. */
 Vec3 vkr_atmosphere_observer_irradiance(const VkrAtmosphereGpuParams *params);
 
+/** Sun depression, in degrees below the observer's horizon, beyond which no
+ * point a bake reaches is sunlit. With D = acos(R / R_top), the horizon dip at
+ * the atmosphere top, a view ray reaches at most acos(R / r_observer) + D
+ * around the planet, a multiple-scattering ray from there at most 2D further,
+ * and a point there is unlit once the sun is D below its horizon. Single
+ * scattering, multiple scattering and the sunlit ground are then zero. */
+float32_t
+vkr_atmosphere_dark_depression_degrees(const VkrAtmosphereGpuParams *params);
+
+/** True when a bake of `params` is black for every sun direction a change
+ * could reach while it stays true: no solar irradiance, or a sun beyond the
+ * dark depression. */
+bool8_t vkr_atmosphere_bake_dark(const VkrAtmosphereGpuParams *params);
+
 /** Prepares the camera-dependent sky from validated enabled settings. The
  * camera altitude is clamped to the supported observer-altitude domain.
  * Clouds render only where aerial perspective applies. */

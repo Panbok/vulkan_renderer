@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-30
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -66,7 +66,13 @@ not started baking, since replacing it costs nothing; otherwise once 0.25
 seconds have passed since the last, so a moving sun refreshes the sky light
 at most four times a second and its final position always gets its own bake.
 A request that arrives while a candidate bakes waits for it: the candidate
-publishes, then the newest request bakes. Each generation owns a 256×64
+publishes, then the newest request bakes. A sun past the dark depression, or
+one without irradiance, bakes black: with D = acos(R / R_top), the horizon dip
+at the atmosphere top, no point a bake reaches is sunlit once the sun is
+acos(R / r_observer) + 4D below the horizon, 40.4 degrees at sea level and
+50.5 at 100 km (`vkr_atmosphere_dark_depression_degrees`). While both the
+latest request and the current sun are dark, a turning sun requests nothing;
+the sun that crosses into or out of the dark gets its own bake. Each generation owns a 256×64
 transmittance and a 32×32 multiple-scattering RGBA16F lookup texture, 136 KiB
 together. The runtime
 creates them beside the candidate source and prefilter, and they publish and
@@ -232,7 +238,7 @@ world scale but, like the runtime bake, does not use it.
 
 Stable settings add only the per-frame sky-view lookup, aerial-perspective
 volume and aerial application to ordinary frames; revisions pay the full sky
-and IBL bake, about 10 ms of GPU time in one frame on the M1 Pro at the
+and IBL bake, about 3.5 ms of GPU time in one frame on the M1 Pro at the
 256-texel source and prefilter, and temporarily retain both generations. A
 moving sun costs at most one such bake every 0.25 seconds, and its sky light, which shapes
 ambient light and reflections, trails the drawn sun by up to that interval
@@ -423,3 +429,21 @@ generation `8d8439fc` with failed-pixel ratio 0 in every view, matching an
 unchanged-renderer control run view by view; the IBL single-probe snapshot
 matches exactly. Metal API validation of `atmosphere_bistro_local`, with a
 still and a moving sun, reports no diagnostics.
+
+The prefilter's mirror mip, roughness zero and three quarters of its texels,
+now takes one source fetch instead of 256 identical importance samples
+(ADR-044). With the same diagnostic and configuration, a revision's `IBL.Bake`
+falls from 10.18 ms (16 samples, 10.17-10.21) to 3.55 ms (3.54-3.55); the
+moving-sun frame p95 falls from 42.7 ms to 36.9 ms and the maximum from 45.3 ms
+to 38.1 ms. The Bistro Metal text snapshot still has no failing pixels and keeps
+its per-view errors, and the IBL single-probe snapshot matches exactly. Metal
+API validation with pass timing and a moving sun reports no diagnostics.
+
+The dark-depression skip was checked against the CPU baker, which evaluates the
+same model without the bound's geometry: with the sun 0.01 degrees past the
+bound at 0 m and 100 km the source cube has no radiance in any texel, while
+10 degrees short of it the sky still scatters light. At sea level the CPU
+source is exactly black from 38 degrees, inside the 40.4-degree bound, and its
+peak is 3.6e-5 at 12 degrees and 7.7e-8 at 18. Turning the Bistro sun through a
+full day at 0.5 degrees per frame bakes 36 revisions instead of 48; the one
+past the bound is the bake that turns the sky light black.

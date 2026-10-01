@@ -5,6 +5,7 @@ project(vulkan_renderer_tester)
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS src/*.c)
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
 target_sources(vulkan_renderer_tester PRIVATE
+    src/atmosphere_bake_dark_tests.cpp
     "${CMAKE_SOURCE_DIR}/editor/src/editor_project_store.c"
     "${CMAKE_SOURCE_DIR}/app/src/app_ui.c"
     "${CMAKE_SOURCE_DIR}/app/src/debug_overlay.c"
@@ -35,7 +36,7 @@ target_compile_definitions(vulkan_renderer_tester PRIVATE
 
 # The harness core exports renderer_lib transitively.
 find_package(Vulkan REQUIRED)
-target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_script_fps vkr_harness_core vkr_collision_cooking ktx Vulkan::Vulkan)
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_sample_runtime vkr_script_fps vkr_harness_core vkr_collision_cooking vkr_bake_core ktx Vulkan::Vulkan)
 
 # Script modules the host reload tests load (ADR-079): one source, four
 # variants, linked as MODULE libraries so an engine symbol fails the link.

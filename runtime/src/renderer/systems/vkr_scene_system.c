@@ -2108,6 +2108,12 @@ vkr_internal bool8_t scene_atmosphere_sun_matches(
          a->sun_angular_diameter_degrees == b->sun_angular_diameter_degrees;
 }
 
+vkr_internal bool8_t
+scene_atmosphere_bake_dark(const VkrAtmosphereSettings *settings) {
+  const VkrAtmosphereGpuParams params = vkr_atmosphere_prepare(settings);
+  return vkr_atmosphere_bake_dark(&params);
+}
+
 void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
   if (!scene || !scene->world) {
     return;
@@ -2145,6 +2151,14 @@ void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
   if (atmosphere->requested_settings.enabled &&
       scene_atmosphere_sun_matches(&atmosphere->live_settings,
                                    &atmosphere->requested_settings)) {
+    return;
+  }
+  /* A sky the latest request already bakes black stays black however a sun
+     that remains dark turns, so the night requests nothing; the sun that
+     crosses into or out of the dark gets its own bake. */
+  if (atmosphere->requested_settings.enabled &&
+      scene_atmosphere_bake_dark(&atmosphere->live_settings) &&
+      scene_atmosphere_bake_dark(&atmosphere->requested_settings)) {
     return;
   }
 

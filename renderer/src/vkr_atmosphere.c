@@ -227,6 +227,29 @@ vkr_atmosphere_prepare(const VkrAtmosphereSettings *settings) {
   };
 }
 
+float32_t
+vkr_atmosphere_dark_depression_degrees(const VkrAtmosphereGpuParams *params) {
+  const float64_t planet = params->planet.x;
+  const float64_t top = params->planet.y;
+  const float64_t observer = planet + params->planet.z;
+  const float64_t top_dip = acos(planet / top);
+  const float64_t observer_dip = acos(planet / Min(observer, top));
+  return (float32_t)((observer_dip + 4.0 * top_dip) *
+                     (180.0 / 3.14159265358979323846));
+}
+
+bool8_t vkr_atmosphere_bake_dark(const VkrAtmosphereGpuParams *params) {
+  if (params->solar.x <= 0.0f && params->solar.y <= 0.0f &&
+      params->solar.z <= 0.0f)
+    return true_v;
+  const float64_t elevation_degrees =
+      asin(Clamp((float64_t)params->sun.y, -1.0, 1.0)) *
+      (180.0 / 3.14159265358979323846);
+  return -elevation_degrees >= vkr_atmosphere_dark_depression_degrees(params)
+             ? true_v
+             : false_v;
+}
+
 VkrSkyGpuParams
 vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
                            const VkrCloudSettings *clouds,
