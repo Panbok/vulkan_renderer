@@ -65,6 +65,7 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
     float2 coord = side ? hit.zy : hit.xz;
     // Derivatives come before any discard.
     float2 footprint = fwidth(coord);
+    float t_footprint = fwidth(t);
     if (t <= 0.0f || t >= 1.0f)
         discard;
     float visibility = 1.0f;
@@ -82,9 +83,12 @@ float4 editor_grid_fragment(VkrVulkanEditorGridOutput input) : SV_Target0
         {
             float3 surface = vkr_vk_editor_grid_unproject(root, ndc, device_depth);
             float s = dot(surface - near_point, ray) / max(dot(ray, ray), 1e-12f);
-            // A soft band keeps a coplanar floor from shimmering.
-            float band = max(s * 0.004f, 1e-6f);
-            visibility = saturate((s + band - t) / band);
+            // A floor on the plane stays under the grid: the depth texel is
+            // render-scaled and jittered, so allow two of them plus a pixel.
+            float texels = 2.0f * float(root.extent.x) /
+                               max(float(depth_width), 1.0f) + 1.0f;
+            visibility =
+                vkr_editor_grid_depth_visibility(t, s, t_footprint, texels);
         }
     }
     float fade = 1.0f;

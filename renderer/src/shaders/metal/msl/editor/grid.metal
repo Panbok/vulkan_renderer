@@ -55,6 +55,7 @@ fragment float4 vkr_metal_packet_editor_grid_fragment(
   const float2 coord = side ? hit.zy : hit.xz;
   /* Derivatives come before any discard. */
   const float2 footprint = fwidth(coord);
+  const float t_footprint = fwidth(t);
   if (t <= 0.0 || t >= 1.0)
     discard_fragment();
   float visibility = 1.0;
@@ -69,9 +70,13 @@ fragment float4 vkr_metal_packet_editor_grid_fragment(
           vkr_metal_editor_grid_unproject(root, ndc, device_depth);
       const float s =
           dot(surface - near_point, ray) / max(dot(ray, ray), 1e-12f);
-      /* A soft band keeps a coplanar floor from shimmering. */
-      const float band = max(s * 0.004f, 1e-6f);
-      visibility = saturate((s + band - t) / band);
+      /* A floor on the plane stays under the grid: the depth texel is
+       * render-scaled and jittered, so allow two of them plus a pixel. */
+      const float texels =
+          2.0f * float(root->extent.x) / max(float(depth_extent.x), 1.0f) +
+          1.0f;
+      visibility =
+          vkr_editor_grid_depth_visibility(t, s, t_footprint, texels);
     }
   }
   float fade = 1.0;

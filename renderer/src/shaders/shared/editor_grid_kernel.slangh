@@ -28,6 +28,18 @@ float2 vkr_editor_grid_line_pixels(float2 coord, float spacing,
   return offset / max(footprint, float2(1e-7f, 1e-7f));
 }
 
+// Visibility of the plane at ray parameter `t` over an opaque surface at
+// `surface`, both along the same near-to-far ray. The depth test tolerates
+// the uncertainty of a surface lying on the plane: a relative share of its
+// distance plus the plane's change across `texels` depth texels, where
+// `t_footprint` is that change across one output pixel. Beyond the tolerance
+// the grid fades out over one more of it.
+float vkr_editor_grid_depth_visibility(float t, float surface,
+                                       float t_footprint, float texels) {
+  float slack = max(surface * 0.002f + t_footprint * texels, 1e-6f);
+  return saturate((surface + 2.0f * slack - t) / slack);
+}
+
 // Coverage of lines `width_px` wide with a one-pixel ramp; the nearer axis
 // wins.
 float vkr_editor_grid_coverage(float2 pixels, float width_px) {

@@ -449,7 +449,8 @@ reading the opaque depth at binding 0. The shared kernel owns line coverage,
 the tenfold level cross-fade, axis colors and distance fade; native entries own
 the unjittered ray (Metal flips NDC Y and the clip matrix, Vulkan does not),
 the depth read at the matching render-extent texel and the UI display-output
-transform. Both 128-byte roots pin their layouts by static assertion: Metal
+transform; the kernel's depth visibility widens its tolerance by the plane's
+change across that texel so a floor on the plane cannot z-fight it. Both 128-byte roots pin their layouts by static assertion: Metal
 carries a read-access depth reference, Vulkan a depth-table index, and Vulkan
 checks the reflected fragment root. The Release editor renders it through Metal,
 hidden behind a cube and drawn through it with the toggle; Vulkan SPIR-V passes
