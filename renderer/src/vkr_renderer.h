@@ -1166,6 +1166,10 @@ void vkr_renderer_get_device_information(
     Arena *temp_arena);
 uint64_t vkr_renderer_get_submit_serial(VkrRenderer *renderer);
 uint64_t vkr_renderer_get_completed_submit_serial(VkrRenderer *renderer);
+/** The exposure multiplier the latest prepared frame displays with: the
+ * newest completed automatic exposure, else the manual multiplier. Zero
+ * before any frame is prepared. */
+float32_t vkr_renderer_get_display_exposure(const VkrRenderer *renderer);
 bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
     VkrRenderer *renderer, VkrRendererUploadWaitStats *out_stats);
 /** Returns and resets CPU waits caused by bounded command-slot reuse. */

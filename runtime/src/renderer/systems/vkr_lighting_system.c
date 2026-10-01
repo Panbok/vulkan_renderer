@@ -369,15 +369,23 @@ void vkr_lighting_system_append_scene(VkrLightingSystem *system,
 
 void vkr_lighting_system_apply_atmosphere_light(
     VkrLightingSystem *system, Vec3 toward_light, Vec3 irradiance,
-    float32_t angular_diameter_degrees) {
+    float32_t angular_diameter_degrees, float32_t display_exposure) {
   if (!system)
     return;
 
   /* The directional-light record points along incoming light, which shaders
      negate when forming their surface-to-light vector. A sky with neither a
-     lit sun nor a lit moon has no light to light with. */
+     lit sun nor a lit moon has no light to light with, and a moon under
+     street lamps lights nothing that shows: its four cascades would cost a
+     whole frame's shadow budget for an invisible term. */
+  const float32_t luminance =
+      0.2126f * irradiance.x + 0.7152f * irradiance.y + 0.0722f * irradiance.z;
+  const bool8_t visible =
+      !(display_exposure > 0.0f) || luminance * display_exposure / VKR_PI >=
+                                        VKR_LIGHTING_KEY_LIGHT_VISIBLE_MIN;
   system->directional.enabled =
-      irradiance.x > 0.0f || irradiance.y > 0.0f || irradiance.z > 0.0f;
+      visible &&
+      (irradiance.x > 0.0f || irradiance.y > 0.0f || irradiance.z > 0.0f);
   system->directional.direction = vec3_negate(toward_light);
   system->directional.color = irradiance;
   system->directional.intensity = 1.0f;

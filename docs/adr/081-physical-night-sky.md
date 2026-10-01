@@ -133,6 +133,18 @@ the cloud shadow map. The cloud trace adds the moon only while it is the key
 light, and still lights high cloud with a sun just below the horizon. A sample
 the planet hides from a light skips that light's march.
 
+A key light too dim to show is disabled, along with its cascades.
+
+- **Test.** The runtime compares E × exposure / π, the display value of a
+  white Lambertian surface it lights head-on, against 2^-12. That is a
+  sixteenth of an 8-bit step (`VKR_LIGHTING_KEY_LIGHT_VISIBLE_MIN`).
+- **Exposure.** The exposure is the one the previous frame displayed with
+  (`vkr_renderer_get_display_exposure`). Before any frame there is no
+  exposure, and the light stays enabled.
+- **Why.** Under Bistro's street lamps the full moon's direct light is about
+  2^-16 of display white. Its four moving cascades nonetheless cost 8.4 ms of
+  GPU time per frame.
+
 Sky-light bakes are skipped only while both lights are past the dark
 depression. The offline diffuse baker applies the same moon, both-light source
 and key light. Its recipe hash covers the moon only when the moon has
@@ -267,6 +279,40 @@ Star evidence (Metal Release, M1 Pro):
   intensity. The compiled sky offsets match the C asserts: `star_pole` at 400,
   `star_axis` at 416, and a 480-byte Vulkan record.
 
+Day/night cycle evidence (Metal Release, M1 Pro). These are diagnostic,
+single-process runs with no timing authority. A temporary diagnostic, since
+reverted, turned the sun and moon together about the celestial pole by 0.25
+degrees per frame for 1440 measured frames.
+
+- **Street exposure.** In the Bistro street (night case), the automatic
+  exposure ran from 3.0 at noon to 10.9 at night, and P stayed 1 throughout.
+  The street lamps keep the night within four stops of the day.
+- **Sky exposure.** In the cloud-sky view (moonlit-cloud scene, automatic
+  exposure):
+  - The exposure ran from 1.5 at noon to 2.7 × 10^4 at the end of the night,
+    where P = 2^16.
+  - P changed 27 times, always by one stop or across the neutral band (5 to 0
+    and back).
+  - Through the 2^5 to 1 change at sunrise, post-TAA physical luminance stays
+    within 3 % frame to frame (0.0274, 0.0282, 0.0278, 0.0274). A wrong
+    history scale would jump by 32×.
+- **GPU cost.** GPU submission time by sun elevation (night below −12
+  degrees), p50 / p95:
+
+  | Run | Sun up | Night |
+  |---|---|---|
+  | Moon, before the invisible-light rule | 33.1 / 36.9 ms | 33.2 / 36.9 ms |
+  | Moon, with the rule | 33.1 / 36.9 ms | 24.8 / 28.7 ms |
+  | Moonless | 33.1 / 36.5 ms | 24.8 / 28.2 ms |
+
+  The remaining 0.5 ms at p95 is the moonlit sky-light bake, which now runs at
+  night at up to 4 Hz.
+- **Output after the rule.** The night street matches its pre-rule output to a
+  0.999999 mean HDR ratio, with 4 final pixels differing as run-to-run noise
+  (`sha256:ef33532c…`). The moonlit-cloud (`sha256:5a248d2e…`), moonlit-sky
+  (`sha256:26e9cf1b…`) and starry-sky (`sha256:606f6e70…`) cases keep their
+  key light, and the Bistro text baseline passes (`sha256:feac04ef…`).
+
 Native Vulkan execution and the Windows-only FSR SDK build are unavailable on
 this host, so the affected shader domains are UNALIGNED in
 [ADR-044](044-shader-cross-backend-contract.md).
@@ -291,6 +337,7 @@ exposure-relative quantity other than those listed here is not scale-free.
 [`vkr_atmosphere.c`](../../renderer/src/vkr_atmosphere.c),
 [`atmosphere_kernel.slangh`](../../renderer/src/shaders/shared/atmosphere_kernel.slangh),
 [`vkr_scene_system.c`](../../runtime/src/renderer/systems/vkr_scene_system.c),
+[`vkr_lighting_system.c`](../../runtime/src/renderer/systems/vkr_lighting_system.c),
 [`vkr_bake_atmosphere.cpp`](../../tools/bake/vkr_bake_atmosphere.cpp),
 [`vkr_packet_constants.c`](../../renderer/src/vkr_packet_constants.c),
 [`vkr_bloom.c`](../../renderer/src/vkr_bloom.c),

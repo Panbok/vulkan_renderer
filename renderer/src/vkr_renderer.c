@@ -1045,6 +1045,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   };
   prepared->frame.exposure =
       vkr_exposure_prepare(&rf->exposure_state, &prepared->exposure_input);
+  rf->display_exposure =
+      packet->globals.exposure_mode == VKR_EXPOSURE_MODE_AUTOMATIC &&
+              rf->observed_exposure > 0.0f
+          ? rf->observed_exposure
+          : packet->globals.manual_exposure;
   if (rf->pre_exposure_forced) {
     prepared->frame.exposure.pre_exposure_stops = rf->pre_exposure_forced_stops;
     prepared->frame.exposure.pre_exposure =
@@ -1726,6 +1731,10 @@ uint64_t vkr_renderer_get_submit_serial(VkrRenderer *renderer) {
 
 uint64_t vkr_renderer_get_completed_submit_serial(VkrRenderer *renderer) {
   return vkr_renderer_backend_completed_submit_serial(renderer);
+}
+
+float32_t vkr_renderer_get_display_exposure(const VkrRenderer *renderer) {
+  return renderer->display_exposure;
 }
 
 bool8_t vkr_renderer_get_and_reset_upload_wait_stats(

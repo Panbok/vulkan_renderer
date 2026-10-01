@@ -137,6 +137,9 @@ struct VkrRenderer {
   VkrExposureState exposure_state;
   /** Newest completed automatic exposure multiplier; pre-exposure source. */
   float32_t observed_exposure;
+  /** Exposure the latest prepared frame displays with; see
+      vkr_renderer_get_display_exposure. */
+  float32_t display_exposure;
   uint32_t exposure_reset_reasons;
   /** Diagnostic VKR_PRE_EXPOSURE_FORCE_STOPS override. */
   int32_t pre_exposure_forced_stops;

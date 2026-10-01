@@ -63,13 +63,19 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
 void vkr_lighting_system_append_scene(VkrLightingSystem *system,
                                       const VkrScene *scene);
 
+/** A white Lambertian surface lit head-on by a directional light of
+ * irradiance E shows E * exposure / pi. Below this fraction of display white,
+ * a sixteenth of an 8-bit step, the light is invisible (ADR-081). */
+#define VKR_LIGHTING_KEY_LIGHT_VISIBLE_MIN (1.0f / 4096.0f)
+
 /** Lights with the frame's atmosphere key light, the sun or the moon
  * (ADR-081): `toward_light` points from the observer toward it, `irradiance`
  * is its light attenuated to the observer and the diameter sizes the shadow
- * penumbra. */
+ * penumbra. With a known `display_exposure`, a light too dim to show is
+ * disabled, so neither it nor its cascaded shadows render; zero keeps it. */
 void vkr_lighting_system_apply_atmosphere_light(
     VkrLightingSystem *system, Vec3 toward_light, Vec3 irradiance,
-    float32_t angular_diameter_degrees);
+    float32_t angular_diameter_degrees, float32_t display_exposure);
 
 /** Rebuilds the conservative world-space lookup from point_lights. Public for
  * deterministic CPU coverage tests; scene sync calls it automatically. */

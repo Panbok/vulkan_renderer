@@ -672,6 +672,29 @@ static bool32_t test_moon_light_lights_the_night(void) {
   return true_v;
 }
 
+/* A full moon under street lamps lights nothing that shows, so it must not
+ * cost the frame its cascades (ADR-081); a long exposure makes the same moon
+ * visible again, and an unknown exposure never hides a light. */
+static bool32_t test_invisible_key_light_is_disabled(void) {
+  printf("  Running test_invisible_key_light_is_disabled...\n");
+  VkrLightingSystem system = {0};
+  const Vec3 toward = vec3_new(0.0f, 0.5f, -0.8660254f);
+  const Vec3 moonlight = vec3_new(3.6e-6f, 3.6e-6f, 3.6e-6f);
+  vkr_lighting_system_apply_atmosphere_light(&system, toward, moonlight, 0.52f,
+                                             10.8f);
+  assert(!system.directional.enabled);
+  vkr_lighting_system_apply_atmosphere_light(&system, toward, moonlight, 0.52f,
+                                             262144.0f);
+  assert(system.directional.enabled);
+  assert(lighting_test_vec3_near(system.directional.direction,
+                                 vec3_negate(toward)));
+  vkr_lighting_system_apply_atmosphere_light(&system, toward, moonlight, 0.52f,
+                                             0.0f);
+  assert(system.directional.enabled);
+  printf("  test_invisible_key_light_is_disabled PASSED\n");
+  return true_v;
+}
+
 bool32_t run_lighting_system_tests(void) {
   printf("--- Running Lighting System tests... ---\n");
   bool32_t passed = true_v;
@@ -686,6 +709,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_sun_refresh_follows_moving_light();
   passed &= test_dark_sun_requests_no_revision();
   passed &= test_moon_light_lights_the_night();
+  passed &= test_invisible_key_light_is_disabled();
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();

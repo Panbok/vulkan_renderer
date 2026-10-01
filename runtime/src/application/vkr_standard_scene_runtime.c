@@ -1760,9 +1760,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
         render_scene->atmosphere.active_settings.enabled) {
       const VkrSceneKeyLight key =
           vkr_scene_atmosphere_frame_key_light(render_scene);
-      vkr_lighting_system_apply_atmosphere_light(&application->lighting_system,
-                                                 key.toward, key.irradiance,
-                                                 key.angular_diameter_degrees);
+      vkr_lighting_system_apply_atmosphere_light(
+          &application->lighting_system, key.toward, key.irradiance,
+          key.angular_diameter_degrees,
+          vkr_renderer_get_display_exposure(&application->renderer));
     }
   }
 
