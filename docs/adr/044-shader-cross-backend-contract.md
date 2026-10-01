@@ -321,7 +321,7 @@ This local Metal evidence does not close the bilateral UNALIGNED state.
 
 Local shadow views use a shared 144-byte record: matrix at byte 0, light
 position/near plane at 64, direction/far plane at 80, perspective footprint
-and texel bias parameters at 96, the light's shadow strength and mask layer
+and texel bias parameters at 96, the light's shadow strength (y zero)
 at 112, and the face's atlas square and layer at 128. `shadow_params.z` of
 one selects a single hardware-filtered tap and no contact shadows on both
 backends. Both receivers map face
@@ -341,7 +341,17 @@ Both backends run the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
 with its own 128-byte root: frame, G-buffer inputs, visible rows, inverse
 view-projection, extent and the contact-shadow noise index (byte 120 on Metal,
 112 on Vulkan). The deferred-lighting kernels read the mask array at byte 216 on
-Metal and 168 on Vulkan; those roots stay 240 and 192 bytes. The shared
+Metal and 168 on Vulkan; the roots are 240 and 208 bytes. Vulkan's appends the
+per-light contribution counters at byte 192 (null when not measured), into
+which the deferred punctual loop adds, per wave and light, the pixels'
+unshadowed contribution for local-shadow selection (ADR-019); Metal measures
+none and keeps distance ranking, a capability boundary rather than a parity
+gap in shading. Mask layers are
+per-pixel slots: the k-th shadowed light in range of a pixel, in light
+traversal order, writes layer k with alpha tagging its light index through the
+shared `vkr_local_shadow_mask_tag`. Both deferred-lighting kernels count the
+same lights and filter inline when the slot is past
+`VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` or its tag names another light. The shared
 `local_shadow.slangh` owns the contact-shadow step count, length, noise,
 start offset, occlusion test and fade. Forward and transmission shading pass
 an inline visibility source (a functor on Metal, a Slang generic value parameter
@@ -392,7 +402,9 @@ directional caster semantics are unchanged. Public frame-input version is 45.
 The Metal frame root is 544 bytes with a 48-byte sampling record and a 32-byte
 per-view material record; its draw root remains 48 bytes. Vulkan's frame root is
 624 bytes, with the sampling pointer at byte 608, a 32-byte sampling record,
-an 80-byte shadow raster root and a 192-byte cull root. The shared local-view
+an 80-byte shadow raster root and a 208-byte cull root whose 64-bit
+`reused_local_faces` mask at byte 192 skips classification and encoding for
+reused local faces. The shared local-view
 record remains 112 bytes. Native assertions and reflection pin these layouts.
 The dedicated MSL shadow vertex consumes buffer 0 and the frame root's existing
 row-vector matrix convention; instance matrices remain column-major.

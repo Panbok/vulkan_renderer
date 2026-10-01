@@ -779,8 +779,9 @@ normal-specific coat visibility. Deferred lighting runs a base kernel without
 the layer paths; when a plane exists, a layered kernel shades the 8x8 tiles
 that contain layer data and the base kernel skips them. Both read local shadow
 visibility from the `Shadow.LocalMask` pass, which filters each shadowed
-light's maps once per pixel into its own mask layer and multiplies in a short
-screen-space contact-shadow march. Valid baked-volume cells skip environment
+light's maps once per pixel into the pixel's next overlap slot, in light
+order, and multiplies in a short screen-space contact-shadow march; lights
+past the eight slots are filtered inline. Valid baked-volume cells skip environment
 diffuse evaluation while retaining environment specular.
 
 Thin-sheet diffuse transmission partitions residual base diffuse into front
@@ -834,15 +835,20 @@ See [ADR-012](adr/012-texture-compression-pipeline.md).
 Punctual lighting uses a stable 128-light table and 384-cell fragment-local
 bitmask grid with exact range/cone rejection. Up to 16 ready probes contribute
 fragment-space AABB weights. Directional lighting samples CSM. Point/spot shadows use a separate
-16-face, 1024-squared depth pool per physical target image, with one face per
-spot and six per point. Importance selection retains complete groups; excess
-lights remain unshadowed. Static maps retain valid contents across frames, with
+4096-squared depth atlas per physical target image holding up to 64 faces of
+128 to 1024 texels, with one face per spot and six per point; presets budget
+12 (Balanced), 30 (High) or 60 (Ultra) faces. Importance selection retains complete groups; excess
+lights remain unshadowed. Vulkan ranks lights by the visible contribution
+deferred lighting measured a few frames earlier, so enclosed and off-screen
+lights take no faces; without a measurement, distance ranks. Static maps retain valid contents across frames, with
 nine-tap PCF and point taps remapped across faces. Refractive casters use two
 512² depth/RGB prefix layers and a blocking third-crossing depth. Per-tap
 visibility combines opaque depth with receiver-gated RGB transmission, layered
 reflection loss and material absorption. All five transmission images follow the
-same complete-group reuse and submission proof as opaque depth. A full pool adds
-336 MiB across three target images and three raster passes per refreshed face;
+same complete-group reuse and submission proof as opaque depth. The
+transmission arrays keep at most 32 faces' worth of 512² texels, halving the
+crossing size for larger budgets; a full pool adds 672 MiB across three target
+images and three raster passes per refreshed face;
 straight rays do not model caustics. Directional glass-shadow behavior is unchanged.
 Scene `casts_shadow` and the editor's Cast shadows checkbox require a finite
 range. Imported glTF point/spot
