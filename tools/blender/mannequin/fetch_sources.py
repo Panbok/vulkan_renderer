@@ -5,7 +5,8 @@
 Reads sources.json beside this script and writes each file to
 <sources-dir>/<path>. A file already present with the right SHA-256 is kept;
 a mismatch after download fails the run, so the generator never builds from
-unexpected data. Plain Python 3, no third-party packages.
+unexpected data. A record with `extract` is a zip archive unpacked into
+<sources-dir>/<extract>. Plain Python 3, no third-party packages.
 """
 
 import hashlib
@@ -13,6 +14,7 @@ import json
 import sys
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
 
@@ -26,9 +28,11 @@ def sha256(path):
 
 def fetch(url, destination, attempts=3):
     temporary = destination.with_suffix(destination.suffix + ".part")
+    # Some hosts refuse urllib's default agent string.
+    request = urllib.request.Request(url, headers={"User-Agent": "vkr-fetch-sources/1"})
     for attempt in range(1, attempts + 1):
         try:
-            with urllib.request.urlopen(url, timeout=120) as response, open(temporary, "wb") as out:
+            with urllib.request.urlopen(request, timeout=120) as response, open(temporary, "wb") as out:
                 while True:
                     block = response.read(1 << 20)
                     if not block:
@@ -42,6 +46,29 @@ def fetch(url, destination, attempts=3):
             time.sleep(2.0 * attempt)
 
 
+def extract(archive, target):
+    """Unpack members missing or changed in `target`, refusing paths that
+    would land outside it."""
+    target = target.resolve()
+    with zipfile.ZipFile(archive) as bundle:
+        for member in bundle.infolist():
+            destination = (target / member.filename).resolve()
+            if target not in destination.parents and destination != target:
+                raise RuntimeError(f"{archive}: member {member.filename} leaves {target}")
+            if member.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            if destination.is_file() and destination.stat().st_size == member.file_size:
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with bundle.open(member) as source, open(destination, "wb") as out:
+                while True:
+                    block = source.read(1 << 20)
+                    if not block:
+                        break
+                    out.write(block)
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__.strip())
@@ -51,15 +78,16 @@ def main():
     fetched = 0
     for record in manifest["files"]:
         destination = root / record["path"]
-        if destination.is_file() and sha256(destination) == record["sha256"]:
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        fetch(record["url"], destination)
-        actual = sha256(destination)
-        if actual != record["sha256"]:
-            destination.unlink()
-            raise RuntimeError(f"{record['path']}: SHA-256 {actual} does not match {record['sha256']}")
-        fetched += 1
+        if not (destination.is_file() and sha256(destination) == record["sha256"]):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fetch(record["url"], destination)
+            actual = sha256(destination)
+            if actual != record["sha256"]:
+                destination.unlink()
+                raise RuntimeError(f"{record['path']}: SHA-256 {actual} does not match {record['sha256']}")
+            fetched += 1
+        if "extract" in record:
+            extract(destination, root / record["extract"])
     print(f"{len(manifest['files'])} sources ready in {root} ({fetched} downloaded)")
     return 0
 

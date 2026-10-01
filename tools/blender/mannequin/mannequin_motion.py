@@ -4,7 +4,7 @@ Source takes are 100STYLE BVH files (Xsens, 60 fps): centimetres, Y up,
 facing +Z with the actor's left on +X. They are converted to the mannequin
 frame (metres, Z up, facing +Y, left on -X) before any analysis.
 
-A clip is produced in four steps:
+A clip is produced in five steps:
 
 1. **Window.** Choose a stretch of the take: for locomotion an integer number
    of gait cycles along a straight path, between left heel strikes whose
@@ -18,7 +18,12 @@ A clip is produced in four steps:
    orientation aligned to that T-pose (arms and legs by direction; spine,
    head and feet keep their own rest). The pelvis path scales with hip
    height.
-4. **Feet.** Heel and ball contacts detected on the source are planted: in a
+4. **Posture.** The clip's mean pose is corrected per gait (`POSTURES`):
+   torso lean, head level and facing forward, shoulders unshrugged, elbows
+   flexed, hands clear of the hips and apart, the arm swing scaled and the
+   two arms made alike. The corrections are constant over the clip (the
+   swing scales about its mean), so the capture's own motion stays.
+5. **Feet.** Heel and ball contacts detected on the source are planted: in a
    loop the planted foot slides backwards at exactly the clip speed, so a
    character moving at that speed shows no skating. Two-bone IK places the
    ankles; knees keep the retargeted bend direction.
@@ -683,6 +688,253 @@ def retarget(clip, target, hip_scale, reference, finger_pose=None):
         offset = np.swapaxes(target.rest[parent, :3, :3], -1, -2) @ (target.rest[b, :3, 3] - target.rest[parent, :3, 3])
         position[:, b] = position[:, parent] + np.einsum("fij,j->fi", rotation[:, parent], offset)
     return rotation, position
+
+
+# =============================================================================
+# Posture
+# =============================================================================
+
+@dataclass
+class Posture:
+    """Mean pose a retargeted clip is corrected to, keeping the source's
+    motion about each mean. Angles in degrees; None keeps the source's."""
+    lean: float = None        # torso forward lean, pelvis to neck
+    head: float = None        # head pitch, positive looking up
+    elbow: float = None       # elbow flexion
+    shrug: float = 5.0        # clavicle elevation allowed above rest
+    clearance: float = None   # margin between the hands and the hips (HIP_VOLUME), metres
+    apart: float = None       # lowest wrist distance from the midline for bent arms, metres
+    swing: float = 1.0        # arm swing scale about its mean
+    forward: bool = True      # the head faces the body's front, without a mean turn or tilt
+    # Share of each arm's motion taken from the other arm, mirrored (half a
+    # cycle later in a loop): 0.5 makes both arms move alike.
+    symmetric: float = 0.0
+
+
+POSTURES = {
+    "idle": Posture(lean=1.0, head=-2.0, elbow=20.0, clearance=0.05),
+    "walk": Posture(lean=3.0, head=-3.0, elbow=25.0, clearance=0.035, swing=1.35, symmetric=0.5),
+    "strafe": Posture(lean=2.0, head=-3.0, elbow=22.0, clearance=0.035),
+    "strafe_jog": Posture(lean=4.0, head=-3.0, elbow=45.0, clearance=0.035),
+    "jog": Posture(lean=7.0, head=-2.0, elbow=90.0, clearance=0.02, apart=0.035, symmetric=0.5),
+    "run": Posture(lean=10.0, head=0.0, elbow=90.0, clearance=0.02, apart=0.04, symmetric=0.5),
+    "crouch": Posture(head=-6.0, elbow=22.0, clearance=0.03),
+    "jump": Posture(head=-2.0, clearance=0.02, symmetric=0.5),
+}
+
+# The hips and lower torso a hand must stay out of: an elliptic cylinder
+# about the pelvis head, half width and half depth in metres over a band of
+# heights relative to the pelvis head.
+HIP_VOLUME = {"half_width": 0.17, "half_depth": 0.125, "centre_y": 0.01, "low": -0.25, "high": 0.30}
+
+
+def hip_intrusion(offset, margin):
+    """Per frame: the hand's radius inside the hip volume grown by `margin`,
+    normalized so 1 lies on its surface; infinite outside the height band.
+    `offset` is the hand minus the pelvis head, (F, 3)."""
+    v = HIP_VOLUME
+    radius = np.sqrt((offset[:, 0] / (v["half_width"] + margin)) ** 2 +
+                     ((offset[:, 1] - v["centre_y"]) / (v["half_depth"] + margin)) ** 2)
+    band = (offset[:, 2] > v["low"]) & (offset[:, 2] < v["high"])
+    return np.where(band, radius, np.inf)
+
+# The arm chains that mirror onto each other.
+_ARM_BONES = ("clavicle", "upperarm", "upperarm_twist_01", "lowerarm", "lowerarm_twist_01", "hand")
+_FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+
+# Shares of a correction taken by each joint of a chain.
+_SPINE_SHARES = (("spine_01", 0.10), ("spine_02", 0.20), ("spine_03", 0.25), ("spine_04", 0.25),
+                 ("spine_05", 0.20))
+_NECK_SHARES = (("neck_01", 0.35), ("neck_02", 0.35), ("head", 0.30))
+
+_LATERAL = np.array([1.0, 0.0, 0.0])
+_FORWARD = np.array([0.0, 1.0, 0.0])
+
+
+def _local_rotations(target, rotation):
+    local = np.empty_like(rotation)
+    for b, parent in enumerate(target.parents):
+        local[:, b] = rotation[:, b] if parent < 0 else np.swapaxes(rotation[:, parent], -1, -2) @ rotation[:, b]
+    return local
+
+
+def _compose(target, local, position):
+    """Global rotations and heads from local rotations; root and pelvis heads
+    stay where they are."""
+    rotation = np.empty_like(local)
+    heads = position.copy()
+    pelvis = target.index("pelvis")
+    for b, parent in enumerate(target.parents):
+        if parent < 0:
+            rotation[:, b] = local[:, b]
+            continue
+        rotation[:, b] = rotation[:, parent] @ local[:, b]
+        if b != pelvis:
+            offset = target.rest[parent, :3, :3].T @ (target.rest[b, :3, 3] - target.rest[parent, :3, 3])
+            heads[:, b] = heads[:, parent] + np.einsum("fij,j->fi", rotation[:, parent], offset)
+    return rotation, heads
+
+
+def _turn(target, local, rotation, name, axis, angle):
+    """Turn a bone and everything it carries about a world axis through its
+    head, by `angle` radians (scalar or per frame)."""
+    b = target.index(name)
+    axis = np.broadcast_to(axis, (len(local), 3))
+    parent_axis = np.einsum("fji,fj->fi", rotation[:, target.parents[b]], axis)
+    local[:, b] = axis_angle(parent_axis, np.broadcast_to(angle, len(local))) @ local[:, b]
+
+
+def _torso_lean(target, rotation, position):
+    torso = position[:, target.index("neck_01")] - position[:, target.index("pelvis")]
+    return np.arctan2(torso[:, 1], torso[:, 2])
+
+
+def _head_pitch(target, rotation):
+    forward = rotation[:, target.index("head")] @ np.array([0.0, 0.0, 1.0])
+    return np.arcsin(np.clip(forward[:, 2], -1.0, 1.0))
+
+
+def _bone_axis(target, rotation, name):
+    return rotation[:, target.index(name)] @ np.array([0.0, 1.0, 0.0])
+
+
+def _arm_pairs(target):
+    names = list(_ARM_BONES)
+    for finger in _FINGERS:
+        if finger != "thumb":
+            names.append(f"{finger}_metacarpal")
+        names += [f"{finger}_0{segment}" for segment in (1, 2, 3)]
+    return [(target.index(f"{name}_l"), target.index(f"{name}_r")) for name in names]
+
+
+def _symmetrize_arms(target, local, share, shift):
+    """Blend each arm's local rotations towards the other arm's, mirrored
+    across the midline and `shift` frames later."""
+    reflect = np.diag([-1.0, 1.0, 1.0])
+
+    def mirror_frame(a, b):
+        # Rest frame of b expressed as the mirror image of a's.
+        return target.rest[a, :3, :3].T @ reflect @ target.rest[b, :3, :3]
+
+    source = local.copy()
+    for left, right in _arm_pairs(target):
+        for this, other in ((left, right), (right, left)):
+            parent, other_parent = target.parents[this], target.parents[other]
+            # A bone's parent is the spine (shared) or the same arm's bone.
+            parent_frame = mirror_frame(other_parent, parent)
+            frame = mirror_frame(other, this)
+            mirrored = parent_frame.T @ np.roll(source[:, other], -shift, axis=0) @ frame
+            local[:, this] = slerp_matrix(source[:, this], mirrored, np.full(len(local), share))
+
+
+def correct_posture(target, rotation, position, posture, loop=True):
+    """Correct a retargeted clip's mean posture (see Posture): the torso lean
+    spread over the spine, the head pitch over the neck, shrugged clavicles
+    lowered, arms abducted clear of the hips, the arm swing scaled and the
+    elbows flexed. Each correction is constant over the clip except the
+    swing, so the motion capture's own oscillation stays."""
+    if posture is None:
+        return rotation, position
+    local = _local_rotations(target, rotation)
+
+    def update():
+        return _compose(target, local, position)
+
+    if posture.symmetric > 0.0:
+        _symmetrize_arms(target, local, posture.symmetric, len(local) // 2 if loop else 0)
+    rotation, position = update()
+    if posture.lean is not None:
+        # The lower spine carries less of the lean, so iterate on the result.
+        for _ in range(3):
+            delta = np.radians(posture.lean) - _torso_lean(target, rotation, position).mean()
+            for name, share in _SPINE_SHARES:
+                _turn(target, local, rotation, name, -_LATERAL, share * delta)
+            rotation, position = update()
+    if posture.forward:
+        # A strafing actor watches where they go; a game character looks
+        # where it faces.
+        up = np.array([0.0, 0.0, 1.0])
+        for _ in range(2):
+            head = rotation[:, target.index("head")]
+            front = head @ np.array([0.0, 0.0, 1.0])
+            side = head @ np.array([1.0, 0.0, 0.0])
+            yaw = np.arctan2(-front[:, 0], front[:, 1]).mean()
+            roll = np.arcsin(np.clip(side[:, 2], -1.0, 1.0)).mean()
+            for name, share in _NECK_SHARES:
+                _turn(target, local, rotation, name, up, -share * yaw)
+                _turn(target, local, rotation, name, _FORWARD, -share * roll)
+            rotation, position = update()
+    if posture.head is not None:
+        for _ in range(3):
+            delta = np.radians(posture.head) - _head_pitch(target, rotation).mean()
+            for name, share in _NECK_SHARES:
+                _turn(target, local, rotation, name, _LATERAL, share * delta)
+            rotation, position = update()
+    for side, sign in (("l", -1.0), ("r", 1.0)):
+        # Shoulders: no more shrug than `shrug` above the rest pose.
+        clavicle = f"clavicle_{side}"
+        rest_elevation = np.arcsin(target.direction(clavicle)[2])
+        elevation = np.arcsin(np.clip(_bone_axis(target, rotation, clavicle)[:, 2], -1.0, 1.0)).mean()
+        excess = elevation - rest_elevation - np.radians(posture.shrug)
+        if excess > 0.0:
+            _turn(target, local, rotation, clavicle, sign * _FORWARD, excess)
+            rotation, position = update()
+        upper = f"upperarm_{side}"
+        hand = target.index(f"hand_{side}")
+        pelvis = target.index("pelvis")
+        if posture.elbow is not None:
+            up = _bone_axis(target, rotation, upper)
+            down = _bone_axis(target, rotation, f"lowerarm_{side}")
+            angle = np.arccos(np.clip((up * down).sum(axis=1), -1.0, 1.0))
+            # The hinge is the arm's own plane once it bends; nearly straight,
+            # the forearm folds forwards.
+            plane = _normalize(np.cross(up, down))
+            fold = _normalize(np.cross(up, _FORWARD))
+            plane = np.where(((plane * fold).sum(axis=1) < 0.0)[:, None], -plane, plane)
+            bend = smoothstep(np.radians(5.0), np.radians(15.0), angle)[:, None]
+            hinge = _normalize(plane * bend + fold * (1.0 - bend))
+            delta = np.radians(posture.elbow) - angle.mean()
+            # Never straighten past 3 degrees.
+            delta = np.maximum(delta, np.radians(3.0) - angle)
+            lower = target.index(f"lowerarm_{side}")
+            parent_hinge = np.einsum("fji,fj->fi", rotation[:, target.index(upper)], hinge)
+            local[:, lower] = axis_angle(parent_hinge, delta) @ local[:, lower]
+            rotation, position = update()
+        if posture.clearance is not None:
+            # The hands clear the hips: abduct the arm until no frame puts
+            # the hand inside the grown hip volume.
+            for _ in range(4):
+                offset = position[:, hand] - position[:, pelvis]
+                inside = hip_intrusion(offset, posture.clearance)
+                if inside.min() >= 1.0:
+                    break
+                f = int(np.argmin(inside))
+                # Lateral distance still missing at the worst frame.
+                v = HIP_VOLUME
+                depth = (offset[f, 1] - v["centre_y"]) / (v["half_depth"] + posture.clearance)
+                wanted = (v["half_width"] + posture.clearance) * np.sqrt(max(0.0, 1.0 - min(1.0, depth * depth)))
+                shortfall = wanted - sign * offset[f, 0] + 0.002
+                reach = np.linalg.norm(position[:, hand] - position[:, target.index(upper)], axis=1).mean()
+                _turn(target, local, rotation, upper, -sign * _FORWARD, np.arcsin(min(0.9, shortfall / reach)))
+                rotation, position = update()
+        if posture.apart is not None:
+            # Bent arms swing in front of the chest; turning the upper arm
+            # outwards about its own axis keeps the hands off the midline.
+            for _ in range(4):
+                lateral = sign * (position[:, hand, 0] - position[:, pelvis, 0])
+                shortfall = posture.apart - lateral.min()
+                if shortfall <= 0.0:
+                    break
+                forearm = np.linalg.norm(position[:, hand] - position[:, target.index(f"lowerarm_{side}")], axis=1).mean()
+                axis = _bone_axis(target, rotation, upper)
+                _turn(target, local, rotation, upper, axis, sign * np.arcsin(min(0.9, shortfall / forearm)))
+                rotation, position = update()
+        if posture.swing != 1.0:
+            axis = _bone_axis(target, rotation, upper)
+            swing = np.arctan2(axis[:, 1], -axis[:, 2])
+            _turn(target, local, rotation, upper, _LATERAL, (posture.swing - 1.0) * (swing - swing.mean()))
+            rotation, position = update()
+    return orthonormalize(rotation), position
 
 
 # =============================================================================

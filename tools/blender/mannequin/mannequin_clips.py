@@ -26,30 +26,32 @@ class ClipSpec:
     cycles: int = 1
     seconds: float = 0.0    # idle length
     hands: str = "relaxed"  # mannequin_motion.HAND_POSES
+    posture: str = "walk"   # mannequin_motion.POSTURES
 
 
 CLIPS = [
-    ClipSpec("Idle", "Neutral_ID", "idle", seconds=6.0),
-    # Forward walk and jog at game pace (100STYLE's are 0.85 and 1.86 m/s).
-    ClipSpec("Walk_Fwd", "cmu:35:" + ",".join(f"35_{i:02d}" for i in range(1, 17)), "cycle", 0.0, 1),
-    ClipSpec("Walk_Bwd", "Neutral_BW", "cycle", np.pi, 1),
-    ClipSpec("Walk_Left", "Neutral_SW", "cycle", np.pi / 2.0, 1),
-    ClipSpec("Walk_Right", "Neutral_SW", "cycle", -np.pi / 2.0, 1),
-    # The easier CMU 35 jogs; its faster ones nearly match the run's speed.
-    ClipSpec("Jog_Fwd", "cmu:35:35_17,35_18", "cycle", 0.0, 1, hands="fist"),
-    ClipSpec("Jog_Bwd", "Neutral_BR", "cycle", np.pi, 1, hands="fist"),
-    ClipSpec("Jog_Left", "Neutral_SR", "cycle", np.pi / 2.0, 1, hands="fist"),
-    ClipSpec("Jog_Right", "Neutral_SR", "cycle", -np.pi / 2.0, 1, hands="fist"),
-    ClipSpec("Run_Fwd", "cmu:09:09_01,09_02,09_03,09_04,09_05,09_06,09_07,09_08,09_09,09_10,09_11", "cycle", 0.0, 1,
-             hands="fist"),
-    ClipSpec("Jump_Start", "cmu:13:13_41", "jump_start", seconds=0.45),
-    ClipSpec("Jump_Loop", "cmu:13:13_41", "jump_loop", seconds=0.5),
-    ClipSpec("Jump_Land", "cmu:13:13_41", "jump_land", seconds=0.75),
-    ClipSpec("Crouch_Idle", "Crouched_ID", "idle", seconds=5.0),
-    ClipSpec("Crouch_Walk_Fwd", "Crouched_FW", "cycle", 0.0, 1),
-    ClipSpec("Crouch_Walk_Bwd", "Crouched_BW", "cycle", np.pi, 1),
-    ClipSpec("Crouch_Walk_Left", "Crouched_SW", "cycle", np.pi / 2.0, 1),
-    ClipSpec("Crouch_Walk_Right", "Crouched_SW", "cycle", -np.pi / 2.0, 1),
+    ClipSpec("Idle", "Neutral_ID", "idle", seconds=6.0, posture="idle"),
+    # Forward walk, jog and run at game pace (100STYLE's are 0.85 and 1.86
+    # m/s): a brisk, even-armed CMU walk at 1.9 m/s.
+    ClipSpec("Walk_Fwd", "cmu:16:16_21", "cycle", 0.0, 1),
+    ClipSpec("Walk_Bwd", "Neutral_BW", "cycle", np.pi, 1, posture="strafe"),
+    ClipSpec("Walk_Left", "Neutral_SW", "cycle", np.pi / 2.0, 1, posture="strafe"),
+    ClipSpec("Walk_Right", "Neutral_SW", "cycle", -np.pi / 2.0, 1, posture="strafe"),
+    # CMU 35's most even-armed easy jog; its faster ones nearly match the run.
+    ClipSpec("Jog_Fwd", "cmu:35:35_18", "cycle", 0.0, 1, hands="fist", posture="jog"),
+    ClipSpec("Jog_Bwd", "Neutral_BR", "cycle", np.pi, 1, hands="fist", posture="strafe_jog"),
+    ClipSpec("Jog_Left", "Neutral_SR", "cycle", np.pi / 2.0, 1, hands="fist", posture="strafe_jog"),
+    ClipSpec("Jog_Right", "Neutral_SR", "cycle", -np.pi / 2.0, 1, hands="fist", posture="strafe_jog"),
+    # The longest-striding CMU 9 run, with the fullest arm swing.
+    ClipSpec("Run_Fwd", "cmu:09:09_11", "cycle", 0.0, 1, hands="fist", posture="run"),
+    ClipSpec("Jump_Start", "cmu:13:13_41", "jump_start", seconds=0.45, posture="jump"),
+    ClipSpec("Jump_Loop", "cmu:13:13_41", "jump_loop", seconds=0.5, posture="jump"),
+    ClipSpec("Jump_Land", "cmu:13:13_41", "jump_land", seconds=0.75, posture="jump"),
+    ClipSpec("Crouch_Idle", "Crouched_ID", "idle", seconds=5.0, posture="crouch"),
+    ClipSpec("Crouch_Walk_Fwd", "Crouched_FW", "cycle", 0.0, 1, posture="crouch"),
+    ClipSpec("Crouch_Walk_Bwd", "Crouched_BW", "cycle", np.pi, 1, posture="crouch"),
+    ClipSpec("Crouch_Walk_Left", "Crouched_SW", "cycle", np.pi / 2.0, 1, posture="crouch"),
+    ClipSpec("Crouch_Walk_Right", "Crouched_SW", "cycle", -np.pi / 2.0, 1, posture="crouch"),
 ]
 
 
@@ -162,6 +164,7 @@ def _finish_cycle(spec, take, a, b, start, target, reference, source):
 def _finish(spec, take, clip, a, b, start, target, reference, source):
     scale = hip_scale(target, take)
     rotation, position = mm.retarget(clip, target, scale, reference, mm.hand_pose(target, spec.hands))
+    rotation, position = mm.correct_posture(target, rotation, position, mm.POSTURES[spec.posture], clip.loop)
     rotation, position = mm.plant_feet(clip, target, rotation, position, scale)
     quaternions, translation = mm.local_pose(target, rotation, position)
     return {"clip": clip, "window": (int(a + start), int(b + start)), "source": source, "scale": scale,

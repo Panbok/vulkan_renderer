@@ -1,176 +1,17 @@
 {
   "version": 1,
-  "description": "Third-party inputs of the default mannequin (build_mannequin.py). fetch_sources.py downloads them into <sources>/<path> and checks each SHA-256.",
+  "description": "Third-party inputs of the default mannequin (build_mannequin.py). fetch_sources.py downloads them into <sources>/<path>, checks each SHA-256 and unpacks archives into <sources>/<extract>.",
   "licenses": {
-    "makehuman": "CC0 1.0 (MakeHuman assets: base mesh, targets, default rig and weights), makehumancommunity/makehuman at a8bc2d54ff0ac92e78ff71431b1023eda42bf482",
+    "blender-studio": "CC0 1.0 (Blender Studio, Human Base Meshes bundle v1.4.1: the realistic male body)",
     "100style": "CC BY 4.0, credit: \"The 100STYLE Dataset - Ian Mason\" (https://www.ianxmason.com/100style/)",
     "cmu": "CMU Graphics Lab Motion Capture Database (http://mocap.cs.cmu.edu): free for commercial use, not for resale as raw data; the database was created with funding from NSF EIA-0196217"
   },
   "files": [
     {
-      "path": "makehuman/3dobjs/base.obj",
-      "sha256": "8e761e6624b8f54536409135d1636da63b32486a90d4897f84e121d144f6fb4c",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/3dobjs/base.obj"
-    },
-    {
-      "path": "makehuman/rigs/default.mhskel",
-      "sha256": "99f179bce0aa850b45d4191a1d0d234c5851f881c057439470ded3bddf729a24",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/rigs/default.mhskel"
-    },
-    {
-      "path": "makehuman/rigs/default_weights.mhw",
-      "sha256": "0f3641d651ae3d00ad6b4ccee43142edb109d3bd909d27d9e4139ef1beed8625",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/rigs/default_weights.mhw"
-    },
-    {
-      "path": "makehuman/targets/armslegs/l-lowerarm-muscle-incr.target",
-      "sha256": "68511185971789f16fc625788f6abd61bfee61d5580b015745ad4fa7faa83d6b",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/l-lowerarm-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/l-lowerleg-muscle-incr.target",
-      "sha256": "5c4323925e92e0875d4a3ce5e72db3ee0394dc865183349ac12ac8051dc1bd53",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/l-lowerleg-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/l-upperarm-muscle-incr.target",
-      "sha256": "61440e900b9e65748005e837b129abd48b1cd8fb98a653a2288a1bd3ace810d7",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/l-upperarm-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/l-upperarm-shoulder-muscle-incr.target",
-      "sha256": "0d1994d9d45b5f7b5d4884262514fee53c6fd111bce1cc931a6fcb69f60aa8b6",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/l-upperarm-shoulder-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/l-upperleg-muscle-incr.target",
-      "sha256": "f5804422cee551ab197a7e41b4d1a9c25d5f7c2d8277e0615c1b61341bc65647",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/l-upperleg-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/r-lowerarm-muscle-incr.target",
-      "sha256": "f4c207478c621e2ac9c0c1e6e1e67803e25a7ee083fe2aa8e31cf831d20d1ab3",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/r-lowerarm-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/r-lowerleg-muscle-incr.target",
-      "sha256": "e2d438a2ef32948d77316343f7882cfabe5cfe447b8b96bc31131c6812f10792",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/r-lowerleg-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/r-upperarm-muscle-incr.target",
-      "sha256": "cf81df0a8d38bd66742d017dbcfe77f180659dfd61ed3fc94cb25751ccd4417b",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/r-upperarm-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/r-upperarm-shoulder-muscle-incr.target",
-      "sha256": "33d8d39af985071484836ebda826ab50332408256b1e6d2ab2240d480fd00295",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/r-upperarm-shoulder-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/armslegs/r-upperleg-muscle-incr.target",
-      "sha256": "833d03f125d75a933164e69918fdc075080ea453a11091a132f58f3d68f7def8",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/armslegs/r-upperleg-muscle-incr.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/african-male-young.target",
-      "sha256": "894abc1fbb3d28543a51fef16f89d5d4bdf9aa2e1534413339811a3d47818b7d",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/african-male-young.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/asian-male-young.target",
-      "sha256": "ed2e8c191cb6b87b4a2d97c80486acb2604fa549316c7aa2a738a5d5a14334dc",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/asian-male-young.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/caucasian-male-young.target",
-      "sha256": "70e228ba7164737dae664454394536fc5935fa48d333c1a97d77e2dc6eacc5f5",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/caucasian-male-young.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/height/male-young-maxmuscle-averageweight-maxheight.target",
-      "sha256": "3baacc70187410ebba2b62c56a53775266ab859b7844d47e658d36ee78493621",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/height/male-young-maxmuscle-averageweight-maxheight.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/height/male-young-maxmuscle-minweight-maxheight.target",
-      "sha256": "3baacc70187410ebba2b62c56a53775266ab859b7844d47e658d36ee78493621",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/height/male-young-maxmuscle-minweight-maxheight.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/proportions/male-young-maxmuscle-averageweight-idealproportions.target",
-      "sha256": "d9452857903d18a2100ca26105d5a61083e7064fbe16f035863446728755ec20",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/proportions/male-young-maxmuscle-averageweight-idealproportions.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/proportions/male-young-maxmuscle-minweight-idealproportions.target",
-      "sha256": "d9452857903d18a2100ca26105d5a61083e7064fbe16f035863446728755ec20",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/proportions/male-young-maxmuscle-minweight-idealproportions.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/universal-male-young-maxmuscle-averageweight.target",
-      "sha256": "c171ff9cc95e96273beb3e3b1969a01988c2d4982ebc6fe04bf81cf72ee3b295",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/universal-male-young-maxmuscle-averageweight.target"
-    },
-    {
-      "path": "makehuman/targets/macrodetails/universal-male-young-maxmuscle-minweight.target",
-      "sha256": "5873f11edc96fde72a79ec35fa1d292a6a1a594b5eadfd82d59faf48834561de",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/macrodetails/universal-male-young-maxmuscle-minweight.target"
-    },
-    {
-      "path": "makehuman/targets/measure/measure-calf-circ-incr.target",
-      "sha256": "c6106ec484a875a8763a7e9b12a4891da8efcd5152efbc1c7061f40bdc4353a6",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/measure/measure-calf-circ-incr.target"
-    },
-    {
-      "path": "makehuman/targets/measure/measure-neck-circ-incr.target",
-      "sha256": "caa38a399ef4dcdd713e5cb3e496afa8c6c938dea41fd848703d4549a48a74c0",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/measure/measure-neck-circ-incr.target"
-    },
-    {
-      "path": "makehuman/targets/measure/measure-shoulder-dist-incr.target",
-      "sha256": "af7394300c91d64fb0b032377aae72e546c778d1d5c00daed88858c04ee9150b",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/measure/measure-shoulder-dist-incr.target"
-    },
-    {
-      "path": "makehuman/targets/measure/measure-thigh-circ-incr.target",
-      "sha256": "5dca89b139df6f9b7c7641485dee18e9f0da10087359b9df5ca6a1e752ea0bcc",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/measure/measure-thigh-circ-incr.target"
-    },
-    {
-      "path": "makehuman/targets/measure/measure-upperarm-circ-incr.target",
-      "sha256": "37f960203ae6c006399d3d26ab81e6d1de81523e86f845549aa94ca345c5d980",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/measure/measure-upperarm-circ-incr.target"
-    },
-    {
-      "path": "makehuman/targets/measure/measure-waist-circ-decr.target",
-      "sha256": "6a976bd7819fa037a290b381bb3e04dfd04220dddeac194c476472295d2baba8",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/measure/measure-waist-circ-decr.target"
-    },
-    {
-      "path": "makehuman/targets/neck/neck-scale-horiz-incr.target",
-      "sha256": "60be8afb75b4c6e41f0157a157cdeba09b6efb5597e417ccd155e14cb06a216d",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/neck/neck-scale-horiz-incr.target"
-    },
-    {
-      "path": "makehuman/targets/stomach/stomach-tone-incr.target",
-      "sha256": "0fc4629f4f38b7c83dadc3a1a650f0db6e8c50f974ff57eb920d4881cadcf0d9",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/stomach/stomach-tone-incr.target"
-    },
-    {
-      "path": "makehuman/targets/torso/torso-muscle-dorsi-incr.target",
-      "sha256": "a9eb27874c600716c4ac058caf922671c6556427f00373d0d31c7615d31ded56",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/torso/torso-muscle-dorsi-incr.target"
-    },
-    {
-      "path": "makehuman/targets/torso/torso-muscle-pectoral-incr.target",
-      "sha256": "0299c687b73a5e217d00273da99acb8a983c8a83640177062fdc27d20bdce77b",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/torso/torso-muscle-pectoral-incr.target"
-    },
-    {
-      "path": "makehuman/targets/torso/torso-vshape-incr.target",
-      "sha256": "9d0ac9eec39a14d51d7db50e48292b3db67aed9b91e654b379f4dbe348644684",
-      "url": "https://raw.githubusercontent.com/makehumancommunity/makehuman/a8bc2d54ff0ac92e78ff71431b1023eda42bf482/makehuman/data/targets/torso/torso-vshape-incr.target"
+      "path": "blender-studio/human-base-meshes-bundle-v1.4.1.zip",
+      "sha256": "811f43accbb31a88266d932f8f5563b2d13586fca0ba2693aad1f5fe582b3515",
+      "url": "https://download.blender.org/demo/asset-bundles/human-base-meshes/human-base-meshes-bundle-v1.4.1.zip",
+      "extract": "blender-studio"
     },
     {
       "path": "100style/Crouched_BW.bvh",
@@ -191,6 +32,11 @@
       "path": "100style/Crouched_SW.bvh",
       "sha256": "e23e286f6b8479535f021460825fc7a8981b658935ea118501c1c59a0b8059cf",
       "url": "https://drive.google.com/uc?id=1KFo6eDIqQyaCgsxL09SsaPxdW003rhEx&export=download"
+    },
+    {
+      "path": "100style/Frame_Cuts.csv",
+      "sha256": "e3c1d2beab6486e083622cef6a5402fe9b20edc75a9963ea30675c67ec29ee82",
+      "url": "https://drive.google.com/uc?id=1d0VM8k4UjA4dDmaviuZMjAf-WQNLUwnZ&export=download"
     },
     {
       "path": "100style/Neutral_BR.bvh",
@@ -218,64 +64,9 @@
       "url": "https://drive.google.com/uc?id=1HzUccloKCjQgpObQ0ZXTEDW7-RllNwHX&export=download"
     },
     {
-      "path": "100style/Frame_Cuts.csv",
-      "sha256": "e3c1d2beab6486e083622cef6a5402fe9b20edc75a9963ea30675c67ec29ee82",
-      "url": "https://drive.google.com/uc?id=1d0VM8k4UjA4dDmaviuZMjAf-WQNLUwnZ&export=download"
-    },
-    {
       "path": "cmu/09.asf",
       "sha256": "be10dbce393fd60a2d322410032d618757afcc5bb2f7a508d887c5b0213f1897",
       "url": "http://mocap.cs.cmu.edu/subjects/09/09.asf"
-    },
-    {
-      "path": "cmu/09_01.amc",
-      "sha256": "02c94e8c2d4d2ff05f9a784f06403700c2c9d7caedd9bd92b50284d1a05f2bee",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_01.amc"
-    },
-    {
-      "path": "cmu/09_02.amc",
-      "sha256": "9e618b1c3897776e98485ad01509708b1e5190c76fc630ad6db9ccb12529b927",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_02.amc"
-    },
-    {
-      "path": "cmu/09_03.amc",
-      "sha256": "2d2114dcc00c3e4d5f08b95e36a7e82883804d3dcfbcb1a4a5c976eebbc538b1",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_03.amc"
-    },
-    {
-      "path": "cmu/09_04.amc",
-      "sha256": "8dab7838b13302ba49183cb506c25832d9ae398c229c690a6cdb580551064771",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_04.amc"
-    },
-    {
-      "path": "cmu/09_05.amc",
-      "sha256": "291760ca4a0ad482400233e56862df39fb7de7018bbe16ad4657ff52cbf3b992",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_05.amc"
-    },
-    {
-      "path": "cmu/09_06.amc",
-      "sha256": "d181d43ca32c8c2b3906f796e7670c8c679aa1767184d3a919540e7bb6d7382f",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_06.amc"
-    },
-    {
-      "path": "cmu/09_07.amc",
-      "sha256": "123e5ebb29f428a6048a4bca264dcdae09d25d383bb8aed435fd32935c8bd2c9",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_07.amc"
-    },
-    {
-      "path": "cmu/09_08.amc",
-      "sha256": "2529ea372b5604c0ba88aa0dfc52f0e52485d3072c70e3045fc70c137937ccfe",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_08.amc"
-    },
-    {
-      "path": "cmu/09_09.amc",
-      "sha256": "7185ba29118fa01809e61a6a1e61c90d1ee5926f46d62977ba7ecee87e3a0a91",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_09.amc"
-    },
-    {
-      "path": "cmu/09_10.amc",
-      "sha256": "fe9df0c542000f3b68cd159897348c4f1d97e76a3247d1ca7dc016e70dff79d0",
-      "url": "http://mocap.cs.cmu.edu/subjects/09/09_10.amc"
     },
     {
       "path": "cmu/09_11.amc",
@@ -293,94 +84,19 @@
       "url": "http://mocap.cs.cmu.edu/subjects/13/13_41.amc"
     },
     {
+      "path": "cmu/16.asf",
+      "sha256": "2323f876564610f84bfbec9b90b8ebffb57515673b7f4a45b0fb0849af465bdb",
+      "url": "http://mocap.cs.cmu.edu/subjects/16/16.asf"
+    },
+    {
+      "path": "cmu/16_21.amc",
+      "sha256": "351283886a5fcc555f187068955472b284f00c51df44d612a1a21da271f1ad92",
+      "url": "http://mocap.cs.cmu.edu/subjects/16/16_21.amc"
+    },
+    {
       "path": "cmu/35.asf",
       "sha256": "2a8e2eda3c0d7d828566b2a9a8ab36b2b8b3864110574e8b73c8f069fded416c",
       "url": "http://mocap.cs.cmu.edu/subjects/35/35.asf"
-    },
-    {
-      "path": "cmu/35_01.amc",
-      "sha256": "0743f4ea48e7e199cd56b2810b5ce81f8ede08d32ff79aa4e363c44cc4fe33aa",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_01.amc"
-    },
-    {
-      "path": "cmu/35_02.amc",
-      "sha256": "c2573ac32712c503d0d957a4708e0f3488348269485cdc7b00266b44d116c903",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_02.amc"
-    },
-    {
-      "path": "cmu/35_03.amc",
-      "sha256": "268e87ca19726fe03a66b4f792e3226706afe8a393ab1587a8794de6b43dc447",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_03.amc"
-    },
-    {
-      "path": "cmu/35_04.amc",
-      "sha256": "fa0f78d04aa0228959bb517c311da1f013c385259d5de93781dbb26b1e9bd08a",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_04.amc"
-    },
-    {
-      "path": "cmu/35_05.amc",
-      "sha256": "2af02bae8a393e3a9f2d04afaac3fdb651e16af74a6e44a994c22bb2047150ae",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_05.amc"
-    },
-    {
-      "path": "cmu/35_06.amc",
-      "sha256": "d8b5e84fa6b3ee2d87daa82b76a9a9332e42253b2266ab931af838d9aee7e4fd",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_06.amc"
-    },
-    {
-      "path": "cmu/35_07.amc",
-      "sha256": "a07a991cd061518c89311d50703e494b9b70a158bd8768002a5b87084b124208",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_07.amc"
-    },
-    {
-      "path": "cmu/35_08.amc",
-      "sha256": "95d6b0b70eb12bed3dc8c1c284a8b7ba1ff845c93fa992ac0ba444fdf9e51762",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_08.amc"
-    },
-    {
-      "path": "cmu/35_09.amc",
-      "sha256": "6bf794e4f3d9c71752e54a342cdff29a1f5e20270ddbea28326b37fff47f68a5",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_09.amc"
-    },
-    {
-      "path": "cmu/35_10.amc",
-      "sha256": "2700fcdf53742722ec6a1f65be9c5b954f0faa8c9c3026256f059fe3f135fd44",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_10.amc"
-    },
-    {
-      "path": "cmu/35_11.amc",
-      "sha256": "da8d7b616a3e9af89cb679a3b8efa886de0297bf78f1810c8dff655bb4847bc5",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_11.amc"
-    },
-    {
-      "path": "cmu/35_12.amc",
-      "sha256": "4ef686d5cb10e07ed838e64f161d2f49ff79bbaec7bca8996bb2ead858a80427",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_12.amc"
-    },
-    {
-      "path": "cmu/35_13.amc",
-      "sha256": "cef7e776b876ab4df222e0960ab916cb28c4cb75a51b125342e79ccd59c1fe28",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_13.amc"
-    },
-    {
-      "path": "cmu/35_14.amc",
-      "sha256": "6b41988a7e7cac9170cb5b410e1a8e32f729624e201169596087c3e37f608d06",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_14.amc"
-    },
-    {
-      "path": "cmu/35_15.amc",
-      "sha256": "f3fd06482059576cc87a6ec422e5f00221bcd9be8554719608db2058e496fbd6",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_15.amc"
-    },
-    {
-      "path": "cmu/35_16.amc",
-      "sha256": "d4f526aa1df4df166857e7ffd716aa96351e5d222a2f05e8818fd3562616609b",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_16.amc"
-    },
-    {
-      "path": "cmu/35_17.amc",
-      "sha256": "8096cd53878242dbc35e987288cef6ae81d4e1c0e207086639bbed5cc06c8fee",
-      "url": "http://mocap.cs.cmu.edu/subjects/35/35_17.amc"
     },
     {
       "path": "cmu/35_18.amc",

@@ -1,27 +1,40 @@
-"""The mannequin skeleton and skin weights.
+"""The mannequin skeleton.
 
 Bone names follow the UE5 mannequin convention (root, pelvis, spine_01..05,
 neck_01/02, head, clavicle/upperarm/lowerarm/hand with twist bones, full
 fingers with metacarpals, thigh/calf/foot/ball with twist bones and the ik_*
-virtual bones), so retargeting tools map it without manual work. Joint
-placement comes from the MakeHuman joint helpers of the target-applied body,
-and weights from MakeHuman's CC0 default weights. Plain numpy.
+virtual bones), so retargeting tools map it without manual work.
+
+Joints come from the base body: limb and finger joints are the centres of
+the rings where the bundle's sculpt face sets meet (upper arm and forearm at
+the elbow, each phalanx at its knuckle); the spine, neck and hips follow
+proportions of the torso's sections. Plain numpy; skin weights are bone heat
+in Blender (mannequin_blender.skin).
 """
 
 from dataclasses import dataclass
 
 import numpy as np
 
-import mannequin_body as mb
-import mannequin_makehuman as mh
 
+SIDES = ("l", "r")
 
-MAX_INFLUENCES = 4
+# Face sets of the base body on the character's right (+X); the left side
+# uses the mirrored sets below.
+RIGHT_SETS = {"torso": 1, "upperarm": 20, "forearm": 11, "hand": 10,
+              "thigh": 23, "shin": 16, "pelvis": 18}
+LEFT_SETS = {"torso": 1, "upperarm": 21, "forearm": 12, "hand": 9,
+             "thigh": 24, "shin": 15, "pelvis": 18}
+# Finger chains from the palm outwards: segment sets, then the nail.
+RIGHT_FINGERS = {"thumb": (84, 85, 86, 87), "index": (88, 89, 90, 91), "middle": (92, 93, 94, 95),
+                 "ring": (96, 97, 98, 99), "pinky": (100, 101, 102, 103)}
+LEFT_FINGERS = {"thumb": (80, 81, 82, 83), "index": (76, 77, 78, 79), "middle": (72, 73, 74, 75),
+                "ring": (68, 69, 70, 71), "pinky": (64, 65, 66, 67)}
 
-SIDES = (("l", ".L"), ("r", ".R"))
-
-FINGERS = (("thumb", 1, False), ("index", 2, True), ("middle", 3, True),
-           ("ring", 4, True), ("pinky", 5, True))
+# Joint heights of the spine chain (metres, 1.80 m stature).
+SPINE = (("pelvis", 0.960), ("spine_01", 1.005), ("spine_02", 1.085), ("spine_03", 1.165),
+         ("spine_04", 1.250), ("spine_05", 1.340), ("neck_01", 1.455), ("neck_02", 1.525),
+         ("head", 1.605))
 
 
 @dataclass
@@ -33,112 +46,109 @@ class Bone:
     deform: bool = True
 
 
-def _bone_specs():
-    """(name, parent, MakeHuman head bone, MakeHuman tail source) in parent-
-    first order. A tail source is a bone whose head ends this bone, or None
-    to extend along the parent."""
-    specs = [
-        ("pelvis", "root", "root", "spine05"),
-        ("spine_01", "pelvis", "spine05", "spine04"),
-        ("spine_02", "spine_01", "spine04", "spine03"),
-        ("spine_03", "spine_02", "spine03", "spine02"),
-        ("spine_04", "spine_03", "spine02", "spine01"),
-        ("spine_05", "spine_04", "spine01", "neck01"),
-        ("neck_01", "spine_05", "neck01", "neck02"),
-        ("neck_02", "neck_01", "neck02", "head"),
-        ("head", "neck_02", "head", None),
-    ]
-    for side, mh_side in SIDES:
-        specs += [
-            (f"clavicle_{side}", "spine_05", "clavicle" + mh_side, "upperarm01" + mh_side),
-            (f"upperarm_{side}", f"clavicle_{side}", "upperarm01" + mh_side, "lowerarm01" + mh_side),
-            (f"upperarm_twist_01_{side}", f"upperarm_{side}", "upperarm02" + mh_side, "lowerarm01" + mh_side),
-            (f"lowerarm_{side}", f"upperarm_{side}", "lowerarm01" + mh_side, "wrist" + mh_side),
-            (f"lowerarm_twist_01_{side}", f"lowerarm_{side}", "lowerarm02" + mh_side, "wrist" + mh_side),
-            (f"hand_{side}", f"lowerarm_{side}", "wrist" + mh_side, "finger3-1" + mh_side),
-        ]
-        for finger, digit, metacarpal in FINGERS:
-            parent = f"hand_{side}"
-            if metacarpal:
-                name = f"{finger}_metacarpal_{side}"
-                specs.append((name, parent, f"metacarpal{digit - 1}{mh_side}", f"finger{digit}-1{mh_side}"))
-                parent = name
-            for segment in (1, 2, 3):
-                name = f"{finger}_0{segment}_{side}"
-                tail = f"finger{digit}-{segment + 1}{mh_side}" if segment < 3 else None
-                specs.append((name, parent, f"finger{digit}-{segment}{mh_side}", tail))
-                parent = name
-        specs += [
-            (f"thigh_{side}", "pelvis", "upperleg01" + mh_side, "lowerleg01" + mh_side),
-            (f"thigh_twist_01_{side}", f"thigh_{side}", "upperleg02" + mh_side, "lowerleg01" + mh_side),
-            (f"calf_{side}", f"thigh_{side}", "lowerleg01" + mh_side, "foot" + mh_side),
-            (f"calf_twist_01_{side}", f"calf_{side}", "lowerleg02" + mh_side, "foot" + mh_side),
-            (f"foot_{side}", f"calf_{side}", "foot" + mh_side, None),
-        ]
-    return specs
+class Joints:
+    """Ring centres where the base body's face sets meet."""
+
+    def __init__(self, body):
+        self.positions = body.positions
+        self.members = {}
+        for face, face_set in zip(body.faces, body.face_sets):
+            self.members.setdefault(int(face_set), set()).update(face)
+
+    def ring(self, a, b):
+        shared = sorted(self.members[a] & self.members[b])
+        if not shared:
+            raise ValueError(f"Face sets {a} and {b} do not meet")
+        return self.positions[shared].mean(axis=0)
+
+    def centroid(self, face_set):
+        return self.positions[sorted(self.members[face_set])].mean(axis=0)
 
 
-# MakeHuman default-rig bone to mannequin bone (weight shares).
-def _weight_map():
-    mapping = {"root": {"pelvis": 1.0}, "pelvis.L": {"pelvis": 1.0}, "pelvis.R": {"pelvis": 1.0},
-               "spine05": {"spine_01": 1.0}, "spine04": {"spine_02": 1.0},
-               "spine03": {"spine_03": 1.0}, "spine02": {"spine_04": 1.0},
-               "spine01": {"spine_05": 1.0}, "breast.L": {"spine_04": 1.0},
-               "breast.R": {"spine_04": 1.0}, "neck01": {"neck_01": 1.0},
-               "neck02": {"neck_02": 1.0}, "neck03": {"neck_02": 0.5, "head": 0.5}}
-    for side, mh_side in SIDES:
-        mapping.update({
-            "clavicle" + mh_side: {f"clavicle_{side}": 1.0},
-            # The deltoid cap shares clavicle and arm so a raised arm neither
-            # collapses the shoulder nor drags the trapezius.
-            "shoulder01" + mh_side: {f"clavicle_{side}": 0.45, f"upperarm_{side}": 0.55},
-            "upperarm01" + mh_side: {f"upperarm_{side}": 1.0},
-            "upperarm02" + mh_side: {f"upperarm_twist_01_{side}": 1.0},
-            "lowerarm01" + mh_side: {f"lowerarm_{side}": 1.0},
-            "lowerarm02" + mh_side: {f"lowerarm_twist_01_{side}": 1.0},
-            "wrist" + mh_side: {f"hand_{side}": 1.0},
-            "upperleg01" + mh_side: {f"thigh_{side}": 1.0},
-            "upperleg02" + mh_side: {f"thigh_twist_01_{side}": 1.0},
-            "lowerleg01" + mh_side: {f"calf_{side}": 1.0},
-            "lowerleg02" + mh_side: {f"calf_twist_01_{side}": 1.0},
-            "foot" + mh_side: {f"foot_{side}": 1.0},
-        })
-        for finger, digit, metacarpal in FINGERS:
-            if metacarpal:
-                mapping[f"metacarpal{digit - 1}{mh_side}"] = {f"{finger}_metacarpal_{side}": 1.0}
-            for segment in (1, 2, 3):
-                mapping[f"finger{digit}-{segment}{mh_side}"] = {f"{finger}_0{segment}_{side}": 1.0}
-        for toe in range(1, 6):
-            for segment in range(1, 4):
-                mapping[f"toe{toe}-{segment}{mh_side}"] = {f"ball_{side}": 1.0}
-    return mapping
+def _section(positions, z, half_width=0.05):
+    """Front and back of the torso's midline at height z."""
+    band = positions[(np.abs(positions[:, 2] - z) < 0.006) & (np.abs(positions[:, 0]) < half_width)]
+    return band[:, 1].max(), band[:, 1].min()
 
 
 class Rig:
-    def __init__(self, body, skeleton):
-        positions = body.makehuman_positions
-        bones = {"root": Bone("root", None, np.zeros(3), np.array([0.0, 0.25, 0.0]))}
+    def __init__(self, body):
+        joints = Joints(body)
+        p = body.positions
+        bones = {"root": Bone("root", None, np.zeros(3), np.array([0.0, 0.25, 0.0]), deform=False)}
         order = ["root"]
-        for name, parent, mh_head, mh_tail in _bone_specs():
-            head = skeleton.head(positions, mh_head)
-            if mh_tail is not None:
-                tail = skeleton.head(positions, mh_tail)
-            else:
-                tail = skeleton.tail(positions, mh_head)
-            bones[name] = Bone(name, parent, head, tail)
+
+        def add(name, parent, head, tail, deform=True):
+            bones[name] = Bone(name, parent, np.asarray(head, dtype=np.float64),
+                               np.asarray(tail, dtype=np.float64), deform)
             order.append(name)
-        for side, mh_side in SIDES:
-            # The ball joint sits over the toe joints at the boot's forefoot.
-            toes = np.mean([skeleton.head(positions, f"toe{t}-1{mh_side}") for t in range(1, 6)], axis=0)
-            foot = bones[f"foot_{side}"]
-            ball_head = np.array([toes[0], toes[1], 0.035])
-            foot.tail = ball_head.copy()
-            tip = skeleton.tail(positions, f"toe3-3{mh_side}")
-            bones[f"ball_{side}"] = Bone(f"ball_{side}", f"foot_{side}", ball_head,
-                                         np.array([tip[0], tip[1] + 0.02, 0.035]))
-            order.append(f"ball_{side}")
-        # Head: its tail at the crown for a stable orientation.
-        bones["head"].tail = np.array([0.0, bones["head"].head[1], mb.STATURE])
+
+        # Spine: a third of the torso's depth in from the back.
+        chain = []
+        for name, z in SPINE:
+            if z < 1.45:
+                front, back = _section(p, z, 0.05)
+                y = back + 0.36 * (front - back)
+            else:
+                # The neck and head joints sit on the neck column's axis,
+                # the head's a little forward of it, under the helmet.
+                front, back = _section(p, min(z, 1.52), 0.04)
+                y = back + 0.5 * (front - back) + (0.008 if name == "head" else 0.0)
+            chain.append((name, np.array([0.0, y, z])))
+        hips = {side: self._hip(joints, side) for side in SIDES}
+        chain[0] = ("pelvis", np.array([0.0, 0.5 * (hips["l"][1] + hips["r"][1]), SPINE[0][1]]))
+        for i, (name, head) in enumerate(chain):
+            parent = "root" if i == 0 else chain[i - 1][0]
+            tail = chain[i + 1][1] if i + 1 < len(chain) else np.array([0.0, head[1], p[:, 2].max()])
+            add(name, parent, head, tail)
+
+        for side in SIDES:
+            sets = LEFT_SETS if side == "l" else RIGHT_SETS
+            fingers = LEFT_FINGERS if side == "l" else RIGHT_FINGERS
+            sign = -1.0 if side == "l" else 1.0
+            shoulder = joints.ring(sets["torso"], sets["upperarm"]) + np.array([sign * 0.012, 0.0, 0.010])
+            elbow = joints.ring(sets["upperarm"], sets["forearm"])
+            wrist = joints.ring(sets["forearm"], sets["hand"])
+            sternal = np.array([sign * 0.020, bones["spine_05"].head[1] + 0.035, 1.445])
+            add(f"clavicle_{side}", "spine_05", sternal, shoulder)
+            add(f"upperarm_{side}", f"clavicle_{side}", shoulder, elbow)
+            add(f"upperarm_twist_01_{side}", f"upperarm_{side}", 0.5 * (shoulder + elbow), elbow)
+            add(f"lowerarm_{side}", f"upperarm_{side}", elbow, wrist)
+            add(f"lowerarm_twist_01_{side}", f"lowerarm_{side}", 0.5 * (elbow + wrist), wrist)
+            knuckles = {name: joints.ring(sets["hand"], chain_sets[0]) for name, chain_sets in fingers.items()}
+            add(f"hand_{side}", f"lowerarm_{side}", wrist, knuckles["middle"])
+            for name, chain_sets in fingers.items():
+                s1, s2, s3, nail = chain_sets
+                tip = joints.ring(s3, nail)
+                tip = tip + (tip - joints.ring(s2, s3)) * 0.35
+                if name == "thumb":
+                    heads = [wrist + 0.40 * (knuckles["thumb"] - wrist), joints.ring(s1, s2), joints.ring(s2, s3)]
+                    parent = f"hand_{side}"
+                else:
+                    metacarpal = wrist + 0.28 * (knuckles[name] - wrist)
+                    add(f"{name}_metacarpal_{side}", f"hand_{side}", metacarpal, knuckles[name])
+                    heads = [knuckles[name], joints.ring(s1, s2), joints.ring(s2, s3)]
+                    parent = f"{name}_metacarpal_{side}"
+                ends = heads[1:] + [tip]
+                for segment, (head, tail) in enumerate(zip(heads, ends), start=1):
+                    bone = f"{name}_0{segment}_{side}"
+                    add(bone, parent, head, tail)
+                    parent = bone
+
+            hip = hips[side]
+            knee = joints.ring(sets["thigh"], sets["shin"]) + np.array([0.0, 0.0, 0.008])
+            frame, ankle_center = body.feet[side]
+            ankle = ankle_center + np.array([0.0, 0.004, -0.016])
+            forward = frame[:, 1]
+            ball = np.array([ankle[0], ankle[1], 0.0]) + forward * 0.135 + np.array([0.0, 0.0, 0.032])
+            toe = np.array([ankle[0], ankle[1], 0.0]) + forward * 0.205 + np.array([0.0, 0.0, 0.032])
+            add(f"thigh_{side}", "pelvis", hip, knee)
+            add(f"thigh_twist_01_{side}", f"thigh_{side}", 0.5 * (hip + knee), knee)
+            add(f"calf_{side}", f"thigh_{side}", knee, ankle)
+            add(f"calf_twist_01_{side}", f"calf_{side}", 0.5 * (knee + ankle), ankle)
+            add(f"foot_{side}", f"calf_{side}", ankle, ball)
+            add(f"ball_{side}", f"foot_{side}", ball, toe)
+
         # UE-style virtual bones for IK targets; they carry no weights.
         virtual = [("ik_foot_root", "root", np.zeros(3)),
                    ("ik_foot_l", "ik_foot_root", bones["foot_l"].head),
@@ -148,70 +158,17 @@ class Rig:
                    ("ik_hand_l", "ik_hand_gun", bones["hand_l"].head),
                    ("ik_hand_r", "ik_hand_gun", bones["hand_r"].head)]
         for name, parent, head in virtual:
-            bones[name] = Bone(name, parent, np.array(head, dtype=np.float64),
-                               np.array(head, dtype=np.float64) + np.array([0.0, 0.0, 0.1]), deform=False)
-            order.append(name)
-        bones["root"].deform = False
+            add(name, parent, head, np.asarray(head) + np.array([0.0, 0.0, 0.1]), deform=False)
         self.bones = bones
         self.order = order
 
+    @staticmethod
+    def _hip(joints, side):
+        """The hip joint: the thigh ring's centre is pulled down by the groin,
+        so the joint sits at the pelvis ring's lateral third, above it."""
+        sets = LEFT_SETS if side == "l" else RIGHT_SETS
+        ring = joints.ring(sets["pelvis"], sets["thigh"])
+        return np.array([ring[0] * 0.96, ring[1], 0.915])
+
     def deform_names(self):
         return [name for name in self.order if self.bones[name].deform]
-
-
-def skin_weights(body, rig, weights_path):
-    """Per vertex of `body`: up to MAX_INFLUENCES (bone, weight) pairs,
-    normalized."""
-    source = mh.read_weights(weights_path)
-    mapping = _weight_map()
-    names = rig.deform_names()
-    column = {name: i for i, name in enumerate(names)}
-    table = np.zeros((mh.BODY_VERTEX_COUNT, len(names)))
-    for mh_bone, (indices, values) in source.items():
-        # Helper geometry (tights, skirt, hair) follows the body indices.
-        body_only = indices < mh.BODY_VERTEX_COUNT
-        indices = indices[body_only]
-        values = values[body_only]
-        # Unlisted source bones are the face rig: all of it rides the head.
-        for bone, share in mapping.get(mh_bone, {"head": 1.0}).items():
-            np.add.at(table[:, column[bone]], indices, values * share)
-
-    count = len(body.positions)
-    dense = np.zeros((count, len(names)))
-    kept = body.source >= 0
-    dense[kept] = table[body.source[kept]]
-
-    # New parts start from their loop's weights and hand over to the part's
-    # own bones within the first rings.
-    for key, (index, loop_count) in body.part_uvs.items():
-        loop = index[:loop_count]
-        loop_positions = body.positions[loop]
-        new = index[loop_count:]
-        nearest = np.argmin(np.linalg.norm(body.positions[new][:, None] - loop_positions[None], axis=2), axis=1)
-        inherited = dense[loop[nearest]]
-        own = np.zeros((len(new), len(names)))
-        if key == "head":
-            own[:, column["head"]] = 1.0
-        else:
-            side = key[-1]
-            ball = rig.bones[f"ball_{side}"].head
-            foot = rig.bones[f"foot_{side}"].head
-            axis = ball - foot
-            axis[2] = 0.0
-            axis /= np.linalg.norm(axis)
-            along = (body.positions[new] - ball) @ axis
-            share = np.clip((along + 0.012) / 0.024, 0.0, 1.0)
-            share = share * share * (3.0 - 2.0 * share)
-            own[:, column[f"ball_{side}"]] = share
-            own[:, column[f"foot_{side}"]] = 1.0 - share
-        blend = np.clip(body.ring_parameter[new] / 0.22, 0.0, 1.0)
-        blend = blend * blend * (3.0 - 2.0 * blend)
-        dense[new] = inherited * (1.0 - blend[:, None]) + own * blend[:, None]
-
-    order = np.argsort(-dense, axis=1)[:, :MAX_INFLUENCES]
-    top = np.take_along_axis(dense, order, axis=1)
-    total = top.sum(axis=1, keepdims=True)
-    if np.any(total <= 0.0):
-        raise ValueError("Vertices without skin weights: " + str(np.flatnonzero(total[:, 0] <= 0.0)[:10]))
-    top /= total
-    return names, order, top

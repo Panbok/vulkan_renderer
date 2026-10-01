@@ -1,4 +1,4 @@
-"""Build VKR's default mannequin character and export it as one GLB.
+"""Build VKR's default mannequin character and export it as glTF.
 
 Run headless from the repository root:
 
@@ -7,9 +7,10 @@ Run headless from the repository root:
         --sources <dir> --out <dir>
 
 `--sources` holds the pinned third-party inputs listed in sources.json
-(fetched by fetch_sources.py); `--out` receives mannequin.glb. Metres,
-Blender Z up and facing +Y, exported as glTF Y up facing -Z (the engine's
-actor forward).
+(fetched by fetch_sources.py); `--out` receives mannequin.gltf with its
+buffer and textures/. Metres, Blender Z up and facing +Y, exported as glTF
+Y up facing -Z (the engine's actor forward). `--clips none` skips the
+animations for look development.
 """
 
 import argparse
@@ -24,10 +25,11 @@ sys.path.insert(0, str(HERE))
 import bpy  # noqa: E402
 import numpy as np  # noqa: E402
 
+import mannequin_bake as mbk  # noqa: E402
+import mannequin_base as mb  # noqa: E402
 import mannequin_blender as mbl  # noqa: E402
-import mannequin_body as mb  # noqa: E402
 import mannequin_clips as mc  # noqa: E402
-import mannequin_makehuman as mh  # noqa: E402
+import mannequin_design as md  # noqa: E402
 import mannequin_rig as mr  # noqa: E402
 
 
@@ -36,9 +38,11 @@ def _arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sources", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--subdivide", type=int, default=1)
+    parser.add_argument("--texture-size", type=int, default=2048)
+    parser.add_argument("--detail-levels", type=int, default=2,
+                        help="subdivision levels of the baked detail mesh")
     parser.add_argument("--blend", action="store_true", help="also save mannequin.blend")
-    parser.add_argument("--clips", default="", help="comma-separated clip names (default: all)")
+    parser.add_argument("--clips", default="", help="comma-separated clip names, 'none', or all by default")
     return parser.parse_args(argv)
 
 
@@ -59,23 +63,48 @@ def _frame_cuts(path):
 def main():
     args = _arguments()
     started = time.time()
-    sources = args.sources / "makehuman"
-    body = mb.build(sources)
-    skeleton = mh.Skeleton(sources / "rigs/default.mhskel")
-    rig = mr.Rig(body, skeleton)
-    weights = mr.skin_weights(body, rig, sources / "rigs/default_weights.mhw")
-    print(f"body {len(body.positions)} vertices, {len(body.faces)} faces, "
-          f"{len(weights[0])} deform bones ({time.time() - started:.1f} s)")
-
+    args.out.mkdir(parents=True, exist_ok=True)
     mbl.reset_scene()
-    mesh = mbl.create_mesh(body, weights)
-    mbl.assign_materials(mesh, body.face_parts)
+    body = mb.build(args.sources)
+    rig = mr.Rig(body)
+    mesh = mbl.create_mesh(body)
     mbl.pack_uvs(mesh)
-    if args.subdivide:
-        mbl.subdivide(mesh, args.subdivide)
     armature = mbl.create_armature(rig)
-    mbl.bind(mesh, armature)
+    names, _, _ = mbl.skin(mesh, armature, rig, body)
+    print(f"body {len(body.positions)} vertices, {len(body.faces)} faces, "
+          f"{len(names)} deform bones ({time.time() - started:.1f} s)")
 
+    # Weights come from the 30 k-vertex base; the game mesh is one level
+    # finer so plates keep real steps; the detail mesh adds the fine design.
+    mbl.subdivide(mesh, 1)
+    design = md.layout(rig)
+    source = bpy.data.objects.new("SK_Mannequin_Source", mesh.data.copy())
+    bpy.context.scene.collection.objects.link(source)
+    mbk.displace(mesh, design, md.BASE_TONE)
+    details = mbk.detail_meshes(source, design, args.detail_levels, md.BASE_TONE)
+    cage = mbk.cage(source)
+    bpy.data.objects.remove(source, do_unlink=True)
+    print(f"game {len(mesh.data.vertices)} vertices, detail "
+          f"{sum(len(obj.data.vertices) for obj in details)} vertices ({time.time() - started:.1f} s)")
+    baked = mbk.bake(mesh, details, cage, args.texture_size)
+    bpy.data.objects.remove(cage, do_unlink=True)
+    base, orm, normal = mbk.compose(baked)
+    textures_dir = args.out / "textures"
+    textures_dir.mkdir(exist_ok=True)
+    textures = {"base": textures_dir / "mannequin_basecolor.png",
+                "orm": textures_dir / "mannequin_orm.png",
+                "normal": textures_dir / "mannequin_normal.png"}
+    mbk.save_png(base, textures["base"], srgb=True)
+    mbk.save_png(orm, textures["orm"], srgb=False)
+    mbk.save_png(normal, textures["normal"], srgb=False)
+    for obj in details:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    mbl.textured_material(mesh, textures)
+    print(f"baked {args.texture_size}px textures ({time.time() - started:.1f} s)")
+
+    if args.clips == "none":
+        _export(args, mesh, started)
+        return
     target = mc.target_from_armature(armature)
     cuts = _frame_cuts(args.sources / "100style" / "Frame_Cuts.csv")
     wanted = {name for name in args.clips.split(",") if name}
@@ -95,7 +124,10 @@ def main():
         print(f"clip {spec.name}: {result['source']} frames {len(result['quaternions'])}, window {result['window']}, "
               f"speed {result['speed']:.3f} m/s ({time.time() - clip_started:.1f} s)")
 
-    args.out.mkdir(parents=True, exist_ok=True)
+    _export(args, mesh, started)
+
+
+def _export(args, mesh, started):
     # Clip metadata for controllers: loop speed and direction in the glTF
     # frame (Y up, -Z forward), where Blender (x, y) maps to glTF (x, -z).
     clips = []
@@ -114,8 +146,8 @@ def main():
         encoding="utf-8")
     if args.blend:
         bpy.ops.wm.save_as_mainfile(filepath=str(args.out / "mannequin.blend"))
-    mbl.export_glb(args.out / "mannequin.glb")
-    print(f"exported {args.out / 'mannequin.glb'} ({time.time() - started:.1f} s, "
+    mbl.export_gltf(args.out / "mannequin.gltf")
+    print(f"exported {args.out / 'mannequin.gltf'} ({time.time() - started:.1f} s, "
           f"{len(mesh.data.vertices)} vertices)")
 
 
