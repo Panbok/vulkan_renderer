@@ -2852,6 +2852,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
       .subsurface_source_texture_id = subsurface_source.gpuResourceID._impl,
       .subsurface_profile_count =
           packet->subsurface_enabled ? packet->subsurface.dimensions[2] : 0u,
+      .light_contribution = renderer->light_contribution_gpu,
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = pipeline,
@@ -4892,6 +4893,8 @@ vkr_internal void vkr_metal_packet_plan_frame_submission(
       renderer->prepared_frame.transmission_pending,
       renderer->prepared_frame.sdsm_enabled,
       renderer->prepared_frame.exposure_automatic,
+      packet->scene_rendering && packet->input.lighting &&
+          packet->input.lighting->point_light_count > 0u,
       1u + renderer->prepared_frame.shadow_cascade_count +
           renderer->prepared_frame.local_shadow_render_count +
           renderer->prepared_frame.local_shadow_transmission_render_count);
@@ -4970,6 +4973,11 @@ vkr_internal VkrRendererError vkr_metal_packet_acquire_frame_readback(
                : vkr_metal_packet_allocation_error(readback_status);
   }
   MemZero(submission->readback.cpu_address, submission->capture_size);
+  renderer->light_contribution_gpu =
+      submission->readback_layout.light_contribution_size > 0u
+          ? submission->readback.gpu_address +
+                submission->readback_layout.light_contribution
+          : 0u;
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -5618,6 +5626,24 @@ vkr_internal void vkr_metal_packet_record_slot_readbacks(
           ? (const uint8_t *)submission->readback.cpu_address +
                 submission->readback_layout.exposure
           : NULL;
+  /* Records the light table whose contribution this submission measures, so
+     the shadow system can match counters to lights by render id. */
+  command_slot->light_contribution_source =
+      (VkrLocalLightContributionSample){0};
+  command_slot->light_contribution_readback = NULL;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  if (submission->readback_layout.light_contribution_size > 0u) {
+    command_slot->light_contribution_readback =
+        (const uint8_t *)submission->readback.cpu_address +
+        submission->readback_layout.light_contribution;
+    VkrLocalLightContributionSample *source =
+        &command_slot->light_contribution_source;
+    source->source_frame_index = packet->input.frame.frame_index;
+    source->light_count = Min(packet->input.lighting->point_light_count,
+                              VKR_MAX_SCENE_POINT_LIGHTS);
+    for (uint32_t i = 0u; i < source->light_count; ++i)
+      source->render_ids[i] = packet->input.lighting->point_lights[i].render_id;
+  }
   command_slot->transmission_coverage_requested =
       submission->transmission_coverage;
   if (renderer->prepared_frame.transmission_pending) {

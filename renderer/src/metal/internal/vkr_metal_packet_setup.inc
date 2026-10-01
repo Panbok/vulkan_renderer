@@ -2662,7 +2662,7 @@ vkr_internal bool8_t vkr_metal_packet_create_capacities(
     const VkrMetalPacketRendererConfig *config,
     VkrMetalPacketCreateCapacities *out_capacities) {
   const VkrMetalPacketReadbackLayout maximum_readback =
-      vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v,
+      vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v, true_v,
                                        VKR_SHADOW_CASCADE_COUNT_MAX);
   const uint64_t readback_prefix_size = vkr_metal_packet_align_up(
       maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);

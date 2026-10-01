@@ -350,12 +350,11 @@ Both backends run the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
 with its own 128-byte root: frame, G-buffer inputs, visible rows, inverse
 view-projection, extent and the contact-shadow noise index (byte 120 on Metal,
 112 on Vulkan). The deferred-lighting kernels read the mask array at byte 216 on
-Metal and 168 on Vulkan; the roots are 240 and 208 bytes. Vulkan's appends the
-per-light contribution counters at byte 192 (null when not measured), into
-which the deferred punctual loop adds, per wave and light, the pixels'
-unshadowed contribution for local-shadow priority (ADR-019); Metal measures
-none and keeps distance ranking, a capability boundary rather than a parity
-gap in shading. Mask layers are
+Metal and 168 on Vulkan; the roots are 256 and 208 bytes. Both append the
+per-light contribution counters, at byte 240 on Metal and 192 on Vulkan (null
+when not measured), into which the deferred punctual loop adds, per SIMD group
+or wave and light, the pixels' unshadowed contribution from the shared
+`vkr_local_light_contribution` for local-shadow priority (ADR-019). Mask layers are
 per-pixel slots: the k-th shadowed light in range of a pixel, in light
 traversal order, writes layer k with alpha tagging its light index through the
 shared `vkr_local_shadow_mask_tag`. Both deferred-lighting kernels count the

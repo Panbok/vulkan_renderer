@@ -81,16 +81,17 @@ Importance orders the fill and the filter. It is luminance times intensity
 times range squared over the squared camera distance, held constant within a
 tenth of the range, so the nearest of several overlapping lights wins. Distance
 cannot tell a lamp lighting the street from one enclosed in a building, so
-where the renderer measures it, importance is instead each light's visible
-contribution: deferred lighting sums, over the pixels it shades, the light's
-unshadowed luminance at the surface after pre-exposure, x, compressed per pixel
-to x / (1 + x), with one atomic per wave per light into a per-frame-slot
-counter array. The readback reaches the cache two to three frames later as a
-`VkrLocalLightContributionSample` keyed by render id. Shadowing never changes
-the measure. A sample is used only when it is at most eight frames old and
-comes from no earlier than the last snap; otherwise, and on Metal, which does
-not measure contribution, distance ranks. Vulkan measures it as a capability:
-it shares no ABI with Metal, and `VKR_LOCAL_SHADOW_FEEDBACK=0` restores distance
+importance is instead each light's measured visible contribution once a sample
+exists: deferred lighting on both backends sums, over the pixels it shades,
+the light's unshadowed luminance at the surface after pre-exposure, x,
+compressed per pixel to x / (1 + x) by the shared
+`vkr_local_light_contribution`, with one atomic per SIMD group or wave per
+light into counters the frame reads back: a per-frame-slot buffer on Vulkan,
+the frame's cleared readback slice on Metal. The readback reaches the cache
+two to three frames later as a `VkrLocalLightContributionSample` keyed by
+render id. Shadowing never changes the measure. A sample is used only when it
+is at most eight frames old and comes from no earlier than the last snap;
+otherwise distance ranks. `VKR_LOCAL_SHADOW_FEEDBACK=0` restores distance
 ranking for diagnosis.
 
 Each shadowed light adds its filtering to every pixel in its range. The three
@@ -431,3 +432,9 @@ view: nearby lights covering many pixels dominate. Faces of 256 squared
 instead of 512 lowered street mask time from 5.09 to 4.92 ms and left the
 indoor view unchanged. These are single local observations, not matched speed
 claims.
+
+Metal measured contribution from 2026-10-02. With `MTL_DEBUG_LAYER=1`,
+`local_shadow_cache_bistro_metal_validation` passed with no messages and
+`lighting.local_shadow.unshadowed_ratio` and `fading_ratio` of 0 at the default
+30 m fade; with `VKR_LOCAL_SHADOW_FADE_DISTANCE=10` the unshadowed ratio rose to
+0.99 with 12 lamps shadowed, which shows the measure reaches the metrics.

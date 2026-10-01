@@ -30,12 +30,13 @@ shadow-casting light is resident in one shared multi-layer 4096² D32 atlas,
 with face sizes fixed by range; invalid and stale faces redraw by importance
 within the preset's face budget per frame, and a transmission pool of one layer
 per budgeted face serves the most important lights. Importance is measured
-visible contribution on Vulkan and distance on Metal. The `Shadow.LocalMask`
-pass writes per-pixel overlap slots that deferred lighting reads, with inline
-filtering past eight lights or for forward and transmission shading. Phase 1
-still lacks the bounded per-pixel filtering with a distance fade, Metal
-contribution measurement, the measured format and face-size choice, and its
-evidence gates.
+visible contribution on both backends, distance until a sample arrives.
+Shadows fade out by camera distance. The `Shadow.LocalMask` pass writes
+per-pixel overlap slots that deferred lighting reads, with inline filtering
+past eight lights or for forward and transmission shading. Phase 1 still lacks
+its evidence gates and the measured format choice; the distance fade did not
+lower the cost of the indoor and street views, where nearby lights dominate
+(ADR-019).
 
 The measurements below predate the cache: one 4096² D32 atlas per physical
 target image holding up to 64 faces, selected per frame.

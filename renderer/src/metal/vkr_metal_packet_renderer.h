@@ -234,6 +234,8 @@ typedef struct VkrMetalPacketResult {
   uint32_t shadow_gpu_overflow_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   bool8_t hzb_history_valid;
   VkrShadowDepthRangeSample shadow_depth_range;
+  /** Visible contribution per light, measured by deferred lighting. */
+  VkrLocalLightContributionSample local_light_contribution;
   bool8_t has_gpu_draw_diagnostics;
   VkrExposureDebugSample exposure;
   uint32_t resize_count;

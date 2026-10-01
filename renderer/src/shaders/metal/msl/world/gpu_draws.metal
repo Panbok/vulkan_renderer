@@ -1137,6 +1137,10 @@ struct VkrMetalPacketDeferredLightingRoot {
   texture2d_array<float, access::read_write> local_shadow_mask;
   device VkrGpuVisibleDrawRow *visible_rows;
   texture2d<float, access::write> subsurface_source;
+  // Per-light visible contribution counters, or null when not measured.
+  device atomic_uint *light_contribution;
+  // Keeps the size at the host's 16-byte-aligned 256 bytes.
+  ulong reserved_tail;
 };
 
 static float3 vkr_metal_packet_octahedral_decode(float2 encoded) {
@@ -1269,6 +1273,19 @@ struct VkrMetalDeferredShadowMask {
     }
     return vkr_metal_packet_local_shadow_sample(frame, first_view_encoded, kind,
                                                 world_position, normal);
+  }
+
+  // `light_index` is SIMD-uniform, so the group adds its pixels' unshadowed
+  // contribution with one atomic. Shadowing never changes the measure.
+  void measure(uint light_index, float contribution) {
+    if (root->light_contribution == nullptr)
+      return;
+    float group = simd_sum(contribution);
+    if (simd_is_first())
+      atomic_fetch_add_explicit(
+          &root->light_contribution[light_index],
+          uint(group * float(VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE) + 0.5f),
+          memory_order_relaxed);
   }
 };
 
@@ -3214,8 +3231,8 @@ static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 448,
               "G-buffer resolve root ABI must remain 416 bytes");
 static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 224,
               "Temporal-resolve root ABI must remain 224 bytes");
-static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 240,
-              "Deferred-lighting root ABI must remain 240 bytes");
+static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 256,
+              "Deferred-lighting root ABI must remain 256 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 464,
               "Transmission-shade root ABI must remain 464 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionCoverageRoot) == 32,

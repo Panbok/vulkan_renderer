@@ -1087,10 +1087,9 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
             // changes the measure, so selection cannot feed back on itself.
             if (UseMask && light_contribution != nullptr)
             {
-                float lit = vkr_exposure_luminance(p1.rgb) * p2.x * attenuation *
-                            saturate(dot(normal, light_direction)) *
-                            frame.pre_exposure;
-                float wave_lit = WaveActiveSum(lit / (1.0f + lit));
+                float wave_lit = WaveActiveSum(vkr_local_light_contribution(
+                    p1.rgb, p2.x, attenuation, dot(normal, light_direction),
+                    frame.pre_exposure));
                 if (WaveIsFirstLane())
                 {
                     uint ignored;

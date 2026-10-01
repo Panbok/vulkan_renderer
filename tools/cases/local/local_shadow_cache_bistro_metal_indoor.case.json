@@ -79,9 +79,14 @@
       "max": 0
     },
     {
-      "metric": "lighting.local_shadow.lights",
-      "stat": "min",
-      "min": 72
+      "metric": "lighting.local_shadow.unshadowed_ratio",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "lighting.local_shadow.fading_ratio",
+      "stat": "max",
+      "max": 0
     }
   ],
   "target_image_count": 3

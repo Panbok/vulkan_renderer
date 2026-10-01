@@ -1261,6 +1261,8 @@ vkr_global const VkrMetalPacketAbiField vkr_deferred_lighting_root_fields[] = {
                   "visible_rows", 224),
     VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot,
                   subsurface_source_texture_id, "subsurface_source", 232),
+    VKR_ABI_FIELD(VkrMetalPacketDeferredLightingRoot, light_contribution,
+                  "light_contribution", 240),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_local_shadow_mask_root_fields[] = {
@@ -1748,7 +1750,7 @@ vkr_global const VkrMetalPacketAbiRecord
             480, 16, vkr_ssr_composite_root_fields),
         [VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketDeferredLightingRoot,
-                           "VkrMetalPacketDeferredLightingRoot", 240, 16,
+                           "VkrMetalPacketDeferredLightingRoot", 256, 16,
                            vkr_deferred_lighting_root_fields),
         [VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketLocalShadowMaskRoot,

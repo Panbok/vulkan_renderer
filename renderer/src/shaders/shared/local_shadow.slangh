@@ -102,6 +102,18 @@ bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
 // counters; matches the host's VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE.
 #define VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE 256u
 
+// One pixel's visible contribution of a light, unshadowed: its luminance at
+// the surface after pre-exposure, x, compressed to x / (1 + x) so a few bright
+// pixels cannot outweigh a lit area.
+float vkr_local_light_contribution(float3 color, float intensity,
+                                   float attenuation, float n_dot_l,
+                                   float pre_exposure)
+{
+    float lit = dot(color, float3(0.2126f, 0.7152f, 0.0722f)) * intensity *
+                attenuation * saturate(n_dot_l) * pre_exposure;
+    return lit / (1.0f + lit);
+}
+
 // Contact shadows march VKR_LOCAL_SHADOW_CONTACT_STEPS depth-buffer samples
 // along at most VKR_LOCAL_SHADOW_CONTACT_LENGTH metres toward a shadowed light.
 // They recover occlusion near contacts that the shadow map's filter radius,

@@ -164,6 +164,15 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
         &renderer->capture_ring, slot->submit_value,
         slot->pending_result.exposure.state.exposure_multiplier);
   }
+  if (slot->light_contribution_readback) {
+    VkrLocalLightContributionSample *sample =
+        &slot->pending_result.local_light_contribution;
+    *sample = slot->light_contribution_source;
+    sample->submit_value = slot->submit_value;
+    MemCopy(sample->contribution, slot->light_contribution_readback,
+            sizeof(sample->contribution));
+    sample->valid = true_v;
+  }
   if (slot->transmission_coverage_requested &&
       slot->transmission_coverage_readback) {
     const VkrMetalPacketTransmissionDiagnostics *diagnostics =
@@ -276,6 +285,7 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->transmission_coverage_readback = NULL;
   slot->sdsm_readback = NULL;
   slot->exposure_readback = NULL;
+  slot->light_contribution_readback = NULL;
   slot->shadow_cascade_count = 0u;
   slot->gpu_draw_view_count = 0u;
   slot->transmission_coverage_extent[0] = 0u;

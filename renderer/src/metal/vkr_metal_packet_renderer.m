@@ -459,12 +459,15 @@ typedef struct VkrMetalPacketReadbackLayout {
   uint64_t sdsm_size;
   uint64_t exposure;
   uint64_t exposure_size;
+  uint64_t light_contribution;
+  uint64_t light_contribution_size;
   uint64_t prefix_size;
 } VkrMetalPacketReadbackLayout;
 
 vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
     bool8_t deferred_diagnostics, bool8_t transmission_diagnostics,
-    bool8_t sdsm, bool8_t exposure, uint32_t gpu_draw_view_count) {
+    bool8_t sdsm, bool8_t exposure, bool8_t light_contribution,
+    uint32_t gpu_draw_view_count) {
   /* The final target can be RGBA8 or RGBA16F. Reserve an eight-byte pixel
      before the fixed diagnostic fields so the transfer stays valid across an
      extended-linear target transition. */
@@ -491,8 +494,16 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
   const uint64_t exposure_bytes =
       exposure ? sizeof(VkrExposureGpuState) + sizeof(VkrExposureGpuHistogram)
                : 0u;
+  /* Deferred lighting adds into these counters in place; the cleared slice
+     starts them at zero. */
+  const uint64_t light_contribution_offset =
+      vkr_metal_packet_align_up(exposure_offset + exposure_bytes, 16u);
+  const uint64_t light_contribution_bytes =
+      light_contribution ? VKR_MAX_SCENE_POINT_LIGHTS * sizeof(uint32_t) : 0u;
   const uint64_t prefix_size =
-      exposure_bytes > 0u ? exposure_offset + exposure_bytes
+      light_contribution_bytes > 0u
+          ? light_contribution_offset + light_contribution_bytes
+      : exposure_bytes > 0u ? exposure_offset + exposure_bytes
       : deferred_diagnostics || transmission_diagnostics || sdsm_bytes > 0u
           ? sdsm_offset + sdsm_bytes
           : fixed_size;
@@ -507,6 +518,8 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
       .sdsm_size = sdsm_bytes,
       .exposure = exposure_offset,
       .exposure_size = exposure_bytes,
+      .light_contribution = light_contribution_offset,
+      .light_contribution_size = light_contribution_bytes,
       .prefix_size = prefix_size,
   };
 }
@@ -554,6 +567,9 @@ typedef struct VkrMetalPacketCommandSlot {
   const uint8_t *gpu_draw_diagnostics_readback;
   const uint8_t *sdsm_readback;
   const uint8_t *exposure_readback;
+  const uint8_t *light_contribution_readback;
+  /** This submission's light identities; completion fills contribution. */
+  VkrLocalLightContributionSample light_contribution_source;
   const uint8_t *transmission_coverage_readback;
   uint32_t shadow_cascade_count;
   uint32_t gpu_draw_view_count;
@@ -585,6 +601,9 @@ typedef struct VkrMetalPacketTextureUploadBatch {
 struct VkrMetalPacketRenderer {
   VkrPixelReadbackResult picking_result;
   uint64_t picking_submit_value;
+  /** Device address of this frame's light-contribution counters in its
+   * readback slice, or zero when the frame does not measure them. */
+  uint64_t light_contribution_gpu;
   VkrAllocator *allocator;
   VkrMetalDiagnostics diagnostics;
   Arena *graph_frame_arena;

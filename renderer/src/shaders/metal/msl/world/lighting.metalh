@@ -411,6 +411,9 @@ struct VkrMetalInlineLocalShadow {
     return vkr_metal_packet_local_shadow_sample(frame, first_view_encoded, kind,
                                                 world_position, normal);
   }
+
+  // Forward and transmission shading do not measure light contribution.
+  void measure(uint, float) const {}
 };
 
 template <bool EvaluateDiffuse, typename LocalShadow>
@@ -454,6 +457,11 @@ void vkr_metal_packet_punctual_layered(
       uint kind = term.kind;
       float3 light_direction = term.direction;
       float attenuation = term.attenuation * term.cone;
+      local_shadow.measure(light_index,
+                           vkr_local_light_contribution(
+                               p1.rgb, p2.x, attenuation,
+                               dot(normal, light_direction),
+                               frame->pre_exposure));
       bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                       dot(normal, light_direction) < 0.0f;
       float3 shadow_normal = back_lit ? -normal : normal;

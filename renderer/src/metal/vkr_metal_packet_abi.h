@@ -1059,6 +1059,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   uint64_t local_shadow_mask_texture_id;
   uint64_t visible_rows;
   uint64_t subsurface_source_texture_id;
+  /** Per-light visible contribution counters (VkrLocalLightContributionSample)
+   * in the slot readback, or zero when not measured. */
+  uint64_t light_contribution;
+  /** Keeps the shader's size at the host's 16-byte-aligned 256 bytes. */
+  uint64_t reserved_tail;
 } VkrMetalPacketDeferredLightingRoot;
 _Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
                         subsurface_source_texture_id) == 232u &&
@@ -1081,8 +1086,11 @@ _Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
 _Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot, visible_rows) ==
                    224u,
                "Metal deferred visible-row ABI offset drift");
-_Static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 240u,
-               "Metal deferred-lighting root ABI must remain 240 bytes");
+_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
+                        light_contribution) == 240u,
+               "Metal deferred light-contribution ABI offset drift");
+_Static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 256u,
+               "Metal deferred-lighting root ABI must remain 256 bytes");
 
 /** Per-dispatch frontmost transmission visibility resolve and shading. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
