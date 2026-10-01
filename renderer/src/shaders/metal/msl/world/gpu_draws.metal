@@ -1214,6 +1214,19 @@ vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
                                           params.solar, view_transmittance) +
                 vkr_atmosphere_light_glow(params, direction, params.moon,
                                           params.lunar, view_transmittance);
+    // Stars sit behind the whole atmosphere; the neighbouring pixel's ray
+    // sets each star's footprint.
+    if (sky.params.star_axis.w > 0.0f) {
+      float2 next_ndc = vkr_metal_packet_resolve_ndc(
+          float2(pixel) + float2(1.5, 0.5), root.extent);
+      float4 next_world =
+          root.inverse_view_projection * float4(next_ndc, 1.0, 1.0);
+      float3 next = -vkr_metal_packet_view_direction(root.frame,
+          next_world.xyz / max(abs(next_world.w), 1e-7) * sign(next_world.w));
+      radiance += vkr_atmosphere_stars(sky.params, direction,
+                                       length(cross(direction, next))) *
+                  view_transmittance;
+    }
   }
   // The cloud trace shares screen coordinates with this pass. The disc
   // follows the cloud's apparent opacity; see vkr_cloud_disc_visibility.

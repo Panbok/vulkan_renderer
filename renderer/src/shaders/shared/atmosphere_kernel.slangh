@@ -75,12 +75,15 @@ struct VkrCloudParams {
   float4 shadow; // shadow-map centre X/Z, 1/extent, extent.
 };
 
-// Matches the 400-byte VkrSkyGpuParams C record. `atmosphere.planet.z` is the
+// Matches the 432-byte VkrSkyGpuParams C record. `atmosphere.planet.z` is the
 // camera altitude. The unjittered packet view-projection and its inverse only
 // map world positions to aerial-perspective froxels, so both backends share
 // them regardless of their raster clip convention. `key_light` points toward
 // the light that drives direct lighting and cloud shadows; `w` is 1 when it
-// is the moon.
+// is the moon. The star field's celestial frame is `star_pole`, toward the
+// celestial pole, and `star_axis`, the sun's hour-angle direction about it;
+// `star_pole.w` is the irradiance of a magnitude-zero star and `star_axis.w`
+// is 1 while the sun is below the horizon and the field draws (ADR-081).
 struct VkrSkyParams {
   VkrAtmosphereParams atmosphere;
 #if defined(__METAL_VERSION__)
@@ -94,11 +97,26 @@ struct VkrSkyParams {
   float4 aerial;          // km per slice, slice count, 1/count, 1 if applied.
   VkrCloudParams clouds;
   float4 key_light;
+  float4 star_pole;
+  float4 star_axis;
 };
 
 // True when a light carries no irradiance, so its scattering is zero.
 bool vkr_atmosphere_light_dark(float4 irradiance) {
   return max(irradiance.x, max(irradiance.y, irradiance.z)) <= 0.0f;
+}
+
+// PCG3D (Jarzynski and Olano, JCGT 2020): three decorrelated 32-bit hashes.
+uint3 vkr_atmosphere_hash3(uint3 value) {
+  uint3 v = value * 1664525u + 1013904223u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  v ^= v >> 16u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  return v;
 }
 
 struct VkrAtmosphereMedium {
@@ -473,6 +491,114 @@ float3 vkr_atmosphere_light_glow(VkrAtmosphereParams params, float3 direction,
   float peak = max(radiance.x, max(radiance.y, radiance.z));
   return radiance * min(1.0f, VKR_ATMOSPHERE_GLOW_RADIANCE_MAX /
                                   max(peak, VKR_ATMOSPHERE_GLOW_RADIANCE_MAX));
+}
+
+// Procedural star field (ADR-081). Each face of a cube around the celestial
+// pole holds a grid of cells, and a cell holds at most one star at a hashed
+// position, kept off the cell border so a star's footprint stays inside the
+// cell and its three neighbours toward the nearest corner. Magnitudes follow
+// the naked-eye count law N(<m) ~ 10^(0.5 m) up to magnitude 6.5, about
+// 9000 stars over the sphere, the brightest near -1.5.
+#define VKR_ATMOSPHERE_STAR_CELLS 64u
+#define VKR_ATMOSPHERE_STAR_DENSITY 0.37f
+#define VKR_ATMOSPHERE_STAR_FAINTEST_MAGNITUDE 6.5f
+#define VKR_ATMOSPHERE_STAR_BRIGHTEST_FRACTION 1e-4f
+#define VKR_ATMOSPHERE_STAR_BORDER 0.15f
+// A star is a Gaussian about one pixel wide, so temporal jitter resolves it
+// without flicker; the width never falls below this many radians.
+#define VKR_ATMOSPHERE_STAR_MIN_WIDTH 1e-4f
+
+// Cube face and face coordinates in [0, 1] of a unit direction; the inverse
+// of vkr_atmosphere_cube_direction.
+void vkr_atmosphere_cube_face(float3 direction, VKR_ATMOSPHERE_OUT(uint) face,
+                              VKR_ATMOSPHERE_OUT(float2) uv) {
+  float3 a = abs(direction);
+  float2 st;
+  if (a.x >= a.y && a.x >= a.z) {
+    face = direction.x >= 0.0f ? 0u : 1u;
+    st = direction.x >= 0.0f ? float2(-direction.z, -direction.y)
+                             : float2(direction.z, -direction.y);
+    st /= a.x;
+  } else if (a.y >= a.z) {
+    face = direction.y >= 0.0f ? 2u : 3u;
+    st = direction.y >= 0.0f ? float2(direction.x, direction.z)
+                             : float2(direction.x, -direction.z);
+    st /= a.y;
+  } else {
+    face = direction.z >= 0.0f ? 4u : 5u;
+    st = direction.z >= 0.0f ? float2(direction.x, -direction.y)
+                             : float2(-direction.x, -direction.y);
+    st /= a.z;
+  }
+  uv = st * 0.5f + 0.5f;
+}
+
+// Linear Rec.709 colour of a star class drawn from `selector` in [0, 1]:
+// blue-white, white, yellow and orange, each at unit luminance.
+float3 vkr_atmosphere_star_colour(float selector) {
+  float3 colour = selector < 0.2f   ? float3(0.80f, 0.92f, 1.25f)
+                  : selector < 0.55f ? float3(1.0f, 1.0f, 1.0f)
+                  : selector < 0.85f ? float3(1.10f, 0.98f, 0.80f)
+                                     : float3(1.25f, 0.90f, 0.62f);
+  return colour /
+         dot(colour, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+// One cell's star seen along `direction`, both in celestial coordinates.
+float3 vkr_atmosphere_star_cell(float magnitude_zero, uint face, int2 cell,
+                                float3 direction, float width) {
+  if (any(cell < int2(0)) || any(cell >= int2(int(VKR_ATMOSPHERE_STAR_CELLS))))
+    return float3(0.0f);
+  uint3 hashed = vkr_atmosphere_hash3(uint3(uint(cell.x), uint(cell.y), face));
+  float3 random = float3(hashed) * (1.0f / 4294967296.0f);
+  uint3 second = vkr_atmosphere_hash3(hashed.zxy);
+  float2 extra = float2(second.xy) * (1.0f / 4294967296.0f);
+  if (random.x >= VKR_ATMOSPHERE_STAR_DENSITY)
+    return float3(0.0f);
+  float2 offset = VKR_ATMOSPHERE_STAR_BORDER +
+                  float2(random.y, random.z) *
+                      (1.0f - 2.0f * VKR_ATMOSPHERE_STAR_BORDER);
+  float2 uv = (float2(cell) + offset) / float(VKR_ATMOSPHERE_STAR_CELLS);
+  float3 star = normalize(vkr_atmosphere_cube_direction(face, uv));
+  float3 chord = direction - star;
+  float distance_squared = dot(chord, chord);
+  float variance = width * width;
+  if (distance_squared > 16.0f * variance)
+    return float3(0.0f);
+  float magnitude = VKR_ATMOSPHERE_STAR_FAINTEST_MAGNITUDE +
+                    2.0f * log10(max(extra.x,
+                                     VKR_ATMOSPHERE_STAR_BRIGHTEST_FRACTION));
+  float irradiance = magnitude_zero * pow(10.0f, -0.4f * magnitude);
+  return vkr_atmosphere_star_colour(extra.y) * irradiance /
+         (2.0f * VKR_ATMOSPHERE_PI * variance) *
+         exp(-0.5f * distance_squared / variance);
+}
+
+// Star radiance along a unit world view direction for a pixel `pixel_angle`
+// radians wide, before atmospheric extinction. Stars stay fixed relative to
+// the sun, turning with its hour angle about the celestial pole.
+float3 vkr_atmosphere_stars(VkrSkyParams sky, float3 direction,
+                            float pixel_angle) {
+  float3 pole = sky.star_pole.xyz;
+  float3 axis = sky.star_axis.xyz;
+  float3 celestial =
+      float3(dot(direction, axis), dot(direction, cross(pole, axis)),
+             dot(direction, pole));
+  uint face;
+  float2 uv;
+  vkr_atmosphere_cube_face(celestial, face, uv);
+  float2 position = uv * float(VKR_ATMOSPHERE_STAR_CELLS);
+  int2 cell = int2(floor(position));
+  int2 toward = int2(position - float2(cell) >= 0.5f) * 2 - 1;
+  float width = max(pixel_angle * 0.7f, VKR_ATMOSPHERE_STAR_MIN_WIDTH);
+  float magnitude_zero = sky.star_pole.w;
+  return vkr_atmosphere_star_cell(magnitude_zero, face, cell, celestial, width) +
+         vkr_atmosphere_star_cell(magnitude_zero, face, cell + int2(toward.x, 0),
+                                  celestial, width) +
+         vkr_atmosphere_star_cell(magnitude_zero, face, cell + int2(0, toward.y),
+                                  celestial, width) +
+         vkr_atmosphere_star_cell(magnitude_zero, face, cell + toward,
+                                  celestial, width);
 }
 
 // Camera-to-slice distance in kilometres. Texel k stores the integral to the

@@ -905,8 +905,10 @@ the moon while the sun is below the horizon
 ([ADR-081](adr/081-physical-night-sky.md)). Every frame builds a 384×108
 sky-view image, a sun table beside a moon table, and a 32³ aerial-perspective
 volume from the published lookups at the camera's altitude. The deferred
-background samples both tables and adds an analytic limb-darkened sun disc and
-a phase-shaded moon disc. Aerial perspective attenuates surfaces before fog. Isolated fixtures and previews may instead author a
+background samples both tables and adds an analytic limb-darkened sun disc, a
+phase-shaded moon disc and, while the sun is below the horizon, a procedural
+star field that turns with the sun about the celestial pole. Aerial
+perspective attenuates surfaces before fog. Isolated fixtures and previews may instead author a
 uniform constant source, uploaded as a one-texel-per-face cube and shown as a
 uniform background. The scene `environment` block is the sky light: its enable
 flag, intensities and SH window apply to either source, and a disabled sky

@@ -1522,6 +1522,21 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
                     vkr_atmosphere_light_glow(params, direction, params.moon,
                                               params.lunar,
                                               view_transmittance);
+        // Stars sit behind the whole atmosphere; the neighbouring pixel's ray
+        // sets each star's footprint.
+        if (sky.params.star_axis.w > 0.0f)
+        {
+            float2 next_ndc =
+                (float2(pixel) + float2(1.5f, 0.5f)) / float2(root.extent) *
+                    2.0f -
+                1.0f;
+            float3 next_world = vkr_vk_deferred_homogeneous(mul(
+                root.inverse_view_projection, float4(next_ndc, 1.0f, 1.0f)));
+            float3 next = -packet_view_direction(root.frame, next_world);
+            radiance += vkr_atmosphere_stars(sky.params, direction,
+                                             length(cross(direction, next))) *
+                        view_transmittance;
+        }
     }
     // The cloud trace shares screen coordinates with this pass; clouds carry
     // aerial perspective at their own depth. The disc follows the cloud's

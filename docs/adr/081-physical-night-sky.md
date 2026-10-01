@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-10-01
 authority: adr
 ---
@@ -8,8 +8,9 @@ authority: adr
 
 ## Status
 
-Accepted. Pre-exposure and the moon as a second atmosphere light are
-implemented. The procedural star field is pending.
+Accepted and implemented: pre-exposure, the moon as a second atmosphere light
+and the procedural star field. Native Vulkan execution remains unavailable on
+the development host.
 
 ## Context
 
@@ -137,6 +138,44 @@ depression. The offline diffuse baker applies the same moon, both-light source
 and key light. Its recipe hash covers the moon only when the moon has
 irradiance, so the hashes of moonless bakes are unchanged.
 
+### Stars
+
+The deferred background draws a procedural star field behind the atmosphere.
+
+- **Layout.** Each face of a cube around the celestial pole holds 64 × 64
+  cells, and a cell holds at most one star (37 % do). A star's hashed
+  position keeps 15 % of a cell from its border, so its footprint lies in its
+  cell and the three neighbours toward the nearest corner. A pixel evaluates
+  those four cells.
+- **Magnitudes.** Magnitudes follow the naked-eye count law
+  N(< m) ∝ 10^(0.5 m) up to magnitude 6.5: about 9000 stars, the brightest
+  near −1.5.
+- **Brightness.** A magnitude-m star's irradiance is
+  `star_intensity` × 10^(−0.4 (m + 26.74)) times the default sun's luminance.
+  At 1 the field is physical beside that sun.
+- **Colour.** Each star takes one of four unit-luminance classes: blue-white,
+  white, yellow or orange.
+- **Shape.** Each star is a Gaussian 0.7 pixel wide, never narrower than
+  10^−4 radians, so temporal jitter resolves it without flicker.
+- **Sky effects.** The view transmittance attenuates and reddens stars near
+  the horizon, and clouds composite over them. Stars do not light the scene
+  and do not enter the sky-light bake.
+
+The field keeps its place relative to the sun:
+
+- **Rotation.** Its frame is the celestial pole and the sun's direction
+  projected off the pole, so as the sun moves through its hour angle about the
+  pole, the stars rise and set with the night.
+- **Visibility.** The field draws only while the sun is below the observer's
+  horizon, where stars can show; in daylight it is skipped.
+- **Authoring.** The Sky atmosphere component's Night group authors
+  `star_intensity` in [0, 10^6] (default 1) and `celestial_pole`, a direction
+  whose elevation is the latitude (default 45 degrees, toward +Z, so the noon
+  sun lies toward −Z). Both follow the scene at once and never request a
+  bake.
+- **Sky record.** It carries `star_pole` and `star_axis` and grows to 432
+  bytes. The magnitude-zero irradiance is pre-exposed.
+
 ## Consequences
 
 - **Precision.** Night scenes keep RGBA16F precision.
@@ -211,6 +250,22 @@ Moon evidence (Metal Release, M1 Pro):
     is the key light only while the sun is below the horizon.
   - All 102 SPIR-V modules pass `spirv-val`, and the compiled atmosphere root
     (208 bytes) and sky record (448 bytes) offsets match the C asserts.
+
+Star evidence (Metal Release, M1 Pro):
+
+- **Starry sky.**
+  `tools/cases/local/atmosphere_bistro_starry_sky_local.case.json`
+  (`sha256:e5329184…`), a moonless sky at manual exposure 2^19, shows the field
+  thinning and reddening toward the horizon.
+- **Moonlit clouds.** The moonlit-cloud case (`sha256:8df4adeb…`) shows the
+  brighter stars between the clouds.
+- **Day output.** The day atmosphere case matches the pre-moon reference to a
+  1.000000 mean HDR luminance ratio, with run-to-run noise of up to 0.026.
+- **Validation.** One Metal API validation process on the starry case is clean
+  (`sha256:3dd357d4…`). A CPU test checks that the field's frame turns with
+  the sun about the pole, and that the field is hidden in daylight and without
+  intensity. The compiled sky offsets match the C asserts: `star_pole` at 400,
+  `star_axis` at 416, and a 480-byte Vulkan record.
 
 Native Vulkan execution and the Windows-only FSR SDK build are unavailable on
 this host, so the affected shader domains are UNALIGNED in

@@ -1066,6 +1066,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.sky.atmosphere.lunar.x *= pre_exposure;
   prepared->frame.sky.atmosphere.lunar.y *= pre_exposure;
   prepared->frame.sky.atmosphere.lunar.z *= pre_exposure;
+  prepared->frame.sky.star_pole.w *= pre_exposure;
 
   prepared->frame.color_grading = vkr_color_grading_prepare(
       packet->globals.white_balance_temperature,

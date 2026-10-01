@@ -668,6 +668,8 @@ bool parse_atmosphere(const std::vector<uint8_t> &bytes,
       !optional_float("sun_angular_diameter_degrees",
                       &out->sun_angular_diameter_degrees) ||
       !optional_float("sun_glow", &out->sun_glow) ||
+      !optional_float("star_intensity", &out->star_intensity) ||
+      !optional_vec3("celestial_pole", &out->celestial_pole) ||
       !optional_float("rayleigh_density_scale", &out->rayleigh_density_scale) ||
       !optional_float("mie_density_scale", &out->mie_density_scale) ||
       !optional_float("ozone_density_scale", &out->ozone_density_scale) ||

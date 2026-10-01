@@ -206,21 +206,21 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
 vkr_global const VkrMetalPacketAbiField vkr_sky_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketSky, params, "params", 0),
     VKR_ABI_FIELD(VkrMetalPacketSky, aerial_perspective_texture_id,
-                  "aerial_perspective", 400),
+                  "aerial_perspective", 432),
     VKR_ABI_FIELD(VkrMetalPacketSky, transmittance_texture_id, "transmittance",
-                  408),
+                  440),
     VKR_ABI_FIELD(VkrMetalPacketSky, multiple_scattering_texture_id,
-                  "multiple_scattering", 416),
+                  "multiple_scattering", 448),
     VKR_ABI_FIELD(VkrMetalPacketSky, cloud_radiance_texture_id,
-                  "cloud_radiance", 424),
+                  "cloud_radiance", 456),
     VKR_ABI_FIELD(VkrMetalPacketSky, cloud_shadow_texture_id, "cloud_shadow",
-                  432),
+                  464),
     VKR_ABI_FIELD(VkrMetalPacketSky, cloud_base_noise_texture_id,
-                  "cloud_base_noise", 440),
+                  "cloud_base_noise", 472),
     VKR_ABI_FIELD(VkrMetalPacketSky, cloud_detail_noise_texture_id,
-                  "cloud_detail_noise", 448),
+                  "cloud_detail_noise", 480),
     VKR_ABI_FIELD(VkrMetalPacketSky, cloud_weather_texture_id, "cloud_weather",
-                  456),
+                  488),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_params_fields[] = {
@@ -232,6 +232,8 @@ vkr_global const VkrMetalPacketAbiField vkr_sky_params_fields[] = {
     VKR_ABI_FIELD(VkrSkyGpuParams, aerial, "aerial", 304),
     VKR_ABI_FIELD(VkrSkyGpuParams, clouds, "clouds", 320),
     VKR_ABI_FIELD(VkrSkyGpuParams, key_light, "key_light", 384),
+    VKR_ABI_FIELD(VkrSkyGpuParams, star_pole, "star_pole", 400),
+    VKR_ABI_FIELD(VkrSkyGpuParams, star_axis, "star_axis", 416),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_cloud_params_fields[] = {
@@ -1738,9 +1740,9 @@ vkr_global const VkrMetalPacketAbiRecord
                            "VkrMetalPacketMetalfxStabilizeRoot", 64, 16,
                            vkr_metalfx_stabilize_root_fields),
         [VKR_METAL_PACKET_ABI_SKY] = VKR_ABI_RECORD(
-            VkrMetalPacketSky, "VkrMetalPacketSky", 464, 16, vkr_sky_fields),
+            VkrMetalPacketSky, "VkrMetalPacketSky", 496, 16, vkr_sky_fields),
         [VKR_METAL_PACKET_ABI_SKY_PARAMS] = VKR_ABI_RECORD(
-            VkrSkyGpuParams, "VkrSkyParams", 400, 16, vkr_sky_params_fields),
+            VkrSkyGpuParams, "VkrSkyParams", 432, 16, vkr_sky_params_fields),
         [VKR_METAL_PACKET_ABI_SKY_VIEW_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketSkyBuildRoot, "VkrMetalPacketSkyViewRoot", 16, 16,
             vkr_sky_build_root_fields),

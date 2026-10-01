@@ -176,7 +176,7 @@ Frame input version 50 carries a sky payload: the published generation's
 medium lit by the scene's current sun and its lookup textures, or the constant
 radiance, and the published cloud layer of
 [ADR-074](074-volumetric-cloud-layer.md). The renderer prepares a
-400-byte sky record per frame slot, and every native frame root addresses it.
+432-byte sky record per frame slot, and every native frame root addresses it.
 The camera stands on the planet below its world position, at the observer
 altitude plus its world height times `atmosphere.metres_per_world_unit`,
 clamped to the altitude domain. The scale defaults to one and does not

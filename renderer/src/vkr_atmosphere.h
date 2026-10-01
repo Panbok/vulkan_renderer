@@ -46,7 +46,10 @@
  * glow form the sun, and the moon fields the second atmosphere light
  * (ADR-081); the rest is the medium, which the revision bake alone depends
  * on. `lunar_irradiance` is the full moon's top-of-atmosphere irradiance:
- * the lit fraction its angle from the sun leaves scales it at preparation. */
+ * the lit fraction its angle from the sun leaves scales it at preparation.
+ * The star field draws only in the sky: `star_intensity` in [0, 1e6] scales
+ * its physical brightness beside the default sun, and the field turns with the
+ * sun about `celestial_pole`. */
 typedef struct VkrAtmosphereSettings {
   bool8_t enabled;
   Vec3 sun_direction;
@@ -54,6 +57,8 @@ typedef struct VkrAtmosphereSettings {
   Vec3 moon_direction;
   Vec3 lunar_irradiance;
   float32_t moon_angular_diameter_degrees;
+  float32_t star_intensity;
+  Vec3 celestial_pole;
   Vec3 ground_albedo;
   float32_t observer_altitude_m;
   float32_t sun_angular_diameter_degrees;
@@ -104,7 +109,10 @@ typedef enum VkrSkyMode {
  * slice count, its reciprocal, and 1 when aerial perspective applies.
  * `clouds` is zero unless the cloud layer renders this frame. `key_light`
  * points toward the light that drives direct lighting, cascaded and cloud
- * shadows; `w` is 1 when it is the moon. */
+ * shadows; `w` is 1 when it is the moon. The star field's celestial frame is
+ * `star_pole` and `star_axis`, the sun's hour-angle direction about the pole;
+ * `star_pole.w` is the irradiance of a magnitude-zero star and `star_axis.w` 1
+ * while the sun is below the horizon and the field draws. */
 typedef struct VkrSkyGpuParams {
   VkrAtmosphereGpuParams atmosphere;
   Mat4 view_projection;
@@ -113,9 +121,17 @@ typedef struct VkrSkyGpuParams {
   Vec4 aerial;
   VkrCloudGpuParams clouds;
   Vec4 key_light;
+  Vec4 star_pole;
+  Vec4 star_axis;
 } VkrSkyGpuParams;
 
-_Static_assert(sizeof(VkrSkyGpuParams) == 400u, "Sky parameter ABI size drift");
+_Static_assert(sizeof(VkrSkyGpuParams) == 432u, "Sky parameter ABI size drift");
+
+/** Largest authorable star-field brightness multiplier. */
+#define VKR_ATMOSPHERE_STAR_INTENSITY_MAX 1000000.0f
+/** Apparent magnitude of the sun; a magnitude-zero star is 10^(-0.4 * 26.74)
+ * of the default sun's luminance. */
+#define VKR_ATMOSPHERE_SUN_MAGNITUDE -26.74f
 
 typedef enum VkrAtmosphereBakeStatus {
   VKR_ATMOSPHERE_BAKE_PENDING = 0,

@@ -329,6 +329,50 @@ vkr_internal bool32_t test_atmosphere_sun_glow(void) {
   return true_v;
 }
 
+/* The star field keeps its place relative to the sun (ADR-081): turning the
+   sun about the celestial pole turns the field's frame by the same angle, so
+   the stars rise and set with the night. The field draws only while the sun
+   is below the horizon. */
+vkr_internal bool32_t test_atmosphere_stars_turn_with_the_sun(void) {
+  printf("  Running test_atmosphere_stars_turn_with_the_sun...\n");
+  VkrAtmosphereSettings settings = vkr_atmosphere_settings_defaults();
+  settings.enabled = true_v;
+  settings.celestial_pole = vec3_new(0.0f, 1.0f, 0.0f);
+  const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
+  const Mat4 identity = mat4_identity();
+  const Vec2 wind = {0};
+
+  // A sun 30 degrees below the horizon toward +X, then a quarter turn about
+  // the pole later toward +Z.
+  settings.sun_direction = vec3_new(0.8660254f, -0.5f, 0.0f);
+  const VkrSkyGpuParams evening = vkr_atmosphere_prepare_sky(
+      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+  settings.sun_direction = vec3_new(0.0f, -0.5f, 0.8660254f);
+  const VkrSkyGpuParams midnight = vkr_atmosphere_prepare_sky(
+      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+  assert(evening.star_axis.w == 1.0f && midnight.star_axis.w == 1.0f);
+  assert(fabsf(evening.star_axis.x - 1.0f) < 1e-5f &&
+         fabsf(evening.star_axis.y) < 1e-5f &&
+         fabsf(evening.star_axis.z) < 1e-5f);
+  assert(fabsf(midnight.star_axis.x) < 1e-5f &&
+         fabsf(midnight.star_axis.y) < 1e-5f &&
+         fabsf(midnight.star_axis.z - 1.0f) < 1e-5f);
+  assert(evening.star_pole.w > 0.0f);
+
+  // In daylight the field is hidden; without intensity it never draws.
+  settings.sun_direction = vec3_new(0.0f, 0.5f, 0.8660254f);
+  const VkrSkyGpuParams day = vkr_atmosphere_prepare_sky(
+      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+  assert(day.star_axis.w == 0.0f);
+  settings.sun_direction = vec3_new(0.0f, -0.5f, 0.8660254f);
+  settings.star_intensity = 0.0f;
+  const VkrSkyGpuParams starless = vkr_atmosphere_prepare_sky(
+      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+  assert(starless.star_axis.w == 0.0f);
+  printf("  test_atmosphere_stars_turn_with_the_sun PASSED\n");
+  return true_v;
+}
+
 bool32_t run_atmosphere_tests(void) {
   printf("--- Starting Atmosphere Tests ---\n");
   bool32_t passed = true_v;
@@ -339,6 +383,7 @@ bool32_t run_atmosphere_tests(void) {
   passed &= test_atmosphere_cloud_layer();
   passed &= test_atmosphere_observer_irradiance();
   passed &= test_atmosphere_sun_glow();
+  passed &= test_atmosphere_stars_turn_with_the_sun();
   printf("--- Atmosphere Tests Completed ---\n");
   return passed;
 }

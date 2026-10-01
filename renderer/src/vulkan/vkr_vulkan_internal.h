@@ -929,8 +929,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSky {
   uint32_t cloud_noise_sampler;
   uint32_t reserved[2];
 } VkrVulkanSky;
-_Static_assert(sizeof(VkrVulkanSky) == 448u, "Vulkan sky record ABI drift");
-_Static_assert(offsetof(VkrVulkanSky, cloud_radiance_texture) == 416u,
+_Static_assert(sizeof(VkrVulkanSky) == 480u, "Vulkan sky record ABI drift");
+_Static_assert(offsetof(VkrVulkanSky, cloud_radiance_texture) == 448u,
                "Vulkan sky cloud slot offset drift");
 
 /** Per-frame sky-view lookup and aerial-perspective volume builders. */

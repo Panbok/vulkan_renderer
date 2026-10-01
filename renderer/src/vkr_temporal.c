@@ -97,7 +97,8 @@ vkr_internal void temporal_scene_sky(VkrTemporalSceneSignature *signature,
   temporal_scene_vec3(signature, atmosphere->moon_direction);
   temporal_scene_vec3(signature, atmosphere->lunar_irradiance);
   temporal_scene_floats(signature, atmosphere->moon_angular_diameter_degrees,
-                        0.0f);
+                        atmosphere->star_intensity);
+  temporal_scene_vec3(signature, atmosphere->celestial_pole);
   temporal_scene_vec3(signature, atmosphere->ground_albedo);
   temporal_scene_floats(signature, atmosphere->observer_altitude_m,
                         atmosphere->sun_angular_diameter_degrees);

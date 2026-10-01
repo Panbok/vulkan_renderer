@@ -8,6 +8,9 @@ VkrAtmosphereSettings vkr_atmosphere_settings_defaults(void) {
       .solar_irradiance = {.x = 1.474f, .y = 1.8504f, .z = 1.91198f},
       .moon_direction = {.x = 0.0f, .y = -0.70710678f, .z = 0.70710678f},
       .moon_angular_diameter_degrees = VKR_ATMOSPHERE_MOON_DIAMETER_DEFAULT,
+      .star_intensity = 1.0f,
+      /* A 45-degree latitude whose noon sun lies toward -Z. */
+      .celestial_pole = {.x = 0.0f, .y = 0.70710678f, .z = 0.70710678f},
       .ground_albedo = {.x = 0.3f, .y = 0.3f, .z = 0.3f},
       .sun_angular_diameter_degrees = 0.53f,
       .sun_glow = VKR_ATMOSPHERE_SUN_GLOW_DEFAULT,
@@ -28,6 +31,7 @@ bool8_t vkr_atmosphere_settings_valid(const VkrAtmosphereSettings *settings) {
   const Vec3 solar = settings->solar_irradiance;
   const Vec3 moon = settings->moon_direction;
   const Vec3 lunar = settings->lunar_irradiance;
+  const Vec3 pole = settings->celestial_pole;
   const Vec3 ground = settings->ground_albedo;
   return isfinite(sun.x) && isfinite(sun.y) && isfinite(sun.z) &&
          (sun.x != 0.0f || sun.y != 0.0f || sun.z != 0.0f) &&
@@ -40,6 +44,11 @@ bool8_t vkr_atmosphere_settings_valid(const VkrAtmosphereSettings *settings) {
          isfinite(settings->moon_angular_diameter_degrees) &&
          settings->moon_angular_diameter_degrees >= 1e-16f &&
          settings->moon_angular_diameter_degrees <= 5.0f &&
+         isfinite(settings->star_intensity) &&
+         settings->star_intensity >= 0.0f &&
+         settings->star_intensity <= VKR_ATMOSPHERE_STAR_INTENSITY_MAX &&
+         isfinite(pole.x) && isfinite(pole.y) && isfinite(pole.z) &&
+         (pole.x != 0.0f || pole.y != 0.0f || pole.z != 0.0f) &&
          isfinite(ground.x) && ground.x >= 0.0f && ground.x <= 1.0f &&
          isfinite(ground.y) && ground.y >= 0.0f && ground.y <= 1.0f &&
          isfinite(ground.z) && ground.z >= 0.0f && ground.z <= 1.0f &&
@@ -173,6 +182,9 @@ vkr_atmosphere_with_sun(const VkrAtmosphereSettings *medium,
   lit.moon_direction = lights->moon_direction;
   lit.lunar_irradiance = lights->lunar_irradiance;
   lit.moon_angular_diameter_degrees = lights->moon_angular_diameter_degrees;
+  /* The star field never bakes, so it follows the scene at once too. */
+  lit.star_intensity = lights->star_intensity;
+  lit.celestial_pole = lights->celestial_pole;
   return lit;
 }
 
@@ -325,6 +337,47 @@ bool8_t vkr_atmosphere_bake_dark(const VkrAtmosphereGpuParams *params) {
          vkr_atmosphere_light_dark(params, params->moon, params->lunar);
 }
 
+/* True when a light has irradiance and is above the observer's horizon. */
+vkr_internal bool8_t vkr_atmosphere_light_lights_observer(
+    const VkrAtmosphereGpuParams *params, Vec4 direction, Vec4 irradiance) {
+  const Vec3 observer =
+      vec3_new(0.0f, params->planet.x + params->planet.z, 0.0f);
+  return (irradiance.x > 0.0f || irradiance.y > 0.0f || irradiance.z > 0.0f) &&
+         !vkr_atmosphere_sun_occluded(
+             params, observer, vec3_new(direction.x, direction.y, direction.z));
+}
+
+/* The celestial frame turns with the sun: its axis is the sun's direction
+   projected off the pole, so the stars keep their place relative to the sun.
+   A sun at the pole leaves the hour angle undefined; any perpendicular axis
+   then serves. Stars draw only while the sun is below the horizon, where they
+   can show against the sky. */
+vkr_internal void
+vkr_atmosphere_prepare_stars(const VkrAtmosphereSettings *settings,
+                             VkrSkyGpuParams *sky) {
+  const Vec3 pole = vec3_normalize(settings->celestial_pole);
+  const Vec3 sun = vec3_new(sky->atmosphere.sun.x, sky->atmosphere.sun.y,
+                            sky->atmosphere.sun.z);
+  Vec3 axis = vec3_sub(sun, vec3_scale(pole, vec3_dot(sun, pole)));
+  if (vec3_dot(axis, axis) < 1e-8f) {
+    const Vec3 reference = fabsf(pole.x) < 0.9f ? vec3_new(1.0f, 0.0f, 0.0f)
+                                                : vec3_new(0.0f, 0.0f, 1.0f);
+    axis = vec3_cross(reference, pole);
+  }
+  axis = vec3_normalize(axis);
+  const float32_t magnitude_zero =
+      settings->star_intensity *
+      vkr_atmosphere_luminance(
+          vkr_atmosphere_settings_defaults().solar_irradiance) *
+      powf(10.0f, 0.4f * VKR_ATMOSPHERE_SUN_MAGNITUDE);
+  const bool8_t visible =
+      magnitude_zero > 0.0f &&
+      !vkr_atmosphere_light_lights_observer(
+          &sky->atmosphere, sky->atmosphere.sun, sky->atmosphere.solar);
+  sky->star_pole = (Vec4){pole.x, pole.y, pole.z, magnitude_zero};
+  sky->star_axis = (Vec4){axis.x, axis.y, axis.z, visible ? 1.0f : 0.0f};
+}
+
 VkrSkyGpuParams
 vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
                            const VkrCloudSettings *clouds,
@@ -347,6 +400,7 @@ vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
   const bool8_t moon_key = vkr_atmosphere_moon_is_key(&sky.atmosphere);
   const Vec4 key = moon_key ? sky.atmosphere.moon : sky.atmosphere.sun;
   sky.key_light = (Vec4){key.x, key.y, key.z, moon_key ? 1.0f : 0.0f};
+  vkr_atmosphere_prepare_stars(settings, &sky);
   /* The camera stands on the planet directly below its world position, so
      only its height changes the atmosphere it looks through. */
   const float32_t altitude_m =
@@ -502,19 +556,8 @@ Vec3 vkr_atmosphere_observer_lunar_irradiance(
 }
 
 bool8_t vkr_atmosphere_moon_is_key(const VkrAtmosphereGpuParams *params) {
-  const Vec3 observer =
-      vec3_new(0.0f, params->planet.x + params->planet.z, 0.0f);
-  const bool8_t sun_lights =
-      (params->solar.x > 0.0f || params->solar.y > 0.0f ||
-       params->solar.z > 0.0f) &&
-      !vkr_atmosphere_sun_occluded(
-          params, observer,
-          vec3_new(params->sun.x, params->sun.y, params->sun.z));
-  const bool8_t moon_lights =
-      (params->lunar.x > 0.0f || params->lunar.y > 0.0f ||
-       params->lunar.z > 0.0f) &&
-      !vkr_atmosphere_sun_occluded(
-          params, observer,
-          vec3_new(params->moon.x, params->moon.y, params->moon.z));
-  return !sun_lights && moon_lights;
+  return !vkr_atmosphere_light_lights_observer(params, params->sun,
+                                               params->solar) &&
+         vkr_atmosphere_light_lights_observer(params, params->moon,
+                                              params->lunar);
 }

@@ -120,9 +120,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSky {
   uint64_t cloud_detail_noise_texture_id;
   uint64_t cloud_weather_texture_id;
 } VkrMetalPacketSky;
-_Static_assert(sizeof(VkrMetalPacketSky) == 464u, "Metal sky record ABI drift");
+_Static_assert(sizeof(VkrMetalPacketSky) == 496u, "Metal sky record ABI drift");
 _Static_assert(offsetof(VkrMetalPacketSky, aerial_perspective_texture_id) ==
-                   400u,
+                   432u,
                "Metal sky aerial-perspective offset drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {

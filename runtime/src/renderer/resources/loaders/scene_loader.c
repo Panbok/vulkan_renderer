@@ -925,6 +925,14 @@ scene_loader_parse_atmosphere_import(String8 json) {
       !vkr_json_parse_float(&field, &result.settings.sun_glow))
     goto invalid;
   field = atmosphere_object;
+  if (vkr_json_find_field(&field, "star_intensity") &&
+      !vkr_json_parse_float(&field, &result.settings.star_intensity))
+    goto invalid;
+  field = atmosphere_object;
+  if (vkr_json_find_field(&field, "celestial_pole") &&
+      !scene_json_parse_vec3(&field, &result.settings.celestial_pole))
+    goto invalid;
+  field = atmosphere_object;
   if (vkr_json_find_field(&field, "rayleigh_density_scale") &&
       !vkr_json_parse_float(&field, &result.settings.rayleigh_density_scale))
     goto invalid;
@@ -977,7 +985,8 @@ invalid:
             "direction; finite nonnegative solar_irradiance; density scales in "
             "[0,100]; "
             "ground_albedo in [0,1]; altitude in [0,100000]; angular "
-            "diameter in [1e-16,5]; sun_glow in [0,100]; mie_anisotropy in "
+            "diameter in [1e-16,5]; sun_glow in [0,100]; star_intensity in "
+            "[0,1e6]; a finite nonzero celestial_pole; mie_anisotropy in "
             "[-.95,.95]; and metres_per_world_unit in [0.001,1000]");
   return result;
 }

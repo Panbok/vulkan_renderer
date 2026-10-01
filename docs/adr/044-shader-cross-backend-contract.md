@@ -75,21 +75,24 @@ Pre-exposure ([ADR-081](081-physical-night-sky.md)) is **UNALIGNED**.
 - **Missing gates.** Native Vulkan execution and a bilateral comparison are
   unavailable on this host.
 
-## Moon evidence state
+## Moon and star evidence state
 
-The moon, the atmosphere's second light ([ADR-081](081-physical-night-sky.md)),
-is **UNALIGNED**. It changes the sky atmosphere, aerial perspective and
-volumetric cloud domains.
+The moon, the atmosphere's second light, and the procedural star field
+([ADR-081](081-physical-night-sky.md)) are **UNALIGNED**. They change the sky
+atmosphere, aerial perspective and volumetric cloud domains.
 
 - **Changed contracts.**
   - Atmosphere parameters grow to 160 bytes with `moon` and `lunar`.
-  - The sky record adds `key_light`: 400 bytes of parameters, a 464-byte
-    Metal record and a 448-byte Vulkan record.
+  - The sky record adds `key_light` and, for the star field, `star_pole` and
+    `star_axis`: 432 bytes of parameters, a 496-byte Metal record and a
+    480-byte Vulkan record.
+  - The deferred background draws the procedural star field from the shared
+    `vkr_atmosphere_stars`.
   - The atmosphere bake roots grow to 224 bytes on Metal and 208 on Vulkan.
   - The sky-view image is 384×108, a sun table and a moon table.
 - **Metal evidence.** Day Bistro output is within run-to-run noise, the night,
-  moonlit-sky and moonlit-cloud Bistro cases render, and a focused API
-  validation run is clean.
+  moonlit-sky, moonlit-cloud and starry-sky Bistro cases render, and focused
+  API validation runs are clean.
 - **Vulkan evidence.** All production modules pass `spirv-val`, and their
   compiled atmosphere and sky offsets match the C asserts.
 - **Missing gates.** Native Vulkan execution and a bilateral comparison are
