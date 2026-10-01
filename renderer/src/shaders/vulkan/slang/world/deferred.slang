@@ -364,6 +364,9 @@ struct VkrVkPickingRoot
     uint2 pixel;
     uint transmission_layer;
     uint use_transmission;
+    uint depth_texture;
+    // One float: the opaque depth at `pixel`, read back with the object id.
+    float *depth_output;
 };
 
 struct VkrVkTransmissionRoot
@@ -3162,6 +3165,10 @@ void vk_picking_resolve(uint3 thread_id : SV_DispatchThreadID)
                 : root.opaque_instances[visible.instance_index].object_id;
     }
     g_storage_uint_2d[root.output_texture][root.pixel] = identifier;
+    // The editor lifts its grid onto the visible floor from this depth when
+    // the scene has no collision; 1 is the far plane.
+    root.depth_output[0] =
+        g_depth_textures[root.depth_texture].Load(int3(root.pixel, 0));
 }
 
 // The 8x8 group can contain at most 64 subgroups. Do not assume a native

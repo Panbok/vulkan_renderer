@@ -389,9 +389,14 @@ vkr_internal void vkr_vk_collect_picking_result(VkrVulkanRenderer *renderer,
       .y = slot->picking_y,
   };
   if (vkr_vk_invalidate(renderer, &slot->readback.allocation, 0u,
-                        sizeof(result.data))) {
+                        VKR_VULKAN_READBACK_PICKING_DEPTH_OFFSET +
+                            sizeof(result.depth))) {
     MemCopy(&result.data, slot->readback.allocation.mapped,
             sizeof(result.data));
+    MemCopy(&result.depth,
+            (const uint8_t *)slot->readback.allocation.mapped +
+                VKR_VULKAN_READBACK_PICKING_DEPTH_OFFSET,
+            sizeof(result.depth));
     result.status = VKR_READBACK_STATUS_READY;
     result.valid = true_v;
   }
@@ -840,8 +845,11 @@ vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
   }
   VkBufferMemoryBarrier2 readback_barrier = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-      .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      /* Copies, and the picking resolve's depth store. */
+      .srcStageMask =
+          VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask =
+          VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
       .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
       .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,

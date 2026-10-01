@@ -1367,6 +1367,8 @@ vkr_global const VkrVulkanReflectedField s_vk_picking_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, pixel),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, transmission_layer),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, use_transmission),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, depth_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPickingRoot, depth_output),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_hzb_fields[] = {

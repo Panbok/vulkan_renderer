@@ -1184,10 +1184,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketPickingResolveRoot {
   uint32_t transmission_instance_count;
   uint32_t transmission_enabled;
   uint32_t reserved[1];
+  /* Address of one float: the opaque depth at `pixel`, read back with the
+     object id. */
+  uint64_t depth_output;
 } VkrMetalPacketPickingResolveRoot;
 
-_Static_assert(sizeof(VkrMetalPacketPickingResolveRoot) == 128,
-               "Metal picking-resolve root ABI must remain 128 bytes");
+_Static_assert(sizeof(VkrMetalPacketPickingResolveRoot) == 144,
+               "Metal picking-resolve root ABI must remain 144 bytes");
 
 /** One upload-ring cell used by the retained table-driven forward path. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTableDrawUpload {

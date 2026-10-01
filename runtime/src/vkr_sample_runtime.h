@@ -59,6 +59,9 @@ typedef struct VkrSampleViewState {
   VkrSampleCameraView camera_view;
   VkrRenderMode render_mode;
   float32_t grid_spacing;
+  /* World Y of the ground grid and of placement onto it, per scene: a floor
+     modelled above the origin hides a grid at zero. */
+  float32_t grid_height;
   /* VkrGizmoMode tool: NONE (Select) shows no handles, and dragging an
      object moves it; another mode shows that handle family. */
   uint32_t gizmo_tool;
@@ -92,6 +95,14 @@ typedef enum VkrSamplePickPurpose {
   /* A Script asset dropped: attach it to the picked object. */
   VKR_SAMPLE_PICK_SCRIPT_DROP,
 } VkrSamplePickPurpose;
+
+/* Lift the ground grid onto the surface at a window pixel of the Scene:
+ * collision answers at once, else the GPU depth at that pixel a few frames
+ * later; the frame's grid_status reports the outcome. */
+typedef struct VkrSampleGridFitRequest {
+  bool8_t request;
+  Vec2 position_px;
+} VkrSampleGridFitRequest;
 
 /* Pick the Scene at a window pixel; the result arrives in a later frame as
  * the frame's context fields. */
@@ -146,6 +157,8 @@ typedef struct VkrSampleSceneRecall {
   float32_t field_of_view;
   float32_t near_plane;
   float32_t far_plane;
+  /* The scene's grid height; files written before it read zero. */
+  float32_t grid_height;
   bool8_t selection_valid;
   VkrSampleEntityIdentity selection;
 } VkrSampleSceneRecall;
@@ -262,6 +275,9 @@ typedef struct VkrSampleUiFrame {
   Vec2 context_position_px;
   VkrSamplePickPurpose context_purpose;
   VkrSamplePickRequest *pick_request;
+  VkrSampleGridFitRequest *grid_fit_request;
+  /* The last grid fit's outcome, or empty. */
+  String8 grid_status;
   uint64_t scene_generation;
   const VkrSceneEditState *edits;
   VkrSceneEditRequest *scene_edit;

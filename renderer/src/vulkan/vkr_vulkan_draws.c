@@ -1463,10 +1463,16 @@ bool8_t vkr_vk_prepare_editor_grid(VkrVulkanRenderer *renderer,
     return false_v;
   const Mat4 view_projection =
       mat4_mul(packet->input.globals.projection, packet->input.globals.view);
+  /* The shader's plane passes through its origin: lift the unprojected
+     world by the grid height instead of changing the shader contract. */
+  const float32_t plane_height =
+      grid->plane == VKR_EDITOR_GRID_PLANE_XZ ? grid->height : 0.0f;
   const Vec3 eye = packet->input.globals.view_position;
   *root = (VkrVulkanEditorGridRoot){
-      .inverse_view_projection = mat4_inverse(view_projection),
-      .camera_position = {eye.x, eye.y, eye.z,
+      .inverse_view_projection =
+          mat4_mul(mat4_translate(vec3_new(0.0f, -plane_height, 0.0f)),
+                   mat4_inverse(view_projection)),
+      .camera_position = {eye.x, eye.y - plane_height, eye.z,
                           grid->fade_end > 0.0f ? 1.0f : 0.0f},
       .params = {grid->cell_size, grid->fade_start, grid->fade_end,
                  grid->through_geometry ? 1.0f : 0.0f},

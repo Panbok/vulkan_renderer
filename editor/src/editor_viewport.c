@@ -115,10 +115,12 @@ static const struct {
 static const char *const view_snap_targets[VKR_EDITOR_SNAP_COUNT] = {
     "Free", "Surface", "Grid"};
 
-/* Grid popup: the toggles, then cell size halving and doubling. */
+/* Grid popup: the toggles, cell size halving and doubling, then the grid's
+   height with Fit to surface and Reset. */
 static const char *const view_grid_rows[] = {
     "Show grid", "Through geometry", "Cell numbers and letters",
-    "Cell size", "Smaller cells",    "Larger cells"};
+    "Cell size", "Smaller cells",    "Larger cells",
+    "Height",    "Fit to surface",   "Reset height"};
 
 typedef enum ViewRowKind {
   VIEW_ROW_OPTION,
@@ -201,6 +203,18 @@ static Vec4 view_scene_rect(const VkrSampleUiFrame *frame) {
   const Vec4 scene = frame->mapping.panel_rect_px;
   return (Vec4){scene.x / scale, scene.y / scale + top, scene.z / scale,
                 Max(0.0f, scene.w / scale - top)};
+}
+
+void vkr_editor_view_fit_grid(const VkrSampleUiFrame *frame) {
+  if (!frame->grid_fit_request) {
+    return;
+  }
+  const Vec4 scene = frame->mapping.panel_rect_px;
+  *frame->grid_fit_request = (VkrSampleGridFitRequest){
+      .request = true_v,
+      .position_px =
+          vec2_new(scene.x + scene.z * 0.5f, scene.y + scene.w * 0.5f),
+  };
 }
 
 /* Graphics settings the Scene renders with, or the editor's draft of the
@@ -360,6 +374,19 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
         row->kind = VIEW_ROW_HEADER;
         snprintf(row->text, sizeof(row->text), "Cell size  %.4g u",
                  (double)state->grid_spacing);
+      } else if (i == 6) {
+        /* The last fit's outcome while it is fresh, else the height. */
+        row->kind = VIEW_ROW_HEADER;
+        if (frame->grid_status.length)
+          snprintf(row->text, sizeof(row->text), "%.*s",
+                   (int)frame->grid_status.length, frame->grid_status.str);
+        else
+          snprintf(row->text, sizeof(row->text), "Height  %.2f m",
+                   (double)state->grid_height);
+      } else if (i == 7) {
+        row->disabled = !frame->grid_fit_request;
+      } else if (i == 8) {
+        row->disabled = state->grid_height == 0.0f;
       } else {
         row->icon = i == 4 ? VKR_UI_ICON_ZOOM_OUT : VKR_UI_ICON_ZOOM_IN;
       }
@@ -763,10 +790,15 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
       next->grid_through_geometry = !next->grid_through_geometry;
     } else if (index == 2) {
       next->grid_labels = !next->grid_labels;
-    } else if (index >= 4) {
+    } else if (index == 4 || index == 5) {
       next->grid_spacing = vkr_clamp_f32(
           next->grid_spacing * (index == 4 ? 0.5f : 2.0f), 0.001f, 10000.0f);
       next->grid_enabled = true_v;
+    } else if (index == 7) {
+      vkr_editor_view_fit_grid(frame);
+      next->grid_enabled = true_v;
+    } else if (index == 8) {
+      next->grid_height = 0.0f;
     }
     return true_v;
   case VIEW_POPUP_SHOW:
@@ -1412,13 +1444,15 @@ bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
     out->rotation = place_orientation(normal, yaw);
     return true_v;
   }
-  /* The ground plane through the grid's origin. */
+  /* The ground plane at the grid's height, which Fit to surface lifts onto a
+     floor modelled above the origin when the scene has no collision. */
+  const float32_t ground_y = frame->view_state.grid_height;
   const float32_t t =
-      fabsf(direction.y) > 1e-4f ? -origin.y / direction.y : -1.0f;
+      fabsf(direction.y) > 1e-4f ? (ground_y - origin.y) / direction.y : -1.0f;
   const bool8_t ground = t > 0.0f && t < 500.0f;
   Vec3 position = vec3_add(origin, vec3_scale(direction, ground ? t : 8.0f));
   if (ground) {
-    position.y = 0.0f;
+    position.y = ground_y;
     if (placement->target == VKR_EDITOR_SNAP_GRID) {
       const float32_t cell = frame->view_state.grid_spacing > 0.0f
                                  ? frame->view_state.grid_spacing

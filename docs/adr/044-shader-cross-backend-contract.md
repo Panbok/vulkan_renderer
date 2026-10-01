@@ -466,9 +466,24 @@ change across that texel so a floor on the plane cannot z-fight it. Both 128-byt
 carries a read-access depth reference, Vulkan a depth-table index, and Vulkan
 checks the reflected fragment root. The Release editor renders it through Metal,
 hidden behind a cube and drawn through it with the toggle; Vulkan SPIR-V passes
-`spirv-val` and its reflected offsets match the host root, but native Vulkan did
-not run on this MoltenVK 1.2 host. The domain is **UNALIGNED** until a native
-Vulkan run and a same-revision comparison pass.
+`spirv-val` and its reflected offsets match the host root. The Windows Release
+Vulkan editor draws it in the top view through geometry with both axes, and
+Debug Vulkan validation is clean for the XZ and ZY planes, depth-tested and
+drawn-through. The shared kernel strengthens the finest level's sparse lines
+toward major alpha when zoomed in past it; on Windows Vulkan this raised the
+near-camera line contrast of the FPS Arena floor from 69 to 97 at 1.7 m and
+from 44 to 68 at 0.25 m, and left 6.6 m unchanged. The Metal library was not
+compiled for that change. The domain is **UNALIGNED** until a same-revision
+comparison passes.
+
+The picking resolve also stores the opaque device depth at the picked pixel,
+which the editor's grid fit unprojects. The Vulkan root grows to 80 bytes
+(`depth_texture`, `depth_output` at 64) and writes the readback buffer at offset
+8 through its device address; the Metal root grows to 144 bytes
+(`depth_output` at 128) and writes 4 bytes after the object id in a readback
+prefix grown to 32 bytes. Windows Vulkan fits Bistro's grid from that depth;
+the Metal side was not compiled on this host, so picking stays **UNALIGNED**
+until a native Metal build and pick run pass.
 
 Metal and Vulkan reject geometry range counts that cannot fit the existing
 32-bit temporal surface token before publication or narrowing loader counts.

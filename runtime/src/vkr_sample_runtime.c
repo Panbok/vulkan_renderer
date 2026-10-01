@@ -241,6 +241,13 @@ typedef struct State {
   /* The click ended, or the UI asked; its pick runs when the picker is
      free, for this purpose. */
   bool8_t context_click_pending;
+  /* A grid fit waits for its GPU pick: the camera's inverse view-projection
+     and the pixel's NDC at the request turn the depth into a point. */
+  bool8_t grid_fit_pending;
+  float64_t grid_fit_started;
+  Mat4 grid_fit_inverse_view_projection;
+  Vec2 grid_fit_ndc;
+  char grid_status[96];
   VkrSamplePickPurpose context_purpose;
   /* The pending pick answers a context click, for this purpose. */
   bool8_t context_pick;
@@ -3331,6 +3338,147 @@ static void sample_begin_select_drag(VkrStandardSceneRuntime *application,
   vkr_standard_scene_runtime_update_gizmo_drag(application, viewport_info);
 }
 
+/* Seconds a grid fit waits for its GPU pick before giving up, so a Scene that
+   stops rendering cannot hold the picking context. */
+#define SAMPLE_GRID_FIT_TIMEOUT_SECONDS 2.0
+
+/* Lifts the ground grid onto the surface at a window pixel. The nearest
+   collision of the scene and its World answers at once; without one, a GPU
+   pick reads the pixel's opaque depth (sample_grid_fit_update), so scenes
+   without collision such as Bistro fit too. */
+static void sample_grid_fit_begin(VkrStandardSceneRuntime *application,
+                                  Vec2 position_px) {
+  state->grid_status[0] = '\0';
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  const VkrViewportHitInfo info =
+      vkr_standard_scene_runtime_get_viewport_hit_info(
+          application, (int32_t)position_px.x, (int32_t)position_px.y);
+  Vec3 origin = vec3_zero();
+  Vec3 direction = vec3_zero();
+  if (!camera || !info.has_target_coords ||
+      !vkr_standard_scene_runtime_build_view_ray(camera, info.position, &origin,
+                                                 &direction)) {
+    snprintf(state->grid_status, sizeof(state->grid_status),
+             "The Scene view is not available");
+    log_info("Grid fit: %s", state->grid_status);
+    return;
+  }
+
+  VkrScene *scenes[] = {application->active_scene,
+                        vkr_scene_handle_get_scene(state->world_handle)};
+  bool8_t found = false_v;
+  float32_t nearest = 0.0f;
+  float32_t height = 0.0f;
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    VkrPhysicsRayHit hit = {0};
+    if (!scenes[i] ||
+        !vkr_scene_physics_raycast(
+            scenes[i], origin, vec3_scale(direction, camera->far_clip), &hit)) {
+      continue;
+    }
+    const Vec3 point =
+        vec3_new(hit.position[0], hit.position[1], hit.position[2]);
+    const float32_t distance = vec3_length(vec3_sub(point, origin));
+    if (!found || distance < nearest) {
+      found = true_v;
+      nearest = distance;
+      height = point.y;
+    }
+  }
+  if (found) {
+    state->view_state.grid_height = vkr_clamp_f32(height, -10000.0f, 10000.0f);
+    snprintf(state->grid_status, sizeof(state->grid_status),
+             "Grid at %.2f m from collision", (double)height);
+    log_info("Grid fit: %s", state->grid_status);
+    return;
+  }
+
+  VkrPickingContext *picking = &application->picking;
+  if (!picking->initialized || state->gizmo_drag.pending_pick ||
+      state->grid_fit_pending) {
+    snprintf(state->grid_status, sizeof(state->grid_status),
+             "Picking is busy; try again");
+    log_info("Grid fit: %s", state->grid_status);
+    return;
+  }
+  /* A hover pick only refreshes a highlight; the fit takes its place. */
+  if (vkr_picking_is_pending(picking)) {
+    vkr_picking_cancel(picking);
+  }
+  state->gizmo_hover_pending = false_v;
+  if (picking->width != info.target_width ||
+      picking->height != info.target_height) {
+    vkr_picking_resize(picking, info.target_width, info.target_height);
+  }
+  if (info.target_x >= picking->width || info.target_y >= picking->height) {
+    snprintf(state->grid_status, sizeof(state->grid_status),
+             "The Scene view is not available");
+    log_info("Grid fit: %s", state->grid_status);
+    return;
+  }
+  vkr_camera_system_update(camera);
+  state->grid_fit_inverse_view_projection =
+      mat4_inverse(mat4_mul(vkr_camera_system_get_projection_matrix(camera),
+                            vkr_camera_system_get_view_matrix(camera)));
+  state->grid_fit_ndc =
+      vec2_new(info.position.x * 2.0f - 1.0f, info.position.y * 2.0f - 1.0f);
+  state->grid_fit_started = vkr_platform_get_absolute_time();
+  vkr_picking_request(picking, info.target_x, info.target_y);
+  state->grid_fit_pending = true_v;
+  snprintf(state->grid_status, sizeof(state->grid_status),
+           "Reading the surface under the view");
+  log_info("Grid fit: %s", state->grid_status);
+}
+
+/* Consumes the grid fit's GPU pick. Returns true while the fit owns the
+   picking context, so selection and hover picks wait for it. */
+static bool8_t sample_grid_fit_update(VkrStandardSceneRuntime *application) {
+  if (!state->grid_fit_pending) {
+    return false_v;
+  }
+  VkrPickingContext *picking = &application->picking;
+  const VkrPickResult result =
+      vkr_picking_get_result(&application->renderer, picking);
+  if (vkr_picking_is_pending(picking)) {
+    if (vkr_platform_get_absolute_time() - state->grid_fit_started <
+        SAMPLE_GRID_FIT_TIMEOUT_SECONDS) {
+      return true_v;
+    }
+    vkr_picking_cancel(picking);
+    state->grid_fit_pending = false_v;
+    snprintf(state->grid_status, sizeof(state->grid_status),
+             "The surface read timed out; try again");
+    log_info("Grid fit: %s", state->grid_status);
+    return true_v;
+  }
+  state->grid_fit_pending = false_v;
+  /* Depth 1 is the far plane: the pixel shows only sky. */
+  if (!result.has_depth || !(result.depth >= 0.0f && result.depth < 1.0f)) {
+    snprintf(state->grid_status, sizeof(state->grid_status),
+             "No surface under the view centre");
+    log_info("Grid fit: %s", state->grid_status);
+    return true_v;
+  }
+  const Vec4 world =
+      mat4_mul_vec4(state->grid_fit_inverse_view_projection,
+                    vec4_new(state->grid_fit_ndc.x, state->grid_fit_ndc.y,
+                             result.depth, 1.0f));
+  const float32_t height =
+      vkr_abs_f32(world.w) > VKR_FLOAT_EPSILON ? world.y / world.w : NAN;
+  if (!isfinite(height)) {
+    snprintf(state->grid_status, sizeof(state->grid_status),
+             "No surface under the view centre");
+    log_info("Grid fit: %s", state->grid_status);
+    return true_v;
+  }
+  state->view_state.grid_height = vkr_clamp_f32(height, -10000.0f, 10000.0f);
+  snprintf(state->grid_status, sizeof(state->grid_status),
+           "Grid at %.2f m from the visible surface", (double)height);
+  log_info("Grid fit: %s", state->grid_status);
+  return true_v;
+}
+
 vkr_internal void vkr_standard_scene_runtime_update_picking(
     VkrStandardSceneRuntime *application) {
   if (!application || !state || !state->input_state) {
@@ -3339,6 +3487,10 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
 
   VkrPickingContext *picking = &application->picking;
   if (!picking->initialized) {
+    return;
+  }
+  /* Before the UI-capture cancel below: the fit is asked from a menu. */
+  if (sample_grid_fit_update(application)) {
     return;
   }
 
@@ -3776,9 +3928,10 @@ static void sample_grid_apply(VkrStandardSceneRuntime *application) {
       .through_geometry = view->grid_through_geometry,
       .plane = side ? VKR_EDITOR_GRID_PLANE_ZY : VKR_EDITOR_GRID_PLANE_XZ,
       .cell_size = vkr_clamp_f32(view->grid_spacing, 0.001f, 10000.0f),
+      .height = side ? 0.0f : view->grid_height,
   };
   if (grid.enabled && view->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE) {
-    const float32_t height = fabsf(camera->position.y);
+    const float32_t height = fabsf(camera->position.y - grid.height);
     grid.fade_end = Max(grid.cell_size * 150.0f, height * 60.0f);
     grid.fade_start = grid.fade_end * 0.35f;
   }
@@ -3794,7 +3947,7 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
   if ((uint32_t)next.camera_view >= VKR_SAMPLE_CAMERA_VIEW_COUNT ||
       (uint32_t)next.render_mode >= VKR_RENDER_MODE_COUNT ||
       !isfinite(next.grid_spacing) || next.grid_spacing <= 0.0f ||
-      next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
+      !isfinite(next.grid_height) || next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
       next.gizmo_space > VKR_GIZMO_SPACE_LOCAL || next.collision_display > 2u ||
       (next.hidden_kinds & ~VKR_SCENE_SHOW_HIDE_ALL) ||
       !isfinite(next.camera_speed) || next.camera_speed <= 0.0f ||
@@ -3802,6 +3955,11 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
     return;
   }
   next.grid_spacing = vkr_clamp_f32(next.grid_spacing, 0.001f, 10000.0f);
+  next.grid_height = vkr_clamp_f32(next.grid_height, -10000.0f, 10000.0f);
+  /* A height set by hand replaces the last fit's outcome in the Grid menu. */
+  if (next.grid_height != state->view_state.grid_height) {
+    state->grid_status[0] = '\0';
+  }
   next.camera_speed = vkr_clamp_f32(next.camera_speed, 0.05f, 10000.0f);
   /* The bound the saved editor preferences accept. */
   next.camera_sensitivity =
@@ -3910,6 +4068,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleScriptRequest script_request;
   VkrSampleEditorStateRequest editor_state_request;
   VkrSamplePickRequest pick_request;
+  VkrSampleGridFitRequest grid_fit_request;
   VkrSampleCloseResponse close_response;
   bool8_t quit;
   bool8_t scene_shortcuts_blocked;
@@ -3987,6 +4146,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .context_position_px = state->context_position_px,
       .context_purpose = state->context_ready_purpose,
       .pick_request = &requests->pick_request,
+      .grid_fit_request = &requests->grid_fit_request,
+      .grid_status = string8_create_from_cstr(
+          (const uint8_t *)state->grid_status, strlen(state->grid_status)),
       .scene_generation = application->scene_generation,
       .edits = &state->edits,
       .scene_edit = &requests->scene_edit,
@@ -5025,6 +5187,9 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   sample_view_apply(application, &requests.view_request);
   sample_show_filter_apply(application);
   sample_grid_apply(application);
+  if (requests.grid_fit_request.request) {
+    sample_grid_fit_begin(application, requests.grid_fit_request.position_px);
+  }
   /* A UI pick runs as a context click does, at the given pixel. */
   if (requests.pick_request.request) {
     state->context_click_pending = true_v;
@@ -5620,7 +5785,8 @@ sample_preferences_valid(const VkrSampleRuntimePreferences *value) {
 }
 
 static bool8_t sample_recall_valid(const VkrSampleSceneRecall *value) {
-  return value &&
+  return value && isfinite(value->grid_height) &&
+         fabsf(value->grid_height) <= 10000.0f &&
          (!value->camera_valid ||
           (isfinite(value->position.x) && isfinite(value->position.y) &&
            isfinite(value->position.z) && isfinite(value->yaw) &&
@@ -5831,6 +5997,10 @@ bool8_t vkr_sample_scene_recall_write_json(const VkrSampleSceneRecall *value,
         SAMPLE_JSON_FLOAT("far", far_plane))) {
     return false_v;
   }
+  if (value->grid_height != 0.0f &&
+      !SAMPLE_JSON_FLOAT("grid_height", grid_height)) {
+    return false_v;
+  }
   if (value->selection_valid &&
       !(vkr_json_writer_name(writer, string8_lit("selection")) &&
         vkr_sample_entity_identity_write_json(&value->selection, writer))) {
@@ -5861,6 +6031,10 @@ bool8_t vkr_sample_scene_recall_read_json(String8 json,
         sample_read_float(json, "near", &candidate.near_plane) &&
         sample_read_float(json, "far", &candidate.far_plane))) {
     return false_v;
+  }
+  /* Optional: older files have no grid height. */
+  if (!sample_read_float(json, "grid_height", &candidate.grid_height)) {
+    candidate.grid_height = 0.0f;
   }
   if (candidate.selection_valid) {
     VkrJsonReader reader = vkr_json_reader_from_string(json);
@@ -5926,6 +6100,7 @@ sample_recall_snapshot(VkrStandardSceneRuntime *application) {
     result.near_plane = camera->near_clip;
     result.far_plane = camera->far_clip;
   }
+  result.grid_height = state->view_state.grid_height;
   result.selection_valid =
       state->has_selection &&
       vkr_sample_entity_identity(application->active_scene,
@@ -5958,6 +6133,7 @@ sample_editor_state_apply(VkrStandardSceneRuntime *application,
   }
   if (request->apply_recall && sample_recall_valid(&request->recall)) {
     const VkrSampleSceneRecall *value = &request->recall;
+    state->view_state.grid_height = value->grid_height;
     if (camera && value->camera_valid) {
       camera->type = VKR_CAMERA_TYPE_PERSPECTIVE;
       state->view_state.camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE;

@@ -1310,7 +1310,10 @@ typedef struct VkrPixelReadbackResult {
   uint32_t x;               // Requested X coordinate
   uint32_t y;               // Requested Y coordinate
   uint32_t data;            // Pixel data (for R32_UINT format)
-  bool8_t valid;            // True if data is valid
+  /* Opaque device depth at a picked pixel when `valid`, in [0, 1] with 1 the
+     far plane (no surface). */
+  float32_t depth;
+  bool8_t valid; // True if data is valid
 } VkrPixelReadbackResult;
 
 /**

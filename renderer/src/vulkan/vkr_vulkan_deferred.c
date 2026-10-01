@@ -4216,9 +4216,12 @@ bool8_t vkr_vk_prepare_deferred_picking(VkrVulkanRenderer *renderer,
   VkrVulkanGraphBufferInstance *opaque =
       vkr_vk_deferred_buffer(renderer, pass, 2u);
   uint32_t opaque_vbuffer = 0u, transmission_vbuffer = 0u, output = 0u;
+  uint32_t depth_texture = 0u;
   if (!opaque ||
       !vkr_vk_deferred_storage_index(renderer, pass, 0u, &opaque_vbuffer) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &output))
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &output) ||
+      !slot->readback.address)
     return false_v;
   const bool8_t use_transmission =
       vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u) != NULL;
@@ -4243,6 +4246,9 @@ bool8_t vkr_vk_prepare_deferred_picking(VkrVulkanRenderer *renderer,
                                 ? transmission_use->slice.base_layer
                                 : 0u,
       .use_transmission = use_transmission,
+      .depth_texture = depth_texture,
+      .depth_output =
+          slot->readback.address + VKR_VULKAN_READBACK_PICKING_DEPTH_OFFSET,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanPickingRoot),

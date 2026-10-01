@@ -174,8 +174,22 @@ geometry unless Show > Grid through geometry is on. The depth test tolerates
 depth texels and a pixel, so a floor lying on the plane keeps the grid on top
 through jitter and reduced screen percentage instead of z-fighting. Lines anti-alias from their screen footprint;
 levels step by ten from the requested cell size and cross-fade as the camera
-zooms, the next level drawing the majors, as in UE5. Perspective fades the grid
-between 35% and 100% of a distance that grows with camera height. The X and Z
+zooms, the next level drawing the majors, as in UE5. Zoomed in past the finest
+level, its sparse lines strengthen from minor to major alpha over the next
+decade (about 60 pixels between lines), so the grid keeps its contrast close
+to the plane. Perspective fades the grid only with distance, between 35% and
+100% of a distance that grows with camera height above the grid.
+
+The XZ grid lies at a per-scene height (`VkrSampleViewState.grid_height`,
+saved with the scene's editor state), because some floors are modelled above
+the origin: Bistro's pavement sits 0.14-0.47 m up, which hides a grid at zero.
+Grid > Fit to surface (`grid.fit`) sets it from the surface at the Scene's
+centre: the nearest collision of the scene and its World, else the opaque
+depth the GPU pick resolves at that pixel, unprojected with the camera of the
+request. Reset height returns it to zero, and `grid.height <y>` sets it.
+Placement onto the ground plane uses the same height, so scenes without
+collision place objects on the fitted floor. The backends lift the grid by
+translating its unprojection; the side views' ZY plane stays at x = 0. The X and Z
 axis lines are red and blue (Z and Y green from the sides).
 
 Orthographic views can label cells in screen order: numbers 1..N left to right

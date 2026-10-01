@@ -547,6 +547,8 @@ struct VkrMetalPacketPickingResolveRoot {
   uint transmission_instance_count;
   uint transmission_enabled;
   uint reserved[1];
+  // One float: the opaque depth at `pixel`, read back with the object id.
+  device float *depth_output;
 };
 
 static uint vkr_metal_packet_picking_object_id(
@@ -592,6 +594,9 @@ vkr_metal_packet_picking_resolve(constant VkrMetalPacketPickingResolveRoot &root
         root.pixel);
   }
   root.destination.write(uint4(object_id, 0u, 0u, 0u), root.pixel);
+  // The editor lifts its grid onto the visible floor from this depth when
+  // the scene has no collision; 1 is the far plane.
+  root.depth_output[0] = root.opaque_depth.read(root.pixel).x;
 }
 
 struct VkrMetalPacketTemporalTransformRoot {

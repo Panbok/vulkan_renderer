@@ -451,6 +451,7 @@ typedef struct VkrMetalPacketCapturePlan {
 typedef struct VkrMetalPacketReadbackLayout {
   uint64_t shadow_depth;
   uint64_t picking;
+  uint64_t picking_depth;
   uint64_t deferred_diagnostics;
   uint64_t deferred_diagnostics_size;
   uint64_t transmission_diagnostics;
@@ -469,7 +470,10 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
      extended-linear target transition. */
   const uint64_t shadow_depth_offset = 8u;
   const uint64_t picking_offset = shadow_depth_offset + sizeof(float32_t);
-  const uint64_t fixed_size = 16u;
+  /* The picking resolve stores the picked pixel's opaque depth right after
+     the object id (vkr_metal_packet_prepare_picking_resolve). */
+  const uint64_t picking_depth_offset = picking_offset + sizeof(uint32_t);
+  const uint64_t fixed_size = 32u;
   const uint64_t deferred_offset = vkr_metal_packet_align_up(fixed_size, 16u);
   const uint64_t deferred_bytes =
       deferred_diagnostics
@@ -495,6 +499,7 @@ vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
   return (VkrMetalPacketReadbackLayout){
       .shadow_depth = shadow_depth_offset,
       .picking = picking_offset,
+      .picking_depth = picking_depth_offset,
       .deferred_diagnostics = deferred_offset,
       .deferred_diagnostics_size = deferred_bytes,
       .transmission_diagnostics = transmission_offset,
@@ -1010,6 +1015,9 @@ vkr_internal void vkr_metal_packet_collect_picking_results(
     if (slot->submit_value == renderer->picking_submit_value) {
       MemCopy(&renderer->picking_result.data, slot->picking_readback,
               sizeof(renderer->picking_result.data));
+      MemCopy(&renderer->picking_result.depth,
+              slot->picking_readback + sizeof(renderer->picking_result.data),
+              sizeof(renderer->picking_result.depth));
       renderer->picking_result.valid = true_v;
       renderer->picking_result.status = VKR_READBACK_STATUS_READY;
     }

@@ -96,6 +96,9 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
 void vkr_editor_viewport_build(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame);
 void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
+/* Asks the runtime to lift the ground grid onto the surface at the Scene's
+   centre (VkrSampleGridFitRequest). */
+void vkr_editor_view_fit_grid(const VkrSampleUiFrame *frame);
 /* Add a document showing the World and switch to it; switch documents. */
 bool8_t vkr_editor_viewport_tab_new(VkrEditorUi *editor,
                                     const VkrSampleUiFrame *frame);

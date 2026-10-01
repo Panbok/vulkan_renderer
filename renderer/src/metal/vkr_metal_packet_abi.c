@@ -1522,6 +1522,8 @@ vkr_global const VkrMetalPacketAbiField vkr_picking_resolve_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, transmission_enabled,
                   "transmission_enabled", 120),
     VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, reserved, "reserved", 124),
+    VKR_ABI_FIELD(VkrMetalPacketPickingResolveRoot, depth_output,
+                  "depth_output", 128),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_editor_overlay_root_fields[] = {
@@ -1796,7 +1798,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            vkr_transmission_compact_root_fields),
         [VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketPickingResolveRoot,
-                           "VkrMetalPacketPickingResolveRoot", 128, 16,
+                           "VkrMetalPacketPickingResolveRoot", 144, 16,
                            vkr_picking_resolve_root_fields),
         [VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketHzbBuildRoot, "VkrMetalPacketHzbBuildRoot", 48, 16,

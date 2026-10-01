@@ -764,6 +764,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_editor_grid(
   const Mat4 view_projection = vkr_metal_packet_clip_matrix(
       renderer->convert_vulkan_clip_y,
       mat4_mul(packet->input.globals.projection, packet->input.globals.view));
+  /* The shader's plane passes through its origin: lift the unprojected
+     world by the grid height instead of changing the shader contract. */
+  const float32_t plane_height =
+      grid->plane == VKR_EDITOR_GRID_PLANE_XZ ? grid->height : 0.0f;
   const Vec3 eye = packet->input.globals.view_position;
   uint64_t root_gpu = 0u;
   VkrMetalPacketEditorGridRoot *root =
@@ -771,8 +775,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_editor_grid(
   if (!root)
     return false_v;
   *root = (VkrMetalPacketEditorGridRoot){
-      .inverse_view_projection = mat4_inverse(view_projection),
-      .camera_position = {eye.x, eye.y, eye.z,
+      .inverse_view_projection =
+          mat4_mul(mat4_translate(vec3_new(0.0f, -plane_height, 0.0f)),
+                   mat4_inverse(view_projection)),
+      .camera_position = {eye.x, eye.y - plane_height, eye.z,
                           grid->fade_end > 0.0f ? 1.0f : 0.0f},
       .params = {grid->cell_size, grid->fade_start, grid->fade_end,
                  grid->through_geometry ? 1.0f : 0.0f},
@@ -3436,12 +3442,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transmission_coverage(
   return true_v;
 }
 
+/* `readback_offset` addresses the object id in `readback`; the picked
+   pixel's opaque depth follows it (vkr_metal_packet_readback_layout). */
 vkr_internal bool8_t vkr_metal_packet_prepare_picking_resolve(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+    VkrMetalPacketFrameUpload *upload, id<MTLBuffer> readback,
+    uint64_t readback_offset) API_AVAILABLE(macos(26.0)) {
   if (!renderer || !pass || !packet || !packet->input.picking || !prepared ||
-      !upload || !renderer->picking_resolve_pipeline)
+      !upload || !renderer->picking_resolve_pipeline || !readback)
     return false_v;
   id<MTLTexture> opaque_vbuffer =
       vkr_metal_packet_pass_texture(renderer, pass, 0u);
@@ -3503,6 +3512,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_picking_resolve(
           renderer->prepared_frame.transmission_gpu_draw_visible_capacity,
       .transmission_instance_count = renderer->transmission_gpu_draw_count,
       .transmission_enabled = transmission ? 1u : 0u,
+      .depth_output =
+          readback.gpuAddress + readback_offset + sizeof(uint32_t),
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->picking_resolve_pipeline,
@@ -4325,8 +4336,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
     return vkr_metal_packet_prepare_transmission_shade(renderer, pass, packet,
                                                        prepared, upload);
   case VKR_RG_EXECUTOR_PICKING_RESOLVE:
-    return vkr_metal_packet_prepare_picking_resolve(renderer, pass, packet,
-                                                    prepared, upload);
+    return vkr_metal_packet_prepare_picking_resolve(
+        renderer, pass, packet, prepared, upload, readback, readback_offset);
   case VKR_RG_EXECUTOR_TRANSMISSION_COVERAGE:
     return vkr_metal_packet_prepare_transmission_coverage(renderer, pass,
                                                           prepared, upload);

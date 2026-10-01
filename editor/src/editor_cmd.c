@@ -488,6 +488,33 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
   return cmd_view_request(ctx, next);
 }
 
+/* grid.fit lifts the grid onto the surface at the Scene's centre; grid.height
+   sets its world Y, which may be zero or negative. */
+static bool8_t cmd_run_grid_height(CmdContext *ctx, const CmdDef *def,
+                                   String8 arg) {
+  if (def->value == 1u) {
+    if (!ctx->frame->grid_fit_request) {
+      snprintf(ctx->message, sizeof(ctx->message),
+               "The Scene view is not available");
+      return false_v;
+    }
+    vkr_editor_view_fit_grid(ctx->frame);
+    return true_v;
+  }
+  const String8 word = cmd_split(arg, NULL);
+  float64_t number = 0.0;
+  if (!cmd_number(word, &number)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Expected a height in world units, not '%.*s'", (int)word.length,
+             word.str);
+    return false_v;
+  }
+  VkrSampleViewState next = ctx->frame->view_state;
+  next.grid_height = vkr_clamp_f32((float32_t)number, -10000.0f, 10000.0f);
+  next.grid_enabled = true_v;
+  return cmd_view_request(ctx, next);
+}
+
 static bool8_t cmd_run_labels(CmdContext *ctx, const CmdDef *def, String8 arg) {
   VkrEditorUi *editor = ctx->editor;
   bool8_t *targets[] = {&editor->labels_enabled, &editor->labels_directional,
@@ -1604,6 +1631,12 @@ static const CmdDef cmd_defs[] = {
      CMD_COUNT, 2u},
     {"grid.spacing", CMD_ARG_NUMBER, "<units>",
      "Set the grid cell size and show the grid", cmd_run_view, CMD_COUNT, 1u},
+    {"grid.height", CMD_ARG_NUMBER, "<y>",
+     "Set the grid's world height and show the grid", cmd_run_grid_height,
+     CMD_COUNT, 0u},
+    {"grid.fit", CMD_ARG_NONE, "",
+     "Lift the grid onto the surface at the Scene's centre",
+     cmd_run_grid_height, CMD_COUNT, 1u},
     {"labels", CMD_ARG_SWITCH, "[on|off|toggle]", "Show or hide light icons",
      cmd_run_labels, CMD_COUNT, 0u},
     {"labels.directional", CMD_ARG_SWITCH, "[on|off|toggle]",

@@ -9,6 +9,9 @@
 // cross-fade as the camera zooms, as in UE5: the finest shown level fades out
 // while its spacing nears VKR_EDITOR_GRID_MIN_SPACING_PX, the next level
 // takes over as the minor lines and the level after it draws the majors.
+// Zoomed in past the finest level its lines are sparse on screen, so they
+// strengthen toward major alpha: close to the plane the grid keeps the
+// contrast it has from farther away, and only the distance fade dims it.
 
 // Pixels between lines of the finest level when it has faded out.
 #define VKR_EDITOR_GRID_MIN_SPACING_PX 6.0f
@@ -60,8 +63,14 @@ float vkr_editor_grid_axis_coverage(float pixels) {
 float4 vkr_editor_grid_shade(float2 coord, float2 footprint, float cell,
                              float fade, float3 axis_u, float3 axis_v) {
   float pixel_world = max(max(footprint.x, footprint.y), 1e-7f);
-  float level =
-      max(0.0f, log10(pixel_world * VKR_EDITOR_GRID_MIN_SPACING_PX / cell));
+  float zoom = log10(pixel_world * VKR_EDITOR_GRID_MIN_SPACING_PX / cell);
+  float level = max(0.0f, zoom);
+  // 0 at the finest level's own scale, 1 a decade closer (about 60 pixels
+  // between its lines).
+  float sparse = saturate(-zoom);
+  float fine_alpha =
+      VKR_EDITOR_GRID_MINOR_ALPHA +
+      (VKR_EDITOR_GRID_MAJOR_ALPHA - VKR_EDITOR_GRID_MINOR_ALPHA) * sparse;
   float base = floor(level);
   float blend = level - base;
   float spacing = cell * pow(10.0f, base);
@@ -76,7 +85,7 @@ float4 vkr_editor_grid_shade(float2 coord, float2 footprint, float cell,
       VKR_EDITOR_GRID_MAJOR_PX);
   // The middle level moves from major to minor while the fine level fades.
   float alpha = max(
-      fine * VKR_EDITOR_GRID_MINOR_ALPHA * (1.0f - blend),
+      fine * fine_alpha * (1.0f - blend),
       max(middle * (VKR_EDITOR_GRID_MAJOR_ALPHA +
                     (VKR_EDITOR_GRID_MINOR_ALPHA - VKR_EDITOR_GRID_MAJOR_ALPHA) *
                         blend),

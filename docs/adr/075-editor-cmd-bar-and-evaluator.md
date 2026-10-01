@@ -81,6 +81,8 @@ dependable channel for scripts.
 | `tool` | `<select\|move\|rotate\|scale>` | Transform tool |
 | `grid` | `[on\|off\|toggle]` | World grid |
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |
+| `grid.height` | `<y>` | Grid world height (shows the grid) |
+| `grid.fit` | | Lift the grid onto the surface at the Scene's centre: collision, else the GPU depth there |
 | `grid.labels` | `[on\|off\|toggle]` | Grid cell numbers and letters |
 | `labels`, `labels.directional`, `labels.spot`, `labels.point` | `[on\|off\|toggle]` | Light icons |
 | `create` | `<object>` | Create an object kind (`empty`, `cube`, `text`, a light kind or a world component type) in the selection's container, else the primary scene, else the World; World-only settings always go to the World |
@@ -142,7 +144,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `sel`, `entity("name")` | `name`, `position`, `rotation` (degrees, XYZ), `scale`, `visible`, `light`, `id`, `world_position` (the evaluated pose, which simulation moves) | all but `light`, `id`, `world_position` |
 | `.light` | `kind`, `color`, `intensity` (radiance for rectangles), `range`, `enabled`, `inner`, `outer` (degrees) | all but `kind` |
 | `.<component>` | Descriptor properties of a component the entity carries, by type name (`sel.post_process.exposure_compensation_ev`, `sel.point_light.intensity`) | visible, non-read-only properties |
-| `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `grid_through`, `collision` (0 off, 1 selected, 2 all), `camera_speed`, `tool`, `snap` (`free`, `surface`, `grid`), `snap_offset`, `snap_yaw`, `snap_align`, `snap_centers` | all |
+| `view` | `camera`, `mode`, `grid`, `grid_spacing`, `grid_labels`, `grid_through`, `collision` (0 off, 1 selected, 2 all), `camera_speed`, `camera_sensitivity` (mouse-look multiplier), `grid_height` (world Y of the ground grid), `tool`, `snap` (`free`, `surface`, `grid`), `snap_offset`, `snap_yaw`, `snap_align`, `snap_centers` | all |
 | `ui` | `zoom`, `reduce_motion` | all |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |

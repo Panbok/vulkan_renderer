@@ -27,6 +27,10 @@ typedef struct VkrPickingContext {
 typedef struct VkrPickResult {
   uint32_t object_id;
   bool8_t hit;
+  /* Opaque device depth at the pixel, 1 at the far plane; `has_depth` is set
+     on the frame the readback completes. */
+  float32_t depth;
+  bool8_t has_depth;
 } VkrPickResult;
 
 bool8_t vkr_picking_init(VkrPickingContext *ctx, uint32_t width,

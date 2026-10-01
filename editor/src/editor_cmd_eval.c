@@ -111,6 +111,7 @@ static const char *const eval_view_members[] = {"camera",
                                                 "snap_align",
                                                 "snap_centers",
                                                 "camera_sensitivity",
+                                                "grid_height",
                                                 NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
@@ -706,6 +707,9 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         return true_v;
       case 14:
         *out = eval_number(view->camera_sensitivity);
+        return true_v;
+      case 15:
+        *out = eval_number(view->grid_height);
         return true_v;
       case 5:
         for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
@@ -1505,6 +1509,12 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
     if (!(value->number >= 0.0 && value->number <= 2.0))
       return eval_fail(eval, "'collision' is 0 off, 1 selected or 2 all");
     next.collision_display = (uint32_t)value->number;
+  } else if (index == 15) {
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
+      return false_v;
+    next.grid_height =
+        vkr_clamp_f32((float32_t)value->number, -10000.0f, 10000.0f);
+    next.grid_enabled = true_v;
   } else if (index == 3 || index == 4 || index == 14) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
       return false_v;

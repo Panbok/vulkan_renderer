@@ -276,6 +276,17 @@ static void project_test_runtime_settings(void) {
          loaded.position.z == 3);
   assert(loaded.pitch == 12 && loaded.field_of_view == 65 &&
          loaded.near_plane == 0.25f);
+  // A recall written without a grid height, as older files are, reads zero;
+  // a lifted grid round-trips.
+  assert(loaded.grid_height == 0.0f);
+  recall.grid_height = 0.25f;
+  buffer.length = 0;
+  vkr_json_writer_init(&writer, project_settings_sink, &buffer);
+  assert(vkr_sample_scene_recall_write_json(&recall, &writer));
+  assert(vkr_json_writer_complete(&writer));
+  assert(vkr_sample_scene_recall_read_json(
+      (String8){.str = buffer.data, .length = buffer.length}, &loaded));
+  assert(loaded.grid_height == 0.25f);
   recall.near_plane = 600;
   buffer.length = 0;
   vkr_json_writer_init(&writer, project_settings_sink, &buffer);

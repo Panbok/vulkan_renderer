@@ -504,6 +504,9 @@ typedef struct VkrEditorGridPayload {
       camera; both zero keep every distance opaque. */
   float32_t fade_start;
   float32_t fade_end;
+  /** World Y of the XZ plane, so the grid can lie on a floor modelled above
+      the origin; the ZY side plane stays at x = 0. */
+  float32_t height;
 } VkrEditorGridPayload;
 
 typedef struct VkrEditorPassPayload {

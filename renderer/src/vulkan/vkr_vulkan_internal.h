@@ -255,6 +255,9 @@ enum {
   /* The final target can be RGBA8 or RGBA16F. A tightly packed 1x1 image
    * copy therefore occupies eight bytes in the extended-linear case. */
   VKR_VULKAN_READBACK_COLOR_SIZE = 8,
+  /* The picking resolve writes the opaque device depth at the picked pixel
+     here, after the object id or color. */
+  VKR_VULKAN_READBACK_PICKING_DEPTH_OFFSET = 8,
   VKR_VULKAN_READBACK_DRAW_STATE_OFFSET = 16,
   VKR_VULKAN_READBACK_TRANSMISSION_STATE_OFFSET =
       VKR_VULKAN_READBACK_DRAW_STATE_OFFSET +
@@ -1178,6 +1181,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPickingRoot {
   uint32_t pixel[2];
   uint32_t transmission_layer;
   uint32_t use_transmission;
+  uint32_t depth_texture;
+  /* Address of one float: the opaque depth at `pixel`. */
+  uint64_t depth_output;
 } VkrVulkanPickingRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionRoot {
@@ -1841,7 +1847,8 @@ _Static_assert(sizeof(VkrVulkanSdsmRoot) == 32u,
                "Deferred SDSM-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSdsmState) == VKR_VULKAN_SDSM_STATE_SIZE,
                "Deferred SDSM-state ABI size drift");
-_Static_assert(sizeof(VkrVulkanPickingRoot) == 64u,
+_Static_assert(sizeof(VkrVulkanPickingRoot) == 80u &&
+                   offsetof(VkrVulkanPickingRoot, depth_output) == 64u,
                "Deferred picking-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanTransmissionRoot) == 464u,
                "Deferred transmission-root ABI size drift");

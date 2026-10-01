@@ -1518,9 +1518,12 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
                                  &slot->command_buffer) != VK_SUCCESS ||
         vkCreateQueryPool(device, &query_info, NULL, &slot->timestamp_pool) !=
             VK_SUCCESS ||
+        /* The picking resolve also stores its depth here directly. */
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
                               VKR_GPU_ALLOCATION_OWNER_READBACK, readback_size,
-                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                               &slot->readback) ||
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
                               VKR_GPU_ALLOCATION_OWNER_READBACK,
