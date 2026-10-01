@@ -7,7 +7,7 @@
 #include <string.h>
 
 static const char *const s_shadow_quality_names[] = {"off", "balanced", "high",
-                                                     NULL};
+                                                     "ultra", NULL};
 
 #define GRAPHICS_OFFSET(field) (uint32_t)offsetof(VkrGraphicsSettings, field)
 
@@ -68,7 +68,7 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .offset = GRAPHICS_OFFSET(shadow_quality),
      .kind = VKR_PROPERTY_U32,
      .min = 0.0f,
-     .max = 2.0f},
+     .max = 3.0f},
     {.name = "soft_shadows",
      .label = "Soft shadows",
      .tooltip = "Soften shadow edges",
@@ -256,7 +256,7 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
   const bool8_t epic = preset >= VKR_GRAPHICS_PRESET_EPIC;
   VkrGraphicsSettings out = *base;
   out.anti_aliasing = true_v;
-  out.shadow_quality = high ? 2u : 1u;
+  out.shadow_quality = epic ? 3u : high ? 2u : 1u;
   out.soft_shadows = medium;
   out.local_shadows = medium;
   out.ambient_occlusion = medium;

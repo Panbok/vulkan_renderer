@@ -333,9 +333,15 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
       !settings->fog || !settings->volumetric_fog;
   application->disable_subsurface_scattering = !settings->subsurface_scattering;
   application->ibl_probe_limit = settings->reflection_probes ? UINT32_MAX : 0;
-  application->shadow_system.config = settings->shadow_quality == 1
-                                          ? VKR_SHADOW_CONFIG_BALANCED
-                                          : VKR_SHADOW_CONFIG_HIGH;
+  /* Ultra's extra local-shadow filtering was measured affordable only on the
+   * Vulkan desktop host (ADR-019); Metal keeps High's budget. */
+  application->shadow_system.config =
+      settings->shadow_quality == 1 ? VKR_SHADOW_CONFIG_BALANCED
+      : settings->shadow_quality == 3 &&
+              application->renderer.backend_type ==
+                  VKR_RENDERER_BACKEND_TYPE_VULKAN
+          ? vkr_shadow_config_ultra()
+          : VKR_SHADOW_CONFIG_HIGH;
   application->renderer.temporal_enabled =
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
       settings->anti_aliasing;

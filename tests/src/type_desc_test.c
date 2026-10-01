@@ -279,7 +279,7 @@ static void test_graphics_preferences_type(void) {
       &settings));
   assert(settings.shadow_quality == 1u && settings.frame_limit == 60u);
   assert(!vkr_graphics_settings_read_json(
-      string8_lit("{\"version\":1,\"shadow_quality\":3}"), &settings));
+      string8_lit("{\"version\":1,\"shadow_quality\":4}"), &settings));
   assert(!vkr_graphics_settings_read_json(
       string8_lit("{\"version\":1,\"temporal_upscaling\":true,"
                   "\"anti_aliasing\":false}"),
