@@ -270,10 +270,10 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
                 PHYSICS_RESERVED_NODES
           : 0u;
   const uint32_t capacity = Min(PHYSICS_LINE_MAX, available);
-  if ((frame->collision_display || starts) && !capacity) {
+  if ((frame->view_state.collision_display || starts) && !capacity) {
     editor->physics_lines_truncated = true_v;
   }
-  if ((frame->collision_display || starts) && capacity) {
+  if ((frame->view_state.collision_display || starts) && capacity) {
     editor->physics_lines = vkr_allocator_alloc(
         ui->frame_allocator, capacity * sizeof(*editor->physics_lines),
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -281,13 +281,14 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   if (editor->physics_lines && starts) {
     physics_player_starts(editor, frame, capacity);
   }
-  if (frame->collision_display && capacity && bodies) {
+  if (frame->view_state.collision_display && capacity && bodies) {
     if (editor->physics_lines) {
       const VkrEntityId selected =
           vkr_scene_physics_owner(frame->scene, frame->selected_entity);
       for (uint32_t i = 0; i < bodies; ++i) {
         const VkrEntityId owner = vkr_scene_physics_body_at(frame->scene, i);
-        if (frame->collision_display == 1 && owner.u64 != selected.u64) {
+        if (frame->view_state.collision_display == 1 &&
+            owner.u64 != selected.u64) {
           continue;
         }
         VkrScenePhysicsSnapshot body;
@@ -320,80 +321,23 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       editor->physics_lines_truncated = true_v;
     }
   }
-  if (!bodies) {
-    (void)vkr_ui_panel_end(ui);
-    return;
-  }
-  char status[192];
-  char debt[48] = {0};
-  const float64_t pending_time = vkr_scene_physics_debt(frame->scene);
-  if (pending_time >= VKR_SCENE_PHYSICS_FIXED_DT) {
-    snprintf(debt, sizeof(debt), " | Catch-up: %.3fs", pending_time);
-  }
-  const char *error = vkr_scene_physics_error(frame->scene);
-  snprintf(status, sizeof(status), "%u bodies | %s%s%s", bodies,
-           error && error[0]           ? error
-           : frame->simulation_running ? "Simulating"
-                                       : "Paused",
-           editor->physics_lines_truncated ? " | Overlay limit reached" : "",
-           debt);
-  VkrUiWidgetConfig label = physics_widget(
-      8, Min(56.0f, Max(0.0f, height - 62)), Max(1.0f, width - 16), 22);
-  const VkrUiTheme *theme = vkr_ui_theme();
-  label.style.background_color = theme->overlay;
-  label.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
-  label.style.padding_pt = (VkrUiEdges){3, 8, 3, 8};
-  label.style.text_color = error && error[0] ? theme->error : theme->text;
-  label.style.font_size_pt = theme->font_caption;
-  label.icon = VKR_UI_ICON_PHYSICS;
-  label.icon_size_pt = 13.0f;
-  label.icon_color = (Vec4){0.45f, 0.84f, 0.56f, 1.0f};
-  vkr_ui_label(
-      ui, string8_lit("status"),
-      string8_create_from_cstr((const uint8_t *)status, strlen(status)),
-      &label);
-  const char *display[] = {"Collision: Off", "Collision: Selected",
-                           "Collision: All"};
-  const char *titles[] = {
-      "Step", "Reset", display[Min(frame->collision_display, 2u)],
-      vkr_scene_physics_is_disabled(frame->scene) ? "Restore physics"
-                                                  : "Disable physics"};
-  const VkrSampleTransportAction actions[] = {
-      VKR_SAMPLE_TRANSPORT_STEP_SIMULATION,
-      VKR_SAMPLE_TRANSPORT_RESET_SIMULATION,
-      VKR_SAMPLE_TRANSPORT_CYCLE_COLLISION_DISPLAY,
-      VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS};
-  const float32_t button_width = Min(118.0f, Max(24.0f, (width - 28) / 4));
-  for (uint32_t i = 0; i < ArrayCount(actions); ++i) {
-    VkrUiWidgetConfig button =
-        physics_widget(8 + i * (button_width + 4),
-                       Min(84.0f, Max(0.0f, height - 34)), button_width, 26);
-    static const VkrUiIcon icons[] = {VKR_UI_ICON_STEP, VKR_UI_ICON_RESET,
-                                      VKR_UI_ICON_BOUNDING_BOX,
-                                      VKR_UI_ICON_PHYSICS};
-    button.style.background_color = theme->overlay;
-    button.style.hover_background_color = theme->popup;
-    button.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-    button.style.border_color = vkr_ui_color_alpha(theme->border_strong, 0.5f);
-    button.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
-    button.style.font_size_pt = theme->font_caption;
-    button.style.text_color = theme->text;
-    button.icon = icons[i];
-    button.icon_size_pt = 13.0f;
-    button.icon_color = theme->text_secondary;
-    button.disabled = i == 0 && frame->simulation_running;
-    button.tooltip =
-        i == 3
-            ? string8_lit("Temporary session override; Reset restores physics")
-            : (String8){0};
-    (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(ui, string8_lit("control"),
-                      string8_create_from_cstr((const uint8_t *)titles[i],
-                                               strlen(titles[i])),
-                      &button)) {
-      *frame->transport_action = actions[i];
-    }
-    (void)vkr_ui_pop_id(ui);
+  /* Simulation controls live on the toolbar and the Show menu; the Scene
+     only reports a failing simulation, as UE5 prints viewport warnings. */
+  const char *error = bodies ? vkr_scene_physics_error(frame->scene) : NULL;
+  if (error && error[0]) {
+    const VkrUiTheme *theme = vkr_ui_theme();
+    VkrUiWidgetConfig label = physics_widget(
+        10, Min(48.0f, Max(0.0f, height - 30)), Max(1.0f, width - 20), 20);
+    label.style.padding_pt = (VkrUiEdges){2, 0, 2, 0};
+    label.style.text_color = theme->error;
+    label.style.font_size_pt = theme->font_caption;
+    label.icon = VKR_UI_ICON_WARNING_FILL;
+    label.icon_size_pt = 12.0f;
+    label.icon_color = theme->error;
+    vkr_ui_label(
+        ui, string8_lit("status"),
+        string8_create_from_cstr((const uint8_t *)error, strlen(error)),
+        &label);
   }
   (void)vkr_ui_panel_end(ui);
 }

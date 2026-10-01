@@ -71,6 +71,9 @@ struct VkrUiFrameNode {
   String8 tooltip;
   VkrUiIcon icon;
   Vec4 icon_color;
+  bool8_t leading;
+  VkrUiIcon trailing_icon;
+  float32_t trailing_icon_size_px;
   VkrUiTextureRef image;
   Vec2 image_size;
   Vec2 bezier_points[4];
@@ -99,6 +102,8 @@ struct VkrUiFrameNode {
   bool8_t clip_children;
 };
 
+/* Space between text and a trailing icon such as a dropdown caret. */
+#define VKR_UI_TRAILING_GAP_PT 6.0f
 #define VKR_UI_NODE_NONE UINT32_MAX
 #define VKR_UI_RETAINED_TOMBSTONE ((VkrUiRetainedState *)(uintptr_t)1u)
 #define VKR_UI_KEY_REPEAT_DELAY_SECONDS 0.4
@@ -595,6 +600,7 @@ vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
   node->tooltip = config->tooltip;
   node->fill = config->fill;
   node->center = config->center;
+  node->leading = config->leading;
   node->cursor = config->cursor;
   if (node->disabled)
     node->style.text_color.w *= 0.45f;
@@ -619,6 +625,18 @@ vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
             node->icon_size_px + node->style.padding_px.top +
                 node->style.padding_px.bottom + node->style.border_px.top +
                 node->style.border_px.bottom);
+  }
+  if ((node->kind == VKR_UI_NODE_LABEL || node->kind == VKR_UI_NODE_BUTTON) &&
+      config->trailing_icon > VKR_UI_ICON_NONE &&
+      config->trailing_icon < VKR_UI_ICON_COUNT) {
+    node->trailing_icon = config->trailing_icon;
+    node->trailing_icon_size_px = (isfinite(config->trailing_icon_size_pt) &&
+                                           config->trailing_icon_size_pt > 0.0f
+                                       ? config->trailing_icon_size_pt
+                                       : 10.0f) *
+                                  system->content_scale;
+    node->intrinsic_size.x += node->trailing_icon_size_px +
+                              VKR_UI_TRAILING_GAP_PT * system->content_scale;
   }
   if (node->kind != VKR_UI_NODE_CHECKBOX) {
     node->intrinsic_size =
@@ -1763,9 +1781,14 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
   hash =
       vkr_ui_hash_bytes(hash, &node->icon_size_px, sizeof(node->icon_size_px));
   hash = vkr_ui_hash_bytes(hash, &node->icon_color, sizeof(node->icon_color));
+  hash = vkr_ui_hash_bytes(hash, &node->trailing_icon,
+                           sizeof(node->trailing_icon));
+  hash = vkr_ui_hash_bytes(hash, &node->trailing_icon_size_px,
+                           sizeof(node->trailing_icon_size_px));
   hash = vkr_ui_hash_bytes(hash, &node->disabled, sizeof(node->disabled));
   hash = vkr_ui_hash_bytes(hash, &node->fill, sizeof(node->fill));
   hash = vkr_ui_hash_bytes(hash, &node->center, sizeof(node->center));
+  hash = vkr_ui_hash_bytes(hash, &node->leading, sizeof(node->leading));
   hash = vkr_ui_hash_bytes(hash, &node->hovered, sizeof(node->hovered));
   hash = vkr_ui_hash_bytes(hash, &node->retained->hover_t,
                            sizeof(node->retained->hover_t));
@@ -2980,7 +3003,7 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
     vkr_ui_emit_rect(buffer, vkr_ui_rect_inset(node->rect, edges), background,
                      vkr_ui_inner_radii(node->style.corner_radius_px, edges));
   }
-  const VkrUiRect content = vkr_ui_style_content_rect(node->rect, &node->style);
+  VkrUiRect content = vkr_ui_style_content_rect(node->rect, &node->style);
   switch (node->kind) {
   case VKR_UI_NODE_BEZIER: {
     Vec2 previous = node->bezier_points[0];
@@ -3042,7 +3065,27 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   }
   case VKR_UI_NODE_LABEL:
   case VKR_UI_NODE_BUTTON: {
-    const bool8_t centered = node->kind == VKR_UI_NODE_BUTTON || node->center;
+    /* A trailing icon ends the content box; text and the leading icon lay
+       out in what remains. */
+    if (node->trailing_icon != VKR_UI_ICON_NONE) {
+      const float32_t size =
+          Min(node->trailing_icon_size_px, Min(content.width, content.height));
+      const VkrUiRect caret = {content.x + content.width - size,
+                               content.y + (content.height - size) * 0.5f, size,
+                               size};
+      Vec4 color = theme->text_secondary;
+      color.w *= node->disabled ? 0.45f : 1.0f;
+      if (size > 0.0f)
+        vkr_ui_emit_icon(system, buffer, node->trailing_icon, caret, color);
+      content.width =
+          Max(0.0f, content.width - size - VKR_UI_TRAILING_GAP_PT * scale);
+    }
+    /* A dropdown, a button with a trailing icon, reads from its leading
+       edge like a field; other buttons center. */
+    const bool8_t centered =
+        (node->kind == VKR_UI_NODE_BUTTON && !node->leading &&
+         node->trailing_icon == VKR_UI_ICON_NONE) ||
+        node->center;
     /* Text never spills past its own box into neighbouring widgets. Wrapped
      * or unconstrained text keeps the parent clip. */
     const float32_t text_width =
@@ -3057,10 +3100,12 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
         text_width + icon_extent > content.width + 0.5f && content.width > 0.0f;
     /* Overflowing text may use the padding, as the clip below allows; the
      * ellipsis marks what still does not fit. */
+    VkrUiRect text_clip = vkr_ui_uniform_inset(node->rect, 1.0f);
+    if (node->trailing_icon != VKR_UI_ICON_NONE)
+      text_clip.width = Max(0.0f, content.x + content.width - text_clip.x);
     const float32_t ellipsis_right =
-        clip_text ? node->rect.x + node->rect.width - 1.0f : 0.0f;
-    if (clip_text && !vkr_ui_draw_buffer_push_clip(
-                         buffer, vkr_ui_uniform_inset(node->rect, 1.0f)))
+        clip_text ? text_clip.x + text_clip.width : 0.0f;
+    if (clip_text && !vkr_ui_draw_buffer_push_clip(buffer, text_clip))
       break;
     if (node->icon == VKR_UI_ICON_NONE) {
       vkr_ui_emit_text(system, buffer, node, content, centered, 0.0f,

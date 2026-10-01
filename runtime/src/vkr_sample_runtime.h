@@ -31,7 +31,6 @@ typedef enum VkrSampleTransportAction {
   VKR_SAMPLE_TRANSPORT_STEP_SIMULATION,
   VKR_SAMPLE_TRANSPORT_RESET_SIMULATION,
   VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS,
-  VKR_SAMPLE_TRANSPORT_CYCLE_COLLISION_DISPLAY,
 } VkrSampleTransportAction;
 
 typedef struct VkrSamplePhysicsRequest {
@@ -67,9 +66,16 @@ typedef struct VkrSampleViewState {
   uint32_t gizmo_space;
   /* Free-camera flight speed in world units per second. */
   float32_t camera_speed;
+  /* VKR_SCENE_SHOW_HIDE_* geometry kinds the Scene neither draws nor
+     picks. */
+  uint32_t hidden_kinds;
+  /* Collision shapes drawn: 0 off, 1 the selected body, 2 all (bounded). */
+  uint32_t collision_display;
   bool8_t grid_enabled;
   /* Screen-order cell numbers and letters along the grid's edges. */
   bool8_t grid_labels;
+  /* The grid stays visible through opaque geometry instead of behind it. */
+  bool8_t grid_through_geometry;
 } VkrSampleViewState;
 
 typedef struct VkrSampleViewRequest {
@@ -311,7 +317,6 @@ typedef struct VkrSampleUiFrame {
   VkrSampleViewState view_state;
   VkrSampleViewRequest *view_request;
   VkrSamplePhysicsRequest *physics_request;
-  uint32_t collision_display; /* 0 off, 1 selected body, 2 all (bounded). */
   bool8_t mapping_valid;
   bool8_t scene_only;
   bool8_t mouse_captured;

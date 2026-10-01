@@ -104,7 +104,7 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
     *out =
         (EditorLabelKind){vkr_editor_world_type_icon(type),
                           (Vec4){0.62f, 0.78f, 0.98f, 1.0f}, true_v, !placed};
-    return true_v;
+    return placed ? editor->labels_markers : editor->labels_environment;
   }
   return false_v;
 }
@@ -118,6 +118,7 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
   EditorLabelKind kind = {VKR_UI_ICON_EMPTY, theme->text_secondary, true_v,
                           false_v};
   if (editor->label_anchor_count >= build->capacity ||
+      (build->empty && !editor->labels_empty) ||
       (!build->empty && !editor_label_kind(editor, scene, entity, &kind))) {
     return;
   }

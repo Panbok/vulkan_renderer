@@ -1256,6 +1256,21 @@ VkrRendererError
 vkr_renderer_restore_scene_output_extent(VkrRenderer *renderer);
 /** Invalidates temporal accumulation before the next submitted frame. */
 void vkr_renderer_invalidate_temporal_history(VkrRenderer *renderer);
+/** Scene render scales accepted between frames without recreating the device
+ * or upscaler. A backend whose upscaler fixes its scale reports min == max. */
+void vkr_renderer_render_scale_range(const VkrRenderer *renderer,
+                                     float32_t *out_min, float32_t *out_max);
+/** Whether dynamic resolution can be switched between frames. */
+bool8_t vkr_renderer_dynamic_resolution_switchable(const VkrRenderer *renderer);
+/**
+ * Sets the Scene render scale and dynamic resolution outside an active frame.
+ * With dynamic resolution on, `render_scale` only seeds the controller. The
+ * scale must lie in vkr_renderer_render_scale_range; a change resets temporal
+ * history and the resolution controller.
+ */
+VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
+                                               float32_t render_scale,
+                                               bool8_t dynamic_resolution);
 /**
  * @brief Invalidates exposure adaptation before the next submitted frame.
  *

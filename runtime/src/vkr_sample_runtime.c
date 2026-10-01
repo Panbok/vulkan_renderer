@@ -134,7 +134,6 @@ typedef struct State {
   VkrSampleViewState view_state;
   VkrCamera perspective_camera;
   bool8_t perspective_camera_saved;
-  uint32_t collision_display;
   /* Reused application-owned event buffer; draining the editor's demo events
      prevents an otherwise unconsumed sensor queue from exhausting capacity. */
   VkrPhysicsSensorEvent
@@ -366,6 +365,28 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       old.subsurface_scattering != settings.subsurface_scattering ||
       old.fog != settings.fog || old.volumetric_fog != settings.volumetric_fog;
   state->graphics.settings = settings;
+  /* Screen percentage and dynamic resolution apply between frames when the
+     renderer's upscaler covers them; the started values then follow. */
+  float32_t live_min = 1.0f;
+  float32_t live_max = 1.0f;
+  vkr_renderer_render_scale_range(&application->renderer, &live_min, &live_max);
+  const bool8_t dynamic =
+      settings.dynamic_resolution && settings.temporal_upscaling;
+  if ((settings.render_scale != state->graphics_started.render_scale ||
+       settings.dynamic_resolution !=
+           state->graphics_started.dynamic_resolution) &&
+      settings.temporal_upscaling ==
+          state->graphics_started.temporal_upscaling &&
+      settings.render_scale >= live_min - 1e-4f &&
+      settings.render_scale <= live_max + 1e-4f &&
+      (!dynamic ||
+       vkr_renderer_dynamic_resolution_switchable(&application->renderer)) &&
+      vkr_renderer_set_render_scale(&application->renderer,
+                                    settings.render_scale,
+                                    dynamic) == VKR_RENDERER_ERROR_NONE) {
+    state->graphics_started.render_scale = settings.render_scale;
+    state->graphics_started.dynamic_resolution = settings.dynamic_resolution;
+  }
   state->graphics.restart_required = vkr_graphics_settings_restart_required(
       &settings, &state->graphics_started);
   state->graphics_message[0] = '\0';
@@ -1370,7 +1391,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_request_picking(
           &state->gizmo_drag.pick_ray_direction))
     return false_v;
   state->picked_collider = VKR_ENTITY_ID_INVALID;
-  if (state->collision_display && application->active_scene) {
+  if (state->view_state.collision_display && application->active_scene) {
     VkrPhysicsRayHit hit = {0};
     const Vec3 displacement =
         vec3_scale(state->gizmo_drag.pick_ray_direction, camera->far_clip);
@@ -1381,7 +1402,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_request_picking(
       const VkrEntityId child = {.u64 = hit.collider_entity_id};
       const VkrEntityId selected_owner = vkr_scene_physics_owner(
           application->active_scene, state->selected_entity);
-      if ((state->collision_display == 2 || owner.u64 == selected_owner.u64) &&
+      if ((state->view_state.collision_display == 2 ||
+           owner.u64 == selected_owner.u64) &&
           vkr_scene_entity_alive(application->active_scene, child) &&
           vkr_scene_physics_owner(application->active_scene, child).u64 ==
               owner.u64) {
@@ -3695,6 +3717,19 @@ vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
   }
 }
 
+/* The Show filter reaches every loaded container, including ones loaded
+   after it changed; an unchanged filter costs one compare per scene. */
+static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
+  const uint32_t hidden = state->view_state.hidden_kinds;
+  vkr_scene_set_editor_hidden_kinds(application->active_scene, hidden);
+  vkr_scene_set_editor_hidden_kinds(
+      vkr_scene_handle_get_scene(state->world_handle), hidden);
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    vkr_scene_set_editor_hidden_kinds(
+        vkr_scene_handle_get_scene(state->additive_handles[i]), hidden);
+  }
+}
+
 static void sample_view_apply(VkrStandardSceneRuntime *application,
                               const VkrSampleViewRequest *request) {
   if (!request->apply || !application->editor_viewport.enabled) {
@@ -3705,7 +3740,8 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
       (uint32_t)next.render_mode >= VKR_RENDER_MODE_COUNT ||
       !isfinite(next.grid_spacing) || next.grid_spacing <= 0.0f ||
       next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
-      next.gizmo_space > VKR_GIZMO_SPACE_LOCAL ||
+      next.gizmo_space > VKR_GIZMO_SPACE_LOCAL || next.collision_display > 2u ||
+      (next.hidden_kinds & ~VKR_SCENE_SHOW_HIDE_ALL) ||
       !isfinite(next.camera_speed) || next.camera_speed <= 0.0f) {
     return;
   }
@@ -3877,7 +3913,6 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .view_state = state->view_state,
       .view_request = &requests->view_request,
       .physics_request = &requests->physics_request,
-      .collision_display = state->collision_display,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
       .scene_backdrop_blur = &application->editor_viewport.scene_backdrop_blur,
       .animation_preview = &application->animation_preview,
@@ -4774,9 +4809,6 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     }
     break;
   }
-  case VKR_SAMPLE_TRANSPORT_CYCLE_COLLISION_DISPLAY:
-    state->collision_display = (state->collision_display + 1u) % 3u;
-    break;
   case VKR_SAMPLE_TRANSPORT_START_RENDERING:
     application->editor_viewport.scene_error = VKR_RENDERER_ERROR_NONE;
     application->editor_viewport.scene_rendering_stopped = false_v;
@@ -4924,6 +4956,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   sample_graphics_request(application, &requests.graphics_request);
   sample_editor_state_apply(application, &requests.editor_state_request);
   sample_view_apply(application, &requests.view_request);
+  sample_show_filter_apply(application);
   /* A UI pick runs as a context click does, at the given pixel. */
   if (requests.pick_request.request) {
     state->context_click_pending = true_v;
@@ -5130,6 +5163,7 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
       .render_mode = application->globals.render_mode,
       .grid_spacing = 1.0f,
       .camera_speed = 1.0f,
+      .collision_display = 1u,
       /* A blank level shows its ground grid (ADR-076). */
       .grid_enabled = true_v,
   };
@@ -5174,7 +5208,6 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
   state->gizmo_edit_pending = false_v;
   application->editor_viewport.simulation_running =
       !runtime_config->presentation.paneled;
-  state->collision_display = 1u;
   if (!state->ui.initialize(state->ui.state, &application->editor_viewport.dock,
                             &application->ui_system)) {
     arena_destroy(state->stats_arena);

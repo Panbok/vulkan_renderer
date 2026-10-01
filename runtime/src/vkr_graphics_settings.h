@@ -35,6 +35,24 @@ typedef struct VkrGraphicsSettingsRequest {
   bool8_t reset_defaults;
 } VkrGraphicsSettingsRequest;
 
+/* Scalability presets: each sets every quality gate (Quality, Lighting and
+ * Effects groups) and leaves display settings and render scale alone. */
+typedef enum VkrGraphicsPreset {
+  VKR_GRAPHICS_PRESET_LOW = 0,
+  VKR_GRAPHICS_PRESET_MEDIUM,
+  VKR_GRAPHICS_PRESET_HIGH,
+  VKR_GRAPHICS_PRESET_EPIC,
+  /* No preset matches: the gates were set one by one. */
+  VKR_GRAPHICS_PRESET_CUSTOM,
+} VkrGraphicsPreset;
+
+const char *vkr_graphics_preset_name(VkrGraphicsPreset preset);
+void vkr_graphics_settings_apply_preset(VkrGraphicsSettings *settings,
+                                        VkrGraphicsPreset preset);
+/* The preset whose quality gates `settings` match, else CUSTOM. */
+VkrGraphicsPreset
+vkr_graphics_settings_preset(const VkrGraphicsSettings *settings);
+
 /** Machine-local graphics preferences. The state hook's context is a
  * `const VkrGraphicsSettingsState *` or NULL. */
 extern const VkrTypeDesc vkr_graphics_settings_type;

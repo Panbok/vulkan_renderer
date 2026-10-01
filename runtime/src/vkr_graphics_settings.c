@@ -237,6 +237,72 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
   };
 }
 
+static const char *const s_graphics_preset_names[] = {"Low", "Medium", "High",
+                                                      "Epic", "Custom"};
+
+const char *vkr_graphics_preset_name(VkrGraphicsPreset preset) {
+  return s_graphics_preset_names[Min((uint32_t)preset,
+                                     (uint32_t)VKR_GRAPHICS_PRESET_CUSTOM)];
+}
+
+/* Quality gates of one preset over `base`, whose display settings stay. */
+static VkrGraphicsSettings
+graphics_preset_gates(const VkrGraphicsSettings *base,
+                      VkrGraphicsPreset preset) {
+  const bool8_t medium = preset >= VKR_GRAPHICS_PRESET_MEDIUM;
+  const bool8_t high = preset >= VKR_GRAPHICS_PRESET_HIGH;
+  const bool8_t epic = preset >= VKR_GRAPHICS_PRESET_EPIC;
+  VkrGraphicsSettings out = *base;
+  out.anti_aliasing = true_v;
+  out.shadow_quality = high ? 2u : 1u;
+  out.soft_shadows = medium;
+  out.local_shadows = medium;
+  out.ambient_occlusion = medium;
+  out.screen_space_gi = epic;
+  out.screen_space_reflections = high;
+  out.reflection_probes = true_v;
+  out.subsurface_scattering = medium;
+  out.fog = true_v;
+  out.volumetric_fog = high;
+  out.bloom = true_v;
+  out.depth_of_field = epic;
+  out.motion_blur = epic;
+  return out;
+}
+
+void vkr_graphics_settings_apply_preset(VkrGraphicsSettings *settings,
+                                        VkrGraphicsPreset preset) {
+  if (settings && preset < VKR_GRAPHICS_PRESET_CUSTOM) {
+    *settings = graphics_preset_gates(settings, preset);
+  }
+}
+
+VkrGraphicsPreset
+vkr_graphics_settings_preset(const VkrGraphicsSettings *settings) {
+  for (uint32_t i = 0; i < VKR_GRAPHICS_PRESET_CUSTOM; ++i) {
+    const VkrGraphicsSettings gates =
+        graphics_preset_gates(settings, (VkrGraphicsPreset)i);
+    /* Field by field: struct padding is unspecified. */
+    if (gates.anti_aliasing == settings->anti_aliasing &&
+        gates.shadow_quality == settings->shadow_quality &&
+        gates.soft_shadows == settings->soft_shadows &&
+        gates.local_shadows == settings->local_shadows &&
+        gates.ambient_occlusion == settings->ambient_occlusion &&
+        gates.screen_space_gi == settings->screen_space_gi &&
+        gates.screen_space_reflections == settings->screen_space_reflections &&
+        gates.reflection_probes == settings->reflection_probes &&
+        gates.subsurface_scattering == settings->subsurface_scattering &&
+        gates.fog == settings->fog &&
+        gates.volumetric_fog == settings->volumetric_fog &&
+        gates.bloom == settings->bloom &&
+        gates.depth_of_field == settings->depth_of_field &&
+        gates.motion_blur == settings->motion_blur) {
+      return (VkrGraphicsPreset)i;
+    }
+  }
+  return VKR_GRAPHICS_PRESET_CUSTOM;
+}
+
 bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings) {
   return settings &&
          vkr_type_validate(&vkr_graphics_settings_type, settings, NULL, 0u);

@@ -655,6 +655,14 @@ typedef struct VkrSceneSettings {
   bool8_t inherit_world;
 } VkrSceneSettings;
 
+/* Geometry kinds the editor's Show menu can leave undrawn. */
+#define VKR_SCENE_SHOW_HIDE_STATIC_MESHES (1u << 0)
+#define VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES (1u << 1)
+#define VKR_SCENE_SHOW_HIDE_SHAPES (1u << 2)
+#define VKR_SCENE_SHOW_HIDE_ALL                                                \
+  (VKR_SCENE_SHOW_HIDE_STATIC_MESHES | VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES |   \
+   VKR_SCENE_SHOW_HIDE_SHAPES)
+
 typedef struct VkrScene {
   VkrScenePhysics *physics;
   /** Scenes sharing one native physics world (ADR-076), or NULL for a
@@ -737,6 +745,9 @@ typedef struct VkrScene {
   uint32_t render_dirty_count;
   uint32_t render_dirty_capacity;
   bool8_t render_full_sync_needed; // Set on scene load or dirty overflow
+  /** Editor Show filter (VKR_SCENE_SHOW_HIDE_*): geometry kinds the viewport
+      neither draws nor picks, without editing the scene. Zero shows all. */
+  uint32_t editor_hidden_kinds;
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
   /** Offset of this container's picking range; local render ids stay small
@@ -1131,6 +1142,9 @@ void vkr_scene_set_visibility(VkrScene *scene, VkrEntityId entity,
 /** Effective visibility through inheriting parents. Hidden entities do not
     render, and hidden lights and world objects take no effect. */
 bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity);
+
+/** Set the editor Show filter; a change resyncs every renderable. */
+void vkr_scene_set_editor_hidden_kinds(VkrScene *scene, uint32_t hidden_kinds);
 
 // ============================================================================
 // Light Components

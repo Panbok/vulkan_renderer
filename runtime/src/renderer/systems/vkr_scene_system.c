@@ -3109,6 +3109,31 @@ bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity) {
   return true_v;
 }
 
+void vkr_scene_set_editor_hidden_kinds(VkrScene *scene, uint32_t hidden_kinds) {
+  hidden_kinds &= VKR_SCENE_SHOW_HIDE_ALL;
+  if (scene && scene->editor_hidden_kinds != hidden_kinds) {
+    scene->editor_hidden_kinds = hidden_kinds;
+    scene->render_full_sync_needed = true;
+  }
+}
+
+/* The editor Show filter: whether a mesh renderer, or a shape, of `entity`
+   draws. An animation component marks an animated mesh. */
+vkr_internal bool8_t scene_kind_shown(const VkrScene *scene, VkrEntityId entity,
+                                      bool8_t shape) {
+  const uint32_t hidden = scene->editor_hidden_kinds;
+  if (!hidden) {
+    return true_v;
+  }
+  if (shape) {
+    return !(hidden & VKR_SCENE_SHOW_HIDE_SHAPES);
+  }
+  const bool8_t animated =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_animation_type) != NULL;
+  return !(hidden & (animated ? VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES
+                              : VKR_SCENE_SHOW_HIDE_STATIC_MESHES));
+}
+
 /* Scene-local render id offset into its container's picking range; zero
    stays zero (no render id). */
 vkr_internal INLINE uint32_t scene_picking_render_id(const VkrScene *scene,
@@ -3170,7 +3195,8 @@ vkr_internal void render_sync_chunk_cb(const VkrArchetype *arch,
 
   for (uint32_t i = 0; i < count; i++) {
     VkrMeshInstanceHandle instance = mesh_renderers[i].instance;
-    bool8_t is_visible = vkr_scene_entity_visible(scene, entities[i]);
+    bool8_t is_visible = vkr_scene_entity_visible(scene, entities[i]) &&
+                         scene_kind_shown(scene, entities[i], false_v);
     uint32_t render_id = render_ids[i].id;
     scene_sync_renderable(ctx, entities[i], instance, transforms[i].world,
                           render_id, is_visible);
@@ -3230,7 +3256,8 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
       continue;
 
     uint32_t render_id = render_ids[i].id;
-    bool8_t is_visible = vkr_scene_entity_visible(scene, entities[i]);
+    bool8_t is_visible = vkr_scene_entity_visible(scene, entities[i]) &&
+                         scene_kind_shown(scene, entities[i], true_v);
 
     // Sync mesh-slot state for shapes
     vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index,
@@ -3290,7 +3317,8 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
     if (mesh_renderer) {
       VkrMeshInstanceHandle instance = mesh_renderer->instance;
       scene_sync_renderable(&ctx, entity, instance, transform->world, render_id,
-                            is_visible);
+                            is_visible &&
+                                scene_kind_shown(scene, entity, false_v));
       continue;
     }
 
@@ -3299,6 +3327,7 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
         (const SceneShape *)vkr_entity_get_component_if_alive_const(
             world, entity, scene->comp_shape);
     if (shape && shape->mesh_index != VKR_INVALID_ID) {
+      is_visible = is_visible && scene_kind_shown(scene, entity, true_v);
       vkr_mesh_manager_set_model(&assets->mesh_manager, shape->mesh_index,
                                  transform->world);
       vkr_mesh_manager_set_visible(&assets->mesh_manager, shape->mesh_index,
@@ -3968,7 +3997,8 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
   }
 
   // Set up mesh for picking and visibility
-  bool8_t is_visible = vkr_scene_entity_visible(scene, entity);
+  bool8_t is_visible = vkr_scene_entity_visible(scene, entity) &&
+                       scene_kind_shown(scene, entity, true_v);
   vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index,
                                  scene_picking_render_id(scene, render_id));
   vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);

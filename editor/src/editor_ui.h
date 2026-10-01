@@ -237,6 +237,11 @@ typedef struct VkrEditorUi {
   bool8_t labels_directional;
   bool8_t labels_spot;
   bool8_t labels_point;
+  /* Abstract one-per-world objects (sky, fog, post process) stacked at the
+     origin; placed volumes, probes and markers; empty objects. */
+  bool8_t labels_environment;
+  bool8_t labels_markers;
+  bool8_t labels_empty;
   /* Empty objects of the primary scene, the World and each added scene, in
      the labels' container order. */
   VkrEditorLabelEmpties label_empties[2u + VKR_SCENE_ADDITIVE_MAX];
@@ -296,6 +301,8 @@ typedef struct VkrEditorUi {
   Vec4 view_popup_anchor_pt;
   Vec4 view_popup_rect_pt;
   uint32_t view_popup;
+  /* Render scale while the screen-percentage slider is held, else zero. */
+  float32_t view_scale_draft;
   VkrUiId grid_panel;
   uint64_t grid_frame;
   VkrSampleCameraView grid_camera_view;

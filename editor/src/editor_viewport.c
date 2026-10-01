@@ -14,14 +14,25 @@ enum {
   VIEW_POPUP_CAMERA,
   VIEW_POPUP_RENDER,
   VIEW_POPUP_GRID,
+  VIEW_POPUP_SHOW,
+  VIEW_POPUP_QUALITY,
+  /* The compact header's camera speed slider. */
   VIEW_POPUP_SPEED,
   VIEW_POPUP_COUNT,
 };
 
 #define VIEW_CHIP_HEIGHT_PT 26.0f
-#define VIEW_POPUP_ROW_PT 26.0f
-#define VIEW_POPUP_WIDTH_PT 220.0f
+#define VIEW_CHIP_PAD_PT 8.0f
+#define VIEW_CHIP_ICON_PT 15.0f
+#define VIEW_CHIP_CARET_PT 10.0f
+#define VIEW_POPUP_ROW_PT 24.0f
+#define VIEW_POPUP_HEADER_PT 24.0f
+#define VIEW_POPUP_WIDTH_PT 244.0f
+#define VIEW_POPUP_ROW_MAX 24u
 #define VIEW_INSET_PT 8.0f
+/* Logarithmic speed range of the slider, in world units per second. */
+#define VIEW_SPEED_MIN 0.1f
+#define VIEW_SPEED_MAX 100.0f
 
 static const char *const view_camera_names[] = {"Perspective", "Top", "Left",
                                                 "Right", "Bottom"};
@@ -37,9 +48,6 @@ static const struct {
     {"Wireframe", VKR_RENDER_MODE_WIREFRAME},
 };
 
-static const float32_t view_camera_speeds[] = {0.25f, 0.5f, 1.0f,  2.0f,
-                                               4.0f,  8.0f, 16.0f, 32.0f};
-
 static const struct {
   const char *name;
   const char *key;
@@ -52,6 +60,74 @@ static const struct {
     {"Scale", "R", VKR_UI_ICON_SCALE, VKR_GIZMO_MODE_SCALE},
 };
 
+/* What one Show menu row toggles. */
+typedef enum ViewShowTarget {
+  VIEW_SHOW_HEADER,
+  /* A VKR_SCENE_SHOW_HIDE_* geometry kind. */
+  VIEW_SHOW_KIND,
+  VIEW_SHOW_ICONS,
+  /* One icon category: the offset of its flag in VkrEditorUi. */
+  VIEW_SHOW_ICON_KIND,
+  VIEW_SHOW_GRID,
+  VIEW_SHOW_GRID_THROUGH,
+  /* Collision shapes: `value` is the display mode the row selects. */
+  VIEW_SHOW_COLLISION,
+  VIEW_SHOW_PHYSICS,
+} ViewShowTarget;
+
+static const struct {
+  const char *name;
+  ViewShowTarget target;
+  uint32_t value;
+} view_show_rows[] = {
+    {"Geometry", VIEW_SHOW_HEADER, 0},
+    {"Static meshes", VIEW_SHOW_KIND, VKR_SCENE_SHOW_HIDE_STATIC_MESHES},
+    {"Animated meshes", VIEW_SHOW_KIND, VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES},
+    {"Shapes", VIEW_SHOW_KIND, VKR_SCENE_SHOW_HIDE_SHAPES},
+    {"Object icons", VIEW_SHOW_HEADER, 0},
+    {"All icons", VIEW_SHOW_ICONS, 0},
+    {"Directional lights", VIEW_SHOW_ICON_KIND,
+     offsetof(VkrEditorUi, labels_directional)},
+    {"Point and rect lights", VIEW_SHOW_ICON_KIND,
+     offsetof(VkrEditorUi, labels_point)},
+    {"Spot lights", VIEW_SHOW_ICON_KIND, offsetof(VkrEditorUi, labels_spot)},
+    {"Sky, fog and post process", VIEW_SHOW_ICON_KIND,
+     offsetof(VkrEditorUi, labels_environment)},
+    {"Volumes, probes and markers", VIEW_SHOW_ICON_KIND,
+     offsetof(VkrEditorUi, labels_markers)},
+    {"Empty objects", VIEW_SHOW_ICON_KIND, offsetof(VkrEditorUi, labels_empty)},
+    {"Overlays", VIEW_SHOW_HEADER, 0},
+    {"Grid", VIEW_SHOW_GRID, 0},
+    {"Grid through geometry", VIEW_SHOW_GRID_THROUGH, 0},
+    {"Collision of the selection", VIEW_SHOW_COLLISION, 1},
+    {"Collision of all bodies", VIEW_SHOW_COLLISION, 2},
+    {"Physics simulation", VIEW_SHOW_PHYSICS, 0},
+};
+
+/* Grid popup: the toggles, then cell size halving and doubling. */
+static const char *const view_grid_rows[] = {
+    "Show grid", "Through geometry", "Cell numbers and letters",
+    "Cell size", "Smaller cells",    "Larger cells"};
+
+typedef enum ViewRowKind {
+  VIEW_ROW_OPTION,
+  VIEW_ROW_HEADER,
+  VIEW_ROW_SLIDER,
+} ViewRowKind;
+
+/* One popup row as built: an option button, a section header, or a slider
+   over [minimum, maximum] with its value drawn in `text`. */
+typedef struct ViewRow {
+  ViewRowKind kind;
+  char text[64];
+  VkrUiIcon icon;
+  bool8_t checked;
+  bool8_t disabled;
+  float32_t value;
+  float32_t minimum;
+  float32_t maximum;
+} ViewRow;
+
 static String8 view_string(const char *text) {
   return string8_create_from_cstr((const uint8_t *)text, strlen(text));
 }
@@ -63,6 +139,25 @@ static const char *view_render_name(VkrRenderMode mode) {
     }
   }
   return "Diagnostic";
+}
+
+static float32_t view_speed_fraction(float32_t speed) {
+  return vkr_clamp_f32(logf(Max(speed, 1e-6f) / VIEW_SPEED_MIN) /
+                           logf(VIEW_SPEED_MAX / VIEW_SPEED_MIN),
+                       0.0f, 1.0f);
+}
+
+/* Two significant digits keep the value readable on the chip. */
+static float32_t view_speed_value(float32_t fraction) {
+  const float32_t speed =
+      VIEW_SPEED_MIN * powf(VIEW_SPEED_MAX / VIEW_SPEED_MIN,
+                            vkr_clamp_f32(fraction, 0.0f, 1.0f));
+  const float32_t unit = powf(10.0f, floorf(log10f(speed)) - 1.0f);
+  return roundf(speed / unit) * unit;
+}
+
+static void view_speed_text(float32_t speed, char text[24]) {
+  snprintf(text, 24, "%.3g", (double)speed);
 }
 
 static Vec2 view_text_size(const VkrUiSystem *ui, VkrFontHandle font_handle,
@@ -97,9 +192,24 @@ static Vec4 view_scene_rect(const VkrSampleUiFrame *frame) {
                 Max(0.0f, scene.w / scale - top)};
 }
 
-/* Chip labels: camera, view mode, grid spacing, camera speed. */
-static void view_chip_text(const VkrSampleViewState *state,
-                           float32_t drawn_spacing, char text[4][48]) {
+/* Graphics settings the Scene renders with, or the editor's draft of the
+   render scale while its slider is held. */
+static VkrGraphicsSettings view_graphics(const VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame) {
+  VkrGraphicsSettings settings = frame->graphics->settings;
+  if (editor->view_scale_draft > 0.0f) {
+    settings.render_scale = editor->view_scale_draft;
+  }
+  return settings;
+}
+
+/* Left chip labels: camera, view mode, grid spacing, Show, quality. */
+#define VIEW_LEFT_CHIPS 5u
+
+static void view_chip_text(const VkrEditorUi *editor,
+                           const VkrSampleUiFrame *frame,
+                           char text[VIEW_LEFT_CHIPS][48]) {
+  const VkrSampleViewState *state = &frame->view_state;
   const uint32_t camera = (uint32_t)state->camera_view;
   snprintf(text[0], 48, "%s",
            camera < ArrayCount(view_camera_names) ? view_camera_names[camera]
@@ -107,27 +217,44 @@ static void view_chip_text(const VkrSampleViewState *state,
   snprintf(text[1], 48, "%s", view_render_name(state->render_mode));
   if (state->grid_enabled)
     snprintf(text[2], 48, "%.4g",
-             (double)(drawn_spacing > 0 ? drawn_spacing : state->grid_spacing));
+             (double)(editor->grid_spacing > 0 ? editor->grid_spacing
+                                               : state->grid_spacing));
   else
     snprintf(text[2], 48, "Off");
-  snprintf(text[3], 48, "%.3g", (double)state->camera_speed);
+  snprintf(text[3], 48, "Show");
+  if (frame->graphics) {
+    const VkrGraphicsSettings settings = view_graphics(editor, frame);
+    const char *preset =
+        vkr_graphics_preset_name(vkr_graphics_settings_preset(&settings));
+    if (settings.dynamic_resolution && settings.temporal_upscaling)
+      snprintf(text[4], 48, "%s \xc2\xb7 Dynamic", preset);
+    else
+      snprintf(text[4], 48, "%s \xc2\xb7 %.0f%%", preset,
+               (double)(settings.render_scale * 100.0f));
+  } else {
+    snprintf(text[4], 48, "Quality");
+  }
 }
 
-/* Label width plus leading icon, caret and padding. */
+/* The chip's content: padding, icon, gap, text, gap and caret. */
 static float32_t view_chip_width(const VkrUiSystem *ui, const char *text,
                                  bool8_t compact) {
+  const float32_t frame =
+      VIEW_CHIP_PAD_PT * 2.0f + VIEW_CHIP_ICON_PT + 6.0f + VIEW_CHIP_CARET_PT;
   if (compact)
-    return 40.0f;
+    return frame;
   return ceilf(view_text_size(ui, VKR_FONT_HANDLE_INVALID, text,
                               vkr_ui_theme()->font_body)
                    .x) +
-         52.0f;
+         frame + 6.0f;
 }
 
 typedef struct ViewHeaderLayout {
   Vec4 left;
   Vec4 right;
-  float32_t chips[4];
+  float32_t chips[VIEW_LEFT_CHIPS];
+  /* Width of the camera speed chip on the right. */
+  float32_t speed;
   bool8_t compact;
   bool8_t show_right;
 } ViewHeaderLayout;
@@ -136,21 +263,26 @@ static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
                                            const VkrSampleUiFrame *frame) {
   ViewHeaderLayout layout = {0};
   const Vec4 scene = view_scene_rect(frame);
-  char text[4][48];
-  view_chip_text(&frame->view_state, editor->grid_spacing, text);
+  char text[VIEW_LEFT_CHIPS][48];
+  view_chip_text(editor, frame, text);
   const float32_t available = Max(0.0f, scene.z - VIEW_INSET_PT * 2.0f);
-  /* The tools, then the World/Local space toggle. */
+  /* The tools and the World/Local space toggle, with the panel padding and
+     the gaps between them. */
   const float32_t right_width =
-      VIEW_CHIP_HEIGHT_PT * (float32_t)(ArrayCount(view_tools) + 1u) + 6.0f;
+      (VIEW_CHIP_HEIGHT_PT + 2.0f) * (float32_t)(ArrayCount(view_tools) + 1u) +
+      6.0f;
   for (uint32_t pass = 0; pass < 2; ++pass) {
     layout.compact = pass == 1;
-    float32_t width = 6.0f;
-    for (uint32_t i = 0; i < 3; ++i) {
+    /* Overlay panels pad 3 points and space their columns 2 apart. */
+    float32_t width = 6.0f - 2.0f;
+    for (uint32_t i = 0; i < VIEW_LEFT_CHIPS; ++i) {
       layout.chips[i] = view_chip_width(frame->ui, text[i], layout.compact);
       width += layout.chips[i] + 2.0f;
     }
-    layout.chips[3] = view_chip_width(frame->ui, text[3], layout.compact);
-    const float32_t right = right_width + 10.0f + layout.chips[3] + 6.0f;
+    char speed[24];
+    view_speed_text(frame->view_state.camera_speed, speed);
+    layout.speed = view_chip_width(frame->ui, speed, false_v);
+    const float32_t right = right_width + 10.0f + layout.speed + 2.0f * 2.0f;
     layout.show_right = width + right + 12.0f <= available;
     layout.left = (Vec4){scene.x + VIEW_INSET_PT, scene.y + VIEW_INSET_PT,
                          Min(width, available), VIEW_CHIP_HEIGHT_PT + 6.0f};
@@ -167,35 +299,181 @@ static ViewHeaderLayout view_header_layout(const VkrEditorUi *editor,
   return layout;
 }
 
-static uint32_t view_popup_count(uint32_t popup) {
+static bool8_t *view_icon_flag(VkrEditorUi *editor, uint32_t offset) {
+  return (bool8_t *)((uint8_t *)editor + offset);
+}
+
+/* Fill `rows` for `popup`; returns how many. */
+static uint32_t view_popup_rows(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame, uint32_t popup,
+                                ViewRow *rows) {
+  const VkrSampleViewState *state = &frame->view_state;
+  uint32_t count = 0;
   switch (popup) {
   case VIEW_POPUP_CAMERA:
-    return ArrayCount(view_camera_names);
+    for (uint32_t i = 0; i < ArrayCount(view_camera_names); ++i) {
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){.checked = (uint32_t)state->camera_view == i};
+      snprintf(row->text, sizeof(row->text), "%s%s", view_camera_names[i],
+               i ? "  (orthographic)" : "");
+    }
+    break;
   case VIEW_POPUP_RENDER:
-    return ArrayCount(view_render_modes);
+    for (uint32_t i = 0; i < ArrayCount(view_render_modes); ++i) {
+      ViewRow *row = &rows[count++];
+      *row =
+          (ViewRow){.checked = state->render_mode == view_render_modes[i].mode};
+      snprintf(row->text, sizeof(row->text), "%s", view_render_modes[i].name);
+    }
+    break;
   case VIEW_POPUP_GRID:
-    return 4;
-  case VIEW_POPUP_SPEED:
-    return ArrayCount(view_camera_speeds);
-  default:
-    return 0;
+    for (uint32_t i = 0; i < ArrayCount(view_grid_rows); ++i) {
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){0};
+      snprintf(row->text, sizeof(row->text), "%s", view_grid_rows[i]);
+      if (i == 0) {
+        row->checked = state->grid_enabled;
+      } else if (i == 1) {
+        row->checked = state->grid_through_geometry;
+      } else if (i == 2) {
+        row->checked = state->grid_labels;
+        row->disabled = state->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
+      } else if (i == 3) {
+        row->kind = VIEW_ROW_HEADER;
+        snprintf(row->text, sizeof(row->text), "Cell size  %.4g u",
+                 (double)state->grid_spacing);
+      } else {
+        row->icon = i == 4 ? VKR_UI_ICON_ZOOM_OUT : VKR_UI_ICON_ZOOM_IN;
+      }
+    }
+    break;
+  case VIEW_POPUP_SHOW:
+    for (uint32_t i = 0; i < ArrayCount(view_show_rows); ++i) {
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){0};
+      snprintf(row->text, sizeof(row->text), "%s", view_show_rows[i].name);
+      const uint32_t value = view_show_rows[i].value;
+      switch (view_show_rows[i].target) {
+      case VIEW_SHOW_HEADER:
+        row->kind = VIEW_ROW_HEADER;
+        break;
+      case VIEW_SHOW_KIND:
+        row->checked = !(state->hidden_kinds & value);
+        break;
+      case VIEW_SHOW_ICONS:
+        row->checked = editor->labels_enabled;
+        break;
+      case VIEW_SHOW_ICON_KIND:
+        row->checked = *view_icon_flag(editor, value);
+        row->disabled = !editor->labels_enabled;
+        break;
+      case VIEW_SHOW_GRID:
+        row->checked = state->grid_enabled;
+        break;
+      case VIEW_SHOW_GRID_THROUGH:
+        row->checked = state->grid_through_geometry;
+        row->disabled = !state->grid_enabled;
+        break;
+      case VIEW_SHOW_COLLISION:
+        row->checked = state->collision_display == value;
+        break;
+      case VIEW_SHOW_PHYSICS:
+        row->checked =
+            frame->scene && !vkr_scene_physics_is_disabled(frame->scene);
+        row->disabled = !frame->scene;
+        break;
+      }
+    }
+    break;
+  case VIEW_POPUP_QUALITY: {
+    if (!frame->graphics) {
+      break;
+    }
+    const VkrGraphicsSettings settings = view_graphics(editor, frame);
+    const VkrGraphicsPreset preset = vkr_graphics_settings_preset(&settings);
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "Scalability");
+    for (uint32_t i = 0; i < VKR_GRAPHICS_PRESET_CUSTOM; ++i) {
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){.checked = (uint32_t)preset == i};
+      snprintf(row->text, sizeof(row->text), "%s",
+               vkr_graphics_preset_name((VkrGraphicsPreset)i));
+    }
+    ViewRow *custom = &rows[count++];
+    *custom = (ViewRow){.checked = preset == VKR_GRAPHICS_PRESET_CUSTOM,
+                        .icon = VKR_UI_ICON_SETTINGS};
+    snprintf(custom->text, sizeof(custom->text), "Custom settings...");
+    /* Dynamic resolution chooses the scale itself. */
+    const bool8_t automatic =
+        settings.dynamic_resolution && settings.temporal_upscaling;
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    if (automatic)
+      snprintf(rows[count++].text, sizeof(rows[0].text),
+               "Screen percentage  dynamic");
+    else
+      snprintf(rows[count++].text, sizeof(rows[0].text),
+               "Screen percentage  %.0f%%",
+               (double)(settings.render_scale * 100.0f));
+    rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
+                              .disabled = automatic,
+                              .value = settings.render_scale,
+                              .minimum = 1.0f / 3.0f,
+                              .maximum = 1.0f};
+    ViewRow *dynamic = &rows[count++];
+    *dynamic =
+        (ViewRow){.checked = settings.dynamic_resolution,
+                  .disabled = !frame->graphics->dynamic_resolution_available ||
+                              !settings.temporal_upscaling};
+    snprintf(dynamic->text, sizeof(dynamic->text), "Dynamic resolution");
+    break;
   }
+  case VIEW_POPUP_SPEED: {
+    const float32_t speed = state->camera_speed;
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text), "Camera speed  %.3g u/s",
+             (double)speed);
+    rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
+                              .value = view_speed_fraction(speed),
+                              .minimum = 0.0f,
+                              .maximum = 1.0f};
+    break;
+  }
+  default:
+    break;
+  }
+  return count;
+}
+
+static float32_t view_row_height(const ViewRow *row) {
+  return row->kind == VIEW_ROW_HEADER ? VIEW_POPUP_HEADER_PT
+                                      : VIEW_POPUP_ROW_PT;
 }
 
 static void view_popup_layout(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame) {
-  const uint32_t count = view_popup_count(editor->view_popup);
+  ViewRow rows[VIEW_POPUP_ROW_MAX];
+  const uint32_t count =
+      view_popup_rows(editor, frame, editor->view_popup, rows);
   if (!count) {
     editor->view_popup_rect_pt = (Vec4){0};
     return;
   }
+  float32_t height = 10.0f;
+  for (uint32_t i = 0; i < count; ++i) {
+    height += view_row_height(&rows[i]);
+  }
   const float32_t scale = frame->ui->content_scale;
   const float32_t screen_w = (float32_t)frame->ui->target_width / scale;
   const float32_t screen_h = (float32_t)frame->ui->target_height / scale;
-  const Vec2 size = {VIEW_POPUP_WIDTH_PT,
-                     (float32_t)count * VIEW_POPUP_ROW_PT + 10.0f};
+  const Vec2 size = {VIEW_POPUP_WIDTH_PT, height};
   const Vec4 anchor = editor->view_popup_anchor_pt;
-  const float32_t x = vkr_clamp_f32(anchor.x, 0, Max(0.0f, screen_w - size.x));
+  /* A popup that would leave the Scene opens leftward from its chip. */
+  const Vec4 scene = view_scene_rect(frame);
+  float32_t x = anchor.x;
+  if (x + size.x > scene.x + scene.z) {
+    x = anchor.x + anchor.z - size.x;
+  }
+  x = vkr_clamp_f32(x, 0, Max(0.0f, screen_w - size.x));
   float32_t y = anchor.y + anchor.w + 4.0f;
   if (y + size.y > screen_h)
     y = Max(VKR_EDITOR_NAVIGATION_HEIGHT_PT, anchor.y - size.y - 4.0f);
@@ -311,7 +589,8 @@ static VkrUiPanelConfig view_panel(Vec4 rect) {
   return panel;
 }
 
-/* Dropdown chip: icon, value and a trailing caret. */
+/* Dropdown chip: one button holding the icon, the value and a trailing
+   caret, so the caret always sits inside the chip's padding. */
 static bool8_t view_chip(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
                          uint32_t column, VkrUiIcon icon, const char *text,
                          bool8_t open, bool8_t active, bool8_t disabled,
@@ -324,12 +603,15 @@ static bool8_t view_chip(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
   chip.placement.align = VKR_UI_ALIGN_STRETCH;
   chip.fill = true_v;
   vkr_editor_ghost_style(&chip);
-  chip.style.padding_pt = (VkrUiEdges){3, 20, 3, 8};
+  chip.style.padding_pt =
+      (VkrUiEdges){3, VIEW_CHIP_PAD_PT, 3, VIEW_CHIP_PAD_PT};
   chip.style.font_size_pt = theme->font_body;
   chip.style.text_color = theme->text;
   chip.icon = icon;
-  chip.icon_size_pt = 15.0f;
+  chip.icon_size_pt = VIEW_CHIP_ICON_PT;
   chip.icon_color = active ? theme->accent_hover : theme->text_secondary;
+  chip.trailing_icon = VKR_UI_ICON_CHEVRON_DOWN;
+  chip.trailing_icon_size_pt = VIEW_CHIP_CARET_PT;
   if (open)
     chip.style.background_color = theme->raised_hover;
   chip.disabled = disabled;
@@ -340,17 +622,6 @@ static bool8_t view_chip(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
   const bool8_t clicked =
       vkr_ui_button(ui, string8_lit("chip"),
                     compact ? (String8){0} : view_string(text), &chip);
-  VkrUiWidgetConfig caret = vkr_ui_widget_config_default();
-  caret.placement.column = column;
-  caret.placement.row = 0;
-  caret.placement.justify = VKR_UI_ALIGN_END;
-  caret.placement.align = VKR_UI_ALIGN_CENTER;
-  caret.placement.margin_pt.right = 5.0f;
-  caret.icon = VKR_UI_ICON_CHEVRON_DOWN;
-  caret.icon_size_pt = 10.0f;
-  caret.icon_color = theme->text_secondary;
-  caret.disabled = disabled;
-  vkr_ui_label(ui, string8_lit("caret"), (String8){0}, &caret);
   (void)vkr_ui_pop_id(ui);
   if (clicked) {
     VkrUiRect rect = {0};
@@ -365,109 +636,228 @@ static bool8_t view_chip(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
   return clicked;
 }
 
+/* Apply one Show menu row. */
+static void view_show_activate(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame, uint32_t index,
+                               VkrSampleViewState *next) {
+  const uint32_t value = view_show_rows[index].value;
+  switch (view_show_rows[index].target) {
+  case VIEW_SHOW_KIND:
+    next->hidden_kinds ^= value;
+    break;
+  case VIEW_SHOW_ICONS:
+    editor->labels_enabled = !editor->labels_enabled;
+    break;
+  case VIEW_SHOW_ICON_KIND: {
+    bool8_t *flag = view_icon_flag(editor, value);
+    *flag = !*flag;
+    break;
+  }
+  case VIEW_SHOW_GRID:
+    next->grid_enabled = !next->grid_enabled;
+    break;
+  case VIEW_SHOW_GRID_THROUGH:
+    next->grid_through_geometry = !next->grid_through_geometry;
+    break;
+  case VIEW_SHOW_COLLISION:
+    next->collision_display = next->collision_display == value ? 0u : value;
+    break;
+  case VIEW_SHOW_PHYSICS:
+    *frame->transport_action = VKR_SAMPLE_TRANSPORT_TOGGLE_PHYSICS;
+    break;
+  case VIEW_SHOW_HEADER:
+    break;
+  }
+}
+
+static void view_quality_apply(const VkrSampleUiFrame *frame,
+                               VkrGraphicsSettings settings) {
+  *frame->graphics_request =
+      (VkrGraphicsSettingsRequest){.settings = settings, .apply = true_v};
+}
+
+/* Apply a clicked option row; returns whether the popup stays open. */
+static bool8_t view_popup_activate(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   uint32_t popup, uint32_t index,
+                                   VkrSampleViewState *next) {
+  switch (popup) {
+  case VIEW_POPUP_CAMERA:
+    next->camera_view = (VkrSampleCameraView)index;
+    return false_v;
+  case VIEW_POPUP_RENDER:
+    next->render_mode = view_render_modes[index].mode;
+    return false_v;
+  case VIEW_POPUP_GRID:
+    if (index == 0) {
+      next->grid_enabled = !next->grid_enabled;
+    } else if (index == 1) {
+      next->grid_through_geometry = !next->grid_through_geometry;
+    } else if (index == 2) {
+      next->grid_labels = !next->grid_labels;
+    } else if (index >= 4) {
+      next->grid_spacing = vkr_clamp_f32(
+          next->grid_spacing * (index == 4 ? 0.5f : 2.0f), 0.001f, 10000.0f);
+      next->grid_enabled = true_v;
+    }
+    return true_v;
+  case VIEW_POPUP_SHOW:
+    view_show_activate(editor, frame, index, next);
+    return true_v;
+  case VIEW_POPUP_QUALITY: {
+    VkrGraphicsSettings settings = view_graphics(editor, frame);
+    /* Rows: header, the presets, Custom, header, slider, dynamic. */
+    if (index >= 1 && index <= VKR_GRAPHICS_PRESET_CUSTOM) {
+      vkr_graphics_settings_apply_preset(&settings,
+                                         (VkrGraphicsPreset)(index - 1u));
+      view_quality_apply(frame, settings);
+    } else if (index == VKR_GRAPHICS_PRESET_CUSTOM + 1u) {
+      vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_GRAPHICS, true_v);
+      return false_v;
+    } else if (index == VKR_GRAPHICS_PRESET_CUSTOM + 4u) {
+      settings.dynamic_resolution = !settings.dynamic_resolution;
+      view_quality_apply(frame, settings);
+    }
+    return true_v;
+  }
+  default:
+    return true_v;
+  }
+}
+
+/* A slider row moved to `value`; `done` ends the gesture. Render scale
+   applies once, when the drag ends, since each change resizes targets. */
+static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             uint32_t popup, float32_t value, bool8_t done,
+                             VkrSampleViewState *next) {
+  if (popup == VIEW_POPUP_SPEED) {
+    next->camera_speed = view_speed_value(value);
+    return;
+  }
+  if (popup != VIEW_POPUP_QUALITY || !frame->graphics) {
+    return;
+  }
+  /* Whole percents read cleanly beside the slider. */
+  editor->view_scale_draft = roundf(value * 100.0f) / 100.0f;
+  if (done) {
+    VkrGraphicsSettings settings = frame->graphics->settings;
+    settings.render_scale =
+        vkr_clamp_f32(editor->view_scale_draft, 1.0f / 3.0f, 1.0f);
+    view_quality_apply(frame, settings);
+    editor->view_scale_draft = 0.0f;
+  }
+}
+
 static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                              bool8_t disabled) {
   const uint32_t popup = editor->view_popup;
-  const uint32_t count = view_popup_count(popup);
+  ViewRow rows[VIEW_POPUP_ROW_MAX];
+  const uint32_t count = view_popup_rows(editor, frame, popup, rows);
   if (!count)
     return;
   const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = frame->ui;
   view_popup_layout(editor, frame);
   view_register_rect(ui, editor->view_popup_rect_pt);
-  VkrUiTrack rows[16];
+  VkrUiTrack tracks[VIEW_POPUP_ROW_MAX];
   for (uint32_t i = 0; i < count; ++i)
-    rows[i] = (VkrUiTrack){.value = VIEW_POPUP_ROW_PT, .unit = VKR_UI_TRACK_PX};
+    tracks[i] = (VkrUiTrack){.value = view_row_height(&rows[i]),
+                             .unit = VKR_UI_TRACK_PX};
   VkrUiPanelConfig panel = view_panel(editor->view_popup_rect_pt);
   panel.style = vkr_editor_glass_style();
   panel.style.padding_pt = (VkrUiEdges){5, 5, 5, 5};
   panel.style.gap_pt = 0;
   panel.style.min_size_pt = panel.style.max_size_pt =
       (Vec2){editor->view_popup_rect_pt.z, editor->view_popup_rect_pt.w};
-  panel.rows = rows;
+  panel.rows = tracks;
   panel.row_count = count;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.viewport.options"), &panel))
     return;
   VkrSampleViewState next = frame->view_state;
+  bool8_t changed = false_v;
   for (uint32_t i = 0; i < count; ++i) {
-    char text[64];
-    bool8_t checked = false_v;
-    VkrUiIcon icon = VKR_UI_ICON_NONE;
-    switch (popup) {
-    case VIEW_POPUP_CAMERA:
-      snprintf(text, sizeof(text), "%s%s", view_camera_names[i],
-               i ? "  (orthographic)" : "");
-      checked = (uint32_t)next.camera_view == i;
-      break;
-    case VIEW_POPUP_RENDER:
-      snprintf(text, sizeof(text), "%s", view_render_modes[i].name);
-      checked = next.render_mode == view_render_modes[i].mode;
-      break;
-    case VIEW_POPUP_GRID:
-      if (i == 0) {
-        snprintf(text, sizeof(text), "Show grid");
-        checked = next.grid_enabled;
-      } else if (i == 3) {
-        snprintf(text, sizeof(text), "Cell numbers and letters");
-        checked = next.grid_labels;
-      } else {
-        snprintf(
-            text, sizeof(text), "%s cells  (%.4g u)",
-            i == 1 ? "Smaller" : "Larger",
-            (double)vkr_clamp_f32(next.grid_spacing * (i == 1 ? 0.5f : 2.0f),
-                                  0.001f, 10000.0f));
-        icon = i == 1 ? VKR_UI_ICON_ZOOM_OUT : VKR_UI_ICON_ZOOM_IN;
-      }
-      break;
-    case VIEW_POPUP_SPEED:
-      snprintf(text, sizeof(text), "%.3g units / second",
-               (double)view_camera_speeds[i]);
-      checked = fabsf(next.camera_speed - view_camera_speeds[i]) < 0.001f;
-      break;
-    default:
-      break;
-    }
+    const ViewRow *row = &rows[i];
     VkrUiWidgetConfig item = vkr_ui_widget_config_default();
     item.placement.column = 0;
     item.placement.row = i;
     item.fill = true_v;
-    vkr_editor_ghost_style(&item);
-    item.style.hover_background_color = theme->accent;
-    item.style.padding_pt = (VkrUiEdges){3, 8, 3, 8};
-    item.style.text_color = theme->text;
-    item.style.font_size_pt = theme->font_body;
-    item.icon = checked ? VKR_UI_ICON_CHECK : icon;
-    item.icon_size_pt = 14.0f;
-    item.icon_color = checked ? theme->accent_hover : theme->text_secondary;
-    if (item.icon == VKR_UI_ICON_NONE)
-      item.style.padding_pt.left += 20.0f;
-    item.disabled = disabled;
-    (void)vkr_ui_push_id_u64(ui, (uint64_t)popup * 16 + i);
-    if (vkr_ui_button(ui, string8_lit("option"), view_string(text), &item)) {
-      if (popup == VIEW_POPUP_CAMERA) {
-        next.camera_view = (VkrSampleCameraView)i;
-      } else if (popup == VIEW_POPUP_RENDER) {
-        next.render_mode = view_render_modes[i].mode;
-      } else if (popup == VIEW_POPUP_GRID) {
-        if (i == 0) {
-          next.grid_enabled = !next.grid_enabled;
-        } else if (i == 3) {
-          next.grid_labels = !next.grid_labels;
-        } else {
-          next.grid_spacing = vkr_clamp_f32(
-              next.grid_spacing * (i == 1 ? 0.5f : 2.0f), 0.001f, 10000.0f);
-          next.grid_enabled = true_v;
-        }
-      } else {
-        next.camera_speed = view_camera_speeds[i];
+    item.disabled = disabled || row->disabled;
+    (void)vkr_ui_push_id_u64(ui, (uint64_t)popup * 64 + i);
+    if (row->kind == VIEW_ROW_HEADER) {
+      item.placement.align = VKR_UI_ALIGN_END;
+      item.style.padding_pt = (VkrUiEdges){6, 8, 3, 8};
+      item.style.font_size_pt = theme->font_caption;
+      item.style.text_color = theme->text_secondary;
+      item.text.font = editor->heading_font;
+      item.disabled = false_v;
+      vkr_ui_label(ui, string8_lit("header"), view_string(row->text), &item);
+    } else if (row->kind == VIEW_ROW_SLIDER) {
+      item.placement.margin_pt = (VkrUiEdges){4, 10, 4, 10};
+      item.style.min_size_pt = (Vec2){10.0f, 16.0f};
+      item.tooltip = popup == VIEW_POPUP_SPEED
+                         ? string8_lit("Free-camera flight speed")
+                         : string8_lit("Share of the output resolution the "
+                                       "Scene renders before upscaling");
+      float32_t value = row->value;
+      const VkrUiId slider_id =
+          vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("slider"));
+      const bool8_t moved = vkr_ui_slider_f32(
+          ui, string8_lit("slider"), &value, row->minimum, row->maximum, &item);
+      const bool8_t held = ui->active_id == slider_id;
+      if (moved || (!held && editor->view_scale_draft > 0.0f &&
+                    popup == VIEW_POPUP_QUALITY)) {
+        view_popup_slide(editor, frame, popup, value, !held, &next);
+        changed |= popup == VIEW_POPUP_SPEED;
       }
-      view_request(frame, next);
-      if (popup != VIEW_POPUP_GRID)
-        editor->view_popup = VIEW_POPUP_NONE;
+    } else {
+      vkr_editor_ghost_style(&item);
+      item.leading = true_v;
+      item.style.hover_background_color = theme->accent;
+      item.style.padding_pt = (VkrUiEdges){3, 8, 3, 8};
+      item.style.text_color = theme->text;
+      item.style.font_size_pt = theme->font_body;
+      item.icon = row->checked ? VKR_UI_ICON_CHECK : row->icon;
+      item.icon_size_pt = 14.0f;
+      item.icon_color =
+          row->checked ? theme->accent_hover : theme->text_secondary;
+      if (item.icon == VKR_UI_ICON_NONE)
+        item.style.padding_pt.left += 20.0f;
+      if (vkr_ui_button(ui, string8_lit("option"), view_string(row->text),
+                        &item)) {
+        if (!view_popup_activate(editor, frame, popup, i, &next))
+          editor->view_popup = VIEW_POPUP_NONE;
+        changed = true_v;
+      }
     }
     (void)vkr_ui_pop_id(ui);
   }
+  if (changed)
+    view_request(frame, next);
   (void)vkr_ui_panel_end(ui);
+}
+
+/* Camera speed: the icon and current speed; its dropdown holds a
+   logarithmic slider. The wheel over the chip steps the speed. */
+static void view_speed_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             uint32_t column, bool8_t disabled) {
+  VkrUiSystem *ui = frame->ui;
+  char value_text[24];
+  view_speed_text(frame->view_state.camera_speed, value_text);
+  (void)vkr_ui_push_id_label(ui, string8_lit("speed"));
+  const VkrUiId chip_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("chip"));
+  (void)vkr_ui_pop_id(ui);
+  (void)view_chip(
+      editor, ui, "speed", column, VKR_UI_ICON_CAMERA, value_text,
+      editor->view_popup == VIEW_POPUP_SPEED, false_v, disabled, false_v,
+      "Camera speed in units per second (scroll to adjust)", VIEW_POPUP_SPEED);
+  if (!disabled && ui->mouse_wheel && ui->hot_id == chip_id) {
+    VkrSampleViewState next = frame->view_state;
+    next.camera_speed =
+        view_speed_value(view_speed_fraction(next.camera_speed) +
+                         (float32_t)ui->mouse_wheel / 24.0f);
+    view_request(frame, next);
+  }
 }
 
 void vkr_editor_viewport_build(VkrEditorUi *editor,
@@ -481,15 +871,15 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
     return;
   const bool8_t disabled =
       !frame->view_request || frame->scene_rendering_stopped;
-  char text[4][48];
-  view_chip_text(&frame->view_state, editor->grid_spacing, text);
+  char text[VIEW_LEFT_CHIPS][48];
+  view_chip_text(editor, frame, text);
   (void)vkr_ui_input_layer_set(ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER);
 
-  const VkrUiTrack left_columns[] = {
-      {.value = layout.chips[0], .unit = VKR_UI_TRACK_PX},
-      {.value = layout.chips[1], .unit = VKR_UI_TRACK_PX},
-      {.value = layout.chips[2], .unit = VKR_UI_TRACK_PX},
-  };
+  VkrUiTrack left_columns[VIEW_LEFT_CHIPS];
+  for (uint32_t i = 0; i < VIEW_LEFT_CHIPS; ++i) {
+    left_columns[i] =
+        (VkrUiTrack){.value = layout.chips[i], .unit = VKR_UI_TRACK_PX};
+  }
   const VkrUiTrack chip_row = {.value = VIEW_CHIP_HEIGHT_PT,
                                .unit = VKR_UI_TRACK_PX};
   VkrUiPanelConfig left = view_panel(layout.left);
@@ -498,8 +888,9 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
   left.rows = &chip_row;
   left.row_count = 1u;
   if (vkr_ui_panel_begin(ui, string8_lit("editor.viewport.toolbar"), &left)) {
+    const VkrSampleViewState *state = &frame->view_state;
     const bool8_t perspective =
-        frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
+        state->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
     (void)view_chip(editor, ui, "camera", 0, VKR_UI_ICON_PERSPECTIVE, text[0],
                     editor->view_popup == VIEW_POPUP_CAMERA, !perspective,
                     disabled, layout.compact,
@@ -507,14 +898,26 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
                     VIEW_POPUP_CAMERA);
     (void)view_chip(editor, ui, "render", 1, VKR_UI_ICON_VIEW_MODE, text[1],
                     editor->view_popup == VIEW_POPUP_RENDER,
-                    frame->view_state.render_mode != VKR_RENDER_MODE_DEFAULT,
-                    disabled, layout.compact, "Viewport rendering mode",
+                    state->render_mode != VKR_RENDER_MODE_DEFAULT, disabled,
+                    layout.compact, "Viewport rendering mode",
                     VIEW_POPUP_RENDER);
     (void)view_chip(editor, ui, "grid", 2, VKR_UI_ICON_GRID, text[2],
-                    editor->view_popup == VIEW_POPUP_GRID,
-                    frame->view_state.grid_enabled, disabled, layout.compact,
-                    "World grid: numbered columns, lettered rows and cell size",
+                    editor->view_popup == VIEW_POPUP_GRID, state->grid_enabled,
+                    disabled, layout.compact,
+                    "World grid: visibility, depth and cell size",
                     VIEW_POPUP_GRID);
+    const bool8_t filtered = state->hidden_kinds || !editor->labels_enabled;
+    (void)view_chip(editor, ui, "show", 3, VKR_UI_ICON_EYE, text[3],
+                    editor->view_popup == VIEW_POPUP_SHOW, filtered, disabled,
+                    layout.compact,
+                    "Show or hide object types, icons and overlays",
+                    VIEW_POPUP_SHOW);
+    (void)view_chip(editor, ui, "quality", 4, VKR_UI_ICON_GRAPHICS, text[4],
+                    editor->view_popup == VIEW_POPUP_QUALITY, false_v,
+                    disabled || !frame->graphics || !frame->graphics_request,
+                    layout.compact,
+                    "Scalability preset and screen percentage, applied live",
+                    VIEW_POPUP_QUALITY);
     (void)vkr_ui_panel_end(ui);
   }
 
@@ -526,7 +929,7 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
         {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
         {.value = VIEW_CHIP_HEIGHT_PT, .unit = VKR_UI_TRACK_PX},
         {.value = 10.0f, .unit = VKR_UI_TRACK_PX},
-        {.value = layout.chips[3], .unit = VKR_UI_TRACK_PX},
+        {.value = layout.speed, .unit = VKR_UI_TRACK_PX},
     };
     VkrUiPanelConfig right = view_panel(layout.right);
     right.columns = right_columns;
@@ -592,11 +995,7 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
       divider.style.background_color = theme->border_strong;
       if (vkr_ui_panel_begin(ui, string8_lit("divider"), &divider))
         (void)vkr_ui_panel_end(ui);
-      (void)view_chip(
-          editor, ui, "speed", ArrayCount(view_tools) + 2u, VKR_UI_ICON_SPEED,
-          text[3], editor->view_popup == VIEW_POPUP_SPEED, false_v, disabled,
-          layout.compact, "Free-camera flight speed (units per second)",
-          VIEW_POPUP_SPEED);
+      view_speed_build(editor, frame, ArrayCount(view_tools) + 2u, disabled);
       (void)vkr_ui_panel_end(ui);
     }
   }

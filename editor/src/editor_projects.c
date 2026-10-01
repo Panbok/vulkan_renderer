@@ -640,6 +640,10 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
                         editor->labels_directional) &&
       project_json_bool(&writer, "labels_spot", editor->labels_spot) &&
       project_json_bool(&writer, "labels_point", editor->labels_point) &&
+      project_json_bool(&writer, "labels_environment",
+                        editor->labels_environment) &&
+      project_json_bool(&writer, "labels_markers", editor->labels_markers) &&
+      project_json_bool(&writer, "labels_empty", editor->labels_empty) &&
       project_json_bool(&writer, "console_follow",
                         editor->console.follow_tail) &&
       project_json_bool(&writer, "console_verbose",
@@ -875,6 +879,9 @@ static void project_restore_settings(VkrEditorProjects *projects,
   editor->labels_directional = true_v;
   editor->labels_spot = true_v;
   editor->labels_point = true_v;
+  editor->labels_environment = true_v;
+  editor->labels_markers = true_v;
+  editor->labels_empty = true_v;
   editor->console.follow_tail = true_v;
   editor->console.search[0] = '\0';
   for (uint32_t i = 0; i < ArrayCount(editor->console.levels); ++i) {
@@ -901,6 +908,13 @@ static void project_restore_settings(VkrEditorProjects *projects,
   (void)vkr_json_get_bool(&panels, "labels_spot", &editor->labels_spot);
   panels.pos = 0;
   (void)vkr_json_get_bool(&panels, "labels_point", &editor->labels_point);
+  panels.pos = 0;
+  (void)vkr_json_get_bool(&panels, "labels_environment",
+                          &editor->labels_environment);
+  panels.pos = 0;
+  (void)vkr_json_get_bool(&panels, "labels_markers", &editor->labels_markers);
+  panels.pos = 0;
+  (void)vkr_json_get_bool(&panels, "labels_empty", &editor->labels_empty);
   panels.pos = 0;
   (void)vkr_json_get_bool(&panels, "console_follow",
                           &editor->console.follow_tail);

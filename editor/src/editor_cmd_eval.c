@@ -95,20 +95,17 @@ static const char *const eval_entity_members[] = {
     "light", "id",       "world_position", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
 static const char *const eval_view_members[] = {
-    "camera",       "mode", "grid",        "grid_spacing",
-    "camera_speed", "tool", "grid_labels", NULL};
+    "camera", "mode",        "grid",         "grid_spacing", "camera_speed",
+    "tool",   "grid_labels", "grid_through", "collision",    NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
 static const char *const eval_scene_members[] = {"loaded", "entities", "added",
                                                  NULL};
 static const char *const eval_world_members[] = {"loaded", "entities", NULL};
-static const char *const eval_stats_members[] = {"frame_ms",
-                                                 "frame_ms_p95",
-                                                 "finalizing",
-                                                 "replaced_materials",
-                                                 "pending_replacements",
-                                                 "pending_textures",
-                                                 NULL};
+static const char *const eval_stats_members[] = {
+    "frame_ms",           "frame_ms_p95",         "finalizing",
+    "replaced_materials", "pending_replacements", "pending_textures",
+    "render_width",       "render_height",        NULL};
 static const char *const eval_roots[] = {
     "sel",    "view", "ui",   "sim",   "scene",     "world", "stats",
     "entity", "vec3", "len",  "sqrt",  "sin",       "cos",   "tan",
@@ -663,6 +660,12 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       case 6:
         *out = eval_bool(view->grid_labels);
         return true_v;
+      case 7:
+        *out = eval_bool(view->grid_through_geometry);
+        return true_v;
+      case 8:
+        *out = eval_number(view->collision_display);
+        return true_v;
       case 5:
         for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
           if (vkr_editor_cmd_tool_modes[i] == view->gizmo_tool) {
@@ -737,6 +740,11 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       }
       if (index == 5) {
         *out = eval_number(frame->texture_pending_count);
+        return true_v;
+      }
+      if (index == 6 || index == 7) {
+        *out = eval_number(index == 6 ? frame->scene_render_width
+                                      : frame->scene_render_height);
         return true_v;
       }
     } else if (base->object == EVAL_OBJECT_SCENE ||
@@ -1351,13 +1359,21 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
       next.render_mode = vkr_editor_cmd_render_mode_values[choice];
     else
       next.gizmo_tool = vkr_editor_cmd_tool_modes[choice];
-  } else if (index == 2 || index == 6) {
+  } else if (index == 2 || index == 6 || index == 7) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))
       return false_v;
     if (index == 2)
       next.grid_enabled = value->number != 0.0;
-    else
+    else if (index == 6)
       next.grid_labels = value->number != 0.0;
+    else
+      next.grid_through_geometry = value->number != 0.0;
+  } else if (index == 8) {
+    if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
+      return false_v;
+    if (!(value->number >= 0.0 && value->number <= 2.0))
+      return eval_fail(eval, "'collision' is 0 off, 1 selected or 2 all");
+    next.collision_display = (uint32_t)value->number;
   } else if (index == 3 || index == 4) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
       return false_v;

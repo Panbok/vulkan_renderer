@@ -262,14 +262,24 @@ typedef struct VkrUiWidgetConfig {
   float32_t icon_size_pt;
   /** Icon tint; zero alpha uses the text color. */
   Vec4 icon_color;
+  /** Optional icon after the text, such as a dropdown caret, laid out inside
+   * the padding and measured with the content. It uses the secondary text
+   * color at `trailing_icon_size_pt` (zero uses 10). A button with one reads
+   * from its leading edge, as a dropdown field does. */
+  VkrUiIcon trailing_icon;
+  float32_t trailing_icon_size_pt;
   bool8_t disabled;
   /** Text fields retain selection and copying while rejecting mutation. */
   bool8_t read_only;
   /** Keep STRETCH placement for a text widget so it fills its grid cell,
    * for example a search field spanning a toolbar column. */
   bool8_t fill;
-  /** Center a label's icon and text horizontally; buttons always center. */
+  /** Center a label's icon and text horizontally; buttons center unless
+   * `leading` is set or they carry a trailing icon. */
   bool8_t center;
+  /** Lay a button's icon and text out from its leading edge, as menu rows
+   * and dropdown fields do. */
+  bool8_t leading;
   /** Pointer shape while hovered or held; text fields default to an I-beam. */
   VkrWindowCursor cursor;
   /** Borrowed through vkr_ui_end; shown on hover or keyboard focus. */

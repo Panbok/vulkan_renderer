@@ -911,6 +911,13 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
   }
 }
 
+void vkr_metal_packet_renderer_set_dynamic_resolution(
+    VkrMetalPacketRenderer *renderer, bool8_t enabled) {
+  if (renderer)
+    renderer->metalfx_dynamic_resolution_enabled =
+        renderer->metalfx_enabled && enabled;
+}
+
 void vkr_metal_packet_renderer_request_memory_relief(
     VkrMetalPacketRenderer *renderer) {
   if (renderer)

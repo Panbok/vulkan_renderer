@@ -3261,29 +3261,13 @@ static void inspector_script_row(VkrEditorUi *editor, VkrEditorScenePanels *p,
   picker.tooltip = string8_lit("Choose the script this object runs, or make a "
                                "new one");
   const char *name = script ? script->label : "None";
-  /* The button takes the click; its name reads from the leading edge. */
-  VkrUiWidgetConfig hit = picker;
-  hit.icon = VKR_UI_ICON_NONE;
-  if (vkr_ui_button(ui, string8_lit("script.pick"), (String8){0}, &hit)) {
+  picker.trailing_icon = VKR_UI_ICON_CHEVRON_DOWN;
+  if (vkr_ui_button(ui, string8_lit("script.pick"),
+                    string8_create((uint8_t *)name, strlen(name)), &picker)) {
     p->script_menu = true_v;
     p->script_menu_pt = (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
                                (float32_t)ui->mouse_y / ui->content_scale};
   }
-  VkrUiWidgetConfig text = picker;
-  text.style.background_color = (Vec4){0};
-  text.style.border_pt = (VkrUiEdges){0};
-  text.style.min_size_pt = text.style.max_size_pt =
-      (Vec2){picker_w - 26.0f, 26.0f};
-  vkr_ui_label(ui, string8_lit("script.name"),
-               string8_create((uint8_t *)name, strlen(name)), &text);
-  VkrUiWidgetConfig chevron =
-      widget_at(picker_x + picker_w - 22.0f, *y + 6.0f, 20.0f, 26.0f);
-  chevron.style.background_color = (Vec4){0};
-  chevron.icon = VKR_UI_ICON_CHEVRON_DOWN;
-  chevron.icon_size_pt = 11.0f;
-  chevron.icon_color = theme->text_secondary;
-  chevron.style.padding_pt = (VkrUiEdges){0};
-  vkr_ui_label(ui, string8_lit("script.chevron"), (String8){0}, &chevron);
   VkrUiWidgetConfig edit = vkr_editor_icon_button_config(
       0, 0, VKR_UI_ICON_PENCIL_LINE,
       editable ? string8_lit("Edit this script's source")

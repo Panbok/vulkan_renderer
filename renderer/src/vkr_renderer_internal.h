@@ -100,9 +100,16 @@ struct VkrRenderer {
   VkrAllocator *instance_allocator;
   VkrNativeSurface surface;
   VkrPresentTargetConfig present_target;
-  /** Validated cold scene-resolution scale and its current pixel extent. */
+  /** Validated scene-resolution scale and its current pixel extent. */
   float32_t render_scale;
+  /** Scales vkr_renderer_set_render_scale accepts between frames: the
+      upscaler is built once for this range. Equal bounds fix the scale. */
+  float32_t render_scale_min;
+  float32_t render_scale_max;
   VkrUpscaleMode upscale_mode;
+  /** The caller's dynamic-resolution request before normalization, kept so
+      the controller can be switched on again between frames. */
+  VkrDynamicResolutionConfig dynamic_resolution_request;
   VkrDynamicResolutionConfig dynamic_resolution_config;
   VkrDynamicResolutionState dynamic_resolution_state;
   /** Reconstructed Scene extent before native editor composition. */

@@ -409,6 +409,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .target_width = width,
       .target_height = height,
       .render_scale = renderer->render_scale,
+      .render_scale_min = renderer->render_scale_min,
+      .render_scale_max = renderer->render_scale_max,
       .upscale_mode = renderer->upscale_mode,
       .dynamic_resolution = renderer->dynamic_resolution_config,
       .metal_layer = surface ? surface->metal_layer : NULL,
@@ -670,6 +672,28 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     log_error("Dynamic resolution requires MetalFX temporal upscaling");
     return false_v;
   }
+  /* The live range: MetalFX builds its scaler once for every scale the
+     dynamic-resolution range and the requested scale need, and the spatial
+     Metal path resamples any extent. Other upscalers fix the scale. */
+  const VkrDynamicResolutionConfig dynamic_resolution_request =
+      requested_dynamic_resolution;
+  float32_t live_min = requested_render_scale;
+  float32_t live_max = requested_render_scale;
+  if (requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL) {
+    const float32_t dynamic_min =
+        requested_dynamic_resolution.min_scale > 0.0f
+            ? requested_dynamic_resolution.min_scale
+            : VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE;
+    const float32_t dynamic_max =
+        requested_dynamic_resolution.max_scale > 0.0f
+            ? requested_dynamic_resolution.max_scale
+            : VKR_DYNAMIC_RESOLUTION_DEFAULT_MAX_SCALE;
+    live_min = Min(live_min, dynamic_min);
+    live_max = Min(1.0f, Max(live_max, dynamic_max));
+  } else if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    live_min = Min(live_min, 1.0f / 3.0f);
+    live_max = 1.0f;
+  }
   if (!vkr_dynamic_resolution_config_normalize(
           &requested_dynamic_resolution, requested_render_scale,
           &requested_dynamic_resolution, &requested_render_scale)) {
@@ -712,7 +736,10 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->surface = surface ? *surface : (VkrNativeSurface){0};
   renderer->present_target = requested_target;
   renderer->render_scale = requested_render_scale;
+  renderer->render_scale_min = live_min;
+  renderer->render_scale_max = live_max;
   renderer->upscale_mode = requested_upscale_mode;
+  renderer->dynamic_resolution_request = dynamic_resolution_request;
   renderer->dynamic_resolution_config = requested_dynamic_resolution;
   vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state,
                               &requested_dynamic_resolution,
@@ -2467,6 +2494,55 @@ void vkr_renderer_invalidate_temporal_history(VkrRenderer *renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   ((VkrRenderer *)renderer)->temporal_reset_reasons |=
       VKR_TEMPORAL_RESET_EXPLICIT;
+}
+
+void vkr_renderer_render_scale_range(const VkrRenderer *renderer,
+                                     float32_t *out_min, float32_t *out_max) {
+  *out_min = renderer ? renderer->render_scale_min : 1.0f;
+  *out_max = renderer ? renderer->render_scale_max : 1.0f;
+}
+
+bool8_t
+vkr_renderer_dynamic_resolution_switchable(const VkrRenderer *renderer) {
+  return renderer &&
+         renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+}
+
+VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
+                                               float32_t render_scale,
+                                               bool8_t dynamic_resolution) {
+  if (!renderer || !isfinite(render_scale) ||
+      render_scale < renderer->render_scale_min - 1e-4f ||
+      render_scale > renderer->render_scale_max + 1e-4f)
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (renderer->frame_active)
+    return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
+  if (dynamic_resolution &&
+      !vkr_renderer_dynamic_resolution_switchable(renderer))
+    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+  render_scale = vkr_clamp_f32(render_scale, renderer->render_scale_min,
+                               renderer->render_scale_max);
+  VkrDynamicResolutionConfig request = renderer->dynamic_resolution_request;
+  request.enabled = dynamic_resolution;
+  VkrDynamicResolutionConfig config = {0};
+  float32_t scale = render_scale;
+  if (!vkr_dynamic_resolution_config_normalize(&request, render_scale, &config,
+                                               &scale))
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (scale == renderer->render_scale &&
+      config.enabled == renderer->dynamic_resolution_config.enabled)
+    return VKR_RENDERER_ERROR_NONE;
+  renderer->dynamic_resolution_config = config;
+  vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state, &config,
+                              scale);
+  renderer->render_scale = scale;
+  renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+#if defined(PLATFORM_APPLE)
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL)
+    vkr_metal_packet_renderer_set_dynamic_resolution(renderer->metal_renderer,
+                                                     config.enabled);
+#endif
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 void vkr_renderer_invalidate_exposure_history(VkrRenderer *renderer) {

@@ -70,6 +70,10 @@ typedef struct VkrMetalPacketRendererConfig {
   uint32_t target_width;
   uint32_t target_height;
   float32_t render_scale;
+  /** Render scales the MetalFX scaler must accept, covering later live
+   * changes; zero bounds use the dynamic-resolution range or render_scale. */
+  float32_t render_scale_min;
+  float32_t render_scale_max;
   VkrUpscaleMode upscale_mode;
   VkrDynamicResolutionConfig dynamic_resolution;
   /** Borrowed CAMetalLayer pointer; required only for WINDOW. */
@@ -291,6 +295,9 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
     VkrTextureHandle *out_handle);
+/** Dynamic resolution needs completed submission timing every frame. */
+void vkr_metal_packet_renderer_set_dynamic_resolution(
+    VkrMetalPacketRenderer *renderer, bool8_t enabled);
 /** Authorizes completion-gated retirement before a smaller graph realization.
  */
 void vkr_metal_packet_renderer_request_memory_relief(

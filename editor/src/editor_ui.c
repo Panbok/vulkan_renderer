@@ -152,6 +152,9 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_directional = true_v,
       .labels_spot = true_v,
       .labels_point = true_v,
+      .labels_environment = true_v,
+      .labels_markers = true_v,
+      .labels_empty = true_v,
       .windows =
           {
               [VKR_EDITOR_WINDOW_PHYSICS] = {.position_pt = {180.0f, 80.0f},
