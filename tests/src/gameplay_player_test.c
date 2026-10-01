@@ -273,6 +273,14 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
   assert(!scene.simulation.faulted);
   assert(vkr_scene_character_get_state(&scene, entity, &motor, NULL));
   assert(!motor.crouched && !state->crouched);
+
+  // Captured look reports upward motion as positive delta_y; it looks up.
+  const float32_t pitch_before = player.render_pitch;
+  event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
+                               .time_seconds = 100.080,
+                               .delta_y = 40};
+  fps_player_observe(&player, &event);
+  assert(player.render_pitch > pitch_before);
   player_shutdown(&player);
   vkr_scene_shutdown(&scene, NULL);
 }

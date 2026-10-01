@@ -365,6 +365,8 @@ typedef struct VkrInputTransition {
   VkrInputTransitionKind kind;
   uint32_t code;
   bool8_t pressed;
+  /* LOOK motion. While the mouse is captured, positive delta_y is upward
+     motion (negated when InputState.invert_look_y is set). */
   float64_t delta_x;
   float64_t delta_y;
 } VkrInputTransition;
@@ -393,6 +395,9 @@ typedef struct InputState {
   uint32_t characters[VKR_INPUT_CHARACTER_CAPACITY];
   uint32_t character_count;
   uint32_t dropped_character_count;
+  /* The user's "Invert mouse Y": LOOK transitions and captured free-camera
+     look turn down for upward motion. */
+  bool8_t invert_look_y;
   bool32_t is_initialized;
 } InputState;
 

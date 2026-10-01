@@ -96,16 +96,28 @@ static const char *const eval_entity_members[] = {
     "name",  "position", "rotation",       "scale", "visible",
     "light", "id",       "world_position", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
-static const char *const eval_view_members[] = {
-    "camera",       "mode",         "grid",        "grid_spacing",
-    "camera_speed", "tool",         "grid_labels", "grid_through",
-    "collision",    "snap",         "snap_offset", "snap_yaw",
-    "snap_align",   "snap_centers", NULL};
+static const char *const eval_view_members[] = {"camera",
+                                                "mode",
+                                                "grid",
+                                                "grid_spacing",
+                                                "camera_speed",
+                                                "tool",
+                                                "grid_labels",
+                                                "grid_through",
+                                                "collision",
+                                                "snap",
+                                                "snap_offset",
+                                                "snap_yaw",
+                                                "snap_align",
+                                                "snap_centers",
+                                                "camera_sensitivity",
+                                                NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion", NULL};
 static const char *const eval_gfx_members[] = {
-    "render_scale", "dynamic", "vsync", "preset", "restart", NULL};
+    "render_scale", "dynamic",        "vsync", "preset",
+    "restart",      "invert_mouse_y", NULL};
 static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
                                                "epic", "custom", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
@@ -692,6 +704,9 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       case 13:
         *out = eval_bool(eval->editor->placement.cell_centers);
         return true_v;
+      case 14:
+        *out = eval_number(view->camera_sensitivity);
+        return true_v;
       case 5:
         for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
           if (vkr_editor_cmd_tool_modes[i] == view->gizmo_tool) {
@@ -721,6 +736,9 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         return true_v;
       case 4:
         *out = eval_bool(frame->graphics->restart_required);
+        return true_v;
+      case 5:
+        *out = eval_bool(settings->invert_mouse_y);
         return true_v;
       default:
         break;
@@ -1366,12 +1384,14 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
         eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member)) {
       settings.render_scale =
           vkr_clamp_f32((float32_t)value->number, 1.0f / 3.0f, 1.0f);
-    } else if ((index == 1 || index == 2) &&
+    } else if ((index == 1 || index == 2 || index == 5) &&
                eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
       if (index == 1)
         settings.dynamic_resolution = value->number != 0.0;
-      else
+      else if (index == 2)
         settings.vsync = value->number != 0.0;
+      else
+        settings.invert_mouse_y = value->number != 0.0;
     } else if (index == 3 &&
                eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member)) {
       const int32_t preset = eval_word_index(
@@ -1417,7 +1437,7 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
     return eval_fail(eval, "That value is read-only");
   /* Snapping is editor state; it needs no view request. */
   const int32_t snap_member = eval_word_index(eval_view_members, member);
-  if (snap_member >= 9) {
+  if (snap_member >= 9 && snap_member <= 13) {
     VkrEditorPlacement *place = &eval->editor->placement;
     if (snap_member == 9) {
       if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
@@ -1485,7 +1505,7 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
     if (!(value->number >= 0.0 && value->number <= 2.0))
       return eval_fail(eval, "'collision' is 0 off, 1 selected or 2 all");
     next.collision_display = (uint32_t)value->number;
-  } else if (index == 3 || index == 4) {
+  } else if (index == 3 || index == 4 || index == 14) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member))
       return false_v;
     if (!(value->number > 0.0))
@@ -1495,6 +1515,9 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
       next.grid_spacing =
           vkr_clamp_f32((float32_t)value->number, 0.001f, 10000.0f);
       next.grid_enabled = true_v;
+    } else if (index == 14) {
+      next.camera_sensitivity =
+          vkr_clamp_f32((float32_t)value->number, 0.01f, 100.0f);
     } else {
       next.camera_speed =
           vkr_clamp_f32((float32_t)value->number, 0.01f, 1000.0f);

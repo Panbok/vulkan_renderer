@@ -66,15 +66,14 @@ static VkrUiWidgetConfig player_button(uint32_t row) {
   return config;
 }
 
-/* The only player UI: Resume, the display mode and Quit over the paused
-   game. */
+/* The only player UI: Resume, the display mode, Invert mouse Y and Quit over
+   the paused game. */
 static void player_ui_pause_menu(VkrPlayer *player,
                                  const VkrSampleUiFrame *frame) {
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack rows[] = {
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
-      {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
+      {.unit = VKR_UI_TRACK_AUTO}, {.unit = VKR_UI_TRACK_AUTO},
       {.unit = VKR_UI_TRACK_AUTO},
   };
   VkrUiPanelConfig panel = vkr_ui_panel_config_default();
@@ -126,7 +125,21 @@ static void player_ui_pause_menu(VkrPlayer *player,
                                                  ? covering
                                                  : VKR_WINDOW_MODE_WINDOWED);
   }
-  VkrUiWidgetConfig quit = player_button(3u);
+  /* A machine-local Graphics setting, saved with the game's preferences. */
+  VkrUiWidgetConfig invert = player_button(3u);
+  if (frame->graphics && frame->graphics_request) {
+    const bool8_t inverted = frame->graphics->settings.invert_mouse_y;
+    if (vkr_ui_button(frame->ui, string8_lit("invert"),
+                      inverted ? string8_lit("Invert mouse Y: On")
+                               : string8_lit("Invert mouse Y: Off"),
+                      &invert)) {
+      VkrGraphicsSettings settings = frame->graphics->settings;
+      settings.invert_mouse_y = !inverted;
+      *frame->graphics_request =
+          (VkrGraphicsSettingsRequest){.settings = settings, .apply = true_v};
+    }
+  }
+  VkrUiWidgetConfig quit = player_button(4u);
   if (vkr_ui_button(frame->ui, string8_lit("quit"), string8_lit("Quit"),
                     &quit) &&
       frame->quit_request) {

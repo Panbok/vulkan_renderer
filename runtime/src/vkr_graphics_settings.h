@@ -19,6 +19,8 @@ typedef struct VkrGraphicsSettings {
   bool8_t screen_space_reflections, screen_space_gi, reflection_probes;
   bool8_t subsurface_scattering, fog, volumetric_fog;
   bool8_t bloom, depth_of_field, motion_blur;
+  /* Captured mouse look turns down for upward motion, as flight controls do. */
+  bool8_t invert_mouse_y;
 } VkrGraphicsSettings;
 
 typedef struct VkrGraphicsSettingsState {

@@ -333,6 +333,7 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
       !settings->fog || !settings->volumetric_fog;
   application->disable_subsurface_scattering = !settings->subsurface_scattering;
   application->ibl_probe_limit = settings->reflection_probes ? UINT32_MAX : 0;
+  application->host.window.input_state.invert_look_y = settings->invert_mouse_y;
   /* Ultra's extra local-shadow filtering was measured affordable only on the
    * Vulkan desktop host (ADR-019); Metal keeps High's budget. */
   application->shadow_system.config =
@@ -2621,16 +2622,18 @@ vkr_internal void vkr_standard_scene_runtime_apply_free_camera_input(
       float32_t x_offset = (float32_t)(x - last_x);
       float32_t y_offset = (float32_t)(y - last_y);
 
-      float32_t max_mouse_delta = VKR_MAX_MOUSE_DELTA / camera->sensitivity;
-      x_offset = vkr_clamp_f32(x_offset, -max_mouse_delta, max_mouse_delta);
-      y_offset = vkr_clamp_f32(y_offset, -max_mouse_delta, max_mouse_delta);
+      x_offset =
+          vkr_clamp_f32(x_offset, -VKR_MAX_MOUSE_DELTA, VKR_MAX_MOUSE_DELTA);
+      y_offset =
+          vkr_clamp_f32(y_offset, -VKR_MAX_MOUSE_DELTA, VKR_MAX_MOUSE_DELTA);
 
       // Positive screen-space X turns the +yaw camera direction to the right.
       // Captured platform input exposes upward motion as positive virtual Y,
-      // so both positive deltas map directly to positive camera rotation.
-      yaw_input = x_offset;
-      pitch_input = y_offset;
-      should_rotate = true_v;
+      // so both positive deltas map directly to positive camera rotation
+      // unless the user inverts vertical look.
+      vkr_camera_controller_look(controller, x_offset,
+                                 input_state->invert_look_y ? -y_offset
+                                                            : y_offset);
     }
   } else {
     float right_x = 0.0f;
@@ -3794,17 +3797,23 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
       next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
       next.gizmo_space > VKR_GIZMO_SPACE_LOCAL || next.collision_display > 2u ||
       (next.hidden_kinds & ~VKR_SCENE_SHOW_HIDE_ALL) ||
-      !isfinite(next.camera_speed) || next.camera_speed <= 0.0f) {
+      !isfinite(next.camera_speed) || next.camera_speed <= 0.0f ||
+      !isfinite(next.camera_sensitivity) || next.camera_sensitivity <= 0.0f) {
     return;
   }
   next.grid_spacing = vkr_clamp_f32(next.grid_spacing, 0.001f, 10000.0f);
   next.camera_speed = vkr_clamp_f32(next.camera_speed, 0.05f, 10000.0f);
+  /* The bound the saved editor preferences accept. */
+  next.camera_sensitivity =
+      vkr_clamp_f32(next.camera_sensitivity, 0.01f, 100.0f);
   VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
   application->gizmo_system.tool = (VkrGizmoMode)next.gizmo_tool;
   application->gizmo_system.space = (VkrGizmoSpace)next.gizmo_space;
-  if (camera)
+  if (camera) {
     camera->speed = next.camera_speed;
+    camera->sensitivity = next.camera_sensitivity;
+  }
   if (camera && next.camera_view != state->view_state.camera_view) {
     vkr_standard_scene_runtime_finish_gizmo_edit(application);
     vkr_standard_scene_runtime_cancel_gizmo_pick(application);
@@ -3879,6 +3888,8 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
     application->camera_controller.frame_move_world_up = 0.0f;
     application->camera_controller.frame_yaw_delta = 0.0f;
     application->camera_controller.frame_pitch_delta = 0.0f;
+    application->camera_controller.frame_look_yaw = 0.0f;
+    application->camera_controller.frame_look_pitch = 0.0f;
     vkr_window_set_mouse_capture(&application->host.window, false_v);
     state->free_camera_held = false_v;
   }
@@ -4995,6 +5006,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     const VkrCamera *camera = vkr_camera_registry_get_by_handle(
         &application->camera_system, application->active_camera);
     state->view_state.camera_speed = camera ? camera->speed : 1.0f;
+    state->view_state.camera_sensitivity =
+        camera ? camera->sensitivity : VKR_DEFAULT_CAMERA_SENSITIVITY;
   }
   state->modal = false_v;
   application->editor_viewport.scene_backdrop_blur = false_v;
@@ -5213,11 +5226,14 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
         input_init(&application->host.events);
   }
   state->input_state = &application->host.window.input_state;
+  /* A headless run initializes its input after the settings applied. */
+  state->input_state->invert_look_y = state->graphics.settings.invert_mouse_y;
   state->view_state = (VkrSampleViewState){
       .camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE,
       .render_mode = application->globals.render_mode,
       .grid_spacing = 1.0f,
       .camera_speed = 1.0f,
+      .camera_sensitivity = VKR_DEFAULT_CAMERA_SENSITIVITY,
       .collision_display = 1u,
       /* A blank level shows its ground grid (ADR-076). */
       .grid_enabled = true_v,

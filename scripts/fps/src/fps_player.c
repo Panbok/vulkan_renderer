@@ -374,8 +374,9 @@ void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event) {
     player->render_yaw = remainderf(
         player->render_yaw + (float32_t)event->delta_x * PLAYER_LOOK_SCALE,
         6.28318530718f);
+    // Captured look reports upward motion as positive delta_y (input.h).
     player->render_pitch = Clamp(
-        player->render_pitch - (float32_t)event->delta_y * PLAYER_LOOK_SCALE,
+        player->render_pitch + (float32_t)event->delta_y * PLAYER_LOOK_SCALE,
         -PLAYER_PITCH_LIMIT, PLAYER_PITCH_LIMIT);
   } else if (event->kind == VKR_INPUT_TRANSITION_BUTTON &&
              event->code == BUTTON_LEFT) {

@@ -110,7 +110,8 @@ loader from the building machine's Vulkan SDK. The [player](../../player/src/mai
 the World and the startup scene with their overlays on its first frame through
 the same requests the editor issues. It registers the package fonts and applies
 the startup camera once the scene activates. A scene's player entity starts
-gameplay; Escape opens Resume, a Fullscreen/Windowed switch and Quit. The
+gameplay; Escape opens Resume, a Fullscreen/Windowed switch, an Invert mouse
+Y toggle saved with the game's preferences, and Quit. The
 player enters `game.window.mode` once its window exists through
 `vkr_window_set_mode` ([window](../../runtime/src/core/vkr_window.h)). On macOS,
 `fullscreen` is the native fullscreen Space, requested from the event pump once

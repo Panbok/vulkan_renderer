@@ -132,8 +132,15 @@ grid, Show and Scalability controls in dropdowns, with the
 Select/Move/Rotate/Scale tools (Q/W/E/R), a World/Local axes toggle, the
 Snapping chip (where spawned objects land; [ADR-076](076-project-object-model.md))
 and a camera speed chip on its right. The speed chip shows the speed; its dropdown holds a
-logarithmic 0.1-100 units-per-second slider, and the wheel over the chip steps
-it. Show toggles geometry kinds (static meshes, animated meshes, shapes), object
+logarithmic 0.1-100 units-per-second slider and a 0.5-20 mouse sensitivity
+slider (default 6, saved with the editor preferences) and an Invert mouse Y
+toggle, and the wheel over the chip steps the speed. Invert mouse Y is the
+machine-local Graphics setting `invert_mouse_y`: captured upward motion looks
+up unless it is set, in the Scene camera and in gameplay, which read it from
+`InputState.invert_look_y`. Mouse look turns 1/60 degree per pointer count at
+sensitivity 1, independent of frame rate; gamepad sticks remain rates scaled
+by frame time. While the camera is held on Windows, look reads raw mouse input
+(`WM_INPUT`) and clips the hidden cursor to the window centre. Show toggles geometry kinds (static meshes, animated meshes, shapes), object
 icon categories, the grid and its depth test, collision display and the session
 physics override; hidden geometry is neither drawn nor picked
 (`VkrScene.editor_hidden_kinds`) and the scene stays unedited. Scalability

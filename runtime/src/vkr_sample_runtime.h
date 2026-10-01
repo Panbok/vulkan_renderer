@@ -66,6 +66,8 @@ typedef struct VkrSampleViewState {
   uint32_t gizmo_space;
   /* Free-camera flight speed in world units per second. */
   float32_t camera_speed;
+  /* Free-camera mouse-look multiplier (VkrCamera.sensitivity). */
+  float32_t camera_sensitivity;
   /* VKR_SCENE_SHOW_HIDE_* geometry kinds the Scene neither draws nor
      picks. */
   uint32_t hidden_kinds;

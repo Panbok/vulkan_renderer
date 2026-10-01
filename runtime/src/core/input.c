@@ -265,7 +265,9 @@ void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y) {
     input_notify(input_state,
                  (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
                                       .delta_x = dx,
-                                      .delta_y = dy});
+                                      .delta_y = input_state->invert_look_y
+                                                     ? -dy
+                                                     : dy});
 
     MouseMoveEventData mouse_move_event_data = {
         .x = x,

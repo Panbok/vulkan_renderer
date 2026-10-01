@@ -36,6 +36,9 @@ enum {
 /* Logarithmic speed range of the slider, in world units per second. */
 #define VIEW_SPEED_MIN 0.1f
 #define VIEW_SPEED_MAX 100.0f
+/* Mouse-look multiplier range of the camera popup; 6 is the default. */
+#define VIEW_SENSITIVITY_MIN 0.5f
+#define VIEW_SENSITIVITY_MAX 20.0f
 /* VKR_EDITOR_GRID_MIN_SPACING_PX of shared/editor_grid_kernel.slangh. */
 #define VIEW_GRID_MIN_SPACING_PX 6.0f
 
@@ -488,6 +491,19 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
                               .value = view_speed_fraction(speed),
                               .minimum = 0.0f,
                               .maximum = 1.0f};
+    const float32_t sensitivity = state->camera_sensitivity;
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    snprintf(rows[count++].text, sizeof(rows[0].text),
+             "Mouse sensitivity  %.1f", (double)sensitivity);
+    rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
+                              .value = sensitivity,
+                              .minimum = VIEW_SENSITIVITY_MIN,
+                              .maximum = VIEW_SENSITIVITY_MAX};
+    if (frame->graphics) {
+      ViewRow *invert = &rows[count++];
+      *invert = (ViewRow){.checked = frame->graphics->settings.invert_mouse_y};
+      snprintf(invert->text, sizeof(invert->text), "Invert mouse Y");
+    }
     break;
   }
   default:
@@ -766,6 +782,15 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
       editor->placement.align_to_normal = !editor->placement.align_to_normal;
     }
     return true_v;
+  case VIEW_POPUP_SPEED:
+    /* Rows: speed header and slider, sensitivity header and slider, then
+       Invert mouse Y, a machine-local Graphics setting. */
+    if (index == 4u && frame->graphics) {
+      VkrGraphicsSettings settings = frame->graphics->settings;
+      settings.invert_mouse_y = !settings.invert_mouse_y;
+      view_quality_apply(frame, settings);
+    }
+    return true_v;
   case VIEW_POPUP_QUALITY: {
     VkrGraphicsSettings settings = view_graphics(editor, frame);
     /* Rows: header, the presets, Custom, header, slider, dynamic. */
@@ -801,7 +826,11 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     return;
   }
   if (popup == VIEW_POPUP_SPEED) {
-    next->camera_speed = view_speed_value(value);
+    /* Rows: speed header and slider, then sensitivity header and slider. */
+    if (index == 3u)
+      next->camera_sensitivity = roundf(value * 10.0f) / 10.0f;
+    else
+      next->camera_speed = view_speed_value(value);
     return;
   }
   if (popup != VIEW_POPUP_QUALITY || !frame->graphics) {
@@ -864,7 +893,10 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     } else if (row->kind == VIEW_ROW_SLIDER) {
       item.placement.margin_pt = (VkrUiEdges){4, 10, 4, 10};
       item.style.min_size_pt = (Vec2){10.0f, 16.0f};
-      item.tooltip = popup == VIEW_POPUP_SPEED
+      item.tooltip = popup == VIEW_POPUP_SPEED && i == 3u
+                         ? string8_lit("How far the free camera turns per "
+                                       "mouse movement")
+                     : popup == VIEW_POPUP_SPEED
                          ? string8_lit("Free-camera flight speed")
                      : popup == VIEW_POPUP_SNAP
                          ? string8_lit("How a placed object turns and sits "

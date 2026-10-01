@@ -9,7 +9,9 @@
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 
-#define VKR_MAX_MOUSE_DELTA 100.0f
+/* Largest pointer displacement one frame of mouse look accepts, in counts:
+   it rejects capture glitches, not fast flicks. */
+#define VKR_MAX_MOUSE_DELTA 1000.0f
 #define VKR_DEFAULT_CAMERA_ZOOM 45.0f
 #define VKR_DEFAULT_CAMERA_SPEED 7.5f
 #define VKR_DEFAULT_CAMERA_SENSITIVITY 6.0f

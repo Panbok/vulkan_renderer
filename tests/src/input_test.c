@@ -693,9 +693,14 @@ static void test_input_synchronous_observer(void) {
   assert(input_observe(&input, observe_input_transition, &other));
   input_process_key(&input, KEY_W, false_v);
   assert(other.count == 1 && observations.count == 8);
+  // "Invert mouse Y" negates vertical look, not horizontal.
+  input.invert_look_y = true_v;
+  input_process_mouse_move(&input, 9, 10);
+  assert(other.count == 2 && other.transitions[1].delta_x == 2 &&
+         other.transitions[1].delta_y == -6);
   input_shutdown(&input);
   assert(input.observer == NULL && input.observer_context == NULL);
-  assert(other.count == 1);
+  assert(other.count == 2);
   event_manager_destroy(&manager);
   teardown_suite();
   printf("  test_input_synchronous_observer PASSED\n");

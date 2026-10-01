@@ -26,6 +26,10 @@ typedef struct PlatformState {
   // Mouse capture state
   bool8_t cursor_hidden;
   bool8_t mouse_captured;
+  /* Raw mouse input is registered: captured look reads unaccelerated device
+     counts from WM_INPUT, and the cursor stays clipped to the window centre
+     instead of being re-centred each frame. */
+  bool8_t raw_mouse;
   float64_t restore_cursor_x;
   float64_t restore_cursor_y;
   float64_t cursor_warp_delta_x;
@@ -445,6 +449,20 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   vkr_window_content_scale_publish(window, (float32_t)initial_dpi / 96.0f);
   // Files dragged from Explorer arrive as WM_DROPFILES.
   DragAcceptFiles(state->window, TRUE);
+  const RAWINPUTDEVICE raw_mouse = {
+      .usUsagePage = 0x01, // HID_USAGE_PAGE_GENERIC
+      .usUsage = 0x02,     // HID_USAGE_GENERIC_MOUSE
+      .dwFlags = 0u,
+      // Follow keyboard focus, so a later window does not orphan this one.
+      .hwndTarget = NULL,
+  };
+  state->raw_mouse = RegisterRawInputDevices(&raw_mouse, 1u, sizeof(raw_mouse))
+                         ? true_v
+                         : false_v;
+  if (!state->raw_mouse) {
+    log_warn("Raw mouse input is unavailable; captured look uses cursor "
+             "motion");
+  }
   if (!vkr_window_resize(window, width, height)) {
     DestroyWindow(state->window);
     free(state);
@@ -541,7 +559,7 @@ bool8_t vkr_window_update(VkrWindow *window) {
   // Re-center cursor if in capture mode and it has moved since the last call
   // This prevents the cursor from hitting window boundaries and stopping
   // movement
-  if (state->mouse_captured) {
+  if (state->mouse_captured && !state->raw_mouse) {
     RECT client_rect;
     GetClientRect(state->window, &client_rect);
     int32_t center_x = (client_rect.right - client_rect.left) / 2;
@@ -777,12 +795,14 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
     state->first_mouse_move = true_v;
     state->cursor_warp_delta_x = 0.0;
     state->cursor_warp_delta_y = 0.0;
+    center_cursor_in_window(state);
 
     update_cursor_image(state);
   } else {
     state->mouse_captured = false_v;
 
     // Release capture
+    ClipCursor(NULL);
     ReleaseCapture();
 
     // Restore cursor position
@@ -1023,10 +1043,36 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     return FALSE;
   }
 
+  case WM_INPUT: {
+    /* Captured look: relative device counts, before pointer acceleration
+       and unaffected by the clipped cursor. */
+    if (state->mouse_captured && state->raw_mouse) {
+      RAWINPUT raw;
+      UINT size = sizeof(raw);
+      if (GetRawInputData((HRAWINPUT)lparam, RID_INPUT, &raw, &size,
+                          sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+          raw.header.dwType == RIM_TYPEMOUSE &&
+          !(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) &&
+          (raw.data.mouse.lLastX || raw.data.mouse.lLastY)) {
+        int32_t current_x, current_y;
+        input_get_mouse_position(state->input_state, &current_x, &current_y);
+        // Upward motion is positive virtual Y, as with cursor motion.
+        input_process_mouse_move(state->input_state,
+                                 current_x + raw.data.mouse.lLastX,
+                                 current_y - raw.data.mouse.lLastY);
+      }
+    }
+    return DefWindowProc(hwnd, msg, wparam, lparam);
+  }
+
   case WM_MOUSEMOVE: {
     int32_t x = GET_X_LPARAM(lparam);
     int32_t y = GET_Y_LPARAM(lparam);
 
+    if (state->mouse_captured && state->raw_mouse) {
+      // WM_INPUT carries captured motion; the clipped cursor does not move.
+      return FALSE;
+    }
     if (state->mouse_captured) {
       // In capture mode, use delta movement for virtual cursor
       if (state->first_mouse_move) {
@@ -1118,6 +1164,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
          without changing latched camera capture. */
       input_process_button(state->input_state, BUTTON_RIGHT, false_v);
       if (state->mouse_captured) {
+        ClipCursor(NULL);
         show_cursor(state);
       }
     }
@@ -1304,6 +1351,12 @@ static void center_cursor_in_window(PlatformState *state) {
 
   ClientToScreen(state->window, &center);
   SetCursorPos(center.x, center.y);
+  /* Raw look keeps the cursor on this pixel so clicks and the hidden pointer
+     stay inside the window; Windows drops the clip on focus changes. */
+  if (state->mouse_captured && state->raw_mouse) {
+    const RECT clip = {center.x, center.y, center.x + 1, center.y + 1};
+    ClipCursor(&clip);
+  }
 
   // Update tracking position (use client coordinates)
   state->last_cursor_pos_x = client_center_x;

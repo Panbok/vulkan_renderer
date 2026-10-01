@@ -15,6 +15,8 @@ void vkr_camera_controller_create(VkrCameraController *controller,
   controller->frame_move_world_up = 0.0f;
   controller->frame_yaw_delta = 0.0f;
   controller->frame_pitch_delta = 0.0f;
+  controller->frame_look_yaw = 0.0f;
+  controller->frame_look_pitch = 0.0f;
 }
 
 void vkr_camera_controller_move_forward(VkrCameraController *controller,
@@ -42,6 +44,13 @@ void vkr_camera_controller_rotate(VkrCameraController *controller,
   controller->frame_pitch_delta += pitch_delta;
 }
 
+void vkr_camera_controller_look(VkrCameraController *controller,
+                                float32_t yaw_counts, float32_t pitch_counts) {
+  assert_log(controller != NULL, "Camera controller is NULL");
+  controller->frame_look_yaw += yaw_counts;
+  controller->frame_look_pitch += pitch_counts;
+}
+
 void vkr_camera_controller_update(VkrCameraController *controller,
                                   float64_t delta_time, bool8_t input_blocked) {
   assert_log(controller != NULL, "Camera controller is NULL");
@@ -55,6 +64,8 @@ void vkr_camera_controller_update(VkrCameraController *controller,
     controller->frame_move_world_up = 0.0f;
     controller->frame_yaw_delta = 0.0f;
     controller->frame_pitch_delta = 0.0f;
+    controller->frame_look_yaw = 0.0f;
+    controller->frame_look_pitch = 0.0f;
     return;
   }
 
@@ -86,12 +97,17 @@ void vkr_camera_controller_update(VkrCameraController *controller,
   float32_t rotation_speed = (camera->sensitivity > 0.0f)
                                  ? camera->sensitivity
                                  : controller->rotation_speed;
+  /* Stick rates scale by frame time; pointer counts are already this frame's
+     displacement. */
   float32_t frame_adjusted_sensitivity = rotation_speed * frame_delta;
+  float32_t look_degrees = rotation_speed * VKR_CAMERA_LOOK_DEGREES_PER_COUNT;
 
   float32_t yaw_delta =
-      controller->frame_yaw_delta * frame_adjusted_sensitivity;
+      controller->frame_yaw_delta * frame_adjusted_sensitivity +
+      controller->frame_look_yaw * look_degrees;
   float32_t pitch_delta =
-      controller->frame_pitch_delta * frame_adjusted_sensitivity;
+      controller->frame_pitch_delta * frame_adjusted_sensitivity +
+      controller->frame_look_pitch * look_degrees;
 
   if (yaw_delta != 0.0f || pitch_delta != 0.0f) {
     vkr_camera_rotate(camera, yaw_delta, pitch_delta);
@@ -102,4 +118,6 @@ void vkr_camera_controller_update(VkrCameraController *controller,
   controller->frame_move_world_up = 0.0f;
   controller->frame_yaw_delta = 0.0f;
   controller->frame_pitch_delta = 0.0f;
+  controller->frame_look_yaw = 0.0f;
+  controller->frame_look_pitch = 0.0f;
 }

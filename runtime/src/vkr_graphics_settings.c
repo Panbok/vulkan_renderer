@@ -34,6 +34,12 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .min = 0.0f,
      .max = 240.0f,
      .step = 1.0f},
+    {.name = "invert_mouse_y",
+     .label = "Invert mouse Y",
+     .tooltip = "Moving the mouse up looks down, in the Scene camera and in "
+                "gameplay",
+     .offset = GRAPHICS_OFFSET(invert_mouse_y),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "temporal_upscaling",
      .label = "Temporal upscaling",
      .tooltip = "Reconstruct a higher-resolution image from temporal data",
