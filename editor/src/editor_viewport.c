@@ -235,7 +235,8 @@ static void view_chip_text(const VkrEditorUi *editor,
     const char *preset =
         vkr_graphics_preset_name(vkr_graphics_settings_preset(&settings));
     if (settings.dynamic_resolution && settings.temporal_upscaling)
-      snprintf(text[4], 48, "%s \xc2\xb7 Dynamic", preset);
+      snprintf(text[4], 48, "%s \xc2\xb7 Dynamic %.0f%%", preset,
+               (double)(settings.render_scale * 100.0f));
     else
       snprintf(text[4], 48, "%s \xc2\xb7 %.0f%%", preset,
                (double)(settings.render_scale * 100.0f));
@@ -415,19 +416,15 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     *custom = (ViewRow){.checked = preset == VKR_GRAPHICS_PRESET_CUSTOM,
                         .icon = VKR_UI_ICON_SETTINGS};
     snprintf(custom->text, sizeof(custom->text), "Custom settings...");
-    /* Dynamic resolution chooses the scale itself. */
+    /* With dynamic resolution the percentage caps the scale it chooses. */
     const bool8_t automatic =
         settings.dynamic_resolution && settings.temporal_upscaling;
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    if (automatic)
-      snprintf(rows[count++].text, sizeof(rows[0].text),
-               "Screen percentage  dynamic");
-    else
-      snprintf(rows[count++].text, sizeof(rows[0].text),
-               "Screen percentage  %.0f%%",
-               (double)(settings.render_scale * 100.0f));
+    snprintf(rows[count++].text, sizeof(rows[0].text),
+             automatic ? "Screen percentage  up to %.0f%%"
+                       : "Screen percentage  %.0f%%",
+             (double)(settings.render_scale * 100.0f));
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
-                              .disabled = automatic,
                               .value = settings.render_scale,
                               .minimum = 1.0f / 3.0f,
                               .maximum = 1.0f};

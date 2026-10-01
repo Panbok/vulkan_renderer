@@ -221,6 +221,10 @@ bool8_t vkr_vulkan_renderer_resize(VkrVulkanRenderer *renderer, uint32_t width,
                                    uint32_t height, uint32_t image_count);
 
 bool8_t vkr_vulkan_renderer_wait_idle(VkrVulkanRenderer *renderer);
+/** Requests a new presentation mode; the window target is recreated before
+ * the next frame. False for an offscreen target. */
+bool8_t vkr_vulkan_renderer_set_present_mode(VkrVulkanRenderer *renderer,
+                                             VkrPresentMode mode);
 uint64_t vkr_vulkan_renderer_submit_value(const VkrVulkanRenderer *renderer);
 uint64_t vkr_vulkan_renderer_completed_value(const VkrVulkanRenderer *renderer);
 bool8_t

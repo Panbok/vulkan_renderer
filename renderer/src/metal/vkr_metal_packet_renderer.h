@@ -293,6 +293,11 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketRgba8TextureCreateInfo *create_info,
     VkrTextureHandle *out_handle);
+/** Vertical sync on (FIFO) or off (IMMEDIATE) for the window's layer; false
+ * for an offscreen target. */
+bool8_t
+vkr_metal_packet_renderer_set_present_mode(VkrMetalPacketRenderer *renderer,
+                                           VkrPresentMode mode);
 /** Dynamic resolution needs completed submission timing every frame. */
 void vkr_metal_packet_renderer_set_dynamic_resolution(
     VkrMetalPacketRenderer *renderer, bool8_t enabled);

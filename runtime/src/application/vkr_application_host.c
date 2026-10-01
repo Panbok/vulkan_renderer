@@ -122,15 +122,16 @@ void vkr_application_host_run(VkrApplicationHost *host) {
   vkr_clock_start(&host->clock);
   vkr_clock_update(&host->clock);
   host->last_frame_time = host->clock.elapsed;
-  const float64_t target_seconds = host->config.target_frame_rate
-                                       ? 1.0 / host->config.target_frame_rate
-                                       : 0.0;
 
   bool8_t window_running = true_v;
   while (window_running &&
          bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING) &&
          bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_INITIALIZED)) {
     vkr_clock_update(&host->clock);
+    /* The frame limit can change between frames, as Graphics settings do. */
+    const float64_t target_seconds = host->config.target_frame_rate
+                                         ? 1.0 / host->config.target_frame_rate
+                                         : 0.0;
     const VkrApplicationHostFrame frame = {
         .delta_seconds = host->config.fixed_delta_seconds > 0.0
                              ? host->config.fixed_delta_seconds

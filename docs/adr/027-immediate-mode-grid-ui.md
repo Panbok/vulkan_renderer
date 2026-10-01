@@ -162,8 +162,10 @@ at x=0 in Left and Right, through the world origin. The renderer draws it in the
 `Editor.Grid` pass over the Scene image, before the selection outline and
 handles: each pixel intersects the plane with the unjittered camera ray, so the
 grid is continuous to the horizon, and the opaque depth hides it behind nearer
-geometry unless Show > Grid through geometry is on. A soft depth band keeps a
-coplanar floor from shimmering. Lines anti-alias from their screen footprint;
+geometry unless Show > Grid through geometry is on. The depth test tolerates
+0.2% of the surface distance plus the plane's change across two render-scaled
+depth texels and a pixel, so a floor lying on the plane keeps the grid on top
+through jitter and reduced screen percentage instead of z-fighting. Lines anti-alias from their screen footprint;
 levels step by ten from the requested cell size and cross-fade as the camera
 zooms, the next level drawing the majors, as in UE5. Perspective fades the grid
 between 35% and 100% of a distance that grows with camera height. The X and Z
@@ -426,15 +428,19 @@ The sample runtime owns player Graphics settings in `VkrGraphicsSettings`.
 Settings > Graphics uses a left tab rail and a clipped, scrollable right pane
 with Display, Quality, Lighting, Effects, and Color tabs. The editor borrows
 current state during UI build and sends a typed `VkrGraphicsSettingsRequest`;
-the runtime validates and applies the request. Vsync, HDR and temporal upscaling
-are startup-owned values and set a restart-required notice when changed. Render
-scale and dynamic resolution apply between frames when the renderer reports the
-scale inside `vkr_renderer_render_scale_range` (MetalFX builds its scaler for
-the dynamic-resolution range and the requested scale; the spatial Metal path
-accepts 1/3..1); otherwise they also wait for a restart. With dynamic
-resolution on, the controller chooses the scale. Other controls apply to live
-frame state; lighting changes invalidate the relevant shadow and temporal
-histories.
+the runtime validates and applies the request. HDR and temporal upscaling are
+startup-owned values and set a restart-required notice when changed. Vsync
+switches between frames (`vkr_renderer_set_present_mode`: the Metal layer's
+display sync, a recreated Vulkan swapchain); a windowed macOS editor still
+presents at most once per display refresh, because the compositor paces the
+layer's drawables. Render scale and dynamic resolution apply between frames when
+the renderer reports the scale inside `vkr_renderer_render_scale_range`
+(MetalFX builds its scaler for the dynamic-resolution floor up to native; the
+spatial Metal path accepts 1/3..1); otherwise they also wait for a restart.
+With dynamic resolution on, the render scale caps the scale the controller
+chooses, so Metal defaults to 1.0. The frame limit is read every frame. Other
+controls apply to live frame state; lighting changes invalidate the relevant
+shadow and temporal histories.
 
 Settings load from `VKR_GRAPHICS_SETTINGS_PATH`, or the project
 `.vkr-graphics-settings.json` default when the variable is absent. Missing files

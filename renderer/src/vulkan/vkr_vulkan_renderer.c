@@ -1603,6 +1603,17 @@ bool8_t vkr_vulkan_renderer_capture_release(VkrVulkanRenderer *renderer,
          vkr_capture_ring_release(&renderer->capture_ring, request_id);
 }
 
+bool8_t vkr_vulkan_renderer_set_present_mode(VkrVulkanRenderer *renderer,
+                                             VkrPresentMode mode) {
+  if (!renderer || renderer->config.target_kind == VKR_PRESENT_TARGET_OFFSCREEN)
+    return false_v;
+  if (renderer->config.requested_present_mode != mode) {
+    renderer->config.requested_present_mode = mode;
+    renderer->target_dirty = true_v;
+  }
+  return true_v;
+}
+
 bool8_t vkr_vulkan_renderer_wait_idle(VkrVulkanRenderer *renderer) {
   if (!renderer || !renderer->timeline || renderer->submit_value == 0u) {
     return renderer != NULL;

@@ -161,6 +161,9 @@ typedef struct State {
   VkrSampleUiClient ui;
   VkrGraphicsSettingsState graphics;
   VkrGraphicsSettings graphics_started;
+  /* The renderer took the loaded presentation and scale settings. */
+  bool8_t graphics_present_live;
+  bool8_t graphics_scale_live;
   char graphics_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   char graphics_message[160];
   bool8_t graphics_dirty;
@@ -339,6 +342,45 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
   application->host.config.target_frame_rate = settings->frame_limit;
 }
 
+/* Display settings the renderer switches between frames: vertical sync,
+   screen percentage and dynamic resolution, whose percentage caps the
+   controller. Applied ones become the started values, so they need no
+   restart; the first frame applies the loaded settings. */
+static void sample_graphics_apply_display(VkrStandardSceneRuntime *application,
+                                          const VkrGraphicsSettings *settings) {
+  VkrRenderer *renderer = &application->renderer;
+  if (!state->graphics_present_live ||
+      settings->vsync != state->graphics_started.vsync) {
+    if (vkr_renderer_set_present_mode(
+            renderer, settings->vsync ? VKR_PRESENT_MODE_FIFO
+                                      : VKR_PRESENT_MODE_IMMEDIATE) ==
+        VKR_RENDERER_ERROR_NONE) {
+      state->graphics_started.vsync = settings->vsync;
+    }
+    state->graphics_present_live = true_v;
+  }
+  float32_t live_min = 1.0f;
+  float32_t live_max = 1.0f;
+  vkr_renderer_render_scale_range(renderer, &live_min, &live_max);
+  const bool8_t dynamic =
+      settings->dynamic_resolution && settings->temporal_upscaling;
+  if ((!state->graphics_scale_live ||
+       settings->render_scale != state->graphics_started.render_scale ||
+       settings->dynamic_resolution !=
+           state->graphics_started.dynamic_resolution) &&
+      settings->temporal_upscaling ==
+          state->graphics_started.temporal_upscaling &&
+      settings->render_scale >= live_min - 1e-4f &&
+      settings->render_scale <= live_max + 1e-4f &&
+      (!dynamic || vkr_renderer_dynamic_resolution_switchable(renderer)) &&
+      vkr_renderer_set_render_scale(renderer, settings->render_scale,
+                                    dynamic) == VKR_RENDERER_ERROR_NONE) {
+    state->graphics_started.render_scale = settings->render_scale;
+    state->graphics_started.dynamic_resolution = settings->dynamic_resolution;
+    state->graphics_scale_live = true_v;
+  }
+}
+
 static void sample_graphics_request(VkrStandardSceneRuntime *application,
                                     const VkrGraphicsSettingsRequest *request) {
   if (!request->apply && !request->reset_defaults)
@@ -365,28 +407,7 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       old.subsurface_scattering != settings.subsurface_scattering ||
       old.fog != settings.fog || old.volumetric_fog != settings.volumetric_fog;
   state->graphics.settings = settings;
-  /* Screen percentage and dynamic resolution apply between frames when the
-     renderer's upscaler covers them; the started values then follow. */
-  float32_t live_min = 1.0f;
-  float32_t live_max = 1.0f;
-  vkr_renderer_render_scale_range(&application->renderer, &live_min, &live_max);
-  const bool8_t dynamic =
-      settings.dynamic_resolution && settings.temporal_upscaling;
-  if ((settings.render_scale != state->graphics_started.render_scale ||
-       settings.dynamic_resolution !=
-           state->graphics_started.dynamic_resolution) &&
-      settings.temporal_upscaling ==
-          state->graphics_started.temporal_upscaling &&
-      settings.render_scale >= live_min - 1e-4f &&
-      settings.render_scale <= live_max + 1e-4f &&
-      (!dynamic ||
-       vkr_renderer_dynamic_resolution_switchable(&application->renderer)) &&
-      vkr_renderer_set_render_scale(&application->renderer,
-                                    settings.render_scale,
-                                    dynamic) == VKR_RENDERER_ERROR_NONE) {
-    state->graphics_started.render_scale = settings.render_scale;
-    state->graphics_started.dynamic_resolution = settings.dynamic_resolution;
-  }
+  sample_graphics_apply_display(application, &settings);
   state->graphics.restart_required = vkr_graphics_settings_restart_required(
       &settings, &state->graphics_started);
   state->graphics_message[0] = '\0';
@@ -4979,6 +5000,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     vkr_window_set_cursor(&application->host.window,
                           application->ui_system.cursor);
   sample_graphics_request(application, &requests.graphics_request);
+  if (!state->graphics_present_live || !state->graphics_scale_live)
+    sample_graphics_apply_display(application, &state->graphics.settings);
   sample_editor_state_apply(application, &requests.editor_state_request);
   sample_view_apply(application, &requests.view_request);
   sample_show_filter_apply(application);

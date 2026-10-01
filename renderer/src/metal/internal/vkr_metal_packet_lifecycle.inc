@@ -912,6 +912,20 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
   }
 }
 
+bool8_t
+vkr_metal_packet_renderer_set_present_mode(VkrMetalPacketRenderer *renderer,
+                                           VkrPresentMode mode) {
+  if (!renderer || !renderer->layer ||
+      renderer->target_kind != VKR_METAL_PACKET_TARGET_WINDOW)
+    return false_v;
+  renderer->actual_present_mode = mode == VKR_PRESENT_MODE_IMMEDIATE
+                                      ? VKR_PRESENT_MODE_IMMEDIATE
+                                      : VKR_PRESENT_MODE_FIFO;
+  renderer->layer.displaySyncEnabled =
+      renderer->actual_present_mode != VKR_PRESENT_MODE_IMMEDIATE;
+  return true_v;
+}
+
 void vkr_metal_packet_renderer_set_dynamic_resolution(
     VkrMetalPacketRenderer *renderer, bool8_t enabled) {
   if (renderer)

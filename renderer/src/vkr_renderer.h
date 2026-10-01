@@ -1260,13 +1260,17 @@ void vkr_renderer_invalidate_temporal_history(VkrRenderer *renderer);
  * or upscaler. A backend whose upscaler fixes its scale reports min == max. */
 void vkr_renderer_render_scale_range(const VkrRenderer *renderer,
                                      float32_t *out_min, float32_t *out_max);
+/** Switch a windowed target between vertical sync (FIFO) and immediate
+ * presentation between frames; offscreen targets reject it. */
+VkrRendererError vkr_renderer_set_present_mode(VkrRenderer *renderer,
+                                               VkrPresentMode mode);
 /** Whether dynamic resolution can be switched between frames. */
 bool8_t vkr_renderer_dynamic_resolution_switchable(const VkrRenderer *renderer);
 /**
  * Sets the Scene render scale and dynamic resolution outside an active frame.
- * With dynamic resolution on, `render_scale` only seeds the controller. The
- * scale must lie in vkr_renderer_render_scale_range; a change resets temporal
- * history and the resolution controller.
+ * With dynamic resolution on, `render_scale` is the controller's upper bound
+ * and its starting tier. The scale must lie in vkr_renderer_render_scale_range;
+ * a change resets temporal history and the resolution controller.
  */
 VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
                                                float32_t render_scale,

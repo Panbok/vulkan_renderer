@@ -222,8 +222,10 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .temporal_upscaling = true_v,
       .dynamic_resolution = backend == VKR_RENDERER_BACKEND_TYPE_METAL,
       .anti_aliasing = true_v,
+      /* With dynamic resolution the scale caps the controller, so Metal
+         starts uncapped and lets it choose. */
       .render_scale =
-          backend == VKR_RENDERER_BACKEND_TYPE_METAL ? .8f : 2.0f / 3.0f,
+          backend == VKR_RENDERER_BACKEND_TYPE_METAL ? 1.0f : 2.0f / 3.0f,
       .shadow_quality = 2,
       .soft_shadows = true_v,
       .local_shadows = true_v,

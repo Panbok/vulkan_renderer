@@ -678,16 +678,13 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   float32_t live_min = requested_render_scale;
   float32_t live_max = requested_render_scale;
   if (requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL) {
+    /* Up to native: the dynamic-resolution cap and fixed scale may rise. */
     const float32_t dynamic_min =
         requested_dynamic_resolution.min_scale > 0.0f
             ? requested_dynamic_resolution.min_scale
             : VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE;
-    const float32_t dynamic_max =
-        requested_dynamic_resolution.max_scale > 0.0f
-            ? requested_dynamic_resolution.max_scale
-            : VKR_DYNAMIC_RESOLUTION_DEFAULT_MAX_SCALE;
     live_min = Min(live_min, dynamic_min);
-    live_max = Min(1.0f, Max(live_max, dynamic_max));
+    live_max = 1.0f;
   } else if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
     live_min = Min(live_min, 1.0f / 3.0f);
     live_max = 1.0f;
@@ -2503,6 +2500,25 @@ void vkr_renderer_render_scale_range(const VkrRenderer *renderer,
   *out_max = renderer ? renderer->render_scale_max : 1.0f;
 }
 
+VkrRendererError vkr_renderer_set_present_mode(VkrRenderer *renderer,
+                                               VkrPresentMode mode) {
+  if (!renderer ||
+      (mode != VKR_PRESENT_MODE_FIFO && mode != VKR_PRESENT_MODE_IMMEDIATE))
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (renderer->present_target.kind != VKR_PRESENT_TARGET_WINDOWED)
+    return VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+#if defined(PLATFORM_APPLE)
+  return vkr_metal_packet_renderer_set_present_mode(renderer->metal_renderer,
+                                                    mode)
+             ? VKR_RENDERER_ERROR_NONE
+             : VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+#else
+  return vkr_vulkan_renderer_set_present_mode(renderer->vulkan_renderer, mode)
+             ? VKR_RENDERER_ERROR_NONE
+             : VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+#endif
+}
+
 bool8_t
 vkr_renderer_dynamic_resolution_switchable(const VkrRenderer *renderer) {
   return renderer &&
@@ -2524,14 +2540,22 @@ VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
   render_scale = vkr_clamp_f32(render_scale, renderer->render_scale_min,
                                renderer->render_scale_max);
   VkrDynamicResolutionConfig request = renderer->dynamic_resolution_request;
-  request.enabled = dynamic_resolution;
+  /* The scale caps the controller; a cap at its floor fixes the scale. */
+  const float32_t floor_scale = request.min_scale > 0.0f
+                                    ? request.min_scale
+                                    : VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE;
+  request.enabled =
+      dynamic_resolution &&
+      render_scale > floor_scale + VKR_DYNAMIC_RESOLUTION_SCALE_STEP;
+  request.max_scale = render_scale;
   VkrDynamicResolutionConfig config = {0};
   float32_t scale = render_scale;
   if (!vkr_dynamic_resolution_config_normalize(&request, render_scale, &config,
                                                &scale))
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   if (scale == renderer->render_scale &&
-      config.enabled == renderer->dynamic_resolution_config.enabled)
+      config.enabled == renderer->dynamic_resolution_config.enabled &&
+      config.max_scale == renderer->dynamic_resolution_config.max_scale)
     return VKR_RENDERER_ERROR_NONE;
   renderer->dynamic_resolution_config = config;
   vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state, &config,

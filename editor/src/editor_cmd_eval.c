@@ -38,6 +38,8 @@ enum {
   EVAL_OBJECT_SCENE,
   EVAL_OBJECT_WORLD,
   EVAL_OBJECT_STATS,
+  /* Machine graphics preferences, applied as the Scalability menu does. */
+  EVAL_OBJECT_GFX,
 };
 
 typedef enum TokenKind {
@@ -102,6 +104,10 @@ static const char *const eval_view_members[] = {
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion", NULL};
+static const char *const eval_gfx_members[] = {
+    "render_scale", "dynamic", "vsync", "preset", "restart", NULL};
+static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
+                                               "epic", "custom", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
 static const char *const eval_scene_members[] = {"loaded", "entities", "added",
                                                  NULL};
@@ -111,11 +117,11 @@ static const char *const eval_stats_members[] = {
     "replaced_materials", "pending_replacements", "pending_textures",
     "render_width",       "render_height",        NULL};
 static const char *const eval_roots[] = {
-    "sel",    "view", "ui",   "sim",   "scene",     "world", "stats",
-    "entity", "vec3", "len",  "sqrt",  "sin",       "cos",   "tan",
-    "abs",    "min",  "max",  "clamp", "lerp",      "round", "floor",
-    "ceil",   "pow",  "dot",  "cross", "normalize", "deg",   "rad",
-    "str",    "pi",   "true", "false", NULL};
+    "sel",   "view",   "ui",   "sim",  "scene", "world",     "stats",
+    "gfx",   "entity", "vec3", "len",  "sqrt",  "sin",       "cos",
+    "tan",   "abs",    "min",  "max",  "clamp", "lerp",      "round",
+    "floor", "ceil",   "pow",  "dot",  "cross", "normalize", "deg",
+    "rad",   "str",    "pi",   "true", "false", NULL};
 
 /* ---- Small helpers ---- */
 
@@ -697,6 +703,28 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       default:
         break;
       }
+    } else if (base->object == EVAL_OBJECT_GFX && frame->graphics) {
+      const VkrGraphicsSettings *settings = &frame->graphics->settings;
+      switch (eval_word_index(eval_gfx_members, name)) {
+      case 0:
+        *out = eval_number(settings->render_scale);
+        return true_v;
+      case 1:
+        *out = eval_bool(settings->dynamic_resolution);
+        return true_v;
+      case 2:
+        *out = eval_bool(settings->vsync);
+        return true_v;
+      case 3:
+        *out = eval_string(
+            "%s", eval_gfx_presets[vkr_graphics_settings_preset(settings)]);
+        return true_v;
+      case 4:
+        *out = eval_bool(frame->graphics->restart_required);
+        return true_v;
+      default:
+        break;
+      }
     } else if (base->object == EVAL_OBJECT_UI) {
       const int32_t index = eval_word_index(eval_ui_members, name);
       if (index == 0) {
@@ -973,7 +1001,7 @@ static bool8_t eval_ident(Eval *eval, String8 name, Value *out) {
     return true_v;
   }
   static const char *const objects[] = {"view",  "ui",    "sim", "scene",
-                                        "world", "stats", NULL};
+                                        "world", "stats", "gfx", NULL};
   const int32_t object = eval_word_index(objects, name);
   if (object >= 0) {
     *out = (Value){.kind = VKR_EDITOR_CMD_VALUE_OBJECT,
@@ -1329,6 +1357,38 @@ static bool8_t eval_assign_component(Eval *eval, const Value *base,
 static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
                                   const Value *value) {
   const VkrSampleUiFrame *frame = eval->frame;
+  if (object == EVAL_OBJECT_GFX) {
+    if (!frame->graphics || !frame->graphics_request)
+      return eval_fail(eval, "Graphics preferences are unavailable");
+    VkrGraphicsSettings settings = frame->graphics->settings;
+    const int32_t index = eval_word_index(eval_gfx_members, member);
+    if (index == 0 &&
+        eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member)) {
+      settings.render_scale =
+          vkr_clamp_f32((float32_t)value->number, 1.0f / 3.0f, 1.0f);
+    } else if ((index == 1 || index == 2) &&
+               eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
+      if (index == 1)
+        settings.dynamic_resolution = value->number != 0.0;
+      else
+        settings.vsync = value->number != 0.0;
+    } else if (index == 3 &&
+               eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member)) {
+      const int32_t preset = eval_word_index(
+          eval_gfx_presets, (String8){.str = (uint8_t *)value->text,
+                                      .length = strlen(value->text)});
+      if (preset < 0 || preset >= (int32_t)VKR_GRAPHICS_PRESET_CUSTOM)
+        return eval_fail(eval, "Unknown preset '%s'", value->text);
+      vkr_graphics_settings_apply_preset(&settings, (VkrGraphicsPreset)preset);
+    } else {
+      return eval->error[0] ? false_v
+                            : eval_fail(eval, "Cannot assign gfx.%.*s",
+                                        (int)member.length, member.str);
+    }
+    *frame->graphics_request =
+        (VkrGraphicsSettingsRequest){.settings = settings, .apply = true_v};
+    return true_v;
+  }
   if (object == EVAL_OBJECT_UI) {
     const int32_t index = eval_word_index(eval_ui_members, member);
     if (index == 0 &&
@@ -1526,11 +1586,11 @@ static uint32_t eval_format(const VkrEditorCmdValue *value, char *out,
                        value->entity.parts.index);
     break;
   case VKR_EDITOR_CMD_VALUE_OBJECT: {
-    static const char *const names[] = {"",      "view",  "ui",   "sim",
-                                        "scene", "world", "stats"};
+    static const char *const names[] = {"",      "view",  "ui",    "sim",
+                                        "scene", "world", "stats", "gfx"};
     written =
         snprintf(out, capacity, "%s (type %s. for members)",
-                 names[Min(value->object, 6u)], names[Min(value->object, 6u)]);
+                 names[Min(value->object, 7u)], names[Min(value->object, 7u)]);
     break;
   }
   default:
@@ -1658,6 +1718,7 @@ uint32_t vkr_editor_cmd_eval_complete(VkrEditorUi *editor,
             : base.object == EVAL_OBJECT_SCENE ? eval_scene_members
             : base.object == EVAL_OBJECT_WORLD ? eval_world_members
             : base.object == EVAL_OBJECT_STATS ? eval_stats_members
+            : base.object == EVAL_OBJECT_GFX   ? eval_gfx_members
                                                : NULL;
     if (base.kind != VKR_EDITOR_CMD_VALUE_OBJECT &&
         base.kind != VKR_EDITOR_CMD_VALUE_VEC3 &&
