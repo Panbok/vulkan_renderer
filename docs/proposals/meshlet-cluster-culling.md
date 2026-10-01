@@ -76,85 +76,106 @@ not fall with render scale or MetalFX, so it becomes a fixed floor as
 resolution drops. Individual refreshes cost 1.4–2.1 ms per cascade and
 0.3–0.9 ms per local light.
 
-Cluster culling can only remove part of this cost. Its saving is the share of
-submitted triangles that a cluster-level frustum, back-face cone and HZB test
-rejects; that share is not yet measured.
+Cluster culling can only remove part of this cost: the share of submitted
+triangles that a finer frustum, back-face or HZB test rejects.
+
+## Step 0 results
+
+**Reduced visibility vertex function (rejected).** A Metal variant that wrote
+only clip position and visible row for `VBuffer.Opaque` and opaque shadow
+raster kept depth, visibility primitives and all four cascade maps
+bit-identical on a Bistro witness, but moved `VBuffer.Opaque` from 1.59 to
+1.57 ms, local shadow depth from 1.25 to 1.21 ms and cascades from 0.46 to
+0.45 ms (same case and profile, report
+`32802faee24c9086d3ba0391c42b5b76ad0990ea349ef2f0a91f222c4d98ae4d`). That is
+within run spread, so the cost lies in fetch, decode, transform and primitive
+setup rather than surface varyings. The change was reverted.
+
+**Offline rejection estimate.** A local estimator (cgltf plus vendored
+meshoptimizer 1.2) loaded `assets/models/bistro-lights.gltf`, built
+64-vertex/124-triangle meshlets (cone weight 0.25) and replayed the run A
+orbit at every second measured frame (150 views). For local shadows it took the
+five nearest point lights as a stand-in for importance selection and tested
+their six 90° faces with the renderer's planes (`near = min(0.05, 0.01·range)`,
+`far = range`; `vkr_local_shadow_system.c`), 4,500 face views. Instances are
+culled by their bounding sphere per view as in the GPU classify pass; HZB is not
+modeled. Blend and transmission materials are excluded, and double-sided
+materials get no cone test. The estimator's 1,788.7 visible instances per
+camera view match the renderer's 1,788.4.
+
+| Culling unit | Scene candidates | Camera rejected | Local face rejected |
+|---|---|---|---|
+| Today: instance/submesh | 2,909 | 0 | 0 |
+| Cook-time chunks of ~2,000 triangles | 3,470 | 5.1% | 40.9% |
+| Cook-time chunks of ~800 triangles | 6,240 | 7.6% | 58.3% |
+| Cook-time chunks of ~240 triangles | 17,730 | 9.8% | 69.7% |
+| Meshlets, frustum and cone | 69,076 | 13.2% | 76.6% |
+
+Per view, the camera submits 2.96 M triangles and a local face 0.57 M. Cluster
+size barely matters: 64/64 and 128/256 meshlets give 13.7% and 11.4% for the
+camera and 77.0% and 74.0% for local faces. The back-face cone rejects only
+2–3% of single-sided triangles, although 32% of camera triangles face away;
+Bistro's back-facing triangles are scattered across clusters rather than
+grouped, so cone culling, and with it the main reason for mesh shaders, buys
+little here.
+
+Most of the reachable saving is therefore local-shadow frustum waste: large
+meshes whose bounds touch a 90° face that sees a small part of them. If cost
+scales with submitted triangles, local shadow depth (1.25 ms per frame) could
+fall by up to 0.7–1.0 ms and `VBuffer.Opaque` (about 1.55 ms geometry-bound)
+by up to 0.1–0.2 ms, before any added culling cost. These are upper bounds;
+in-frustum triangles also pay rasterization. Local transmission shadows and
+cascades were not estimated.
 
 ## Proposed change
 
-### Step 0: bound the saving before changing formats
+### Step 1: cook-time spatial chunks
 
-1. Build meshlets offline for the Bistro meshes with
-   `meshopt_buildMeshlets` and `meshopt_computeMeshletBounds`, without changing
-   the cooked format. For the run A camera path and its shadow views, compute
-   the triangle share rejected per view by cluster frustum and cone tests, with
-   the same determinant-parity and double-sided rules as the raster buckets.
-2. Measure the cheaper alternative on the same case: an opaque, non-cutout
-   visibility vertex variant that omits UV and color outputs and their fetches.
-   If it removes most of the `VBuffer.Opaque` cost, ship it first.
+Split large primitives at cook time into spatially coherent index ranges of
+roughly 800–2,000 triangles, using meshoptimizer clusters and
+`meshopt_partitionClusters`. Each chunk becomes an ordinary cooked range with
+its own bounds and decode record, so the existing candidate, culling, indirect
+draw and visibility-identity paths apply unchanged: resolve already reads
+`indices[visible.first_index + primitive_id * 3]` from the draw's own range.
+The cost is a new compatible artifact version, a Bistro recook and roughly
+2–6× more candidates in classify, encode and publication.
 
-Continue only if the estimated rejection would remove at least 1 ms per frame
-from the geometry-bound groups above, or explicitly accept a smaller gain for
-p95 refresh frames.
+### Step 2: compute cluster culling, only if Step 1 falls short
 
-### Step 1: portable compute cluster culling
+If matched measurements leave a material local-shadow or camera cost, add
+per-cluster frustum and HZB tests after instance culling on both backends with
+the same semantics:
 
-Use the same path on both backends, with no new device capability:
-
-- Cook meshlets into a new compatible artifact version: local vertex remap,
-  8-bit local triangle indices, and bounds (sphere, cone axis/cutoff). Publish
-  meshlet rows beside geometry rows with the same generation and
+- Cook meshlets: local vertex remap, 8-bit local triangle indices and bounds.
+  Publish meshlet rows beside geometry rows with the same generation and
   completion-gated retirement.
-- After instance culling, a compute pass tests the clusters of each visible row
-  against the view frustum, back-face cone (single-sided buckets only) and HZB
-  under the existing ADR-028 history gates, then compacts surviving clusters per
-  bucket.
-- Raster the compacted clusters through the existing ICB / indirect-count path.
-  The spike chooses between an instanced fixed-size cluster draw and a compacted
-  index buffer.
-- Deformed instances (nonzero `deformation_address`) keep candidate-level culling
-  because cooked bounds do not cover their deformed positions.
+- A compute pass tests the clusters of each visible row and compacts survivors
+  per bucket; raster uses the existing ICB / indirect-count path.
+- Deformed instances (nonzero `deformation_address`) keep candidate-level
+  culling because cooked bounds do not cover their deformed positions.
 
-### Step 2: optional mesh-shader path
-
-Only after Step 1 is measured, add object/task plus mesh shaders behind an
-explicit capability boundary:
-
-- Metal: object and mesh shaders on Apple7+ (M1 Pro). Native indirect mesh
-  dispatch requires Apple9 (M3), so M1 launches a CPU-bounded direct grid whose
-  object threadgroups read GPU-written counts and exit early.
-- Vulkan: optional `VK_EXT_mesh_shader`, which RDNA 2 Windows driver reports
-  expose (target: RX 6700 XT; confirm on that machine). The [ADR-023](../adr/023-vulkan-1-4-bindless-capability-profile.md)
-  floor does not change; devices without it keep Step 1.
-
-Keep Step 2 only if it beats Step 1 on both target machines with matched
-Release evidence. Otherwise Step 1 is the single representation.
+Mesh shaders (Metal object/mesh on Apple7+, with direct-only dispatch on M1;
+optional `VK_EXT_mesh_shader` on Vulkan) are not proposed for Bistro: the
+cone-culling gain they would carry is 2–3%. Reconsider them only with a
+workload whose estimate shows grouped back-facing or occluded clusters.
 
 ## Decision boundaries
 
-- Visibility identity. The G-buffer resolve, picking and transmission resolve
-  read `primitive_id` against the submesh index range. Cluster raster must
-  either preserve that mapping or change the visibility ID encoding in every
-  consumer on both backends in the same change.
-- Cluster size (for example 64 vertices / 124 triangles) and the per-triangle
-  index format, chosen by the Step 0 rejection rate and memory cost.
-- Whether shadow views use cone culling, given double-sided casters and the
-  existing caster face policy.
-- Overflow policy for compacted cluster capacity, reported like the existing
-  visible-row overflow rather than silently truncating.
-- Memory: meshlet rows and local indices add a fraction of the 77 MB vertex and
-  index data; Step 0 reports the exact size.
+- Chunk size and which primitives to split: a fixed triangle target, or only
+  ranges whose bounds are large relative to local-light ranges.
+- Candidate capacity and classify/encode cost at 2–6× today's candidate count.
+- For Step 2: visibility identity. Cluster raster must either preserve the
+  range-relative `primitive_id` mapping or change the visibility ID encoding in
+  every consumer on both backends in the same change, plus an overflow policy
+  for compacted cluster capacity.
 
 ## Evidence needed
 
-- Step 0: rejection shares per view and the vertex-variant measurement, with
-  commands and report digests.
-- Step 1 and 2: authoritative matched Release before/after runs on
+- Authoritative matched Release before/after runs on
   `bistro_metal_production_040` with `tools/profiles/performance-windowed-gpu.json`
   on the M1 Pro, and a matched Bistro Vulkan case on the RX 6700 XT. Report
-  `VBuffer.Opaque`, shadow, cascade-refresh and p95 frame time.
-- Equivalent output: Bistro snapshot depth, visibility and picking IDs, color
-  within policy, matching work-volume rows and new cluster submitted/rejected
-  and overflow metrics.
+  local shadow, `VBuffer.Opaque`, cascade, `Cull.*` and p95 frame time.
+- Equivalent output: Bistro depth, shadow-cascade and final-color captures within
+  policy, picking, matching work-volume rows and candidate overflow metrics.
 - Native Vulkan execution and synchronization validation on Windows; a Metal
   run does not establish Vulkan behavior.
