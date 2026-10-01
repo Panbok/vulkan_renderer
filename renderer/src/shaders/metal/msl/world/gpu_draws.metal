@@ -549,6 +549,8 @@ struct VkrMetalPacketPickingResolveRoot {
   uint reserved[1];
   // One float: the opaque depth at `pixel`, read back with the object id.
   device float *depth_output;
+  // Keeps the size at the host's 16-byte-aligned 144 bytes.
+  ulong reserved_tail;
 };
 
 static uint vkr_metal_packet_picking_object_id(

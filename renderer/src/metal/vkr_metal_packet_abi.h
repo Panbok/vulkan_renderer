@@ -1187,6 +1187,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketPickingResolveRoot {
   /* Address of one float: the opaque depth at `pixel`, read back with the
      object id. */
   uint64_t depth_output;
+  /* Keeps the shader's size at the host's 16-byte-aligned 144 bytes. */
+  uint64_t reserved_tail;
 } VkrMetalPacketPickingResolveRoot;
 
 _Static_assert(sizeof(VkrMetalPacketPickingResolveRoot) == 144,
