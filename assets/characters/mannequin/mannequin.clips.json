@@ -17,7 +17,7 @@
       "name": "Crouch_Walk_Bwd",
       "loop": true,
       "duration": 1.3,
-      "speed": 0.5109,
+      "speed": 0.4763,
       "travel": [
         -0.0,
         1.0
@@ -28,7 +28,7 @@
       "name": "Crouch_Walk_Fwd",
       "loop": true,
       "duration": 1.233333,
-      "speed": 0.6764,
+      "speed": 0.6306,
       "travel": [
         0.0,
         -1.0
@@ -39,7 +39,7 @@
       "name": "Crouch_Walk_Left",
       "loop": true,
       "duration": 1.316667,
-      "speed": 0.4729,
+      "speed": 0.4409,
       "travel": [
         -1.0,
         -0.0
@@ -50,7 +50,7 @@
       "name": "Crouch_Walk_Right",
       "loop": true,
       "duration": 1.083333,
-      "speed": 0.5625,
+      "speed": 0.5243,
       "travel": [
         1.0,
         -0.0
@@ -72,7 +72,7 @@
       "name": "Jog_Bwd",
       "loop": true,
       "duration": 0.65,
-      "speed": 1.1216,
+      "speed": 1.0456,
       "travel": [
         -0.0,
         1.0
@@ -82,19 +82,19 @@
     {
       "name": "Jog_Fwd",
       "loop": true,
-      "duration": 0.75,
-      "speed": 3.6455,
+      "duration": 0.766667,
+      "speed": 3.3772,
       "travel": [
         0.0,
         -1.0
       ],
-      "source": "35_17"
+      "source": "35_18"
     },
     {
       "name": "Jog_Left",
       "loop": true,
       "duration": 0.733333,
-      "speed": 1.0919,
+      "speed": 1.0178,
       "travel": [
         -1.0,
         -0.0
@@ -105,7 +105,7 @@
       "name": "Jog_Right",
       "loop": true,
       "duration": 0.616667,
-      "speed": 1.494,
+      "speed": 1.3928,
       "travel": [
         1.0,
         -0.0
@@ -148,19 +148,19 @@
     {
       "name": "Run_Fwd",
       "loop": true,
-      "duration": 0.766667,
-      "speed": 4.0476,
+      "duration": 0.8,
+      "speed": 3.8063,
       "travel": [
         0.0,
         -1.0
       ],
-      "source": "09_09"
+      "source": "09_11"
     },
     {
       "name": "Walk_Bwd",
       "loop": true,
       "duration": 1.15,
-      "speed": 0.6584,
+      "speed": 0.6138,
       "travel": [
         -0.0,
         1.0
@@ -170,19 +170,19 @@
     {
       "name": "Walk_Fwd",
       "loop": true,
-      "duration": 1.1,
-      "speed": 1.4744,
+      "duration": 0.966667,
+      "speed": 1.9049,
       "travel": [
         0.0,
         -1.0
       ],
-      "source": "35_07"
+      "source": "16_21"
     },
     {
       "name": "Walk_Left",
       "loop": true,
       "duration": 1.266667,
-      "speed": 0.473,
+      "speed": 0.441,
       "travel": [
         -1.0,
         -0.0
@@ -193,7 +193,7 @@
       "name": "Walk_Right",
       "loop": true,
       "duration": 1.183333,
-      "speed": 0.5941,
+      "speed": 0.5538,
       "travel": [
         1.0,
         -0.0
