@@ -51,7 +51,8 @@ struct alignas(16) VkrMetalPacketSsrTemporalRoot {
   device VkrTemporalTransform *previous_transforms;
   constant VkrSsrReprojectionParams *reprojection;
   uint previous_frame_index;
-  uint reserved;
+  // Converts history radiance to this frame's pre-exposure.
+  float history_pre_exposure_scale;
 };
 
 struct alignas(16) VkrMetalPacketSsrCompositeRoot {
@@ -524,6 +525,7 @@ kernel void vkr_metal_packet_ssr_temporal(
     }
   }
   float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
+  history.rgb *= root.history_pre_exposure_scale;
   VkrSsrHistoryDecision decision;
   decision.accepted = history_support > 0.0f ? 1u : 0u;
   float2 reflected_motion =

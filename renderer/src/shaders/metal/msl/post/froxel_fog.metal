@@ -10,6 +10,8 @@ struct alignas(16) VkrMetalPacketFroxelInjectRoot {
   texture3d<float, access::write> output;
   uint history_valid;
   packed_uint3 extent;
+  // Converts history source radiance to this frame's pre-exposure.
+  float history_pre_exposure_scale;
 };
 
 struct alignas(16) VkrMetalPacketFroxelIntegrateRoot {
@@ -126,6 +128,7 @@ kernel void vkr_metal_packet_froxel_inject(
                        ? root.history.sample(vkr_metal_froxel_linear_sampler,
                                              history_coordinate.uvw)
                        : float4(0.0f);
+  history.rgb *= root.history_pre_exposure_scale;
   root.output.write(vkr_froxel_temporal_filter(*root.params, current, history,
                                                 valid),
                     cell);

@@ -1702,6 +1702,22 @@ vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrPreparedFrame *packet,
   return out_source->id != 0;
 }
 
+/* Exponent of the radiance scale the frame's global prefilter was baked at,
+   zero without one. */
+vkr_internal int32_t
+vkr_metal_packet_global_radiance_stops(VkrMetalPacketRenderer *renderer,
+                                       const VkrPreparedFrame *packet) {
+  VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
+  if (!vkr_metal_packet_ibl_source(packet, &handle))
+    return 0;
+  const VkrMetalPacketTexture *source =
+      vkr_metal_packet_resolve_texture(renderer, handle);
+  const VkrMetalPacketTexture *prefilter =
+      source ? vkr_metal_packet_resolve_texture(renderer, source->ibl_prefilter)
+             : NULL;
+  return prefilter ? prefilter->radiance_stops : 0;
+}
+
 vkr_internal VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle);
@@ -2874,7 +2890,7 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
         (VkrGpuPointLightRow *)(cpu + plan->point_light_offset);
     for (uint32_t i = 0; i < plan->point_light_count; ++i)
       vkr_point_light_pack(&packet->input.lighting->point_lights[i],
-                           &packed[i]);
+                           packet->exposure.pre_exposure, &packed[i]);
     if (plan->local_shadow_view_count > 0u) {
       for (uint32_t i = 0u; i < plan->point_light_count; ++i)
         packed[i].p3.w =
@@ -2952,6 +2968,7 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
       (VkrGpuRectangleLightRow *)(cpu + plan->rectangle_lights_offset);
   for (uint32_t i = 0u; i < plan->rectangle_light_count; ++i)
     vkr_rectangle_light_pack(&packet->input.lighting->rectangle_lights[i],
+                             packet->exposure.pre_exposure,
                              &rectangle_rows[i]);
   upload->ltc_gpu = gpu + plan->ltc_offset;
   VkrMetalPacketSheen *sheen =
@@ -2974,7 +2991,9 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
     VkrMetalPacketFrameUpload *upload, const VkrMetalPacketUploadPlan *plan) {
   uint8_t *cpu = upload->addresses.cpu_address;
   uint64_t gpu = upload->addresses.gpu_address;
-  MemCopy(cpu + plan->fog_offset, &packet->fog, sizeof(packet->fog));
+  const VkrFogGpuParams fog =
+      vkr_fog_pre_exposed(&packet->fog, packet->exposure.pre_exposure);
+  MemCopy(cpu + plan->fog_offset, &fog, sizeof(fog));
   upload->fog_gpu = gpu + plan->fog_offset;
   VkrFroxelFogGpuParams froxel_fog = packet->froxel_fog;
   if (froxel_fog.grid_dimensions_cell_pixels[0] != 0u) {
@@ -3128,6 +3147,8 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
     renderer->ibl_sh_slot =
         sh_global ? sh_global->ibl_sh_slot : VKR_SH_SLOT_BLACK;
   }
+  const int32_t global_radiance_stops =
+      vkr_metal_packet_global_radiance_stops(renderer, packet);
   if (plan->ibl_probe_count > 0) {
     VkrMetalPacketIblProbe *packed =
         (VkrMetalPacketIblProbe *)(cpu + plan->ibl_probes_offset);
@@ -3144,7 +3165,12 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
                            probe->blend_distance},
           .extents_weight = {probe->extents.x, probe->extents.y,
                              probe->extents.z, probe->weight},
-          .intensity_box = {probe->intensity, probe->diffuse_intensity,
+          /* The frame gain carries pre-exposure over the global source's
+             bake scale; each probe exchanges that scale for its own. */
+          .intensity_box = {probe->intensity *
+                                ldexpf(1.0f, global_radiance_stops -
+                                                 prefilter->radiance_stops),
+                            probe->diffuse_intensity,
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };
@@ -3237,6 +3263,9 @@ vkr_internal void vkr_metal_packet_write_upload_text_and_ui(
     text_offset =
         vkr_metal_packet_align_up(text_offset, AlignOf(VkrTextVertex));
     MemCopy(cpu + text_offset, draw->vertices, vertex_bytes);
+    vkr_packet_pre_expose_text_vertices((VkrTextVertex *)(cpu + text_offset),
+                                        draw->vertex_count,
+                                        packet->exposure.pre_exposure);
     text_upload->vertices_gpu = gpu + text_offset;
     text_offset += vertex_bytes;
     text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(uint32_t));

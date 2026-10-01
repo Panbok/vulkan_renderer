@@ -148,6 +148,9 @@ typedef struct VkrMetalPacketPreparedPass {
       uint32_t width;
       uint32_t height;
       Vec2 jitter;
+      /** The input colour's pre-exposure; MetalFX keeps its history in
+          exposure-independent units and writes output at this scale. */
+      float32_t pre_exposure;
       bool8_t reset;
     } metalfx;
     VkrMetalPacketTransferPass transfer;

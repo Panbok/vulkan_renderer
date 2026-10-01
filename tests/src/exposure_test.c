@@ -19,6 +19,61 @@ vkr_internal VkrExposureFrameInput exposure_input(uint32_t mode) {
   };
 }
 
+/* Commits the frame that `input` prepares from `state`. */
+vkr_internal void exposure_commit(VkrExposureState *state,
+                                  const VkrExposureFrameInput *input) {
+  const VkrExposureFrame frame = vkr_exposure_prepare(state, input);
+  vkr_exposure_commit(state, input, &frame);
+}
+
+/* Pre-exposure keeps ordinary scenes unscaled and stores extreme exposures
+ * at an exact power of two that does not flip while the exposure settles. */
+vkr_internal void test_pre_exposure_selection(void) {
+  printf("  Running test_pre_exposure_selection...\n");
+  VkrExposureState state = {0};
+  VkrExposureFrameInput input = exposure_input(VKR_EXPOSURE_MODE_MANUAL);
+  VkrExposureFrame frame = vkr_exposure_prepare(&state, &input);
+  assert(frame.pre_exposure == 1.0f && frame.pre_exposure_stops == 0);
+
+  // A night exposure stores radiance at that exposure's nearest stop.
+  input.manual_exposure = ldexpf(1.0f, 18);
+  frame = vkr_exposure_prepare(&state, &input);
+  assert(frame.pre_exposure_stops == 18 && frame.pre_exposure == 262144.0f);
+  vkr_exposure_commit(&state, &input, &frame);
+
+  // Within one stop of the committed scale it holds; beyond, it follows.
+  input.manual_exposure = exp2f(17.2f);
+  assert(vkr_exposure_prepare(&state, &input).pre_exposure_stops == 18);
+  input.manual_exposure = exp2f(16.8f);
+  assert(vkr_exposure_prepare(&state, &input).pre_exposure_stops == 17);
+
+  // Back inside the neutral band radiance is unscaled again, and the band's
+  // edge holds whichever side the scale came from.
+  input.manual_exposure = exp2f(3.9f);
+  frame = vkr_exposure_prepare(&state, &input);
+  assert(frame.pre_exposure_stops == 0 && frame.pre_exposure == 1.0f);
+  vkr_exposure_commit(&state, &input, &frame);
+  input.manual_exposure = exp2f(4.4f);
+  assert(vkr_exposure_prepare(&state, &input).pre_exposure_stops == 0);
+  input.manual_exposure = exp2f(4.7f);
+  assert(vkr_exposure_prepare(&state, &input).pre_exposure_stops == 5);
+
+  // Automatic mode follows the newest completed exposure, and the manual
+  // multiplier until one completes.
+  VkrExposureState automatic = {0};
+  VkrExposureFrameInput metered = exposure_input(VKR_EXPOSURE_MODE_AUTOMATIC);
+  metered.manual_exposure = ldexpf(1.0f, -9);
+  assert(vkr_exposure_prepare(&automatic, &metered).pre_exposure_stops == -9);
+  metered.observed_exposure = ldexpf(1.0f, 20);
+  assert(vkr_exposure_prepare(&automatic, &metered).pre_exposure_stops == 20);
+
+  // The exponent is bounded, so the scale stays finite in binary32.
+  input.manual_exposure = FLT_MAX;
+  assert(vkr_exposure_prepare(&state, &input).pre_exposure_stops ==
+         VKR_PRE_EXPOSURE_MAX_STOPS);
+  printf("  test_pre_exposure_selection PASSED\n");
+}
+
 vkr_internal void test_exposure_manual_is_passthrough(void) {
   printf("  Running test_exposure_manual_is_passthrough...\n");
   VkrExposureState state = {0};
@@ -34,7 +89,7 @@ vkr_internal void test_exposure_manual_is_passthrough(void) {
   assert(frame.compensation_ev == 0.0f);
   assert(!frame.history_valid);
 
-  vkr_exposure_commit(&state, &input);
+  exposure_commit(&state, &input);
   frame = vkr_exposure_prepare(&state, &input);
   assert(frame.manual == VKR_DEFAULT_EXPOSURE && !frame.history_valid &&
          frame.reset_reasons == 0u);
@@ -51,7 +106,7 @@ vkr_internal void test_exposure_automatic_history(void) {
   assert(!first.history_valid);
   assert(first.compensation_ev == 1.5f);
 
-  vkr_exposure_commit(&state, &input);
+  exposure_commit(&state, &input);
   const VkrExposureFrame second = vkr_exposure_prepare(&state, &input);
   assert(second.reset_reasons == 0u && second.history_valid);
 
@@ -67,7 +122,7 @@ vkr_internal void test_exposure_reset_reasons(void) {
   printf("  Running test_exposure_reset_reasons...\n");
   VkrExposureState state = {0};
   VkrExposureFrameInput input = exposure_input(VKR_EXPOSURE_MODE_AUTOMATIC);
-  vkr_exposure_commit(&state, &input);
+  exposure_commit(&state, &input);
 
   const uint32_t shared[] = {
       VKR_TEMPORAL_RESET_FIRST_FRAME,   VKR_TEMPORAL_RESET_FRAME_GAP,
@@ -105,7 +160,7 @@ vkr_internal void test_exposure_bounded_delta(void) {
   printf("  Running test_exposure_bounded_delta...\n");
   VkrExposureState state = {0};
   VkrExposureFrameInput input = exposure_input(VKR_EXPOSURE_MODE_AUTOMATIC);
-  vkr_exposure_commit(&state, &input);
+  exposure_commit(&state, &input);
 
   input.delta_time = 1.0 / 60.0;
   assert(fabsf(vkr_exposure_prepare(&state, &input).delta_seconds -
@@ -268,6 +323,7 @@ bool32_t run_exposure_tests(void) {
   test_exposure_automatic_history();
   test_exposure_reset_reasons();
   test_exposure_bounded_delta();
+  test_pre_exposure_selection();
   test_exposure_completed_history_elapsed_time();
   test_exposure_metering_config_normalize();
   test_exposure_packet_validation();

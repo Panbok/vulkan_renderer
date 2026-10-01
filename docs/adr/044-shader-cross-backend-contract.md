@@ -53,6 +53,28 @@ pass for front/back energy, tint, black absorption, sun/point/rectangle lighting
 shadow occlusion, cutout coverage, layered SSR/SSGI and API-validated resize.
 The zero-strength witness preserves all eight captured channels byte-for-byte.
 
+## Pre-exposure evidence state
+
+Pre-exposure ([ADR-081](081-physical-night-sky.md)) is **UNALIGNED**.
+
+- **Changed contracts.**
+  - Frame, utility and Vulkan resolve roots carry `pre_exposure`, and the
+    Metal tonemap root carries `inverse_pre_exposure`.
+  - Bloom parameters carry `inverse_pre_exposure`.
+  - TAA, SSR temporal, SSGI temporal, cloud trace, froxel inject, and
+    MetalFX/FSR stabilize roots carry `history_pre_exposure_scale`. TAA also
+    carries `pre_exposure`.
+- **Root sizes.**
+  - Metal: SSGI temporal keeps 416 bytes, cloud trace grows to 144, froxel
+    inject to 64 and tonemap to 64.
+  - Vulkan: TAA grows to 160 bytes.
+- **Metal evidence.** Bistro output passes at forced P = 1, 8 and 1/64, and a
+  focused API validation run is clean.
+- **Vulkan evidence.** All production modules pass `spirv-val`, and their
+  compiled offsets match the C roots.
+- **Missing gates.** Native Vulkan execution and a bilateral comparison are
+  unavailable on this host.
+
 ## Editor inspection views
 
 `VkrRenderMode` retains Lit (`DEFAULT`, 0) and Unlit (3), and adds Detail lighting
@@ -443,8 +465,8 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Volumetric clouds (UNALIGNED) | `shared/cloud_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/clouds.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
 | Opaque SSR (UNALIGNED) | `shared/ssr_kernel.slangh` | `metal/msl/post/ssr.metal` | `vulkan/slang/world/deferred.slang` |
 | Opaque SSGI (UNALIGNED) | `shared/ssgi_kernel.slangh` | `metal/msl/post/ssgi.metal` | `vulkan/slang/post/ssgi.slang` |
-| Exposure/bloom/GTAO | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
-| Temporal resolve | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
+| Exposure/bloom/GTAO (UNALIGNED: pre-exposure) | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
+| Temporal resolve (UNALIGNED: pre-exposure) | `shared/temporal_filter_kernel.slangh`; native visibility/identity helpers | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | MetalFX stationary accumulation (UNALIGNED: authorized Metal-only feature) | shared static-sample limit and CPU settling metadata | `metal/msl/post/metalfx.metal`, MetalFX SDK encode | — |
 | FSR 3.1 (UNALIGNED: authorized Vulkan-only feature) | graph inputs and prepared temporal metadata | — | `vulkan/slang/post/fsr31.slang`, FSR SDK dispatch |
 | Tonemap/FXAA/sharpening (UNALIGNED) | shared exposure state, `shared/sharpen_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |

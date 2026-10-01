@@ -29,6 +29,9 @@ typedef struct VkrPacketFrameConstants {
   uint32_t shadow_debug_mode;
   uint32_t prefilter_mip_count;
   uint32_t shadow_cascade_count;
+  /** Scale applied to inputs that cannot be lowered pre-exposed: material
+      emissive, the baked diffuse volume and the no-sky background. */
+  float32_t pre_exposure;
   /** Receiver filter and bias, already normalized by the shadow system. */
   VkrShadowReceiverPacketData shadow_receiver;
   Mat4 view;
@@ -60,6 +63,12 @@ VkrPacketFrameConstants
 vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
                                   uint32_t target_width,
                                   uint32_t target_height);
+
+/** Scales the colour of copied world text vertices by the frame's
+ * pre-exposure; alpha is coverage and stays unscaled. */
+void vkr_packet_pre_expose_text_vertices(VkrTextVertex *vertices,
+                                         uint32_t vertex_count,
+                                         float32_t pre_exposure);
 
 /** Derives the shared lighting and IBL flags. */
 uint32_t vkr_packet_derive_frame_flags(const VkrPreparedFrame *packet,

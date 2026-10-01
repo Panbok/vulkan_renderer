@@ -192,7 +192,7 @@ struct VkrMetalPacketFrameRoot {
   device VkrShL2Packed *sh_coefficients;
   texturecube<float, access::sample> prefilter;
   uint sh_global_slot;
-  uint sh_reserved;
+  float pre_exposure;
   float4 view_position;
   uint prefilter_mip_count;
   uint flags;

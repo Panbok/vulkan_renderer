@@ -224,7 +224,7 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
       const uint32_t index = params->selected_local_indices_count[i];
       const VkrPointLight *light = &input->lighting->point_lights[index];
       VkrGpuPointLightRow row;
-      vkr_point_light_pack(light, &row);
+      vkr_point_light_pack(light, 1.0f, &row);
       HASH(row);
       HASH(light->render_id);
       const uint32_t first = input->local_shadow->light_first_view[index];

@@ -648,7 +648,7 @@ struct VkrMetalPacketGBufferResolveRoot {
   uint render_mode;
   uint history_valid;
   uint previous_frame_index;
-  uint reserved;
+  float pre_exposure;
   float4x4 sky_reprojection;
   texture2d<float, access::write> clearcoat;
   texture2d<float, access::write> sheen;
@@ -985,6 +985,7 @@ static void vkr_metal_packet_gbuffer_resolve(
     emissive *= material.emissive_texture
                     .sample(material.emissive_sampler, texcoord, gradients)
                     .rgb;
+  emissive *= root.pre_exposure;
   float2 texture_extent = float2(material.base_color_texture.get_width(),
                                  material.base_color_texture.get_height());
   float footprint = max(length(gradient_x * texture_extent),
@@ -1173,7 +1174,7 @@ static float3
 vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
                               uint2 pixel) {
   if (root.sky_mode == VKR_SKY_MODE_NONE)
-    return float3(0.02, 0.02, 0.03);
+    return float3(0.02, 0.02, 0.03) * root.frame->pre_exposure;
   if (root.sky_mode == VKR_SKY_MODE_CONSTANT)
     return root.sky_radiance.rgb;
   float2 ndc = vkr_metal_packet_resolve_ndc(float2(pixel) + 0.5, root.extent);
@@ -1709,8 +1710,11 @@ struct alignas(16) VkrMetalPacketTemporalResolveRoot {
   texture2d<uint, access::read> transmission_vbuffer;
   texture2d<float, access::read> transmission_depth;
   uint transmission_enabled;
-  uint transmission_alignment_padding;
-  uint transmission_reserved[2];
+  // Converts history radiance to this frame's pre-exposure.
+  float history_pre_exposure_scale;
+  // Scales the absolute luminance floor of the transmission reactivity.
+  float pre_exposure;
+  uint transmission_reserved;
   float2 current_jitter_pixels;
   float2 previous_jitter_pixels;
   uint scene_history_mode;
@@ -1960,6 +1964,7 @@ kernel void vkr_metal_packet_temporal_resolve(
         float authored_reactive = validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
         float history_weight = ((age - 1.0f) / age) * (1.0f - authored_reactive);
         float4 history = root.history_color.read(pixel);
+        history.rgb *= root.history_pre_exposure_scale;
         // A capped EMA still oscillates with thin-coverage jitter forever.
         // Copy the completed static integral exactly; any scene change resets
         // its age through the ordinary resolve before this path can resume.
@@ -1996,7 +2001,8 @@ kernel void vkr_metal_packet_temporal_resolve(
   float derived_reactive =
       min(0.75,
                 saturate(abs(current_luminance - pre_luminance) /
-                         max(max(current_luminance, pre_luminance), 0.05)));
+                         max(max(current_luminance, pre_luminance),
+                             0.05 * root.pre_exposure)));
   float authored_reactive =
       validity.x >= 2.0 ? saturate(validity.x - 2.0) : 0.0;
   float reactive = max(derived_reactive, authored_reactive);
@@ -2026,7 +2032,10 @@ kernel void vkr_metal_packet_temporal_resolve(
                                                 allow_coverage);
     accepted = sample.accepted;
         history_confidence = sample.confidence;
-    history = accepted ? sample.color : current;
+    history = accepted ? float4(sample.color.rgb *
+                                    root.history_pre_exposure_scale,
+                                sample.color.a)
+                       : current;
   }
 
   if (accepted) {
@@ -2362,6 +2371,7 @@ static bool vkr_metal_packet_resolve_transmission_surface(
     emissive *= material.emissive_texture
                     .sample(material.emissive_sampler, texcoord, gradients)
                     .rgb;
+  emissive *= root.frame->pre_exposure;
   float transmission = saturate(material.material_alpha.y);
   if (TextureEnabled && (material.flags & 8u) != 0u) {
     const device VkrMetalPacketTransmissionMaterial &transmission_material =

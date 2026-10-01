@@ -195,7 +195,9 @@ float4 fullscreen_fragment(VkrVulkanVertexOutput input) : SV_Target0
         NonUniformResourceIndex(root.transmission_sampler);
     bool tonemap = (g_fullscreen_push.flags & VKR_FULLSCREEN_TONEMAP) != 0u;
     bool aces_fitted = (g_fullscreen_push.flags & VKR_FULLSCREEN_ACES_FITTED) != 0u;
-    float exposure = root.exposure_state->exposure_multiplier;
+    // The scene is stored pre-exposed; exposure applies to scene-linear.
+    float exposure =
+        root.exposure_state->exposure_multiplier / root.pre_exposure;
     VkrDisplayOutputParams display_output = root.display_output[0];
     uint2 extent = uint2(root.point_light_grid_origin_cell_size.xy);
     float sharpness = root.point_light_grid_origin_cell_size.z;

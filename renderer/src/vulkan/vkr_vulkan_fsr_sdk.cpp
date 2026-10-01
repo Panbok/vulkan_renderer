@@ -287,7 +287,8 @@ vkr_vulkan_fsr_sdk_dispatch(VkrVulkanFsrSdk *sdk,
       !vkr_fsr_image_valid(&dispatch->depth) ||
       !vkr_fsr_image_valid(&dispatch->motion) ||
       !vkr_fsr_image_valid(&dispatch->output) ||
-      dispatch->frame_time_ms <= 0.0f || dispatch->camera_near <= 0.0f ||
+      dispatch->frame_time_ms <= 0.0f || !(dispatch->pre_exposure > 0.0f) ||
+      dispatch->camera_near <= 0.0f ||
       dispatch->camera_far <= dispatch->camera_near ||
       dispatch->camera_fov_y_radians <= 0.0f || dispatch->sharpness != 0.0f)
     return VKR_VULKAN_FSR_SDK_INVALID_ARGUMENT;
@@ -365,7 +366,7 @@ vkr_vulkan_fsr_sdk_dispatch(VkrVulkanFsrSdk *sdk,
   description.enableSharpening = false;
   description.sharpness = 0.0f;
   description.frameTimeDelta = dispatch->frame_time_ms;
-  description.preExposure = 1.0f;
+  description.preExposure = dispatch->pre_exposure;
   description.reset = dispatch->reset != 0;
   description.cameraNear = dispatch->camera_near;
   description.cameraFar = dispatch->camera_far;

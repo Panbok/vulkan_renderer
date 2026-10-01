@@ -18,16 +18,20 @@ static float32_t vkr_exposure_finite_or(float32_t value, float32_t fallback) {
 VkrExposureMeteringConfig vkr_exposure_metering_config_default(void) {
   return (VkrExposureMeteringConfig){
       .histogram_bin_count = VKR_EXPOSURE_HISTOGRAM_BIN_COUNT,
-      .min_log_luminance = -10.0f,
-      .max_log_luminance = 10.0f,
+      /* The window spans moonlit night, about 2^-22 scene-linear, through
+         direct sun; EV 24 exposes it. 32 stops over 256 bins is 8 bins per
+         stop, so a whole-stop pre-exposure shifts it by whole bins and leaves
+         the metered exposure exact. */
+      .min_log_luminance = -24.0f,
+      .max_log_luminance = 8.0f,
       .low_percentile = 0.5f,
       .high_percentile = 0.95f,
       .middle_gray = 0.18f,
       .min_ev = -8.0f,
-      .max_ev = 4.0f,
+      .max_ev = 24.0f,
       .brighten_rate_per_second = 1.0f,
       .darken_rate_per_second = 8.0f,
-      .min_luminance = 1e-4f,
+      .min_luminance = 0x1p-28f,
   };
 }
 
@@ -100,14 +104,18 @@ VkrExposureGpuMetering
 vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
                           const VkrExposureFrame *frame) {
   const float32_t range = config->max_log_luminance - config->min_log_luminance;
+  /* The kernels meter pre-exposed radiance, whose log luminance is shifted by
+     exactly the pre-exposure exponent. Shifting the window, background
+     threshold and middle grey by it keeps the resolved exposure absolute. */
+  const float32_t stops = (float32_t)frame->pre_exposure_stops;
   return (VkrExposureGpuMetering){
-      .min_log_luminance = config->min_log_luminance,
+      .min_log_luminance = config->min_log_luminance + stops,
       .log_luminance_range = range,
       .inverse_log_luminance_range = 1.0f / range,
-      .min_luminance = config->min_luminance,
+      .min_luminance = config->min_luminance * frame->pre_exposure,
       .low_percentile = config->low_percentile,
       .high_percentile = config->high_percentile,
-      .log_middle_gray = log2f(config->middle_gray),
+      .log_middle_gray = log2f(config->middle_gray) + stops,
       .min_ev = config->min_ev,
       .max_ev = config->max_ev,
       .brighten_rate_per_second = config->brighten_rate_per_second,
@@ -158,13 +166,42 @@ VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,
 
   frame.history_valid =
       input->mode == VKR_EXPOSURE_MODE_AUTOMATIC && frame.reset_reasons == 0u;
+
+  /* Automatic mode follows the newest completed exposure; until one
+     completes, and in manual mode, the manual multiplier is the exposure. */
+  const float32_t exposure = input->mode == VKR_EXPOSURE_MODE_AUTOMATIC &&
+                                     isfinite(input->observed_exposure) &&
+                                     input->observed_exposure > 0.0f
+                                 ? input->observed_exposure
+                                 : input->manual_exposure;
+  frame.pre_exposure_stops = vkr_pre_exposure_select(
+      state->valid ? state->pre_exposure_stops : 0, exposure);
+  frame.pre_exposure = ldexpf(1.0f, frame.pre_exposure_stops);
   return frame;
 }
 
+int32_t vkr_pre_exposure_select(int32_t current_stops,
+                                float32_t exposure_multiplier) {
+  if (!isfinite(exposure_multiplier) || exposure_multiplier <= 0.0f)
+    return current_stops;
+  const float32_t stops = log2f(exposure_multiplier);
+  const float32_t neutral = (float32_t)VKR_PRE_EXPOSURE_NEUTRAL_STOPS;
+  if (current_stops == 0 && fabsf(stops) <= neutral + 0.5f)
+    return 0;
+  if (current_stops != 0 && fabsf(stops - (float32_t)current_stops) <= 1.0f)
+    return current_stops;
+  if (fabsf(stops) <= neutral)
+    return 0;
+  const float32_t limit = (float32_t)VKR_PRE_EXPOSURE_MAX_STOPS;
+  return (int32_t)lroundf(Clamp(stops, -limit, limit));
+}
+
 void vkr_exposure_commit(VkrExposureState *state,
-                         const VkrExposureFrameInput *input) {
+                         const VkrExposureFrameInput *input,
+                         const VkrExposureFrame *frame) {
   *state = (VkrExposureState){
       .mode = input->mode,
+      .pre_exposure_stops = frame->pre_exposure_stops,
       .valid = true_v,
   };
 }

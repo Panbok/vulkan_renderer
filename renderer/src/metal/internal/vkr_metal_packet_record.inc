@@ -367,7 +367,7 @@ vkr_metal_packet_record_metalfx(VkrMetalPacketRenderer *renderer,
   scaler.reactiveMaskTexture = nil;
   scaler.inputContentWidth = pass->metalfx.width;
   scaler.inputContentHeight = pass->metalfx.height;
-  scaler.preExposure = 1.0f;
+  scaler.preExposure = pass->metalfx.pre_exposure;
   scaler.jitterOffsetX = pass->metalfx.jitter.x;
   scaler.jitterOffsetY = pass->metalfx.jitter.y;
   scaler.motionVectorScaleX = (float32_t)pass->metalfx.width;

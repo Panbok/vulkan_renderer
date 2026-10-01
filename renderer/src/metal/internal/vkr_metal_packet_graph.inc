@@ -2445,7 +2445,8 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
                    .data_size = data_size,
                    .mip = 0,
                    .layer = source_slice,
-                   .display_exposure = packet->exposure.manual},
+                   .display_exposure = packet->exposure.manual,
+                   .pre_exposure = packet->exposure.pre_exposure},
         .buffer_offset = offset,
         .source_slice = source_slice,
     };

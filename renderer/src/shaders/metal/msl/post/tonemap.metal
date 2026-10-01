@@ -8,6 +8,8 @@ struct alignas(16) VkrMetalPacketTonemapRoot {
   uint2 output_extent;
   device const VkrColorGrading *color_grading;
   constant VkrDisplayOutputParams *display_output;
+  // Returns pre-exposed radiance to scene-linear before exposure.
+  float inverse_pre_exposure;
 };
 
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED =
@@ -209,7 +211,8 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
   constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge,
                                    filter::linear);
   float2 uv = input.texcoord;
-  float exposure = root->exposure_state->exposure_multiplier;
+  float exposure =
+      root->exposure_state->exposure_multiplier * root->inverse_pre_exposure;
   uint flags = root->flags;
   float sharpness = root->image_sharpness;
   VkrDisplayOutputParams display_output = *root->display_output;
@@ -257,5 +260,5 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
       flags, display_output);
 }
 
-static_assert(sizeof(VkrMetalPacketTonemapRoot) == 48,
-              "Tonemap root ABI must remain 48 bytes");
+static_assert(sizeof(VkrMetalPacketTonemapRoot) == 64,
+              "Tonemap root ABI must remain 64 bytes");

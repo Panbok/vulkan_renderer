@@ -525,6 +525,9 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
   const bool8_t bgra = item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM ||
                        item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
   const bool8_t hdr = item->format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+  /* Scene-referred sources carry the frame's pre-exposure; the display
+     exposure applies to physical radiance. */
+  const float32_t hdr_exposure = item->display_exposure / item->pre_exposure;
   const bool8_t opaque_scene = string_equals(
       vkr_renderer_capture_channel_get(item->channel)->name, "scene_color");
   const bool8_t oct_normal = item->format == VKR_TEXTURE_FORMAT_R16G16_SNORM;
@@ -586,15 +589,15 @@ static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
         target[x * 4u + 0u] = vkr_harness_capture_linear_to_srgb8(
             vkr_harness_capture_half_to_float(
                 vkr_harness_capture_read_u16(texel + 0u)),
-            item->display_exposure);
+            hdr_exposure);
         target[x * 4u + 1u] = vkr_harness_capture_linear_to_srgb8(
             vkr_harness_capture_half_to_float(
                 vkr_harness_capture_read_u16(texel + 2u)),
-            item->display_exposure);
+            hdr_exposure);
         target[x * 4u + 2u] = vkr_harness_capture_linear_to_srgb8(
             vkr_harness_capture_half_to_float(
                 vkr_harness_capture_read_u16(texel + 4u)),
-            item->display_exposure);
+            hdr_exposure);
         target[x * 4u + 3u] =
             opaque_scene
                 ? 255u
@@ -847,6 +850,7 @@ static bool8_t vkr_harness_capture_write_metadata(
       vkr_harness_json_emit_u64(writer, "layer", capture->layer) &&
       vkr_harness_json_emit_f64(writer, "display_exposure",
                                 item->display_exposure) &&
+      vkr_harness_json_emit_f64(writer, "pre_exposure", item->pre_exposure) &&
       vkr_harness_json_emit_u64(writer, "source_frame_index",
                                 capture->source_frame_index) &&
       vkr_harness_json_emit_u64(writer, "submit_serial",

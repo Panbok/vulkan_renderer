@@ -68,6 +68,12 @@ vkr_internal bool8_t vkr_vk_prepare_atmosphere_dispatch(
       .extent = {width, height},
       .face_size = source->image.width,
   };
+  /* The bake stores radiance pre-exposed by the recording frame's scale; the
+     source and prefilter carry its exponent (vkr_vk_prepare_ibl_bakes). */
+  const float32_t pre_exposure = renderer->graph->packet->exposure.pre_exposure;
+  root->params.solar.x *= pre_exposure;
+  root->params.solar.y *= pre_exposure;
+  root->params.solar.z *= pre_exposure;
   prepared->root_address = root_address;
   prepared->pipelines[0] = renderer->atmosphere_pipelines[pipeline];
   prepared->groups[0][0] = (width + 7u) / 8u;
@@ -459,6 +465,10 @@ bool8_t vkr_vk_prepare_ibl_bakes(VkrVulkanRenderer *renderer,
       continue;
     }
     VkrVulkanPreparedIblBake *bake = &prepared->bakes[prepared->count];
+    if (job->is_atmosphere)
+      source->radiance_stops =
+          renderer->graph->packet->exposure.pre_exposure_stops;
+    prefilter->radiance_stops = source->radiance_stops;
     bake->source = source;
     bake->prefilter = prefilter;
     bake->transmittance = transmittance;

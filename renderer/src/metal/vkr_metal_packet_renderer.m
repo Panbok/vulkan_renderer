@@ -61,6 +61,9 @@ enum {
   VKR_METAL_PACKET_CLOUD_NOISE_COUNT = 3,
   /* Queued environment and probe bakes awaiting the frame's IBL.Bake pass. */
   VKR_METAL_PACKET_PENDING_IBL_BAKE_MAX = 32,
+  /* Recent submissions whose pre-exposure a history may still be scaled
+     from; histories come from frames a few submissions back at most. */
+  VKR_METAL_PACKET_PRE_EXPOSURE_HISTORY = 32,
   /* Transmittance, multiple-scattering and source dispatches. */
   VKR_METAL_PACKET_ATMOSPHERE_DISPATCH_COUNT = 3,
   /* Four address modes on three axes, two min/mag filters, one canonical
@@ -299,6 +302,9 @@ typedef struct VkrMetalPacketTexture {
   /** GGX prefilter the latest queued bake writes from this source cubemap.
       Global lighting samples it; invalid until a bake is queued. */
   VkrTextureHandle ibl_prefilter;
+  /** Exponent of the radiance scale this texture's contents were written
+      at: a pre-exposed atmosphere bake's, zero for physical uploads. */
+  int32_t radiance_stops;
   uint64_t atmosphere_completion_submit_value;
   VkrAtmosphereBakeStatus atmosphere_status;
   bool8_t atmosphere_bake_active;
@@ -428,6 +434,12 @@ typedef struct VkrMetalPacketPendingIblBake {
   bool8_t is_atmosphere;
   bool8_t recorded;
 } VkrMetalPacketPendingIblBake;
+
+/* The pre-exposure exponent one submitted frame stored its radiance at. */
+typedef struct VkrMetalPacketPreExposureRecord {
+  uint64_t submit_value;
+  int32_t stops;
+} VkrMetalPacketPreExposureRecord;
 
 typedef struct VkrMetalPacketCapturePlan {
   id<MTLTexture> texture;
@@ -838,6 +850,9 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketPendingIblBake
       pending_ibl_bakes[VKR_METAL_PACKET_PENDING_IBL_BAKE_MAX];
   uint32_t pending_ibl_bake_count;
+  VkrMetalPacketPreExposureRecord
+      pre_exposure_history[VKR_METAL_PACKET_PRE_EXPOSURE_HISTORY];
+  uint32_t pre_exposure_history_next;
   /* Immutable RG16Float split-sum BRDF coefficients. Renderer lifetime;
      retirement waits for the last submitted frame root that references it. */
   VkrMetalTextureResource dfg_lut;

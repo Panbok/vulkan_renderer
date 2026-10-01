@@ -75,12 +75,13 @@ float3 vkr_bloom_combine13(VkrBloomTaps13 taps)
            (taps.j + taps.k + taps.l + taps.m) * 0.125f;
 }
 
-float3 vkr_bloom_karis_box(float3 a, float3 b, float3 c, float3 d)
+float3 vkr_bloom_karis_box(VkrBloomParams params, float3 a, float3 b,
+                           float3 c, float3 d)
 {
-    float wa = vkr_bloom_karis_weight(a);
-    float wb = vkr_bloom_karis_weight(b);
-    float wc = vkr_bloom_karis_weight(c);
-    float wd = vkr_bloom_karis_weight(d);
+    float wa = vkr_bloom_karis_weight(params, a);
+    float wb = vkr_bloom_karis_weight(params, b);
+    float wc = vkr_bloom_karis_weight(params, c);
+    float wd = vkr_bloom_karis_weight(params, d);
     return (a * wa + b * wb + c * wc + d * wd) / (wa + wb + wc + wd);
 }
 
@@ -88,13 +89,14 @@ float3 vkr_bloom_karis_box(float3 a, float3 b, float3 c, float3 d)
 // averaged by perceived intensity before the boxes are combined, so a single
 // hot texel cannot own the reduction. Only the prefilter needs this: once the
 // chain is bounded, later levels have no isolated outlier left to suppress.
-float3 vkr_bloom_combine13_karis(VkrBloomTaps13 taps)
+float3 vkr_bloom_combine13_karis(VkrBloomParams params,
+                                 VkrBloomTaps13 taps)
 {
-    return vkr_bloom_karis_box(taps.j, taps.k, taps.l, taps.m) * 0.5f +
-           vkr_bloom_karis_box(taps.a, taps.b, taps.d, taps.e) * 0.125f +
-           vkr_bloom_karis_box(taps.b, taps.c, taps.e, taps.f) * 0.125f +
-           vkr_bloom_karis_box(taps.d, taps.e, taps.g, taps.h) * 0.125f +
-           vkr_bloom_karis_box(taps.e, taps.f, taps.h, taps.i) * 0.125f;
+    return vkr_bloom_karis_box(params, taps.j, taps.k, taps.l, taps.m) * 0.5f +
+           vkr_bloom_karis_box(params, taps.a, taps.b, taps.d, taps.e) * 0.125f +
+           vkr_bloom_karis_box(params, taps.b, taps.c, taps.e, taps.f) * 0.125f +
+           vkr_bloom_karis_box(params, taps.d, taps.e, taps.g, taps.h) * 0.125f +
+           vkr_bloom_karis_box(params, taps.e, taps.f, taps.h, taps.i) * 0.125f;
 }
 
 // Four bilinear taps, each covering a 2x2 source footprint, so the filter is a
@@ -155,7 +157,7 @@ void vk_bloom_prefilter(uint3 thread_id : SV_DispatchThreadID)
         vkr_bloom_gather13(root, root.source_texture, uv, texel);
     // Threshold after the firefly-weighted reduction. Thresholding each tap
     // first would let the knee reintroduce the outlier the weighting removed.
-    float3 reduced = vkr_bloom_combine13_karis(taps);
+    float3 reduced = vkr_bloom_combine13_karis(root.params, taps);
     g_storage_2d[NonUniformResourceIndex(root.destination_texture)]
         [thread_id.xy] =
             float4(vkr_bloom_soft_threshold(root.params, reduced), 1.0f);

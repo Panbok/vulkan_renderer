@@ -29,6 +29,15 @@ bool8_t vkr_fog_settings_valid(const VkrFogSettings *settings) {
          settings->anisotropy >= -0.95f && settings->anisotropy <= 0.95f;
 }
 
+VkrFogGpuParams vkr_fog_pre_exposed(const VkrFogGpuParams *params,
+                                    float32_t pre_exposure) {
+  VkrFogGpuParams scaled = *params;
+  scaled.color_density.x *= pre_exposure;
+  scaled.color_density.y *= pre_exposure;
+  scaled.color_density.z *= pre_exposure;
+  return scaled;
+}
+
 VkrFogGpuParams vkr_fog_prepare(const VkrFogSettings *settings) {
   if (!settings->enabled || settings->density == 0.0f)
     return (VkrFogGpuParams){0};

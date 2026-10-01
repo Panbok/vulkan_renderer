@@ -135,7 +135,12 @@ struct VkrRenderer {
   uint32_t temporal_reset_reasons;
   bool8_t temporal_enabled;
   VkrExposureState exposure_state;
+  /** Newest completed automatic exposure multiplier; pre-exposure source. */
+  float32_t observed_exposure;
   uint32_t exposure_reset_reasons;
+  /** Diagnostic VKR_PRE_EXPOSURE_FORCE_STOPS override. */
+  int32_t pre_exposure_forced_stops;
+  bool8_t pre_exposure_forced;
   bool8_t bloom_forced_disabled;
   bool8_t gtao_forced_disabled;
   bool8_t ssr_forced_disabled;

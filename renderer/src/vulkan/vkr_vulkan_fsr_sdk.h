@@ -54,6 +54,8 @@ typedef struct VkrVulkanFsrSdkDispatch {
   float32_t motion_scale_x;
   float32_t motion_scale_y;
   float32_t frame_time_ms;
+  /** Radiance scale already applied to the HDR input; a power of two. */
+  float32_t pre_exposure;
   float32_t camera_near;
   float32_t camera_far;
   float32_t camera_fov_y_radians;

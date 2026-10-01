@@ -185,6 +185,23 @@ bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Ratio that brings a history written by `producer_submit_value` to this
+   frame's pre-exposure. Both scales are powers of two, so it is exact. A
+   producer outside the record window is treated as this frame's scale. */
+vkr_internal float32_t vkr_vk_history_pre_exposure_scale(
+    const VkrVulkanRenderer *renderer, uint64_t producer_submit_value) {
+  if (producer_submit_value == 0u)
+    return 1.0f;
+  for (uint32_t i = 0u; i < VKR_VULKAN_PRE_EXPOSURE_HISTORY; ++i) {
+    const VkrVulkanPreExposureRecord *record =
+        &renderer->pre_exposure_history[i];
+    if (record->submit_value == producer_submit_value)
+      return ldexpf(1.0f, renderer->graph->packet->exposure.pre_exposure_stops -
+                              record->stops);
+  }
+  return 1.0f;
+}
+
 bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedCompute *prepared,
                                        const VkrRgPass *pass) {
@@ -215,6 +232,8 @@ bool8_t vkr_vk_prepare_fsr31_stabilize(VkrVulkanRenderer *renderer,
   if (scene_stationary) {
     root.scene_stationary = scene_stationary;
     root.history_texture = previous->sampled_slot.index;
+    root.history_pre_exposure_scale = vkr_vk_history_pre_exposure_scale(
+        renderer, previous->history_producer_submit_value);
     slot->temporal_color_input = previous;
     // The preceding submission owns this history. Order its writes before
     // this read; the HISTORY pool separately proves completion before reuse.
@@ -1336,6 +1355,7 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .clearcoat_texture = indices[7],
       .sheen_texture = indices[8],
       .anisotropy_texture = indices[9],
+      .pre_exposure = packet->exposure.pre_exposure,
       .extent = {renderer->prepared_frame.viewport_width,
                  renderer->prepared_frame.viewport_height},
       .visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity,
@@ -1531,8 +1551,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .gtao_visibility_texture = gtao_visibility,
       .sky_radiance =
           sky_mode == VKR_SKY_MODE_CONSTANT
-              ? (Vec4){sky->constant_radiance.x, sky->constant_radiance.y,
-                       sky->constant_radiance.z, 0.0f}
+              ? (Vec4){sky->constant_radiance.x * packet->exposure.pre_exposure,
+                       sky->constant_radiance.y * packet->exposure.pre_exposure,
+                       sky->constant_radiance.z * packet->exposure.pre_exposure,
+                       0.0f}
               : (Vec4){0},
       .direct_source_texture = direct_source,
       .ssgi_enabled = renderer->prepared_frame.ssgi_enabled,
@@ -1671,6 +1693,13 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
           history_valid ? vkr_temporal_jitter_for_frame(
                               (uint32_t)slot->temporal_previous_frame_index)
                         : (Vec2){0},
+      .history_pre_exposure_scale =
+          history_valid
+              ? vkr_vk_history_pre_exposure_scale(
+                    renderer,
+                    slot->temporal_color_input->history_producer_submit_value)
+              : 1.0f,
+      .pre_exposure = packet->exposure.pre_exposure,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanTemporalResolveRoot),
@@ -2128,6 +2157,12 @@ bool8_t vkr_vk_prepare_ssr_temporal(VkrVulkanRenderer *renderer,
       .output_identity_texture = output_identity,
       .specular_texture = specular,
       .clearcoat_texture = clearcoat,
+      .history_pre_exposure_scale =
+          slot->ssr_history_valid
+              ? vkr_vk_history_pre_exposure_scale(
+                    renderer,
+                    slot->ssr_color_input->history_producer_submit_value)
+              : 1.0f,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsrTemporalRoot),
@@ -2248,7 +2283,8 @@ bool8_t vkr_vk_prepare_fog_apply(VkrVulkanRenderer *renderer,
       packet->temporal.current_view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
       VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
   const VkrVulkanFogRoot root = {
-      .params = packet->fog,
+      .params =
+          vkr_fog_pre_exposed(&packet->fog, packet->exposure.pre_exposure),
       .inverse_view_projection = mat4_inverse(view_projection),
       .camera_position = {packet->input.globals.view_position.x,
                           packet->input.globals.view_position.y,
@@ -2484,6 +2520,11 @@ bool8_t vkr_vk_prepare_cloud_trace(VkrVulkanRenderer *renderer,
                        renderer->prepared_frame.viewport_height},
       .frame_index = (uint32_t)packet->input.frame.frame_index,
       .history_valid = selected ? 1u : 0u,
+      .history_pre_exposure_scale =
+          selected ? vkr_vk_history_pre_exposure_scale(
+                         renderer, renderer->cloud_histories[selected_index]
+                                       .producer_submit_value)
+                   : 1.0f,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanCloudTraceRoot),
@@ -2725,6 +2766,11 @@ bool8_t vkr_vk_prepare_froxel_inject(VkrVulkanRenderer *renderer,
       .extent = {slot->froxel_fog_params->grid_dimensions_cell_pixels[0],
                  slot->froxel_fog_params->grid_dimensions_cell_pixels[1],
                  slot->froxel_fog_params->grid_dimensions_cell_pixels[2]},
+      .history_pre_exposure_scale =
+          slot->froxel_history_valid
+              ? vkr_vk_history_pre_exposure_scale(
+                    renderer, source->history_producer_submit_value)
+              : 1.0f,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanFroxelInjectRoot),
@@ -3311,6 +3357,12 @@ bool8_t vkr_vk_prepare_ssgi_temporal(VkrVulkanRenderer *renderer,
       .output_depth_texture = output_depth,
       .output_identity_texture = output_identity,
       .linear_sampler = renderer->transmission_sampler_slot,
+      .history_pre_exposure_scale =
+          slot->ssgi_history_valid
+              ? vkr_vk_history_pre_exposure_scale(
+                    renderer,
+                    slot->ssgi_color_input->history_producer_submit_value)
+              : 1.0f,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSsgiTemporalRoot),

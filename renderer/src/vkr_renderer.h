@@ -673,6 +673,9 @@ typedef struct VkrCaptureItemResult {
   /** Exposure used when canonicalizing an HDR color source. Automatic-mode
    * captures receive the completed GPU multiplier before collection. */
   float32_t display_exposure;
+  /** Power-of-two radiance scale baked into scene-referred HDR sources.
+   * Dividing their values by it recovers physical radiance. */
+  float32_t pre_exposure;
   /** Producer output units for extended-linear final-color captures. */
   VkrDisplayOutputParams display_output;
 } VkrCaptureItemResult;

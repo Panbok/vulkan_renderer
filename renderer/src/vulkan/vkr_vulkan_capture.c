@@ -120,6 +120,7 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
                    .mip = 0u,
                    .layer = source_layer,
                    .display_exposure = packet->exposure.manual,
+                   .pre_exposure = packet->exposure.pre_exposure,
                    .display_output = extended_linear_final
                                          ? renderer->display_output_params
                                          : (VkrDisplayOutputParams){0}},

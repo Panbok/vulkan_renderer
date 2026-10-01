@@ -118,9 +118,11 @@ struct alignas(16) VkrMetalPacketCloudTraceRoot {
   uint2 depth_extent;
   uint frame_index;
   uint history_valid;
+  // Converts history radiance to this frame's pre-exposure.
+  float history_pre_exposure_scale;
 };
 
-static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 128u,
+static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 144u,
               "VkrMetalPacketCloudTraceRoot ABI drift");
 
 // Optical depth toward the sun through the base shape, with doubling steps.
@@ -262,6 +264,8 @@ kernel void vkr_metal_packet_cloud_trace(
       history_valid
           ? root.history.sample(vkr_metal_cloud_history_sampler, previous_uv)
           : current;
+  if (history_valid)
+    history.rgb *= root.history_pre_exposure_scale;
   root.output.write(vkr_cloud_history_blend(current, history, history_valid),
                     texel);
 }

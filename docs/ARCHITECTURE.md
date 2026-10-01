@@ -1062,12 +1062,14 @@ spare channel, with no additional images. Retained shadow images converge to a
 common submitted projection so cached per-image fits cannot prevent temporal
 convergence after camera movement. The G-buffer writes
 sky rotation motion for portable TAA and MetalFX. Completed history remains
-scene-linear and exposure-independent.
+scene-linear. It is stored at the frame's whole-stop pre-exposure, and each
+consumer rescales it exactly when that changes
+([ADR-081](adr/081-physical-night-sky.md)).
 
 Automatic exposure adapts over elapsed time since its selected completed state,
 using a renderer-owned committed exposure clock and a bounded hitch policy.
-Defaults lower exposure at 8 EV/s and raise it at 1 EV/s with a +4 EV upper target
-limit. Exposure, bloom and GTAO have independent frame controls. GTAO's slice
+Defaults lower exposure at 8 EV/s and raise it at 1 EV/s with a +24 EV upper target
+limit, so physical night scenes are reachable. Exposure, bloom and GTAO have independent frame controls. GTAO's slice
 basis and horizon signs follow view reconstruction. RGBA8 outputs carry world
 bent normals and visibility: global/probe diffuse uses bent sampling and
 albedo-aware multi-bounce compensation, while baked volumes retain scalar AO.

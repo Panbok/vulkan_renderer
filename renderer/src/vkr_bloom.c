@@ -79,23 +79,32 @@ VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
           ? frame->intensity *
                 ((float32_t)config->max_mip_count / (float32_t)mip_count)
           : 0.0f;
+  /* The kernels read pre-exposed radiance, so every scene-linear level scales
+     with it, its epsilon included; the soft threshold is then unchanged. The
+     Karis weight is not scale-free and returns luminance to scene-linear
+     first. */
+  const float32_t pre_exposure = frame->pre_exposure;
   return (VkrBloomGpuParams){
-      .threshold = frame->threshold,
-      .knee = frame->knee,
-      .knee_denominator = 4.0f * frame->knee + VKR_BLOOM_KNEE_EPSILON,
-      .firefly_clamp = config->firefly_clamp,
+      .threshold = frame->threshold * pre_exposure,
+      .knee = frame->knee * pre_exposure,
+      .knee_denominator =
+          (4.0f * frame->knee + VKR_BLOOM_KNEE_EPSILON) * pre_exposure,
+      .firefly_clamp = config->firefly_clamp * pre_exposure,
       .intensity = intensity,
+      .inverse_pre_exposure = 1.0f / pre_exposure,
   };
 }
 
 VkrBloomFrame vkr_bloom_prepare(bool8_t enabled, float32_t threshold,
-                                float32_t knee, float32_t intensity) {
+                                float32_t knee, float32_t intensity,
+                                float32_t pre_exposure) {
   if (!enabled)
-    return (VkrBloomFrame){0};
+    return (VkrBloomFrame){.pre_exposure = pre_exposure};
   return (VkrBloomFrame){
       .enabled = true_v,
       .threshold = threshold,
       .knee = knee,
       .intensity = intensity,
+      .pre_exposure = pre_exposure,
   };
 }

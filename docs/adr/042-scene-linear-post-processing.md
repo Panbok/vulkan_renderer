@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-08
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -17,15 +17,17 @@ modify the lighting terms they physically approximate.
 
 ## Decision
 
-Keep temporal history scene-linear. Meter the post-temporal HDR source with a
-256-bin log-luminance histogram and percentile exposure resolve. Renderer-owned
+Keep temporal history scene-linear, up to the whole-stop pre-exposure of
+[ADR-081](081-physical-night-sky.md), which every history consumer rescales
+exactly. Meter the post-temporal HDR source with a 256-bin log-luminance
+histogram over [-24, 8] log2 and percentile exposure resolve. Renderer-owned
 frame delta/discontinuities control completion-safe EV history. Each native
 renderer advances an exposure clock only when an exposure output is submitted
 and stores that clock with the output. Adaptation uses elapsed exposure-clock
 time since the selected completed history, bounded by the shared hitch limit;
 it does not apply only one frame's delta to an older state. Invalid history snaps
 to target. Defaults lower exposure at 8 EV/s, raise it at 1 EV/s, and clamp the
-target to [-8,+4] EV. The rate names describe displayed-image brightness.
+target to [-8,+24] EV so night scenes are reachable. The rate names describe displayed-image brightness.
 Tonemap consumes GPU state
 without synchronous CPU readback; delayed completed samples expose diagnostics.
 Manual exposure remains an explicit alternative.
@@ -94,7 +96,9 @@ behavior, not a frame-time claim.
 
 ## Alternatives considered
 
-Pre-exposing temporal history couples adaptation to reconstruction. Scalar AO on all
+Continuously pre-exposing temporal history couples adaptation to
+reconstruction; ADR-081 instead steps pre-exposure in whole stops with
+hysteresis and rescales histories exactly. Scalar AO on all
 lighting darkens direct lighting and cannot model directional specular occlusion. Reusing stale HZB as current
 GTAO depth changes the input contract.
 

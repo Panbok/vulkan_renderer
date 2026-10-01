@@ -64,6 +64,23 @@ vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                                                    : NULL;
 }
 
+/* Ratio that brings a history written by `producer_submit_value` to this
+   frame's pre-exposure. Both scales are powers of two, so it is exact. A
+   producer outside the record window is treated as this frame's scale. */
+vkr_internal float32_t vkr_metal_packet_history_pre_exposure_scale(
+    const VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    uint64_t producer_submit_value) {
+  for (uint32_t i = 0u; i < VKR_METAL_PACKET_PRE_EXPOSURE_HISTORY; ++i) {
+    const VkrMetalPacketPreExposureRecord *record =
+        &renderer->pre_exposure_history[i];
+    if (record->submit_value == producer_submit_value &&
+        producer_submit_value != 0u)
+      return ldexpf(1.0f,
+                    packet->exposure.pre_exposure_stops - record->stops);
+  }
+  return 1.0f;
+}
+
 /* Cancellation proves the command buffer carrying the recorded bakes was not
    submitted. The bakes stay queued for the next frame; their SH candidates
    return to the pool so a retry does not leak a slot. */
@@ -128,10 +145,19 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
                                   : renderer->ibl_black_prefilter.resource_id,
       .sh_global_slot =
           has_global_ibl ? renderer->ibl_sh_slot : VKR_SH_SLOT_BLACK,
+      .pre_exposure = frame_constants.pre_exposure,
       .view_position = frame_constants.view_position,
       .prefilter_mip_count = frame_constants.prefilter_mip_count,
       .flags = *out_frame_flags,
-      .ibl_controls = frame_constants.ibl_controls,
+      /* The shared constants pre-expose the IBL gain; the global source's
+         own bake scale is removed here. */
+      .ibl_controls = {frame_constants.ibl_controls.x *
+                           (has_global_ibl
+                                ? ldexpf(1.0f, -global_prefilter->radiance_stops)
+                                : 1.0f),
+                       frame_constants.ibl_controls.y,
+                       frame_constants.ibl_controls.z,
+                       frame_constants.ibl_controls.w},
       .directional_direction_enabled =
           frame_constants.directional_direction_enabled,
       .directional_color_intensity =
@@ -645,6 +671,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
       editor_rect ? (uint32_t)editor_rect->w : target_height;
   *root = (VkrMetalPacketTonemapRoot){
       .source_texture_id = source.gpuResourceID._impl,
+      .inverse_pre_exposure = 1.0f / packet->exposure.pre_exposure,
       .flags =
           (!editor_rect && renderer->tonemap_enabled ? 1u : 0u) |
           (!editor_rect && !prepare_display_linear && renderer->fxaa_enabled &&
@@ -728,8 +755,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_selection_outline(
 /* Records every queued bake into this frame's IBL.Bake pass. Roots come from
    the frame upload, so a cancelled frame keeps the queue for its retry. */
 vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
-    VkrMetalPacketRenderer *renderer, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketResult *result)
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload,
+    VkrMetalPacketResult *result)
     API_AVAILABLE(macos(26.0)) {
   const uint64_t pending_submit = renderer->submit_value + 1u;
   for (uint32_t i = 0u; i < renderer->pending_ibl_bake_count; ++i) {
@@ -758,6 +786,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
     uint64_t root_gpu = 0u;
 
     if (job->is_atmosphere) {
+      /* The bake stores radiance pre-exposed by this frame's scale, so a
+         night sky fits RGBA16F; the source and prefilter carry the
+         exponent for whichever frames later sample them. */
+      VkrAtmosphereGpuParams bake_params = job->params;
+      bake_params.solar.x *= packet->exposure.pre_exposure;
+      bake_params.solar.y *= packet->exposure.pre_exposure;
+      bake_params.solar.z *= packet->exposure.pre_exposure;
+      source->radiance_stops = packet->exposure.pre_exposure_stops;
       /* Transmittance, then multiple scattering, then the source cube; the
          source dispatch reads only the face size. */
       const uint32_t extents[VKR_METAL_PACKET_ATMOSPHERE_DISPATCH_COUNT][2] = {
@@ -775,7 +811,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
         if (!root)
           return false_v;
         *root = (VkrMetalPacketAtmosphereRoot){
-            .params = job->params,
+            .params = bake_params,
             .transmittance_sample_texture_id =
                 transmittance->resource.resource_id,
             .transmittance_storage_texture_id =
@@ -792,6 +828,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ibl(
       }
     }
 
+    prefilter->radiance_stops = source->radiance_stops;
     job->prefilter_size = (uint32_t)prefilter_texture.width;
     job->prefilter_mip_count = (uint32_t)prefilter_texture.mipmapLevelCount;
     for (uint32_t mip = 0u; mip < job->prefilter_mip_count; ++mip) {
@@ -1403,6 +1440,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
   if (!root)
     return false_v;
   *root = (VkrMetalPacketGBufferResolveRoot){
+      .pre_exposure = packet->exposure.pre_exposure,
       .visible_rows = visible->resource.gpu_address,
       .geometry_rows = upload->gpu_draw_geometry_rows_gpu,
       .instances = upload->gpu_draw_instances_gpu,
@@ -1783,6 +1821,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssgi(
     if (!root)
       return false_v;
     *root = (VkrMetalPacketSsgiTemporalRoot){
+        .history_pre_exposure_scale =
+            history_valid
+                ? vkr_metal_packet_history_pre_exposure_scale(
+                      renderer, packet,
+                      color_slot->instances[selected]
+                          .history_producer_submit_value)
+                : 1.0f,
         .receiver_texture_id = receiver.gpuResourceID._impl,
         .params = renderer->ssgi_params,
         .raw_texture_id = raw.gpuResourceID._impl,
@@ -2105,6 +2150,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ssr_temporal(
   if (!root)
     return false_v;
   *root = (VkrMetalPacketSsrTemporalRoot){
+      .history_pre_exposure_scale =
+          history_valid
+              ? vkr_metal_packet_history_pre_exposure_scale(
+                    renderer, packet,
+                    color_slot->instances[selected]
+                        .history_producer_submit_value)
+              : 1.0f,
       .params = renderer->ssr_params,
       .raw_texture_id = raw.gpuResourceID._impl,
       .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
@@ -2275,7 +2327,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_fog(
   if (!root)
     return false_v;
   *root = (VkrMetalPacketFogRoot){
-      .params = packet->fog,
+      .params = vkr_fog_pre_exposed(&packet->fog, packet->exposure.pre_exposure),
       .inverse_view_projection = mat4_inverse(view_projection),
       .camera_position = {.x = packet->input.globals.view_position.x,
                           .y = packet->input.globals.view_position.y,
@@ -2412,6 +2464,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_trace(
   if (!root)
     return false_v;
   *root = (VkrMetalPacketCloudTraceRoot){
+      .history_pre_exposure_scale =
+          history_valid
+              ? vkr_metal_packet_history_pre_exposure_scale(
+                    renderer, packet,
+                    history_slot->instances[selected]
+                        .history_producer_submit_value)
+              : 1.0f,
       .previous_view_projection =
           history_valid ? renderer->cloud_history[selected].view_projection
                         : packet->sky.view_projection,
@@ -2489,6 +2548,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_froxel(
     if (!root)
       return false_v;
     *root = (VkrMetalPacketFroxelInjectRoot){
+        .history_pre_exposure_scale =
+            history_valid
+                ? vkr_metal_packet_history_pre_exposure_scale(
+                      renderer, packet,
+                      history_slot->instances[selected]
+                          .history_producer_submit_value)
+                : 1.0f,
         .frame = frame_gpu,
         .params = upload->froxel_fog_gpu,
         .history_texture_id = history.gpuResourceID._impl,
@@ -2737,8 +2803,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_deferred_lighting(
       .sky_mode = sky_mode,
       .sky_radiance =
           sky_mode == VKR_SKY_MODE_CONSTANT
-              ? (Vec4){sky->constant_radiance.x, sky->constant_radiance.y,
-                       sky->constant_radiance.z, 0.0f}
+              ? (Vec4){sky->constant_radiance.x * packet->exposure.pre_exposure,
+                       sky->constant_radiance.y * packet->exposure.pre_exposure,
+                       sky->constant_radiance.z * packet->exposure.pre_exposure,
+                       0.0f}
               : (Vec4){0},
       .direct_source_texture_id =
           ssgi_enabled ? direct_source.gpuResourceID._impl : 0u,
@@ -2867,6 +2935,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_temporal_resolve(
           : 0u,
       &upload->temporal_scene.unchanged_frames);
   *root = (VkrMetalPacketTemporalResolveRoot){
+      .pre_exposure = packet->exposure.pre_exposure,
+      .history_pre_exposure_scale =
+          history_valid
+              ? vkr_metal_packet_history_pre_exposure_scale(
+                    renderer, packet,
+                    color_slot->instances[selected]
+                        .history_producer_submit_value)
+              : 1.0f,
       .visible_rows = visible->resource.gpu_address,
       .instances = instances->resource.gpu_address,
       .scene_texture_id = scene.gpuResourceID._impl,
@@ -2944,6 +3020,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_metalfx_temporal(
   prepared->metalfx.width = content_width;
   prepared->metalfx.height = content_height;
   prepared->metalfx.jitter = packet->temporal.jitter_pixels;
+  prepared->metalfx.pre_exposure = packet->exposure.pre_exposure;
   prepared->metalfx.reset =
       packet->temporal.reset_reasons != 0u || !packet->temporal.history_valid ||
       renderer->selected_temporal_history_instance == UINT32_MAX;
@@ -3005,6 +3082,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_metalfx_stabilize(
   if (!root)
     return false_v;
   *root = (VkrMetalPacketMetalfxStabilizeRoot){
+      .history_pre_exposure_scale =
+          history_valid
+              ? vkr_metal_packet_history_pre_exposure_scale(
+                    renderer, packet,
+                    colors->instances[selected].history_producer_submit_value)
+              : 1.0f,
       .output_texture_id = output.gpuResourceID._impl,
       .history_texture_id = history.gpuResourceID._impl,
       .validity_texture_id = validity.gpuResourceID._impl,
@@ -4138,7 +4221,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
     return vkr_metal_packet_prepare_transfer(renderer, pass, prepared, upload);
   switch (prepared->kind) {
   case VKR_RG_EXECUTOR_IBL_BAKE:
-    return vkr_metal_packet_prepare_ibl(renderer, prepared, upload, result);
+    return vkr_metal_packet_prepare_ibl(renderer, packet, prepared, upload,
+                                        result);
   case VKR_RG_EXECUTOR_METALFX_TEMPORAL:
     return vkr_metal_packet_prepare_metalfx_temporal(renderer, pass, packet,
                                                      prepared);
@@ -5790,6 +5874,14 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
 
     const uint64_t submit_value = ++renderer->submit_value;
+    renderer->pre_exposure_history[renderer->pre_exposure_history_next] =
+        (VkrMetalPacketPreExposureRecord){
+            .submit_value = submit_value,
+            .stops = packet->exposure.pre_exposure_stops,
+        };
+    renderer->pre_exposure_history_next =
+        (renderer->pre_exposure_history_next + 1u) %
+        VKR_METAL_PACKET_PRE_EXPOSURE_HISTORY;
     vkr_metal_packet_mark_frame_submitted(renderer, packet, &submission,
                                           submit_value);
     VkrMetalPacketCommandSlot *command_slot = renderer->active_command_slot;

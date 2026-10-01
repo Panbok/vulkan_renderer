@@ -122,7 +122,7 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
                   96),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, sh_global_slot, "sh_global_slot",
                   104),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, sh_reserved, "sh_reserved", 108),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, pre_exposure, "pre_exposure", 108),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, view_position, "view_position", 112),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, prefilter_mip_count,
                   "prefilter_mip_count", 128),
@@ -265,6 +265,8 @@ vkr_global const VkrMetalPacketAbiField vkr_cloud_trace_root_fields[] = {
                   120),
     VKR_ABI_FIELD(VkrMetalPacketCloudTraceRoot, history_valid, "history_valid",
                   124),
+    VKR_ABI_FIELD(VkrMetalPacketCloudTraceRoot, history_pre_exposure_scale,
+                  "history_pre_exposure_scale", 128),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_build_root_fields[] = {
@@ -312,6 +314,8 @@ vkr_global const VkrMetalPacketAbiField vkr_froxel_inject_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFroxelInjectRoot, history_valid,
                   "history_valid", 32),
     VKR_ABI_FIELD(VkrMetalPacketFroxelInjectRoot, extent, "extent", 36),
+    VKR_ABI_FIELD(VkrMetalPacketFroxelInjectRoot, history_pre_exposure_scale,
+                  "history_pre_exposure_scale", 48),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_froxel_integrate_root_fields[] = {
@@ -407,6 +411,8 @@ vkr_global const VkrMetalPacketAbiField vkr_tonemap_root_fields[] = {
                   32),
     VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, display_output, "display_output",
                   40),
+    VKR_ABI_FIELD(VkrMetalPacketTonemapRoot, inverse_pre_exposure,
+                  "inverse_pre_exposure", 48),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_atmosphere_root_fields[] = {
@@ -825,6 +831,8 @@ vkr_global const VkrMetalPacketAbiField vkr_ssgi_temporal_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketSsgiTemporalRoot, instances, "instances", 392),
     VKR_ABI_FIELD(VkrMetalPacketSsgiTemporalRoot, receiver_texture_id,
                   "receiver", 400),
+    VKR_ABI_FIELD(VkrMetalPacketSsgiTemporalRoot, history_pre_exposure_scale,
+                  "history_pre_exposure_scale", 408),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ssgi_composite_root_fields[] = {
@@ -986,7 +994,8 @@ vkr_global const VkrMetalPacketAbiField vkr_ssr_temporal_root_fields[] = {
                   416),
     VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, previous_frame_index,
                   "previous_frame_index", 424),
-    VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, reserved, "reserved", 428),
+    VKR_ABI_FIELD(VkrMetalPacketSsrTemporalRoot, history_pre_exposure_scale,
+                  "history_pre_exposure_scale", 428),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_fog_params_fields[] = {
@@ -1192,7 +1201,8 @@ vkr_global const VkrMetalPacketAbiField vkr_gbuffer_resolve_root_fields[] = {
                   "history_valid", 340),
     VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, previous_frame_index,
                   "previous_frame_index", 344),
-    VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, reserved, "reserved", 348),
+    VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, pre_exposure,
+                  "pre_exposure", 348),
     VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, sky_reprojection,
                   "sky_reprojection", 352),
     VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, clearcoat_texture_id,
@@ -1287,7 +1297,9 @@ vkr_global const VkrMetalPacketAbiField vkr_metalfx_stabilize_root_fields[] = {
                   "history_valid", 48),
     VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, scene_stationary,
                   "scene_stationary", 52),
-    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, reserved, "reserved", 56),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot,
+                  history_pre_exposure_scale, "history_pre_exposure_scale", 56),
+    VKR_ABI_FIELD(VkrMetalPacketMetalfxStabilizeRoot, reserved, "reserved", 60),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
@@ -1339,11 +1351,12 @@ vkr_global const VkrMetalPacketAbiField vkr_temporal_resolve_root_fields[] = {
                   transmission_depth_texture_id, "transmission_depth", 176),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, transmission_enabled,
                   "transmission_enabled", 184),
-    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot,
-                  transmission_alignment_padding,
-                  "transmission_alignment_padding", 188),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, history_pre_exposure_scale,
+                  "history_pre_exposure_scale", 188),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, pre_exposure,
+                  "pre_exposure", 192),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, transmission_reserved,
-                  "transmission_reserved", 192),
+                  "transmission_reserved", 196),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, current_jitter_pixels,
                   "current_jitter_pixels", 200),
     VKR_ABI_FIELD(VkrMetalPacketTemporalResolveRoot, previous_jitter_pixels,
@@ -1590,7 +1603,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrDisplayOutputParams, "VkrDisplayOutputParams", 16,
                            4, vkr_display_output_params_fields),
         [VKR_METAL_PACKET_ABI_TONEMAP_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketTonemapRoot, "VkrMetalPacketTonemapRoot", 48, 16,
+            VkrMetalPacketTonemapRoot, "VkrMetalPacketTonemapRoot", 64, 16,
             vkr_tonemap_root_fields),
         [VKR_METAL_PACKET_ABI_ATMOSPHERE_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketAtmosphereRoot, "VkrMetalPacketAtmosphereRoot", 192,
@@ -1666,7 +1679,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            vkr_froxel_params_fields),
         [VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketFroxelInjectRoot, "VkrMetalPacketFroxelInjectRoot",
-            48, 16, vkr_froxel_inject_root_fields),
+            64, 16, vkr_froxel_inject_root_fields),
         [VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketFroxelIntegrateRoot,
                            "VkrMetalPacketFroxelIntegrateRoot", 48, 16,
@@ -1743,7 +1756,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VkrMetalPacketSkyBuildRoot, "VkrMetalPacketCloudShadowRoot", 16, 16,
             vkr_sky_build_root_fields),
         [VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketCloudTraceRoot, "VkrMetalPacketCloudTraceRoot", 128,
+            VkrMetalPacketCloudTraceRoot, "VkrMetalPacketCloudTraceRoot", 144,
             16, vkr_cloud_trace_root_fields),
         [VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketTemporalResolveRoot,

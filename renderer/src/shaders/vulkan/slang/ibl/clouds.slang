@@ -118,7 +118,8 @@ struct VkrVulkanCloudTraceRoot
     uint2 depth_extent;
     uint frame_index;
     uint history_valid;
-    uint2 reserved;
+    float history_pre_exposure_scale;
+    uint reserved;
 };
 
 struct VkrVulkanCloudTracePush
@@ -285,6 +286,8 @@ void cloud_trace_compute(uint3 id : SV_DispatchThreadID)
             ? g_textures[root.history_texture].SampleLevel(
                   g_samplers[root.history_sampler], previous_uv, 0.0f)
             : current;
+    if (history_valid)
+        history.rgb *= root.history_pre_exposure_scale;
     g_storage_2d[root.output_texture][texel] =
         vkr_cloud_history_blend(current, history, history_valid);
 }

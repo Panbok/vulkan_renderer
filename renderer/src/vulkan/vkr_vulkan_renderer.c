@@ -1061,6 +1061,14 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
                                               VkrVulkanFrameSlot *slot,
                                               uint64_t signal_value) {
   renderer->submit_value = signal_value;
+  renderer->pre_exposure_history[renderer->pre_exposure_history_next] =
+      (VkrVulkanPreExposureRecord){
+          .submit_value = signal_value,
+          .stops = packet->exposure.pre_exposure_stops,
+      };
+  renderer->pre_exposure_history_next =
+      (renderer->pre_exposure_history_next + 1u) %
+      VKR_VULKAN_PRE_EXPOSURE_HISTORY;
   if (slot->picking_readback_pending)
     slot->picking_submit_value = signal_value;
   if (slot->sh_coefficients_clear_recorded) {

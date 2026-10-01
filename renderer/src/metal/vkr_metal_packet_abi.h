@@ -136,7 +136,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t sh_coefficients_address;
   uint64_t prefilter_texture_id;
   uint32_t sh_global_slot;
-  uint32_t sh_reserved;
+  float32_t pre_exposure;
   Vec4 view_position;
   uint32_t prefilter_mip_count;
   uint32_t flags;
@@ -411,9 +411,12 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelInjectRoot {
   uint64_t output_texture_id;
   uint32_t history_valid;
   uint32_t extent[3];
+  /** Converts history source radiance to this frame's pre-exposure. */
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved[3];
 } VkrMetalPacketFroxelInjectRoot;
 
-_Static_assert(sizeof(VkrMetalPacketFroxelInjectRoot) == 48u,
+_Static_assert(sizeof(VkrMetalPacketFroxelInjectRoot) == 64u,
                "Metal froxel inject root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelIntegrateRoot {
@@ -476,9 +479,12 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudTraceRoot {
   uint32_t depth_extent[2];
   uint32_t frame_index;
   uint32_t history_valid;
+  /** Converts history radiance to this frame's pre-exposure. */
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved[3];
 } VkrMetalPacketCloudTraceRoot;
 
-_Static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 128u,
+_Static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 144u,
                "Metal cloud trace root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiDepthBaseRoot {
@@ -535,6 +541,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiTemporalRoot {
   uint64_t visible_rows;
   uint64_t instances;
   uint64_t receiver_texture_id;
+  /** Converts history radiance to this frame's pre-exposure. */
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved;
 } VkrMetalPacketSsgiTemporalRoot;
 
 _Static_assert(sizeof(VkrMetalPacketSsgiTemporalRoot) == 416u,
@@ -647,7 +656,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
   uint64_t previous_transforms;
   uint64_t reprojection;
   uint32_t previous_frame_index;
-  uint32_t reserved;
+  /** Converts history radiance to this frame's pre-exposure. */
+  float32_t history_pre_exposure_scale;
 } VkrMetalPacketSsrTemporalRoot;
 
 _Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 432,
@@ -868,7 +878,7 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
   uint32_t render_mode;
   uint32_t history_valid;
   uint32_t previous_frame_index;
-  uint32_t reserved;
+  float32_t pre_exposure;
   Mat4 sky_reprojection;
   uint64_t clearcoat_texture_id;
   uint64_t sheen_texture_id;
@@ -916,8 +926,11 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint64_t transmission_vbuffer_texture_id;
   uint64_t transmission_depth_texture_id;
   uint32_t transmission_enabled;
-  uint32_t transmission_alignment_padding;
-  uint32_t transmission_reserved[2];
+  /** Converts history radiance to this frame's pre-exposure. */
+  float32_t history_pre_exposure_scale;
+  /** Scales the absolute luminance floor of the transmission reactivity. */
+  float32_t pre_exposure;
+  uint32_t transmission_reserved;
   Vec2 current_jitter_pixels;
   Vec2 previous_jitter_pixels;
   uint32_t scene_history_mode;
@@ -945,7 +958,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketMetalfxStabilizeRoot {
   Vec2 jitter_pixels;
   uint32_t history_valid;
   uint32_t scene_stationary;
-  uint32_t reserved[2];
+  /** Converts history radiance to this frame's pre-exposure. */
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved;
 } VkrMetalPacketMetalfxStabilizeRoot;
 
 _Static_assert(sizeof(VkrMetalPacketMetalfxStabilizeRoot) == 64u &&
@@ -962,7 +977,9 @@ _Static_assert(
         offsetof(VkrMetalPacketMetalfxStabilizeRoot, jitter_pixels) == 40u &&
         offsetof(VkrMetalPacketMetalfxStabilizeRoot, history_valid) == 48u &&
         offsetof(VkrMetalPacketMetalfxStabilizeRoot, scene_stationary) == 52u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, reserved) == 56u,
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot,
+                 history_pre_exposure_scale) == 56u &&
+        offsetof(VkrMetalPacketMetalfxStabilizeRoot, reserved) == 60u,
     "MetalFX stabilize root field ABI drift");
 
 /** Per-dispatch Shadow.LocalMask inputs: the G-buffer surface, its camera
@@ -1195,11 +1212,16 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {
   uint32_t output_extent[2];
   uint64_t color_grading;
   uint64_t display_output;
+  /** Returns pre-exposed radiance to scene-linear before exposure. */
+  float32_t inverse_pre_exposure;
+  uint32_t reserved[3];
 } VkrMetalPacketTonemapRoot;
 
 _Static_assert(offsetof(VkrMetalPacketTonemapRoot, display_output) == 40u,
                "Metal tonemap display-output ABI offset drift");
-_Static_assert(sizeof(VkrMetalPacketTonemapRoot) == 48u,
+_Static_assert(offsetof(VkrMetalPacketTonemapRoot, inverse_pre_exposure) == 48u,
+               "Metal tonemap pre-exposure ABI offset drift");
+_Static_assert(sizeof(VkrMetalPacketTonemapRoot) == 64u,
                "Metal tonemap root ABI size drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketAtmosphereRoot {

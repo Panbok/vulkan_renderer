@@ -34,7 +34,8 @@ struct VkrVkFsr31StabilizeRoot
     uint2 output_extent;
     uint2 render_extent;
     float2 jitter_pixels;
-    uint2 reserved;
+    float history_pre_exposure_scale;
+    uint reserved;
 };
 
 struct VkrVkFsr31StabilizePush
@@ -129,6 +130,7 @@ void vk_fsr31_stabilize(uint3 thread_id : SV_DispatchThreadID)
     // History and current are the same canonical output pixel. The history is
     // the previous submitted final result, so alpha can remain a private age.
     float4 previous = g_textures[root.history_texture].Load(int3(pixel, 0));
+    previous.rgb *= root.history_pre_exposure_scale;
     float age = min(previous.a + 1.0f, VKR_TEMPORAL_STATIC_SAMPLE_COUNT);
     float weight = (age - 1.0f) / age;
     float4 resolved = previous.a >= VKR_TEMPORAL_STATIC_SAMPLE_COUNT

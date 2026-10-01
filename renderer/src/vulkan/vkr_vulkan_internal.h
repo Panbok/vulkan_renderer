@@ -235,6 +235,9 @@ enum {
   VKR_VULKAN_GRAPH_LAYER_MAX = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
   VKR_VULKAN_TEXTURE_MIP_MAX = 16,
   VKR_VULKAN_PENDING_IBL_BAKE_MAX = 32,
+  /* Submissions whose pre-exposure a history consumer can look up. It spans
+     every in-flight frame plus the history ring with ample margin. */
+  VKR_VULKAN_PRE_EXPOSURE_HISTORY = 32,
   /* Preserve the former shared-upload ceiling for direct reads. Copy-only
      candidate rows now grow separately in STAGING memory at slot reuse. */
   VKR_VULKAN_FRAME_UPLOAD_SIZE = 75u * 1024u * 1024u,
@@ -599,7 +602,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint32_t clearcoat_texture;
   uint32_t sheen_texture;
   uint32_t anisotropy_texture;
-  uint32_t reserved_tail;
+  float32_t pre_exposure;
   Mat4 sky_reprojection;
 } VkrVulkanResolveRoot;
 
@@ -633,6 +636,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
   uint32_t scene_history_mode;
   Vec2 current_jitter_pixels;
   Vec2 previous_jitter_pixels;
+  /** Ratio from the history producer's pre-exposure to this frame's. */
+  float32_t history_pre_exposure_scale;
+  /** Scales the absolute luminance floor of the transmission reactivity. */
+  float32_t pre_exposure;
+  uint32_t reserved[2];
 } VkrVulkanTemporalResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanFsr31PrepareRoot {
@@ -659,7 +667,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanFsr31StabilizeRoot {
   uint32_t output_extent[2];
   uint32_t render_extent[2];
   Vec2 jitter_pixels;
-  uint32_t reserved[2];
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved;
 } VkrVulkanFsr31StabilizeRoot;
 _Static_assert(sizeof(VkrVulkanFsr31StabilizeRoot) == 48u,
                "FSR stabilization root must match its shader");
@@ -787,7 +796,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsrTemporalRoot {
   uint32_t output_identity_texture;
   uint32_t specular_texture;
   uint32_t clearcoat_texture;
-  uint32_t reserved[4];
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved[3];
 } VkrVulkanSsrTemporalRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsrCompositeRoot {
@@ -855,7 +865,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiTemporalRoot {
   uint32_t output_identity_texture;
   uint32_t linear_sampler;
   uint32_t receiver_texture;
-  uint32_t reserved[2];
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved;
 } VkrVulkanSsgiTemporalRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanSsgiCompositeRoot {
@@ -956,7 +967,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCloudTraceRoot {
   uint32_t depth_extent[2];
   uint32_t frame_index;
   uint32_t history_valid;
-  uint32_t reserved[2];
+  float32_t history_pre_exposure_scale;
+  uint32_t reserved;
 } VkrVulkanCloudTraceRoot;
 _Static_assert(sizeof(VkrVulkanCloudTraceRoot) == 128u,
                "Vulkan cloud trace root ABI drift");
@@ -969,7 +981,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanFroxelInjectRoot {
   uint32_t output_texture;
   uint32_t history_valid;
   uint32_t extent[3];
-  uint32_t reserved;
+  float32_t history_pre_exposure_scale;
 } VkrVulkanFroxelInjectRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanFroxelIntegrateRoot {
@@ -1339,7 +1351,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
   uint32_t sh_global_slot;
-  uint32_t sh_reserved;
+  float32_t pre_exposure;
   uint32_t shadow_texture;
   uint32_t shadow_sampler;
   uint32_t transmission_texture;
@@ -1480,7 +1492,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketUtilityRoot {
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
   uint32_t sh_global_slot;
-  uint32_t sh_reserved;
+  float32_t pre_exposure;
   uint32_t shadow_texture;
   uint32_t shadow_sampler;
   uint32_t transmission_texture;
@@ -1633,12 +1645,15 @@ _Static_assert(offsetof(VkrVulkanResolveRoot, anisotropy_texture) == 344u,
                "Deferred resolve-root anisotropy ABI drift");
 _Static_assert(offsetof(VkrVulkanResolveRoot, sky_reprojection) == 352u,
                "G-buffer sky-reprojection matrix ABI drift");
-_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 144u,
+_Static_assert(sizeof(VkrVulkanTemporalResolveRoot) == 160u,
                "Temporal resolve-root ABI size drift");
 _Static_assert(
     offsetof(VkrVulkanTemporalResolveRoot, scene_history_mode) == 124u &&
         offsetof(VkrVulkanTemporalResolveRoot, current_jitter_pixels) == 128u &&
-        offsetof(VkrVulkanTemporalResolveRoot, previous_jitter_pixels) == 136u,
+        offsetof(VkrVulkanTemporalResolveRoot, previous_jitter_pixels) ==
+            136u &&
+        offsetof(VkrVulkanTemporalResolveRoot, history_pre_exposure_scale) ==
+            144u,
     "Temporal resolve-root scene/jitter ABI drift");
 _Static_assert(sizeof(VkrVulkanLightingRoot) == 192u,
                "Deferred lighting-root ABI size drift");
@@ -1680,7 +1695,7 @@ _Static_assert(
         offsetof(VkrVulkanSsrTemporalRoot, previous_frame_index) == 440u &&
         offsetof(VkrVulkanSsrTemporalRoot, hit_texture) == 460u &&
         offsetof(VkrVulkanSsrTemporalRoot, clearcoat_texture) == 492u &&
-        offsetof(VkrVulkanSsrTemporalRoot, reserved) == 496u,
+        offsetof(VkrVulkanSsrTemporalRoot, history_pre_exposure_scale) == 496u,
     "SSR temporal root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrCompositeRoot) == 416u &&
                    offsetof(VkrVulkanSsrCompositeRoot, clearcoat_texture) ==
@@ -1719,17 +1734,16 @@ _Static_assert(offsetof(VkrVulkanFogRoot, params) == 0u &&
                "Vulkan fog root ABI offset drift");
 _Static_assert(sizeof(VkrVulkanFroxelInjectRoot) == 48u,
                "Froxel inject-root ABI drift");
-_Static_assert(offsetof(VkrVulkanFroxelInjectRoot, frame) == 0u &&
-                   offsetof(VkrVulkanFroxelInjectRoot, params) == 8u &&
-                   offsetof(VkrVulkanFroxelInjectRoot, history_texture) ==
-                       16u &&
-                   offsetof(VkrVulkanFroxelInjectRoot, history_sampler) ==
-                       20u &&
-                   offsetof(VkrVulkanFroxelInjectRoot, output_texture) == 24u &&
-                   offsetof(VkrVulkanFroxelInjectRoot, history_valid) == 28u &&
-                   offsetof(VkrVulkanFroxelInjectRoot, extent) == 32u &&
-                   offsetof(VkrVulkanFroxelInjectRoot, reserved) == 44u,
-               "Froxel inject-root ABI offset drift");
+_Static_assert(
+    offsetof(VkrVulkanFroxelInjectRoot, frame) == 0u &&
+        offsetof(VkrVulkanFroxelInjectRoot, params) == 8u &&
+        offsetof(VkrVulkanFroxelInjectRoot, history_texture) == 16u &&
+        offsetof(VkrVulkanFroxelInjectRoot, history_sampler) == 20u &&
+        offsetof(VkrVulkanFroxelInjectRoot, output_texture) == 24u &&
+        offsetof(VkrVulkanFroxelInjectRoot, history_valid) == 28u &&
+        offsetof(VkrVulkanFroxelInjectRoot, extent) == 32u &&
+        offsetof(VkrVulkanFroxelInjectRoot, history_pre_exposure_scale) == 44u,
+    "Froxel inject-root ABI offset drift");
 _Static_assert(sizeof(VkrVulkanFroxelIntegrateRoot) == 48u,
                "Froxel integrate-root ABI drift");
 _Static_assert(
@@ -2267,6 +2281,8 @@ typedef struct VkrVulkanFrameSlot {
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
   uint32_t sh_global_slot;
+  /** Bake exponent of the global prefilter; the frame gain removes it. */
+  int32_t ibl_radiance_stops;
   bool8_t ibl_ready;
   uint32_t subsurface_texture;
   uint32_t diffuse_volume_texture;
@@ -2388,6 +2404,9 @@ typedef struct VkrVulkanRetiredWindowTarget {
 typedef struct VkrVulkanPublishedTexture {
   VkrTextureHandle handle;
   VkrTextureHandle ibl_prefilter;
+  /** Exponent of the radiance scale this texture's contents were written
+      at: a pre-exposed atmosphere bake's, zero for physical uploads. */
+  int32_t radiance_stops;
   /** Published L2 coefficient slot projected from this source cubemap, or
       VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
@@ -2414,6 +2433,12 @@ typedef struct VkrVulkanPublishedTexture {
   bool8_t pending_retire;
   bool8_t atmosphere_bake_ready;
 } VkrVulkanPublishedTexture;
+
+/** Pre-exposure exponent a submitted frame wrote its HDR histories with. */
+typedef struct VkrVulkanPreExposureRecord {
+  uint64_t submit_value;
+  int32_t stops;
+} VkrVulkanPreExposureRecord;
 
 typedef struct VkrVulkanPendingIblBake {
   VkrTextureHandle source;
@@ -2845,6 +2870,9 @@ struct VkrVulkanRenderer {
   VkSemaphore timeline;
   uint64_t submit_value;
   uint64_t completed_value;
+  VkrVulkanPreExposureRecord
+      pre_exposure_history[VKR_VULKAN_PRE_EXPOSURE_HISTORY];
+  uint32_t pre_exposure_history_next;
   VkrPixelReadbackResult picking_completed_result;
   uint64_t picking_request_order;
   uint64_t picking_completed_order;
@@ -3237,7 +3265,7 @@ bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
                                   const VkrPreparedTextDraw *draws,
                                   uint32_t draw_count, Mat4 view_projection,
                                   uint32_t target_width, uint32_t target_height,
-                                  bool8_t ui_domain);
+                                  bool8_t ui_domain, float32_t radiance_scale);
 bool8_t vkr_vk_prepare_ui_draw_list(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedUi *out,
                                     const VkrPreparedUiDrawList *draw_list,

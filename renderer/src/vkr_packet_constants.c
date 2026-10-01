@@ -11,6 +11,9 @@ vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
     return constants;
 
   const VkrFrameLighting *lighting = packet->input.lighting;
+  /* Every radiometric input is lowered pre-exposed (VkrExposureFrame); the
+     packet keeps physical values, which history signatures hash. */
+  const float32_t pre_exposure = packet->exposure.pre_exposure;
   const float32_t inverse_width =
       1.0f / (float32_t)(target_width ? target_width : 1u);
   const float32_t inverse_height =
@@ -20,10 +23,10 @@ vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
                                    packet->input.globals.view_position.y,
                                    packet->input.globals.view_position.z, 1.0f};
   constants.ibl_controls =
-      lighting
-          ? (Vec4){lighting->ibl_intensity, lighting->ibl_diffuse_intensity,
-                   lighting->ibl_specular_intensity, inverse_width}
-          : (Vec4){1.0f, 1.0f, 1.0f, inverse_width};
+      lighting ? (Vec4){lighting->ibl_intensity * pre_exposure,
+                        lighting->ibl_diffuse_intensity,
+                        lighting->ibl_specular_intensity, inverse_width}
+               : (Vec4){pre_exposure, 1.0f, 1.0f, inverse_width};
   constants.directional_direction_enabled =
       lighting ? (Vec4){lighting->directional_direction.x,
                         lighting->directional_direction.y,
@@ -34,12 +37,12 @@ vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
       lighting
           ? (Vec4){lighting->directional_color.x, lighting->directional_color.y,
                    lighting->directional_color.z,
-                   lighting->directional_intensity}
+                   lighting->directional_intensity * pre_exposure}
           : vec4_zero();
-  constants.ambient_color =
-      (Vec4){packet->input.globals.ambient_color.x,
-             packet->input.globals.ambient_color.y,
-             packet->input.globals.ambient_color.z, inverse_height};
+  constants.ambient_color = (Vec4){
+      packet->input.globals.ambient_color.x * pre_exposure,
+      packet->input.globals.ambient_color.y * pre_exposure,
+      packet->input.globals.ambient_color.z * pre_exposure, inverse_height};
 
   /* The grid block stays zeroed unless finite lights actually populated it;
      an empty grid must not publish a cell size or dimensions. */
@@ -59,6 +62,7 @@ vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
   constants.shadow_debug_mode =
       packet->input.debug ? packet->input.debug->shadow_debug_mode : 0u;
   constants.prefilter_mip_count = VKR_IBL_PREFILTER_MIP_COUNT;
+  constants.pre_exposure = pre_exposure;
   constants.shadow_cascade_count =
       packet->input.shadow ? packet->input.shadow->cascade_count : 0u;
   /* Zeroed without a shadow payload: a zero tap count is the receiver's own
@@ -67,6 +71,18 @@ vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
     constants.shadow_receiver = packet->input.shadow->receiver;
   constants.view = packet->input.globals.view;
   return constants;
+}
+
+void vkr_packet_pre_expose_text_vertices(VkrTextVertex *vertices,
+                                         uint32_t vertex_count,
+                                         float32_t pre_exposure) {
+  if (pre_exposure == 1.0f)
+    return;
+  for (uint32_t i = 0u; i < vertex_count; ++i) {
+    vertices[i].color.x *= pre_exposure;
+    vertices[i].color.y *= pre_exposure;
+    vertices[i].color.z *= pre_exposure;
+  }
 }
 
 uint32_t vkr_packet_derive_frame_flags(const VkrPreparedFrame *packet,

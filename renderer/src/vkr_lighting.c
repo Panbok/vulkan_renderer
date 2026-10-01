@@ -1,7 +1,7 @@
 #include "vkr_lighting.h"
 #include <math.h>
 
-void vkr_point_light_pack(const VkrPointLight *light,
+void vkr_point_light_pack(const VkrPointLight *light, float32_t radiance_scale,
                           VkrGpuPointLightRow *row) {
   row->p0 = (Vec4){light->position.x, light->position.y, light->position.z,
                    light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
@@ -11,8 +11,8 @@ void vkr_point_light_pack(const VkrPointLight *light,
                    light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
                        ? cosf(light->outer_cone_angle)
                        : light->linear};
-  row->p2 = (Vec4){light->intensity, light->quadratic, light->range,
-                   (float32_t)light->kind};
+  row->p2 = (Vec4){light->intensity * radiance_scale, light->quadratic,
+                   light->range, (float32_t)light->kind};
   row->p3 =
       (Vec4){light->direction.x, light->direction.y, light->direction.z, 0.0f};
 }
@@ -35,12 +35,13 @@ bool8_t vkr_rectangle_light_valid(const VkrRectangleLight *light) {
 }
 
 void vkr_rectangle_light_pack(const VkrRectangleLight *light,
+                              float32_t radiance_scale,
                               VkrGpuRectangleLightRow *row) {
   row->center_half_width = (Vec4){light->position.x, light->position.y,
                                   light->position.z, light->half_width};
   row->right_half_height = (Vec4){light->right.x, light->right.y,
                                   light->right.z, light->half_height};
-  row->up_radiance =
-      (Vec4){light->up.x, light->up.y, light->up.z, light->radiance};
+  row->up_radiance = (Vec4){light->up.x, light->up.y, light->up.z,
+                            light->radiance * radiance_scale};
   row->color = (Vec4){light->color.x, light->color.y, light->color.z, 0.0f};
 }

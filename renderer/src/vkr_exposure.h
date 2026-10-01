@@ -41,6 +41,16 @@ typedef enum VkrExposureResetReason {
               VKR_TEMPORAL_RESET_SCENE_CHANGE |                                \
               VKR_TEMPORAL_RESET_CAMERA_CUT | VKR_TEMPORAL_RESET_EXPLICIT))
 
+/**
+ * Pre-exposure keeps physical radiance inside RGBA16F at extreme exposures.
+ * HDR radiance is stored multiplied by P = 2^stops, a power of two so scaling
+ * and its inverse are exact. P stays 1 while the exposure is within this many
+ * stops of 1, so ordinary scenes store unscaled radiance.
+ */
+#define VKR_PRE_EXPOSURE_NEUTRAL_STOPS 4
+/** Bound on the pre-exposure exponent; RGBA16F spans about 40 stops. */
+#define VKR_PRE_EXPOSURE_MAX_STOPS 24
+
 /** Longest adaptation step a single frame may take, in seconds. */
 #define VKR_EXPOSURE_MAX_DELTA_SECONDS 0.25f
 
@@ -105,6 +115,8 @@ typedef struct VkrExposureMeteringConfig {
  */
 typedef struct VkrExposureState {
   uint32_t mode;
+  /** Committed pre-exposure exponent; the next frame's hysteresis origin. */
+  int32_t pre_exposure_stops;
   bool8_t valid;
 } VkrExposureState;
 
@@ -115,6 +127,9 @@ typedef struct VkrExposureFrameInput {
   float32_t manual_exposure;
   float32_t compensation_ev;
   float64_t delta_time;
+  /** Newest completed automatic exposure multiplier, or zero when none has
+      completed since the mode was selected. */
+  float32_t observed_exposure;
   /** Reset bits already derived for this frame by `vkr_temporal_prepare()`. */
   uint32_t temporal_reset_reasons;
   uint32_t explicit_reset_reasons;
@@ -134,6 +149,9 @@ typedef struct VkrExposureFrame {
   /** Adaptation step, clamped to [0, VKR_EXPOSURE_MAX_DELTA_SECONDS]. */
   float32_t delta_seconds;
   uint32_t reset_reasons;
+  /** Radiance scale every HDR producer applies, 2^pre_exposure_stops. */
+  float32_t pre_exposure;
+  int32_t pre_exposure_stops;
   bool8_t history_valid;
 } VkrExposureFrame;
 
@@ -238,6 +256,17 @@ vkr_exposure_metering_config_normalize(const VkrExposureMeteringConfig *config);
 VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,
                                       const VkrExposureFrameInput *input);
 
+/**
+ * Selects the pre-exposure exponent for an exposure multiplier. Zero while the
+ * exposure is within VKR_PRE_EXPOSURE_NEUTRAL_STOPS of 1, otherwise the
+ * nearest stop. `current_stops` keeps its value while the exposure stays
+ * within one stop of it (or half a stop past the neutral band), so a settled
+ * exposure does not flip the scale every frame.
+ */
+int32_t vkr_pre_exposure_select(int32_t current_stops,
+                                float32_t exposure_multiplier);
+
 /** Commits one successfully submitted frame as the next history source. */
 void vkr_exposure_commit(VkrExposureState *state,
-                         const VkrExposureFrameInput *input);
+                         const VkrExposureFrameInput *input,
+                         const VkrExposureFrame *frame);

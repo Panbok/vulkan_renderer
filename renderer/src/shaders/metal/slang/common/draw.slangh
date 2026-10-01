@@ -146,7 +146,7 @@ struct VkrMetalPacketFrameRoot
     uint64_t sh_coefficients;
     TextureCube<float4> prefilter;
     uint sh_global_slot;
-    uint sh_reserved;
+    float pre_exposure;
     float4 view_position;
     uint prefilter_mip_count;
     uint flags;

@@ -34,3 +34,8 @@ _Static_assert(sizeof(VkrFogGpuParams) == 48u, "Fog parameter ABI size drift");
 VkrFogSettings vkr_fog_settings_defaults(void);
 bool8_t vkr_fog_settings_valid(const VkrFogSettings *settings);
 VkrFogGpuParams vkr_fog_prepare(const VkrFogSettings *settings);
+/** The prepared block as uploaded: its constant in-scatter colour is radiance
+    and takes the frame's pre-exposure. The prepared block stays physical, as
+    the fog-change comparison expects. */
+VkrFogGpuParams vkr_fog_pre_exposed(const VkrFogGpuParams *params,
+                                    float32_t pre_exposure);

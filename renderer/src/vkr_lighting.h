@@ -56,11 +56,16 @@ typedef struct VkrRectangleLight {
 } VkrRectangleLight;
 
 bool8_t vkr_rectangle_light_valid(const VkrRectangleLight *light);
+/** Packs one rectangle light; `radiance_scale` is the frame's pre-exposure,
+ * or 1 for an unscaled content signature. */
 void vkr_rectangle_light_pack(const VkrRectangleLight *light,
+                              float32_t radiance_scale,
                               VkrGpuRectangleLightRow *row);
 
-/** Packs one canonical point light into the shared four-Vec4 GPU row. */
-void vkr_point_light_pack(const VkrPointLight *light, VkrGpuPointLightRow *row);
+/** Packs one canonical point light into the shared four-Vec4 GPU row;
+ * `radiance_scale` multiplies its intensity as for rectangle lights. */
+void vkr_point_light_pack(const VkrPointLight *light, float32_t radiance_scale,
+                          VkrGpuPointLightRow *row);
 
 /** Raw 128-bit light membership. Its bytes are uploaded through a float4
  * uniform and recovered with asuint() in Slang to stay within the existing

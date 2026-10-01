@@ -71,6 +71,8 @@ typedef struct VkrBloomFrame {
   float32_t knee;
   /** Weight applied to the resolved bloom when combined with the HDR source. */
   float32_t intensity;
+  /** The frame's pre-exposure: the HDR source is stored scaled by it. */
+  float32_t pre_exposure;
 } VkrBloomFrame;
 
 /**
@@ -87,7 +89,9 @@ typedef struct VkrBloomGpuParams {
   float32_t knee_denominator;
   float32_t firefly_clamp;
   float32_t intensity;
-  float32_t reserved[3];
+  /** Returns pre-exposed luminance to scene-linear for the Karis weight. */
+  float32_t inverse_pre_exposure;
+  float32_t reserved[2];
 } VkrBloomGpuParams;
 
 _Static_assert(sizeof(VkrBloomGpuParams) == 32,
@@ -131,4 +135,5 @@ VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
 
 /** Builds frame-local bloom controls from validated packet fields. */
 VkrBloomFrame vkr_bloom_prepare(bool8_t enabled, float32_t threshold,
-                                float32_t knee, float32_t intensity);
+                                float32_t knee, float32_t intensity,
+                                float32_t pre_exposure);

@@ -51,7 +51,7 @@ vkr_internal void test_bloom_config_and_mips(void) {
 vkr_internal void test_bloom_chain_gain(void) {
   printf("  Running test_bloom_chain_gain...\n");
   const VkrBloomConfig config = vkr_bloom_config_default();
-  VkrBloomFrame frame = vkr_bloom_prepare(true_v, 1.0f, 0.5f, 0.05f);
+  VkrBloomFrame frame = vkr_bloom_prepare(true_v, 1.0f, 0.5f, 0.05f, 1.0f);
   const struct {
     uint32_t width;
     uint32_t height;

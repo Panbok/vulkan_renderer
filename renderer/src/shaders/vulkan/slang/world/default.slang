@@ -1158,8 +1158,10 @@ bool packet_diffuse_volume_terms(VkrVulkanPacketFrameRoot *frame,
                 g_textures[frame.diffuse_volume_texture]
                     .Load(int3(int(term), int(node), 0)) * weight;
     }
+    // The baked volume stores physical E/pi; lighting is pre-exposed.
     float3 response = vkr_sh_l2_evaluate(
-        coefficients, vkr_sh_l2_prepare_evaluation(normal));
+        coefficients, vkr_sh_l2_prepare_evaluation(normal)) *
+        frame.pre_exposure;
     irradiance = response * ao;
     diffuse = energy.diffuse_weight * (1.0f - metallic) * albedo * ao *
               response;
@@ -1573,6 +1575,7 @@ float4 packet_world_shade(VkrVulkanVertexOutput input, bool front_facing,
                         .Sample(g_samplers[sampler_index], input.uv)
                         .rgb;
     }
+    emissive *= frame.pre_exposure;
     if (frame.render_mode == 3u)
         return float4(base.rgb + emissive,
                       material.alpha_mode == 0u ? 1.0f : base.a);

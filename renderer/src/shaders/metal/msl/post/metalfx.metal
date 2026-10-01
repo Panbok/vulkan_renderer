@@ -7,7 +7,9 @@ struct alignas(16) VkrMetalPacketMetalfxStabilizeRoot {
   float2 jitter_pixels;
   uint history_valid;
   uint scene_stationary;
-  uint2 reserved;
+  // Converts history radiance to this frame's pre-exposure.
+  float history_pre_exposure_scale;
+  uint reserved;
 };
 
 kernel void vkr_metal_packet_metalfx_stabilize(
@@ -50,6 +52,7 @@ kernel void vkr_metal_packet_metalfx_stabilize(
   // Current + four validity + previous = at most six reads and one write.
   // Alpha is private sample age; presentation restores opaque alpha separately.
   float4 previous = root.history.read(pixel);
+  previous.rgb *= root.history_pre_exposure_scale;
   float age = min(previous.a + 1.0f, VKR_TEMPORAL_STATIC_SAMPLE_COUNT);
   float weight = (age - 1.0f) / age;
   float4 resolved = previous.a >= VKR_TEMPORAL_STATIC_SAMPLE_COUNT

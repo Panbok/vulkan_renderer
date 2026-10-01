@@ -7,7 +7,7 @@ struct VkrVkFroxelInjectRoot
     uint output_texture;
     uint history_valid;
     uint3 extent;
-    uint reserved;
+    float history_pre_exposure_scale;
 };
 
 struct VkrVkFroxelIntegrateRoot
@@ -161,6 +161,7 @@ void froxel_inject_compute(uint3 cell : SV_DispatchThreadID)
         ? g_3d_textures[root.history_texture].SampleLevel(
               g_samplers[root.history_sampler], history_coordinate.uvw, 0.0f)
         : float4(0.0f);
+    history.rgb *= root.history_pre_exposure_scale;
     g_storage_3d[root.output_texture][cell] =
         vkr_froxel_temporal_filter(params, current, history, valid);
 }

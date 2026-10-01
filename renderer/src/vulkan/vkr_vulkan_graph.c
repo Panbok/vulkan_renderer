@@ -1264,7 +1264,7 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                                       packet->input.world->text_draws,
                                       packet->input.world->text_draw_count,
                                       view_projection, target_width,
-                                      target_height, false_v));
+                                      target_height, false_v, 1.0f));
   }
   case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
     return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
@@ -1294,7 +1294,8 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                renderer, &prepared->text, VKR_VULKAN_PACKET_PIPELINE_WORLD_TEXT,
                packet->input.world->text_draws,
                packet->input.world->text_draw_count, view_projection,
-               target_width, target_height, false_v);
+               target_width, target_height, false_v,
+               packet->exposure.pre_exposure);
   }
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY:
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
@@ -1647,6 +1648,7 @@ vkr_internal bool8_t vkr_vk_prepare_fsr31_dispatch(
   prepared->motion_scale_y = (float32_t)prepared->motion.extent.height;
   prepared->frame_time_ms =
       (float32_t)(packet->input.frame.delta_time * 1000.0);
+  prepared->pre_exposure = packet->exposure.pre_exposure;
   prepared->reset = !renderer->frame_slots[renderer->active_frame_slot]
                          .temporal_history_valid;
   prepared->sharpness = 0.0f;

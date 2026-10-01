@@ -508,7 +508,9 @@ static float4 vkr_metal_packet_diffuse_volume(
     for (uint coefficient = 0u; coefficient < 7u; ++coefficient)
       packed.v[coefficient] += frame->diffuse_volume.read(uint2(coefficient, row)) * weight;
   }
-  return float4(vkr_sh_l2_evaluate(packed, vkr_sh_l2_prepare_evaluation(normal)), 1.0f);
+  return float4(vkr_sh_l2_evaluate(packed, vkr_sh_l2_prepare_evaluation(normal)) *
+                    frame->pre_exposure,
+                1.0f);
 }
 
 /* The deferred pass and SSR composite share this exact local/global probe

@@ -47,6 +47,8 @@ struct alignas(16) VkrMetalPacketSsgiTemporalRoot {
   device VkrGpuVisibleDrawRow *visible_rows;
   device VkrMetalPacketInstance *instances;
   texture2d<uint, access::read> receiver;
+  // Converts history radiance to this frame's pre-exposure.
+  float history_pre_exposure_scale;
 };
 struct alignas(16) VkrMetalPacketSsgiCompositeRoot {
   constant VkrMetalPacketFrameRoot *frame;
@@ -316,7 +318,10 @@ kernel void vkr_metal_packet_ssgi_temporal(
       decision.accepted = 1u;
       decision.weight = screen.temporal_weight;
       raw = vkr_ssgi_temporal_filter(
-          raw, float4(history_sum / history_support, 1.0f),
+          raw,
+          float4(history_sum / history_support *
+                     root.history_pre_exposure_scale,
+                 1.0f),
           neighborhood_mean, neighborhood_variance, decision);
     }
   }

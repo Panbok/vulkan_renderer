@@ -139,7 +139,7 @@ struct VkrVkResolveRoot
     uint clearcoat_texture;
     uint sheen_texture;
     uint anisotropy_texture;
-    uint reserved_tail;
+    float pre_exposure;
     float4x4 sky_reprojection;
 };
 
@@ -181,6 +181,10 @@ struct VkrVkTemporalResolveRoot
     uint scene_history_mode;
     float2 current_jitter_pixels;
     float2 previous_jitter_pixels;
+    float history_pre_exposure_scale;
+    // Scales the absolute luminance floor of the transmission reactivity.
+    float pre_exposure;
+    uint reserved[2];
 };
 
 struct VkrVkLightingRoot
@@ -300,7 +304,8 @@ struct VkrVkSsrTemporalRoot
     uint output_identity_texture;
     uint specular_texture;
     uint clearcoat_texture;
-    uint reserved[4];
+    float history_pre_exposure_scale;
+    uint reserved[3];
 };
 
 struct VkrVkSsrCompositeRoot
@@ -1001,6 +1006,8 @@ struct VkrVkSurfaceSource
     uint material_count;
     uint instance_count;
     uint render_mode;
+    // Scale for material emissive, which is lowered physical.
+    float pre_exposure;
 };
 
 bool vkr_vk_reject_surface(VkrVkSurfaceSource source)
@@ -1162,6 +1169,7 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                                 material.emissive_sampler)],
                             uv, uv_dx, uv_dy)
                 .rgb;
+    emissive *= source.pre_exposure;
     uint2 base_color_extent;
     g_textures[NonUniformResourceIndex(material.base_color_texture)]
         .GetDimensions(base_color_extent.x, base_color_extent.y);
@@ -1259,7 +1267,7 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         root.materials,        root.vertices,        root.indices,
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
-        root.instance_count, root.render_mode,
+        root.instance_count, root.render_mode, root.pre_exposure,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
@@ -1466,7 +1474,7 @@ float3 vkr_vk_deferred_homogeneous(float4 value)
 float3 vkr_vk_deferred_sky(VkrVkLightingRoot *root, uint2 pixel)
 {
     if (root.sky_mode == VKR_SKY_MODE_NONE)
-        return float3(0.02f, 0.02f, 0.03f);
+        return float3(0.02f, 0.02f, 0.03f) * root.frame.pre_exposure;
     if (root.sky_mode == VKR_SKY_MODE_CONSTANT)
         return root.sky_radiance.rgb;
     // Framebuffer-derived NDC needs no Y flip here: the pipeline's viewport
@@ -2267,6 +2275,7 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
         float authored_reactive = validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
         float history_weight = ((age - 1.0f) / age) * (1.0f - authored_reactive);
         float4 history = g_textures[root.history_color_texture].Load(int3(pixel, 0));
+        history.rgb *= root.history_pre_exposure_scale;
         // A capped EMA still oscillates with thin-coverage jitter forever.
         // Copy the completed static integral exactly; any scene change resets
         // its age through the ordinary resolve before this path can resume.
@@ -2303,7 +2312,8 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
     float derived_reactive =
         min(0.75f,
                   saturate(abs(current_luminance - pre_luminance) /
-                           max(max(current_luminance, pre_luminance), 0.05f)));
+                           max(max(current_luminance, pre_luminance),
+                               0.05f * root.pre_exposure)));
     float authored_reactive =
         validity.x >= 2.0f ? saturate(validity.x - 2.0f) : 0.0f;
     float reactive = max(derived_reactive, authored_reactive);
@@ -2334,7 +2344,10 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
             check_history_depth, pixel, motion, allow_coverage);
         accepted = sample.accepted;
         history_confidence = sample.confidence;
-        history = accepted ? sample.color : current;
+        history = accepted ? float4(sample.color.rgb *
+                                        root.history_pre_exposure_scale,
+                                    sample.color.a)
+                           : current;
     }
 
     if (accepted)
@@ -2885,6 +2898,7 @@ void vk_ssr_temporal(uint3 thread_id : SV_DispatchThreadID)
         }
     }
     float4 history = vkr_ssr_spatial_resolve(history_sum, history_support);
+    history.rgb *= root.history_pre_exposure_scale;
     float2 motion = hit.previous_uv - uv -
         float2(root.params.history_jitter_uv_x, root.params.history_jitter_uv_y);
     VkrSsrHistoryDecision decision;
@@ -3257,7 +3271,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         root.materials,        root.vertices,        root.indices,
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
-        root.instance_count, root.frame.render_mode,
+        root.instance_count, root.frame.render_mode, root.frame.pre_exposure,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, pixel, surface))

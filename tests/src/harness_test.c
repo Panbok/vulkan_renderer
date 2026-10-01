@@ -2452,6 +2452,7 @@ vkr_internal void test_harness_capture_catalog_and_converters(void) {
        .value_kind = VKR_CAPTURE_VALUE_COLOR,
        .color_space = VKR_CAPTURE_COLOR_SPACE_LINEAR,
        .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .pre_exposure = 1.0f,
        .data = (const uint8_t *)hdr_bottom_left,
        .data_size = sizeof(hdr_bottom_left)},
   };

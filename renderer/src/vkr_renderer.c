@@ -303,6 +303,16 @@ vkr_internal VkrRendererError vkr_renderer_backend_present_target_recreate(
 vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
     VkrRenderer *renderer, uint64_t after_submit_value,
     VkrRendererImplSubmitResult *out_result);
+
+/* A completed automatic exposure seeds the next frames' pre-exposure. */
+vkr_internal void vkr_renderer_observe_exposure(VkrRenderer *renderer) {
+  const VkrExposureDebugSample *sample = &renderer->timing_result.exposure;
+  if (renderer->timing_completed_ready && sample->valid &&
+      isfinite(sample->state.exposure_multiplier) &&
+      sample->state.exposure_multiplier > 0.0f)
+    renderer->observed_exposure = sample->state.exposure_multiplier;
+}
+
 vkr_internal VkrAllocator *
 vkr_renderer_backend_allocator(VkrRenderer *renderer);
 vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
@@ -725,6 +735,18 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
       !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
   renderer->exposure_state = (VkrExposureState){0};
   renderer->exposure_reset_reasons = 0u;
+  /* Diagnostic: a forced pre-exposure exponent. Pre-exposure is exact, so
+     any forced scale must leave displayed output unchanged. */
+  {
+    const char *stops = getenv("VKR_PRE_EXPOSURE_FORCE_STOPS");
+    renderer->pre_exposure_forced = stops != NULL && stops[0] != '\0';
+    renderer->pre_exposure_forced_stops =
+        renderer->pre_exposure_forced
+            ? (int32_t)Clamp(strtol(stops, NULL, 10),
+                             -VKR_PRE_EXPOSURE_MAX_STOPS,
+                             VKR_PRE_EXPOSURE_MAX_STOPS)
+            : 0;
+  }
   /* Production enables bloom, and the environment override exists for the same
      reason `VKR_TAA_DISABLED` does: a matched capture of the same frame with
      and without it must not require a rebuild. */
@@ -1008,16 +1030,39 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
 
   /* Exposure reuses the discontinuities temporal already derived at this same
      boundary rather than re-deriving them from the same inputs. */
+  /* A completed exposure from another mode's chain must not seed the
+     pre-exposure. */
+  if (rf->exposure_state.mode != packet->globals.exposure_mode)
+    rf->observed_exposure = 0.0f;
   prepared->exposure_input = (VkrExposureFrameInput){
       .mode = packet->globals.exposure_mode,
       .manual_exposure = packet->globals.manual_exposure,
       .compensation_ev = packet->globals.exposure_compensation_ev,
       .delta_time = packet->frame.delta_time,
+      .observed_exposure = rf->observed_exposure,
       .temporal_reset_reasons = prepared->frame.temporal.reset_reasons,
       .explicit_reset_reasons = rf->exposure_reset_reasons,
   };
   prepared->frame.exposure =
       vkr_exposure_prepare(&rf->exposure_state, &prepared->exposure_input);
+  if (rf->pre_exposure_forced) {
+    prepared->frame.exposure.pre_exposure_stops = rf->pre_exposure_forced_stops;
+    prepared->frame.exposure.pre_exposure =
+        ldexpf(1.0f, rf->pre_exposure_forced_stops);
+  }
+  /* Inspection modes write albedo, normals and other non-radiance values
+     into the HDR target, which a 1/P tonemap would distort. */
+  if (packet->globals.render_mode != VKR_RENDER_MODE_DEFAULT) {
+    prepared->frame.exposure.pre_exposure_stops = 0;
+    prepared->frame.exposure.pre_exposure = 1.0f;
+  }
+  /* The sky record is lowered pre-exposed; the frame input keeps the physical
+     sun the temporal signature hashes. Its RGBA16F limits then bound the
+     stored values, which is what they protect. */
+  const float32_t pre_exposure = prepared->frame.exposure.pre_exposure;
+  prepared->frame.sky.atmosphere.solar.x *= pre_exposure;
+  prepared->frame.sky.atmosphere.solar.y *= pre_exposure;
+  prepared->frame.sky.atmosphere.solar.z *= pre_exposure;
 
   prepared->frame.color_grading = vkr_color_grading_prepare(
       packet->globals.white_balance_temperature,
@@ -1030,7 +1075,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.bloom_enabled && !rf->bloom_forced_disabled &&
           !indirect_diffuse_only && !editor_inspection,
       packet->globals.bloom_threshold, packet->globals.bloom_knee,
-      packet->globals.bloom_intensity);
+      packet->globals.bloom_intensity, prepared->frame.exposure.pre_exposure);
   prepared->frame.subsurface_enabled =
       prepared->frame.scene_rendering && !orthographic && packet->lighting &&
       packet->lighting->subsurface.profile_count > 0u &&
@@ -1813,6 +1858,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   renderer->timing_completed_ready = vkr_renderer_backend_poll_submit_result(
       renderer, renderer->timing_last_completed_submit_value,
       &renderer->timing_result);
+  vkr_renderer_observe_exposure(renderer);
   if (renderer->timing_completed_ready) {
     renderer->timing_last_completed_submit_value =
         renderer->timing_result.submit_value;
@@ -1945,6 +1991,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
   renderer->timing_completed_ready = vkr_renderer_backend_poll_submit_result(
       renderer, renderer->timing_last_completed_submit_value,
       &renderer->timing_result);
+  vkr_renderer_observe_exposure(renderer);
   if (renderer->timing_completed_ready) {
     renderer->timing_last_completed_submit_value =
         renderer->timing_result.submit_value;
@@ -1979,6 +2026,31 @@ VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
   return error;
 }
 
+/* A submitted frame becomes the producer of the state its successor reuses. */
+vkr_internal void
+vkr_renderer_commit_submitted_frame(VkrRenderer *renderer,
+                                    const VkrFrameInput *packet,
+                                    const VkrFramePreparation *prepared) {
+  if (prepared->frame.scene_rendering) {
+    vkr_temporal_commit(&renderer->temporal_state, &prepared->temporal_input);
+    renderer->submitted_ssgi_enabled = prepared->frame.ssgi_enabled;
+    renderer->submitted_fog = prepared->frame.fog;
+    renderer->submitted_froxel_fog = prepared->frame.froxel_fog;
+    renderer->temporal_reset_reasons = 0u;
+    vkr_exposure_commit(&renderer->exposure_state, &prepared->exposure_input,
+                        &prepared->frame.exposure);
+    renderer->exposure_reset_reasons = 0u;
+    if (packet->editor) {
+      renderer->editor_image_width = prepared->frame.editor_image_width;
+      renderer->editor_image_height = prepared->frame.editor_image_height;
+    }
+  } else {
+    /* UI submissions do not publish scene histories. Resume resets even if
+       the caller uses scene-local frame indices without a submission gap. */
+    renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+  }
+}
+
 vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
     VkrRenderer *renderer, const VkrFrameInput *packet,
     VkrRendererFrameMetrics *out_metrics,
@@ -2005,23 +2077,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
             ? "Metal frame resource allocation exhausted GPU memory"
             : "Metal frame rendering failed");
   }
-  if (prepared.frame.scene_rendering) {
-    vkr_temporal_commit(&renderer->temporal_state, &prepared.temporal_input);
-    renderer->submitted_ssgi_enabled = prepared.frame.ssgi_enabled;
-    renderer->submitted_fog = prepared.frame.fog;
-    renderer->submitted_froxel_fog = prepared.frame.froxel_fog;
-    renderer->temporal_reset_reasons = 0u;
-    vkr_exposure_commit(&renderer->exposure_state, &prepared.exposure_input);
-    renderer->exposure_reset_reasons = 0u;
-    if (packet->editor) {
-      renderer->editor_image_width = prepared.frame.editor_image_width;
-      renderer->editor_image_height = prepared.frame.editor_image_height;
-    }
-  } else {
-    /* UI submissions do not publish scene histories. Resume resets even if
-       the caller uses scene-local frame indices without a submission gap. */
-    renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
-  }
+  vkr_renderer_commit_submitted_frame(renderer, packet, &prepared);
   VkrRendererImplSubmitResult current_result = {0};
   vkr_renderer_impl_lower_metal_result(&result, &current_result);
   current_result.source_frame_index = packet->frame.frame_index;
@@ -2151,23 +2207,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
                                          : VKR_RENDERER_ERROR_SUBMISSION_FAILED,
         "vulkan", "Vulkan frame rendering failed");
   }
-  if (prepared.frame.scene_rendering) {
-    vkr_temporal_commit(&renderer->temporal_state, &prepared.temporal_input);
-    renderer->submitted_ssgi_enabled = prepared.frame.ssgi_enabled;
-    renderer->submitted_fog = prepared.frame.fog;
-    renderer->submitted_froxel_fog = prepared.frame.froxel_fog;
-    renderer->temporal_reset_reasons = 0u;
-    vkr_exposure_commit(&renderer->exposure_state, &prepared.exposure_input);
-    renderer->exposure_reset_reasons = 0u;
-    if (packet->editor) {
-      renderer->editor_image_width = prepared.frame.editor_image_width;
-      renderer->editor_image_height = prepared.frame.editor_image_height;
-    }
-  } else {
-    /* UI submissions do not publish scene histories. Resume resets even if
-       the caller uses scene-local frame indices without a submission gap. */
-    renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
-  }
+  vkr_renderer_commit_submitted_frame(renderer, packet, &prepared);
   if (!renderer->timing_completed_ready) {
     renderer->timing_result = (VkrRendererImplSubmitResult){
         .submit_value = result.submit_value,

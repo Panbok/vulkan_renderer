@@ -418,6 +418,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->prefilter_sampler = 0u;
   slot->sh_global_slot = VKR_SH_SLOT_BLACK;
   slot->ibl_ready = false_v;
+  slot->ibl_radiance_stops = 0;
   slot->subsurface_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   slot->diffuse_volume_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   slot->diffuse_volume_origin = (Vec4){0};
@@ -440,7 +441,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
       vkr_vk_frame_upload_allocate(slot, sizeof(*fog), 16u, &fog_address, NULL);
   if (!fog)
     return false_v;
-  *fog = packet->fog;
+  *fog = vkr_fog_pre_exposed(&packet->fog, packet->exposure.pre_exposure);
   slot->fog = fog_address;
 
   uint64_t froxel_fog_address = 0u;
@@ -472,7 +473,8 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     if (!rows)
       return false_v;
     for (uint32_t i = 0u; i < rectangle_count; ++i)
-      vkr_rectangle_light_pack(&lighting->rectangle_lights[i], &rows[i]);
+      vkr_rectangle_light_pack(&lighting->rectangle_lights[i],
+                               packet->exposure.pre_exposure, &rows[i]);
   }
   *ltc = (VkrVulkanLtc){
       .lights = rectangle_lights,
@@ -521,7 +523,8 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
     if (!packed)
       return false_v;
     for (uint32_t i = 0u; i < lighting->point_light_count; ++i) {
-      vkr_point_light_pack(&lighting->point_lights[i], &packed[i]);
+      vkr_point_light_pack(&lighting->point_lights[i],
+                           packet->exposure.pre_exposure, &packed[i]);
       packed[i].p3.w =
           packet->input.local_shadow
               ? (float32_t)packet->input.local_shadow->light_first_view[i]
@@ -636,6 +639,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
                                               &slot->prefilter_sampler)) {
       slot->ibl_ready = true_v;
       slot->sh_global_slot = source->ibl_sh_slot;
+      slot->ibl_radiance_stops = source->radiance_stops;
       slot->sh_referenced_slots[slot->sh_referenced_slot_count++] =
           source->ibl_sh_slot;
     }
@@ -661,6 +665,13 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };
+      /* The frame gain carries pre-exposure over the global source's bake
+         scale; each probe exchanges that scale for its own. */
+      const VkrVulkanPublishedTexture *probe_prefilter =
+          vkr_vk_published_texture(renderer, probe->prefilter, NULL);
+      packed.intensity_box.x *= ldexpf(
+          1.0f, slot->ibl_radiance_stops -
+                    (probe_prefilter ? probe_prefilter->radiance_stops : 0));
       if (!vkr_vk_resolve_sampled_pair(renderer, probe->prefilter,
                                        &packed.prefilter_texture,
                                        &packed.prefilter_sampler))
@@ -1217,6 +1228,8 @@ void vkr_vk_fill_packet_frame_root(
   root->view_position = frame->view_position;
   root->prefilter_mip_count = frame->prefilter_mip_count;
   root->ibl_controls = frame->ibl_controls;
+  root->ibl_controls.x *= ldexpf(1.0f, -slot->ibl_radiance_stops);
+  root->pre_exposure = frame->pre_exposure;
   root->directional_direction_enabled = frame->directional_direction_enabled;
   root->directional_color_intensity = frame->directional_color_intensity;
   root->ambient_color = frame->ambient_color;
@@ -1567,7 +1580,7 @@ bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
                                   const VkrPreparedTextDraw *draws,
                                   uint32_t draw_count, Mat4 view_projection,
                                   uint32_t target_width, uint32_t target_height,
-                                  bool8_t ui_domain) {
+                                  bool8_t ui_domain, float32_t radiance_scale) {
   if (draw_count == 0u)
     return true_v;
   VkrVulkanFrameSlot *slot =
@@ -1598,6 +1611,9 @@ bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
     const uint64_t index_offset = cursor;
     cursor += vkr_vk_align_up(index_bytes, 16u);
     MemCopy((uint8_t *)prepared + vertex_offset, draw->vertices, vertex_bytes);
+    vkr_packet_pre_expose_text_vertices(
+        (VkrTextVertex *)((uint8_t *)prepared + vertex_offset),
+        draw->vertex_count, radiance_scale);
     MemCopy((uint8_t *)prepared + index_offset, draw->indices, index_bytes);
     prepared[prepared_count++] = (VkrVulkanPreparedTextDraw){
         .root =
@@ -1773,6 +1789,9 @@ bool8_t vkr_vk_prepare_packet_fullscreen(
       .exposure_multiplier =
           composite ? 1.0f : renderer->graph->packet->exposure.manual,
   };
+  /* The composite samples already tonemapped pixels. */
+  root->pre_exposure =
+      composite ? 1.0f : renderer->graph->packet->exposure.pre_exposure;
   root->materials = renderer->materials.address;
   root->transmission_texture = texture_index;
   const bool8_t prepare_display_linear =

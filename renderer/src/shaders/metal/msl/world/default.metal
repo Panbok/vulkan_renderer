@@ -96,6 +96,7 @@ static float4 vkr_metal_packet_shade(
                     .sample(material.emissive_sampler, input.texcoord)
                     .rgb;
   }
+  emissive *= frame->pre_exposure;
   if (frame->render_mode == 3u)
     return float4(base.rgb + emissive,
                   material.alpha_mode == 0u ? 1.0 : base.a);

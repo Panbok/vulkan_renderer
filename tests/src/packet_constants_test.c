@@ -45,6 +45,7 @@ vkr_internal void test_packet_frame_constants(void) {
   Mat4 view = mat4_identity();
   view.elements[12] = 13.0f;
   const VkrPreparedFrame packet = {
+      .exposure = {.pre_exposure = 1.0f},
       .input = {
           .globals =
               {
@@ -92,7 +93,8 @@ vkr_internal void test_packet_frame_constants(void) {
                     sizeof(shadow.receiver)) == 0);
   assert(MemCompare(&constants.view, &view, sizeof(view)) == 0);
 
-  const VkrPreparedFrame unlit = {.input = {0}};
+  const VkrPreparedFrame unlit = {.input = {0},
+                                  .exposure = {.pre_exposure = 1.0f}};
   const VkrPacketFrameConstants defaults =
       vkr_packet_derive_frame_constants(&unlit, 0u, 0u);
   assert(defaults.ibl_controls.x == 1.0f && defaults.ibl_controls.y == 1.0f &&
@@ -140,7 +142,8 @@ vkr_internal void test_packet_material_constants(void) {
 vkr_internal void test_packet_frame_flags(void) {
   printf("  Running test_packet_frame_flags...\n");
   VkrFrameLighting lighting = {.ibl_enabled = true_v};
-  VkrPreparedFrame packet = {.input = {.lighting = &lighting}};
+  VkrPreparedFrame packet = {.input = {.lighting = &lighting},
+                             .exposure = {.pre_exposure = 1.0f}};
 
   assert(vkr_packet_derive_frame_flags(&packet, true_v, true_v) ==
          (VKR_PACKET_FRAME_FLAG_LIGHTING | VKR_PACKET_FRAME_FLAG_IBL));

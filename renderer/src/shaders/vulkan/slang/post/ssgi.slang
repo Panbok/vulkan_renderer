@@ -51,7 +51,8 @@ struct VkrVkSsgiTemporalRoot
     uint output_identity_texture;
     uint linear_sampler;
     uint receiver_texture;
-    uint2 reserved;
+    float history_pre_exposure_scale;
+    uint reserved;
 };
 
 struct VkrVkSsgiCompositeRoot
@@ -379,7 +380,10 @@ void ssgi_temporal_compute(uint3 thread_id : SV_DispatchThreadID)
             decision.accepted = 1u;
             decision.weight = root.params.temporal_weight;
             raw = vkr_ssgi_temporal_filter(
-                raw, float4(history_sum / history_support, 1.0f),
+                raw,
+                float4(history_sum / history_support *
+                           root.history_pre_exposure_scale,
+                       1.0f),
                 neighborhood_mean, neighborhood_variance, decision);
         }
     }
