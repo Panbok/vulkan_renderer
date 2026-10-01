@@ -939,6 +939,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_editor_viewport(
       draw->editor_payload.scene_rendering_stopped = draw->scene_stopped;
       draw->editor_payload.scene_backdrop_blur =
           application->editor_viewport.scene_backdrop_blur;
+      draw->editor_payload.grid = application->editor_viewport.grid;
       draw->viewport_width = draw->editor_mapping.target_width;
       draw->viewport_height = draw->editor_mapping.target_height;
       draw->has_editor = true_v;

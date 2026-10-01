@@ -26,10 +26,10 @@ vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
   /* A catalog metallib is compiled offline from this same source by
    * `vkr_bakery shaders`; failure to load it falls back to the source. */
   if (metallib_path && metallib_path[0]) {
-    NSURL *url = [NSURL
-        fileURLWithPath:[NSString stringWithUTF8String:metallib_path]];
-    id<MTLLibrary> precompiled = [renderer->device newLibraryWithURL:url
-                                                               error:&error];
+    NSURL *url =
+        [NSURL fileURLWithPath:[NSString stringWithUTF8String:metallib_path]];
+    id<MTLLibrary> precompiled =
+        [renderer->device newLibraryWithURL:url error:&error];
     if (precompiled) {
       precompiled.label = name;
       return precompiled;
@@ -312,9 +312,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_sky_abi(NSString *pipeline_label,
       vkr_metal_packet_reflected_member(sky_type, "params");
   return vkr_metal_packet_validate_nested_abi(pipeline_label, root_type, "sky",
                                               VKR_METAL_PACKET_ABI_SKY) &&
-         vkr_metal_packet_validate_nested_abi(pipeline_label, sky_type,
-                                              "params",
-                                              VKR_METAL_PACKET_ABI_SKY_PARAMS) &&
+         vkr_metal_packet_validate_nested_abi(
+             pipeline_label, sky_type, "params",
+             VKR_METAL_PACKET_ABI_SKY_PARAMS) &&
          vkr_metal_packet_validate_nested_abi(
              pipeline_label, params ? params.structType : nil, "clouds",
              VKR_METAL_PACKET_ABI_CLOUD_PARAMS);
@@ -488,8 +488,7 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
        record_id == VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_FOG_ROOT) &&
-      !vkr_metal_packet_validate_sky_abi(pipeline_label,
-                                         root.bufferStructType))
+      !vkr_metal_packet_validate_sky_abi(pipeline_label, root.bufferStructType))
     return false_v;
   if ((record_id == VKR_METAL_PACKET_ABI_FOG_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT) &&
@@ -742,6 +741,7 @@ typedef struct VkrMetalPacketPresentationPipelines {
   id<MTLRenderPipelineState> ui;
   id<MTLRenderPipelineState> editor_overlay;
   id<MTLRenderPipelineState> editor_selection_outline;
+  id<MTLRenderPipelineState> editor_grid;
   id<MTLRenderPipelineState> tonemap;
 } VkrMetalPacketPresentationPipelines;
 
@@ -750,6 +750,7 @@ vkr_internal void vkr_metal_packet_release_presentation_pipelines(
   [pipelines->ui release];
   [pipelines->editor_overlay release];
   [pipelines->editor_selection_outline release];
+  [pipelines->editor_grid release];
   [pipelines->tonemap release];
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
@@ -776,13 +777,19 @@ vkr_internal bool8_t vkr_metal_packet_create_presentation_pipelines(
       VKR_METAL_PACKET_ABI_RECORD_COUNT,
       VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT, false_v,
       @"VKR Metal editor selection outline");
+  out_pipelines->editor_grid = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_editor_grid_vertex", fragment,
+      "vkr_metal_packet_editor_grid_fragment", target_format, true_v,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
+      false_v, @"VKR Metal editor grid");
   out_pipelines->tonemap = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_tonemap_vertex", fragment,
       "vkr_metal_packet_tonemap_fragment", target_format, false_v,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
       false_v, @"VKR Metal packet tonemap");
   if (out_pipelines->ui && out_pipelines->editor_overlay &&
-      out_pipelines->editor_selection_outline && out_pipelines->tonemap)
+      out_pipelines->editor_selection_outline && out_pipelines->editor_grid &&
+      out_pipelines->tonemap)
     return true_v;
   vkr_metal_packet_release_presentation_pipelines(out_pipelines);
   return false_v;
@@ -794,11 +801,13 @@ vkr_internal void vkr_metal_packet_install_presentation_pipelines(
   [renderer->ui_pipeline release];
   [renderer->editor_overlay_pipeline release];
   [renderer->editor_selection_outline_pipeline release];
+  [renderer->editor_grid_pipeline release];
   [renderer->tonemap_pipeline release];
   renderer->ui_pipeline = pipelines->ui;
   renderer->editor_overlay_pipeline = pipelines->editor_overlay;
   renderer->editor_selection_outline_pipeline =
       pipelines->editor_selection_outline;
+  renderer->editor_grid_pipeline = pipelines->editor_grid;
   renderer->tonemap_pipeline = pipelines->tonemap;
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
@@ -1389,17 +1398,16 @@ vkr_internal bool8_t vkr_metal_packet_deferred_pipelines_ready(
       !renderer->local_shadow_mask_pipeline ||
       !renderer->deferred_lighting_pipeline ||
       !renderer->deferred_lighting_layered_pipeline ||
-      !renderer->sh_coefficients ||
-      renderer->sh_coefficients.gpuAddress == 0 || !renderer->ibl_sh_pipeline ||
+      !renderer->sh_coefficients || renderer->sh_coefficients.gpuAddress == 0 ||
+      !renderer->ibl_sh_pipeline ||
       !renderer->atmosphere_transmittance_pipeline ||
       !renderer->atmosphere_multiple_scattering_pipeline ||
       !renderer->atmosphere_source_pipeline || !renderer->sky_view_pipeline ||
       !renderer->aerial_perspective_pipeline ||
       !renderer->cloud_noise_pipelines[0] ||
       !renderer->cloud_noise_pipelines[1] ||
-      !renderer->cloud_noise_pipelines[2] ||
-      !renderer->cloud_shadow_pipeline || !renderer->cloud_trace_pipeline ||
-      !renderer->temporal_resolve_pipeline ||
+      !renderer->cloud_noise_pipelines[2] || !renderer->cloud_shadow_pipeline ||
+      !renderer->cloud_trace_pipeline || !renderer->temporal_resolve_pipeline ||
       !renderer->metalfx_stabilize_pipeline ||
       !renderer->transmission_shade_pipeline ||
       !renderer->transmission_shade_partitioned_pipeline ||
@@ -1483,6 +1491,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
        "editor selection mask pipeline"},
       {renderer->editor_selection_outline_pipeline,
        "editor selection outline pipeline"},
+      {renderer->editor_grid_pipeline, "editor grid pipeline"},
       {renderer->world_text_pipeline, "world text pipeline"},
       {renderer->picking_text_pipeline, "picking text pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},
@@ -2214,8 +2223,7 @@ vkr_internal bool8_t vkr_metal_packet_create_cloud_noise(
   id<MTLBuffer> upload_buffer = nil;
   id<MTL4ComputeCommandEncoder> encoder = nil;
   if (!vkr_metal_packet_begin_upload(renderer, VKR_METAL_PACKET_ROOT_ALIGNMENT,
-                                     &slice, &upload, &upload_buffer,
-                                     &encoder))
+                                     &slice, &upload, &upload_buffer, &encoder))
     return false_v;
   const VkrMetalPacketCloudNoiseRoot root = {
       .base_texture_id = renderer->cloud_noise[0].resource_id,

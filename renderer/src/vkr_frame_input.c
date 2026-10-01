@@ -901,6 +901,17 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
                         "packet.editor.selection_color",
                         "requires finite non-negative color, 0..1 alpha "
                         "and a 1..8 pixel width");
+    const VkrEditorGridPayload *grid = &editor->grid;
+    if (grid->enabled > true_v || grid->through_geometry > true_v ||
+        (grid->enabled &&
+         ((uint32_t)grid->plane >= VKR_EDITOR_GRID_PLANE_COUNT ||
+          !isfinite(grid->cell_size) || grid->cell_size <= 0.0f ||
+          !isfinite(grid->fade_start) || !isfinite(grid->fade_end) ||
+          grid->fade_start < 0.0f || grid->fade_end < grid->fade_start)))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.editor.grid",
+                        "requires a plane, a positive cell and ordered "
+                        "non-negative fade distances");
     if (editor->scene_backdrop_blur > true_v) {
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.scene_backdrop_blur",

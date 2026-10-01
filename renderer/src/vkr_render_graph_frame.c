@@ -60,6 +60,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->scene_rendering && packet->input.editor &&
       !packet->input.editor->scene_rendering_stopped &&
       packet->input.editor->selection_draw_count > 0u;
+  frame->editor_grid_enabled = packet->scene_rendering &&
+                               packet->input.editor &&
+                               !packet->input.editor->scene_rendering_stopped &&
+                               packet->input.editor->grid.enabled;
   frame->editor_image_width = packet->editor_image_width;
   frame->editor_image_height = packet->editor_image_height;
   frame->viewport_width = packet->input.frame.viewport_width
@@ -377,6 +381,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                                VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE] =
         {"pass.editor.selection.outline", VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_EDITOR_GRID] = {"pass.editor.grid",
+                                     VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_ANIMATION_PREVIEW] = {"pass.animation.preview",
                                            VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_UI] = {"pass.ui", VKR_RG_PASS_TYPE_GRAPHICS},

@@ -58,6 +58,16 @@
       "stage": "fragment"
     },
     {
+      "name": "packet.editor_grid.vert",
+      "entry": "editor_grid_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.editor_grid.frag",
+      "entry": "editor_grid_fragment",
+      "stage": "fragment"
+    },
+    {
       "name": "packet.fullscreen.vert",
       "entry": "fullscreen_vertex",
       "stage": "vertex"

@@ -1,0 +1,85 @@
+#ifndef VKR_SHADER_EDITOR_GRID_KERNEL_SLANGH
+#define VKR_SHADER_EDITOR_GRID_KERNEL_SLANGH
+
+// Editor ground grid (ADR-027): an analytic plane evaluated per Scene pixel,
+// compiled by the Vulkan Slang library and concatenated into the Metal
+// library. Native entries own the ray, depth test and display transform.
+//
+// Lines are anti-aliased from their screen footprint. Levels step by ten and
+// cross-fade as the camera zooms, as in UE5: the finest shown level fades out
+// while its spacing nears VKR_EDITOR_GRID_MIN_SPACING_PX, the next level
+// takes over as the minor lines and the level after it draws the majors.
+
+// Pixels between lines of the finest level when it has faded out.
+#define VKR_EDITOR_GRID_MIN_SPACING_PX 6.0f
+#define VKR_EDITOR_GRID_LINE_PX 1.0f
+#define VKR_EDITOR_GRID_MAJOR_PX 1.25f
+#define VKR_EDITOR_GRID_AXIS_PX 2.0f
+#define VKR_EDITOR_GRID_MINOR_ALPHA 0.22f
+#define VKR_EDITOR_GRID_MAJOR_ALPHA 0.42f
+#define VKR_EDITOR_GRID_AXIS_ALPHA 0.85f
+
+// Distance in pixels from `coord` to the nearest line of `spacing`, per axis;
+// `footprint` is the coordinate change across one pixel.
+float2 vkr_editor_grid_line_pixels(float2 coord, float spacing,
+                                   float2 footprint) {
+  float2 cell = coord / spacing;
+  float2 offset = abs(cell - floor(cell + 0.5f)) * spacing;
+  return offset / max(footprint, float2(1e-7f, 1e-7f));
+}
+
+// Coverage of lines `width_px` wide with a one-pixel ramp; the nearer axis
+// wins.
+float vkr_editor_grid_coverage(float2 pixels, float width_px) {
+  float2 covered = saturate(float2(width_px * 0.5f + 0.5f, width_px * 0.5f + 0.5f) -
+                            pixels);
+  return max(covered.x, covered.y);
+}
+
+// Line coverage of an axis line at coordinate zero, `pixels` from it.
+float vkr_editor_grid_axis_coverage(float pixels) {
+  return saturate(VKR_EDITOR_GRID_AXIS_PX * 0.5f + 0.5f - pixels);
+}
+
+// Grid color with straight alpha at plane coordinate `coord`.
+// `cell` is the finest cell in world units; `fade` is the distance weight
+// in [0, 1]; `axis_u` colors the line where coord.y is zero and `axis_v` the
+// line where coord.x is zero.
+float4 vkr_editor_grid_shade(float2 coord, float2 footprint, float cell,
+                             float fade, float3 axis_u, float3 axis_v) {
+  float pixel_world = max(max(footprint.x, footprint.y), 1e-7f);
+  float level =
+      max(0.0f, log10(pixel_world * VKR_EDITOR_GRID_MIN_SPACING_PX / cell));
+  float base = floor(level);
+  float blend = level - base;
+  float spacing = cell * pow(10.0f, base);
+  float fine = vkr_editor_grid_coverage(
+      vkr_editor_grid_line_pixels(coord, spacing, footprint),
+      VKR_EDITOR_GRID_LINE_PX);
+  float middle = vkr_editor_grid_coverage(
+      vkr_editor_grid_line_pixels(coord, spacing * 10.0f, footprint),
+      VKR_EDITOR_GRID_LINE_PX);
+  float coarse = vkr_editor_grid_coverage(
+      vkr_editor_grid_line_pixels(coord, spacing * 100.0f, footprint),
+      VKR_EDITOR_GRID_MAJOR_PX);
+  // The middle level moves from major to minor while the fine level fades.
+  float alpha = max(
+      fine * VKR_EDITOR_GRID_MINOR_ALPHA * (1.0f - blend),
+      max(middle * (VKR_EDITOR_GRID_MAJOR_ALPHA +
+                    (VKR_EDITOR_GRID_MINOR_ALPHA - VKR_EDITOR_GRID_MAJOR_ALPHA) *
+                        blend),
+          coarse * VKR_EDITOR_GRID_MAJOR_ALPHA));
+  float3 color = float3(0.78f, 0.80f, 0.84f);
+  float2 axis_pixels = abs(coord) / max(footprint, float2(1e-7f, 1e-7f));
+  float along_u = vkr_editor_grid_axis_coverage(axis_pixels.y);
+  float along_v = vkr_editor_grid_axis_coverage(axis_pixels.x);
+  if (along_u > 0.0f || along_v > 0.0f) {
+    float3 axis = along_u >= along_v ? axis_u : axis_v;
+    float weight = max(along_u, along_v);
+    color = color + (axis - color) * weight;
+    alpha = max(alpha, weight * VKR_EDITOR_GRID_AXIS_ALPHA);
+  }
+  return float4(color, alpha * fade);
+}
+
+#endif

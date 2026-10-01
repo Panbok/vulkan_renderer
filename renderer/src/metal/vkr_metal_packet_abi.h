@@ -264,6 +264,28 @@ _Static_assert(offsetof(VkrMetalPacketSelectionOutlineRoot, color) == 16u &&
 _Static_assert(sizeof(VkrMetalPacketSelectionOutlineRoot) == 48,
                "Metal selection outline root ABI size drift");
 
+/** Full-screen editor ground grid over the Scene image; `depth` is the
+ * opaque depth's GPU resource ID at the render extent. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketEditorGridRoot {
+  Mat4 inverse_view_projection;
+  Vec4 camera_position;
+  Vec4 params;
+  uint32_t extent[2];
+  uint32_t plane;
+  uint32_t reserved;
+  uint64_t depth;
+  uint64_t display_output;
+} VkrMetalPacketEditorGridRoot;
+
+_Static_assert(offsetof(VkrMetalPacketEditorGridRoot, camera_position) == 64u &&
+                   offsetof(VkrMetalPacketEditorGridRoot, extent) == 96u &&
+                   offsetof(VkrMetalPacketEditorGridRoot, depth) == 112u &&
+                   offsetof(VkrMetalPacketEditorGridRoot, display_output) ==
+                       120u,
+               "Metal editor grid ABI offset drift");
+_Static_assert(sizeof(VkrMetalPacketEditorGridRoot) == 128,
+               "Metal editor grid root ABI size drift");
+
 /** The only record written per indexed packet draw. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t geometry_rows;
@@ -1395,6 +1417,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT,
   VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT,
+  VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

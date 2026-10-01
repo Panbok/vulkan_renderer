@@ -481,6 +481,31 @@ typedef struct VkrEditorOverlayDraw {
     A larger selection outlines only its first draws. */
 #define VKR_EDITOR_SELECTION_DRAW_MAX 1024u
 
+/** Plane of the editor ground grid. */
+typedef enum VkrEditorGridPlane {
+  /** y = 0, seen from perspective, top and bottom views. */
+  VKR_EDITOR_GRID_PLANE_XZ = 0,
+  /** x = 0, seen from the left and right views. */
+  VKR_EDITOR_GRID_PLANE_ZY,
+  VKR_EDITOR_GRID_PLANE_COUNT,
+} VkrEditorGridPlane;
+
+/** Ground grid through the world origin, drawn over the Scene image before
+    the selection outline and handles (ADR-027). Lines anti-alias from their
+    screen footprint and step by ten as the camera zooms. */
+typedef struct VkrEditorGridPayload {
+  bool8_t enabled;
+  /** Draw over nearer opaque geometry instead of hiding behind it. */
+  bool8_t through_geometry;
+  VkrEditorGridPlane plane;
+  /** Finest cell in world units, > 0. */
+  float32_t cell_size;
+  /** Lines fade out from `fade_start` to `fade_end` world units from the
+      camera; both zero keep every distance opaque. */
+  float32_t fade_start;
+  float32_t fade_end;
+} VkrEditorGridPayload;
+
 typedef struct VkrEditorPassPayload {
   /** Scene destination in Y-down swapchain pixels: (x, y, width, height).
       Components are finite integral values validated at packet submission. */
@@ -500,6 +525,7 @@ typedef struct VkrEditorPassPayload {
   Vec4 selection_color;
   /** Outline reach in Scene-image pixels, 1..8. */
   uint32_t selection_width_px;
+  VkrEditorGridPayload grid;
 } VkrEditorPassPayload;
 
 /**

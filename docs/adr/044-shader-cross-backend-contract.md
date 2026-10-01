@@ -444,6 +444,19 @@ Vulkan SPIR-V compiles, passes `spirv-val` and matches the host offsets, but
 native Vulkan did not run because the host device is MoltenVK 1.2. The domain
 is **UNALIGNED** until a native Vulkan run and a same-revision comparison pass.
 
+The editor ground grid (ADR-027) is one full-screen pass over the Scene image
+reading the opaque depth at binding 0. The shared kernel owns line coverage,
+the tenfold level cross-fade, axis colors and distance fade; native entries own
+the unjittered ray (Metal flips NDC Y and the clip matrix, Vulkan does not),
+the depth read at the matching render-extent texel and the UI display-output
+transform. Both 128-byte roots pin their layouts by static assertion: Metal
+carries a read-access depth reference, Vulkan a depth-table index, and Vulkan
+checks the reflected fragment root. The Release editor renders it through Metal,
+hidden behind a cube and drawn through it with the toggle; Vulkan SPIR-V passes
+`spirv-val` and its reflected offsets match the host root, but native Vulkan did
+not run on this MoltenVK 1.2 host. The domain is **UNALIGNED** until a native
+Vulkan run and a same-revision comparison pass.
+
 Metal and Vulkan reject geometry range counts that cannot fit the existing
 32-bit temporal surface token before publication or narrowing loader counts.
 Metal's per-geometry CPU range storage changes neither that encoding nor shader
@@ -474,6 +487,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Editor inspection views (UNALIGNED) | `shared/editor_view.slangh` | `metal/msl/world/default.metal`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Editor handles/color/picking | CPU `VkrEditorOverlayDraw` | `metal/msl/editor/overlay.metal` | `vulkan/slang/editor/overlay.slang` |
 | Editor selection outline (UNALIGNED) | CPU `VkrEditorOverlayDraw` mask draws | `metal/msl/editor/overlay.metal`, `selection.metal` | `vulkan/slang/editor/overlay.slang`, `selection.slang` |
+| Editor ground grid (UNALIGNED) | `shared/editor_grid_kernel.slangh` | `metal/msl/editor/grid.metal` | `vulkan/slang/editor/grid.slang` |
 | Compute skinning | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
 | Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |

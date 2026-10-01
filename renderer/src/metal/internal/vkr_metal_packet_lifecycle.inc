@@ -830,6 +830,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->editor_overlay_picking_pipeline release];
   [renderer->editor_selection_mask_pipeline release];
   [renderer->editor_selection_outline_pipeline release];
+  [renderer->editor_grid_pipeline release];
   [renderer->animation_preview_pipeline release];
   [renderer->fragment_library release];
 }

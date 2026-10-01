@@ -219,8 +219,10 @@ contains layer names, the matrix and presets, with Apply/Revert/Undo/Redo/Save.
 
 [The editor collision overlay](../../editor/src/editor_physics.c) projects line
 segments on the CPU into the existing UI stream, capped at 512 lines and remaining
-UI node capacity. Display supports off, selected-body and all-body modes. It adds
-no shader or native render-packet contract. Collider ray selection respects gizmo
+UI node capacity. Display supports off, selected-body and all-body modes, chosen
+in the Scene's Show menu beside the session physics override; Step and Reset
+live on the transport bar, and the Scene prints only a failing simulation's
+error. It adds no shader or native render-packet contract. Collider ray selection respects gizmo
 priority; muted/disabled bodies remain selectable in the hierarchy. Debug drawing
 is an authoring aid and is separate from native collision queries.
 

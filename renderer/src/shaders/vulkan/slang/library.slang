@@ -26,6 +26,7 @@
 #include "../../shared/display_output_kernel.slangh"
 #include "../../shared/color_grading_kernel.slangh"
 #include "../../shared/editor_view.slangh"
+#include "../../shared/editor_grid_kernel.slangh"
 #include "../../shared/normal_map_kernel.slangh"
 #include "../../shared/transmission_kernel.slangh"
 #include "../../shared/punctual_light_kernel.slangh"
@@ -64,5 +65,6 @@
 
 #include "editor/overlay.slang"
 #include "editor/selection.slang"
+#include "editor/grid.slang"
 
 #include "editor/animation_preview.slang"

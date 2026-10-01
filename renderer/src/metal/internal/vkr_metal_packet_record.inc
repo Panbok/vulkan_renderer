@@ -140,7 +140,8 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
       }
     }
     /* Metal 4 resets execute at the blit stage, concurrently with dispatches
-       unless this intra-pass dependency orders command generation after them. */
+       unless this intra-pass dependency orders command generation after them.
+     */
     const VkrMetalDependency reset_to_encode = {
         .src_stages = MTLStageBlit,
         .dst_stages = MTLStageDispatch,
@@ -260,17 +261,16 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
     id<MTLRenderPipelineState> pipeline =
-        draw->opaque_pipeline && (bucket & 2u) == 0u
-            ? draw->opaque_pipeline
-            : draw->pipeline;
+        draw->opaque_pipeline && (bucket & 2u) == 0u ? draw->opaque_pipeline
+                                                     : draw->pipeline;
     if (pipeline != bound_pipeline) {
       [encoder setRenderPipelineState:pipeline];
       bound_pipeline = pipeline;
     }
     [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
     [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
-                                      ? MTLWindingClockwise
-                                      : MTLWindingCounterClockwise];
+                                       ? MTLWindingClockwise
+                                       : MTLWindingCounterClockwise];
     [encoder executeCommandsInBuffer:draw->commands
                       indirectBuffer:draw->arguments +
                                      (uint64_t)bucket * 2u * sizeof(uint32_t)];
@@ -322,11 +322,14 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
           pass->ui.count, pass->ui.width, pass->ui.height);
     break;
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
+  case VKR_RG_EXECUTOR_EDITOR_GRID:
     [renderer->argument_table setAddress:pass->tonemap.root atIndex:1u];
     [encoder setViewport:pass->tonemap.viewport];
     [encoder setScissorRect:pass->tonemap.scissor];
-    [encoder
-        setRenderPipelineState:renderer->editor_selection_outline_pipeline];
+    [encoder setRenderPipelineState:pass->kind == VKR_RG_EXECUTOR_EDITOR_GRID
+                                        ? renderer->editor_grid_pipeline
+                                        : renderer->
+                                          editor_selection_outline_pipeline];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageFragment];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle

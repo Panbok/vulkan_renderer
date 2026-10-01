@@ -1444,6 +1444,58 @@ void vkr_vk_record_selection_outline(
   vkCmdDraw(command, 3u, 1u, 0u, 0u);
 }
 
+/* The grid's rays use the unjittered camera, like the editor handles. */
+bool8_t vkr_vk_prepare_editor_grid(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedEditorGrid *out,
+                                   uint32_t depth_texture, uint32_t width,
+                                   uint32_t height) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrEditorPassPayload *editor = packet->input.editor;
+  if (!editor || !editor->grid.enabled)
+    return true_v;
+  const VkrEditorGridPayload *grid = &editor->grid;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t address = 0u;
+  VkrVulkanEditorGridRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanEditorGridRoot), &address, NULL);
+  if (!root)
+    return false_v;
+  const Mat4 view_projection =
+      mat4_mul(packet->input.globals.projection, packet->input.globals.view);
+  const Vec3 eye = packet->input.globals.view_position;
+  *root = (VkrVulkanEditorGridRoot){
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .camera_position = {eye.x, eye.y, eye.z,
+                          grid->fade_end > 0.0f ? 1.0f : 0.0f},
+      .params = {grid->cell_size, grid->fade_start, grid->fade_end,
+                 grid->through_geometry ? 1.0f : 0.0f},
+      .extent = {width, height},
+      .plane = (uint32_t)grid->plane,
+      .depth_texture = depth_texture,
+      .display_output = slot->display_output,
+  };
+  *out =
+      (VkrVulkanPreparedEditorGrid){.root_address = address, .enabled = true_v};
+  return true_v;
+}
+
+void vkr_vk_record_editor_grid(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command,
+                               const VkrVulkanPreparedEditorGrid *grid) {
+  if (!grid->enabled)
+    return;
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+      renderer->packet_pipelines[VKR_VULKAN_PACKET_PIPELINE_EDITOR_GRID]);
+  const VkrVulkanPushConstants push = {.root = grid->root_address};
+  vkCmdPushConstants(command, renderer->pipeline_layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+                         VK_SHADER_STAGE_COMPUTE_BIT,
+                     0u, sizeof(push), &push);
+  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+}
+
 bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
     VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,

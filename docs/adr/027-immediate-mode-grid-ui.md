@@ -124,9 +124,20 @@ View > Zoom interface (Cmd/Ctrl with =, - or 0) scales all UI, including dock
 geometry, and Reduce motion disables eased transitions; both persist with the
 project settings. Toasts announce saved scene edits and finished Bakery work.
 
-A header pinned to the Scene groups the current camera view, rendering mode and
-grid controls in dropdowns, with the Select/Move/Rotate/Scale tools (Q/W/E/R), a
-World/Local axes toggle and a camera-speed popup on its right. The gizmo shows
+A header pinned to the Scene groups the current camera view, rendering mode,
+grid, Show and Scalability controls in dropdowns, with the
+Select/Move/Rotate/Scale tools (Q/W/E/R), a World/Local axes toggle and a camera
+speed chip on its right. The speed chip shows the speed; its dropdown holds a
+logarithmic 0.1-100 units-per-second slider, and the wheel over the chip steps
+it. Show toggles geometry kinds (static meshes, animated meshes, shapes), object
+icon categories, the grid and its depth test, collision display and the session
+physics override; hidden geometry is neither drawn nor picked
+(`VkrScene.editor_hidden_kinds`) and the scene stays unedited. Scalability
+applies a Low, Medium, High or Epic preset of the quality gates, opens the
+custom settings, and sets the screen percentage or dynamic resolution live.
+Every dropdown is one button whose trailing caret lays out inside its padding
+(`VkrUiWidgetConfig.trailing_icon`), and popups that would leave the Scene open
+leftward from their chip. The gizmo shows
 only the active tool's handle family; Select shows no handles, only the
 selection outline, and dragging an object with it moves the object in the view
 plane as one undo entry. Move and rotate follow the world axes or, in Local, the object's;
@@ -143,21 +154,26 @@ Camera/projection and rendering behavior belong to
 [ADR-044](044-shader-cross-backend-contract.md#editor-inspection-views).
 
 The optional world grid lies on XZ at y=0 in Perspective, Top and Bottom, and YZ
-at x=0 in Left and Right. Cell spacing is in world units. Labels identify the
-visible cells in screen order: numbers 1..N left to right along the Scene's top
-edge and letters A.. top to bottom along its right edge, continuing through Z,
-AA, AZ, BA and AAA. Each label sits at its cell center, so panning or zooming
-renumbers the visible cells; labels are viewport references, not world
-coordinates. Orthographic views coarsen the drawn cell size by powers of two
-until every visible cell holds a label and at most 44 cells per axis remain; the
-Grid button reports that drawn size, while Smaller/Larger change the requested
-size. Each edge reserves the other's corner strip, so no visible orthographic
-cell loses its label to a collision. Perspective uses a bounded patch around its
-visible center; labels sit where cell-center lines meet the top/right edge or at
-the patch end nearest it, and crowded perspective labels are omitted before
-numbering. The editor numbers labels with the UI-time camera and projects at
-most 96 lines through the final unjittered camera, clipped to the Scene image.
-The grid is a UI overlay and has no depth-occlusion or scene-picking ownership.
+at x=0 in Left and Right, through the world origin. The renderer draws it in the
+`Editor.Grid` pass over the Scene image, before the selection outline and
+handles: each pixel intersects the plane with the unjittered camera ray, so the
+grid is continuous to the horizon, and the opaque depth hides it behind nearer
+geometry unless Show > Grid through geometry is on. A soft depth band keeps a
+coplanar floor from shimmering. Lines anti-alias from their screen footprint;
+levels step by ten from the requested cell size and cross-fade as the camera
+zooms, the next level drawing the majors, as in UE5. Perspective fades the grid
+between 35% and 100% of a distance that grows with camera height. The X and Z
+axis lines are red and blue (Z and Y green from the sides).
+
+Orthographic views can label cells in screen order: numbers 1..N left to right
+along the Scene's top edge and letters A.. top to bottom along its right edge,
+continuing through Z, AA, AZ, BA and AAA. Labels mark the cells of the level the
+renderer draws at full strength, computed on the CPU from the same footprint,
+and the Grid button reports that size; Smaller/Larger change the requested cell
+size. Each label sits at its cell center, so panning or zooming renumbers the
+visible cells; labels are viewport references, not world coordinates. Each edge
+reserves the other's corner strip, and crowded labels are omitted before
+numbering. Perspective shows no labels. The grid has no scene-picking ownership.
 
 Panels use the shared field, action, primary, ghost and toggle styles; read-only
 fields, disabled actions, severity and follow-tail states retain distinct
@@ -400,10 +416,15 @@ The sample runtime owns player Graphics settings in `VkrGraphicsSettings`.
 Settings > Graphics uses a left tab rail and a clipped, scrollable right pane
 with Display, Quality, Lighting, Effects, and Color tabs. The editor borrows
 current state during UI build and sends a typed `VkrGraphicsSettingsRequest`;
-the runtime validates and applies the request. Vsync, HDR, temporal upscaling,
-dynamic resolution, and render scale are startup-owned values and set a
-restart-required notice when changed. Other controls apply to live frame state;
-lighting changes invalidate the relevant shadow and temporal histories.
+the runtime validates and applies the request. Vsync, HDR and temporal upscaling
+are startup-owned values and set a restart-required notice when changed. Render
+scale and dynamic resolution apply between frames when the renderer reports the
+scale inside `vkr_renderer_render_scale_range` (MetalFX builds its scaler for
+the dynamic-resolution range and the requested scale; the spatial Metal path
+accepts 1/3..1); otherwise they also wait for a restart. With dynamic
+resolution on, the controller chooses the scale. Other controls apply to live
+frame state; lighting changes invalidate the relevant shadow and temporal
+histories.
 
 Settings load from `VKR_GRAPHICS_SETTINGS_PATH`, or the project
 `.vkr-graphics-settings.json` default when the variable is absent. Missing files

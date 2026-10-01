@@ -20,6 +20,7 @@ struct VkrVulkanPreparedGraphPass {
   VkrVulkanPreparedWorldDraws world;
   VkrVulkanPreparedOverlay overlay;
   VkrVulkanPreparedSelectionOutline selection_outline;
+  VkrVulkanPreparedEditorGrid editor_grid;
   VkrVulkanPreparedText text;
   VkrVulkanPreparedUi ui;
   VkrVulkanPreparedFullscreen fullscreen;
@@ -1315,6 +1316,14 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     return vkr_vk_prepare_selection_outline(
         renderer, &prepared->selection_outline, mask_texture);
   }
+  case VKR_RG_EXECUTOR_EDITOR_GRID: {
+    uint32_t depth_texture = 0u;
+    if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &depth_texture))
+      return false_v;
+    return vkr_vk_prepare_editor_grid(renderer, &prepared->editor_grid,
+                                      depth_texture, target_width,
+                                      target_height);
+  }
   case VKR_RG_EXECUTOR_EDITOR: {
     /* The retained sRGB texture already contains exposure, tonemap and FXAA.
        Decode/sample/re-encode it without applying those operations again. */
@@ -1684,6 +1693,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
+  case VKR_RG_EXECUTOR_EDITOR_GRID:
   case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_RG_EXECUTOR_UI:
     return vkr_vk_prepare_graph_graphics_pass(renderer, prepared, pass, kind);
@@ -2038,6 +2048,9 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
     vkr_vk_record_selection_outline(renderer, command,
                                     &prepared->selection_outline);
     break;
+  case VKR_RG_EXECUTOR_EDITOR_GRID:
+    vkr_vk_record_editor_grid(renderer, command, &prepared->editor_grid);
+    break;
   case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
   case VKR_RG_EXECUTOR_TONEMAP:
   case VKR_RG_EXECUTOR_EDITOR:
@@ -2098,6 +2111,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_EDITOR_OVERLAY_PICKING:
     case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
     case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
+    case VKR_RG_EXECUTOR_EDITOR_GRID:
     case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
     case VKR_RG_EXECUTOR_UI:
       vkr_vk_record_graph_graphics_pass(renderer, command, prepared);

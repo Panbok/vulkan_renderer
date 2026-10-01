@@ -33,6 +33,8 @@ enum {
 /* Logarithmic speed range of the slider, in world units per second. */
 #define VIEW_SPEED_MIN 0.1f
 #define VIEW_SPEED_MAX 100.0f
+/* VKR_EDITOR_GRID_MIN_SPACING_PX of shared/editor_grid_kernel.slangh. */
+#define VIEW_GRID_MIN_SPACING_PX 6.0f
 
 static const char *const view_camera_names[] = {"Perspective", "Top", "Left",
                                                 "Right", "Bottom"};
@@ -1263,64 +1265,12 @@ bool8_t vkr_editor_viewport_drop_point(const VkrSampleUiFrame *frame,
   return true_v;
 }
 
-/* Cells from the world origin to each edge of the perspective grid. */
-#define GRID_PERSPECTIVE_CELLS 40
-/* Every tenth line is a major line. */
-#define GRID_MAJOR_CELLS 10
-
-/* A fixed world grid, as in UE5: centered on the world origin with a
-   constant extent, one line per grid spacing and a major line every ten.
-   It never follows or rescales with the camera. Minor lines fade out as the
-   camera rises, so distant views keep only the major lines. */
-static bool8_t grid_perspective_lines(VkrEditorUi *editor,
-                                      const VkrSampleUiFrame *frame,
-                                      uint32_t capacity) {
-  Vec3 eye;
-  const float32_t spacing = frame->view_state.grid_spacing;
-  if (!grid_eye(frame, &eye) || !isfinite(spacing) || spacing <= 0.0f) {
-    return false_v;
-  }
-  const float32_t rise = fabsf(eye.y) / (spacing * 40.0f);
-  const float32_t minor_alpha =
-      vkr_clamp_f32((1.0f - rise) / 0.75f, 0.0f, 1.0f);
-  const float32_t extent = spacing * GRID_PERSPECTIVE_CELLS;
-  editor->grid_spacing = spacing;
-  for (uint32_t axis = 0; axis < 2; ++axis) {
-    for (int32_t cell = -GRID_PERSPECTIVE_CELLS;
-         cell <= GRID_PERSPECTIVE_CELLS && editor->grid_line_count < capacity;
-         ++cell) {
-      const bool8_t major = cell % GRID_MAJOR_CELLS == 0;
-      if (!major && minor_alpha <= 0.0f) {
-        continue;
-      }
-      const float32_t coordinate = (float32_t)cell * spacing;
-      const Vec3 from = axis ? vec3_new(-extent, 0, coordinate)
-                             : vec3_new(coordinate, 0, -extent);
-      const Vec3 to = axis ? vec3_new(extent, 0, coordinate)
-                           : vec3_new(coordinate, 0, extent);
-      const float32_t half_major = spacing * GRID_MAJOR_CELLS * 0.5f;
-      editor->grid_lines[editor->grid_line_count++] = (VkrEditorGridLine){
-          .from = from,
-          .to = to,
-          .label_offset =
-              axis ? vec3_new(0, 0, half_major) : vec3_new(half_major, 0, 0),
-          .top_label = axis == 0,
-          .world_axis = cell == 0,
-          .alpha = major ? 1.0f : 0.55f * minor_alpha,
-          .unlabelled = !major,
-      };
-    }
-  }
-  return editor->grid_line_count > 0u;
-}
-
 /* Returns false when an image corner misses the grid plane or the visible
  * extent is empty. */
 static bool8_t grid_fit_orthographic(const VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      bool8_t side, float32_t *spacing,
                                      Vec2 *minimum, Vec2 *maximum) {
-  const VkrUiSystem *ui = frame->ui;
   for (uint32_t i = 0; i < 4; ++i) {
     Vec2 point;
     if (!grid_plane_point(frame, (Vec2){i & 1 ? 1 : -1, i & 2 ? 1 : -1}, side,
@@ -1332,27 +1282,19 @@ static bool8_t grid_fit_orthographic(const VkrEditorUi *editor,
     maximum->x = Max(maximum->x, point.x);
     maximum->y = Max(maximum->y, point.y);
   }
-  /* Coarsen by powers of two until every visible cell can carry its own
-   * label. Axis views keep the first grid axis horizontal on screen. */
+  /* Labels mark the lines the renderer's grid draws at full strength: the
+     level after the finest, from the same per-pixel footprint
+     (editor_grid_kernel.slangh). */
   const Vec4 image = frame->mapping.image_rect_px;
   const Vec2 extent = {maximum->x - minimum->x, maximum->y - minimum->y};
-  if (!(extent.x > 0 && extent.y > 0)) {
+  if (!(extent.x > 0 && extent.y > 0) || image.z <= 0 || image.w <= 0) {
     return false_v;
   }
-  const Vec2 pt_per_unit = {image.z / ui->content_scale / extent.x,
-                            image.w / ui->content_scale / extent.y};
-  for (uint32_t step = 0; step < 64; ++step) {
-    const float32_t columns = ceilf(extent.x / *spacing) + 1;
-    const float32_t rows = ceilf(extent.y / *spacing) + 1;
-    const Vec2 number =
-        grid_label_size(editor, ui, (uint32_t)Min(columns, 1.0e9f), true_v);
-    if (columns <= 44 && rows <= 44 &&
-        *spacing * pt_per_unit.x >= number.x + 6 &&
-        *spacing * pt_per_unit.y >= number.y + 4) {
-      break;
-    }
-    *spacing *= 2;
-  }
+  const float32_t pixel_world = Max(extent.x / image.z, extent.y / image.w);
+  const float32_t level =
+      Max(0.0f, log10f(pixel_world * VIEW_GRID_MIN_SPACING_PX / *spacing));
+  *spacing *= powf(10.0f, floorf(level) + 1.0f);
+  (void)editor;
   return true_v;
 }
 
@@ -1395,7 +1337,7 @@ static void grid_number_labels(VkrEditorUi *editor,
       const VkrEditorGridLine *line = &editor->grid_lines[i];
       float32_t order = 0;
       VkrUiRect rect;
-      if (line->top_label != top_edge || line->unlabelled ||
+      if (line->top_label != top_edge ||
           !grid_label_rect(editor, frame, line, &rect, &order)) {
         continue;
       }
@@ -1426,42 +1368,33 @@ static void grid_number_labels(VkrEditorUi *editor,
   }
 }
 
-static void grid_build_line_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
+/* Cell labels only; the renderer draws the lines (Editor.Grid). */
+static void grid_build_label_widgets(VkrEditorUi *editor, VkrUiSystem *ui) {
   for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
     VkrEditorGridLine *line = &editor->grid_lines[i];
+    line->label = VKR_UI_ID_NONE;
+    if (!line->ordinal) {
+      continue;
+    }
     (void)vkr_ui_push_id_u64(ui, i);
+    char text[24];
+    grid_label_text(text, line->ordinal, line->top_label);
     VkrUiWidgetConfig widget = vkr_ui_widget_config_default();
     widget.placement.column = 0;
     widget.placement.row = 0;
     widget.placement.justify = VKR_UI_ALIGN_START;
     widget.placement.align = VKR_UI_ALIGN_START;
-    widget.style.min_size_pt = widget.style.max_size_pt = (Vec2){1, 1};
-    widget.style.text_color =
-        line->world_axis
-            ? vkr_ui_color_alpha(vkr_ui_theme()->accent_hover, 0.8f)
-            : (Vec4){0.80f, 0.84f, 0.90f, 0.28f * line->alpha};
-    const Vec2 hidden[4] = {{0}, {0}, {0}, {0}};
-    vkr_ui_bezier(ui, string8_lit("line"), hidden,
-                  line->world_axis ? 1.25f : 0.75f, &widget);
-    line->widget =
-        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("line"));
-    line->label = VKR_UI_ID_NONE;
-    if (line->ordinal) {
-      char text[24];
-      grid_label_text(text, line->ordinal, line->top_label);
-      widget.style.min_size_pt = widget.style.max_size_pt = line->label_size_pt;
-      widget.style.padding_pt = (VkrUiEdges){2, 4, 2, 4};
-      widget.style.font_size_pt = 10;
-      widget.style.text_color = vkr_ui_theme()->text;
-      widget.style.background_color = vkr_ui_theme()->overlay;
-      widget.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
-      widget.style.corner_radius_pt = (Vec4){2, 2, 2, 2};
-      widget.text.font = editor->heading_font;
-      widget.placement.margin_pt = (VkrUiEdges){100000, 0, 0, 100000};
-      vkr_ui_label(ui, string8_lit("cell"), view_string(text), &widget);
-      line->label =
-          vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("cell"));
-    }
+    widget.placement.margin_pt = (VkrUiEdges){100000, 0, 0, 100000};
+    widget.style.min_size_pt = widget.style.max_size_pt = line->label_size_pt;
+    widget.style.padding_pt = (VkrUiEdges){2, 4, 2, 4};
+    widget.style.font_size_pt = 10;
+    widget.style.text_color = vkr_ui_theme()->text;
+    widget.style.background_color = vkr_ui_theme()->overlay;
+    widget.style.corner_radius_pt = (Vec4){2, 2, 2, 2};
+    widget.text.font = editor->heading_font;
+    vkr_ui_label(ui, string8_lit("cell"), view_string(text), &widget);
+    line->label =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("cell"));
     (void)vkr_ui_pop_id(ui);
   }
 }
@@ -1490,20 +1423,24 @@ static void grid_orthographic_lines(VkrEditorUi *editor, bool8_t side,
                                           : (Vec2){spacing * 0.5f, 0},
                                      side),
           .top_label = axis == 0 ? first_axis_top : !first_axis_top,
-          .world_axis = cell == 0,
-          .alpha = 1.0f,
       };
     }
   }
 }
 
+/* The renderer draws the grid (Editor.Grid). Orthographic views add cell
+   labels that read 1..N across the top and A.. down the right, on the lines
+   the renderer draws at full strength. */
 void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   editor->grid_line_count = 0;
   editor->grid_spacing = 0;
   editor->grid_frame = frame->ui->frame_index;
   editor->grid_camera_view = frame->view_state.camera_view;
+  editor->grid_reserved_pt = (Vec2){0};
   /* A project's World renders alone before any scene opens. */
   if (!frame->mapping_valid || !frame->view_state.grid_enabled ||
+      !frame->view_state.grid_labels ||
+      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE ||
       (!frame->scene && !frame->world) || frame->scene_rendering_stopped ||
       (frame->scene_backdrop_blur && *frame->scene_backdrop_blur)) {
     return;
@@ -1512,31 +1449,24 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   const bool8_t side =
       frame->view_state.camera_view == VKR_SAMPLE_CAMERA_LEFT ||
       frame->view_state.camera_view == VKR_SAMPLE_CAMERA_RIGHT;
-  const bool8_t perspective =
-      frame->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
   float32_t spacing = frame->view_state.grid_spacing;
   if (!isfinite(spacing) || spacing <= 0) {
     return;
   }
   Vec2 minimum = {INFINITY, INFINITY};
   Vec2 maximum = {-INFINITY, -INFINITY};
-  Vec3 center = vec3_zero();
-  if (!perspective) {
-    Vec2 center_plane;
-    if (!grid_plane_point(frame, (Vec2){0, 0}, side, &center_plane)) {
-      return;
-    }
-    center = grid_world(center_plane, side);
-    if (!grid_fit_orthographic(editor, frame, side, &spacing, &minimum,
-                               &maximum) ||
-        !isfinite(spacing) || spacing <= 0 ||
-        fabsf(minimum.x / spacing) > 1000000000 ||
-        fabsf(minimum.y / spacing) > 1000000000 ||
-        fabsf(maximum.x / spacing) > 1000000000 ||
-        fabsf(maximum.y / spacing) > 1000000000) {
-      return;
-    }
+  Vec2 center_plane;
+  if (!grid_plane_point(frame, (Vec2){0, 0}, side, &center_plane) ||
+      !grid_fit_orthographic(editor, frame, side, &spacing, &minimum,
+                             &maximum) ||
+      !isfinite(spacing) || spacing <= 0 ||
+      fabsf(minimum.x / spacing) > 1000000000 ||
+      fabsf(minimum.y / spacing) > 1000000000 ||
+      fabsf(maximum.x / spacing) > 1000000000 ||
+      fabsf(maximum.y / spacing) > 1000000000) {
+    return;
   }
+  const Vec3 center = grid_world(center_plane, side);
   const Vec4 image = frame->mapping.image_rect_px;
   VkrUiPanelConfig panel = view_panel(
       (Vec4){image.x / ui->content_scale, image.y / ui->content_scale,
@@ -1554,48 +1484,31 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
    */
   const uint32_t available =
       ui->frame_node_count + 320 < ui->frame_node_capacity
-          ? (ui->frame_node_capacity - ui->frame_node_count - 320) / 2
+          ? ui->frame_node_capacity - ui->frame_node_count - 320
           : 0;
   const uint32_t capacity = Min(VKR_EDITOR_GRID_LINE_CAPACITY, available);
-  bool8_t first_axis_top = true_v;
-  if (perspective) {
-    if (!grid_perspective_lines(editor, frame, capacity)) {
-      (void)vkr_ui_panel_end(ui);
-      return;
-    }
-  } else {
-    first_axis_top = grid_first_axis_top(frame, perspective, center, spacing);
-    editor->grid_spacing = spacing;
-    grid_orthographic_lines(editor, side, spacing, minimum, maximum,
-                            first_axis_top, capacity);
+  const bool8_t first_axis_top =
+      grid_first_axis_top(frame, false_v, center, spacing);
+  editor->grid_spacing = spacing;
+  grid_orthographic_lines(editor, side, spacing, minimum, maximum,
+                          first_axis_top, capacity);
+  /* Labels are sized for the largest possible ordinal. */
+  uint32_t axis_lines[2] = {0, 0};
+  for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
+    ++axis_lines[editor->grid_lines[i].top_label == first_axis_top ? 0 : 1];
   }
-
-  /* Cell labels are optional; they read 1..N across the top and A.. down the
-     right, sized for the largest possible ordinal. */
-  if (frame->view_state.grid_labels) {
-    uint32_t axis_lines[2] = {0, 0};
-    for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
-      const VkrEditorGridLine *line = &editor->grid_lines[i];
-      if (!line->unlabelled) {
-        ++axis_lines[line->top_label == first_axis_top ? 0 : 1];
-      }
-    }
-    const uint32_t top_axis = first_axis_top ? 0 : 1;
-    const Vec2 top_size =
-        grid_label_size(editor, ui, axis_lines[top_axis], true_v);
-    const Vec2 right_size =
-        grid_label_size(editor, ui, axis_lines[1 - top_axis], false_v);
-    editor->grid_reserved_pt = (Vec2){right_size.x, top_size.y};
-    for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
-      VkrEditorGridLine *line = &editor->grid_lines[i];
-      line->label_size_pt = line->top_label ? top_size : right_size;
-    }
-    grid_number_labels(editor, frame);
-  } else {
-    editor->grid_reserved_pt = (Vec2){0};
+  const uint32_t top_axis = first_axis_top ? 0 : 1;
+  const Vec2 top_size =
+      grid_label_size(editor, ui, axis_lines[top_axis], true_v);
+  const Vec2 right_size =
+      grid_label_size(editor, ui, axis_lines[1 - top_axis], false_v);
+  editor->grid_reserved_pt = (Vec2){right_size.x, top_size.y};
+  for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
+    VkrEditorGridLine *line = &editor->grid_lines[i];
+    line->label_size_pt = line->top_label ? top_size : right_size;
   }
-
-  grid_build_line_widgets(editor, ui);
+  grid_number_labels(editor, frame);
+  grid_build_label_widgets(editor, ui);
   (void)vkr_ui_panel_end(ui);
 }
 
@@ -1614,16 +1527,6 @@ void vkr_editor_grid_project(VkrEditorUi *editor,
       editor->grid_camera_view == frame->view_state.camera_view;
   for (uint32_t i = 0; i < editor->grid_line_count; ++i) {
     const VkrEditorGridLine *line = &editor->grid_lines[i];
-    Vec2 points[4] = {{0}, {0}, {0}, {0}};
-    Vec2 a;
-    Vec2 b;
-    const bool8_t visible =
-        same_view && grid_project_line(frame, line->from, line->to, &a, &b);
-    if (visible) {
-      points[0] = points[1] = a;
-      points[2] = points[3] = b;
-    }
-    (void)vkr_ui_bezier_set_points(frame->ui, line->widget, points);
     if (line->label == VKR_UI_ID_NONE) {
       continue;
     }

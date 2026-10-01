@@ -3730,6 +3730,31 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   }
 }
 
+/* The ground grid follows the view: the XZ plane in perspective, top and
+   bottom views, the ZY plane from the sides. In perspective it fades with
+   distance, farther as the camera rises. */
+static void sample_grid_apply(VkrStandardSceneRuntime *application) {
+  const VkrSampleViewState *view = &state->view_state;
+  const VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  const bool8_t side = view->camera_view == VKR_SAMPLE_CAMERA_LEFT ||
+                       view->camera_view == VKR_SAMPLE_CAMERA_RIGHT;
+  VkrEditorGridPayload grid = {
+      .enabled = view->grid_enabled && camera &&
+                 (application->active_scene ||
+                  vkr_scene_handle_get_scene(state->world_handle)),
+      .through_geometry = view->grid_through_geometry,
+      .plane = side ? VKR_EDITOR_GRID_PLANE_ZY : VKR_EDITOR_GRID_PLANE_XZ,
+      .cell_size = vkr_clamp_f32(view->grid_spacing, 0.001f, 10000.0f),
+  };
+  if (grid.enabled && view->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE) {
+    const float32_t height = fabsf(camera->position.y);
+    grid.fade_end = Max(grid.cell_size * 150.0f, height * 60.0f);
+    grid.fade_start = grid.fade_end * 0.35f;
+  }
+  application->editor_viewport.grid = grid;
+}
+
 static void sample_view_apply(VkrStandardSceneRuntime *application,
                               const VkrSampleViewRequest *request) {
   if (!request->apply || !application->editor_viewport.enabled) {
@@ -4957,6 +4982,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   sample_editor_state_apply(application, &requests.editor_state_request);
   sample_view_apply(application, &requests.view_request);
   sample_show_filter_apply(application);
+  sample_grid_apply(application);
   /* A UI pick runs as a context click does, at the given pixel. */
   if (requests.pick_request.request) {
     state->context_click_pending = true_v;

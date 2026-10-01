@@ -695,6 +695,7 @@ struct VkrMetalPacketRenderer {
    * edge pass over the Scene image. */
   id<MTLRenderPipelineState> editor_selection_mask_pipeline;
   id<MTLRenderPipelineState> editor_selection_outline_pipeline;
+  id<MTLRenderPipelineState> editor_grid_pipeline;
   id<MTLRenderPipelineState> animation_preview_pipeline;
   id<MTLRenderPipelineState> tonemap_pipeline;
   id<MTLRenderPipelineState> display_linear_pipeline;
@@ -707,7 +708,8 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> atmosphere_source_pipeline;
   id<MTLComputePipelineState> sky_view_pipeline;
   id<MTLComputePipelineState> aerial_perspective_pipeline;
-  id<MTLComputePipelineState> cloud_noise_pipelines[VKR_METAL_PACKET_CLOUD_NOISE_COUNT];
+  id<MTLComputePipelineState>
+      cloud_noise_pipelines[VKR_METAL_PACKET_CLOUD_NOISE_COUNT];
   id<MTLComputePipelineState> cloud_shadow_pipeline;
   id<MTLComputePipelineState> cloud_trace_pipeline;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;

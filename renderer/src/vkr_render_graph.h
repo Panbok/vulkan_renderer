@@ -554,6 +554,8 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t editor_overlay_enabled;
   /* The editor draws a selection mask and outlines its edge. */
   bool8_t editor_selection_enabled;
+  /* The editor draws its ground grid over the Scene image. */
+  bool8_t editor_grid_enabled;
   uint32_t editor_image_width;
   uint32_t editor_image_height;
   /** True only when a completion-protected HZB history generation is valid. */

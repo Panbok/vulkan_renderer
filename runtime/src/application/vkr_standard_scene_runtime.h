@@ -44,6 +44,8 @@ typedef struct VkrStandardSceneRuntimeEditorViewport {
   bool8_t scripts_own_camera;
   bool8_t scene_rendering_stopped;
   bool8_t scene_backdrop_blur;
+  /* Ground grid the client wants drawn this frame (ADR-027). */
+  VkrEditorGridPayload grid;
   VkrRendererError scene_error;
   float64_t simulation_time;
   VkrViewportFitMode fit_mode;

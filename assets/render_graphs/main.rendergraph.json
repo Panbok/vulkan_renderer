@@ -11568,6 +11568,29 @@
       "execute": "pass.tonemap"
     },
     {
+      "name": "Editor.Grid",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_grid_enabled",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_scene_image",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.editor.grid"
+    },
+    {
       "name": "Editor.SelectionMask",
       "type": "graphics",
       "domain": "UI",

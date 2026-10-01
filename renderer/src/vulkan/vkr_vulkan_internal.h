@@ -69,6 +69,8 @@
   "packet.selection_outline.vert.spv"
 #define VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV                           \
   "packet.selection_outline.frag.spv"
+#define VKR_VULKAN_PACKET_EDITOR_GRID_VERT_SPV "packet.editor_grid.vert.spv"
+#define VKR_VULKAN_PACKET_EDITOR_GRID_FRAG_SPV "packet.editor_grid.frag.spv"
 #define VKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV "packet.fullscreen.vert.spv"
 #define VKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV "packet.fullscreen.frag.spv"
 #define VKR_VULKAN_PACKET_TEXT_VERT_SPV "packet.text.vert.spv"
@@ -287,6 +289,7 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY_PICKING,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_MASK,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE,
+  VKR_VULKAN_PACKET_PIPELINE_EDITOR_GRID,
   VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW,
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
 } VkrVulkanPacketPipeline;
@@ -329,6 +332,8 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_ANIMATION_PREVIEW_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_VERTEX,
   VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_COUNT,
 } VkrVulkanPacketShader;
 
@@ -1463,6 +1468,24 @@ _Static_assert(sizeof(VkrVulkanSelectionOutlineRoot) == 48u &&
                        32u,
                "Selection outline root ABI drift");
 
+/** Full-screen editor ground grid root; `depth_texture` indexes the opaque
+    depth in the depth-texture table. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanEditorGridRoot {
+  Mat4 inverse_view_projection;
+  Vec4 camera_position;
+  Vec4 params;
+  uint32_t extent[2];
+  uint32_t plane;
+  uint32_t depth_texture;
+  uint64_t display_output;
+  uint64_t display_output_reserved;
+} VkrVulkanEditorGridRoot;
+_Static_assert(sizeof(VkrVulkanEditorGridRoot) == 128u &&
+                   offsetof(VkrVulkanEditorGridRoot, camera_position) == 64u &&
+                   offsetof(VkrVulkanEditorGridRoot, extent) == 96u &&
+                   offsetof(VkrVulkanEditorGridRoot, display_output) == 112u,
+               "Editor grid root ABI drift");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanUiRoot {
   uint64_t vertices;
   uint32_t texture;
@@ -2151,6 +2174,11 @@ typedef struct VkrVulkanPreparedSelectionOutline {
   uint64_t root_address;
   bool8_t enabled;
 } VkrVulkanPreparedSelectionOutline;
+
+typedef struct VkrVulkanPreparedEditorGrid {
+  uint64_t root_address;
+  bool8_t enabled;
+} VkrVulkanPreparedEditorGrid;
 
 typedef struct VkrVulkanPreparedTextDraw VkrVulkanPreparedTextDraw;
 typedef struct VkrVulkanPreparedUiDraw VkrVulkanPreparedUiDraw;
@@ -3247,6 +3275,13 @@ bool8_t vkr_vk_prepare_selection_outline(VkrVulkanRenderer *renderer,
 void vkr_vk_record_selection_outline(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrVulkanPreparedSelectionOutline *outline);
+bool8_t vkr_vk_prepare_editor_grid(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedEditorGrid *out,
+                                   uint32_t depth_texture, uint32_t width,
+                                   uint32_t height);
+void vkr_vk_record_editor_grid(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command,
+                               const VkrVulkanPreparedEditorGrid *grid);
 
 bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,

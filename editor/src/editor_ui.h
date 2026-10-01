@@ -82,7 +82,6 @@ typedef struct VkrEditorPhysicsLine VkrEditorPhysicsLine;
 #define VKR_EDITOR_GRID_LINE_CAPACITY 192u
 
 typedef struct VkrEditorGridLine {
-  VkrUiId widget;
   VkrUiId label;
   Vec3 from;
   Vec3 to;
@@ -92,11 +91,6 @@ typedef struct VkrEditorGridLine {
    * bottom on the right. Zero leaves the cell unlabeled. */
   uint32_t ordinal;
   bool8_t top_label;
-  bool8_t world_axis;
-  /* Line opacity: minor perspective lines fade as the camera rises. */
-  float32_t alpha;
-  /* Minor perspective lines are never labelled. */
-  bool8_t unlabelled;
 } VkrEditorGridLine;
 
 /* Cmd evaluator value; objects name editor data roots (view, ui, sim, scene)
