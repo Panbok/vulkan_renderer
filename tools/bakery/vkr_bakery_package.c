@@ -1050,8 +1050,34 @@ vkr_internal bool8_t vkr_package_finalize(VkrPackage *package,
   return true_v;
 }
 
+/* The harness that renders reflection captures: `vkr_harness` beside this
+   vkr_bakery, as a distributed editor ships it, then the build tree's. NULL
+   when neither exists; a scene with probes then fails its bake. */
+vkr_internal const char *vkr_package_harness(VkrPackage *package) {
+#if defined(_WIN32)
+  const char *name = "vkr_harness.exe";
+#else
+  const char *name = "vkr_harness";
+#endif
+  char directory[VKR_BAKERY_PATH_CAPACITY];
+  char beside[VKR_BAKERY_PATH_CAPACITY];
+  vkr_bakery_path_parent(directory, sizeof(directory),
+                         package->cli->config.self_path);
+  if (vkr_bakery_path_join(beside, sizeof(beside), directory, name) &&
+      vkr_bakery_is_file(beside)) {
+    return vkr_package_printf(package, "%s", beside);
+  }
+#if defined(VKR_BAKERY_HARNESS_DEFAULT)
+  if (vkr_bakery_is_file(VKR_BAKERY_HARNESS_DEFAULT)) {
+    return VKR_BAKERY_HARNESS_DEFAULT;
+  }
+#endif
+  return NULL;
+}
+
 vkr_internal bool8_t vkr_package_bake(VkrPackage *package) {
   Arena *arena = package->arena;
+  const char *harness = vkr_package_harness(package);
   for (uint32_t i = 0u; i < package->scene_count; ++i) {
     VkrPackageScene *scene = &package->scenes[i];
     VkrBakeryJson *request =
@@ -1064,6 +1090,12 @@ vkr_internal bool8_t vkr_package_bake(VkrPackage *package) {
     vkr_bakery_json_set(arena, bakes, "diffuse",
                         vkr_bakery_json_bool(arena, true_v));
     vkr_bakery_json_set(arena, request, "bakes", bakes);
+    if (harness) {
+      VkrBakeryJson *tools = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, tools, "harness",
+                          vkr_bakery_json_cstr(arena, harness));
+      vkr_bakery_json_set(arena, request, "tools", tools);
+    }
     if (!vkr_package_run_job(
             package, request,
             vkr_package_printf(package, "Baking %s",
@@ -1571,6 +1603,7 @@ vkr_internal VkrBakeryJson *vkr_package_game_object(VkrPackage *package) {
   return game;
 }
 
+#if defined(__APPLE__)
 /* A name usable in a bundle identifier: letters, digits, '-' and '.'. */
 vkr_internal void vkr_package_identifier_part(const char *text, char *out,
                                               uint32_t capacity) {
@@ -1584,7 +1617,6 @@ vkr_internal void vkr_package_identifier_part(const char *text, char *out,
   out[length] = '\0';
 }
 
-#if defined(__APPLE__)
 typedef struct VkrPackageSign {
   VkrPackage *package;
   const char *identity;

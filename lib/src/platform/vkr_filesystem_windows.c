@@ -524,8 +524,22 @@ FileError file_rename(const FilePath *source, const FilePath *destination,
   if (overwrite) {
     flags |= MOVEFILE_REPLACE_EXISTING;
   }
-  return MoveFileExW(from, to, flags) ? FILE_ERROR_NONE
-                                      : fs_windows_error(GetLastError());
+  /* A reader that opened the destination without FILE_SHARE_DELETE (the CRT
+     never grants it) blocks the replace until it closes; another process
+     polling a progress or result document holds it only briefly. Retry for
+     about a second before reporting the error. */
+  for (uint32_t attempt = 0;; ++attempt) {
+    if (MoveFileExW(from, to, flags)) {
+      return FILE_ERROR_NONE;
+    }
+    const DWORD error = GetLastError();
+    if ((error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION &&
+         error != ERROR_ACCESS_DENIED) ||
+        attempt >= 100u) {
+      return fs_windows_error(error);
+    }
+    Sleep(10u);
+  }
 }
 
 /* ReFS (including Dev Drive) shares clusters between files through extent

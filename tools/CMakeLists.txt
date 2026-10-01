@@ -392,3 +392,10 @@ endif()
 # The build system itself; always present because renderer builds compile
 # their shader catalog through it.
 add_subdirectory(bakery)
+
+# The bakery finds this build tree's harness for package reflection bakes
+# unless one sits beside it, as in an editor distribution.
+if(TARGET vkr_harness)
+    target_compile_definitions(vkr_bakery PRIVATE
+        VKR_BAKERY_HARNESS_DEFAULT="$<TARGET_FILE:vkr_harness>")
+endif()

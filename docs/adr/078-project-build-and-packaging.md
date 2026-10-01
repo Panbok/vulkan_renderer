@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-30
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -99,7 +99,9 @@ to the template. The engine resource list lives in
 `vkr_player_shipping` (errors only, no developer UI) are prebuilt in every tree
 under `<build>/player`. So are `template.json` and `engine/assets`, which hold
 the render graph and runtime fonts of the former Bistro recipe with the files
-they name, and the default mannequin with its credits notice
+they name, including the Windows UI font configuration
+(`NotoSansCJK-Windows.fontcfg`) the runtime loads there, and the default
+mannequin with its credits notice
 ([ADR-080](080-default-mannequin-character.md)). On macOS the template's `lib/` holds the Vulkan loader, which the
 players link as `@rpath/libvulkan.1.dylib`; a package copies it into
 `Contents/Frameworks` and signs it before the application, and the players'
@@ -141,6 +143,13 @@ folder. `content.reveal <path>` runs the same step. Build and Run forwards the g
 queue and report the result
 ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 [`editor_build.c`](../../editor/src/editor_build.c) owns this workflow.
+A package's reflection-probe bakes render through the `vkr_harness` beside
+`vkr_bakery`, as a distribution ships it, else the build tree's
+(`VKR_BAKERY_HARNESS_DEFAULT`); a scene with probes fails its bake without one.
+On Windows the package jobs share one log for both output streams, which
+`vkr_platform_process_run` opens once, and `file_rename` retries a replace for
+about a second while the package polls the job's progress document, since the
+CRT reader grants no delete sharing.
 
 **Editor distribution.** `build_editor_dist.sh [folder]` (or `.bat`) builds the
 Release editor and runs `cmake --install --component editor`

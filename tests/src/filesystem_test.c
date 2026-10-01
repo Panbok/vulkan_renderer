@@ -5,6 +5,7 @@
 #include "containers/str.h"
 #include "core/vkr_content_codec.h"
 #include "core/vkr_hash.h"
+#include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
@@ -566,6 +567,74 @@ vkr_internal void test_file_link(void) {
   printf("  test_file_link PASSED\n");
 }
 
+typedef struct FsTestHeldReader {
+  FILE *file;
+} FsTestHeldReader;
+
+vkr_internal void *fs_test_release_reader(void *argument) {
+  FsTestHeldReader *reader = (FsTestHeldReader *)argument;
+  vkr_thread_sleep(100u);
+  fclose(reader->file);
+  return NULL;
+}
+
+/* A document another process is polling stays replaceable: on Windows the
+   CRT reader shares no delete access, so the atomic replace must outlast a
+   brief read instead of failing at once. */
+vkr_internal void test_file_rename_waits_for_brief_reader(void) {
+  printf("  Running test_file_rename_waits_for_brief_reader...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  const uint32_t id = ++g_fs_test_counter;
+  String8 directory_text =
+      string8_create_formatted(&allocator, "%s%s/reader_%u", PROJECT_SOURCE_DIR,
+                               FS_TEST_RELATIVE_DIR, id);
+  FilePath directory = {.path = directory_text,
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory_exclusive(&directory) == FILE_ERROR_NONE);
+  const char *root = (const char *)directory_text.str;
+  FilePath document = {
+      .path = string8_create_formatted(&allocator, "%s/progress.json", root),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath staged = {
+      .path = string8_create_formatted(&allocator, "%s/progress.tmp", root),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+
+  FileMode write_mode = bitset8_create();
+  bitset8_set(&write_mode, FILE_MODE_WRITE);
+  bitset8_set(&write_mode, FILE_MODE_BINARY);
+  bitset8_set(&write_mode, FILE_MODE_TRUNCATE);
+  const uint8_t before[] = {'o', 'l', 'd'};
+  const uint8_t after[] = {'n', 'e', 'w', '!'};
+  FileHandle file = {0};
+  uint64_t transferred = 0;
+  assert(file_open(&document, write_mode, &file) == FILE_ERROR_NONE);
+  assert(file_write(&file, sizeof(before), before, &transferred) ==
+         FILE_ERROR_NONE);
+  file_close(&file);
+  assert(file_open(&staged, write_mode, &file) == FILE_ERROR_NONE);
+  assert(file_write(&file, sizeof(after), after, &transferred) ==
+         FILE_ERROR_NONE);
+  file_close(&file);
+
+  FsTestHeldReader reader = {
+      .file = file_fopen((const char *)document.path.str, "rb")};
+  assert(reader.file);
+  VkrThread thread = NULL;
+  assert(
+      vkr_thread_create(&allocator, &thread, fs_test_release_reader, &reader));
+  assert(file_rename(&staged, &document, true_v) == FILE_ERROR_NONE);
+  assert(vkr_thread_join(thread));
+  fs_test_expect_bytes(&document, after, sizeof(after));
+  assert(!file_exists(&staged));
+
+  assert(file_remove(&document) == FILE_ERROR_NONE);
+  fs_test_remove_dir(root);
+  arena_destroy(arena);
+  printf("  test_file_rename_waits_for_brief_reader PASSED\n");
+}
+
 vkr_internal void test_file_portable_publication_primitives(void) {
   printf("  Running test_file_portable_publication_primitives...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -1008,6 +1077,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_get_error_strings();
   test_file_clone();
   test_file_link();
+  test_file_rename_waits_for_brief_reader();
   test_file_portable_publication_primitives();
   test_file_io_failures_release_owned_outputs();
   test_file_allocation_failures();

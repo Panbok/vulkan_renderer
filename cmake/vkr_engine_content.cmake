@@ -14,6 +14,7 @@ set(VKR_ENGINE_INCLUDE
     assets/fonts/UbuntuMono21px.fnt.vkf
     assets/textures/UbuntuMono21px_0.png
     assets/fonts/NotoSansCJK.fontcfg
+    assets/fonts/NotoSansCJK-Windows.fontcfg
     ${VKR_MANNEQUIN_INCLUDE})
 set(VKR_ENGINE_FILES
     ${VKR_ENGINE_INCLUDE}

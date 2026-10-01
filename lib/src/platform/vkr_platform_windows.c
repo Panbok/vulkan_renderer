@@ -24,8 +24,20 @@ bool8_t vkr_platform_executable_path(char *path, uint32_t capacity) {
   wchar_t executable[32768];
   const DWORD length =
       GetModuleFileNameW(NULL, executable, ArrayCount(executable));
-  if (!length || length >= ArrayCount(executable) ||
-      !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, executable, -1, path,
+  if (!length || length >= ArrayCount(executable)) {
+    return false_v;
+  }
+  /* A process started through an extended path reports it with the \\?\
+     prefix; callers get the ordinary absolute form, which every native
+     conversion extends again. */
+  const wchar_t *name = executable;
+  if (length >= 8 && !_wcsnicmp(executable, L"\\\\?\\UNC\\", 8)) {
+    executable[6] = L'\\';
+    name = executable + 6;
+  } else if (length >= 4 && !wcsncmp(executable, L"\\\\?\\", 4)) {
+    name = executable + 4;
+  }
+  if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1, path,
                            (int)capacity, NULL, NULL)) {
     return false_v;
   }
@@ -789,10 +801,15 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     return false_v;
   }
   /* Redirection files are not inheritable; the child receives listed
-   * duplicates (VkrPlatformChildHandles). */
+   * duplicates (VkrPlatformChildHandles). One file named for both streams is
+   * opened once: a second write handle would fail with a sharing violation. */
   HANDLE output[2] = {GetStdHandle(STD_OUTPUT_HANDLE),
                       GetStdHandle(STD_ERROR_HANDLE)};
-  const char *paths[2] = {config->stdout_path, config->stderr_path};
+  const bool8_t shared_output =
+      config->stdout_path && config->stderr_path &&
+      strcmp(config->stdout_path, config->stderr_path) == 0;
+  const char *paths[2] = {config->stdout_path,
+                          shared_output ? NULL : config->stderr_path};
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
     if (paths[i]) {
       wchar_t wide_path[32768];
@@ -815,6 +832,9 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
         return false_v;
       }
     }
+  }
+  if (shared_output) {
+    output[1] = output[0];
   }
   VkrPlatformChildHandles child;
   if (!vkr_platform_child_handles_begin(&child, GetStdHandle(STD_INPUT_HANDLE),
