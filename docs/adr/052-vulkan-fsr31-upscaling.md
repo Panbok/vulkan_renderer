@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -18,9 +18,12 @@ upscaling path while retaining native output and UI resolution.
 
 ## Decision
 
-Add `fsr31` as a Vulkan-only temporal upscaler. It accepts a fixed render scale
-in `[1/3, 1]`, including Native AA at one, and forces temporal inputs. It has no
-frame generation or dynamic-resolution control. Metal retains MetalFX; inactive
+Add `fsr31` as a Vulkan-only temporal upscaler. It accepts a render scale in
+`[1/3, 1]`, including Native AA at one, and forces temporal inputs. The SDK
+context is sized to the Scene output, so `vkr_renderer_set_render_scale` changes
+the scale between frames without recreating it; the change resets temporal
+history like any extent change. It has no frame generation or
+dynamic-resolution control. Metal retains MetalFX; inactive
 FSR graph declarations do not activate a Metal path.
 
 FSR uses the portable jitter convention and a scale-dependent Halton phase count.

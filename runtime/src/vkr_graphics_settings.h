@@ -26,6 +26,9 @@ typedef struct VkrGraphicsSettingsState {
   bool8_t restart_required;
   bool8_t temporal_upscaling_available;
   bool8_t dynamic_resolution_available;
+  /* Whether render scale applies without temporal upscaling; otherwise the
+     Scene renders at unit scale until temporal upscaling is enabled. */
+  bool8_t spatial_render_scale_available;
   String8 temporal_upscaling_name;
   String8 message;
 } VkrGraphicsSettingsState;
@@ -65,6 +68,11 @@ bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings);
 bool8_t
 vkr_graphics_settings_restart_required(const VkrGraphicsSettings *requested,
                                        const VkrGraphicsSettings *started);
+/* The Scene render scale `settings` selects under `state`'s capabilities: unit
+ * scale where the backend cannot scale without temporal upscaling. */
+float32_t
+vkr_graphics_settings_render_scale(const VkrGraphicsSettingsState *state,
+                                   const VkrGraphicsSettings *settings);
 /* Missing files preserve defaults. Invalid files leave the destination intact.
  */
 bool8_t vkr_graphics_settings_load(const char *path,

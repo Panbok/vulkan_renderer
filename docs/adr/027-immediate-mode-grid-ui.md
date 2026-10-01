@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-10-01
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -435,12 +435,14 @@ display sync, a recreated Vulkan swapchain); a windowed macOS editor still
 presents at most once per display refresh, because the compositor paces the
 layer's drawables. Render scale and dynamic resolution apply between frames when
 the renderer reports the scale inside `vkr_renderer_render_scale_range`
-(MetalFX builds its scaler for the dynamic-resolution floor up to native; the
-spatial Metal path accepts 1/3..1); otherwise they also wait for a restart.
-With dynamic resolution on, the render scale caps the scale the controller
-chooses, so Metal defaults to 1.0. The frame limit is read every frame. Other
-controls apply to live frame state; lighting changes invalidate the relevant
-shadow and temporal histories.
+(MetalFX builds its scaler for the dynamic-resolution floor up to native;
+Vulkan FSR 3.1 and the spatial Metal path accept 1/3..1); otherwise they also
+wait for a restart. Vulkan without temporal upscaling renders at unit scale, so
+render scale is disabled there and the Scene percentage reads 100%. With
+dynamic resolution on, the render scale caps the scale the controller chooses,
+so Metal defaults to 1.0. The frame limit is read every frame. Other controls
+apply to live frame state; lighting changes invalidate the relevant shadow and
+temporal histories.
 
 Settings load from `VKR_GRAPHICS_SETTINGS_PATH`, or the project
 `.vkr-graphics-settings.json` default when the variable is absent. Missing files

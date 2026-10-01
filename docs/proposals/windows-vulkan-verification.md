@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-27
+updated: 2026-10-01
 authority: proposal
 ---
 
@@ -377,10 +377,12 @@ Native BC7/BC5 derived textures and Windows import measurements are in
   right content for Display, Quality, Lighting, Effects, and Color. Check active
   tab state, keyboard/mouse focus, Restore defaults, and narrow-dock layout.
   Confirm the UI emits typed requests and the runtime owns validation/application.
-- [ ] Change vsync, HDR, temporal upscaling, dynamic resolution, and render
-  scale. Verify the restart-required notice and the started/effective values;
-  change the remaining controls and verify live application plus shadow/history
-  invalidation where applicable.
+- [ ] Change vsync, HDR and temporal upscaling and verify the restart-required
+  notice and the started/effective values. With FSR 3.1, change render scale
+  from the Settings slider and the viewport Scalability menu and verify it
+  applies live; without temporal upscaling, verify render scale is disabled at
+  100%. Change the remaining controls and verify live application plus
+  shadow/history invalidation where applicable.
 - [ ] Set `VKR_GRAPHICS_SETTINGS_PATH` to a temporary Windows path and verify
   missing-file defaults, invalid-file rejection, versioned JSON, 0.25-second
   idle debounce, atomic save, and exit flush. Relaunch and verify persistence;

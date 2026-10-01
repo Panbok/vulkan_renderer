@@ -238,8 +238,9 @@ directories (ADR-078).
 Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
 and Color and a clipped, scrollable right content area. The editor emits typed
 `VkrGraphicsSettingsRequest` values; the sample runtime validates and owns their
-application. Vsync, HDR, temporal upscaling, dynamic resolution, and render
-scale changes show a restart-required notice. Other controls apply live and
+application. Vsync, HDR and temporal upscaling changes show a restart-required
+notice; render scale and dynamic resolution do too unless the renderer's live
+range covers them (ADR-027). Other controls apply live and
 invalidate the affected histories. Legacy app/scene settings load from
 `VKR_GRAPHICS_SETTINGS_PATH` or `.vkr-graphics-settings.json`, debounce saves, and
 flush on exit. Managed editor preferences use the project writer described below. Render Stop retains the last Scene image while UI continues;
@@ -1145,8 +1146,9 @@ The pass reads current color, four existing validity texels and previous color,
 then writes once; it adds no mask or depth image. This addresses stationary
 shimmer, not moving MetalFX quality, and has no matched performance claim.
 Vulkan spatial rendering
-rejects non-unit scale and MetalFX. Vulkan FSR 3.1 accepts a fixed scale in
-`[1/3, 1]`, including Native AA, with no frame generation or dynamic resolution.
+rejects non-unit scale and MetalFX. Vulkan FSR 3.1 accepts a scale in
+`[1/3, 1]`, changeable between frames, including Native AA, with no frame
+generation or dynamic resolution.
 It consumes raw HDR, normalized previous-UV minus current-UV motion, portable
 jitter, masks and nearest transmission depth, then writes output-sized HDR before
 exposure, bloom, tonemap and UI. The first slice supports finite perspective

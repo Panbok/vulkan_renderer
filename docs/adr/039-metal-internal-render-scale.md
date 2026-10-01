@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-10-01
 authority: adr
 ---
 
@@ -18,8 +18,10 @@ target would also reduce UI resolution and change capture/picking semantics.
 ## Decision
 
 Accept a finite Metal Scene scale in `(0,1]` at initialization; zero selects
-unit scale for API callers. Vulkan's spatial path rejects non-unit scale.
-Vulkan FSR 3.1, accepted separately in ADR-052, uses a fixed scale in `[1/3, 1]`.
+unit scale for API callers. Vulkan's spatial path rejects non-unit scale, so
+the sample runtime renders a Vulkan Scene without temporal upscaling at unit
+scale and keeps the stored preference for when FSR is enabled again. Vulkan
+FSR 3.1, accepted separately in ADR-052, accepts a live scale in `[1/3, 1]`.
 Keep native physical output and UI extent separate from the Scene presentation
 extent: whole target in direct mode or the dock-owned panel in editor mode.
 

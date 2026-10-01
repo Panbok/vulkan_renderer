@@ -187,6 +187,11 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
     if (settings->temporal_upscaling) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
+  } else if (offset == offsetof(VkrGraphicsSettings, render_scale)) {
+    if (!settings->temporal_upscaling && state &&
+        !state->spatial_render_scale_available) {
+      result.flags |= VKR_PROPERTY_STATE_DISABLED;
+    }
   } else if (offset == offsetof(VkrGraphicsSettings, soft_shadows) ||
              offset == offsetof(VkrGraphicsSettings, local_shadows)) {
     if (settings->shadow_quality == 0u) {
@@ -316,6 +321,16 @@ bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
          a->temporal_upscaling != b->temporal_upscaling ||
          a->dynamic_resolution != b->dynamic_resolution ||
          a->render_scale != b->render_scale;
+}
+
+float32_t
+vkr_graphics_settings_render_scale(const VkrGraphicsSettingsState *state,
+                                   const VkrGraphicsSettings *settings) {
+  if (!settings->temporal_upscaling && state &&
+      !state->spatial_render_scale_available) {
+    return 1.0f;
+  }
+  return settings->render_scale;
 }
 
 bool8_t vkr_graphics_settings_load(const char *path,

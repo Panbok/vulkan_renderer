@@ -239,7 +239,9 @@ static void view_chip_text(const VkrEditorUi *editor,
                (double)(settings.render_scale * 100.0f));
     else
       snprintf(text[4], 48, "%s \xc2\xb7 %.0f%%", preset,
-               (double)(settings.render_scale * 100.0f));
+               (double)(vkr_graphics_settings_render_scale(frame->graphics,
+                                                           &settings) *
+                        100.0f));
   } else {
     snprintf(text[4], 48, "Quality");
   }
@@ -416,16 +418,22 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     *custom = (ViewRow){.checked = preset == VKR_GRAPHICS_PRESET_CUSTOM,
                         .icon = VKR_UI_ICON_SETTINGS};
     snprintf(custom->text, sizeof(custom->text), "Custom settings...");
-    /* With dynamic resolution the percentage caps the scale it chooses. */
+    /* With dynamic resolution the percentage caps the scale it chooses; a
+       backend that cannot scale without temporal upscaling renders at 100%. */
     const bool8_t automatic =
         settings.dynamic_resolution && settings.temporal_upscaling;
+    const float32_t render_scale =
+        vkr_graphics_settings_render_scale(frame->graphics, &settings);
+    const bool8_t fixed = !settings.temporal_upscaling &&
+                          !frame->graphics->spatial_render_scale_available;
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
     snprintf(rows[count++].text, sizeof(rows[0].text),
              automatic ? "Screen percentage  up to %.0f%%"
                        : "Screen percentage  %.0f%%",
-             (double)(settings.render_scale * 100.0f));
+             (double)(render_scale * 100.0f));
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
-                              .value = settings.render_scale,
+                              .disabled = fixed,
+                              .value = render_scale,
                               .minimum = 1.0f / 3.0f,
                               .maximum = 1.0f};
     ViewRow *dynamic = &rows[count++];

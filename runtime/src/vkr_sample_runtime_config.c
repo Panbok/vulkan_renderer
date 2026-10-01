@@ -176,6 +176,7 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
       .settings = settings,
       .temporal_upscaling_available = temporal_available,
       .dynamic_resolution_available = dynamic_available,
+      .spatial_render_scale_available = metal,
       .temporal_upscaling_name =
           metal ? string8_lit("MetalFX") : string8_lit("FSR 3.1"),
   };
@@ -333,7 +334,8 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .display_output_mode = graphics->hdr && !headless
                                  ? VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR
                                  : VKR_DISPLAY_OUTPUT_SDR,
-      .render_scale = graphics->render_scale,
+      .render_scale =
+          vkr_graphics_settings_render_scale(&options->graphics, graphics),
       .upscale_mode = upscale_mode,
       .dynamic_resolution =
           {

@@ -670,9 +670,10 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     log_error("Dynamic resolution requires MetalFX temporal upscaling");
     return false_v;
   }
-  /* The live range: MetalFX builds its scaler once for every scale the
-     dynamic-resolution range and the requested scale need, and the spatial
-     Metal path resamples any extent. Other upscalers fix the scale. */
+  /* The live range: MetalFX builds its scaler once from the
+     dynamic-resolution floor up to native, the FSR 3.1 context accepts any
+     render extent up to its output, and the spatial Metal path resamples any
+     extent. Vulkan spatial fixes unit scale. */
   const VkrDynamicResolutionConfig dynamic_resolution_request =
       requested_dynamic_resolution;
   float32_t live_min = requested_render_scale;
@@ -685,7 +686,8 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
             : VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE;
     live_min = Min(live_min, dynamic_min);
     live_max = 1.0f;
-  } else if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+  } else if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
+             backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
     live_min = Min(live_min, 1.0f / 3.0f);
     live_max = 1.0f;
   }
