@@ -350,6 +350,10 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
                   VKR_RENDERER_BACKEND_TYPE_VULKAN
           ? vkr_shadow_config_ultra()
           : VKR_SHADOW_CONFIG_HIGH;
+  /* Contact shadows follow their own setting on both backends, so Metal can
+     enable them under High's local-shadow budget. */
+  application->shadow_system.config.local_shadow_contact =
+      settings->contact_shadows;
   application->renderer.temporal_enabled =
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
       settings->anti_aliasing;
@@ -414,6 +418,7 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       old.shadow_quality != settings.shadow_quality ||
       old.soft_shadows != settings.soft_shadows ||
       old.local_shadows != settings.local_shadows ||
+      old.contact_shadows != settings.contact_shadows ||
       old.ambient_occlusion != settings.ambient_occlusion ||
       old.screen_space_reflections != settings.screen_space_reflections ||
       old.screen_space_gi != settings.screen_space_gi ||

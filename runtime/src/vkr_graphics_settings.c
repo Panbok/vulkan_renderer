@@ -85,6 +85,11 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .tooltip = "Enable shadows from nearby lights",
      .offset = GRAPHICS_OFFSET(local_shadows),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "contact_shadows",
+     .label = "Contact shadows",
+     .tooltip = "Add fine shadows where objects meet surfaces near lights",
+     .offset = GRAPHICS_OFFSET(contact_shadows),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "ambient_occlusion",
      .label = "Ambient occlusion",
      .tooltip = "Add contact shading where surfaces meet",
@@ -203,6 +208,10 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
     if (settings->shadow_quality == 0u) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
+  } else if (offset == offsetof(VkrGraphicsSettings, contact_shadows)) {
+    if (settings->shadow_quality == 0u || !settings->local_shadows) {
+      result.flags |= VKR_PROPERTY_STATE_DISABLED;
+    }
   } else if (offset == offsetof(VkrGraphicsSettings, volumetric_fog)) {
     if (!settings->fog) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
@@ -270,6 +279,7 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
   out.shadow_quality = epic ? 3u : high ? 2u : 1u;
   out.soft_shadows = medium;
   out.local_shadows = medium;
+  out.contact_shadows = epic;
   out.ambient_occlusion = medium;
   out.screen_space_gi = epic;
   out.screen_space_reflections = high;
@@ -300,6 +310,7 @@ vkr_graphics_settings_preset(const VkrGraphicsSettings *settings) {
         gates.shadow_quality == settings->shadow_quality &&
         gates.soft_shadows == settings->soft_shadows &&
         gates.local_shadows == settings->local_shadows &&
+        gates.contact_shadows == settings->contact_shadows &&
         gates.ambient_occlusion == settings->ambient_occlusion &&
         gates.screen_space_gi == settings->screen_space_gi &&
         gates.screen_space_reflections == settings->screen_space_reflections &&

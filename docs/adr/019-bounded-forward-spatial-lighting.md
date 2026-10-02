@@ -354,8 +354,10 @@ Contact shadows therefore belong to the Ultra preset only
 `VkrLocalShadowPassPayload.contact_shadows`). Both backends build the mask
 twice, `vkr_metal_packet_local_shadow_mask[_contact]` and
 `vk_local_shadow_mask[_contact]`, so the default kernel carries none of the
-march's registers. The application selects Ultra only on Vulkan, so Metal
-renders without contact shadows. On the M1 host (matched builds, default
+march's registers. In the application they follow the "Contact shadows"
+graphics setting on both backends, which the Epic preset enables, so Metal
+can render them under High's local-shadow budget; harness cases enable them
+through the `ultra` shadow preset. On the M1 host (matched builds, default
 preset) the mask fell from 5.68 to 4.61 ms in the street view without TAA and
 from 4.18 to 3.15 ms with it, the frame median from 16.3 to 15.3 ms with TAA,
 and indoors from 1.77 to 1.60 ms; an Ultra capture was unchanged.
