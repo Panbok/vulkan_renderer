@@ -94,6 +94,26 @@ four full-screen `Transmission.Compact` scans 0.68 ms, the opaque pyramid
 inline nine-tap local-shadow filtering) and the three deeper layers' shading
 0.48 ms, about 0.15 ms each whatever their pixel count.
 
+Measured the same way afterwards, each against a matched base build:
+
+- An occupancy hint on transmission shading saved 0.04 ms at 512 threads and
+  cost more above it, because the deeper layers shade too few pixels to fill
+  the GPU; it was not kept. Skipping the nearer layers' compaction copies saved
+  0.05 ms (ADR-018); the scans themselves cost about 0.11 ms per layer, so
+  merging them into one scan of layer 0's coverage could save at most about
+  0.33 ms.
+- PCSS for the full-filter local lights (a four-tap blocker search in the
+  receiver's face, penumbra from a fixed 5 or 10 cm light radius, then the
+  existing taps at that radius) cost 0.56 to 0.68 ms more mask time in the
+  street view and 0.17 ms indoors, and widened penumbrae with distance from
+  the caster. Bistro lights carry no source size, so it was not adopted.
+- Skipping the glass transmission lookup of single-tap lights would save
+  0.39 ms of mask and 0.41 ms of transmission shading, but it removes tinted
+  shadows behind glass and shifts the street view's exposure, so it stays.
+- A D16 atlas in the graph alone was rejected by the local-shadow cache (five
+  lights shadowed, faces redrawn every frame); it needs host support, and the
+  mask's texture-sample limiter of 13% suggests little bandwidth to save.
+
 ## Proposed change
 
 In order of measured payoff:
