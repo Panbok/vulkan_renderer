@@ -252,8 +252,9 @@ typedef struct VkrShadowConfig {
  * past the three most important take a single filtered tap. */
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA 60u
 /* Camera distance at which local shadows have faded out, and the width of the
- * fade before it. */
-#define VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT 30.0f
+ * fade before it. Lights stay resident past it, so the distance bounds only
+ * filtering; distant lights cover few pixels and take the single tap. */
+#define VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT 120.0f
 #define VKR_LOCAL_SHADOW_FADE_BAND_METRES 5.0f
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH 30u
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED 12u

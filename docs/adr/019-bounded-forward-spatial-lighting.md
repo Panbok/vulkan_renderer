@@ -70,9 +70,19 @@ rule: more than 10 m or 60 degrees of turn), since the image has no history to
 keep. A resident light whose content stays valid never fades out with time, so
 its shadow cannot switch off while the camera moves. Receivers instead see that
 strength times a fade by camera distance, from one to zero over the last 5 m
-before `VkrShadowConfig.local_shadow_fade_distance`, 30 m by default: a light
+before `VkrShadowConfig.local_shadow_fade_distance`, 120 m by default: a light
 past it is not shadowed, so no pixel filters it, yet it stays resident and its
 shadow returns continuously as the camera approaches. Faded lights draw last.
+The default was 30 m until 2026-10-02. Because residency does not depend on
+it, the distance bounds only filtering, and distant lights cover few pixels
+and take the single tap. On the M1 host (Metal Release,
+`local-offscreen-gpu-single`, matched builds), 120 m shadowed all 72 Bistro
+lamps instead of 56 in the street view and 62 in
+`local_shadow_cache_bistro_metal_indoor_walk`, with `Shadow.LocalMask`,
+the GPU pass sum and median frame time unchanged within 0.05 ms, with and
+without TAA. In that walk the unshadowed share of visible local light fell
+from 0.42% mean and 6.0% at most to zero; the street and indoor captures
+stayed within 6 of 255.
 `VKR_LOCAL_SHADOW_FADE_DISTANCE` overrides the distance for diagnosis. Shadowed lights require a
 finite positive range, and shadowed spot outer half angles must be below 90
 degrees.
@@ -291,9 +301,12 @@ host. With every lamp shadowed (56 lights in that view, 2026-10-02, TAA off)
 removing the march saved 1.49 ms of the 6.34 ms mask, but four steps instead
 of eight saved only 0.22 ms, and one march per pixel after the light loop,
 toward the full-filter light with the largest shadowed contribution, saved
-0.04 ms while dropping the other lights' contacts, so it was rejected. The
-cost follows the march's presence in the kernel rather than its work; a
-separate pass or cheaper per-step reconstruction are the remaining options. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
+0.04 ms while dropping the other lights' contacts, so it was rejected.
+Replacing each step's world reconstruction with the ratio of view depths along
+the sample's camera ray, one dot product instead of a 4x4 transform, left the
+mask at 6.44 ms and was not kept either. The cost follows the march's presence
+in the kernel rather than its arithmetic; a separate pass is the remaining
+option and needs a GPU counter trace to justify it. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
 experiment is not an occlusion mechanism. GTAO attenuates local indirect diffuse
 only and does not establish arbitrary wall or furniture occlusion.
 
