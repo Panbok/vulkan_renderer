@@ -731,7 +731,8 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                "Subsurface source producer ABI drift");
 
 /** Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
- * and the noise index that varies the contact-shadow march between frames. */
+ * the noise index that varies the contact-shadow march and tap rotation
+ * between frames, and the temporal filter selection. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   uint64_t frame;
   uint64_t frame_padding;
@@ -743,16 +744,20 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   /* One RGBA8 layer of visibility per shadowed light. */
   uint32_t mask_texture;
   uint32_t extent[2];
-  /* Zero without temporal reconstruction, so the march pattern stays fixed. */
+  /* Zero without temporal reconstruction, so the march and tap patterns stay
+   * fixed. */
   uint32_t contact_noise_index;
-  uint32_t reserved[3];
+  /* Nonzero under temporal reconstruction: fully filtered lights take the
+   * rotated temporal taps. */
+  uint32_t temporal_filter;
+  uint32_t reserved[2];
 } VkrVulkanLocalShadowMaskRoot;
-_Static_assert(sizeof(VkrVulkanLocalShadowMaskRoot) == 128u &&
-                   offsetof(VkrVulkanLocalShadowMaskRoot, visible_rows) ==
-                       80u &&
-                   offsetof(VkrVulkanLocalShadowMaskRoot,
-                            contact_noise_index) == 112u,
-               "Local shadow mask root ABI drift");
+_Static_assert(
+    sizeof(VkrVulkanLocalShadowMaskRoot) == 128u &&
+        offsetof(VkrVulkanLocalShadowMaskRoot, visible_rows) == 80u &&
+        offsetof(VkrVulkanLocalShadowMaskRoot, contact_noise_index) == 112u &&
+        offsetof(VkrVulkanLocalShadowMaskRoot, temporal_filter) == 116u,
+    "Local shadow mask root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanHzbRoot {
   uint32_t source_texture;

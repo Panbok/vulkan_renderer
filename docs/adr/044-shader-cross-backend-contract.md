@@ -348,8 +348,9 @@ Local shadow parity remains **UNALIGNED** until matched native Vulkan and Metal
 captures and diagnostics pass. Production compilation does not close that gate.
 Both backends run the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
 with its own 128-byte root: frame, G-buffer inputs, visible rows, inverse
-view-projection, extent and the contact-shadow noise index (byte 120 on Metal,
-112 on Vulkan). The deferred-lighting kernels read the mask array at byte 216 on
+view-projection, extent, the contact-shadow noise index (byte 120 on Metal,
+112 on Vulkan) and the temporal filter flag (byte 124 on Metal, 116 on
+Vulkan), nonzero under temporal reconstruction. The deferred-lighting kernels read the mask array at byte 216 on
 Metal and 168 on Vulkan; the roots are 256 and 208 bytes. Both append the
 per-light contribution counters, at byte 240 on Metal and 192 on Vulkan (null
 when not measured), into which the deferred punctual loop adds, per SIMD group
@@ -361,7 +362,10 @@ shared `vkr_local_shadow_mask_tag`. Both deferred-lighting kernels count the
 same lights and filter inline when the slot is past
 `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` or its tag names another light. The shared
 `local_shadow.slangh` owns the contact-shadow step count, length, noise,
-start offset, occlusion test and fade. Forward and transmission shading pass
+start offset, occlusion test and fade, and the full and temporal tap counts,
+tap rotation and rotation of a Poisson tap. Both receivers take an optional
+rotation and tap count that default to the fixed nine taps; only the mask
+passes the rotated four-tap kernel, and only when the temporal flag is set. Forward and transmission shading pass
 an inline visibility source (a functor on Metal, a Slang generic value parameter
 on Vulkan) to the shared punctual loop.
 2026-09-26: all 31 Vulkan modules that declare the record, including the mask

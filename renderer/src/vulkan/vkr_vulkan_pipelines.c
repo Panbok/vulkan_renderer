@@ -1303,6 +1303,7 @@ vkr_global const VkrVulkanReflectedField s_vk_local_shadow_mask_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, extent),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot,
                                contact_noise_index),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, temporal_filter),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, reserved),
 };
 

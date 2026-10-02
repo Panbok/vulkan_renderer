@@ -1473,6 +1473,7 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                  ? packet->input.frame.frame_index %
                                        VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD
                                  : 0u,
+      .temporal_filter = packet->temporal.enabled ? 1u : 0u,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLocalShadowMaskRoot),

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-27
+updated: 2026-10-02
 authority: proposal
 ---
 # Lighting efficiency
@@ -90,7 +90,11 @@ In order of measured payoff:
    fallback that restores them made it slower than the full-resolution mask.
    A five-tap PCF would save about 1.3 ms of inline cost, with 1.5 to 6% of
    pixels changing; it needs an owner quality decision. Four rotated taps
-   integrated by TAA remain an option with the same decision boundary.
+   integrated by TAA have shipped in the mask pass, with the fixed nine taps
+   kept without temporal reconstruction
+   ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)): 1.83 ms less
+   mask time in the street view with TAA. Inline filtering in forward and
+   transmission shading still takes nine taps.
 2. **Contact shadows** have shipped in the mask pass: an eight-step
    depth-buffer march of up to 0.25 m per shadowed light, for about 0.85 ms
    ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)). They recover
@@ -119,8 +123,8 @@ together with a meshlet-rendering decision. Each needs a separate decision.
 
 ## Decision boundaries
 
-- Tap reduction relies on TAA or an upscaler, so modes without temporal
-  resolve need a defined fallback kernel.
+- Further tap reduction outside the mask relies on TAA or an upscaler; the
+  mask's fallback without temporal resolve is the fixed nine-tap kernel.
 - Contribution cutoffs and half precision change output within a tolerance
   that must be chosen before implementation.
 

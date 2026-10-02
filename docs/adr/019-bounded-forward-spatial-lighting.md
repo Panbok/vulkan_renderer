@@ -106,6 +106,23 @@ lights with two reduced cost 0.6 ms more mask time and 0.95 ms more frame time
 than three, because forward and transmission shading also filter the extra
 lights.
 
+Under temporal reconstruction `Shadow.LocalMask` filters the full-filter
+lights with the first four taps of the progressive Poisson table instead of
+nine, rotated per pixel by interleaved gradient noise that advances with the
+contact-shadow noise index, and TAA integrates the rotations
+([`local_shadow.slangh`](../../renderer/src/shaders/shared/local_shadow.slangh)).
+Without temporal reconstruction the mask keeps the fixed nine taps, and
+lighting's inline fallback, the clearcoat query, forward and transmission
+shading always do. On the M1 host (Metal Release,
+`local_shadow_taps_bistro_metal_street_taa`, 1280x720, TAA, profile
+`local-offscreen-gpu-single`, timestamps on) the mask fell from 6.44 ms to
+4.61 ms and the frame from 20.2 ms to 17.6 ms median; in
+`local_shadow_taps_bistro_metal_indoor_walk_taa` (0.75 scale) the mask fell
+from 2.03 ms to 1.65 ms. The street capture after TAA changed at most 9 of 255,
+with 0.26% of pixels changing by more than 2, against a repeat floor of 3; the
+indoor capture changed at most 1. Without TAA the street capture is
+byte-identical. Native Vulkan remains unrun.
+
 Application preparation owns the fixed frame-local view payload. Its views are
 the faces of the shadowed lights, rebuilt each frame; `light_first_view` names
 a light's contiguous faces, and view indices need not persist because history
@@ -270,7 +287,13 @@ reconstruction is enabled, so TAA integrates the step pattern. Contact
 shadows are screen-space: occluders off screen or hidden behind nearer
 surfaces cast none, and forward and transmission shading do not apply them.
 They add about 0.85 ms to the mask pass in the Bistro street view on the M1
-host. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
+host. With every lamp shadowed (56 lights in that view, 2026-10-02, TAA off)
+removing the march saved 1.49 ms of the 6.34 ms mask, but four steps instead
+of eight saved only 0.22 ms, and one march per pixel after the light loop,
+toward the full-filter light with the largest shadowed contribution, saved
+0.04 ms while dropping the other lights' contacts, so it was rejected. The
+cost follows the march's presence in the kernel rather than its work; a
+separate pass or cheaper per-step reconstruction are the remaining options. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
 experiment is not an occlusion mechanism. GTAO attenuates local indirect diffuse
 only and does not establish arbitrary wall or furniture occlusion.
 

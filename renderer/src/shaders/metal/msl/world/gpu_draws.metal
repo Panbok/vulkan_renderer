@@ -1299,9 +1299,12 @@ struct VkrMetalPacketLocalShadowMaskRoot {
   device VkrGpuVisibleDrawRow *visible_rows;
   float4x4 inverse_view_projection;
   uint2 extent;
-  // Zero without temporal reconstruction, so the march pattern stays fixed.
+  // Zero without temporal reconstruction, so the march and tap patterns stay
+  // fixed.
   uint contact_noise_index;
-  uint reserved;
+  // Nonzero under temporal reconstruction: fully filtered lights take the
+  // rotated temporal taps.
+  uint temporal_filter;
 };
 
 static float3 vkr_metal_packet_local_shadow_mask_world(
@@ -1349,8 +1352,9 @@ static float vkr_metal_packet_local_contact_shadow(
 // Shadow.LocalMask stores every in-range shadowed light's visibility with the
 // receiver normal, range test and light traversal of deferred lighting, so the
 // lighting kernels read one texel per light instead of filtering shadow maps.
-// A short contact-shadow march multiplies the filtered visibility of each light
-// that takes the full filter.
+// Under temporal reconstruction, fully filtered lights take rotated temporal
+// taps. A short contact-shadow march multiplies the filtered visibility of
+// each light that takes the full filter.
 kernel void vkr_metal_packet_local_shadow_mask(
     constant VkrMetalPacketLocalShadowMaskRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
@@ -1368,6 +1372,14 @@ kernel void vkr_metal_packet_local_shadow_mask(
   float camera_distance = distance(world_position, frame->view_position.xyz);
   float contact_noise =
       vkr_local_shadow_contact_noise(pixel, root.contact_noise_index);
+  // Without temporal reconstruction the full filter keeps its fixed taps.
+  float2 tap_rotation = float2(1.0f, 0.0f);
+  uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT;
+  if (root.temporal_filter != 0u) {
+    tap_rotation =
+        vkr_local_shadow_tap_rotation(pixel, root.contact_noise_index);
+    tap_count = VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT;
+  }
   float diffuse_transmission =
       vkr_editor_neutral_lighting(frame->render_mode)
           ? 0.0f
@@ -1406,7 +1418,8 @@ kernel void vkr_metal_packet_local_shadow_mask(
           slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
         continue;
       float3 visibility = vkr_metal_packet_local_shadow_sample(
-          frame, uint(p3.w), term.kind, world_position, shadow_normal);
+          frame, uint(p3.w), term.kind, world_position, shadow_normal,
+          tap_rotation, tap_count);
       const device VkrLocalShadowView &view =
           frame->local_shadow_views[uint(p3.w) - 1u];
       if (view.shadow_params.z < 0.5f && any(visibility > 0.0f)) {

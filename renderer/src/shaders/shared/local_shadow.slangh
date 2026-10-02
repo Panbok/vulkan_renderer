@@ -107,6 +107,34 @@ bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
     return uint(tag * 255.0f + 0.5f) == light_index + 1u;
 }
 
+// Fully filtered lights take the first VKR_LOCAL_SHADOW_FILTER_TAP_COUNT
+// entries of the progressive Poisson table, unrotated. Under temporal
+// reconstruction Shadow.LocalMask takes the first
+// VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT instead, rotated per pixel and frame, and
+// TAA integrates the rotations into a disk.
+#define VKR_LOCAL_SHADOW_FILTER_TAP_COUNT 9u
+#define VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT 4u
+
+// Tap rotation (cosine, sine) from interleaved gradient noise over the pixel,
+// shifted each frame by the temporal noise index.
+float2 vkr_local_shadow_tap_rotation(uint2 pixel, uint noise_index)
+{
+    float2 position = float2(pixel) + 5.588238f * float(noise_index);
+    float gradient = dot(position, float2(0.06711056f, 0.00583715f));
+    gradient -= floor(gradient);
+    float value = 52.9829189f * gradient;
+    value -= floor(value);
+    float angle = value * 6.28318530718f;
+    return float2(cos(angle), sin(angle));
+}
+
+// Rotates one Poisson tap by a (cosine, sine) pair.
+float2 vkr_local_shadow_rotate_tap(float2 tap, float2 rotation)
+{
+    return float2(tap.x * rotation.x - tap.y * rotation.y,
+                  tap.x * rotation.y + tap.y * rotation.x);
+}
+
 // Fixed-point units per fully lit pixel in the per-light contribution
 // counters; matches the host's VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE.
 #define VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE 256u

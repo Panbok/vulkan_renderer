@@ -1282,7 +1282,8 @@ vkr_global const VkrMetalPacketAbiField vkr_local_shadow_mask_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, extent, "extent", 112),
     VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, contact_noise_index,
                   "contact_noise_index", 120),
-    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, reserved, "reserved", 124),
+    VKR_ABI_FIELD(VkrMetalPacketLocalShadowMaskRoot, temporal_filter,
+                  "temporal_filter", 124),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_metalfx_stabilize_root_fields[] = {

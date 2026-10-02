@@ -2728,6 +2728,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_mask(
                                  ? packet->input.frame.frame_index %
                                        VKR_LOCAL_SHADOW_CONTACT_NOISE_PERIOD
                                  : 0u,
+      .temporal_filter = packet->temporal.enabled ? 1u : 0u,
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->local_shadow_mask_pipeline,

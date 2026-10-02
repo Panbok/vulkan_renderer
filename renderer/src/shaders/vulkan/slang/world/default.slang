@@ -831,9 +831,13 @@ float3 packet_local_shadow_transmission(VkrVulkanPacketFrameRoot *frame,
 }
 
 // Local perspective depth arrays share the directional comparison sampler.
+// Fully filtered lights take `tap_count` Poisson taps rotated by
+// `tap_rotation`.
 float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                           VkrGpuPointLightRow light, uint kind,
-                          float3 world_position, float3 normal)
+                          float3 world_position, float3 normal,
+                          float2 tap_rotation = float2(1.0f, 0.0f),
+                          uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT)
 {
     uint encoded_view = uint(light.p3.w);
     if (encoded_view == 0u)
@@ -890,10 +894,12 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
     float4 face_clip_terms =
         float4(origin_clip.z, axis_clip.z, origin_clip.w, axis_clip.w);
     float3 visibility = 0.0f;
-    [unroll] for (uint tap = 0u; tap < 9u; ++tap)
+    [unroll] for (uint tap = 0u; tap < tap_count; ++tap)
     {
-        float2 tap_uv = uv + vkr_shadow_poisson[tap] *
-                            (1.5f * data.projection_params.y);
+        float2 tap_uv = uv +
+            vkr_local_shadow_rotate_tap(vkr_shadow_poisson[tap],
+                                        tap_rotation) *
+                (1.5f * data.projection_params.y);
         float reference = clip.z / clip.w;
         uint tap_view = first_view;
         if (kind == 2u)
@@ -943,7 +949,8 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                 uint(frame.local_shadow_views[tap_view].shadow_params.y),
                 reference);
     }
-    return vkr_local_shadow_apply_strength(visibility / 9.0f, strength);
+    return vkr_local_shadow_apply_strength(visibility / float(tap_count),
+                                           strength);
 }
 
 float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,

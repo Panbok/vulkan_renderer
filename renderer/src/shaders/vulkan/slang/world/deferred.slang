@@ -239,9 +239,13 @@ struct VkrVkLocalShadowMaskRoot
     // One RGBA8 layer of local-shadow visibility per shadowed light.
     uint mask_texture;
     uint2 extent;
-    // Zero without temporal reconstruction, so the march pattern stays fixed.
+    // Zero without temporal reconstruction, so the march and tap patterns stay
+    // fixed.
     uint contact_noise_index;
-    uint3 reserved;
+    // Nonzero under temporal reconstruction: fully filtered lights take the
+    // rotated temporal taps.
+    uint temporal_filter;
+    uint2 reserved;
 };
 
 struct VkrVkHzbRoot
@@ -1631,8 +1635,9 @@ float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot *root, float3 origin,
 // Shadow.LocalMask stores every in-range shadowed light's visibility with the
 // receiver normal, range test and light traversal of deferred lighting, so the
 // lighting kernels read one texel per light instead of filtering shadow maps.
-// A short contact-shadow march multiplies the filtered visibility of each light
-// that takes the full filter.
+// Under temporal reconstruction, fully filtered lights take rotated temporal
+// taps. A short contact-shadow march multiplies the filtered visibility of
+// each light that takes the full filter.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
@@ -1654,6 +1659,15 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
     float camera_distance = distance(world, frame.view_position.xyz);
     float contact_noise =
         vkr_local_shadow_contact_noise(thread_id.xy, root.contact_noise_index);
+    // Without temporal reconstruction the full filter keeps its fixed taps.
+    float2 tap_rotation = float2(1.0f, 0.0f);
+    uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT;
+    if (root.temporal_filter != 0u)
+    {
+        tap_rotation = vkr_local_shadow_tap_rotation(thread_id.xy,
+                                                     root.contact_noise_index);
+        tap_count = VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT;
+    }
     float diffuse_transmission =
         vkr_editor_neutral_lighting(frame.render_mode)
             ? 0.0f
@@ -1691,7 +1705,8 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
                 slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
                 continue;
             float3 visibility = packet_local_shadow(
-                frame, light, term.kind, world, shadow_normal);
+                frame, light, term.kind, world, shadow_normal, tap_rotation,
+                tap_count);
             VkrLocalShadowView view =
                 frame.local_shadow_views[uint(light.p3.w) - 1u];
             if (view.shadow_params.z < 0.5f && any(visibility > 0.0f))

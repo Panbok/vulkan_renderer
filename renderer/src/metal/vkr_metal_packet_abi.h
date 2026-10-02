@@ -1007,8 +1007,8 @@ _Static_assert(
     "MetalFX stabilize root field ABI drift");
 
 /** Per-dispatch Shadow.LocalMask inputs: the G-buffer surface, its camera
- * reconstruction, and the noise index that varies the contact-shadow march
- * between frames. */
+ * reconstruction, the noise index that varies the contact-shadow march and
+ * tap rotation between frames, and the temporal filter selection. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketLocalShadowMaskRoot {
   uint64_t frame;
   uint64_t vbuffer_texture_id;
@@ -1019,15 +1019,20 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketLocalShadowMaskRoot {
   uint64_t visible_rows;
   Mat4 inverse_view_projection;
   uint32_t extent[2];
-  /** Zero without temporal reconstruction, so the march pattern stays fixed. */
+  /** Zero without temporal reconstruction, so the march and tap patterns stay
+   * fixed. */
   uint32_t contact_noise_index;
-  uint32_t reserved;
+  /** Nonzero under temporal reconstruction: fully filtered lights take the
+   * rotated temporal taps. */
+  uint32_t temporal_filter;
 } VkrMetalPacketLocalShadowMaskRoot;
 _Static_assert(sizeof(VkrMetalPacketLocalShadowMaskRoot) == 128u &&
                    offsetof(VkrMetalPacketLocalShadowMaskRoot,
                             inverse_view_projection) == 48u &&
                    offsetof(VkrMetalPacketLocalShadowMaskRoot,
-                            contact_noise_index) == 120u,
+                            contact_noise_index) == 120u &&
+                   offsetof(VkrMetalPacketLocalShadowMaskRoot,
+                            temporal_filter) == 124u,
                "Metal local shadow mask root ABI drift");
 
 /** Per-dispatch deferred-lighting resources and reconstruction contract. */
