@@ -781,6 +781,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->gtao_depth_mip_pipeline release];
   [renderer->gtao_depth_prefilter_pipeline release];
   [renderer->local_shadow_mask_pipeline release];
+  [renderer->local_shadow_mask_contact_pipeline release];
   [renderer->deferred_lighting_pipeline release];
   [renderer->deferred_lighting_layered_pipeline release];
   [renderer->temporal_resolve_pipeline release];

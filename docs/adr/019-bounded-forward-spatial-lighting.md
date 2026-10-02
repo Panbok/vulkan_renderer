@@ -348,6 +348,17 @@ view-depth march and its depth reads issued before any test, so mask and
 contact together stayed above the single kernel (5.84 against 5.74 ms). It was
 not kept; the march costs about 1.1 ms wherever it runs, and only fewer
 marches or steps, a quality decision, would lower it. Vulkan has no equivalent hint; its drivers choose
+
+Contact shadows therefore belong to the Ultra preset only
+(`VkrShadowConfig.local_shadow_contact`, carried to the backends as
+`VkrLocalShadowPassPayload.contact_shadows`). Both backends build the mask
+twice, `vkr_metal_packet_local_shadow_mask[_contact]` and
+`vk_local_shadow_mask[_contact]`, so the default kernel carries none of the
+march's registers. The application selects Ultra only on Vulkan, so Metal
+renders without contact shadows. On the M1 host (matched builds, default
+preset) the mask fell from 5.68 to 4.61 ms in the street view without TAA and
+from 4.18 to 3.15 ms with it, the frame median from 16.3 to 15.3 ms with TAA,
+and indoors from 1.77 to 1.60 ms; an Ultra capture was unchanged.
 occupancy. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
 experiment is not an occlusion mechanism. GTAO attenuates local indirect diffuse
 only and does not establish arbitrary wall or furniture occlusion.

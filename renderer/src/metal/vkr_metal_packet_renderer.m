@@ -750,6 +750,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> temporal_transform_pipeline;
   id<MTLComputePipelineState> gbuffer_resolve_pipelines[4];
   id<MTLComputePipelineState> local_shadow_mask_pipeline;
+  id<MTLComputePipelineState> local_shadow_mask_contact_pipeline;
   id<MTLComputePipelineState> deferred_lighting_pipeline;
   /** Adds clearcoat, sheen and anisotropy; shades only tiles that use them. */
   id<MTLComputePipelineState> deferred_lighting_layered_pipeline;

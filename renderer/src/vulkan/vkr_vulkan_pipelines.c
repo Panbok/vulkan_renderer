@@ -1707,6 +1707,10 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
     VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV, "vk_local_shadow_mask",
         s_vk_local_shadow_mask_fields, VkrVulkanLocalShadowMaskRoot),
+    VKR_VULKAN_REFLECTED_ROOT(
+        VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_COMP_SPV,
+        "vk_local_shadow_mask_contact", s_vk_local_shadow_mask_fields,
+        VkrVulkanLocalShadowMaskRoot),
     VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
                               "vk_deferred_lighting", s_vk_lighting_fields,
                               VkrVulkanLightingRoot),
@@ -2613,6 +2617,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_DEBUG_COMP_SPV,
       VKR_VULKAN_PACKET_GBUFFER_RESOLVE_EMISSIVE_DEBUG_COMP_SPV,
       VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV,
+      VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
@@ -2686,6 +2691,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_gbuffer_resolve",
       "vk_gbuffer_resolve",
       "vk_local_shadow_mask",
+      "vk_local_shadow_mask_contact",
       "vk_deferred_lighting",
       "vk_deferred_lighting_layered",
       "vk_temporal_resolve",

@@ -422,6 +422,8 @@ typedef struct VkrLocalShadowPassPayload {
   uint32_t transmission_layer_count;
   /** Whether refractive casters exist, so opaque faces exclude them. */
   bool8_t refractive_casters;
+  /** Shadow.LocalMask applies contact shadows to the full-filter lights. */
+  bool8_t contact_shadows;
   uint32_t render_views[VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX];
   uint32_t light_first_view[VKR_MAX_SCENE_POINT_LIGHTS];
   VkrLocalShadowView views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX];

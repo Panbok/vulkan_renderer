@@ -124,6 +124,8 @@
   "packet.gbuffer_resolve.emissive_debug.comp.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_COMP_SPV                           \
   "packet.local_shadow_mask.comp.spv"
+#define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_COMP_SPV                   \
+  "packet.local_shadow_mask_contact.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
@@ -371,6 +373,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK,
+  VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,

@@ -1664,6 +1664,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .contents_unstable =
           dynamic_scan_failed || candidates->publication_pending,
       .refractive_casters = candidates->transmission_gpu_candidate_count > 0u,
+      .contact_shadows = system->config.local_shadow_contact,
       .face_budget = system->config.local_shadow_face_budget,
       .map_size = system->config.local_shadow_map_size,
       .fade_distance = system->config.local_shadow_fade_distance,

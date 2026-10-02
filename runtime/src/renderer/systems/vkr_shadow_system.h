@@ -186,6 +186,10 @@ typedef struct VkrShadowConfig {
    * over the last VKR_LOCAL_SHADOW_FADE_BAND_METRES; lights past it are not
    * filtered. Bounds the shadowed lights a pixel filters. */
   float32_t local_shadow_fade_distance;
+  /** Screen-space contact shadows for the full-filter local lights. Ultra
+   * only: the march costs about 1.1 ms of Shadow.LocalMask in the Bistro
+   * street view on the M1 Pro, mostly through the occupancy it takes. */
+  bool8_t local_shadow_contact;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
   float32_t cascade_split_lambda;
@@ -371,6 +375,7 @@ typedef struct VkrShadowConfig {
 static inline VkrShadowConfig vkr_shadow_config_ultra(void) {
   VkrShadowConfig config = VKR_SHADOW_CONFIG_HIGH;
   config.local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA;
+  config.local_shadow_contact = true_v;
   return config;
 }
 

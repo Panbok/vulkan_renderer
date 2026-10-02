@@ -12,8 +12,8 @@ typedef struct VkrGraphicsSettings {
   bool8_t vsync, hdr, temporal_upscaling, dynamic_resolution, anti_aliasing;
   float32_t render_scale;
   uint32_t frame_limit;
-  /* 0 off, 1 balanced, 2 high, 3 ultra: ten shadowed local lights on Vulkan,
-   * High on Metal. */
+  /* 0 off, 1 balanced, 2 high, 3 ultra: ten shadowed local lights and contact
+   * shadows on Vulkan, High on Metal. */
   uint32_t shadow_quality;
   bool8_t soft_shadows, local_shadows, ambient_occlusion;
   bool8_t screen_space_reflections, screen_space_gi, reflection_probes;

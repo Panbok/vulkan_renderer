@@ -1636,11 +1636,11 @@ float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot *root, float3 origin,
 // receiver normal, range test and light traversal of deferred lighting, so the
 // lighting kernels read one texel per light instead of filtering shadow maps.
 // Under temporal reconstruction, fully filtered lights take rotated temporal
-// taps. A short contact-shadow march multiplies the filtered visibility of
-// each light that takes the full filter.
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
+// taps. In the contact variant, which the Ultra preset selects, a short
+// contact-shadow march multiplies the filtered visibility of each light that
+// takes the full filter; without it the march's registers do not lower the
+// kernel's occupancy.
+void vk_local_shadow_mask_impl<let ContactShadows : bool>(uint3 thread_id)
 {
     VkrVkLocalShadowMaskRoot *root = g_local_shadow_mask_push.root;
     if (any(thread_id.xy >= root.extent))
@@ -1714,7 +1714,8 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
                 tap_count);
             VkrLocalShadowView view =
                 frame.local_shadow_views[uint(light.p3.w) - 1u];
-            if (view.shadow_params.z < 0.5f && any(visibility > 0.0f))
+            if (ContactShadows && view.shadow_params.z < 0.5f &&
+                any(visibility > 0.0f))
             {
                 float3 origin =
                     world + shadow_normal *
@@ -1733,6 +1734,20 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
             ++slot;
         }
     }
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
+{
+    vk_local_shadow_mask_impl<false>(thread_id);
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_local_shadow_mask_contact(uint3 thread_id : SV_DispatchThreadID)
+{
+    vk_local_shadow_mask_impl<true>(thread_id);
 }
 
 groupshared uint g_deferred_tile_layered;

@@ -660,6 +660,8 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t local_shadow_transmission_layer_count;
   /** Opaque local faces exclude refractive casters. */
   bool8_t local_shadow_refractive_casters;
+  /** Shadow.LocalMask runs its contact-shadow variant. */
+  bool8_t local_shadow_contact;
   /** Faces drawn this frame, one opaque culling view and pass each. */
   uint32_t local_shadow_render_count;
   /** The first render slots also draw transmission layers, with one

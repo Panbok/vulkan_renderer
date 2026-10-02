@@ -687,6 +687,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
     }
   }
   out->refractive_casters = input->refractive_casters;
+  out->contact_shadows = input->contact_shadows;
   out->transmission_layer_count = transmission_layer_count;
   pending->transmission_layer_count = transmission_layer_count;
 

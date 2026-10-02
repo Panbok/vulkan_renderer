@@ -122,6 +122,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->local_shadow_view_count = local_shadow ? local_shadow->view_count : 0u;
   frame->local_shadow_refractive_casters =
       local_shadow && local_shadow->refractive_casters;
+  frame->local_shadow_contact = local_shadow && local_shadow->contact_shadows;
   frame->local_shadow_transmission_layer_count =
       frame->local_shadow_refractive_casters
           ? local_shadow->transmission_layer_count

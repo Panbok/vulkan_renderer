@@ -2693,8 +2693,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_mask(
   id<MTLTexture> mask = vkr_metal_packet_pass_texture(renderer, pass, 16u);
   VkrMetalPacketGraphBufferInstance *visible =
       vkr_metal_packet_pass_buffer(renderer, pass, 13u);
-  if (!renderer->local_shadow_mask_pipeline || !vbuffer || !depth || !normal ||
-      !mask || !visible || vbuffer.width == 0u || vbuffer.height == 0u ||
+  /* Contact shadows are a separate kernel so the default one does not carry
+     the march's registers. */
+  id<MTLComputePipelineState> pipeline =
+      renderer->prepared_frame.local_shadow_contact
+          ? renderer->local_shadow_mask_contact_pipeline
+          : renderer->local_shadow_mask_pipeline;
+  if (!pipeline || !vbuffer || !depth || !normal || !mask || !visible ||
+      vbuffer.width == 0u || vbuffer.height == 0u ||
       vbuffer.width > UINT32_MAX || vbuffer.height > UINT32_MAX)
     return false_v;
 
@@ -2731,7 +2737,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_mask(
       .temporal_filter = packet->temporal.enabled ? 1u : 0u,
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
-      .pipeline = renderer->local_shadow_mask_pipeline,
+      .pipeline = pipeline,
       .root = root_gpu,
       .threads = MTLSizeMake(vbuffer.width, vbuffer.height, 1u),
       .group_size = MTLSizeMake(8u, 8u, 1u),

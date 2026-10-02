@@ -1189,6 +1189,11 @@ vkr_internal void vkr_metal_packet_create_scene_compute_pipelines(
           renderer, fragment, "vkr_metal_packet_local_shadow_mask",
           VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT, false_v,
           @"VKR Metal packet local shadow mask");
+  renderer->local_shadow_mask_contact_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_local_shadow_mask_contact",
+          VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT, false_v,
+          @"VKR Metal packet local shadow mask with contact shadows");
   renderer->deferred_lighting_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_deferred_lighting",
@@ -1396,6 +1401,7 @@ vkr_internal bool8_t vkr_metal_packet_deferred_pipelines_ready(
       !renderer->froxel_integrate_pipeline ||
       !renderer->froxel_apply_pipeline ||
       !renderer->local_shadow_mask_pipeline ||
+      !renderer->local_shadow_mask_contact_pipeline ||
       !renderer->deferred_lighting_pipeline ||
       !renderer->deferred_lighting_layered_pipeline ||
       !renderer->sh_coefficients || renderer->sh_coefficients.gpuAddress == 0 ||
@@ -1550,6 +1556,8 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->cloud_shadow_pipeline, "Cloud shadow pipeline"},
       {renderer->cloud_trace_pipeline, "Cloud trace pipeline"},
       {renderer->local_shadow_mask_pipeline, "local shadow mask pipeline"},
+      {renderer->local_shadow_mask_contact_pipeline,
+       "local shadow mask contact pipeline"},
       {renderer->deferred_lighting_pipeline, "deferred lighting pipeline"},
       {renderer->deferred_lighting_layered_pipeline,
        "layered deferred lighting pipeline"},

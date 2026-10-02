@@ -1357,8 +1357,10 @@ static float vkr_metal_packet_local_contact_shadow(
 // receiver normal, range test and light traversal of deferred lighting, so the
 // lighting kernels read one texel per light instead of filtering shadow maps.
 // Under temporal reconstruction, fully filtered lights take rotated temporal
-// taps. A short contact-shadow march multiplies the filtered visibility of
-// each light that takes the full filter.
+// taps. In the contact variant, which the Ultra preset selects, a short
+// contact-shadow march multiplies the filtered visibility of each light that
+// takes the full filter; without it the march's registers do not lower the
+// kernel's occupancy.
 //
 // The mask and base deferred-lighting kernels are latency-bound at low
 // occupancy: unhinted, the compiler gives them 576 and 384 threads per
@@ -1370,10 +1372,9 @@ static float vkr_metal_packet_local_contact_shadow(
 #define VKR_METAL_LOCAL_SHADOW_MASK_MAX_THREADS 768
 #define VKR_METAL_DEFERRED_LIGHTING_MAX_THREADS 512
 
-[[max_total_threads_per_threadgroup(VKR_METAL_LOCAL_SHADOW_MASK_MAX_THREADS)]]
-kernel void vkr_metal_packet_local_shadow_mask(
-    constant VkrMetalPacketLocalShadowMaskRoot &root [[buffer(0)]],
-    uint2 pixel [[thread_position_in_grid]]) {
+template <bool ContactShadows>
+static void vkr_metal_packet_local_shadow_mask_impl(
+    constant VkrMetalPacketLocalShadowMaskRoot &root, uint2 pixel) {
   if (any(pixel >= root.extent))
     return;
   uint visible_index = root.vbuffer.read(pixel).x;
@@ -1444,7 +1445,8 @@ kernel void vkr_metal_packet_local_shadow_mask(
           tap_rotation, tap_count);
       const device VkrLocalShadowView &view =
           frame->local_shadow_views[uint(p3.w) - 1u];
-      if (view.shadow_params.z < 0.5f && any(visibility > 0.0f)) {
+      if (ContactShadows && view.shadow_params.z < 0.5f &&
+          any(visibility > 0.0f)) {
         float3 origin =
             world_position +
             shadow_normal *
@@ -1462,6 +1464,20 @@ kernel void vkr_metal_packet_local_shadow_mask(
       ++slot;
     }
   }
+}
+
+[[max_total_threads_per_threadgroup(VKR_METAL_LOCAL_SHADOW_MASK_MAX_THREADS)]]
+kernel void vkr_metal_packet_local_shadow_mask(
+    constant VkrMetalPacketLocalShadowMaskRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  vkr_metal_packet_local_shadow_mask_impl<false>(root, pixel);
+}
+
+[[max_total_threads_per_threadgroup(VKR_METAL_LOCAL_SHADOW_MASK_MAX_THREADS)]]
+kernel void vkr_metal_packet_local_shadow_mask_contact(
+    constant VkrMetalPacketLocalShadowMaskRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  vkr_metal_packet_local_shadow_mask_impl<true>(root, pixel);
 }
 
 // A pixel with no clearcoat, sheen or anisotropy G-buffer data shades

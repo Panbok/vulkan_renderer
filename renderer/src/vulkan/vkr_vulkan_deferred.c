@@ -1479,9 +1479,13 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanLocalShadowMaskRoot),
                                  &prepared->root_address))
     return false_v;
+  /* Contact shadows are a separate kernel so the default one does not carry
+     the march's registers. */
   prepared->pipelines[prepared->dispatch_count] =
-      renderer
-          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK];
+      renderer->deferred_pipelines
+          [renderer->prepared_frame.local_shadow_contact
+               ? VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT
+               : VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK];
   prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][2] = 1u;

@@ -362,7 +362,9 @@ shared `vkr_local_shadow_mask_tag`. Both deferred-lighting kernels count the
 same lights, skip the same lights below the shared
 `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` that the mask gives no slot, and filter
 inline when the slot is past
-`VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` or its tag names another light. The shared
+`VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` or its tag names another light. Each
+backend builds the mask kernel with and without contact shadows and selects
+the variant from the payload's `contact_shadows` (Ultra only). The shared
 `local_shadow.slangh` owns the contact-shadow step count, length, noise,
 start offset, occlusion test and fade, and the full and temporal tap counts,
 tap rotation and rotation of a Poisson tap. Both receivers take an optional

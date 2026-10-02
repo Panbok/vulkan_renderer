@@ -252,6 +252,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.local_shadow_mask_contact.comp",
+      "entry": "vk_local_shadow_mask_contact",
+      "stage": "compute"
+    },
+    {
       "name": "packet.deferred_lighting.comp",
       "entry": "vk_deferred_lighting",
       "stage": "compute"
