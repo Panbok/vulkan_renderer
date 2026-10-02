@@ -317,8 +317,9 @@ vkr_internal bool8_t vkr_script_library_run(VkrBakeryTask *task) {
                  library);
   (void)snprintf(archive_argument, sizeof(archive_argument), "/OUT:%s",
                  archive);
-  const char *link[] = {"/NOLOGO", "/DLL", "/NOENTRY", library_argument,
-                        response};
+  /* The default DLL entry initializes the module's own static C runtime,
+     which SDK calls such as vkr_log use. */
+  const char *link[] = {"/NOLOGO", "/DLL", library_argument, response};
   const char *pack[] = {"/NOLOGO", archive_argument, response};
   const char *linker = VKR_SCRIPT_LINKER;
   const char *archiver = VKR_SCRIPT_ARCHIVER;
