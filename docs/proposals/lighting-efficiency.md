@@ -127,6 +127,20 @@ Measured the same way afterwards, each against a matched base build:
   flags on both backends for an estimated 0.4 to 0.6 ms under TAA, so it was
   not built. The prototype is a starting point if TAA-off rendering or a
   cheaper history read changes that balance.
+- Inline local-shadow filtering in transmission and forward shading takes four
+  taps (ADR-019): transmission shading fell from 1.94 to 1.53 ms.
+- Directional PCF sample count is not the directional cost: 4 samples matched
+  16 within 0.03 ms of `Lighting.Deferred`, and 9 was slower because the
+  16-sample kernel's nine-tap uniform early-out no longer applies. Cascade
+  selection, the PCSS blocker search and the cloud shadow remain.
+- After the contribution cutoff, lights past the eighth mask slot no longer
+  matter: a four-tap inline fallback or twelve slots each saved at most
+  0.06 ms of `Lighting.Deferred`.
+- The deeper transmission layers (about 0.15 ms each for 1,200 to 2,300
+  pixels) are latency-bound: a few threadgroups each walk the whole light
+  list. Each layer refracts through the composite behind it at neighbouring
+  pixels, so layers cannot share a dispatch; a variant in which a SIMD group
+  shares one pixel's light loop could recover up to about 0.3 ms.
 
 ## Proposed change
 
