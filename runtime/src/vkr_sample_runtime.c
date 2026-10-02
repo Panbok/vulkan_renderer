@@ -3060,16 +3060,21 @@ static void sample_script_request(VkrStandardSceneRuntime *application,
        i < request->load_count && i < VKR_SAMPLE_SCRIPT_LOAD_MAX; ++i) {
     const VkrSampleScriptLoad *load = &request->loads[i];
     const char *error = NULL;
-    const VkrScriptReload result = vkr_script_host_load_library(
-        &state->scripts, load->name, load->path, &error);
+    const VkrScriptReload result =
+        load->project
+            ? vkr_script_host_load_project(&state->scripts, load->name,
+                                           load->path, &error)
+            : vkr_script_host_load_library(&state->scripts, load->name,
+                                           load->path, &error);
     VkrSampleScriptResult *out =
         &state->script_results[state->script_result_count++];
     *out = (VkrSampleScriptResult){.serial = ++state->script_result_serial,
                                    .result = result};
     snprintf(out->name, sizeof(out->name), "%s", load->name);
     snprintf(out->message, sizeof(out->message), "%s", error ? error : "");
-    if (result == VKR_SCRIPT_RELOAD_LOADED) {
-      /* Scenes already loaded learn the module's component types. */
+    if (result != VKR_SCRIPT_RELOAD_FAILED) {
+      /* Scenes already loaded learn the component types of modules the
+         load added. */
       VkrScene *world = vkr_scene_handle_get_scene(state->world_handle);
       (void)vkr_scene_sync_world_types(application->active_scene);
       (void)vkr_scene_sync_world_types(world);

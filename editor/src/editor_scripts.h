@@ -3,14 +3,17 @@
 #include "editor_bakery_service.h"
 #include "vkr_sample_runtime.h"
 
-/* A project's C script modules (ADR-079): `<project>/Scripts/<Name>/` holds
- * `<Name>.script.json` and its sources. The manager builds each module with
- * Bakery, reports compiler diagnostics, asks the runtime to load or hot
- * reload the library, and rebuilds when a source is saved here or changed
- * on disk. UI-thread owner; one build runs at a time on its worker. */
+/* A project's C script packages (ADR-079): `<project>/Scripts/<Name>/` holds
+ * `<Name>.script.json` and its sources, a module with an entry point or a
+ * library other packages depend on. The manager builds the whole folder into
+ * one project library with Bakery, reports compiler diagnostics, asks the
+ * runtime to load or hot reload that library, and rebuilds when a source is
+ * saved here or changed on disk. UI-thread owner; one build runs at a time
+ * on its worker. */
 
-#define VKR_EDITOR_SCRIPT_MODULE_MAX 8u
-#define VKR_EDITOR_SCRIPT_FILE_MAX 64u
+#define VKR_EDITOR_SCRIPT_MODULE_MAX 64u
+#define VKR_EDITOR_SCRIPT_FILE_MAX 256u
+#define VKR_EDITOR_SCRIPT_DEPENDENCY_MAX 8u
 #define VKR_EDITOR_SCRIPT_DIAGNOSTIC_MAX 64u
 #define VKR_EDITOR_SCRIPT_PATH 1024u
 #define VKR_EDITOR_SCRIPT_NAME 48u
@@ -29,16 +32,15 @@ typedef struct VkrEditorScriptModule {
   char name[VKR_EDITOR_SCRIPT_NAME];
   char directory[VKR_EDITOR_SCRIPT_PATH];
   char description[VKR_EDITOR_SCRIPT_PATH];
-  char output[VKR_EDITOR_SCRIPT_PATH];
-  char library[VKR_EDITOR_SCRIPT_PATH];
+  /* The project library's state, shown on each package. */
   VkrEditorScriptStatus status;
   char message[256];
-  /* Bytes of the library the runtime last loaded, to skip identical builds. */
-  uint64_t loaded_fingerprint;
-  uint64_t pending_fingerprint;
   uint32_t watch;
-  /* A build was asked for while another one ran. */
-  bool8_t rebuild;
+  /* A library package: code other packages use, with no entry point. */
+  bool8_t library_kind;
+  /* Packages whose headers it includes, from its description. */
+  char dependencies[VKR_EDITOR_SCRIPT_DEPENDENCY_MAX][VKR_EDITOR_SCRIPT_NAME];
+  uint32_t dependency_count;
 } VkrEditorScriptModule;
 
 typedef struct VkrEditorScriptFile {
@@ -64,11 +66,11 @@ VkrEditorScripts *vkr_editor_scripts_create(VkrAllocator *allocator);
 void vkr_editor_scripts_destroy(VkrEditorScripts *scripts);
 
 /**
- * Scans `scripts_directory`, such as a project's `Scripts`, builds each
- * module that has no library under `output_root` synchronously, and adds its
- * load to the frame's script request, which the runtime applies before the
- * project's World and scenes load. Modules with a library load it now and
- * rebuild in the background.
+ * Scans `scripts_directory`, such as a project's `Scripts`, builds the
+ * project library under `output_root` synchronously when there is none, and
+ * adds its load to the frame's script request, which the runtime applies
+ * before the project's World and scenes load. An existing library loads now
+ * and rebuilds in the background.
  */
 void vkr_editor_scripts_open(VkrEditorScripts *scripts,
                              const char *scripts_directory,
@@ -84,9 +86,16 @@ void vkr_editor_scripts_close_project(VkrEditorScripts *scripts,
 void vkr_editor_scripts_update(VkrEditorScripts *scripts,
                                EditorBakeryService *service,
                                const VkrSampleUiFrame *frame);
-/** Queues a rebuild of the module owning `path`, such as after a save. */
+/** Queues a rebuild of the project when a package owns `path`, such as
+ * after a save. */
 void vkr_editor_scripts_rebuild_file(VkrEditorScripts *scripts,
                                      const char *path);
+/** The folders whose headers a source at `path` may include: its package's,
+ * then those of the packages it depends on, directly or not. */
+uint32_t vkr_editor_scripts_header_folders(const VkrEditorScripts *scripts,
+                                           const char *path, const char **out,
+                                           uint32_t capacity);
+
 /** Writes a new module from the template: `Scripts/<name>/<name>.script.json`
  * and `<name>.c` with one component type and a behavior whose start,
  * update, fixed update, destroy and stop hooks are empty. Returns the source

@@ -32,14 +32,14 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "sdk.h"
 
-#define VKR_SCRIPT_MODULE_MAX 16u
 #define VKR_SCRIPT_MODULE_NAME_CAPACITY 64u
 #define VKR_SCRIPT_RETIRED_LIBRARY_MAX 32u
 #define VKR_SCRIPT_PATH_CAPACITY 1024u
+/* Libraries loaded at once: project libraries and single-module ones. */
+#define VKR_SCRIPT_LIBRARY_MAX 8u
+#define VKR_SCRIPT_LIBRARY_NONE UINT32_MAX
 /* The World and the active container. */
 #define VKR_SCRIPT_CONTAINER_MAX 2u
-#define VKR_SCRIPT_INSTANCE_MAX                                                \
-  (VKR_SCRIPT_MODULE_MAX * VKR_SCRIPT_CONTAINER_MAX)
 #define VKR_SCRIPT_STATE_TYPE_MAX 64u
 #define VKR_SCRIPT_HUD_CAPACITY 512u
 #define VKR_SCRIPT_ERROR_CAPACITY 256u
@@ -56,15 +56,28 @@ typedef struct VkrScriptModule {
      hold these pointers, so they outlive every library generation. */
   VkrTypeDesc *types[VKR_SDK_EXPORT_MAX];
   uint32_t type_count;
-  /* Library modules: the loaded copy of the build. */
-  VkrPlatformLibrary library;
-  char loaded_path[VKR_SCRIPT_PATH_CAPACITY];
+  /* The library holding its code; VKR_SCRIPT_LIBRARY_NONE when linked into
+     the executable. */
+  uint32_t library;
   bool8_t dynamic;
   /* A retired module keeps its registered types and receives no calls. */
   bool8_t retired;
   /* Counts successful loads and reloads. */
   uint32_t generation;
 } VkrScriptModule;
+
+/* A loaded shared library: one project library holding many modules, or
+ * one module's own library. Its modules swap together on reload. */
+typedef struct VkrScriptLibrary {
+  char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
+  /* The loaded copy of the build; no handle once retired. */
+  VkrPlatformLibrary handle;
+  char loaded_path[VKR_SCRIPT_PATH_CAPACITY];
+  /* Lists its modules through vkr_project_modules. */
+  bool8_t project;
+  /* Counts successful loads and reloads. */
+  uint32_t generation;
+} VkrScriptLibrary;
 
 typedef struct VkrScriptRetiredLibrary {
   VkrPlatformLibrary library;
@@ -157,8 +170,13 @@ typedef struct VkrScriptHost {
   VkrAllocator instance_allocator;
   /* Temp memory of the running hook, rewound after it returns. */
   Arena *temp;
-  VkrScriptModule modules[VKR_SCRIPT_MODULE_MAX];
+  /* Registered modules, grown in `allocator`; an index stays valid, a
+     pointer until the next registration. */
+  VkrScriptModule *modules;
   uint32_t module_count;
+  uint32_t module_capacity;
+  VkrScriptLibrary libraries[VKR_SCRIPT_LIBRARY_MAX];
+  uint32_t library_count;
 
   /* Session. */
   bool8_t started;
@@ -168,8 +186,10 @@ typedef struct VkrScriptHost {
   /* Index of the active container and of the World's. */
   uint32_t active_container;
   uint32_t world_container;
-  VkrScriptInstance *instances[VKR_SCRIPT_INSTANCE_MAX];
+  /* Running instances in start order, grown in `instance_allocator`. */
+  VkrScriptInstance **instances;
   uint32_t instance_count;
+  uint32_t instance_capacity;
   /* Installed as the active scene's simulation callbacks and input observer. */
   bool8_t callbacks_installed;
   bool8_t observing_input;
@@ -252,6 +272,21 @@ bool8_t vkr_script_host_add_module(VkrScriptHost *host, VkrModuleEntry entry,
  * never from a hook. A failure keeps the previous code running.
  */
 VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
+                                             const char *name,
+                                             const char *library_path,
+                                             const char **error);
+
+/**
+ * Loads project library `name` from `library_path`: every module its
+ * `vkr_project_modules` entry lists (sdk.h). The reload is atomic: when one
+ * module would be refused (a changed component layout, a type name another
+ * module owns), every module keeps its previous code. Otherwise modules new
+ * to the library register, known ones swap code, and modules it no longer
+ * lists retire. A running session keeps its data when every module keeps
+ * its data shape and none was added or removed, and restarts otherwise. Call
+ * between frames, never from a hook.
+ */
+VkrScriptReload vkr_script_host_load_project(VkrScriptHost *host,
                                              const char *name,
                                              const char *library_path,
                                              const char **error);

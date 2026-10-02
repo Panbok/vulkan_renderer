@@ -72,7 +72,7 @@
 #define VKR_SDK_VERSION 3u
 
 /** Component types or behaviors one module may declare. */
-#define VKR_SDK_EXPORT_MAX 8u
+#define VKR_SDK_EXPORT_MAX 64u
 
 // =============================================================================
 // Handles and value types
@@ -481,6 +481,10 @@ typedef struct VkrModuleDesc {
 /** A module's one entry point, `vkr_module_<Name>`. Returns its description,
  * or NULL when `sdk_version` differs from the version it was built for. */
 typedef const VkrModuleDesc *(*VkrModuleEntry)(uint32_t sdk_version);
+
+/** A project library's entry, `vkr_project_modules`, which Bakery generates:
+ * writes up to `capacity` module entries and returns how many it lists. */
+typedef uint32_t (*VkrProjectEntry)(VkrModuleEntry *entries, uint32_t capacity);
 
 // =============================================================================
 // Private host table: call the vkr_* functions below instead

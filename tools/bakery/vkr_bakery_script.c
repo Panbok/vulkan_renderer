@@ -1,16 +1,23 @@
-/* Script producers (ADR-077). A C script module is described by
- * `<module>.script.json`:
+/* Script producers (ADR-077, ADR-079). A C script package is described by
+ * `<name>.script.json`:
  *
  *   {"language": "c", "sources": ["behavior.c"], "include_roots": ["include"],
- *    "defines": {"SPEED": "2"}, "standard": "c11"}
+ *    "defines": {"SPEED": "2"}, "standard": "c11", "kind": "module",
+ *    "dependencies": ["Common"]}
  *
- * with paths relative to the description. Each translation unit compiles in
- * its own cached `script_object` action whose depfile adds the headers it
- * read; one `script_library` action links the editor's hot-reload library
- * (`lib<module>.dylib`, `<module>.dll`) and archives the objects for static
- * linking at bundle time (`lib<module>.a`, `<module>.lib`). Loading and the
- * runtime ABI belong to the entity behavior proposal; these producers only
- * compile, cache, diagnose and publish. */
+ * with paths relative to the description. A `module` defines
+ * `vkr_module_<name>`; a `library` has no entry point and serves the
+ * packages that list it in `dependencies`, which compile with its include
+ * roots (or its folder). Each translation unit compiles in its own cached
+ * `script_object` action whose depfile adds the headers it read; one
+ * `script_library` action links the hot-reload library (`lib<name>.dylib`,
+ * `<name>.dll`) and archives the objects for static linking at bundle time
+ * (`lib<name>.a`, `<name>.lib`).
+ *
+ * `cook <name>.script.json` builds one package without dependencies into its
+ * own library. `scripts <folder> --name <project>` builds every package of a
+ * Scripts folder into one project library, with a generated
+ * `<project>_modules.c` whose `vkr_project_modules` lists the modules. */
 
 #include "vkr_bakery_internal.h"
 
@@ -375,8 +382,33 @@ const VkrBakeryProducer vkr_bakery_producer_script_library = {
 };
 
 // =============================================================================
-// Module planning
+// Package planning
 // =============================================================================
+
+/* Packages one Scripts folder may hold. */
+#define VKR_SCRIPT_MAX_PACKAGES 256u
+
+typedef enum VkrScriptKind {
+  VKR_SCRIPT_KIND_MODULE = 0,
+  /* Code other packages link and include; no entry point. */
+  VKR_SCRIPT_KIND_LIBRARY,
+} VkrScriptKind;
+
+/* One `<name>.script.json` package, read and validated. */
+typedef struct VkrScriptPackage {
+  char name[128];
+  const char *description;
+  char directory[VKR_BAKERY_PATH_CAPACITY];
+  VkrScriptKind kind;
+  const VkrBakeryJson *sources;
+  const VkrBakeryJson *defines;
+  const VkrBakeryJson *standard;
+  const VkrBakeryJson *dependencies;
+  /* Declared include roots as portable display names. */
+  VkrBakeryJson *roots;
+  /* What dependents include: the declared roots, else the package folder. */
+  VkrBakeryJson *public_roots;
+} VkrScriptPackage;
 
 vkr_internal bool8_t vkr_script_fail(VkrBakeryGraph *graph,
                                      const char *description,
@@ -412,16 +444,37 @@ vkr_internal bool8_t vkr_script_module_name(const char *description, char *out,
   return true_v;
 }
 
-VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
-                                        const char *description,
-                                        const char *output_directory) {
+/* A module's entry `vkr_module_<name>` needs a C identifier. */
+vkr_internal bool8_t vkr_script_identifier(const char *name) {
+  if (!name[0] || (name[0] >= '0' && name[0] <= '9')) {
+    return false_v;
+  }
+  for (const char *c = name; *c; ++c) {
+    if (*c == '-') {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_script_key_is(const VkrBakeryJson *field,
+                                       const char *key) {
+  return field->key.length == strlen(key) &&
+         MemCompare(field->key.str, key, field->key.length) == 0;
+}
+
+/* Reads and validates a package description. */
+vkr_internal bool8_t vkr_script_package_read(VkrBakeryGraph *graph,
+                                             const char *description,
+                                             VkrScriptPackage *package) {
   Arena *arena = graph->arena;
-  char module[128];
-  if (!vkr_script_module_name(description, module, sizeof(module))) {
-    (void)vkr_script_fail(graph, description, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
-                          "a script module is <name>.script.json with a name "
-                          "of letters, digits, '_' and '-'");
-    return NULL;
+  *package = (VkrScriptPackage){.description = description};
+  if (!vkr_script_module_name(description, package->name,
+                              sizeof(package->name))) {
+    return vkr_script_fail(graph, description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                           "a script package is <name>.script.json with a "
+                           "name of letters, digits, '_' and '-'");
   }
   uint8_t *data = NULL;
   uint64_t length = 0u;
@@ -437,16 +490,16 @@ VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
                           error.line, error.column,
                           error.message[0] ? error.message : NULL, NULL);
     graph->plan_failed = true_v;
-    return NULL;
+    return false_v;
   }
-  static const char *const fields[] = {"language", "sources", "include_roots",
-                                       "defines", "standard"};
+  static const char *const fields[] = {
+      "language", "sources", "include_roots", "defines",
+      "standard", "kind",    "dependencies"};
   for (const VkrBakeryJson *field = document->first; field;
        field = field->next) {
     bool8_t known = false_v;
     for (uint32_t i = 0u; i < ArrayCount(fields) && !known; ++i) {
-      known = field->key.length == strlen(fields[i]) &&
-              MemCompare(field->key.str, fields[i], field->key.length) == 0;
+      known = vkr_script_key_is(field, fields[i]);
     }
     if (!known) {
       char key[64];
@@ -456,35 +509,51 @@ VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
                             vkr_bakery_graph_display(graph, description), 0u,
                             0u, key, NULL);
       graph->plan_failed = true_v;
-      return NULL;
+      return false_v;
     }
   }
   if (!vkr_bakery_json_is_string(vkr_bakery_json_get(document, "language"),
                                  "c")) {
-    (void)vkr_script_fail(graph, description, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
-                          "language must be \"c\"; \"js\" and \"ts\" are "
-                          "reserved");
-    return NULL;
+    return vkr_script_fail(graph, description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                           "language must be \"c\"; \"js\" and \"ts\" are "
+                           "reserved");
   }
-  const VkrBakeryJson *sources = vkr_bakery_json_get(document, "sources");
-  if (!sources || sources->type != VKR_BAKERY_JSON_ARRAY || !sources->count ||
-      sources->count > VKR_SCRIPT_MAX_SOURCES) {
-    (void)vkr_script_fail(graph, description, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
-                          "sources must list 1 to 256 C files");
-    return NULL;
+  const VkrBakeryJson *kind = vkr_bakery_json_get(document, "kind");
+  if (kind && vkr_bakery_json_is_string(kind, "library")) {
+    package->kind = VKR_SCRIPT_KIND_LIBRARY;
+  } else if (kind && !vkr_bakery_json_is_string(kind, "module")) {
+    return vkr_script_fail(graph, description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                           "kind must be \"module\" or \"library\"");
   }
-  const char *compiler = vkr_script_compiler_version(graph);
-  if (!compiler) {
-    (void)vkr_script_fail(graph, description,
-                          VKR_BAKERY_DIAG_SCRIPT_COMPILER_MISSING,
-                          "no C compiler for scripts");
-    return NULL;
+  if (package->kind == VKR_SCRIPT_KIND_MODULE &&
+      !vkr_script_identifier(package->name)) {
+    return vkr_script_fail(graph, description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                           "a module's name must be a C identifier");
   }
-
-  char directory[VKR_BAKERY_PATH_CAPACITY];
-  vkr_bakery_path_parent(directory, sizeof(directory), description);
+  /* A library may be headers only; a module compiles at least one file. */
+  package->sources = vkr_bakery_json_get(document, "sources");
+  const uint32_t minimum = package->kind == VKR_SCRIPT_KIND_LIBRARY ? 0u : 1u;
+  if (!package->sources || package->sources->type != VKR_BAKERY_JSON_ARRAY ||
+      package->sources->count < minimum ||
+      package->sources->count > VKR_SCRIPT_MAX_SOURCES) {
+    return vkr_script_fail(graph, description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                           "sources must list 1 to 256 C files");
+  }
+  package->dependencies = vkr_bakery_json_get(document, "dependencies");
+  if (package->dependencies &&
+      package->dependencies->type != VKR_BAKERY_JSON_ARRAY) {
+    return vkr_script_fail(graph, description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                           "dependencies must list package names");
+  }
+  vkr_bakery_path_parent(package->directory, sizeof(package->directory),
+                         description);
   /* Include roots become root-relative names so keys survive checkouts. */
-  VkrBakeryJson *roots = vkr_bakery_json_array(arena);
+  package->roots = vkr_bakery_json_array(arena);
   const VkrBakeryJson *declared =
       vkr_bakery_json_get(document, "include_roots");
   for (const VkrBakeryJson *root = declared ? declared->first : NULL; root;
@@ -492,61 +561,70 @@ VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
     char absolute[VKR_BAKERY_PATH_CAPACITY];
     const char *name = vkr_bakery_json_cstr_value(arena, root);
     if (!name ||
-        !vkr_bakery_path_join(absolute, sizeof(absolute), directory, name) ||
+        !vkr_bakery_path_join(absolute, sizeof(absolute), package->directory,
+                              name) ||
         !vkr_bakery_is_directory(absolute)) {
-      (void)vkr_script_fail(graph, description,
-                            VKR_BAKERY_DIAG_REC_INVALID_VALUE,
-                            "an include root is not a directory");
-      return NULL;
+      return vkr_script_fail(graph, description,
+                             VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                             "an include root is not a directory");
     }
     vkr_bakery_json_append(
-        roots,
+        package->roots,
         vkr_bakery_json_cstr(arena, vkr_bakery_graph_display(graph, absolute)));
   }
-  const VkrBakeryJson *defines = vkr_bakery_json_get(document, "defines");
-  if (defines && defines->type != VKR_BAKERY_JSON_OBJECT) {
-    (void)vkr_script_fail(graph, description, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
-                          "defines must be an object");
-    return NULL;
+  package->public_roots =
+      package->roots->count ? package->roots : vkr_bakery_json_array(arena);
+  if (!package->roots->count) {
+    vkr_bakery_json_append(
+        package->public_roots,
+        vkr_bakery_json_cstr(
+            arena, vkr_bakery_graph_display(graph, package->directory)));
   }
-  const VkrBakeryJson *standard = vkr_bakery_json_get(document, "standard");
+  package->defines = vkr_bakery_json_get(document, "defines");
+  if (package->defines && package->defines->type != VKR_BAKERY_JSON_OBJECT) {
+    return vkr_script_fail(graph, description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                           "defines must be an object");
+  }
+  package->standard = vkr_bakery_json_get(document, "standard");
+  return true_v;
+}
 
-  VkrBakeryJson *library_recipe = vkr_bakery_json_object(arena);
-  vkr_bakery_json_set(arena, library_recipe, "module",
-                      vkr_bakery_json_cstr(arena, module));
-  vkr_bakery_json_set(arena, library_recipe, "compiler",
-                      vkr_bakery_json_cstr(arena, compiler));
-  vkr_bakery_json_set(arena, library_recipe, "platform",
-                      vkr_bakery_json_cstr(arena, graph->config->platform));
-  VkrBakeryAction *library = vkr_bakery_graph_add(
-      graph, &vkr_bakery_producer_script_library, NULL, library_recipe, NULL);
-  if (!library) {
-    return NULL;
-  }
-  for (const VkrBakeryJson *source = sources->first; source;
+/* Plans one `script_object` per source of `package`, each an input of
+ * `library`, compiled with `roots` on its include path. */
+vkr_internal bool8_t vkr_script_package_objects(VkrBakeryGraph *graph,
+                                                const VkrScriptPackage *package,
+                                                const VkrBakeryJson *roots,
+                                                const char *compiler,
+                                                VkrBakeryAction *library) {
+  Arena *arena = graph->arena;
+  for (const VkrBakeryJson *source = package->sources->first; source;
        source = source->next) {
     char absolute[VKR_BAKERY_PATH_CAPACITY];
     const char *name = vkr_bakery_json_cstr_value(arena, source);
     if (!name ||
-        !vkr_bakery_path_join(absolute, sizeof(absolute), directory, name) ||
+        !vkr_bakery_path_join(absolute, sizeof(absolute), package->directory,
+                              name) ||
         !vkr_bakery_is_file(absolute)) {
       vkr_bakery_event_diag(0u, VKR_BAKERY_DIAG_IDX_MISSING_SOURCE,
                             name ? name : "", 0u, 0u,
                             "a script source is missing", NULL);
       graph->plan_failed = true_v;
-      return NULL;
+      return false_v;
     }
     VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
     vkr_bakery_json_set(arena, recipe, "module",
-                        vkr_bakery_json_cstr(arena, module));
+                        vkr_bakery_json_cstr(arena, package->name));
     vkr_bakery_json_set(arena, recipe, "language",
                         vkr_bakery_json_cstr(arena, "c"));
     vkr_bakery_json_set(arena, recipe, "standard",
-                        standard ? vkr_bakery_json_clone(arena, standard)
-                                 : vkr_bakery_json_cstr(arena, "c11"));
+                        package->standard
+                            ? vkr_bakery_json_clone(arena, package->standard)
+                            : vkr_bakery_json_cstr(arena, "c11"));
     vkr_bakery_json_set(arena, recipe, "defines",
-                        defines ? vkr_bakery_json_clone(arena, defines)
-                                : vkr_bakery_json_object(arena));
+                        package->defines
+                            ? vkr_bakery_json_clone(arena, package->defines)
+                            : vkr_bakery_json_object(arena));
     vkr_bakery_json_set(arena, recipe, "include_roots",
                         vkr_bakery_json_clone(arena, roots));
     vkr_bakery_json_set(arena, recipe, "sdk_roots",
@@ -559,26 +637,333 @@ VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
     if (!object || !vkr_bakery_action_dep_input(
                        graph, library, object, "object",
                        vkr_bakery_graph_display(graph, absolute))) {
-      return NULL;
+      return false_v;
     }
   }
+  return true_v;
+}
 
-  const char *target = output_directory ? output_directory : directory;
+/* The link action of library `name`, with its outputs in `target`. */
+vkr_internal VkrBakeryAction *vkr_script_library_action(VkrBakeryGraph *graph,
+                                                        const char *name,
+                                                        const char *compiler,
+                                                        const char *target) {
+  Arena *arena = graph->arena;
+  VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, recipe, "module",
+                      vkr_bakery_json_cstr(arena, name));
+  vkr_bakery_json_set(arena, recipe, "compiler",
+                      vkr_bakery_json_cstr(arena, compiler));
+  vkr_bakery_json_set(arena, recipe, "platform",
+                      vkr_bakery_json_cstr(arena, graph->config->platform));
+  VkrBakeryAction *library = vkr_bakery_graph_add(
+      graph, &vkr_bakery_producer_script_library, NULL, recipe, NULL);
+  if (!library) {
+    return NULL;
+  }
   char library_path[VKR_BAKERY_PATH_CAPACITY];
   char archive_path[VKR_BAKERY_PATH_CAPACITY];
 #if defined(_WIN32)
-  (void)snprintf(library_path, sizeof(library_path), "%s/%s.dll", target,
-                 module);
-  (void)snprintf(archive_path, sizeof(archive_path), "%s/%s.lib", target,
-                 module);
+  (void)snprintf(library_path, sizeof(library_path), "%s/%s.dll", target, name);
+  (void)snprintf(archive_path, sizeof(archive_path), "%s/%s.lib", target, name);
 #else
   (void)snprintf(library_path, sizeof(library_path), "%s/lib%s.dylib", target,
-                 module);
+                 name);
   (void)snprintf(archive_path, sizeof(archive_path), "%s/lib%s.a", target,
-                 module);
+                 name);
 #endif
   if (!vkr_bakery_action_output(graph, library, "library", library_path) ||
       !vkr_bakery_action_output(graph, library, "archive", archive_path)) {
+    return NULL;
+  }
+  return library;
+}
+
+vkr_internal const char *vkr_script_compiler_or_fail(VkrBakeryGraph *graph,
+                                                     const char *description) {
+  const char *compiler = vkr_script_compiler_version(graph);
+  if (!compiler) {
+    (void)vkr_script_fail(graph, description,
+                          VKR_BAKERY_DIAG_SCRIPT_COMPILER_MISSING,
+                          "no C compiler for scripts");
+  }
+  return compiler;
+}
+
+VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
+                                        const char *description,
+                                        const char *output_directory) {
+  VkrScriptPackage package;
+  if (!vkr_script_package_read(graph, description, &package)) {
+    return NULL;
+  }
+  if (package.dependencies && package.dependencies->count) {
+    (void)vkr_script_fail(graph, description, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                          "a package with dependencies builds with its "
+                          "Scripts folder: vkr_bakery scripts <folder>");
+    return NULL;
+  }
+  const char *compiler = vkr_script_compiler_or_fail(graph, description);
+  if (!compiler) {
+    return NULL;
+  }
+  VkrBakeryAction *library = vkr_script_library_action(
+      graph, package.name, compiler,
+      output_directory ? output_directory : package.directory);
+  if (!library || !vkr_script_package_objects(graph, &package, package.roots,
+                                              compiler, library)) {
+    return NULL;
+  }
+  return library;
+}
+
+// =============================================================================
+// Project planning
+// =============================================================================
+
+typedef struct VkrScriptProject {
+  VkrBakeryGraph *graph;
+  const char *directory;
+  VkrScriptPackage *packages;
+  uint32_t count;
+  bool8_t failed;
+} VkrScriptProject;
+
+/* A folder `<name>` holding `<name>.script.json` is a package. */
+vkr_internal bool8_t vkr_script_project_visit(void *context, const char *name,
+                                              bool8_t is_directory) {
+  VkrScriptProject *project = context;
+  char folder[VKR_BAKERY_PATH_CAPACITY];
+  char description[VKR_BAKERY_PATH_CAPACITY];
+  char file[160];
+  (void)snprintf(file, sizeof(file), "%s.script.json", name);
+  if (!is_directory ||
+      !vkr_bakery_path_join(folder, sizeof(folder), project->directory, name) ||
+      !vkr_bakery_path_join(description, sizeof(description), folder, file) ||
+      !vkr_bakery_is_file(description)) {
+    return true_v;
+  }
+  if (project->count == VKR_SCRIPT_MAX_PACKAGES) {
+    project->failed = !vkr_script_fail(project->graph, description,
+                                       VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                                       "a Scripts folder holds at most 256 "
+                                       "packages");
+    return false_v;
+  }
+  VkrScriptPackage *package = &project->packages[project->count];
+  if (!vkr_script_package_read(
+          project->graph, vkr_bakery_graph_strdup(project->graph, description),
+          package)) {
+    project->failed = true_v;
+    return true_v;
+  }
+  project->count++;
+  return true_v;
+}
+
+vkr_internal int32_t vkr_script_project_find(const VkrScriptProject *project,
+                                             const char *name,
+                                             uint64_t length) {
+  for (uint32_t i = 0u; i < project->count; ++i) {
+    if (strlen(project->packages[i].name) == length &&
+        MemCompare(project->packages[i].name, name, length) == 0) {
+      return (int32_t)i;
+    }
+  }
+  return -1;
+}
+
+/* Adds the public roots of `index` and of everything it depends on to
+ * `roots`, once each. `state` marks packages: 1 visiting, 2 added. A package
+ * met while visiting closes a cycle. */
+vkr_internal bool8_t vkr_script_project_roots(VkrScriptProject *project,
+                                              uint32_t index, uint8_t *state,
+                                              VkrBakeryJson *roots,
+                                              bool8_t include_self) {
+  VkrBakeryGraph *graph = project->graph;
+  const VkrScriptPackage *package = &project->packages[index];
+  if (state[index] == 1u) {
+    char message[256];
+    (void)snprintf(message, sizeof(message),
+                   "the dependencies of %s form a cycle", package->name);
+    return vkr_script_fail(graph, package->description,
+                           VKR_BAKERY_DIAG_REC_INVALID_VALUE, message);
+  }
+  if (state[index] == 2u) {
+    return true_v;
+  }
+  state[index] = 1u;
+  for (const VkrBakeryJson *dependency =
+           package->dependencies ? package->dependencies->first : NULL;
+       dependency; dependency = dependency->next) {
+    const int32_t found =
+        dependency->type == VKR_BAKERY_JSON_STRING
+            ? vkr_script_project_find(project,
+                                      (const char *)dependency->string.str,
+                                      dependency->string.length)
+            : -1;
+    if (found < 0) {
+      char message[256];
+      (void)snprintf(message, sizeof(message),
+                     "%s depends on %.*s, which is not a package here",
+                     package->name, (int)dependency->string.length,
+                     (const char *)dependency->string.str);
+      return vkr_script_fail(graph, package->description,
+                             VKR_BAKERY_DIAG_REC_INVALID_VALUE, message);
+    }
+    if (!vkr_script_project_roots(project, (uint32_t)found, state, roots,
+                                  true_v)) {
+      return false_v;
+    }
+  }
+  state[index] = 2u;
+  if (include_self) {
+    for (const VkrBakeryJson *root = package->public_roots->first; root;
+         root = root->next) {
+      vkr_bakery_json_append(roots, vkr_bakery_json_clone(graph->arena, root));
+    }
+  }
+  return true_v;
+}
+
+/* Writes `path` when its bytes differ, so an unchanged module list keeps
+ * its object cached. */
+vkr_internal bool8_t vkr_script_write_if_changed(const char *path,
+                                                 const char *text) {
+  const uint64_t length = strlen(text);
+  uint8_t *data = NULL;
+  uint64_t existing = 0u;
+  if (vkr_bakery_read_file(path, MB(1), &data, &existing)) {
+    const bool8_t same = existing == length && !MemCompare(data, text, length);
+    free(data);
+    if (same) {
+      return true_v;
+    }
+  }
+  return vkr_bakery_write_file_atomic(path, text, length);
+}
+
+/* The project's module list: `vkr_project_modules` returns each module
+ * package's `vkr_module_<name>` (sdk.h). */
+vkr_internal bool8_t vkr_script_project_entry(const VkrScriptProject *project,
+                                              const char *path) {
+  char text[64u * 1024u];
+  uint64_t length = 0u;
+  int written = snprintf(text, sizeof(text),
+                         "/* Generated by vkr_bakery scripts: the modules of "
+                         "this project (ADR-079). */\n#include \"sdk.h\"\n\n");
+  length += written > 0 ? (uint64_t)written : 0u;
+  uint32_t modules = 0u;
+  for (uint32_t i = 0u; i < project->count && length < sizeof(text); ++i) {
+    if (project->packages[i].kind != VKR_SCRIPT_KIND_MODULE) {
+      continue;
+    }
+    written = snprintf(text + length, sizeof(text) - length,
+                       "const VkrModuleDesc *vkr_module_%s(uint32_t);\n",
+                       project->packages[i].name);
+    length += written > 0 ? (uint64_t)written : 0u;
+    modules++;
+  }
+  written = snprintf(text + length, sizeof(text) - length,
+                     "\nVKR_SDK_EXPORT uint32_t vkr_project_modules("
+                     "VkrModuleEntry *entries,\n"
+                     "                                           uint32_t "
+                     "capacity) {\n");
+  length += written > 0 ? (uint64_t)written : 0u;
+  if (modules) {
+    written = snprintf(text + length, sizeof(text) - length,
+                       "  static const VkrModuleEntry modules[] = {\n");
+    length += written > 0 ? (uint64_t)written : 0u;
+    for (uint32_t i = 0u; i < project->count && length < sizeof(text); ++i) {
+      if (project->packages[i].kind == VKR_SCRIPT_KIND_MODULE) {
+        written = snprintf(text + length, sizeof(text) - length,
+                           "      vkr_module_%s,\n", project->packages[i].name);
+        length += written > 0 ? (uint64_t)written : 0u;
+      }
+    }
+    written =
+        snprintf(text + length, sizeof(text) - length,
+                 "  };\n"
+                 "  for (uint32_t i = 0; i < %uu && i < capacity; ++i) {\n"
+                 "    entries[i] = modules[i];\n"
+                 "  }\n"
+                 "  return %uu;\n}\n",
+                 modules, modules);
+  } else {
+    written =
+        snprintf(text + length, sizeof(text) - length,
+                 "  (void)entries;\n  (void)capacity;\n  return 0u;\n}\n");
+  }
+  length += written > 0 ? (uint64_t)written : 0u;
+  return length < sizeof(text) && vkr_script_write_if_changed(path, text);
+}
+
+VkrBakeryAction *vkr_bakery_plan_script_project(VkrBakeryGraph *graph,
+                                                const char *directory,
+                                                const char *name,
+                                                const char *output_directory) {
+  Arena *arena = graph->arena;
+  if (!vkr_script_identifier(name) || strlen(name) >= 128u) {
+    (void)vkr_script_fail(graph, directory, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                          "a project library's name must be a C identifier");
+    return NULL;
+  }
+  VkrScriptProject project = {
+      .graph = graph,
+      .directory = directory,
+      .packages =
+          arena_alloc(arena, sizeof(VkrScriptPackage) * VKR_SCRIPT_MAX_PACKAGES,
+                      ARENA_MEMORY_TAG_ARRAY)};
+  if (!project.packages ||
+      !vkr_bakery_list_directory(directory, vkr_script_project_visit,
+                                 &project) ||
+      project.failed) {
+    if (!graph->plan_failed) {
+      (void)vkr_script_fail(graph, directory, VKR_BAKERY_DIAG_REC_UNREADABLE,
+                            "the Scripts folder cannot be read");
+    }
+    return NULL;
+  }
+  const char *compiler = vkr_script_compiler_or_fail(graph, directory);
+  const char *target = output_directory ? output_directory : directory;
+  if (!compiler || !vkr_bakery_make_directories(target)) {
+    return NULL;
+  }
+  VkrBakeryAction *library =
+      vkr_script_library_action(graph, name, compiler, target);
+  if (!library) {
+    return NULL;
+  }
+  uint8_t *state =
+      arena_alloc(arena, project.count + 1u, ARENA_MEMORY_TAG_ARRAY);
+  for (uint32_t i = 0u; state && i < project.count; ++i) {
+    /* Its own roots, then its dependencies' public roots. */
+    MemZero(state, project.count);
+    VkrBakeryJson *roots =
+        vkr_bakery_json_clone(arena, project.packages[i].roots);
+    if (!vkr_script_project_roots(&project, i, state, roots, false_v) ||
+        !vkr_script_package_objects(graph, &project.packages[i], roots,
+                                    compiler, library)) {
+      return NULL;
+    }
+  }
+  /* The generated module list compiles like any project source. */
+  char entry[VKR_BAKERY_PATH_CAPACITY];
+  (void)snprintf(entry, sizeof(entry), "%s/%s_modules.c", target, name);
+  if (!state || !vkr_script_project_entry(&project, entry)) {
+    (void)vkr_script_fail(graph, directory, VKR_BAKERY_DIAG_REC_UNREADABLE,
+                          "the project's module list cannot be written");
+    return NULL;
+  }
+  VkrScriptPackage list = {.sources = vkr_bakery_json_array(arena),
+                           .roots = vkr_bakery_json_array(arena)};
+  (void)snprintf(list.name, sizeof(list.name), "%s", name);
+  (void)snprintf(list.directory, sizeof(list.directory), "%s", target);
+  vkr_bakery_json_append(
+      (VkrBakeryJson *)list.sources,
+      vkr_bakery_json_cstr(arena, vkr_bakery_path_name(entry)));
+  if (!vkr_script_package_objects(graph, &list, list.roots, compiler,
+                                  library)) {
     return NULL;
   }
   return library;

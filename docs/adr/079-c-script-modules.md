@@ -18,15 +18,15 @@ Accepted (partial). Implemented:
 - shared-library loading with hot reload that keeps instance data;
 - Script assets attached to objects, the authoring macros and the Player
   Start;
-- project `Scripts/` modules built by Bakery and loaded before the project's
+- project `Scripts/` packages, modules and libraries with dependencies,
+  built by Bakery into one project library loaded before the project's
   documents;
 - the floating Script editor with highlighting, completion and diagnostics;
 - the FPS sample as a statically linked module.
 
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
-- Library packages with dependencies built into one project library, and
-  later exports.
+- Exports between modules.
 - Asynchronous library preparation, model loads and first builds, script
   jobs and a Jolt thread pool.
 - Packaged games do not load a project's script library yet; `vkr_player`
@@ -140,7 +140,8 @@ registered types live in the allocator the shell passes, for the process.
 ### The script host
 
 [`VkrScriptHost`](../../runtime/src/script/vkr_script_host.h) owns the SDK
-table, up to sixteen modules and one session. A session attaches the active
+table, the registered modules and their libraries in growable tables, and
+one session. A session attaches the active
 container (the played scene, or the World when it plays alone) and the root
 World ([ADR-076](076-project-object-model.md)).
 
@@ -174,10 +175,13 @@ World ([ADR-076](076-project-object-model.md)).
   `vkr_script_host_bind_animation` lets it drive a caller-owned animation
   player.
 
-**Libraries.** `vkr_script_host_load_library(name, path)` loads a byte copy of
-the library at `<path>.<pid>-<serial>.loaded`. The build can then be replaced,
-and a reload never reuses a cached image. A new module registers its types. A
-known module reloads between frames, never from a hook:
+**Libraries.** `vkr_script_host_load_library(name, path)` loads one module's
+library through `vkr_module_<name>`; `vkr_script_host_load_project(name,
+path)` loads a project library and every module its `vkr_project_modules`
+lists. Either loads a byte copy at `<path>.<pid>-<serial>.loaded`, so the
+build can be replaced and a reload never reuses a cached image. Up to eight
+libraries are loaded at once. A new module registers its types. A known
+module reloads between frames, never from a hook:
 
 - **Component types must keep their layout**: same names, size, alignment and
   field names, kinds and offsets. A changed layout is refused and the
@@ -192,6 +196,13 @@ known module reloads between frames, never from a hook:
 - **Changed data shape**: the host stops the session with the old code, swaps
   and starts it again with the new code.
 
+A project library reloads atomically. The host checks every listed module
+first; one refused module, a changed layout or a type name another module
+owns, refuses the load and every module keeps its previous code. Otherwise
+new modules register, known ones swap, and modules the library no longer
+lists retire. The session keeps its data only when no module was added or
+removed and every one kept its data shape; otherwise it restarts.
+
 `vkr_script_host_retire_libraries` retires every library module, as when a
 project closes. Its types stay registered without defaults, and a later load
 of the same name adopts them. Registered types have no removal, so the
@@ -204,6 +215,9 @@ registers linked modules from `VkrSampleRuntimeConfig`. It applies each
 frame's `VkrSampleScriptRequest` (retire, then loads) after the UI build and
 before scene and World requests, and publishes per-load results.
 
+- **Requests.** A load flagged `project` goes through
+  `vkr_script_host_load_project`; any load that did not fail gives already
+  loaded scenes the new types.
 - **Simulated scene.** The open primary scene once it is ready; with no
   scene open or loading, the root World, so a World-only project plays. The
   transport, Step, Reset and the physics toggle act on the same scene.
@@ -220,34 +234,55 @@ before scene and World requests, and publishes per-load results.
 ### Project scripts in the editor
 
 [`editor_scripts.c`](../../editor/src/editor_scripts.c) manages a Scripts
-folder. A module is `Scripts/<Name>/<Name>.script.json` with its sources: a
-project's `<project>/Scripts`, or `--scripts <dir>` beside `--scene`.
+folder: a project's `<project>/Scripts`, or `--scripts <dir>` beside
+`--scene`. A package is `Scripts/<Name>/<Name>.script.json` with its sources
+([`vkr_bakery_script.c`](../../tools/bakery/vkr_bakery_script.c)):
 
-- **Open.** Opening a project scans its modules. A module with a built library
-  under `<workspace>/scripts/<project>/<Name>` loads it at once. A module
-  without one builds synchronously first. Both loads join the frame's script
-  request, which comes before the World request, so project documents see the
-  types.
-- **Build.** Runs `vkr_bakery cook <description> --root <module> --out
-  <output> --json` on a worker, one at a time. Bakery adds `sdk/` and
-  `lib/src` of this source tree as system includes
-  (`VKR_BAKERY_SCRIPT_SDK_DIRS`), so the engine's own warnings are not script
-  diagnostics. On Windows the library links with its own static C runtime and
-  the default DLL entry, which initializes it. Modules therefore free what
-  they allocate themselves and pass no allocation or `FILE` across the SDK.
-  The runtime's DLL startup adds about 105 KB per library (the empty
-  template); the printf family adds about 35 KB more.
-- **Diagnostics.** `diag` events become file, line, column and message.
-- **Reload.** A library whose bytes differ from the loaded one is requested
-  for reload.
+- **Kinds.** `"kind": "module"` (the default) defines `vkr_module_<Name>`, so
+  its name is a C identifier. `"kind": "library"` has no entry point and may
+  be headers only; it holds code other packages share.
+- **Dependencies.** `"dependencies": ["Common"]` names packages whose headers
+  a package includes: their include roots, or their folders, and those of
+  everything they depend on. A cycle or an unknown name fails the build with
+  a diagnostic on the description.
+- **One library per project.** Every package of the folder compiles to cached
+  objects that link into one project library. Library code and state exist
+  once, and the project pays one load and one C runtime startup however many
+  packages it has. A compile error in any package keeps the previous project
+  library running.
+
+The manager drives it:
+
+- **Open.** Opening a project scans its packages. A built project library
+  under `<workspace>/scripts/<project>` loads at once; without one the folder
+  builds synchronously first. The load joins the frame's script request,
+  which comes before the World request, so project documents see the types.
+- **Build.** Runs `vkr_bakery scripts <Scripts> --name project --root
+  <Scripts> --out <output> --json` on a worker, one at a time. Bakery
+  generates `project_modules.c`, whose `vkr_project_modules` lists each
+  module's entry, and rewrites it only when the list changes, so an
+  unchanged project is fully cached. It adds `sdk/` and `lib/src` of this
+  source tree as system includes (`VKR_BAKERY_SCRIPT_SDK_DIRS`), so the
+  engine's own warnings are not script diagnostics. On Windows the library
+  links with its own static C runtime and the default DLL entry, which
+  initializes it. Modules therefore free what they allocate themselves and
+  pass no allocation or `FILE` across the SDK. The runtime's DLL startup adds
+  about 105 KB per library (the empty template); the printf family adds
+  about 35 KB more. `vkr_bakery cook <Name>.script.json` still builds one
+  package without dependencies into its own library.
+- **Diagnostics.** `diag` events become file, line, column and message, and
+  belong to the package owning the file. Every package shows the project
+  library's build and load state.
+- **Reload.** A project library whose bytes differ from the loaded one is
+  requested for reload.
 - **Rebuild triggers.** Saving in the Script editor and the Bakery daemon's
-  watch of each module folder and of `Scripts/` both rebuild.
+  watch of each package folder and of `Scripts/` both rebuild.
 - **New Script.** Writes a module from a template: one component with a
   `speed` field and a behavior whose `start`, `update`, `fixed_update` and
   `stop` hooks have empty bodies.
-- **Close.** Closing or switching the project retires its libraries.
+- **Close.** Closing or switching the project retires its library.
 
-**Content** lists each module's `.c`, `.h` and `.script.json` as Script items
+**Content** lists each package's `.c`, `.h` and `.script.json` as Script items
 in Scripts. Double-click or Edit script opens a source. The toolbar's code
 button asks for a new module. Script sources cannot be deleted from Content.
 
@@ -271,7 +306,9 @@ Script editor window (View > Script editor).
   or on Ctrl+Space. Candidates come from `sdk.h` and the foundation's math
   headers parsed at first use (functions, including inline definitions, with
   their declarations, types, struct members, macros and enum constants), the
-  open file's declarations and identifiers, and C keywords.
+  headers of the open file's package and of the packages it depends on,
+  read again when the package list changes or a file is saved, the open
+  file's declarations and identifiers, and C keywords.
   - After `->` or `.` it lists the members of the struct the variable points
     to. It knows `event`, `hit`, `body`, `motor`, `move` and `type`, and
     reads the file's own `Type *name` declarations, such as a hook's
@@ -454,6 +491,10 @@ the startup scene has neither a Player Start nor an `fps_player`.
   it: a spawned projectile has no transform or body until the next tick, and
   a destroyed entity stays readable until the tick ends.
 - Superseded libraries stay mapped until Stop, bounded at 32 per session.
+- A project builds and reloads as one unit: a compile error or a refused
+  module in one package holds back every package's changes until it is
+  fixed. Splitting a project into a few separately loaded groups is the way
+  to isolate failing work.
 - Registered types and their host copies live for the process. A later
   project whose module reuses a retired module's type name must match that
   layout.
@@ -507,6 +548,15 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
     - a new `data_version` restarts on zeroed data;
     - a changed field is refused while the old code keeps counting;
     - retiring keeps the type registered, and a later load adopts it.
+  - It also loads [`project_probe.c`](../../tests/scripts/project_probe.c),
+    a project library built four ways:
+    - two listed modules share one library entry and register both types;
+    - a code-only reload keeps data (3 ticks, then 23);
+    - dropping `ProbeB` and adding `ProbeC` retires B, keeping its type,
+      registers C and restarts on zeroed data;
+    - a changed `ProbeA` field refuses the load with
+      `probe_a changed its fields`, and `ProbeC`, whose code also changed,
+      keeps its generation and old code (one tick adds 1, not 100).
   - `gameplay_player_test.c` and `player_animation_test.c` run the FPS
     player, input admission, action animation and locomotion through a tool
     context with unchanged expected values.
@@ -514,6 +564,13 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
   import is `KERNEL32.dll` and its only export is `vkr_module_fps`. The New
   Script template, expanded for `Door`, builds `Door.dll` (107,008 bytes)
   without warnings.
+- `vkr_bakery scripts` on a sample folder (a `Common` library, a `Door`
+  module depending on it and a `Spinner` module) ran 5 actions (4 objects,
+  1 link) in 0.64 s and wrote `project.dll` (107,520 bytes). It exports
+  `vkr_module_Door`, `vkr_module_Spinner` and `vkr_project_modules` and
+  imports only `KERNEL32.dll`, so two modules cost about what one module's
+  own library did. A second run was 5 of 5 cached. A dependency cycle and an
+  unknown dependency each failed with a diagnostic naming the package.
 - Headless Release editor on Bistro
   (`--scene assets/scenes/bistro.scene.json`), with a temporary, reverted
   render-graph reserve increase because the Vulkan renderer at this revision
@@ -538,7 +595,10 @@ Unavailable:
   `VKR_LOCAL_SHADOW_FACE_COUNT_MAX` 768 (`c87bce97`) makes the graph image
   table about 289 MiB, beyond the renderer's 98 MiB render-graph allocator.
 - The windowed Script editor: highlighting, diagnostics and completion over
-  `sdk.h` were built but not exercised interactively.
+  `sdk.h` and package headers were built but not exercised interactively.
+- The editor driving a project library: the build, load and reload path was
+  built and its runtime half tested, but no editor run loaded one, since the
+  Vulkan editor at this revision needs the reserve workaround.
 - A packaged game running scripts; `vkr_player` builds but was not run.
 - Timing: no frame-time claim.
 
@@ -573,6 +633,6 @@ exercised; items not listed above were not repeated on the SDK.
 ## Revisit when
 
 A packaged game loads a project's library, a second language binds the table,
-additive scenes simulate and need their own instances, the project library
-replaces per-module libraries, or component layout changes should migrate
-live data.
+additive scenes simulate and need their own instances, a project needs
+separately loaded groups, or component layout changes should migrate live
+data.

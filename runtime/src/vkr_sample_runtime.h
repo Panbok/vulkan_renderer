@@ -230,6 +230,8 @@ typedef struct VkrSampleWorldRequest {
 typedef struct VkrSampleScriptLoad {
   char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
   char path[VKR_SCRIPT_PATH_CAPACITY];
+  /* A project library listing its modules, else one module's library. */
+  bool8_t project;
 } VkrSampleScriptLoad;
 
 /** Script library requests (ADR-079), applied after the UI build and before

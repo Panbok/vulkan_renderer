@@ -35,6 +35,8 @@ typedef struct VkrBakeryCli {
      directory (docs/proposals/project-packaging.md). */
   const char *profile;
   const char *player_template;
+  /* `scripts`: the project library's name. */
+  const char *name;
   uint64_t idle_exit_seconds;
   uint64_t older_than_days;
   bool8_t watch;
@@ -47,6 +49,7 @@ int vkr_bakery_run_command(int argc, char **argv, VkrBakeryEventSink sink,
                            void *sink_context);
 
 int vkr_bakery_cmd_cook(VkrBakeryCli *cli);
+int vkr_bakery_cmd_scripts(VkrBakeryCli *cli);
 int vkr_bakery_cmd_serve(VkrBakeryCli *cli);
 int vkr_bakery_cmd_send(VkrBakeryCli *cli);
 int vkr_bakery_cmd_build(VkrBakeryCli *cli);

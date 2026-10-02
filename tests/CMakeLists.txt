@@ -62,6 +62,25 @@ foreach(variant 1 2 3 4)
         VKR_TEST_RELOAD_PROBE_${variant}="$<TARGET_FILE:vkr_test_reload_probe_${variant}>")
 endforeach()
 
+# A project library the host's project tests load: one source, four
+# variants listing their modules through vkr_project_modules.
+foreach(variant 1 2 3 4)
+    add_library(vkr_test_project_probe_${variant} MODULE scripts/project_probe.c)
+    target_compile_definitions(vkr_test_project_probe_${variant} PRIVATE
+        PROJECT_VARIANT=${variant})
+    target_include_directories(vkr_test_project_probe_${variant} PRIVATE
+        "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/lib/src")
+    set_target_properties(vkr_test_project_probe_${variant} PROPERTIES
+        C_VISIBILITY_PRESET hidden)
+    if(APPLE)
+        target_compile_options(vkr_test_project_probe_${variant} PRIVATE
+            -fno-sanitize=address)
+    endif()
+    add_dependencies(vulkan_renderer_tester vkr_test_project_probe_${variant})
+    target_compile_definitions(vulkan_renderer_tester PRIVATE
+        VKR_TEST_PROJECT_PROBE_${variant}="$<TARGET_FILE:vkr_test_project_probe_${variant}>")
+endforeach()
+
 target_include_directories(vulkan_renderer_tester
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src

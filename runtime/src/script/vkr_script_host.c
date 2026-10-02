@@ -1155,23 +1155,23 @@ static void script_close_library(VkrScriptHost *host,
 
 /* A superseded library stays mapped while a session may still hold
  * pointers into its code or constants. */
-static bool8_t script_retire_library(VkrScriptHost *host,
-                                     VkrScriptModule *module) {
-  if (!module->library.handle) {
+static bool8_t script_retire_handle(VkrScriptHost *host,
+                                    VkrScriptLibrary *library) {
+  if (!library->handle.handle) {
     return true_v;
   }
   if (!host->started) {
-    script_close_library(host, &module->library, module->loaded_path);
+    script_close_library(host, &library->handle, library->loaded_path);
     return true_v;
   }
   if (host->retired_count == VKR_SCRIPT_RETIRED_LIBRARY_MAX) {
     return false_v;
   }
   VkrScriptRetiredLibrary *retired = &host->retired[host->retired_count++];
-  retired->library = module->library;
-  snprintf(retired->path, sizeof(retired->path), "%s", module->loaded_path);
-  module->library = (VkrPlatformLibrary){0};
-  module->loaded_path[0] = '\0';
+  retired->library = library->handle;
+  snprintf(retired->path, sizeof(retired->path), "%s", library->loaded_path);
+  library->handle = (VkrPlatformLibrary){0};
+  library->loaded_path[0] = '\0';
   return true_v;
 }
 
@@ -1180,6 +1180,23 @@ static void script_close_retired(VkrScriptHost *host) {
     VkrScriptRetiredLibrary *retired = &host->retired[--host->retired_count];
     script_close_library(host, &retired->library, retired->path);
   }
+}
+
+/* The library slot named `name`, kept after retirement so a later load of
+ * the same name adopts its modules; UINT32_MAX when none is free. */
+static uint32_t script_library_slot(VkrScriptHost *host, const char *name) {
+  for (uint32_t i = 0; i < host->library_count; ++i) {
+    if (!strcmp(host->libraries[i].name, name)) {
+      return i;
+    }
+  }
+  if (host->library_count == VKR_SCRIPT_LIBRARY_MAX) {
+    return UINT32_MAX;
+  }
+  VkrScriptLibrary *library = &host->libraries[host->library_count];
+  *library = (VkrScriptLibrary){0};
+  snprintf(library->name, sizeof(library->name), "%s", name);
+  return host->library_count++;
 }
 
 // =============================================================================
@@ -1193,7 +1210,7 @@ static const char *script_validate(const VkrModuleDesc *desc) {
   }
   if (desc->component_count > VKR_SDK_EXPORT_MAX ||
       desc->behavior_count > VKR_SDK_EXPORT_MAX) {
-    return "Script module exports more than eight components or behaviors";
+    return "Script module exports more than 64 components or behaviors";
   }
   for (uint32_t i = 0; i < desc->component_count + desc->behavior_count; ++i) {
     const VkrComponentDesc *type =
@@ -1215,7 +1232,7 @@ static const char *script_validate(const VkrModuleDesc *desc) {
   }
   VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
   if (script_module_components(desc, types) > VKR_SDK_EXPORT_MAX) {
-    return "Script module declares more than eight component types";
+    return "Script module declares more than 64 component types";
   }
   if (desc->data_size &&
       (!desc->data_align || (desc->data_align & (desc->data_align - 1u)))) {
@@ -1224,24 +1241,78 @@ static const char *script_validate(const VkrModuleDesc *desc) {
   return NULL;
 }
 
-/* Registers a new module's copies of its component types. A name another
- * module registered fails; nothing is registered then. */
-static const char *script_register(VkrScriptHost *host, const char *name,
-                                   const VkrModuleDesc *desc, bool8_t dynamic,
-                                   uint32_t *out_index) {
-  if (host->module_count == VKR_SCRIPT_MODULE_MAX) {
-    return "At most sixteen script modules register";
+static bool8_t script_modules_reserve(VkrScriptHost *host, uint32_t count) {
+  if (count <= host->module_capacity) {
+    return true_v;
   }
+  const uint32_t capacity = Max(count, Max(16u, host->module_capacity * 2u));
+  VkrScriptModule *modules =
+      vkr_allocator_alloc(host->allocator, sizeof(*modules) * capacity,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!modules) {
+    return false_v;
+  }
+  if (host->modules) {
+    MemCopy(modules, host->modules, sizeof(*modules) * host->module_count);
+    vkr_allocator_free(host->allocator, host->modules,
+                       sizeof(*modules) * host->module_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  host->modules = modules;
+  host->module_capacity = capacity;
+  return true_v;
+}
+
+/* Index of a registered type among the module's copies, or UINT32_MAX. */
+static uint32_t script_type_index(const VkrScriptModule *module,
+                                  const VkrTypeDesc *type) {
+  for (uint32_t i = 0; i < module->type_count; ++i) {
+    if (module->types[i] == type) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
+/* A type name some module other than `self` registered, or NULL. */
+static const char *script_type_taken(const VkrScriptHost *host,
+                                     const VkrModuleDesc *desc, uint32_t self) {
   VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
   const uint32_t type_count = script_module_components(desc, types);
   for (uint32_t i = 0; i < type_count; ++i) {
-    if (vkr_scene_world_type_named(string8_create_from_cstr(
-            (const uint8_t *)types[i]->name, strlen(types[i]->name)))) {
-      return "Script component type is invalid or its name is taken";
+    const VkrTypeDesc *registered =
+        vkr_scene_world_type_named(string8_create_from_cstr(
+            (const uint8_t *)types[i]->name, strlen(types[i]->name)));
+    if (!registered) {
+      continue;
+    }
+    const bool8_t own =
+        self != UINT32_MAX &&
+        script_type_index(&host->modules[self], registered) != UINT32_MAX;
+    if (!own) {
+      return types[i]->name;
     }
   }
+  return NULL;
+}
+
+/* Registers a new module's copies of its component types. A name another
+ * module registered fails; nothing is registered then. */
+static const char *script_register(VkrScriptHost *host, const char *name,
+                                   const VkrModuleDesc *desc, uint32_t library,
+                                   uint32_t *out_index) {
+  if (script_type_taken(host, desc, UINT32_MAX)) {
+    return "Script component type is invalid or its name is taken";
+  }
+  if (!script_modules_reserve(host, host->module_count + 1u)) {
+    return "Script module allocation failed";
+  }
+  VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
+  const uint32_t type_count = script_module_components(desc, types);
   VkrScriptModule *module = &host->modules[host->module_count];
-  *module = (VkrScriptModule){.desc = desc, .dynamic = dynamic};
+  *module = (VkrScriptModule){.desc = desc,
+                              .library = library,
+                              .dynamic = library != VKR_SCRIPT_LIBRARY_NONE};
   snprintf(module->name, sizeof(module->name), "%s", name);
   for (uint32_t i = 0; i < type_count; ++i) {
     VkrTypeDesc *copy = vkr_allocator_alloc(host->allocator, sizeof(*copy),
@@ -1294,7 +1365,8 @@ bool8_t vkr_script_host_add_module(VkrScriptHost *host, VkrModuleEntry entry,
                                       : script_validate(desc);
   uint32_t index = 0u;
   if (!failure) {
-    failure = script_register(host, desc->name, desc, false_v, &index);
+    failure = script_register(host, desc->name, desc, VKR_SCRIPT_LIBRARY_NONE,
+                              &index);
   }
   if (failure && error) {
     *error = failure;
@@ -1314,13 +1386,8 @@ const VkrScriptModule *vkr_script_host_module(const VkrScriptHost *host,
 
 /* Replaces a known module's code. The types keep their copies; display
  * metadata and defaults follow the new code. */
-static const char *script_swap(VkrScriptHost *host, VkrScriptModule *module,
-                               const VkrModuleDesc *desc,
-                               VkrPlatformLibrary library,
-                               const char *loaded_path) {
-  if (!script_retire_library(host, module)) {
-    return "Too many reloads in one session; stop the simulation first";
-  }
+static void script_swap(VkrScriptHost *host, VkrScriptModule *module,
+                        const VkrModuleDesc *desc, uint32_t library) {
   VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
   (void)script_module_components(desc, types);
   for (uint32_t i = 0; i < module->type_count; ++i) {
@@ -1336,10 +1403,18 @@ static const char *script_swap(VkrScriptHost *host, VkrScriptModule *module,
   }
   module->desc = desc;
   module->library = library;
-  snprintf(module->loaded_path, sizeof(module->loaded_path), "%s", loaded_path);
+  module->dynamic = true_v;
   module->retired = false_v;
   module->generation++;
-  return NULL;
+}
+
+/* A module that keeps its types but runs no code until a load adopts it. */
+static void script_retire_module(VkrScriptModule *module) {
+  for (uint32_t t = 0; t < module->type_count; ++t) {
+    module->types[t]->defaults = NULL;
+  }
+  module->desc = NULL;
+  module->retired = true_v;
 }
 
 /* Running instances keep their data and bindings only when the new code
@@ -1371,93 +1446,244 @@ static bool8_t script_module_running(const VkrScriptHost *host,
   return false_v;
 }
 
-VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
-                                             const char *name,
-                                             const char *library_path,
-                                             const char **error) {
-  const char *failure = NULL;
-  VkrScriptModule *module =
-      (VkrScriptModule *)vkr_script_host_module(host, name);
-  if (!name || !name[0] || !library_path || !library_path[0]) {
-    failure = "A script library needs a module name and a path";
-  } else if (module && !module->dynamic) {
-    failure = "That module is linked into the executable";
-  } else if (host->tool) {
-    failure = "A tool context is open";
-  }
-  char loaded[VKR_SCRIPT_PATH_CAPACITY] = {0};
-  char entry_name[VKR_SCRIPT_MODULE_NAME_CAPACITY + 32u];
-  VkrPlatformLibrary library = {0};
-  const VkrModuleDesc *desc = NULL;
-  if (!failure) {
-    snprintf(loaded, sizeof(loaded), "%s.%u-%u.loaded", library_path,
-             vkr_platform_get_process_id(), ++host->load_serial);
-    snprintf(entry_name, sizeof(entry_name), "vkr_module_%s", name);
-    if (!script_copy_file(library_path, loaded)) {
-      failure = "The script library could not be copied for loading";
-      loaded[0] = '\0';
-    } else if (!vkr_platform_library_open(loaded, &library, host->error,
-                                          sizeof(host->error))) {
-      failure = host->error;
-    } else {
-      const VkrModuleEntry entry =
-          (VkrModuleEntry)(uintptr_t)vkr_platform_library_symbol(&library,
-                                                                 entry_name);
-      desc = entry ? entry(VKR_SDK_VERSION) : NULL;
-      failure = entry ? script_validate(desc)
-                      : "The library has no vkr_module_<name> entry";
-    }
-  }
+/* One module a library lists: its description and the registered module it
+ * reloads, or UINT32_MAX for a new one. */
+typedef struct ScriptListed {
+  const VkrModuleDesc *desc;
+  const char *name;
+  uint32_t module;
+} ScriptListed;
 
-  VkrScriptReload result = VKR_SCRIPT_RELOAD_FAILED;
-  if (!failure && !module) {
-    uint32_t index = 0u;
-    failure = script_register(host, name, desc, true_v, &index);
-    if (!failure) {
-      module = &host->modules[index];
-      module->library = library;
-      snprintf(module->loaded_path, sizeof(module->loaded_path), "%s", loaded);
-      result = VKR_SCRIPT_RELOAD_LOADED;
+/* Checks every module a library lists before anything changes: a refused
+ * one keeps all of them on their previous code. NULL when the load may
+ * apply; `restart` reports whether a running session must restart. */
+static const char *script_load_check(VkrScriptHost *host, uint32_t slot,
+                                     ScriptListed *listed, uint32_t count,
+                                     bool8_t *restart) {
+  *restart = false_v;
+  for (uint32_t i = 0; i < count; ++i) {
+    ScriptListed *entry = &listed[i];
+    const char *invalid = script_validate(entry->desc);
+    if (invalid) {
+      return invalid;
     }
-  } else if (!failure) {
-    const uint32_t index = (uint32_t)(module - host->modules);
+    for (uint32_t j = 0; j < i; ++j) {
+      if (!strcmp(listed[j].name, entry->name)) {
+        return "The library lists one module name twice";
+      }
+    }
+    const VkrScriptModule *known = vkr_script_host_module(host, entry->name);
+    entry->module = known ? (uint32_t)(known - host->modules) : UINT32_MAX;
+    if (known && !known->dynamic) {
+      return "A module of that name is linked into the executable";
+    }
+    if (known && !known->retired && known->library != slot) {
+      return "A module of that name belongs to another library";
+    }
+    const char *taken = script_type_taken(host, entry->desc, entry->module);
+    if (taken) {
+      snprintf(host->error, sizeof(host->error),
+               "Component %s belongs to another module", taken);
+      return host->error;
+    }
+    if (!known) {
+      *restart = *restart || host->started;
+      continue;
+    }
     VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
-    if (script_module_components(desc, types) != module->type_count) {
-      failure = "The module's component types changed; reopen the project";
+    if (script_module_components(entry->desc, types) != known->type_count) {
+      snprintf(host->error, sizeof(host->error),
+               "%s changed its component types; reopen the project",
+               known->name);
+      return host->error;
     }
-    for (uint32_t i = 0; !failure && i < module->type_count; ++i) {
-      if (!script_type_same_layout(module->types[i], types[i])) {
+    for (uint32_t t = 0; t < known->type_count; ++t) {
+      if (!script_type_same_layout(known->types[t], types[t])) {
         snprintf(host->error, sizeof(host->error),
                  "Component %s changed its fields; reopen the project to "
                  "apply it",
-                 module->types[i]->name);
-        failure = host->error;
+                 known->types[t]->name);
+        return host->error;
       }
     }
-    const bool8_t running = script_module_running(host, index);
-    if (!failure && running && !script_same_shape(module->desc, desc)) {
-      /* The data shape changed: stop with the old code, restart with the new
-         one on the same containers. */
-      const VkrScriptSessionDesc session = host->session;
-      vkr_script_host_stop(host);
-      failure = script_swap(host, module, desc, library, loaded);
-      const char *start_error = NULL;
-      if (!failure && !vkr_script_host_start(host, &session, &start_error)) {
-        failure = start_error;
-      }
-      result = failure ? VKR_SCRIPT_RELOAD_FAILED : VKR_SCRIPT_RELOAD_RESTARTED;
-      library = (VkrPlatformLibrary){0};
-    } else if (!failure) {
-      failure = script_swap(host, module, desc, library, loaded);
-      if (!failure) {
-        library = (VkrPlatformLibrary){0};
-        result = VKR_SCRIPT_RELOAD_KEPT_STATE;
-      }
+    if (script_module_running(host, entry->module) &&
+        !script_same_shape(known->desc, entry->desc)) {
+      *restart = true_v;
     }
   }
+  /* A module the library no longer lists retires; a running one restarts
+     the session. */
+  for (uint32_t m = 0; m < host->module_count; ++m) {
+    const VkrScriptModule *module = &host->modules[m];
+    if (module->library != slot || module->retired) {
+      continue;
+    }
+    bool8_t listed_again = false_v;
+    for (uint32_t i = 0; i < count && !listed_again; ++i) {
+      listed_again = listed[i].module == m;
+    }
+    if (!listed_again && script_module_running(host, m)) {
+      *restart = true_v;
+    }
+  }
+  return NULL;
+}
+
+/* Opens a byte copy of `path` and lists its modules: the project entry's,
+ * or the one `vkr_module_<name>`. */
+static const char *script_load_open(VkrScriptHost *host, const char *name,
+                                    const char *path, bool8_t project,
+                                    VkrPlatformLibrary *library, char *loaded,
+                                    ScriptListed **out_listed,
+                                    uint32_t *out_count) {
+  snprintf(loaded, VKR_SCRIPT_PATH_CAPACITY, "%s.%u-%u.loaded", path,
+           vkr_platform_get_process_id(), ++host->load_serial);
+  if (!script_copy_file(path, loaded)) {
+    loaded[0] = '\0';
+    return "The script library could not be copied for loading";
+  }
+  if (!vkr_platform_library_open(loaded, library, host->error,
+                                 sizeof(host->error))) {
+    return host->error;
+  }
+  uint32_t count = 1u;
+  VkrModuleEntry single = NULL;
+  VkrProjectEntry list = NULL;
+  if (project) {
+    list = (VkrProjectEntry)(uintptr_t)vkr_platform_library_symbol(
+        library, "vkr_project_modules");
+    if (!list) {
+      return "The library has no vkr_project_modules entry";
+    }
+    count = list(NULL, 0u);
+  } else {
+    char entry_name[VKR_SCRIPT_MODULE_NAME_CAPACITY + 32u];
+    snprintf(entry_name, sizeof(entry_name), "vkr_module_%s", name);
+    single = (VkrModuleEntry)(uintptr_t)vkr_platform_library_symbol(library,
+                                                                    entry_name);
+    if (!single) {
+      return "The library has no vkr_module_<name> entry";
+    }
+  }
+  /* The temp arena holds the list until the load returns. */
+  VkrModuleEntry *entries =
+      count ? arena_alloc(host->temp, sizeof(*entries) * count,
+                          ARENA_MEMORY_TAG_ARRAY)
+            : NULL;
+  ScriptListed *listed = count
+                             ? arena_alloc(host->temp, sizeof(*listed) * count,
+                                           ARENA_MEMORY_TAG_ARRAY)
+                             : NULL;
+  if (count && (!entries || !listed)) {
+    return "The library's module list could not be read";
+  }
+  if (project) {
+    (void)list(entries, count);
+  } else {
+    entries[0] = single;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrModuleDesc *desc = entries[i](VKR_SDK_VERSION);
+    listed[i] =
+        (ScriptListed){.desc = desc,
+                       .name = project ? (desc ? desc->name : "") : name,
+                       .module = UINT32_MAX};
+    if (!desc) {
+      return "A module of the library was built for another SDK version";
+    }
+  }
+  *out_listed = listed;
+  *out_count = count;
+  return NULL;
+}
+
+static VkrScriptReload script_load(VkrScriptHost *host, const char *name,
+                                   const char *library_path, bool8_t project,
+                                   const char **error) {
+  const uint64_t temp_position = arena_pos(host->temp);
+  const char *failure = NULL;
+  uint32_t slot = UINT32_MAX;
+  if (!name || !name[0] || !library_path || !library_path[0]) {
+    failure = "A script library needs a name and a path";
+  } else if (host->tool) {
+    failure = "A tool context is open";
+  } else if ((slot = script_library_slot(host, name)) == UINT32_MAX) {
+    failure = "Too many script libraries are loaded";
+  }
+  char loaded[VKR_SCRIPT_PATH_CAPACITY] = {0};
+  VkrPlatformLibrary handle = {0};
+  ScriptListed *listed = NULL;
+  uint32_t count = 0u;
+  bool8_t restart = false_v;
+  if (!failure) {
+    failure = script_load_open(host, name, library_path, project, &handle,
+                               loaded, &listed, &count);
+  }
+  if (!failure) {
+    failure = script_load_check(host, slot, listed, count, &restart);
+  }
+  VkrScriptLibrary *library =
+      slot != UINT32_MAX ? &host->libraries[slot] : NULL;
+  if (!failure && !restart && host->started &&
+      host->retired_count == VKR_SCRIPT_RETIRED_LIBRARY_MAX &&
+      library->handle.handle) {
+    failure = "Too many reloads in one session; stop the simulation first";
+  }
+
+  VkrScriptReload result = VKR_SCRIPT_RELOAD_FAILED;
+  if (!failure) {
+    const VkrScriptSessionDesc session = host->session;
+    const bool8_t restarting = restart && host->started;
+    if (restarting) {
+      /* Stop with the old code, restart with the new on the same
+         containers. */
+      vkr_script_host_stop(host);
+    }
+    (void)script_retire_handle(host, library);
+    const bool8_t fresh = library->generation == 0u;
+    library->handle = handle;
+    library->project = project;
+    library->generation++;
+    snprintf(library->loaded_path, sizeof(library->loaded_path), "%s", loaded);
+    handle = (VkrPlatformLibrary){0};
+    loaded[0] = '\0';
+    bool8_t all_new = true_v;
+    for (uint32_t i = 0; i < count && !failure; ++i) {
+      if (listed[i].module != UINT32_MAX) {
+        all_new = false_v;
+        script_swap(host, &host->modules[listed[i].module], listed[i].desc,
+                    slot);
+      } else {
+        uint32_t index = 0u;
+        failure =
+            script_register(host, listed[i].name, listed[i].desc, slot, &index);
+        listed[i].module = index;
+      }
+    }
+    for (uint32_t m = 0; m < host->module_count; ++m) {
+      VkrScriptModule *module = &host->modules[m];
+      bool8_t listed_again = false_v;
+      for (uint32_t i = 0; i < count && !listed_again; ++i) {
+        listed_again = listed[i].module == m;
+      }
+      if (module->library == slot && !module->retired && !listed_again) {
+        script_retire_module(module);
+      }
+    }
+    const char *start_error = NULL;
+    if (!failure && restarting &&
+        !vkr_script_host_start(host, &session, &start_error)) {
+      failure = start_error;
+    }
+    result = failure            ? VKR_SCRIPT_RELOAD_FAILED
+             : restarting       ? VKR_SCRIPT_RELOAD_RESTARTED
+             : fresh && all_new ? VKR_SCRIPT_RELOAD_LOADED
+                                : VKR_SCRIPT_RELOAD_KEPT_STATE;
+  }
+  arena_reset_to(host->temp, temp_position, ARENA_MEMORY_TAG_UNKNOWN);
   if (failure) {
-    if (library.handle || loaded[0]) {
-      script_close_library(host, &library, loaded);
+    if (handle.handle || loaded[0]) {
+      script_close_library(host, &handle, loaded);
     }
     if (failure != host->error) {
       snprintf(host->error, sizeof(host->error), "%s", failure);
@@ -1469,19 +1695,33 @@ VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
   return result;
 }
 
+VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
+                                             const char *name,
+                                             const char *library_path,
+                                             const char **error) {
+  return script_load(host, name, library_path, false_v, error);
+}
+
+VkrScriptReload vkr_script_host_load_project(VkrScriptHost *host,
+                                             const char *name,
+                                             const char *library_path,
+                                             const char **error) {
+  return script_load(host, name, library_path, true_v, error);
+}
+
 void vkr_script_host_retire_libraries(VkrScriptHost *host) {
   vkr_script_host_stop(host);
   for (uint32_t i = 0; i < host->module_count; ++i) {
     VkrScriptModule *module = &host->modules[i];
-    if (!module->dynamic || module->retired) {
-      continue;
+    if (module->dynamic && !module->retired) {
+      script_retire_module(module);
     }
-    for (uint32_t t = 0; t < module->type_count; ++t) {
-      module->types[t]->defaults = NULL;
+  }
+  for (uint32_t i = 0; i < host->library_count; ++i) {
+    VkrScriptLibrary *library = &host->libraries[i];
+    if (library->handle.handle) {
+      script_close_library(host, &library->handle, library->loaded_path);
     }
-    module->desc = NULL;
-    module->retired = true_v;
-    script_close_library(host, &module->library, module->loaded_path);
   }
 }
 
@@ -1548,6 +1788,31 @@ static bool8_t script_instance_needs_ticks(const VkrScriptHost *host,
   return false_v;
 }
 
+/* Appends a started instance, growing the list in instance memory. */
+static bool8_t script_instances_push(VkrScriptHost *host,
+                                     VkrScriptInstance *instance) {
+  if (host->instance_count == host->instance_capacity) {
+    const uint32_t capacity = Max(32u, host->instance_capacity * 2u);
+    VkrScriptInstance **instances = vkr_allocator_alloc(
+        &host->instance_allocator, sizeof(*instances) * capacity,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!instances) {
+      return false_v;
+    }
+    if (host->instances) {
+      MemCopy(instances, host->instances,
+              sizeof(*instances) * host->instance_count);
+      vkr_allocator_free(&host->instance_allocator, host->instances,
+                         sizeof(*instances) * host->instance_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    host->instances = instances;
+    host->instance_capacity = capacity;
+  }
+  host->instances[host->instance_count++] = instance;
+  return true_v;
+}
+
 /* Starts module hooks, then behaviors, then installs the callbacks the
  * enabled instances need. */
 static const char *script_session_begin(VkrScriptHost *host) {
@@ -1565,11 +1830,13 @@ static const char *script_session_begin(VkrScriptHost *host) {
         continue;
       }
       VkrScriptInstance *instance = script_instance_create(host, m, container);
-      if (!instance) {
+      if (!instance || !script_instances_push(host, instance)) {
+        if (instance) {
+          script_instance_free(host, instance);
+        }
         return script_host_fail(host, module->name,
                                 "Script instance allocation failed");
       }
-      host->instances[host->instance_count++] = instance;
     }
   }
   for (uint32_t i = 0; i < host->instance_count; ++i) {

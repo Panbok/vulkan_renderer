@@ -38,6 +38,10 @@ vkr_internal const VkrBakeryCommand vkr_bakery_commands[] = {
      "<path>]",
      "Cook sources with their producers; directories cook every supported "
      "file, and <module>.script.json builds a C script module."},
+    {"scripts", vkr_bakery_cmd_scripts,
+     "scripts <Scripts folder> --name <project> [--out <dir>]",
+     "Build every script package of a Scripts folder into one project "
+     "library, with each package's dependencies on its include path."},
     {"build", vkr_bakery_cmd_build, "build <bakery.json>...",
      "Build every target of a bakery manifest."},
     {"shaders", vkr_bakery_cmd_shaders,
@@ -231,6 +235,8 @@ vkr_internal int vkr_bakery_parse(int argc, char **argv, VkrBakeryCli *cli) {
       VKR_BAKERY_TAKE(cli->out);
     } else if (strcmp(argument, "--producer") == 0) {
       VKR_BAKERY_TAKE(cli->producer);
+    } else if (strcmp(argument, "--name") == 0) {
+      VKR_BAKERY_TAKE(cli->name);
     } else if (strcmp(argument, "--backend") == 0) {
       VKR_BAKERY_TAKE(cli->backend);
     } else if (strcmp(argument, "--slangc") == 0) {

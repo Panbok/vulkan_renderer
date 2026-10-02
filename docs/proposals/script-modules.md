@@ -16,25 +16,26 @@ and the runtime host. It covers:
 - behaviors per entity with destroy hooks, and script instances per attached
   container;
 - structural edits in fixed updates, queued until the tick ends;
-- loading project libraries in the editor, with hot reload that keeps
-  instance data;
+- library packages with dependencies, built into one project library the
+  editor loads, with hot reload that keeps instance data;
 - the Script editor, Script objects and the Player Start;
 - the FPS sample as a statically linked module.
 
-Bakery builds each module's shared library and static archive
+Bakery builds a project's shared library and static archive
 ([ADR-077](../adr/077-asset-build-system.md)). This proposal covers what
 remains. The SDK still has these gaps:
 
 - **Additive scenes run no scripts.** Their simulation stays paused, so a
   session attaches only the played container and the World.
-- **One unit per module.** A module cannot use another module's code.
+- **No exports.** Packages share code through library packages; a module
+  cannot call into another module.
 - **Everything on the main thread.** Every hook, every library load,
   `vkr_spawn_model` (a synchronous load), Jolt (`JobSystemSingleThreaded`) and
   the first build of an unbuilt project module all run on the frame thread.
 
 ## Accepted direction (2026-10-02)
 
-The user accepted these choices; phases 1 and 2 shipped in ADR-079:
+The user accepted these choices; phases 1 to 3 shipped in ADR-079:
 
 - ABI v2 is replaced outright, without a compatibility layer.
 - The public header is `sdk.h`.
@@ -50,6 +51,8 @@ Additive scenes join a session once their simulation runs, each with its own
 instances, and their unload detaches them as the World's does.
 
 ### Packages and the project library
+
+Shipped in ADR-079 as described below, except named groups.
 
 - **Kinds.** A `Scripts/<Name>/` folder is a package of kind `module` or
   `library`.
@@ -111,8 +114,8 @@ Parallel behaviors and exports come last, when a measured case needs them.
    with the FPS module, the template and the tests ported.
 2. Shipped in ADR-079: deferred structural edits in fixed updates over ECS
    ID reservation, owner and timed lifetimes, and the transient mark.
-3. Library packages, dependencies and the project library in Bakery, the
-   host, the editor and completion.
+3. Shipped in ADR-079: library packages, dependencies and the project
+   library in Bakery, the host, the editor and completion.
 4. Asynchronous library preparation, `spawn_model` and first builds; script
    jobs; the Jolt thread pool, measured on Bistro in Release.
 5. Exports and parallel behaviors.

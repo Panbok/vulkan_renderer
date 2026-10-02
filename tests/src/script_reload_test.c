@@ -98,6 +98,82 @@ static void test_script_library_reload(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* The project probe's data layout (tests/scripts/project_probe.c). */
+typedef struct ProbeData {
+  uint32_t ticks;
+} ProbeData;
+
+/* A project library lists several modules and reloads them together: code
+ * changes keep data, a dropped module retires and an added one registers by
+ * restarting the session, and one refused module keeps every module on its
+ * previous code. */
+static void test_project_library(VkrAllocator *allocator) {
+  static VkrScriptHost host;
+  assert(vkr_script_host_init(&host, allocator));
+  const char *error = NULL;
+  assert(vkr_script_host_load_project(&host, "probe_project",
+                                      VKR_TEST_PROJECT_PROBE_1,
+                                      &error) == VKR_SCRIPT_RELOAD_LOADED);
+  const VkrScriptModule *a = vkr_script_host_module(&host, "ProbeA");
+  const VkrScriptModule *b = vkr_script_host_module(&host, "ProbeB");
+  assert(a && b && a->dynamic && a->library == b->library);
+  assert(host.libraries[a->library].project);
+  assert(vkr_scene_world_type_named(string8_lit("probe_a")) &&
+         vkr_scene_world_type_named(string8_lit("probe_b")));
+
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 55, 16, NULL));
+  InputState input = {0};
+  const VkrScriptSessionDesc session = {.active = &scene, .input = &input};
+  assert(vkr_script_host_start(&host, &session, &error));
+  const ProbeData *data =
+      vkr_script_host_instance_data(&host, "ProbeA", &scene);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  reload_ticks(&scene, 3u);
+  assert(data->ticks == 3u);
+
+  // Code only: the running data continues under the new code.
+  assert(vkr_script_host_load_project(&host, "probe_project",
+                                      VKR_TEST_PROJECT_PROBE_2,
+                                      &error) == VKR_SCRIPT_RELOAD_KEPT_STATE);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  reload_ticks(&scene, 2u);
+  assert(data->ticks == 23u);
+
+  // ProbeB leaves and ProbeC arrives: B retires, C registers, and the
+  // session restarts on fresh data.
+  assert(vkr_script_host_load_project(&host, "probe_project",
+                                      VKR_TEST_PROJECT_PROBE_3,
+                                      &error) == VKR_SCRIPT_RELOAD_RESTARTED);
+  b = vkr_script_host_module(&host, "ProbeB");
+  const VkrScriptModule *c = vkr_script_host_module(&host, "ProbeC");
+  assert(b && b->retired && !b->desc);
+  assert(c && !c->retired && c->generation == 1u);
+  assert(vkr_scene_world_type_named(string8_lit("probe_b")));
+  data = vkr_script_host_instance_data(&host, "ProbeA", &scene);
+  const ProbeData *c_data =
+      vkr_script_host_instance_data(&host, "ProbeC", &scene);
+  assert(data && c_data && data->ticks == 0u);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  reload_ticks(&scene, 1u);
+  assert(data->ticks == 1u && c_data->ticks == 1u);
+
+  // One refused module refuses the whole load: ProbeC keeps its code too.
+  const uint32_t c_generation = c->generation;
+  assert(vkr_script_host_load_project(&host, "probe_project",
+                                      VKR_TEST_PROJECT_PROBE_4,
+                                      &error) == VKR_SCRIPT_RELOAD_FAILED);
+  assert(error && strstr(error, "probe_a changed its fields"));
+  c = vkr_script_host_module(&host, "ProbeC");
+  assert(c->generation == c_generation);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  reload_ticks(&scene, 1u);
+  assert(data->ticks == 2u && c_data->ticks == 2u);
+
+  vkr_script_host_shutdown(&host);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_script_reload_tests(void) {
   /* The registered component type copies outlive this suite, as every host
      allocator must: later suites' scenes read them. */
@@ -107,6 +183,7 @@ bool32_t run_script_reload_tests(void) {
   allocator = (VkrAllocator){.ctx = &memory};
   vkr_dmemory_allocator_create(&allocator);
   test_script_library_reload(&allocator);
+  test_project_library(&allocator);
   printf("Script reload tests passed\n");
   return true_v;
 }

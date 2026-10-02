@@ -126,6 +126,14 @@ struct VkrEditorCode {
   CodeSymbols sdk;
   CodeSymbols local;
   bool8_t sdk_loaded;
+  /* Headers of the open file's package and the packages it depends on,
+     read again when the file, the package list or a saved header changes. */
+  CodeSymbols headers;
+  char headers_path[VKR_EDITOR_SCRIPT_PATH];
+  uint64_t headers_revision;
+  bool8_t headers_loaded;
+  /* The project's packages, borrowed from the editor each build. */
+  const VkrEditorScripts *scripts;
   CodeCompletion completion;
   VkrUiId view_id;
   VkrUiRect view_rect;
@@ -692,6 +700,8 @@ static bool8_t code_save(VkrEditorCode *code, VkrEditorUi *editor,
   doc->changed_on_disk = false_v;
   doc->disk_fingerprint = code_hash(doc->text, doc->length);
   vkr_editor_scripts_rebuild_file(editor->scripts, doc->path);
+  /* A saved header may declare new names. */
+  code->headers_loaded = false_v;
   snprintf(code->status, sizeof(code->status), "Saved %s; rebuilding",
            doc->name);
   return true_v;
@@ -1385,6 +1395,41 @@ static void code_completion_offer(CodeCompletion *completion,
   completion->count = count + 1u;
 }
 
+/* Headers a source at `path` may include: its package's and those of the
+ * packages it depends on (`vkr_editor_scripts_header_folders`). */
+static void code_load_headers(VkrEditorCode *code, const char *path) {
+  const uint64_t revision = vkr_editor_scripts_revision(code->scripts);
+  if (code->headers_loaded && revision == code->headers_revision &&
+      !strcmp(code->headers_path, path)) {
+    return;
+  }
+  code->headers_loaded = true_v;
+  code->headers_revision = revision;
+  snprintf(code->headers_path, sizeof(code->headers_path), "%s", path);
+  if (!code_symbols_reset(&code->headers)) {
+    return;
+  }
+  const char *folders[VKR_EDITOR_SCRIPT_DEPENDENCY_MAX + 1u];
+  const uint32_t folder_count = vkr_editor_scripts_header_folders(
+      code->scripts, path, folders, ArrayCount(folders));
+  const uint32_t file_count = vkr_editor_scripts_file_count(code->scripts);
+  for (uint32_t i = 0; i < file_count; ++i) {
+    const VkrEditorScriptFile *file = vkr_editor_scripts_file(code->scripts, i);
+    const size_t length = strlen(file->name);
+    if (length < 3u || strcmp(file->name + length - 2u, ".h")) {
+      continue;
+    }
+    for (uint32_t f = 0; f < folder_count; ++f) {
+      const size_t folder = strlen(folders[f]);
+      if (!strncmp(file->path, folders[f], folder) &&
+          (file->path[folder] == '/' || file->path[folder] == '\\')) {
+        code_symbols_parse_file(code, &code->headers, file->path);
+        break;
+      }
+    }
+  }
+}
+
 /* Opens or refreshes the list for the word ending at the caret. `forced`
  * opens it for an empty word, such as after `->` or Ctrl+Space. */
 static void code_complete(VkrEditorCode *code, CodeDocument *doc,
@@ -1406,6 +1451,7 @@ static void code_complete(VkrEditorCode *code, CodeDocument *doc,
     return;
   }
   code_load_sdk(code);
+  code_load_headers(code, doc->path);
   if (code_symbols_reset(&code->local)) {
     uint8_t *copy = vkr_allocator_alloc(code->allocator, doc->length + 1u,
                                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -1436,7 +1482,7 @@ static void code_complete(VkrEditorCode *code, CodeDocument *doc,
   completion->count = 0u;
   completion->selected = 0u;
   completion->start = start;
-  const CodeSymbols *sources[] = {&code->local, &code->sdk};
+  const CodeSymbols *sources[] = {&code->local, &code->headers, &code->sdk};
   if (arrow || dot) {
     uint32_t end = start - (arrow ? 2u : 1u);
     uint32_t begin = end;
@@ -2426,6 +2472,7 @@ static void code_build_status(VkrEditorCode *code, VkrEditorUi *editor,
 void vkr_editor_code_build(VkrEditorCode *code, VkrEditorUi *editor,
                            const VkrSampleUiFrame *frame, VkrUiRect bounds) {
   VkrUiSystem *ui = frame->ui;
+  code->scripts = editor->scripts;
   code_poll_files(code);
   const uint32_t problem_count = Min(
       CODE_PROBLEM_ROWS, vkr_editor_scripts_diagnostic_count(editor->scripts));
@@ -2529,6 +2576,10 @@ void vkr_editor_code_destroy(VkrEditorCode *code) {
   if (code->sdk.arena) {
     vkr_allocator_release_global_accounting(&code->sdk.allocator);
     arena_destroy(code->sdk.arena);
+  }
+  if (code->headers.arena) {
+    vkr_allocator_release_global_accounting(&code->headers.allocator);
+    arena_destroy(code->headers.arena);
   }
   if (code->local.arena) {
     vkr_allocator_release_global_accounting(&code->local.allocator);

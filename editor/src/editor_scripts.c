@@ -24,6 +24,9 @@
 #endif
 
 #define SCRIPTS_NONE UINT32_MAX
+/* The runtime's name for the open project's library; one project is open at
+   a time and closing it retires the library. */
+#define SCRIPTS_PROJECT_LIBRARY "project"
 #if defined(PLATFORM_WINDOWS)
 #define SCRIPTS_LIBRARY_PREFIX ""
 #define SCRIPTS_LIBRARY_SUFFIX ".dll"
@@ -54,11 +57,19 @@ struct VkrEditorScripts {
   /* The Scripts folder itself, for modules added or removed on disk. */
   uint32_t folder_watch;
   EditorBakeryService *service;
-  /* The worker's build: module, process result and completion. */
+  /* The project library every package builds into. */
+  char library[VKR_EDITOR_SCRIPT_PATH];
+  VkrEditorScriptStatus status;
+  char message[256];
+  /* Bytes of the library the runtime last loaded, to skip identical builds. */
+  uint64_t loaded_fingerprint;
+  uint64_t pending_fingerprint;
+  /* A build was asked for while another one ran or none could start. */
+  bool8_t rebuild;
+  /* The worker's build: process result and completion. */
   VkrThread worker;
   bool8_t worker_live;
   VkrAtomicBool worker_done;
-  uint32_t building;
   int32_t exit_code;
   bool8_t process_ok;
   uint64_t result_serial;
@@ -257,7 +268,46 @@ static void scripts_visit_file(void *context, const char *name,
   scripts->file_count++;
 }
 
-/* A module is a folder holding `<folder>.script.json`. */
+/* The package's kind and dependencies from its description. Strings are
+ * read by hand: a dependency list is a flat array of names. */
+static void scripts_read_description(VkrEditorScripts *scripts,
+                                     VkrEditorScriptModule *module) {
+  uint64_t length = 0u;
+  uint8_t *data =
+      scripts_read(scripts->allocator, module->description, &length);
+  if (!data) {
+    return;
+  }
+  const char *text = (const char *)data;
+  const char *kind = strstr(text, "\"kind\"");
+  if (kind) {
+    const char *value = strchr(kind + 6, '"');
+    module->library_kind = value && !strncmp(value, "\"library\"", 9);
+  }
+  const char *dependencies = strstr(text, "\"dependencies\"");
+  const char *open = dependencies ? strchr(dependencies, '[') : NULL;
+  const char *close = open ? strchr(open, ']') : NULL;
+  for (const char *at = open;
+       at && at < close &&
+       module->dependency_count < VKR_EDITOR_SCRIPT_DEPENDENCY_MAX;) {
+    const char *start = strchr(at, '"');
+    const char *end = start && start < close ? strchr(start + 1, '"') : NULL;
+    if (!end || end > close) {
+      break;
+    }
+    const uint64_t size = (uint64_t)(end - start - 1);
+    if (size && size < VKR_EDITOR_SCRIPT_NAME) {
+      char *name = module->dependencies[module->dependency_count++];
+      MemCopy(name, start + 1, size);
+      name[size] = '\0';
+    }
+    at = end + 1;
+  }
+  vkr_allocator_free(scripts->allocator, data, length + 1u,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+}
+
+/* A package is a folder holding `<folder>.script.json`. */
 static void scripts_visit_module(void *context, const char *name,
                                  bool8_t directory) {
   ScriptsScan *scan = context;
@@ -269,23 +319,32 @@ static void scripts_visit_module(void *context, const char *name,
   VkrEditorScriptModule module = {.watch = 0u};
   snprintf(module.name, sizeof(module.name), "%s", name);
   char description[VKR_EDITOR_SCRIPT_PATH];
-  char library[VKR_EDITOR_SCRIPT_NAME + 16u];
   snprintf(description, sizeof(description), "%s.script.json", name);
-  snprintf(library, sizeof(library), "%s%s%s", SCRIPTS_LIBRARY_PREFIX, name,
-           SCRIPTS_LIBRARY_SUFFIX);
   if (!scripts_join(module.directory, scripts->scripts_directory, name) ||
       !scripts_join(module.description, module.directory, description) ||
-      !scripts_join(module.output, scripts->output_root, name) ||
-      !scripts_join(module.library, module.output, library) ||
       !scripts_is_file(module.description)) {
     return;
   }
+  scripts_read_description(scripts, &module);
   scan->module = scripts->module_count;
   scripts->modules[scripts->module_count++] = module;
   scripts_list(module.directory, scripts_visit_file, scan);
 }
 
-/* Rebuilds the module and file lists, keeping the state of modules that
+/* Shows the project's state on every package. */
+static void scripts_set_status(VkrEditorScripts *scripts,
+                               VkrEditorScriptStatus status,
+                               const char *message) {
+  scripts->status = status;
+  snprintf(scripts->message, sizeof(scripts->message), "%s", message);
+  for (uint32_t i = 0; i < scripts->module_count; ++i) {
+    scripts->modules[i].status = status;
+    snprintf(scripts->modules[i].message, sizeof(scripts->modules[i].message),
+             "%s", message);
+  }
+}
+
+/* Rebuilds the package and file lists, keeping the watches of packages that
  * remain. */
 static void scripts_scan(VkrEditorScripts *scripts,
                          EditorBakeryService *service) {
@@ -298,14 +357,11 @@ static void scripts_scan(VkrEditorScripts *scripts,
   scripts_list(scripts->scripts_directory, scripts_visit_module, &scan);
   for (uint32_t i = 0; i < scripts->module_count; ++i) {
     VkrEditorScriptModule *module = &scripts->modules[i];
+    module->status = scripts->status;
+    snprintf(module->message, sizeof(module->message), "%s", scripts->message);
     for (uint32_t p = 0; p < previous_count; ++p) {
       if (!strcmp(previous[p].name, module->name)) {
-        module->status = previous[p].status;
-        module->loaded_fingerprint = previous[p].loaded_fingerprint;
         module->watch = previous[p].watch;
-        module->rebuild = previous[p].rebuild;
-        snprintf(module->message, sizeof(module->message), "%s",
-                 previous[p].message);
         previous[p].watch = 0u;
       }
     }
@@ -322,22 +378,36 @@ static void scripts_scan(VkrEditorScripts *scripts,
   scripts->revision++;
 }
 
+static uint32_t scripts_index_of(const VkrEditorScripts *scripts,
+                                 const char *path) {
+  for (uint32_t i = 0; path && i < scripts->module_count; ++i) {
+    const size_t length = strlen(scripts->modules[i].directory);
+    if (!strncmp(path, scripts->modules[i].directory, length) &&
+        (path[length] == '/' || path[length] == '\\' || !path[length])) {
+      return i;
+    }
+  }
+  return SCRIPTS_NONE;
+}
+
 // =============================================================================
 // Builds
 // =============================================================================
 
+/* One build covers the whole Scripts folder: every package links into the
+ * project library (`vkr_bakery scripts`). */
 static bool8_t scripts_build_prepare(VkrEditorScripts *scripts,
-                                     const VkrEditorScriptModule *module,
                                      ScriptsBuild *build) {
   *build = (ScriptsBuild){0};
-  if (!scripts_make_directory(scripts->allocator, module->output) ||
-      !scripts_join(build->events, module->output, "build.events") ||
-      !scripts_join(build->log, module->output, "build.log")) {
+  if (!scripts_make_directory(scripts->allocator, scripts->output_root) ||
+      !scripts_join(build->events, scripts->output_root, "build.events") ||
+      !scripts_join(build->log, scripts->output_root, "build.log")) {
     return false_v;
   }
   const char *arguments[] = {
-      "cook",  module->description, "--root", module->directory,
-      "--out", module->output,      "--json"};
+      "scripts", scripts->scripts_directory, "--name", SCRIPTS_PROJECT_LIBRARY,
+      "--root",  scripts->scripts_directory, "--out",  scripts->output_root,
+      "--json"};
   MemCopy(build->arguments, arguments, sizeof(arguments));
   build->argument_count = ArrayCount(arguments);
   return true_v;
@@ -360,7 +430,7 @@ static bool8_t scripts_build_run(const ScriptsBuild *build,
   return vkr_platform_process_run(&config, exit_code, &timed_out) && !timed_out;
 }
 
-/* Runs the prepared build; the module's paths stay unchanged meanwhile. */
+/* Runs the prepared build; the project's paths stay unchanged meanwhile. */
 static void *scripts_worker(void *context) {
   VkrEditorScripts *scripts = context;
   scripts->process_ok =
@@ -378,18 +448,11 @@ static void scripts_join_worker(VkrEditorScripts *scripts) {
   }
 }
 
-/* Replaces the module's diagnostics with those its build reported. */
+/* Replaces the diagnostics with those the project build reported, each
+ * filed under the package holding its file. */
 static void scripts_read_diagnostics(VkrEditorScripts *scripts,
-                                     const VkrEditorScriptModule *module,
                                      const char *events_path) {
-  const uint32_t index = (uint32_t)(module - scripts->modules);
-  uint32_t kept = 0u;
-  for (uint32_t i = 0; i < scripts->diagnostic_count; ++i) {
-    if (scripts->diagnostics[i].module != index) {
-      scripts->diagnostics[kept++] = scripts->diagnostics[i];
-    }
-  }
-  scripts->diagnostic_count = kept;
+  scripts->diagnostic_count = 0u;
   uint64_t length = 0u;
   uint8_t *events = scripts_read(scripts->allocator, events_path, &length);
   if (!events) {
@@ -433,11 +496,13 @@ static void scripts_read_diagnostics(VkrEditorScripts *scripts,
         VkrEditorScriptDiagnostic *diagnostic =
             &scripts->diagnostics[scripts->diagnostic_count];
         *diagnostic = (VkrEditorScriptDiagnostic){
-            .module = index,
+            .module = SCRIPTS_NONE,
             .line = line_number > 0 ? (uint32_t)line_number : 0u,
             .column = column > 0 ? (uint32_t)column : 0u,
             .error = severity.length == 5u &&
                      MemCompare(severity.str, "error", 5u) == 0};
+        /* Bakery names files under its --root, the Scripts folder; compiler
+           messages name them absolutely. */
         if (has_source && source.length &&
             (source.str[0] == '/' ||
              (source.length > 1u && source.str[1] == ':'))) {
@@ -445,9 +510,10 @@ static void scripts_read_diagnostics(VkrEditorScripts *scripts,
                    (int32_t)source.length, (const char *)source.str);
         } else if (has_source) {
           snprintf(diagnostic->path, sizeof(diagnostic->path), "%s/%.*s",
-                   module->directory, (int32_t)source.length,
+                   scripts->scripts_directory, (int32_t)source.length,
                    (const char *)source.str);
         }
+        diagnostic->module = scripts_index_of(scripts, diagnostic->path);
         snprintf(diagnostic->message, sizeof(diagnostic->message), "%.*s",
                  (int32_t)message.length, (const char *)message.str);
         scripts->diagnostic_count++;
@@ -463,55 +529,53 @@ static void scripts_read_diagnostics(VkrEditorScripts *scripts,
                      VKR_ALLOCATOR_MEMORY_TAG_FILE);
 }
 
-/* After a finished build: diagnostics, then a load request when the library
- * changed. */
-static void scripts_build_finished(VkrEditorScripts *scripts, uint32_t index,
+/* After a finished build: diagnostics, then a load request when the
+ * library changed. */
+static void scripts_build_finished(VkrEditorScripts *scripts,
                                    bool8_t process_ok, int32_t exit_code,
                                    const char *events_path,
                                    const VkrSampleUiFrame *frame) {
-  VkrEditorScriptModule *module = &scripts->modules[index];
-  scripts_read_diagnostics(scripts, module, events_path);
+  scripts_read_diagnostics(scripts, events_path);
   if (!process_ok || exit_code != 0) {
-    module->status = VKR_EDITOR_SCRIPT_BUILD_FAILED;
     uint32_t errors = 0u;
     for (uint32_t i = 0; i < scripts->diagnostic_count; ++i) {
       errors += scripts->diagnostics[i].error;
     }
-    snprintf(module->message, sizeof(module->message),
+    char message[256];
+    snprintf(message, sizeof(message),
              process_ok ? "Build failed with %u error%s; the previous code "
                           "keeps running"
                         : "Bakery could not run the build",
              errors, errors == 1u ? "" : "s");
-    log_error("Script %s: %s", module->name, module->message);
+    scripts_set_status(scripts, VKR_EDITOR_SCRIPT_BUILD_FAILED, message);
+    log_error("Scripts: %s", message);
     return;
   }
   const uint64_t fingerprint =
-      scripts_fingerprint(scripts->allocator, module->library);
-  if (fingerprint && fingerprint == module->loaded_fingerprint) {
-    module->status = VKR_EDITOR_SCRIPT_LOADED;
-    snprintf(module->message, sizeof(module->message), "Up to date");
+      scripts_fingerprint(scripts->allocator, scripts->library);
+  if (fingerprint && fingerprint == scripts->loaded_fingerprint) {
+    scripts_set_status(scripts, VKR_EDITOR_SCRIPT_LOADED, "Up to date");
     return;
   }
   VkrSampleScriptRequest *request = frame->script_request;
   if (!request || request->load_count == VKR_SAMPLE_SCRIPT_LOAD_MAX) {
-    module->rebuild = true_v;
+    scripts->rebuild = true_v;
     return;
   }
   VkrSampleScriptLoad *load = &request->loads[request->load_count++];
-  snprintf(load->name, sizeof(load->name), "%s", module->name);
-  snprintf(load->path, sizeof(load->path), "%s", module->library);
-  module->pending_fingerprint = fingerprint;
-  module->status = VKR_EDITOR_SCRIPT_LOADING;
-  snprintf(module->message, sizeof(module->message), "Loading");
+  *load = (VkrSampleScriptLoad){.project = true_v};
+  snprintf(load->name, sizeof(load->name), "%s", SCRIPTS_PROJECT_LIBRARY);
+  snprintf(load->path, sizeof(load->path), "%s", scripts->library);
+  scripts->pending_fingerprint = fingerprint;
+  scripts_set_status(scripts, VKR_EDITOR_SCRIPT_LOADING, "Loading");
 }
 
-static bool8_t scripts_start_build(VkrEditorScripts *scripts, uint32_t index) {
+static bool8_t scripts_start_build(VkrEditorScripts *scripts) {
   if (scripts->worker_live) {
-    scripts->modules[index].rebuild = true_v;
+    scripts->rebuild = true_v;
     return false_v;
   }
-  if (!scripts_build_prepare(scripts, &scripts->modules[index],
-                             &scripts->worker_build)) {
+  if (!scripts_build_prepare(scripts, &scripts->worker_build)) {
     return false_v;
   }
   vkr_atomic_bool_store(&scripts->worker_done, false_v,
@@ -521,11 +585,8 @@ static bool8_t scripts_start_build(VkrEditorScripts *scripts, uint32_t index) {
     return false_v;
   }
   scripts->worker_live = true_v;
-  scripts->building = index;
-  scripts->modules[index].rebuild = false_v;
-  scripts->modules[index].status = VKR_EDITOR_SCRIPT_BUILDING;
-  snprintf(scripts->modules[index].message,
-           sizeof(scripts->modules[index].message), "Building");
+  scripts->rebuild = false_v;
+  scripts_set_status(scripts, VKR_EDITOR_SCRIPT_BUILDING, "Building");
   return true_v;
 }
 
@@ -539,7 +600,6 @@ VkrEditorScripts *vkr_editor_scripts_create(VkrAllocator *allocator) {
   if (scripts) {
     MemZero(scripts, sizeof(*scripts));
     scripts->allocator = allocator;
-    scripts->building = SCRIPTS_NONE;
   }
   return scripts;
 }
@@ -563,29 +623,38 @@ void vkr_editor_scripts_open(VkrEditorScripts *scripts,
            scripts_directory);
   snprintf(scripts->output_root, sizeof(scripts->output_root), "%s",
            output_root);
+  char library[VKR_EDITOR_SCRIPT_NAME + 16u];
+  snprintf(library, sizeof(library), "%s%s%s", SCRIPTS_LIBRARY_PREFIX,
+           SCRIPTS_PROJECT_LIBRARY, SCRIPTS_LIBRARY_SUFFIX);
+  if (!scripts_join(scripts->library, scripts->output_root, library)) {
+    scripts->library[0] = '\0';
+  }
   scripts->open = true_v;
   scripts->service = service;
+  scripts->loaded_fingerprint = 0u;
+  scripts->status = VKR_EDITOR_SCRIPT_UNBUILT;
+  scripts->message[0] = '\0';
   scripts_scan(scripts, service);
   if (service) {
     const char *paths[] = {scripts->scripts_directory};
     scripts->folder_watch =
         editor_bakery_service_watch(service, paths, 1u, NULL, 0u);
   }
-  for (uint32_t i = 0; i < scripts->module_count; ++i) {
-    VkrEditorScriptModule *module = &scripts->modules[i];
-    if (scripts_is_file(module->library)) {
-      /* Load the last build now; a background build replaces it when the
-         sources moved on. */
-      scripts_build_finished(scripts, i, true_v, 0, "", frame);
-      module->rebuild = true_v;
-      continue;
-    }
-    ScriptsBuild build;
-    int32_t exit_code = -1;
-    const bool8_t ok = scripts_build_prepare(scripts, module, &build) &&
-                       scripts_build_run(&build, &exit_code);
-    scripts_build_finished(scripts, i, ok, exit_code, build.events, frame);
+  if (!scripts->module_count) {
+    return;
   }
+  if (scripts_is_file(scripts->library)) {
+    /* Load the last build now; a background build replaces it when the
+       sources moved on. */
+    scripts_build_finished(scripts, true_v, 0, "", frame);
+    scripts->rebuild = true_v;
+    return;
+  }
+  ScriptsBuild build;
+  int32_t exit_code = -1;
+  const bool8_t ok = scripts_build_prepare(scripts, &build) &&
+                     scripts_build_run(&build, &exit_code);
+  scripts_build_finished(scripts, ok, exit_code, build.events, frame);
 }
 
 void vkr_editor_scripts_close_project(VkrEditorScripts *scripts,
@@ -613,27 +682,14 @@ void vkr_editor_scripts_close_project(VkrEditorScripts *scripts,
   scripts->file_count = 0u;
   scripts->diagnostic_count = 0u;
   scripts->folder_watch = 0u;
-  scripts->building = SCRIPTS_NONE;
+  scripts->rebuild = false_v;
   scripts->revision++;
-}
-
-static uint32_t scripts_index_of(const VkrEditorScripts *scripts,
-                                 const char *path) {
-  for (uint32_t i = 0; path && i < scripts->module_count; ++i) {
-    const size_t length = strlen(scripts->modules[i].directory);
-    if (!strncmp(path, scripts->modules[i].directory, length) &&
-        (path[length] == '/' || path[length] == '\\' || !path[length])) {
-      return i;
-    }
-  }
-  return SCRIPTS_NONE;
 }
 
 void vkr_editor_scripts_rebuild_file(VkrEditorScripts *scripts,
                                      const char *path) {
-  const uint32_t index = scripts_index_of(scripts, path);
-  if (index != SCRIPTS_NONE) {
-    scripts->modules[index].rebuild = true_v;
+  if (scripts_index_of(scripts, path) != SCRIPTS_NONE) {
+    scripts->rebuild = true_v;
   }
 }
 
@@ -646,31 +702,24 @@ void vkr_editor_scripts_update(VkrEditorScripts *scripts,
   /* Load outcomes the runtime applied since the last frame. */
   for (uint32_t r = 0; r < frame->script_result_count; ++r) {
     const VkrSampleScriptResult *result = &frame->script_results[r];
-    if (result->serial <= scripts->result_serial) {
+    if (result->serial <= scripts->result_serial ||
+        strcmp(result->name, SCRIPTS_PROJECT_LIBRARY)) {
       continue;
     }
     scripts->result_serial = result->serial;
-    for (uint32_t i = 0; i < scripts->module_count; ++i) {
-      VkrEditorScriptModule *module = &scripts->modules[i];
-      if (strcmp(module->name, result->name)) {
-        continue;
-      }
-      if (result->result == VKR_SCRIPT_RELOAD_FAILED) {
-        module->status = VKR_EDITOR_SCRIPT_LOAD_FAILED;
-        snprintf(module->message, sizeof(module->message), "%s",
-                 result->message);
-      } else {
-        module->status = VKR_EDITOR_SCRIPT_LOADED;
-        module->loaded_fingerprint = module->pending_fingerprint;
-        snprintf(module->message, sizeof(module->message), "%s",
-                 result->result == VKR_SCRIPT_RELOAD_LOADED ? "Loaded"
-                 : result->result == VKR_SCRIPT_RELOAD_RESTARTED
-                     ? "Reloaded; its state changed, so the simulation "
-                       "restarted"
-                     : "Reloaded; state kept");
-        log_info("Script %s: %s", module->name, module->message);
-      }
+    if (result->result == VKR_SCRIPT_RELOAD_FAILED) {
+      scripts_set_status(scripts, VKR_EDITOR_SCRIPT_LOAD_FAILED,
+                         result->message);
+      continue;
     }
+    scripts->loaded_fingerprint = scripts->pending_fingerprint;
+    scripts_set_status(
+        scripts, VKR_EDITOR_SCRIPT_LOADED,
+        result->result == VKR_SCRIPT_RELOAD_LOADED ? "Loaded"
+        : result->result == VKR_SCRIPT_RELOAD_RESTARTED
+            ? "Reloaded; its state changed, so the simulation restarted"
+            : "Reloaded; state kept");
+    log_info("Scripts: %s", scripts->message);
   }
 
   /* Sources changed on disk, including saves from another editor. */
@@ -680,34 +729,60 @@ void vkr_editor_scripts_update(VkrEditorScripts *scripts,
         editor_bakery_service_take_changes(service, scripts->folder_watch,
                                            changed, ArrayCount(changed))) {
       scripts_scan(scripts, service);
+      scripts->rebuild = true_v;
     }
     for (uint32_t i = 0; i < scripts->module_count; ++i) {
       VkrEditorScriptModule *module = &scripts->modules[i];
       if (module->watch &&
           editor_bakery_service_take_changes(service, module->watch, changed,
                                              ArrayCount(changed))) {
-        module->rebuild = true_v;
+        scripts->rebuild = true_v;
       }
     }
   }
 
   if (scripts->worker_live &&
       vkr_atomic_bool_load(&scripts->worker_done, VKR_MEMORY_ORDER_ACQUIRE)) {
-    const uint32_t index = scripts->building;
     scripts_join_worker(scripts);
-    scripts->building = SCRIPTS_NONE;
-    if (index < scripts->module_count) {
-      scripts_build_finished(scripts, index, scripts->process_ok,
-                             scripts->exit_code, scripts->worker_build.events,
-                             frame);
+    scripts_build_finished(scripts, scripts->process_ok, scripts->exit_code,
+                           scripts->worker_build.events, frame);
+  }
+  if (!scripts->worker_live && scripts->rebuild && scripts->module_count) {
+    (void)scripts_start_build(scripts);
+  }
+}
+
+uint32_t vkr_editor_scripts_header_folders(const VkrEditorScripts *scripts,
+                                           const char *path, const char **out,
+                                           uint32_t capacity) {
+  const uint32_t owner =
+      scripts ? scripts_index_of(scripts, path) : SCRIPTS_NONE;
+  if (owner == SCRIPTS_NONE) {
+    return 0u;
+  }
+  /* The owner, then dependencies breadth first, each once. */
+  uint32_t order[VKR_EDITOR_SCRIPT_MODULE_MAX];
+  uint32_t count = 0u;
+  order[count++] = owner;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrEditorScriptModule *module = &scripts->modules[order[i]];
+    for (uint32_t d = 0; d < module->dependency_count; ++d) {
+      for (uint32_t m = 0; m < scripts->module_count; ++m) {
+        bool8_t seen = false_v;
+        for (uint32_t k = 0; k < count && !seen; ++k) {
+          seen = order[k] == m;
+        }
+        if (!seen && count < ArrayCount(order) &&
+            !strcmp(scripts->modules[m].name, module->dependencies[d])) {
+          order[count++] = m;
+        }
+      }
     }
   }
-  for (uint32_t i = 0; !scripts->worker_live && i < scripts->module_count;
-       ++i) {
-    if (scripts->modules[i].rebuild) {
-      (void)scripts_start_build(scripts, i);
-    }
+  for (uint32_t i = 0; i < count && i < capacity; ++i) {
+    out[i] = scripts->modules[order[i]].directory;
   }
+  return Min(count, capacity);
 }
 
 // =============================================================================
@@ -858,9 +933,8 @@ bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
   }
   /* List and build it now rather than waiting for the folder watch. */
   scripts_scan(scripts, scripts->service);
-  const uint32_t index = scripts_index_of(scripts, source);
-  if (index != SCRIPTS_NONE) {
-    scripts->modules[index].rebuild = true_v;
+  if (scripts_index_of(scripts, source) != SCRIPTS_NONE) {
+    scripts->rebuild = true_v;
   }
   snprintf(out_path, out_capacity, "%s", source);
   return true_v;

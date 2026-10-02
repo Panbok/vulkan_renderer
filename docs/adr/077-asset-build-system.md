@@ -270,14 +270,17 @@ from it.
   the runtime's reader and rehashes every chunk. The shader catalog stays a
   directory beside the executable, which the catalog lookup already resolves,
   rather than a second archive.
-- **Scripts.** A C script module is `<module>.script.json` (`language` `c`,
-  `sources`, `include_roots`, `defines`, `standard`; paths relative to it),
-  built by `cook` ([producers](../../tools/bakery/vkr_bakery_script.c)). Each
-  translation unit is one cached `script_object` action whose key holds the
-  compiler's version line and whose depfile adds the headers it read; one
-  `script_library` action links the hot-reload library (`lib<module>.dylib`)
-  and a deterministic static archive (`lib<module>.a`) beside the description
-  or under `--out`. Compiler errors and warnings become `VKR-SCRIPT-0100` and
+- **Scripts.** A C script package is `<name>.script.json` (`language` `c`,
+  `sources`, `include_roots`, `defines`, `standard`, `kind` and
+  `dependencies`; paths relative to it). `cook` builds one package without
+  dependencies; `scripts <folder> --name <project>` builds every package of
+  a Scripts folder into one project library
+  ([producers](../../tools/bakery/vkr_bakery_script.c)). Each translation
+  unit is one cached `script_object` action whose key holds the compiler's
+  version line and whose depfile adds the headers it read; one
+  `script_library` action links the hot-reload library (`lib<name>.dylib`,
+  `<name>.dll`) and a deterministic static archive (`lib<name>.a`,
+  `<name>.lib`) beside the description or under `--out`. Compiler errors and warnings become `VKR-SCRIPT-0100` and
   `0101` with file, line and column; a missing compiler is `VKR-SCRIPT-0102`.
   A bundle recipe's `scripts` ship their archives under `<out>/scripts/` and
   in `bundle.json`. The module ABI and runtime host are

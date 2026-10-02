@@ -161,7 +161,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Scene physics | Authored bodies/collider children, staged editor mutations, fixed ticks and evaluated pose publication | `runtime/src/renderer/systems/vkr_scene_physics.c` |
 | Script SDK | `sdk.h`: the context, handles, hooks and authoring macros modules use; the private table behind its inline calls | `sdk/sdk.h` |
 | Script host | Linked and shared-library modules, hot reload, script instances per attached container, ledgers that release acquisitions, behavior bindings, temp memory and the SDK's engine adapters | `runtime/src/script/vkr_script_host.h` |
-| Editor scripts | Project `Scripts/` modules: Bakery builds, diagnostics, loads before the project's documents, rebuilds on save and file changes | `editor/src/editor_scripts.c` |
+| Editor scripts | Project `Scripts/` packages built into one project library: Bakery builds, diagnostics, loads before the project's documents, rebuilds on save and file changes | `editor/src/editor_scripts.c` |
 | Script editor | Floating code window: tabs, C highlighting, completion, diagnostics, drawn by `vkr_ui_code_view` | `editor/src/editor_code.c` |
 | FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the SDK | `scripts/fps/src/fps_module.c` |
 | Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |
@@ -518,10 +518,11 @@ right after the tick, and what scripts spawn is never saved. The host is the pla
 callback client and input observer. The editor session starts on the first
 run or step and ends at Reset; Backspace restarts it.
 
-A project's `Scripts/` modules, or `--scripts <dir>` in scene mode, build with
-Bakery and load as shared libraries before the project's documents. Saving in
-the Script editor, or changing a source on disk, rebuilds the module and hot
-reloads it between frames. Instances keep their data unless its shape or
+A project's `Scripts/` packages, or `--scripts <dir>` in scene mode, build
+with Bakery into one project library that loads before the project's
+documents. Library packages share code with the packages that depend on
+them. Saving in the Script editor, or changing a source on disk, rebuilds the
+library and hot reloads every module in it between frames, or none. Instances keep their data unless its shape or
 version changed, and compiler diagnostics mark the editor's gutter. The FPS
 module, linked into the app, editor and
 player, uses ordered input, a Jolt character capsule and a first/third-person

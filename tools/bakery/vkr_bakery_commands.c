@@ -351,6 +351,25 @@ int vkr_bakery_cmd_cook(VkrBakeryCli *cli) {
   return code;
 }
 
+int vkr_bakery_cmd_scripts(VkrBakeryCli *cli) {
+  if (cli->positional_count != 1u || !cli->name) {
+    return vkr_bakery_usage(
+        "scripts needs one Scripts folder and --name <project>");
+  }
+  vkr_bakery_emit_run(cli);
+  VkrBakeryGraph graph;
+  if (!vkr_bakery_graph_init(&graph, &cli->config)) {
+    return VKR_BAKERY_EXIT_ENVIRONMENT;
+  }
+  if (vkr_bakery_plan_script_project(&graph, cli->positional[0], cli->name,
+                                     cli->out)) {
+    graph.root_count = 1u;
+  }
+  const int code = vkr_bakery_execute(cli, &graph);
+  vkr_bakery_graph_shutdown(&graph);
+  return code;
+}
+
 int vkr_bakery_cmd_build(VkrBakeryCli *cli) {
   if (cli->positional_count == 0u) {
     return vkr_bakery_usage("build needs a bakery manifest");

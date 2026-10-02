@@ -373,6 +373,14 @@ VkrBakeryAction *vkr_bakery_plan_script(VkrBakeryGraph *graph,
                                         const char *description,
                                         const char *output_directory);
 
+/** Plans one project library from every `<name>/<name>.script.json` package
+ * under `directory`: package objects with their dependencies' include roots,
+ * a generated module list and one link. Returns the library action. */
+VkrBakeryAction *vkr_bakery_plan_script_project(VkrBakeryGraph *graph,
+                                                const char *directory,
+                                                const char *name,
+                                                const char *output_directory);
+
 // =============================================================================
 // Cache
 // =============================================================================
