@@ -114,6 +114,10 @@ bool8_t vkr_scene_simulation_tick(VkrScene *scene, const char **error) {
             : "Gameplay callback failed; reset before resuming");
   }
   simulation->completed_ticks = tick;
+  if (simulation->callbacks.after_tick) {
+    simulation->callbacks.after_tick(scene, tick,
+                                     simulation->callbacks.context);
+  }
   return true_v;
 }
 

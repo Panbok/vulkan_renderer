@@ -74,8 +74,11 @@ component value writes remain available. The scope is an owning-thread counter,
 not a lock or permission for concurrent access. Query objects and their owning
 world must outlive iteration; callbacks cannot destroy/recompile an active query.
 Scene hierarchy changes and scene teardown are rejected inside gameplay hooks.
-Apply structural edits between updates; a deferred structural-command queue is
-still future work.
+Apply structural edits between updates. A tick may reserve entity IDs
+(`vkr_entity_reserve_entity`, which never grows the directory inside a read
+scope), and the optional `after_tick` callback runs once the tick's read scope
+has ended, where the script host applies the edits scripts queued during the
+tick ([ADR-079](079-c-script-modules.md)).
 
 Compiled queries retain their world and archetype count even when initially
 empty. Freshness is checked in every build; stale iteration asserts in Debug and

@@ -17,6 +17,9 @@ typedef void (*VkrSceneResetCallback)(struct VkrScene *scene, void *context);
 typedef struct VkrSceneSimulationCallbacks {
   VkrSceneTickCallback before_physics;
   VkrSceneTickCallback after_physics;
+  /* After a completed tick, once its structural read scope has ended:
+   * structural edits are allowed. Optional. */
+  void (*after_tick)(struct VkrScene *scene, uint64_t tick, void *context);
   /* Infallible restore of caller-owned gameplay state after native reset. */
   VkrSceneResetCallback reset;
   void *context;

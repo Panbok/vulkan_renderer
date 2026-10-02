@@ -11,8 +11,10 @@ authority: adr
 Accepted (partial). Implemented:
 
 - the script SDK (`sdk.h`, version 3) and the runtime script host, with
-  temp, scoped and persistent lifetimes released through ledgers, behaviors
-  per entity, and script instances per attached container;
+  temp, scoped and persistent lifetimes released through ledgers, owner and
+  timed lifetimes, behaviors per entity with destroy hooks, script instances
+  per attached container, and structural edits in fixed updates queued until
+  the tick ends;
 - shared-library loading with hot reload that keeps instance data;
 - Script assets attached to objects, the authoring macros and the Player
   Start;
@@ -23,9 +25,8 @@ Accepted (partial). Implemented:
 
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
-- Deferred structural edits in fixed updates, owner and timed lifetimes, and
-  the transient mark for objects spawned in Play.
-- Library packages with dependencies, and later exports.
+- Library packages with dependencies built into one project library, and
+  later exports.
 - Asynchronous library preparation, model loads and first builds, script
   jobs and a Jolt thread pool.
 - Packaged games do not load a project's script library yet; `vkr_player`
@@ -90,9 +91,21 @@ NULL when the version differs; there is no compatibility with older modules.
     a module that owns the input clock does.
   - The host refreshes changed transforms and child lists before reads and
     after frame hooks; there is no `update_transforms` call.
-- **Structural edits.** Spawning or destroying entities, characters, models,
-  runtime state and bodies is refused in fixed updates; the deferred queue
-  that would allow it is proposed work.
+- **Structural edits in ticks.** In `fixed_update` and `late_fixed_update`,
+  structural calls (spawn, destroy, models, characters, bodies, shapes,
+  names, parents, visibility, render poses, components and runtime state)
+  are queued with copies of their arguments and replay in order through the
+  same SDK calls right after the tick, from the simulation's `after_tick`
+  callback, where structural edits are allowed again.
+  - A spawn reserves its entity ID at once (`vkr_scene_reserve_entity`), so
+    the handle is valid inside the tick: it reads as alive, calls on it are
+    queued, and its transform and components appear after the tick. The host
+    keeps 256 IDs free in every attached world before each frame, so a tick
+    never grows an entity directory.
+  - `vkr_state_add` in a tick returns the queued value, which the tick's end
+    stores.
+  - Edits queued by a scope that ends before the replay are dropped, except
+    destroys, and their reservations return.
 
 ### Lifetimes and the ledger
 
@@ -107,6 +120,20 @@ Every acquiring call (`vkr_spawn`, `vkr_spawn_model`, `vkr_character_create`,
 calling scope's ledger; an explicit release forgets it. Ending a scope
 releases what remains newest first, skipping resources already gone, so a
 failed start leaves nothing behind. `vkr_destroy` destroys descendants too.
+A ledger that fills up first drops records of entities already gone, so
+spawns that expire keep a long session's ledgers small.
+
+A spawn can end earlier than its scope:
+
+- **Owner.** `VkrSpawnDesc.owner` names an entity in any attached container;
+  the spawn is destroyed with it, through the destroy observer.
+- **Lifetime.** `VkrSpawnDesc.lifetime` is simulated seconds; the clock stops
+  while the simulation pauses. Expired spawns are destroyed after each tick
+  and at each frame start, running their destroy hooks.
+- **Transient.** Everything scripts spawn carries the scene's runtime-only
+  `SceneTransient` tag (`vkr_scene_set_transient`), and saving skips edits to
+  tagged entities, so an edit made to a spawned object during Play neither
+  saves it nor fails the save.
 Ledgers, bindings and instance data live in the host's own `VkrDMemory`;
 registered types live in the allocator the shell passes, for the process.
 
@@ -423,8 +450,9 @@ the startup scene has neither a Player Start nor an `fps_player`.
 - Hot reload trusts `data_version`: a module that changes its data struct
   without bumping it runs new code over old bytes. Component layout changes
   need the project reopened.
-- Structural edits wait for frame hooks until the deferred queue lands, so
-  projectiles and similar spawns happen in `update`.
+- Structural edits in fixed updates take effect after the tick, not inside
+  it: a spawned projectile has no transform or body until the next tick, and
+  a destroyed entity stays readable until the tick ends.
 - Superseded libraries stay mapped until Stop, bounded at 32 per session.
 - Registered types and their host copies live for the process. A later
   project whose module reuses a retired module's type name must match that
@@ -456,6 +484,11 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
     - Behaviors start with the session and when an entity gains the
       component, write the component every frame, and stop and release only
       that entity's spawn when it loses the component.
+    - In a fixed update, a spawn with a 0.1 s lifetime and an owned trail
+      reads as alive without a transform; after the tick it has the queued
+      transform, the queued runtime state (42) and the transient tag. A
+      destroy in the next tick leaves the entity alive until the tick ends.
+      The spawn survives six ticks and is gone, with its trail, after ten.
     - Destroying an entity through the scene, as the editor's delete does,
       runs `destroy` with the component (`speed` 1.5) and the behavior's
       spawn still alive, then `stop`, then releases the spawn; Stop runs no
@@ -540,6 +573,6 @@ exercised; items not listed above were not repeated on the SDK.
 ## Revisit when
 
 A packaged game loads a project's library, a second language binds the table,
-additive scenes simulate and need their own instances, the deferred
-structural queue lands, or component layout changes should migrate live
-data.
+additive scenes simulate and need their own instances, the project library
+replaces per-module libraries, or component layout changes should migrate
+live data.

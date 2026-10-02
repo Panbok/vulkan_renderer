@@ -512,7 +512,9 @@ played container and the root World: a container-scoped module runs one
 instance on each, a World-scoped one runs once. Behaviors run per entity
 carrying their component. Each instance and behavior records what it acquires
 in a ledger the host releases when the entity leaves, the instance ends or
-its container unloads. The host is the played scene's only simulation
+its container unloads; a spawn may also end with an owner entity or after a
+simulated lifetime. Structural edits made in fixed updates queue and apply
+right after the tick, and what scripts spawn is never saved. The host is the played scene's only simulation
 callback client and input observer. The editor session starts on the first
 run or step and ends at Reset; Backspace restarts it.
 

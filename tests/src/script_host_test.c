@@ -42,7 +42,7 @@ static LifeMode s_life_mode;
 static LifeData *s_life;
 static VkrEntity s_life_spawned;
 static uint32_t s_life_stops;
-static bool8_t s_life_refused_spawn;
+static bool8_t s_life_deferred_spawn;
 static bool8_t s_life_temp_zeroed;
 
 static void life_start(VkrCtx *ctx, LifeData *data) {
@@ -76,10 +76,15 @@ static void life_update(VkrCtx *ctx, LifeData *data, float32_t dt) {
 static void life_fixed_update(VkrCtx *ctx, LifeData *data) {
   data->fixed++;
   data->last_tick = vkr_ticks(ctx) + 1u;
-  /* Structural edits wait for update. */
-  s_life_refused_spawn =
-      !vkr_entity_valid(vkr_spawn(ctx, &(VkrSpawnDesc){0})) &&
-      strstr(vkr_last_error(ctx), "fixed updates") != NULL;
+  /* A spawn in a tick is pending: alive, with no transform until the tick
+     ends. */
+  if (data->fixed == 1u) {
+    Mat4 world;
+    const VkrEntity spawned = vkr_spawn(ctx, &(VkrSpawnDesc){0});
+    s_life_deferred_spawn = vkr_entity_valid(spawned) &&
+                            vkr_alive(ctx, spawned) &&
+                            !vkr_world_matrix(ctx, spawned, &world);
+  }
 }
 
 static void life_late_fixed_update(VkrCtx *ctx, LifeData *data) {
@@ -133,7 +138,7 @@ static void test_script_host_lifecycle(VkrScriptHost *host) {
   script_test_frame(host, &scene);
   assert(arena_pos(host->temp) == temp && s_life_temp_zeroed);
   assert(s_life->fixed == 2u && s_life->late_fixed == 2u);
-  assert(s_life->last_tick == 2u && s_life_refused_spawn);
+  assert(s_life->last_tick == 2u && s_life_deferred_spawn);
 
   // A hook failure faults the simulation with the module's name.
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
@@ -361,6 +366,98 @@ static void test_script_containers(VkrScriptHost *host) {
 }
 
 // =============================================================================
+// Deferred edits and lifetimes
+// =============================================================================
+
+typedef struct BurstData {
+  uint32_t ticks;
+} BurstData;
+
+static VkrEntity s_burst_shot;
+static VkrEntity s_burst_trail;
+static VkrEntity s_burst_victim;
+static bool8_t s_burst_pending_ok;
+static bool8_t s_burst_victim_alive_in_tick;
+
+static void burst_fixed_update(VkrCtx *ctx, BurstData *data) {
+  data->ticks++;
+  if (data->ticks == 1u) {
+    /* A shot that lives 0.1 simulated seconds, and a trail it owns. */
+    s_burst_shot =
+        vkr_spawn(ctx, &(VkrSpawnDesc){.name = "Shot", .lifetime = 0.1f});
+    s_burst_trail = vkr_spawn(
+        ctx, &(VkrSpawnDesc){.name = "ShotTrail", .owner = s_burst_shot});
+    BurstData *state =
+        vkr_state_add(ctx, s_burst_shot, VKR_STATE_TYPE(ctx, BurstData), NULL);
+    if (state) {
+      state->ticks = 42u;
+    }
+    Mat4 world;
+    s_burst_pending_ok =
+        state && vkr_alive(ctx, s_burst_shot) &&
+        !vkr_world_matrix(ctx, s_burst_shot, &world) &&
+        vkr_set_transform(ctx, s_burst_shot,
+                          &(VkrTRS){.position = vec3_new(1, 2, 3)});
+  } else if (data->ticks == 2u) {
+    vkr_destroy(ctx, s_burst_victim);
+    s_burst_victim_alive_in_tick = vkr_alive(ctx, s_burst_victim);
+  }
+}
+
+VKR_MODULE(burst, BurstData, , .fixed_update = burst_fixed_update)
+
+static void test_script_deferred(VkrScriptHost *host) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &s_allocator, 54, 16, NULL));
+  InputState input = {0};
+  const VkrEntityId victim = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, victim, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  s_burst_victim = (VkrEntity){.id = victim.u64};
+  const VkrScriptSessionDesc session = {.active = &scene, .input = &input};
+  const char *error = NULL;
+  s_life_mode = LIFE_IDLE;
+  assert(vkr_script_host_start(host, &session, &error));
+  vkr_scene_physics_set_paused(&scene, false_v);
+
+  // A spawn in a fixed update reads as alive at once; it and the calls on it
+  // apply right after the tick.
+  vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  assert(vkr_scene_simulation_completed_ticks(&scene) == 1u);
+  assert(s_burst_pending_ok && !scene.simulation.faulted);
+  const VkrEntityId shot = {.u64 = s_burst_shot.id};
+  const VkrEntityId trail = {.u64 = s_burst_trail.id};
+  assert(vkr_scene_entity_alive(&scene, shot));
+  assert(vkr_scene_entity_alive(&scene, trail));
+  assert(vkr_scene_entity_transient(&scene, shot));
+  const SceneTransform *transform = vkr_scene_get_transform(&scene, shot);
+  assert(transform && transform->position.y == 2.0f);
+  const VkrComponentTypeId burst_state =
+      vkr_entity_find_component(scene.world, "BurstData");
+  const BurstData *state =
+      vkr_entity_get_component(scene.world, shot, burst_state);
+  assert(state && state->ticks == 42u);
+
+  // A destroy in a fixed update applies after the tick.
+  vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  assert(s_burst_victim_alive_in_tick);
+  assert(!vkr_scene_entity_alive(&scene, victim));
+
+  // The shot expires on the simulated clock and takes the trail it owns.
+  for (uint32_t i = 0; i < 4u; ++i) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  }
+  assert(vkr_scene_entity_alive(&scene, shot));
+  for (uint32_t i = 0; i < 4u; ++i) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  }
+  assert(!vkr_scene_entity_alive(&scene, shot));
+  assert(!vkr_scene_entity_alive(&scene, trail));
+  vkr_script_host_stop(host);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
+// =============================================================================
 // Engine queries through a tool context
 // =============================================================================
 
@@ -535,6 +632,8 @@ bool32_t run_script_host_tests(void) {
   assert(vkr_script_host_add_module(&host, vkr_module_zone, &error));
   assert(vkr_script_host_add_module(&host, vkr_module_game, &error));
   test_script_containers(&host);
+  assert(vkr_script_host_add_module(&host, vkr_module_burst, &error));
+  test_script_deferred(&host);
   test_has_visual(&host);
   vkr_script_host_shutdown(&host);
   printf("Script host tests passed\n");

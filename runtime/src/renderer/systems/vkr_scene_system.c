@@ -1590,6 +1590,8 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   scene->comp_evaluated_transform = vkr_entity_register_component_once(
       scene->world, "SceneEvaluatedTransform", sizeof(SceneEvaluatedTransform),
       AlignOf(SceneEvaluatedTransform));
+  scene->comp_transient = vkr_entity_register_component_once(
+      scene->world, "SceneTransient", sizeof(uint8_t), 1u);
   scene->comp_mesh_renderer = vkr_entity_register_component_once(
       scene->world, "SceneMeshRenderer", sizeof(SceneMeshRenderer),
       AlignOf(SceneMeshRenderer));
@@ -1632,6 +1634,7 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       scene->comp_name == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_transform == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_evaluated_transform == VKR_COMPONENT_TYPE_INVALID ||
+      scene->comp_transient == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_mesh_renderer == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_visibility == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_render_id == VKR_COMPONENT_TYPE_INVALID ||
@@ -2357,6 +2360,42 @@ VkrEntityId vkr_scene_create_entity(VkrScene *scene, VkrSceneError *out_error) {
     *out_error = VKR_SCENE_ERROR_NONE;
   scene->structure_revision++;
   return entity;
+}
+
+VkrEntityId vkr_scene_reserve_entity(VkrScene *scene) {
+  return scene && scene->world ? vkr_entity_reserve_entity(scene->world)
+                               : VKR_ENTITY_ID_INVALID;
+}
+
+bool8_t vkr_scene_create_reserved_entity(VkrScene *scene, VkrEntityId entity) {
+  if (!scene || !scene->world || !vkr_scene_physics_mutations_allowed(scene) ||
+      !vkr_entity_create_reserved(scene->world, entity)) {
+    return false_v;
+  }
+  scene->structure_revision++;
+  return true_v;
+}
+
+void vkr_scene_cancel_reserved_entity(VkrScene *scene, VkrEntityId entity) {
+  if (scene && scene->world) {
+    vkr_entity_cancel_reserved(scene->world, entity);
+  }
+}
+
+bool8_t vkr_scene_set_transient(VkrScene *scene, VkrEntityId entity) {
+  if (!scene || !scene->world) {
+    return false_v;
+  }
+  const uint8_t tag = 1u;
+  return vkr_entity_has_component(scene->world, entity,
+                                  scene->comp_transient) ||
+         vkr_entity_add_component(scene->world, entity, scene->comp_transient,
+                                  &tag);
+}
+
+bool8_t vkr_scene_entity_transient(const VkrScene *scene, VkrEntityId entity) {
+  return scene && scene->world &&
+         vkr_entity_has_component(scene->world, entity, scene->comp_transient);
 }
 
 bool8_t vkr_scene_observe_destroy(VkrScene *scene,

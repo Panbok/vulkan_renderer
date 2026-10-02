@@ -1407,6 +1407,89 @@ bool8_t vkr_entity_destroy_entity(VkrWorld *world, VkrEntityId id) {
   return true_v;
 }
 
+/* The generation a reservation of `idx` takes: the next one, skipping zero. */
+vkr_internal INLINE uint16_t vkr_entity_next_generation(const VkrWorld *world,
+                                                        uint32_t idx) {
+  const uint16_t gen = (uint16_t)(world->dir.generations[idx] + 1u);
+  return gen ? gen : 1u;
+}
+
+VkrEntityId vkr_entity_reserve_entity(VkrWorld *world) {
+  assert_log(world, "World must not be NULL");
+  VkrEntityDir *dir = &world->dir;
+  uint32_t idx = VKR_INVALID_ID;
+  if (dir->free_count > 0) {
+    idx = dir->free_indices[--dir->free_count];
+  } else if (dir->living < dir->capacity) {
+    idx = dir->living++;
+  } else if (world->structural_read_depth == 0) {
+    idx = vkr_entity_dir_alloc_index(world);
+  }
+  if (idx == VKR_INVALID_ID) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  /* The directory keeps the old generation until creation, so the ID is not
+     alive and no lookup reaches its empty record. */
+  return vkr_entity_id_make(idx, vkr_entity_next_generation(world, idx),
+                            world->world_id);
+}
+
+/* A reservation: its index has no record and its generation is the next. */
+vkr_internal INLINE bool8_t vkr_entity_is_reserved(const VkrWorld *world,
+                                                   VkrEntityId id) {
+  return id.u64 && id.parts.world == world->world_id &&
+         id.parts.index < world->dir.capacity &&
+         !world->dir.records[id.parts.index].chunk &&
+         vkr_entity_next_generation(world, id.parts.index) ==
+             id.parts.generation;
+}
+
+bool8_t vkr_entity_create_reserved(VkrWorld *world, VkrEntityId id) {
+  assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0 || !vkr_entity_is_reserved(world, id)) {
+    return false_v;
+  }
+  VkrArchetype *empty = vkr_entity_archetype_get_or_create(world, NULL, 0);
+  VkrChunk *chunk =
+      empty ? vkr_entity_archetype_acquire_chunk(world, empty) : NULL;
+  if (!chunk) {
+    return false_v;
+  }
+  const uint32_t idx = id.parts.index;
+  world->dir.generations[idx] = id.parts.generation;
+  const uint32_t slot = chunk->count++;
+  chunk->ents[slot] = id;
+  world->dir.records[idx] = (VkrEntityRecord){.chunk = chunk, .slot = slot};
+  return true_v;
+}
+
+void vkr_entity_cancel_reserved(VkrWorld *world, VkrEntityId id) {
+  assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0 || !vkr_entity_is_reserved(world, id)) {
+    return;
+  }
+  /* Consume the reserved generation so a stale copy never matches the next
+     entity at this index. */
+  world->dir.generations[id.parts.index] = id.parts.generation;
+  vkr_entity_dir_free_index(world, id.parts.index);
+}
+
+bool8_t vkr_entity_reserve_capacity(VkrWorld *world, uint32_t count) {
+  assert_log(world, "World must not be NULL");
+  if (world->structural_read_depth > 0) {
+    return false_v;
+  }
+  VkrEntityDir *dir = &world->dir;
+  while (dir->free_count + (dir->capacity - dir->living) < count) {
+    const uint32_t capacity = dir->capacity;
+    vkr_entity_dir_grow(world);
+    if (dir->capacity == capacity) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 // Find column index of type in archetype, or -1
 vkr_internal INLINE int32_t vkr_entity_arch_find_col(
     const VkrArchetype *archetype, VkrComponentTypeId type) {

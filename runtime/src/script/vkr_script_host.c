@@ -17,6 +17,10 @@
 #define SCRIPT_TEMP_RESERVE MB(16)
 #define SCRIPT_TEMP_COMMIT KB(64)
 #define SCRIPT_LEDGER_MIN_CAPACITY 16u
+/* Entity IDs every attached world keeps free for spawns in one tick. */
+#define SCRIPT_TICK_SPAWN_RESERVE 256u
+#define SCRIPT_COMMAND_RESERVE MB(16)
+#define SCRIPT_COMMAND_COMMIT KB(64)
 
 // =============================================================================
 // Component type copies
@@ -208,10 +212,29 @@ static void script_ledger_free(VkrScriptHost *host, ScriptLedger *ledger) {
   *ledger = (ScriptLedger){0};
 }
 
+/* Drops records whose entity is already gone, as when spawns expired, so a
+ * long session's ledger holds what lives. */
+static void script_ledger_compact(VkrScriptHost *host, ScriptLedger *ledger) {
+  uint32_t kept = 0u;
+  for (uint32_t i = 0; i < ledger->count; ++i) {
+    const ScriptLedgerRecord record = ledger->records[i];
+    VkrScriptContainer *container = script_container_of(host, record.entity);
+    if (record.kind != SCRIPT_LEDGER_NONE && container &&
+        vkr_scene_entity_alive(container->scene,
+                               (VkrEntityId){.u64 = record.entity})) {
+      ledger->records[kept++] = record;
+    }
+  }
+  ledger->count = kept;
+}
+
 bool8_t script_ledger_record(ScriptCtx *ctx, ScriptLedgerKind kind,
                              uint64_t entity, uint32_t aux) {
   VkrScriptHost *host = ctx->host;
   ScriptLedger *ledger = ctx->ledger ? ctx->ledger : &ctx->instance->ledger;
+  if (ledger->count == ledger->capacity) {
+    script_ledger_compact(host, ledger);
+  }
   if (ledger->count == ledger->capacity) {
     const uint32_t capacity =
         Max(SCRIPT_LEDGER_MIN_CAPACITY, ledger->capacity * 2u);
@@ -596,6 +619,7 @@ void script_binding_end(VkrScriptHost *host, VkrScriptInstance *instance,
     (void)script_call_end(host, instance, &call);
   }
   binding->started = false_v;
+  binding->ledger.closed = true_v;
   script_ledger_release(host, &binding->ledger);
   script_update_transforms(host);
 }
@@ -604,6 +628,8 @@ void script_binding_end(VkrScriptHost *host, VkrScriptInstance *instance,
  * everything it acquired, newest first. */
 static void script_instance_end(VkrScriptHost *host,
                                 VkrScriptInstance *instance) {
+  /* Edits it queued in a tick never apply. */
+  script_commands_drop(host, instance);
   for (uint32_t i = instance->binding_count; i-- > 0u;) {
     script_binding_end(host, instance, &instance->bindings[i]);
   }
@@ -617,6 +643,7 @@ static void script_instance_end(VkrScriptHost *host,
     (void)script_call_end(host, instance, &call);
   }
   instance->started = false_v;
+  instance->ledger.closed = true_v;
   script_ledger_release(host, &instance->ledger);
   script_update_transforms(host);
 }
@@ -816,6 +843,9 @@ static ScriptBinding *script_binding_find(VkrScriptInstance *instance,
   return NULL;
 }
 
+static void script_lifetimes_owner_destroyed(VkrScriptHost *host,
+                                             uint64_t entity);
+
 /* An entity of an attached container is about to be destroyed: each
  * running behavior on it runs `destroy` and then `stop` while it still
  * exists, and its scope is released. */
@@ -863,6 +893,7 @@ static void script_host_entity_destroying(VkrScene *scene, VkrEntityId entity,
       vkr_scene_physics_set_paused(host->session.active, true_v);
     }
   }
+  script_lifetimes_owner_destroyed(host, entity.u64);
 }
 
 static bool8_t script_host_tick(VkrScriptHost *host, VkrScene *scene,
@@ -890,6 +921,141 @@ static bool8_t script_host_after_physics(VkrScene *scene, uint64_t tick,
                                          void *context) {
   (void)tick;
   return script_host_tick(context, scene, SCRIPT_HOOK_LATE_FIXED_UPDATE);
+}
+
+// =============================================================================
+// Lifetimes
+// =============================================================================
+
+/* The simulated seconds deadlines compare with. */
+static float64_t script_sim_time(const VkrScriptHost *host) {
+  return host->session.active ? vkr_scene_physics_time(host->session.active)
+                              : 0.0;
+}
+
+bool8_t script_lifetime_add(VkrScriptHost *host, uint64_t entity,
+                            uint64_t owner, float32_t seconds) {
+  if (seconds > 0.0f) {
+    if (host->timed_count == host->timed_capacity) {
+      const uint32_t capacity = Max(64u, host->timed_capacity * 2u);
+      ScriptTimed *timed = vkr_allocator_alloc(&host->instance_allocator,
+                                               sizeof(*timed) * capacity,
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      if (!timed) {
+        return false_v;
+      }
+      if (host->timed) {
+        MemCopy(timed, host->timed, sizeof(*timed) * host->timed_count);
+        vkr_allocator_free(&host->instance_allocator, host->timed,
+                           sizeof(*timed) * host->timed_capacity,
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      host->timed = timed;
+      host->timed_capacity = capacity;
+    }
+    host->timed[host->timed_count++] = (ScriptTimed){
+        .entity = entity, .deadline = script_sim_time(host) + seconds};
+  }
+  if (owner) {
+    if (host->owned_count == host->owned_capacity) {
+      const uint32_t capacity = Max(64u, host->owned_capacity * 2u);
+      ScriptOwned *owned = vkr_allocator_alloc(&host->instance_allocator,
+                                               sizeof(*owned) * capacity,
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      if (!owned) {
+        return false_v;
+      }
+      if (host->owned) {
+        MemCopy(owned, host->owned, sizeof(*owned) * host->owned_count);
+        vkr_allocator_free(&host->instance_allocator, host->owned,
+                           sizeof(*owned) * host->owned_capacity,
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      host->owned = owned;
+      host->owned_capacity = capacity;
+    }
+    host->owned[host->owned_count++] =
+        (ScriptOwned){.entity = entity, .owner = owner};
+  }
+  return true_v;
+}
+
+static bool8_t script_entity_alive(VkrScriptHost *host, uint64_t entity) {
+  VkrScriptContainer *container = script_container_of(host, entity);
+  return container &&
+         vkr_scene_entity_alive(container->scene, (VkrEntityId){.u64 = entity});
+}
+
+/* Destroys an entity of an attached container, running its destroy hooks. */
+static void script_entity_destroy(VkrScriptHost *host, uint64_t entity) {
+  VkrScriptContainer *container = script_container_of(host, entity);
+  if (container) {
+    script_destroy_tree(host, container->scene, (VkrEntityId){.u64 = entity});
+    host->transforms_dirty[container - host->containers] = true_v;
+  }
+}
+
+void script_lifetimes_update(VkrScriptHost *host) {
+  const float64_t now = script_sim_time(host);
+  /* Destroying can run destroy hooks that spawn timed entities, so the
+     array is read by index and its count again each step. */
+  for (uint32_t i = 0; i < host->timed_count;) {
+    const ScriptTimed timed = host->timed[i];
+    const bool8_t alive = script_entity_alive(host, timed.entity);
+    if (alive && now < timed.deadline) {
+      ++i;
+      continue;
+    }
+    host->timed[i] = host->timed[--host->timed_count];
+    if (alive) {
+      script_entity_destroy(host, timed.entity);
+    }
+  }
+  uint32_t kept = 0u;
+  for (uint32_t i = 0; i < host->owned_count; ++i) {
+    const ScriptOwned owned = host->owned[i];
+    if (owned.owner && script_entity_alive(host, owned.entity)) {
+      host->owned[kept++] = owned;
+    }
+  }
+  host->owned_count = kept;
+}
+
+/* Spawns owned by a destroyed entity go with it; entries of either end. */
+static void script_lifetimes_owner_destroyed(VkrScriptHost *host,
+                                             uint64_t entity) {
+  for (uint32_t i = 0; i < host->owned_count; ++i) {
+    if (host->owned[i].entity == entity) {
+      host->owned[i].owner = 0u;
+    }
+    if (host->owned[i].owner != entity) {
+      continue;
+    }
+    const uint64_t owned = host->owned[i].entity;
+    host->owned[i].owner = 0u;
+    if (script_entity_alive(host, owned)) {
+      script_entity_destroy(host, owned);
+    }
+  }
+}
+
+/* After each completed tick, outside its read scope: queued edits apply in
+ * order, then expired spawns go. */
+static void script_host_after_tick(VkrScene *scene, uint64_t tick,
+                                   void *context) {
+  (void)scene;
+  (void)tick;
+  VkrScriptHost *host = context;
+  script_commands_flush(host);
+  script_lifetimes_update(host);
+}
+
+/* Keeps entity IDs free so spawns in a tick never grow a directory. */
+static void script_reserve_spawns(VkrScriptHost *host) {
+  for (uint32_t c = 0; c < host->container_count; ++c) {
+    (void)vkr_entity_reserve_capacity(host->containers[c].scene->world,
+                                      SCRIPT_TICK_SPAWN_RESERVE);
+  }
 }
 
 /* A native reset restores bodies; the instances restart at the next frame
@@ -1105,7 +1271,15 @@ bool8_t vkr_script_host_init(VkrScriptHost *host, VkrAllocator *allocator) {
   host->instance_allocator = (VkrAllocator){.ctx = &host->memory};
   vkr_dmemory_allocator_create(&host->instance_allocator);
   host->temp = arena_create(SCRIPT_TEMP_RESERVE, SCRIPT_TEMP_COMMIT);
-  if (!host->temp) {
+  host->command_arena =
+      arena_create(SCRIPT_COMMAND_RESERVE, SCRIPT_COMMAND_COMMIT);
+  if (!host->temp || !host->command_arena) {
+    if (host->temp) {
+      arena_destroy(host->temp);
+    }
+    if (host->command_arena) {
+      arena_destroy(host->command_arena);
+    }
     vkr_dmemory_allocator_destroy(&host->instance_allocator);
     return false_v;
   }
@@ -1319,6 +1493,8 @@ void vkr_script_host_shutdown(VkrScriptHost *host) {
   vkr_script_host_retire_libraries(host);
   arena_destroy(host->temp);
   host->temp = NULL;
+  arena_destroy(host->command_arena);
+  host->command_arena = NULL;
   vkr_dmemory_allocator_destroy(&host->instance_allocator);
 }
 
@@ -1375,6 +1551,7 @@ static bool8_t script_instance_needs_ticks(const VkrScriptHost *host,
 /* Starts module hooks, then behaviors, then installs the callbacks the
  * enabled instances need. */
 static const char *script_session_begin(VkrScriptHost *host) {
+  script_reserve_spawns(host);
   for (uint32_t m = 0; m < host->module_count; ++m) {
     const VkrScriptModule *module = &host->modules[m];
     if (!module->desc || module->retired) {
@@ -1440,6 +1617,7 @@ static const char *script_session_begin(VkrScriptHost *host) {
     const VkrSceneSimulationCallbacks callbacks = {
         .before_physics = script_host_before_physics,
         .after_physics = script_host_after_physics,
+        .after_tick = script_host_after_tick,
         .reset = script_host_reset,
         .context = host};
     const char *failure = NULL;
@@ -1455,6 +1633,9 @@ static const char *script_session_begin(VkrScriptHost *host) {
 static void script_session_teardown(VkrScriptHost *host) {
   VkrScene *active = host->session.active;
   vkr_scene_physics_set_paused(active, true_v);
+  script_commands_drop(host, NULL);
+  host->timed_count = 0u;
+  host->owned_count = 0u;
   /* Instances end by stopping, not destroying: what their ledgers release
      runs no destroy hook. */
   for (uint32_t c = 0; c < host->container_count; ++c) {
@@ -1617,6 +1798,9 @@ void vkr_script_host_frame(VkrScriptHost *host, VkrScriptFrame *frame) {
     return;
   }
   host->frame_serial++;
+  script_commands_flush(host);
+  script_lifetimes_update(host);
+  script_reserve_spawns(host);
   host->frame_time_valid = true_v;
   for (uint32_t i = 0; i < host->instance_count; ++i) {
     VkrScriptInstance *instance = host->instances[i];

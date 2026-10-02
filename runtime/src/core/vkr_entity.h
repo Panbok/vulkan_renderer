@@ -336,6 +336,29 @@ VkrEntityId vkr_entity_create_entity_with_components(
 bool8_t vkr_entity_destroy_entity(VkrWorld *world, VkrEntityId id);
 
 /**
+ * @brief Reserve an entity ID without creating the entity.
+ *
+ * Allowed inside a structural read scope, where it takes a free directory
+ * index and never grows the directory: reserve capacity first with
+ * vkr_entity_reserve_capacity. The ID is not alive until
+ * vkr_entity_create_reserved; vkr_entity_cancel_reserved returns it.
+ * @return The reserved ID, or VKR_ENTITY_ID_INVALID when no index is free.
+ */
+VkrEntityId vkr_entity_reserve_entity(VkrWorld *world);
+
+/** Creates the entity a reservation names, with no components. Refused in a
+ * structural read scope and for an ID that is not reserved. */
+bool8_t vkr_entity_create_reserved(VkrWorld *world, VkrEntityId id);
+
+/** Returns a reservation's index; the ID never becomes alive. Refused in a
+ * structural read scope. */
+void vkr_entity_cancel_reserved(VkrWorld *world, VkrEntityId id);
+
+/** Grows the directory, outside a structural read scope, until `count`
+ * reservations can be made without growing it. */
+bool8_t vkr_entity_reserve_capacity(VkrWorld *world, uint32_t count);
+
+/**
  * @brief Check if an entity is alive (inline for hot paths).
  * @param world World to check the entity in (must not be NULL)
  * @param id Entity ID

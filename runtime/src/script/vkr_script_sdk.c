@@ -1,7 +1,7 @@
 /* The SDK table behind sdk.h (ADR-079): each entry adapts one engine call
- * to SDK value types, routes entities to their container, refuses
- * structural edits in ticks and records acquisitions in the calling scope's
- * ledger. */
+ * to SDK value types, routes entities to their container, queues structural
+ * edits made in fixed updates for right after the tick, and records
+ * acquisitions in the calling scope's ledger. */
 #include "script/vkr_script_internal.h"
 
 #include "animation/vkr_animation_player.h"
@@ -70,16 +70,103 @@ static void sdk_refresh(ScriptCtx *ctx, VkrScene *scene) {
   script_refresh_scene(ctx->host, scene);
 }
 
-static bool8_t sdk_structural(ScriptCtx *ctx) {
-  if (ctx->host->phase == VKR_SCRIPT_PHASE_TICK) {
-    return script_ctx_error(ctx, "Structural edits are refused in fixed "
-                                 "updates; spawn and destroy from update");
+static VkrScene *sdk_active(ScriptCtx *ctx) {
+  return ctx->host->session.active;
+}
+
+// =============================================================================
+// Deferred structural edits
+// =============================================================================
+
+/* Capacity of queued edits added at a time. */
+#define SDK_COMMAND_GROWTH 64u
+
+bool8_t script_pending(const VkrScriptHost *host, uint64_t entity) {
+  for (uint32_t i = 0; entity && i < host->pending_count; ++i) {
+    if (host->pending[i] == entity) {
+      return true_v;
+    }
   }
+  return false_v;
+}
+
+static void sdk_pending_remove(VkrScriptHost *host, uint64_t entity) {
+  for (uint32_t i = 0; i < host->pending_count; ++i) {
+    if (host->pending[i] == entity) {
+      host->pending[i] = host->pending[--host->pending_count];
+      return;
+    }
+  }
+}
+
+/* Grows a host-owned array of `size`-byte items to hold one more. */
+static bool8_t sdk_grow(VkrScriptHost *host, void **items, uint32_t count,
+                        uint32_t *capacity, uint64_t size) {
+  if (count < *capacity) {
+    return true_v;
+  }
+  const uint32_t grown = *capacity + SDK_COMMAND_GROWTH;
+  void *next = vkr_allocator_alloc(&host->instance_allocator, size * grown,
+                                   VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!next) {
+    return false_v;
+  }
+  if (*items) {
+    MemCopy(next, *items, size * count);
+    vkr_allocator_free(&host->instance_allocator, *items, size * *capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  *items = next;
+  *capacity = grown;
   return true_v;
 }
 
-static VkrScene *sdk_active(ScriptCtx *ctx) {
-  return ctx->host->session.active;
+/* In a fixed update, a structural call, or any call on a spawn still
+ * pending, queues itself for right after the tick. */
+static bool8_t sdk_deferred(ScriptCtx *ctx, VkrEntity entity,
+                            bool8_t structural) {
+  return ctx->host->phase == VKR_SCRIPT_PHASE_TICK &&
+         (structural || script_pending(ctx->host, entity.id));
+}
+
+/* Copies call data into the queue's arena, which empties after replay. */
+static void *sdk_command_copy(ScriptCtx *ctx, const void *data, uint64_t size,
+                              uint64_t align) {
+  void *copy =
+      size ? arena_alloc_aligned(ctx->host->command_arena, size,
+                                 align ? align : 1u, ARENA_MEMORY_TAG_UNKNOWN)
+           : NULL;
+  if (copy) {
+    if (data) {
+      MemCopy(copy, data, size);
+    } else {
+      MemZero(copy, size);
+    }
+  }
+  return copy;
+}
+
+static const char *sdk_command_text(ScriptCtx *ctx, const char *text) {
+  return text ? sdk_command_copy(ctx, text, strlen(text) + 1u, 1u) : NULL;
+}
+
+/* Appends a call of the running scope to the queue; NULL with the context
+ * error set when memory runs out. */
+static ScriptCommand *sdk_queue(ScriptCtx *ctx, ScriptCommandKind kind,
+                                VkrEntity entity) {
+  VkrScriptHost *host = ctx->host;
+  if (!sdk_grow(host, (void **)&host->commands, host->command_count,
+                &host->command_capacity, sizeof(*host->commands))) {
+    (void)script_ctx_error(ctx, "Queued edit allocation failed");
+    return NULL;
+  }
+  ScriptCommand *command = &host->commands[host->command_count++];
+  *command = (ScriptCommand){.kind = kind,
+                             .instance = ctx->instance,
+                             .ledger = ctx->ledger ? ctx->ledger
+                                                   : &ctx->instance->ledger,
+                             .entity = entity.id};
+  return command;
 }
 
 // =============================================================================
@@ -151,19 +238,53 @@ static VkrContainer sdk_container_of(VkrCtx *ctx, VkrEntity entity) {
 // Entities
 // =============================================================================
 
-static VkrEntity sdk_spawn(VkrCtx *ctx, const VkrSpawnDesc *desc) {
-  ScriptCtx *script = sdk_ctx(ctx);
-  const VkrSpawnDesc spawn = desc ? *desc : (VkrSpawnDesc){0};
-  const uint32_t slot = script_container_slot(script, spawn.container);
-  if (!sdk_structural(script)) {
+/* A spawn in a fixed update: a reserved ID now, the entity after the
+ * tick. */
+static VkrEntity sdk_spawn_deferred(ScriptCtx *ctx, VkrScene *scene,
+                                    uint32_t slot, const VkrSpawnDesc *spawn) {
+  VkrScriptHost *host = ctx->host;
+  const VkrEntityId reserved = vkr_scene_reserve_entity(scene);
+  if (!reserved.u64) {
+    (void)script_ctx_error(ctx, "No entity IDs are free in this tick");
     return VKR_ENTITY_NONE;
   }
+  const VkrEntity entity = {.id = reserved.u64};
+  ScriptCommand *command =
+      sdk_grow(host, (void **)&host->pending, host->pending_count,
+               &host->pending_capacity, sizeof(*host->pending))
+          ? sdk_queue(ctx, SCRIPT_COMMAND_SPAWN, entity)
+          : NULL;
+  if (!command) {
+    vkr_scene_cancel_reserved_entity(scene, reserved);
+    return VKR_ENTITY_NONE;
+  }
+  host->pending[host->pending_count++] = reserved.u64;
+  command->as.spawn = *spawn;
+  command->as.spawn.name = sdk_command_text(ctx, spawn->name);
+  command->as.spawn.container = (VkrContainer){.id = slot + 1u};
+  return entity;
+}
+
+static VkrEntity sdk_spawn(VkrCtx *ctx, const VkrSpawnDesc *desc) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  const VkrSpawnDesc spawn = desc ? *desc : (VkrSpawnDesc){0};
+  const uint32_t slot = script_container_slot(script, spawn.container);
   if (slot == UINT32_MAX) {
     (void)script_ctx_error(script, "Unknown container");
     return VKR_ENTITY_NONE;
   }
-  VkrScene *scene = script->host->containers[slot].scene;
-  const VkrEntityId entity = vkr_scene_create_entity(scene, NULL);
+  VkrScene *scene = host->containers[slot].scene;
+  if (host->phase == VKR_SCRIPT_PHASE_TICK) {
+    return sdk_spawn_deferred(script, scene, slot, &spawn);
+  }
+  /* A replayed spawn creates the entity its reservation named. */
+  const VkrEntityId reserved = {.u64 = host->replay_reserved};
+  const VkrEntityId entity =
+      reserved.u64 ? (vkr_scene_create_reserved_entity(scene, reserved)
+                          ? reserved
+                          : VKR_ENTITY_ID_INVALID)
+                   : vkr_scene_create_entity(scene, NULL);
   if (!entity.u64) {
     (void)script_ctx_error(script, "Entity creation failed");
     return VKR_ENTITY_NONE;
@@ -197,6 +318,10 @@ static VkrEntity sdk_spawn(VkrCtx *ctx, const VkrSpawnDesc *desc) {
       vkr_scene_set_parent(scene, entity, sdk_id(spawn.parent));
     }
   }
+  /* Saving never writes what scripts spawn. */
+  ok = ok && vkr_scene_set_transient(scene, entity);
+  ok = ok &&
+       script_lifetime_add(host, entity.u64, spawn.owner.id, spawn.lifetime);
   sdk_mark_dirty(script, scene);
   if (!ok) {
     script_ledger_forget(script, SCRIPT_LEDGER_ENTITY, entity.u64, 0u);
@@ -209,8 +334,12 @@ static VkrEntity sdk_spawn(VkrCtx *ctx, const VkrSpawnDesc *desc) {
 
 static void sdk_destroy(VkrCtx *ctx, VkrEntity entity) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    (void)sdk_queue(script, SCRIPT_COMMAND_DESTROY, entity);
+    return;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
-  if (!scene || !sdk_structural(script)) {
+  if (!scene) {
     return;
   }
   script_ledger_forget(script, SCRIPT_LEDGER_ENTITY, entity.id, 0u);
@@ -219,13 +348,24 @@ static void sdk_destroy(VkrCtx *ctx, VkrEntity entity) {
 }
 
 static bool8_t sdk_alive(VkrCtx *ctx, VkrEntity entity) {
-  VkrScriptContainer *container =
-      script_container_of(sdk_ctx(ctx)->host, entity.id);
+  VkrScriptHost *host = sdk_ctx(ctx)->host;
+  if (script_pending(host, entity.id)) {
+    return true_v;
+  }
+  VkrScriptContainer *container = script_container_of(host, entity.id);
   return container && vkr_scene_entity_alive(container->scene, sdk_id(entity));
 }
 
 static bool8_t sdk_set_name(VkrCtx *ctx, VkrEntity entity, const char *name) {
-  VkrScene *scene = sdk_scene_of(sdk_ctx(ctx), entity);
+  ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command = sdk_queue(script, SCRIPT_COMMAND_SET_NAME, entity);
+    if (command) {
+      command->as.name = sdk_command_text(script, name);
+    }
+    return command && command->as.name;
+  }
+  VkrScene *scene = sdk_scene_of(script, entity);
   return scene && name &&
          vkr_scene_set_name(
              scene, sdk_id(entity),
@@ -234,6 +374,14 @@ static bool8_t sdk_set_name(VkrCtx *ctx, VkrEntity entity, const char *name) {
 
 static bool8_t sdk_set_parent(VkrCtx *ctx, VkrEntity entity, VkrEntity parent) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_SET_PARENT, entity);
+    if (command) {
+      command->as.parent = parent.id;
+    }
+    return command != NULL;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
   if (!scene) {
     return false_v;
@@ -249,7 +397,16 @@ static bool8_t sdk_set_parent(VkrCtx *ctx, VkrEntity entity, VkrEntity parent) {
 }
 
 static bool8_t sdk_set_visible(VkrCtx *ctx, VkrEntity entity, bool8_t visible) {
-  VkrScene *scene = sdk_scene_of(sdk_ctx(ctx), entity);
+  ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_SET_VISIBLE, entity);
+    if (command) {
+      command->as.visible = visible;
+    }
+    return command != NULL;
+  }
+  VkrScene *scene = sdk_scene_of(script, entity);
   if (!scene) {
     return false_v;
   }
@@ -265,6 +422,14 @@ static bool8_t sdk_visible(VkrCtx *ctx, VkrEntity entity) {
 static bool8_t sdk_set_transform(VkrCtx *ctx, VkrEntity entity,
                                  const VkrTRS *transform) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (transform && sdk_deferred(script, entity, false_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_SET_TRANSFORM, entity);
+    if (command) {
+      command->as.transform = *transform;
+    }
+    return command != NULL;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
   if (!scene || !transform) {
     return false_v;
@@ -301,6 +466,15 @@ static bool8_t sdk_world_matrix(VkrCtx *ctx, VkrEntity entity, Mat4 *out) {
 static bool8_t sdk_set_render_pose(VkrCtx *ctx, VkrEntity entity,
                                    const Mat4 *world) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_SET_RENDER_POSE, entity);
+    if (command) {
+      command->as.pose.clear = !world;
+      command->as.pose.world = world ? *world : mat4_identity();
+    }
+    return command != NULL;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
   if (!scene) {
     return false_v;
@@ -359,6 +533,14 @@ static bool8_t sdk_has_visual(VkrCtx *ctx, VkrEntity entity) {
 static bool8_t sdk_set_shape(VkrCtx *ctx, VkrEntity entity,
                              const VkrShapeDesc *shape) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (shape && sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_SET_SHAPE, entity);
+    if (command) {
+      command->as.shape = *shape;
+    }
+    return command != NULL;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
   if (!scene || !shape) {
     return false_v;
@@ -374,8 +556,17 @@ static bool8_t sdk_set_shape(VkrCtx *ctx, VkrEntity entity,
 static bool8_t sdk_spawn_model(VkrCtx *ctx, VkrEntity entity, const char *mesh,
                                const char *animation) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_SPAWN_MODEL, entity);
+    if (command) {
+      command->as.model.mesh = sdk_command_text(script, mesh);
+      command->as.model.animation = sdk_command_text(script, animation);
+    }
+    return command != NULL;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
-  if (!scene || !sdk_structural(script)) {
+  if (!scene) {
     return false_v;
   }
   VkrSceneModelDesc desc = {.animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
@@ -402,8 +593,12 @@ static bool8_t sdk_spawn_model(VkrCtx *ctx, VkrEntity entity, const char *mesh,
 
 static void sdk_despawn_model(VkrCtx *ctx, VkrEntity entity) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    (void)sdk_queue(script, SCRIPT_COMMAND_DESPAWN_MODEL, entity);
+    return;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
-  if (!scene || !sdk_structural(script)) {
+  if (!scene) {
     return;
   }
   script_ledger_forget(script, SCRIPT_LEDGER_MODEL, entity.id, 0u);
@@ -469,13 +664,24 @@ static bool8_t sdk_component_set(VkrCtx *ctx, VkrEntity entity,
                                  const VkrComponentDesc *type,
                                  const void *value) {
   ScriptCtx *script = sdk_ctx(ctx);
-  VkrScene *scene = sdk_scene_of(script, entity);
   const VkrTypeDesc *resolved = script_resolve_type(script->host, type);
-  if (!scene || !resolved) {
+  if (!resolved) {
     return script_ctx_error(script, "Unknown component type");
   }
-  if (!vkr_scene_get_typed(scene, sdk_id(entity), resolved) &&
-      !sdk_structural(script)) {
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_COMPONENT_SET, entity);
+    if (command) {
+      command->as.component.type = type;
+      command->as.component.value =
+          value
+              ? sdk_command_copy(script, value, resolved->size, resolved->align)
+              : NULL;
+    }
+    return command && (!value || command->as.component.value);
+  }
+  VkrScene *scene = sdk_scene_of(script, entity);
+  if (!scene) {
     return false_v;
   }
   void *defaults = NULL;
@@ -560,9 +766,26 @@ static VkrComponentTypeId sdk_state_id(ScriptCtx *ctx, VkrEntity entity,
 static void *sdk_state_add(VkrCtx *ctx, VkrEntity entity, VkrStateType type,
                            const void *value) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    /* The caller fills the queued value until the tick ends. */
+    if (!type.id || type.id > script->host->state_type_count) {
+      (void)script_ctx_error(script, "Unknown state type");
+      return NULL;
+    }
+    const VkrScriptStateType *state = &script->host->state_types[type.id - 1u];
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_STATE_ADD, entity);
+    if (!command) {
+      return NULL;
+    }
+    command->as.state.type = type;
+    command->as.state.value =
+        sdk_command_copy(script, value, state->size, state->align);
+    return command->as.state.value;
+  }
   VkrScene *scene = NULL;
   const VkrComponentTypeId id = sdk_state_id(script, entity, type, &scene);
-  if (id == VKR_COMPONENT_TYPE_INVALID || !sdk_structural(script)) {
+  if (id == VKR_COMPONENT_TYPE_INVALID) {
     return NULL;
   }
   if (vkr_entity_has_component(scene->world, sdk_id(entity), id)) {
@@ -597,9 +820,17 @@ static void *sdk_state_get(VkrCtx *ctx, VkrEntity entity, VkrStateType type) {
 
 static void sdk_state_remove(VkrCtx *ctx, VkrEntity entity, VkrStateType type) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_STATE_REMOVE, entity);
+    if (command) {
+      command->as.state.type = type;
+    }
+    return;
+  }
   VkrScene *scene = NULL;
   const VkrComponentTypeId id = sdk_state_id(script, entity, type, &scene);
-  if (id == VKR_COMPONENT_TYPE_INVALID || !sdk_structural(script)) {
+  if (id == VKR_COMPONENT_TYPE_INVALID) {
     return;
   }
   script_ledger_forget(script, SCRIPT_LEDGER_STATE, entity.id, type.id - 1u);
@@ -728,8 +959,15 @@ static VkrBodyDesc sdk_body_default(VkrCtx *ctx) {
 static bool8_t sdk_set_body(VkrCtx *ctx, VkrEntity entity,
                             const VkrBodyDesc *body) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (body && sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command = sdk_queue(script, SCRIPT_COMMAND_SET_BODY, entity);
+    if (command) {
+      command->as.body = *body;
+    }
+    return command != NULL;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
-  if (!scene || !body || !sdk_structural(script)) {
+  if (!scene || !body) {
     return false_v;
   }
   VkrScenePhysicsSnapshot snapshot = vkr_scene_physics_default();
@@ -851,8 +1089,18 @@ static bool8_t sdk_character_create(VkrCtx *ctx, VkrEntity entity,
                                     const VkrCharacterDesc *desc,
                                     const Vec3 *spawn_foot) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    ScriptCommand *command =
+        sdk_queue(script, SCRIPT_COMMAND_CHARACTER_CREATE, entity);
+    if (command) {
+      command->as.character.desc = desc ? *desc : sdk_character_default(ctx);
+      command->as.character.has_foot = spawn_foot != NULL;
+      command->as.character.foot = spawn_foot ? *spawn_foot : vec3_zero();
+    }
+    return command != NULL;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
-  if (!scene || !sdk_structural(script)) {
+  if (!scene) {
     return false_v;
   }
   VkrPhysicsCharacterDesc settings = vkr_physics_character_default();
@@ -881,8 +1129,12 @@ static bool8_t sdk_character_create(VkrCtx *ctx, VkrEntity entity,
 
 static void sdk_character_destroy(VkrCtx *ctx, VkrEntity entity) {
   ScriptCtx *script = sdk_ctx(ctx);
+  if (sdk_deferred(script, entity, true_v)) {
+    (void)sdk_queue(script, SCRIPT_COMMAND_CHARACTER_DESTROY, entity);
+    return;
+  }
   VkrScene *scene = sdk_scene_of(script, entity);
-  if (!scene || !sdk_structural(script)) {
+  if (!scene) {
     return;
   }
   script_ledger_forget(script, SCRIPT_LEDGER_CHARACTER, entity.id, 0u);
@@ -1070,6 +1322,127 @@ static bool8_t sdk_anim_blend(VkrCtx *ctx, VkrEntity entity,
   return player &&
          vkr_animation_player_sample_blend(
              player, (const VkrAnimationSample *)samples, count, discontinuity);
+}
+
+// =============================================================================
+// Replaying queued edits
+// =============================================================================
+
+/* Replays one queued call through its SDK entry, now outside the tick. */
+static bool8_t sdk_replay(VkrScriptHost *host, const ScriptCommand *command) {
+  VkrCtx *ctx = &command->instance->ctx.base;
+  const VkrEntity entity = {.id = command->entity};
+  switch ((ScriptCommandKind)command->kind) {
+  case SCRIPT_COMMAND_SPAWN: {
+    host->replay_reserved = command->entity;
+    const VkrEntity spawned = sdk_spawn(ctx, &command->as.spawn);
+    host->replay_reserved = 0u;
+    return vkr_entity_valid(spawned);
+  }
+  case SCRIPT_COMMAND_DESTROY:
+    sdk_destroy(ctx, entity);
+    return true_v;
+  case SCRIPT_COMMAND_SET_NAME:
+    return sdk_set_name(ctx, entity, command->as.name);
+  case SCRIPT_COMMAND_SET_PARENT:
+    return sdk_set_parent(ctx, entity, (VkrEntity){.id = command->as.parent});
+  case SCRIPT_COMMAND_SET_VISIBLE:
+    return sdk_set_visible(ctx, entity, command->as.visible);
+  case SCRIPT_COMMAND_SET_TRANSFORM:
+    return sdk_set_transform(ctx, entity, &command->as.transform);
+  case SCRIPT_COMMAND_SET_RENDER_POSE:
+    return sdk_set_render_pose(
+        ctx, entity, command->as.pose.clear ? NULL : &command->as.pose.world);
+  case SCRIPT_COMMAND_SET_SHAPE:
+    return sdk_set_shape(ctx, entity, &command->as.shape);
+  case SCRIPT_COMMAND_SPAWN_MODEL:
+    return sdk_spawn_model(ctx, entity, command->as.model.mesh,
+                           command->as.model.animation);
+  case SCRIPT_COMMAND_DESPAWN_MODEL:
+    sdk_despawn_model(ctx, entity);
+    return true_v;
+  case SCRIPT_COMMAND_COMPONENT_SET:
+    return sdk_component_set(ctx, entity, command->as.component.type,
+                             command->as.component.value);
+  case SCRIPT_COMMAND_STATE_ADD:
+    return sdk_state_add(ctx, entity, command->as.state.type,
+                         command->as.state.value) != NULL;
+  case SCRIPT_COMMAND_STATE_REMOVE:
+    sdk_state_remove(ctx, entity, command->as.state.type);
+    return true_v;
+  case SCRIPT_COMMAND_SET_BODY:
+    return sdk_set_body(ctx, entity, &command->as.body);
+  case SCRIPT_COMMAND_CHARACTER_CREATE:
+    return sdk_character_create(
+        ctx, entity, &command->as.character.desc,
+        command->as.character.has_foot ? &command->as.character.foot : NULL);
+  case SCRIPT_COMMAND_CHARACTER_DESTROY:
+    sdk_character_destroy(ctx, entity);
+    return true_v;
+  }
+  return false_v;
+}
+
+static void sdk_cancel_spawn(VkrScriptHost *host,
+                             const ScriptCommand *command) {
+  VkrScriptContainer *container = script_container_of(host, command->entity);
+  if (container) {
+    vkr_scene_cancel_reserved_entity(container->scene,
+                                     (VkrEntityId){.u64 = command->entity});
+  }
+  sdk_pending_remove(host, command->entity);
+}
+
+void script_commands_flush(VkrScriptHost *host) {
+  if (!host->command_count) {
+    return;
+  }
+  const VkrScriptPhase phase = host->phase;
+  host->phase = VKR_SCRIPT_PHASE_FRAME;
+  /* Replay queues nothing, so the array stays put. */
+  for (uint32_t i = 0; i < host->command_count; ++i) {
+    const ScriptCommand *command = &host->commands[i];
+    ScriptCtx *ctx = &command->instance->ctx;
+    /* An ended scope keeps only destroys; its spawns never appear. */
+    if (command->ledger->closed && command->kind != SCRIPT_COMMAND_DESTROY) {
+      if (command->kind == SCRIPT_COMMAND_SPAWN) {
+        sdk_cancel_spawn(host, command);
+      }
+      continue;
+    }
+    if (command->kind == SCRIPT_COMMAND_SPAWN) {
+      sdk_pending_remove(host, command->entity);
+    }
+    ScriptLedger *saved = ctx->ledger;
+    ctx->ledger = command->ledger;
+    if (!sdk_replay(host, command)) {
+      log_warn("%s: a call queued in a fixed update failed: %s",
+               sdk_module_name(ctx), ctx->last_error);
+    }
+    ctx->ledger = saved;
+  }
+  host->command_count = 0u;
+  arena_clear(host->command_arena, ARENA_MEMORY_TAG_UNKNOWN);
+  host->phase = phase;
+}
+
+void script_commands_drop(VkrScriptHost *host,
+                          const VkrScriptInstance *instance) {
+  uint32_t kept = 0u;
+  for (uint32_t i = 0; i < host->command_count; ++i) {
+    const ScriptCommand command = host->commands[i];
+    if (instance && command.instance != instance) {
+      host->commands[kept++] = command;
+      continue;
+    }
+    if (command.kind == SCRIPT_COMMAND_SPAWN) {
+      sdk_cancel_spawn(host, &command);
+    }
+  }
+  host->command_count = kept;
+  if (!kept) {
+    arena_clear(host->command_arena, ARENA_MEMORY_TAG_UNKNOWN);
+  }
 }
 
 // =============================================================================

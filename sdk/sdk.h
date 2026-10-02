@@ -46,9 +46,16 @@
  * fails part way leaves nothing behind. Handles are generational: a call
  * with a released entity fails instead of touching another one.
  *
- * Hooks run on the thread that owns the scene. Structural edits (spawning or
- * destroying entities, characters and models) are refused inside
- * fixed_update and late_fixed_update.
+ * A spawn ends at the latest with its scope, earlier with its owner entity or
+ * after its lifetime (VkrSpawnDesc), or by vkr_destroy(). Saving never writes
+ * what scripts spawn.
+ *
+ * Hooks run on the thread that owns the scene. In fixed_update and
+ * late_fixed_update, structural calls (spawning, destroying, models,
+ * characters, bodies, shapes, names, parents, visibility, render poses,
+ * components and runtime state) are queued and apply in order right after
+ * the tick. A spawn's handle is valid at once: it reads as alive, calls on it
+ * are queued too, and its transform and components appear after the tick.
  */
 #pragma once
 
@@ -129,6 +136,11 @@ typedef struct VkrSpawnDesc {
   VkrTRS transform;
   /** Target container; VKR_CONTAINER_SELF for the instance's own. */
   VkrContainer container;
+  /** Optional owner in any container: the spawn is destroyed with it. */
+  VkrEntity owner;
+  /** Simulated seconds after which the spawn is destroyed; zero for none.
+   * The clock stops while the simulation pauses. */
+  float32_t lifetime;
 } VkrSpawnDesc;
 
 /** A coloured box primitive with the given size in metres. */
@@ -691,14 +703,14 @@ static inline VkrContainer vkr_container_of(VkrCtx *ctx, VkrEntity entity) {
 // Entities
 // =============================================================================
 
-/** Creates an entity owned by the calling scope; see the file comment.
- * Refused in fixed updates. NONE on failure. */
+/** Creates an entity owned by the calling scope; see the file comment. In a
+ * fixed update the entity appears right after the tick. NONE on failure. */
 static inline VkrEntity vkr_spawn(VkrCtx *ctx, const VkrSpawnDesc *desc) {
   return ctx->sdk->spawn(ctx, desc);
 }
 
-/** Destroys an entity and its children. Releasing one this script spawned
- * ends its scope early. Refused in fixed updates. */
+/** Destroys an entity and its children, running their destroy hooks; in a
+ * fixed update, right after the tick. */
 static inline void vkr_destroy(VkrCtx *ctx, VkrEntity entity) {
   ctx->sdk->destroy(ctx, entity);
 }
@@ -766,7 +778,7 @@ static inline bool8_t vkr_set_shape(VkrCtx *ctx, VkrEntity entity,
 
 /** Instantiates a cooked model (a .vkb, and an optional .vka of the same
  * source) under `entity`, which must carry no mesh. Owned by the calling
- * scope. Refused in fixed updates. */
+ * scope. */
 static inline bool8_t vkr_spawn_model(VkrCtx *ctx, VkrEntity entity,
                                       const char *mesh, const char *animation) {
   return ctx->sdk->spawn_model(ctx, entity, mesh, animation);
@@ -833,7 +845,8 @@ static inline VkrStateType vkr_state_type(VkrCtx *ctx, const char *name,
   vkr_state_type((ctx), #Type, (uint32_t)sizeof(Type), (uint32_t)AlignOf(Type))
 
 /** Adds the entity's state, owned by the calling scope; NULL `value` zeroes
- * it. Returns the stored state, valid until the hook returns, or NULL. */
+ * it. Returns the stored state, valid until the hook returns, or NULL. In a
+ * fixed update it returns the queued value, which the tick's end stores. */
 static inline void *vkr_state_add(VkrCtx *ctx, VkrEntity entity,
                                   VkrStateType type, const void *value) {
   return ctx->sdk->state_add(ctx, entity, type, value);
@@ -982,8 +995,7 @@ static inline VkrCharacterDesc vkr_character_default(VkrCtx *ctx) {
 }
 
 /** Gives the entity a character controller owned by the calling scope,
- * standing at `spawn_foot` or, for NULL, at the entity's position. Refused in
- * fixed updates. */
+ * standing at `spawn_foot` or, for NULL, at the entity's position. */
 static inline bool8_t vkr_character_create(VkrCtx *ctx, VkrEntity entity,
                                            const VkrCharacterDesc *desc,
                                            const Vec3 *spawn_foot) {

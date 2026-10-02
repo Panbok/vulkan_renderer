@@ -29,7 +29,80 @@ typedef struct ScriptLedger {
   ScriptLedgerRecord *records;
   uint32_t count;
   uint32_t capacity;
+  /* The scope ended; edits queued for it are dropped. */
+  bool8_t closed;
 } ScriptLedger;
+
+typedef enum ScriptCommandKind {
+  SCRIPT_COMMAND_SPAWN,
+  SCRIPT_COMMAND_DESTROY,
+  SCRIPT_COMMAND_SET_NAME,
+  SCRIPT_COMMAND_SET_PARENT,
+  SCRIPT_COMMAND_SET_VISIBLE,
+  SCRIPT_COMMAND_SET_TRANSFORM,
+  SCRIPT_COMMAND_SET_RENDER_POSE,
+  SCRIPT_COMMAND_SET_SHAPE,
+  SCRIPT_COMMAND_SPAWN_MODEL,
+  SCRIPT_COMMAND_DESPAWN_MODEL,
+  SCRIPT_COMMAND_COMPONENT_SET,
+  SCRIPT_COMMAND_STATE_ADD,
+  SCRIPT_COMMAND_STATE_REMOVE,
+  SCRIPT_COMMAND_SET_BODY,
+  SCRIPT_COMMAND_CHARACTER_CREATE,
+  SCRIPT_COMMAND_CHARACTER_DESTROY,
+} ScriptCommandKind;
+
+/* One call queued in a fixed update, replayed through the same SDK entry
+ * after the tick. Pointers reach `command_arena`. */
+typedef struct ScriptCommand {
+  uint32_t kind; /**< ScriptCommandKind. */
+  struct VkrScriptInstance *instance;
+  /* The scope that queued it; a closed scope drops all but destroys. */
+  ScriptLedger *ledger;
+  uint64_t entity;
+  union {
+    VkrSpawnDesc spawn;
+    const char *name;
+    uint64_t parent;
+    bool8_t visible;
+    VkrTRS transform;
+    struct {
+      Mat4 world;
+      bool8_t clear;
+    } pose;
+    VkrShapeDesc shape;
+    struct {
+      const char *mesh;
+      const char *animation;
+    } model;
+    struct {
+      const VkrComponentDesc *type;
+      const void *value;
+    } component;
+    struct {
+      VkrStateType type;
+      void *value;
+    } state;
+    VkrBodyDesc body;
+    struct {
+      VkrCharacterDesc desc;
+      Vec3 foot;
+      bool8_t has_foot;
+    } character;
+  } as;
+} ScriptCommand;
+
+/* A spawn destroyed once the simulation reaches `deadline` seconds. */
+typedef struct ScriptTimed {
+  uint64_t entity;
+  float64_t deadline;
+} ScriptTimed;
+
+/* A spawn destroyed with `owner`; zero entries are removed. */
+typedef struct ScriptOwned {
+  uint64_t entity;
+  uint64_t owner;
+} ScriptOwned;
 
 /* One behavior running on one entity. */
 typedef struct ScriptBinding {
@@ -76,6 +149,24 @@ struct VkrScriptInstance {
 
 /* Fills the SDK table (vkr_script_sdk.c). */
 void script_sdk_table(VkrSdkTable *table);
+
+/* Replays the queued structural edits in order, then empties the queue
+ * (vkr_script_sdk.c). */
+void script_commands_flush(VkrScriptHost *host);
+
+/* Drops queued edits of `instance`, or every queued edit for NULL, and
+ * returns their reservations. */
+void script_commands_drop(VkrScriptHost *host,
+                          const struct VkrScriptInstance *instance);
+
+/* A queued spawn not yet created. */
+bool8_t script_pending(const VkrScriptHost *host, uint64_t entity);
+
+/* Records a spawn's owner or duration; destroys expired and orphaned
+ * spawns (vkr_script_host.c). */
+bool8_t script_lifetime_add(VkrScriptHost *host, uint64_t entity,
+                            uint64_t owner, float32_t seconds);
+void script_lifetimes_update(VkrScriptHost *host);
 
 /* The attached container holding `entity`, or NULL. */
 VkrScriptContainer *script_container_of(VkrScriptHost *host, uint64_t entity);

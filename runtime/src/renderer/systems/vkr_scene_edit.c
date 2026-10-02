@@ -1917,8 +1917,10 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, const VkrScene *scene,
     VkrEntityId entity = s->touched[i];
     VkrSceneEditValues values;
     /* Deleted entities are written by identity and created ones with the
-       created entities below. */
-    if (!vkr_scene_entity_alive(scene, entity) || edit_created_id(s, entity))
+       created entities below; runtime-only ones, such as what scripts
+       spawned in Play, are never saved. */
+    if (!vkr_scene_entity_alive(scene, entity) || edit_created_id(s, entity) ||
+        vkr_scene_entity_transient(scene, entity))
       continue;
     const SceneSourceIdentity *source = vkr_entity_get_component(
         scene->world, entity, scene->comp_source_identity);

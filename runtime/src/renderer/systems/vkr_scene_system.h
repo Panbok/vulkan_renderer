@@ -701,6 +701,8 @@ typedef struct VkrScene {
   VkrComponentTypeId comp_name;
   VkrComponentTypeId comp_transform;
   VkrComponentTypeId comp_evaluated_transform;
+  /** Tag of runtime-only entities that saving skips. */
+  VkrComponentTypeId comp_transient;
   VkrComponentTypeId comp_mesh_renderer;
   VkrComponentTypeId comp_visibility;
   VkrComponentTypeId comp_render_id;
@@ -1030,6 +1032,22 @@ VkrEntityId vkr_scene_create_entity(VkrScene *scene, VkrSceneError *out_error);
  * @param entity Entity to destroy
  */
 void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity);
+
+/** Reserves an entity ID, also inside a tick; see vkr_entity_reserve_entity.
+ * The ID is not alive until vkr_scene_create_reserved_entity. */
+VkrEntityId vkr_scene_reserve_entity(VkrScene *scene);
+
+/** Creates the entity a reservation names. False in a tick, for an ID that is
+ * not reserved, or when creation fails. */
+bool8_t vkr_scene_create_reserved_entity(VkrScene *scene, VkrEntityId entity);
+
+/** Returns an unused reservation. */
+void vkr_scene_cancel_reserved_entity(VkrScene *scene, VkrEntityId entity);
+
+/** Marks an entity as runtime-only: saving never writes it or its edits.
+ * Scripts mark everything they spawn (ADR-079). */
+bool8_t vkr_scene_set_transient(VkrScene *scene, VkrEntityId entity);
+bool8_t vkr_scene_entity_transient(const VkrScene *scene, VkrEntityId entity);
 
 /** Installs the scene's one destroy observer; false when another holds the
  * slot. `context` is borrowed until vkr_scene_unobserve_destroy. */

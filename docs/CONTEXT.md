@@ -97,6 +97,8 @@ below are starting points for checking a definition, not alternate API specs.
 | Script instance | A module running on one attached container, with its data and ledger; container-scoped modules run one per container, World-scoped ones once on the World. | [vkr_script_host.h](../runtime/src/script/vkr_script_host.h) |
 | Behavior | A module's hooks run for every entity carrying one of its components, with that entity's own ledger. | [sdk.h](../sdk/sdk.h) |
 | Ledger | The record of what one instance or behavior acquired (entities, characters, models, runtime state, render poses), released newest first when its scope ends. | [vkr_script_internal.h](../runtime/src/script/vkr_script_internal.h) |
+| Queued edit | A structural SDK call made in a fixed update, replayed in order right after the tick; a spawn's reserved ID is valid at once. | [vkr_script_sdk.c](../runtime/src/script/vkr_script_sdk.c) |
+| Transient entity | An entity tagged runtime-only, such as anything a script spawned; saving skips it. | [vkr_scene_system.h](../runtime/src/renderer/systems/vkr_scene_system.h) |
 | Script object | An object kind creating an entity with one registered script component; the same component attaches through Add component. | [ADR-079](adr/079-c-script-modules.md) |
 | Hot reload | Swapping a script library's code between frames while instances keep their data; a changed data shape or version restarts the session and a changed component layout is refused. | [vkr_script_host.h](../runtime/src/script/vkr_script_host.h) |
 | Script editor | The editor's floating window for script sources, with highlighting, completion and compiler diagnostics. | [editor_code.c](../editor/src/editor_code.c) |

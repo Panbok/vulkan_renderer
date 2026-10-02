@@ -11,8 +11,11 @@ authority: proposal
 [ADR-079](../adr/079-c-script-modules.md) defines the script SDK (`sdk.h`)
 and the runtime host. It covers:
 
-- temp, scoped and persistent lifetimes released through ledgers;
-- behaviors per entity and script instances per attached container;
+- temp, scoped and persistent lifetimes released through ledgers, with owner
+  and timed lifetimes and the transient mark;
+- behaviors per entity with destroy hooks, and script instances per attached
+  container;
+- structural edits in fixed updates, queued until the tick ends;
 - loading project libraries in the editor, with hot reload that keeps
   instance data;
 - the Script editor, Script objects and the Player Start;
@@ -22,13 +25,8 @@ Bakery builds each module's shared library and static archive
 ([ADR-077](../adr/077-asset-build-system.md)). This proposal covers what
 remains. The SDK still has these gaps:
 
-- **No structural edits in ticks.** Fixed updates refuse spawning and
-  destroying, because ticks hold a structural read scope and the deferred
-  structural-command queue is still future work
-  ([ADR-073](../adr/073-native-gameplay-foundation.md)).
-- **Lifetimes end only with a scope.** A resource cannot yet name an owner
-  entity or a duration, and objects spawned during Play carry no transient
-  mark that keeps them out of saved documents.
+- **Additive scenes run no scripts.** Their simulation stays paused, so a
+  session attaches only the played container and the World.
 - **One unit per module.** A module cannot use another module's code.
 - **Everything on the main thread.** Every hook, every library load,
   `vkr_spawn_model` (a synchronous load), Jolt (`JobSystemSingleThreaded`) and
@@ -36,7 +34,7 @@ remains. The SDK still has these gaps:
 
 ## Accepted direction (2026-10-02)
 
-The user accepted these choices, and phase 1 shipped them in ADR-079:
+The user accepted these choices; phases 1 and 2 shipped in ADR-079:
 
 - ABI v2 is replaced outright, without a compatibility layer.
 - The public header is `sdk.h`.
@@ -46,19 +44,10 @@ The user accepted these choices, and phase 1 shipped them in ADR-079:
 - Jolt threading is in scope.
 - One library per project is the link unit (accepted 2026-10-02).
 
-### Deferred edits and lifetimes
+### More containers
 
-- **Deferred structural commands.** `vkr_spawn` and `vkr_destroy` run in
-  fixed updates: the spawn returns a reserved generational handle at once,
-  and the commands apply at the next structural boundary. Because nothing
-  migrates during a hook, component pointers stay valid until it returns.
-- **Owner and timed lifetimes.** A spawn names an owner entity or a duration,
-  and the ledger releases it when the owner dies or the time elapses, at the
-  latest with its scope.
-- **Transient mark.** Entities spawned during Play carry a runtime-only mark,
-  so saving never writes them.
-- **More containers.** Additive scenes join a session once their simulation
-  runs, each with its own instances.
+Additive scenes join a session once their simulation runs, each with its own
+instances, and their unload detaches them as the World's does.
 
 ### Packages and the project library
 
@@ -120,8 +109,8 @@ Parallel behaviors and exports come last, when a measured case needs them.
 1. Shipped in ADR-079: `sdk.h`, `VkrCtx`, the temp arena, ledgers,
    `vkr_fail`, behaviors and systems, and container and World instances,
    with the FPS module, the template and the tests ported.
-2. The ECS deferred structural queue, spawning in fixed updates, owner and
-   timed lifetimes, and the transient mark.
+2. Shipped in ADR-079: deferred structural edits in fixed updates over ECS
+   ID reservation, owner and timed lifetimes, and the transient mark.
 3. Library packages, dependencies and the project library in Bakery, the
    host, the editor and completion.
 4. Asynchronous library preparation, `spawn_model` and first builds; script
@@ -180,8 +169,6 @@ Parallel behaviors and exports come last, when a measured case needs them.
 ## Evidence to accept
 
 - CPU suites show that:
-  - a spawn in a fixed update applies at the next boundary, and owner and
-    timed lifetimes release on time;
   - a library change rebuilds and reloads its dependents;
   - a reload joins the module's jobs before closing its library.
 - Bistro Play and Stop in the headless editor return to the authored entity

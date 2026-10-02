@@ -45,6 +45,9 @@
 #define VKR_SCRIPT_ERROR_CAPACITY 256u
 
 typedef struct VkrScriptInstance VkrScriptInstance;
+struct ScriptCommand;
+struct ScriptTimed;
+struct ScriptOwned;
 
 typedef struct VkrScriptModule {
   const VkrModuleDesc *desc;
@@ -192,6 +195,26 @@ typedef struct VkrScriptHost {
      registered types. */
   VkrComponentDesc named_types[VKR_SCRIPT_STATE_TYPE_MAX];
   uint32_t named_type_count;
+  /* Structural edits queued in fixed updates, applied right after the tick
+     in order; their strings and values live in `command_arena`. */
+  struct ScriptCommand *commands;
+  uint32_t command_count;
+  uint32_t command_capacity;
+  Arena *command_arena;
+  /* Reserved IDs of queued spawns not yet created. */
+  uint64_t *pending;
+  uint32_t pending_count;
+  uint32_t pending_capacity;
+  /* The reservation the replayed spawn creates, or zero. */
+  uint64_t replay_reserved;
+  /* Spawns that end after a simulated duration or with an owner entity. */
+  struct ScriptTimed *timed;
+  uint32_t timed_count;
+  uint32_t timed_capacity;
+  struct ScriptOwned *owned;
+  uint32_t owned_count;
+  uint32_t owned_capacity;
+
   /* The tool context of vkr_script_host_open_context, or NULL. */
   VkrScriptInstance *tool;
   /* Players tools bound to entities in place of the scene's. */
