@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-30
+updated: 2026-10-02
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -329,7 +329,9 @@ Overlay version 5 lists the document's ids in order, so loading maps each
 saved entity index to the index of the entity with that id. A document can
 be reordered without detaching its edits, and an edit whose entity left the
 document fails the load. Older overlays and documents without ids bind by
-index.
+index. Saving authored edits accepts version 3 to 5 manifests with a scene id
+and replaces only their `edit_overlay` member
+([`vkr_editor_project_save_scene_overlay`](../../editor/src/editor_project_store.c)).
 
 A **prefab instance** copies another scene of the project into the open
 scene under one new root entity (`scene.instantiate`, jobs `prefabs`).

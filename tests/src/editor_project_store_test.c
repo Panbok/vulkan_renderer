@@ -148,6 +148,31 @@ static void project_test_overlay(VkrAllocator *allocator,
                                     inventory_overlay, &error));
   FilePath inventory_overlay_file = project_test_path(inventory_overlay);
   assert(file_remove(&inventory_overlay_file) == FILE_ERROR_NONE);
+  // Project jobs publish version 5, which saves the same way.
+  project_test_write(manifest,
+                     "{\"version\":5,\"id\":\"00000000-0000-4000-8000-"
+                     "000000000003\",\"entities\":[],\"inventory\":"
+                     "\"inventory/records.json\"}");
+  uint64_t current_fingerprint = 0;
+  assert(vkr_editor_project_json_read_file(manifest, allocator, &document,
+                                           &current_fingerprint, &error));
+  assert(vkr_scene_edit_read(&scene, entity, &values));
+  values.position.x = 10;
+  assert(vkr_scene_edit_apply(&edits, &scene, entity, &values));
+  assert(vkr_editor_project_save_scene_overlay(
+      manifest, &current_fingerprint, &edits, &scene, allocator, &error));
+  assert(edits.revision == edits.saved_revision);
+  assert(vkr_editor_project_json_read_file(manifest, allocator, &published,
+                                           &observed, &error));
+  char current_overlay_relative[128];
+  char current_overlay[1024];
+  assert(vkr_editor_project_json_string(
+      published, "edit_overlay", current_overlay_relative,
+      sizeof(current_overlay_relative), &error));
+  assert(vkr_editor_project_resolve(scene_root, current_overlay_relative,
+                                    current_overlay, &error));
+  FilePath current_overlay_file = project_test_path(current_overlay);
+  assert(file_remove(&current_overlay_file) == FILE_ERROR_NONE);
   fingerprint = observed;
   assert(vkr_scene_edit_read(&scene, entity, &values));
   values.position.x = 9;
