@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define LOCOMOTION_SAMPLE_MAX VKR_ANIMATION_BLEND_SAMPLE_CAPACITY
+#define LOCOMOTION_SAMPLE_MAX VKR_ANIM_BLEND_MAX
 /* Below this ground speed the body stands. */
 #define LOCOMOTION_STILL 0.05f
 /* Seconds of the velocity, crouch and airborne blends. */
@@ -28,27 +28,24 @@ static const char *const s_direction_names[FPS_LOCOMOTION_DIRECTION_COUNT] = {
 // Clips
 // =============================================================================
 
-static uint32_t locomotion_find(const VkrAnimationAsset *asset,
+/* A clip with a positive duration by name, or VKR_CLIP_NONE. */
+static uint32_t locomotion_find(VkrCtx *ctx, VkrEntity entity,
                                 const char *name) {
-  const uint64_t length = strlen(name);
-  for (uint32_t i = 0; i < asset->clip_count; ++i) {
-    if (asset->clips[i].name.length == length &&
-        MemCompare(asset->clips[i].name.str, name, length) == 0 &&
-        asset->clips[i].duration > 0.0f) {
-      return i;
-    }
-  }
-  return UINT32_MAX;
+  const uint32_t clip = vkr_anim_clip_find(ctx, entity, name);
+  return clip != VKR_CLIP_NONE &&
+                 vkr_anim_clip_duration(ctx, entity, clip) > 0.0f
+             ? clip
+             : VKR_CLIP_NONE;
 }
 
 /* A clip by name with its ground speed from the mannequin's clip table. */
-static FpsLocomotionClip locomotion_clip(const VkrAnimationAsset *asset,
+static FpsLocomotionClip locomotion_clip(VkrCtx *ctx, VkrEntity entity,
                                          const char *name) {
-  FpsLocomotionClip clip = {.clip = locomotion_find(asset, name)};
-  if (clip.clip == UINT32_MAX) {
+  FpsLocomotionClip clip = {.clip = locomotion_find(ctx, entity, name)};
+  if (clip.clip == VKR_CLIP_NONE) {
     return clip;
   }
-  clip.duration = asset->clips[clip.clip].duration;
+  clip.duration = vkr_anim_clip_duration(ctx, entity, clip.clip);
   for (uint32_t i = 0; i < ArrayCount(fps_mannequin_clips); ++i) {
     if (strcmp(fps_mannequin_clips[i].name, name) == 0) {
       clip.speed = fps_mannequin_clips[i].speed;
@@ -59,7 +56,7 @@ static FpsLocomotionClip locomotion_clip(const VkrAnimationAsset *asset,
 }
 
 static bool8_t locomotion_has(const FpsLocomotionClip *clip) {
-  return clip->clip != UINT32_MAX;
+  return clip->clip != VKR_CLIP_NONE;
 }
 
 /* A moving loop needs a speed to derive its stride. */
@@ -67,36 +64,34 @@ static bool8_t locomotion_moving(const FpsLocomotionClip *clip) {
   return locomotion_has(clip) && clip->speed > 0.0f;
 }
 
-static FpsLocomotionGaits locomotion_gaits(const VkrAnimationAsset *asset,
+static FpsLocomotionGaits locomotion_gaits(VkrCtx *ctx, VkrEntity entity,
                                            bool8_t crouched) {
   char name[64];
   FpsLocomotionGaits gaits;
-  gaits.idle = locomotion_clip(asset, crouched ? "Crouch_Idle" : "Idle");
+  gaits.idle = locomotion_clip(ctx, entity, crouched ? "Crouch_Idle" : "Idle");
   for (uint32_t d = 0; d < FPS_LOCOMOTION_DIRECTION_COUNT; ++d) {
     snprintf(name, sizeof(name), crouched ? "Crouch_Walk_%s" : "Walk_%s",
              s_direction_names[d]);
-    gaits.walk[d] = locomotion_clip(asset, name);
-    gaits.jog[d] = (FpsLocomotionClip){.clip = UINT32_MAX};
+    gaits.walk[d] = locomotion_clip(ctx, entity, name);
+    gaits.jog[d] = (FpsLocomotionClip){.clip = VKR_CLIP_NONE};
     if (!crouched) {
       snprintf(name, sizeof(name), "Jog_%s", s_direction_names[d]);
-      gaits.jog[d] = locomotion_clip(asset, name);
+      gaits.jog[d] = locomotion_clip(ctx, entity, name);
     }
   }
-  gaits.run = crouched ? (FpsLocomotionClip){.clip = UINT32_MAX}
-                       : locomotion_clip(asset, "Run_Fwd");
+  gaits.run = crouched ? (FpsLocomotionClip){.clip = VKR_CLIP_NONE}
+                       : locomotion_clip(ctx, entity, "Run_Fwd");
   return gaits;
 }
 
-bool8_t fps_locomotion_supported(const VkrScriptApi *api,
-                                 const VkrAnimationPlayer *player) {
-  const VkrAnimationAsset *asset = api ? api->animation_asset(player) : NULL;
-  if (!asset) {
+bool8_t fps_locomotion_supported(VkrCtx *ctx, VkrEntity entity) {
+  if (!vkr_anim_id(ctx, entity)) {
     return false_v;
   }
-  const FpsLocomotionClip walk = locomotion_clip(asset, "Walk_Fwd");
-  return locomotion_find(asset, "Idle") != UINT32_MAX &&
+  const FpsLocomotionClip walk = locomotion_clip(ctx, entity, "Walk_Fwd");
+  return locomotion_find(ctx, entity, "Idle") != VKR_CLIP_NONE &&
          locomotion_moving(&walk) &&
-         locomotion_find(asset, "Jump_Loop") != UINT32_MAX;
+         locomotion_find(ctx, entity, "Jump_Loop") != VKR_CLIP_NONE;
 }
 
 // =============================================================================
@@ -104,7 +99,7 @@ bool8_t fps_locomotion_supported(const VkrScriptApi *api,
 // =============================================================================
 
 typedef struct LocomotionMix {
-  VkrAnimationSample samples[LOCOMOTION_SAMPLE_MAX];
+  VkrAnimSample samples[LOCOMOTION_SAMPLE_MAX];
   /* Per sample: the loop duration its time follows through the shared
    * phase, or zero for samples on their own clocks. */
   float32_t phase_duration[LOCOMOTION_SAMPLE_MAX];
@@ -121,7 +116,7 @@ static void mix_add(LocomotionMix *mix, const FpsLocomotionClip *clip,
     return;
   }
   mix->samples[mix->count] =
-      (VkrAnimationSample){.clip = clip->clip, .time = time, .weight = weight};
+      (VkrAnimSample){.clip = clip->clip, .time = time, .weight = weight};
   mix->phase_duration[mix->count] = phased ? clip->duration : 0.0f;
   mix->count++;
   if (phased) {
@@ -216,8 +211,8 @@ static float32_t locomotion_smoothstep(float64_t edge0, float64_t edge1,
 // Public API
 // =============================================================================
 
-bool8_t fps_locomotion_reset(FpsLocomotion *locomotion) {
-  if (!locomotion || !locomotion->player) {
+bool8_t fps_locomotion_reset(VkrCtx *ctx, FpsLocomotion *locomotion) {
+  if (!locomotion || !vkr_entity_valid(locomotion->entity)) {
     return false_v;
   }
   locomotion->phase = 0.0;
@@ -234,44 +229,38 @@ bool8_t fps_locomotion_reset(FpsLocomotion *locomotion) {
   locomotion->land_weight = 0.0f;
   locomotion->airborne = false_v;
   locomotion->jumped = false_v;
-  locomotion->api->animation_set_playing(locomotion->player, false_v);
-  const VkrAnimationSample idle = {
+  vkr_anim_set_playing(ctx, locomotion->entity, false_v);
+  const VkrAnimSample idle = {
       .clip = locomotion->stand.idle.clip, .time = 0.0, .weight = 1.0f};
-  return locomotion->api->animation_sample_blend(locomotion->player, &idle, 1,
-                                                 true_v);
+  return vkr_anim_blend(ctx, locomotion->entity, &idle, 1, true_v);
 }
 
-bool8_t fps_locomotion_initialize(FpsLocomotion *locomotion,
-                                  const VkrScriptApi *api,
-                                  VkrAnimationPlayer *player,
-                                  const char **error) {
-  if (!locomotion || !api || api->size < sizeof(VkrScriptApi) ||
-      !fps_locomotion_supported(api, player)) {
+bool8_t fps_locomotion_initialize(VkrCtx *ctx, FpsLocomotion *locomotion,
+                                  VkrEntity entity, const char **error) {
+  if (!locomotion || !fps_locomotion_supported(ctx, entity)) {
     *error = "Locomotion needs a bank with Idle, Walk_Fwd and Jump_Loop";
     return false_v;
   }
-  const VkrAnimationAsset *asset = api->animation_asset(player);
   *locomotion = (FpsLocomotion){
-      .api = api,
-      .player = player,
-      .stand = locomotion_gaits(asset, false_v),
-      .crouch = locomotion_gaits(asset, true_v),
-      .jump_start = locomotion_clip(asset, "Jump_Start"),
-      .jump_loop = locomotion_clip(asset, "Jump_Loop"),
-      .jump_land = locomotion_clip(asset, "Jump_Land"),
+      .entity = entity,
+      .stand = locomotion_gaits(ctx, entity, false_v),
+      .crouch = locomotion_gaits(ctx, entity, true_v),
+      .jump_start = locomotion_clip(ctx, entity, "Jump_Start"),
+      .jump_loop = locomotion_clip(ctx, entity, "Jump_Loop"),
+      .jump_land = locomotion_clip(ctx, entity, "Jump_Land"),
   };
-  if (!fps_locomotion_reset(locomotion)) {
+  if (!fps_locomotion_reset(ctx, locomotion)) {
     *error = "Locomotion could not pose the idle";
     return false_v;
   }
   return true_v;
 }
 
-bool8_t fps_locomotion_update(FpsLocomotion *locomotion,
+bool8_t fps_locomotion_update(VkrCtx *ctx, FpsLocomotion *locomotion,
                               const FpsLocomotionInput *input, float64_t dt) {
-  if (!locomotion || !locomotion->player || !input || !isfinite(dt) ||
-      dt < 0.0 || !isfinite(input->forward) || !isfinite(input->right) ||
-      !isfinite(input->up)) {
+  if (!locomotion || !vkr_entity_valid(locomotion->entity) || !input ||
+      !isfinite(dt) || dt < 0.0 || !isfinite(input->forward) ||
+      !isfinite(input->right) || !isfinite(input->up)) {
     return false_v;
   }
   const float32_t follow =
@@ -376,6 +365,6 @@ bool8_t fps_locomotion_update(FpsLocomotion *locomotion,
   if (!mix.count) {
     mix_add(&mix, &locomotion->stand.idle, 0.0, 1.0f, false_v);
   }
-  return locomotion->api->animation_sample_blend(
-      locomotion->player, mix.samples, mix.count, false_v);
+  return vkr_anim_blend(ctx, locomotion->entity, mix.samples, mix.count,
+                        false_v);
 }

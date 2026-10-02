@@ -224,7 +224,7 @@ VKR_MAIN(argc, argv) {
   config.ui = vkr_player_ui_client(&player);
   /* Until players load a project's script library, every package runs the
      FPS module linked here (ADR-079). */
-  static const VkrScriptModuleEntry script_modules[] = {vkr_script_module_fps};
+  static const VkrModuleEntry script_modules[] = {vkr_module_fps};
   config.script_modules = script_modules;
   config.script_module_count = ArrayCount(script_modules);
   return vkr_sample_runtime_run(argc, argv, &config);

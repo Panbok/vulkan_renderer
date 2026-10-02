@@ -1,6 +1,7 @@
-# The FPS sample game. It reaches the engine only through VkrScriptApi; the
-# runtime link supplies headers and the table's value types. Bakery builds
-# the same sources from fps.script.json as a shared library.
+# The FPS sample game. It reaches the engine only through sdk.h; the runtime
+# link supplies the platform definitions its headers need. Bakery builds the
+# same sources from fps.script.json as a shared library that sees only the
+# SDK and foundation headers.
 add_library(vkr_script_fps STATIC
     src/fps_camera_rig.c
     src/fps_input.c

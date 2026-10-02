@@ -2473,7 +2473,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_handle_hotkeys(
 vkr_internal void vkr_standard_scene_runtime_handle_gameplay_input(
     VkrStandardSceneRuntime *application, InputState *input_state) {
   if (input_key_just_pressed(input_state, KEY_BACKSPACE)) {
-    VkrScene *scene = state->scripts.session.scene;
+    VkrScene *scene = state->scripts.session.active;
     vkr_scene_physics_set_paused(scene, true_v);
     const char *error = NULL;
     if (!vkr_scene_physics_reset(scene, &error)) {
@@ -3018,17 +3018,19 @@ vkr_internal void vkr_standard_scene_runtime_init_world_content(
 static void sample_scripts_start(VkrStandardSceneRuntime *application) {
   state->script_start_attempted = true_v;
   const char *error = NULL;
-  const uint32_t flags = state->gameplay_enabled
-                             ? VKR_SCRIPT_SESSION_SAMPLE_CONTENT
-                             : VKR_SCRIPT_SESSION_NONE;
   VkrScene *scene = sample_simulated_scene(application, NULL);
   /* A World played alone steps the shared physics itself. */
   if (scene && scene == application->world_scene) {
     vkr_scene_physics_drive(scene);
   }
-  if (!scene ||
-      !vkr_script_host_start(&state->scripts, scene, state->input_state,
-                             &application->assets, flags, &error)) {
+  /* The played container and the root World each run their instances. */
+  const VkrScriptSessionDesc session = {.active = scene,
+                                        .world = application->world_scene,
+                                        .input = state->input_state,
+                                        .assets = &application->assets,
+                                        .sample_content =
+                                            state->gameplay_enabled};
+  if (!scene || !vkr_script_host_start(&state->scripts, &session, &error)) {
     application->editor_viewport.simulation_running = false_v;
     snprintf(state->scene_status, sizeof(state->scene_status),
              "Scripts failed to start: %s", error ? error : "unknown error");
@@ -3135,7 +3137,10 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
       application->editor_viewport.simulation_running) {
     application->editor_viewport.simulation_running = false_v;
     vkr_window_set_mouse_capture(&application->host.window, false_v);
-    const char *reason = vkr_scene_physics_error(scene);
+    const char *reason = vkr_script_host_error(&state->scripts);
+    if (!reason) {
+      reason = vkr_scene_physics_error(scene);
+    }
     snprintf(state->scene_status, sizeof(state->scene_status),
              "Simulation stopped: %s", reason ? reason : "paused");
     log_error("%s", state->scene_status);
@@ -4236,6 +4241,10 @@ vkr_internal void sample_world_unload(VkrStandardSceneRuntime *application) {
   if (state->has_selection &&
       state->selected_entity.parts.world == VKR_SCENE_WORLD_ROOT_ID) {
     vkr_standard_scene_runtime_clear_gizmo_selection(application);
+  }
+  /* World-attached script instances end before their entities go. */
+  if (application->world_scene) {
+    vkr_script_host_detach(&state->scripts, application->world_scene);
   }
   if (application->active_scene) {
     vkr_scene_set_world_fallback(application->active_scene, NULL);
@@ -5455,7 +5464,9 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
   }
   state->gameplay_enabled = options->gameplay_enabled;
   /* Module component types join the scene types before any scene exists. */
-  vkr_script_host_init(&state->scripts, &application->app_allocator);
+  if (!vkr_script_host_init(&state->scripts, &application->app_allocator)) {
+    log_error("The script host could not reserve its memory");
+  }
   for (uint32_t i = 0; i < runtime_config->script_module_count; ++i) {
     const char *error = NULL;
     if (!vkr_script_host_add_module(

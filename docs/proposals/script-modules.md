@@ -1,24 +1,132 @@
 ---
 status: proposed
-updated: 2026-09-30
+updated: 2026-10-02
 authority: proposal
 ---
 
-# Script modules: packaging, SDK headers, TypeScript and the shell split
+# Script modules: deferred edits, packages, threading and packaging
 
 ## Baseline
 
-[ADR-079](../adr/079-c-script-modules.md) defines the C script ABI and the
-runtime host. It also covers:
+[ADR-079](../adr/079-c-script-modules.md) defines the script SDK (`sdk.h`)
+and the runtime host. It covers:
 
-- loading project libraries in the editor, with hot reload that keeps state;
-- the Script editor;
-- Script objects and the Player Start;
+- temp, scoped and persistent lifetimes released through ledgers;
+- behaviors per entity and script instances per attached container;
+- loading project libraries in the editor, with hot reload that keeps
+  instance data;
+- the Script editor, Script objects and the Player Start;
 - the FPS sample as a statically linked module.
 
 Bakery builds each module's shared library and static archive
 ([ADR-077](../adr/077-asset-build-system.md)). This proposal covers what
-remains.
+remains. The SDK still has these gaps:
+
+- **No structural edits in ticks.** Fixed updates refuse spawning and
+  destroying, because ticks hold a structural read scope and the deferred
+  structural-command queue is still future work
+  ([ADR-073](../adr/073-native-gameplay-foundation.md)).
+- **Lifetimes end only with a scope.** A resource cannot yet name an owner
+  entity or a duration, and objects spawned during Play carry no transient
+  mark that keeps them out of saved documents.
+- **One unit per module.** A module cannot use another module's code.
+- **Everything on the main thread.** Every hook, every library load,
+  `vkr_spawn_model` (a synchronous load), Jolt (`JobSystemSingleThreaded`) and
+  the first build of an unbuilt project module all run on the frame thread.
+
+## Accepted direction (2026-10-02)
+
+The user accepted these choices, and phase 1 shipped them in ADR-079:
+
+- ABI v2 is replaced outright, without a compatibility layer.
+- The public header is `sdk.h`.
+- Persistent resources live as long as their script instance's container.
+- Per-entity behaviors plus systems form the programming model.
+- Static library packages come first, and exports later.
+- Jolt threading is in scope.
+- One library per project is the link unit (accepted 2026-10-02).
+
+### Deferred edits and lifetimes
+
+- **Deferred structural commands.** `vkr_spawn` and `vkr_destroy` run in
+  fixed updates: the spawn returns a reserved generational handle at once,
+  and the commands apply at the next structural boundary. Because nothing
+  migrates during a hook, component pointers stay valid until it returns.
+- **Owner and timed lifetimes.** A spawn names an owner entity or a duration,
+  and the ledger releases it when the owner dies or the time elapses, at the
+  latest with its scope.
+- **Transient mark.** Entities spawned during Play carry a runtime-only mark,
+  so saving never writes them.
+- **More containers.** Additive scenes join a session once their simulation
+  runs, each with its own instances.
+
+### Packages and the project library
+
+- **Kinds.** A `Scripts/<Name>/` folder is a package of kind `module` or
+  `library`.
+  - Modules declare entry points (behaviors and systems) and are the only
+    registered units.
+  - Libraries have no entry points; a package lists the libraries it uses in
+    `dependencies`, which adds their include roots.
+- **One library per project.** Bakery compiles every package's sources to
+  objects and links them into one `<project>` library, which exports one
+  entry listing its modules. A project may later split into a few named
+  groups, like Unity's assemblies, each its own library.
+  - One C runtime and one load per project instead of one per package, so
+    hundreds of scripts cost one library's startup code, measured at about
+    105 KB per Windows DLL.
+  - Imports between packages are ordinary linking, and library code and
+    state exist once.
+  - The host's fixed caps (16 modules, 8 exports per module) become growable
+    tables.
+- **Builds.** Bakery orders packages by dependency, refuses cycles, compiles
+  changed objects only and relinks the project library.
+- **Reload.** A project library reload swaps every module in it at once, each
+  under the existing rules: unchanged data shapes keep their data, changed
+  ones restart the session and changed component layouts are refused.
+- **Failures.** A compile error anywhere keeps the previous project library
+  running until it is fixed; splitting into groups is the way to isolate
+  failing work.
+- **Rejected:** one DLL per package with a hybrid C runtime (Windows' shared
+  UCRT with static startup code). Failures would stay isolated, but each
+  package pays a load and its startup code, and lld-link refused the hybrid
+  link with duplicate UCRT symbols in a first attempt.
+
+### Threading
+
+**Stays on the main thread:**
+
+- applying structural commands and hierarchy changes;
+- input observation and the window;
+- publishing the camera, HUD and UI;
+- publishing GPU resources;
+- swapping and unloading libraries;
+- starting and stopping instances.
+
+**Moves off the main thread:**
+
+- Copying, opening and validating libraries.
+- `vkr_spawn_model` loads, through the resource system's asynchronous path.
+- The first build of an unbuilt project module. The World request waits for
+  its types instead of the frame blocking.
+- Script jobs, recorded in the ledger. The host joins or cancels them before
+  a reload, retire or stop unloads their code.
+- Jolt's internal work, on a thread pool backed by `VkrJobSystem`.
+
+Parallel behaviors and exports come last, when a measured case needs them.
+
+### Phases
+
+1. Shipped in ADR-079: `sdk.h`, `VkrCtx`, the temp arena, ledgers,
+   `vkr_fail`, behaviors and systems, and container and World instances,
+   with the FPS module, the template and the tests ported.
+2. The ECS deferred structural queue, spawning in fixed updates, owner and
+   timed lifetimes, and the transient mark.
+3. Library packages, dependencies and the project library in Bakery, the
+   host, the editor and completion.
+4. Asynchronous library preparation, `spawn_model` and first builds; script
+   jobs; the Jolt thread pool, measured on Bistro in Release.
+5. Exports and parallel behaviors.
 
 ## Remaining work
 
@@ -33,18 +141,18 @@ remains.
    at package time and runtime archives and headers in the editor
    distribution.
 3. **Headers for projects.** Bakery and the Script editor's completion read
-   the engine headers from this source tree (`VKR_BAKERY_SCRIPT_SDK_DIRS`,
-   `VKR_EDITOR_SCRIPT_SDK_ROOT`). The editor distribution needs the runtime
-   and foundation headers, or a trimmed script SDK header, so project scripts
-   compile outside the repository.
+   `sdk/` and `lib/src` from this source tree (`VKR_BAKERY_SCRIPT_SDK_DIRS`,
+   `VKR_EDITOR_SCRIPT_SDK_ROOT`). The editor distribution needs `sdk.h` and
+   the foundation's `defines.h` and math headers, so project scripts compile
+   outside the repository.
 4. **Shell split.** `vkr_sample_runtime.c` still mixes the game shell with
    editor tooling: gizmo, picking, the edit journal, transport and view
    modes, IBL validation and telemetry. The packaged player links all of it.
    The game shell should keep loading, the World and overlays, the script
    host and the camera, and editor tooling should move to the editor. Only
    overlay loading and applying from the edit journal belong at runtime.
-5. **TypeScript.** Describe the API once and generate the C table, the
-   bindings and a `.d.ts` from that description. Implement the language as a
+5. **TypeScript.** Describe the SDK once and generate its table, the inline
+   calls, the bindings and a `.d.ts` from that description. Implement the language as a
    C script module hosting QuickJS-ng. QuickJS-ng is an interpreter with no
    JIT, so it runs on consoles and iOS. Keep per-entity loops in C systems and
    give TypeScript batch calls for event and sparse logic. Measure crossing
@@ -71,8 +179,17 @@ remains.
 
 ## Evidence to accept
 
-- The editor builds, loads and hot reloads a project module on Windows as it
-  does on macOS.
+- CPU suites show that:
+  - a spawn in a fixed update applies at the next boundary, and owner and
+    timed lifetimes release on time;
+  - a library change rebuilds and reloads its dependents;
+  - a reload joins the module's jobs before closing its library.
+- Bistro Play and Stop in the headless editor return to the authored entity
+  count.
+- The Jolt pool's frame-time effect comes from matched Release Bistro
+  reports.
+- The editor builds, loads and hot reloads a project module on macOS with the
+  SDK, as it does on Windows.
 - A packaged Bistro game runs its bundled module on both platforms.
 - The shell split leaves the player without editor tooling objects.
 - A TypeScript behavior matches its C equivalent on Bistro, with measured

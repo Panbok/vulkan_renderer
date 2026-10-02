@@ -2,160 +2,374 @@
 
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_script_host.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
-/* A module that records its calls; `start_result` selects its start. */
-typedef struct ScriptTestState {
+/* Registered component types outlive every host and scene of the process, so
+   this suite registers each name once, from storage that lives as long. */
+static VkrDMemory s_memory;
+static VkrAllocator s_allocator;
+
+static void script_test_frame(VkrScriptHost *host, VkrScene *scene) {
+  VkrScriptFrame frame = {.now = 1.0,
+                          .scene_delta = 0.0,
+                          .simulation_running = true_v,
+                          .camera_available = true_v};
+  vkr_script_host_frame(host, &frame);
+  vkr_scene_update(scene, frame.scene_delta);
+  VkrScriptView view;
+  vkr_script_host_present(host, &frame, &view);
+}
+
+// =============================================================================
+// Lifecycle: start, ledger release, ticks, faults and restart
+// =============================================================================
+
+typedef enum LifeMode { LIFE_FAIL, LIFE_IDLE, LIFE_ACTIVE } LifeMode;
+
+typedef struct LifeData {
   uint32_t starts;
-  uint32_t stops;
-  uint32_t before;
-  uint32_t after;
-  uint32_t resets;
+  uint32_t fixed;
+  uint32_t late_fixed;
   uint64_t last_tick;
-} ScriptTestState;
+} LifeData;
 
-static VkrScriptStart s_start_result;
-static ScriptTestState *s_state;
+static LifeMode s_life_mode;
+static LifeData *s_life;
+static VkrEntity s_life_spawned;
+static uint32_t s_life_stops;
+static bool8_t s_life_refused_spawn;
+static bool8_t s_life_temp_zeroed;
 
-static VkrScriptStart script_test_start(const VkrScriptSession *session,
-                                        void *state, const char **error) {
-  assert(session->scene && session->instance_id);
-  ScriptTestState *test = state;
-  assert(test->starts == 0 && test->before == 0); // Zeroed for every session.
-  test->starts++;
-  s_state = test;
-  *error = "refused";
-  return s_start_result;
-}
-
-static void script_test_stop(const VkrScriptSession *session, void *state) {
-  (void)session;
-  ((ScriptTestState *)state)->stops++;
-}
-
-static bool8_t script_test_before(const VkrScriptSession *session, void *state,
-                                  uint64_t tick, const char **error) {
-  (void)session;
-  (void)error;
-  ScriptTestState *test = state;
-  test->before++;
-  test->last_tick = tick;
-  return true_v;
-}
-
-static bool8_t script_test_after(const VkrScriptSession *session, void *state,
-                                 uint64_t tick, const char **error) {
-  (void)session;
-  ScriptTestState *test = state;
-  test->after++;
-  if (tick == 3) {
-    *error = "tick three";
-    return false_v;
+static void life_start(VkrCtx *ctx, LifeData *data) {
+  assert(data->starts == 0 && data->fixed == 0); // Zeroed for every start.
+  data->starts++;
+  s_life = data;
+  /* Persistent: released when the instance ends, or by a failed start. */
+  s_life_spawned = vkr_spawn(ctx, &(VkrSpawnDesc){.name = "LifeMarker"});
+  assert(vkr_entity_valid(s_life_spawned));
+  if (s_life_mode == LIFE_FAIL) {
+    vkr_fail(ctx, "refused %u", 7u);
+  } else if (s_life_mode == LIFE_IDLE) {
+    vkr_disable(ctx);
   }
-  return true_v;
 }
 
-static void script_test_reset(const VkrScriptSession *session, void *state) {
-  (void)session;
-  ((ScriptTestState *)state)->resets++;
+static void life_stop(VkrCtx *ctx, LifeData *data) {
+  (void)ctx;
+  (void)data;
+  s_life_stops++;
 }
 
-static void script_test_frame(const VkrScriptSession *session, void *state,
-                              VkrScriptFrame *frame) {
-  (void)session;
-  (void)state;
-  frame->scene_delta = 2.0 * VKR_SCENE_SIMULATION_FIXED_DT;
+static void life_update(VkrCtx *ctx, LifeData *data, float32_t dt) {
+  (void)data;
+  (void)dt;
+  uint32_t *scratch = vkr_temp(ctx, uint32_t, 64);
+  s_life_temp_zeroed = scratch && scratch[0] == 0u && scratch[63] == 0u;
+  vkr_set_time_step(ctx, 2.0 * vkr_fixed_dt(ctx));
 }
 
-static const VkrScriptModuleDesc s_test_module = {
-    .abi_version = VKR_SCRIPT_ABI_VERSION,
-    .size = sizeof(VkrScriptModuleDesc),
-    .name = "test",
-    .state_size = sizeof(ScriptTestState),
-    .state_align = AlignOf(ScriptTestState),
-    .start = script_test_start,
-    .stop = script_test_stop,
-    .before_physics = script_test_before,
-    .after_physics = script_test_after,
-    .reset = script_test_reset,
-    .frame = script_test_frame,
-};
-
-static const VkrScriptModuleDesc *script_test_entry(const VkrScriptApi *api) {
-  return api->version == VKR_SCRIPT_ABI_VERSION ? &s_test_module : NULL;
+static void life_fixed_update(VkrCtx *ctx, LifeData *data) {
+  data->fixed++;
+  data->last_tick = vkr_ticks(ctx) + 1u;
+  /* Structural edits wait for update. */
+  s_life_refused_spawn =
+      !vkr_entity_valid(vkr_spawn(ctx, &(VkrSpawnDesc){0})) &&
+      strstr(vkr_last_error(ctx), "fixed updates") != NULL;
 }
 
-static const VkrScriptModuleDesc *
-script_test_old_entry(const VkrScriptApi *api) {
-  (void)api;
-  static const VkrScriptModuleDesc old = {.abi_version = 0};
-  return &old;
+static void life_late_fixed_update(VkrCtx *ctx, LifeData *data) {
+  data->late_fixed++;
+  if (data->last_tick == 3u) {
+    vkr_fail(ctx, "tick three");
+  }
 }
 
-static void test_script_host_lifecycle(VkrAllocator *allocator) {
+VKR_MODULE(life, LifeData, , .start = life_start, .stop = life_stop,
+           .update = life_update, .fixed_update = life_fixed_update,
+           .late_fixed_update = life_late_fixed_update)
+
+static const VkrModuleDesc *life_old_entry(uint32_t sdk_version) {
+  return vkr_module_life(sdk_version + 1u);
+}
+
+static void test_script_host_lifecycle(VkrScriptHost *host) {
   VkrScene scene;
-  assert(vkr_scene_init(&scene, allocator, 49, 16, NULL));
+  assert(vkr_scene_init(&scene, &s_allocator, 49, 16, NULL));
   InputState input = {0};
-  VkrScriptHost host;
-  vkr_script_host_init(&host, allocator);
+  const VkrScriptSessionDesc session = {.active = &scene, .input = &input};
   const char *error = NULL;
-  assert(!vkr_script_host_add_module(&host, script_test_old_entry, &error));
-  assert(vkr_script_host_add_module(&host, script_test_entry, &error));
 
-  // A failed start leaves no session and no scene callbacks.
-  s_start_result = VKR_SCRIPT_START_FAILED;
-  assert(!vkr_script_host_start(&host, &scene, &input, NULL, 0, &error));
-  assert(error && !host.started && !scene.simulation.enabled);
-  assert(s_state->stops == 0);
+  // A failed start releases what it acquired and leaves no callbacks.
+  s_life_mode = LIFE_FAIL;
+  assert(!vkr_script_host_start(host, &session, &error));
+  assert(error && strstr(error, "life: refused 7"));
+  assert(!host->started && !scene.simulation.enabled);
+  assert(
+      !vkr_scene_entity_alive(&scene, (VkrEntityId){.u64 = s_life_spawned.id}));
+  assert(s_life_stops == 1u);
 
-  // An idle module receives no hooks, and the scene keeps no callbacks.
-  s_start_result = VKR_SCRIPT_START_IDLE;
-  assert(vkr_script_host_start(&host, &scene, &input, NULL, 0, &error));
-  assert(host.started && !vkr_script_host_active(&host));
+  // A disabled instance receives no hooks, and the scene keeps no callbacks.
+  s_life_mode = LIFE_IDLE;
+  assert(vkr_script_host_start(host, &session, &error));
+  assert(host->started && !vkr_script_host_active(host));
   assert(!scene.simulation.enabled);
-  vkr_script_host_stop(&host);
-  assert(s_state->stops == 0 && !host.started);
+  vkr_script_host_stop(host);
+  assert(s_life_stops == 2u && !host->started);
 
-  // An active module runs on the shared clock and its frame hook sets the
-  // admitted elapsed time.
-  s_start_result = VKR_SCRIPT_START_ACTIVE;
-  assert(vkr_script_host_start(&host, &scene, &input, NULL, 0, &error));
-  assert(vkr_script_host_active(&host) && scene.simulation.enabled);
-  const uint64_t first_instance = host.session.instance_id;
+  // An active instance runs on the shared clock; its update sets the elapsed
+  // time and its temp memory rewinds after the hook.
+  s_life_mode = LIFE_ACTIVE;
+  assert(vkr_script_host_start(host, &session, &error));
+  assert(vkr_script_host_active(host) && scene.simulation.enabled);
+  const VkrEntityId marker = {.u64 = s_life_spawned.id};
+  assert(vkr_scene_entity_alive(&scene, marker));
   vkr_scene_physics_set_paused(&scene, false_v);
-  VkrScriptFrame frame = {.scene_delta = 0.0};
-  vkr_script_host_frame(&host, &frame);
-  vkr_scene_update(&scene, frame.scene_delta);
-  assert(s_state->before == 2 && s_state->after == 2);
-  assert(s_state->last_tick == 2);
+  const uint64_t temp = arena_pos(host->temp);
+  script_test_frame(host, &scene);
+  assert(arena_pos(host->temp) == temp && s_life_temp_zeroed);
+  assert(s_life->fixed == 2u && s_life->late_fixed == 2u);
+  assert(s_life->last_tick == 2u && s_life_refused_spawn);
 
   // A hook failure faults the simulation with the module's name.
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
-  assert(scene.simulation.faulted && s_state->after == 3);
-  assert(strstr(scene.simulation.error_storage, "test: tick three"));
+  assert(scene.simulation.faulted && s_life->late_fixed == 3u);
+  assert(strstr(scene.simulation.error_storage, "life: tick three"));
 
+  // A native reset restarts the instances at the next frame on fresh data;
+  // the old instance's marker is released and a new one spawned.
   vkr_scene_physics_set_paused(&scene, true_v);
   assert(vkr_scene_physics_reset(&scene, NULL));
-  assert(s_state->resets == 1);
-  vkr_script_host_stop(&host);
-  assert(s_state->stops == 1 && !scene.simulation.enabled);
+  assert(host->restart_pending);
+  VkrScriptFrame frame = {.now = 2.0};
+  vkr_script_host_frame(host, &frame);
+  assert(!host->restart_pending && s_life_stops == 3u);
+  assert(s_life->starts == 1u && s_life->fixed == 0u);
+  assert(!vkr_scene_entity_alive(&scene, marker));
+  const VkrEntityId restarted = {.u64 = s_life_spawned.id};
+  assert(vkr_scene_entity_alive(&scene, restarted));
 
-  // A new session gets a new identity and freshly zeroed state.
-  assert(vkr_script_host_start(&host, &scene, &input, NULL, 0, &error));
-  assert(host.session.instance_id != first_instance && s_state->starts == 1);
-  vkr_script_host_stop(&host);
+  // Stop releases the instance's acquisitions.
+  vkr_script_host_stop(host);
+  assert(s_life_stops == 4u && !scene.simulation.enabled);
+  assert(!vkr_scene_entity_alive(&scene, restarted));
   vkr_scene_shutdown(&scene, NULL);
 }
 
-static void test_player_start_resolution(VkrAllocator *allocator) {
+// =============================================================================
+// Behaviors: per-entity hooks and scoped resources
+// =============================================================================
+
+typedef struct SpinData {
+  uint32_t unused;
+} SpinData;
+
+static uint32_t s_spin_starts;
+static uint32_t s_spin_stops;
+static uint32_t s_spin_updates;
+static uint32_t s_spin_destroys;
+static VkrEntity s_spin_child;
+/* What the last destroy hook saw: the component's speed and whether the
+   child its start spawned still lived. */
+static float32_t s_spin_destroy_speed;
+static bool8_t s_spin_destroy_child_alive;
+static uint32_t s_spin_stops_at_destroy;
+
+#define SPIN_FIELDS VKR_FIELD(F32, speed, "Speed", 0.5f, .unit = "turns/s")
+VKR_COMPONENT(Spin, spin, "Spin", SPIN_FIELDS)
+
+static void spin_start(VkrCtx *ctx, VkrEntity self, Spin *spin) {
+  assert(spin && spin->speed == 0.5f);
+  s_spin_starts++;
+  /* Scoped to this entity's behavior. */
+  s_spin_child =
+      vkr_spawn(ctx, &(VkrSpawnDesc){.name = "SpinChild", .parent = self});
+  assert(vkr_entity_valid(s_spin_child));
+}
+
+static void spin_update(VkrCtx *ctx, VkrEntity self, Spin *spin, float32_t dt) {
+  (void)ctx;
+  (void)self;
+  (void)dt;
+  spin->speed += 1.0f;
+  s_spin_updates++;
+}
+
+static void spin_stop(VkrCtx *ctx, VkrEntity self, Spin *spin) {
+  (void)ctx;
+  (void)self;
+  (void)spin;
+  s_spin_stops++;
+}
+
+static void spin_destroy(VkrCtx *ctx, VkrEntity self, Spin *spin) {
+  assert(vkr_alive(ctx, self) && spin);
+  s_spin_destroys++;
+  s_spin_destroy_speed = spin->speed;
+  s_spin_destroy_child_alive = vkr_alive(ctx, s_spin_child);
+  s_spin_stops_at_destroy = s_spin_stops;
+}
+
+VKR_BEHAVIOR(spin, .start = spin_start, .update = spin_update,
+             .stop = spin_stop, .destroy = spin_destroy)
+VKR_MODULE(spinner, SpinData, VKR_EXPORT_BEHAVIOR(spin))
+
+static void test_script_behaviors(VkrScriptHost *host) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &s_allocator, 53, 16, NULL));
+  InputState input = {0};
+  const VkrTypeDesc *type = vkr_scene_world_type_named(string8_lit("spin"));
+  assert(type);
+  Spin value;
+  type->defaults(&value);
+  const VkrEntityId first = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, first, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_typed(&scene, first, type, &value));
+
+  // Entities carrying the component start with the session.
+  const VkrScriptSessionDesc session = {.active = &scene, .input = &input};
+  const char *error = NULL;
+  s_life_mode = LIFE_IDLE;
+  assert(vkr_script_host_start(host, &session, &error));
+  assert(vkr_script_host_active(host) && s_spin_starts == 1u);
+  const VkrEntityId first_child = {.u64 = s_spin_child.id};
+  assert(vkr_scene_entity_alive(&scene, first_child));
+  script_test_frame(host, &scene);
+  assert(s_spin_updates == 1u);
+  assert(((const Spin *)vkr_scene_get_typed(&scene, first, type))->speed ==
+         1.5f);
+
+  // An entity that gains the component starts at the next frame.
+  const VkrEntityId second = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, second, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_typed(&scene, second, type, &value));
+  script_test_frame(host, &scene);
+  assert(s_spin_starts == 2u && s_spin_updates == 3u);
+  const VkrEntityId second_child = {.u64 = s_spin_child.id};
+
+  // Losing the component stops the behavior and releases its scope only.
+  assert(vkr_scene_remove_typed(&scene, first, type));
+  script_test_frame(host, &scene);
+  assert(s_spin_stops == 1u && s_spin_updates == 4u);
+  assert(!vkr_scene_entity_alive(&scene, first_child));
+  assert(vkr_scene_entity_alive(&scene, second_child));
+
+  // Destroying an entity, as the editor's delete does, runs destroy while
+  // the component and the behavior's spawn still exist, then stop, then
+  // releases the scope.
+  const VkrEntityId third = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, third, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_typed(&scene, third, type, &value));
+  script_test_frame(host, &scene);
+  assert(s_spin_starts == 3u);
+  const VkrEntityId third_child = {.u64 = s_spin_child.id};
+  vkr_scene_destroy_entity(&scene, third);
+  assert(s_spin_destroys == 1u && s_spin_destroy_speed == 1.5f);
+  assert(s_spin_destroy_child_alive && s_spin_stops_at_destroy == 1u);
+  assert(s_spin_stops == 2u);
+  assert(!vkr_scene_entity_alive(&scene, third));
+  assert(!vkr_scene_entity_alive(&scene, third_child));
+  assert(vkr_scene_entity_alive(&scene, second_child));
+  script_test_frame(host, &scene);
+  assert(s_spin_stops == 2u && s_spin_destroys == 1u);
+
+  // Stop ends the remaining behaviors without destroy hooks.
+  vkr_script_host_stop(host);
+  assert(s_spin_stops == 3u && s_spin_destroys == 1u);
+  assert(!vkr_scene_entity_alive(&scene, second_child));
+  assert(!scene.destroy_observer);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
+// =============================================================================
+// Containers: World and zone instances
+// =============================================================================
+
+typedef struct ZoneData {
+  VkrEntity spawned;
+} ZoneData;
+
+static uint32_t s_zone_starts;
+static uint32_t s_game_starts;
+static VkrEntity s_zone_spawned[2];
+static VkrEntity s_game_spawned;
+
+static void zone_start(VkrCtx *ctx, ZoneData *data) {
+  data->spawned = vkr_spawn(ctx, &(VkrSpawnDesc){.name = "ZoneMarker"});
+  assert(vkr_container_of(ctx, data->spawned).id == vkr_container_self(ctx).id);
+  s_zone_spawned[s_zone_starts++] = data->spawned;
+}
+
+static void game_start(VkrCtx *ctx, ZoneData *data) {
+  assert(vkr_container_self(ctx).id == vkr_container_world(ctx).id);
+  data->spawned = vkr_spawn(ctx, &(VkrSpawnDesc){.name = "GameMarker"});
+  s_game_spawned = data->spawned;
+  s_game_starts++;
+}
+
+VKR_MODULE(zone, ZoneData, , .start = zone_start)
+VKR_MODULE(game, ZoneData, , .scope = VKR_SCOPE_WORLD, .start = game_start)
+
+static VkrScene *test_scene_holding(VkrScene *a, VkrScene *b, VkrEntity e) {
+  const VkrEntityId id = {.u64 = e.id};
+  return vkr_scene_entity_alive(a, id)   ? a
+         : vkr_scene_entity_alive(b, id) ? b
+                                         : NULL;
+}
+
+static void test_script_containers(VkrScriptHost *host) {
   VkrScene world;
   VkrScene scene;
-  assert(vkr_scene_init(&world, allocator, VKR_SCENE_WORLD_ROOT_ID, 16, NULL));
-  assert(vkr_scene_init(&scene, allocator, 50, 16, NULL));
+  assert(
+      vkr_scene_init(&world, &s_allocator, VKR_SCENE_WORLD_ROOT_ID, 16, NULL));
+  assert(vkr_scene_init(&scene, &s_allocator, 0, 16, NULL));
+  InputState input = {0};
+  const VkrScriptSessionDesc session = {
+      .active = &scene, .world = &world, .input = &input};
+  const char *error = NULL;
+  s_life_mode = LIFE_IDLE;
+  assert(vkr_script_host_start(host, &session, &error));
+
+  // A container-scoped module runs on the World and on the played scene; a
+  // World-scoped one runs once, on the World.
+  assert(s_zone_starts == 2u && s_game_starts == 1u);
+  assert(test_scene_holding(&world, &scene, s_zone_spawned[0]) == &world);
+  assert(test_scene_holding(&world, &scene, s_zone_spawned[1]) == &scene);
+  assert(test_scene_holding(&world, &scene, s_game_spawned) == &world);
+  assert(vkr_script_host_instance_data(host, "zone", &scene));
+  assert(!vkr_script_host_instance_data(host, "game", &scene));
+
+  // Unloading the World ends its instances and releases what they spawned;
+  // the scene's instance lives on.
+  vkr_script_host_detach(host, &world);
+  assert(!test_scene_holding(&world, &scene, s_zone_spawned[0]));
+  assert(!test_scene_holding(&world, &scene, s_game_spawned));
+  assert(test_scene_holding(&world, &scene, s_zone_spawned[1]) == &scene);
+  assert(host->started && host->container_count == 1u);
+
+  vkr_script_host_stop(host);
+  assert(!test_scene_holding(&world, &scene, s_zone_spawned[1]));
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_scene_shutdown(&world, NULL);
+}
+
+// =============================================================================
+// Engine queries through a tool context
+// =============================================================================
+
+static void test_player_start_resolution(void) {
+  VkrScene world;
+  VkrScene scene;
+  assert(
+      vkr_scene_init(&world, &s_allocator, VKR_SCENE_WORLD_ROOT_ID, 16, NULL));
+  assert(vkr_scene_init(&scene, &s_allocator, 50, 16, NULL));
   vkr_scene_set_world_fallback(&scene, &world);
   Mat4 pose;
   assert(!vkr_scene_player_start(&scene, &pose));
@@ -195,11 +409,9 @@ static void test_player_start_resolution(VkrAllocator *allocator) {
 
 /* A placed model is the player's body when its entity or a descendant
    carries a mesh or a shape; an empty entity is not. */
-static void test_renders_mesh(VkrAllocator *allocator) {
+static void test_has_visual(VkrScriptHost *host) {
   VkrScene scene;
-  assert(vkr_scene_init(&scene, allocator, 52, 16, NULL));
-  VkrScriptHost host;
-  vkr_script_host_init(&host, allocator);
+  assert(vkr_scene_init(&scene, &s_allocator, 52, 16, NULL));
   const VkrEntityId root = vkr_scene_create_entity(&scene, NULL);
   const VkrEntityId node = vkr_scene_create_entity(&scene, NULL);
   const VkrEntityId empty = vkr_scene_create_entity(&scene, NULL);
@@ -216,18 +428,30 @@ static void test_renders_mesh(VkrAllocator *allocator) {
                             .dimensions = vec3_one(),
                             .mesh_index = VKR_INVALID_ID};
   assert(vkr_entity_add_component(scene.world, cube, scene.comp_shape, &shape));
-  vkr_scene_update_transforms(&scene);
-  assert(host.api.renders_mesh(&scene, root));
-  assert(host.api.renders_mesh(&scene, cube));
-  assert(host.api.renders_mesh(&scene, node));
-  assert(!host.api.renders_mesh(&scene, empty));
-  assert(!host.api.renders_mesh(&scene, VKR_ENTITY_ID_INVALID));
-  vkr_script_host_shutdown(&host);
+  VkrCtx *ctx = vkr_script_host_open_context(host, &scene, NULL, NULL);
+  assert(ctx);
+  assert(vkr_has_visual(ctx, (VkrEntity){.id = root.u64}));
+  assert(vkr_has_visual(ctx, (VkrEntity){.id = cube.u64}));
+  assert(vkr_has_visual(ctx, (VkrEntity){.id = node.u64}));
+  assert(!vkr_has_visual(ctx, (VkrEntity){.id = empty.u64}));
+  assert(!vkr_has_visual(ctx, VKR_ENTITY_NONE));
+
+  // A tool context's acquisitions are released when it closes.
+  const VkrEntity spawned =
+      vkr_spawn(ctx, &(VkrSpawnDesc){.parent = {root.u64}});
+  assert(vkr_alive(ctx, spawned));
+  vkr_destroy(ctx, (VkrEntity){.id = root.u64});
+  assert(!vkr_alive(ctx, spawned)); // Destroying a parent takes its children.
+  vkr_script_host_close_context(host);
   vkr_scene_shutdown(&scene, NULL);
 }
 
-/* The authoring macros, read back through the descriptors they generate:
-   member offsets, kinds, options, defaults and the module description. */
+// =============================================================================
+// Authoring macros
+// =============================================================================
+
+/* The descriptors the macros generate: member offsets, kinds, options,
+   defaults, behaviors and the module description. */
 static const char *const s_macro_modes[] = {"Walk", "Run", NULL};
 
 #define MACRO_GATE_FIELDS                                                      \
@@ -238,69 +462,81 @@ static const char *const s_macro_modes[] = {"Walk", "Run", NULL};
   VKR_FIELD(I32, offset, "Offset", -2)                                         \
   VKR_FIELD(VEC3, axis, "Axis", vec3_new(0.0f, 1.0f, 0.0f))                    \
   VKR_FIELD(ENUM, mode, "Mode", 1, .names = s_macro_modes)
-VKR_SCRIPT_COMPONENT(MacroGate, macro_gate, "Macro gate", MACRO_GATE_FIELDS)
+VKR_COMPONENT(MacroGate, macro_gate, "Macro gate", MACRO_GATE_FIELDS)
 
 #define MACRO_LAMP_FIELDS VKR_FIELD(F32, glow, "Glow", 1.0f)
-VKR_SCRIPT_COMPONENT(MacroLamp, macro_lamp, "Macro lamp", MACRO_LAMP_FIELDS)
+VKR_COMPONENT(MacroLamp, macro_lamp, "Macro lamp", MACRO_LAMP_FIELDS)
 
-typedef struct MacroState {
+typedef struct MacroData {
   uint32_t ticks;
-} MacroState;
+} MacroData;
 
-static VkrScriptStart macro_start(const VkrScriptSession *session, void *state,
-                                  const char **error) {
-  (void)session;
-  (void)state;
-  (void)error;
-  return VKR_SCRIPT_START_IDLE;
+static void macro_lamp_update(VkrCtx *ctx, VkrEntity self, MacroLamp *lamp,
+                              float32_t dt) {
+  (void)ctx;
+  (void)self;
+  (void)lamp;
+  (void)dt;
 }
 
-static void macro_stop(const VkrScriptSession *session, void *state) {
-  (void)session;
-  (void)state;
+static void macro_start(VkrCtx *ctx, MacroData *data) {
+  (void)ctx;
+  (void)data;
 }
 
-VKR_SCRIPT_MODULE(MacroProbe, MacroState, 3, (macro_gate)(macro_lamp),
-                  .start = macro_start, .stop = macro_stop)
+VKR_BEHAVIOR(macro_lamp, .update = macro_lamp_update)
+VKR_MODULE(MacroProbe, MacroData,
+           VKR_EXPORT_COMPONENT(macro_gate) VKR_EXPORT_BEHAVIOR(macro_lamp),
+           .data_version = 3, .start = macro_start)
 
 static void test_script_authoring_macros(void) {
-  VkrScriptApi api = {.version = VKR_SCRIPT_ABI_VERSION,
-                      .size = sizeof(VkrScriptApi)};
-  const VkrScriptModuleDesc *desc = vkr_script_module_MacroProbe(&api);
-  assert(desc && !strcmp(desc->name, "MacroProbe") && desc->type_count == 2u);
-  assert(desc->start == macro_start && desc->stop == macro_stop);
-  assert(desc->state_size == sizeof(MacroState) && desc->state_version == 3u);
-  const VkrTypeDesc *gate = desc->types[0];
-  assert(gate == macro_gate_type() && gate == macro_gate_type());
-  assert(!strcmp(gate->name, "macro_gate") && gate->property_count == 6u);
+  const VkrModuleDesc *desc = vkr_module_MacroProbe(VKR_SDK_VERSION);
+  assert(desc && !strcmp(desc->name, "MacroProbe"));
+  assert(desc->component_count == 1u && desc->behavior_count == 1u);
+  assert(desc->start && !desc->stop && !desc->update);
+  assert(desc->data_size == sizeof(MacroData) && desc->data_version == 3u);
+  assert(desc->scope == VKR_SCOPE_CONTAINER);
+  const VkrComponentDesc *gate = desc->components[0];
+  assert(gate == macro_gate_type());
+  assert(!strcmp(gate->name, "macro_gate") && gate->field_count == 6u);
   assert(gate->size == sizeof(MacroGate));
-  const VkrPropertyDesc *axis = &gate->properties[4];
-  assert(!strcmp(axis->name, "axis") && axis->kind == VKR_PROPERTY_VEC3 &&
+  const VkrFieldDesc *axis = &gate->fields[4];
+  assert(!strcmp(axis->name, "axis") && axis->kind == VKR_FIELD_KIND_VEC3 &&
          axis->offset == offsetof(MacroGate, axis));
-  assert(gate->properties[0].max == 10.0f &&
-         !strcmp(gate->properties[0].unit, "turns/s"));
-  assert(gate->properties[5].names == s_macro_modes);
+  assert(gate->fields[0].max == 10.0f &&
+         !strcmp(gate->fields[0].unit, "turns/s"));
+  assert(gate->fields[5].names == s_macro_modes);
   MacroGate value;
   memset(&value, 0xff, sizeof(value));
   gate->defaults(&value);
   assert(value.speed == 0.25f && !value.locked && value.count == 3u &&
          value.offset == -2 && value.axis.y == 1.0f && value.mode == 1);
-  assert(vkr_type_validate(gate, &value, NULL, 0u));
-  assert(desc->types[1]->property_count == 1u);
-  api.version = VKR_SCRIPT_ABI_VERSION + 1u;
-  assert(!vkr_script_module_MacroProbe(&api));
+  const VkrBehaviorDesc *lamp = desc->behaviors[0];
+  assert(lamp->component == macro_lamp_type() && lamp->update && !lamp->start);
+  assert(!vkr_module_MacroProbe(VKR_SDK_VERSION + 1u));
 }
 
 bool32_t run_script_host_tests(void) {
-  VkrDMemory memory;
-  assert(vkr_dmemory_create(MB(4), MB(32), &memory));
-  VkrAllocator allocator = {.ctx = &memory};
-  vkr_dmemory_allocator_create(&allocator);
-  test_script_host_lifecycle(&allocator);
-  test_player_start_resolution(&allocator);
-  test_renders_mesh(&allocator);
+  assert(vkr_dmemory_create(MB(4), MB(32), &s_memory));
+  s_allocator = (VkrAllocator){.ctx = &s_memory};
+  vkr_dmemory_allocator_create(&s_allocator);
   test_script_authoring_macros();
-  vkr_dmemory_allocator_destroy(&allocator);
+  test_player_start_resolution();
+
+  /* One host for the suite: its modules register their types once. */
+  static VkrScriptHost host;
+  assert(vkr_script_host_init(&host, &s_allocator));
+  const char *error = NULL;
+  assert(!vkr_script_host_add_module(&host, life_old_entry, &error));
+  assert(vkr_script_host_add_module(&host, vkr_module_life, &error));
+  test_script_host_lifecycle(&host);
+  assert(vkr_script_host_add_module(&host, vkr_module_spinner, &error));
+  test_script_behaviors(&host);
+  assert(vkr_script_host_add_module(&host, vkr_module_zone, &error));
+  assert(vkr_script_host_add_module(&host, vkr_module_game, &error));
+  test_script_containers(&host);
+  test_has_visual(&host);
+  vkr_script_host_shutdown(&host);
   printf("Script host tests passed\n");
   return true_v;
 }

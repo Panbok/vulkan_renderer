@@ -663,6 +663,12 @@ typedef struct VkrSceneSettings {
   (VKR_SCENE_SHOW_HIDE_STATIC_MESHES | VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES |   \
    VKR_SCENE_SHOW_HIDE_SHAPES)
 
+struct VkrScene;
+
+/** Called before an entity is destroyed, while its components exist. */
+typedef void (*VkrSceneEntityObserver)(struct VkrScene *scene,
+                                       VkrEntityId entity, void *context);
+
 typedef struct VkrScene {
   VkrScenePhysics *physics;
   /** Scenes sharing one native physics world (ADR-076), or NULL for a
@@ -768,6 +774,10 @@ typedef struct VkrScene {
   uint32_t type_count;
   /** Bumped by every world component change; resolution compares it. */
   uint64_t world_revision;
+  /** Told about each entity before vkr_scene_destroy_entity tears it down;
+      the script host runs destroy hooks from it (ADR-079). */
+  VkrSceneEntityObserver destroy_observer;
+  void *destroy_observer_context;
   /** Root World consulted after this scene's own singletons, or NULL; the
       runtime sets it each frame. Resolution notices its revision. */
   const struct VkrScene *world_fallback;
@@ -1013,10 +1023,22 @@ VkrEntityId vkr_scene_create_entity(VkrScene *scene, VkrSceneError *out_error);
 
 /**
  * @brief Destroy an entity and remove it from the scene.
+ *
+ * The destroy observer runs first, while the entity's components and
+ * children exist; it may destroy other entities, including this one.
  * @param scene Scene containing the entity
  * @param entity Entity to destroy
  */
 void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity);
+
+/** Installs the scene's one destroy observer; false when another holds the
+ * slot. `context` is borrowed until vkr_scene_unobserve_destroy. */
+bool8_t vkr_scene_observe_destroy(VkrScene *scene,
+                                  VkrSceneEntityObserver observer,
+                                  void *context);
+
+/** Removes the observer installed with `context`; false for another. */
+bool8_t vkr_scene_unobserve_destroy(VkrScene *scene, void *context);
 
 /**
  * @brief Check if an entity is alive.

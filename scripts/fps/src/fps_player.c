@@ -6,21 +6,15 @@
 #define PLAYER_LOOK_SCALE 0.0025f
 
 FpsPlayerSettings fps_player_settings_default(void) {
-  return (FpsPlayerSettings){.move_speed = 5.0f,
-                             .crouch_speed = 0.6f,
-                             .jump_speed = 5.0f,
-                             .magazine = 12,
-                             .reserve = 120,
-                             .camera_mode = FPS_CAMERA_RIG_FIRST_PERSON,
-                             .walk_speed = 1.5f,
-                             .acceleration = 14.0f,
-                             .turn_rate = 9.42477796f,
-                             .orient_to_movement = true_v};
+  FpsPlayerSettings settings;
+  fps_player_type()->defaults(&settings);
+  return settings;
 }
 
-static FpsPlayerState *player_state(FpsPlayer *player) {
-  return player->api->get_state(player->scene, player->entity,
-                                player->component);
+FpsPlayerState *fps_player_state(VkrCtx *ctx, const FpsPlayer *player) {
+  return player->attached
+             ? vkr_state_get(ctx, player->entity, player->state_type)
+             : NULL;
 }
 
 static bool8_t player_fail(FpsPlayer *player, const char *message) {
@@ -31,20 +25,20 @@ static bool8_t player_fail(FpsPlayer *player, const char *message) {
   return false_v;
 }
 
-static bool8_t player_prepare_animation(FpsPlayer *player, const char **error) {
-  const VkrScriptApi *api = player->api;
-  VkrAnimationPlayer *current =
-      player->visual.u64 ? api->animation_player(player->scene, player->visual)
-                         : NULL;
+static bool8_t player_prepare_animation(VkrCtx *ctx, FpsPlayer *player,
+                                        const char **error) {
+  const uint64_t animation_id =
+      vkr_entity_valid(player->visual) ? vkr_anim_id(ctx, player->visual) : 0u;
   player->animation = (FpsPlayerAnimation){0};
   player->locomotion = (FpsLocomotion){0};
   player->locomotion_active = false_v;
   player->pose_failed = false_v;
   player->weapon_reference_valid = false_v;
-  if (!current) {
+  player->animation_id = animation_id;
+  if (!animation_id) {
     return true_v;
   }
-  if (api->animation_graph(player->scene, player->visual)) {
+  if (vkr_anim_has_graph(ctx, player->visual)) {
     if (error) {
       *error = "Player animation already has a graph owner";
     }
@@ -52,20 +46,20 @@ static bool8_t player_prepare_animation(FpsPlayer *player, const char **error) {
   }
   // A bank with the mannequin's clip names moves with speed-synchronized
   // locomotion; any other plays its named action clips.
-  if (fps_locomotion_supported(api, current)) {
-    if (!fps_locomotion_initialize(&player->locomotion, api, current, error)) {
+  if (fps_locomotion_supported(ctx, player->visual)) {
+    if (!fps_locomotion_initialize(ctx, &player->locomotion, player->visual,
+                                   error)) {
       return false_v;
     }
     player->locomotion_active = true_v;
-  } else if (!fps_player_animation_initialize(&player->animation, api, current,
-                                              VKR_SCENE_SIMULATION_FIXED_DT,
+  } else if (!fps_player_animation_initialize(ctx, &player->animation,
+                                              player->visual, vkr_fixed_dt(ctx),
                                               error)) {
     return false_v;
   }
-  const VkrAnimationAsset *asset = api->animation_asset(current);
-  if (player->weapon_bone < asset->node_count) {
-    player->weapon_reference_inverse =
-        mat4_inverse(api->animation_global_pose(current)[player->weapon_bone]);
+  Mat4 bone;
+  if (vkr_anim_bone_pose(ctx, player->visual, player->weapon_bone, &bone)) {
+    player->weapon_reference_inverse = mat4_inverse(bone);
     player->weapon_reference_valid = true_v;
   }
   return true_v;
@@ -92,7 +86,7 @@ static bool8_t player_reserve_shot(const FpsWeaponShot *shot, void *context) {
   return true_v;
 }
 
-static void player_fire(FpsPlayer *player, FpsPlayerState *state,
+static void player_fire(VkrCtx *ctx, FpsPlayer *player, FpsPlayerState *state,
                         uint64_t tick) {
   FpsWeaponShot shot;
   if (fps_weapon_try_fire(&state->weapon, tick, player_reserve_shot, player,
@@ -104,18 +98,14 @@ static void player_fire(FpsPlayer *player, FpsPlayerState *state,
   const Vec3 direction =
       vec3_new(cosf(state->pitch) * cosf(state->yaw), sinf(state->pitch),
                cosf(state->pitch) * sinf(state->yaw));
-  const uint64_t ignored = player->entity.u64;
-  const VkrPhysicsQueryFilter filter = {
-      .mask = UINT16_MAX, .ignored_entities = &ignored, .ignored_count = 1};
-  player->hit_pending =
-      player->api->raycast(player->scene, eye, vec3_scale(direction, 100),
-                           &filter, &player->pending_hit);
+  const VkrQueryFilter filter = {
+      .mask = UINT16_MAX, .ignored = &player->entity, .ignored_count = 1};
+  player->hit_pending = vkr_raycast(ctx, eye, vec3_scale(direction, 100),
+                                    &filter, &player->pending_hit);
 }
 
-static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
-  const VkrScriptApi *api = player->api;
-  VkrScene *scene = player->scene;
-  FpsPlayerState *state = player_state(player);
+static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
+  FpsPlayerState *state = fps_player_state(ctx, player);
   if (!state) {
     return player_fail(player, "Player entity or behavior was removed");
   }
@@ -127,13 +117,10 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
   if (player->pose_failed) {
     return player_fail(player, player->error);
   }
-  VkrAnimationPlayer *bound = player->locomotion_active
-                                  ? player->locomotion.player
-                                  : player->animation.player;
-  if ((player->visual.u64 &&
-       (api->animation_player(scene, player->visual) != bound ||
-        api->animation_graph(scene, player->visual))) ||
-      (!player->visual.u64 && bound)) {
+  const uint64_t animation_id =
+      vkr_entity_valid(player->visual) ? vkr_anim_id(ctx, player->visual) : 0u;
+  if (animation_id != player->animation_id ||
+      (animation_id && vkr_anim_has_graph(ctx, player->visual))) {
     return player_fail(
         player, "Player animation binding changed; reset before resuming");
   }
@@ -163,7 +150,7 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
     }
     switch (command.action) {
     case FPS_ACTION_FIRE:
-      player_fire(player, state, tick);
+      player_fire(ctx, player, state, tick);
       break;
     case FPS_ACTION_RELOAD:
       (void)fps_weapon_reload_start(&state->weapon, tick, state->reserve_rounds,
@@ -185,12 +172,11 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
     return player_fail(player, fps_input_error(&player->commands));
   }
   if (state->held & (1u << FPS_ACTION_FIRE)) {
-    player_fire(player, state, tick);
+    player_fire(ctx, player, state, tick);
   }
-  VkrPhysicsCharacterState motor;
-  const char *error = NULL;
-  if (!api->character_get_state(scene, player->entity, &motor, &error)) {
-    return player_fail(player, error);
+  VkrCharacterState motor;
+  if (!vkr_character_state(ctx, player->entity, &motor)) {
+    return player_fail(player, vkr_last_error(ctx));
   }
   const float32_t forward = !!(state->held & (1u << FPS_ACTION_FORWARD)) -
                             !!(state->held & (1u << FPS_ACTION_BACKWARD));
@@ -205,7 +191,7 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
                                : walk_requested ? player->settings.walk_speed
                                                 : player->settings.move_speed;
   const float32_t speed = length > 0 ? move_speed / length : 0;
-  const float32_t dt = (float32_t)VKR_SCENE_SIMULATION_FIXED_DT;
+  const float32_t dt = (float32_t)vkr_fixed_dt(ctx);
   const Vec2 desired =
       vec2_new((cosf(state->yaw) * forward - sinf(state->yaw) * right) * speed,
                (sinf(state->yaw) * forward + cosf(state->yaw) * right) * speed);
@@ -239,26 +225,23 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
   } else {
     player->facing = state->yaw;
   }
-  const Vec3 gravity = api->gravity(scene);
-  VkrPhysicsCharacterInput input = {
-      .velocity = {player->move_velocity.x, motor.velocity[1],
-                   player->move_velocity.y},
-      .gravity = {gravity.x, gravity.y, gravity.z},
-      .crouch = crouch_requested,
-      .dt = dt};
-  if (motor.ground == VKR_PHYSICS_CHARACTER_ON_GROUND) {
-    input.velocity[1] = jump && !crouch_requested && !motor.crouched
-                            ? player->settings.jump_speed
-                            : motor.ground_velocity[1];
+  VkrCharacterMove move = {.velocity = vec3_new(player->move_velocity.x,
+                                                motor.velocity.y,
+                                                player->move_velocity.y),
+                           .gravity = vkr_gravity(ctx),
+                           .crouch = crouch_requested,
+                           .dt = dt};
+  if (motor.ground == VKR_GROUND_ON_GROUND) {
+    move.velocity.y = jump && !crouch_requested && !motor.crouched
+                          ? player->settings.jump_speed
+                          : motor.ground_velocity.y;
   }
-  if (!api->character_step(scene, player->entity, &input, &motor, &error)) {
-    return player_fail(player, error);
+  if (!vkr_character_move(ctx, player->entity, &move, &motor)) {
+    return player_fail(player, vkr_last_error(ctx));
   }
-  player->current_foot = vec3_new(
-      motor.foot_position[0], motor.foot_position[1], motor.foot_position[2]);
-  state->velocity =
-      vec3_new(motor.velocity[0], motor.velocity[1], motor.velocity[2]);
-  state->grounded = motor.ground == VKR_PHYSICS_CHARACTER_ON_GROUND;
+  player->current_foot = motor.foot;
+  state->velocity = motor.velocity;
+  state->grounded = motor.ground == VKR_GROUND_ON_GROUND;
   state->crouched = motor.crouched;
   player->camera.config.eye_height = state->crouched ? .9f : 1.6f;
   player->steps++;
@@ -273,42 +256,38 @@ static bool8_t player_before(FpsPlayer *player, uint64_t tick) {
         .up = state->velocity.y,
         .grounded = state->grounded,
         .crouched = state->crouched};
-  } else if (player->animation.player) {
+  } else if (vkr_entity_valid(player->animation.entity)) {
     const FpsPlayerAnimationInput animation = player_animation_input(state);
-    if (!fps_player_animation_update(&player->animation, &animation)) {
+    if (!fps_player_animation_update(ctx, &player->animation, &animation)) {
       return player_fail(player, "Player action animation failed");
     }
   }
   return true_v;
 }
 
-void fps_player_after_physics(FpsPlayer *player) {
+void fps_player_after_physics(VkrCtx *ctx, FpsPlayer *player) {
   if (player->shot_pending) {
     player->shots_fired++;
     if (player->hit_pending) {
       player->hits++;
-      const Vec3 impulse = vec3_scale(vec3_new(-player->pending_hit.normal[0],
-                                               -player->pending_hit.normal[1],
-                                               -player->pending_hit.normal[2]),
-                                      5.0f);
-      const VkrEntityId target = {.u64 = player->pending_hit.entity_id};
+      const Vec3 impulse =
+          vec3_scale(vec3_negate(player->pending_hit.normal), 5.0f);
       // Static hits remain valid facts; only a dynamic target accepts impulse.
-      (void)player->api->physics_impulse(player->scene, target, impulse, NULL,
-                                         NULL);
+      (void)vkr_impulse(ctx, player->pending_hit.entity, impulse, NULL);
     }
     player->shot_pending = false_v;
     player->hit_pending = false_v;
   }
 }
 
-void fps_player_reset(FpsPlayer *player) {
-  FpsPlayerState *state = player_state(player);
+void fps_player_reset(VkrCtx *ctx, FpsPlayer *player) {
+  FpsPlayerState *state = fps_player_state(ctx, player);
   if (!state || player->instance_id == UINT64_MAX) {
     player->commands.faulted = true_v;
     return;
   }
   const char *animation_error = NULL;
-  if (!player_prepare_animation(player, &animation_error)) {
+  if (!player_prepare_animation(ctx, player, &animation_error)) {
     player_fail(player, animation_error);
     player->commands.faulted = true_v;
     return;
@@ -336,13 +315,11 @@ void fps_player_reset(FpsPlayer *player) {
   player->active = false_v;
   player->shots_fired = 0;
   player->hits = 0;
-  VkrPhysicsCharacterState motor;
-  if (player->api->character_get_state(player->scene, player->entity, &motor,
-                                       NULL)) {
-    player->current_foot = vec3_new(
-        motor.foot_position[0], motor.foot_position[1], motor.foot_position[2]);
+  VkrCharacterState motor;
+  if (vkr_character_state(ctx, player->entity, &motor)) {
+    player->current_foot = motor.foot;
     player->previous_foot = player->current_foot;
-    state->grounded = motor.ground == VKR_PHYSICS_CHARACTER_ON_GROUND;
+    state->grounded = motor.ground == VKR_GROUND_ON_GROUND;
     state->crouched = motor.crouched;
   }
   player->steps = 0;
@@ -350,75 +327,78 @@ void fps_player_reset(FpsPlayer *player) {
   player->locomotion_input = (FpsLocomotionInput){.grounded = state->grounded,
                                                   .crouched = state->crouched};
   if (player->locomotion_active) {
-    if (!fps_locomotion_reset(&player->locomotion)) {
+    if (!fps_locomotion_reset(ctx, &player->locomotion)) {
       player_fail(player, "Player locomotion reset failed");
       player->commands.faulted = true_v;
     }
-  } else if (player->animation.player) {
+  } else if (vkr_entity_valid(player->animation.entity)) {
     const FpsPlayerAnimationInput animation = player_animation_input(state);
-    if (!fps_player_animation_reset(&player->animation, &animation)) {
+    if (!fps_player_animation_reset(ctx, &player->animation, &animation)) {
       player_fail(player, "Player animation reset failed");
       player->commands.faulted = true_v;
     }
   }
 }
 
-void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event) {
-  if (!player->scene || !player->active || player->commands.faulted) {
+/* A modifier is held while any of its keys is. */
+static bool8_t player_any_down(VkrCtx *ctx, VkrKey a, VkrKey b, VkrKey c) {
+  return vkr_key_down(ctx, a) || vkr_key_down(ctx, b) || vkr_key_down(ctx, c);
+}
+
+void fps_player_observe(VkrCtx *ctx, FpsPlayer *player,
+                        const VkrInputEvent *event) {
+  if (!player->attached || !player->active || player->commands.faulted) {
     return;
   }
   FpsAction action;
   bool8_t pressed = event->pressed;
-  if (event->kind == VKR_INPUT_TRANSITION_LOOK) {
+  if (event->kind == VKR_INPUT_LOOK) {
     action = FPS_ACTION_LOOK;
-    player->render_yaw = remainderf(
-        player->render_yaw + (float32_t)event->delta_x * PLAYER_LOOK_SCALE,
-        6.28318530718f);
-    // Captured look reports upward motion as positive delta_y (input.h).
-    player->render_pitch = Clamp(
-        player->render_pitch + (float32_t)event->delta_y * PLAYER_LOOK_SCALE,
-        -PLAYER_PITCH_LIMIT, PLAYER_PITCH_LIMIT);
-  } else if (event->kind == VKR_INPUT_TRANSITION_BUTTON &&
-             event->code == BUTTON_LEFT) {
+    player->render_yaw = remainderf(player->render_yaw + (float32_t)event->dx *
+                                                             PLAYER_LOOK_SCALE,
+                                    6.28318530718f);
+    // Captured look reports upward motion as positive dy.
+    player->render_pitch =
+        Clamp(player->render_pitch + (float32_t)event->dy * PLAYER_LOOK_SCALE,
+              -PLAYER_PITCH_LIMIT, PLAYER_PITCH_LIMIT);
+  } else if (event->kind == VKR_INPUT_BUTTON && event->code == VKR_MOUSE_LEFT) {
     action = FPS_ACTION_FIRE;
-  } else if (event->kind == VKR_INPUT_TRANSITION_KEY) {
+  } else if (event->kind == VKR_INPUT_KEY) {
     switch (event->code) {
-    case KEY_W:
+    case VKR_KEY_W:
       action = FPS_ACTION_FORWARD;
       break;
-    case KEY_S:
+    case VKR_KEY_S:
       action = FPS_ACTION_BACKWARD;
       break;
-    case KEY_A:
+    case VKR_KEY_A:
       action = FPS_ACTION_LEFT;
       break;
-    case KEY_D:
+    case VKR_KEY_D:
       action = FPS_ACTION_RIGHT;
       break;
-    case KEY_R:
+    case VKR_KEY_R:
       action = FPS_ACTION_RELOAD;
       break;
-    case KEY_SPACE:
+    case VKR_KEY_SPACE:
       action = FPS_ACTION_JUMP;
       break;
-    case KEY_V:
+    case VKR_KEY_V:
       action = FPS_ACTION_CAMERA;
       break;
-    case KEY_CONTROL:
-    case KEY_LCONTROL:
-    case KEY_RCONTROL:
+    case VKR_KEY_CONTROL:
+    case VKR_KEY_LCONTROL:
+    case VKR_KEY_RCONTROL:
       action = FPS_ACTION_CROUCH;
-      pressed = player->api->input_key_down(player->input, KEY_CONTROL) ||
-                player->api->input_key_down(player->input, KEY_LCONTROL) ||
-                player->api->input_key_down(player->input, KEY_RCONTROL);
+      pressed = player_any_down(ctx, VKR_KEY_CONTROL, VKR_KEY_LCONTROL,
+                                VKR_KEY_RCONTROL);
       break;
-    case KEY_SHIFT:
-    case KEY_LSHIFT:
-    case KEY_RSHIFT:
+    case VKR_KEY_SHIFT:
+    case VKR_KEY_LSHIFT:
+    case VKR_KEY_RSHIFT:
       action = FPS_ACTION_WALK;
-      pressed = player->api->input_key_down(player->input, KEY_SHIFT) ||
-                player->api->input_key_down(player->input, KEY_LSHIFT) ||
-                player->api->input_key_down(player->input, KEY_RSHIFT);
+      pressed =
+          player_any_down(ctx, VKR_KEY_SHIFT, VKR_KEY_LSHIFT, VKR_KEY_RSHIFT);
       break;
     default:
       return;
@@ -427,7 +407,7 @@ void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event) {
     return;
   }
   uint64_t tick;
-  if (!fps_input_tick(event->time_seconds - player->epoch, &tick)) {
+  if (!fps_input_tick(event->time - player->epoch, &tick)) {
     player->commands.faulted = true_v;
     player->commands.error = FPS_INPUT_ERROR_TIME;
   } else if (player->commands.last_sequence == UINT64_MAX ||
@@ -440,7 +420,7 @@ void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event) {
     // place an exact-boundary event one interval behind; admit it next instead.
     // Explicit/replayed queue commands retain strict late-input rejection.
     if (tick <= player->commands.consumed_tick &&
-        event->time_seconds >= player->last_frame_time) {
+        event->time >= player->last_frame_time) {
       tick = player->commands.consumed_tick + 1;
     }
     (void)fps_input_push(
@@ -461,58 +441,51 @@ void fps_player_observe(FpsPlayer *player, const VkrInputTransition *event) {
   }
 }
 
-bool8_t fps_player_before_physics(FpsPlayer *player, uint64_t tick,
+bool8_t fps_player_before_physics(VkrCtx *ctx, FpsPlayer *player, uint64_t tick,
                                   const char **error) {
-  if (!player_before(player, tick)) {
+  if (!player_before(ctx, player, tick)) {
     *error = player->error;
     return false_v;
   }
   return true_v;
 }
 
-bool8_t fps_player_attach(FpsPlayer *player, const FpsPlayerConfig *config,
-                          const char **error) {
-  const VkrScriptApi *api = config ? config->api : NULL;
-  VkrScene *scene = config ? config->scene : NULL;
-  if (!player || player->scene || !api || !scene || !config->input ||
-      !config->instance_id || config->instance_id == UINT64_MAX ||
-      !isfinite(config->yaw) || !api->physics_paused(scene) ||
-      api->simulation_completed_ticks(scene) || api->physics_debt(scene) ||
-      !api->entity_alive(scene, config->entity)) {
+bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
+                          const FpsPlayerConfig *config, const char **error) {
+  if (!player || player->attached || !config || !config->instance_id ||
+      config->instance_id == UINT64_MAX || !isfinite(config->yaw) ||
+      !vkr_paused(ctx) || vkr_ticks(ctx) || vkr_sim_debt(ctx) ||
+      !vkr_alive(ctx, config->entity)) {
     if (error)
-      *error = "Player requires an unbound paused/reset scene and input";
+      *error = "Player requires an unbound paused/reset scene";
     return false_v;
   }
-  const VkrComponentTypeId component = api->register_state(
-      scene, "FpsPlayerState", sizeof(FpsPlayerState), AlignOf(FpsPlayerState));
-  VkrPhysicsCharacterState existing_motor;
-  if (component == VKR_COMPONENT_TYPE_INVALID ||
-      api->has_state(scene, config->entity, component) ||
-      api->character_get_state(scene, config->entity, &existing_motor, NULL)) {
+  const VkrStateType state_type = VKR_STATE_TYPE(ctx, FpsPlayerState);
+  if (!state_type.id || vkr_state_get(ctx, config->entity, state_type) ||
+      vkr_character_state(ctx, config->entity, NULL)) {
     if (error)
       *error = "Player behavior/motor is already attached";
     return false_v;
   }
-  *player = (FpsPlayer){.api = api,
-                        .scene = scene,
-                        .input = config->input,
-                        .entity = config->entity,
-                        .component = component,
+  *player = (FpsPlayer){.entity = config->entity,
+                        .state_type = state_type,
                         .settings = config->settings,
                         .visual = config->visual,
                         .weapon_bone = config->weapon_bone,
                         .instance_id = config->instance_id - 1,
                         .spawn_yaw = config->yaw,
-                        .render_yaw = config->yaw};
-  FpsPlayerState state = {0};
-  if (!api->add_state(scene, config->entity, component, &state)) {
+                        .render_yaw = config->yaw,
+                        .attached = true_v};
+  if (!vkr_state_add(ctx, config->entity, state_type, NULL)) {
     goto fail;
   }
-  VkrPhysicsCharacterDesc motor = api->character_default();
-  if (!api->character_create(scene, config->entity, &motor,
-                             config->has_spawn ? &config->spawn_foot : NULL,
-                             error)) {
-    goto remove_component;
+  const VkrCharacterDesc motor = vkr_character_default(ctx);
+  if (!vkr_character_create(ctx, config->entity, &motor,
+                            config->has_spawn ? &config->spawn_foot : NULL)) {
+    if (error) {
+      *error = vkr_last_error(ctx);
+    }
+    goto remove_state;
   }
   const FpsCameraRigConfig camera = {.eye_height = 1.6f,
                                      .distance = 4,
@@ -529,7 +502,7 @@ bool8_t fps_player_attach(FpsPlayer *player, const FpsPlayerConfig *config,
     }
     goto remove_motor;
   }
-  fps_player_reset(player);
+  fps_player_reset(ctx, player);
   if (player->commands.faulted) {
     if (error) {
       *error = "Player animation initialization failed";
@@ -538,32 +511,31 @@ bool8_t fps_player_attach(FpsPlayer *player, const FpsPlayerConfig *config,
   }
   return true_v;
 remove_motor:
-  api->character_destroy(scene, config->entity, NULL);
-remove_component:
-  api->remove_state(scene, config->entity, component);
+  vkr_character_destroy(ctx, config->entity);
+remove_state:
+  vkr_state_remove(ctx, config->entity, state_type);
 fail:
   *player = (FpsPlayer){0};
   return false_v;
 }
 
-void fps_player_shutdown(FpsPlayer *player) {
-  if (!player || !player->scene) {
+void fps_player_shutdown(VkrCtx *ctx, FpsPlayer *player) {
+  if (!player || !player->attached) {
     return;
   }
-  const VkrScriptApi *api = player->api;
   // The scene owner destroys the entity; teardown releases only what attach
   // created and resets no unrelated native state.
-  api->character_destroy(player->scene, player->entity, NULL);
-  api->remove_state(player->scene, player->entity, player->component);
+  vkr_character_destroy(ctx, player->entity);
+  vkr_state_remove(ctx, player->entity, player->state_type);
   *player = (FpsPlayer){0};
 }
 
-float64_t fps_player_frame(FpsPlayer *player, float64_t now, bool8_t active) {
-  if (!player || !player->scene || !isfinite(now)) {
+float64_t fps_player_frame(VkrCtx *ctx, FpsPlayer *player, float64_t now,
+                           bool8_t active) {
+  if (!player || !player->attached || !isfinite(now)) {
     return 0;
   }
-  const VkrScriptApi *api = player->api;
-  const bool8_t running = api->simulation_running(player->scene);
+  const bool8_t running = vkr_simulating(ctx);
   const float64_t dt =
       running && player->clock_running ? now - player->last_frame_time : 0.0;
   if (dt < 0.0 || !isfinite(dt)) {
@@ -572,14 +544,13 @@ float64_t fps_player_frame(FpsPlayer *player, float64_t now, bool8_t active) {
     return 0;
   }
   if (!running || !player->clock_running) {
-    player->epoch = now - api->physics_time(player->scene) -
-                    api->physics_debt(player->scene);
+    player->epoch = now - vkr_sim_time(ctx) - vkr_sim_debt(ctx);
   }
   player->last_frame_time = now;
   player->clock_running = running;
   active = active && running;
   if (!active || !player->active) {
-    FpsPlayerState *state = player_state(player);
+    FpsPlayerState *state = fps_player_state(ctx, player);
     if (state) {
       if (player->active && !active) {
         player->render_yaw = state->yaw;
@@ -588,45 +559,48 @@ float64_t fps_player_frame(FpsPlayer *player, float64_t now, bool8_t active) {
       state->held = 0;
       fps_weapon_reload_cancel(&state->weapon, state->reload);
     }
-    player->commands = (FpsInput){
-        .consumed_tick = api->simulation_completed_ticks(player->scene)};
+    player->commands = (FpsInput){.consumed_tick = vkr_ticks(ctx)};
   }
   player->active = active;
   return dt;
 }
 
+typedef struct PlayerSweep {
+  VkrCtx *ctx;
+  const FpsPlayer *player;
+} PlayerSweep;
+
 static bool8_t player_camera_sweep(Vec3 origin, Vec3 displacement,
                                    float32_t radius, void *context,
                                    float32_t *fraction) {
-  FpsPlayer *player = context;
-  const uint64_t ignored = player->entity.u64;
-  const VkrPhysicsQueryFilter filter = {
-      .mask = UINT16_MAX, .ignored_entities = &ignored, .ignored_count = 1};
-  VkrPhysicsRayHit hit;
-  bool8_t has_hit = false_v;
-  if (!player->api->sweep_sphere(player->scene, origin, displacement, radius,
-                                 &filter, &hit, &has_hit)) {
-    return false_v;
+  const PlayerSweep *sweep = context;
+  const VkrQueryFilter filter = {.mask = UINT16_MAX,
+                                 .ignored = &sweep->player->entity,
+                                 .ignored_count = 1};
+  VkrRayHit hit;
+  if (vkr_sweep_sphere(sweep->ctx, origin, displacement, radius, &filter,
+                       &hit)) {
+    *fraction = hit.fraction;
+    return true_v;
   }
-  *fraction = has_hit ? hit.fraction : 1.0f;
+  /* No hit, or a refused query: the camera keeps its full distance. */
+  *fraction = 1.0f;
   return true_v;
 }
 
-bool8_t fps_player_camera(FpsPlayer *player, FpsCameraRigPose *pose) {
-  if (!player || !player->scene) {
+bool8_t fps_player_camera(VkrCtx *ctx, FpsPlayer *player,
+                          FpsCameraRigPose *pose) {
+  if (!player || !player->attached) {
     return false_v;
   }
-  const float32_t alpha =
-      player->api->physics_paused(player->scene)
-          ? 1
-          : (float32_t)Min(1.0, player->api->physics_debt(player->scene) /
-                                    VKR_SCENE_SIMULATION_FIXED_DT);
+  const float32_t alpha = vkr_tick_alpha(ctx);
   const Vec3 foot = vec3_add(
       player->previous_foot,
       vec3_scale(vec3_sub(player->current_foot, player->previous_foot), alpha));
+  PlayerSweep sweep = {.ctx = ctx, .player = player};
   return fps_camera_rig_evaluate(&player->camera, foot, player->render_yaw,
                                  player->render_pitch, player_camera_sweep,
-                                 player, pose);
+                                 &sweep, pose);
 }
 
 float32_t fps_player_render_facing(const FpsPlayer *player, float32_t alpha) {
@@ -635,21 +609,21 @@ float32_t fps_player_render_facing(const FpsPlayer *player, float32_t alpha) {
   return player->previous_facing + turn * Clamp(alpha, 0.0f, 1.0f);
 }
 
-void fps_player_animate(FpsPlayer *player, float32_t alpha) {
+void fps_player_animate(VkrCtx *ctx, FpsPlayer *player, float32_t alpha) {
   if (!player->locomotion_active || !player->steps || player->pose_failed) {
     return;
   }
   // The root renders `alpha` of the way through the latest tick.
   const float64_t time =
       ((float64_t)player->steps - 1.0 + (float64_t)Clamp(alpha, 0.0f, 1.0f)) *
-      VKR_SCENE_SIMULATION_FIXED_DT;
+      vkr_fixed_dt(ctx);
   if (time <= player->pose_time) {
     return;
   }
   const float64_t dt = time - player->pose_time;
   player->pose_time = time;
-  if (!fps_locomotion_update(&player->locomotion, &player->locomotion_input,
-                             dt)) {
+  if (!fps_locomotion_update(ctx, &player->locomotion,
+                             &player->locomotion_input, dt)) {
     player_fail(player, "Player locomotion animation failed");
     player->pose_failed = true_v;
   }

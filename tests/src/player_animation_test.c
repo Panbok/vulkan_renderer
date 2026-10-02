@@ -5,6 +5,7 @@
 #include "fps_player.h"
 #include "fps_player_animation.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "script/vkr_script_host.h"
 #include <assert.h>
 #include <math.h>
@@ -29,8 +30,20 @@ enum {
   TEST_CLIPS
 };
 
-/* The engine table the player animation calls through. */
+/* The FPS animation code drives an entity's animation through the SDK; a
+   tool context binds each test's player to one entity. */
 static VkrScriptHost s_script_host;
+static VkrCtx *s_ctx;
+static VkrEntity s_entity;
+static VkrAnimationPlayer *s_bound;
+
+/* Binds `player` to the test entity and returns the context. */
+static VkrCtx *test_bind(VkrAnimationPlayer *player) {
+  assert(vkr_script_host_bind_animation(
+      &s_script_host, (VkrEntityId){.u64 = s_entity.id}, player));
+  s_bound = player;
+  return s_ctx;
+}
 
 typedef struct PlayerAnimationFixture {
   VkrAnimationNode node;
@@ -106,14 +119,14 @@ static void player_animation_actions(VkrAllocator *scratch) {
   assert(player);
   FpsPlayerAnimation animation = {0};
   const char *error = NULL;
-  assert(fps_player_animation_initialize(&animation, &s_script_host.api, player,
-                                         1.0 / 60, &error));
+  assert(fps_player_animation_initialize(test_bind(player), &animation,
+                                         s_entity, 1.0 / 60, &error));
   assert(!error && animation.reload_ticks == 168);
   assert(vkr_animation_player_clip(player) == TEST_IDLE);
   assert(player_animation_x(player) == TEST_IDLE + 1);
 
   FpsPlayerAnimationInput input = {.grounded = true_v, .speed = 5};
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_RUN);
   assert(fabs(vkr_animation_player_rate(player) - 5.0 / 3.4) < 1e-6);
   assert(vkr_animation_player_time(player) == 0);
@@ -122,14 +135,14 @@ static void player_animation_actions(VkrAllocator *scratch) {
   assert(fabsf(player_animation_x(player) - 2.5f) < 1e-5f);
   const float64_t time = vkr_animation_player_time(player);
   const uint64_t generation = vkr_animation_player_generation(player);
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_time(player) == time);
   assert(vkr_animation_player_generation(player) == generation);
   assert(vkr_animation_player_advance(player, 0.1));
   assert(player_animation_x(player) == TEST_RUN + 1);
 
   input.shot_sequence = 1;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_FIRE);
   assert(!vkr_animation_player_loop(player));
   assert(vkr_animation_player_rate(player) == 1);
@@ -137,90 +150,90 @@ static void player_animation_actions(VkrAllocator *scratch) {
   const float32_t interrupted_pose = player_animation_x(player);
   assert(fabsf(interrupted_pose - 6.5f) < 1e-5f);
   input.shot_sequence = 2;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(player_animation_x(player) == interrupted_pose);
   assert(vkr_animation_player_time(player) == 0);
   assert(vkr_animation_player_advance(player, 0.04));
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_time(player) == 0.04);
   assert(vkr_animation_player_advance(player, 0.4));
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_RUN);
 
   input.reloading = true_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_RELOAD);
   assert(vkr_animation_player_rate(player) == 1);
   assert(vkr_animation_player_advance(player, 1.4));
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_time(player) == 1.4);
   assert(vkr_animation_player_advance(player, 2));
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_RELOAD);
   assert(vkr_animation_player_time(player) ==
          vkr_animation_player_duration(player));
   input.reloading = false_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_RUN);
   input.reloading = true_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_time(player) == 0);
   assert(vkr_animation_player_advance(player, 0.2));
   input.reloading = false_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_RUN);
 
   input.speed = 0;
   input.shot_sequence = 0;
-  assert(!fps_player_animation_update(&animation, &input));
-  assert(fps_player_animation_reset(&animation, &input));
+  assert(!fps_player_animation_update(s_ctx, &animation, &input));
+  assert(fps_player_animation_reset(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_IDLE);
   assert(vkr_animation_player_time(player) == 0);
   input.grounded = false_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_AIR);
   assert(vkr_animation_player_loop(player));
   assert(vkr_animation_player_advance(player, 0.8));
   input.grounded = true_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_LAND);
   assert(vkr_animation_player_advance(player, 0.8));
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_IDLE);
 
   input.crouched = true_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_CROUCH_DOWN);
   assert(vkr_animation_player_advance(player, 0.1));
   const float32_t crouch_pose = player_animation_x(player);
   input.crouched = false_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_CROUCH_UP);
   assert(player_animation_x(player) == crouch_pose);
   input.crouched = true_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_advance(player, 0.5));
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_CROUCH_IDLE);
   input.speed = 0.6f;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_CROUCH_WALK);
   assert(vkr_animation_player_rate(player) == 1);
   input.shot_sequence = 1;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == TEST_CROUCH_FIRE);
 
   const FpsPlayerAnimation saved = animation;
   const uint64_t saved_generation = vkr_animation_player_generation(player);
   input.speed = NAN;
-  assert(!fps_player_animation_update(&animation, &input));
+  assert(!fps_player_animation_update(s_ctx, &animation, &input));
   assert(MemCompare(&saved, &animation, sizeof(saved)) == 0);
   assert(vkr_animation_player_generation(player) == saved_generation);
-  assert(!fps_player_animation_initialize(&animation, &s_script_host.api,
-                                          player, 0, &error));
+  assert(!fps_player_animation_initialize(test_bind(player), &animation,
+                                          s_entity, 0, &error));
   assert(error && MemCompare(&saved, &animation, sizeof(saved)) == 0);
-  assert(!fps_player_animation_initialize(&animation, &s_script_host.api,
-                                          player, 1e-100, &error));
+  assert(!fps_player_animation_initialize(test_bind(player), &animation,
+                                          s_entity, 1e-100, &error));
   assert(error && MemCompare(&saved, &animation, sizeof(saved)) == 0);
   vkr_animation_player_destroy(player);
 }
@@ -237,17 +250,17 @@ static void player_animation_fallback(VkrAllocator *scratch) {
       &fixture.asset, scratch, 0, false_v, 1, true_v, NULL);
   assert(player);
   FpsPlayerAnimation animation;
-  assert(fps_player_animation_initialize(&animation, &s_script_host.api, player,
-                                         1.0 / 60, NULL));
+  assert(fps_player_animation_initialize(test_bind(player), &animation,
+                                         s_entity, 1.0 / 60, NULL));
   FpsPlayerAnimationInput input = {.grounded = true_v, .speed = 5};
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == 2);
   assert(fabs(vkr_animation_player_rate(player) - 5.0 / 1.3) < 1e-6);
   input.shot_sequence = 1;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == 3);
   input.reloading = true_v;
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == 0);
   vkr_animation_player_destroy(player);
 
@@ -256,10 +269,10 @@ static void player_animation_fallback(VkrAllocator *scratch) {
   player = vkr_animation_player_create(&fixture.asset, scratch, 0, true_v, 1,
                                        true_v, NULL);
   assert(player);
-  assert(fps_player_animation_initialize(&animation, &s_script_host.api, player,
-                                         1.0 / 60, NULL));
+  assert(fps_player_animation_initialize(test_bind(player), &animation,
+                                         s_entity, 1.0 / 60, NULL));
   assert(animation.reload_ticks == 0);
-  assert(fps_player_animation_update(&animation, &input));
+  assert(fps_player_animation_update(s_ctx, &animation, &input));
   assert(vkr_animation_player_clip(player) == 0);
   assert(vkr_animation_player_loop(player));
   vkr_animation_player_destroy(player);
@@ -355,7 +368,7 @@ static float64_t locomotion_time(VkrAnimationPlayer *player, const char *name) {
 static void locomotion_run(FpsLocomotion *locomotion,
                            const FpsLocomotionInput *input, uint32_t frames) {
   for (uint32_t i = 0; i < frames; ++i) {
-    assert(fps_locomotion_update(locomotion, input, 1.0 / 60));
+    assert(fps_locomotion_update(s_ctx, locomotion, input, 1.0 / 60));
   }
 }
 
@@ -364,9 +377,9 @@ static float64_t locomotion_advance(FpsLocomotion *locomotion,
                                     const FpsLocomotionInput *input,
                                     const char *name) {
   const float64_t duration = locomotion_table(name)->duration;
-  const float64_t before = locomotion_time(locomotion->player, name);
+  const float64_t before = locomotion_time(s_bound, name);
   locomotion_run(locomotion, input, 1);
-  const float64_t after = locomotion_time(locomotion->player, name);
+  const float64_t after = locomotion_time(s_bound, name);
   return fmod(after - before + duration, duration);
 }
 
@@ -380,10 +393,10 @@ static void player_animation_locomotion(VkrAllocator *scratch) {
   VkrAnimationPlayer *player = vkr_animation_player_create(
       &fixture.asset, scratch, 0, true_v, 1, true_v, NULL);
   assert(player);
-  assert(fps_locomotion_supported(&s_script_host.api, player));
+  assert(fps_locomotion_supported(test_bind(player), s_entity));
   FpsLocomotion locomotion;
   const char *error = NULL;
-  assert(fps_locomotion_initialize(&locomotion, &s_script_host.api, player,
+  assert(fps_locomotion_initialize(test_bind(player), &locomotion, s_entity,
                                    &error));
   // Paused, so the scene clock never replaces the pose; posed at Idle.
   assert(!vkr_animation_player_playing(player));
@@ -483,9 +496,9 @@ static void player_animation_locomotion(VkrAllocator *scratch) {
 
   // Nonfinite input and negative time are refused.
   input.forward = NAN;
-  assert(!fps_locomotion_update(&locomotion, &input, dt));
+  assert(!fps_locomotion_update(s_ctx, &locomotion, &input, dt));
   input.forward = 0;
-  assert(!fps_locomotion_update(&locomotion, &input, -dt));
+  assert(!fps_locomotion_update(s_ctx, &locomotion, &input, -dt));
 
   // A body poses at the root's render time, `alpha` into the latest tick,
   // never ahead of it and never twice for one time.
@@ -494,14 +507,14 @@ static void player_animation_locomotion(VkrAllocator *scratch) {
                      .locomotion_input = {.grounded = true_v},
                      .locomotion_active = true_v,
                      .steps = 3};
-  assert(fps_locomotion_reset(&body.locomotion));
-  fps_player_animate(&body, 0.5f);
+  assert(fps_locomotion_reset(s_ctx, &body.locomotion));
+  fps_player_animate(s_ctx, &body, 0.5f);
   assert(locomotion_near(body.pose_time, 2.5 * dt));
   assert(locomotion_near(locomotion_time(player, "Idle"), 2.5 * dt));
-  fps_player_animate(&body, 0.5f);
+  fps_player_animate(s_ctx, &body, 0.5f);
   assert(locomotion_near(locomotion_time(player, "Idle"), 2.5 * dt));
   body.steps = 4;
-  fps_player_animate(&body, 0.25f);
+  fps_player_animate(s_ctx, &body, 0.25f);
   assert(locomotion_near(locomotion_time(player, "Idle"), 3.25 * dt));
   vkr_animation_player_destroy(player);
 }
@@ -511,11 +524,24 @@ bool32_t run_player_animation_tests(void) {
   Arena *arena = arena_create(MB(1), KB(64));
   assert(arena);
   VkrAllocator scratch = {.ctx = arena};
-  vkr_script_host_init(&s_script_host, &scratch);
   assert(vkr_allocator_arena(&scratch));
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(32), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  assert(vkr_script_host_init(&s_script_host, &allocator));
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &allocator, 48, 16, NULL));
+  s_entity = (VkrEntity){.id = vkr_scene_create_entity(&scene, NULL).u64};
+  s_ctx = vkr_script_host_open_context(&s_script_host, &scene, NULL, NULL);
+  assert(s_ctx);
   player_animation_actions(&scratch);
   player_animation_fallback(&scratch);
   player_animation_locomotion(&scratch);
+  vkr_script_host_close_context(&s_script_host);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_script_host_shutdown(&s_script_host);
+  vkr_dmemory_allocator_destroy(&allocator);
   vkr_allocator_release_global_accounting(&scratch);
   arena_destroy(arena);
   printf("Player animation tests passed.\n");

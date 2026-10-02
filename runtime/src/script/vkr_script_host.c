@@ -1,215 +1,34 @@
-#include "script/vkr_script_host.h"
+#include "script/vkr_script_internal.h"
 
 #include "filesystem/filesystem.h"
-#include "renderer/systems/vkr_scene_animation.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_scene_model.h"
+#include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_simulation.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-// =============================================================================
-// API table: engine entry points whose signatures differ from the ABI
-// =============================================================================
-
-static void script_api_log(LogLevel level, const char *message) {
-  _log_message(level, "script", 0u, "%s", message ? message : "");
-}
-
-static bool8_t script_api_world_matrix(VkrScene *scene, VkrEntityId entity,
-                                       Mat4 *out) {
-  const SceneTransform *transform =
-      scene && vkr_scene_entity_alive(scene, entity)
-          ? vkr_scene_get_transform(scene, entity)
-          : NULL;
-  if (!transform || !out) {
-    return false_v;
-  }
-  *out = transform->world;
-  return true_v;
-}
-
-static VkrComponentTypeId script_api_register_state(VkrScene *scene,
-                                                    const char *name,
-                                                    uint32_t size,
-                                                    uint32_t align) {
-  return vkr_entity_register_component_once(scene->world, name, size, align);
-}
-
-static bool8_t script_api_add_state(VkrScene *scene, VkrEntityId entity,
-                                    VkrComponentTypeId type,
-                                    const void *value) {
-  return vkr_entity_add_component(scene->world, entity, type, value);
-}
-
-static bool8_t script_api_remove_state(VkrScene *scene, VkrEntityId entity,
-                                       VkrComponentTypeId type) {
-  return vkr_entity_remove_component(scene->world, entity, type);
-}
-
-static bool8_t script_api_has_state(const VkrScene *scene, VkrEntityId entity,
-                                    VkrComponentTypeId type) {
-  return type != VKR_COMPONENT_TYPE_INVALID &&
-         vkr_entity_has_component(scene->world, entity, type);
-}
-
-static void *script_api_get_state(VkrScene *scene, VkrEntityId entity,
-                                  VkrComponentTypeId type) {
-  return vkr_entity_get_component_if_alive(scene->world, entity, type);
-}
-
-/* A module passes its own descriptors; scenes know the registered copies,
- * which share the name. Engine types resolve to themselves. */
-static const VkrTypeDesc *script_api_type(const VkrTypeDesc *type) {
-  if (!type || !type->name || vkr_scene_world_type_registered(type)) {
-    return type;
-  }
-  const VkrTypeDesc *named =
-      vkr_scene_world_type_named(string8_create_from_cstr(
-          (const uint8_t *)type->name, strlen(type->name)));
-  return named ? named : type;
-}
-
-static const void *script_api_get_typed(const VkrScene *scene,
-                                        VkrEntityId entity,
-                                        const VkrTypeDesc *type) {
-  return vkr_scene_get_typed(scene, entity, script_api_type(type));
-}
-
-static bool8_t script_api_set_typed(VkrScene *scene, VkrEntityId entity,
-                                    const VkrTypeDesc *type,
-                                    const void *value) {
-  return vkr_scene_set_typed(scene, entity, script_api_type(type), value);
-}
-
-static uint32_t script_api_find_typed(const VkrScene *scene,
-                                      const VkrTypeDesc *type,
-                                      VkrEntityId *out_entities,
-                                      uint32_t capacity) {
-  return vkr_scene_find_typed(scene, script_api_type(type), out_entities,
-                              capacity);
-}
-
-static bool8_t script_api_simulation_running(const VkrScene *scene) {
-  return !scene->physics_paused && !scene->physics_disabled &&
-         !scene->simulation.faulted;
-}
-
-static bool8_t script_api_input_key_down(InputState *input, Keys key) {
-  return input_is_key_down(input, key);
-}
-
-static bool8_t script_api_spawn_model(VkrScene *scene,
-                                      struct VkrRenderAssets *assets,
-                                      VkrEntityId entity, const char *mesh_path,
-                                      const char *animation_path,
-                                      const char **error) {
-  VkrSceneModelDesc desc = {.animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
-  if (mesh_path) {
-    desc.mesh_path =
-        string8_create_from_cstr((const uint8_t *)mesh_path, strlen(mesh_path));
-  }
-  if (animation_path) {
-    desc.animation_path = string8_create_from_cstr(
-        (const uint8_t *)animation_path, strlen(animation_path));
-  }
-  return vkr_scene_spawn_model(scene, assets, entity, &desc, error);
-}
-
-/* Deeper hierarchies answer from their first levels. */
-#define SCRIPT_MESH_DEPTH_MAX 64u
-
-static bool8_t script_subtree_renders_mesh(const VkrScene *scene,
-                                           VkrEntityId entity, uint32_t depth) {
-  if (vkr_entity_has_component(scene->world, entity,
-                               scene->comp_mesh_renderer) ||
-      vkr_entity_has_component(scene->world, entity, scene->comp_shape)) {
-    return true_v;
-  }
-  uint32_t count = 0;
-  const VkrEntityId *children =
-      depth < SCRIPT_MESH_DEPTH_MAX
-          ? vkr_scene_get_children(scene, entity, &count)
-          : NULL;
-  for (uint32_t i = 0; i < count; ++i) {
-    if (script_subtree_renders_mesh(scene, children[i], depth + 1u)) {
-      return true_v;
-    }
-  }
-  return false_v;
-}
-
-static bool8_t script_api_renders_mesh(const VkrScene *scene,
-                                       VkrEntityId entity) {
-  return scene && scene->world && vkr_scene_entity_alive(scene, entity) &&
-         script_subtree_renders_mesh(scene, entity, 0u);
-}
-
-static VkrScriptApi script_api_table(void) {
-  return (VkrScriptApi){
-      .version = VKR_SCRIPT_ABI_VERSION,
-      .size = sizeof(VkrScriptApi),
-      .log = script_api_log,
-      .entity_alive = vkr_scene_entity_alive,
-      .create_entity = vkr_scene_create_entity,
-      .destroy_entity = vkr_scene_destroy_entity,
-      .set_name = vkr_scene_set_name,
-      .set_transform = vkr_scene_set_transform,
-      .set_parent = vkr_scene_set_parent,
-      .set_visibility = vkr_scene_set_visibility,
-      .entity_visible = vkr_scene_entity_visible,
-      .set_shape = vkr_scene_set_shape,
-      .world_matrix = script_api_world_matrix,
-      .set_evaluated_transform = vkr_scene_set_evaluated_transform,
-      .update_transforms = vkr_scene_update_transforms,
-      .get_typed = script_api_get_typed,
-      .set_typed = script_api_set_typed,
-      .find_typed = script_api_find_typed,
-      .register_state = script_api_register_state,
-      .add_state = script_api_add_state,
-      .remove_state = script_api_remove_state,
-      .has_state = script_api_has_state,
-      .get_state = script_api_get_state,
-      .player_start_type = &vkr_scene_player_start_type,
-      .player_start = vkr_scene_player_start,
-      .simulation_running = script_api_simulation_running,
-      .simulation_completed_ticks = vkr_scene_simulation_completed_ticks,
-      .physics_time = vkr_scene_physics_time,
-      .physics_debt = vkr_scene_physics_debt,
-      .physics_paused = vkr_scene_physics_is_paused,
-      .gravity = vkr_scene_gravity,
-      .physics_default = vkr_scene_physics_default,
-      .physics_apply = vkr_scene_physics_apply,
-      .physics_impulse = vkr_scene_physics_impulse,
-      .raycast = vkr_scene_physics_raycast_query,
-      .sweep_sphere = vkr_scene_physics_sweep_sphere,
-      .character_default = vkr_physics_character_default,
-      .character_create = vkr_scene_character_create,
-      .character_destroy = vkr_scene_character_destroy,
-      .character_get_state = vkr_scene_character_get_state,
-      .character_step = vkr_scene_character_step,
-      .animation_player = vkr_scene_animation_get_player,
-      .animation_graph = vkr_scene_animation_get_graph,
-      .animation_asset = vkr_animation_player_asset,
-      .animation_global_pose = vkr_animation_player_global_pose,
-      .animation_select_clip = vkr_animation_player_select_clip,
-      .animation_crossfade = vkr_animation_player_crossfade,
-      .animation_set_playing = vkr_animation_player_set_playing,
-      .animation_set_rate = vkr_animation_player_set_rate,
-      .animation_rate = vkr_animation_player_rate,
-      .animation_duration = vkr_animation_player_duration,
-      .animation_time = vkr_animation_player_time,
-      .input_key_down = script_api_input_key_down,
-      .physics_world_matrix = vkr_scene_physics_world_matrix,
-      .spawn_model = script_api_spawn_model,
-      .despawn_model = vkr_scene_despawn_model,
-      .animation_sample_blend = vkr_animation_player_sample_blend,
-      .renders_mesh = script_api_renders_mesh,
-  };
-}
+/* Instance data, ledgers and bindings live in the host's own freeable
+   memory; temp memory rewinds after every hook. */
+#define SCRIPT_INSTANCE_MEMORY_RESERVE MB(64)
+#define SCRIPT_INSTANCE_MEMORY_SIZE MB(4)
+#define SCRIPT_TEMP_RESERVE MB(16)
+#define SCRIPT_TEMP_COMMIT KB(64)
+#define SCRIPT_LEDGER_MIN_CAPACITY 16u
 
 // =============================================================================
 // Component type copies
 // =============================================================================
+
+/* Indexed by VkrFieldKind. */
+static const VkrPropertyKind s_field_kinds[] = {
+    VKR_PROPERTY_BOOL,  VKR_PROPERTY_I32,       VKR_PROPERTY_U32,
+    VKR_PROPERTY_F32,   VKR_PROPERTY_ANGLE,     VKR_PROPERTY_VEC2,
+    VKR_PROPERTY_VEC3,  VKR_PROPERTY_VEC4,      VKR_PROPERTY_QUAT,
+    VKR_PROPERTY_COLOR, VKR_PROPERTY_DIRECTION, VKR_PROPERTY_ENUM,
+};
 
 static char *script_copy_text(VkrScriptHost *host, const char *text) {
   if (!text) {
@@ -224,7 +43,7 @@ static char *script_copy_text(VkrScriptHost *host, const char *text) {
   return copy;
 }
 
-/* A NULL-terminated list of names, such as enum values or retired keys. */
+/* A NULL-terminated list of names, such as enum values. */
 static const char *const *script_copy_names(VkrScriptHost *host,
                                             const char *const *names) {
   if (!names) {
@@ -247,139 +66,875 @@ static const char *const *script_copy_names(VkrScriptHost *host,
   return copy;
 }
 
-/* Copies everything a descriptor borrows into host storage, so its strings
- * and property table outlive the library that declared them; the hooks stay
- * the library's until the next rebind. */
+/* Copies everything an SDK descriptor borrows into host storage, so its
+ * strings and fields outlive the library that declared them; `defaults`
+ * stays the library's until the next rebind. */
 static bool8_t script_type_fill(VkrScriptHost *host, VkrTypeDesc *copy,
-                                const VkrTypeDesc *source) {
+                                const VkrComponentDesc *source) {
   VkrPropertyDesc *properties = NULL;
-  if (source->property_count) {
-    properties = vkr_allocator_alloc(
-        host->allocator, sizeof(*properties) * source->property_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (source->field_count) {
+    properties = vkr_allocator_alloc(host->allocator,
+                                     sizeof(*properties) * source->field_count,
+                                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!properties) {
       return false_v;
     }
   }
-  for (uint32_t i = 0; i < source->property_count; ++i) {
-    const VkrPropertyDesc *from = &source->properties[i];
-    properties[i] = *from;
-    properties[i].name = script_copy_text(host, from->name);
-    properties[i].label = script_copy_text(host, from->label);
-    properties[i].tooltip = script_copy_text(host, from->tooltip);
-    properties[i].group = script_copy_text(host, from->group);
-    properties[i].unit = script_copy_text(host, from->unit);
-    properties[i].zero_label = script_copy_text(host, from->zero_label);
-    properties[i].names = script_copy_names(host, from->names);
+  for (uint32_t i = 0; i < source->field_count; ++i) {
+    const VkrFieldDesc *from = &source->fields[i];
+    properties[i] = (VkrPropertyDesc){
+        .name = script_copy_text(host, from->name),
+        .label = script_copy_text(host, from->label),
+        .tooltip = script_copy_text(host, from->tooltip),
+        .group = script_copy_text(host, from->group),
+        .unit = script_copy_text(host, from->unit),
+        .zero_label = script_copy_text(host, from->zero_label),
+        .names = script_copy_names(host, from->names),
+        .offset = from->offset,
+        .kind = s_field_kinds[from->kind],
+        .flags = from->flags,
+        .min = from->min,
+        .max = from->max,
+        .step = from->step,
+    };
   }
-  *copy = *source;
-  copy->name = script_copy_text(host, source->name);
-  copy->label = script_copy_text(host, source->label);
-  copy->category = script_copy_text(host, source->category);
-  copy->properties = properties;
-  copy->retired = script_copy_names(host, source->retired);
+  *copy = (VkrTypeDesc){
+      .name = script_copy_text(host, source->name),
+      .label = script_copy_text(host, source->label),
+      .category = "Scripts",
+      .properties = properties,
+      .property_count = source->field_count,
+      .size = source->size,
+      .align = source->align,
+      .defaults = source->defaults,
+  };
   return copy->name != NULL;
 }
 
 /* Documents and live components keep their bytes across a reload, so a
- * reloaded type must store the same properties at the same places. */
+ * reloaded type must store the same fields at the same places. */
 static bool8_t script_type_same_layout(const VkrTypeDesc *left,
-                                       const VkrTypeDesc *right) {
+                                       const VkrComponentDesc *right) {
   if (strcmp(left->name, right->name) || left->size != right->size ||
-      left->align != right->align || left->version != right->version ||
-      left->flags != right->flags ||
-      left->property_count != right->property_count) {
+      left->align != right->align ||
+      left->property_count != right->field_count) {
     return false_v;
   }
   for (uint32_t i = 0; i < left->property_count; ++i) {
     const VkrPropertyDesc *a = &left->properties[i];
-    const VkrPropertyDesc *b = &right->properties[i];
-    if (strcmp(a->name, b->name) || a->kind != b->kind ||
-        a->offset != b->offset || a->capacity != b->capacity) {
+    const VkrFieldDesc *b = &right->fields[i];
+    if (strcmp(a->name, b->name) || a->kind != s_field_kinds[b->kind] ||
+        a->offset != b->offset) {
       return false_v;
     }
   }
   return true_v;
 }
 
-static void script_type_unbind(VkrTypeDesc *copy) {
-  copy->defaults = NULL;
-  copy->validate = NULL;
-  copy->normalize = NULL;
-  copy->state = NULL;
+/* The module's component types in registration order: its exported
+ * components, then its behaviors' components not exported on their own. */
+static uint32_t script_module_components(const VkrModuleDesc *desc,
+                                         VkrComponentDesc **out) {
+  uint32_t count = 0u;
+  const uint32_t components = Min(desc->component_count, VKR_SDK_EXPORT_MAX);
+  const uint32_t behaviors = Min(desc->behavior_count, VKR_SDK_EXPORT_MAX);
+  for (uint32_t i = 0; i < components + behaviors; ++i) {
+    VkrComponentDesc *type = i < components
+                                 ? desc->components[i]
+                                 : desc->behaviors[i - components]->component;
+    bool8_t seen = false_v;
+    for (uint32_t j = 0; j < count; ++j) {
+      seen = seen || out[j] == type || !strcmp(out[j]->name, type->name);
+    }
+    if (!seen) {
+      if (count < VKR_SDK_EXPORT_MAX) {
+        out[count] = type;
+      }
+      ++count;
+    }
+  }
+  return count;
+}
+
+const VkrTypeDesc *script_resolve_type(VkrScriptHost *host,
+                                       const VkrComponentDesc *type) {
+  (void)host;
+  if (!type) {
+    return NULL;
+  }
+  if (type->host_binding) {
+    return type->host_binding;
+  }
+  return type->name ? vkr_scene_world_type_named(string8_create_from_cstr(
+                          (const uint8_t *)type->name, strlen(type->name)))
+                    : NULL;
 }
 
 // =============================================================================
-// Simulation and input callbacks
+// Containers and ledgers
 // =============================================================================
 
-static bool8_t script_host_callable(const VkrScriptHost *host, uint32_t i) {
-  return host->active[i] && host->modules[i].desc && !host->modules[i].retired;
+VkrScriptContainer *script_container_of(VkrScriptHost *host, uint64_t entity) {
+  const VkrEntityId id = {.u64 = entity};
+  for (uint32_t i = 0; entity && i < host->container_count; ++i) {
+    if (host->containers[i].world_id == id.parts.world) {
+      return &host->containers[i];
+    }
+  }
+  return NULL;
 }
 
-/* Copies a module failure beside its name; the coordinator copies it again
- * before publishing the fault. */
-static const char *script_host_fail(VkrScriptHost *host, uint32_t module,
+uint32_t script_container_slot(ScriptCtx *ctx, VkrContainer container) {
+  VkrScriptHost *host = ctx->host;
+  if (container.id == 0u) {
+    return ctx->instance->container;
+  }
+  return container.id - 1u < host->container_count ? container.id - 1u
+                                                   : UINT32_MAX;
+}
+
+bool8_t script_ctx_error(ScriptCtx *ctx, const char *message) {
+  snprintf(ctx->last_error, sizeof(ctx->last_error), "%s",
+           message ? message : "Script call failed");
+  return false_v;
+}
+
+static void script_ledger_free(VkrScriptHost *host, ScriptLedger *ledger) {
+  if (ledger->records) {
+    vkr_allocator_free(&host->instance_allocator, ledger->records,
+                       sizeof(*ledger->records) * ledger->capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  *ledger = (ScriptLedger){0};
+}
+
+bool8_t script_ledger_record(ScriptCtx *ctx, ScriptLedgerKind kind,
+                             uint64_t entity, uint32_t aux) {
+  VkrScriptHost *host = ctx->host;
+  ScriptLedger *ledger = ctx->ledger ? ctx->ledger : &ctx->instance->ledger;
+  if (ledger->count == ledger->capacity) {
+    const uint32_t capacity =
+        Max(SCRIPT_LEDGER_MIN_CAPACITY, ledger->capacity * 2u);
+    ScriptLedgerRecord *records = vkr_allocator_alloc(
+        &host->instance_allocator, sizeof(*records) * capacity,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!records) {
+      return script_ctx_error(ctx, "Script ledger allocation failed");
+    }
+    if (ledger->count) {
+      MemCopy(records, ledger->records, sizeof(*records) * ledger->count);
+    }
+    if (ledger->records) {
+      vkr_allocator_free(&host->instance_allocator, ledger->records,
+                         sizeof(*records) * ledger->capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    ledger->records = records;
+    ledger->capacity = capacity;
+  }
+  ledger->records[ledger->count++] =
+      (ScriptLedgerRecord){.entity = entity, .aux = aux, .kind = kind};
+  return true_v;
+}
+
+/* Drops the newest matching record; trailing released records shrink the
+ * count. */
+static bool8_t script_ledger_drop(ScriptLedger *ledger, ScriptLedgerKind kind,
+                                  uint64_t entity, uint32_t aux) {
+  for (uint32_t i = ledger->count; i-- > 0u;) {
+    ScriptLedgerRecord *record = &ledger->records[i];
+    if (record->kind == (uint32_t)kind && record->entity == entity &&
+        record->aux == aux) {
+      record->kind = SCRIPT_LEDGER_NONE;
+      while (ledger->count &&
+             ledger->records[ledger->count - 1u].kind == SCRIPT_LEDGER_NONE) {
+        --ledger->count;
+      }
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+void script_ledger_forget(ScriptCtx *ctx, ScriptLedgerKind kind,
+                          uint64_t entity, uint32_t aux) {
+  VkrScriptInstance *instance = ctx->instance;
+  if ((ctx->ledger && script_ledger_drop(ctx->ledger, kind, entity, aux)) ||
+      script_ledger_drop(&instance->ledger, kind, entity, aux)) {
+    return;
+  }
+  for (uint32_t i = 0; i < instance->binding_count; ++i) {
+    if (script_ledger_drop(&instance->bindings[i].ledger, kind, entity, aux)) {
+      return;
+    }
+  }
+}
+
+void script_ledger_release_record(VkrScriptHost *host,
+                                  const ScriptLedgerRecord *record) {
+  VkrScriptContainer *container = script_container_of(host, record->entity);
+  if (!container || record->kind == SCRIPT_LEDGER_NONE) {
+    return;
+  }
+  VkrScene *scene = container->scene;
+  const VkrEntityId entity = {.u64 = record->entity};
+  if (!vkr_scene_entity_alive(scene, entity)) {
+    return;
+  }
+  host->transforms_dirty[container - host->containers] = true_v;
+  switch ((ScriptLedgerKind)record->kind) {
+  case SCRIPT_LEDGER_ENTITY:
+    script_destroy_tree(host, scene, entity);
+    break;
+  case SCRIPT_LEDGER_CHARACTER:
+    (void)vkr_scene_character_destroy(scene, entity, NULL);
+    break;
+  case SCRIPT_LEDGER_MODEL:
+    vkr_scene_despawn_model(scene, entity);
+    break;
+  case SCRIPT_LEDGER_STATE: {
+    const VkrComponentTypeId type =
+        record->aux < host->state_type_count
+            ? host->state_types[record->aux].ids[container - host->containers]
+            : VKR_COMPONENT_TYPE_INVALID;
+    if (type != VKR_COMPONENT_TYPE_INVALID) {
+      (void)vkr_entity_remove_component(scene->world, entity, type);
+    }
+    break;
+  }
+  case SCRIPT_LEDGER_RENDER_POSE:
+    (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
+    break;
+  case SCRIPT_LEDGER_NONE:
+    break;
+  }
+}
+
+/* Releases a scope's acquisitions newest first. */
+static void script_ledger_release(VkrScriptHost *host, ScriptLedger *ledger) {
+  while (ledger->count) {
+    const ScriptLedgerRecord record = ledger->records[--ledger->count];
+    script_ledger_release_record(host, &record);
+  }
+}
+
+void script_refresh_scene(VkrScriptHost *host, VkrScene *scene) {
+  bool8_t dirty = !scene->child_index_valid;
+  for (uint32_t i = 0; i < host->container_count; ++i) {
+    if (host->containers[i].scene == scene) {
+      dirty = dirty || host->transforms_dirty[i];
+      host->transforms_dirty[i] = false_v;
+    }
+  }
+  if (dirty) {
+    vkr_scene_update_transforms(scene);
+  }
+}
+
+void script_destroy_tree(VkrScriptHost *host, VkrScene *scene,
+                         VkrEntityId entity) {
+  script_refresh_scene(host, scene);
+  /* Destroying a child edits the parent's child list, so walk a copy. */
+  uint32_t count = 0u;
+  const VkrEntityId *children = vkr_scene_get_children(scene, entity, &count);
+  const uint64_t temp_position = arena_pos(host->temp);
+  VkrEntityId *copy = count ? arena_alloc(host->temp, sizeof(*copy) * count,
+                                          ARENA_MEMORY_TAG_ARRAY)
+                            : NULL;
+  if (copy) {
+    MemCopy(copy, children, sizeof(*copy) * count);
+    for (uint32_t i = count; i-- > 0u;) {
+      if (vkr_scene_entity_alive(scene, copy[i])) {
+        script_destroy_tree(host, scene, copy[i]);
+      }
+    }
+  }
+  arena_reset_to(host->temp, temp_position, ARENA_MEMORY_TAG_UNKNOWN);
+  vkr_scene_destroy_entity(scene, entity);
+}
+
+static void script_update_transforms(VkrScriptHost *host) {
+  for (uint32_t i = 0; i < host->container_count; ++i) {
+    if (host->transforms_dirty[i]) {
+      host->transforms_dirty[i] = false_v;
+      vkr_scene_update_transforms(host->containers[i].scene);
+    }
+  }
+}
+
+// =============================================================================
+// Hook calls
+// =============================================================================
+
+typedef struct ScriptCall {
+  uint64_t temp_position;
+  VkrScriptPhase phase;
+  ScriptLedger *ledger;
+} ScriptCall;
+
+static void script_call_begin(VkrScriptHost *host, VkrScriptInstance *instance,
+                              ScriptLedger *ledger, VkrScriptPhase phase,
+                              ScriptCall *saved) {
+  *saved = (ScriptCall){.temp_position = arena_pos(host->temp),
+                        .phase = host->phase,
+                        .ledger = instance->ctx.ledger};
+  host->phase = phase;
+  instance->ctx.ledger = ledger;
+}
+
+/* Rewinds temp memory and refreshes changed transforms outside ticks.
+ * False when the hook failed. */
+static bool8_t script_call_end(VkrScriptHost *host, VkrScriptInstance *instance,
+                               const ScriptCall *saved) {
+  arena_reset_to(host->temp, saved->temp_position, ARENA_MEMORY_TAG_UNKNOWN);
+  if (host->phase != VKR_SCRIPT_PHASE_TICK) {
+    script_update_transforms(host);
+  }
+  host->phase = saved->phase;
+  instance->ctx.ledger = saved->ledger;
+  return !instance->failed;
+}
+
+static const VkrModuleDesc *script_instance_desc(const VkrScriptHost *host,
+                                                 const VkrScriptInstance *i) {
+  return i->module == SCRIPT_MODULE_NONE ? NULL : host->modules[i->module].desc;
+}
+
+static bool8_t script_instance_callable(const VkrScriptHost *host,
+                                        const VkrScriptInstance *instance) {
+  return instance->started && !instance->disabled &&
+         script_instance_desc(host, instance) &&
+         !host->modules[instance->module].retired;
+}
+
+/* The behavior's component on its entity, valid until the next structural
+ * change; NULL when the entity or component is gone. */
+static void *script_binding_component(VkrScriptHost *host,
+                                      const VkrScriptInstance *instance,
+                                      const ScriptBinding *binding) {
+  VkrScriptContainer *container = script_container_of(host, binding->entity);
+  const VkrModuleDesc *desc = script_instance_desc(host, instance);
+  if (!container || !desc) {
+    return NULL;
+  }
+  const VkrTypeDesc *type =
+      script_resolve_type(host, desc->behaviors[binding->behavior]->component);
+  const VkrComponentTypeId id = vkr_scene_type_id(container->scene, type);
+  return id == VKR_COMPONENT_TYPE_INVALID
+             ? NULL
+             : vkr_entity_get_component_if_alive(
+                   container->scene->world,
+                   (VkrEntityId){.u64 = binding->entity}, id);
+}
+
+typedef enum ScriptHook {
+  SCRIPT_HOOK_START,
+  SCRIPT_HOOK_STOP,
+  SCRIPT_HOOK_UPDATE,
+  SCRIPT_HOOK_LATE_UPDATE,
+  SCRIPT_HOOK_FIXED_UPDATE,
+  SCRIPT_HOOK_LATE_FIXED_UPDATE,
+} ScriptHook;
+
+/* Runs one module hook and then its behavior hooks. False when one failed. */
+static bool8_t script_instance_run(VkrScriptHost *host,
+                                   VkrScriptInstance *instance, ScriptHook hook,
+                                   float32_t dt) {
+  const VkrModuleDesc *desc = script_instance_desc(host, instance);
+  VkrCtx *ctx = &instance->ctx.base;
+  const VkrScriptPhase phase =
+      hook == SCRIPT_HOOK_FIXED_UPDATE || hook == SCRIPT_HOOK_LATE_FIXED_UPDATE
+          ? VKR_SCRIPT_PHASE_TICK
+          : VKR_SCRIPT_PHASE_FRAME;
+  ScriptCall call;
+  script_call_begin(host, instance, &instance->ledger, phase, &call);
+  switch (hook) {
+  case SCRIPT_HOOK_UPDATE:
+    if (desc->update) {
+      desc->update(ctx, instance->data, dt);
+    }
+    break;
+  case SCRIPT_HOOK_LATE_UPDATE:
+    if (desc->late_update) {
+      desc->late_update(ctx, instance->data, dt);
+    }
+    break;
+  case SCRIPT_HOOK_FIXED_UPDATE:
+    if (desc->fixed_update) {
+      desc->fixed_update(ctx, instance->data);
+    }
+    break;
+  case SCRIPT_HOOK_LATE_FIXED_UPDATE:
+    if (desc->late_fixed_update) {
+      desc->late_fixed_update(ctx, instance->data);
+    }
+    break;
+  default:
+    break;
+  }
+  if (!script_call_end(host, instance, &call)) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < instance->binding_count && !instance->disabled;
+       ++i) {
+    ScriptBinding *binding = &instance->bindings[i];
+    const VkrBehaviorDesc *behavior = desc->behaviors[binding->behavior];
+    if (!binding->started) {
+      continue;
+    }
+    void (*frame_hook)(VkrCtx *, VkrEntity, void *, float32_t) =
+        hook == SCRIPT_HOOK_UPDATE        ? behavior->update
+        : hook == SCRIPT_HOOK_LATE_UPDATE ? behavior->late_update
+                                          : NULL;
+    void (*tick_hook)(VkrCtx *, VkrEntity, void *) =
+        hook == SCRIPT_HOOK_FIXED_UPDATE        ? behavior->fixed_update
+        : hook == SCRIPT_HOOK_LATE_FIXED_UPDATE ? behavior->late_fixed_update
+                                                : NULL;
+    if (!frame_hook && !tick_hook) {
+      continue;
+    }
+    void *component = script_binding_component(host, instance, binding);
+    if (!component) {
+      continue;
+    }
+    const VkrEntity self = {.id = binding->entity};
+    script_call_begin(host, instance, &binding->ledger, phase, &call);
+    if (frame_hook) {
+      frame_hook(ctx, self, component, dt);
+    } else {
+      tick_hook(ctx, self, component);
+    }
+    if (!script_call_end(host, instance, &call)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Copies a module failure beside its name into the host error. */
+static const char *script_host_fail(VkrScriptHost *host, const char *module,
                                     const char *error) {
-  snprintf(host->error, sizeof(host->error), "%s: %s",
-           host->modules[module].name, error ? error : "script failed");
+  if (error != host->error) {
+    char message[VKR_SCRIPT_ERROR_CAPACITY];
+    snprintf(message, sizeof(message), "%s", error ? error : "script failed");
+    snprintf(host->error, sizeof(host->error), "%s: %s",
+             module ? module : "script", message);
+  }
   return host->error;
+}
+
+// =============================================================================
+// Instances and behavior bindings
+// =============================================================================
+
+static VkrScriptInstance *script_instance_create(VkrScriptHost *host,
+                                                 uint32_t module,
+                                                 uint32_t container) {
+  VkrScriptInstance *instance =
+      vkr_allocator_alloc(&host->instance_allocator, sizeof(*instance),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!instance) {
+    return NULL;
+  }
+  MemZero(instance, sizeof(*instance));
+  instance->ctx = (ScriptCtx){
+      .base = {.sdk = &host->table}, .host = host, .instance = instance};
+  instance->ctx.ledger = &instance->ledger;
+  instance->module = module;
+  instance->container = container;
+  const VkrModuleDesc *desc =
+      module == SCRIPT_MODULE_NONE ? NULL : host->modules[module].desc;
+  if (desc && desc->data_size) {
+    instance->data_size = desc->data_size;
+    instance->data_align = desc->data_align;
+    instance->data = vkr_allocator_alloc_aligned(
+        &host->instance_allocator, desc->data_size, desc->data_align,
+        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    if (!instance->data) {
+      vkr_allocator_free(&host->instance_allocator, instance, sizeof(*instance),
+                         VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+      return NULL;
+    }
+    MemZero(instance->data, desc->data_size);
+  }
+  return instance;
+}
+
+static void script_instance_free(VkrScriptHost *host,
+                                 VkrScriptInstance *instance) {
+  for (uint32_t i = 0; i < instance->binding_count; ++i) {
+    script_ledger_free(host, &instance->bindings[i].ledger);
+  }
+  if (instance->bindings) {
+    vkr_allocator_free(&host->instance_allocator, instance->bindings,
+                       sizeof(*instance->bindings) * instance->binding_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  script_ledger_free(host, &instance->ledger);
+  if (instance->data) {
+    vkr_allocator_free_aligned(&host->instance_allocator, instance->data,
+                               instance->data_size, instance->data_align,
+                               VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  }
+  vkr_allocator_free(&host->instance_allocator, instance, sizeof(*instance),
+                     VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+}
+
+/* Runs a binding's stop hook and releases what its entity scope acquired. */
+void script_binding_end(VkrScriptHost *host, VkrScriptInstance *instance,
+                        ScriptBinding *binding) {
+  const VkrModuleDesc *desc = script_instance_desc(host, instance);
+  const VkrBehaviorDesc *behavior =
+      desc ? desc->behaviors[binding->behavior] : NULL;
+  if (binding->started && behavior && behavior->stop &&
+      !host->modules[instance->module].retired) {
+    ScriptCall call;
+    script_call_begin(host, instance, &binding->ledger, VKR_SCRIPT_PHASE_FRAME,
+                      &call);
+    behavior->stop(&instance->ctx.base, (VkrEntity){.id = binding->entity},
+                   script_binding_component(host, instance, binding));
+    (void)script_call_end(host, instance, &call);
+  }
+  binding->started = false_v;
+  script_ledger_release(host, &binding->ledger);
+  script_update_transforms(host);
+}
+
+/* Ends an instance: behaviors in reverse, the module's stop hook, then
+ * everything it acquired, newest first. */
+static void script_instance_end(VkrScriptHost *host,
+                                VkrScriptInstance *instance) {
+  for (uint32_t i = instance->binding_count; i-- > 0u;) {
+    script_binding_end(host, instance, &instance->bindings[i]);
+  }
+  const VkrModuleDesc *desc = script_instance_desc(host, instance);
+  if (instance->started && desc && desc->stop &&
+      !host->modules[instance->module].retired) {
+    ScriptCall call;
+    script_call_begin(host, instance, &instance->ledger, VKR_SCRIPT_PHASE_FRAME,
+                      &call);
+    desc->stop(&instance->ctx.base, instance->data);
+    (void)script_call_end(host, instance, &call);
+  }
+  instance->started = false_v;
+  script_ledger_release(host, &instance->ledger);
+  script_update_transforms(host);
+}
+
+typedef struct ScriptFound {
+  uint64_t entity;
+  uint32_t behavior;
+} ScriptFound;
+
+static int script_found_compare(const void *left, const void *right) {
+  const ScriptFound *a = left;
+  const ScriptFound *b = right;
+  if (a->behavior != b->behavior) {
+    return a->behavior < b->behavior ? -1 : 1;
+  }
+  return a->entity < b->entity ? -1 : a->entity > b->entity ? 1 : 0;
+}
+
+static int script_binding_compare(const ScriptBinding *binding,
+                                  const ScriptFound *found) {
+  const ScriptFound key = {.entity = binding->entity,
+                           .behavior = binding->behavior};
+  return script_found_compare(&key, found);
+}
+
+// =============================================================================
+// Simulation, destroy and input callbacks
+// =============================================================================
+
+/* Matches bindings with the entities carrying each behavior's component:
+ * gone entities stop and release, new ones start. False when a hook
+ * failed. */
+static bool8_t script_instance_sync(VkrScriptHost *host,
+                                    VkrScriptInstance *instance) {
+  const VkrModuleDesc *desc = script_instance_desc(host, instance);
+  if (!desc || !desc->behavior_count || instance->disabled) {
+    return true_v;
+  }
+  const bool8_t world_scope = desc->scope == VKR_SCOPE_WORLD;
+  /* Adding, removing or destroying a typed component bumps its container's
+     world revision, so unchanged revisions mean unchanged bindings. */
+  bool8_t changed = !instance->synced;
+  for (uint32_t c = 0; c < host->container_count; ++c) {
+    const uint64_t revision = host->containers[c].scene->world_revision;
+    changed = changed || instance->synced_revisions[c] != revision;
+    instance->synced_revisions[c] = revision;
+  }
+  instance->synced = true_v;
+  if (!changed) {
+    return true_v;
+  }
+  const uint64_t temp_position = arena_pos(host->temp);
+  uint32_t found_count = 0u;
+  ScriptFound *found = NULL;
+  for (uint32_t pass = 0; pass < 2u; ++pass) {
+    uint32_t written = 0u;
+    for (uint32_t b = 0; b < desc->behavior_count; ++b) {
+      const VkrTypeDesc *type =
+          script_resolve_type(host, desc->behaviors[b]->component);
+      for (uint32_t c = 0; c < host->container_count; ++c) {
+        if (!world_scope && c != instance->container) {
+          continue;
+        }
+        VkrScene *scene = host->containers[c].scene;
+        if (pass == 0u) {
+          found_count += vkr_scene_find_typed(scene, type, NULL, 0u);
+          continue;
+        }
+        VkrEntityId *ids =
+            arena_alloc(host->temp, sizeof(*ids) * (found_count + 1u),
+                        ARENA_MEMORY_TAG_ARRAY);
+        const uint32_t count =
+            ids ? Min(vkr_scene_find_typed(scene, type, ids,
+                                           found_count - written),
+                      found_count - written)
+                : 0u;
+        for (uint32_t i = 0; i < count; ++i) {
+          found[written++] = (ScriptFound){.entity = ids[i].u64, .behavior = b};
+        }
+      }
+    }
+    if (pass == 0u) {
+      found = found_count
+                  ? arena_alloc(host->temp, sizeof(*found) * found_count,
+                                ARENA_MEMORY_TAG_ARRAY)
+                  : NULL;
+      if (found_count && !found) {
+        arena_reset_to(host->temp, temp_position, ARENA_MEMORY_TAG_UNKNOWN);
+        return true_v;
+      }
+    } else {
+      found_count = written;
+    }
+  }
+  if (found_count > 1u) {
+    qsort(found, found_count, sizeof(*found), script_found_compare);
+  }
+
+  /* Stop bindings whose entity no longer carries the component. */
+  uint32_t f = 0u;
+  for (uint32_t i = 0; i < instance->binding_count; ++i) {
+    ScriptBinding *binding = &instance->bindings[i];
+    while (f < found_count && script_binding_compare(binding, &found[f]) > 0) {
+      ++f;
+    }
+    const bool8_t kept =
+        f < found_count && script_binding_compare(binding, &found[f]) == 0;
+    if (!kept) {
+      script_binding_end(host, instance, binding);
+      script_ledger_free(host, &binding->ledger);
+      binding->entity = 0u;
+    }
+  }
+
+  /* Merge kept bindings with new entities, both in key order. */
+  ScriptBinding *bindings = NULL;
+  if (found_count) {
+    bindings = vkr_allocator_alloc(&host->instance_allocator,
+                                   sizeof(*bindings) * found_count,
+                                   VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!bindings) {
+      arena_reset_to(host->temp, temp_position, ARENA_MEMORY_TAG_UNKNOWN);
+      instance->failed = true_v;
+      script_host_fail(host, desc->name, "Behavior allocation failed");
+      return false_v;
+    }
+  }
+  uint32_t kept = 0u;
+  uint32_t b = 0u;
+  for (f = 0u; f < found_count; ++f) {
+    while (b < instance->binding_count &&
+           (!instance->bindings[b].entity ||
+            script_binding_compare(&instance->bindings[b], &found[f]) < 0)) {
+      ++b;
+    }
+    if (b < instance->binding_count &&
+        script_binding_compare(&instance->bindings[b], &found[f]) == 0) {
+      bindings[kept++] = instance->bindings[b++];
+    } else {
+      bindings[kept++] = (ScriptBinding){.entity = found[f].entity,
+                                         .behavior = found[f].behavior};
+    }
+  }
+  if (instance->bindings) {
+    vkr_allocator_free(&host->instance_allocator, instance->bindings,
+                       sizeof(*instance->bindings) * instance->binding_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  instance->bindings = bindings;
+  instance->binding_count = kept;
+  instance->binding_capacity = found_count;
+  arena_reset_to(host->temp, temp_position, ARENA_MEMORY_TAG_UNKNOWN);
+
+  /* Start the new ones in key order. */
+  for (uint32_t i = 0; i < instance->binding_count && !instance->disabled;
+       ++i) {
+    ScriptBinding *binding = &instance->bindings[i];
+    if (binding->started) {
+      continue;
+    }
+    binding->started = true_v;
+    const VkrBehaviorDesc *behavior = desc->behaviors[binding->behavior];
+    if (!behavior->start) {
+      continue;
+    }
+    ScriptCall call;
+    script_call_begin(host, instance, &binding->ledger, VKR_SCRIPT_PHASE_FRAME,
+                      &call);
+    behavior->start(&instance->ctx.base, (VkrEntity){.id = binding->entity},
+                    script_binding_component(host, instance, binding));
+    if (!script_call_end(host, instance, &call)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* The binding of `behavior` on `entity`, or NULL; bindings are sorted by
+ * behavior, then entity. */
+static ScriptBinding *script_binding_find(VkrScriptInstance *instance,
+                                          uint32_t behavior, uint64_t entity) {
+  const ScriptFound key = {.entity = entity, .behavior = behavior};
+  uint32_t low = 0u;
+  uint32_t high = instance->binding_count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    const int order = script_binding_compare(&instance->bindings[middle], &key);
+    if (order == 0) {
+      return &instance->bindings[middle];
+    }
+    if (order < 0) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return NULL;
+}
+
+/* An entity of an attached container is about to be destroyed: each
+ * running behavior on it runs `destroy` and then `stop` while it still
+ * exists, and its scope is released. */
+static void script_host_entity_destroying(VkrScene *scene, VkrEntityId entity,
+                                          void *context) {
+  VkrScriptHost *host = context;
+  for (uint32_t i = 0; i < host->instance_count; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    const VkrModuleDesc *desc = script_instance_desc(host, instance);
+    if (!script_instance_callable(host, instance) || !desc->behavior_count) {
+      continue;
+    }
+    for (uint32_t b = 0; b < desc->behavior_count; ++b) {
+      const VkrTypeDesc *type =
+          script_resolve_type(host, desc->behaviors[b]->component);
+      const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
+      if (id == VKR_COMPONENT_TYPE_INVALID ||
+          !vkr_entity_has_component(scene->world, entity, id)) {
+        continue;
+      }
+      ScriptBinding *binding = script_binding_find(instance, b, entity.u64);
+      if (!binding || !binding->started) {
+        continue;
+      }
+      if (desc->behaviors[b]->destroy) {
+        ScriptCall call;
+        script_call_begin(host, instance, &binding->ledger,
+                          host->phase == VKR_SCRIPT_PHASE_TICK
+                              ? VKR_SCRIPT_PHASE_TICK
+                              : VKR_SCRIPT_PHASE_FRAME,
+                          &call);
+        desc->behaviors[b]->destroy(
+            &instance->ctx.base, (VkrEntity){.id = entity.u64},
+            script_binding_component(host, instance, binding));
+        (void)script_call_end(host, instance, &call);
+      }
+      /* The hook may have ended it, through a nested destroy. */
+      binding = script_binding_find(instance, b, entity.u64);
+      if (binding && binding->started) {
+        script_binding_end(host, instance, binding);
+      }
+    }
+    if (instance->failed) {
+      host->faulted = true_v;
+      vkr_scene_physics_set_paused(host->session.active, true_v);
+    }
+  }
+}
+
+static bool8_t script_host_tick(VkrScriptHost *host, VkrScene *scene,
+                                ScriptHook hook) {
+  for (uint32_t i = 0; i < host->instance_count; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    if (!script_instance_callable(host, instance)) {
+      continue;
+    }
+    if (!script_instance_run(host, instance, hook, 0.0f)) {
+      scene->simulation.error = host->error;
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 static bool8_t script_host_before_physics(VkrScene *scene, uint64_t tick,
                                           void *context) {
-  VkrScriptHost *host = context;
-  for (uint32_t i = 0; i < host->module_count; ++i) {
-    const VkrScriptModuleDesc *module = host->modules[i].desc;
-    if (!script_host_callable(host, i) || !module->before_physics) {
-      continue;
-    }
-    const char *error = NULL;
-    if (!module->before_physics(&host->session, host->modules[i].state, tick,
-                                &error)) {
-      scene->simulation.error = script_host_fail(host, i, error);
-      return false_v;
-    }
-  }
-  return true_v;
+  (void)tick;
+  return script_host_tick(context, scene, SCRIPT_HOOK_FIXED_UPDATE);
 }
 
 static bool8_t script_host_after_physics(VkrScene *scene, uint64_t tick,
                                          void *context) {
-  VkrScriptHost *host = context;
-  for (uint32_t i = 0; i < host->module_count; ++i) {
-    const VkrScriptModuleDesc *module = host->modules[i].desc;
-    if (!script_host_callable(host, i) || !module->after_physics) {
-      continue;
-    }
-    const char *error = NULL;
-    if (!module->after_physics(&host->session, host->modules[i].state, tick,
-                               &error)) {
-      scene->simulation.error = script_host_fail(host, i, error);
-      return false_v;
-    }
-  }
-  return true_v;
+  (void)tick;
+  return script_host_tick(context, scene, SCRIPT_HOOK_LATE_FIXED_UPDATE);
 }
 
+/* A native reset restores bodies; the instances restart at the next frame
+ * boundary, where structural edits are allowed. */
 static void script_host_reset(VkrScene *scene, void *context) {
   (void)scene;
   VkrScriptHost *host = context;
-  for (uint32_t i = 0; i < host->module_count; ++i) {
-    const VkrScriptModuleDesc *module = host->modules[i].desc;
-    if (script_host_callable(host, i) && module->reset) {
-      module->reset(&host->session, host->modules[i].state);
-    }
-  }
+  host->restart_pending = true_v;
 }
+
+_Static_assert(
+    sizeof(VkrInputEvent) == sizeof(VkrInputTransition) &&
+        offsetof(VkrInputEvent, time) ==
+            offsetof(VkrInputTransition, time_seconds) &&
+        offsetof(VkrInputEvent, kind) == offsetof(VkrInputTransition, kind) &&
+        offsetof(VkrInputEvent, code) == offsetof(VkrInputTransition, code) &&
+        offsetof(VkrInputEvent, pressed) ==
+            offsetof(VkrInputTransition, pressed) &&
+        offsetof(VkrInputEvent, dx) == offsetof(VkrInputTransition, delta_x) &&
+        offsetof(VkrInputEvent, dy) == offsetof(VkrInputTransition, delta_y),
+    "VkrInputEvent mirrors VkrInputTransition");
+_Static_assert((int)VKR_INPUT_LOOK == (int)VKR_INPUT_TRANSITION_LOOK &&
+                   (int)VKR_KEY_W == (int)KEY_W &&
+                   (int)VKR_KEY_LCONTROL == (int)KEY_LCONTROL &&
+                   (int)VKR_KEY_F1 == (int)KEY_F1 &&
+                   (int)VKR_MOUSE_LEFT == (int)BUTTON_LEFT,
+               "SDK input codes match the engine's");
 
 static void script_host_input(const VkrInputTransition *transition,
                               void *context) {
   VkrScriptHost *host = context;
-  for (uint32_t i = 0; i < host->module_count; ++i) {
-    const VkrScriptModuleDesc *module = host->modules[i].desc;
-    if (script_host_callable(host, i) && module->input) {
-      module->input(&host->session, host->modules[i].state, transition);
+  const VkrInputEvent *event = (const VkrInputEvent *)transition;
+  for (uint32_t i = 0; !host->faulted && i < host->instance_count; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    const VkrModuleDesc *desc = script_instance_desc(host, instance);
+    if (!script_instance_callable(host, instance) || !desc->input) {
+      continue;
+    }
+    ScriptCall call;
+    script_call_begin(host, instance, &instance->ledger, VKR_SCRIPT_PHASE_FRAME,
+                      &call);
+    desc->input(&instance->ctx.base, instance->data, event);
+    if (!script_call_end(host, instance, &call)) {
+      host->faulted = true_v;
+      vkr_scene_physics_set_paused(host->session.active, true_v);
     }
   }
 }
@@ -432,7 +987,7 @@ static void script_close_library(VkrScriptHost *host,
   path[0] = '\0';
 }
 
-/* A superseded library stays mapped while the session may still hold
+/* A superseded library stays mapped while a session may still hold
  * pointers into its code or constants. */
 static bool8_t script_retire_library(VkrScriptHost *host,
                                      VkrScriptModule *module) {
@@ -465,95 +1020,101 @@ static void script_close_retired(VkrScriptHost *host) {
 // Registration
 // =============================================================================
 
-static const char *script_validate(const VkrScriptModuleDesc *desc) {
-  if (!desc || desc->abi_version != VKR_SCRIPT_ABI_VERSION ||
-      desc->size < sizeof(VkrScriptModuleDesc) || !desc->name || !desc->start ||
-      !desc->stop) {
+static const char *script_validate(const VkrModuleDesc *desc) {
+  if (!desc || desc->sdk_version != VKR_SDK_VERSION || !desc->name ||
+      (desc->scope != VKR_SCOPE_CONTAINER && desc->scope != VKR_SCOPE_WORLD)) {
     return "Script module has an incompatible description";
   }
-  if (desc->type_count > VKR_SCRIPT_MODULE_TYPE_MAX ||
-      (desc->type_count && !desc->types)) {
-    return "Script module declares more than eight component types";
+  if (desc->component_count > VKR_SDK_EXPORT_MAX ||
+      desc->behavior_count > VKR_SDK_EXPORT_MAX) {
+    return "Script module exports more than eight components or behaviors";
   }
-  for (uint32_t i = 0; i < desc->type_count; ++i) {
-    if (!desc->types[i] || !desc->types[i]->name) {
+  for (uint32_t i = 0; i < desc->component_count + desc->behavior_count; ++i) {
+    const VkrComponentDesc *type =
+        i < desc->component_count
+            ? desc->components[i]
+            : (desc->behaviors[i - desc->component_count]
+                   ? desc->behaviors[i - desc->component_count]->component
+                   : NULL);
+    if (!type || !type->name || !type->size || !type->align) {
       return "Script component type is missing its descriptor or name";
     }
+    for (uint32_t f = 0; f < type->field_count; ++f) {
+      if (!type->fields[f].name ||
+          (uint32_t)type->fields[f].kind >= ArrayCount(s_field_kinds) ||
+          type->fields[f].offset >= type->size) {
+        return "Script component field is invalid";
+      }
+    }
   }
-  if (desc->state_size &&
-      (!desc->state_align || (desc->state_align & (desc->state_align - 1u)))) {
-    return "Script module state needs a power-of-two alignment";
+  VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
+  if (script_module_components(desc, types) > VKR_SDK_EXPORT_MAX) {
+    return "Script module declares more than eight component types";
+  }
+  if (desc->data_size &&
+      (!desc->data_align || (desc->data_align & (desc->data_align - 1u)))) {
+    return "Script module data needs a power-of-two alignment";
   }
   return NULL;
-}
-
-/* State storage for the module's lifetime, grown only while no session can
- * hold the old block. */
-static bool8_t script_state_reserve(VkrScriptHost *host,
-                                    VkrScriptModule *module,
-                                    const VkrScriptModuleDesc *desc) {
-  if (desc->state_size <= module->state_capacity &&
-      ((uintptr_t)module->state & (desc->state_align - 1u)) == 0u) {
-    return true_v;
-  }
-  void *state = vkr_allocator_alloc_aligned(host->allocator, desc->state_size,
-                                            desc->state_align,
-                                            VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-  if (!state) {
-    return false_v;
-  }
-  MemZero(state, desc->state_size);
-  module->state = state;
-  module->state_capacity = desc->state_size;
-  return true_v;
 }
 
 /* Registers a new module's copies of its component types. A name another
  * module registered fails; nothing is registered then. */
 static const char *script_register(VkrScriptHost *host, const char *name,
-                                   const VkrScriptModuleDesc *desc,
-                                   bool8_t dynamic, uint32_t *out_index) {
+                                   const VkrModuleDesc *desc, bool8_t dynamic,
+                                   uint32_t *out_index) {
   if (host->module_count == VKR_SCRIPT_MODULE_MAX) {
     return "At most sixteen script modules register";
   }
-  for (uint32_t i = 0; i < desc->type_count; ++i) {
-    const VkrTypeDesc *type = desc->types[i];
-    if (!type || !type->name ||
-        vkr_scene_world_type_named(string8_create_from_cstr(
-            (const uint8_t *)type->name, strlen(type->name)))) {
+  VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
+  const uint32_t type_count = script_module_components(desc, types);
+  for (uint32_t i = 0; i < type_count; ++i) {
+    if (vkr_scene_world_type_named(string8_create_from_cstr(
+            (const uint8_t *)types[i]->name, strlen(types[i]->name)))) {
       return "Script component type is invalid or its name is taken";
     }
   }
   VkrScriptModule *module = &host->modules[host->module_count];
   *module = (VkrScriptModule){.desc = desc, .dynamic = dynamic};
   snprintf(module->name, sizeof(module->name), "%s", name);
-  if (desc->state_size && !script_state_reserve(host, module, desc)) {
-    return "Script module state allocation failed";
-  }
-  for (uint32_t i = 0; i < desc->type_count; ++i) {
+  for (uint32_t i = 0; i < type_count; ++i) {
     VkrTypeDesc *copy = vkr_allocator_alloc(host->allocator, sizeof(*copy),
                                             VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-    if (!copy || !script_type_fill(host, copy, desc->types[i]) ||
+    if (!copy || !script_type_fill(host, copy, types[i]) ||
         !vkr_scene_register_world_type(copy)) {
       /* Earlier copies stay registered: the scene type table has no
          removal. Their module never becomes callable. */
       return "Script component type registration failed";
     }
     module->types[module->type_count++] = copy;
+    types[i]->host_binding = copy;
   }
   module->generation = 1u;
   *out_index = host->module_count++;
   return NULL;
 }
 
-void vkr_script_host_init(VkrScriptHost *host, VkrAllocator *allocator) {
-  *host = (VkrScriptHost){.api = script_api_table(), .allocator = allocator};
+bool8_t vkr_script_host_init(VkrScriptHost *host, VkrAllocator *allocator) {
+  MemZero(host, sizeof(*host));
+  host->allocator = allocator;
+  script_sdk_table(&host->table);
+  if (!vkr_dmemory_create(SCRIPT_INSTANCE_MEMORY_SIZE,
+                          SCRIPT_INSTANCE_MEMORY_RESERVE, &host->memory)) {
+    return false_v;
+  }
+  host->instance_allocator = (VkrAllocator){.ctx = &host->memory};
+  vkr_dmemory_allocator_create(&host->instance_allocator);
+  host->temp = arena_create(SCRIPT_TEMP_RESERVE, SCRIPT_TEMP_COMMIT);
+  if (!host->temp) {
+    vkr_dmemory_allocator_destroy(&host->instance_allocator);
+    return false_v;
+  }
+  return true_v;
 }
 
-bool8_t vkr_script_host_add_module(VkrScriptHost *host,
-                                   VkrScriptModuleEntry entry,
+bool8_t vkr_script_host_add_module(VkrScriptHost *host, VkrModuleEntry entry,
                                    const char **error) {
-  const VkrScriptModuleDesc *desc = entry ? entry(&host->api) : NULL;
+  const VkrModuleDesc *desc = entry ? entry(VKR_SDK_VERSION) : NULL;
   const char *failure = host->started ? "Script modules register before a "
                                         "session"
                                       : script_validate(desc);
@@ -577,24 +1138,27 @@ const VkrScriptModule *vkr_script_host_module(const VkrScriptHost *host,
   return NULL;
 }
 
-/* Replaces a known module's code. The types keep their copies; their hooks
- * and display metadata follow the new code. */
+/* Replaces a known module's code. The types keep their copies; display
+ * metadata and defaults follow the new code. */
 static const char *script_swap(VkrScriptHost *host, VkrScriptModule *module,
-                               const VkrScriptModuleDesc *desc,
+                               const VkrModuleDesc *desc,
                                VkrPlatformLibrary library,
                                const char *loaded_path) {
   if (!script_retire_library(host, module)) {
     return "Too many reloads in one session; stop the simulation first";
   }
+  VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
+  (void)script_module_components(desc, types);
   for (uint32_t i = 0; i < module->type_count; ++i) {
     VkrTypeDesc *copy = module->types[i];
     const VkrTypeDesc kept = *copy;
-    if (script_type_fill(host, copy, desc->types[i])) {
+    if (script_type_fill(host, copy, types[i])) {
       /* The registered name stays the pointer scenes compare. */
       copy->name = kept.name;
     } else {
       *copy = kept;
     }
+    types[i]->host_binding = copy;
   }
   module->desc = desc;
   module->library = library;
@@ -602,6 +1166,35 @@ static const char *script_swap(VkrScriptHost *host, VkrScriptModule *module,
   module->retired = false_v;
   module->generation++;
   return NULL;
+}
+
+/* Running instances keep their data and bindings only when the new code
+ * describes the same data and behaviors. */
+static bool8_t script_same_shape(const VkrModuleDesc *old,
+                                 const VkrModuleDesc *desc) {
+  if (!old || old->data_size != desc->data_size ||
+      old->data_align != desc->data_align ||
+      old->data_version != desc->data_version || old->scope != desc->scope ||
+      old->behavior_count != desc->behavior_count) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < desc->behavior_count; ++i) {
+    if (strcmp(old->behaviors[i]->component->name,
+               desc->behaviors[i]->component->name)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+static bool8_t script_module_running(const VkrScriptHost *host,
+                                     uint32_t module) {
+  for (uint32_t i = 0; host->started && i < host->instance_count; ++i) {
+    if (host->instances[i]->module == module) {
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
@@ -615,15 +1208,17 @@ VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
     failure = "A script library needs a module name and a path";
   } else if (module && !module->dynamic) {
     failure = "That module is linked into the executable";
+  } else if (host->tool) {
+    failure = "A tool context is open";
   }
   char loaded[VKR_SCRIPT_PATH_CAPACITY] = {0};
   char entry_name[VKR_SCRIPT_MODULE_NAME_CAPACITY + 32u];
   VkrPlatformLibrary library = {0};
-  const VkrScriptModuleDesc *desc = NULL;
+  const VkrModuleDesc *desc = NULL;
   if (!failure) {
     snprintf(loaded, sizeof(loaded), "%s.%u-%u.loaded", library_path,
              vkr_platform_get_process_id(), ++host->load_serial);
-    snprintf(entry_name, sizeof(entry_name), "vkr_script_module_%s", name);
+    snprintf(entry_name, sizeof(entry_name), "vkr_module_%s", name);
     if (!script_copy_file(library_path, loaded)) {
       failure = "The script library could not be copied for loading";
       loaded[0] = '\0';
@@ -631,12 +1226,12 @@ VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
                                           sizeof(host->error))) {
       failure = host->error;
     } else {
-      const VkrScriptModuleEntry entry =
-          (VkrScriptModuleEntry)(uintptr_t)vkr_platform_library_symbol(
-              &library, entry_name);
-      desc = entry ? entry(&host->api) : NULL;
+      const VkrModuleEntry entry =
+          (VkrModuleEntry)(uintptr_t)vkr_platform_library_symbol(&library,
+                                                                 entry_name);
+      desc = entry ? entry(VKR_SDK_VERSION) : NULL;
       failure = entry ? script_validate(desc)
-                      : "The library has no vkr_script_module_<name> entry";
+                      : "The library has no vkr_module_<name> entry";
     }
   }
 
@@ -652,12 +1247,12 @@ VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
     }
   } else if (!failure) {
     const uint32_t index = (uint32_t)(module - host->modules);
-    const VkrScriptModuleDesc *old = module->desc;
-    if (desc->type_count != module->type_count) {
+    VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
+    if (script_module_components(desc, types) != module->type_count) {
       failure = "The module's component types changed; reopen the project";
     }
     for (uint32_t i = 0; !failure && i < module->type_count; ++i) {
-      if (!script_type_same_layout(module->types[i], desc->types[i])) {
+      if (!script_type_same_layout(module->types[i], types[i])) {
         snprintf(host->error, sizeof(host->error),
                  "Component %s changed its fields; reopen the project to "
                  "apply it",
@@ -665,37 +1260,23 @@ VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,
         failure = host->error;
       }
     }
-    const bool8_t running = host->started && host->active[index];
-    const bool8_t same_state = old && old->state_size == desc->state_size &&
-                               old->state_align == desc->state_align &&
-                               old->state_version == desc->state_version;
-    if (!failure && running && !same_state) {
-      /* The state shape changed: stop with the old code, restart with the
-         new one on the same scene. */
-      const VkrScriptSession session = host->session;
+    const bool8_t running = script_module_running(host, index);
+    if (!failure && running && !script_same_shape(module->desc, desc)) {
+      /* The data shape changed: stop with the old code, restart with the new
+         one on the same containers. */
+      const VkrScriptSessionDesc session = host->session;
       vkr_script_host_stop(host);
-      failure = script_state_reserve(host, module, desc)
-                    ? script_swap(host, module, desc, library, loaded)
-                    : "Script module state allocation failed";
+      failure = script_swap(host, module, desc, library, loaded);
       const char *start_error = NULL;
-      if (!failure &&
-          !vkr_script_host_start(host, session.scene, session.input,
-                                 session.assets, session.flags, &start_error)) {
+      if (!failure && !vkr_script_host_start(host, &session, &start_error)) {
         failure = start_error;
       }
       result = failure ? VKR_SCRIPT_RELOAD_FAILED : VKR_SCRIPT_RELOAD_RESTARTED;
       library = (VkrPlatformLibrary){0};
     } else if (!failure) {
-      if (!running && !script_state_reserve(host, module, desc)) {
-        failure = "Script module state allocation failed";
-      } else {
-        failure = script_swap(host, module, desc, library, loaded);
-      }
+      failure = script_swap(host, module, desc, library, loaded);
       if (!failure) {
         library = (VkrPlatformLibrary){0};
-        if (running && desc->reload) {
-          desc->reload(&host->session, module->state);
-        }
         result = VKR_SCRIPT_RELOAD_KEPT_STATE;
       }
     }
@@ -722,7 +1303,7 @@ void vkr_script_host_retire_libraries(VkrScriptHost *host) {
       continue;
     }
     for (uint32_t t = 0; t < module->type_count; ++t) {
-      script_type_unbind(module->types[t]);
+      module->types[t]->defaults = NULL;
     }
     module->desc = NULL;
     module->retired = true_v;
@@ -731,88 +1312,206 @@ void vkr_script_host_retire_libraries(VkrScriptHost *host) {
 }
 
 void vkr_script_host_shutdown(VkrScriptHost *host) {
+  if (!host->temp) {
+    return;
+  }
+  vkr_script_host_close_context(host);
   vkr_script_host_retire_libraries(host);
+  arena_destroy(host->temp);
+  host->temp = NULL;
+  vkr_dmemory_allocator_destroy(&host->instance_allocator);
 }
 
 // =============================================================================
 // Sessions
 // =============================================================================
 
-/* Stops the active modules among the first `count` in reverse order. */
-static void script_host_stop_modules(VkrScriptHost *host, uint32_t count) {
-  while (count) {
-    const uint32_t i = --count;
-    if (script_host_callable(host, i)) {
-      host->modules[i].desc->stop(&host->session, host->modules[i].state);
+static uint32_t script_container_attach(VkrScriptHost *host, VkrScene *scene) {
+  for (uint32_t i = 0; i < host->container_count; ++i) {
+    if (host->containers[i].scene == scene) {
+      return i;
     }
-    host->active[i] = false_v;
   }
+  const uint32_t slot = host->container_count++;
+  host->containers[slot] = (VkrScriptContainer){
+      .scene = scene, .world_id = scene->world ? scene->world->world_id : 0u};
+  host->transforms_dirty[slot] = false_v;
+  for (uint32_t t = 0; t < host->state_type_count; ++t) {
+    host->state_types[t].ids[slot] = VKR_COMPONENT_TYPE_INVALID;
+  }
+  return slot;
 }
 
-bool8_t vkr_script_host_start(VkrScriptHost *host, VkrScene *scene,
-                              InputState *input, struct VkrRenderAssets *assets,
-                              uint32_t flags, const char **error) {
-  if (host->started || !scene || !input) {
-    if (error) {
-      *error = "Script session requires a scene and input and no session";
+/* Ends every instance in reverse order and forgets the containers. */
+static void script_session_end(VkrScriptHost *host) {
+  for (uint32_t i = host->instance_count; i-- > 0u;) {
+    script_instance_end(host, host->instances[i]);
+  }
+  for (uint32_t i = host->instance_count; i-- > 0u;) {
+    script_instance_free(host, host->instances[i]);
+    host->instances[i] = NULL;
+  }
+  host->instance_count = 0u;
+}
+
+static bool8_t script_instance_needs_ticks(const VkrScriptHost *host,
+                                           const VkrScriptInstance *instance) {
+  const VkrModuleDesc *desc = script_instance_desc(host, instance);
+  if (!script_instance_callable(host, instance)) {
+    return false_v;
+  }
+  if (desc->fixed_update || desc->late_fixed_update) {
+    return true_v;
+  }
+  for (uint32_t b = 0; b < desc->behavior_count; ++b) {
+    if (desc->behaviors[b]->fixed_update ||
+        desc->behaviors[b]->late_fixed_update) {
+      return true_v;
     }
-    return false_v;
   }
-  vkr_scene_physics_set_paused(scene, true_v);
-  if ((vkr_scene_simulation_completed_ticks(scene) ||
-       vkr_scene_physics_debt(scene)) &&
-      !vkr_scene_physics_reset(scene, error)) {
-    return false_v;
-  }
-  host->session = (VkrScriptSession){.api = &host->api,
-                                     .scene = scene,
-                                     .input = input,
-                                     .assets = assets,
-                                     .instance_id = ++host->last_instance_id,
-                                     .flags = flags};
-  bool8_t any_active = false_v;
-  for (uint32_t i = 0; i < host->module_count; ++i) {
-    VkrScriptModule *module = &host->modules[i];
+  return false_v;
+}
+
+/* Starts module hooks, then behaviors, then installs the callbacks the
+ * enabled instances need. */
+static const char *script_session_begin(VkrScriptHost *host) {
+  for (uint32_t m = 0; m < host->module_count; ++m) {
+    const VkrScriptModule *module = &host->modules[m];
     if (!module->desc || module->retired) {
       continue;
     }
-    if (module->state) {
-      MemZero(module->state, module->desc->state_size);
-    }
-    const char *failure = NULL;
-    const VkrScriptStart result =
-        module->desc->start(&host->session, module->state, &failure);
-    if (result == VKR_SCRIPT_START_FAILED) {
-      script_host_stop_modules(host, i);
-      if (error) {
-        *error = script_host_fail(host, i, failure);
+    const bool8_t world_scope = module->desc->scope == VKR_SCOPE_WORLD;
+    for (uint32_t pass = 0; pass < 2u; ++pass) {
+      const uint32_t container =
+          pass == 0u ? host->world_container : host->active_container;
+      if ((pass == 1u && (world_scope || container == host->world_container))) {
+        continue;
       }
-      return false_v;
+      VkrScriptInstance *instance = script_instance_create(host, m, container);
+      if (!instance) {
+        return script_host_fail(host, module->name,
+                                "Script instance allocation failed");
+      }
+      host->instances[host->instance_count++] = instance;
     }
-    host->active[i] = result == VKR_SCRIPT_START_ACTIVE;
-    any_active = any_active || host->active[i];
   }
-  if (any_active) {
+  for (uint32_t i = 0; i < host->instance_count; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    const VkrModuleDesc *desc = script_instance_desc(host, instance);
+    instance->started = true_v;
+    if (!desc->start) {
+      continue;
+    }
+    ScriptCall call;
+    script_call_begin(host, instance, &instance->ledger, VKR_SCRIPT_PHASE_FRAME,
+                      &call);
+    desc->start(&instance->ctx.base, instance->data);
+    if (!script_call_end(host, instance, &call)) {
+      return host->error;
+    }
+  }
+  for (uint32_t i = 0; i < host->instance_count; ++i) {
+    if (!script_instance_sync(host, host->instances[i])) {
+      return host->error;
+    }
+  }
+  bool8_t ticks = false_v;
+  bool8_t input = false_v;
+  for (uint32_t i = 0; i < host->instance_count; ++i) {
+    const VkrScriptInstance *instance = host->instances[i];
+    ticks = ticks || script_instance_needs_ticks(host, instance);
+    input = input || (script_instance_callable(host, instance) &&
+                      script_instance_desc(host, instance)->input);
+  }
+  VkrScene *active = host->session.active;
+  for (uint32_t c = 0; c < host->container_count; ++c) {
+    if (!vkr_scene_observe_destroy(host->containers[c].scene,
+                                   script_host_entity_destroying, host)) {
+      return "The scene already has a destroy observer";
+    }
+  }
+  if (input) {
+    if (!input_observe(host->session.input, script_host_input, host)) {
+      return "The input already has an observer";
+    }
+    host->observing_input = true_v;
+  }
+  if (ticks) {
     const VkrSceneSimulationCallbacks callbacks = {
         .before_physics = script_host_before_physics,
         .after_physics = script_host_after_physics,
         .reset = script_host_reset,
         .context = host};
     const char *failure = NULL;
-    if (!input_observe(input, script_host_input, host)) {
-      failure = "The input already has an observer";
-    } else if (!vkr_scene_simulation_configure(scene, &callbacks, &failure)) {
-      (void)input_unobserve(input, host);
+    if (!vkr_scene_simulation_configure(active, &callbacks, &failure)) {
+      return failure ? failure : "Script simulation callbacks were refused";
     }
-    if (failure) {
-      script_host_stop_modules(host, host->module_count);
-      if (error) {
-        *error = failure;
-      }
-      return false_v;
-    }
+    host->callbacks_installed = true_v;
   }
+  return NULL;
+}
+
+/* Detaches callbacks and the input observer and ends every instance. */
+static void script_session_teardown(VkrScriptHost *host) {
+  VkrScene *active = host->session.active;
+  vkr_scene_physics_set_paused(active, true_v);
+  /* Instances end by stopping, not destroying: what their ledgers release
+     runs no destroy hook. */
+  for (uint32_t c = 0; c < host->container_count; ++c) {
+    (void)vkr_scene_unobserve_destroy(host->containers[c].scene, host);
+  }
+  if (host->callbacks_installed) {
+    (void)vkr_scene_simulation_detach(active, host);
+    host->callbacks_installed = false_v;
+  }
+  if (host->observing_input) {
+    (void)input_unobserve(host->session.input, host);
+    host->observing_input = false_v;
+  }
+  script_session_end(host);
+}
+
+bool8_t vkr_script_host_start(VkrScriptHost *host,
+                              const VkrScriptSessionDesc *desc,
+                              const char **error) {
+  if (host->started || host->tool || !desc || !desc->active || !desc->input) {
+    if (error) {
+      *error = "Script session requires a scene and input and no session";
+    }
+    return false_v;
+  }
+  VkrScene *active = desc->active;
+  vkr_scene_physics_set_paused(active, true_v);
+  if ((vkr_scene_simulation_completed_ticks(active) ||
+       vkr_scene_physics_debt(active)) &&
+      !vkr_scene_physics_reset(active, error)) {
+    return false_v;
+  }
+  host->session = *desc;
+  host->container_count = 0u;
+  host->active_container = script_container_attach(host, active);
+  host->world_container = desc->world
+                              ? script_container_attach(host, desc->world)
+                              : host->active_container;
   host->started = true_v;
+  host->faulted = false_v;
+  host->restart_pending = false_v;
+  host->view = (VkrScriptView){0};
+  host->error[0] = '\0';
+  host->frame_serial++;
+  const char *failure = script_session_begin(host);
+  if (failure) {
+    if (failure != host->error) {
+      snprintf(host->error, sizeof(host->error), "%s", failure);
+    }
+    script_session_teardown(host);
+    host->started = false_v;
+    host->container_count = 0u;
+    if (error) {
+      *error = host->error;
+    }
+    return false_v;
+  }
   return true_v;
 }
 
@@ -820,57 +1519,210 @@ void vkr_script_host_stop(VkrScriptHost *host) {
   if (!host->started) {
     return;
   }
-  VkrScene *scene = host->session.scene;
-  vkr_scene_physics_set_paused(scene, true_v);
-  // Detach only the host's borrowed context; other clock and fault
-  // diagnostics stay with the scene.
-  (void)vkr_scene_simulation_detach(scene, host);
-  (void)input_unobserve(host->session.input, host);
-  script_host_stop_modules(host, host->module_count);
-  host->session = (VkrScriptSession){0};
+  script_session_teardown(host);
+  host->session = (VkrScriptSessionDesc){0};
+  host->container_count = 0u;
   host->started = false_v;
+  host->faulted = false_v;
+  host->restart_pending = false_v;
+  host->view = (VkrScriptView){0};
   script_close_retired(host);
 }
 
+void vkr_script_host_detach(VkrScriptHost *host, const VkrScene *scene) {
+  if (!host->started || !scene) {
+    return;
+  }
+  if (scene == host->session.active) {
+    vkr_script_host_stop(host);
+    return;
+  }
+  uint32_t slot = UINT32_MAX;
+  for (uint32_t i = 0; i < host->container_count; ++i) {
+    if (host->containers[i].scene == scene) {
+      slot = i;
+    }
+  }
+  if (slot == UINT32_MAX) {
+    return;
+  }
+  /* The container's instances end, and World-scoped behaviors on its
+     entities stop, before its entities go; unloading runs no destroy hook. */
+  (void)vkr_scene_unobserve_destroy(host->containers[slot].scene, host);
+  for (uint32_t i = host->instance_count; i-- > 0u;) {
+    VkrScriptInstance *instance = host->instances[i];
+    if (instance->container == slot) {
+      script_instance_end(host, instance);
+      script_instance_free(host, instance);
+      for (uint32_t j = i; j + 1u < host->instance_count; ++j) {
+        host->instances[j] = host->instances[j + 1u];
+      }
+      host->instances[--host->instance_count] = NULL;
+      continue;
+    }
+    for (uint32_t b = instance->binding_count; b-- > 0u;) {
+      ScriptBinding *binding = &instance->bindings[b];
+      if (script_container_of(host, binding->entity) ==
+          &host->containers[slot]) {
+        script_binding_end(host, instance, binding);
+      }
+    }
+  }
+  /* The World is the last slot; the active container stays at zero. */
+  host->container_count = slot;
+  host->world_container = host->active_container;
+  host->session.world = NULL;
+}
+
 bool8_t vkr_script_host_active(const VkrScriptHost *host) {
-  for (uint32_t i = 0; host->started && i < host->module_count; ++i) {
-    if (script_host_callable(host, i)) {
+  for (uint32_t i = 0; host->started && i < host->instance_count; ++i) {
+    const VkrScriptInstance *instance = host->instances[i];
+    const VkrModuleDesc *desc = script_instance_desc(host, instance);
+    if (!script_instance_callable(host, instance)) {
+      continue;
+    }
+    if (instance->binding_count || desc->update || desc->late_update ||
+        desc->fixed_update || desc->late_fixed_update || desc->input) {
       return true_v;
     }
   }
   return false_v;
 }
 
+/* Restarts after a native reset, keeping the scene's run state. */
+static void script_host_restart(VkrScriptHost *host) {
+  host->restart_pending = false_v;
+  const VkrScriptSessionDesc session = host->session;
+  const bool8_t paused = vkr_scene_physics_is_paused(session.active);
+  vkr_script_host_stop(host);
+  const char *error = NULL;
+  if (vkr_script_host_start(host, &session, &error)) {
+    vkr_scene_physics_set_paused(session.active, paused);
+  }
+}
+
+/* A hook failed outside a tick: pause and stop calling hooks. */
+static void script_host_fault(VkrScriptHost *host) {
+  host->faulted = true_v;
+  vkr_scene_physics_set_paused(host->session.active, true_v);
+}
+
 void vkr_script_host_frame(VkrScriptHost *host, VkrScriptFrame *frame) {
-  for (uint32_t i = 0; host->started && i < host->module_count; ++i) {
-    const VkrScriptModuleDesc *module = host->modules[i].desc;
-    if (script_host_callable(host, i) && module->frame) {
-      module->frame(&host->session, host->modules[i].state, frame);
+  host->frame = *frame;
+  host->time_step_set = false_v;
+  if (host->started && host->restart_pending) {
+    script_host_restart(host);
+  }
+  if (!host->started || host->faulted) {
+    return;
+  }
+  host->frame_serial++;
+  host->frame_time_valid = true_v;
+  for (uint32_t i = 0; i < host->instance_count; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    if (!script_instance_callable(host, instance)) {
+      continue;
     }
+    if (!script_instance_sync(host, instance) ||
+        !script_instance_run(host, instance, SCRIPT_HOOK_UPDATE,
+                             (float32_t)frame->scene_delta)) {
+      script_host_fault(host);
+      break;
+    }
+  }
+  host->frame_time_valid = false_v;
+  if (host->time_step_set) {
+    frame->scene_delta = host->time_step;
   }
 }
 
 void vkr_script_host_present(VkrScriptHost *host, const VkrScriptFrame *frame,
                              VkrScriptView *view) {
-  *view = (VkrScriptView){0};
-  for (uint32_t i = 0; host->started && i < host->module_count; ++i) {
-    const VkrScriptModuleDesc *module = host->modules[i].desc;
-    if (!script_host_callable(host, i) || !module->present) {
+  host->frame = *frame;
+  host->view = (VkrScriptView){0};
+  host->frame_time_valid = true_v;
+  for (uint32_t i = 0;
+       host->started && !host->faulted && i < host->instance_count; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    if (!script_instance_callable(host, instance)) {
       continue;
     }
-    VkrScriptView module_view = {0};
-    module->present(&host->session, host->modules[i].state, frame,
-                    &module_view);
-    if (module_view.camera_valid) {
-      view->camera_valid = true_v;
-      view->camera_position = module_view.camera_position;
-      view->camera_yaw_degrees = module_view.camera_yaw_degrees;
-      view->camera_pitch_degrees = module_view.camera_pitch_degrees;
-    }
-    if (module_view.hud[0]) {
-      const uint32_t length = (uint32_t)strlen(view->hud);
-      snprintf(view->hud + length, sizeof(view->hud) - length, "%s%s",
-               length ? "\n" : "", module_view.hud);
+    if (!script_instance_run(host, instance, SCRIPT_HOOK_LATE_UPDATE,
+                             (float32_t)frame->scene_delta)) {
+      script_host_fault(host);
+      break;
     }
   }
+  host->frame_time_valid = false_v;
+  *view = host->view;
+}
+
+const char *vkr_script_host_error(const VkrScriptHost *host) {
+  return host->error[0] ? host->error : NULL;
+}
+
+void *vkr_script_host_instance_data(VkrScriptHost *host, const char *module,
+                                    const VkrScene *scene) {
+  for (uint32_t i = 0; host->started && i < host->instance_count; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    if (instance->module != SCRIPT_MODULE_NONE &&
+        !strcmp(host->modules[instance->module].name, module) &&
+        host->containers[instance->container].scene == scene) {
+      return instance->data;
+    }
+  }
+  return NULL;
+}
+
+VkrCtx *vkr_script_host_open_context(VkrScriptHost *host, VkrScene *scene,
+                                     InputState *input,
+                                     struct VkrRenderAssets *assets) {
+  if (host->started || host->tool || !scene) {
+    return NULL;
+  }
+  host->session =
+      (VkrScriptSessionDesc){.active = scene, .input = input, .assets = assets};
+  host->container_count = 0u;
+  host->active_container = script_container_attach(host, scene);
+  host->world_container = host->active_container;
+  host->tool =
+      script_instance_create(host, SCRIPT_MODULE_NONE, host->active_container);
+  if (!host->tool) {
+    host->container_count = 0u;
+    return NULL;
+  }
+  host->tool->started = true_v;
+  return &host->tool->ctx.base;
+}
+
+void vkr_script_host_close_context(VkrScriptHost *host) {
+  if (!host->tool) {
+    return;
+  }
+  script_ledger_release(host, &host->tool->ledger);
+  script_update_transforms(host);
+  script_instance_free(host, host->tool);
+  host->tool = NULL;
+  host->container_count = 0u;
+  host->session = (VkrScriptSessionDesc){0};
+  host->bound_animation_count = 0u;
+}
+
+bool8_t vkr_script_host_bind_animation(VkrScriptHost *host, VkrEntityId entity,
+                                       VkrAnimationPlayer *player) {
+  if (!host->tool || !player) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < host->bound_animation_count; ++i) {
+    if (host->bound_animations[i].entity == entity.u64) {
+      host->bound_animations[i].player = player;
+      return true_v;
+    }
+  }
+  if (host->bound_animation_count == VKR_SCRIPT_BOUND_ANIMATION_MAX) {
+    return false_v;
+  }
+  host->bound_animations[host->bound_animation_count++] =
+      (VkrScriptBoundAnimation){.entity = entity.u64, .player = player};
+  return true_v;
 }

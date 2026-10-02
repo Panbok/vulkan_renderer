@@ -1,6 +1,6 @@
 #pragma once
 
-#include "script/vkr_script.h"
+#include "sdk.h"
 
 /* Directions of the locomotion loops, relative to the body's facing. */
 typedef enum FpsLocomotionDirection {
@@ -40,19 +40,18 @@ typedef struct FpsLocomotionInput {
 /*
  * Speed-synchronized locomotion for a bank with the mannequin's clip names
  * (Idle, Walk_*, Jog_*, Run_Fwd, Crouch_*, Jump_*), on caller-owned clocks
- * through animation_sample_blend. Every loop starts on the same footfall,
+ * through vkr_anim_blend. Every loop starts on the same footfall,
  * so one normalized phase drives them all; the phase advances by distance
  * over the blended stride, which keeps planted feet still at any speed.
  * Jumps play Jump_Start into Jump_Loop while airborne and Jump_Land on
  * touchdown after a real fall. The player stays paused so the scene's own
  * clock never replaces the pose.
  *
- * Caller-owned fixed storage borrowing the scene's player and its bank until
- * discarded; nothing allocates. It is the only writer of the player's pose.
+ * Caller-owned fixed storage naming the entity whose animation it poses;
+ * nothing allocates. It is the only writer of that animation's pose.
  */
 typedef struct FpsLocomotion {
-  const VkrScriptApi *api;
-  VkrAnimationPlayer *player;
+  VkrEntity entity;
   FpsLocomotionGaits stand;
   FpsLocomotionGaits crouch;
   FpsLocomotionClip jump_start;
@@ -77,21 +76,18 @@ typedef struct FpsLocomotion {
 
 /* True when the bank holds at least Idle, Walk_Fwd and Jump_Loop; missing
  * directions, gaits and crouch clips fall back to what exists. */
-bool8_t fps_locomotion_supported(const VkrScriptApi *api,
-                                 const VkrAnimationPlayer *player);
+bool8_t fps_locomotion_supported(VkrCtx *ctx, VkrEntity entity);
 
 /* Resolves clips by name (speeds from the mannequin's clip table), pauses
  * the player and poses Idle. */
-bool8_t fps_locomotion_initialize(FpsLocomotion *locomotion,
-                                  const VkrScriptApi *api,
-                                  VkrAnimationPlayer *player,
-                                  const char **error);
+bool8_t fps_locomotion_initialize(VkrCtx *ctx, FpsLocomotion *locomotion,
+                                  VkrEntity entity, const char **error);
 
 /* Standing idle with fresh clocks, as after a reset. */
-bool8_t fps_locomotion_reset(FpsLocomotion *locomotion);
+bool8_t fps_locomotion_reset(VkrCtx *ctx, FpsLocomotion *locomotion);
 
 /* Advances `dt` seconds and poses the player. The caller advances it per
  * presented frame by the time its interpolated root advanced, so planted
  * feet stay under the rendered body. */
-bool8_t fps_locomotion_update(FpsLocomotion *locomotion,
+bool8_t fps_locomotion_update(VkrCtx *ctx, FpsLocomotion *locomotion,
                               const FpsLocomotionInput *input, float64_t dt);

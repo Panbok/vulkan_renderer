@@ -1106,6 +1106,20 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
           tag[n] = '\0';
         }
         in_enum = enumeration != NULL && keyword == NULL;
+        const char *paren = keyword || enumeration ? NULL : strchr(head, '(');
+        if (paren && !strchr(head, '=')) {
+          const char *name = paren;
+          while (name > head && name[-1] == ' ') {
+            --name;
+          }
+          const char *end = name;
+          while (name > head &&
+                 (isalnum((unsigned char)name[-1]) || name[-1] == '_')) {
+            --name;
+          }
+          code_symbols_add(symbols, name, (uint32_t)(end - name), head,
+                           head_length, NULL, CODE_SYMBOL_FUNCTION);
+        }
         owner = tag[0] ? code_symbols_copy(symbols, tag, (uint32_t)strlen(tag))
                        : NULL;
         if (tag[0]) {
@@ -1247,7 +1261,7 @@ static void code_symbols_parse_file(VkrEditorCode *code, CodeSymbols *symbols,
   }
 }
 
-/* The headers a script includes through script/vkr_script.h. */
+/* The headers a script includes through sdk.h. */
 static void code_load_sdk(VkrEditorCode *code) {
   if (code->sdk_loaded) {
     return;
@@ -1257,16 +1271,9 @@ static void code_load_sdk(VkrEditorCode *code) {
     return;
   }
   static const char *const headers[] = {
-      "runtime/src/script/vkr_script.h",
-      "runtime/src/core/vkr_type_desc.h",
-      "runtime/src/physics/vkr_physics.h",
-      "runtime/src/renderer/systems/vkr_scene_physics.h",
-      "runtime/src/core/vkr_entity.h",
-      "lib/src/math/vec.h",
-      "lib/src/math/mat.h",
-      "lib/src/math/vkr_quat.h",
+      "sdk/sdk.h",          "lib/src/math/vec.h",
+      "lib/src/math/mat.h", "lib/src/math/vkr_quat.h",
       "lib/src/defines.h",
-      "lib/src/core/logger.h",
   };
   for (uint32_t i = 0; i < ArrayCount(headers); ++i) {
     char path[VKR_EDITOR_SCRIPT_PATH];
@@ -1288,15 +1295,15 @@ static void code_load_sdk(VkrEditorCode *code) {
 // Completion
 // =============================================================================
 
-/* The struct a variable name most likely points to, from the script API's
- * naming conventions and the open file's declarations. */
+/* The struct a variable name most likely points to, from the SDK's naming
+ * conventions and the open file's declarations. */
 static const char *code_owner_of(const CodeDocument *doc, uint32_t before,
                                  const uint8_t *name, uint32_t length,
                                  char *out, uint32_t capacity) {
   static const char *const known[][2] = {
-      {"api", "VkrScriptApi"},         {"session", "VkrScriptSession"},
-      {"frame", "VkrScriptFrame"},     {"view", "VkrScriptView"},
-      {"desc", "VkrScriptModuleDesc"}, {"type", "VkrTypeDesc"},
+      {"event", "VkrInputEvent"},   {"hit", "VkrRayHit"},
+      {"body", "VkrBodyDesc"},      {"motor", "VkrCharacterState"},
+      {"move", "VkrCharacterMove"}, {"type", "VkrComponentDesc"},
   };
   for (uint32_t i = 0; i < ArrayCount(known); ++i) {
     if (strlen(known[i][0]) == length &&

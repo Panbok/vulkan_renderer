@@ -44,9 +44,9 @@ foreach(variant 1 2 3 4)
     add_library(vkr_test_reload_probe_${variant} MODULE scripts/reload_probe.c)
     target_compile_definitions(vkr_test_reload_probe_${variant} PRIVATE
         RELOAD_VARIANT=${variant})
+    # Only the script SDK and the foundation headers, as Bakery builds them.
     target_include_directories(vkr_test_reload_probe_${variant} PRIVATE
-        "${CMAKE_SOURCE_DIR}/runtime/src" "${CMAKE_SOURCE_DIR}/lib/src"
-        "${CMAKE_SOURCE_DIR}/renderer/src")
+        "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/lib/src")
     set_target_properties(vkr_test_reload_probe_${variant} PROPERTIES
         C_VISIBILITY_PRESET hidden)
     # Reload closes these modules and opens their next generation. With

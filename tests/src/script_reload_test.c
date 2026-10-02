@@ -2,18 +2,18 @@
 
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_script_host.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
-/* The probe's state layout (tests/scripts/reload_probe.c). */
-typedef struct ReloadState {
+/* The probe's data layout (tests/scripts/reload_probe.c). */
+typedef struct ReloadData {
   uint32_t ticks;
   uint32_t starts;
-  uint32_t reloads;
-} ReloadState;
+} ReloadData;
 
 static void reload_ticks(VkrScene *scene, uint32_t count) {
   for (uint32_t i = 0; i < count; ++i) {
@@ -21,15 +21,15 @@ static void reload_ticks(VkrScene *scene, uint32_t count) {
   }
 }
 
-/* Hot reload of a real library: code-only changes keep the running state, a
- * new state version restarts the session, and changed component fields are
+/* Hot reload of a real library: code-only changes keep the running data, a
+ * new data version restarts the session, and changed component fields are
  * refused while the previous code keeps running. */
 static void test_script_library_reload(VkrAllocator *allocator) {
   VkrScene scene;
   assert(vkr_scene_init(&scene, allocator, 51, 16, NULL));
   InputState input = {0};
-  VkrScriptHost host;
-  vkr_script_host_init(&host, allocator);
+  static VkrScriptHost host;
+  assert(vkr_script_host_init(&host, allocator));
   const char *error = NULL;
 
   assert(vkr_script_host_load_library(&host, "reload_probe",
@@ -46,27 +46,29 @@ static void test_script_library_reload(VkrAllocator *allocator) {
   assert(vkr_scene_sync_world_types(&scene));
   assert(vkr_scene_type_id(&scene, type) != VKR_COMPONENT_TYPE_INVALID);
 
-  assert(vkr_script_host_start(&host, &scene, &input, NULL, 0u, &error));
-  const ReloadState *state = module->state;
+  const VkrScriptSessionDesc session = {.active = &scene, .input = &input};
+  assert(vkr_script_host_start(&host, &session, &error));
+  const ReloadData *state =
+      vkr_script_host_instance_data(&host, "reload_probe", &scene);
   vkr_scene_physics_set_paused(&scene, false_v);
   reload_ticks(&scene, 3u);
   assert(state->ticks == 3u && state->starts == 1u);
 
-  /* Code only: the same state continues under the new code. */
+  /* Code only: the same data continues under the new code. */
   assert(vkr_script_host_load_library(&host, "reload_probe",
                                       VKR_TEST_RELOAD_PROBE_2,
                                       &error) == VKR_SCRIPT_RELOAD_KEPT_STATE);
   assert(host.started && module->generation == 2u && host.retired_count == 1u);
-  assert(state->reloads == 1u && state->starts == 1u);
+  assert(state->starts == 1u);
   vkr_scene_physics_set_paused(&scene, false_v);
   reload_ticks(&scene, 2u);
   assert(state->ticks == 23u);
 
-  /* A new state version: the session restarts on fresh state. */
+  /* A new data version: the session restarts on fresh data. */
   assert(vkr_script_host_load_library(&host, "reload_probe",
                                       VKR_TEST_RELOAD_PROBE_3,
                                       &error) == VKR_SCRIPT_RELOAD_RESTARTED);
-  state = module->state;
+  state = vkr_script_host_instance_data(&host, "reload_probe", &scene);
   assert(host.started && state->starts == 1u && state->ticks == 0u);
   assert(host.retired_count == 0u);
   vkr_scene_physics_set_paused(&scene, false_v);

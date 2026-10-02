@@ -401,7 +401,7 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .headless = editor->headless,
   };
   editor->window_launcher = editor->project_managed;
-  static const VkrScriptModuleEntry script_modules[] = {vkr_script_module_fps};
+  static const VkrModuleEntry script_modules[] = {vkr_module_fps};
   config.script_modules = script_modules;
   config.script_module_count = ArrayCount(script_modules);
   config.ui = (VkrSampleUiClient){

@@ -2,19 +2,28 @@
 #include "fps_player.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_simulation.h"
 #include "script/vkr_script_host.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
 
-/* The host supplies the engine table; these tests install the player's tick
- * hooks directly, as the FPS module does through the host. */
+/* The host supplies the SDK through a tool context; these tests install the
+ * player's tick hooks directly, as the FPS module's hooks call them. */
 static VkrScriptHost s_script_host;
+
+typedef struct PlayerTest {
+  VkrCtx *ctx;
+  VkrScene *scene;
+  FpsPlayer player;
+} PlayerTest;
 
 static bool8_t player_test_before(VkrScene *scene, uint64_t tick,
                                   void *context) {
+  PlayerTest *test = context;
   const char *error = NULL;
-  if (!fps_player_before_physics(context, tick, &error)) {
+  if (!fps_player_before_physics(test->ctx, &test->player, tick, &error)) {
     scene->simulation.error = error;
     return false_v;
   }
@@ -25,46 +34,59 @@ static bool8_t player_test_after(VkrScene *scene, uint64_t tick,
                                  void *context) {
   (void)scene;
   (void)tick;
-  fps_player_after_physics(context);
+  PlayerTest *test = context;
+  fps_player_after_physics(test->ctx, &test->player);
   return true_v;
 }
 
 static void player_test_reset(VkrScene *scene, void *context) {
   (void)scene;
-  fps_player_reset(context);
+  PlayerTest *test = context;
+  fps_player_reset(test->ctx, &test->player);
 }
 
-static bool8_t player_attach(FpsPlayer *player, VkrScene *scene,
+/* Opens the test's context on `scene` once; player_shutdown closes it. */
+static VkrCtx *player_context(PlayerTest *test, VkrScene *scene,
+                              InputState *input) {
+  if (!test->ctx) {
+    test->ctx =
+        vkr_script_host_open_context(&s_script_host, scene, input, NULL);
+    test->scene = scene;
+  }
+  return test->ctx;
+}
+
+static bool8_t player_attach(PlayerTest *test, VkrScene *scene,
                              InputState *input, VkrEntityId entity,
                              uint64_t instance_id, float32_t yaw) {
-  const FpsPlayerConfig config = {.api = &s_script_host.api,
-                                  .scene = scene,
-                                  .input = input,
-                                  .entity = entity,
+  VkrCtx *ctx = player_context(test, scene, input);
+  const FpsPlayerConfig config = {.entity = {entity.u64},
                                   .settings = fps_player_settings_default(),
                                   .yaw = yaw,
                                   .weapon_bone = UINT32_MAX,
                                   .instance_id = instance_id};
-  if (!fps_player_attach(player, &config, NULL)) {
+  if (!ctx || !fps_player_attach(ctx, &test->player, &config, NULL)) {
     return false_v;
   }
   const VkrSceneSimulationCallbacks callbacks = {
       .before_physics = player_test_before,
       .after_physics = player_test_after,
       .reset = player_test_reset,
-      .context = player};
+      .context = test};
   if (!vkr_scene_simulation_configure(scene, &callbacks, NULL)) {
-    fps_player_shutdown(player);
+    fps_player_shutdown(ctx, &test->player);
     return false_v;
   }
   return true_v;
 }
 
-static void player_shutdown(FpsPlayer *player) {
-  VkrScene *scene = player->scene;
+static void player_shutdown(PlayerTest *test) {
+  VkrScene *scene = test->scene;
   vkr_scene_physics_set_paused(scene, true_v);
-  assert(vkr_scene_simulation_detach(scene, player));
-  fps_player_shutdown(player);
+  assert(vkr_scene_simulation_detach(scene, test));
+  fps_player_shutdown(test->ctx, &test->player);
+  vkr_script_host_close_context(&s_script_host);
+  test->ctx = NULL;
 }
 
 static void player_command(FpsPlayer *player, uint64_t tick, FpsAction action,
@@ -190,98 +212,95 @@ static void test_player_observer_bursts(VkrAllocator *allocator) {
   VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
   assert(vkr_scene_set_transform(&scene, entity, vec3_new(0, .1f, 0),
                                  vkr_quat_identity(), vec3_one()));
-  FpsPlayer player = {0};
-  assert(player_attach(&player, &scene, &input, entity, 90, 0));
+  PlayerTest test = {0};
+  FpsPlayer *const player = &test.player;
+  assert(player_attach(&test, &scene, &input, entity, 90, 0));
   vkr_scene_physics_set_paused(&scene, false_v);
-  assert(fps_player_frame(&player, 100, true_v) == 0);
+  assert(fps_player_frame(test.ctx, player, 100, true_v) == 0);
   const float64_t boundary = 100 + VKR_SCENE_SIMULATION_FIXED_DT;
-  const float64_t elapsed = fps_player_frame(&player, boundary, true_v);
+  const float64_t elapsed =
+      fps_player_frame(test.ctx, player, boundary, true_v);
   assert(elapsed < VKR_SCENE_SIMULATION_FIXED_DT);
   vkr_scene_update(&scene, elapsed);
   assert(vkr_scene_simulation_completed_ticks(&scene) == 1);
-  VkrInputTransition event = {.kind = VKR_INPUT_TRANSITION_LOOK,
-                              .time_seconds = boundary};
-  fps_player_observe(&player, &event);
-  assert(!player.commands.faulted && player.commands.count == 1);
-  assert(player.commands.commands[player.commands.head].tick == 2);
+  VkrInputEvent event = {.kind = VKR_INPUT_LOOK, .time = boundary};
+  fps_player_observe(test.ctx, player, &event);
+  assert(!player->commands.faulted && player->commands.count == 1);
+  assert(player->commands.commands[player->commands.head].tick == 2);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   assert(vkr_scene_simulation_completed_ticks(&scene) == 2);
 
   for (uint32_t i = 0; i < 1024; ++i) {
-    event.time_seconds = 100.040 + i * 1e-7;
-    event.delta_x = 0.125;
-    fps_player_observe(&player, &event);
+    event.time = 100.040 + i * 1e-7;
+    event.dx = 0.125;
+    fps_player_observe(test.ctx, player, &event);
   }
-  assert(!player.commands.faulted && player.commands.count == 1);
-  event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_BUTTON,
-                               .time_seconds = 100.041,
-                               .code = BUTTON_LEFT,
-                               .pressed = true_v};
-  fps_player_observe(&player, &event);
-  event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
-                               .delta_x = -0.125};
+  assert(!player->commands.faulted && player->commands.count == 1);
+  event = (VkrInputEvent){.kind = VKR_INPUT_BUTTON,
+                          .time = 100.041,
+                          .code = VKR_MOUSE_LEFT,
+                          .pressed = true_v};
+  fps_player_observe(test.ctx, player, &event);
+  event = (VkrInputEvent){.kind = VKR_INPUT_LOOK, .dx = -0.125};
   for (uint32_t i = 0; i < 1024; ++i) {
-    event.time_seconds = 100.042 + i * 1e-7;
-    fps_player_observe(&player, &event);
+    event.time = 100.042 + i * 1e-7;
+    fps_player_observe(test.ctx, player, &event);
   }
-  event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_BUTTON,
-                               .time_seconds = 100.043,
-                               .code = BUTTON_LEFT,
-                               .pressed = false_v};
-  fps_player_observe(&player, &event);
-  assert(!player.commands.faulted && player.commands.count == 4);
+  event = (VkrInputEvent){.kind = VKR_INPUT_BUTTON,
+                          .time = 100.043,
+                          .code = VKR_MOUSE_LEFT,
+                          .pressed = false_v};
+  fps_player_observe(test.ctx, player, &event);
+  assert(!player->commands.faulted && player->commands.count == 4);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   assert(!scene.simulation.faulted);
-  assert(player.shots_fired == 1 && player.hits == 1);
-  const FpsPlayerState *state = vkr_entity_get_component_if_alive_const(
-      scene.world, entity, player.component);
+  assert(player->shots_fired == 1 && player->hits == 1);
+  const FpsPlayerState *state = fps_player_state(test.ctx, player);
   assert(state && state->weapon.magazine_rounds == 11);
   assert(fabsf(state->yaw) < 1e-5f);
   assert(!(state->held & (1u << FPS_ACTION_FIRE)));
-  assert(player.commands.count == 0);
+  assert(player->commands.count == 0);
 
   // The observer runs after InputState records each physical key transition.
   // Releasing one Ctrl while the other stays held must keep the motor crouched.
-  event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_KEY,
-                               .time_seconds = 100.060,
-                               .code = KEY_LCONTROL,
-                               .pressed = true_v};
+  event = (VkrInputEvent){.kind = VKR_INPUT_KEY,
+                          .time = 100.060,
+                          .code = VKR_KEY_LCONTROL,
+                          .pressed = true_v};
   input.current_keys.keys[KEY_LCONTROL] = true_v;
-  fps_player_observe(&player, &event);
-  event.time_seconds = 100.061;
-  event.code = KEY_RCONTROL;
+  fps_player_observe(test.ctx, player, &event);
+  event.time = 100.061;
+  event.code = VKR_KEY_RCONTROL;
   input.current_keys.keys[KEY_RCONTROL] = true_v;
-  fps_player_observe(&player, &event);
-  event.time_seconds = 100.062;
-  event.code = KEY_LCONTROL;
+  fps_player_observe(test.ctx, player, &event);
+  event.time = 100.062;
+  event.code = VKR_KEY_LCONTROL;
   event.pressed = false_v;
   input.current_keys.keys[KEY_LCONTROL] = false_v;
-  fps_player_observe(&player, &event);
+  fps_player_observe(test.ctx, player, &event);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   assert(!scene.simulation.faulted);
   VkrPhysicsCharacterState motor;
   assert(vkr_scene_character_get_state(&scene, entity, &motor, NULL));
   assert(motor.crouched && state->crouched);
   FpsCameraRigPose camera;
-  assert(fps_player_camera(&player, &camera));
-  assert(camera.position.y - player.current_foot.y < 1.5f);
-  event.time_seconds = 100.070;
-  event.code = KEY_RCONTROL;
+  assert(fps_player_camera(test.ctx, player, &camera));
+  assert(camera.position.y - player->current_foot.y < 1.5f);
+  event.time = 100.070;
+  event.code = VKR_KEY_RCONTROL;
   input.current_keys.keys[KEY_RCONTROL] = false_v;
-  fps_player_observe(&player, &event);
+  fps_player_observe(test.ctx, player, &event);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
   assert(!scene.simulation.faulted);
   assert(vkr_scene_character_get_state(&scene, entity, &motor, NULL));
   assert(!motor.crouched && !state->crouched);
 
   // Captured look reports upward motion as positive delta_y; it looks up.
-  const float32_t pitch_before = player.render_pitch;
-  event = (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
-                               .time_seconds = 100.080,
-                               .delta_y = 40};
-  fps_player_observe(&player, &event);
-  assert(player.render_pitch > pitch_before);
-  player_shutdown(&player);
+  const float32_t pitch_before = player->render_pitch;
+  event = (VkrInputEvent){.kind = VKR_INPUT_LOOK, .time = 100.080, .dy = 40};
+  fps_player_observe(test.ctx, player, &event);
+  assert(player->render_pitch > pitch_before);
+  player_shutdown(&test);
   vkr_scene_shutdown(&scene, NULL);
 }
 
@@ -297,72 +316,73 @@ static void test_player_unfocused_simulation(VkrAllocator *allocator) {
   const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
   assert(vkr_scene_set_transform(&scene, entity, vec3_new(0, 8, 0),
                                  vkr_quat_identity(), vec3_one()));
-  FpsPlayer player = {0};
-  assert(player_attach(&player, &scene, &input, entity, 100, 0));
-  FpsPlayerState *state =
-      vkr_entity_get_component_mut(scene.world, entity, player.component);
+  PlayerTest test = {0};
+  FpsPlayer *const player = &test.player;
+  assert(player_attach(&test, &scene, &input, entity, 100, 0));
+  FpsPlayerState *state = fps_player_state(test.ctx, player);
   assert(state);
   vkr_scene_physics_set_paused(&scene, false_v);
-  assert(fps_player_frame(&player, 100, true_v) == 0);
-  const VkrInputTransition press = {.time_seconds = 100.001,
-                                    .kind = VKR_INPUT_TRANSITION_BUTTON,
-                                    .code = BUTTON_LEFT,
-                                    .pressed = true_v};
-  fps_player_observe(&player, &press);
+  assert(fps_player_frame(test.ctx, player, 100, true_v) == 0);
+  const VkrInputEvent press = {.time = 100.001,
+                               .kind = VKR_INPUT_BUTTON,
+                               .code = VKR_MOUSE_LEFT,
+                               .pressed = true_v};
+  fps_player_observe(test.ctx, player, &press);
   state->held = 1u << FPS_ACTION_FORWARD;
 
   // UI input capture cancels player intent, but cannot freeze a running world.
   for (uint32_t tick = 1; tick <= 8; ++tick) {
     const float64_t now = 100 + tick * VKR_SCENE_SIMULATION_FIXED_DT;
-    const float64_t dt = fps_player_frame(&player, now, false_v);
+    const float64_t dt = fps_player_frame(test.ctx, player, now, false_v);
     assert(fabs(dt - VKR_SCENE_SIMULATION_FIXED_DT) < 1e-12);
     vkr_scene_update(&scene, dt);
     assert(vkr_scene_simulation_completed_ticks(&scene) == tick);
     assert(!scene.physics_paused && !scene.simulation.faulted);
-    assert(!player.active && !state->held && !player.commands.count);
+    assert(!player->active && !state->held && !player->commands.count);
   }
   VkrPhysicsPose pose;
   assert(vkr_scene_physics_get_pose(&scene, falling, &pose));
-  assert(pose.position[1] < 8 && player.current_foot.y < 8);
-  assert(player.shots_fired == 0);
+  assert(pose.position[1] < 8 && player->current_foot.y < 8);
+  assert(player->shots_fired == 0);
 
-  VkrInputTransition ignored = press;
-  ignored.time_seconds = 100 + 8.5 * VKR_SCENE_SIMULATION_FIXED_DT;
-  fps_player_observe(&player, &ignored);
-  assert(!player.commands.count);
+  VkrInputEvent ignored = press;
+  ignored.time = 100 + 8.5 * VKR_SCENE_SIMULATION_FIXED_DT;
+  fps_player_observe(test.ctx, player, &ignored);
+  assert(!player->commands.count);
   const float64_t resumed = 100 + 9 * VKR_SCENE_SIMULATION_FIXED_DT;
-  vkr_scene_update(&scene, fps_player_frame(&player, resumed, true_v));
+  vkr_scene_update(&scene, fps_player_frame(test.ctx, player, resumed, true_v));
   assert(vkr_scene_simulation_completed_ticks(&scene) == 9);
-  assert(player.active && player.shots_fired == 0);
+  assert(player->active && player->shots_fired == 0);
 
   // A fresh press after focus returns retains the shared scene tick mapping.
-  VkrInputTransition fresh = press;
-  fresh.time_seconds = resumed + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
-  fps_player_observe(&player, &fresh);
-  assert(!player.commands.faulted && player.commands.count == 1);
-  assert(player.commands.commands[player.commands.head].tick == 10);
-  vkr_scene_update(
-      &scene, fps_player_frame(
-                  &player, 100 + 10 * VKR_SCENE_SIMULATION_FIXED_DT, true_v));
+  VkrInputEvent fresh = press;
+  fresh.time = resumed + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
+  fps_player_observe(test.ctx, player, &fresh);
+  assert(!player->commands.faulted && player->commands.count == 1);
+  assert(player->commands.commands[player->commands.head].tick == 10);
+  vkr_scene_update(&scene,
+                   fps_player_frame(test.ctx, player,
+                                    100 + 10 * VKR_SCENE_SIMULATION_FIXED_DT,
+                                    true_v));
   assert(vkr_scene_simulation_completed_ticks(&scene) == 10);
-  assert(!scene.simulation.faulted && player.shots_fired == 1);
+  assert(!scene.simulation.faulted && player->shots_fired == 1);
 
   // Explicit pause still excludes the paused wall-time span on resume.
   vkr_scene_physics_set_paused(&scene, true_v);
-  assert(fps_player_frame(&player, 150, true_v) == 0);
-  assert(!player.active && !state->held && !player.commands.count);
+  assert(fps_player_frame(test.ctx, player, 150, true_v) == 0);
+  assert(!player->active && !state->held && !player->commands.count);
   vkr_scene_physics_set_paused(&scene, false_v);
-  assert(fps_player_frame(&player, 200, true_v) == 0);
-  fresh.time_seconds = 200 + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
-  fps_player_observe(&player, &fresh);
-  assert(!player.commands.faulted && player.commands.count == 1);
-  assert(player.commands.commands[player.commands.head].tick == 11);
-  vkr_scene_update(
-      &scene,
-      fps_player_frame(&player, 200 + VKR_SCENE_SIMULATION_FIXED_DT, true_v));
+  assert(fps_player_frame(test.ctx, player, 200, true_v) == 0);
+  fresh.time = 200 + 0.5 * VKR_SCENE_SIMULATION_FIXED_DT;
+  fps_player_observe(test.ctx, player, &fresh);
+  assert(!player->commands.faulted && player->commands.count == 1);
+  assert(player->commands.commands[player->commands.head].tick == 11);
+  vkr_scene_update(&scene, fps_player_frame(test.ctx, player,
+                                            200 + VKR_SCENE_SIMULATION_FIXED_DT,
+                                            true_v));
   assert(vkr_scene_simulation_completed_ticks(&scene) == 11);
   assert(!scene.simulation.faulted);
-  player_shutdown(&player);
+  player_shutdown(&test);
   vkr_scene_shutdown(&scene, NULL);
 }
 
@@ -374,29 +394,29 @@ static void test_player_authored_camera_mode(VkrAllocator *allocator) {
                                  vkr_quat_identity(), vec3_one()));
   vkr_scene_physics_set_paused(&scene, true_v);
   InputState input = {0};
-  FpsPlayerConfig config = {.api = &s_script_host.api,
-                            .scene = &scene,
-                            .input = &input,
-                            .entity = entity,
+  VkrCtx *ctx =
+      vkr_script_host_open_context(&s_script_host, &scene, &input, NULL);
+  FpsPlayerConfig config = {.entity = {entity.u64},
                             .settings = fps_player_settings_default(),
                             .weapon_bone = UINT32_MAX,
                             .instance_id = 101};
   config.settings.camera_mode = FPS_CAMERA_RIG_THIRD_PERSON;
   FpsPlayer player = {0};
-  assert(fps_player_attach(&player, &config, NULL));
+  assert(fps_player_attach(ctx, &player, &config, NULL));
   FpsCameraRigPose pose = {0};
-  assert(fps_player_camera(&player, &pose));
+  assert(fps_player_camera(ctx, &player, &pose));
   assert(player.camera.mode == FPS_CAMERA_RIG_THIRD_PERSON);
   assert(fabsf(pose.position.x + 4.0f) < 0.001f);
-  fps_player_shutdown(&player);
+  fps_player_shutdown(ctx, &player);
 
   // A mode outside the rig's range fails attach and leaves nothing behind.
-  config.settings.camera_mode = 3u;
-  assert(!fps_player_attach(&player, &config, NULL));
+  config.settings.camera_mode = 3;
+  assert(!fps_player_attach(ctx, &player, &config, NULL));
   config.settings.camera_mode = FPS_CAMERA_RIG_FIRST_PERSON;
-  assert(fps_player_attach(&player, &config, NULL));
+  assert(fps_player_attach(ctx, &player, &config, NULL));
   assert(player.camera.mode == FPS_CAMERA_RIG_FIRST_PERSON);
-  fps_player_shutdown(&player);
+  fps_player_shutdown(ctx, &player);
+  vkr_script_host_close_context(&s_script_host);
   vkr_scene_shutdown(&scene, NULL);
 }
 
@@ -405,7 +425,7 @@ bool32_t run_gameplay_player_tests(void) {
   assert(vkr_dmemory_create(MB(4), MB(32), &memory));
   VkrAllocator allocator = {.ctx = &memory};
   vkr_dmemory_allocator_create(&allocator);
-  vkr_script_host_init(&s_script_host, &allocator);
+  assert(vkr_script_host_init(&s_script_host, &allocator));
   test_player_evaluated_transforms(&allocator);
   test_player_observer_bursts(&allocator);
   test_player_unfocused_simulation(&allocator);
@@ -423,70 +443,71 @@ bool32_t run_gameplay_player_tests(void) {
   VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
   assert(vkr_scene_set_transform(&scene, entity, vec3_new(0, .1f, 0),
                                  vkr_quat_identity(), vec3_one()));
-  FpsPlayer player = {0};
-  assert(player_attach(&player, &scene, &input, entity, 70, 0.25f));
-  assert(!player_attach(&player, &scene, &input, entity, 80, 0));
-  FpsPlayerState *state =
-      vkr_entity_get_component_mut(scene.world, entity, player.component);
+  PlayerTest test = {0};
+  FpsPlayer *const player = &test.player;
+  assert(player_attach(&test, &scene, &input, entity, 70, 0.25f));
+  assert(!player_attach(&test, &scene, &input, entity, 80, 0));
+  FpsPlayerState *state = fps_player_state(test.ctx, player);
   assert(state && state->weapon.magazine_rounds == 12);
   vkr_scene_physics_set_paused(&scene, false_v);
-  assert(fps_player_frame(&player, 100, true_v) == 0);
+  assert(fps_player_frame(test.ctx, player, 100, true_v) == 0);
   // Complete short presses must survive a frame with no simulation tick.
-  const VkrInputTransition press = {.time_seconds = 100.001,
-                                    .kind = VKR_INPUT_TRANSITION_BUTTON,
-                                    .code = BUTTON_LEFT,
-                                    .pressed = true_v};
-  fps_player_observe(&player, &press);
-  VkrInputTransition release = press;
-  release.time_seconds = 100.002;
+  const VkrInputEvent press = {.time = 100.001,
+                               .kind = VKR_INPUT_BUTTON,
+                               .code = VKR_MOUSE_LEFT,
+                               .pressed = true_v};
+  fps_player_observe(test.ctx, player, &press);
+  VkrInputEvent release = press;
+  release.time = 100.002;
   release.pressed = false_v;
-  fps_player_observe(&player, &release);
+  fps_player_observe(test.ctx, player, &release);
   vkr_scene_update(&scene, 0);
-  assert(player.shots_fired == 0);
+  assert(player->shots_fired == 0);
   vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
-  assert(player.shots_fired == 1 && state->weapon.magazine_rounds == 11);
+  assert(player->shots_fired == 1 && state->weapon.magazine_rounds == 11);
   assert(!(state->held & (1u << FPS_ACTION_FIRE)));
-  player_command(&player, 2, FPS_ACTION_FORWARD, true_v);
-  player_command(&player, 2, FPS_ACTION_RELOAD, true_v);
-  player_command(&player, 32, FPS_ACTION_FORWARD, false_v);
+  player_command(player, 2, FPS_ACTION_FORWARD, true_v);
+  player_command(player, 2, FPS_ACTION_RELOAD, true_v);
+  player_command(player, 32, FPS_ACTION_FORWARD, false_v);
   for (uint32_t tick = 2; tick <= 62; ++tick) {
     vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
     assert(!scene.simulation.faulted);
   }
-  assert(fabsf(player.current_foot.x - 2.422281f) < .05f);
-  assert(fabsf(player.current_foot.z - 0.618510f) < .05f);
-  assert(fabsf(player.current_foot.y) < .05f);
+  assert(fabsf(player->current_foot.x - 2.422281f) < .05f);
+  assert(fabsf(player->current_foot.z - 0.618510f) < .05f);
+  assert(fabsf(player->current_foot.y) < .05f);
   assert(state->weapon.magazine_rounds == 12 && state->reserve_rounds == 119);
   FpsCameraRigPose camera;
-  assert(fps_player_camera(&player, &camera));
+  assert(fps_player_camera(test.ctx, player, &camera));
   assert(fabsf(camera.position.y - 1.6f) < .06f);
   // Pause invalidates pending/held input without admitting the paused wall
   // span.
   state->held = 1u << FPS_ACTION_FIRE;
   vkr_scene_physics_set_paused(&scene, true_v);
-  assert(fps_player_frame(&player, 150, true_v) == 0);
-  assert(!player.active && state->held == 0 && player.commands.count == 0);
+  assert(fps_player_frame(test.ctx, player, 150, true_v) == 0);
+  assert(!player->active && state->held == 0 && player->commands.count == 0);
   vkr_scene_physics_set_paused(&scene, false_v);
-  assert(fps_player_frame(&player, 200, true_v) == 0);
-  assert(player.active);
+  assert(fps_player_frame(test.ctx, player, 200, true_v) == 0);
+  assert(player->active);
   assert(!vkr_scene_simulation_detach(&scene, &input));
   vkr_scene_physics_set_paused(&scene, true_v);
-  player.render_yaw = 1.0f;
-  player.render_pitch = 0.5f;
+  player->render_yaw = 1.0f;
+  player->render_pitch = 0.5f;
   state->yaw = 1.0f;
   state->pitch = 0.5f;
   assert(vkr_scene_physics_reset(&scene, NULL));
-  state = vkr_entity_get_component_mut(scene.world, entity, player.component);
+  state = fps_player_state(test.ctx, player);
   assert(state->weapon.instance_id == 71 &&
          state->weapon.magazine_rounds == 12);
-  assert(player.commands.consumed_tick == 0 && player.shots_fired == 0);
-  assert(player.render_yaw == 0.25f && player.render_pitch == 0);
+  assert(player->commands.consumed_tick == 0 && player->shots_fired == 0);
+  assert(player->render_yaw == 0.25f && player->render_pitch == 0);
   assert(state->yaw == 0.25f && state->pitch == 0);
-  player_shutdown(&player);
+  player_shutdown(&test);
   assert(!input.observer && !scene.simulation.enabled);
   assert(!vkr_scene_character_get_state(&scene, entity,
                                         &(VkrPhysicsCharacterState){0}, NULL));
   vkr_scene_shutdown(&scene, NULL);
+  vkr_script_host_shutdown(&s_script_host);
   vkr_dmemory_allocator_destroy(&allocator);
   printf("Gameplay player tests passed\n");
   return true_v;

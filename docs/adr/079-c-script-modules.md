@@ -1,17 +1,19 @@
 ---
 status: partial
-updated: 2026-09-30
+updated: 2026-10-02
 authority: adr
 ---
 
-# ADR-079: C script modules, hot reload, the Script editor and the Player Start
+# ADR-079: C script modules, the script SDK, hot reload, the Script editor and the Player Start
 
 ## Status
 
 Accepted (partial). Implemented:
 
-- the script ABI (version 2) and the runtime script host;
-- shared-library loading with hot reload that keeps state;
+- the script SDK (`sdk.h`, version 3) and the runtime script host, with
+  temp, scoped and persistent lifetimes released through ledgers, behaviors
+  per entity, and script instances per attached container;
+- shared-library loading with hot reload that keeps instance data;
 - Script assets attached to objects, the authoring macros and the Player
   Start;
 - project `Scripts/` modules built by Bakery and loaded before the project's
@@ -21,10 +23,14 @@ Accepted (partial). Implemented:
 
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
+- Deferred structural edits in fixed updates, owner and timed lifetimes, and
+  the transient mark for objects spawned in Play.
+- Library packages with dependencies, and later exports.
+- Asynchronous library preparation, model loads and first builds, script
+  jobs and a Jolt thread pool.
 - Packaged games do not load a project's script library yet; `vkr_player`
   still links only the FPS module.
-- Headers for projects outside this source tree.
-- Windows verification.
+- The SDK and foundation headers in the editor distribution.
 - A TypeScript layer.
 
 ## Context
@@ -37,87 +43,133 @@ Bakery already compiled `*.script.json` C modules into a shared library and a
 static archive ([ADR-077](077-asset-build-system.md)), but nothing defined how
 the engine calls them, and the editor offered no way to write them.
 
+The first table (ABI version 2) left scripts to release every entity,
+character and runtime component by hand, handed them raw animation players,
+engine structs and `const char **` errors, made them include runtime and
+renderer headers, and ran one session on the played scene only, so nothing
+could live with the World while zones came and went.
+
 ## Decision
 
-### One ABI: a host-owned function table
+### One SDK: `sdk.h` over a host-owned table
 
-[`vkr_script.h`](../../runtime/src/script/vkr_script.h) defines the ABI. A
-module exports `vkr_script_module_<name>(const VkrScriptApi *api)` and returns
-a static `VkrScriptModuleDesc`.
+[`sdk.h`](../../sdk/sdk.h) is everything a module may use. It includes only
+the foundation's `defines.h` and inline math, so Bakery builds modules with
+the SDK and `lib/src` as their only include roots. A module exports
+`vkr_module_<Name>(sdk_version)` and returns a static `VkrModuleDesc`, or
+NULL when the version differs; there is no compatibility with older modules.
 
-- **Engine access.** The module reaches the engine only through
-  `VkrScriptApi`: entity, component and transform access, the Player Start, the
-  shared simulation clock, physics bodies, queries and characters, animation
-  playback, key state and logging.
-- **Opaque handles.** Runtime headers supply value types and inline math.
-  Scene, input and asset pointers are opaque to the module.
-- **Two build forms.** The same sources link statically into an executable,
-  or build as a shared library that imports no engine symbols.
-- **Versioning.** The table and the descriptor carry `version` and `size`; a
-  module refuses a shorter table.
+- **Context and calls.** Every hook receives an opaque `VkrCtx`. The SDK's
+  functions (`vkr_spawn`, `vkr_set_render_pose`, `vkr_raycast`,
+  `vkr_character_move`, `vkr_anim_blend`, `vkr_hud` and the rest) are static
+  inline calls through a private `VkrSdkTable` the host fills, so a module
+  imports no engine symbols and links statically or as a shared library.
+- **Handles and SDK types.** Entities are generational `VkrEntity` handles
+  whose world id names their container, so one handle works across
+  containers and a stale one fails the call. Physics, characters, input,
+  animation samples and transforms use SDK value types
+  ([`vkr_script_sdk.c`](../../runtime/src/script/vkr_script_sdk.c) converts or
+  statically asserts identical layouts). Scene, input, asset and animation
+  player pointers never reach a module.
+- **Hooks.** Hooks return void and take the context and the script's own
+  data: module hooks `start`, `stop`, `update`, `late_update`, `fixed_update`,
+  `late_fixed_update` and `input`; behavior hooks `(ctx, self, component)`,
+  which add `destroy`.
+  - A behavior's `destroy` runs when its entity is destroyed during a
+    session (by a script, the editor or a destroyed parent), before anything
+    is torn down; `stop` follows and the scope is released. The scene tells
+    the host through its one destroy observer
+    (`vkr_scene_observe_destroy`). Ending Play or unloading a container runs
+    `stop` only.
+  - `vkr_fail` fails the running hook. A failed start ends the session; a
+    failed tick faults the simulation; another failed hook pauses it.
+  - `vkr_disable` makes an instance idle; only `stop` runs afterwards.
+  - The camera and HUD are calls (`vkr_set_camera`, `vkr_hud`) from
+    `late_update`; a later module's camera wins.
+  - `vkr_set_time_step` from `update` replaces the frame's elapsed time, as
+    a module that owns the input clock does.
+  - The host refreshes changed transforms and child lists before reads and
+    after frame hooks; there is no `update_transforms` call.
+- **Structural edits.** Spawning or destroying entities, characters, models,
+  runtime state and bodies is refused in fixed updates; the deferred queue
+  that would allow it is proposed work.
 
-A module describes:
+### Lifetimes and the ledger
 
-- **Component types.** Plain-data `VkrTypeDesc` tables for the behaviors users
-  attach to entities. The host copies each into host storage and registers the
-  copy as a world type ([ADR-076](076-project-object-model.md)). Documents,
-  overlays, Details, Add component, presets and Cmd paths then accept it. API
-  calls that take the module's own descriptor resolve to the copy by name.
-- **State.** `state_size` bytes at `state_align`, owned by the host and zeroed
-  before every session start. Modules keep no session state elsewhere.
-  `state_version` names the state's shape.
-- **Hooks.** The engine keeps no module function pointer past one call except
-  those in the description, which the host reads again after every reload.
-  - `start` and `stop` run at a paused boundary.
-  - `before_physics`, `after_physics` and `reset` run on the
-    [ADR-073](073-native-gameplay-foundation.md) clock.
-  - `input` receives every ordered transition; the host is the input's only
-    observer.
-  - `frame` runs before the scene advances and may replace the elapsed time
-    it advances.
-  - `present` runs after the scene advances and publishes a camera pose and
-    HUD text.
-  - `reload` runs after a hot reload that kept the running state.
+| Lifetime | Use | Released |
+| --- | --- | --- |
+| Temp | `vkr_temp_alloc`, `vkr_temp`, `vkr_format` | When the hook returns: one host arena rewinds after every hook |
+| Scoped | What a behavior hook acquires | When the entity stops carrying the component, the entity dies or the instance ends |
+| Persistent | Module data and what module hooks acquire | When the instance ends |
+
+Every acquiring call (`vkr_spawn`, `vkr_spawn_model`, `vkr_character_create`,
+`vkr_state_add`, a first `vkr_set_render_pose`) records the resource in the
+calling scope's ledger; an explicit release forgets it. Ending a scope
+releases what remains newest first, skipping resources already gone, so a
+failed start leaves nothing behind. `vkr_destroy` destroys descendants too.
+Ledgers, bindings and instance data live in the host's own `VkrDMemory`;
+registered types live in the allocator the shell passes, for the process.
 
 ### The script host
 
-[`VkrScriptHost`](../../runtime/src/script/vkr_script_host.h) owns the API
-table, up to sixteen modules and one session on the active scene. It is the
-scene's only simulation callback client and runs active modules in
-registration order.
+[`VkrScriptHost`](../../runtime/src/script/vkr_script_host.h) owns the SDK
+table, up to sixteen modules and one session. A session attaches the active
+container (the played scene, or the World when it plays alone) and the root
+World ([ADR-076](076-project-object-model.md)).
 
-- **Start.** Pauses the scene and resets a simulation that already advanced,
-  then starts every module. `START_IDLE` means nothing in the scene uses a
-  module, and that module receives no further calls.
-- **Start failure.** A module that fails `start` must leave nothing behind.
-  The host stops the modules it already started and reports
-  `<module>: <message>`.
-- **Hook failure.** Faults the simulation with the same prefix.
-- **Stop.** Pauses the scene, detaches the host, stops modules in reverse order
-  and closes superseded libraries.
+- **Instances.** A container-scoped module runs one instance per attached
+  container; a World-scoped module (`.scope = VKR_SCOPE_WORLD`) runs one on
+  the World for the whole game. Each instance owns zeroed data and a ledger.
+  `vkr_container_self`, `_active` and `_world` name containers; `vkr_spawn`
+  and `vkr_find_in` take one.
+- **Behaviors.** Each frame, an instance whose containers' world revisions
+  changed matches its behaviors with the entities carrying their components:
+  new entities start, gone ones stop and release their ledgers. A World
+  instance's behaviors cover every attached container.
+- **Order.** Instances start in module order, World first; module hooks run
+  before their behaviors' hooks; instances end in reverse.
+- **Start.** Pauses the active scene and resets a simulation that already
+  advanced, runs every `start`, then starts behaviors, then installs the
+  simulation callbacks when an enabled instance has tick hooks and the input
+  observer when one has `input`. A failure ends everything started and
+  reports `<module>: <message>`.
+- **Reset.** A native reset (Backspace) restarts the instances at the next
+  frame boundary, where structural edits are allowed, and restores the run
+  state.
+- **Detach.** `vkr_script_host_detach` ends a container's instances and the
+  World behaviors on its entities before the container unloads; the shell
+  calls it before the World unloads. Detaching the active container stops
+  the session.
+- **Stop.** Pauses the scene, detaches the host, ends instances in reverse
+  order and closes superseded libraries.
+- **Tools.** `vkr_script_host_open_context` gives tests and tools a context
+  bound to one scene outside any module, and
+  `vkr_script_host_bind_animation` lets it drive a caller-owned animation
+  player.
 
 **Libraries.** `vkr_script_host_load_library(name, path)` loads a byte copy of
 the library at `<path>.<pid>-<serial>.loaded`. The build can then be replaced,
 and a reload never reuses a cached image. A new module registers its types. A
 known module reloads between frames, never from a hook:
 
-- **Component types must keep their layout**: same names, size, alignment,
-  version, flags and property names, kinds, offsets and capacities. A changed
-  layout is refused and the previous code keeps running, because live
-  components and documents hold the old bytes. Display metadata and hooks
-  follow the new code.
-- **Same state shape** (`state_size`, `state_align`, `state_version`): the new
-  code takes over the running state, `reload` runs, and the old library stays
-  mapped until the session stops, since state may still point into its code or
-  constants. At most 32 libraries can be superseded in one session.
-- **Changed state shape**: the host stops the session with the old code, swaps
+- **Component types must keep their layout**: same names, size, alignment and
+  field names, kinds and offsets. A changed layout is refused and the
+  previous code keeps running, because live components and documents hold
+  the old bytes. Display metadata and defaults follow the new code; the new
+  descriptors bind to the registered copies.
+- **Same data shape** (`data_size`, `data_align`, `data_version`, scope and
+  behavior components): the new code runs with the running instances' data,
+  and the old library stays mapped until the session stops, since data may
+  still point into its code or constants. At most 32 libraries can be
+  superseded in one session.
+- **Changed data shape**: the host stops the session with the old code, swaps
   and starts it again with the new code.
 
 `vkr_script_host_retire_libraries` retires every library module, as when a
-project closes. Its types stay registered without hooks, and a later load of
-the same name adopts them. Registered types have no removal, so the host's
-allocator must live for the process. `vkr_scene_sync_world_types` gives
-already loaded scenes the types of a module that loaded after they
+project closes. Its types stay registered without defaults, and a later load
+of the same name adopts them. Registered types have no removal, so the
+host's allocator must live for the process. `vkr_scene_sync_world_types`
+gives already loaded scenes the types of a module that loaded after they
 initialized.
 
 **The shell** ([`vkr_sample_runtime.c`](../../runtime/src/vkr_sample_runtime.c))
@@ -129,10 +181,12 @@ before scene and World requests, and publishes per-load results.
   scene open or loading, the root World, so a World-only project plays. The
   transport, Step, Reset and the physics toggle act on the same scene.
 - **Start.** The session starts the first time simulation runs or steps from
-  a reset boundary. The app and player start it once the scene is ready.
+  a reset boundary, with the World attached beside the played scene. The app
+  and player start it once the scene is ready.
 - **Reset.** The transport Reset stops the session and resets physics
-  (Play/Stop). Backspace during play resets inside the session.
-- **Failure.** A start failure keeps the scene paused and shows the reason.
+  (Play/Stop).
+- **Failure.** A start failure keeps the scene paused and shows the reason; a
+  later hook failure stops the simulation with the host's message.
 - **Camera and HUD.** While a module publishes a camera, the free-camera
   controller rests and the editing camera is restored afterwards.
 
@@ -148,17 +202,22 @@ project's `<project>/Scripts`, or `--scripts <dir>` beside `--scene`.
   request, which comes before the World request, so project documents see the
   types.
 - **Build.** Runs `vkr_bakery cook <description> --root <module> --out
-  <output> --json` on a worker, one at a time. Bakery adds the engine SDK
-  directories of this source tree as system includes
+  <output> --json` on a worker, one at a time. Bakery adds `sdk/` and
+  `lib/src` of this source tree as system includes
   (`VKR_BAKERY_SCRIPT_SDK_DIRS`), so the engine's own warnings are not script
-  diagnostics.
+  diagnostics. On Windows the library links with its own static C runtime and
+  the default DLL entry, which initializes it. Modules therefore free what
+  they allocate themselves and pass no allocation or `FILE` across the SDK.
+  The runtime's DLL startup adds about 105 KB per library (the empty
+  template); the printf family adds about 35 KB more.
 - **Diagnostics.** `diag` events become file, line, column and message.
 - **Reload.** A library whose bytes differ from the loaded one is requested
   for reload.
 - **Rebuild triggers.** Saving in the Script editor and the Bakery daemon's
   watch of each module folder and of `Scripts/` both rebuild.
-- **New Script.** Writes a module from a template: one component that spins
-  its entity through an evaluated transform acquired at `start`.
+- **New Script.** Writes a module from a template: one component with a
+  `speed` field and a behavior whose `start`, `update`, `fixed_update` and
+  `stop` hooks have empty bodies.
 - **Close.** Closing or switching the project retires its libraries.
 
 **Content** lists each module's `.c`, `.h` and `.script.json` as Script items
@@ -182,13 +241,14 @@ Script editor window (View > Script editor).
   strings, numbers, comments (including block comments across lines),
   preprocessor lines and macros.
 - **Completion.** Opens after two identifier characters, after `->` or `.`,
-  or on Ctrl+Space. Candidates come from the script SDK headers parsed at
-  first use (API table members with their declarations, types, functions,
-  macros and enum constants), the open file's declarations and identifiers,
-  and C keywords.
+  or on Ctrl+Space. Candidates come from `sdk.h` and the foundation's math
+  headers parsed at first use (functions, including inline definitions, with
+  their declarations, types, struct members, macros and enum constants), the
+  open file's declarations and identifiers, and C keywords.
   - After `->` or `.` it lists the members of the struct the variable points
-    to. It knows `api`, `session`, `frame`, `view`, `desc` and `type`, and
-    reads the file's own `Type *name` declarations.
+    to. It knows `event`, `hit`, `body`, `motor`, `move` and `type`, and
+    reads the file's own `Type *name` declarations, such as a hook's
+    component parameter.
   - The list opens below the caret, or above it where it would leave the
     window.
 - **Diagnostics.** Compiler messages mark gutter lines and underline the
@@ -272,50 +332,54 @@ whose script has no source shows a notice instead.
 
 ### Authoring macros
 
-`vkr_script.h` declares a component and a module once, instead of a struct,
-a property table, a defaults function, a type descriptor, a module
-description and an entry point written by hand:
+`sdk.h` declares a component, its behavior and the module once, instead of a
+struct, a field table, a defaults function, a descriptor, typed hook
+adapters, a module description and an entry point written by hand:
 
 ```c
-#define DOOR_FIELDS                                                     \
-  VKR_FIELD(F32, speed, "Speed", 0.25f, .unit = "turns/s", .min = -10.0f, \
-            .max = 10.0f)                                                \
-  VKR_FIELD(BOOL, locked, "Locked", false_v)
-VKR_SCRIPT_COMPONENT(Door, door, "Door", DOOR_FIELDS)
+VKR_COMPONENT(Door, door, "Door",
+              VKR_FIELD(F32, speed, "Speed", 0.25f, .unit = "turns/s")
+              VKR_FIELD(BOOL, locked, "Locked", false_v))
 
-VKR_SCRIPT_MODULE(Door, DoorState, 1, (door), .start = door_start,
-                  .stop = door_stop)
+static void door_update(VkrCtx *ctx, VkrEntity self, Door *door,
+                        float32_t dt) {
+}
+
+VKR_BEHAVIOR(door, .update = door_update)
+VKR_MODULE(Door, VkrNoData, VKR_EXPORT_BEHAVIOR(door))
 ```
 
-- `VKR_FIELD(kind, name, label, default, options...)`: one property. The
+- `VKR_FIELD(kind, name, label, default, options...)`: one saved field. The
   kinds are `BOOL`, `I32`, `U32`, `F32`, `ANGLE` (radians), `VEC2`, `VEC3`,
   `VEC4`, `QUAT`, `COLOR`, `DIRECTION` and `ENUM` (with `.names`). Options
-  are `VkrPropertyDesc` designators.
-- `VKR_SCRIPT_COMPONENT(Type, name, label, FIELDS)`: the `Type` struct,
-  `name_type()`, `name_get(session, entity)` and
-  `name_find(session, out, capacity)`.
-- `VKR_SCRIPT_MODULE(Name, State, version, (a)(b), hooks...)`: the exported
-  `vkr_script_module_Name` with its components, its state and its hooks.
+  are `VkrFieldDesc` designators; the host converts the fields to property
+  descriptors.
+- `VKR_COMPONENT(Type, name, label, FIELDS)`: the `Type` struct,
+  `name_type()`, `name_get(ctx, entity)` and `name_find(ctx, out, capacity)`.
+  A module split across files uses `VKR_COMPONENT_DECLARE` in a header and
+  `VKR_COMPONENT_DEFINE` in one file.
+- `VKR_BEHAVIOR(name, hooks...)`: typed per-entity hooks for the component.
+- `VKR_MODULE(Name, Data, EXPORTS, options...)`: the exported
+  `vkr_module_Name`, with `VKR_EXPORT_COMPONENT` and `VKR_EXPORT_BEHAVIOR`
+  exports, `.scope`, `.data_version` and typed module hooks.
 
-The macros walk the field sequence with two alternating macros, so a list has
-no length limit. Each descriptor is built once, on first use, in static
-storage the host maps to its registered copy. New modules start from a
-template written with them; hand-written modules keep working.
+The macros walk sequences with two alternating macros, so lists have no
+length limit. Typed hooks reach the erased description through generated
+trampolines, so no function is called through a pointer of another type.
+Each descriptor is built once, on first use, in writable static storage the
+host binds to its registered copy.
 
-A presentation override (`set_evaluated_transform`) replaces the rigid-body
-pose, so a script that decorates a physics object starts from
-`physics_world_matrix`, appended to `VkrScriptApi`. `spawn_model`,
-`despawn_model`, `animation_sample_blend` and `renders_mesh` follow it for
-the default mannequin ([ADR-080](080-default-mannequin-character.md)). The template spins its
-objects on top of that simulated pose after each tick, so a body running it
-still falls; modules made from the earlier template spin on their start pose
-and hold a body in place.
+A render pose (`vkr_set_render_pose`) replaces the rigid-body pose until the
+scope that set it ends. `vkr_spawn_model`, `vkr_anim_blend` and
+`vkr_has_visual` serve the default mannequin
+([ADR-080](080-default-mannequin-character.md)).
 
 ### The FPS module
 
 [`scripts/fps`](../../scripts/fps/src/fps_module.c) is the former
-`runtime/src/gameplay` client, now called through the API table. It receives
-input through its `input` hook. It registers two component types:
+`runtime/src/gameplay` client, written against `sdk.h` as a World-scoped
+module. It receives input through its `input` hook, owns the input clock
+through `vkr_set_time_step`, and registers two component types:
 
 - `fps_player`: move, walk, crouch and jump speed, magazine and reserve,
   camera mode, and the third-person orient-to-movement, acceleration and turn
@@ -324,15 +388,16 @@ input through its `input` hook. It registers two component types:
 
 At start:
 
-- **Authored player.** An `fps_player` entity becomes the player. With a
-  Player Start, its motor spawns at the start's position and yaw. Its own
-  animation, mesh or shape is its body; without one it gets the default
-  mannequin.
+- **Authored player.** An `fps_player` entity of the played container
+  becomes the player. With a Player Start, its motor spawns at the start's
+  position and yaw. Its own animation, mesh or shape is its body; without one
+  it gets the default mannequin.
 - **Spawned player.** Without an `fps_player` entity, a Player Start spawns a
   capsule player with the default mannequin as its body
-  ([ADR-080](080-default-mannequin-character.md)). The module destroys both at
-  stop.
-- **Idle.** With neither, the module is idle.
+  ([ADR-080](080-default-mannequin-character.md)) in the played container.
+  The instance's ledger releases both, its character, runtime state and
+  render poses at stop or when a start fails part way.
+- **Idle.** With neither, the module disables itself.
 - **Sample content.** `--gameplay` adds the Bistro training platform with a
   Player Start on it.
 - **Rejected scenes.** More than one player or weapon, or a weapon without a
@@ -347,103 +412,108 @@ the startup scene has neither a Player Start nor an `fps_player`.
 - Engine code no longer contains weapon, player or rifle-animation rules.
   Game code gets the same composition path as engine components, and a
   project's code changes without restarting the editor.
-- The API table becomes an ABI to maintain: new engine capabilities need
-  entries, and removing or reordering an entry needs a version change.
-  Header value types remain shared, so a changed struct layout still requires
-  rebuilding modules.
-- Hot reload trusts `state_version`: a module that changes its state struct
+- Modules release nothing by hand unless they want to end a resource early:
+  the ledger covers failed starts, removed components, Stop and container
+  unloads. A module must still undo edits to authored entities it does not
+  own, such as the FPS module's visibility change, in `stop`.
+- The SDK is the only surface: new engine capabilities need table entries
+  and inline calls, and `VKR_SDK_VERSION` changes refuse older modules
+  outright. Foundation math types stay shared, so a changed `Vec3` layout
+  still requires rebuilding modules.
+- Hot reload trusts `data_version`: a module that changes its data struct
   without bumping it runs new code over old bytes. Component layout changes
   need the project reopened.
+- Structural edits wait for frame hooks until the deferred queue lands, so
+  projectiles and similar spawns happen in `update`.
 - Superseded libraries stay mapped until Stop, bounded at 32 per session.
 - Registered types and their host copies live for the process. A later
   project whose module reuses a retired module's type name must match that
   layout.
 - Starting Play in the editor spawns and removes gameplay objects. Stepping
   starts the session as well, so a stepped scene never runs without its
-  scripts.
+  scripts. Backspace restarts every instance, so spawned objects are
+  recreated.
 
 ## Evidence
 
-macOS 26.6.2, Apple M1 Pro, Release, Metal, 2026-09-29 and 2026-09-30:
+Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
+(the SDK, version 3):
 
-- `./build_release.sh`, `./build_editor.sh Release` and
-  `VKR_BUILD_TARGET=vkr_player|vulkan_renderer_tester|vkr_bakery ./build.sh Release`
-  build with no compiler warnings.
-- `build_release/tests/vulkan_renderer_tester` passes.
-  - It covers the moved weapon, camera rig, input, player and player-animation
-    suites.
-  - `script_host_test.c` covers start (failed, idle and active), tick hooks and
-    the frame delta, a hook fault with the module name, reset and stop, fresh
-    state per session, and Player Start resolution with the World fallback.
-  - `script_reload_test.c` loads [`reload_probe.c`](../../tests/scripts/reload_probe.c),
-    built as four `MODULE` libraries that import no symbols.
-    - A code-only reload keeps state (3 ticks, then 20) and runs `reload`.
-    - A new `state_version` restarts on zeroed state.
-    - A changed field is refused while the old code keeps counting.
-    - Retiring keeps the type registered, and a later load adopts it.
-  - `character_test.c` checks that an explicit spawn survives reset.
-- `vkr_bakery cook scripts/fps/fps.script.json` builds `libfps.dylib` without
-  warnings.
-  - `nm -u` lists only libc and compiler-runtime symbols.
-  - `dlopen` returns the `fps` description, and refuses a too-short table.
-- Headless editor on Bistro (`--scene assets/scenes/bistro.scene.json`):
-  - **Player Start:** playing spawned `Player` at (2, 1, 3), 5,990 to 5,992
-    entities. Its body was hidden in first person, and stop removed both
-    spawned entities. This passed again on ABI version 2.
-  - **Authored player:** an `fps_player` kept its authored position.
-  - **Two players:** a second `fps_player` refused to start with its message.
-  - **Script lifecycle** (`--scripts`):
-    1. `script.new Spinner` built and loaded the module, and `create spinner`
-       made an entity with `speed` 0.25.
-    2. During Play, an external code edit reported "Reloaded; state kept".
-    3. A state struct change with a `state_version` bump reported
-       "Reloaded; its state changed, so the simulation restarted".
-    4. A syntax error reported "Build failed with 1 error; the previous code
-       keeps running", with 1 diagnostic, and Play kept running.
-- Windowed editor on Bistro, captured with `screencapture`:
-  - highlighting;
-  - the gutter marker and underline at `spinner.c:101:10`;
-  - the problems row and status;
-  - `session->api->ra` completing `raycast` with its declaration;
-  - `session->api->s` listing ten `VkrScriptApi` members above the caret.
-- Minimal managed project (empty World, headless):
-  - `script.new Door` wrote `projects/<id>/Scripts/Door` and built into
-    `<workspace>/scripts/<id>/Door`.
-  - `create door` worked.
-  - A `door` component saved with `speed` 1.5 read 1.5 after reopening, so
-    the type registered before the World loaded.
-
-Editor feedback round, macOS 26.6.2, Apple M1 Pro, 2026-09-30:
-
-- `./build_editor.sh Release`, and `vulkan_renderer_tester` and `vkr_player`
-  in Debug, build with no compiler warnings.
-- `build_release/tests/vulkan_renderer_tester` passes all 88 suites. The Debug
-  (AddressSanitizer) tester passes every suite except `run_script_reload_tests`,
-  where ASan faults describing a global of the newly loaded probe after the
-  restart closed earlier copies. The suite passes under
-  `ASAN_OPTIONS=report_globals=0`; neither the host nor the probe changed.
-- Managed project with a World-only Door script, headless and windowed:
-  - `create script; script.attach door`, undo, redo, `script.attach none` and
-    undo each left exactly the expected component. With a second module
-    `Spin`, `script.attach spin` on Door replaced `door`; undo restored `door`
-    and redo `spin`.
-  - `script.edit` opened the module source. The Details picker and the
-    Outliner's Script submenu listed FPS player, FPS weapon, Spin and Door
-    with Door checked; `ui.key` Down five times, Right and Down moved into
-    the submenu.
-  - A World Player Start at (4, 1, 2) spawned `Player` there on Play with no
-    scene open; its capsule drew at the start.
-  - Placing Point Light from System/Objects switched Content to the World's
-    folder with the light selected.
-- Bistro Play: `Player` spawned at (2, 1, 3), the body was hidden and stop
-  returned the scene to 5,990 entities.
+- `build.bat Debug` (tester, `vkr_script_fps`, `vkr_bakery`),
+  `build_editor.bat Debug` and `Release`, `build_release.bat` and
+  `VKR_BUILD_TARGET=vkr_player build.bat Release` build with no warnings
+  beyond Bakery's existing `strdup` and `getenv` deprecations.
+- The Debug and Release testers pass all 88 suites.
+  - `script_host_test.c`:
+    - A failed start reports `life: refused 7` and releases the entity it
+      spawned.
+    - A disabled instance is inactive and installs no callbacks.
+    - `update` sets the elapsed time (two ticks); temp memory is zeroed and
+      rewinds after the hook; a spawn in a fixed update is refused.
+    - A late fixed-update failure faults with `life: tick three`.
+    - A native reset restarts on fresh data and releases the old spawn; Stop
+      releases the new one.
+    - Behaviors start with the session and when an entity gains the
+      component, write the component every frame, and stop and release only
+      that entity's spawn when it loses the component.
+    - Destroying an entity through the scene, as the editor's delete does,
+      runs `destroy` with the component (`speed` 1.5) and the behavior's
+      spawn still alive, then `stop`, then releases the spawn; Stop runs no
+      `destroy` and removes the scene's destroy observer.
+    - A container-scoped module runs on the World and the scene, a
+      World-scoped one once; detaching the World releases what its instances
+      spawned.
+    - Through a tool context, `vkr_has_visual` reads child meshes and shapes,
+      and `vkr_destroy` takes the children.
+    - The macros' descriptors carry offsets, kinds, options, defaults and
+      behaviors, and a different SDK version gets no description.
+  - `script_reload_test.c` loads
+    [`reload_probe.c`](../../tests/scripts/reload_probe.c), built as four
+    `MODULE` libraries from `sdk/` and `lib/src` only:
+    - a code-only reload keeps data (3 ticks, then 23);
+    - a new `data_version` restarts on zeroed data;
+    - a changed field is refused while the old code keeps counting;
+    - retiring keeps the type registered, and a later load adopts it.
+  - `gameplay_player_test.c` and `player_animation_test.c` run the FPS
+    player, input admission, action animation and locomotion through a tool
+    context with unchanged expected values.
+- `vkr_bakery cook scripts/fps/fps.script.json` builds `fps.dll`. Its only
+  import is `KERNEL32.dll` and its only export is `vkr_module_fps`. The New
+  Script template, expanded for `Door`, builds `Door.dll` (107,008 bytes)
+  without warnings.
+- Headless Release editor on Bistro
+  (`--scene assets/scenes/bistro.scene.json`), with a temporary, reverted
+  render-graph reserve increase because the Vulkan renderer at this revision
+  cannot create its graph image table (see Unavailable):
+  - Without a Player Start the FPS module disabled itself: 5,989 entities
+    before Play and after Stop.
+  - `create player_start` at (2, 1, 3): Play spawned `Player` with a hidden
+    first-person body, 5,990 to 6,073 entities with the mannequin's nodes;
+    Stop returned to 5,990. Bistro's city has no collision, so the player
+    fell.
+  - With `--scripts`, `script.new Spinner` built and loaded the template with
+    0 diagnostics, and `create spinner` made an entity with `speed` 1.
+  - During Play, typing `spinner->speed += dt;` into the update hook and
+    `script.save` reported "Reloaded; state kept", and `speed` rose to 17.1.
+    An edit outside a function reported "Build failed with 2 errors; the
+    previous code keeps running". Stop returned to 5,990 entities.
 
 Unavailable:
 
-- Windows and Vulkan builds of the host, scripts and editor.
-- A packaged game running a project's library.
-- Interactive keyboard and mouse editing; only the Cmd hooks drove the editor.
+- macOS and Metal builds and runs of the SDK.
+- The Vulkan editor at this revision without the reserve workaround:
+  `VKR_LOCAL_SHADOW_FACE_COUNT_MAX` 768 (`c87bce97`) makes the graph image
+  table about 289 MiB, beyond the renderer's 98 MiB render-graph allocator.
+- The windowed Script editor: highlighting, diagnostics and completion over
+  `sdk.h` were built but not exercised interactively.
+- A packaged game running scripts; `vkr_player` builds but was not run.
 - Timing: no frame-time claim.
+
+Earlier macOS evidence (Apple M1 Pro, Metal, 2026-09-29 and 2026-09-30)
+covered ABI version 2: the FPS sample on Bistro, the Script editor's
+highlighting, diagnostics and completion, script attach and undo, and
+project scripts in a managed project. The SDK replaced the calls those runs
+exercised; items not listed above were not repeated on the SDK.
 
 ## Alternatives considered
 
@@ -456,7 +526,12 @@ Unavailable:
 - **Keep the session attached from scene load.** Rejected. A Player Start
   would spawn while editing, and Reset could not return to the authored scene.
 - **Hot reload by restarting Play.** Rejected at the user's choice: keeping
-  state speeds iteration. The restart path remains for changed state shapes.
+  state speeds iteration. The restart path remains for changed data shapes.
+- **Keep the ABI v2 table beside the SDK.** Rejected at the user's choice:
+  the engine is early, so the table, its session struct and its descriptor
+  form were replaced outright.
+- **One session on the played scene only.** Rejected: World-attached scripts
+  must outlive a zone's unload, so instances belong to containers.
 - **Module-owned input observers.** Rejected: an observer pointer into an
   unloaded library would dangle; the host observes and forwards.
 - **Label widgets per token for highlighting.** Rejected: one text node has
@@ -465,5 +540,6 @@ Unavailable:
 ## Revisit when
 
 A packaged game loads a project's library, a second language binds the table,
-a module needs more than one session (additive scenes or a cloned Play world),
-or component layout changes should migrate live data.
+additive scenes simulate and need their own instances, the deferred
+structural queue lands, or component layout changes should migrate live
+data.

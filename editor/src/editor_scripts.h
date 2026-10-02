@@ -88,8 +88,9 @@ void vkr_editor_scripts_update(VkrEditorScripts *scripts,
 void vkr_editor_scripts_rebuild_file(VkrEditorScripts *scripts,
                                      const char *path);
 /** Writes a new module from the template: `Scripts/<name>/<name>.script.json`
- * and `<name>.c` with one component type that spins its entity. Returns the
- * source path to open. */
+ * and `<name>.c` with one component type and a behavior whose start,
+ * update, fixed update, destroy and stop hooks are empty. Returns the source
+ * path to open. */
 bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
                                          const char *name, char *out_path,
                                          uint32_t out_capacity, char *error,

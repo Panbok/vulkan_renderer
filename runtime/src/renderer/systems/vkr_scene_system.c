@@ -2359,9 +2359,37 @@ VkrEntityId vkr_scene_create_entity(VkrScene *scene, VkrSceneError *out_error) {
   return entity;
 }
 
+bool8_t vkr_scene_observe_destroy(VkrScene *scene,
+                                  VkrSceneEntityObserver observer,
+                                  void *context) {
+  if (!scene || !observer || scene->destroy_observer) {
+    return false_v;
+  }
+  scene->destroy_observer = observer;
+  scene->destroy_observer_context = context;
+  return true_v;
+}
+
+bool8_t vkr_scene_unobserve_destroy(VkrScene *scene, void *context) {
+  if (!scene || !scene->destroy_observer ||
+      scene->destroy_observer_context != context) {
+    return false_v;
+  }
+  scene->destroy_observer = NULL;
+  scene->destroy_observer_context = NULL;
+  return true_v;
+}
+
 void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   if (!scene || !scene->world || !vkr_scene_physics_mutations_allowed(scene)) {
     return;
+  }
+  if (scene->destroy_observer && vkr_entity_is_alive(scene->world, entity)) {
+    scene->destroy_observer(scene, entity, scene->destroy_observer_context);
+    /* The observer may have destroyed it already. */
+    if (!vkr_entity_is_alive(scene->world, entity)) {
+      return;
+    }
   }
   bool8_t had_mesh =
       vkr_entity_has_component(scene->world, entity, scene->comp_mesh_renderer);

@@ -32,8 +32,8 @@ event, scene, loader or cooking owner.
 decoding, not source import or artifact encoding. `vkr_runtime` builds on the
 renderer and format libraries. It supplies the reusable application host,
 standard scene runtime, runtime core services, and scene-facing systems.
-C script modules under `scripts/` build over `vkr_runtime` headers and call the
-engine through the runtime script host's table
+C script modules under `scripts/` include only `sdk/sdk.h` and the foundation
+headers, and call the engine through the runtime script host's SDK table
 ([ADR-079](adr/079-c-script-modules.md)).
 `vkr_sample_runtime` is an optional consumer that supplies sample control and
 presentation policy for the app, the editor and the packaged-game player
@@ -159,10 +159,11 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `renderer/src/vkr_gpu_*`, `vkr_capture_ring.*` |
 | Render assets | Geometry, textures, materials, meshes, animation banks, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
 | Scene physics | Authored bodies/collider children, staged editor mutations, fixed ticks and evaluated pose publication | `runtime/src/renderer/systems/vkr_scene_physics.c` |
-| Script host | C script module ABI table, linked and shared-library modules, hot reload, one session's hooks on the scene clock | `runtime/src/script/vkr_script_host.h` |
+| Script SDK | `sdk.h`: the context, handles, hooks and authoring macros modules use; the private table behind its inline calls | `sdk/sdk.h` |
+| Script host | Linked and shared-library modules, hot reload, script instances per attached container, ledgers that release acquisitions, behavior bindings, temp memory and the SDK's engine adapters | `runtime/src/script/vkr_script_host.h` |
 | Editor scripts | Project `Scripts/` modules: Bakery builds, diagnostics, loads before the project's documents, rebuilds on save and file changes | `editor/src/editor_scripts.c` |
 | Script editor | Floating code window: tabs, C highlighting, completion, diagnostics, drawn by `vkr_ui_code_view` | `editor/src/editor_code.c` |
-| FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the script API | `scripts/fps/src/fps_module.c` |
+| FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the SDK | `scripts/fps/src/fps_module.c` |
 | Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |
 | Production shaders | Shared math and native bindings/entry points | `renderer/src/shaders/` |
 | Offline tools/harness | Asset cooking, cases, captures, comparisons and profiles | `tools/` |
@@ -504,17 +505,21 @@ scene update refreshes cached queries when new archetypes appear. The native
 weapon primitive provides tick-based ammo, reload and independent firing locks
 with reservation before consumption. Gameplay lives in C script modules
 ([ADR-079](adr/079-c-script-modules.md)). A module calls the engine only
-through the `VkrScriptApi` table of the runtime script host, registers its
-component types, which Content's Script assets attach to objects by drag or
-an entity's Details script slot, and runs on
-the scene clock; with no scene open, the World plays. The host is the
-scene's only simulation callback client and input observer. The editor session
-starts on the first run or step and ends at Reset.
+through `sdk.h`, registers its component types, which Content's Script assets
+attach to objects by drag or an entity's Details script slot, and runs on the
+scene clock; with no scene open, the World plays. A session attaches the
+played container and the root World: a container-scoped module runs one
+instance on each, a World-scoped one runs once. Behaviors run per entity
+carrying their component. Each instance and behavior records what it acquires
+in a ledger the host releases when the entity leaves, the instance ends or
+its container unloads. The host is the played scene's only simulation
+callback client and input observer. The editor session starts on the first
+run or step and ends at Reset; Backspace restarts it.
 
 A project's `Scripts/` modules, or `--scripts <dir>` in scene mode, build with
 Bakery and load as shared libraries before the project's documents. Saving in
 the Script editor, or changing a source on disk, rebuilds the module and hot
-reloads it between frames. The session keeps its state unless the state
+reloads it between frames. Instances keep their data unless its shape or
 version changed, and compiler diagnostics mark the editor's gutter. The FPS
 module, linked into the app, editor and
 player, uses ordered input, a Jolt character capsule and a first/third-person

@@ -394,7 +394,7 @@ typedef struct VkrSampleRuntimeConfig {
   VkrSampleUiClient ui;
   /** C script modules linked into the executable (ADR-079), registered in
    * order before any scene loads. */
-  const VkrScriptModuleEntry *script_modules;
+  const VkrModuleEntry *script_modules;
   uint32_t script_module_count;
 } VkrSampleRuntimeConfig;
 

@@ -199,12 +199,13 @@ the wrapper or scene shutdown releases it, and a failed spawn leaves nothing.
 as a root while physics bodies exist, as `vkr_scene_set_transform` already
 did. Before, it refused every new entity, so no model could spawn during Play.
 
-[`VkrScriptApi`](../../runtime/src/script/vkr_script.h) appends four members;
-the ABI version stays 2:
+The script SDK ([`sdk.h`](../../sdk/sdk.h), [ADR-079](079-c-script-modules.md))
+serves the mannequin with:
 
-- `spawn_model` and `despawn_model`;
-- `animation_sample_blend`;
-- `renders_mesh`: whether the entity or a descendant carries a mesh or a
+- `vkr_spawn_model` and `vkr_despawn_model`, the spawn released with the
+  calling scope;
+- `vkr_anim_blend`;
+- `vkr_has_visual`: whether the entity or a descendant carries a mesh or a
   shape.
 
 ### The player's body
