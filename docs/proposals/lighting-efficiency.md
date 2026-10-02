@@ -141,6 +141,17 @@ Measured the same way afterwards, each against a matched base build:
   list. Each layer refracts through the composite behind it at neighbouring
   pixels, so layers cannot share a dispatch; a variant in which a SIMD group
   shares one pixel's light loop could recover up to about 0.3 ms.
+- `GBuffer.Resolve` (1.40 ms, 1.59 ms with TAA) is per-pixel triangle
+  reconstruction: compiling out every material texture sample and then the
+  motion vectors left it unchanged. An occupancy hint of 512 threads saved
+  0.07 to 0.11 ms with unchanged output (ADR-044); 640 spilled. A larger cut
+  needs a different visibility-buffer design.
+- `AO.Evaluate` (1.08 ms at full resolution, three slices of three steps)
+  dominates GTAO; the depth prefilter takes 0.12 ms and the denoise 0.24 ms.
+  Two slices saved 0.30 ms but changed 6.3% of indoor pixels by more than 2 of
+  255 even with TAA, and two steps saved 0.13 ms while changing up to 25%;
+  neither was adopted. Half-resolution evaluation is the remaining option and
+  changes the look.
 
 ## Proposed change
 

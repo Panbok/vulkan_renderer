@@ -1085,24 +1085,36 @@ static void vkr_metal_packet_gbuffer_resolve(
     root.debug.write(float4(barycentric, selected_lod + 1.0), pixel);
 }
 
+// The resolve's cost is per-pixel triangle reconstruction: index and vertex
+// fetch, decode, barycentrics and target writes; material sampling and motion
+// vectors measured as free. Unhinted the compiler gives it 448 threads per
+// threadgroup; 512 lowered it from 1.40 to 1.29 ms in the Bistro street view
+// on the M1 Pro, and 640 spilled and ran slower. The pass dispatches 8x8
+// threadgroups.
+#define VKR_METAL_GBUFFER_RESOLVE_MAX_THREADS 512
+
+[[max_total_threads_per_threadgroup(VKR_METAL_GBUFFER_RESOLVE_MAX_THREADS)]]
 kernel void vkr_metal_packet_gbuffer_resolve_none(
     constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
   vkr_metal_packet_gbuffer_resolve<false, false>(root, pixel);
 }
 
+[[max_total_threads_per_threadgroup(VKR_METAL_GBUFFER_RESOLVE_MAX_THREADS)]]
 kernel void vkr_metal_packet_gbuffer_resolve_emissive(
     constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
   vkr_metal_packet_gbuffer_resolve<true, false>(root, pixel);
 }
 
+[[max_total_threads_per_threadgroup(VKR_METAL_GBUFFER_RESOLVE_MAX_THREADS)]]
 kernel void vkr_metal_packet_gbuffer_resolve_debug(
     constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
   vkr_metal_packet_gbuffer_resolve<false, true>(root, pixel);
 }
 
+[[max_total_threads_per_threadgroup(VKR_METAL_GBUFFER_RESOLVE_MAX_THREADS)]]
 kernel void vkr_metal_packet_gbuffer_resolve_emissive_debug(
     constant VkrMetalPacketGBufferResolveRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
