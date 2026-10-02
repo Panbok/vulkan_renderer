@@ -42,16 +42,17 @@ among the included scenes.
 
 **Command.** `vkr_bakery bundle <project directory> [--profile <name>] [--out
 <dir>] [--template <dir>]` ([package](../../tools/bakery/vkr_bakery_package.c))
-runs seven stages. Each is a `start`/`done` event pair with coded diagnostics:
+runs eight stages. Each is a `start`/`done` event pair with coded diagnostics:
 
 | Stage | Work |
 |---|---|
 | Validate | Settings, profile, host platform, player template, and an output outside the workspace directory and repository. An existing output must hold a `bundle.json` or be empty. Portable lowering of the World and every included scene. Warns when the startup scene has neither a Player Start nor an `fps_player` ([ADR-079](079-c-script-modules.md)). |
+| Scripts | A project whose `Scripts/` folder holds script packages builds it with a child `vkr_bakery scripts <Scripts> --name project`, as the editor does, sharing the action cache ([ADR-079](079-c-script-modules.md)). A compile error fails the package and points at the script build log. Libraries are built on Windows and macOS only. |
 | Finalize | `finalize_textures` for a scene with preview or deferred assets (the job publishes the scene), and `finalize_project_assets` when project assets are. The returned inventory is lowered against without publishing `project.json`, which the editor owns. Shipping finalizes with the final encoder, development with the fast one. Fast-encoded final textures are not re-encoded; the report counts them. |
 | Bake | With `bake_lighting`, `bake_scene` with reflection and diffuse for each included scene. |
 | Lower | Lowers again only when an earlier stage published. |
 | Pack | Walks the closure over identity mounts: staged documents, `project/` to the project directory, `editor/` to the editor bundle, `assets/` to the template's engine resources. Rejects a document naming the workspace directory or the repository. Writes `content/game.vkpak` and `content/engine.vkpak` (`assets/...`), compressing the chunks the runtime reads into memory (ADR-077); an archive whose entries all match the previous package's `products`, written by the same `archive_writer`, is cloned from it instead. |
-| Stage runtime | Copies the profile's player as `<executable>[.exe]`, the template's libraries, and only the host backend's shader catalog. Writes `bundle.json` version 2. On macOS the package is `<executable>.app`: the player in `Contents/MacOS`, an Info.plist (`com.<company>.<executable>`, the game version) and the rest in `Contents/Resources`, signed with `codesign` using the profile's `signing_identity`, else ad hoc. |
+| Stage runtime | Copies the profile's player as `<executable>[.exe]`, the template's libraries, the script library (`scripts/project.dll` beside the player on Windows, `Contents/Frameworks/libproject.dylib` on macOS, signed with the other nested code), and only the host backend's shader catalog. Writes `bundle.json` version 2. On macOS the package is `<executable>.app`: the player in `Contents/MacOS`, an Info.plist (`com.<company>.<executable>`, the game version) and the rest in `Contents/Resources`, signed with `codesign` using the profile's `signing_identity`, else ad hoc. |
 | Verify and report | Validates and rehashes both archives, then renames `<out>.staging` over `<out>`. |
 
 Project jobs run as child `vkr_bakery project` processes, so publication keeps
@@ -79,7 +80,9 @@ a mesh's `.remap.json`.
 **Package layout.** `bundle.json` version 2 keeps version 1's members, drops
 `scene`, and adds `game`: `world`, `world_overlay`, `startup_scene`,
 `startup_overlay`, `scenes[]`, `fonts[]` (`default-scene-font` falls back to the
-engine's UbuntuMono configuration), `window`, `graphics`, and `startup_camera`,
+engine's UbuntuMono configuration), `window`, `graphics`, `script_library`
+(the script library relative to the content root, present only when the
+project has scripts), and `startup_camera`,
 the startup scene's editor viewport recall without selection. The
 [vfs](../../lib/src/filesystem/vkr_vfs.h) reads only root members, through
 `vkr_json_find_root_field`, and keeps the description for the player. It
@@ -306,5 +309,6 @@ vcpkg triplet and the system Vulkan loader.
 
 ## Revisit when
 
-Packages need incremental or streamed archives, or cross-platform output; script modules load at runtime; or a second
-application boots from `bundle.json`.
+Packages need incremental or streamed archives, or cross-platform output; a
+platform needs script modules linked statically; or a second application boots
+from `bundle.json`.

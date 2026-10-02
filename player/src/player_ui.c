@@ -5,6 +5,7 @@
 #include "debug_overlay.h"
 #endif
 
+#include <stdio.h>
 #include <string.h>
 
 static String8 player_string(const char *text) {
@@ -151,10 +152,19 @@ static void player_ui_pause_menu(VkrPlayer *player,
 static VkrUiDockInputCapture player_ui_build(void *state,
                                              const VkrSampleUiFrame *frame) {
   VkrPlayer *player = state;
-  /* The first frame opens the game as the editor opens a project: the World,
-     then the startup scene over it. */
+  /* The first frame opens the game as the editor opens a project: the
+     script library, whose types the documents use, the World, then the
+     startup scene over it. */
   if (!player->requested) {
     player->requested = true_v;
+    VkrSampleScriptRequest *scripts = frame->script_request;
+    if (player->script_library[0] && scripts &&
+        scripts->load_count < VKR_SAMPLE_SCRIPT_LOAD_MAX) {
+      VkrSampleScriptLoad *load = &scripts->loads[scripts->load_count++];
+      *load = (VkrSampleScriptLoad){.project = true_v, .in_place = true_v};
+      snprintf(load->name, sizeof(load->name), "project");
+      snprintf(load->path, sizeof(load->path), "%s", player->script_library);
+    }
     if (player->world[0]) {
       *frame->world_request = (VkrSampleWorldRequest){
           .path = player_string(player->world),

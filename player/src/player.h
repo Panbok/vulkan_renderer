@@ -25,6 +25,8 @@ typedef struct VkrPlayer {
   char world_overlay[VKR_PLAYER_PATH_CAPACITY];
   char startup_scene[VKR_PLAYER_PATH_CAPACITY];
   char startup_overlay[VKR_PLAYER_PATH_CAPACITY];
+  /* The project's script library, or empty (ADR-079). */
+  char script_library[VKR_PLAYER_PATH_CAPACITY];
   char settings_path[VKR_PLAYER_PATH_CAPACITY];
   VkrPlayerFont fonts[VKR_PLAYER_MAX_FONTS];
   uint32_t font_count;

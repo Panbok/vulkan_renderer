@@ -3088,6 +3088,8 @@ static void sample_script_result(VkrStandardSceneRuntime *application,
   if (result == VKR_SCRIPT_RELOAD_FAILED) {
     log_error("Script %s was not loaded: %s", name,
               error ? error : "unknown error");
+  } else if (result == VKR_SCRIPT_RELOAD_LOADED) {
+    log_info("Script library %s loaded", name);
   } else if (result == VKR_SCRIPT_RELOAD_RESTARTED) {
     log_info("Script %s reloaded; its state changed shape, so the "
              "simulation restarted",
@@ -3113,7 +3115,7 @@ static void sample_script_prepare(VkrStandardSceneRuntime *application,
   pending->queued = false_v;
   vkr_atomic_bool_store(&pending->done, false_v, VKR_MEMORY_ORDER_RELAXED);
   if (!vkr_script_host_prepare(&state->scripts, &pending->prepared, load->name,
-                               load->path, load->project)) {
+                               load->path, load->project, load->in_place)) {
     vkr_atomic_bool_store(&pending->done, true_v, VKR_MEMORY_ORDER_RELAXED);
     return;
   }
@@ -3221,13 +3223,17 @@ static void sample_script_request(VkrStandardSceneRuntime *application,
       sample_script_prepare(application, slot, load);
       continue;
     }
+    /* A first load applies now: the documents that follow need its types. */
+    static VkrScriptPrepared prepared;
     const char *error = NULL;
-    const VkrScriptReload result =
-        load->project
-            ? vkr_script_host_load_project(&state->scripts, load->name,
-                                           load->path, &error)
-            : vkr_script_host_load_library(&state->scripts, load->name,
-                                           load->path, &error);
+    VkrScriptReload result = VKR_SCRIPT_RELOAD_FAILED;
+    if (vkr_script_host_prepare(&state->scripts, &prepared, load->name,
+                                load->path, load->project, load->in_place)) {
+      vkr_script_prepare_run(&prepared);
+      result = vkr_script_host_commit(&state->scripts, &prepared, &error);
+    } else {
+      error = prepared.error;
+    }
     sample_script_result(application, load->name, result, error, &first);
   }
 }

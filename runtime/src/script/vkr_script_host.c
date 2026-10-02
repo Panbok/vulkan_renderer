@@ -1546,7 +1546,8 @@ static bool8_t script_prepare_fail(VkrScriptPrepared *prepared,
 
 bool8_t vkr_script_host_prepare(VkrScriptHost *host,
                                 VkrScriptPrepared *prepared, const char *name,
-                                const char *library_path, bool8_t project) {
+                                const char *library_path, bool8_t project,
+                                bool8_t in_place) {
   *prepared = (VkrScriptPrepared){.project = project};
   if (!name || !name[0] || !library_path || !library_path[0]) {
     return script_prepare_fail(prepared,
@@ -1562,25 +1563,29 @@ bool8_t vkr_script_host_prepare(VkrScriptHost *host,
   snprintf(prepared->path, sizeof(prepared->path), "%s", library_path);
   /* A unique copy per load: the build can be replaced, and a reload never
      reuses a cached image. */
-  snprintf(prepared->loaded_path, sizeof(prepared->loaded_path),
-           "%s.%u-%u.loaded", library_path, vkr_platform_get_process_id(),
-           ++host->load_serial);
+  if (!in_place) {
+    snprintf(prepared->loaded_path, sizeof(prepared->loaded_path),
+             "%s.%u-%u.loaded", library_path, vkr_platform_get_process_id(),
+             ++host->load_serial);
+  }
   return true_v;
 }
 
 void vkr_script_prepare_run(VkrScriptPrepared *prepared) {
   prepared->ready = false_v;
   prepared->count = 0u;
-  if (!prepared->loaded_path[0]) {
+  if (!prepared->path[0]) {
     return;
   }
-  if (!script_copy_file(prepared->path, prepared->loaded_path)) {
+  const bool8_t copied = prepared->loaded_path[0] != '\0';
+  if (copied && !script_copy_file(prepared->path, prepared->loaded_path)) {
     (void)script_prepare_fail(
         prepared, "The script library could not be copied for loading");
     return;
   }
-  if (!vkr_platform_library_open(prepared->loaded_path, &prepared->handle,
-                                 prepared->error, sizeof(prepared->error))) {
+  if (!vkr_platform_library_open(
+          copied ? prepared->loaded_path : prepared->path, &prepared->handle,
+          prepared->error, sizeof(prepared->error))) {
     return;
   }
   const VkrPlatformLibrary *library = &prepared->handle;
@@ -1745,7 +1750,8 @@ static VkrScriptReload script_load(VkrScriptHost *host, const char *name,
                                    const char *library_path, bool8_t project,
                                    const char **error) {
   VkrScriptPrepared prepared;
-  if (!vkr_script_host_prepare(host, &prepared, name, library_path, project)) {
+  if (!vkr_script_host_prepare(host, &prepared, name, library_path, project,
+                               false_v)) {
     snprintf(host->error, sizeof(host->error), "%s", prepared.error);
     if (error) {
       *error = host->error;

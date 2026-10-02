@@ -84,6 +84,9 @@ typedef struct VkrPackage {
   char player[VKR_BAKERY_PATH_CAPACITY];
   /* Libraries shipped beside the player, or empty. */
   char libraries[VKR_BAKERY_PATH_CAPACITY];
+  /* The project's script library built in the work directory, or empty
+     for a project without script packages (ADR-079). */
+  char script_library[VKR_BAKERY_PATH_CAPACITY];
   char editor_bundle[VKR_BAKERY_PATH_CAPACITY];
   char out[VKR_BAKERY_PATH_CAPACITY];
   char staging[VKR_BAKERY_PATH_CAPACITY];
@@ -401,6 +404,134 @@ vkr_internal VkrBakeryJson *vkr_package_run_job(VkrPackage *package,
     }
   }
   return result;
+}
+
+// =============================================================================
+// Scripts
+// =============================================================================
+
+#if defined(_WIN32)
+#define VKR_PACKAGE_SCRIPT_LIBRARY "project.dll"
+/* Beside the player; relative to the content root, as the player reads it. */
+#define VKR_PACKAGE_SCRIPT_PLACE "scripts/project.dll"
+#define VKR_PACKAGE_SCRIPT_IDENTITY "../scripts/project.dll"
+#elif defined(__APPLE__)
+#define VKR_PACKAGE_SCRIPT_LIBRARY "libproject.dylib"
+/* Contents/Frameworks, signed with the application's nested code. */
+#define VKR_PACKAGE_SCRIPT_IDENTITY "../../Frameworks/libproject.dylib"
+#endif
+
+/* Counts `<name>/<name>.script.json` packages in a Scripts folder. */
+typedef struct VkrPackageScriptScan {
+  const char *directory;
+  uint32_t packages;
+} VkrPackageScriptScan;
+
+vkr_internal bool8_t vkr_package_visit_script(void *context, const char *name,
+                                              bool8_t is_directory) {
+  VkrPackageScriptScan *scan = context;
+  char description[VKR_BAKERY_PATH_CAPACITY];
+  if (is_directory &&
+      (uint32_t)snprintf(description, sizeof(description),
+                         "%s/%s/%s.script.json", scan->directory, name,
+                         name) < sizeof(description) &&
+      vkr_bakery_is_file(description)) {
+    scan->packages++;
+  }
+  return true_v;
+}
+
+/* Builds the project's `Scripts` folder into one library with a child
+   `vkr_bakery scripts`, as the editor does, sharing the action cache. A
+   project without script packages ships none. */
+vkr_internal bool8_t vkr_package_scripts(VkrPackage *package, bool8_t *built) {
+  *built = false_v;
+  char scripts[VKR_BAKERY_PATH_CAPACITY];
+  if (!vkr_bakery_path_join(scripts, sizeof(scripts), package->project_root,
+                            "Scripts")) {
+    return vkr_package_fail(package, NULL, "the Scripts path is too long");
+  }
+  VkrPackageScriptScan scan = {.directory = scripts};
+  if (!vkr_bakery_is_directory(scripts) ||
+      !vkr_bakery_list_directory(scripts, vkr_package_visit_script, &scan) ||
+      !scan.packages) {
+    return true_v;
+  }
+#if !defined(VKR_PACKAGE_SCRIPT_LIBRARY)
+  return vkr_package_fail(package, scripts,
+                          "script libraries are not built on this platform");
+#else
+  const char *out = vkr_package_printf(package, "%s/scripts", package->work);
+  const char *log =
+      vkr_package_printf(package, "%s/scripts.log", package->work);
+  const char *arguments[] = {
+      "scripts", scripts, "--name", "project", "--root",
+      scripts,   "--out", out,      "--cache", package->cli->config.cache_dir};
+  const VkrPlatformProcessConfig config = {
+      .executable = package->cli->config.self_path,
+      .arguments = arguments,
+      .argument_count = ArrayCount(arguments),
+      .stdout_path = log,
+      .stderr_path = log,
+      .termination_grace_ms = 5000u,
+      .terminate_process_tree = true_v,
+      .hidden = true_v,
+      .is_cancelled = vkr_package_poll_job,
+      .cancel_context = package,
+  };
+  vkr_bakery_event_progress(package->stage_id, -1.0, "scripts");
+  int32_t code = -1;
+  bool8_t timed_out = false_v;
+  const bool8_t ran = vkr_platform_process_run(&config, &code, &timed_out);
+  if (vkr_package_cancelled()) {
+    return vkr_package_fail(package, NULL, "the script build was cancelled");
+  }
+  char library[VKR_BAKERY_PATH_CAPACITY];
+  if (!ran || code != 0 ||
+      !vkr_bakery_path_join(library, sizeof(library), out,
+                            VKR_PACKAGE_SCRIPT_LIBRARY) ||
+      !vkr_bakery_is_file(library)) {
+    return vkr_package_fail(package, log,
+                            "the project's scripts did not build; see the "
+                            "script build log");
+  }
+  (void)snprintf(package->script_library, sizeof(package->script_library), "%s",
+                 library);
+  *built = true_v;
+  return true_v;
+#endif
+}
+
+/* Ships the script library where the player's loader looks and returns its
+   path relative to the content root, or NULL after a failure. */
+vkr_internal const char *vkr_package_stage_scripts(VkrPackage *package,
+                                                   const char *directory) {
+#if defined(VKR_PACKAGE_SCRIPT_IDENTITY)
+  char destination[VKR_BAKERY_PATH_CAPACITY];
+#if defined(__APPLE__)
+  (void)directory;
+  const bool8_t placed =
+      (uint32_t)snprintf(destination, sizeof(destination),
+                         "%s/%s.app/Contents/Frameworks/%s", package->staging,
+                         package->executable,
+                         VKR_PACKAGE_SCRIPT_LIBRARY) < sizeof(destination);
+#else
+  const bool8_t placed = vkr_bakery_path_join(
+      destination, sizeof(destination), directory, VKR_PACKAGE_SCRIPT_PLACE);
+#endif
+  char parent[VKR_BAKERY_PATH_CAPACITY];
+  vkr_bakery_path_parent(parent, sizeof(parent), destination);
+  if (placed && vkr_bakery_make_directories(parent) &&
+      vkr_bakery_clone_or_copy(package->script_library, destination)) {
+    return VKR_PACKAGE_SCRIPT_IDENTITY;
+  }
+#else
+  (void)directory;
+#endif
+  vkr_bakery_event_diag(
+      package->stage_id, VKR_BAKERY_DIAG_BUNDLE_MISSING_RUNTIME,
+      package->script_library, 0u, 0u, "cannot copy the script library", NULL);
+  return NULL;
 }
 
 // =============================================================================
@@ -1783,6 +1914,11 @@ vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
       return false_v;
     }
   }
+  const char *script_identity = NULL;
+  if (package->script_library[0] &&
+      !(script_identity = vkr_package_stage_scripts(package, directory))) {
+    return false_v;
+  }
   if (!vkr_bakery_path_join(catalog, sizeof(catalog), package->shaders,
                             VKR_PACKAGE_BACKEND) ||
       !vkr_package_runtime_path(package, package->staging,
@@ -1829,8 +1965,12 @@ vkr_internal bool8_t vkr_package_stage_runtime(VkrPackage *package,
   vkr_bakery_json_set(arena, description, "products", products);
   vkr_bakery_json_set(arena, description, "scripts",
                       vkr_bakery_json_array(arena));
-  vkr_bakery_json_set(arena, description, "game",
-                      vkr_package_game_object(package));
+  VkrBakeryJson *game = vkr_package_game_object(package);
+  if (script_identity) {
+    vkr_bakery_json_set(arena, game, "script_library",
+                        vkr_bakery_json_cstr(arena, script_identity));
+  }
+  vkr_bakery_json_set(arena, description, "game", game);
   char path[VKR_BAKERY_PATH_CAPACITY];
   (void)vkr_package_runtime_path(package, package->staging, "bundle.json",
                                  path);
@@ -2026,6 +2166,12 @@ int vkr_bakery_bundle_project(VkrBakeryCli *cli, const char *project) {
   const bool8_t opened = package->workspace[0] && package->out[0];
   vkr_package_stage_end(package, ok, NULL);
 
+  if (ok) {
+    bool8_t scripts = false_v;
+    vkr_package_stage_begin(package, "Scripts");
+    ok = vkr_package_scripts(package, &scripts);
+    vkr_package_stage_end(package, ok, scripts ? NULL : "no script packages");
+  }
   if (ok) {
     vkr_package_stage_begin(package, "Finalize");
     ok = vkr_package_finalize(package, &changed);

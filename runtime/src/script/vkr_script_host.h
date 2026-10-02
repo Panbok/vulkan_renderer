@@ -92,7 +92,8 @@ typedef struct VkrScriptLibrary {
 typedef struct VkrScriptPrepared {
   char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
   char path[VKR_SCRIPT_PATH_CAPACITY];
-  /* The byte copy that is opened; removed when the library closes. */
+  /* The byte copy that is opened; removed when the library closes. Empty
+     when the library opens in place. */
   char loaded_path[VKR_SCRIPT_PATH_CAPACITY];
   VkrPlatformLibrary handle;
   /* Lists its modules through vkr_project_modules. */
@@ -328,12 +329,15 @@ VkrScriptReload vkr_script_host_load_project(VkrScriptHost *host,
 /**
  * Names a library to prepare: `vkr_script_host_load_library` or
  * `_load_project` split so the copy and open can run on a worker. Picks the
- * copy's unique path; false with `prepared->error` when the name or path is
- * unusable. Frame thread.
+ * copy's unique path, or with `in_place` opens `library_path` itself, as a
+ * packaged game does: its folder may be read-only or signed, and it never
+ * reloads. False with `prepared->error` when the name or path is unusable.
+ * Frame thread.
  */
 bool8_t vkr_script_host_prepare(VkrScriptHost *host,
                                 VkrScriptPrepared *prepared, const char *name,
-                                const char *library_path, bool8_t project);
+                                const char *library_path, bool8_t project,
+                                bool8_t in_place);
 
 /** Copies, opens and lists a prepared library. Any thread; reads nothing of
  * the host, so it may run while frames and hooks continue. */

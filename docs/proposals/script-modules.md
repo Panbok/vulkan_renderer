@@ -147,12 +147,11 @@ ADR-072 records the adapter, the 512-body threshold and the measurements.
    changed; the project must be reopened, and nothing migrates the old bytes.
    A migration needs versioned field serialization and atomic replacement of
    the live values.
-2. **Packaged games.** The recommended first step ships the shared library
-   beside the prebuilt `vkr_player`, signed inside the `.app`. The player
-   then loads the modules `bundle.json` names instead of linking the FPS
-   module. Consoles and iOS need static linking later. That requires a linker
-   at package time and runtime archives and headers in the editor
-   distribution.
+2. **Packaged games.** Shipped in ADR-078 and ADR-079: a package carries the
+   project's shared library beside `vkr_player` (signed inside the `.app` on
+   macOS), and the player loads it in place. Left: consoles and iOS need
+   static linking, which requires a linker at package time and runtime
+   archives in the editor distribution.
 3. **Headers for projects.** Shipped in ADR-079: the script SDK headers are
    staged as one include root and installed as `sdk/` in the editor
    distribution: `sdk.h`, `defines.h`, `vkr_pch.h` and five math headers.

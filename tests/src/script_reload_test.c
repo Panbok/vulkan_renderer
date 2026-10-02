@@ -142,7 +142,7 @@ static void test_project_library(VkrAllocator *allocator) {
   // the running data continues under the new code once it commits.
   static VkrScriptPrepared prepared;
   assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
-                                 VKR_TEST_PROJECT_PROBE_2, true_v));
+                                 VKR_TEST_PROJECT_PROBE_2, true_v, false_v));
   VkrThread thread = NULL;
   assert(vkr_thread_create(allocator, &thread, prepare_thread, &prepared));
   vkr_scene_physics_set_paused(&scene, false_v);
@@ -160,7 +160,7 @@ static void test_project_library(VkrAllocator *allocator) {
 
   // A discarded preparation changes nothing and removes its copy.
   assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
-                                 VKR_TEST_PROJECT_PROBE_3, true_v));
+                                 VKR_TEST_PROJECT_PROBE_3, true_v, false_v));
   vkr_script_prepare_run(&prepared);
   char copy[VKR_SCRIPT_PATH_CAPACITY];
   snprintf(copy, sizeof(copy), "%s", prepared.loaded_path);
@@ -171,7 +171,7 @@ static void test_project_library(VkrAllocator *allocator) {
          !vkr_script_host_module(&host, "ProbeC"));
   // A failed run reports through the commit.
   assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
-                                 "/missing/project.dll", true_v));
+                                 "/missing/project.dll", true_v, false_v));
   vkr_script_prepare_run(&prepared);
   assert(!prepared.ready);
   assert(vkr_script_host_commit(&host, &prepared, &error) ==
@@ -208,7 +208,22 @@ static void test_project_library(VkrAllocator *allocator) {
   reload_ticks(&scene, 1u);
   assert(data->ticks == 2u && c_data->ticks == 2u);
 
+  // A packaged game opens its library where it lies: no copy beside it,
+  // and closing leaves the file.
+  assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
+                                 VKR_TEST_PROJECT_PROBE_3, true_v, true_v));
+  assert(!prepared.loaded_path[0]);
+  vkr_script_prepare_run(&prepared);
+  assert(vkr_script_host_commit(&host, &prepared, &error) ==
+         VKR_SCRIPT_RELOAD_KEPT_STATE);
+  c = vkr_script_host_module(&host, "ProbeC");
+  assert(host.libraries[c->library].handle.handle &&
+         !host.libraries[c->library].loaded_path[0]);
+
   vkr_script_host_shutdown(&host);
+  FILE *kept = fopen(VKR_TEST_PROJECT_PROBE_3, "rb");
+  assert(kept);
+  fclose(kept);
   vkr_scene_shutdown(&scene, NULL);
 }
 

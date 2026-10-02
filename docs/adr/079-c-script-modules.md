@@ -26,13 +26,13 @@ Accepted (partial). Implemented:
 - the floating Script editor with highlighting, completion and diagnostics;
 - the FPS sample as a statically linked module;
 - the script SDK headers staged as one include root and shipped in the
-  editor distribution.
+  editor distribution;
+- packaged games that ship the project's script library and load it in
+  place before their World.
 
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
 - Exports between modules.
-- Packaged games do not load a project's script library yet; `vkr_player`
-  still links only the FPS module.
 - A TypeScript layer.
 
 ## Context
@@ -244,6 +244,18 @@ module reloads between frames, never from a hook:
   meanwhile; opening runs the library's C runtime startup.
 - `vkr_script_host_commit` checks and applies it between frames, or
   `vkr_script_host_discard` closes it and removes the copy.
+
+**In place.** `vkr_script_host_prepare(..., in_place)` opens the library
+where it lies instead of a byte copy, and closing it removes nothing. A
+packaged game loads this way: its folder may be read-only, a signed macOS
+application must not change, and it never reloads.
+
+**Packaged games.** `vkr_bakery bundle` builds the project's `Scripts/`
+into the package and names the library in `game.script_library` (ADR-078).
+On its first frame the [player](../../player/src/player_ui.c) asks the shell
+to load it in place, flagged `project` and `in_place` in
+`VkrSampleScriptLoad`, before its World and startup scene. The FPS sample
+stays linked into `vkr_player` for packages that use it.
 
 A project library reloads atomically. The host checks every listed module
 first; one refused module, a changed layout or a type name another module
@@ -664,6 +676,16 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
   headers need no platform header. After deleting the staged copies, the
   Debug build of every target and the editor restaged eight headers, the
   probes built from them, and the full tester passed.
+- Packaged game, Windows, Debug: `vkr_bakery bundle` on a copy of an empty
+  managed project with a never-built `Scripts/Spinner` ran the Scripts stage
+  (1.5 s) and wrote `scripts/project.dll` beside `f.exe`, exporting
+  `vkr_module_Spinner` and `vkr_project_modules` and importing only
+  `KERNEL32.dll`, with `game.script_library` `../scripts/project.dll`. The
+  packaged player, rebuilt with the reserve workaround, logged "Script
+  library project loaded" before its World (5 entities) loaded, left no
+  copy beside the library, and exited 0 when its autoclose timer ended.
+  `script_reload_test.c` reloads the project probe in place: no copy path,
+  and the library file remains after shutdown.
 - `vkr_bakery scripts` on a sample folder (a `Common` library, a `Door`
   module depending on it and a `Spinner` module) ran 5 actions (4 objects,
   1 link) in 0.64 s and wrote `project.dll` (107,520 bytes). It exports
@@ -706,10 +728,8 @@ Unavailable:
 - The windowed Script editor: highlighting, diagnostics and completion over
   `sdk.h` and package headers were built but not exercised interactively,
   including completion from an installed editor's `sdk/`.
-- The editor driving a project library: the build, load and reload path was
-  built and its runtime half tested, but no editor run loaded one, since the
-  Vulkan editor at this revision needs the reserve workaround.
-- A packaged game running scripts; `vkr_player` builds but was not run.
+- A macOS package with a script library: staging in `Contents/Frameworks`
+  and its signature were built but not run.
 - Timing: no frame-time claim.
 
 Earlier macOS evidence (Apple M1 Pro, Metal, 2026-09-29 and 2026-09-30)
@@ -742,7 +762,7 @@ exercised; items not listed above were not repeated on the SDK.
 
 ## Revisit when
 
-A packaged game loads a project's library, a second language binds the table,
+A platform needs script modules linked statically, a second language binds the table,
 additive scenes simulate and need their own instances, a project needs
 separately loaded groups, or component layout changes should migrate live
 data.

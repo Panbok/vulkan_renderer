@@ -232,6 +232,8 @@ typedef struct VkrSampleScriptLoad {
   char path[VKR_SCRIPT_PATH_CAPACITY];
   /* A project library listing its modules, else one module's library. */
   bool8_t project;
+  /* Opens `path` itself instead of a byte copy, as a packaged game does. */
+  bool8_t in_place;
 } VkrSampleScriptLoad;
 
 /** Script library requests (ADR-079), applied after the UI build and before

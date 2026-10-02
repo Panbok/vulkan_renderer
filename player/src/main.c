@@ -133,6 +133,8 @@ bool8_t vkr_player_load(VkrPlayer *player) {
                                    player->world_overlay) &&
                player_content_path(game, "startup_scene", &allocator,
                                    player->startup_scene) &&
+               player_content_path(game, "script_library", &allocator,
+                                   player->script_library) &&
                player_content_path(game, "startup_overlay", &allocator,
                                    player->startup_overlay);
 
@@ -222,8 +224,8 @@ VKR_MAIN(argc, argv) {
       player.settings_path[0] ? player.settings_path : NULL;
   config.graphics_defaults = player.graphics;
   config.ui = vkr_player_ui_client(&player);
-  /* Until players load a project's script library, every package runs the
-     FPS module linked here (ADR-079). */
+  /* The FPS sample stays linked for packages whose scenes use it; the
+     project's own modules come from its script library (ADR-079). */
   static const VkrModuleEntry script_modules[] = {vkr_module_fps};
   config.script_modules = script_modules;
   config.script_module_count = ArrayCount(script_modules);
