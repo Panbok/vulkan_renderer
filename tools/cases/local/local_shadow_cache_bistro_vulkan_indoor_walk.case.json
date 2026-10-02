@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "id": "local.bistro.local_shadow_cache.metal_indoor_walk",
+  "id": "local.bistro.local_shadow_cache.vulkan_indoor_walk",
   "suite": "local",
-  "description": "Metal Bistro walk through the five owner indoor cameras, High, 960x540 spatially upscaled to 1280x720 (the M1 Pro target), after the cache fills: no crossfading (gate 1); 60 FPS (gate 2).",
+  "description": "Vulkan Bistro walk through the five owner indoor cameras, High at 1280x720 (the RX 6700 XT and Ampere target), after the cache fills: no crossfading (gate 1); 60 FPS (gate 2).",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [
@@ -22,8 +22,8 @@
     "measure": 660
   },
   "renderer": {
-    "backend": "metal",
-    "render_scale": 0.75,
+    "backend": "vulkan",
+    "render_scale": 1.0,
     "editor": false,
     "skybox": true,
     "taa_enabled": false,

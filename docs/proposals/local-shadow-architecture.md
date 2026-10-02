@@ -164,9 +164,14 @@ needs its own decision.
 
 ## Decisions
 
-- **Target.** 60 FPS (16.7 ms per frame) on each baseline architecture in the
-  indoor cases. Everything else is measured against that target rather than
-  fixed in advance.
+- **Target.** 60 FPS (16.7 ms per frame) in the indoor cases with output at
+  1280x720 and the High preset: rendered at full resolution on RDNA2 and
+  Ampere, and at a 0.75 render scale (960x540, spatially upscaled) on the M1
+  family. The M1 Pro missed 60 FPS at full resolution with every measured
+  choice, 19.1 ms median with every lamp shadowed, and its 95th percentile
+  was 18.2 ms even without local shadows; at 0.75 it holds 12.6 ms median and 16.7 ms at the 95th percentile
+  (ADR-019). Everything else is measured against that target rather than fixed
+  in advance.
 - **Choices settled by measurement.** For each choice below, the
   highest-quality option that holds 60 FPS on every baseline host is taken;
   the recommendation applies when options tie:
@@ -195,7 +200,9 @@ existing contribution-weighted metrics.
    `lighting.local_shadow.unshadowed_ratio` counts only lights beyond the fade
    distance. Final-color captures show no exterior lamp light inside the café.
 2. **60 FPS.** Frame time on the indoor walk with every in-range light
-   shadowed holds 16.7 ms on the M1 Pro and the RX 6700 XT, with
+   shadowed holds 16.7 ms at the target's render scale:
+   `local_shadow_cache_bistro_metal_indoor_walk` (0.75) on the M1 Pro and
+   `local_shadow_cache_bistro_vulkan_indoor_walk` (1.0) on the RX 6700 XT, with
    `Shadow.LocalMask` and `Lighting.Deferred` recorded per option; matched
    Release reports per `vkr-performance`.
 3. **Memory.** Live cache bytes from `memory.gpu.*` and `rendergraph.*` rows

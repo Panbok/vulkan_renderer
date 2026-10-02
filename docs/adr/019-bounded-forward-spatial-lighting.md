@@ -466,3 +466,11 @@ Captures after the fill were byte-identical indoors and differed in the street
 view by at most 8 of 255, as two captures of one build do. A
 `MTL_DEBUG_LAYER=1` run of `local_shadow_cache_bistro_metal_validation` passed
 with no messages. The walk still misses 60 FPS on the M1 Pro.
+
+The local shadow architecture's 60 FPS target therefore renders the M1 family
+at a 0.75 render scale. With `render_scale` 0.75 (960x540, spatial upscaling to
+1280x720) the same walk measured 12.8 and 12.6 ms median and 16.4 and 16.7 ms
+at the 95th percentile in two runs, and 11.1 ms median and 15.0 ms p95 at
+0.667, with no crossfading. `local_shadow_cache_bistro_metal_indoor_walk` now
+runs at 0.75 and `local_shadow_cache_bistro_vulkan_indoor_walk` keeps full
+resolution for the RX 6700 XT; native Vulkan remains unrun.
