@@ -109,7 +109,12 @@ typedef struct VkrJobSystem {
   Arena *arena;
   VkrAllocator allocator;
   VkrMutex mutex;
+  /* Idle workers wait here for queued work. */
   VkrCondVar cond;
+  /* vkr_job_wait callers wait here for a slot to be recycled; completions
+     broadcast it only while `done_waiters` is nonzero. */
+  VkrCondVar done_cond;
+  uint32_t done_waiters;
   VkrCondVar slots_avail;
   bool32_t running;
 

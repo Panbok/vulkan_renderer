@@ -205,6 +205,20 @@ vkr_internal void job_slot_reset(VkrJobSystem *system, VkrJobSlot *slot) {
   }
 }
 
+/* Returns a completed slot to the free stack. Waiters watch the generation,
+ * so they wake only now, once the job and its callback are done. */
+vkr_internal void job_slot_recycle_locked(VkrJobSystem *system,
+                                          VkrJobSlot *slot,
+                                          VkrJobHandle handle) {
+  slot->handle.generation++;
+  system->free_stack[system->free_top++] = handle.id - 1;
+  job_slot_reset(system, slot);
+  vkr_cond_signal(system->slots_avail);
+  if (system->done_waiters) {
+    vkr_cond_broadcast(system->done_cond);
+  }
+}
+
 vkr_internal void job_worker_complete(VkrJobSystem *system, VkrJobSlot *slot,
                                       VkrJobHandle handle, VkrJobContext *ctx,
                                       bool8_t success) {
@@ -220,10 +234,7 @@ vkr_internal void job_worker_complete(VkrJobSystem *system, VkrJobSlot *slot,
   slot->state = JOB_STATE_COMPLETED;
   slot->success = success;
 
-  // Wake waiters for this job.
-  vkr_cond_broadcast(system->cond);
-
-  // Release dependents
+  // Release dependents; each one queued wakes one idle worker.
   if (slot->dependents.data != NULL) {
     for (uint64_t i = 0; i < slot->dependents.length; i++) {
       VkrJobHandle child_handle = slot->dependents.data[i];
@@ -236,7 +247,9 @@ vkr_internal void job_worker_complete(VkrJobSystem *system, VkrJobSlot *slot,
         child->remaining_dependencies--;
         if (child->remaining_dependencies == 0 &&
             child->state == JOB_STATE_PENDING) {
-          if (!job_system_enqueue_locked(system, child)) {
+          if (job_system_enqueue_locked(system, child)) {
+            vkr_cond_signal(system->cond);
+          } else {
             log_warn("Job failed to enqueue dependency child job");
           }
         }
@@ -244,24 +257,17 @@ vkr_internal void job_worker_complete(VkrJobSystem *system, VkrJobSlot *slot,
     }
   }
 
-  vkr_cond_broadcast(system->cond);
-  vkr_mutex_unlock(system->mutex);
-
-  // Run callback outside the lock to avoid blocking other workers.
-  if (callback) {
+  if (!callback) {
+    job_slot_recycle_locked(system, slot, handle);
+    vkr_mutex_unlock(system->mutex);
+  } else {
+    vkr_mutex_unlock(system->mutex);
+    // Run callback outside the lock to avoid blocking other workers.
     callback(ctx, payload);
+    vkr_mutex_lock(system->mutex);
+    job_slot_recycle_locked(system, slot, handle);
+    vkr_mutex_unlock(system->mutex);
   }
-
-  vkr_mutex_lock(system->mutex);
-  // Recycle slot
-  slot->handle.generation++;
-  system->free_stack[system->free_top++] = handle.id - 1;
-  job_slot_reset(system, slot);
-  // Signal waiting submitters that a slot is available
-  vkr_cond_signal(system->slots_avail);
-  // Wake any waiters so they see the generation has changed (job fully done)
-  vkr_cond_broadcast(system->cond);
-  vkr_mutex_unlock(system->mutex);
 #if VKR_METRICS_ENABLED
   vkr_atomic_uint32_fetch_sub(&system->metrics_busy_workers, 1u,
                               VKR_MEMORY_ORDER_RELAXED);
@@ -421,6 +427,7 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
 
   if (!vkr_mutex_create(&out_system->allocator, &out_system->mutex) ||
       !vkr_cond_create(&out_system->allocator, &out_system->cond) ||
+      !vkr_cond_create(&out_system->allocator, &out_system->done_cond) ||
       !vkr_cond_create(&out_system->allocator, &out_system->slots_avail)) {
     log_error("Failed to create job system synchronization primitives");
     goto cleanup;
@@ -497,6 +504,8 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
     vkr_mutex_unlock(system->mutex);
   if (system->cond)
     vkr_cond_broadcast(system->cond);
+  if (system->done_cond)
+    vkr_cond_broadcast(system->done_cond);
   if (system->slots_avail)
     vkr_cond_broadcast(system->slots_avail);
 
@@ -520,6 +529,9 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
 
   if (system->slots_avail) {
     vkr_cond_destroy(&system->allocator, &system->slots_avail);
+  }
+  if (system->done_cond) {
+    vkr_cond_destroy(&system->allocator, &system->done_cond);
   }
   if (system->cond) {
     vkr_cond_destroy(&system->allocator, &system->cond);
@@ -735,9 +747,11 @@ bool8_t vkr_job_wait(VkrJobSystem *system, VkrJobHandle handle) {
 
   // Wait for the slot to be recycled (generation changes after callbacks run).
   // This ensures the job AND its callbacks have fully completed.
+  system->done_waiters++;
   while (slot->handle.generation == handle.generation) {
-    vkr_cond_wait(system->cond, system->mutex);
+    vkr_cond_wait(system->done_cond, system->mutex);
   }
+  system->done_waiters--;
 
   vkr_mutex_unlock(system->mutex);
   return true_v;
