@@ -37,7 +37,8 @@
  * Performance Notes:
  * - All functions are marked INLINE for maximum performance
  * - Functions directly wrap optimized C math library calls
- * - Random number generator is automatically seeded on first use
+ * - Random numbers follow the C library's rand() sequence; vkr_rand_seed()
+ *   seeds it
  * - No dynamic memory allocation is performed
  *
  * Thread Safety:
@@ -64,7 +65,6 @@
 #pragma once
 
 #include "defines.h"
-#include "platform/vkr_platform.h"
 
 /** @brief Mathematical constant π (pi) with high precision
  *  @note Value: 3.14159265358979323846...
@@ -164,8 +164,6 @@
  *  @note Use for bounds checking and initialization of minimum values
  *  @note Should be larger than any realistic value in your application */
 #define VKR_FLOAT_MIN 1.175494351e-38f
-
-vkr_global bool8_t vkr_rand_seeded = false;
 
 /**
  * @brief Converts degrees to radians
@@ -566,18 +564,16 @@ vkr_internal INLINE float32_t vkr_atan2_f32(float32_t y, float32_t x) {
 /**
  * @brief Generates a random float32_t value in the range [0.0, 1.0]
  * @return Random float32_t value between 0.0 (inclusive) and 1.0 (inclusive)
- * @note Uses the standard C rand() function, automatically seeds on first use
+ * @note Uses the standard C rand() sequence; vkr_rand_seed() selects it
  * @note NOT thread-safe due to global state in rand()
  */
 vkr_internal INLINE float32_t vkr_rand_f32() {
   return (float32_t)rand() / (float32_t)RAND_MAX;
 }
 
-/** @brief Seeds the renderer's standard pseudo-random number source. */
-vkr_internal INLINE void vkr_rand_seed(uint64_t seed) {
-  srand((uint32_t)seed);
-  vkr_rand_seeded = true_v;
-}
+/** @brief Seeds the standard pseudo-random number source; until a seed, it
+ * runs the C library's default sequence. */
+vkr_internal INLINE void vkr_rand_seed(uint64_t seed) { srand((uint32_t)seed); }
 
 /**
  * @brief Generates a random float32_t value within a specified range
@@ -672,18 +668,10 @@ vkr_internal INLINE char *vkr_write_u32_dec(char *p, uint32_t v) {
 /**
  * @brief Generates a random int32_t value
  * @return Random int32_t value in the range [0, RAND_MAX]
- * @note Automatically seeds the random number generator on first call
- * @note Uses vkr_platform_get_absolute_time() for seeding to ensure uniqueness
- * @note NOT thread-safe due to global state in rand() and seeding logic
+ * @note Uses the standard C rand() sequence; vkr_rand_seed() selects it
+ * @note NOT thread-safe due to global state in rand()
  */
-vkr_internal INLINE int32_t vkr_rand_i32() {
-  if (!vkr_rand_seeded) {
-    srand((int32_t)vkr_platform_get_absolute_time());
-    vkr_rand_seeded = true;
-  }
-
-  return rand();
-}
+vkr_internal INLINE int32_t vkr_rand_i32() { return rand(); }
 
 /**
  * @brief Generates a random int32_t value within a specified range

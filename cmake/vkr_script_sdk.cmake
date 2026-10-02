@@ -8,7 +8,6 @@ set(VKR_SCRIPT_SDK_HEADERS
     "sdk/sdk.h|sdk.h"
     "lib/src/defines.h|defines.h"
     "lib/src/vkr_pch.h|vkr_pch.h"
-    "lib/src/platform/vkr_platform.h|platform/vkr_platform.h"
     "lib/src/math/mat.h|math/mat.h"
     "lib/src/math/vec.h|math/vec.h"
     "lib/src/math/vkr_math.h|math/vkr_math.h"

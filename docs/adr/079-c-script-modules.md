@@ -58,8 +58,8 @@ could live with the World while zones came and went.
 [`sdk.h`](../../sdk/sdk.h) is everything a module may use. It includes only
 the foundation's `defines.h` and inline math.
 [`vkr_script_sdk.cmake`](../../cmake/vkr_script_sdk.cmake) lists `sdk.h` and
-the eight foundation headers it reaches (`defines.h`, `vkr_pch.h`,
-`platform/vkr_platform.h` and five math headers) and stages them flat into
+the seven foundation headers it reaches (`defines.h`, `vkr_pch.h` and
+five math headers) and stages them flat into
 one include root, `<build>/script_sdk`. That root is the only engine include
 modules compile against:
 
@@ -659,6 +659,11 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
   copy of the sample folder under `%TEMP%` into `project.dll` (107,520
   bytes); with the installed `sdk/` renamed away too, it failed with
   "'sdk.h' file not found".
+- `platform/vkr_platform.h` left the SDK: `math/vkr_math.h` no longer seeds
+  `vkr_rand_i32` from the platform clock (nothing called it), so the math
+  headers need no platform header. After deleting the staged copies, the
+  Debug build of every target and the editor restaged eight headers, the
+  probes built from them, and the full tester passed.
 - `vkr_bakery scripts` on a sample folder (a `Common` library, a `Door`
   module depending on it and a `Spinner` module) ran 5 actions (4 objects,
   1 link) in 0.64 s and wrote `project.dll` (107,520 bytes). It exports
