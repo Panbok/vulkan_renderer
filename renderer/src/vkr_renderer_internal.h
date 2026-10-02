@@ -96,6 +96,17 @@ typedef struct VkrRendererFrameMetrics {
   VkrExposureDebugSample exposure;
 } VkrRendererFrameMetrics;
 
+/** Outcome of one submitted frame; see vkr_renderer_complete_frame. */
+struct VkrRendererFrameResult {
+  VkrRendererError error;
+  VkrRendererFrameMetrics metrics;
+  VkrValidationError validation;
+  /** CPU time of validation, preparation, recording, submission and present. */
+  uint64_t render_ns;
+};
+
+typedef struct VkrRendererWorker VkrRendererWorker;
+
 struct VkrRenderer {
   VkrAllocator *instance_allocator;
   VkrNativeSurface surface;
@@ -176,7 +187,22 @@ struct VkrRenderer {
   bool32_t frame_active;
   uint64_t frame_number;
   uint64_t target_generation;
+
+  /* Render thread, or NULL to render submitted frames inline. While it works
+     on a frame, it alone touches renderer and native state; every public
+     entry point waits for it first. `asset_publisher` then forwards to
+     `native_publisher` after that wait. */
+  VkrRendererWorker *worker;
+  VkrAssetPublisher native_publisher;
+  /* Written by the frame's work; the caller collects it after the wait. */
+  VkrRendererFrameResult frame_result;
+  bool8_t frame_result_ready;
 };
+
+/* Waits until no submitted frame is rendering. Public entry points call it
+   before touching renderer or native state. The render thread itself never
+   waits, so renderer code it runs may use public entry points. */
+void vkr_renderer_join_render_thread(const VkrRenderer *renderer);
 
 /* Embedded application instances use caller-owned storage. */
 bool32_t vkr_renderer_initialize(VkrRenderer *renderer,

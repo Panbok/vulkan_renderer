@@ -1,12 +1,15 @@
 #include "vkr_renderer.h"
 #include "containers/str.h"
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
+#include "core/vkr_threads.h"
 #include "filesystem/vkr_vfs.h"
 #include "math/mat.h"
 #include "math/vec.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "metal/vkr_metal_memory.h"
 #include "metal/vkr_metal_packet_renderer.h"
+#include "platform/vkr_platform.h"
 #include "vkr_asset_metrics.h"
 #include "vkr_capture.h"
 #include "vkr_dynamic_resolution.h"
@@ -37,6 +40,337 @@ vkr_internal bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
   return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
                                                               : false_v;
+}
+
+// =============================================================================
+// Render thread
+// =============================================================================
+
+/* One frame at a time: the caller submits, the worker renders, and every other
+   renderer entry point waits until the worker is idle again. */
+typedef enum VkrRendererWorkerState {
+  VKR_RENDERER_WORKER_IDLE = 0,
+  VKR_RENDERER_WORKER_BUSY,
+} VkrRendererWorkerState;
+
+struct VkrRendererWorker {
+  VkrThread thread;
+  VkrThreadId thread_id;
+  VkrMutex mutex;
+  VkrCondVar cond;
+  /* VkrRendererWorkerState; release on completion orders the frame's writes
+     before a waiter's acquire. */
+  VkrAtomicUint32 state;
+  bool8_t stop;
+  /* The submitted frame, copied because submission consumes the caller's. */
+  VkrFrame frame;
+  const VkrFrameInput *input;
+};
+
+vkr_internal void vkr_renderer_render_submitted(VkrRenderer *renderer,
+                                                VkrFrame *frame,
+                                                const VkrFrameInput *packet,
+                                                VkrRendererFrameResult *result);
+
+void vkr_renderer_join_render_thread(const VkrRenderer *renderer) {
+  VkrRendererWorker *worker = renderer ? renderer->worker : NULL;
+  if (!worker ||
+      vkr_atomic_uint32_load(&worker->state, VKR_MEMORY_ORDER_ACQUIRE) ==
+          VKR_RENDERER_WORKER_IDLE ||
+      vkr_thread_current_id() == worker->thread_id) {
+    return;
+  }
+  vkr_mutex_lock(worker->mutex);
+  while (vkr_atomic_uint32_load(&worker->state, VKR_MEMORY_ORDER_ACQUIRE) !=
+         VKR_RENDERER_WORKER_IDLE) {
+    vkr_cond_wait(worker->cond, worker->mutex);
+  }
+  vkr_mutex_unlock(worker->mutex);
+}
+
+vkr_internal void *vkr_renderer_worker_main(void *arg) {
+  VkrRenderer *renderer = arg;
+  VkrRendererWorker *worker = renderer->worker;
+  vkr_mutex_lock(worker->mutex);
+  for (;;) {
+    while (!worker->stop &&
+           vkr_atomic_uint32_load(&worker->state, VKR_MEMORY_ORDER_ACQUIRE) !=
+               VKR_RENDERER_WORKER_BUSY) {
+      vkr_cond_wait(worker->cond, worker->mutex);
+    }
+    if (vkr_atomic_uint32_load(&worker->state, VKR_MEMORY_ORDER_ACQUIRE) !=
+        VKR_RENDERER_WORKER_BUSY) {
+      break;
+    }
+    vkr_mutex_unlock(worker->mutex);
+
+    vkr_renderer_render_submitted(renderer, &worker->frame, worker->input,
+                                  &renderer->frame_result);
+
+    vkr_mutex_lock(worker->mutex);
+    vkr_atomic_uint32_store(&worker->state, VKR_RENDERER_WORKER_IDLE,
+                            VKR_MEMORY_ORDER_RELEASE);
+    vkr_cond_broadcast(worker->cond);
+  }
+  vkr_mutex_unlock(worker->mutex);
+  return NULL;
+}
+
+vkr_internal void vkr_renderer_worker_destroy(VkrRenderer *renderer) {
+  VkrRendererWorker *worker = renderer->worker;
+  if (!worker) {
+    return;
+  }
+  VkrAllocator *allocator = &renderer->render_graph_allocator;
+  if (worker->thread) {
+    vkr_renderer_join_render_thread(renderer);
+    vkr_mutex_lock(worker->mutex);
+    worker->stop = true_v;
+    vkr_cond_broadcast(worker->cond);
+    vkr_mutex_unlock(worker->mutex);
+    vkr_thread_join(worker->thread);
+    vkr_thread_destroy(allocator, &worker->thread);
+  }
+  if (worker->cond) {
+    vkr_cond_destroy(allocator, &worker->cond);
+  }
+  if (worker->mutex) {
+    vkr_mutex_destroy(allocator, &worker->mutex);
+  }
+  vkr_allocator_free(allocator, worker, sizeof(*worker),
+                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->worker = NULL;
+}
+
+vkr_internal bool8_t vkr_renderer_worker_create(VkrRenderer *renderer) {
+  VkrAllocator *allocator = &renderer->render_graph_allocator;
+  VkrRendererWorker *worker = vkr_allocator_alloc(
+      allocator, sizeof(*worker), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!worker) {
+    return false_v;
+  }
+  MemZero(worker, sizeof(*worker));
+  renderer->worker = worker;
+  if (!vkr_mutex_create(allocator, &worker->mutex) ||
+      !vkr_cond_create(allocator, &worker->cond) ||
+      /* Frame preparation and recording run with the main thread's 8 MiB
+         stack (CMakeLists.txt reserves the same on Windows); a default
+         secondary-thread stack overflows inside Metal image realization. */
+      !vkr_thread_create_with_stack(allocator, &worker->thread,
+                                    vkr_renderer_worker_main, renderer,
+                                    MB(8))) {
+    vkr_renderer_worker_destroy(renderer);
+    return false_v;
+  }
+  worker->thread_id = vkr_thread_get_id(worker->thread);
+  return true_v;
+}
+
+// =============================================================================
+// Asset publication behind the render thread
+// =============================================================================
+
+/* Asset systems publish between frames on the caller's thread. With a render
+   thread, each call first waits for the submitted frame, so publication never
+   overlaps native recording. */
+
+vkr_internal const VkrAssetPublisher *
+vkr_renderer_publisher_native(void *state) {
+  VkrRenderer *renderer = state;
+  vkr_renderer_join_render_thread(renderer);
+  return &renderer->native_publisher;
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_publications_idle(void *state) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->publications_idle(native->state);
+}
+
+vkr_internal uint64_t
+vkr_renderer_publisher_publication_generation(void *state) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->publication_generation(native->state);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_texture_upload_available(
+    void *state, uint64_t upload_bytes) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->texture_upload_available(native->state, upload_bytes);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_publish_geometry(
+    void *state, VkrGeometryHandle handle,
+    const struct VkrGeometryConfig *geometry) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->publish_geometry(native->state, handle, geometry);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_publish_loaded_mesh(
+    void *state, VkrGeometryHandle handle,
+    const struct VkrGeometryUpload *mesh) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->publish_loaded_mesh(native->state, handle, mesh);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_unpublish_geometry(
+    void *state, VkrGeometryHandle handle) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->unpublish_geometry(native->state, handle);
+}
+
+vkr_internal bool8_t
+vkr_renderer_publisher_begin_texture_upload_batch(void *state) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->begin_texture_upload_batch(native->state);
+}
+
+vkr_internal bool8_t
+vkr_renderer_publisher_end_texture_upload_batch(void *state) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->end_texture_upload_batch(native->state);
+}
+
+vkr_internal VkrRendererError vkr_renderer_publisher_publish_texture(
+    void *state, VkrTextureHandle handle,
+    const struct VkrTexturePreparedLoad *texture) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->publish_texture(native->state, handle, texture);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_publish_writable_texture(
+    void *state, VkrTextureHandle handle,
+    const VkrTextureDescription *description) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->publish_writable_texture(native->state, handle, description);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_update_texture_sampler(
+    void *state, VkrTextureHandle handle,
+    const VkrTextureDescription *description) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->update_texture_sampler(native->state, handle, description);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_bake_ibl_cubemap(
+    void *state, VkrTextureHandle source, VkrTextureHandle prefilter,
+    float32_t sh_deringing) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->bake_ibl_cubemap(native->state, source, prefilter,
+                                  sh_deringing);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_bake_atmosphere(
+    void *state, const VkrAtmosphereGpuParams *params, VkrTextureHandle source,
+    VkrTextureHandle prefilter, VkrTextureHandle transmittance,
+    VkrTextureHandle multiple_scattering, float32_t sh_deringing) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->bake_atmosphere(native->state, params, source, prefilter,
+                                 transmittance, multiple_scattering,
+                                 sh_deringing);
+}
+
+vkr_internal VkrAtmosphereBakeStatus
+vkr_renderer_publisher_atmosphere_bake_status(void *state,
+                                              VkrTextureHandle source) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->atmosphere_bake_status(native->state, source);
+}
+
+vkr_internal uint32_t
+vkr_renderer_publisher_ibl_sh_slot(void *state, VkrTextureHandle source) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->ibl_sh_slot(native->state, source);
+}
+
+vkr_internal bool8_t
+vkr_renderer_publisher_unpublish_texture(void *state, VkrTextureHandle handle) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->unpublish_texture(native->state, handle);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_publish_material(
+    void *state, VkrMaterialHandle handle, const struct VkrMaterial *material) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->publish_material(native->state, handle, material);
+}
+
+vkr_internal bool8_t vkr_renderer_publisher_unpublish_material(
+    void *state, VkrMaterialHandle handle) {
+  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
+  return native->unpublish_material(native->state, handle);
+}
+
+/* Inline rendering publishes straight through the native table. Optional
+   native entries stay absent in the forwarding table. */
+vkr_internal void vkr_renderer_install_asset_publisher(VkrRenderer *renderer) {
+  const VkrAssetPublisher *native = &renderer->native_publisher;
+  if (!renderer->worker) {
+    renderer->asset_publisher = *native;
+    return;
+  }
+  renderer->asset_publisher = (VkrAssetPublisher){
+      .state = renderer,
+      .publications_idle = native->publications_idle
+                               ? vkr_renderer_publisher_publications_idle
+                               : NULL,
+      .publication_generation =
+          native->publication_generation
+              ? vkr_renderer_publisher_publication_generation
+              : NULL,
+      .texture_upload_available =
+          native->texture_upload_available
+              ? vkr_renderer_publisher_texture_upload_available
+              : NULL,
+      .publish_geometry = native->publish_geometry
+                              ? vkr_renderer_publisher_publish_geometry
+                              : NULL,
+      .publish_loaded_mesh = native->publish_loaded_mesh
+                                 ? vkr_renderer_publisher_publish_loaded_mesh
+                                 : NULL,
+      .unpublish_geometry = native->unpublish_geometry
+                                ? vkr_renderer_publisher_unpublish_geometry
+                                : NULL,
+      .begin_texture_upload_batch =
+          native->begin_texture_upload_batch
+              ? vkr_renderer_publisher_begin_texture_upload_batch
+              : NULL,
+      .end_texture_upload_batch =
+          native->end_texture_upload_batch
+              ? vkr_renderer_publisher_end_texture_upload_batch
+              : NULL,
+      .publish_texture = native->publish_texture
+                             ? vkr_renderer_publisher_publish_texture
+                             : NULL,
+      .publish_writable_texture =
+          native->publish_writable_texture
+              ? vkr_renderer_publisher_publish_writable_texture
+              : NULL,
+      .update_texture_sampler =
+          native->update_texture_sampler
+              ? vkr_renderer_publisher_update_texture_sampler
+              : NULL,
+      .bake_ibl_cubemap = native->bake_ibl_cubemap
+                              ? vkr_renderer_publisher_bake_ibl_cubemap
+                              : NULL,
+      .bake_atmosphere = native->bake_atmosphere
+                             ? vkr_renderer_publisher_bake_atmosphere
+                             : NULL,
+      .atmosphere_bake_status =
+          native->atmosphere_bake_status
+              ? vkr_renderer_publisher_atmosphere_bake_status
+              : NULL,
+      .ibl_sh_slot =
+          native->ibl_sh_slot ? vkr_renderer_publisher_ibl_sh_slot : NULL,
+      .unpublish_texture = native->unpublish_texture
+                               ? vkr_renderer_publisher_unpublish_texture
+                               : NULL,
+      .publish_material = native->publish_material
+                              ? vkr_renderer_publisher_publish_material
+                              : NULL,
+      .unpublish_material = native->unpublish_material
+                                ? vkr_renderer_publisher_unpublish_material
+                                : NULL,
+  };
 }
 
 vkr_internal uint32_t vkr_renderer_scaled_extent(uint32_t extent,
@@ -452,7 +786,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   renderer->impl.caps.present_color_format =
       vkr_metal_packet_renderer_present_color_format(renderer->metal_renderer);
   vkr_metal_packet_renderer_get_asset_publisher(renderer->metal_renderer,
-                                                &renderer->asset_publisher);
+                                                &renderer->native_publisher);
   *out_error = VKR_RENDERER_ERROR_NONE;
   log_info("Selected Metal 4 packet renderer");
   return true_v;
@@ -537,7 +871,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
     return false_v;
   }
   vkr_vulkan_renderer_get_asset_publisher(renderer->vulkan_renderer,
-                                          &renderer->asset_publisher);
+                                          &renderer->native_publisher);
   *out_error = VKR_RENDERER_ERROR_NONE;
   log_info("Selected Vulkan 1.4 packet renderer");
   return true_v;
@@ -727,6 +1061,8 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->render_graph_allocator = (VkrAllocator){0};
   renderer->metal_renderer = NULL;
   renderer->vulkan_renderer = NULL;
+  renderer->worker = NULL;
+  renderer->frame_result_ready = false_v;
   renderer->impl = selected_impl;
 
   // Initialize struct in-place
@@ -850,6 +1186,19 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
                                        out_error)) {
     goto initialize_failure;
   }
+
+  bool8_t render_thread = backend_config && backend_config->render_thread;
+  const char *render_thread_env = getenv("VKR_RENDER_THREAD");
+  if (render_thread_env && render_thread_env[0] != '\0') {
+    render_thread = strcmp(render_thread_env, "0") != 0;
+  }
+  if (render_thread && !vkr_renderer_worker_create(renderer)) {
+    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
+    log_error("Failed to start the render thread");
+    goto initialize_failure;
+  }
+  vkr_renderer_install_asset_publisher(renderer);
+  log_info("Rendering %s", renderer->worker ? "on a render thread" : "inline");
   return true_v;
 
 initialize_failure:
@@ -863,6 +1212,7 @@ initialize_failure:
 
 void vkr_renderer_destroy(VkrRenderer *renderer) {
   vkr_renderer_wait_idle(renderer);
+  vkr_renderer_worker_destroy(renderer);
   vkr_renderer_backend_destroy(renderer);
   if (renderer->render_graph_allocator.ctx)
     vkr_dmemory_allocator_destroy(&renderer->render_graph_allocator);
@@ -1718,6 +2068,7 @@ String8 vkr_renderer_get_error_string(VkrRendererError error) {
 void vkr_renderer_get_device_information(
     VkrRenderer *renderer, VkrDeviceInformation *device_information,
     Arena *temp_arena) {
+  vkr_renderer_join_render_thread(renderer);
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(device_information != NULL, "Device information is NULL");
   assert_log(temp_arena != NULL, "Temp arena is NULL");
@@ -1726,10 +2077,12 @@ void vkr_renderer_get_device_information(
 }
 
 bool32_t vkr_renderer_is_frame_active(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   return renderer->frame_active;
 }
 
 VkrRendererError vkr_renderer_wait_idle(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   return vkr_renderer_backend_wait_idle(renderer);
 }
 
@@ -1737,6 +2090,7 @@ bool8_t
 vkr_renderer_gpu_submission_timing_poll(VkrRenderer *renderer,
                                         uint64_t after_submit_serial,
                                         VkrGpuSubmissionTiming *out_timing) {
+  vkr_renderer_join_render_thread(renderer);
   if (!renderer || !out_timing)
     return false_v;
   VkrRendererImplSubmitResult result = {0};
@@ -1755,19 +2109,23 @@ vkr_renderer_gpu_submission_timing_poll(VkrRenderer *renderer,
 }
 
 uint64_t vkr_renderer_get_submit_serial(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   return vkr_renderer_backend_submit_serial(renderer);
 }
 
 uint64_t vkr_renderer_get_completed_submit_serial(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   return vkr_renderer_backend_completed_submit_serial(renderer);
 }
 
 float32_t vkr_renderer_get_display_exposure(const VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   return renderer->display_exposure;
 }
 
 bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
     VkrRenderer *renderer, VkrRendererUploadWaitStats *out_stats) {
+  vkr_renderer_join_render_thread(renderer);
   out_stats->fence_wait_count = 0;
   out_stats->queue_wait_idle_count = 0;
   out_stats->device_wait_idle_count = 0;
@@ -1778,12 +2136,14 @@ bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
 bool8_t
 vkr_renderer_get_and_reset_command_slot_wait_count(VkrRenderer *renderer,
                                                    uint64_t *out_wait_count) {
+  vkr_renderer_join_render_thread(renderer);
   *out_wait_count = 0;
   return vkr_renderer_backend_command_slot_waits(renderer, out_wait_count);
 }
 
 bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,
                                              VkrDeviceMemoryStats *out_stats) {
+  vkr_renderer_join_render_thread(renderer);
   MemZero(out_stats, sizeof(*out_stats));
   return vkr_renderer_backend_device_memory_stats(renderer, out_stats);
 }
@@ -1791,6 +2151,7 @@ bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,
 void vkr_renderer_present_target_extent(VkrRenderer *renderer,
                                         uint32_t *out_width,
                                         uint32_t *out_height) {
+  vkr_renderer_join_render_thread(renderer);
   if (out_width) {
     *out_width = renderer->last_window_width;
   }
@@ -1802,6 +2163,7 @@ void vkr_renderer_present_target_extent(VkrRenderer *renderer,
 VkrTextureFormat
 vkr_renderer_present_target_format(VkrRenderer *renderer,
                                    VkrPresentTargetAttachment attachment) {
+  vkr_renderer_join_render_thread(renderer);
   return attachment == VKR_PRESENT_TARGET_ATTACHMENT_COLOR
              ? renderer->impl.caps.present_color_format
              : renderer->impl.caps.present_depth_format;
@@ -1811,6 +2173,7 @@ VkrRendererError vkr_renderer_present_target_recreate(VkrRenderer *renderer,
                                                       uint32_t width,
                                                       uint32_t height,
                                                       uint32_t image_count) {
+  vkr_renderer_join_render_thread(renderer);
   assert_log(renderer != NULL, "Renderer is NULL");
   if (renderer->frame_active) {
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
@@ -1847,6 +2210,7 @@ VkrRendererError vkr_renderer_present_target_recreate(VkrRenderer *renderer,
 }
 
 VkrTextureFormat vkr_renderer_get_shadow_depth_format(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   return renderer->impl.caps.shadow_depth_format;
 }
 
@@ -2045,6 +2409,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
 VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
                                           const VkrFrameConfig *config,
                                           VkrFrame *out_frame) {
+  vkr_renderer_join_render_thread(renderer);
   if (!renderer || !out_frame || !config || config->shadow_map_size == 0u ||
       config->shadow_cascade_count == 0u ||
       config->shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX ||
@@ -2362,40 +2727,112 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
 #endif
 }
 
-VkrRendererError
-vkr_renderer_render_frame(VkrFrame *frame, const VkrFrameInput *packet,
-                          VkrRendererFrameMetrics *out_metrics,
-                          VkrValidationError *out_validation_error) {
-  if (!frame || !frame->renderer || !frame->renderer->frame_active ||
-      frame->number != frame->renderer->frame_number)
-    return vkr_renderer_validation_fail(
-        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER, "frame",
-        "must identify the current acquired frame");
-  VkrRenderer *renderer = frame->renderer;
+/* The frame's work on whichever thread renders it: validate, then render or
+   cancel the acquisition. */
+vkr_internal void
+vkr_renderer_render_submitted(VkrRenderer *renderer, VkrFrame *frame,
+                              const VkrFrameInput *packet,
+                              VkrRendererFrameResult *result) {
+  const float64_t start = vkr_platform_get_absolute_time();
+  *result = (VkrRendererFrameResult){0};
   VkrRendererError error =
-      vkr_frame_input_validate(packet, out_validation_error);
+      vkr_frame_input_validate(packet, &result->validation);
   if (error == VKR_RENDERER_ERROR_NONE &&
       (packet->frame.window_width != frame->window_width ||
        packet->frame.window_height != frame->window_height))
     error = vkr_renderer_validation_fail(
-        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        &result->validation, VKR_RENDERER_ERROR_INVALID_PARAMETER,
         "frame_input.frame", "target extent must match the acquired frame");
   if (error != VKR_RENDERER_ERROR_NONE) {
-    const VkrRendererError cancel_error = vkr_renderer_cancel_frame(frame);
+    const VkrRendererError cancel_error =
+        vkr_renderer_backend_cancel_frame(renderer);
     if (cancel_error != VKR_RENDERER_ERROR_NONE)
-      return vkr_renderer_validation_fail(
-          out_validation_error, cancel_error, "frame",
+      error = vkr_renderer_validation_fail(
+          &result->validation, cancel_error, "frame",
           "failed to cancel the acquired frame after input rejection");
-    return error;
+  } else {
+    error = vkr_renderer_backend_render_frame(
+        renderer, packet, &result->metrics, &result->validation);
   }
-  error = vkr_renderer_backend_render_frame(renderer, packet, out_metrics,
-                                            out_validation_error);
+  result->error = error;
+  result->render_ns =
+      (uint64_t)((vkr_platform_get_absolute_time() - start) * 1e9);
+}
+
+VkrRendererError vkr_renderer_submit_frame(VkrFrame *frame,
+                                           const VkrFrameInput *packet,
+                                           VkrValidationError *out_validation) {
+  VkrRenderer *renderer = frame ? frame->renderer : NULL;
+  vkr_renderer_join_render_thread(renderer);
+  if (!renderer || !renderer->frame_active ||
+      frame->number != renderer->frame_number) {
+    return vkr_renderer_validation_fail(
+        out_validation, VKR_RENDERER_ERROR_INVALID_PARAMETER, "frame",
+        "must identify the current acquired frame");
+  }
+  /* A result nobody collected belongs to an older frame; this one replaces
+     it. */
+  renderer->frame_result_ready = true_v;
+  VkrRendererWorker *worker = renderer->worker;
+  if (!worker) {
+    vkr_renderer_render_submitted(renderer, frame, packet,
+                                  &renderer->frame_result);
+    frame->renderer = NULL;
+    return VKR_RENDERER_ERROR_NONE;
+  }
+  vkr_mutex_lock(worker->mutex);
+  worker->frame = *frame;
+  worker->input = packet;
+  vkr_atomic_uint32_store(&worker->state, VKR_RENDERER_WORKER_BUSY,
+                          VKR_MEMORY_ORDER_RELEASE);
+  vkr_cond_broadcast(worker->cond);
+  vkr_mutex_unlock(worker->mutex);
   frame->renderer = NULL;
-  return error;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+bool8_t vkr_renderer_complete_frame(VkrRenderer *renderer,
+                                    VkrRendererFrameResult *out_result) {
+  vkr_renderer_join_render_thread(renderer);
+  if (!renderer || !renderer->frame_result_ready) {
+    return false_v;
+  }
+  renderer->frame_result_ready = false_v;
+  if (out_result) {
+    *out_result = renderer->frame_result;
+  }
+  return true_v;
+}
+
+bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer) {
+  return renderer && renderer->worker;
+}
+
+VkrRendererError
+vkr_renderer_render_frame(VkrFrame *frame, const VkrFrameInput *packet,
+                          VkrRendererFrameMetrics *out_metrics,
+                          VkrValidationError *out_validation_error) {
+  VkrRenderer *renderer = frame ? frame->renderer : NULL;
+  const VkrRendererError submit_error =
+      vkr_renderer_submit_frame(frame, packet, out_validation_error);
+  if (submit_error != VKR_RENDERER_ERROR_NONE) {
+    return submit_error;
+  }
+  VkrRendererFrameResult result = {0};
+  vkr_renderer_complete_frame(renderer, &result);
+  if (result.error == VKR_RENDERER_ERROR_NONE) {
+    if (out_metrics) {
+      *out_metrics = result.metrics;
+    }
+  } else if (out_validation_error) {
+    *out_validation_error = result.validation;
+  }
+  return result.error;
 }
 
 void vkr_renderer_resize(VkrRenderer *renderer, uint32_t width,
                          uint32_t height) {
+  vkr_renderer_join_render_thread(renderer);
   assert_log(renderer != NULL, "Renderer is NULL");
 
   VkrRenderer *rf = (VkrRenderer *)renderer;
@@ -2470,6 +2907,7 @@ VkrRendererError vkr_renderer_set_scene_output_extent(VkrRenderer *renderer,
                                                       uint32_t width,
                                                       uint32_t height,
                                                       bool8_t memory_relief) {
+  vkr_renderer_join_render_thread(renderer);
 #if defined(PLATFORM_APPLE)
   if (renderer && renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL &&
       memory_relief)
@@ -2483,6 +2921,7 @@ VkrRendererError vkr_renderer_set_scene_output_extent(VkrRenderer *renderer,
 
 VkrRendererError
 vkr_renderer_restore_scene_output_extent(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   if (!renderer)
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   if (!renderer->scene_output_extent_overridden)
@@ -2493,9 +2932,16 @@ vkr_renderer_restore_scene_output_extent(VkrRenderer *renderer) {
 }
 
 void vkr_renderer_invalidate_temporal_history(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   assert_log(renderer != NULL, "Renderer is NULL");
   ((VkrRenderer *)renderer)->temporal_reset_reasons |=
       VKR_TEMPORAL_RESET_EXPLICIT;
+}
+
+void vkr_renderer_set_temporal_enabled(VkrRenderer *renderer, bool8_t enabled) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  vkr_renderer_join_render_thread(renderer);
+  renderer->temporal_enabled = enabled;
 }
 
 void vkr_renderer_render_scale_range(const VkrRenderer *renderer,
@@ -2506,6 +2952,7 @@ void vkr_renderer_render_scale_range(const VkrRenderer *renderer,
 
 VkrRendererError vkr_renderer_set_present_mode(VkrRenderer *renderer,
                                                VkrPresentMode mode) {
+  vkr_renderer_join_render_thread(renderer);
   if (!renderer ||
       (mode != VKR_PRESENT_MODE_FIFO && mode != VKR_PRESENT_MODE_IMMEDIATE))
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -2532,6 +2979,7 @@ vkr_renderer_dynamic_resolution_switchable(const VkrRenderer *renderer) {
 VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
                                                float32_t render_scale,
                                                bool8_t dynamic_resolution) {
+  vkr_renderer_join_render_thread(renderer);
   if (!renderer || !isfinite(render_scale) ||
       render_scale < renderer->render_scale_min - 1e-4f ||
       render_scale > renderer->render_scale_max + 1e-4f)
@@ -2575,6 +3023,7 @@ VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
 }
 
 void vkr_renderer_invalidate_exposure_history(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   assert_log(renderer != NULL, "Renderer is NULL");
   ((VkrRenderer *)renderer)->exposure_reset_reasons |=
       VKR_TEMPORAL_RESET_EXPLICIT;
@@ -2601,6 +3050,7 @@ vkr_renderer_backend_cancel_frame(VkrRenderer *renderer) {
 }
 
 VkrRendererError vkr_renderer_cancel_frame(VkrFrame *frame) {
+  vkr_renderer_join_render_thread(frame ? frame->renderer : NULL);
   if (!frame || !frame->renderer || !frame->renderer->frame_active ||
       frame->number != frame->renderer->frame_number)
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -2617,6 +3067,7 @@ VkrRendererError vkr_renderer_cancel_frame(VkrFrame *frame) {
 VkrRendererError
 vkr_renderer_get_pixel_readback_result(VkrRenderer *renderer,
                                        VkrPixelReadbackResult *out_result) {
+  vkr_renderer_join_render_thread(renderer);
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(out_result != NULL, "Output result is NULL");
 

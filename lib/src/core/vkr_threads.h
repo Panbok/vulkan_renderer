@@ -60,6 +60,16 @@ bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
                            VkrThreadFunc func, void *arg);
 
 /**
+ * @brief Creates a new thread whose stack reserves at least `stack_bytes`.
+ * Zero selects the platform default, which is far smaller than a main thread's
+ * (512 KiB on macOS). Pages still commit on demand.
+ * @return true_v on success, false_v on failure.
+ */
+bool32_t vkr_thread_create_with_stack(VkrAllocator *allocator,
+                                      VkrThread *thread, VkrThreadFunc func,
+                                      void *arg, uint64_t stack_bytes);
+
+/**
  * @brief Detaches a thread so resources are reclaimed automatically on exit.
  * @param thread VkrThread to detach.
  * @return true_v on success, false_v on failure.

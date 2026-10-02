@@ -49,6 +49,12 @@ vkr_internal DWORD WINAPI thread_wrapper(LPVOID param) {
 
 bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
                            VkrThreadFunc func, void *arg) {
+  return vkr_thread_create_with_stack(allocator, thread, func, arg, 0u);
+}
+
+bool32_t vkr_thread_create_with_stack(VkrAllocator *allocator,
+                                      VkrThread *thread, VkrThreadFunc func,
+                                      void *arg, uint64_t stack_bytes) {
   if (allocator == NULL || thread == NULL || func == NULL) {
     return false_v;
   }
@@ -71,7 +77,10 @@ bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
   vkr_atomic_bool_store(&(*thread)->active, true_v, VKR_MEMORY_ORDER_RELAXED);
   (*thread)->id = 0;
 
-  (*thread)->handle = CreateThread(NULL, 0, thread_wrapper, *thread, 0, NULL);
+  /* A nonzero size reserves the stack rather than committing it. */
+  (*thread)->handle =
+      CreateThread(NULL, (SIZE_T)stack_bytes, thread_wrapper, *thread,
+                   stack_bytes ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0u, NULL);
   if ((*thread)->handle == NULL) {
     vkr_allocator_free(allocator, *thread, sizeof(struct s_VkrThread),
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);

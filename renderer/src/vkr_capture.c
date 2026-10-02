@@ -241,6 +241,7 @@ vkr_renderer_capture_request_contains(const VkrCaptureBatchRequest *request,
 VkrCaptureStatus vkr_renderer_capture_poll(VkrRenderer *renderer,
                                            VkrCaptureRequestId request_id,
                                            VkrCapturePollResult *out_result) {
+  vkr_renderer_join_render_thread(renderer);
   if (!renderer) {
     if (out_result) {
       MemZero(out_result, sizeof(*out_result));
@@ -253,6 +254,7 @@ VkrCaptureStatus vkr_renderer_capture_poll(VkrRenderer *renderer,
 
 bool8_t vkr_renderer_capture_release(VkrRenderer *renderer,
                                      VkrCaptureRequestId request_id) {
+  vkr_renderer_join_render_thread(renderer);
   if (renderer) {
     return vkr_renderer_backend_capture_release(renderer, request_id);
   }

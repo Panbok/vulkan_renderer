@@ -1938,6 +1938,7 @@ void vkr_renderer_metrics_collect(
   VkrMetrics *metrics = renderer_metrics->metrics;
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
   VkrRenderer *renderer = (VkrRenderer *)context->renderer;
+  vkr_renderer_join_render_thread(renderer);
   const VkrWorldBatchMetrics *world = &context->frame_metrics->world;
   const VkrShadowMetrics *shadow = &context->frame_metrics->shadow;
   const VkrVisibilityStats *visibility = context->visibility;

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-03
 authority: context
 ---
 # Project vocabulary
@@ -23,6 +23,8 @@ below are starting points for checking a definition, not alternate API specs.
 | Bindless | GPU-addressed buffers and indexed texture/sampler tables, replacing per-draw descriptor binding. It does not mean unlimited resources. | [ADR-025](adr/025-selected-renderer-implementation-strategy.md), [ADR-023](adr/023-vulkan-1-4-bindless-capability-profile.md) |
 | Frame slot | Bounded in-flight storage and command resources whose reuse requires GPU completion. | [Vulkan frame slots](../renderer/src/vulkan/vkr_vulkan_internal.h), [Metal command slots](../renderer/src/metal/vkr_metal_packet_renderer.m) |
 | Submit serial | Monotonic identity used to associate completion, timing, and retirement with submitted work. CPU frame identity is recorded separately. | [vkr_renderer_impl.h](../renderer/src/vkr_renderer_impl.h) |
+| Frame-loop thread | The thread running the application host loop (the main thread): update, extraction, acquisition, asset publication and frame completion. Older documents call it the render thread. | [vkr_application_host.c](../runtime/src/application/vkr_application_host.c) |
+| Render thread | Optional renderer-owned worker that renders a submitted frame while the frame-loop thread updates the next; every other renderer call waits for it. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
 | Present target | Window/swapchain or ordinary-image offscreen output, with explicit extent and attachment properties. | [vkr_renderer.h](../renderer/src/vkr_renderer.h) |
 
 ## Graph and lifetime

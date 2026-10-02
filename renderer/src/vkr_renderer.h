@@ -977,6 +977,9 @@ typedef struct VkrRendererBackendConfig {
   bool8_t gpu_assisted_validation;
   uint32_t capture_ring_capacity;
   uint64_t capture_max_batch_bytes;
+  /** Renders submitted frames on a renderer-owned thread; see
+   * vkr_renderer_submit_frame. VKR_RENDER_THREAD=0 or 1 overrides it. */
+  bool8_t render_thread;
 } VkrRendererBackendConfig;
 
 typedef enum VkrPresentTargetAttachment {
@@ -1223,11 +1226,35 @@ VkrRendererError vkr_renderer_cancel_frame(VkrFrame *frame);
 /** Validate and prepare input, record native commands, submit and present.
  * Consumes a valid acquired frame on success or failure. Input arrays are
  * borrowed until return; referenced GPU resources remain retained through
- * completion. */
+ * completion. Equivalent to vkr_renderer_submit_frame followed by
+ * vkr_renderer_complete_frame. */
 VkrRendererError
 vkr_renderer_render_frame(VkrFrame *frame, const VkrFrameInput *input,
                           VkrRendererFrameMetrics *out_metrics,
                           VkrValidationError *out_validation_error);
+
+typedef struct VkrRendererFrameResult VkrRendererFrameResult;
+
+/**
+ * Starts the work of vkr_renderer_render_frame and consumes the acquired
+ * frame. Returns an error, and produces no result, only when `frame` does not
+ * identify the current acquisition.
+ *
+ * With a render thread the work continues after return: `input` and every
+ * array it references stay borrowed and unmodified until
+ * vkr_renderer_complete_frame collects the result. Every other renderer call,
+ * including the asset publisher's, first waits for that work. Without a render
+ * thread the frame renders before return.
+ */
+VkrRendererError vkr_renderer_submit_frame(VkrFrame *frame,
+                                           const VkrFrameInput *input,
+                                           VkrValidationError *out_validation);
+/** Waits for the submitted frame and moves its result out. Returns false when
+ * no submitted frame awaits collection. */
+bool8_t vkr_renderer_complete_frame(VkrRenderer *renderer,
+                                    VkrRendererFrameResult *out_result);
+/** True when submitted frames render on the renderer's own thread. */
+bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer);
 
 uint32_t vkr_renderer_capture_channel_count(void);
 const VkrCaptureChannelDescription *
@@ -1260,6 +1287,8 @@ VkrRendererError
 vkr_renderer_restore_scene_output_extent(VkrRenderer *renderer);
 /** Invalidates temporal accumulation before the next submitted frame. */
 void vkr_renderer_invalidate_temporal_history(VkrRenderer *renderer);
+/** Enables temporal reconstruction for the following frames. */
+void vkr_renderer_set_temporal_enabled(VkrRenderer *renderer, bool8_t enabled);
 /** Scene render scales accepted between frames without recreating the device
  * or upscaler. A backend whose upscaler fixes its scale reports min == max. */
 void vkr_renderer_render_scale_range(const VkrRenderer *renderer,

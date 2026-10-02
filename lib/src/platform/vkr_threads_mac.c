@@ -3,6 +3,8 @@
 #include "platform/vkr_platform.h"
 
 #if defined(PLATFORM_APPLE)
+#include <unistd.h>
+
 struct s_VkrThread {
   pthread_t handle;
   VkrThreadFunc func;
@@ -45,6 +47,12 @@ vkr_internal void *vkr_thread_entry(void *param) {
 
 bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
                            VkrThreadFunc func, void *arg) {
+  return vkr_thread_create_with_stack(allocator, thread, func, arg, 0u);
+}
+
+bool32_t vkr_thread_create_with_stack(VkrAllocator *allocator,
+                                      VkrThread *thread, VkrThreadFunc func,
+                                      void *arg, uint64_t stack_bytes) {
   if (allocator == NULL || thread == NULL || func == NULL) {
     return false_v;
   }
@@ -65,8 +73,20 @@ bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
   vkr_atomic_bool_store(&(*thread)->active, true_v, VKR_MEMORY_ORDER_RELAXED);
   (*thread)->id = 0;
 
-  int32_t result =
-      pthread_create(&(*thread)->handle, NULL, vkr_thread_entry, *thread);
+  pthread_attr_t attributes;
+  int32_t result = pthread_attr_init(&attributes);
+  if (result == 0 && stack_bytes > 0u) {
+    /* The stack size must be a whole number of pages. */
+    const uint64_t page_bytes = (uint64_t)sysconf(_SC_PAGESIZE);
+    const uint64_t rounded =
+        (stack_bytes + page_bytes - 1u) / page_bytes * page_bytes;
+    result = pthread_attr_setstacksize(&attributes, (size_t)rounded);
+  }
+  if (result == 0) {
+    result = pthread_create(&(*thread)->handle, &attributes, vkr_thread_entry,
+                            *thread);
+  }
+  pthread_attr_destroy(&attributes);
   if (result != 0) {
     vkr_allocator_free(allocator, *thread, sizeof(struct s_VkrThread),
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);

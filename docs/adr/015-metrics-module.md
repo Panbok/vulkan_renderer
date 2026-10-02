@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-015: Bounded typed metrics and pinned snapshots
@@ -27,7 +27,10 @@ rejects duplicates, invalid descriptors, and exhaustion. Required fixed
 registration failures propagate through initialization; optional device rows
 stop at available capacity and log the omitted coverage.
 
-Render-thread writers update frame-local values. Concurrent writers update
+Render-thread writers update frame-local values. The render-thread writer is
+the frame-loop thread that runs the host loop, not ADR-082's render thread, which
+records nothing; its results reach these slots through renderer metrics
+collection at frame completion. Concurrent writers update
 cumulative atomics; finalization derives interval deltas, so workers never
 retain a reusable frame buffer. Concurrent durations provide interval sum/count,
 without claiming interval extrema derived from cumulative extrema.

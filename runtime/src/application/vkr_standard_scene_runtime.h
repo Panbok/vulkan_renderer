@@ -115,6 +115,9 @@ typedef struct VkrStandardSceneRuntimeConfig {
   /** Boot intent only: `profile`, `requested_mask`, and `excluded_mask` are
       read and the closure is recomputed. Zero-initialized means full boot. */
   VkrSubsystemPlan subsystem_plan;
+  /** Render submitted frames on the renderer's thread while the next frame
+      updates. VKR_RENDER_THREAD=0 or 1 overrides it. */
+  bool8_t render_thread;
 } VkrStandardSceneRuntimeConfig;
 
 typedef struct VkrStandardSceneRuntimeMetricIds {
@@ -133,9 +136,14 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   // than in the renderer catalog.
   VkrMetricId shadow_update;
   VkrMetricId world_payload_build;
+  // Time the update thread waits for the render thread to finish the
+  // previous frame; zero when rendering inline.
+  VkrMetricId render_wait;
 } VkrStandardSceneRuntimeMetricIds;
 
 struct VkrStandardSceneRuntime;
+/* Packet storage of one frame; private to the runtime. */
+typedef struct VkrStandardSceneRuntimeFrame VkrStandardSceneRuntimeFrame;
 
 typedef struct VkrStandardSceneRuntimeCallbacks {
   void *state;
@@ -173,8 +181,19 @@ typedef struct VkrStandardSceneRuntime {
   uint64_t last_target_generation;
   uint64_t texture_memory_sample_frame;
   VkrRenderAssets assets;
-  Arena *frame_arena;
-  VkrAllocator frame_allocator;
+  /* Frame scratch. With a render thread, consecutive frames alternate between
+     the two arenas: the next frame's update never reuses storage that the
+     submitted packet still borrows. Inline rendering uses only the first. */
+  Arena *frame_arenas[2];
+  VkrAllocator frame_allocators[2];
+  /** The current frame's scratch, one of frame_allocators. */
+  VkrAllocator *frame_allocator;
+  /* Packet storage of the frame being built or rendered. */
+  VkrStandardSceneRuntimeFrame *frame;
+  /* The last completed frame's renderer metrics. */
+  VkrRendererFrameMetrics frame_metrics;
+  /* Submit serial observed when the last frame completed. */
+  uint64_t completed_frame_submit_serial;
   VkrGizmoSystem gizmo_system;
   VkrLightingSystem lighting_system;
   VkrShadowSystem shadow_system;

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-047: Event callback payload lifetime and coalesced resize handoff
@@ -12,7 +12,7 @@ Accepted.
 ## Context
 
 Events may carry variable payloads through a bounded ring buffer, while window
-events arrive off the render thread. Callbacks need stable bytes without holding
+events arrive off the frame-loop thread that runs the host loop. Callbacks need stable bytes without holding
 the shared ring allocation for their full execution, and resize must not mutate
 renderer state from the event worker.
 
@@ -26,7 +26,7 @@ that retains data makes its own copy.
 
 `EventManager` owns the queued ring block; the event worker owns the local-arena
 copy; each callback owns any retained copy it creates. `Application` owns the
-resize subscription and mailbox. Its render thread consumes the mailbox and
+resize subscription and mailbox. Its frame-loop thread consumes the mailbox and
 performs the resulting renderer mutation.
 
 Subscription returns false when its callback list cannot grow, preserving
@@ -49,7 +49,7 @@ invalidate retained shadow fitting before preparing scene data.
 
 The event mutex protects only event manager structures; callbacks synchronize
 their own shared state. The mailbox transfers one complete latest dimension pair
-but does not make renderer mutation thread-safe. The render thread is the sole
+but does not make renderer mutation thread-safe. The frame-loop thread is the sole
 owner of resize and render-target mutation.
 
 ## Alternatives considered
@@ -60,8 +60,10 @@ events with frame work and does not establish a renderer lifecycle boundary.
 
 ## Revisit when
 
-Resize must preserve every intermediate size rather than only the newest value,
-or renderer work moves to a separately owned render thread.
+Resize must preserve every intermediate size rather than only the newest value.
+ADR-082's render thread did not change this: the frame-loop thread still
+consumes the mailbox before acquisition, and `vkr_renderer_resize()` waits for
+the frame the render thread is rendering.
 
 ## Code evidence
 

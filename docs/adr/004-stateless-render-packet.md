@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -28,7 +28,9 @@ rendering does not replace them with retained subsystem output.
 `VkrPreparedFrame` is private rendering input. It combines the borrowed caller
 input with renderer-derived temporal, exposure, bloom and GTAO data. The public
 input no longer carries fields callers must zero so the renderer can overwrite
-them. CPU arrays remain caller-owned through `vkr_renderer_render_frame()`;
+them. CPU arrays remain caller-owned through `vkr_renderer_render_frame()`, or
+with a render thread until `vkr_renderer_complete_frame()` collects the frame
+([ADR-082](082-renderer-owned-render-thread.md));
 generation identities refer to resources with independent GPU last-use lifetimes.
 A frame input is not a standalone serialized command buffer.
 
@@ -62,7 +64,9 @@ not GPU completion.
 `vkr_renderer_render_frame(&frame, &input, ...)` validates the acquired context,
 input structure and matching target extent, then prepares derived data, realizes
 the graph, records native commands, submits and presents. This is a complete
-render operation, not a queue-submit primitive. Rendering or cancellation consumes
+render operation, not a queue-submit primitive. It is
+`vkr_renderer_submit_frame()` followed by `vkr_renderer_complete_frame()`, which
+lets a render thread do the work (ADR-082). Rendering or cancellation consumes
 the context. `vkr_renderer_cancel_frame(&frame)` resolves acquired resources and
 recorded-but-unsubmitted work when input construction fails or a frame is abandoned.
 Input rejection cancels the frame; cancellation errors take precedence over the

@@ -354,9 +354,10 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
      enable them under High's local-shadow budget. */
   application->shadow_system.config.local_shadow_contact =
       settings->contact_shadows;
-  application->renderer.temporal_enabled =
+  const bool8_t temporal =
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
       settings->anti_aliasing;
+  vkr_renderer_set_temporal_enabled(&application->renderer, temporal);
   application->host.config.target_frame_rate = settings->frame_limit;
 }
 
@@ -2025,7 +2026,7 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
   state->scene_load_start_time_seconds = 0.0;
 
   VkrAllocatorScope load_scope =
-      vkr_allocator_begin_scope(&application->frame_allocator);
+      vkr_allocator_begin_scope(application->frame_allocator);
   if (!vkr_allocator_scope_is_valid(&load_scope)) {
     log_error("Failed to create scene load scratch scope");
     return;
@@ -2033,7 +2034,7 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
 
   VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene_path,
-                                &application->frame_allocator,
+                                application->frame_allocator,
                                 &state->scene_resource, &load_err)) {
     String8 err_str = vkr_renderer_get_error_string(load_err);
     log_error("Failed to load scene '%s': %s", string8_cstr(&scene_path),
@@ -2829,13 +2830,12 @@ vkr_standard_scene_runtime_update_fps_text(VkrStandardSceneRuntime *application,
     VkrCamera *camera = vkr_camera_registry_get_by_handle(
         &application->camera_system, application->active_camera);
 
-    VkrAllocator *frame_alloc = &application->frame_allocator;
+    VkrAllocator *frame_alloc = application->frame_allocator;
 
     // Everything below describes one published frame. Seed from the live
     // structs so a metric the collector could not sample leaves the last known
     // value rather than a zero, then let the adapter overwrite what it has.
-    VkrRendererFrameMetrics metrics_snapshot =
-        application->renderer.frame_metrics;
+    VkrRendererFrameMetrics metrics_snapshot = application->frame_metrics;
     VkrVisibilityStats visibility_snapshot = application->visibility_stats;
     VkrRenderGraphResourceStats rg_stats = {0};
     bool8_t have_rg_stats = false_v;
@@ -3592,7 +3592,7 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
     const bool8_t context = state->context_pick;
     state->context_pick = false_v;
 
-    VkrAllocator *frame_alloc = &application->frame_allocator;
+    VkrAllocator *frame_alloc = application->frame_allocator;
     String8 picked_text = {0};
     VkrEntityId picked_entity = VKR_ENTITY_ID_INVALID;
     bool8_t picked_entity_valid = false_v;
@@ -4334,7 +4334,7 @@ vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
   }
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, document,
-                                &application->frame_allocator,
+                                application->frame_allocator,
                                 &state->world_resource, &error)) {
     (void)vkr_scene_loader_request_container(&application->assets, document,
                                              0u);
@@ -4539,7 +4539,7 @@ vkr_internal bool8_t sample_additive_add(VkrStandardSceneRuntime *application,
   }
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, stored,
-                                &application->frame_allocator,
+                                application->frame_allocator,
                                 &state->additive_resources[slot], &error)) {
     (void)vkr_scene_loader_request_container(&application->assets, stored, 0u);
     state->additive_paths[slot][0] = '\0';
@@ -5137,7 +5137,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   root.column_count = 1u;
   root.rows = &root_track;
   root.row_count = 1u;
-  if (!vkr_ui_begin(&application->ui_system, &application->frame_allocator,
+  if (!vkr_ui_begin(&application->ui_system, application->frame_allocator,
                     vkr_standard_scene_runtime_is_windowed(application)
                         ? &application->host.window
                         : NULL,

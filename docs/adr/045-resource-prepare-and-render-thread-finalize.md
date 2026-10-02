@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-045: Worker preparation and render-thread resource finalization
@@ -21,7 +21,10 @@ and lifetime rules.
 ready, failed, and canceled states. A loader may prepare a CPU-only payload on
 a worker. Only `vkr_resource_system_pump()` invokes its finalizer, after the
 application has acquired a frame and supplied explicit submission/completion
-state, so GPU publication and asset-system mutation stay on the render thread. The resource system owns a prepared payload until exactly one
+state, so GPU publication and asset-system mutation stay on the frame-loop
+thread that runs the host loop. Here "render thread" in the title means that
+thread; ADR-082's render thread never publishes, and every publication waits for
+the frame it is rendering. The resource system owns a prepared payload until exactly one
 release callback runs, including cancellation and failure paths. An executing
 callback pins its request slot, path and payload against cancellation release;
 the pump reacquires the request view after callbacks because worker dependency
@@ -40,7 +43,7 @@ reaching ready; consumers inspect request state and resolved handles.
 
 Workers may enqueue CPU-side dependency requests through the resource system;
 mesh preparation uses this path for materials. They do not publish GPU objects
-or mutate render-thread subsystem state.
+or mutate frame-loop subsystem state.
 Finalizers must estimate their work and safely handle cancellation.
 `VkrRenderAssets` owns loader contexts, pools, asynchronous allocators and the
 resource registry's lifecycle. The registry and loaders hold no renderer pointer.

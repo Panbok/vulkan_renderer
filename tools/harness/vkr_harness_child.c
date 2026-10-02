@@ -39,6 +39,7 @@ _Static_assert(VKR_GTAO_NOISE_SEQUENCE_LENGTH % VKR_TEMPORAL_SEQUENCE_LENGTH ==
 #if VKR_METRICS_ENABLED
 vkr_internal uint32_t
 vkr_harness_temporal_alignment(const VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
   _Static_assert(VKR_SSGI_SEQUENCE_LENGTH % VKR_GTAO_NOISE_SEQUENCE_LENGTH ==
                      0u,
                  "SSGI phase alignment must cover the GTAO sequence");
@@ -1039,7 +1040,7 @@ vkr_harness_child_build_ui(VkrStandardSceneRuntime *application,
   root.rows = rows;
   root.row_count = ArrayCount(rows);
   root.style.padding_pt = (VkrUiEdges){32.0f, 32.0f, 32.0f, 32.0f};
-  if (!vkr_ui_begin(&application->ui_system, &application->frame_allocator,
+  if (!vkr_ui_begin(&application->ui_system, application->frame_allocator,
                     vkr_standard_scene_runtime_is_windowed(application)
                         ? &application->host.window
                         : NULL,
@@ -1564,7 +1565,8 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   application->transmission_depth_diagnostic_enabled =
       case_manifest->renderer.transmission_depth_diagnostic_enabled;
   application->ibl_probe_limit = case_manifest->renderer.ibl_probe_limit;
-  application->renderer.temporal_enabled = case_manifest->renderer.taa_enabled;
+  vkr_renderer_set_temporal_enabled(&application->renderer,
+                                    case_manifest->renderer.taa_enabled);
   application->globals.exposure_mode =
       string_equals(case_manifest->renderer.exposure_mode, "automatic")
           ? VKR_EXPOSURE_MODE_AUTOMATIC
@@ -2155,7 +2157,7 @@ vkr_harness_child_run_scene(VkrStandardSceneRuntime *application,
                             VkrHarnessChildContext *child, String8 scene) {
   VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene,
-                                &application->frame_allocator,
+                                application->frame_allocator,
                                 &child->scene_resource, &load_error)) {
     child->failed = true_v;
     string_format(child->failure, sizeof(child->failure),

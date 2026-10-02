@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-02
+updated: 2026-10-03
 authority: architecture
 ---
 
@@ -149,7 +149,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 |---|---|---|
 | Application host | Window, input, event dispatch, timing, shutdown and caller-state callbacks | `runtime/src/application/vkr_application_host.h` |
 | Standard scene runtime | Scene, camera, lighting, shadows, UI, picking, resize events, frame scratch and input construction | `runtime/src/application/vkr_standard_scene_runtime.h`, `runtime/src/renderer/systems/vkr_scene_frame.c` |
-| Renderer | Acquired-frame lifecycle, targets, derived frame data and native operation selection | `renderer/src/vkr_renderer.c`, `renderer/src/vkr_native_surface.h` |
+| Renderer | Acquired-frame lifecycle, targets, derived frame data, native operation selection and the optional render thread | `renderer/src/vkr_renderer.c`, `renderer/src/vkr_native_surface.h` |
 | Selected implementation | Native resources/pipelines, graph realization, record/submit/cancel, targets | `renderer/src/metal/`, `vulkan/` |
 | Shared graph | JSON realization, dependency order, culling, subresource barriers | `renderer/src/vkr_rg_json.c`, `vkr_rg_compile.c` |
 | GPU lifetime cores | Ranges, submit values, generation slots, ABI, capture requests | `renderer/src/vkr_gpu_*`, `vkr_capture_ring.*` |
@@ -388,13 +388,24 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
    then extracts scene, UI and text draws and assembles
    `VkrFrameInput` with borrowed arrays in scratch. Text edits happen through
    their owner before rendering.
-3. `vkr_renderer_render_frame(&frame, &input, ...)` validates input and target
+3. `vkr_renderer_submit_frame(&frame, &input, ...)` validates input and target
    extent, derives private frame data, realizes the graph and prepares every
    enabled pass before recording native work, submitting, capturing and presenting.
+   With a render thread that work continues on the renderer's worker;
+   `vkr_renderer_complete_frame()` waits for it and returns the frame's result.
+   `vkr_renderer_render_frame()` does both.
 4. Rendering consumes the acquired `VkrFrame`. Input-construction failure uses
    `vkr_renderer_cancel_frame(&frame)` to release acquired resources and
    recorded-but-unsubmitted work. Input rejection also cancels.
 5. Completed submission results feed timing, readback, retirement and history.
+
+The frame-loop thread runs the host loop and every step above except the work
+in step 3. The optional render thread (off by default,
+`VKR_RENDER_THREAD=1`) renders frame N while the frame-loop thread runs frame
+N+1's update; the runtime completes frame N after that update and before
+camera, lighting, shadow, asset and extraction work. Every other renderer call
+and asset publication waits for the frame being rendered. See
+[ADR-082](adr/082-renderer-owned-render-thread.md).
 
 `VkrFrame` identifies one acquisition and supplies resolved target facts. It must
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
@@ -408,7 +419,9 @@ Private `VkrPreparedFrame` holds derived temporal, exposure, bloom, GTAO, SSR,
 sky, analytic-fog and froxel-fog values alongside the borrowed input; those derived
 fields and text mutations are absent from the public frame input.
 
-Arrays remain caller-owned until rendering returns. Retained assets use generation
+Arrays remain caller-owned until the frame completes; the runtime keeps them in
+frame storage and, with a render thread, copies update-mutable skinning, world
+text and capture data into frame scratch. Retained assets use generation
 identities and completion-protected storage. Acquisition precedes input validation;
 rejection or recording failure must resolve acquired native resources. Residency,
 retained graph contents and histories commit only after successful submission.
@@ -572,8 +585,8 @@ before command emission; picking and blend roots remain disjoint. Prepared
 draw/dispatch recorders return `void`. Native object/encoder creation, command-buffer
 begin/end, acquisition, submission and completion retain their failure boundaries. See [ADR-004](adr/004-stateless-render-packet.md).
 
-Workers perform CPU-only resource preparation. Render-thread finalization owns
-GPU publication; its upload budgets allow an oversized first upload to progress.
+Workers perform CPU-only resource preparation. Finalization on the frame-loop
+thread owns GPU publication; its upload budgets allow an oversized first upload to progress.
 Required dependency/publication failure prevents scene activation.
 Materials initially publish semantic defaults and request textures incrementally;
 ready textures replace material rows. `vkr_material_system_replace` swaps a live
