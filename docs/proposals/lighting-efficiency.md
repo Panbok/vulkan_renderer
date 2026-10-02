@@ -113,6 +113,20 @@ Measured the same way afterwards, each against a matched base build:
 - A D16 atlas in the graph alone was rejected by the local-shadow cache (five
   lights shadowed, faces redrawn every frame); it needs host support, and the
   mask's texture-sample limiter of 13% suggests little bandwidth to save.
+- Temporal reuse of `Shadow.LocalMask` slots was prototyped on Metal for a
+  static camera: each light reuses its previous slot when the tag matches,
+  and a rotating quarter of 8x8 tiles recomputes each frame (per-pixel 2x2
+  rotation made the mask slower through SIMD divergence). Without TAA the mask
+  fell from 4.63 to 2.09 ms; with TAA only from 3.23 to 2.50 ms. Marking
+  mismatched slots black left the TAA image unchanged, so the history is
+  sound; the cost is the per-light history read. With reads removed the TAA
+  mask would take 1.52 ms, but reading from a separate read-only history
+  image (2.55 ms) or reading all eight slots before the light loop (2.96 ms)
+  did not lower it, and copying the history added 0.35 ms. A production
+  version would add reprojection, depth validation and per-light stability
+  flags on both backends for an estimated 0.4 to 0.6 ms under TAA, so it was
+  not built. The prototype is a starting point if TAA-off rendering or a
+  cheaper history read changes that balance.
 
 ## Proposed change
 
