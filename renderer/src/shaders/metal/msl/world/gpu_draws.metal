@@ -1355,6 +1355,18 @@ static float vkr_metal_packet_local_contact_shadow(
 // Under temporal reconstruction, fully filtered lights take rotated temporal
 // taps. A short contact-shadow march multiplies the filtered visibility of
 // each light that takes the full filter.
+//
+// The mask and base deferred-lighting kernels are latency-bound at low
+// occupancy: unhinted, the compiler gives them 576 and 384 threads per
+// threadgroup and the M1 Pro runs them near 20% compute occupancy with no
+// limiter above 40%. These hints make it allocate fewer registers. In the
+// Bistro street view they lowered the mask from 6.48 to 5.74 ms and lighting
+// from 4.14 to 3.74 ms; larger hints spilled and ran slower. Both passes
+// dispatch 8x8 threadgroups.
+#define VKR_METAL_LOCAL_SHADOW_MASK_MAX_THREADS 768
+#define VKR_METAL_DEFERRED_LIGHTING_MAX_THREADS 512
+
+[[max_total_threads_per_threadgroup(VKR_METAL_LOCAL_SHADOW_MASK_MAX_THREADS)]]
 kernel void vkr_metal_packet_local_shadow_mask(
     constant VkrMetalPacketLocalShadowMaskRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]]) {
@@ -1741,6 +1753,7 @@ static void vkr_metal_packet_deferred_shade(
   root.hdr.write(float4(color, 1.0), pixel);
 }
 
+[[max_total_threads_per_threadgroup(VKR_METAL_DEFERRED_LIGHTING_MAX_THREADS)]]
 kernel void vkr_metal_packet_deferred_lighting(
     constant VkrMetalPacketDeferredLightingRoot &root [[buffer(0)]],
     uint2 pixel [[thread_position_in_grid]],

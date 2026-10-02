@@ -305,8 +305,28 @@ toward the full-filter light with the largest shadowed contribution, saved
 Replacing each step's world reconstruction with the ratio of view depths along
 the sample's camera ray, one dot product instead of a 4x4 transform, left the
 mask at 6.44 ms and was not kept either. The cost follows the march's presence
-in the kernel rather than its arithmetic; a separate pass is the remaining
-option and needs a GPU counter trace to justify it. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
+in the kernel rather than its arithmetic.
+
+A Metal System Trace with GPU counters of the street view, with the mask in
+its own encoder, explained why: the mask ran at 18.5% compute occupancy with
+no limiter above 40% (ALU 40%, texture sampling 13%, last-level cache 13%), so
+it is latency-bound, and the compiler allowed it only 576 threads per
+threadgroup, 640 without the march. Base deferred lighting was allowed 384
+and ran at 20%. On Metal the two kernels therefore carry
+`max_total_threads_per_threadgroup` hints of 768 and 512
+([`gpu_draws.metal`](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal));
+sweeps from 640 to 1024 and from 448 to 640 found these optima, past which the
+compiler spills. In matched runs (Metal Release, `local-offscreen-gpu-single`)
+the mask fell from 6.47 to 5.74 ms and lighting from 4.12 to 3.74 ms in the
+street view without TAA, the GPU pass sum from 19.20 to 18.01 ms and the frame
+median from 20.9 to 19.5 ms; with TAA the pass sum fell from 17.02 to 16.17 ms
+and in `local_shadow_cache_bistro_metal_indoor_walk` from 11.52 to 10.99 ms.
+The hints change only code generation; under fast math the reordered sky
+evaluation moved cloud pixels by at most 20 of 255 (0.11% of the street view
+by more than 2), and every lit surface matched. With the hint the march still
+costs 1.1 ms (5.78 against 4.67 ms without it), which bounds what a separate
+contact pass could recover. Vulkan has no equivalent hint; its drivers choose
+occupancy. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
 experiment is not an occlusion mechanism. GTAO attenuates local indirect diffuse
 only and does not establish arbitrary wall or furniture occlusion.
 
