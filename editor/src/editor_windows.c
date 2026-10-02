@@ -26,6 +26,7 @@ static const char s_help_text[] =
     EDITOR_SHORTCUT("\xe2\x8c\x98P", "Ctrl+P") "\tCmd bar: commands and expressions\n"
     "Q  W  E  R\tSelect, move, rotate, scale tools\n"
     "F\tFrame the selection\n"
+    EDITOR_SHORTCUT("Fn+Right", "End") "\tSnap the selection by the Snapping settings\n"
     "Hold RMB\tFly the Scene camera (WASD)\n"
     "F3 / Tab\tToggle free camera; Esc releases\n"
     EDITOR_SHORTCUT("\xe2\x8c\x98S", "Ctrl+S") "\tSave scene edits\n"
@@ -1721,6 +1722,7 @@ typedef enum EditorContextAction {
   /* Separators, headings and rows that open a submenu. */
   CONTEXT_NONE = 0,
   CONTEXT_FRAME,
+  CONTEXT_SNAP,
   CONTEXT_VISIBILITY,
   CONTEXT_RENAME,
   CONTEXT_COPY_NAME,
@@ -1790,6 +1792,7 @@ void vkr_editor_context_open(VkrEditorUi *editor, VkrEditorContextKind kind,
   editor->context_sub_focused = false_v;
   editor->context_sub_cursor = -1;
   editor->context_sub_rect_px = (VkrUiRect){0};
+  editor->context_at_pixel = false_v;
   editor->menu = VKR_EDITOR_MENU_NONE;
 }
 
@@ -2077,6 +2080,14 @@ static uint32_t editor_context_entity_items(VkrEditorUi *editor,
   context_push(items, &count,
                (EditorContextItem){"Frame", VKR_UI_ICON_FRAME, "F", false_v,
                                    CONTEXT_FRAME});
+  /* Snapping rests the object under the Scene's Snapping settings. */
+  static const char *const snap_labels[VKR_EDITOR_SNAP_COUNT] = {
+      "Snap to ground", "Snap to surface", "Snap to grid"};
+  context_push(items, &count,
+               (EditorContextItem){snap_labels[editor->placement.target],
+                                   VKR_UI_ICON_SNAP,
+                                   EDITOR_SHORTCUT("Fn+Right", "End"),
+                                   cooking || !transform, CONTEXT_SNAP});
   context_push(
       items, &count,
       (EditorContextItem){hidden ? "Show" : "Hide",
@@ -2356,6 +2367,15 @@ static void editor_context_run(VkrEditorUi *editor,
     *frame->scene_edit = (VkrSceneEditRequest){
         .action = VKR_SCENE_EDIT_FRAME, .entity = editor->context_entity};
     break;
+  case CONTEXT_SNAP: {
+    char message[160];
+    if (!vkr_editor_viewport_snap(editor, frame, editor->context_entity,
+                                  message, sizeof(message))) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, message);
+    }
+    break;
+  }
   case CONTEXT_VISIBILITY:
     vkr_editor_toggle_visibility(frame, editor->context_entity);
     break;
@@ -2385,8 +2405,9 @@ static void editor_context_run(VkrEditorUi *editor,
     break;
   case CONTEXT_CREATE:
     /* Content shows what its own menu created. */
-    if (vkr_editor_request_create(frame, item->value, editor->context_container,
-                                  NULL) &&
+    if (vkr_editor_request_create(
+            editor, frame, item->value, editor->context_container,
+            editor->context_at_pixel ? &editor->context_pixel : NULL) &&
         kind == VKR_EDITOR_CONTEXT_CONTENT_FOLDER)
       vkr_editor_content_reveal_created(editor->content,
                                         frame->selected_entity);

@@ -1277,7 +1277,7 @@ static bool8_t cmd_selection(CmdContext *ctx, VkrEntityId *out) {
 }
 
 /* Creates an object in the selection's scene, the primary scene or the
- * World, in front of the camera (ADR-076). */
+ * World, at the viewport's centre under the Snapping settings (ADR-076). */
 static bool8_t cmd_run_create(CmdContext *ctx, const CmdDef *def, String8 arg) {
   (void)def;
   const String8 word = cmd_split(arg, NULL);
@@ -1287,7 +1287,7 @@ static bool8_t cmd_run_create(CmdContext *ctx, const CmdDef *def, String8 arg) {
              (int)word.length, word.str);
     return false_v;
   }
-  if (!vkr_editor_request_create(ctx->frame, (uint32_t)kind,
+  if (!vkr_editor_request_create(ctx->editor, ctx->frame, (uint32_t)kind,
                                  vkr_editor_create_container(ctx->frame),
                                  NULL)) {
     snprintf(ctx->message, sizeof(ctx->message), "No %s is loaded",
@@ -1297,6 +1297,18 @@ static bool8_t cmd_run_create(CmdContext *ctx, const CmdDef *def, String8 arg) {
   snprintf(ctx->message, sizeof(ctx->message), "Creating %s",
            vkr_editor_object_kind_label((uint32_t)kind));
   return true_v;
+}
+
+/* Rests the selection on what lies below it under the Snapping settings. */
+static bool8_t cmd_run_snap(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  (void)def;
+  (void)arg;
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  return vkr_editor_viewport_snap(ctx->editor, ctx->frame, entity, ctx->message,
+                                  sizeof(ctx->message));
 }
 
 /* Deletes the named object, or the selection. */
@@ -1661,7 +1673,11 @@ static const CmdDef cmd_defs[] = {
      "Make an added scene the primary scene", cmd_run_scene_primary, CMD_COUNT,
      0u, .holds = true_v},
     {"create", CMD_ARG_OBJECT, "<object>",
-     "Create an object in front of the camera", cmd_run_create, CMD_COUNT, 0u},
+     "Create an object at the Scene's centre, snapped like a drop",
+     cmd_run_create, CMD_COUNT, 0u},
+    {"snap", CMD_ARG_NONE, "",
+     "Rest the selection on the surface, grid or ground below it (End)",
+     cmd_run_snap, CMD_COUNT, 0u},
     {"script.new", CMD_ARG_TEXT, "<Name>",
      "Create a script module in Scripts/ and open it", cmd_run_script_new,
      CMD_COUNT, 0u},

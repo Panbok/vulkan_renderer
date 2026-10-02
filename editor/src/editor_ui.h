@@ -221,6 +221,10 @@ typedef struct VkrEditorUi {
   uint32_t context_panel;
   /* World id a creation menu adds to. */
   uint16_t context_container;
+  /* A creation menu opened over the Scene places at this pixel; other
+     creation menus place at the viewport's centre. */
+  bool8_t context_at_pixel;
+  Vec2 context_pixel;
   /* Component type a preset menu acts on. */
   const VkrTypeDesc *context_type;
   /* Text field a text menu acts on, and what it could offer when opened. */

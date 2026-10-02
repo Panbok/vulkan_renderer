@@ -1077,6 +1077,14 @@ bool8_t vkr_scene_set_transform(VkrScene *scene, VkrEntityId entity,
 SceneTransform *vkr_scene_get_transform(VkrScene *scene, VkrEntityId entity);
 
 /**
+ * @brief Box around the loaded meshes and shapes of an entity and its
+ * descendants, in the entity's local frame (before its own scale).
+ * @return False when none of them has loaded geometry.
+ */
+bool8_t vkr_scene_entity_local_bounds(const VkrScene *scene, VkrEntityId entity,
+                                      Vec3 *out_min, Vec3 *out_max);
+
+/**
  * @brief Set entity position (auto-marks dirty).
  */
 void vkr_scene_set_position(VkrScene *scene, VkrEntityId entity, Vec3 position);

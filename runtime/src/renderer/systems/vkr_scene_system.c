@@ -2599,6 +2599,89 @@ SceneTransform *vkr_scene_get_transform(VkrScene *scene, VkrEntityId entity) {
                                                         scene->comp_transform);
 }
 
+/* Grows [lower, upper] by the eight corners of the box [minimum, maximum]
+   under `model`. */
+vkr_internal void scene_bounds_add_box(Mat4 model, Vec3 minimum, Vec3 maximum,
+                                       Vec3 *lower, Vec3 *upper) {
+  for (uint32_t corner = 0; corner < 8; ++corner) {
+    const Vec3 point =
+        mat4_mul_vec3(model, vec3_new(corner & 1 ? maximum.x : minimum.x,
+                                      corner & 2 ? maximum.y : minimum.y,
+                                      corner & 4 ? maximum.z : minimum.z));
+    *lower = vec3_new(Min(lower->x, point.x), Min(lower->y, point.y),
+                      Min(lower->z, point.z));
+    *upper = vec3_new(Max(upper->x, point.x), Max(upper->y, point.y),
+                      Max(upper->z, point.z));
+  }
+}
+
+bool8_t vkr_scene_entity_local_bounds(const VkrScene *scene, VkrEntityId entity,
+                                      Vec3 *out_min, Vec3 *out_max) {
+  if (!scene || !scene->world || !scene->assets || !out_min || !out_max) {
+    return false_v;
+  }
+  const SceneTransform *root =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  if (!root) {
+    return false_v;
+  }
+  const Mat4 to_local = mat4_inverse_affine(root->world);
+  VkrMeshManager *meshes = &scene->assets->mesh_manager;
+  Vec3 lower = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 upper = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  bool8_t found = false_v;
+  for (uint32_t i = 0; i < scene->topo_count; ++i) {
+    const VkrEntityId candidate = scene->topo_order[i];
+    VkrEntityId ancestor = candidate;
+    while (ancestor.u64 && ancestor.u64 != entity.u64) {
+      const SceneTransform *parent = vkr_entity_get_component(
+          scene->world, ancestor, scene->comp_transform);
+      ancestor = parent ? parent->parent : VKR_ENTITY_ID_INVALID;
+    }
+    if (!ancestor.u64) {
+      continue;
+    }
+
+    const SceneMeshRenderer *renderer = vkr_entity_get_component(
+        scene->world, candidate, scene->comp_mesh_renderer);
+    const VkrMeshInstance *instance =
+        renderer ? vkr_mesh_manager_get_instance(meshes, renderer->instance)
+                 : NULL;
+    const VkrMeshAsset *asset =
+        instance ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
+                 : NULL;
+    if (asset) {
+      const Mat4 model = mat4_mul(to_local, instance->model);
+      for (uint64_t s = 0; s < asset->submeshes.length; ++s) {
+        const VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[s];
+        scene_bounds_add_box(model, submesh->min_extents, submesh->max_extents,
+                             &lower, &upper);
+        found = true_v;
+      }
+    }
+
+    const SceneShape *shape =
+        vkr_entity_get_component(scene->world, candidate, scene->comp_shape);
+    const VkrMesh *mesh =
+        shape ? vkr_mesh_manager_get(meshes, shape->mesh_index) : NULL;
+    if (mesh) {
+      const Mat4 model = mat4_mul(to_local, mesh->model);
+      for (uint64_t s = 0; s < mesh->submeshes.length; ++s) {
+        const VkrSubMesh *submesh = &mesh->submeshes.data[s];
+        scene_bounds_add_box(model, submesh->min_extents, submesh->max_extents,
+                             &lower, &upper);
+        found = true_v;
+      }
+    }
+  }
+  if (!found) {
+    return false_v;
+  }
+  *out_min = lower;
+  *out_max = upper;
+  return true_v;
+}
+
 void vkr_scene_set_position(VkrScene *scene, VkrEntityId entity,
                             Vec3 position) {
   SceneTransform *t = vkr_scene_get_transform(scene, entity);

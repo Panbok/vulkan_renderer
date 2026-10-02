@@ -930,13 +930,9 @@ void vkr_editor_finish_script_drop(VkrEditorUi *editor,
   for (uint32_t kind = 0; kind < vkr_editor_object_kind_count(); ++kind) {
     EditorObjectKind object;
     if (editor_object_kind(kind, &object) && object.type == type) {
-      VkrEditorDropPose pose;
-      (void)vkr_editor_request_create(
-          frame, kind, vkr_editor_create_container(frame),
-          vkr_editor_viewport_place(editor, frame, frame->context_position_px,
-                                    &pose)
-              ? &pose
-              : NULL);
+      (void)vkr_editor_request_create(editor, frame, kind,
+                                      vkr_editor_create_container(frame),
+                                      &frame->context_position_px);
       return;
     }
   }
@@ -985,9 +981,9 @@ uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame) {
   return frame->world ? VKR_SCENE_WORLD_ROOT_ID : UINT16_MAX;
 }
 
-bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
-                                  uint16_t container,
-                                  const VkrEditorDropPose *pose) {
+bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame, uint32_t kind,
+                                  uint16_t container, const Vec2 *drop_px) {
   EditorObjectKind kind_value;
   if (!editor_object_kind(kind, &kind_value)) {
     return false_v;
@@ -1021,10 +1017,21 @@ bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
     vkr_type_defaults(object->type, values.component);
     values.fields |= VKR_SCENE_EDIT_COMPONENT;
   }
-  if (pose) {
+  /* A shape is centred on its origin, so it rests half its height above the
+     snap point. */
+  const float32_t base =
+      object->type == &vkr_scene_shape_type
+          ? ((const SceneShapeSettings *)values.component)->dimensions.y * 0.5f
+          : 0.0f;
+  const Vec4 image = frame->mapping.image_rect_px;
+  const Vec2 pixel =
+      drop_px ? *drop_px
+              : (Vec2){image.x + image.z * 0.5f, image.y + image.w * 0.5f};
+  VkrEditorDropPose pose;
+  if (vkr_editor_viewport_place(editor, frame, pixel, base, &pose)) {
     values.fields |= VKR_SCENE_EDIT_TRANSFORM;
-    values.position = pose->position;
-    values.rotation = pose->rotation;
+    values.position = pose.position;
+    values.rotation = pose.rotation;
     values.scale = vec3_one();
   }
   *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_CREATE,

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-02
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -85,7 +85,8 @@ dependable channel for scripts.
 | `grid.fit` | | Lift the grid onto the surface at the Scene's centre: collision, else the GPU depth there |
 | `grid.labels` | `[on\|off\|toggle]` | Grid cell numbers and letters |
 | `labels`, `labels.directional`, `labels.spot`, `labels.point` | `[on\|off\|toggle]` | Light icons |
-| `create` | `<object>` | Create an object kind (`empty`, `cube`, `text`, a light kind or a world component type) in the selection's container, else the primary scene, else the World; World-only settings always go to the World |
+| `create` | `<object>` | Create an object kind (`empty`, `cube`, `text`, a light kind or a world component type) in the selection's container, else the primary scene, else the World, at the Scene's centre by the Snapping settings ([ADR-076](076-project-object-model.md)); World-only settings always go to the World |
+| `snap` | | Rest the selection on the collision surface, grid or ground plane below it by the Snapping settings (undoable; the End key) |
 | `delete` | `[name]` | Delete the named object or the selection (undoable) |
 | `script.new`, `script.open` | `<Name>`, `<file>` | Create a script module from the template in the open Scripts folder and open it, or open a listed source in the Script editor ([ADR-079](079-c-script-modules.md)) |
 | `script.goto`, `script.type` | `<line>`, `<text>` | Move the Script editor's caret to a line, or type ASCII text at it as the keyboard would, completion included |

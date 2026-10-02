@@ -621,6 +621,17 @@ static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
         .action = VKR_SCENE_EDIT_FRAME, .entity = frame->selected_entity};
     ui->capture.keyboard = true_v;
   }
+  /* End rests the selection on what lies below it (Fn+Right on a Mac). */
+  if (input_key_just_pressed(frame->input, KEY_END) &&
+      input_key_press_modifiers(frame->input, KEY_END) == 0u && selected) {
+    char message[160];
+    if (!vkr_editor_viewport_snap(editor, frame, frame->selected_entity,
+                                  message, sizeof(message))) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, message);
+    }
+    ui->capture.keyboard = true_v;
+  }
   /* Delete, or Backspace on a Mac keyboard, deletes the selected object. */
   const Keys delete_key = input_key_just_pressed(frame->input, KEY_DELETE)
                               ? KEY_DELETE
@@ -1402,23 +1413,80 @@ static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
   return true_v;
 }
 
+/* Shortest rotation turning unit `from` onto unit `to`. */
+static VkrQuat place_tilt(Vec3 from, Vec3 to) {
+  const float32_t cosine = vkr_clamp_f32(vec3_dot(from, to), -1.0f, 1.0f);
+  if (cosine >= 0.9999f) {
+    return vkr_quat_identity();
+  }
+  Vec3 axis = vec3_cross(from, to);
+  if (cosine <= -0.9999f) {
+    /* Opposite vectors turn about any axis perpendicular to them. */
+    axis = vec3_cross(from, fabsf(from.x) < 0.9f ? vec3_new(1.0f, 0.0f, 0.0f)
+                                                 : vec3_new(0.0f, 0.0f, 1.0f));
+  }
+  return vkr_quat_from_axis_angle(vec3_normalize(axis), acosf(cosine));
+}
+
 /* Rotation turning +Y onto `normal`, then `yaw` radians about it. */
 static VkrQuat place_orientation(Vec3 normal, float32_t yaw) {
   const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
-  const float32_t cosine = vkr_clamp_f32(vec3_dot(up, normal), -1.0f, 1.0f);
-  VkrQuat tilt = vkr_quat_identity();
-  if (cosine < 0.9999f) {
-    const Vec3 axis = cosine > -0.9999f ? vec3_normalize(vec3_cross(up, normal))
-                                        : vec3_new(1.0f, 0.0f, 0.0f);
-    tilt = vkr_quat_from_axis_angle(axis, acosf(cosine));
-  }
   return vkr_quat_normalize(
-      vkr_quat_mul(tilt, vkr_quat_from_axis_angle(up, yaw)));
+      vkr_quat_mul(place_tilt(up, normal), vkr_quat_from_axis_angle(up, yaw)));
+}
+
+/* True when `entity` is `root` or one of its descendants. */
+static bool8_t place_in_subtree(const VkrScene *scene, VkrEntityId entity,
+                                VkrEntityId root) {
+  while (entity.u64) {
+    if (entity.u64 == root.u64) {
+      return true_v;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return false_v;
+}
+
+/* The first solid collision surface along a segment, past any body of `skip`
+   and its descendants. Physics queries take a mutable scene but change none
+   of its state. */
+static bool8_t place_raycast(const VkrScene *scene, Vec3 origin,
+                             Vec3 displacement, VkrEntityId skip,
+                             VkrPhysicsRayHit *hit) {
+  uint64_t ignored[VKR_PHYSICS_MAX_QUERY_IGNORES];
+  VkrPhysicsQueryFilter filter = {.mask = UINT16_MAX,
+                                  .ignored_entities = ignored};
+  while (vkr_scene_physics_raycast_query((VkrScene *)scene, origin,
+                                         displacement, &filter, hit)) {
+    const VkrEntityId owner = {.u64 = hit->entity_id};
+    if (!skip.u64 || !place_in_subtree(scene, owner, skip)) {
+      return true_v;
+    }
+    if (filter.ignored_count == ArrayCount(ignored)) {
+      return false_v;
+    }
+    ignored[filter.ignored_count++] = hit->entity_id;
+  }
+  return false_v;
+}
+
+/* `position` moved to the nearest grid crossing, or cell centre, in XZ. */
+static Vec3 place_grid_point(const VkrEditorPlacement *placement,
+                             const VkrSampleUiFrame *frame, Vec3 position) {
+  const float32_t cell = frame->view_state.grid_spacing > 0.0f
+                             ? frame->view_state.grid_spacing
+                             : 1.0f;
+  const float32_t shift = placement->cell_centers ? 0.5f : 0.0f;
+  position.x = (floorf(position.x / cell - shift + 0.5f) + shift) * cell;
+  position.z = (floorf(position.z / cell - shift + 0.5f) + shift) * cell;
+  return position;
 }
 
 bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame, Vec2 pixel,
-                                  VkrEditorDropPose *out) {
+                                  float32_t base, VkrEditorDropPose *out) {
   const VkrEditorPlacement *placement = &editor->placement;
   Vec3 origin = {0};
   Vec3 direction = {0};
@@ -1426,21 +1494,24 @@ bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
     return false_v;
   }
   const float32_t yaw = placement->yaw_degrees * (VKR_PI / 180.0f);
-  Vec3 normal = vec3_new(0.0f, 1.0f, 0.0f);
-  /* Collision surfaces answer the ray; physics queries take a mutable scene
-     but change none of its state. */
+  const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
+  Vec3 normal = up;
   VkrPhysicsRayHit hit = {0};
   if (placement->target == VKR_EDITOR_SNAP_SURFACE && frame->scene &&
-      vkr_scene_physics_raycast((VkrScene *)frame->scene, origin,
-                                vec3_scale(direction, 1000.0f), &hit)) {
-    const Vec3 surface_normal =
-        vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
-    if (placement->align_to_normal && vec3_length(surface_normal) > 0.5f) {
-      normal = vec3_normalize(surface_normal);
+      place_raycast(frame->scene, origin, vec3_scale(direction, 1000.0f),
+                    VKR_ENTITY_ID_INVALID, &hit)) {
+    Vec3 surface_normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+    surface_normal = vec3_length(surface_normal) > 0.5f
+                         ? vec3_normalize(surface_normal)
+                         : up;
+    if (placement->align_to_normal) {
+      normal = surface_normal;
     }
-    out->position =
+    /* The offset follows the surface; the base follows the object's up. */
+    out->position = vec3_add(
         vec3_add(vec3_new(hit.position[0], hit.position[1], hit.position[2]),
-                 vec3_scale(vec3_normalize(surface_normal), placement->offset));
+                 vec3_scale(surface_normal, placement->offset)),
+        vec3_scale(normal, base));
     out->rotation = place_orientation(normal, yaw);
     return true_v;
   }
@@ -1454,17 +1525,131 @@ bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
   if (ground) {
     position.y = ground_y;
     if (placement->target == VKR_EDITOR_SNAP_GRID) {
-      const float32_t cell = frame->view_state.grid_spacing > 0.0f
-                                 ? frame->view_state.grid_spacing
-                                 : 1.0f;
-      const float32_t shift = placement->cell_centers ? 0.5f : 0.0f;
-      position.x = (floorf(position.x / cell - shift + 0.5f) + shift) * cell;
-      position.z = (floorf(position.z / cell - shift + 0.5f) + shift) * cell;
+      position = place_grid_point(placement, frame, position);
     }
-    position.y += placement->offset;
+    position.y += placement->offset + base;
   }
   out->position = position;
   out->rotation = place_orientation(normal, yaw);
+  return true_v;
+}
+
+bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity, char *message,
+                                 uint64_t message_size) {
+  const VkrEditorPlacement *placement = &editor->placement;
+  VkrScene *scene = (VkrScene *)vkr_editor_entity_scene(frame, entity);
+  VkrSceneEditValues values;
+  if (!scene || !vkr_scene_entity_alive(scene, entity) ||
+      !vkr_scene_edit_read(scene, entity, &values)) {
+    snprintf(message, message_size, "Nothing to snap");
+    return false_v;
+  }
+  const String8 name = vkr_scene_get_name(scene, entity);
+  const SceneTransform *transform = vkr_scene_get_transform(scene, entity);
+  /* A collider moves with its body; the gizmo edits it through physics. */
+  if (!transform || !(values.fields & VKR_SCENE_EDIT_TRANSFORM) ||
+      vkr_entity_get_component(scene->world, entity,
+                               scene->comp_physics_collider)) {
+    snprintf(message, message_size, "'%.*s' has no transform to snap",
+             (int)name.length, name.str);
+    return false_v;
+  }
+  if (frame->scene_edit->action != VKR_SCENE_EDIT_NONE) {
+    snprintf(message, message_size, "Another scene edit is pending");
+    return false_v;
+  }
+
+  /* The object's box relative to its origin in world space; one without
+     loaded geometry snaps its origin. */
+  Vec3 lower = vec3_zero();
+  Vec3 upper = vec3_zero();
+  (void)vkr_scene_entity_local_bounds(scene, entity, &lower, &upper);
+  const Vec3 pivot = mat4_position(transform->world);
+  Vec3 corners[8];
+  Vec3 centre = vec3_zero();
+  float32_t top = -INFINITY;
+  for (uint32_t i = 0; i < ArrayCount(corners); ++i) {
+    const Vec3 corner =
+        vec3_new(i & 1 ? upper.x : lower.x, i & 2 ? upper.y : lower.y,
+                 i & 4 ? upper.z : lower.z);
+    corners[i] = vec3_sub(mat4_mul_vec3(transform->world, corner), pivot);
+    centre = vec3_add(centre, vec3_scale(corners[i], 1.0f / 8.0f));
+    top = Max(top, pivot.y + corners[i].y);
+  }
+  const Vec3 above = vec3_add(pivot, centre);
+
+  /* The point the box comes to rest on, straight below its centre. */
+  const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
+  Vec3 normal = up;
+  Vec3 target = vec3_new(above.x, frame->view_state.grid_height, above.z);
+  const char *onto = "the ground plane";
+  bool8_t align = false_v;
+  VkrPhysicsRayHit hit = {0};
+  if (placement->target == VKR_EDITOR_SNAP_SURFACE &&
+      place_raycast(scene, vec3_new(above.x, top + 0.01f, above.z),
+                    vec3_new(0.0f, -1000.0f, 0.0f), entity, &hit)) {
+    target = vec3_new(hit.position[0], hit.position[1], hit.position[2]);
+    const Vec3 surface_normal =
+        vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+    align = placement->align_to_normal && vec3_length(surface_normal) > 0.5f;
+    if (align) {
+      normal = vec3_normalize(surface_normal);
+    }
+    onto = "the surface";
+  } else if (placement->target == VKR_EDITOR_SNAP_GRID) {
+    target = place_grid_point(placement, frame, target);
+    onto = "the grid";
+  }
+
+  /* Aligning tilts the object's up onto the normal and keeps its heading. */
+  const Vec3 object_up = vec3_normalize(vec3_new(transform->world.elements[4],
+                                                 transform->world.elements[5],
+                                                 transform->world.elements[6]));
+  const VkrQuat tilt =
+      align ? place_tilt(object_up, normal) : vkr_quat_identity();
+  const Vec3 tilted_centre = vkr_quat_rotate_vec3(tilt, centre);
+  float32_t bottom = INFINITY;
+  for (uint32_t i = 0; i < ArrayCount(corners); ++i) {
+    bottom =
+        Min(bottom, vec3_dot(vkr_quat_rotate_vec3(tilt, corners[i]), normal));
+  }
+  /* The box centre sits over the target and its lowest point `offset` above
+     it along the normal. */
+  const Vec3 position =
+      vec3_add(vec3_sub(target, tilted_centre),
+               vec3_scale(normal, vec3_dot(tilted_centre, normal) - bottom +
+                                      placement->offset));
+
+  /* Back to the parent's frame. */
+  Vec3 local = position;
+  VkrQuat parent_rotation = vkr_quat_identity();
+  for (VkrEntityId ancestor = transform->parent; ancestor.u64;) {
+    const SceneTransform *parent = vkr_scene_get_transform(scene, ancestor);
+    if (!parent) {
+      break;
+    }
+    if (ancestor.u64 == transform->parent.u64) {
+      local = mat4_mul_vec3(mat4_inverse_affine(parent->world), position);
+    }
+    parent_rotation = vkr_quat_mul(parent->rotation, parent_rotation);
+    ancestor = parent->parent;
+  }
+  values.fields = VKR_SCENE_EDIT_TRANSFORM;
+  values.position = local;
+  values.rotation = vkr_quat_normalize(
+      vkr_quat_mul(vkr_quat_mul(vkr_quat_conjugate(parent_rotation),
+                                vkr_quat_mul(tilt, parent_rotation)),
+                   values.rotation));
+  if (!vkr_scene_edit_validate(&values)) {
+    snprintf(message, message_size, "The scene rejected the snapped pose");
+    return false_v;
+  }
+  *frame->scene_edit = (VkrSceneEditRequest){
+      .action = VKR_SCENE_EDIT_APPLY, .entity = entity, .values = values};
+  snprintf(message, message_size, "Snapped %.*s to %s", (int)name.length,
+           name.str, onto);
   return true_v;
 }
 

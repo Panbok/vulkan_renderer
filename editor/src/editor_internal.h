@@ -106,10 +106,21 @@ bool8_t vkr_editor_viewport_tab_show(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      uint32_t tab);
 /* Where an object spawned at a viewport pixel lands under the Snapping
-   settings; false without a valid view. */
+   settings; false without a valid view. `base` is the distance from the
+   object's origin down to its lowest point, so it rests on the snap point
+   instead of sinking into it. */
 bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame, Vec2 pixel,
-                                  VkrEditorDropPose *out);
+                                  float32_t base, VkrEditorDropPose *out);
+/* Rests an existing object on what lies below it under the Snapping
+   settings: the first collision surface, else the ground plane (Surface), the
+   nearest grid point (Grid) or the ground plane (Free). Requests an undoable
+   transform edit; false with `message` set when nothing lies below or the
+   object cannot move. */
+bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity, char *message,
+                                 uint64_t message_size);
 /* Viewport document tabs drawn in `strip`, the Scene tab bar's free space. */
 void vkr_editor_viewport_tabs_build(VkrEditorUi *editor,
                                     const VkrSampleUiFrame *frame,

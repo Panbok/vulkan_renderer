@@ -81,12 +81,12 @@ uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame);
 struct VkrEditorContentAction;
 void vkr_editor_apply_content_object(
     const VkrSampleUiFrame *frame, const struct VkrEditorContentAction *action);
-/* A non-NULL `pose` places the object there (vkr_editor_viewport_place);
-   otherwise it appears in front of the camera. */
-struct VkrEditorDropPose;
-bool8_t vkr_editor_request_create(const VkrSampleUiFrame *frame, uint32_t kind,
-                                  uint16_t container,
-                                  const struct VkrEditorDropPose *pose);
+/* Places the object under the Snapping settings (vkr_editor_viewport_place)
+   at `drop_px`, or at the viewport's centre when it is NULL; without a valid
+   view it appears in front of the camera. */
+bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame, uint32_t kind,
+                                  uint16_t container, const Vec2 *drop_px);
 
 /* Current value of an entity's component: a light from its edit values, a
    world component from its typed storage. False when the entity lacks it. */

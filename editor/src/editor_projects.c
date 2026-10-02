@@ -3735,8 +3735,10 @@ static void project_place_asset(VkrEditorProjects *projects,
              "Open a scene to place meshes in it.");
     return;
   }
+  /* A mesh rests on its authored origin; Snap selected rests it on its
+     bounds once it loads. */
   VkrEditorDropPose pose = {.rotation = vkr_quat_identity()};
-  (void)vkr_editor_viewport_place(editor, frame, action->drop_px, &pose);
+  (void)vkr_editor_viewport_place(editor, frame, action->drop_px, 0.0f, &pose);
   project_reset_scene_draft(projects);
   projects->adding_model = false_v;
   projects->light_count = 0;
@@ -4016,13 +4018,10 @@ static void project_take_content_action(VkrEditorProjects *projects,
                              content_action.drop_px);
     } else if (content_action.kind == VKR_EDITOR_CONTENT_ACTION_CREATE_OBJECT) {
       /* Content shows the new object where it lives once it is selected. */
-      VkrEditorDropPose pose;
-      const bool8_t placed = content_action.dropped &&
-                             vkr_editor_viewport_place(
-                                 editor, frame, content_action.drop_px, &pose);
-      if (vkr_editor_request_create(frame, content_action.object,
-                                    vkr_editor_create_container(frame),
-                                    placed ? &pose : NULL)) {
+      if (vkr_editor_request_create(
+              editor, frame, content_action.object,
+              vkr_editor_create_container(frame),
+              content_action.dropped ? &content_action.drop_px : NULL)) {
         vkr_editor_content_reveal_created(editor->content,
                                           frame->selected_entity);
       }

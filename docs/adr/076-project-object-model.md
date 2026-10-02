@@ -93,7 +93,10 @@ records authoritative `components`, created entities, deleted records and
 parents, and per-scene settings. New objects come from built-in **object
 kinds** (empty, four light kinds, one per live world type and the Player Start),
 grouped under headings in menus; Cmd `create` also accepts each registered
-script component type. The runtime places them in front of the camera.
+script component type. A new object lands by the Scene's Snapping settings
+(below) at the drop or right-click point in the Scene, else at the viewport's
+centre (Outliner and Content menus, Cmd `create`); the runtime places it in
+front of the camera only without a valid view.
 
 ### Containers: the root World, a primary scene and additive scenes
 
@@ -243,7 +246,19 @@ to the ground plane), on the nearest grid crossing or cell center (Grid), or
 where the pointer meets the ground plane (Free, else 8 m along its ray). An
 offset moves the object along the snap normal, a 15-degree-step yaw turns it
 about that normal, and surface snaps can turn its up axis to the surface
-normal. The settings persist with the project's editor settings. Loading
+normal. A shape rests its base on the snap point; a placed mesh rests its
+authored origin there, because its bounds are unknown until it loads. Surface
+rays skip sensors. The settings persist with the project's editor settings.
+**Snap selected** (End, the object's context menu, Cmd `snap`) rests an
+existing object by the same settings
+([`vkr_editor_viewport_snap`](../../editor/src/editor_viewport.c)): the box
+around its loaded meshes and shapes
+([`vkr_scene_entity_local_bounds`](../../runtime/src/renderer/systems/vkr_scene_system.c))
+drops straight down onto the first collision surface that is not its own,
+else the ground plane (Surface), onto the nearest grid point (Grid) or onto
+the ground plane (Free), as one undoable transform edit. Aligning tilts the
+object's up onto the surface normal and keeps its heading. The gizmo does not
+snap while dragging. Loading
 the scene that is already loading or open does nothing, from Content, the
 Scenes view or `scene.open`.
 The placed entity references the existing asset by scope and ID; nothing is
