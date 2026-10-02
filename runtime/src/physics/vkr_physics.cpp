@@ -32,6 +32,7 @@ extern "C" {
 #include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <memory>
@@ -144,6 +145,21 @@ struct s_ContactPair {
   JPH::BodyID id_b;
 };
 
+/* Contact key order: bodies, then colliders. Events follow it, so their
+   order does not depend on when Jolt reported each contact. */
+static bool contact_before(const s_ContactPair &a, const s_ContactPair &b) {
+  if (a.event.body_a != b.event.body_a) {
+    return a.event.body_a < b.event.body_a;
+  }
+  if (a.event.body_b != b.event.body_b) {
+    return a.event.body_b < b.event.body_b;
+  }
+  if (a.event.collider_a != b.event.collider_a) {
+    return a.event.collider_a < b.event.collider_a;
+  }
+  return a.event.collider_b < b.event.collider_b;
+}
+
 class s_ContactListener final : public JPH::ContactListener {
 public:
   explicit s_ContactListener(VkrPhysicsWorld *world) : world(world) {}
@@ -182,8 +198,16 @@ struct s_VkrPhysicsWorld {
   std::vector<VkrPhysicsSensorEvent> sensor_pairs;
   std::vector<VkrPhysicsSensorEvent> next_pairs;
   std::vector<VkrPhysicsSensorEvent> events;
+  /* Solid contacts of the last step and of the running one, sorted by
+     contact key once the step's callbacks have run. */
   std::vector<s_ContactPair> contacts;
   std::vector<s_ContactPair> next_contacts;
+  /* The running step's contacts by key: open addressing over twice the
+     contact capacity, a slot holding a next_contacts index and the stamp of
+     the step that wrote it. */
+  std::vector<uint32_t> contact_slots;
+  std::vector<uint32_t> contact_stamps;
+  uint32_t contact_stamp = 0;
   std::vector<VkrPhysicsContactEvent> contact_events;
   const char *error = "";
   bool8_t faulted = false_v;
@@ -246,6 +270,12 @@ extern "C" VkrPhysicsWorld *vkr_physics_world_create(uint32_t max_bodies) {
     world->events.reserve(max_bodies * VKR_PHYSICS_SENSOR_EVENTS_PER_BODY);
     world->contacts.reserve(max_bodies * 8);
     world->next_contacts.reserve(max_bodies * 8);
+    size_t contact_slots = 1;
+    while (contact_slots < static_cast<size_t>(max_bodies) * 16) {
+      contact_slots <<= 1;
+    }
+    world->contact_slots.resize(contact_slots);
+    world->contact_stamps.resize(contact_slots, 0);
     world->contact_events.reserve(max_bodies *
                                   VKR_PHYSICS_CONTACT_EVENTS_PER_BODY);
     world->system.SetContactListener(&world->contact_listener);
@@ -1045,11 +1075,17 @@ extern "C" bool8_t vkr_physics_step(VkrPhysicsWorld *world, float32_t dt) {
   }
   try {
     world->next_contacts.clear();
+    if (++world->contact_stamp == 0) {
+      std::fill(world->contact_stamps.begin(), world->contact_stamps.end(), 0);
+      world->contact_stamp = 1;
+    }
     if (world->system.Update(dt, 1, &world->scratch, &world->jobs) !=
         JPH::EPhysicsUpdateError::None) {
       world->faulted = true_v;
       return fail(world, "Physics contact capacity exceeded; reset required");
     }
+    std::sort(world->next_contacts.begin(), world->next_contacts.end(),
+              contact_before);
     return update_contacts(world) && update_sensors(world);
   } catch (...) {
     world->faulted = true_v;
@@ -1803,6 +1839,35 @@ static bool same_contact(const s_ContactPair &a, const s_ContactPair &b) {
          a.event.collider_b == b.event.collider_b;
 }
 
+static uint64_t contact_hash(const s_ContactPair &pair) {
+  const uint64_t keys[4] = {pair.event.body_a, pair.event.body_b,
+                            pair.event.collider_a, pair.event.collider_b};
+  uint64_t hash = 0x9e3779b97f4a7c15ull;
+  for (const uint64_t key : keys) {
+    hash ^= key + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+  }
+  hash ^= hash >> 33;
+  hash *= 0xff51afd7ed558ccdull;
+  return hash ^ (hash >> 33);
+}
+
+/* One pair reported by several manifolds keeps the least point and normal,
+ * whatever order the manifolds arrived in. */
+static bool contact_detail_before(const s_ContactPair &a,
+                                  const s_ContactPair &b) {
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (a.event.position[i] != b.event.position[i]) {
+      return a.event.position[i] < b.event.position[i];
+    }
+  }
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (a.event.normal[i] != b.event.normal[i]) {
+      return a.event.normal[i] < b.event.normal[i];
+    }
+  }
+  return false;
+}
+
 static void capture_contact(VkrPhysicsWorld *world, const JPH::Body &a,
                             const JPH::Body &b,
                             const JPH::ContactManifold &manifold,
@@ -1823,17 +1888,29 @@ static void capture_contact(VkrPhysicsWorld *world, const JPH::Body &a,
       b.GetShape()->GetSubShapeUserData(manifold.mSubShapeID2);
   store_vec(manifold.GetWorldSpaceContactPointOn1(0), pair.event.position);
   store_vec(manifold.mWorldSpaceNormal, pair.event.normal);
-  for (auto &existing : world->next_contacts) {
+  // The table holds twice the contact capacity, so a probe ends at a free
+  // slot before it is full.
+  const size_t mask = world->contact_slots.size() - 1;
+  for (size_t slot = contact_hash(pair) & mask;; slot = (slot + 1) & mask) {
+    if (world->contact_stamps[slot] != world->contact_stamp) {
+      if (world->next_contacts.size() == world->next_contacts.capacity()) {
+        event_fault(world);
+        return;
+      }
+      world->contact_stamps[slot] = world->contact_stamp;
+      world->contact_slots[slot] =
+          static_cast<uint32_t>(world->next_contacts.size());
+      world->next_contacts.push_back(pair);
+      return;
+    }
+    s_ContactPair &existing = world->next_contacts[world->contact_slots[slot]];
     if (same_contact(existing, pair)) {
-      existing = pair;
+      if (contact_detail_before(pair, existing)) {
+        existing = pair;
+      }
       return;
     }
   }
-  if (world->next_contacts.size() == world->next_contacts.capacity()) {
-    event_fault(world);
-    return;
-  }
-  world->next_contacts.push_back(pair);
 }
 
 void s_ContactListener::OnContactAdded(const JPH::Body &a, const JPH::Body &b,
@@ -1867,35 +1944,48 @@ static bool8_t update_contacts(VkrPhysicsWorld *world) {
     world->contact_events.clear();
     return false_v;
   }
+  // Both lists are sorted by contact key, so each pass is one merge.
   auto &bodies = world->system.GetBodyInterface();
-  for (const auto &old : world->contacts) {
-    bool seen = false;
-    for (const auto &pair : world->next_contacts) {
-      seen = seen || same_contact(old, pair);
+  auto &next = world->next_contacts;
+  const auto &contacts = world->contacts;
+  // Resting bodies that both sleep report no contact, yet still touch.
+  const size_t reported = next.size();
+  size_t cursor = 0;
+  for (const auto &old : contacts) {
+    while (cursor < reported && contact_before(next[cursor], old)) {
+      ++cursor;
     }
+    const bool seen = cursor < reported && same_contact(next[cursor], old);
     if (!seen && !bodies.IsActive(old.id_a) && !bodies.IsActive(old.id_b)) {
-      if (world->next_contacts.size() == world->next_contacts.capacity()) {
+      if (next.size() == next.capacity()) {
         return event_fault(world);
       }
-      world->next_contacts.push_back(old);
+      next.push_back(old);
     }
   }
-  for (const auto &pair : world->next_contacts) {
-    bool existed = false;
-    for (const auto &old : world->contacts) {
-      existed = existed || same_contact(old, pair);
+  if (next.size() != reported) {
+    std::inplace_merge(next.begin(), next.begin() + reported, next.end(),
+                       contact_before);
+  }
+  cursor = 0;
+  for (const auto &pair : next) {
+    while (cursor < contacts.size() && contact_before(contacts[cursor], pair)) {
+      ++cursor;
     }
+    const bool existed =
+        cursor < contacts.size() && same_contact(contacts[cursor], pair);
     if (!queue_contact(world, pair.event,
                        existed ? VKR_PHYSICS_CONTACT_PERSIST
                                : VKR_PHYSICS_CONTACT_BEGIN)) {
       return false_v;
     }
   }
-  for (const auto &old : world->contacts) {
-    bool seen = false;
-    for (const auto &pair : world->next_contacts) {
-      seen = seen || same_contact(old, pair);
+  cursor = 0;
+  for (const auto &old : contacts) {
+    while (cursor < next.size() && contact_before(next[cursor], old)) {
+      ++cursor;
     }
+    const bool seen = cursor < next.size() && same_contact(next[cursor], old);
     if (!seen && !queue_contact(world, old.event, VKR_PHYSICS_CONTACT_END)) {
       return false_v;
     }
@@ -1904,20 +1994,23 @@ static bool8_t update_contacts(VkrPhysicsWorld *world) {
   return true_v;
 }
 
+/* Ends the body's contacts; the rest keep their sorted order. */
 static bool8_t end_contact_pairs(VkrPhysicsWorld *world, VkrPhysicsBody body) {
-  for (size_t i = 0; i < world->contacts.size();) {
-    const auto &pair = world->contacts[i];
-    if (pair.event.body_a == body || pair.event.body_b == body) {
-      if (!queue_contact(world, pair.event, VKR_PHYSICS_CONTACT_END)) {
-        return false_v;
-      }
-      world->contacts[i] = world->contacts.back();
-      world->contacts.pop_back();
-    } else {
-      ++i;
+  auto &contacts = world->contacts;
+  size_t kept = 0;
+  bool8_t ok = true_v;
+  for (size_t i = 0; i < contacts.size(); ++i) {
+    const s_ContactPair pair = contacts[i];
+    const bool ends =
+        ok && (pair.event.body_a == body || pair.event.body_b == body);
+    if (ends && queue_contact(world, pair.event, VKR_PHYSICS_CONTACT_END)) {
+      continue;
     }
+    ok = ok && !ends;
+    contacts[kept++] = pair;
   }
-  return true_v;
+  contacts.resize(kept);
+  return ok;
 }
 
 extern "C" bool8_t vkr_physics_contact_events(VkrPhysicsWorld *world,

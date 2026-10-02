@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-14
+updated: 2026-10-02
 authority: adr
 ---
 
@@ -171,7 +171,12 @@ character controller or a rotational weapon sweep.
 
 Sensor tracking emits buffered begin/end membership, including sleeping occupants.
 Solid contact tracking emits BEGIN/PERSIST/END with body/collider IDs and contact
-position/normal; PERSIST continues for sleeping contacts. Scene callbacks run after
+position/normal; PERSIST continues for sleeping contacts. A step indexes the
+contacts it records by body and collider IDs, in a table twice the contact
+capacity, and sorts them by those IDs. Events follow that order, BEGIN and
+PERSIST before END, and old and new contacts are compared in one merge.
+A pair several manifolds report keeps the least point and normal, so neither
+the events nor their order depend on the order Jolt reported contacts in. Scene callbacks run after
 each completed tick outside Jolt locks. Events are borrowed for the callback only;
 read-only queries are allowed and mutation/reentrant drains are rejected. Queue
 gameplay changes for the next update boundary. With no callback, scene contact
@@ -265,6 +270,21 @@ collider selection/movement, impulses/Step/Reset, and the new layer-name,
 symmetric-matrix, Undo/Redo, Save and reload paths. Native Vulkan/Windows,
 skinned-ragdoll renderer captures, cross-backend image comparison and matched
 performance evidence remain unavailable from this local check.
+
+On 2026-10-02 (Windows 10, Ryzen 5 2600), the tracking above replaced a
+search of every recorded contact per report and per comparison. A temporary
+Release benchmark of 240 steps (not kept, not a frame-time claim) measured
+boxes on a floor with sleep off, best of three:
+
+| Bodies | Pile, before | Pile, after | 4-box stacks, before | Stacks, after |
+| --- | --- | --- | --- | --- |
+| 64 | 136 µs | 122 µs | 219 µs | 218 µs |
+| 256 | 676 µs | 484 µs | 995 µs | 845 µs |
+| 512 | 1.97 ms | 1.21 ms | 2.41 ms | 1.78 ms |
+| 1,024 | 6.07 ms | 3.38 ms | 6.19 ms | 3.77 ms |
+
+Enabling Jolt's large-island splitter changed none of these by more than run
+noise, so it stays off.
 
 ## Alternatives considered
 
