@@ -1680,19 +1680,21 @@ void vk_local_shadow_mask(uint3 thread_id : SV_DispatchThreadID)
                 continue;
             VkrPunctualLightTerm term = vkr_punctual_light_term(
                 light.p0, light.p1, light.p2, light.p3, world);
-            // Lighting filters lights past the last slot inline.
-            if (!term.in_range || term.cone <= 0.0f ||
-                slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+            if (!term.in_range || term.cone <= 0.0f)
                 continue;
             bool back_lit = diffuse_transmission > 0.0f &&
                             dot(normal, term.direction) < 0.0f;
             float3 shadow_normal = back_lit ? -normal : normal;
+            // A light that cannot light the pixel takes no slot, and lighting
+            // filters lights past the last slot inline.
+            if (!vkr_local_shadow_light_faces(shadow_normal, term.direction) ||
+                slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+                continue;
             float3 visibility = packet_local_shadow(
                 frame, light, term.kind, world, shadow_normal);
             VkrLocalShadowView view =
                 frame.local_shadow_views[uint(light.p3.w) - 1u];
-            if (view.shadow_params.z < 0.5f && any(visibility > 0.0f) &&
-                dot(shadow_normal, term.direction) > 0.0f)
+            if (view.shadow_params.z < 0.5f && any(visibility > 0.0f))
             {
                 float3 origin =
                     world + shadow_normal *

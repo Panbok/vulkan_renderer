@@ -231,17 +231,21 @@ semantics.
 Deferred lighting does not filter local shadow maps itself. The
 `Shadow.LocalMask` compute pass runs before it when local shadows are active
 and, for every opaque pixel, stores the filtered RGB visibility, with strength
-applied, of the k-th shadowed light in range of the pixel, in light traversal
-order, in layer k of an eight-layer full-resolution RGBA8 array. Alpha tags the
+applied, of the k-th shadowed light in range of the pixel that can light it, in
+light traversal order, in layer k of an eight-layer full-resolution RGBA8
+array. A light can light the pixel when it lies in front of the shadow normal,
+which back-lit diffuse transmission flips toward it
+(`vkr_local_shadow_light_faces`); otherwise every lobe that uses the base
+visibility is zero, so no receiver looks it up and the mask gives it no slot.
+A coat whose normal differs keeps its own inline lookup. Alpha tags the
 layer with the light index plus one over 255. The pass repeats deferred
 lighting's world-position reconstruction, light traversal, range and cone
-tests, and back-lit normal choice, so lighting counts the same lights in the
-same order and reads layer k for its k-th shadowed light. A light past the
+tests, back-lit normal choice and facing test, so lighting counts the same
+lights in the same order and reads layer k for its k-th shadowed light. A light past the
 eighth, or whose layer tag names another light because a boundary test
 differed between the passes, is filtered inline by lighting without contact
 shadows. Eight layers therefore bound the shadowed lights overlapping a pixel,
-not the shadowed lights in the frame. `VkrLocalShadowView.shadow_params.y` is
-zero. The clearcoat's second visibility query for a differing coat normal,
+not the shadowed lights in the frame. The clearcoat's second visibility query for a differing coat normal,
 forward shading, and transmission shading still filter inline. On the M1 host in
 the Bistro street view, the mask pass costs about 2.3 ms and lowers
 `Lighting.Deferred` from 6.7 ms to 3.3 ms, a net 1.1 ms of GPU time. Output
@@ -450,3 +454,15 @@ every lamp shadowed against 14.6 ms (18.2 ms p95) without local shadows, with
 `Shadow.LocalMask` at 4.0 ms. Giving every light the single-tap filter lowered
 the median to 18.5 ms and the mask to 2.6 ms. The M1 Pro does not hold 60 FPS
 in this walk with any measured choice.
+
+Skipping lights behind the shadow normal was measured the same day with
+alternating builds of the change on the M1 Pro, Metal Release, one run each
+under `local-offscreen-gpu-single` with `VKR_LOCAL_SHADOW_FADE_DISTANCE=1000`.
+On `local_shadow_cache_bistro_metal_indoor_walk`, frame wall time fell from
+20.16 to 19.09 ms median, `Shadow.LocalMask` from 3.98 to 3.45 ms and
+`Lighting.Deferred` from 5.22 to 4.94 ms; the street view was unchanged at
+6.31 to 6.37 ms of mask and 20.4 to 20.6 ms of frame time in both builds.
+Captures after the fill were byte-identical indoors and differed in the street
+view by at most 8 of 255, as two captures of one build do. A
+`MTL_DEBUG_LAYER=1` run of `local_shadow_cache_bistro_metal_validation` passed
+with no messages. The walk still misses 60 FPS on the M1 Pro.

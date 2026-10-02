@@ -1395,19 +1395,21 @@ kernel void vkr_metal_packet_local_shadow_mask(
         continue;
       VkrPunctualLightTerm term = vkr_punctual_light_term(
           light.p0, light.p1, light.p2, p3, world_position);
-      // Lighting filters lights past the last slot inline.
-      if (!term.in_range || term.cone <= 0.0f ||
-          slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+      if (!term.in_range || term.cone <= 0.0f)
         continue;
       bool back_lit = diffuse_transmission > 0.0f &&
                       dot(normal, term.direction) < 0.0f;
       float3 shadow_normal = back_lit ? -normal : normal;
+      // A light that cannot light the pixel takes no slot, and lighting
+      // filters lights past the last slot inline.
+      if (!vkr_local_shadow_light_faces(shadow_normal, term.direction) ||
+          slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+        continue;
       float3 visibility = vkr_metal_packet_local_shadow_sample(
           frame, uint(p3.w), term.kind, world_position, shadow_normal);
       const device VkrLocalShadowView &view =
           frame->local_shadow_views[uint(p3.w) - 1u];
-      if (view.shadow_params.z < 0.5f && any(visibility > 0.0f) &&
-          dot(shadow_normal, term.direction) > 0.0f) {
+      if (view.shadow_params.z < 0.5f && any(visibility > 0.0f)) {
         float3 origin =
             world_position +
             shadow_normal *

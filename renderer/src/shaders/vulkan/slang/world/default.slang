@@ -1102,14 +1102,20 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
             }
             float3 shadow_normal =
                 vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy);
-            float3 visibility;
-            if (UseMask)
-                visibility = packet_local_shadow_mask(
-                    frame, light, light_index, kind, world_position,
-                    shadow_normal, mask_texture, pixel, mask_slot);
-            else
-                visibility = packet_local_shadow(frame, light, kind,
-                                                 world_position, shadow_normal);
+            // The base lobes are zero for a light behind the shadow normal, so
+            // its visibility is never looked up; deferred lighting's mask gave
+            // it no slot either.
+            float3 visibility = 0.0f;
+            if (vkr_local_shadow_light_faces(shadow_normal, light_direction))
+            {
+                if (UseMask)
+                    visibility = packet_local_shadow_mask(
+                        frame, light, light_index, kind, world_position,
+                        shadow_normal, mask_texture, pixel, mask_slot);
+                else
+                    visibility = packet_local_shadow(
+                        frame, light, kind, world_position, shadow_normal);
+            }
             if (diffuse_enabled)
             {
                 VkrVulkanDirectResult direct = packet_direct(

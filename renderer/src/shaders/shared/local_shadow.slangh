@@ -33,6 +33,15 @@ float3 vkr_local_shadow_apply_strength(float3 visibility, float strength) {
     return 1.0f - strength * (1.0f - visibility);
 }
 
+// Whether a light can reach a surface's base lobes. Diffuse, specular, sheen
+// and a coat sharing the base normal all vanish unless the light lies in front
+// of the shadow normal, which back-lit diffuse transmission flips toward the
+// light. Receivers neither filter nor give a mask slot to a light that fails.
+bool vkr_local_shadow_light_faces(float3 shadow_normal, float3 light_direction)
+{
+    return dot(shadow_normal, light_direction) > 0.0f;
+}
+
 uint vkr_local_shadow_face(float3 direction) {
     float3 a = abs(direction);
     if (a.x >= a.y && a.x >= a.z) return direction.x >= 0.0f ? 0u : 1u;

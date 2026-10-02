@@ -465,9 +465,15 @@ void vkr_metal_packet_punctual_layered(
       bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                       dot(normal, light_direction) < 0.0f;
       float3 shadow_normal = back_lit ? -normal : normal;
+      /* The base lobes are zero for a light behind the shadow normal, so its
+         visibility is never looked up; deferred lighting's mask gave it no
+         slot either. */
       float3 base_attenuation =
-          attenuation * local_shadow(frame, uint(p3.w), light_index, kind,
-                                     world_position, shadow_normal);
+          vkr_local_shadow_light_faces(shadow_normal, light_direction)
+              ? attenuation * local_shadow(frame, uint(p3.w), light_index,
+                                           kind, world_position,
+                                           shadow_normal)
+              : float3(0.0f);
       float3 coat_attenuation = base_attenuation;
       if (coat_active && any(coat.normal != shadow_normal)) {
         coat_attenuation =
