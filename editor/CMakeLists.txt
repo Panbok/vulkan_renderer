@@ -37,7 +37,8 @@ vkr_configure_application_target(vkr_editor)
 # Every cooker, table, shader compile, project job, scene bake and material
 # preview runs through vkr_bakery; the harness and preview tool remain
 # separate renderer programs.
-add_dependencies(vkr_editor vkr_bakery vkr_harness vkr_asset_preview)
+add_dependencies(vkr_editor vkr_bakery vkr_harness vkr_asset_preview
+    vkr_script_sdk)
 # Build packages the open project with the player template beside
 # vkr_player (docs/proposals/project-packaging.md).
 if(TARGET vkr_player)
@@ -47,8 +48,12 @@ target_compile_definitions(vkr_editor PRIVATE
     VKR_EDITOR_ASSET_PREVIEW_PATH="$<TARGET_FILE:vkr_asset_preview>"
     VKR_EDITOR_BAKERY_PATH="$<TARGET_FILE:vkr_bakery>"
     VKR_EDITOR_HARNESS_PATH="$<TARGET_FILE:vkr_harness>"
-    # Script completion reads the script SDK headers of this tree (ADR-079).
+    # Linked script modules, such as the FPS sample, keep their sources in
+    # this tree (ADR-079).
     VKR_EDITOR_SCRIPT_SDK_ROOT="${CMAKE_SOURCE_DIR}"
+    # Script completion reads the staged script SDK unless `sdk` lies beside
+    # the editor.
+    VKR_EDITOR_SCRIPT_SDK_DIR="${VKR_SCRIPT_SDK_DIR}"
 )
 
 # Installed bootstrap UI resources allow the chooser to run before a workspace
@@ -90,6 +95,7 @@ endforeach()
 #   shaders/<backend>/         the shader catalog
 #   content/                   engine content, the installed content root
 #   templates/player/          the player template (player/CMakeLists.txt)
+#   sdk/                       the script SDK headers (cmake/vkr_script_sdk.cmake)
 # The programs find each other, the content and the catalog beside
 # themselves, and keep writable state in per-user directories.
 include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
@@ -104,6 +110,8 @@ install(DIRECTORY "$<TARGET_FILE_DIR:vkr_editor>/resources/"
     DESTINATION resources COMPONENT editor)
 install(DIRECTORY "${VKR_SHADER_CATALOG_DIR}/"
     DESTINATION shaders COMPONENT editor)
+install(DIRECTORY "${VKR_SCRIPT_SDK_DIR}/"
+    DESTINATION sdk COMPONENT editor)
 # Probe bakes copy the offscreen profile into each job.
 foreach(resource IN LISTS VKR_ENGINE_FILES ITEMS
         tools/profiles/local-offscreen.json)

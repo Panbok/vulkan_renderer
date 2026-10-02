@@ -26,6 +26,9 @@ void vkr_editor_install_resolve(void);
 /** Absolute path of a companion program: beside the editor when it is
  * there, else where this build tree produced it. */
 const char *vkr_editor_tool_path(VkrEditorTool tool);
+/** The script SDK headers' include root (ADR-079): `sdk` beside the editor
+ * when it holds sdk.h, else the build tree's staged copy. */
+const char *vkr_editor_script_sdk_dir(void);
 /** `<base>/VKR/<leaf>` below a per-user base directory; not created. */
 bool8_t vkr_editor_user_path(VkrPlatformUserDirectory kind, const char *leaf,
                              char *out, uint32_t capacity);

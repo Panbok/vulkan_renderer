@@ -44,9 +44,11 @@ foreach(variant 1 2 3 4)
     add_library(vkr_test_reload_probe_${variant} MODULE scripts/reload_probe.c)
     target_compile_definitions(vkr_test_reload_probe_${variant} PRIVATE
         RELOAD_VARIANT=${variant})
-    # Only the script SDK and the foundation headers, as Bakery builds them.
+    # Only the staged script SDK, as Bakery builds them: a header missing
+    # from its list fails this build.
     target_include_directories(vkr_test_reload_probe_${variant} PRIVATE
-        "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/lib/src")
+        "${VKR_SCRIPT_SDK_DIR}")
+    add_dependencies(vkr_test_reload_probe_${variant} vkr_script_sdk)
     set_target_properties(vkr_test_reload_probe_${variant} PROPERTIES
         C_VISIBILITY_PRESET hidden)
     # Reload closes these modules and opens their next generation. With
@@ -69,7 +71,8 @@ foreach(variant 1 2 3 4)
     target_compile_definitions(vkr_test_project_probe_${variant} PRIVATE
         PROJECT_VARIANT=${variant})
     target_include_directories(vkr_test_project_probe_${variant} PRIVATE
-        "${CMAKE_SOURCE_DIR}/sdk" "${CMAKE_SOURCE_DIR}/lib/src")
+        "${VKR_SCRIPT_SDK_DIR}")
+    add_dependencies(vkr_test_project_probe_${variant} vkr_script_sdk)
     set_target_properties(vkr_test_project_probe_${variant} PROPERTIES
         C_VISIBILITY_PRESET hidden)
     if(APPLE)

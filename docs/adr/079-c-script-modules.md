@@ -24,14 +24,15 @@ Accepted (partial). Implemented:
   built by Bakery into one project library loaded before the project's
   documents, with a project's first build on a worker;
 - the floating Script editor with highlighting, completion and diagnostics;
-- the FPS sample as a statically linked module.
+- the FPS sample as a statically linked module;
+- the script SDK headers staged as one include root and shipped in the
+  editor distribution.
 
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
 - Exports between modules.
 - Packaged games do not load a project's script library yet; `vkr_player`
   still links only the FPS module.
-- The SDK and foundation headers in the editor distribution.
 - A TypeScript layer.
 
 ## Context
@@ -55,8 +56,22 @@ could live with the World while zones came and went.
 ### One SDK: `sdk.h` over a host-owned table
 
 [`sdk.h`](../../sdk/sdk.h) is everything a module may use. It includes only
-the foundation's `defines.h` and inline math, so Bakery builds modules with
-the SDK and `lib/src` as their only include roots. A module exports
+the foundation's `defines.h` and inline math.
+[`vkr_script_sdk.cmake`](../../cmake/vkr_script_sdk.cmake) lists `sdk.h` and
+the eight foundation headers it reaches (`defines.h`, `vkr_pch.h`,
+`platform/vkr_platform.h` and five math headers) and stages them flat into
+one include root, `<build>/script_sdk`. That root is the only engine include
+modules compile against:
+
+- **Bakery** uses `sdk` beside its executable when it holds `sdk.h`, else
+  the staged root of the build tree that produced it
+  (`VKR_BAKERY_SCRIPT_SDK_DIR`). The root joins each object's recipe.
+- **The editor distribution** installs the staged root as `sdk/` beside the
+  programs (ADR-078), so projects compile outside the repository.
+- **Script completion** reads the same headers through
+  `vkr_editor_script_sdk_dir`, resolved like Bakery's.
+- **The test probes** compile from the staged root alone, so a header the
+  list misses fails the build. A module exports
 `vkr_module_<Name>(sdk_version)` and returns a static `VkrModuleDesc`, or
 NULL when the version differs; there is no compatibility with older modules.
 
@@ -307,9 +322,8 @@ The manager drives it:
   <Scripts> --out <output> --json` on a worker, one at a time. Bakery
   generates `project_modules.c`, whose `vkr_project_modules` lists each
   module's entry, and rewrites it only when the list changes, so an
-  unchanged project is fully cached. It adds `sdk/` and `lib/src` of this
-  source tree as system includes (`VKR_BAKERY_SCRIPT_SDK_DIRS`), so the
-  engine's own warnings are not script diagnostics. On Windows the library
+  unchanged project is fully cached. It adds the script SDK root as a system
+  include, so the engine's own warnings are not script diagnostics. On Windows the library
   links with its own static C runtime and the default DLL entry, which
   initializes it. Modules therefore free what they allocate themselves and
   pass no allocation or `FILE` across the SDK. The runtime's DLL startup adds
@@ -604,7 +618,7 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
       calling thread before `vkr_task_run` returns.
   - `script_reload_test.c` loads
     [`reload_probe.c`](../../tests/scripts/reload_probe.c), built as four
-    `MODULE` libraries from `sdk/` and `lib/src` only:
+    `MODULE` libraries from the staged script SDK only:
     - a code-only reload keeps data (3 ticks, then 23);
     - a new `data_version` restarts on zeroed data;
     - a changed field is refused while the old code keeps counting;
@@ -635,6 +649,16 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
   consecutive frames reported "building", "Scripts: Loaded" followed, and
   the project World (5 entities) loaded after it. `create spinner` then
   made an entity with `speed` 1.
+- Script SDK headers: the Debug build staged nine headers into
+  `build_debug/script_sdk`, the reload and project probes compiled with
+  `-I<build>/script_sdk` as their only include, and `vkr_bakery cook
+  scripts/fps/fps.script.json` rebuilt all 8 actions against it.
+  `cmake --install build_release --prefix %TEMP%\vkr-sdk-dist --component
+  editor` installed the same nine under `sdk/`. With the build tree's
+  `script_sdk` renamed away, the installed `vkr_bakery scripts` built a
+  copy of the sample folder under `%TEMP%` into `project.dll` (107,520
+  bytes); with the installed `sdk/` renamed away too, it failed with
+  "'sdk.h' file not found".
 - `vkr_bakery scripts` on a sample folder (a `Common` library, a `Door`
   module depending on it and a `Spinner` module) ran 5 actions (4 objects,
   1 link) in 0.64 s and wrote `project.dll` (107,520 bytes). It exports
@@ -675,7 +699,8 @@ Unavailable:
   `VKR_LOCAL_SHADOW_FACE_COUNT_MAX` 768 (`c87bce97`) makes the graph image
   table about 289 MiB, beyond the renderer's 98 MiB render-graph allocator.
 - The windowed Script editor: highlighting, diagnostics and completion over
-  `sdk.h` and package headers were built but not exercised interactively.
+  `sdk.h` and package headers were built but not exercised interactively,
+  including completion from an installed editor's `sdk/`.
 - The editor driving a project library: the build, load and reload path was
   built and its runtime half tested, but no editor run loaded one, since the
   Vulkan editor at this revision needs the reserve workaround.

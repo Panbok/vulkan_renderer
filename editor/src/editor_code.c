@@ -1,5 +1,6 @@
 #include "editor_code.h"
 
+#include "editor_install.h"
 #include "editor_internal.h"
 #include "editor_scripts.h"
 
@@ -1281,14 +1282,12 @@ static void code_load_sdk(VkrEditorCode *code) {
     return;
   }
   static const char *const headers[] = {
-      "sdk/sdk.h",          "lib/src/math/vec.h",
-      "lib/src/math/mat.h", "lib/src/math/vkr_quat.h",
-      "lib/src/defines.h",
+      "sdk.h", "math/vec.h", "math/mat.h", "math/vkr_quat.h", "defines.h",
   };
+  const char *root = vkr_editor_script_sdk_dir();
   for (uint32_t i = 0; i < ArrayCount(headers); ++i) {
     char path[VKR_EDITOR_SCRIPT_PATH];
-    snprintf(path, sizeof(path), "%s/%s", VKR_EDITOR_SCRIPT_SDK_ROOT,
-             headers[i]);
+    snprintf(path, sizeof(path), "%s/%s", root, headers[i]);
     code_symbols_parse_file(code, &code->sdk, path);
   }
   for (uint32_t i = 0; i < ArrayCount(s_keywords); ++i) {

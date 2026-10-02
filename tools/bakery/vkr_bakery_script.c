@@ -44,26 +44,29 @@
 #define VKR_SCRIPT_DRIVER "xcrun"
 #endif
 
-#if !defined(VKR_BAKERY_SCRIPT_SDK_DIRS)
-#define VKR_BAKERY_SCRIPT_SDK_DIRS ""
+#if !defined(VKR_BAKERY_SCRIPT_SDK_DIR)
+#define VKR_BAKERY_SCRIPT_SDK_DIR ""
 #endif
 
-/* The engine header directories every script compiles against (ADR-079),
- * `|`-separated in the build definition. They join each object's recipe, so
- * moving the engine rebuilds. */
-vkr_internal VkrBakeryJson *vkr_script_sdk_roots(Arena *arena) {
+/* The script SDK every script compiles against (ADR-079): `sdk` beside this
+ * vkr_bakery, as a distributed editor ships it, then the build tree's staged
+ * copy. It joins each object's recipe, so moving the SDK rebuilds. */
+vkr_internal VkrBakeryJson *vkr_script_sdk_roots(VkrBakeryGraph *graph) {
+  Arena *arena = graph->arena;
   VkrBakeryJson *roots = vkr_bakery_json_array(arena);
-  const char *cursor = VKR_BAKERY_SCRIPT_SDK_DIRS;
-  while (*cursor) {
-    const char *end = strchr(cursor, '|');
-    const size_t length = end ? (size_t)(end - cursor) : strlen(cursor);
-    char directory[VKR_BAKERY_PATH_CAPACITY];
-    if (length && length < sizeof(directory)) {
-      MemCopy(directory, cursor, length);
-      directory[length] = '\0';
-      vkr_bakery_json_append(roots, vkr_bakery_json_cstr(arena, directory));
-    }
-    cursor += length + (end ? 1u : 0u);
+  char directory[VKR_BAKERY_PATH_CAPACITY];
+  char beside[VKR_BAKERY_PATH_CAPACITY];
+  char header[VKR_BAKERY_PATH_CAPACITY];
+  vkr_bakery_path_parent(directory, sizeof(directory),
+                         graph->config->self_path);
+  const char *root = VKR_BAKERY_SCRIPT_SDK_DIR;
+  if (vkr_bakery_path_join(beside, sizeof(beside), directory, "sdk") &&
+      vkr_bakery_path_join(header, sizeof(header), beside, "sdk.h") &&
+      vkr_bakery_is_file(header)) {
+    root = beside;
+  }
+  if (root[0]) {
+    vkr_bakery_json_append(roots, vkr_bakery_json_cstr(arena, root));
   }
   return roots;
 }
@@ -628,7 +631,7 @@ vkr_internal bool8_t vkr_script_package_objects(VkrBakeryGraph *graph,
     vkr_bakery_json_set(arena, recipe, "include_roots",
                         vkr_bakery_json_clone(arena, roots));
     vkr_bakery_json_set(arena, recipe, "sdk_roots",
-                        vkr_script_sdk_roots(arena));
+                        vkr_script_sdk_roots(graph));
     vkr_bakery_json_set(arena, recipe, "compiler",
                         vkr_bakery_json_cstr(arena, compiler));
     VkrBakeryAction *object = vkr_bakery_graph_add(

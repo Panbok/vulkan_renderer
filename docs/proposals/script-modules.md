@@ -153,11 +153,12 @@ ADR-072 records the adapter, the 512-body threshold and the measurements.
    module. Consoles and iOS need static linking later. That requires a linker
    at package time and runtime archives and headers in the editor
    distribution.
-3. **Headers for projects.** Bakery and the Script editor's completion read
-   `sdk/` and `lib/src` from this source tree (`VKR_BAKERY_SCRIPT_SDK_DIRS`,
-   `VKR_EDITOR_SCRIPT_SDK_ROOT`). The editor distribution needs `sdk.h` and
-   the foundation's `defines.h` and math headers, so project scripts compile
-   outside the repository.
+3. **Headers for projects.** Shipped in ADR-079: the script SDK headers are
+   staged as one include root and installed as `sdk/` in the editor
+   distribution. Left: `math/vkr_math.h` pulls `platform/vkr_platform.h`
+   into the SDK for one inline seeding helper, so a script calling it fails
+   to link; moving that helper out of the math header would shrink the SDK
+   to its math and `defines.h`.
 4. **Shell split.** `vkr_sample_runtime.c` still mixes the game shell with
    editor tooling: gizmo, picking, the edit journal, transport and view
    modes, IBL validation and telemetry. The packaged player links all of it.

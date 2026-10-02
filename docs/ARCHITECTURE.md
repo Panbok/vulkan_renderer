@@ -33,7 +33,8 @@ decoding, not source import or artifact encoding. `vkr_runtime` builds on the
 renderer and format libraries. It supplies the reusable application host,
 standard scene runtime, runtime core services, and scene-facing systems.
 C script modules under `scripts/` include only `sdk/sdk.h` and the foundation
-headers, and call the engine through the runtime script host's SDK table
+headers it reaches, staged as one include root that the editor distribution
+ships as `sdk/` (`cmake/vkr_script_sdk.cmake`), and call the engine through the runtime script host's SDK table
 ([ADR-079](adr/079-c-script-modules.md)).
 `vkr_sample_runtime` is an optional consumer that supplies sample control and
 presentation policy for the app, the editor and the packaged-game player

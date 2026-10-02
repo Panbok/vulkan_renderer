@@ -35,11 +35,12 @@ else()
     # BCryptGenRandom seeds project identifiers.
     target_link_libraries(vkr_bakery PRIVATE psapi bcrypt)
 endif()
-# Script modules include the script SDK and the foundation headers of this
-# source tree (ADR-079).
+# Script modules compile against the staged script SDK (ADR-079); a
+# distributed Bakery uses the `sdk` folder beside it instead.
+add_dependencies(vkr_bakery vkr_script_sdk)
 target_compile_definitions(vkr_bakery PRIVATE
     VKR_BAKERY_SLANGC_DEFAULT="${VKR_SLANGC_EXECUTABLE}"
-    VKR_BAKERY_SCRIPT_SDK_DIRS="${CMAKE_SOURCE_DIR}/sdk|${CMAKE_SOURCE_DIR}/lib/src")
+    VKR_BAKERY_SCRIPT_SDK_DIR="${VKR_SCRIPT_SDK_DIR}")
 
 # Producer identities: each group lists the sources whose change can alter that
 # producer's output bytes. Toolchain versions for shaders live in recipes.

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-02
 authority: adr
 ---
 
@@ -159,7 +159,9 @@ Release editor and runs `cmake --install --component editor`
 side, the Vulkan loader beside them on macOS, `resources/editor`, the shader
 catalog in `shaders/`, the engine content in `content/`, and
 `templates/player`, whose `template.json` names `../../content` and
-`../../shaders`. The content is the package engine set plus the offscreen
+`../../shaders`, and the script SDK headers in `sdk/`
+([ADR-079](079-c-script-modules.md)), which the installed Bakery compiles
+project scripts against. The content is the package engine set plus the offscreen
 profile probe bakes copy. Every program takes its content root from a
 `content/` directory beside its executable when one exists, else the
 repository it was built from (`vkr_content_root_is_repository()` in the
