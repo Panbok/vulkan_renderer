@@ -3062,7 +3062,8 @@ kernel void vkr_metal_packet_transmission_compact(
     ushort simd_group_count [[simdgroups_per_threadgroup]]) {
   if (root.layer >= 4u)
     return;
-  if (all(pixel < root.extent))
+  if (vkr_transmission_compact_copies_source(root.layer) &&
+      all(pixel < root.extent))
     root.destination.write(root.source.read(pixel), pixel);
   threadgroup uint thin_simd_totals[vkr_metal_compact_simd_max];
   threadgroup uint extended_simd_totals[vkr_metal_compact_simd_max];

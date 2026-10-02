@@ -19,6 +19,18 @@ struct VkrTransmissionExit
     float path_length;
 };
 
+// Compacted layers shade from the deepest, 3, to the nearest, 0, alternating
+// two images; each compaction copies its source into its destination so the
+// pixels its layer does not shade keep the layers behind. A peeled layer covers
+// only pixels its nearer layers cover, so once the two deepest compactions have
+// initialized both images, a nearer layer's destination already matches its
+// source wherever that layer does not shade, and its full-screen copy is
+// skipped.
+bool vkr_transmission_compact_copies_source(uint layer)
+{
+    return layer >= 2u;
+}
+
 float vkr_transmission_directional_scale(float3 direction,
                                          float3 axis_x,
                                          float3 axis_y,

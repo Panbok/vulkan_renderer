@@ -3191,7 +3191,7 @@ void vk_transmission_compact(uint3 thread_id : SV_DispatchThreadID,
 {
     VkrVkTransmissionCompactRoot *root = g_transmission_compact_push.root;
     bool in_extent = all(thread_id.xy < root.extent);
-    if (in_extent)
+    if (vkr_transmission_compact_copies_source(root.layer) && in_extent)
         g_storage_2d[root.destination_texture][thread_id.xy] =
             g_storage_2d[root.source_texture][thread_id.xy];
     bool covered = in_extent &&

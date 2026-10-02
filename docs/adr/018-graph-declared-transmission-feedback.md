@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-10-02
 authority: adr
 ---
 
@@ -36,7 +36,12 @@ an immutable six-level opaque-color pyramid at a continuous IOR-adjusted LOD.
 This is a bounded approximation: frosted layers do not recursively blur all
 other transmissive layers. Compact pixel lists partition thin factor-only and
 extended work; production shader variants select temporal work only for layer 0.
-Metal transmission indirect buffers inherit the parent peel root.
+Metal transmission indirect buffers inherit the parent peel root. Each
+compaction copies its layer's source into its destination so unshaded pixels
+keep the layers behind; because a peeled layer covers only pixels its nearer
+layers cover, layers 1 and 0 skip that full-screen copy once layers 3 and 2
+have initialized both images (shared `vkr_transmission_compact_copies_source`).
+Output is unchanged; the Bistro street view saved 0.05 ms on Metal.
 
 The importer treats omitted metallic/roughness factors without an ORM texture
 on positive-transmission glass as dielectric/smooth; explicit factors remain
