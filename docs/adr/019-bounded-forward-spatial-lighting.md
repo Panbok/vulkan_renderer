@@ -324,8 +324,14 @@ and in `local_shadow_cache_bistro_metal_indoor_walk` from 11.52 to 10.99 ms.
 The hints change only code generation; under fast math the reordered sky
 evaluation moved cloud pixels by at most 20 of 255 (0.11% of the street view
 by more than 2), and every lit surface matched. With the hint the march still
-costs 1.1 ms (5.78 against 4.67 ms without it), which bounds what a separate
-contact pass could recover. Vulkan has no equivalent hint; its drivers choose
+costs 1.1 ms (5.78 against 4.67 ms without it). A separate
+`Shadow.LocalContact` pass that rescanned the mask slots and marched for the
+full-filter lights was built on both backends and measured on Metal: the mask
+fell to 4.64 ms but the contact pass took 1.36 ms, and 1.18 ms with the
+view-depth march and its depth reads issued before any test, so mask and
+contact together stayed above the single kernel (5.84 against 5.74 ms). It was
+not kept; the march costs about 1.1 ms wherever it runs, and only fewer
+marches or steps, a quality decision, would lower it. Vulkan has no equivalent hint; its drivers choose
 occupancy. Probe bounds/ranges are not geometry visibility. The removed hard influence-AABB
 experiment is not an occlusion mechanism. GTAO attenuates local indirect diffuse
 only and does not establish arbitrary wall or furniture occlusion.

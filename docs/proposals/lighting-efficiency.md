@@ -60,6 +60,40 @@ This shows the following:
   views matched same-code captures within run-to-run edge noise. The cost is
   register pressure, not work.
 
+### Cost split, 2026-10-02
+
+Metal Release, M1 Pro, Bistro street view at 1280x720 without TAA (the street
+camera of `bistro_native_perf_audit_steady`), `local-offscreen-gpu-single`,
+after the occupancy hints (ADR-019). Each row is the mask or lighting time
+removed by also compiling out that part, applied cumulatively in the listed
+order, so a row's cost depends on the rows above it.
+
+| `Shadow.LocalMask` (5.77 ms; 4.21 ms with TAA) | ms |
+|---|---:|
+| Contact march for the full-filter lights | 1.10 |
+| Nine-tap PCF for the three full-filter lights (four rotated taps with TAA: 1.14) | 2.63 |
+| Single-tap compare and transmission lookup for every shadowed light | 1.37 |
+| Light traversal, punctual term, G-buffer reads and slot writes | 0.63 |
+
+| `Lighting.Deferred` (3.76 ms) | ms |
+|---|---:|
+| Light-contribution counters | 0.19 |
+| Inline filtering of lights past the eighth mask slot | 0.44 |
+| Mask reads | 0.18 |
+| Punctual BRDF loop over the cell's lights | 1.36 |
+| Directional cascades and cloud shadow | 0.59 |
+| Directional BRDF | 0.06 |
+| Image-based, probe and volume lighting | 0.24 |
+| GTAO | 0.07 |
+| Remainder: G-buffer decode, sky, roughness filtering and writes | 0.63 |
+
+The transmission chain took 3.25 ms in four peeled layers covering 61,898,
+2,272, 1,483 and 1,258 pixels: four `VBuffer.Transmission` rasters 0.50 ms,
+four full-screen `Transmission.Compact` scans 0.68 ms, the opaque pyramid
+0.11 ms, culling 0.04 ms, the nearest layer's shading 1.44 ms (0.49 ms of it
+inline nine-tap local-shadow filtering) and the three deeper layers' shading
+0.48 ms, about 0.15 ms each whatever their pixel count.
+
 ## Proposed change
 
 In order of measured payoff:
