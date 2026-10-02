@@ -103,8 +103,9 @@ Shipped in ADR-079 as described below, except named groups.
 - `vkr_spawn_model` loads, through the resource system's asynchronous path.
 - The first build of an unbuilt project module. The World request waits for
   its types instead of the frame blocking.
-- Script jobs, recorded in the ledger. The host joins or cancels them before
-  a reload, retire or stop unloads their code.
+- Script tasks, recorded in the ledger. Shipped in ADR-079: a scope's end
+  waits for its tasks, and Stop waits for all of them before superseded
+  libraries close.
 - Jolt's internal work, on a thread pool backed by `VkrJobSystem`.
 
 Parallel behaviors and exports come last, when a measured case needs them.

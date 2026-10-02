@@ -24,6 +24,7 @@
 
 #include "animation/vkr_animation_player.h"
 #include "core/input.h"
+#include "core/vkr_job_system.h"
 #include "core/vkr_type_desc.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
@@ -166,6 +167,8 @@ typedef struct VkrScriptSessionDesc {
   VkrScene *world;
   InputState *input;
   struct VkrRenderAssets *assets;
+  /** Workers for script tasks; NULL runs each task when it is created. */
+  VkrJobSystem *jobs;
   /** The application asked for the sample gameplay content (`--gameplay`). */
   bool8_t sample_content;
 } VkrScriptSessionDesc;
@@ -269,6 +272,12 @@ typedef struct VkrScriptHost {
   /* Libraries replaced while a session ran; closed when it stops. */
   VkrScriptRetiredLibrary retired[VKR_SCRIPT_RETIRED_LIBRARY_MAX];
   uint32_t retired_count;
+  /* Script tasks not yet freed, in `instance_allocator`; a released one
+     waits here until its worker job lets go of it. */
+  struct ScriptTask **tasks;
+  uint32_t task_count;
+  uint32_t task_capacity;
+  uint64_t task_serial;
   uint32_t load_serial;
   char error[VKR_SCRIPT_ERROR_CAPACITY];
 } VkrScriptHost;

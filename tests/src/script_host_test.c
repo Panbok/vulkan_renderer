@@ -1,5 +1,6 @@
 #include "script_host_test.h"
 
+#include "core/vkr_job_system.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -458,6 +459,123 @@ static void test_script_deferred(VkrScriptHost *host) {
 }
 
 // =============================================================================
+// Tasks
+// =============================================================================
+
+typedef struct CrunchWork {
+  uint64_t count;
+  uint64_t sum;
+  VkrThreadId thread;
+} CrunchWork;
+
+typedef struct CrunchData {
+  VkrTask sum;
+  VkrTask slow;
+  CrunchWork result;
+  CrunchWork waited;
+  bool8_t taken;
+} CrunchData;
+
+static VkrAtomicBool s_crunch_slow_done;
+
+static void crunch_sum(void *data) {
+  CrunchWork *work = data;
+  work->thread = vkr_thread_current_id();
+  for (uint64_t i = 1; i <= work->count; ++i) {
+    work->sum += i;
+  }
+}
+
+/* Touches only a flag nothing else writes until the task ends. */
+static void crunch_slow(void *data) {
+  (void)data;
+  vkr_thread_sleep(50u);
+  vkr_atomic_bool_store(&s_crunch_slow_done, true_v, VKR_MEMORY_ORDER_RELEASE);
+}
+
+static void crunch_start(VkrCtx *ctx, CrunchData *data) {
+  data->sum = vkr_task_run(ctx, crunch_sum, &(CrunchWork){.count = 100000u},
+                           sizeof(CrunchWork));
+  /* Never taken: Stop waits for it. */
+  data->slow = vkr_task_run(ctx, crunch_slow, NULL, 0u);
+  /* A task larger than the limit does not start. */
+  if (vkr_task_run(ctx, crunch_sum, &data->result, VKR_TASK_DATA_MAX + 1u).id) {
+    vkr_fail(ctx, "oversized task started");
+  }
+}
+
+static void crunch_fixed_update(VkrCtx *ctx, CrunchData *data) {
+  if (!data->taken) {
+    data->taken =
+        vkr_task_take(ctx, data->sum, &data->result, sizeof(data->result));
+  }
+  if (!data->waited.count) {
+    /* Fan out and join inside one tick. */
+    const VkrTask task = vkr_task_run(
+        ctx, crunch_sum, &(CrunchWork){.count = 10u}, sizeof(CrunchWork));
+    if (!vkr_task_wait(ctx, task, &data->waited, sizeof(data->waited)) ||
+        vkr_task_take(ctx, task, NULL, 0u)) {
+      vkr_fail(ctx, "a waited task was not taken exactly once");
+    }
+  }
+}
+
+VKR_MODULE(crunch, CrunchData, , .start = crunch_start,
+           .fixed_update = crunch_fixed_update)
+
+static void test_script_tasks(VkrScriptHost *host) {
+  VkrJobSystem jobs = {0};
+  VkrJobSystemConfig config = vkr_job_system_config_default();
+  config.worker_count = 2u;
+  config.max_jobs = 32u;
+  config.queue_capacity = 32u;
+  assert(vkr_job_system_init(&config, &jobs));
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &s_allocator, 56, 16, NULL));
+  InputState input = {0};
+  const VkrScriptSessionDesc session = {
+      .active = &scene, .input = &input, .jobs = &jobs};
+  const char *error = NULL;
+  s_life_mode = LIFE_IDLE;
+  vkr_atomic_bool_store(&s_crunch_slow_done, false_v, VKR_MEMORY_ORDER_RELAXED);
+  assert(vkr_script_host_start(host, &session, &error));
+  const CrunchData *data =
+      vkr_script_host_instance_data(host, "crunch", &scene);
+  assert(data && data->sum.id && data->slow.id);
+  vkr_scene_physics_set_paused(&scene, false_v);
+
+  // The sum runs on a worker while ticks continue; a tick takes it once it
+  // has finished, and a task waited for inside a tick is taken there.
+  for (uint32_t i = 0; i < 200u && !data->taken; ++i) {
+    vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+    if (!data->taken) {
+      vkr_thread_sleep(1u);
+    }
+  }
+  assert(!scene.simulation.faulted);
+  assert(data->taken && data->result.sum == 5000050000ull);
+  assert(data->result.thread != vkr_thread_current_id());
+  assert(data->waited.sum == 55u);
+
+  // Stop waits for the task nothing took and frees every task.
+  vkr_script_host_stop(host);
+  assert(vkr_atomic_bool_load(&s_crunch_slow_done, VKR_MEMORY_ORDER_ACQUIRE));
+  assert(host->task_count == 0u);
+
+  // Without workers, a task runs when it is created, on this thread.
+  const VkrScriptSessionDesc inline_session = {.active = &scene,
+                                               .input = &input};
+  assert(vkr_script_host_start(host, &inline_session, &error));
+  data = vkr_script_host_instance_data(host, "crunch", &scene);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  vkr_scene_update(&scene, VKR_SCENE_SIMULATION_FIXED_DT);
+  assert(data->taken && data->result.thread == vkr_thread_current_id());
+  vkr_script_host_stop(host);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_job_system_shutdown(&jobs);
+}
+
+// =============================================================================
 // Engine queries through a tool context
 // =============================================================================
 
@@ -634,6 +752,8 @@ bool32_t run_script_host_tests(void) {
   test_script_containers(&host);
   assert(vkr_script_host_add_module(&host, vkr_module_burst, &error));
   test_script_deferred(&host);
+  assert(vkr_script_host_add_module(&host, vkr_module_crunch, &error));
+  test_script_tasks(&host);
   test_has_visual(&host);
   vkr_script_host_shutdown(&host);
   printf("Script host tests passed\n");

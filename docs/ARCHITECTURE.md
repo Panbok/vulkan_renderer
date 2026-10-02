@@ -160,7 +160,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Render assets | Geometry, textures, materials, meshes, animation banks, fonts, persistent world text, loaders and load scratch | `runtime/src/renderer/systems/vkr_render_assets.c`, `runtime/src/renderer/resources/loaders/` |
 | Scene physics | Authored bodies/collider children, staged editor mutations, fixed ticks and evaluated pose publication | `runtime/src/renderer/systems/vkr_scene_physics.c` |
 | Script SDK | `sdk.h`: the context, handles, hooks and authoring macros modules use; the private table behind its inline calls | `sdk/sdk.h` |
-| Script host | Linked and shared-library modules, hot reload, script instances per attached container, ledgers that release acquisitions, behavior bindings, temp memory and the SDK's engine adapters | `runtime/src/script/vkr_script_host.h` |
+| Script host | Linked and shared-library modules, hot reload, script instances per attached container, ledgers that release acquisitions, tasks on worker threads, behavior bindings, temp memory and the SDK's engine adapters | `runtime/src/script/vkr_script_host.h` |
 | Editor scripts | Project `Scripts/` packages built into one project library: Bakery builds, diagnostics, loads before the project's documents, rebuilds on save and file changes | `editor/src/editor_scripts.c` |
 | Script editor | Floating code window: tabs, C highlighting, completion, diagnostics, drawn by `vkr_ui_code_view` | `editor/src/editor_code.c` |
 | FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the SDK | `scripts/fps/src/fps_module.c` |

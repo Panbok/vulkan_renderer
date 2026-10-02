@@ -69,7 +69,7 @@
 #include <stdio.h>
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 3u
+#define VKR_SDK_VERSION 4u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -148,6 +148,17 @@ typedef struct VkrShapeDesc {
   Vec3 size;
   Vec4 color;
 } VkrShapeDesc;
+
+/** Work running on a worker thread (`vkr_task_run`); zero is none. */
+typedef struct VkrTask {
+  uint64_t id;
+} VkrTask;
+
+/** A task's function: reads and writes only its own copy of the data. */
+typedef void (*VkrTaskFn)(void *data);
+
+/** Bytes of data one task may carry. */
+#define VKR_TASK_DATA_MAX (64u * 1024u)
 
 // =============================================================================
 // Components
@@ -603,6 +614,12 @@ typedef struct VkrSdkTable {
   bool8_t (*anim_blend)(VkrCtx *ctx, VkrEntity entity,
                         const VkrAnimSample *samples, uint32_t count,
                         bool8_t discontinuity);
+
+  /* Tasks. */
+  VkrTask (*task_run)(VkrCtx *ctx, VkrTaskFn fn, const void *data,
+                      uint32_t size);
+  bool8_t (*task_take)(VkrCtx *ctx, VkrTask task, void *out, uint32_t size,
+                       bool8_t wait);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -1104,6 +1121,37 @@ static inline bool8_t vkr_anim_blend(VkrCtx *ctx, VkrEntity entity,
                                      const VkrAnimSample *samples,
                                      uint32_t count, bool8_t discontinuity) {
   return ctx->sdk->anim_blend(ctx, entity, samples, count, discontinuity);
+}
+
+// =============================================================================
+// Tasks
+// =============================================================================
+
+/**
+ * Runs `fn` on a worker thread over its own copy of `size` bytes of `data`
+ * (at most VKR_TASK_DATA_MAX). The function must not call the SDK and may
+ * touch only that copy, plus memory nothing else changes until the task is
+ * taken. The task belongs to the calling scope like a spawn: when the scope
+ * ends, the host waits for it and drops its result. A zero task when it
+ * cannot start.
+ */
+static inline VkrTask vkr_task_run(VkrCtx *ctx, VkrTaskFn fn, const void *data,
+                                   uint32_t size) {
+  return ctx->sdk->task_run(ctx, fn, data, size);
+}
+
+/** Once the task has finished, copies up to `size` bytes of its data into
+ * `out` and forgets it. False while it runs, or for an unknown task. */
+static inline bool8_t vkr_task_take(VkrCtx *ctx, VkrTask task, void *out,
+                                    uint32_t size) {
+  return ctx->sdk->task_take(ctx, task, out, size, false_v);
+}
+
+/** Waits for the task, running it here if no worker has started it, then
+ * takes it. False for an unknown task. */
+static inline bool8_t vkr_task_wait(VkrCtx *ctx, VkrTask task, void *out,
+                                    uint32_t size) {
+  return ctx->sdk->task_take(ctx, task, out, size, true_v);
 }
 
 // =============================================================================

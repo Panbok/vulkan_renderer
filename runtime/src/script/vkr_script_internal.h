@@ -15,6 +15,8 @@ typedef enum ScriptLedgerKind {
   SCRIPT_LEDGER_MODEL,
   SCRIPT_LEDGER_STATE,
   SCRIPT_LEDGER_RENDER_POSE,
+  /* `entity` holds the task id. */
+  SCRIPT_LEDGER_TASK,
 } ScriptLedgerKind;
 
 typedef struct ScriptLedgerRecord {
@@ -91,6 +93,22 @@ typedef struct ScriptCommand {
     } character;
   } as;
 } ScriptCommand;
+
+/* A script task and its data copy, which follows the struct. The frame
+ * thread owns it; a worker job borrows it until `job_exited`. Whoever
+ * claims it first runs `fn`. */
+typedef struct ScriptTask {
+  uint64_t id;
+  VkrTaskFn fn;
+  uint32_t size;
+  /* Queued on a worker, which reads the task until it sets `job_exited`. */
+  bool8_t queued;
+  /* Its scope let go of it; freed once no job holds it. */
+  bool8_t released;
+  VkrAtomicBool claimed;
+  VkrAtomicBool done;
+  VkrAtomicBool job_exited;
+} ScriptTask;
 
 /* A spawn destroyed once the simulation reaches `deadline` seconds. */
 typedef struct ScriptTimed {
@@ -195,6 +213,17 @@ void script_destroy_tree(VkrScriptHost *host, VkrScene *scene,
 /* Runs a running binding's stop hook and releases its scope. */
 void script_binding_end(VkrScriptHost *host, VkrScriptInstance *instance,
                         ScriptBinding *binding);
+
+/* A live task by id, or NULL (vkr_script_sdk.c). */
+ScriptTask *script_task_find(VkrScriptHost *host, uint64_t id);
+
+/* Waits for a task its scope released, helping run it, and frees it once
+ * no worker holds it. */
+void script_task_release(VkrScriptHost *host, uint64_t id);
+
+/* Frees released tasks their workers let go of; with `wait`, waits for all
+ * of them, as before libraries close. */
+void script_tasks_collect(VkrScriptHost *host, bool8_t wait);
 
 /* Releases one record's resource. */
 void script_ledger_release_record(VkrScriptHost *host,

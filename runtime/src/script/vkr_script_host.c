@@ -218,6 +218,10 @@ static void script_ledger_compact(VkrScriptHost *host, ScriptLedger *ledger) {
   uint32_t kept = 0u;
   for (uint32_t i = 0; i < ledger->count; ++i) {
     const ScriptLedgerRecord record = ledger->records[i];
+    if (record.kind == SCRIPT_LEDGER_TASK) {
+      ledger->records[kept++] = record;
+      continue;
+    }
     VkrScriptContainer *container = script_container_of(host, record.entity);
     if (record.kind != SCRIPT_LEDGER_NONE && container &&
         vkr_scene_entity_alive(container->scene,
@@ -295,6 +299,10 @@ void script_ledger_forget(ScriptCtx *ctx, ScriptLedgerKind kind,
 
 void script_ledger_release_record(VkrScriptHost *host,
                                   const ScriptLedgerRecord *record) {
+  if (record->kind == SCRIPT_LEDGER_TASK) {
+    script_task_release(host, record->entity);
+    return;
+  }
   VkrScriptContainer *container = script_container_of(host, record->entity);
   if (!container || record->kind == SCRIPT_LEDGER_NONE) {
     return;
@@ -328,6 +336,7 @@ void script_ledger_release_record(VkrScriptHost *host,
   case SCRIPT_LEDGER_RENDER_POSE:
     (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
     break;
+  case SCRIPT_LEDGER_TASK:
   case SCRIPT_LEDGER_NONE:
     break;
   }
@@ -2020,6 +2029,9 @@ void vkr_script_host_stop(VkrScriptHost *host) {
     return;
   }
   script_session_teardown(host);
+  /* Every scope released its tasks; no worker may still hold one when the
+     superseded libraries close. */
+  script_tasks_collect(host, true_v);
   host->session = (VkrScriptSessionDesc){0};
   host->container_count = 0u;
   host->started = false_v;
@@ -2117,6 +2129,8 @@ void vkr_script_host_frame(VkrScriptHost *host, VkrScriptFrame *frame) {
     return;
   }
   host->frame_serial++;
+  /* Released tasks whose workers have let go of them. */
+  script_tasks_collect(host, false_v);
   script_commands_flush(host);
   script_lifetimes_update(host);
   script_reserve_spawns(host);

@@ -1325,6 +1325,177 @@ static bool8_t sdk_anim_blend(VkrCtx *ctx, VkrEntity entity,
 }
 
 // =============================================================================
+// Tasks
+// =============================================================================
+
+/* Data follows the task, aligned for any SDK value. */
+#define SCRIPT_TASK_HEADER AlignPow2(sizeof(ScriptTask), 16u)
+
+static void *script_task_data(ScriptTask *task) {
+  return (uint8_t *)task + SCRIPT_TASK_HEADER;
+}
+
+static uint64_t script_task_bytes(const ScriptTask *task) {
+  return SCRIPT_TASK_HEADER + task->size;
+}
+
+/* Runs the task unless someone else claimed it. */
+static void script_task_execute(ScriptTask *task) {
+  if (!vkr_atomic_bool_exchange(&task->claimed, true_v,
+                                VKR_MEMORY_ORDER_ACQ_REL)) {
+    task->fn(script_task_data(task));
+    vkr_atomic_bool_store(&task->done, true_v, VKR_MEMORY_ORDER_RELEASE);
+  }
+}
+
+static bool8_t script_task_job(VkrJobContext *context, void *payload) {
+  (void)context;
+  ScriptTask *task = *(ScriptTask **)payload;
+  script_task_execute(task);
+  /* The task may be freed as soon as this is visible. */
+  vkr_atomic_bool_store(&task->job_exited, true_v, VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+/* Runs an unclaimed task here, or waits for the worker running it. */
+static void script_task_finish(ScriptTask *task) {
+  script_task_execute(task);
+  while (!vkr_atomic_bool_load(&task->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+    vkr_thread_sleep(0u);
+  }
+}
+
+ScriptTask *script_task_find(VkrScriptHost *host, uint64_t id) {
+  for (uint32_t i = 0; id && i < host->task_count; ++i) {
+    if (host->tasks[i]->id == id && !host->tasks[i]->released) {
+      return host->tasks[i];
+    }
+  }
+  return NULL;
+}
+
+static bool8_t script_task_freeable(const ScriptTask *task) {
+  return !task->queued ||
+         vkr_atomic_bool_load(&task->job_exited, VKR_MEMORY_ORDER_ACQUIRE);
+}
+
+void script_tasks_collect(VkrScriptHost *host, bool8_t wait) {
+  uint32_t kept = 0u;
+  for (uint32_t i = 0; i < host->task_count; ++i) {
+    ScriptTask *task = host->tasks[i];
+    if (task->released && wait) {
+      while (!script_task_freeable(task)) {
+        vkr_thread_sleep(0u);
+      }
+    }
+    if (task->released && script_task_freeable(task)) {
+      vkr_allocator_free(&host->instance_allocator, task,
+                         script_task_bytes(task),
+                         VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+      continue;
+    }
+    host->tasks[kept++] = task;
+  }
+  host->task_count = kept;
+}
+
+void script_task_release(VkrScriptHost *host, uint64_t id) {
+  ScriptTask *task = script_task_find(host, id);
+  if (!task) {
+    return;
+  }
+  script_task_finish(task);
+  task->released = true_v;
+  script_tasks_collect(host, false_v);
+}
+
+static VkrTask sdk_task_run(VkrCtx *ctx, VkrTaskFn fn, const void *data,
+                            uint32_t size) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  if (!fn || size > VKR_TASK_DATA_MAX || (size && !data)) {
+    (void)script_ctx_error(script, "A task needs a function and at most "
+                                   "VKR_TASK_DATA_MAX bytes of data");
+    return (VkrTask){0};
+  }
+  if (host->task_count == host->task_capacity) {
+    const uint32_t capacity = Max(16u, host->task_capacity * 2u);
+    ScriptTask **tasks = vkr_allocator_alloc(&host->instance_allocator,
+                                             sizeof(*tasks) * capacity,
+                                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!tasks) {
+      (void)script_ctx_error(script, "Task allocation failed");
+      return (VkrTask){0};
+    }
+    if (host->tasks) {
+      MemCopy(tasks, host->tasks, sizeof(*tasks) * host->task_count);
+      vkr_allocator_free(&host->instance_allocator, host->tasks,
+                         sizeof(*tasks) * host->task_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    host->tasks = tasks;
+    host->task_capacity = capacity;
+  }
+  ScriptTask *task =
+      vkr_allocator_alloc(&host->instance_allocator, SCRIPT_TASK_HEADER + size,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!task) {
+    (void)script_ctx_error(script, "Task allocation failed");
+    return (VkrTask){0};
+  }
+  *task = (ScriptTask){.id = ++host->task_serial, .fn = fn, .size = size};
+  if (size) {
+    MemCopy(script_task_data(task), data, size);
+  }
+  if (!script_ledger_record(script, SCRIPT_LEDGER_TASK, task->id, 0u)) {
+    vkr_allocator_free(&host->instance_allocator, task, script_task_bytes(task),
+                       VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    return (VkrTask){0};
+  }
+  host->tasks[host->task_count++] = task;
+
+  VkrJobSystem *jobs = host->session.jobs;
+  if (jobs) {
+    Bitset8 type_mask = bitset8_create();
+    bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+    const VkrJobDesc job = {.priority = VKR_JOB_PRIORITY_HIGH,
+                            .type_mask = type_mask,
+                            .run = script_task_job,
+                            .payload = &task,
+                            .payload_size = sizeof(task)};
+    VkrJobHandle handle = {0};
+    task->queued = vkr_job_try_submit(jobs, &job, &handle);
+  }
+  if (!task->queued) {
+    /* No worker can take it: it runs now, before the call returns. */
+    script_task_execute(task);
+  }
+  return (VkrTask){.id = task->id};
+}
+
+static bool8_t sdk_task_take(VkrCtx *ctx, VkrTask task_handle, void *out,
+                             uint32_t size, bool8_t wait) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  ScriptTask *task = script_task_find(host, task_handle.id);
+  if (!task) {
+    return script_ctx_error(script, "Unknown or already taken task");
+  }
+  if (wait) {
+    script_task_finish(task);
+  } else if (!vkr_atomic_bool_load(&task->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+    return false_v;
+  }
+  if (out && size) {
+    MemCopy(out, script_task_data(task), Min(size, task->size));
+  }
+  script_ledger_forget(script, SCRIPT_LEDGER_TASK, task->id, 0u);
+  task->released = true_v;
+  script_tasks_collect(host, false_v);
+  return true_v;
+}
+
+// =============================================================================
 // Replaying queued edits
 // =============================================================================
 
@@ -1522,6 +1693,8 @@ void script_sdk_table(VkrSdkTable *table) {
       .anim_set_playing = sdk_anim_set_playing,
       .anim_set_rate = sdk_anim_set_rate,
       .anim_rate = sdk_anim_rate,
+      .task_run = sdk_task_run,
+      .task_take = sdk_task_take,
       .anim_time = sdk_anim_time,
       .anim_duration = sdk_anim_duration,
       .anim_blend = sdk_anim_blend,

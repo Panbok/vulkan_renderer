@@ -3041,6 +3041,7 @@ static void sample_scripts_start(VkrStandardSceneRuntime *application) {
                                         .world = application->world_scene,
                                         .input = state->input_state,
                                         .assets = &application->assets,
+                                        .jobs = &application->job_system,
                                         .sample_content =
                                             state->gameplay_enabled};
   if (!scene || !vkr_script_host_start(&state->scripts, &session, &error)) {

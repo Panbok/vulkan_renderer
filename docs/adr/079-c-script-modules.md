@@ -10,11 +10,11 @@ authority: adr
 
 Accepted (partial). Implemented:
 
-- the script SDK (`sdk.h`, version 3) and the runtime script host, with
+- the script SDK (`sdk.h`, version 4) and the runtime script host, with
   temp, scoped and persistent lifetimes released through ledgers, owner and
   timed lifetimes, behaviors per entity with destroy hooks, script instances
-  per attached container, and structural edits in fixed updates queued until
-  the tick ends;
+  per attached container, structural edits in fixed updates queued until
+  the tick ends, and tasks on worker threads;
 - shared-library loading with hot reload that keeps instance data, with
   reloads copied and opened on a worker;
 - Script assets attached to objects, the authoring macros and the Player
@@ -28,8 +28,7 @@ Accepted (partial). Implemented:
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
 - Exports between modules.
-- Asynchronous model loads and first builds, script jobs and a Jolt thread
-  pool.
+- Asynchronous model loads and first builds, and a Jolt thread pool.
 - Packaged games do not load a project's script library yet; `vkr_player`
   still links only the FPS module.
 - The SDK and foundation headers in the editor distribution.
@@ -108,6 +107,29 @@ NULL when the version differs; there is no compatibility with older modules.
   - Edits queued by a scope that ends before the replay are dropped, except
     destroys, and their reservations return.
 
+### Tasks
+
+`vkr_task_run(ctx, fn, data, size)` runs `fn` on a `VkrJobSystem` worker
+over the task's own copy of up to `VKR_TASK_DATA_MAX` (64 KB) bytes of
+`data`. A task:
+
+- **Has no SDK.** Its function receives only the copy, so it cannot call the
+  engine. It may also touch memory nothing else changes until the task is
+  taken, such as a global result buffer.
+- **Belongs to its scope.** It is recorded in the calling scope's ledger.
+  When the scope ends, the host waits for it, running it on the frame thread
+  if no worker has started it, and drops its result.
+- **Returns through a take.** `vkr_task_take` copies the data back and
+  forgets the task once it has finished; `vkr_task_wait` waits first, so a
+  tick can fan work out and join it.
+- **Outlives no code.** A kept-state reload leaves the old library mapped
+  until Stop, and Stop waits for every task and for every worker job to let
+  go of it before superseded libraries close.
+
+Without a job system in the session, as in tools and tests, or when no job
+can be queued, a task runs inside `vkr_task_run`. Tasks run at high
+priority among the engine's general jobs.
+
 ### Lifetimes and the ledger
 
 | Lifetime | Use | Released |
@@ -117,8 +139,8 @@ NULL when the version differs; there is no compatibility with older modules.
 | Persistent | Module data and what module hooks acquire | When the instance ends |
 
 Every acquiring call (`vkr_spawn`, `vkr_spawn_model`, `vkr_character_create`,
-`vkr_state_add`, a first `vkr_set_render_pose`) records the resource in the
-calling scope's ledger; an explicit release forgets it. Ending a scope
+`vkr_state_add`, a first `vkr_set_render_pose`, `vkr_task_run`) records the
+resource in the calling scope's ledger; an explicit release forgets it. Ending a scope
 releases what remains newest first, skipping resources already gone, so a
 failed start leaves nothing behind. `vkr_destroy` destroys descendants too.
 A ledger that fills up first drops records of entities already gone, so
@@ -527,7 +549,7 @@ the startup scene has neither a Player Start nor an `fps_player`.
 ## Evidence
 
 Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
-(the SDK, version 3):
+(the SDK, version 3; tasks with version 4):
 
 - `build.bat Debug` (tester, `vkr_script_fps`, `vkr_bakery`),
   `build_editor.bat Debug` and `Release`, `build_release.bat` and
@@ -562,6 +584,12 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
       and `vkr_destroy` takes the children.
     - The macros' descriptors carry offsets, kinds, options, defaults and
       behaviors, and a different SDK version gets no description.
+    - With a two-worker job system, a task started in `start` sums 1 to
+      100,000 (5,000,050,000) on another thread while ticks continue, and a
+      tick takes it. A task waited for inside a tick is taken there and not
+      again. A task over 64 KB does not start. Stop waits for a 50 ms task
+      nothing took and frees every task. Without workers a task runs on the
+      calling thread before `vkr_task_run` returns.
   - `script_reload_test.c` loads
     [`reload_probe.c`](../../tests/scripts/reload_probe.c), built as four
     `MODULE` libraries from `sdk/` and `lib/src` only:
