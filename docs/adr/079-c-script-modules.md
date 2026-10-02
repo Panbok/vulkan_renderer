@@ -10,13 +10,14 @@ authority: adr
 
 Accepted (partial). Implemented:
 
-- the script SDK (`sdk.h`, version 4) and the runtime script host, with
+- the script SDK (`sdk.h`, version 5) and the runtime script host, with
   temp, scoped and persistent lifetimes released through ledgers, owner and
   timed lifetimes, behaviors per entity with destroy hooks, script instances
   per attached container, structural edits in fixed updates queued until
   the tick ends, and tasks on worker threads;
 - shared-library loading with hot reload that keeps instance data, with
   reloads copied and opened on a worker;
+- models spawned by scripts loading on the resource system's workers;
 - Script assets attached to objects, the authoring macros and the Player
   Start;
 - project `Scripts/` packages, modules and libraries with dependencies,
@@ -28,7 +29,7 @@ Accepted (partial). Implemented:
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
 - Exports between modules.
-- Asynchronous model loads and first builds, and a Jolt thread pool.
+- Asynchronous first builds and a Jolt thread pool.
 - Packaged games do not load a project's script library yet; `vkr_player`
   still links only the FPS module.
 - The SDK and foundation headers in the editor distribution.
@@ -479,7 +480,10 @@ host binds to its registered copy.
 A render pose (`vkr_set_render_pose`) replaces the rigid-body pose until the
 scope that set it ends. `vkr_spawn_model`, `vkr_anim_blend` and
 `vkr_has_visual` serve the default mannequin
-([ADR-080](080-default-mannequin-character.md)).
+([ADR-080](080-default-mannequin-character.md)). `vkr_spawn_model` only
+requests the model: its files load on the resource system's workers and its
+nodes appear at a later frame start, when `vkr_model_state` turns
+`VKR_MODEL_READY`. Releasing it while it loads cancels the loads.
 
 ### The FPS module
 
@@ -549,7 +553,8 @@ the startup scene has neither a Player Start nor an `fps_player`.
 ## Evidence
 
 Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
-(the SDK, version 3; tasks with version 4):
+(the SDK, version 3; tasks with version 4; model requests with version
+5):
 
 - `build.bat Debug` (tester, `vkr_script_fps`, `vkr_bakery`),
   `build_editor.bat Debug` and `Release`, `build_release.bat` and
@@ -584,6 +589,11 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
       and `vkr_destroy` takes the children.
     - The macros' descriptors carry offsets, kinds, options, defaults and
       behaviors, and a different SDK version gets no description.
+    - `scene_animation_tests.c`: a requested model reserves its wrapper,
+      reads `LOADING` with no player, and is `READY` with its animation after
+      the next scene update; despawning it first creates nothing; a bank of
+      another source fails at the update with a reason and leaves no nodes
+      or pooled memory.
     - With a two-worker job system, a task started in `start` sums 1 to
       100,000 (5,000,050,000) on another thread while ticks continue, and a
       tick takes it. A task waited for inside a tick is taken there and not
@@ -633,6 +643,10 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
     first-person body, 5,990 to 6,073 entities with the mannequin's nodes;
     Stop returned to 5,990. Bistro's city has no collision, so the player
     fell.
+  - With SDK version 5, the same Play read 5,992 entities right after Play
+    (`Player` and `PlayerBody`, the mannequin still loading) and 6,073 four
+    seconds later. The simulation kept running once the late animation
+    bound, and Stop returned to 5,990.
   - With `--scripts`, `script.new Spinner` built and loaded the template with
     0 diagnostics, and `create spinner` made an entity with `speed` 1.
   - Typing `spinner->speed += dt;` into the update hook and `script.save`

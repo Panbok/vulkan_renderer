@@ -36,6 +36,8 @@ typedef struct FpsModule {
    * at stop. */
   bool8_t visual_authored;
   bool8_t visual_visible;
+  /* The spawned mannequin is loading; a failed load becomes the box. */
+  bool8_t body_loading;
 } FpsModule;
 
 static Vec3 fps_matrix_position(const Mat4 *world) {
@@ -105,28 +107,34 @@ static bool8_t fps_create_training_platform(VkrCtx *ctx) {
   return true_v;
 }
 
+/* A capsule-sized box standing in for the mannequin. */
+static bool8_t fps_body_box(VkrCtx *ctx, VkrEntity body) {
+  const VkrShapeDesc shape = {.size = vec3_new(.6f, 1.8f, .6f),
+                              .color = vec4_new(.15f, .45f, .85f, 1)};
+  return vkr_set_transform(ctx, body,
+                           &(VkrTRS){.position = vec3_new(0, .9f, 0)}) &&
+         vkr_set_shape(ctx, body, &shape);
+}
+
 /* The default character's body under `parent`: the engine mannequin with
- * its animation bank, or a capsule-sized box when that content is missing.
- * Its animation, when it has one, drives locomotion. */
-static VkrEntity fps_spawn_body(VkrCtx *ctx, VkrEntity parent) {
+ * its animation bank, which loads in the background (`*loading`), or a
+ * capsule-sized box when that content is missing. Its animation, when it
+ * has one, drives locomotion. */
+static VkrEntity fps_spawn_body(VkrCtx *ctx, VkrEntity parent,
+                                bool8_t *loading) {
+  *loading = false_v;
   const VkrEntity body = fps_spawn(ctx, "PlayerBody", vec3_zero(), parent);
   if (!vkr_entity_valid(body)) {
     return VKR_ENTITY_NONE;
   }
-  if (!vkr_spawn_model(ctx, body, FPS_MANNEQUIN_MESH,
-                       FPS_MANNEQUIN_ANIMATION)) {
-    vkr_log(ctx, VKR_LOG_WARN,
-            "Default mannequin unavailable (%s); the player uses a box",
-            vkr_last_error(ctx));
-    const VkrShapeDesc shape = {.size = vec3_new(.6f, 1.8f, .6f),
-                                .color = vec4_new(.15f, .45f, .85f, 1)};
-    if (!vkr_set_transform(ctx, body,
-                           &(VkrTRS){.position = vec3_new(0, .9f, 0)}) ||
-        !vkr_set_shape(ctx, body, &shape)) {
-      return VKR_ENTITY_NONE;
-    }
+  if (vkr_spawn_model(ctx, body, FPS_MANNEQUIN_MESH, FPS_MANNEQUIN_ANIMATION)) {
+    *loading = true_v;
+    return body;
   }
-  return body;
+  vkr_log(ctx, VKR_LOG_WARN,
+          "Default mannequin unavailable (%s); the player uses a box",
+          vkr_last_error(ctx));
+  return fps_body_box(ctx, body) ? body : VKR_ENTITY_NONE;
 }
 
 // =============================================================================
@@ -188,7 +196,7 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
       module->visual_authored = true_v;
       module->visual_visible = vkr_visible(ctx, players[0]);
     } else {
-      module->visual = fps_spawn_body(ctx, players[0]);
+      module->visual = fps_spawn_body(ctx, players[0], &module->body_loading);
       if (!vkr_entity_valid(module->visual)) {
         vkr_fail(ctx, "Player body allocation failed");
         return;
@@ -199,9 +207,10 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
        Start, with the default body. */
     config.entity =
         fps_spawn(ctx, "Player", fps_matrix_position(&start), VKR_ENTITY_NONE);
-    module->visual = vkr_entity_valid(config.entity)
-                         ? fps_spawn_body(ctx, config.entity)
-                         : VKR_ENTITY_NONE;
+    module->visual =
+        vkr_entity_valid(config.entity)
+            ? fps_spawn_body(ctx, config.entity, &module->body_loading)
+            : VKR_ENTITY_NONE;
     config.yaw = fps_matrix_yaw(&start);
     if (!vkr_entity_valid(module->visual)) {
       vkr_fail(ctx, "Player spawn allocation failed");
@@ -209,13 +218,15 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
     }
   }
   config.visual = module->visual;
+  config.visual_loading = module->body_loading;
   if (weapon_count) {
-    const FpsWeaponBinding *binding = fps_weapon_get(ctx, weapons[0]);
-    if (binding->bone >= vkr_anim_bone_count(ctx, config.visual)) {
+    /* A body still loading has its bone checked when it arrives. */
+    config.weapon_bone = fps_weapon_get(ctx, weapons[0])->bone;
+    if (!module->body_loading &&
+        config.weapon_bone >= vkr_anim_bone_count(ctx, config.visual)) {
       vkr_fail(ctx, "The fps_weapon bone is outside the player's animation");
       return;
     }
-    config.weapon_bone = binding->bone;
     module->weapon = weapons[0];
   }
 
@@ -260,6 +271,18 @@ static void fps_input(VkrCtx *ctx, FpsModule *module,
  * its input admitted. */
 static void fps_update(VkrCtx *ctx, FpsModule *module, float32_t dt) {
   (void)dt;
+  if (module->body_loading &&
+      vkr_model_state(ctx, module->visual) != VKR_MODEL_LOADING) {
+    module->body_loading = false_v;
+    if (vkr_model_state(ctx, module->visual) == VKR_MODEL_FAILED) {
+      vkr_log(ctx, VKR_LOG_WARN,
+              "Default mannequin failed to load; the player uses a box");
+      if (!fps_body_box(ctx, module->visual)) {
+        vkr_fail(ctx, "Player body box failed: %s", vkr_last_error(ctx));
+        return;
+      }
+    }
+  }
   vkr_set_time_step(ctx, fps_player_frame(ctx, &module->player, vkr_time(ctx),
                                           vkr_input_focused(ctx)));
 }

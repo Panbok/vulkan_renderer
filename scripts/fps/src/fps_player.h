@@ -77,6 +77,9 @@ typedef struct FpsPlayerConfig {
   uint32_t weapon_bone;
   /* Nonzero base of the weapon identities this player allocates. */
   uint64_t instance_id;
+  /* The visual is a spawned model still loading: its animation binds on the
+   * first tick after it arrives. */
+  bool8_t visual_loading;
 } FpsPlayerConfig;
 
 /* One existing root entity owns motor, weapon and intent data; the player
@@ -89,6 +92,8 @@ typedef struct FpsPlayer {
   FpsInput commands;
   FpsCameraRig camera;
   VkrEntity visual;
+  /* The visual's model is still loading; see FpsPlayerConfig. */
+  bool8_t visual_loading;
   /* vkr_anim_id of the visual when the animation was prepared. */
   uint64_t animation_id;
   FpsPlayerAnimation animation;

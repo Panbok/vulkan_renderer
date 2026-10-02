@@ -178,9 +178,13 @@ in its credits or bundled notices. Every package's `engine.vkpak` carries
 ### Spawned models
 
 [`vkr_scene_spawn_model`](../../runtime/src/renderer/systems/vkr_scene_model.h)
-loads a cooked mesh and an optional animation bank synchronously. It
-instantiates the mesh's source nodes under a live wrapper entity, as a scene
-document would, and creates:
+loads a cooked mesh and an optional animation bank synchronously.
+`vkr_scene_request_model` starts the same loads on the resource system's
+workers instead and reserves the wrapper; the scene's update instantiates
+the model at the first frame start where both loads are ready
+(`vkr_scene_models_update`), or records the failure, which
+`vkr_scene_model_status` reports. Either way the model's source nodes are
+instantiated under a live wrapper entity, as a scene document would, with:
 
 - the node entities;
 - one mesh instance per mesh node, casting dynamic shadows;
@@ -193,7 +197,8 @@ Constraints:
 - Spawning happens only between simulation ticks.
 
 The scene owns what the spawn created. `vkr_scene_despawn_model`, destroying
-the wrapper or scene shutdown releases it, and a failed spawn leaves nothing.
+the wrapper or scene shutdown releases it, cancelling a request still
+loading, and a failed spawn leaves nothing.
 
 `vkr_scene_set_local_matrix` on an entity without a transform now validates it
 as a root while physics bodies exist, as `vkr_scene_set_transform` already
@@ -202,8 +207,9 @@ did. Before, it refused every new entity, so no model could spawn during Play.
 The script SDK ([`sdk.h`](../../sdk/sdk.h), [ADR-079](079-c-script-modules.md))
 serves the mannequin with:
 
-- `vkr_spawn_model` and `vkr_despawn_model`, the spawn released with the
-  calling scope;
+- `vkr_spawn_model`, which requests the model, `vkr_model_state`, which
+  reports it loading, ready or failed, and `vkr_despawn_model`; the spawn is
+  released with the calling scope;
 - `vkr_anim_blend`;
 - `vkr_has_visual`: whether the entity or a descendant carries a mesh or a
   shape.
@@ -221,6 +227,10 @@ At start the [FPS module](../../scripts/fps/src/fps_module.c) chooses the body:
   a `PlayerBody` mannequin.
 - **A mannequin that fails to load** logs a warning, and the body falls back
   to the box.
+
+The mannequin loads in the background: the player moves at once without a
+visible body, and its locomotion binds on the first tick after the model
+arrives. An `fps_weapon` bone is checked against the skeleton then.
 
 Stop destroys what the module spawned.
 

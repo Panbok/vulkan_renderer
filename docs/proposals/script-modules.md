@@ -29,9 +29,10 @@ remains. The SDK still has these gaps:
   session attaches only the played container and the World.
 - **No exports.** Packages share code through library packages; a module
   cannot call into another module.
-- **Everything on the main thread.** Every hook, every library load,
-  `vkr_spawn_model` (a synchronous load), Jolt (`JobSystemSingleThreaded`) and
-  the first build of an unbuilt project module all run on the frame thread.
+- **Main-thread work left.** Every hook, a library's first load, Jolt
+  (`JobSystemSingleThreaded`) and the first build of an unbuilt project all
+  run on the frame thread. Reloads, model loads and script tasks already
+  run on workers.
 
 ## Accepted direction (2026-10-02)
 
@@ -101,6 +102,7 @@ Shipped in ADR-079 as described below, except named groups.
   validation stays on the frame thread because it reads the registered
   types.
 - `vkr_spawn_model` loads, through the resource system's asynchronous path.
+  Shipped in ADR-079 and ADR-080.
 - The first build of an unbuilt project module. The World request waits for
   its types instead of the frame blocking.
 - Script tasks, recorded in the ledger. Shipped in ADR-079: a scope's end

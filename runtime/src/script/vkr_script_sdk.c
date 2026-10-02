@@ -25,6 +25,9 @@ _Static_assert((int)VKR_MOTION_DYNAMIC == (int)VKR_PHYSICS_DYNAMIC &&
                    (int)VKR_BODY_CAPSULE == (int)VKR_PHYSICS_CAPSULE &&
                    (int)VKR_GROUND_IN_AIR == (int)VKR_PHYSICS_CHARACTER_IN_AIR,
                "SDK physics enums match the engine's");
+_Static_assert((int)VKR_MODEL_LOADING == (int)VKR_SCENE_MODEL_LOADING &&
+                   (int)VKR_MODEL_FAILED == (int)VKR_SCENE_MODEL_FAILED,
+               "SDK model states match the scene's");
 _Static_assert(VKR_ANIM_BLEND_MAX == VKR_ANIMATION_BLEND_SAMPLE_CAPACITY,
                "The SDK blend cap matches the player's");
 _Static_assert((int)VKR_LOG_ERROR == (int)LOG_LEVEL_ERROR &&
@@ -579,8 +582,8 @@ static bool8_t sdk_spawn_model(VkrCtx *ctx, VkrEntity entity, const char *mesh,
         string8_create_from_cstr((const uint8_t *)animation, strlen(animation));
   }
   const char *error = NULL;
-  if (!vkr_scene_spawn_model(scene, script->host->session.assets,
-                             sdk_id(entity), &desc, &error)) {
+  if (!vkr_scene_request_model(scene, script->host->session.assets,
+                               sdk_id(entity), &desc, &error)) {
     return script_ctx_error(script, error);
   }
   sdk_mark_dirty(script, scene);
@@ -589,6 +592,13 @@ static bool8_t sdk_spawn_model(VkrCtx *ctx, VkrEntity entity, const char *mesh,
     return false_v;
   }
   return true_v;
+}
+
+static VkrModelState sdk_model_state(VkrCtx *ctx, VkrEntity entity) {
+  VkrScene *scene = sdk_scene_of(sdk_ctx(ctx), entity);
+  return scene ? (VkrModelState)vkr_scene_model_status(scene, sdk_id(entity),
+                                                       NULL)
+               : VKR_MODEL_NONE;
 }
 
 static void sdk_despawn_model(VkrCtx *ctx, VkrEntity entity) {
@@ -1646,6 +1656,7 @@ void script_sdk_table(VkrSdkTable *table) {
       .set_shape = sdk_set_shape,
       .spawn_model = sdk_spawn_model,
       .despawn_model = sdk_despawn_model,
+      .model_state = sdk_model_state,
       .component_named = sdk_component_named,
       .component_get = sdk_component_get,
       .component_get_mut = sdk_component_get_mut,

@@ -1965,6 +1965,8 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
       !vkr_scene_physics_mutations_allowed(scene)) {
     return;
   }
+  // Requested models whose loads finished join before queries compile.
+  vkr_scene_models_update(scene);
   // Refresh at the boundary before gameplay borrows any compiled scene query.
   if (!scene_compile_queries(scene)) {
     return;

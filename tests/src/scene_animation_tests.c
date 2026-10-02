@@ -424,6 +424,46 @@ static void scene_animation_test_spawn(VkrScene *scene, VkrAllocator *allocator,
   assert(!vkr_scene_animation_get_player(scene, wrapper));
   assert(scene_animation_test_live(scene) == live);
   assert(pool->pool.allocated == pooled);
+
+  // A requested model reserves the wrapper and appears at the next update;
+  // without workers its loads complete inside the request.
+  desc.animation_path = scene_animation_test_path(s_bank_path);
+  assert(vkr_scene_request_model(scene, &assets, wrapper, &desc, &error));
+  assert(vkr_scene_model_status(scene, wrapper, NULL) ==
+         VKR_SCENE_MODEL_LOADING);
+  assert(!vkr_scene_animation_get_player(scene, wrapper));
+  assert(!vkr_scene_request_model(scene, &assets, wrapper, &desc, &error));
+  vkr_scene_update(scene, 0.0);
+  assert(vkr_scene_model_status(scene, wrapper, NULL) == VKR_SCENE_MODEL_READY);
+  assert(vkr_scene_animation_get_player(scene, wrapper));
+  assert(scene_animation_test_live(scene) == live + 1);
+  vkr_scene_despawn_model(scene, wrapper);
+  assert(vkr_scene_model_status(scene, wrapper, NULL) == VKR_SCENE_MODEL_NONE);
+  assert(scene_animation_test_live(scene) == live);
+  assert(pool->pool.allocated == pooled);
+
+  // Despawning before the update drops the loads and creates nothing.
+  assert(vkr_scene_request_model(scene, &assets, wrapper, &desc, &error));
+  vkr_scene_despawn_model(scene, wrapper);
+  vkr_scene_update(scene, 0.0);
+  assert(!vkr_scene_animation_get_player(scene, wrapper));
+  assert(scene_animation_test_live(scene) == live);
+  assert(pool->pool.allocated == pooled);
+
+  // A bank that does not match fails at the update, reports why and leaves
+  // no nodes; despawning forgets the failure.
+  desc.animation_path = scene_animation_test_path(s_wrong_path);
+  assert(vkr_scene_request_model(scene, &assets, wrapper, &desc, &error));
+  vkr_scene_update(scene, 0.0);
+  const char *failure = NULL;
+  assert(vkr_scene_model_status(scene, wrapper, &failure) ==
+         VKR_SCENE_MODEL_FAILED);
+  assert(failure);
+  assert(!vkr_scene_animation_get_player(scene, wrapper));
+  assert(scene_animation_test_live(scene) == live);
+  assert(pool->pool.allocated == pooled);
+  vkr_scene_despawn_model(scene, wrapper);
+  assert(vkr_scene_model_status(scene, wrapper, NULL) == VKR_SCENE_MODEL_NONE);
   vkr_scene_destroy_entity(scene, wrapper);
 }
 

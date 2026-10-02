@@ -69,7 +69,7 @@
 #include <stdio.h>
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 4u
+#define VKR_SDK_VERSION 5u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -148,6 +148,17 @@ typedef struct VkrShapeDesc {
   Vec3 size;
   Vec4 color;
 } VkrShapeDesc;
+
+/** Where an entity's spawned model stands (`vkr_model_state`). */
+typedef enum VkrModelState {
+  VKR_MODEL_NONE = 0,
+  /** Requested; its mesh and animation are loading. */
+  VKR_MODEL_LOADING,
+  /** Its nodes exist, and its animation plays when it has one. */
+  VKR_MODEL_READY,
+  /** A load failed; nothing of it remains. */
+  VKR_MODEL_FAILED,
+} VkrModelState;
 
 /** Work running on a worker thread (`vkr_task_run`); zero is none. */
 typedef struct VkrTask {
@@ -534,6 +545,7 @@ typedef struct VkrSdkTable {
   bool8_t (*spawn_model)(VkrCtx *ctx, VkrEntity entity, const char *mesh,
                          const char *animation);
   void (*despawn_model)(VkrCtx *ctx, VkrEntity entity);
+  VkrModelState (*model_state)(VkrCtx *ctx, VkrEntity entity);
 
   /* Components and runtime state. */
   const VkrComponentDesc *(*component_named)(VkrCtx *ctx, const char *name);
@@ -797,9 +809,14 @@ static inline bool8_t vkr_set_shape(VkrCtx *ctx, VkrEntity entity,
   return ctx->sdk->set_shape(ctx, entity, shape);
 }
 
-/** Instantiates a cooked model (a .vkb, and an optional .vka of the same
- * source) under `entity`, which must carry no mesh. Owned by the calling
- * scope. */
+/**
+ * Spawns a cooked model (a .vkb, and an optional .vka of the same source)
+ * under `entity`, which must carry no mesh. The files load on the engine's
+ * workers; the model's nodes appear at a later frame start, when
+ * `vkr_model_state` turns READY, and until then `entity` has no visual or
+ * animation. Owned by the calling scope; releasing it while it loads cancels
+ * the loads. False when the request cannot start.
+ */
 static inline bool8_t vkr_spawn_model(VkrCtx *ctx, VkrEntity entity,
                                       const char *mesh, const char *animation) {
   return ctx->sdk->spawn_model(ctx, entity, mesh, animation);
@@ -807,6 +824,12 @@ static inline bool8_t vkr_spawn_model(VkrCtx *ctx, VkrEntity entity,
 
 static inline void vkr_despawn_model(VkrCtx *ctx, VkrEntity entity) {
   ctx->sdk->despawn_model(ctx, entity);
+}
+
+/** Where `entity`'s spawned model stands; NONE for an entity without one,
+ * including authored models. */
+static inline VkrModelState vkr_model_state(VkrCtx *ctx, VkrEntity entity) {
+  return ctx->sdk->model_state(ctx, entity);
 }
 
 // =============================================================================

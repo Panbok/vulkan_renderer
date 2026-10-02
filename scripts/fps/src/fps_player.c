@@ -35,6 +35,16 @@ static bool8_t player_prepare_animation(VkrCtx *ctx, FpsPlayer *player,
   player->pose_failed = false_v;
   player->weapon_reference_valid = false_v;
   player->animation_id = animation_id;
+  if (player->visual_loading) {
+    return true_v;
+  }
+  if (player->weapon_bone != UINT32_MAX &&
+      player->weapon_bone >= vkr_anim_bone_count(ctx, player->visual)) {
+    if (error) {
+      *error = "The fps_weapon bone is outside the player's animation";
+    }
+    return false_v;
+  }
   if (!animation_id) {
     return true_v;
   }
@@ -116,6 +126,16 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
   }
   if (player->pose_failed) {
     return player_fail(player, player->error);
+  }
+  // A body that was loading binds its animation once it has arrived, or
+  // stays without one when its model failed.
+  if (player->visual_loading &&
+      vkr_model_state(ctx, player->visual) != VKR_MODEL_LOADING) {
+    player->visual_loading = false_v;
+    const char *animation_error = NULL;
+    if (!player_prepare_animation(ctx, player, &animation_error)) {
+      return player_fail(player, animation_error);
+    }
   }
   const uint64_t animation_id =
       vkr_entity_valid(player->visual) ? vkr_anim_id(ctx, player->visual) : 0u;
@@ -471,6 +491,7 @@ bool8_t fps_player_attach(VkrCtx *ctx, FpsPlayer *player,
                         .state_type = state_type,
                         .settings = config->settings,
                         .visual = config->visual,
+                        .visual_loading = config->visual_loading,
                         .weapon_bone = config->weapon_bone,
                         .instance_id = config->instance_id - 1,
                         .spawn_yaw = config->yaw,
