@@ -2,6 +2,7 @@
 
 #include "application/vkr_standard_scene_runtime.h"
 
+#include "physics/vkr_physics.h"
 #include "platform/vkr_platform.h"
 
 #include <assert.h>
@@ -192,6 +193,37 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
   }
   return true_v;
 }
+
+/* One Jolt job on an engine worker (VkrPhysicsJobs). */
+typedef struct StandardScenePhysicsJob {
+  void (*run)(void *arg);
+  void *arg;
+} StandardScenePhysicsJob;
+
+vkr_internal bool8_t standard_scene_runtime_physics_job(VkrJobContext *context,
+                                                        void *payload) {
+  (void)context;
+  const StandardScenePhysicsJob *job = payload;
+  job->run(job->arg);
+  return true_v;
+}
+
+/* Physics steps wait on these jobs, so they go ahead of loading work. */
+vkr_internal bool8_t standard_scene_runtime_physics_submit(void *context,
+                                                           void (*run)(void *),
+                                                           void *arg) {
+  Bitset8 type_mask = bitset8_create();
+  bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+  const StandardScenePhysicsJob payload = {.run = run, .arg = arg};
+  const VkrJobDesc job = {.priority = VKR_JOB_PRIORITY_HIGH,
+                          .type_mask = type_mask,
+                          .run = standard_scene_runtime_physics_job,
+                          .payload = &payload,
+                          .payload_size = sizeof(payload)};
+  VkrJobHandle handle = {0};
+  return vkr_job_try_submit(context, &job, &handle);
+}
+
 /**
  * @brief Creates a cube mesh and uploads it to GPU buffers
  * @param application Pointer to the `VkrStandardSceneRuntime` structure.
@@ -478,6 +510,12 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
   }
 
   jobs_ready = true_v;
+  const VkrPhysicsJobs physics_jobs = {
+      .context = &application->job_system,
+      .worker_count = application->job_system.worker_count,
+      .min_active_bodies = VKR_PHYSICS_PARALLEL_BODIES,
+      .submit = standard_scene_runtime_physics_submit};
+  vkr_physics_set_jobs(&physics_jobs);
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   const VkrRendererMetricsProducerConfig *metrics_producers =
       vkr_renderer_metrics_get_producers(&application->renderer_metrics);
@@ -569,8 +607,10 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
   return true_v;
 
 cleanup:
-  if (jobs_ready)
+  if (jobs_ready) {
+    vkr_physics_set_jobs(NULL);
     vkr_job_system_shutdown(&application->job_system);
+  }
   if (renderer_ready) {
     vkr_standard_scene_runtime_rendering_shutdown(application);
     vkr_renderer_destroy(&application->renderer);
@@ -2624,8 +2664,9 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
    * Resource async workers call loader prepare/finalize callbacks that use
    * renderer-owned async allocators (texture/material/mesh/scene). Join worker
    * threads before renderer teardown so those allocators remain valid for the
-   * entire worker lifetime.
+   * entire worker lifetime. Physics lets go of the workers first.
    */
+  vkr_physics_set_jobs(NULL);
   vkr_job_system_shutdown(&application->job_system);
 
   vkr_standard_scene_runtime_rendering_shutdown(application);

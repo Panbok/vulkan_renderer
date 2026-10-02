@@ -207,6 +207,29 @@ typedef struct VkrPhysicsJointDesc {
 // restitution_b); restitution only above 1 m/s closing speed.
 #define VKR_PHYSICS_RESTITUTION_THRESHOLD 1.0f
 
+// Workers a step may spread Jolt's jobs over, filled by the owner of a job
+// system: `submit` queues `run(arg)` on a worker and returns false when it
+// cannot, in which case the stepping thread runs that job itself. Steps that
+// move fewer than `min_active_bodies` active bodies stay on the stepping
+// thread.
+typedef struct VkrPhysicsJobs {
+  void *context;
+  uint32_t worker_count;
+  uint32_t min_active_bodies;
+  bool8_t (*submit)(void *context, void (*run)(void *arg), void *arg);
+} VkrPhysicsJobs;
+
+// Active bodies from which spreading a step over VkrJobSystem workers was
+// faster for both a single pile and separate stacks (ADR-072); below it the
+// submissions and wake-ups can cost more than they save.
+#define VKR_PHYSICS_PARALLEL_BODIES 512u
+
+// Steps of every world spread over `jobs` from now on; NULL, the default,
+// keeps every step on the calling thread. Results do not depend on the
+// choice. Clearing waits for jobs still queued, so clear before the workers
+// shut down. Call between steps, from the owner thread.
+void vkr_physics_set_jobs(const VkrPhysicsJobs *jobs);
+
 // Synchronous, single owner thread. Calls must not overlap, including separate
 // worlds. World owns bodies, shapes and scratch; destroy releases all of them.
 // Capacity and invalid-input errors return false; last_error remains valid

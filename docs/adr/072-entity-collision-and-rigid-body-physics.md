@@ -37,8 +37,25 @@ callers remain C11. C++ types, exceptions and native Jolt body IDs stay inside
 
 A scene lazily creates its physics world when physics is authored. All world
 operations are synchronous and serialized, including operations across different
-worlds; the adapter uses Jolt's single-threaded job system. Process-wide Jolt
-registration survives until the final world is destroyed. The renderer does not
+worlds. Process-wide Jolt registration survives until the final world is
+destroyed.
+
+A step runs Jolt's jobs on the stepping thread (Jolt's single-threaded job
+system) unless `vkr_physics_set_jobs` installed workers and the world moves at
+least `min_active_bodies` active bodies. The application installs its
+`VkrJobSystem` with `VKR_PHYSICS_PARALLEL_BODIES` (512) and clears it before
+the workers shut down. Then:
+
+- **Adapter.** A process-wide `JPH::JobSystemWithBarrier` hands Jolt's jobs
+  to the workers at high priority through `VkrPhysicsJobs`, a table of C
+  function pointers, since the C++ adapter cannot include the engine's C11
+  atomics. A job no worker takes stays with its barrier, whose `Wait` runs
+  it on the stepping thread.
+- **Contacts.** Contact callbacks arrive from several workers and take a lock;
+  contact tracking below is independent of report order.
+- **Results.** Poses and contact events do not depend on the choice:
+  `test_parallel_steps_match` compares 128 falling boxes stepped on one
+  thread and on four workers bit for bit. The renderer does not
 own a solver, bodies or physics allocations.
 
 [The scene owner](../../runtime/src/renderer/systems/vkr_scene_physics.c) retains
@@ -285,6 +302,27 @@ boxes on a floor with sleep off, best of three:
 
 Enabling Jolt's large-island splitter changed none of these by more than run
 noise, so it stays off.
+
+The same benchmark, after `VkrJobSystem` stopped waking every idle worker
+on each completion, compared steps on the stepping thread, on its 11
+workers and on Jolt's own `JobSystemThreadPool` with four threads:
+
+| Bodies | Pile, one thread | Pile, workers | Pile, Jolt pool | Stacks, one thread | Stacks, workers | Stacks, Jolt pool |
+| --- | --- | --- | --- | --- | --- | --- |
+| 64 | 124 µs | 239 µs | 159 µs | 207 µs | 245 µs | 188 µs |
+| 128 | 308 µs | 313 µs | 274 µs | 411 µs | 350 µs | 298 µs |
+| 256 | 490 µs | 557 µs | 487 µs | 834 µs | 604 µs | 513 µs |
+| 512 | 1.26 ms | 0.97 ms | 0.93 ms | 1.72 ms | 0.95 ms | 1.01 ms |
+| 1,024 | 4.31 ms | 1.79 ms | 1.90 ms | 3.86 ms | 1.70 ms | 1.91 ms |
+
+512 is the smallest measured size where workers won for both layouts, hence
+`VKR_PHYSICS_PARALLEL_BODIES`; Jolt's own pool is no faster from there and
+would add threads beside the engine's workers. Before that `VkrJobSystem`
+change, the workers cost 0.15 to 0.25 ms more per step and lost up to 512
+bodies. No Bistro case moves 512 bodies, so frame time on Bistro is
+unchanged by construction and was not measured; a headless Release editor
+with the reserve workaround ADR-079 describes loaded Bistro, played the FPS
+sample (5,990 to 6,073 entities and back) and exited cleanly.
 
 ## Alternatives considered
 

@@ -1,4 +1,5 @@
 #include "physics_test.h"
+#include "core/vkr_job_system.h"
 #include "physics/vkr_physics.h"
 
 static bool8_t step_and_drain(VkrPhysicsWorld *world, float32_t dt) {
@@ -518,6 +519,122 @@ static void test_joint_limits_and_lifetime(void) {
   }
 }
 
+// =============================================================================
+// Steps spread over workers
+// =============================================================================
+
+typedef struct PhysicsTestJob {
+  void (*run)(void *arg);
+  void *arg;
+} PhysicsTestJob;
+
+static VkrAtomicUint32 s_physics_jobs_queued;
+
+static bool8_t physics_test_job(VkrJobContext *context, void *payload) {
+  (void)context;
+  const PhysicsTestJob *job = payload;
+  job->run(job->arg);
+  return true_v;
+}
+
+static bool8_t physics_test_submit(void *context, void (*run)(void *),
+                                   void *arg) {
+  Bitset8 type_mask = bitset8_create();
+  bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+  const PhysicsTestJob payload = {.run = run, .arg = arg};
+  const VkrJobDesc job = {.priority = VKR_JOB_PRIORITY_HIGH,
+                          .type_mask = type_mask,
+                          .run = physics_test_job,
+                          .payload = &payload,
+                          .payload_size = sizeof(payload)};
+  VkrJobHandle handle = {0};
+  const bool8_t queued = vkr_job_try_submit(context, &job, &handle);
+  if (queued) {
+    (void)vkr_atomic_uint32_fetch_add(&s_physics_jobs_queued, 1u,
+                                      VKR_MEMORY_ORDER_RELAXED);
+  }
+  return queued;
+}
+
+#define PHYSICS_PILE_BODIES 128u
+
+static uint64_t physics_hash(uint64_t hash, uint64_t value) {
+  return (hash ^ value) * UINT64_C(1099511628211);
+}
+
+/* A pile of boxes falling onto a floor: every contact event and the final
+ * poses, bit for bit, folded into one hash. */
+static uint64_t physics_pile_run(void) {
+  VkrPhysicsWorld *world = vkr_physics_world_create(PHYSICS_PILE_BODIES + 1u);
+  assert(world);
+  VkrPhysicsColliderDesc floor_shape = box(UINT64_C(0x1000));
+  floor_shape.half_extent[0] = 20.0f;
+  floor_shape.half_extent[2] = 20.0f;
+  VkrPhysicsBodyDesc floor = body_desc(UINT64_C(0x1000), &floor_shape);
+  floor.motion = VKR_PHYSICS_STATIC;
+  VkrPhysicsBody floor_body;
+  assert(vkr_physics_body_create(world, &floor, &floor_body));
+  VkrPhysicsBody bodies[PHYSICS_PILE_BODIES];
+  for (uint32_t i = 0; i < PHYSICS_PILE_BODIES; ++i) {
+    VkrPhysicsColliderDesc shape = box(UINT64_C(0x2000) + i);
+    VkrPhysicsBodyDesc desc = body_desc(UINT64_C(0x2000) + i, &shape);
+    desc.allow_sleep = false_v;
+    desc.position[0] = (float32_t)(i % 8u) * 1.05f - 4.0f;
+    desc.position[1] = 1.0f + (float32_t)(i / 64u) * 1.2f;
+    desc.position[2] = (float32_t)((i / 8u) % 8u) * 1.05f - 4.0f;
+    assert(vkr_physics_body_create(world, &desc, &bodies[i]));
+  }
+  uint64_t hash = UINT64_C(14695981039346656037);
+  static VkrPhysicsContactEvent events[2048];
+  for (uint32_t tick = 0; tick < 90u; ++tick) {
+    assert(vkr_physics_step(world, 1.0f / 60.0f));
+    uint32_t count = 0u;
+    assert(
+        vkr_physics_contact_events(world, events, ArrayCount(events), &count));
+    for (uint32_t e = 0; e < count; ++e) {
+      /* Entities, not body handles: handle generations are process-wide. */
+      hash = physics_hash(hash, events[e].entity_a);
+      hash = physics_hash(hash, events[e].entity_b);
+      hash = physics_hash(hash, (uint64_t)events[e].phase);
+    }
+  }
+  for (uint32_t i = 0; i < PHYSICS_PILE_BODIES; ++i) {
+    VkrPhysicsPose pose;
+    assert(vkr_physics_body_get_pose(world, bodies[i], &pose));
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      uint32_t bits = 0u;
+      MemCopy(&bits, &pose.position[axis], sizeof(bits));
+      hash = physics_hash(hash, bits);
+    }
+  }
+  vkr_physics_world_destroy(world);
+  return hash;
+}
+
+/* Jolt's steps give the same poses and contact events whether its jobs run
+ * on the stepping thread or spread over workers. */
+static void test_parallel_steps_match(void) {
+  const uint64_t serial = physics_pile_run();
+  VkrJobSystem jobs = {0};
+  VkrJobSystemConfig config = vkr_job_system_config_default();
+  config.worker_count = 4u;
+  assert(vkr_job_system_init(&config, &jobs));
+  // Every step spreads, whatever its size.
+  const VkrPhysicsJobs physics_jobs = {.context = &jobs,
+                                       .worker_count = jobs.worker_count,
+                                       .min_active_bodies = 0u,
+                                       .submit = physics_test_submit};
+  vkr_physics_set_jobs(&physics_jobs);
+  vkr_atomic_uint32_store(&s_physics_jobs_queued, 0u, VKR_MEMORY_ORDER_RELAXED);
+  const uint64_t parallel = physics_pile_run();
+  const uint32_t queued =
+      vkr_atomic_uint32_load(&s_physics_jobs_queued, VKR_MEMORY_ORDER_RELAXED);
+  vkr_physics_set_jobs(NULL);
+  vkr_job_system_shutdown(&jobs);
+  assert(queued > 0u);
+  assert(parallel == serial);
+}
+
 bool32_t run_physics_tests(void) {
   printf("Running physics tests...\n");
   test_gravity_impulse_and_handles();
@@ -530,6 +647,7 @@ bool32_t run_physics_tests(void) {
   test_geometry_scale_and_sweep();
   test_contact_identity_and_reservation();
   test_joint_limits_and_lifetime();
+  test_parallel_steps_match();
   printf("Physics tests PASSED\n");
   return true_v;
 }

@@ -29,9 +29,10 @@ remains. The SDK still has these gaps:
   session attaches only the played container and the World.
 - **No exports.** Packages share code through library packages; a module
   cannot call into another module.
-- **Main-thread work left.** Every hook, a library's first load and Jolt
-  (`JobSystemSingleThreaded`) run on the frame thread. Builds, reloads,
-  model loads and script tasks already run on workers.
+- **Main-thread work left.** Every hook and a library's first load run on
+  the frame thread, as do physics steps that move fewer than 512 active
+  bodies. Builds, reloads, model loads, script tasks and larger physics
+  steps already run on workers.
 
 ## Accepted direction (2026-10-02)
 
@@ -107,54 +108,25 @@ Shipped in ADR-079 as described below, except named groups.
 - Script tasks, recorded in the ledger. Shipped in ADR-079: a scope's end
   waits for its tasks, and Stop waits for all of them before superseded
   libraries close.
-- Jolt's internal work, on a thread pool backed by `VkrJobSystem`. Not
-  shipped; see [Jolt on workers](#jolt-on-workers).
+- Jolt's internal work, on `VkrJobSystem` workers. Shipped in ADR-072 for
+  steps that move at least 512 active bodies; see
+  [Jolt on workers](#jolt-on-workers).
 
 Parallel behaviors and exports come last, when a measured case needs them.
 
 ### Jolt on workers
 
-A `JPH::JobSystemWithBarrier` adapter was built and tested, then withdrawn:
+A first `JPH::JobSystemWithBarrier` adapter over `VkrJobSystem` lost to one
+thread up to 512 bodies. The user then chose the recommended order:
 
-- **Design.** Jolt's jobs go to `VkrJobSystem` workers at high priority
-  through a table of C function pointers, since the adapter's C++ cannot
-  include the engine's C11 atomics. A job no worker takes stays with its
-  barrier, whose `Wait` runs it on the stepping thread. Contact callbacks
-  take a lock, and the step sorts the contacts it recorded, so events keep
-  one order.
-- **Determinism.** 128 boxes falling onto a floor for 90 steps gave
-  bit-identical poses and the same entity-level contact events in the same
-  order on the stepping thread and on four workers. Body handles differ
-  between worlds because their generations are process-wide.
-- **Cost.** A temporary Release microbenchmark timed 240 steps of one dense
-  pile of boxes (one island; the large-island splitter stays off) on the
-  12-thread Ryzen 5 2600, with 11 workers. These are local measurements, not
-  frame-time claims:
+1. Jolt's large-island splitter: no measurable gain; it stays off.
+2. Cheaper work around the jobs: solid contact tracking became linear in the
+   contact count (it searched every recorded contact per report and per
+   comparison), and `VkrJobSystem` stopped waking every idle worker on each
+   completion.
+3. Jolt's own pool: not needed; the adapter matches it from 512 bodies.
 
-  | Active bodies | Stepping thread | `VkrJobSystem` adapter | Jolt pool, 4 threads |
-  | --- | --- | --- | --- |
-  | 8 | 20-28 µs | 165-272 µs | 54 µs |
-  | 64 | 170-185 µs | 250-349 µs | 157 µs |
-  | 128 | 366-402 µs | 476-495 µs | 302 µs |
-  | 512 | 1.9-2.1 ms | 2.0-2.3 ms | 1.7 ms |
-  | 2,048 | 28-30 ms | 26-28 ms | 25.6 ms |
-
-  The adapter adds about 0.15 to 0.25 ms per step in submissions and
-  wake-ups. It is slower up to at least 512 active bodies and about 10%
-  faster at 2,048. A scene holds at most 1,024 bodies (ADR-072), so a
-  cut-over where it pays would almost never engage.
-- **Unavailable.** Bistro measurement: the Bistro cases hold a few bodies,
-  and the Vulkan renderer at this revision cannot create its graph image
-  table (`c87bce97`).
-
-Options, in recommended order:
-
-1. Enable Jolt's large-island splitter and measure the solver of dense
-   piles first; one island bounds any job system.
-2. Cut `VkrJobSystem`'s per-job cost (batched submission, fewer wake-ups),
-   then re-run the table; the adapter is ready.
-3. Use Jolt's own `JobSystemThreadPool` with a few threads, which costs less
-   per step, at the price of threads beside the engine's workers.
+ADR-072 records the adapter, the 512-body threshold and the measurements.
 
 ### Phases
 
@@ -166,8 +138,7 @@ Options, in recommended order:
 3. Shipped in ADR-079: library packages, dependencies and the project
    library in Bakery, the host, the editor and completion.
 4. Shipped in ADR-079: asynchronous library reloads, `spawn_model` and first
-   builds, and script tasks. The Jolt thread pool waits on a decision (see
-   [Jolt on workers](#jolt-on-workers)).
+   builds, and script tasks; Jolt on workers shipped in ADR-072.
 5. Exports and parallel behaviors.
 
 ## Remaining work

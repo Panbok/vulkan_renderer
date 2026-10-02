@@ -8,7 +8,9 @@ extern "C" {
 #include "core/logger.h"
 }
 #include <Jolt/Core/Factory.h>
+#include <Jolt/Core/FixedSizeFreeList.h>
 #include <Jolt/Core/JobSystemSingleThreaded.h>
+#include <Jolt/Core/JobSystemWithBarrier.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
@@ -34,8 +36,11 @@ extern "C" {
 #include <Jolt/RegisterTypes.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -175,6 +180,80 @@ public:
   VkrPhysicsWorld *world;
 };
 
+/* Jolt's jobs on the engine's workers (vkr_physics_set_jobs). A job the
+ * workers cannot take stays with its barrier, whose Wait runs it on the
+ * stepping thread; a job both reach runs once. Process-wide: steps are
+ * serialized, so one set of barriers and jobs serves every world. */
+class s_JobSystem final : public JPH::JobSystemWithBarrier {
+public:
+  explicit s_JobSystem(const VkrPhysicsJobs &host)
+      : JPH::JobSystemWithBarrier(JPH::cMaxPhysicsBarriers), host(host) {
+    jobs.Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsJobs);
+  }
+
+  /* Jobs handed to workers that have not let go of them yet. */
+  std::atomic<uint32_t> outstanding{0};
+
+  uint32_t min_active_bodies() const { return host.min_active_bodies; }
+
+  int GetMaxConcurrency() const override {
+    return static_cast<int>(host.worker_count) + 1;
+  }
+
+  JobHandle CreateJob(const char *name, JPH::ColorArg color,
+                      const JobFunction &function,
+                      JPH::uint32 dependencies) override {
+    JPH::uint32 index = Jobs::cInvalidObjectIndex;
+    while ((index = jobs.ConstructObject(name, color, this, function,
+                                         dependencies)) ==
+           Jobs::cInvalidObjectIndex) {
+      std::this_thread::yield();
+    }
+    Job *job = &jobs.Get(index);
+    // The handle keeps a reference; a queued job may finish at once.
+    JobHandle handle(job);
+    if (dependencies == 0) {
+      QueueJob(job);
+    }
+    return handle;
+  }
+
+  void QueueJob(Job *job) override { submit(job); }
+
+  void QueueJobs(Job **queued, JPH::uint count) override {
+    for (JPH::uint i = 0; i < count; ++i) {
+      submit(queued[i]);
+    }
+  }
+
+  void FreeJob(Job *job) override { jobs.DestructObject(job); }
+
+private:
+  using Jobs = JPH::FixedSizeFreeList<Job>;
+
+  static void run(void *arg) {
+    Job *job = static_cast<Job *>(arg);
+    s_JobSystem *self = static_cast<s_JobSystem *>(job->GetJobSystem());
+    job->Execute();
+    job->Release();
+    self->outstanding.fetch_sub(1, std::memory_order_release);
+  }
+
+  void submit(Job *job) {
+    job->AddRef();
+    outstanding.fetch_add(1, std::memory_order_relaxed);
+    if (!host.submit(host.context, run, job)) {
+      job->Release();
+      outstanding.fetch_sub(1, std::memory_order_relaxed);
+    }
+  }
+
+  VkrPhysicsJobs host;
+  Jobs jobs;
+};
+
+static s_JobSystem *s_jobs = nullptr;
+
 struct s_VkrPhysicsWorld {
   s_BroadLayers layers;
   s_BroadFilter broad_filter;
@@ -190,6 +269,8 @@ struct s_VkrPhysicsWorld {
   explicit s_VkrPhysicsWorld(uint32_t max_bodies)
       : scratch(2 * 1024 * 1024 + static_cast<size_t>(max_bodies) * 16384) {}
   JPH::JobSystemSingleThreaded jobs{JPH::cMaxPhysicsJobs};
+  /* Contact callbacks arrive from several workers at once. */
+  std::mutex contact_mutex;
   std::vector<s_BodySlot> slots;
   std::vector<uint32_t> native_to_slot;
   uint32_t joint_count = 0;
@@ -1064,6 +1145,21 @@ extern "C" bool8_t vkr_physics_world_set_gravity(VkrPhysicsWorld *world,
   }
 }
 
+extern "C" void vkr_physics_set_jobs(const VkrPhysicsJobs *jobs) {
+  if (s_jobs) {
+    while (s_jobs->outstanding.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+    delete s_jobs;
+    s_jobs = nullptr;
+  }
+  if (jobs && jobs->submit && jobs->worker_count) {
+    // Jolt allocates through its registered functions, as worlds do.
+    JPH::RegisterDefaultAllocator();
+    s_jobs = new s_JobSystem(*jobs);
+  }
+}
+
 extern "C" bool8_t vkr_physics_step(VkrPhysicsWorld *world, float32_t dt) {
   if (world && world->dispatching) {
     return fail(world, "Physics mutation or drain during event dispatch");
@@ -1079,7 +1175,13 @@ extern "C" bool8_t vkr_physics_step(VkrPhysicsWorld *world, float32_t dt) {
       std::fill(world->contact_stamps.begin(), world->contact_stamps.end(), 0);
       world->contact_stamp = 1;
     }
-    if (world->system.Update(dt, 1, &world->scratch, &world->jobs) !=
+    // Few bodies finish faster on this thread than spread over workers.
+    JPH::JobSystem *jobs = &world->jobs;
+    if (s_jobs && world->system.GetNumActiveBodies(JPH::EBodyType::RigidBody) >=
+                      s_jobs->min_active_bodies()) {
+      jobs = s_jobs;
+    }
+    if (world->system.Update(dt, 1, &world->scratch, jobs) !=
         JPH::EPhysicsUpdateError::None) {
       world->faulted = true_v;
       return fail(world, "Physics contact capacity exceeded; reset required");
@@ -1888,6 +1990,10 @@ static void capture_contact(VkrPhysicsWorld *world, const JPH::Body &a,
       b.GetShape()->GetSubShapeUserData(manifold.mSubShapeID2);
   store_vec(manifold.GetWorldSpaceContactPointOn1(0), pair.event.position);
   store_vec(manifold.mWorldSpaceNormal, pair.event.normal);
+  std::lock_guard<std::mutex> lock(world->contact_mutex);
+  if (world->faulted) {
+    return;
+  }
   // The table holds twice the contact capacity, so a probe ends at a free
   // slot before it is full.
   const size_t mask = world->contact_slots.size() - 1;
