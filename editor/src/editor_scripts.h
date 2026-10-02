@@ -66,17 +66,22 @@ VkrEditorScripts *vkr_editor_scripts_create(VkrAllocator *allocator);
 void vkr_editor_scripts_destroy(VkrEditorScripts *scripts);
 
 /**
- * Scans `scripts_directory`, such as a project's `Scripts`, builds the
- * project library under `output_root` synchronously when there is none, and
- * adds its load to the frame's script request, which the runtime applies
- * before the project's World and scenes load. An existing library loads now
- * and rebuilds in the background.
+ * Scans `scripts_directory`, such as a project's `Scripts`. An existing
+ * project library under `output_root` joins the frame's script request,
+ * which the runtime applies before the project's World and scenes load, and
+ * rebuilds in the background. Without one, the first build starts on the
+ * worker and its load follows when it finishes; until then
+ * vkr_editor_scripts_settling holds the project's documents back.
  */
 void vkr_editor_scripts_open(VkrEditorScripts *scripts,
                              const char *scripts_directory,
                              const char *output_root,
                              EditorBakeryService *service,
                              const VkrSampleUiFrame *frame);
+/** True while an opened project's first build or its load has not
+ * reported, so documents that use its component types should wait. */
+bool8_t vkr_editor_scripts_settling(const VkrEditorScripts *scripts);
+
 /** Retires the project's libraries in the runtime and forgets its modules. */
 void vkr_editor_scripts_close_project(VkrEditorScripts *scripts,
                                       EditorBakeryService *service,

@@ -336,6 +336,10 @@ struct VkrEditorProjects {
   /* Frames a requested World load still counts as busy: the runtime starts
      it after this build and reports it loading until it activates. */
   uint32_t world_wait;
+  /* The World load waits for the project's first script build and load,
+     so its documents see their component types (ADR-079). */
+  VkrSampleWorldRequest world_deferred;
+  bool8_t world_after_scripts;
   /* Project meshes the requested World document places; Content shows them
      loading while the World streams. */
   char world_meshes[32][37];
@@ -1341,11 +1345,18 @@ static bool8_t project_load(VkrEditorProjects *projects, const char *id,
             &moved, &error)) {
       log_warn("Project: World models keep their paths: %s", error.message);
     }
-    *frame->world_request = (VkrSampleWorldRequest){
+    const VkrSampleWorldRequest world = {
         .path = project_string(projects->world_path),
         .sidecar_path = project_string(projects->world_sidecar),
         .load = true_v,
         .discard_edits = projects->discard_edits};
+    projects->world_after_scripts =
+        vkr_editor_scripts_settling(editor->scripts);
+    if (projects->world_after_scripts) {
+      projects->world_deferred = world;
+    } else {
+      *frame->world_request = world;
+    }
     projects->world_wait = 2u;
     projects->world_mesh_count = vkr_editor_project_world_meshes(
         projects->world_path, frame->ui->frame_allocator,
@@ -4187,6 +4198,17 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
                            projects->job_id || projects->waiting_activation ||
                            vkr_editor_bakery_busy(editor->bakery));
   vkr_editor_bakery_update(editor->bakery);
+  if (projects->world_after_scripts) {
+    /* Busy until the first script build settles, then the World loads. */
+    projects->world_wait = 2u;
+    if (!projects->project) {
+      projects->world_after_scripts = false_v;
+    } else if (!vkr_editor_scripts_settling(editor->scripts) &&
+               !frame->world_request->load) {
+      *frame->world_request = projects->world_deferred;
+      projects->world_after_scripts = false_v;
+    }
+  }
   if (projects->world_wait) {
     projects->world_wait =
         frame->world_loading ? 1u : projects->world_wait - 1u;

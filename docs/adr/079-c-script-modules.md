@@ -22,14 +22,14 @@ Accepted (partial). Implemented:
   Start;
 - project `Scripts/` packages, modules and libraries with dependencies,
   built by Bakery into one project library loaded before the project's
-  documents;
+  documents, with a project's first build on a worker;
 - the floating Script editor with highlighting, completion and diagnostics;
 - the FPS sample as a statically linked module.
 
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
 - Exports between modules.
-- Asynchronous first builds and a Jolt thread pool.
+- A Jolt thread pool.
 - Packaged games do not load a project's script library yet; `vkr_player`
   still links only the FPS module.
 - The SDK and foundation headers in the editor distribution.
@@ -298,9 +298,12 @@ folder: a project's `<project>/Scripts`, or `--scripts <dir>` beside
 The manager drives it:
 
 - **Open.** Opening a project scans its packages. A built project library
-  under `<workspace>/scripts/<project>` loads at once; without one the folder
-  builds synchronously first. The load joins the frame's script request,
-  which comes before the World request, so project documents see the types.
+  under `<workspace>/scripts/<project>` joins the frame's script request at
+  once, which comes before the World request, so project documents see the
+  types. Without one, the first build starts on the worker while frames
+  continue; `vkr_editor_scripts_settling` stays true until the build fails
+  or its load reports, and the project holds its World request, showing it
+  as loading, until then.
 - **Build.** Runs `vkr_bakery scripts <Scripts> --name project --root
   <Scripts> --out <output> --json` on a worker, one at a time. Bakery
   generates `project_modules.c`, whose `vkr_project_modules` lists each
@@ -626,6 +629,13 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
   import is `KERNEL32.dll` and its only export is `vkr_module_fps`. The New
   Script template, expanded for `Door`, builds `Door.dll` (107,008 bytes)
   without warnings.
+- The first project build was checked on the order of loads, not on a
+  scene: a headless Release editor with the same reserve workaround opened a
+  copy of an empty managed project (`--workspace`, `--project`) whose
+  `Scripts/Spinner` had never built. Two `script.status` statements in
+  consecutive frames reported "building", "Scripts: Loaded" followed, and
+  the project World (5 entities) loaded after it. `create spinner` then
+  made an entity with `speed` 1.
 - `vkr_bakery scripts` on a sample folder (a `Common` library, a `Door`
   module depending on it and a `Spinner` module) ran 5 actions (4 objects,
   1 link) in 0.64 s and wrote `project.dll` (107,520 bytes). It exports

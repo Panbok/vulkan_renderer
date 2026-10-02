@@ -66,6 +66,9 @@ struct VkrEditorScripts {
   uint64_t pending_fingerprint;
   /* A build was asked for while another one ran or none could start. */
   bool8_t rebuild;
+  /* The project opened without a library: its first build runs on the
+     worker, and documents wait for it (vkr_editor_scripts_settling). */
+  bool8_t first_build;
   /* The worker's build: process result and completion. */
   VkrThread worker;
   bool8_t worker_live;
@@ -650,11 +653,19 @@ void vkr_editor_scripts_open(VkrEditorScripts *scripts,
     scripts->rebuild = true_v;
     return;
   }
-  ScriptsBuild build;
-  int32_t exit_code = -1;
-  const bool8_t ok = scripts_build_prepare(scripts, &build) &&
-                     scripts_build_run(&build, &exit_code);
-  scripts_build_finished(scripts, ok, exit_code, build.events, frame);
+  /* No library yet: build on the worker while frames continue. */
+  scripts->first_build = scripts_start_build(scripts);
+  if (!scripts->first_build) {
+    scripts_set_status(scripts, VKR_EDITOR_SCRIPT_BUILD_FAILED,
+                       "Bakery could not start the build");
+  }
+}
+
+bool8_t vkr_editor_scripts_settling(const VkrEditorScripts *scripts) {
+  return scripts->open && scripts->first_build &&
+         (scripts->status == VKR_EDITOR_SCRIPT_UNBUILT ||
+          scripts->status == VKR_EDITOR_SCRIPT_BUILDING ||
+          scripts->status == VKR_EDITOR_SCRIPT_LOADING);
 }
 
 void vkr_editor_scripts_close_project(VkrEditorScripts *scripts,
@@ -678,6 +689,7 @@ void vkr_editor_scripts_close_project(VkrEditorScripts *scripts,
     frame->script_request->retire_libraries = true_v;
   }
   scripts->open = false_v;
+  scripts->first_build = false_v;
   scripts->module_count = 0u;
   scripts->file_count = 0u;
   scripts->diagnostic_count = 0u;
