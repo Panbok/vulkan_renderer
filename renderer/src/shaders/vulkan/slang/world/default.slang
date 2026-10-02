@@ -1109,6 +1109,14 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
             }
             float3 shadow_normal =
                 vkr_ggx_diffuse_shadow_normal(normal, light_direction, energy);
+            // Deferred lighting skips lights below the contribution cutoff,
+            // as Shadow.LocalMask gave them no slot.
+            if (UseMask &&
+                vkr_local_light_contribution(
+                    p1.rgb, p2.x, attenuation,
+                    dot(shadow_normal, light_direction), frame.pre_exposure) <
+                    VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+                continue;
             // The base lobes are zero for a light behind the shadow normal, so
             // its visibility is never looked up; deferred lighting's mask gave
             // it no slot either.

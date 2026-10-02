@@ -104,6 +104,22 @@ is at most eight frames old and comes from no earlier than the last snap;
 otherwise distance ranks. `VKR_LOCAL_SHADOW_FEEDBACK=0` restores distance
 ranking for diagnosis.
 
+A light whose unshadowed contribution at a pixel, the shared
+`vkr_local_light_contribution` taken with the shadow normal, is below
+`VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` (0.001 of pre-exposed luminance) takes no
+mask slot and no deferred shading; `Shadow.LocalMask` and deferred lighting
+apply the same test, so their slots stay in step, while forward and
+transmission shading keep every light. Because the threshold follows
+pre-exposure, it means the same display contribution by day and night. In
+matched Metal runs on the M1 host it lowered `Lighting.Deferred` by 0.33 ms in
+the Bistro street view, with and without TAA, and by 0.22 ms in
+`local_shadow_cache_bistro_metal_indoor_walk`, partly because fewer pixels
+overflow their eight slots into inline filtering; the GPU pass sum fell by
+0.31 to 0.38 ms. Lit surfaces changed by more than 2 of 255 on at most 41
+pixels of the street and indoor captures (cloud pixels moved by up to 40
+through the reordered sky evaluation under fast math). Skipping such lights
+saved nothing in the mask, whose single-tap cost comes from lights that matter.
+
 Each shadowed light adds its filtering to every pixel in its range. The three
 most important shadowed lights take the nine-tap filter and contact shadows;
 the others take one hardware-filtered comparison tap and no contact shadows,

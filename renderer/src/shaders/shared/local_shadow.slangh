@@ -151,6 +151,13 @@ float vkr_local_light_contribution(float3 color, float intensity,
     return lit / (1.0f + lit);
 }
 
+// A light whose vkr_local_light_contribution at a pixel, taken with the
+// shadow normal, falls below this takes no Shadow.LocalMask slot and no
+// deferred shading. Both kernels apply the same test with the same inputs, so
+// their slots stay in step; forward and transmission shading keep every light.
+// In the Bistro views at most 41 lit pixels changed by more than 2 of 255.
+#define VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF 0.001f
+
 // Contact shadows march VKR_LOCAL_SHADOW_CONTACT_STEPS depth-buffer samples
 // along at most VKR_LOCAL_SHADOW_CONTACT_LENGTH metres toward a shadowed light.
 // They recover occlusion near contacts that the shadow map's filter radius,

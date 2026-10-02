@@ -159,8 +159,10 @@ together with a meshlet-rendering decision. Each needs a separate decision.
 
 - Further tap reduction outside the mask relies on TAA or an upscaler; the
   mask's fallback without temporal resolve is the fixed nine-tap kernel.
-- Contribution cutoffs and half precision change output within a tolerance
-  that must be chosen before implementation.
+- Half precision changes output within a tolerance that must be chosen
+  before implementation. The contribution cutoff shipped at 0.001 of
+  pre-exposed luminance (ADR-019), saving 0.31 to 0.38 ms with at most 41 lit
+  pixels changing by more than 2 of 255.
 
 ## Evidence needed
 

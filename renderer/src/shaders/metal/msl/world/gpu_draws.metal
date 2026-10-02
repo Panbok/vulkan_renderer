@@ -1275,6 +1275,10 @@ struct VkrMetalDeferredShadowMask {
                                                 world_position, normal);
   }
 
+  // Deferred lighting skips lights below the contribution cutoff, as the mask
+  // gave them no slot.
+  bool contribution_cutoff() const { return true; }
+
   // `light_index` is SIMD-uniform, so the group adds its pixels' unshadowed
   // contribution with one atomic. Shadowing never changes the measure.
   void measure(uint light_index, float contribution) {
@@ -1424,6 +1428,12 @@ kernel void vkr_metal_packet_local_shadow_mask(
       bool back_lit = diffuse_transmission > 0.0f &&
                       dot(normal, term.direction) < 0.0f;
       float3 shadow_normal = back_lit ? -normal : normal;
+      if (vkr_local_light_contribution(light.p1.rgb, light.p2.x,
+                                       term.attenuation * term.cone,
+                                       dot(shadow_normal, term.direction),
+                                       frame->pre_exposure) <
+          VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+        continue;
       // A light that cannot light the pixel takes no slot, and lighting
       // filters lights past the last slot inline.
       if (!vkr_local_shadow_light_faces(shadow_normal, term.direction) ||

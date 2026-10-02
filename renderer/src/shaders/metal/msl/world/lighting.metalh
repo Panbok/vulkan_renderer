@@ -412,7 +412,9 @@ struct VkrMetalInlineLocalShadow {
                                                 world_position, normal);
   }
 
-  // Forward and transmission shading do not measure light contribution.
+  // Forward and transmission shading keep every light and do not measure its
+  // contribution.
+  bool contribution_cutoff() const { return false; }
   void measure(uint, float) const {}
 };
 
@@ -465,6 +467,12 @@ void vkr_metal_packet_punctual_layered(
       bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                       dot(normal, light_direction) < 0.0f;
       float3 shadow_normal = back_lit ? -normal : normal;
+      if (local_shadow.contribution_cutoff() &&
+          vkr_local_light_contribution(p1.rgb, p2.x, attenuation,
+                                       dot(shadow_normal, light_direction),
+                                       frame->pre_exposure) <
+              VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+        continue;
       /* The base lobes are zero for a light behind the shadow normal, so its
          visibility is never looked up; deferred lighting's mask gave it no
          slot either. */

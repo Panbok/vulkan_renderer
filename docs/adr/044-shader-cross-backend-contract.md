@@ -359,7 +359,9 @@ or wave and light, the pixels' unshadowed contribution from the shared
 per-pixel slots: the k-th shadowed light in range of a pixel, in light
 traversal order, writes layer k with alpha tagging its light index through the
 shared `vkr_local_shadow_mask_tag`. Both deferred-lighting kernels count the
-same lights and filter inline when the slot is past
+same lights, skip the same lights below the shared
+`VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` that the mask gives no slot, and filter
+inline when the slot is past
 `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` or its tag names another light. The shared
 `local_shadow.slangh` owns the contact-shadow step count, length, noise,
 start offset, occlusion test and fade, and the full and temporal tap counts,
