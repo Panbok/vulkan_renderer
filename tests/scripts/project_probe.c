@@ -1,8 +1,9 @@
 /* A project library built four ways for the host's project tests
  * (ADR-079), listing its modules as Bakery's generated module list does:
  * 1 lists ProbeA and ProbeB; 2 changes only ProbeA's code (ten per tick);
- * 3 drops ProbeB and adds ProbeC; 4 changes a ProbeA field and ProbeC's
- * code. Built as a MODULE library from the SDK and foundation headers. */
+ * 3 drops ProbeB and adds ProbeC; 4 inserts a ProbeA field and changes
+ * ProbeC's code. Built as a MODULE library from the SDK and foundation headers.
+ */
 #include "sdk.h"
 
 #if !defined(PROJECT_VARIANT)
@@ -14,8 +15,10 @@ typedef struct ProbeData {
 } ProbeData;
 
 #if PROJECT_VARIANT == 4
+/* A field inserted before `value`: its bytes move, so only a conversion by
+   name keeps them. */
 #define PROBE_A_FIELDS                                                         \
-  VKR_FIELD(F32, value, "Value", 0.0f) VKR_FIELD(F32, extra, "Extra", 0.0f)
+  VKR_FIELD(F32, extra, "Extra", 0.5f) VKR_FIELD(F32, value, "Value", 0.0f)
 #else
 #define PROBE_A_FIELDS VKR_FIELD(F32, value, "Value", 0.0f)
 #endif

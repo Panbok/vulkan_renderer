@@ -141,6 +141,13 @@ typedef struct VkrSceneEditState {
 
 bool8_t vkr_scene_edit_read(const VkrScene *scene, VkrEntityId entity,
                             VkrSceneEditValues *out);
+/** Converts the values of `type` that undo entries hold, and `pending` when
+    given, from the `previous` layout, as vkr_scene_migrate_world_type does
+    for live components (ADR-079). */
+void vkr_scene_edit_migrate_type(VkrSceneEditState *s,
+                                 VkrSceneEditValues *pending,
+                                 const VkrTypeDesc *type,
+                                 const VkrTypeDesc *previous);
 bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *values);
 
 /** Add the entity's world component of `type` to edit values read by

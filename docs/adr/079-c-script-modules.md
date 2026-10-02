@@ -221,11 +221,39 @@ build can be replaced and a reload never reuses a cached image. Up to eight
 libraries are loaded at once. A new module registers its types. A known
 module reloads between frames, never from a hook:
 
-- **Component types must keep their layout**: same names, size, alignment and
-  field names, kinds and offsets. A changed layout is refused and the
-  previous code keeps running, because live components and documents hold
-  the old bytes. Display metadata and defaults follow the new code; the new
+- **Component types keep their names and count.** Adding, removing or
+  renaming a module's component types is refused and the previous code keeps
+  running. Display metadata and defaults follow the new code; the new
   descriptors bind to the registered copies.
+- **Changed fields migrate.** A type whose size, alignment or field names,
+  kinds or offsets changed keeps its registered copy, which takes the new
+  layout, and its values move with it before any hook runs. The application
+  installs the mover (`vkr_script_host_set_migrator`), because it owns the
+  scenes and journals; without one, as in tools, the change is refused as
+  before. The shell's mover:
+  - converts each value with `vkr_type_migrate`: the new defaults, then each
+    field the old layout had by name. The same kind copies; scalar numbers
+    convert among BOOL, I32, U32, F32, ANGLE and ENUM; float vectors keep
+    their shared components; strings truncate; numbers clamp to new bounds.
+  - moves every loaded container's components with
+    `vkr_scene_migrate_world_type`: the new layout registers as a new ECS
+    component, `<name>#<n>`, that replaces the old one on each entity, and
+    the old id stays registered and unused, so every migration costs a scene
+    one of its 256 component ids;
+  - converts the bytes undo entries hold, in every container's journal, and
+    the frame's pending scene edit (`vkr_scene_edit_migrate_type`), so undo
+    and an edit in flight write the new layout.
+
+  The editor's Content panel reads `presets.json` again after every applied
+  load (`vkr_editor_scripts_load_serial`), so presets of a migrated type
+  hold the new layout.
+
+  A prepared reload waits while a scene, the World or an added scene is
+  still loading, because the loader parsed its components with the layout
+  registered then. Script types carry `VKR_TYPE_FLAG_TOLERANT`: documents
+  saved with an earlier build load with the members the type dropped
+  skipped and a member whose kind changed at its default, so a project
+  saved before a field changed still opens after a restart.
 - **Same data shape** (`data_size`, `data_align`, `data_version`, scope and
   behavior components): the new code runs with the running instances' data,
   and the old library stays mapped until the session stops, since data may
@@ -258,8 +286,9 @@ to load it in place, flagged `project` and `in_place` in
 stays linked into `vkr_player` for packages that use it.
 
 A project library reloads atomically. The host checks every listed module
-first; one refused module, a changed layout or a type name another module
-owns, refuses the load and every module keeps its previous code. Otherwise
+first; one refused module, a changed component type list or a type name
+another module owns, refuses the load and every module keeps its previous
+code. Otherwise
 new modules register, known ones swap, and modules the library no longer
 lists retire. The session keeps its data only when no module was added or
 removed and every one kept its data shape; otherwise it restarts.
@@ -560,8 +589,9 @@ the startup scene has neither a Player Start nor an `fps_player`.
   outright. Foundation math types stay shared, so a changed `Vec3` layout
   still requires rebuilding modules.
 - Hot reload trusts `data_version`: a module that changes its data struct
-  without bumping it runs new code over old bytes. Component layout changes
-  need the project reopened.
+  without bumping it runs new code over old bytes. A component's fields
+  migrate by name: renaming a field drops its value to the default, and a
+  value the new field's kind cannot take keeps the default.
 - Structural edits in fixed updates take effect after the tick, not inside
   it: a spawned projectile has no transform or body until the next tick, and
   a destroyed entity stays readable until the tick ends.
@@ -676,6 +706,26 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
   headers need no platform header. After deleting the staged copies, the
   Debug build of every target and the editor restaged eight headers, the
   probes built from them, and the full tester passed.
+- Component migration:
+  - `type_desc_test.c`: a value moves between two hand-written layouts with
+    fields reordered, an I32 read as F32 (-3), a speed clamped to its new
+    maximum (9 to 5), a label truncated to its new capacity ("abcdef" to
+    "abc"), a dropped field and an added one at its default (2.5). A
+    tolerant type reads a document naming the dropped field and giving the
+    changed field an array, keeping that field's value; without the flag
+    the same document fails.
+  - `script_reload_test.c`: project probe version 4 inserts `extra` (default
+    0.5) before `value`. With a migrator installed, the reload keeps state;
+    an entity's `value` 9 and a pending edit's 9 read back at their new
+    offset with `extra` 0.5, the scene's ECS component is 8 bytes, and undo
+    writes the journal's 7 in the new layout. Reloading version 3 moves them
+    back. With the journal conversion disabled, the test fails on the
+    pending edit.
+  - Headless Release editor on Bistro with the reserve workaround: during
+    Play, typing `VKR_FIELD(F32, boost, "Boost", 2.0f)` before the Spinner's
+    `speed` (set to 3) and saving logged "Component spinner moved its values
+    to its new fields" and "Reloaded; state kept"; `speed` stayed 3 and
+    `boost` read 2, during Play and after Stop.
 - Packaged game, Windows, Debug: `vkr_bakery bundle` on a copy of an empty
   managed project with a never-built `Scripts/Spinner` ran the Scripts stage
   (1.5 s) and wrote `scripts/project.dll` beside `f.exe`, exporting
@@ -764,5 +814,4 @@ exercised; items not listed above were not repeated on the SDK.
 
 A platform needs script modules linked statically, a second language binds the table,
 additive scenes simulate and need their own instances, a project needs
-separately loaded groups, or component layout changes should migrate live
-data.
+separately loaded groups, or field renames should carry values.

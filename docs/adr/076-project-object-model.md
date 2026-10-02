@@ -173,7 +173,9 @@ World. Unloading an additive scene clears its selection and journal.
 Any live world component or light can be saved as a **preset**: a named,
 typed value in the project's `presets.json` (version 1). The
 [project store](../../editor/src/editor_project_store.h) reads and writes it
-through the type's descriptor and skips records of unknown types or invalid
+through the type's descriptor (a type flagged `VKR_TYPE_FLAG_TOLERANT`, as
+script components are, also skips members it no longer has and keeps the
+default for one whose kind changed) and skips records of unknown types or invalid
 values. Details offers Save as preset and the presets of that type from each
 component header; applying one is an ordinary undoable component edit.
 Content lists presets in its Presets folder for rename and delete.

@@ -114,6 +114,10 @@ bool8_t vkr_editor_scripts_project_open(const VkrEditorScripts *scripts);
 /** Increases whenever the module or file list changes; build and load
  * status changes do not count. */
 uint64_t vkr_editor_scripts_revision(const VkrEditorScripts *scripts);
+/** Increases with every project library load the runtime applied. A reload
+ * may have moved component types to new fields (ADR-079), so values held by
+ * layout, such as presets, read again. */
+uint64_t vkr_editor_scripts_load_serial(const VkrEditorScripts *scripts);
 uint32_t vkr_editor_scripts_module_count(const VkrEditorScripts *scripts);
 const VkrEditorScriptModule *
 vkr_editor_scripts_module(const VkrEditorScripts *scripts, uint32_t index);

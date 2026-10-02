@@ -106,6 +106,13 @@ typedef struct VkrScriptPrepared {
   char error[VKR_SCRIPT_ERROR_CAPACITY];
 } VkrScriptPrepared;
 
+/* Moves the live values of a registered component type whose fields a reload
+ * changed, from its `previous` descriptor to the current one: in every scene
+ * and every place that holds its bytes (ADR-079). The application owns those,
+ * so it installs this; without one, a changed layout is refused. */
+typedef void (*VkrScriptMigrateFn)(void *context, const VkrTypeDesc *type,
+                                   const VkrTypeDesc *previous);
+
 typedef struct VkrScriptRetiredLibrary {
   VkrPlatformLibrary library;
   char path[VKR_SCRIPT_PATH_CAPACITY];
@@ -279,6 +286,9 @@ typedef struct VkrScriptHost {
   uint32_t task_count;
   uint32_t task_capacity;
   uint64_t task_serial;
+  /* Moves component values to a reloaded layout; NULL refuses the reload. */
+  VkrScriptMigrateFn migrate;
+  void *migrate_context;
   uint32_t load_serial;
   char error[VKR_SCRIPT_ERROR_CAPACITY];
 } VkrScriptHost;
@@ -352,6 +362,11 @@ VkrScriptReload vkr_script_host_commit(VkrScriptHost *host,
 /** Closes a prepared library that will not be committed and removes its
  * copy. Its run must have returned. */
 void vkr_script_host_discard(VkrScriptHost *host, VkrScriptPrepared *prepared);
+
+/** Lets reloads change a component's fields: before a session restarts or
+ * continues, `migrate` moves every live value of each changed type. */
+void vkr_script_host_set_migrator(VkrScriptHost *host,
+                                  VkrScriptMigrateFn migrate, void *context);
 
 /** Retires every library module, as when a project closes: the session
  * stops, their component types stay registered without hooks, and a later

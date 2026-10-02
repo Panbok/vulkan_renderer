@@ -371,6 +371,91 @@ bool8_t vkr_property_equal(const VkrPropertyDesc *property, const void *a,
                     property_storage_size(property)) == 0;
 }
 
+static bool8_t property_scalar(VkrPropertyKind kind) {
+  return kind == VKR_PROPERTY_BOOL || kind == VKR_PROPERTY_I32 ||
+         kind == VKR_PROPERTY_U32 || kind == VKR_PROPERTY_F32 ||
+         kind == VKR_PROPERTY_ANGLE || kind == VKR_PROPERTY_ENUM;
+}
+
+static bool8_t property_vector(VkrPropertyKind kind) {
+  return kind == VKR_PROPERTY_VEC2 || kind == VKR_PROPERTY_VEC3 ||
+         kind == VKR_PROPERTY_VEC4 || kind == VKR_PROPERTY_QUAT ||
+         kind == VKR_PROPERTY_COLOR || kind == VKR_PROPERTY_DIRECTION;
+}
+
+/* ANGLE bounds are degrees over radians; they stay unapplied here. */
+static float64_t property_clamp(const VkrPropertyDesc *property,
+                                float64_t value) {
+  if (property->min < property->max && property->kind != VKR_PROPERTY_ANGLE) {
+    value = Max(value, (float64_t)property->min);
+    value = Min(value, (float64_t)property->max);
+  }
+  return value;
+}
+
+/* Converts one property's value; false leaves `to_value` as it was. */
+static bool8_t property_migrate(const VkrPropertyDesc *from,
+                                const void *from_value,
+                                const VkrPropertyDesc *to, void *to_value) {
+  uint8_t *target = (uint8_t *)to_value + to->offset;
+  const uint8_t *source = property_address(from, from_value);
+  if (from->kind == VKR_PROPERTY_STRING || to->kind == VKR_PROPERTY_STRING) {
+    if (from->kind != to->kind || !to->capacity) {
+      return false_v;
+    }
+    uint32_t length = 0u;
+    while (length < from->capacity && source[length]) {
+      ++length;
+    }
+    const uint32_t kept = Min(length, to->capacity - 1u);
+    MemCopy(target, source, kept);
+    MemZero(target + kept, to->capacity - kept);
+    return true_v;
+  }
+  if (property_scalar(from->kind) && property_scalar(to->kind)) {
+    float64_t number = 0.0;
+    return vkr_property_get_number(from, from_value, &number) &&
+           vkr_property_set_number(to, to_value, property_clamp(to, number));
+  }
+  if (property_vector(from->kind) && property_vector(to->kind)) {
+    float32_t values[4] = {0};
+    float32_t current[4] = {0};
+    if (!vkr_property_get_floats(from, from_value, values) ||
+        !vkr_property_get_floats(to, to_value, current)) {
+      return false_v;
+    }
+    const uint32_t shared =
+        Min(vkr_property_components(from), vkr_property_components(to));
+    for (uint32_t i = 0; i < shared; ++i) {
+      current[i] = (float32_t)property_clamp(to, values[i]);
+    }
+    return vkr_property_set_floats(to, to_value, current);
+  }
+  return false_v;
+}
+
+void vkr_type_migrate(const VkrTypeDesc *from, const void *from_value,
+                      const VkrTypeDesc *to, void *to_value) {
+  vkr_type_defaults(to, to_value);
+  for (uint32_t i = 0; i < to->property_count; ++i) {
+    const VkrPropertyDesc *property = &to->properties[i];
+    const uint32_t index = vkr_type_find_property(
+        from, string8_create_from_cstr((const uint8_t *)property->name,
+                                       strlen(property->name)));
+    if (index == UINT32_MAX) {
+      continue;
+    }
+    /* A failed conversion must not leave half a value behind. */
+    _Alignas(16) uint8_t kept[VKR_TYPE_VALUE_MAX];
+    const uint32_t size = property_storage_size(property);
+    MemCopy(kept, (uint8_t *)to_value + property->offset, size);
+    if (!property_migrate(&from->properties[index], from_value, property,
+                          to_value)) {
+      MemCopy((uint8_t *)to_value + property->offset, kept, size);
+    }
+  }
+}
+
 // =============================================================================
 // JSON
 // =============================================================================
@@ -628,23 +713,41 @@ bool8_t vkr_type_read_json(VkrJsonReader *reader, const VkrTypeDesc *type,
                            type->name);
         }
       } else {
+        const bool8_t tolerant = (type->flags & VKR_TYPE_FLAG_TOLERANT) != 0u;
         const uint32_t index = vkr_type_find_property(type, key);
-        if (index == UINT32_MAX ||
-            (type->properties[index].flags & VKR_PROPERTY_FLAG_TRANSIENT)) {
-          reader->pos = start;
-          return type_fail(error, capacity, "%s has no property '%.*s'",
-                           type->name, (int)Min(key.length, 64u), key.str);
-        }
-        if (seen & (UINT64_C(1) << index)) {
-          reader->pos = start;
-          return type_fail(error, capacity, "%s repeats '%s'", type->name,
-                           type->properties[index].name);
-        }
-        seen |= UINT64_C(1) << index;
-        if (!json_read_property(reader, &type->properties[index], candidate,
-                                scratch, error, capacity)) {
-          reader->pos = start;
-          return false_v;
+        if (tolerant && index == UINT32_MAX) {
+          /* A member an older layout had. */
+          if (!json_skip_value(reader)) {
+            reader->pos = start;
+            return type_fail(error, capacity, "%s has a malformed member",
+                             type->name);
+          }
+        } else {
+          if (index == UINT32_MAX ||
+              (type->properties[index].flags & VKR_PROPERTY_FLAG_TRANSIENT)) {
+            reader->pos = start;
+            return type_fail(error, capacity, "%s has no property '%.*s'",
+                             type->name, (int)Min(key.length, 64u), key.str);
+          }
+          if (seen & (UINT64_C(1) << index)) {
+            reader->pos = start;
+            return type_fail(error, capacity, "%s repeats '%s'", type->name,
+                             type->properties[index].name);
+          }
+          seen |= UINT64_C(1) << index;
+          const uint64_t member = reader->pos;
+          if (!json_read_property(reader, &type->properties[index], candidate,
+                                  scratch, error, capacity)) {
+            /* A value of a property whose kind changed keeps the default. */
+            reader->pos = member;
+            if (!tolerant || !json_skip_value(reader)) {
+              reader->pos = start;
+              return false_v;
+            }
+            if (error && capacity) {
+              error[0] = '\0';
+            }
+          }
         }
       }
       if (json_take(reader, '}')) {

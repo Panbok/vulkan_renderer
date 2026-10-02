@@ -127,6 +127,9 @@ typedef struct SampleScriptPending {
 typedef struct State {
   /* Script modules and the session of the active scene (ADR-079). */
   VkrScriptHost scripts;
+  /* The frame's scene edit while script loads apply, so a reload that moves
+     a component to new fields converts its bytes too. */
+  VkrSceneEditValues *script_frame_edit;
   SampleScriptPending script_pending[VKR_SAMPLE_SCRIPT_LOAD_MAX];
   /* Last presentation the modules published; its HUD replaces the camera
      text while they run. */
@@ -323,7 +326,8 @@ vkr_global State *state = NULL;
 static uint32_t sample_additive_slot(VkrEntityId entity);
 static void sample_scripts_stop(VkrStandardSceneRuntime *application);
 static void sample_script_request(VkrStandardSceneRuntime *application,
-                                  const VkrSampleScriptRequest *request);
+                                  const VkrSampleScriptRequest *request,
+                                  VkrSceneEditValues *frame_edit);
 static void sample_physics_attach(VkrStandardSceneRuntime *application,
                                   VkrScene *scene, bool8_t driver);
 vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application);
@@ -3163,14 +3167,57 @@ static bool8_t sample_script_library_open(const char *name) {
   return false_v;
 }
 
+/* A reload changed a component's fields: every loaded container, its edit
+ * journal and the frame's pending edit move to the new layout (ADR-079). */
+static void sample_script_migrate(void *context, const VkrTypeDesc *type,
+                                  const VkrTypeDesc *previous) {
+  VkrStandardSceneRuntime *application = context;
+  VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {application->active_scene,
+                                                   application->world_scene};
+  VkrSceneEditState *journals[2u + VKR_SCENE_ADDITIVE_MAX] = {
+      &state->edits, &state->world_edits};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    scenes[2u + i] = vkr_scene_handle_get_scene(state->additive_handles[i]);
+    journals[2u + i] = &state->additive_edits[i];
+  }
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    if (scenes[i] && !vkr_scene_migrate_world_type(scenes[i], type, previous)) {
+      ok = false_v;
+    }
+    vkr_scene_edit_migrate_type(journals[i], NULL, type, previous);
+  }
+  vkr_scene_edit_migrate_type(NULL, state->script_frame_edit, type, previous);
+  if (ok) {
+    log_info("Component %s moved its values to its new fields", type->name);
+  } else {
+    log_error("Component %s could not move every value to its new fields",
+              type->name);
+  }
+}
+
+/* A scene, World or added scene still loading parsed its documents with the
+ * registered layouts; prepared reloads wait until it activates. */
+static bool8_t sample_scripts_loads_in_flight(void) {
+  bool8_t loading =
+      state->world_pending ||
+      (state->scene_load_timer_active && !state->scene_load_terminal_logged);
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    loading = loading || state->additive_pending[i];
+  }
+  return loading;
+}
+
 /* Library loads between frames, where no module hook runs (ADR-079). A
  * reload during a session keeps its state or restarts it; retiring ends the
  * session and returns the camera. Reloads of an open library prepare on a
  * worker and commit at a later frame start, so its copy and C runtime
  * startup do not stall frames. */
 static void sample_script_request(VkrStandardSceneRuntime *application,
-                                  const VkrSampleScriptRequest *request) {
+                                  const VkrSampleScriptRequest *request,
+                                  VkrSceneEditValues *frame_edit) {
   bool8_t first = true_v;
+  state->script_frame_edit = frame_edit;
   if (request->retire_libraries) {
     sample_scripts_join();
     sample_scripts_stop(application);
@@ -3178,9 +3225,10 @@ static void sample_script_request(VkrStandardSceneRuntime *application,
   }
 
   /* Prepared reloads commit in request order of their slots. */
+  const bool8_t loads_in_flight = sample_scripts_loads_in_flight();
   for (uint32_t i = 0; i < VKR_SAMPLE_SCRIPT_LOAD_MAX; ++i) {
     SampleScriptPending *pending = &state->script_pending[i];
-    if (!pending->active ||
+    if (!pending->active || loads_in_flight ||
         !vkr_atomic_bool_load(&pending->done, VKR_MEMORY_ORDER_ACQUIRE)) {
       continue;
     }
@@ -5386,7 +5434,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     application->ui_capture.keyboard = true_v;
     vkr_window_set_mouse_capture(&application->host.window, false_v);
   }
-  sample_script_request(application, &requests.script_request);
+  sample_script_request(application, &requests.script_request,
+                        &requests.scene_edit.values);
   vkr_standard_scene_runtime_apply_scene_request(
       application, &requests.scene_request, &requests.scene_edit);
   sample_world_request(application, &requests.world_request);
@@ -5616,6 +5665,8 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
   if (!vkr_script_host_init(&state->scripts, &application->app_allocator)) {
     log_error("The script host could not reserve its memory");
   }
+  vkr_script_host_set_migrator(&state->scripts, sample_script_migrate,
+                               application);
   for (uint32_t i = 0; i < runtime_config->script_module_count; ++i) {
     const char *error = NULL;
     if (!vkr_script_host_add_module(

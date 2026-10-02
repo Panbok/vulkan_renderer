@@ -114,6 +114,10 @@ typedef enum VkrTypeFlags {
   VKR_TYPE_FLAG_SINGLETON = 1u << 0,
   /** Only the root World holds it; every scene resolves the World's. */
   VKR_TYPE_FLAG_WORLD_ONLY = 1u << 1,
+  /** Its properties change between builds, as script components' do:
+   * readers skip members it no longer has and keep the default for a member
+   * whose value no longer fits its property. */
+  VKR_TYPE_FLAG_TOLERANT = 1u << 2,
 } VkrTypeFlags;
 
 typedef struct VkrTypeDesc {
@@ -210,6 +214,15 @@ void vkr_type_defaults(const VkrTypeDesc *type, void *value);
 VkrPropertyState vkr_type_property_state(const VkrTypeDesc *type,
                                          const void *value, uint32_t property,
                                          const void *context);
+
+/** Converts a value of `from` into `to`, two layouts of one type: defaults
+ * first, then each property of `to` that `from` has by name. The same kind
+ * copies; scalar numbers convert between BOOL, I32, U32, F32, ANGLE and
+ * ENUM; float vectors (VEC2 to QUAT) copy their shared components; STRING
+ * copies within the new capacity. Numbers clamp to the new bounds; a value
+ * that does not convert keeps the default. */
+void vkr_type_migrate(const VkrTypeDesc *from, const void *from_value,
+                      const VkrTypeDesc *to, void *to_value);
 
 /** Byte-compare one property's storage. */
 bool8_t vkr_property_equal(const VkrPropertyDesc *property, const void *a,

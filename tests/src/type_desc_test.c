@@ -368,6 +368,123 @@ static void test_light_types(void) {
   printf("  test_light_types PASSED\n");
 }
 
+/* Two layouts of one script-style type: fields moved, one dropped, one
+ * added, one's kind and another's bounds changed. */
+typedef struct MigrateBefore {
+  float32_t speed;
+  int32_t count;
+  Vec3 tint;
+  char label[8];
+  float32_t gone;
+} MigrateBefore;
+
+typedef struct MigrateAfter {
+  Vec3 tint;
+  float32_t count;
+  float32_t speed;
+  char label[4];
+  float32_t added;
+} MigrateAfter;
+
+static const VkrPropertyDesc s_before_properties[] = {
+    {.name = "speed",
+     .offset = offsetof(MigrateBefore, speed),
+     .kind = VKR_PROPERTY_F32},
+    {.name = "count",
+     .offset = offsetof(MigrateBefore, count),
+     .kind = VKR_PROPERTY_I32},
+    {.name = "tint",
+     .offset = offsetof(MigrateBefore, tint),
+     .kind = VKR_PROPERTY_COLOR},
+    {.name = "label",
+     .offset = offsetof(MigrateBefore, label),
+     .kind = VKR_PROPERTY_STRING,
+     .capacity = 8u},
+    {.name = "gone",
+     .offset = offsetof(MigrateBefore, gone),
+     .kind = VKR_PROPERTY_F32},
+};
+
+static const VkrPropertyDesc s_after_properties[] = {
+    {.name = "tint",
+     .offset = offsetof(MigrateAfter, tint),
+     .kind = VKR_PROPERTY_VEC3},
+    {.name = "count",
+     .offset = offsetof(MigrateAfter, count),
+     .kind = VKR_PROPERTY_F32},
+    {.name = "speed",
+     .offset = offsetof(MigrateAfter, speed),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 5.0f},
+    {.name = "label",
+     .offset = offsetof(MigrateAfter, label),
+     .kind = VKR_PROPERTY_STRING,
+     .capacity = 4u},
+    {.name = "added",
+     .offset = offsetof(MigrateAfter, added),
+     .kind = VKR_PROPERTY_F32},
+};
+
+static void migrate_after_defaults(void *value) {
+  ((MigrateAfter *)value)->added = 2.5f;
+}
+
+static const VkrTypeDesc s_migrate_before = {
+    .name = "migrate_probe",
+    .properties = s_before_properties,
+    .property_count = ArrayCount(s_before_properties),
+    .size = sizeof(MigrateBefore),
+    .align = AlignOf(MigrateBefore),
+};
+
+static const VkrTypeDesc s_migrate_after = {
+    .name = "migrate_probe",
+    .flags = VKR_TYPE_FLAG_TOLERANT,
+    .properties = s_after_properties,
+    .property_count = ArrayCount(s_after_properties),
+    .size = sizeof(MigrateAfter),
+    .align = AlignOf(MigrateAfter),
+    .defaults = migrate_after_defaults,
+};
+
+/* Values follow their fields by name into a changed layout, and a tolerant
+ * reader skips members an older layout wrote. */
+static void test_type_migrate(VkrAllocator *allocator) {
+  const MigrateBefore before = {.speed = 9.0f,
+                                .count = -3,
+                                .tint = {.x = 0.25f, .y = 0.5f, .z = 1.0f},
+                                .label = "abcdef",
+                                .gone = 7.0f};
+  MigrateAfter after;
+  vkr_type_migrate(&s_migrate_before, &before, &s_migrate_after, &after);
+  assert(after.tint.x == 0.25f && after.tint.y == 0.5f && after.tint.z == 1.0f);
+  assert(after.count == -3.0f);
+  assert(after.speed == 5.0f);
+  assert(strcmp(after.label, "abc") == 0);
+  assert(after.added == 2.5f);
+
+  // A member the new layout dropped and one whose kind changed: the tolerant
+  // type skips the first and keeps the default for the second.
+  const char json[] =
+      "{\"gone\":7,\"count\":[1,2],\"speed\":1.5,\"label\":\"hi\"}";
+  MigrateAfter read;
+  char error[128] = {0};
+  vkr_type_defaults(&s_migrate_after, &read);
+  read.count = 4.0f;
+  assert(vkr_type_read_json_document(
+      string8_create_from_cstr((const uint8_t *)json, strlen(json)),
+      &s_migrate_after, &read, allocator, error, sizeof(error)));
+  assert(read.speed == 1.5f && read.count == 4.0f && read.added == 2.5f);
+  assert(strcmp(read.label, "hi") == 0);
+  // Without the flag the same document fails on the dropped member.
+  VkrTypeDesc strict = s_migrate_after;
+  strict.flags = VKR_TYPE_FLAG_NONE;
+  assert(!vkr_type_read_json_document(
+      string8_create_from_cstr((const uint8_t *)json, strlen(json)), &strict,
+      &read, allocator, error, sizeof(error)));
+}
+
 bool32_t run_type_desc_tests(void) {
   printf("--- Starting Type Descriptor Tests ---\n");
   VkrDMemory memory;
@@ -379,6 +496,7 @@ bool32_t run_type_desc_tests(void) {
   test_type_property_access();
   test_graphics_preferences_type();
   test_light_types();
+  test_type_migrate(&allocator);
   vkr_dmemory_destroy(&memory);
   printf("--- Type Descriptor Tests completed. ---\n");
   return true_v;

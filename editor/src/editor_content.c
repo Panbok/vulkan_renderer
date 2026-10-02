@@ -204,6 +204,8 @@ struct VkrEditorContent {
   /* The project's script modules and the file list listed last. */
   const VkrEditorScripts *scripts;
   uint64_t scripts_revision;
+  /* Script loads seen; a reload may move preset values to new fields. */
+  uint64_t scripts_load_serial;
   /* Double-click and drag of one item or folder (ADR-076). */
   uint32_t click_asset;
   float64_t click_time;
@@ -1675,6 +1677,7 @@ void vkr_editor_content_set_scripts(VkrEditorContent *content,
   if (content) {
     content->scripts = scripts;
     content->scripts_revision = UINT64_MAX;
+    content->scripts_load_serial = vkr_editor_scripts_load_serial(scripts);
   }
 }
 
@@ -2126,6 +2129,17 @@ void vkr_editor_content_update(VkrEditorContent *content) {
       content->scripts_revision !=
           vkr_editor_scripts_revision(content->scripts)) {
     vkr_editor_content_refresh(content);
+  }
+  /* Presets hold component bytes; after a reload they read presets.json
+     again through the reloaded layouts. */
+  if (content->scripts &&
+      content->scripts_load_serial !=
+          vkr_editor_scripts_load_serial(content->scripts)) {
+    content->scripts_load_serial =
+        vkr_editor_scripts_load_serial(content->scripts);
+    if (content->project[0]) {
+      vkr_editor_content_refresh(content);
+    }
   }
   if (content->worker &&
       vkr_atomic_bool_load(&content->complete, VKR_MEMORY_ORDER_ACQUIRE)) {

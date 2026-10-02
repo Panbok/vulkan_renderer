@@ -76,6 +76,8 @@ struct VkrEditorScripts {
   int32_t exit_code;
   bool8_t process_ok;
   uint64_t result_serial;
+  /* Successful loads applied; see vkr_editor_scripts_load_serial. */
+  uint64_t load_serial;
   ScriptsBuild worker_build;
 };
 
@@ -725,6 +727,7 @@ void vkr_editor_scripts_update(VkrEditorScripts *scripts,
       continue;
     }
     scripts->loaded_fingerprint = scripts->pending_fingerprint;
+    scripts->load_serial++;
     scripts_set_status(
         scripts, VKR_EDITOR_SCRIPT_LOADED,
         result->result == VKR_SCRIPT_RELOAD_LOADED ? "Loaded"
@@ -958,6 +961,10 @@ bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
 
 bool8_t vkr_editor_scripts_project_open(const VkrEditorScripts *scripts) {
   return scripts && scripts->open;
+}
+
+uint64_t vkr_editor_scripts_load_serial(const VkrEditorScripts *scripts) {
+  return scripts ? scripts->load_serial : 0u;
 }
 
 uint64_t vkr_editor_scripts_revision(const VkrEditorScripts *scripts) {

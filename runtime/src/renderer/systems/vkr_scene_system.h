@@ -843,6 +843,15 @@ bool8_t vkr_scene_remove_typed(VkrScene *scene, VkrEntityId entity,
     script module loaded later (ADR-079). Call outside queries and ticks.
     False when the scene's type table is full. */
 bool8_t vkr_scene_sync_world_types(VkrScene *scene);
+/** Moves every component of `type` to its new layout after the type's
+    registered descriptor changed from `previous` (ADR-079): a new ECS
+    component of the new size replaces the old one on each entity, with its
+    value converted by vkr_type_migrate. The old component id stays
+    registered, unused. True when the scene never synced the type. Call
+    outside queries and ticks. */
+bool8_t vkr_scene_migrate_world_type(VkrScene *scene,
+                                     const struct VkrTypeDesc *type,
+                                     const struct VkrTypeDesc *previous);
 /** Writes up to `capacity` live entities carrying `type` in entity index
     order and returns how many carry it, which may exceed `capacity`. */
 uint32_t vkr_scene_find_typed(const VkrScene *scene,

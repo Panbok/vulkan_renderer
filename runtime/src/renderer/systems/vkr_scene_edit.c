@@ -789,6 +789,54 @@ typedef struct EditStructure {
   EditObject object;
 } EditStructure;
 
+/* Converts one held value of `type` in place. */
+static void edit_migrate_bytes(const VkrTypeDesc *held, uint8_t *bytes,
+                               const VkrTypeDesc *type,
+                               const VkrTypeDesc *previous) {
+  if (held != type) {
+    return;
+  }
+  _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+  vkr_type_migrate(previous, bytes, type, value);
+  MemCopy(bytes, value, type->size);
+}
+
+static void edit_migrate_values(VkrSceneEditValues *values,
+                                const VkrTypeDesc *type,
+                                const VkrTypeDesc *previous) {
+  if (values->fields & VKR_SCENE_EDIT_COMPONENT) {
+    edit_migrate_bytes(values->component_type, values->component, type,
+                       previous);
+  }
+}
+
+void vkr_scene_edit_migrate_type(VkrSceneEditState *s,
+                                 VkrSceneEditValues *pending,
+                                 const VkrTypeDesc *type,
+                                 const VkrTypeDesc *previous) {
+  if (pending) {
+    edit_migrate_values(pending, type, previous);
+  }
+  for (uint32_t i = 0; s && i < s->undo_count; ++i) {
+    VkrSceneEditEntry *entry = &s->undo[i];
+    if (entry->kind == VKR_SCENE_EDIT_ENTRY_ENTITY) {
+      VkrSceneEditValues *values = entry->payload;
+      edit_migrate_values(&values[0], type, previous);
+      edit_migrate_values(&values[1], type, previous);
+    } else if (entry->kind == VKR_SCENE_EDIT_ENTRY_STRUCTURE) {
+      EditStructure *structure = entry->payload;
+      edit_migrate_bytes(structure->type, structure->component, type, previous);
+      edit_migrate_bytes(structure->replaced, structure->replaced_component,
+                         type, previous);
+      EditObject *object = &structure->object;
+      for (uint32_t c = 0; c < object->component_count; ++c) {
+        edit_migrate_bytes(object->types[c], object->components[c], type,
+                           previous);
+      }
+    }
+  }
+}
+
 /* Types the editor may add or remove on a loaded scene. */
 static bool8_t edit_world_type(const VkrTypeDesc *type) {
   return vkr_scene_world_type_live(type);

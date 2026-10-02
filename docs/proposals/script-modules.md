@@ -143,10 +143,10 @@ ADR-072 records the adapter, the 512-body threshold and the measurements.
 
 ## Remaining work
 
-1. **Component migration.** Hot reload refuses a component whose fields
-   changed; the project must be reopened, and nothing migrates the old bytes.
-   A migration needs versioned field serialization and atomic replacement of
-   the live values.
+1. **Component migration.** Shipped in ADR-079: changed fields move live
+   values, undo journals and pending edits by field name, and documents
+   tolerate fields earlier builds wrote. Left: renamed fields lose their
+   values, since nothing records a rename.
 2. **Packaged games.** Shipped in ADR-078 and ADR-079: a package carries the
    project's shared library beside `vkr_player` (signed inside the `.app` on
    macOS), and the player loads it in place. Left: consoles and iOS need

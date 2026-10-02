@@ -3,6 +3,7 @@
 #include "core/vkr_threads.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_script_host.h"
@@ -103,6 +104,42 @@ static void test_script_library_reload(VkrAllocator *allocator) {
 typedef struct ProbeData {
   uint32_t ticks;
 } ProbeData;
+
+/* What the test's migrator reaches, as an application's reaches its scenes,
+ * journals and pending edit. */
+typedef struct MigrateTarget {
+  VkrScene *scene;
+  VkrSceneEditState *edits;
+  VkrSceneEditValues *pending;
+  uint32_t calls;
+} MigrateTarget;
+
+static void migrate_target(void *context, const VkrTypeDesc *type,
+                           const VkrTypeDesc *previous) {
+  MigrateTarget *target = context;
+  assert(vkr_scene_migrate_world_type(target->scene, type, previous));
+  vkr_scene_edit_migrate_type(target->edits, target->pending, type, previous);
+  target->calls++;
+}
+
+/* A number property of a registered type's value, by name. */
+static float64_t probe_number(const VkrTypeDesc *type, const void *value,
+                              const char *name) {
+  const uint32_t index = vkr_type_find_property(
+      type, string8_create_from_cstr((const uint8_t *)name, strlen(name)));
+  float64_t number = -1.0;
+  assert(index != UINT32_MAX &&
+         vkr_property_get_number(&type->properties[index], value, &number));
+  return number;
+}
+
+static void probe_set_number(const VkrTypeDesc *type, void *value,
+                             const char *name, float64_t number) {
+  const uint32_t index = vkr_type_find_property(
+      type, string8_create_from_cstr((const uint8_t *)name, strlen(name)));
+  assert(index != UINT32_MAX &&
+         vkr_property_set_number(&type->properties[index], value, number));
+}
 
 static void *prepare_thread(void *prepared) {
   vkr_script_prepare_run(prepared);
@@ -208,14 +245,58 @@ static void test_project_library(VkrAllocator *allocator) {
   reload_ticks(&scene, 1u);
   assert(data->ticks == 2u && c_data->ticks == 2u);
 
+  // With a migrator, the same change moves the live component, the undo
+  // journal and a pending edit to the new field instead of refusing.
+  const VkrTypeDesc *probe_a =
+      vkr_scene_world_type_named(string8_lit("probe_a"));
+  assert(probe_a && probe_a->size == sizeof(float32_t));
+  const VkrEntityId holder = vkr_scene_create_entity(&scene, NULL);
+  _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+  vkr_type_defaults(probe_a, value);
+  probe_set_number(probe_a, value, "value", 7.0);
+  assert(vkr_scene_set_typed(&scene, holder, probe_a, value));
+  static VkrSceneEditState edits;
+  vkr_scene_edit_reset(&edits, allocator, 1u);
+  VkrSceneEditValues edit = {0};
+  assert(vkr_scene_edit_read_component(&scene, holder, probe_a, &edit));
+  probe_set_number(probe_a, edit.component, "value", 9.0);
+  assert(vkr_scene_edit_apply(&edits, &scene, holder, &edit));
+  VkrSceneEditValues pending = edit;
+  MigrateTarget target = {
+      .scene = &scene, .edits = &edits, .pending = &pending};
+  vkr_script_host_set_migrator(&host, migrate_target, &target);
+  assert(vkr_script_host_load_project(&host, "probe_project",
+                                      VKR_TEST_PROJECT_PROBE_4,
+                                      &error) == VKR_SCRIPT_RELOAD_KEPT_STATE);
+  assert(target.calls == 1u && probe_a->size == 2u * sizeof(float32_t));
+  const void *moved = vkr_scene_get_typed(&scene, holder, probe_a);
+  assert(moved && probe_number(probe_a, moved, "value") == 9.0 &&
+         probe_number(probe_a, moved, "extra") == 0.5);
+  const VkrComponentTypeId id = vkr_scene_type_id(&scene, probe_a);
+  assert(vkr_entity_get_component_info(scene.world, id)->size ==
+         2u * sizeof(float32_t));
+  assert(probe_number(probe_a, pending.component, "value") == 9.0 &&
+         probe_number(probe_a, pending.component, "extra") == 0.5);
+  assert(vkr_scene_edit_undo(&edits, &scene, false_v));
+  moved = vkr_scene_get_typed(&scene, holder, probe_a);
+  assert(moved && probe_number(probe_a, moved, "value") == 7.0 &&
+         probe_number(probe_a, moved, "extra") == 0.5);
+  vkr_scene_physics_set_paused(&scene, false_v);
+  reload_ticks(&scene, 1u);
+  assert(data->ticks == 3u && c_data->ticks == 102u);
+
   // A packaged game opens its library where it lies: no copy beside it,
-  // and closing leaves the file.
+  // and closing leaves the file. Back on V3, ProbeA drops `extra` again.
   assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
                                  VKR_TEST_PROJECT_PROBE_3, true_v, true_v));
   assert(!prepared.loaded_path[0]);
   vkr_script_prepare_run(&prepared);
   assert(vkr_script_host_commit(&host, &prepared, &error) ==
          VKR_SCRIPT_RELOAD_KEPT_STATE);
+  assert(target.calls == 2u && probe_a->size == sizeof(float32_t));
+  moved = vkr_scene_get_typed(&scene, holder, probe_a);
+  assert(moved && probe_number(probe_a, moved, "value") == 7.0);
+  vkr_scene_edit_reset(&edits, allocator, 2u);
   c = vkr_script_host_module(&host, "ProbeC");
   assert(host.libraries[c->library].handle.handle &&
          !host.libraries[c->library].loaded_path[0]);

@@ -102,10 +102,13 @@ static bool8_t script_type_fill(VkrScriptHost *host, VkrTypeDesc *copy,
         .step = from->step,
     };
   }
+  /* Documents saved with an earlier build may name fields this one dropped
+     or changed. */
   *copy = (VkrTypeDesc){
       .name = script_copy_text(host, source->name),
       .label = script_copy_text(host, source->label),
       .category = "Scripts",
+      .flags = VKR_TYPE_FLAG_TOLERANT,
       .properties = properties,
       .property_count = source->field_count,
       .size = source->size,
@@ -1455,6 +1458,19 @@ static bool8_t script_module_running(const VkrScriptHost *host,
   return false_v;
 }
 
+/* A registered type whose layout a reload changes, and its descriptor
+ * before. */
+typedef struct ScriptMigration {
+  VkrTypeDesc *type;
+  VkrTypeDesc previous;
+} ScriptMigration;
+
+void vkr_script_host_set_migrator(VkrScriptHost *host,
+                                  VkrScriptMigrateFn migrate, void *context) {
+  host->migrate = migrate;
+  host->migrate_context = context;
+}
+
 /* One module a library lists: its description and the registered module it
  * reloads, or UINT32_MAX for a new one. */
 typedef struct ScriptListed {
@@ -1507,7 +1523,14 @@ static const char *script_load_check(VkrScriptHost *host, uint32_t slot,
       return host->error;
     }
     for (uint32_t t = 0; t < known->type_count; ++t) {
-      if (!script_type_same_layout(known->types[t], types[t])) {
+      if (strcmp(known->types[t]->name, types[t]->name)) {
+        snprintf(host->error, sizeof(host->error),
+                 "%s changed its component types; reopen the project",
+                 known->name);
+        return host->error;
+      }
+      if (!host->migrate &&
+          !script_type_same_layout(known->types[t], types[t])) {
         snprintf(host->error, sizeof(host->error),
                  "Component %s changed its fields; reopen the project to "
                  "apply it",
@@ -1699,6 +1722,33 @@ VkrScriptReload vkr_script_host_commit(VkrScriptHost *host,
              prepared->loaded_path);
     prepared->handle = (VkrPlatformLibrary){0};
     prepared->loaded_path[0] = '\0';
+    /* Changed layouts, recorded before the swap rewrites their copies. Their
+       old property arrays stay allocated with the host. */
+    uint32_t known_types = 0u;
+    for (uint32_t i = 0; i < count; ++i) {
+      if (listed[i].module != UINT32_MAX) {
+        known_types += host->modules[listed[i].module].type_count;
+      }
+    }
+    ScriptMigration *migrations =
+        known_types ? arena_alloc(host->temp, sizeof(*migrations) * known_types,
+                                  ARENA_MEMORY_TAG_ARRAY)
+                    : NULL;
+    uint32_t migration_count = 0u;
+    for (uint32_t i = 0; migrations && i < count; ++i) {
+      if (listed[i].module == UINT32_MAX) {
+        continue;
+      }
+      const VkrScriptModule *module = &host->modules[listed[i].module];
+      VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
+      (void)script_module_components(listed[i].desc, types);
+      for (uint32_t t = 0; t < module->type_count; ++t) {
+        if (!script_type_same_layout(module->types[t], types[t])) {
+          migrations[migration_count++] = (ScriptMigration){
+              .type = module->types[t], .previous = *module->types[t]};
+        }
+      }
+    }
     bool8_t all_new = true_v;
     for (uint32_t i = 0; i < count && !failure; ++i) {
       if (listed[i].module != UINT32_MAX) {
@@ -1721,6 +1771,11 @@ VkrScriptReload vkr_script_host_commit(VkrScriptHost *host,
       if (module->library == slot && !module->retired && !listed_again) {
         script_retire_module(module);
       }
+    }
+    /* Live values move to their new fields before any hook reads them. */
+    for (uint32_t i = 0; !failure && i < migration_count; ++i) {
+      host->migrate(host->migrate_context, migrations[i].type,
+                    &migrations[i].previous);
     }
     const char *start_error = NULL;
     if (!failure && restarting &&

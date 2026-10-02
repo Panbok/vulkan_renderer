@@ -444,6 +444,61 @@ bool8_t vkr_scene_sync_world_types(VkrScene *scene) {
   return true_v;
 }
 
+bool8_t vkr_scene_migrate_world_type(VkrScene *scene, const VkrTypeDesc *type,
+                                     const VkrTypeDesc *previous) {
+  if (!scene || !scene->world || !type || !previous ||
+      type->size > VKR_TYPE_VALUE_MAX) {
+    return false_v;
+  }
+  VkrSceneComponentType *entry = NULL;
+  for (uint32_t i = 0; i < scene->type_count && !entry; ++i) {
+    if (scene->types[i].type == type) {
+      entry = &scene->types[i];
+    }
+  }
+  if (!entry) {
+    return true_v;
+  }
+  /* The type's name keeps the old storage; the new layout registers under
+     the first free `<name>#<n>`. */
+  VkrWorld *world = scene->world;
+  char name[160];
+  VkrComponentTypeId id = VKR_COMPONENT_TYPE_INVALID;
+  for (uint32_t n = 1u; n < 4096u && id == VKR_COMPONENT_TYPE_INVALID; ++n) {
+    snprintf(name, sizeof(name), "%s#%u", type->name, n);
+    if (vkr_entity_find_component(world, name) == VKR_COMPONENT_TYPE_INVALID) {
+      id = vkr_entity_register_component(world, name, type->size, type->align);
+      break;
+    }
+  }
+  if (id == VKR_COMPONENT_TYPE_INVALID) {
+    return false_v;
+  }
+  const VkrComponentTypeId old = entry->id;
+  bool8_t ok = true_v;
+  _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
+  for (uint32_t i = 0; i < world->dir.capacity; ++i) {
+    if (!world->dir.records[i].chunk) {
+      continue;
+    }
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    const void *current = vkr_entity_get_component(world, entity, old);
+    if (!current) {
+      continue;
+    }
+    vkr_type_migrate(previous, current, type, value);
+    if (!vkr_entity_add_component(world, entity, id, value) ||
+        !vkr_entity_remove_component(world, entity, old)) {
+      ok = false_v;
+    }
+  }
+  entry->id = id;
+  scene_invalidate_queries(scene);
+  scene->structure_revision++;
+  scene->world_revision++;
+  return ok;
+}
+
 uint32_t vkr_scene_find_typed(const VkrScene *scene, const VkrTypeDesc *type,
                               VkrEntityId *out_entities, uint32_t capacity) {
   const VkrComponentTypeId id = vkr_scene_type_id(scene, type);
