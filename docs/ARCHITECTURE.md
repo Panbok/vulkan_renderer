@@ -1244,7 +1244,8 @@ See [ADR-009](adr/009-frame-synchronization.md) and
 Both backends publish completed GPU timing/results and allocation/visibility
 metrics. Unsupported timing scopes are unavailable, never zero-duration proof.
 Metal compute/graphics timestamps exist; a graphics interval spans its vertex,
-tiling and fragment work. Transfer timing is not supported.
+tiling and fragment work, starting no earlier than the previous timed pass's
+end. Transfer timing is not supported.
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero
 of raster jitter and GTAO noise, with temporal history invalidated; replay version

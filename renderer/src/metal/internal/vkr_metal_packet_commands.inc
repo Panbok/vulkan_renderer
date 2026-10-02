@@ -46,6 +46,9 @@ vkr_metal_packet_collect_encoder_timings(VkrMetalPacketRenderer *renderer,
     return;
   const MTL4TimestampHeapEntry *entries = resolved.bytes;
   const float64_t to_ms = 1000.0 / (float64_t)renderer->timestamp_frequency;
+  /* Timings are in execution order. Overlap between a graphics pass's early
+     start stamp and earlier encoders is counted once, in the earlier pass. */
+  uint64_t previous_end = 0u;
   for (uint32_t i = 0u; i < slot->pending_result.pass_timing_count; ++i) {
     VkrMetalPacketPassTiming *timing = &slot->pending_result.pass_timings[i];
     if (timing->unavailable_reason !=
@@ -54,9 +57,12 @@ vkr_metal_packet_collect_encoder_timings(VkrMetalPacketRenderer *renderer,
     const uint32_t begin_index = timing->pass_index * 2u;
     if (begin_index + 1u >= slot->timestamp_entry_count)
       continue;
-    const uint64_t begin = entries[begin_index].timestamp;
+    uint64_t begin = entries[begin_index].timestamp;
     const uint64_t end = entries[begin_index + 1u].timestamp;
     if (begin > 0u && end > begin) {
+      if (timing->starts_after_previous && previous_end > begin)
+        begin = Min(previous_end, end);
+      previous_end = Max(previous_end, end);
       timing->gpu_ms = (float64_t)(end - begin) * to_ms;
       timing->valid = true_v;
       timing->unavailable_reason = VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE;

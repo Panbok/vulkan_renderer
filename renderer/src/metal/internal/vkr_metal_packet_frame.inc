@@ -5164,6 +5164,8 @@ vkr_internal void vkr_metal_packet_record_pass_timing(
       MemCopy(timing->name, pass->desc.name.str, name_length);
     timing->name[name_length] = '\0';
     timing->pass_index = prepared->index;
+    timing->starts_after_previous =
+        pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS;
     timing->cpu_ms = prepared->preparation_cpu_ms +
                      (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
     timing->valid = false_v;

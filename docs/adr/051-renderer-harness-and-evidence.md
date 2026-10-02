@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-02
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -125,6 +125,16 @@ cost, and the pass sum was 26.2 ms against 34.3 ms of whole-submission time.
 With the correction the sum is 34.24 ms against 33.26 ms with the sun up and
 24.86 ms against 24.44 ms at night. Compare graphics-pass rows only between
 reports on the same side of that change.
+
+The vertex stage can start while earlier encoders still run, because a
+pass's consumer barrier blocks only the stages that read the producers. Since
+2026-10-02 a graphics interval therefore starts no earlier than the end of the
+previous timed pass in execution order, so overlap is counted once, in the
+earlier pass
+([`vkr_metal_packet_commands.inc`](../../renderer/src/metal/internal/vkr_metal_packet_commands.inc)).
+Before, `World.Blend.Fullscreen` with no transparent draws read 7.4 ms in the
+Bistro street view, and the pass sum exceeded the frame; after, it reads
+0.05 ms. Compute intervals are unchanged.
 
 The pass catalog freezes once the set of pass names from the requested scene
 stays unchanged for eight completed frames. Retained shadow cascades and local

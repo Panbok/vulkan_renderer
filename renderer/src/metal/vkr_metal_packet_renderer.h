@@ -184,6 +184,10 @@ typedef struct VkrMetalPacketPassTiming {
   float64_t gpu_ms;
   uint32_t pass_index;
   bool8_t valid;
+  /** Graphics passes stamp their start after the vertex stage, which can run
+   * while earlier encoders finish; their interval starts no earlier than the
+   * previous timed pass's end. */
+  bool8_t starts_after_previous;
   VkrRendererImplGpuTimingReason unavailable_reason;
 } VkrMetalPacketPassTiming;
 
