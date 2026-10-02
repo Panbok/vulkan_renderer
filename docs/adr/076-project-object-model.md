@@ -333,6 +333,12 @@ index. Saving authored edits accepts version 3 to 5 manifests with a scene id
 and replaces only their `edit_overlay` member
 ([`vkr_editor_project_save_scene_overlay`](../../editor/src/editor_project_store.c)).
 
+A created entity's physics body is saved with its record. Loading builds the
+body after every created entity exists and is parented, outside the load's
+all-or-nothing preparation: a body that cannot be built leaves its entity
+loaded without it and logs a warning
+([`edit_structure_load_commit`](../../runtime/src/renderer/systems/vkr_scene_edit.c)).
+
 A **prefab instance** copies another scene of the project into the open
 scene under one new root entity (`scene.instantiate`, jobs `prefabs`).
 Copies get new ids, and their parents point inside the copy. Scene-scoped

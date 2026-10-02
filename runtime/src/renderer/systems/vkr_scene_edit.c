@@ -1872,8 +1872,10 @@ static bool8_t write_structure(VkrJsonWriter *w, const VkrSceneEditState *s,
     if (!vkr_scene_edit_read(scene, entity, &values)) {
       return false_v;
     }
-    /* Created entities carry no physics body; the empty snapshot is noise. */
-    values.fields &= ~(uint32_t)VKR_SCENE_EDIT_PHYSICS;
+    /* A created entity's body is saved with it; an absent one is noise. */
+    if (!values.physics.present) {
+      values.fields &= ~(uint32_t)VKR_SCENE_EDIT_PHYSICS;
+    }
     if (!vkr_json_writer_begin_object(w) ||
         !WRITE_INT("id", s->created[i].id) ||
         !write_parent(w, s, scene, entity) || !write_values(w, &values) ||
@@ -3111,6 +3113,13 @@ typedef struct EditParentLink {
 
 /* Version 4 structure staged while the file is read and applied after every
    override commits: created entities first, then parent links. */
+/* A created object's physics body, built once the object and its parent
+   exist. */
+typedef struct EditCreatedBody {
+  uint32_t created_id;
+  VkrScenePhysicsSnapshot physics;
+} EditCreatedBody;
+
 typedef struct EditStructureLoad {
   EditObject *objects;
   uint32_t object_count;
@@ -3118,6 +3127,9 @@ typedef struct EditStructureLoad {
   EditParentLink *links;
   uint32_t link_count;
   uint32_t link_capacity;
+  EditCreatedBody *bodies;
+  uint32_t body_count;
+  uint32_t body_capacity;
   /* The file used members only version 4 defines. */
   bool8_t version4;
 } EditStructureLoad;
@@ -3133,7 +3145,30 @@ static void edit_structure_load_free(VkrSceneEditState *s,
     vkr_allocator_free(s->allocator, load->links,
                        load->link_capacity * sizeof(*load->links), EDIT_TAG);
   }
+  if (load->bodies) {
+    vkr_allocator_free(s->allocator, load->bodies,
+                       load->body_capacity * sizeof(*load->bodies), EDIT_TAG);
+  }
   MemZero(load, sizeof(*load));
+}
+
+static bool8_t edit_structure_body(VkrSceneEditState *s,
+                                   EditStructureLoad *load, uint32_t created_id,
+                                   const VkrScenePhysicsSnapshot *physics) {
+  if (load->body_count == load->body_capacity) {
+    const uint32_t capacity = Max(4u, load->body_capacity * 2u);
+    EditCreatedBody *bodies = vkr_allocator_realloc(
+        s->allocator, load->bodies, load->body_capacity * sizeof(*bodies),
+        capacity * sizeof(*bodies), EDIT_TAG);
+    if (!bodies) {
+      return false_v;
+    }
+    load->bodies = bodies;
+    load->body_capacity = capacity;
+  }
+  load->bodies[load->body_count++] =
+      (EditCreatedBody){.created_id = created_id, .physics = *physics};
+  return true_v;
 }
 
 static bool8_t edit_structure_link(VkrSceneEditState *s,
@@ -3286,6 +3321,15 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
       load->object_capacity = capacity;
     }
     EditObject *object = &load->objects[load->object_count];
+    /* edit_structure_load_commit builds the body once the object exists. */
+    if (values.fields & VKR_SCENE_EDIT_PHYSICS) {
+      if (values.physics.present &&
+          !edit_structure_body(s, load, extra.id, &values.physics)) {
+        *failure = EDIT_SIDECAR_FAILURE_ALLOC;
+        return false_v;
+      }
+      values.fields &= ~(uint32_t)VKR_SCENE_EDIT_PHYSICS;
+    }
     values.fields &= ~(uint32_t)VKR_SCENE_EDIT_COMPONENT;
     if (!edit_object_from_values(&values, object))
       return false_v;
@@ -3359,6 +3403,21 @@ static void edit_structure_load_commit(VkrSceneEditState *s, VkrScene *scene,
       parent = VKR_ENTITY_ID_INVALID;
     }
     vkr_scene_set_parent(scene, child, parent);
+  }
+  /* Bodies follow parenting so they start at the object's final pose. A body
+     that cannot be built leaves its object loaded without it. */
+  for (uint32_t i = 0; i < load->body_count; ++i) {
+    const EditCreatedBody *body = &load->bodies[i];
+    const VkrEntityId entity = edit_created_entity(s, body->created_id);
+    VkrSceneEditValues values;
+    MemZero(&values, sizeof(values));
+    values.fields = VKR_SCENE_EDIT_PHYSICS;
+    values.physics = body->physics;
+    if (!vkr_scene_entity_alive(scene, entity) ||
+        !edit_write(scene, entity, &values)) {
+      log_warn("Overlay object %u loaded without its physics body",
+               body->created_id);
+    }
   }
 }
 

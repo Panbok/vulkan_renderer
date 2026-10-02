@@ -249,8 +249,24 @@ static void edit_test_structure(void) {
   assert(transform->parent.u64 == parent.u64 && transform->position.x == 2.0f);
   assert(vkr_scene_edit_undo(&state, &scene, true_v));
 
-  /* Save, rebuild the document scene and reload: the created entity, the
-     added component, the deletion and the new root all return. */
+  /* A created object's physics body is saved with it. */
+  VkrSceneEditValues body = {.fields = VKR_SCENE_EDIT_PHYSICS};
+  body.physics = vkr_scene_physics_default();
+  body.physics.present = true_v;
+  body.physics.collider_count = 1;
+  body.physics.colliders[0] =
+      (VkrSceneColliderConfig){.authored_id = 7,
+                               .shape = VKR_PHYSICS_BOX,
+                               .scale = {1, 1, 1},
+                               .rotation = vkr_quat_identity(),
+                               .half_extent = {0.5f, 0.25f, 0.5f},
+                               .radius = 0.5f,
+                               .half_height = 0.5f,
+                               .enabled = true_v};
+  assert(vkr_scene_edit_apply(&state, &scene, created, &body));
+
+  /* Save, rebuild the document scene and reload: the created entity with its
+     body, the added component, the deletion and the new root all return. */
   FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
                         .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_create_directory(&directory));
@@ -280,6 +296,10 @@ static void edit_test_structure(void) {
   assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
   assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
   assert(state.created_count == 1u && state.created[0].entity.u64 == found.u64);
+  VkrScenePhysicsSnapshot body_read;
+  assert(vkr_scene_physics_read(&scene, found, &body_read) &&
+         body_read.present && body_read.collider_count == 1 &&
+         body_read.colliders[0].half_extent.y == 0.25f);
 
   /* Version 3 files cannot carry version 4 structure. */
   const char old_delete[] =
