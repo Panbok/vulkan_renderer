@@ -97,7 +97,9 @@ Shipped in ADR-079 as described below, except named groups.
 
 **Moves off the main thread:**
 
-- Copying, opening and validating libraries.
+- Copying and opening libraries for a reload. Shipped in ADR-079;
+  validation stays on the frame thread because it reads the registered
+  types.
 - `vkr_spawn_model` loads, through the resource system's asynchronous path.
 - The first build of an unbuilt project module. The World request waits for
   its types instead of the frame blocking.

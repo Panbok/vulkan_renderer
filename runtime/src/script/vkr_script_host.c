@@ -1529,96 +1529,133 @@ static const char *script_load_check(VkrScriptHost *host, uint32_t slot,
   return NULL;
 }
 
-/* Opens a byte copy of `path` and lists its modules: the project entry's,
- * or the one `vkr_module_<name>`. */
-static const char *script_load_open(VkrScriptHost *host, const char *name,
-                                    const char *path, bool8_t project,
-                                    VkrPlatformLibrary *library, char *loaded,
-                                    ScriptListed **out_listed,
-                                    uint32_t *out_count) {
-  snprintf(loaded, VKR_SCRIPT_PATH_CAPACITY, "%s.%u-%u.loaded", path,
-           vkr_platform_get_process_id(), ++host->load_serial);
-  if (!script_copy_file(path, loaded)) {
-    loaded[0] = '\0';
-    return "The script library could not be copied for loading";
-  }
-  if (!vkr_platform_library_open(loaded, library, host->error,
-                                 sizeof(host->error))) {
-    return host->error;
-  }
-  uint32_t count = 1u;
-  VkrModuleEntry single = NULL;
-  VkrProjectEntry list = NULL;
-  if (project) {
-    list = (VkrProjectEntry)(uintptr_t)vkr_platform_library_symbol(
-        library, "vkr_project_modules");
-    if (!list) {
-      return "The library has no vkr_project_modules entry";
-    }
-    count = list(NULL, 0u);
-  } else {
-    char entry_name[VKR_SCRIPT_MODULE_NAME_CAPACITY + 32u];
-    snprintf(entry_name, sizeof(entry_name), "vkr_module_%s", name);
-    single = (VkrModuleEntry)(uintptr_t)vkr_platform_library_symbol(library,
-                                                                    entry_name);
-    if (!single) {
-      return "The library has no vkr_module_<name> entry";
-    }
-  }
-  /* The temp arena holds the list until the load returns. */
-  VkrModuleEntry *entries =
-      count ? arena_alloc(host->temp, sizeof(*entries) * count,
-                          ARENA_MEMORY_TAG_ARRAY)
-            : NULL;
-  ScriptListed *listed = count
-                             ? arena_alloc(host->temp, sizeof(*listed) * count,
-                                           ARENA_MEMORY_TAG_ARRAY)
-                             : NULL;
-  if (count && (!entries || !listed)) {
-    return "The library's module list could not be read";
-  }
-  if (project) {
-    (void)list(entries, count);
-  } else {
-    entries[0] = single;
-  }
-  for (uint32_t i = 0; i < count; ++i) {
-    const VkrModuleDesc *desc = entries[i](VKR_SDK_VERSION);
-    listed[i] =
-        (ScriptListed){.desc = desc,
-                       .name = project ? (desc ? desc->name : "") : name,
-                       .module = UINT32_MAX};
-    if (!desc) {
-      return "A module of the library was built for another SDK version";
-    }
-  }
-  *out_listed = listed;
-  *out_count = count;
-  return NULL;
+static bool8_t script_prepare_fail(VkrScriptPrepared *prepared,
+                                   const char *message) {
+  snprintf(prepared->error, sizeof(prepared->error), "%s", message);
+  return false_v;
 }
 
-static VkrScriptReload script_load(VkrScriptHost *host, const char *name,
-                                   const char *library_path, bool8_t project,
-                                   const char **error) {
+bool8_t vkr_script_host_prepare(VkrScriptHost *host,
+                                VkrScriptPrepared *prepared, const char *name,
+                                const char *library_path, bool8_t project) {
+  *prepared = (VkrScriptPrepared){.project = project};
+  if (!name || !name[0] || !library_path || !library_path[0]) {
+    return script_prepare_fail(prepared,
+                               "A script library needs a name and a path");
+  }
+  if (strlen(name) >= sizeof(prepared->name) ||
+      strlen(library_path) + 32u >= sizeof(prepared->path)) {
+    return script_prepare_fail(prepared,
+                               "The script library's name or path is too "
+                               "long");
+  }
+  snprintf(prepared->name, sizeof(prepared->name), "%s", name);
+  snprintf(prepared->path, sizeof(prepared->path), "%s", library_path);
+  /* A unique copy per load: the build can be replaced, and a reload never
+     reuses a cached image. */
+  snprintf(prepared->loaded_path, sizeof(prepared->loaded_path),
+           "%s.%u-%u.loaded", library_path, vkr_platform_get_process_id(),
+           ++host->load_serial);
+  return true_v;
+}
+
+void vkr_script_prepare_run(VkrScriptPrepared *prepared) {
+  prepared->ready = false_v;
+  prepared->count = 0u;
+  if (!prepared->loaded_path[0]) {
+    return;
+  }
+  if (!script_copy_file(prepared->path, prepared->loaded_path)) {
+    (void)script_prepare_fail(
+        prepared, "The script library could not be copied for loading");
+    return;
+  }
+  if (!vkr_platform_library_open(prepared->loaded_path, &prepared->handle,
+                                 prepared->error, sizeof(prepared->error))) {
+    return;
+  }
+  const VkrPlatformLibrary *library = &prepared->handle;
+  if (prepared->project) {
+    const VkrProjectEntry list =
+        (VkrProjectEntry)(uintptr_t)vkr_platform_library_symbol(
+            library, "vkr_project_modules");
+    if (!list) {
+      (void)script_prepare_fail(prepared,
+                                "The library has no vkr_project_modules entry");
+      return;
+    }
+    VkrModuleEntry entries[VKR_SCRIPT_PREPARED_MODULE_MAX];
+    const uint32_t count = list(entries, ArrayCount(entries));
+    if (count > ArrayCount(entries)) {
+      (void)script_prepare_fail(prepared,
+                                "The library lists more than 256 modules");
+      return;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      prepared->modules[i] = entries[i](VKR_SDK_VERSION);
+    }
+    prepared->count = count;
+  } else {
+    char entry_name[VKR_SCRIPT_MODULE_NAME_CAPACITY + 32u];
+    snprintf(entry_name, sizeof(entry_name), "vkr_module_%s", prepared->name);
+    const VkrModuleEntry single =
+        (VkrModuleEntry)(uintptr_t)vkr_platform_library_symbol(library,
+                                                               entry_name);
+    if (!single) {
+      (void)script_prepare_fail(prepared,
+                                "The library has no vkr_module_<name> entry");
+      return;
+    }
+    prepared->modules[0] = single(VKR_SDK_VERSION);
+    prepared->count = 1u;
+  }
+  for (uint32_t i = 0; i < prepared->count; ++i) {
+    if (!prepared->modules[i]) {
+      (void)script_prepare_fail(
+          prepared, "A module of the library was built for another SDK "
+                    "version");
+      return;
+    }
+  }
+  prepared->ready = true_v;
+}
+
+void vkr_script_host_discard(VkrScriptHost *host, VkrScriptPrepared *prepared) {
+  if (prepared->handle.handle || prepared->loaded_path[0]) {
+    script_close_library(host, &prepared->handle, prepared->loaded_path);
+  }
+  prepared->ready = false_v;
+}
+
+VkrScriptReload vkr_script_host_commit(VkrScriptHost *host,
+                                       VkrScriptPrepared *prepared,
+                                       const char **error) {
   const uint64_t temp_position = arena_pos(host->temp);
   const char *failure = NULL;
   uint32_t slot = UINT32_MAX;
-  if (!name || !name[0] || !library_path || !library_path[0]) {
-    failure = "A script library needs a name and a path";
+  const uint32_t count = prepared->count;
+  ScriptListed *listed = NULL;
+  if (!prepared->ready) {
+    failure = prepared->error[0] ? prepared->error
+                                 : "The script library was not prepared";
   } else if (host->tool) {
     failure = "A tool context is open";
-  } else if ((slot = script_library_slot(host, name)) == UINT32_MAX) {
+  } else if ((slot = script_library_slot(host, prepared->name)) == UINT32_MAX) {
     failure = "Too many script libraries are loaded";
+  } else if (count &&
+             !(listed = arena_alloc(host->temp, sizeof(*listed) * count,
+                                    ARENA_MEMORY_TAG_ARRAY))) {
+    failure = "The library's module list could not be read";
   }
-  char loaded[VKR_SCRIPT_PATH_CAPACITY] = {0};
-  VkrPlatformLibrary handle = {0};
-  ScriptListed *listed = NULL;
-  uint32_t count = 0u;
+  for (uint32_t i = 0; !failure && i < count; ++i) {
+    const VkrModuleDesc *desc = prepared->modules[i];
+    listed[i] = (ScriptListed){.desc = desc,
+                               .name = prepared->project
+                                           ? (desc->name ? desc->name : "")
+                                           : prepared->name,
+                               .module = UINT32_MAX};
+  }
   bool8_t restart = false_v;
-  if (!failure) {
-    failure = script_load_open(host, name, library_path, project, &handle,
-                               loaded, &listed, &count);
-  }
   if (!failure) {
     failure = script_load_check(host, slot, listed, count, &restart);
   }
@@ -1641,12 +1678,13 @@ static VkrScriptReload script_load(VkrScriptHost *host, const char *name,
     }
     (void)script_retire_handle(host, library);
     const bool8_t fresh = library->generation == 0u;
-    library->handle = handle;
-    library->project = project;
+    library->handle = prepared->handle;
+    library->project = prepared->project;
     library->generation++;
-    snprintf(library->loaded_path, sizeof(library->loaded_path), "%s", loaded);
-    handle = (VkrPlatformLibrary){0};
-    loaded[0] = '\0';
+    snprintf(library->loaded_path, sizeof(library->loaded_path), "%s",
+             prepared->loaded_path);
+    prepared->handle = (VkrPlatformLibrary){0};
+    prepared->loaded_path[0] = '\0';
     bool8_t all_new = true_v;
     for (uint32_t i = 0; i < count && !failure; ++i) {
       if (listed[i].module != UINT32_MAX) {
@@ -1682,17 +1720,31 @@ static VkrScriptReload script_load(VkrScriptHost *host, const char *name,
   }
   arena_reset_to(host->temp, temp_position, ARENA_MEMORY_TAG_UNKNOWN);
   if (failure) {
-    if (handle.handle || loaded[0]) {
-      script_close_library(host, &handle, loaded);
-    }
     if (failure != host->error) {
       snprintf(host->error, sizeof(host->error), "%s", failure);
     }
+    vkr_script_host_discard(host, prepared);
     if (error) {
       *error = host->error;
     }
   }
+  prepared->ready = false_v;
   return result;
+}
+
+static VkrScriptReload script_load(VkrScriptHost *host, const char *name,
+                                   const char *library_path, bool8_t project,
+                                   const char **error) {
+  VkrScriptPrepared prepared;
+  if (!vkr_script_host_prepare(host, &prepared, name, library_path, project)) {
+    snprintf(host->error, sizeof(host->error), "%s", prepared.error);
+    if (error) {
+      *error = host->error;
+    }
+    return VKR_SCRIPT_RELOAD_FAILED;
+  }
+  vkr_script_prepare_run(&prepared);
+  return vkr_script_host_commit(host, &prepared, error);
 }
 
 VkrScriptReload vkr_script_host_load_library(VkrScriptHost *host,

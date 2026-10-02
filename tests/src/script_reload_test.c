@@ -1,5 +1,6 @@
 #include "script_reload_test.h"
 
+#include "core/vkr_threads.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -103,6 +104,11 @@ typedef struct ProbeData {
   uint32_t ticks;
 } ProbeData;
 
+static void *prepare_thread(void *prepared) {
+  vkr_script_prepare_run(prepared);
+  return NULL;
+}
+
 /* A project library lists several modules and reloads them together: code
  * changes keep data, a dropped module retires and an added one registers by
  * restarting the session, and one refused module keeps every module on its
@@ -132,13 +138,45 @@ static void test_project_library(VkrAllocator *allocator) {
   reload_ticks(&scene, 3u);
   assert(data->ticks == 3u);
 
-  // Code only: the running data continues under the new code.
-  assert(vkr_script_host_load_project(&host, "probe_project",
-                                      VKR_TEST_PROJECT_PROBE_2,
-                                      &error) == VKR_SCRIPT_RELOAD_KEPT_STATE);
+  // Code only, prepared on another thread while the session keeps ticking:
+  // the running data continues under the new code once it commits.
+  static VkrScriptPrepared prepared;
+  assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
+                                 VKR_TEST_PROJECT_PROBE_2, true_v));
+  VkrThread thread = NULL;
+  assert(vkr_thread_create(allocator, &thread, prepare_thread, &prepared));
+  vkr_scene_physics_set_paused(&scene, false_v);
+  reload_ticks(&scene, 1u);
+  assert(vkr_thread_join(thread));
+  vkr_thread_destroy(allocator, &thread);
+  assert(prepared.ready && prepared.count == 2u);
+  assert(data->ticks == 4u);
+  assert(vkr_script_host_commit(&host, &prepared, &error) ==
+         VKR_SCRIPT_RELOAD_KEPT_STATE);
+  assert(host.libraries[a->library].generation == 2u);
   vkr_scene_physics_set_paused(&scene, false_v);
   reload_ticks(&scene, 2u);
-  assert(data->ticks == 23u);
+  assert(data->ticks == 24u);
+
+  // A discarded preparation changes nothing and removes its copy.
+  assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
+                                 VKR_TEST_PROJECT_PROBE_3, true_v));
+  vkr_script_prepare_run(&prepared);
+  char copy[VKR_SCRIPT_PATH_CAPACITY];
+  snprintf(copy, sizeof(copy), "%s", prepared.loaded_path);
+  vkr_script_host_discard(&host, &prepared);
+  FILE *removed = fopen(copy, "rb");
+  assert(!removed);
+  assert(vkr_script_host_module(&host, "ProbeB") &&
+         !vkr_script_host_module(&host, "ProbeC"));
+  // A failed run reports through the commit.
+  assert(vkr_script_host_prepare(&host, &prepared, "probe_project",
+                                 "/missing/project.dll", true_v));
+  vkr_script_prepare_run(&prepared);
+  assert(!prepared.ready);
+  assert(vkr_script_host_commit(&host, &prepared, &error) ==
+         VKR_SCRIPT_RELOAD_FAILED);
+  assert(error && strstr(error, "copied"));
 
   // ProbeB leaves and ProbeC arrives: B retires, C registers, and the
   // session restarts on fresh data.

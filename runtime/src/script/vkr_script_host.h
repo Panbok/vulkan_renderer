@@ -38,6 +38,8 @@
 /* Libraries loaded at once: project libraries and single-module ones. */
 #define VKR_SCRIPT_LIBRARY_MAX 8u
 #define VKR_SCRIPT_LIBRARY_NONE UINT32_MAX
+/* Modules one prepared library may list. */
+#define VKR_SCRIPT_PREPARED_MODULE_MAX 256u
 /* The World and the active container. */
 #define VKR_SCRIPT_CONTAINER_MAX 2u
 #define VKR_SCRIPT_STATE_TYPE_MAX 64u
@@ -78,6 +80,29 @@ typedef struct VkrScriptLibrary {
   /* Counts successful loads and reloads. */
   uint32_t generation;
 } VkrScriptLibrary;
+
+/* A library opened ahead of its load, so copying and opening it, which runs
+ * its C runtime startup, stays off the frame thread.
+ * `vkr_script_host_prepare` names it on the frame thread,
+ * `vkr_script_prepare_run` copies, opens and lists it on any thread without
+ * touching the host, and `vkr_script_host_commit` applies it between frames
+ * or `vkr_script_host_discard` closes it. Caller-owned; the host keeps no
+ * pointer to it. */
+typedef struct VkrScriptPrepared {
+  char name[VKR_SCRIPT_MODULE_NAME_CAPACITY];
+  char path[VKR_SCRIPT_PATH_CAPACITY];
+  /* The byte copy that is opened; removed when the library closes. */
+  char loaded_path[VKR_SCRIPT_PATH_CAPACITY];
+  VkrPlatformLibrary handle;
+  /* Lists its modules through vkr_project_modules. */
+  bool8_t project;
+  /* Set by the run: the library is open and lists `modules`; otherwise
+     `error` says why. */
+  bool8_t ready;
+  uint32_t count;
+  const VkrModuleDesc *modules[VKR_SCRIPT_PREPARED_MODULE_MAX];
+  char error[VKR_SCRIPT_ERROR_CAPACITY];
+} VkrScriptPrepared;
 
 typedef struct VkrScriptRetiredLibrary {
   VkrPlatformLibrary library;
@@ -290,6 +315,30 @@ VkrScriptReload vkr_script_host_load_project(VkrScriptHost *host,
                                              const char *name,
                                              const char *library_path,
                                              const char **error);
+
+/**
+ * Names a library to prepare: `vkr_script_host_load_library` or
+ * `_load_project` split so the copy and open can run on a worker. Picks the
+ * copy's unique path; false with `prepared->error` when the name or path is
+ * unusable. Frame thread.
+ */
+bool8_t vkr_script_host_prepare(VkrScriptHost *host,
+                                VkrScriptPrepared *prepared, const char *name,
+                                const char *library_path, bool8_t project);
+
+/** Copies, opens and lists a prepared library. Any thread; reads nothing of
+ * the host, so it may run while frames and hooks continue. */
+void vkr_script_prepare_run(VkrScriptPrepared *prepared);
+
+/** Applies a prepared library as the load functions do and takes its
+ * handle; a failed run or a refused load closes it. Between frames. */
+VkrScriptReload vkr_script_host_commit(VkrScriptHost *host,
+                                       VkrScriptPrepared *prepared,
+                                       const char **error);
+
+/** Closes a prepared library that will not be committed and removes its
+ * copy. Its run must have returned. */
+void vkr_script_host_discard(VkrScriptHost *host, VkrScriptPrepared *prepared);
 
 /** Retires every library module, as when a project closes: the session
  * stops, their component types stay registered without hooks, and a later

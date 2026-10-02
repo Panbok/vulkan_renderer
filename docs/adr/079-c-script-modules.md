@@ -15,7 +15,8 @@ Accepted (partial). Implemented:
   timed lifetimes, behaviors per entity with destroy hooks, script instances
   per attached container, and structural edits in fixed updates queued until
   the tick ends;
-- shared-library loading with hot reload that keeps instance data;
+- shared-library loading with hot reload that keeps instance data, with
+  reloads copied and opened on a worker;
 - Script assets attached to objects, the authoring macros and the Player
   Start;
 - project `Scripts/` packages, modules and libraries with dependencies,
@@ -27,8 +28,8 @@ Accepted (partial). Implemented:
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
 - Exports between modules.
-- Asynchronous library preparation, model loads and first builds, script
-  jobs and a Jolt thread pool.
+- Asynchronous model loads and first builds, script jobs and a Jolt thread
+  pool.
 - Packaged games do not load a project's script library yet; `vkr_player`
   still links only the FPS module.
 - The SDK and foundation headers in the editor distribution.
@@ -196,6 +197,17 @@ module reloads between frames, never from a hook:
 - **Changed data shape**: the host stops the session with the old code, swaps
   and starts it again with the new code.
 
+**Preparing off the frame thread.** A load is three steps, which
+`vkr_script_host_load_library` and `_load_project` run back to back:
+
+- `vkr_script_host_prepare` picks the copy's unique path on the frame
+  thread.
+- `vkr_script_prepare_run` copies, opens and lists the library on any
+  thread. It reads nothing of the host, so frames and hooks continue
+  meanwhile; opening runs the library's C runtime startup.
+- `vkr_script_host_commit` checks and applies it between frames, or
+  `vkr_script_host_discard` closes it and removes the copy.
+
 A project library reloads atomically. The host checks every listed module
 first; one refused module, a changed layout or a type name another module
 owns, refuses the load and every module keeps its previous code. Otherwise
@@ -218,6 +230,15 @@ before scene and World requests, and publishes per-load results.
 - **Requests.** A load flagged `project` goes through
   `vkr_script_host_load_project`; any load that did not fail gives already
   loaded scenes the new types.
+  - A library's first load runs at once, because the project's documents
+    load after it in the same frame and need its types.
+  - A reload of an open library prepares on a `VkrJobSystem` worker (on the
+    frame thread when no job can be queued) and commits at the first frame
+    start after the worker finishes. Its result is published then.
+  - A newer request for a library still preparing replaces any queued one
+    and starts once the current one commits.
+  - Retiring and shutdown wait for preparations still running and discard
+    them.
 - **Simulated scene.** The open primary scene once it is ready; with no
   scene open or loading, the root World, so a World-only project plays. The
   transport, Step, Reset and the physics toggle act on the same scene.
@@ -551,7 +572,10 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
   - It also loads [`project_probe.c`](../../tests/scripts/project_probe.c),
     a project library built four ways:
     - two listed modules share one library entry and register both types;
-    - a code-only reload keeps data (3 ticks, then 23);
+    - a code-only reload prepared on another thread while the session ticks
+      once on the old code (3, then 4) commits with data kept (then 24);
+    - a discarded preparation changes no module and removes its copy, and a
+      run that cannot copy its library fails at commit;
     - dropping `ProbeB` and adding `ProbeC` retires B, keeping its type,
       registers C and restarts on zeroed data;
     - a changed `ProbeA` field refuses the load with
@@ -583,8 +607,13 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
     fell.
   - With `--scripts`, `script.new Spinner` built and loaded the template with
     0 diagnostics, and `create spinner` made an entity with `speed` 1.
-  - During Play, typing `spinner->speed += dt;` into the update hook and
-    `script.save` reported "Reloaded; state kept", and `speed` rose to 17.1.
+  - Typing `spinner->speed += dt;` into the update hook and `script.save`
+    before Play reported "Reloaded; state kept", and during Play `speed`
+    rose to 17.1.
+  - In a later run, the same edit saved during Play reloaded through a
+    worker preparation: "Reloaded; state kept", `speed` 1 before the save,
+    13.85 after it and 15.88 two seconds later, and Stop returned to 5,990
+    entities.
     An edit outside a function reported "Build failed with 2 errors; the
     previous code keeps running". Stop returned to 5,990 entities.
 

@@ -112,9 +112,22 @@ typedef struct ApplicationUiText {
   uint32_t length;
 } ApplicationUiText;
 
+/* A library reload whose copy and open run on a worker (ADR-079). The job
+ * borrows this slot of `state` until `done`; the frame thread then commits
+ * it. */
+typedef struct SampleScriptPending {
+  VkrScriptPrepared prepared;
+  VkrAtomicBool done;
+  bool8_t active;
+  /* A later request for the same library, started once this one commits. */
+  bool8_t queued;
+  VkrSampleScriptLoad next;
+} SampleScriptPending;
+
 typedef struct State {
   /* Script modules and the session of the active scene (ADR-079). */
   VkrScriptHost scripts;
+  SampleScriptPending script_pending[VKR_SAMPLE_SCRIPT_LOAD_MAX];
   /* Last presentation the modules published; its HUD replaces the camera
      text while they run. */
   VkrScriptView script_view;
@@ -3043,22 +3056,170 @@ static void sample_scripts_start(VkrStandardSceneRuntime *application) {
   }
 }
 
+/* Publishes one applied load to the UI. The first in a frame replaces the
+ * previous frame's results. */
+static void sample_script_result(VkrStandardSceneRuntime *application,
+                                 const char *name, VkrScriptReload result,
+                                 const char *error, bool8_t *first) {
+  if (*first) {
+    state->script_result_count = 0u;
+    *first = false_v;
+  }
+  if (state->script_result_count < VKR_SAMPLE_SCRIPT_LOAD_MAX) {
+    VkrSampleScriptResult *out =
+        &state->script_results[state->script_result_count++];
+    *out = (VkrSampleScriptResult){.serial = ++state->script_result_serial,
+                                   .result = result};
+    snprintf(out->name, sizeof(out->name), "%s", name);
+    snprintf(out->message, sizeof(out->message), "%s", error ? error : "");
+  }
+  if (result != VKR_SCRIPT_RELOAD_FAILED) {
+    /* Scenes already loaded learn the component types of modules the load
+       added. */
+    VkrScene *world = vkr_scene_handle_get_scene(state->world_handle);
+    (void)vkr_scene_sync_world_types(application->active_scene);
+    (void)vkr_scene_sync_world_types(world);
+    for (uint32_t s = 0; s < VKR_SCENE_ADDITIVE_MAX; ++s) {
+      (void)vkr_scene_sync_world_types(
+          vkr_scene_handle_get_scene(state->additive_handles[s]));
+    }
+  }
+  if (result == VKR_SCRIPT_RELOAD_FAILED) {
+    log_error("Script %s was not loaded: %s", name,
+              error ? error : "unknown error");
+  } else if (result == VKR_SCRIPT_RELOAD_RESTARTED) {
+    log_info("Script %s reloaded; its state changed shape, so the "
+             "simulation restarted",
+             name);
+  }
+}
+
+static bool8_t sample_script_prepare_job(VkrJobContext *context,
+                                         void *payload) {
+  (void)context;
+  SampleScriptPending *pending = *(SampleScriptPending **)payload;
+  vkr_script_prepare_run(&pending->prepared);
+  vkr_atomic_bool_store(&pending->done, true_v, VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+/* Starts preparing `load` on a worker, or prepares it here when no job can
+ * be queued; the commit happens at a later frame start either way. */
+static void sample_script_prepare(VkrStandardSceneRuntime *application,
+                                  SampleScriptPending *pending,
+                                  const VkrSampleScriptLoad *load) {
+  pending->active = true_v;
+  pending->queued = false_v;
+  vkr_atomic_bool_store(&pending->done, false_v, VKR_MEMORY_ORDER_RELAXED);
+  if (!vkr_script_host_prepare(&state->scripts, &pending->prepared, load->name,
+                               load->path, load->project)) {
+    vkr_atomic_bool_store(&pending->done, true_v, VKR_MEMORY_ORDER_RELAXED);
+    return;
+  }
+  Bitset8 type_mask = bitset8_create();
+  bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+  const VkrJobDesc job = {.priority = VKR_JOB_PRIORITY_NORMAL,
+                          .type_mask = type_mask,
+                          .run = sample_script_prepare_job,
+                          .payload = &pending,
+                          .payload_size = sizeof(pending)};
+  VkrJobHandle handle = {0};
+  if (!vkr_job_try_submit(&application->job_system, &job, &handle)) {
+    vkr_script_prepare_run(&pending->prepared);
+    vkr_atomic_bool_store(&pending->done, true_v, VKR_MEMORY_ORDER_RELAXED);
+  }
+}
+
+/* Waits for every prepare still running and closes what it opened, before
+ * the libraries retire or the host shuts down. */
+static void sample_scripts_join(void) {
+  for (uint32_t i = 0; i < VKR_SAMPLE_SCRIPT_LOAD_MAX; ++i) {
+    SampleScriptPending *pending = &state->script_pending[i];
+    if (!pending->active) {
+      continue;
+    }
+    while (!vkr_atomic_bool_load(&pending->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+      vkr_platform_sleep(1);
+    }
+    vkr_script_host_discard(&state->scripts, &pending->prepared);
+    pending->active = false_v;
+    pending->queued = false_v;
+  }
+}
+
+/* A library the host has open: its reloads may prepare on a worker. A first
+ * load stays here, since the project's documents load after it this frame
+ * and need its component types. */
+static bool8_t sample_script_library_open(const char *name) {
+  for (uint32_t i = 0; i < state->scripts.library_count; ++i) {
+    const VkrScriptLibrary *library = &state->scripts.libraries[i];
+    if (!strcmp(library->name, name)) {
+      return library->handle.handle != NULL;
+    }
+  }
+  return false_v;
+}
+
 /* Library loads between frames, where no module hook runs (ADR-079). A
  * reload during a session keeps its state or restarts it; retiring ends the
- * session and returns the camera. */
+ * session and returns the camera. Reloads of an open library prepare on a
+ * worker and commit at a later frame start, so its copy and C runtime
+ * startup do not stall frames. */
 static void sample_script_request(VkrStandardSceneRuntime *application,
                                   const VkrSampleScriptRequest *request) {
+  bool8_t first = true_v;
   if (request->retire_libraries) {
+    sample_scripts_join();
     sample_scripts_stop(application);
     vkr_script_host_retire_libraries(&state->scripts);
   }
-  if (!request->load_count) {
-    return;
+
+  /* Prepared reloads commit in request order of their slots. */
+  for (uint32_t i = 0; i < VKR_SAMPLE_SCRIPT_LOAD_MAX; ++i) {
+    SampleScriptPending *pending = &state->script_pending[i];
+    if (!pending->active ||
+        !vkr_atomic_bool_load(&pending->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+      continue;
+    }
+    const char *error = NULL;
+    const VkrScriptReload result =
+        vkr_script_host_commit(&state->scripts, &pending->prepared, &error);
+    pending->active = false_v;
+    sample_script_result(application, pending->prepared.name, result, error,
+                         &first);
+    if (pending->queued) {
+      const VkrSampleScriptLoad next = pending->next;
+      sample_script_prepare(application, pending, &next);
+    }
   }
-  state->script_result_count = 0u;
+
   for (uint32_t i = 0;
        i < request->load_count && i < VKR_SAMPLE_SCRIPT_LOAD_MAX; ++i) {
     const VkrSampleScriptLoad *load = &request->loads[i];
+    SampleScriptPending *slot = NULL;
+    for (uint32_t p = 0; p < VKR_SAMPLE_SCRIPT_LOAD_MAX && !slot; ++p) {
+      SampleScriptPending *pending = &state->script_pending[p];
+      if (pending->active && !strcmp(pending->prepared.name, load->name)) {
+        /* The newest request replaces any queued one. */
+        pending->queued = true_v;
+        pending->next = *load;
+        slot = pending;
+      }
+    }
+    if (slot) {
+      continue;
+    }
+    if (sample_script_library_open(load->name)) {
+      for (uint32_t p = 0; p < VKR_SAMPLE_SCRIPT_LOAD_MAX && !slot; ++p) {
+        if (!state->script_pending[p].active) {
+          slot = &state->script_pending[p];
+        }
+      }
+    }
+    if (slot) {
+      sample_script_prepare(application, slot, load);
+      continue;
+    }
     const char *error = NULL;
     const VkrScriptReload result =
         load->project
@@ -3066,31 +3227,7 @@ static void sample_script_request(VkrStandardSceneRuntime *application,
                                            load->path, &error)
             : vkr_script_host_load_library(&state->scripts, load->name,
                                            load->path, &error);
-    VkrSampleScriptResult *out =
-        &state->script_results[state->script_result_count++];
-    *out = (VkrSampleScriptResult){.serial = ++state->script_result_serial,
-                                   .result = result};
-    snprintf(out->name, sizeof(out->name), "%s", load->name);
-    snprintf(out->message, sizeof(out->message), "%s", error ? error : "");
-    if (result != VKR_SCRIPT_RELOAD_FAILED) {
-      /* Scenes already loaded learn the component types of modules the
-         load added. */
-      VkrScene *world = vkr_scene_handle_get_scene(state->world_handle);
-      (void)vkr_scene_sync_world_types(application->active_scene);
-      (void)vkr_scene_sync_world_types(world);
-      for (uint32_t s = 0; s < VKR_SCENE_ADDITIVE_MAX; ++s) {
-        (void)vkr_scene_sync_world_types(
-            vkr_scene_handle_get_scene(state->additive_handles[s]));
-      }
-    }
-    if (result == VKR_SCRIPT_RELOAD_FAILED) {
-      log_error("Script %s was not loaded: %s", load->name,
-                error ? error : "unknown error");
-    } else if (result == VKR_SCRIPT_RELOAD_RESTARTED) {
-      log_info("Script %s reloaded; its state changed shape, so the "
-               "simulation restarted",
-               load->name);
-    }
+    sample_script_result(application, load->name, result, error, &first);
   }
 }
 
@@ -5766,6 +5903,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   }
   sample_world_unload(&application);
   /* Scenes that ran module code are gone; close the libraries. */
+  sample_scripts_join();
   vkr_script_host_shutdown(&state->scripts);
   vkr_scene_physics_set_destroy(state->physics_set);
   state->physics_set = NULL;
