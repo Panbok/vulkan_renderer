@@ -1129,7 +1129,8 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
                         shadow_normal, mask_texture, pixel, mask_slot);
                 else
                     visibility = packet_local_shadow(
-                        frame, light, kind, world_position, shadow_normal);
+                        frame, light, kind, world_position, shadow_normal,
+                        float2(1.0f, 0.0f), VKR_LOCAL_SHADOW_INLINE_TAP_COUNT);
             }
             if (diffuse_enabled)
             {

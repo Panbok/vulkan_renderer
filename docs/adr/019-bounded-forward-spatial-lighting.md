@@ -149,6 +149,15 @@ with 0.26% of pixels changing by more than 2, against a repeat floor of 3; the
 indoor capture changed at most 1. Without TAA the street capture is
 byte-identical. Native Vulkan remains unrun.
 
+Forward and transmission shading filter full-filter lights inline with the
+first four progressive taps, unrotated (`VKR_LOCAL_SHADOW_INLINE_TAP_COUNT`).
+They shade few pixels, so rotation would add plumbing without visible gain:
+on the M1 host transmission shading fell from 1.94 to 1.53 ms in the street
+view (1.99 to 1.56 ms with TAA, 0.94 to 0.86 ms indoors) with at most 0.04%
+of pixels changing by more than 2 of 255. A single tap saved 0.23 ms more but
+changed 0.24%. Lighting's inline fallback and the clearcoat query keep nine
+taps.
+
 Application preparation owns the fixed frame-local view payload. Its views are
 the faces of the shadowed lights, rebuilt each frame; `light_first_view` names
 a light's contiguous faces, and view indices need not persist because history

@@ -408,8 +408,9 @@ struct VkrMetalInlineLocalShadow {
   float3 operator()(constant VkrMetalPacketFrameRoot *frame,
                     uint first_view_encoded, uint, uint kind,
                     float3 world_position, float3 normal) const {
-    return vkr_metal_packet_local_shadow_sample(frame, first_view_encoded, kind,
-                                                world_position, normal);
+    return vkr_metal_packet_local_shadow_sample(
+        frame, first_view_encoded, kind, world_position, normal,
+        float2(1.0, 0.0), VKR_LOCAL_SHADOW_INLINE_TAP_COUNT);
   }
 
   // Forward and transmission shading keep every light and do not measure its

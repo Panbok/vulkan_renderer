@@ -115,6 +115,12 @@ bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
 #define VKR_LOCAL_SHADOW_FILTER_TAP_COUNT 9u
 #define VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT 4u
 
+// Forward and transmission shading filter full-filter lights inline with the
+// first four progressive taps, unrotated: they shade few pixels, and in the
+// Bistro views nine taps changed at most 0.04% of pixels by more than 2 of
+// 255 while costing 0.4 ms more transmission shading.
+#define VKR_LOCAL_SHADOW_INLINE_TAP_COUNT 4u
+
 // Tap rotation (cosine, sine) from interleaved gradient noise over the pixel,
 // shifted each frame by the temporal noise index.
 float2 vkr_local_shadow_tap_rotation(uint2 pixel, uint noise_index)
