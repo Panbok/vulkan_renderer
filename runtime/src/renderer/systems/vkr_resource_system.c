@@ -1201,11 +1201,10 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
       }
       vkr_resource_system_fill_info_from_request(existing, out_info);
       *out_error = existing->last_error;
-      vkr_mutex_unlock(vkr_resource_system->mutex);
-
       uint64_t key_len = string_length(request_key);
       vkr_allocator_free(vkr_resource_system->allocator, request_key,
                          key_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      vkr_mutex_unlock(vkr_resource_system->mutex);
 
       return out_info->load_state != VKR_RESOURCE_LOAD_STATE_FAILED &&
              out_info->load_state != VKR_RESOURCE_LOAD_STATE_CANCELED;
@@ -1217,10 +1216,10 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
   if (request_index < 0) {
     if (!vkr_resource_system_request_slot_ensure_capacity(
             vkr_resource_system, vkr_resource_system->request_capacity + 1)) {
-      vkr_mutex_unlock(vkr_resource_system->mutex);
       uint64_t key_len = string_length(request_key);
       vkr_allocator_free(vkr_resource_system->allocator, request_key,
                          key_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      vkr_mutex_unlock(vkr_resource_system->mutex);
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       out_info->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
       out_info->last_error = *out_error;
@@ -1231,10 +1230,10 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
   }
 
   if (request_index < 0) {
-    vkr_mutex_unlock(vkr_resource_system->mutex);
     uint64_t key_len = string_length(request_key);
     vkr_allocator_free(vkr_resource_system->allocator, request_key, key_len + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    vkr_mutex_unlock(vkr_resource_system->mutex);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     out_info->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
     out_info->last_error = *out_error;
@@ -1245,10 +1244,10 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
   String8 path_copy = {0};
   if (!vkr_resource_system_allocate_string8_copy(vkr_resource_system, path,
                                                  &path_cstr, &path_copy)) {
-    vkr_mutex_unlock(vkr_resource_system->mutex);
     uint64_t key_len = string_length(request_key);
     vkr_allocator_free(vkr_resource_system->allocator, request_key, key_len + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    vkr_mutex_unlock(vkr_resource_system->mutex);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     out_info->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
     out_info->last_error = *out_error;
@@ -1471,9 +1470,13 @@ void vkr_resource_system_unload(const VkrResourceHandleInfo *info,
     vkr_resource_system_unload_sync_internal(&ready_info, unload_name);
   }
 
+  /* The allocator is shared with loader workers; the request mutex serializes
+     its allocations and frees. */
   if (unload_name_owned && unload_name.str) {
+    vkr_mutex_lock(vkr_resource_system->mutex);
     vkr_allocator_free(vkr_resource_system->allocator, unload_name.str,
                        unload_name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    vkr_mutex_unlock(vkr_resource_system->mutex);
   }
 }
 
