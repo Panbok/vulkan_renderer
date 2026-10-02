@@ -29,7 +29,8 @@ Accepted (partial). Implemented:
 Remaining in the [script modules proposal](../proposals/script-modules.md):
 
 - Exports between modules.
-- A Jolt thread pool.
+- A Jolt thread pool: built, measured slower than one thread at scene
+  body counts, and withdrawn pending a decision.
 - Packaged games do not load a project's script library yet; `vkr_player`
   still links only the FPS module.
 - The SDK and foundation headers in the editor distribution.
