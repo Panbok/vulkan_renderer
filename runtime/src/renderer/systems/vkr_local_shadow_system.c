@@ -23,7 +23,7 @@
 #define VKR_LOCAL_SHADOW_FEEDBACK_MAX_AGE 8u
 /* Lights past this many, by importance, take a single filtered tap and no
  * contact shadows. */
-#define VKR_LOCAL_SHADOW_FULL_FILTER_LIGHT_COUNT 3u
+#define VKR_LOCAL_SHADOW_FULL_FILTER_LIGHT_COUNT 2u
 /* Atlas layer side in cells of the smallest face size. */
 #define VKR_LOCAL_SHADOW_ATLAS_CELLS                                           \
   (VKR_LOCAL_SHADOW_ATLAS_SIZE / VKR_LOCAL_SHADOW_FACE_SIZE_MIN)

@@ -854,7 +854,7 @@ vkr_internal void test_local_shadow_camera_cut_snaps(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
-/* The three most important shown lights take the full filter; the others take
+/* The two most important shown lights take the full filter; the others take
  * the reduced filter, so extra shadows cost a fraction of a full light. */
 vkr_internal void test_local_shadow_reduces_least_important(void) {
   VkrShadowSystem system = {0};
@@ -877,7 +877,7 @@ vkr_internal void test_local_shadow_reduces_least_important(void) {
     assert(local.light_first_view[i] != 0u);
     const VkrLocalShadowView *view =
         &local.views[local.light_first_view[i] - 1u];
-    assert(view->shadow_params.z == (i < 3u ? 0.0f : 1.0f));
+    assert(view->shadow_params.z == (i < 2u ? 0.0f : 1.0f));
   }
   vkr_shadow_system_shutdown(&system);
 }

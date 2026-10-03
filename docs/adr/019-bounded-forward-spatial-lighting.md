@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -132,7 +132,7 @@ pixels of the street and indoor captures (cloud pixels moved by up to 40
 through the reordered sky evaluation under fast math). Skipping such lights
 saved nothing in the mask, whose single-tap cost comes from lights that matter.
 
-Each shadowed light adds its filtering to every pixel in its range. The three
+Each shadowed light adds its filtering to every pixel in its range. The two
 most important shadowed lights take the nine-tap filter and contact shadows;
 the others take one hardware-filtered comparison tap and no contact shadows,
 flagged by `shadow_params.z`. A light that had the full filter keeps a 15%
@@ -142,7 +142,14 @@ view, five full-filter lights cost 3.0 ms more `Shadow.LocalMask` time and
 3.8 ms more frame time than three, and four cost 1.5 ms and 2.2 ms more; five
 lights with two reduced cost 0.6 ms more mask time and 0.95 ms more frame time
 than three, because forward and transmission shading also filter the extra
-lights.
+lights. On 2026-10-03 the count fell from three to two
+([`vkr_local_shadow_system.c`](../../runtime/src/renderer/systems/vkr_local_shadow_system.c)).
+On Vulkan, RX 6700 XT, in the Bistro street view at 1920x1080 with TAA and
+the High preset (`local_shadow_bistro_vulkan_street` at that size, one child
+of 240 frames under `local-offscreen-gpu-single`), `Shadow.LocalMask` fell
+from 2.84 to 2.66 ms and the GPU frame from 11.15 to 10.94 ms. The final
+color changed in 0.14% of pixels by more than 8 of 255, at the shadow edges
+of the third light, and a repeated capture of one build changed none.
 
 Under temporal reconstruction `Shadow.LocalMask` filters the full-filter
 lights with the first four taps of the progressive Poisson table instead of

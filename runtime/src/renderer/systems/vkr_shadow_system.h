@@ -253,7 +253,7 @@ typedef struct VkrShadowConfig {
 /* Local-shadow faces per preset: ten point lights for Ultra, five for High,
  * two for Balanced. Each shadowed light adds its PCF to every pixel in its
  * range, so the budget, not the 64-face capacity, bounds that cost; lights
- * past the three most important take a single filtered tap. */
+ * past the two most important take a single filtered tap. */
 #define VKR_LOCAL_SHADOW_FACE_BUDGET_ULTRA 60u
 /* Camera distance at which local shadows have faded out, and the width of the
  * fade before it. Lights stay resident past it, so the distance bounds only
