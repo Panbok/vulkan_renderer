@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-05
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -41,6 +41,19 @@ coordinated readers and shaders. This record claims no universal speedup.
 The 24-byte candidate lost required UV precision. Multiple runtime formats would
 add per-draw selection and duplicate ABI maintenance. Unpacked vertices retain
 larger memory traffic.
+
+A smaller record (24 bytes with range-local unorm16 UVs and without the unused
+eighth word, or 16 bytes with a 32-bit tangent frame) was not built, because
+buffer reads do not limit the passes it would serve. Metal GPU counters on the
+M1 Pro over the production Bistro orbit (Release, `bistro_metal_production_040`
+with one repetition, Instruments Metal GPU Counters for 6 s, 2026-10-03)
+averaged, per pass: `VBuffer.Opaque` 9.0% buffer-read limiter, 6.8% ALU, 17.6%
+last-level cache and 5.0% vertex occupancy; local shadow faces 7.0%, 5.3%,
+14.5% and 3.6%; cascades 8.6%, 6.9%, 18.2% and 4.7%; `GBuffer.Resolve` 2.7%
+buffer read and 46.7% ALU. No unit limits the raster passes, which matches the
+per-draw cost the [meshlet proposal](../proposals/meshlet-cluster-culling.md)
+measured, and the resolve leans on ALU. The 24-byte record would save about
+14 MB of Bistro's 56 MB of vertices.
 
 ## Revisit when
 
