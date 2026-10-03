@@ -4909,8 +4909,7 @@ vkr_internal void vkr_metal_packet_plan_frame_submission(
       renderer->prepared_frame.transmission_pending,
       renderer->prepared_frame.sdsm_enabled,
       renderer->prepared_frame.exposure_automatic,
-      packet->scene_rendering && packet->input.lighting &&
-          packet->input.lighting->point_light_count > 0u,
+      renderer->prepared_frame.light_contribution_enabled,
       1u + renderer->prepared_frame.shadow_cascade_count +
           renderer->prepared_frame.local_shadow_render_count +
           renderer->prepared_frame.local_shadow_transmission_render_count);

@@ -111,7 +111,14 @@ compressed per pixel to x / (1 + x) by the shared
 light into counters the frame reads back: a per-frame-slot buffer on Vulkan,
 the frame's cleared readback slice on Metal. The readback reaches the cache
 two to three frames later as a `VkrLocalLightContributionSample` keyed by
-render id. Shadowing never changes the measure. A sample is used only when it
+render id. Deferred lighting measures only in frames whose index is a
+multiple of `VKR_LOCAL_LIGHT_CONTRIBUTION_PERIOD`, four, which the shared
+`light_contribution_enabled` frame flag selects for both backends
+([`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)),
+so the newest sample is at most about six frames old. On Vulkan, RX 6700 XT,
+in the Bistro street view at 1920x1080 with TAA, mean `Lighting.Deferred`
+time fell from 3.68 to 3.54 ms and the final color did not change.
+Shadowing never changes the measure. A sample is used only when it
 is at most eight frames old and comes from no earlier than the last snap;
 otherwise distance ranks. `VKR_LOCAL_SHADOW_FEEDBACK=0` restores distance
 ranking for diagnosis.

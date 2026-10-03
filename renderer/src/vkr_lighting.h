@@ -28,6 +28,12 @@ _Static_assert(VKR_MAX_SCENE_POINT_LIGHTS ==
  * 4K frame of fully lit pixels stays below 2^31. */
 #define VKR_LOCAL_LIGHT_CONTRIBUTION_SCALE 256u
 
+/* Deferred lighting measures light contribution in frames whose index is a
+ * multiple of this period. With two or three frames of readback latency the
+ * newest sample stays younger than the local shadow cache's eight-frame
+ * feedback limit, and the other frames skip the per-light counters. */
+#define VKR_LOCAL_LIGHT_CONTRIBUTION_PERIOD 4u
+
 /**
  * Visible contribution of each punctual light, measured by deferred lighting
  * in the source frame: over its shaded pixels, the light's unshadowed

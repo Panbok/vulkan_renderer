@@ -75,6 +75,11 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->exposure_automatic =
       packet->scene_rendering &&
       packet->exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
+  frame->light_contribution_enabled =
+      packet->scene_rendering && packet->input.lighting &&
+      packet->input.lighting->point_light_count > 0u &&
+      packet->input.frame.frame_index % VKR_LOCAL_LIGHT_CONTRIBUTION_PERIOD ==
+          0u;
   frame->picking_pending = packet->scene_rendering && packet->input.picking &&
                            packet->input.picking->pending;
   frame->transmission_pending =

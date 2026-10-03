@@ -975,10 +975,8 @@ vkr_internal void vkr_vk_reset_slot_requests(VkrVulkanRenderer *renderer,
   slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;
   slot->exposure_requested = renderer->prepared_frame.exposure_automatic;
   slot->shadow_depth_range = (VkrShadowDepthRangeSample){0};
-  const VkrPreparedFrame *packet = renderer->graph->packet;
   slot->light_contribution_requested =
-      packet->scene_rendering && packet->input.lighting &&
-      packet->input.lighting->point_light_count > 0u;
+      renderer->prepared_frame.light_contribution_enabled;
   slot->light_contribution_written = false_v;
   slot->light_contribution_source = (VkrLocalLightContributionSample){0};
   slot->transmission_coverage_requested =

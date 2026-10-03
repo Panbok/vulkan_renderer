@@ -589,6 +589,12 @@ typedef struct VkrRenderGraphFrameInfo {
    */
   bool8_t exposure_automatic;
   /**
+   * True when deferred lighting measures per-light contribution this frame:
+   * a scene frame with point lights whose index is a multiple of
+   * VKR_LOCAL_LIGHT_CONTRIBUTION_PERIOD.
+   */
+  bool8_t light_contribution_enabled;
+  /**
    * True only for a frame that both requests bloom and has a viewport large
    * enough for a chain. Gates both bloom images and every bloom pass, so a
    * frame without bloom pays nothing for it.
