@@ -178,6 +178,13 @@ order.
 | Image-based, probe and volume lighting | 0.29 |
 | Remainder | 0.91 |
 
+A second series, after counting light contribution every fourth frame,
+removed one part at a time from the 3.50 ms median of `Lighting.Deferred`:
+directional shadow sampling 0.53 ms, of which the PCSS blocker search is
+0.08 ms, the cascade blend band 0.05 ms and the cloud shadow 0.09 ms; the
+GTAO visibility sample and its cone and multibounce terms 0.15 ms; the
+neighbour-normal roughness filter 0.09 ms.
+
 The transmission chain took 1.50 ms over three children. Layer 0 covered
 138,890 pixels for 0.73 ms; layers 1 to 3 covered 4,976, 3,208 and 2,710 pixels
 for about 0.24 ms each, mostly full-screen compaction scans, glass rasters and
