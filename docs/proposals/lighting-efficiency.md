@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-02
+updated: 2026-10-03
 authority: proposal
 ---
 # Lighting efficiency
@@ -153,7 +153,49 @@ Measured the same way afterwards, each against a matched base build:
   neither was adopted. Half-resolution evaluation is the remaining option and
   changes the look.
 
-## Proposed change
+### Vulkan cost split, 2026-10-03
+
+Vulkan Release, RX 6700 XT, AMD driver 26.6.3, the Bistro street view at
+1920x1080 with TAA and the High preset, one child of 240 frames under
+`local-offscreen-gpu-single`, three full-filter lights. Rows are costs removed
+by compiling out each part; the lighting rows are cumulative in the listed
+order.
+
+| `Shadow.LocalMask` (2.82 ms) | ms |
+|---|---:|
+| Four rotated taps for the three full-filter lights | 1.10 |
+| One tap and setup for every shadowed light | 1.24 |
+| Light traversal, punctual term and slot writes | 0.44 |
+| Transmission-map lookups, inside both filter rows | 0.83 |
+
+| `Lighting.Deferred` (3.69 ms) | ms |
+|---|---:|
+| Light-contribution counters (they also change the ranking) | 0.20 |
+| Inline filtering of lights past the eighth mask slot | 0.05 |
+| Mask reads | 0.73 |
+| Punctual light loop and BRDF | 0.83 |
+| Directional cascades, cloud shadow and BRDF | 0.68 |
+| Image-based, probe and volume lighting | 0.29 |
+| Remainder | 0.91 |
+
+The transmission chain took 1.50 ms over three children. Layer 0 covered
+138,890 pixels for 0.73 ms; layers 1 to 3 covered 4,976, 3,208 and 2,710 pixels
+for about 0.24 ms each, mostly full-screen compaction scans, glass rasters and
+depth seeds. Each `Transmission.DepthSeed` copies opaque depth in about
+0.03 ms, at memory bandwidth, so merging the four seeds saves nothing.
+
+The AMD driver compiles these kernels as wave64. `vk_deferred_lighting` uses
+222 VGPRs and 9.5 KB of scratch for the rectangle-light polygon clip; the
+layered lighting and transmission kernels use 253 to 256 VGPRs and spill. None
+of these limits the time: compiling out the rectangle-light path lowered
+`vk_deferred_lighting` to 170 VGPRs without scratch and saved 0.02 ms;
+requiring wave32 slowed the mask by 0.14 ms; loading shadow view rows per wave
+did not change the mask; issuing the transmission depth loads before the
+opaque test slowed it by 0.27 ms. Every Bistro light has refractive casters in
+range, mostly its own lantern glass, so a per-light glass-overlap test removes
+no transmission lookups in Bistro. Peeling two transmission layers instead of
+four would save 0.47 ms but darkens the lantern glass and its glow visibly.
+
 
 In order of measured payoff:
 
