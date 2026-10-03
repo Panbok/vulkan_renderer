@@ -262,12 +262,11 @@ void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y) {
     const float64_t dy = (float64_t)y - input_state->current_buttons.y;
     input_state->current_buttons.x = x;
     input_state->current_buttons.y = y;
-    input_notify(input_state,
-                 (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
-                                      .delta_x = dx,
-                                      .delta_y = input_state->invert_look_y
-                                                     ? -dy
-                                                     : dy});
+    input_notify(
+        input_state,
+        (VkrInputTransition){.kind = VKR_INPUT_TRANSITION_LOOK,
+                             .delta_x = dx,
+                             .delta_y = input_state->invert_look_y ? -dy : dy});
 
     MouseMoveEventData mouse_move_event_data = {
         .x = x,

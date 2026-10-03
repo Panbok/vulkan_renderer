@@ -4,11 +4,9 @@
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 
-VkrApplicationMetricsSnapshot
-vkr_application_metrics_snapshot(const VkrRenderAssets *assets,
-                                 const VkrUiSystem *ui,
-                                 const VkrLightingSystem *lighting,
-                                 const VkrShadowSystem *shadow) {
+VkrApplicationMetricsSnapshot vkr_application_metrics_snapshot(
+    const VkrRenderAssets *assets, const VkrUiSystem *ui,
+    const VkrLightingSystem *lighting, const VkrShadowSystem *shadow) {
   const VkrMaterialTextureStreamStats texture_streams =
       vkr_material_system_get_texture_stream_stats(&assets->material_system);
   const VkrLocalShadowCache *local = &shadow->local_cache;

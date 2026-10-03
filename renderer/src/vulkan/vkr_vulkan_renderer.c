@@ -1006,9 +1006,10 @@ vkr_internal void vkr_vk_set_shadow_depth_source(VkrVulkanFrameSlot *slot,
 
 /* Records the light table whose contribution this submission measures, so the
  * shadow system can match counters to lights by render id. */
-vkr_internal void vkr_vk_set_light_contribution_source(
-    VkrVulkanFrameSlot *slot, const VkrPreparedFrame *packet,
-    uint64_t signal_value) {
+vkr_internal void
+vkr_vk_set_light_contribution_source(VkrVulkanFrameSlot *slot,
+                                     const VkrPreparedFrame *packet,
+                                     uint64_t signal_value) {
   if (!slot->light_contribution_written)
     return;
   VkrLocalLightContributionSample *source = &slot->light_contribution_source;
@@ -1462,9 +1463,10 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-vkr_internal void vkr_vk_decode_light_contribution(
-    const VkrVulkanFrameSlot *slot, const uint8_t *readback,
-    VkrLocalLightContributionSample *out_sample) {
+vkr_internal void
+vkr_vk_decode_light_contribution(const VkrVulkanFrameSlot *slot,
+                                 const uint8_t *readback,
+                                 VkrLocalLightContributionSample *out_sample) {
   *out_sample = slot->light_contribution_source;
   if (!slot->light_contribution_written)
     return;
