@@ -6,7 +6,6 @@ vkr_internal bool8_t vkr_metal_packet_sampler_key_equal(
          a->w_repeat_mode == b->w_repeat_mode &&
          a->min_filter == b->min_filter && a->mag_filter == b->mag_filter &&
          a->mip_filter == b->mip_filter &&
-         a->mip_level_count == b->mip_level_count &&
          a->anisotropy_enable == b->anisotropy_enable;
 }
 
@@ -39,8 +38,6 @@ vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
       (uint32_t)description->mag_filter >= VKR_FILTER_COUNT ||
       (uint32_t)description->mip_filter >= VKR_MIP_FILTER_COUNT)
     return nil;
-  const uint32_t sampler_mip_count =
-      description->mip_filter == VKR_MIP_FILTER_NONE ? 1u : mip_level_count;
   const VkrMetalPacketSamplerKey key = {
       .u_repeat_mode = description->u_repeat_mode,
       .v_repeat_mode = description->v_repeat_mode,
@@ -48,7 +45,6 @@ vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
       .min_filter = description->min_filter,
       .mag_filter = description->mag_filter,
       .mip_filter = description->mip_filter,
-      .mip_level_count = sampler_mip_count,
       .anisotropy_enable = description->anisotropy_enable ? true_v : false_v,
   };
   for (uint32_t i = 0; i < renderer->sampler_count; ++i) {
@@ -56,9 +52,35 @@ vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
       return renderer->samplers[i].state;
   }
   if (renderer->sampler_count >= renderer->max_samplers) {
-    log_error("Metal sampler cache exhausted: %u unique states (max=%u)",
-              renderer->sampler_count, renderer->max_samplers);
-    return nil;
+    /* The device cannot reach another argument-buffer sampler. Reuse one
+       that filters alike, preferring the same addressing on U and V. */
+    VkrMetalPacketSampler *substitute = NULL;
+    uint32_t substitute_score = 0u;
+    for (uint32_t i = 0; i < renderer->sampler_count; ++i) {
+      const VkrMetalPacketSamplerKey *cached = &renderer->samplers[i].key;
+      const uint32_t score =
+          (cached->mip_filter == key.mip_filter ? 8u : 0u) +
+          (cached->min_filter == key.min_filter &&
+                   cached->mag_filter == key.mag_filter
+               ? 4u
+               : 0u) +
+          (cached->u_repeat_mode == key.u_repeat_mode &&
+                   cached->v_repeat_mode == key.v_repeat_mode
+               ? 2u
+               : 0u) +
+          (cached->anisotropy_enable == key.anisotropy_enable ? 1u : 0u);
+      if (!substitute || score > substitute_score) {
+        substitute = &renderer->samplers[i];
+        substitute_score = score;
+      }
+    }
+    if (!renderer->sampler_substitution_logged) {
+      log_warn("Metal sampler cache holds the device's %u argument-buffer "
+               "samplers; further sampler states reuse the closest one",
+               renderer->max_samplers);
+      renderer->sampler_substitution_logged = true_v;
+    }
+    return substitute ? substitute->state : nil;
   }
 
   MTLSamplerDescriptor *descriptor = [MTLSamplerDescriptor new];
@@ -82,9 +104,10 @@ vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
                  ? MTLSamplerMipFilterNearest
                  : MTLSamplerMipFilterNotMipmapped);
   descriptor.lodMinClamp = 0.0f;
-  descriptor.lodMaxClamp = description->mip_filter == VKR_MIP_FILTER_NONE
-                               ? 0.0f
-                               : (float32_t)(sampler_mip_count - 1u);
+  /* A mipmapped texture's own levels bound its LOD, so one sampler serves
+     every mip count. */
+  descriptor.lodMaxClamp =
+      description->mip_filter == VKR_MIP_FILTER_NONE ? 0.0f : FLT_MAX;
   descriptor.maxAnisotropy = description->anisotropy_enable ? 16u : 1u;
   descriptor.borderColor = MTLSamplerBorderColorOpaqueBlack;
   id<MTLSamplerState> state =

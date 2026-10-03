@@ -13,6 +13,7 @@
 
 #include <Block.h>
 #include <dispatch/dispatch.h>
+#include <float.h>
 
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
@@ -67,14 +68,19 @@ enum {
   VKR_METAL_PACKET_PRE_EXPOSURE_HISTORY = 32,
   /* Transmittance, multiple-scattering and source dispatches. */
   VKR_METAL_PACKET_ATMOSPHERE_DISPATCH_COUNT = 3,
-  /* Four address modes on three axes, two min/mag filters, one canonical
-     non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
-     on/off. Samplers remain alive with immutable material rows, so this cache
-     covers the complete key domain rather than only simultaneous textures. */
+  /* Four address modes on three axes, two min/mag filters, three mip
+     filters and anisotropy on/off. Samplers remain alive with immutable
+     material rows, so this covers the complete key domain rather than only
+     simultaneous textures. */
   VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY =
       VKR_TEXTURE_REPEAT_MODE_COUNT * VKR_TEXTURE_REPEAT_MODE_COUNT *
       VKR_TEXTURE_REPEAT_MODE_COUNT * VKR_FILTER_COUNT * VKR_FILTER_COUNT *
-      (1 + (VKR_MIP_FILTER_COUNT - 1) * VKR_METAL_PACKET_MAX_TEXTURE_MIPS) * 2,
+      VKR_MIP_FILTER_COUNT * 2,
+  /* Argument-buffer samplers one stage can reach on Apple7 and Apple8 GPUs
+     (M1, M2; Apple9 raises it to 500,000). Inline constexpr samplers in MSL
+     count toward it, so a reserve stays free for them (ADR-083). */
+  VKR_METAL_PACKET_APPLE7_ARGUMENT_SAMPLER_LIMIT = 996,
+  VKR_METAL_PACKET_CONSTEXPR_SAMPLER_RESERVE = 64,
   /* Editor Scene resolve has already applied the scene display transfer; its
    * composite only samples those encoded pixels. */
   VKR_METAL_PACKET_TONEMAP_FLAG_ALREADY_OUTPUT_ENCODED = 1u << 3u,
@@ -283,7 +289,6 @@ typedef struct VkrMetalPacketSamplerKey {
   VkrFilter min_filter;
   VkrFilter mag_filter;
   VkrMipFilter mip_filter;
-  uint32_t mip_level_count;
   bool8_t anisotropy_enable;
 } VkrMetalPacketSamplerKey;
 
@@ -843,6 +848,8 @@ struct VkrMetalPacketRenderer {
   uint32_t max_textures;
   uint32_t max_samplers;
   uint32_t sampler_count;
+  /* Set once a full cache first substitutes a sampler. */
+  bool8_t sampler_substitution_logged;
   uint32_t max_draws;
   uint32_t max_instances;
   uint32_t gpu_draw_icb_view_group_size;

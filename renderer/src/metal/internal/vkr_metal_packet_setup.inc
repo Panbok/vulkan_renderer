@@ -3067,6 +3067,12 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         return false_v;
       }
       renderer->device = [MTLCreateSystemDefaultDevice() retain];
+      if (renderer->device &&
+          ![renderer->device supportsFamily:MTLGPUFamilyApple9])
+        renderer->max_samplers =
+            Min(renderer->max_samplers,
+                (uint32_t)(VKR_METAL_PACKET_APPLE7_ARGUMENT_SAMPLER_LIMIT -
+                           VKR_METAL_PACKET_CONSTEXPR_SAMPLER_RESERVE));
       if (![renderer->device.name getCString:renderer->device_name
                                    maxLength:sizeof(renderer->device_name)
                                     encoding:NSUTF8StringEncoding])

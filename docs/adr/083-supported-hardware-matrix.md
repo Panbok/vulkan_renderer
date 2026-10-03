@@ -76,7 +76,7 @@ path depends on the capability.
 | Mesh shaders | Direct draws only | Direct draws only | Direct, indirect and ICB draws | `VK_EXT_mesh_shader` | `VK_EXT_mesh_shader` | Not used |
 | Ray tracing | API, no hardware units | API, no hardware units | Hardware | `VK_KHR_ray_query` | `VK_KHR_ray_query` | Not used |
 | Lossy render-target compression | No | Yes | Yes | Not exposed | Not exposed | Not used |
-| Samplers per stage in argument buffers | 996 | 996 | 500,000 | Not applicable | Not applicable | The Metal sampler cache admits 15,872 keys; nothing checks the 996 limit |
+| Samplers per stage in argument buffers | 996 | 996 | 500,000 | Not applicable | Not applicable | The Metal sampler cache holds at most 932 states below Apple9, keeping 64 for inline MSL samplers, and reuses the closest cached state beyond that |
 | Temporal upscaler | MetalFX | MetalFX | MetalFX | FSR 3.1 | FSR 3.1 | ADR-039/040, ADR-052 |
 | Memory budget source | `recommendedMaxWorkingSetSize` | Same | Same | `VK_EXT_memory_budget`, not enabled | Same | Metal only |
 | `VK_EXT_descriptor_heap` | Not applicable | Not applicable | Not applicable | Missing on Windows drivers | Present | Not used; adopting it drops Windows RDNA 2 |
