@@ -15,6 +15,12 @@ set(VKR_ENGINE_INCLUDE
     assets/textures/UbuntuMono21px_0.png
     assets/fonts/NotoSansCJK.fontcfg
     assets/fonts/NotoSansCJK-Windows.fontcfg
+    # The font licences travel with every package, since any package may
+    # carry these fonts (text fonts join only when used).
+    assets/fonts/ubuntu-font-licence-1.0.txt
+    assets/fonts/UbuntuMono-R.ttf.license.md
+    assets/fonts/UbuntuMono-Bold.ttf.license.md
+    assets/fonts/Inter-OFL.txt
     ${VKR_MANNEQUIN_INCLUDE})
 set(VKR_ENGINE_FILES
     ${VKR_ENGINE_INCLUDE}

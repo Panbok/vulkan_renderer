@@ -224,6 +224,9 @@ def main():
         assert {'assets/fonts/Inter-SemiBold-cooked.fontcfg',
                 'assets/fonts/Inter-SemiBold-cooked.vkfa'} <= set(entries)
         assert not any('Inter-Regular' in name for name in entries), sorted(entries)
+        # The font licences ship with every package.
+        assert {'assets/fonts/ubuntu-font-licence-1.0.txt',
+                'assets/fonts/Inter-OFL.txt'} <= set(entries)
         assert 'assets/render_graphs/main.rendergraph.json' in entries
         report_events = [json.loads(line) for line in built.stdout.splitlines() if line.startswith('{')]
         stages = [event['source'] for event in report_events if event.get('ev') == 'start']
