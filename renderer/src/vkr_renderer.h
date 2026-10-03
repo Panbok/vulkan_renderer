@@ -1276,6 +1276,10 @@ VkrRendererError vkr_renderer_submit_unacquired_frame(
  * no submitted frame awaits collection. */
 bool8_t vkr_renderer_complete_frame(VkrRenderer *renderer,
                                     VkrRendererFrameResult *out_result);
+/** Runs recorded asset publications now, outside a frame. Each frame runs
+ * them before its input is prepared; this serves callers that render no
+ * frame, and vkr_renderer_wait_idle() does it first. */
+void vkr_renderer_flush_publications(VkrRenderer *renderer);
 /** True when submitted frames render on the renderer's own thread. */
 bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer);
 

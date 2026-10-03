@@ -209,6 +209,13 @@ typedef struct VkrStandardSceneRuntime {
   uint32_t target_render_height;
   uint64_t target_generation_seen;
   uint64_t frame_number_seen;
+  uint64_t submit_serial_seen;
+  uint64_t completed_submit_serial_seen;
+  VkrDeviceMemoryStats device_memory_seen;
+  bool8_t device_memory_seen_valid;
+  /* Frames submitted and how many of them the render thread acquired. */
+  uint64_t frames_submitted;
+  uint64_t frames_decoupled;
   float32_t display_exposure;
   VkrShadowDepthRangeSample shadow_depth_range;
   /* With a render thread, decoupled frames are built from these values and

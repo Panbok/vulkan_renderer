@@ -5,6 +5,7 @@
 #include "memory/vkr_dmemory.h"
 #include "vkr_asset_metrics.h"
 #include "vkr_dynamic_resolution.h"
+#include "vkr_publication_queue.h"
 #include "vkr_frame_input.h"
 #include "vkr_geometry_upload.h"
 #include "vkr_render_graph.h"
@@ -120,6 +121,9 @@ typedef struct VkrRendererWork {
   VkrFrame frame;
   VkrFrameInput *input;
   VkrFrameHooks hooks;
+  /* Publications recorded before the frame; run before its input is
+     prepared. NULL when none were. */
+  VkrPublicationBatch *publications;
 } VkrRendererWork;
 
 typedef struct VkrRendererWorker VkrRendererWorker;
@@ -207,10 +211,12 @@ struct VkrRenderer {
 
   /* Render thread, or NULL to render submitted frames inline. While it works
      on a frame, it alone touches renderer and native state; every public
-     entry point waits for it first. `asset_publisher` then forwards to
-     `native_publisher` after that wait. */
+     entry point waits for it first. */
   VkrRendererWorker *worker;
+  /* `asset_publisher` records into `publications`; the thread rendering the
+     next frame runs the records through `native_publisher`. */
   VkrAssetPublisher native_publisher;
+  VkrPublicationQueue publications;
   /* Written by the frame's work; the caller collects it after the wait. */
   VkrRendererFrameResult frame_result;
   bool8_t frame_result_ready;

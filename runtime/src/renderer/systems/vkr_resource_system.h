@@ -362,12 +362,6 @@ vkr_resource_system_try_get_resolved(const VkrResourceHandleInfo *tracked_info,
  */
 bool8_t vkr_resource_system_is_ready(const VkrResourceHandleInfo *info);
 
-/**
- * @brief True while any request still needs vkr_resource_system_pump(): a
- * completion is queued or a request has not reached a terminal state.
- */
-bool8_t vkr_resource_system_has_pending_work(void);
-
 /** Values observed before pumping; active-frame uploads use the next submit. */
 typedef struct VkrResourceSubmissionState {
   uint64_t submit_serial;

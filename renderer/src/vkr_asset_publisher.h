@@ -8,15 +8,50 @@ struct VkrGeometryConfig;
 struct VkrGeometryUpload;
 struct VkrTexturePreparedLoad;
 
+/** Which recorded publication a completion reports. */
+typedef enum VkrPublicationKind {
+  VKR_PUBLICATION_GEOMETRY = 0,
+  VKR_PUBLICATION_LOADED_MESH,
+  VKR_PUBLICATION_UNPUBLISH_GEOMETRY,
+  VKR_PUBLICATION_TEXTURE,
+  VKR_PUBLICATION_WRITABLE_TEXTURE,
+  VKR_PUBLICATION_TEXTURE_SAMPLER,
+  VKR_PUBLICATION_UNPUBLISH_TEXTURE,
+  VKR_PUBLICATION_IBL_BAKE,
+  VKR_PUBLICATION_ATMOSPHERE_BAKE,
+  VKR_PUBLICATION_MATERIAL,
+  VKR_PUBLICATION_UNPUBLISH_MATERIAL,
+} VkrPublicationKind;
+
+/** The result of one recorded publication. `id` and `generation` are the
+ * geometry, texture or material handle it named; bakes name their source. */
+typedef struct VkrPublicationCompletion {
+  VkrPublicationKind kind;
+  uint32_t id;
+  uint32_t generation;
+  VkrRendererError error;
+} VkrPublicationCompletion;
+
 /**
  * Coarse resource-publication seam selected once with the renderer.
+ * Frame draw/dispatch loops never dispatch through this table.
  *
- * These callbacks run only during load/unload finalization. They preserve the
- * shared CPU handle identity while the selected renderer owns GPU storage and
- * retirement. Frame draw/dispatch loops never dispatch through this table.
+ * Each backend fills a native table whose calls publish at once. The
+ * renderer's table, which asset systems use, records each call as a command
+ * instead: the thread that renders the next frame runs the commands in order
+ * before preparing that frame, and every result arrives later through
+ * `poll_completion`. A publish, unpublish or bake call returns whether it was
+ * recorded. Recording copies the payload, except a texture's upload data and
+ * regions, which stay borrowed until that texture's completion. A resource is
+ * usable once its completion reports success; frames never reference one
+ * before that. Queries report what the thread rendering the last frame
+ * observed.
  */
 typedef struct VkrAssetPublisher {
   void *state;
+  /** Next completion of the renderer's table, false when none is waiting.
+   * NULL in a native table. */
+  bool8_t (*poll_completion)(void *state, VkrPublicationCompletion *out);
   /** True once every accepted publication is ordered before the next frame. */
   bool8_t (*publications_idle)(void *state);
   /** Monotonic nonzero stamp for geometry/material resolvability changes. */

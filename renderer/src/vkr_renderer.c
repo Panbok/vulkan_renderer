@@ -163,213 +163,6 @@ vkr_internal bool8_t vkr_renderer_worker_create(VkrRenderer *renderer) {
   return true_v;
 }
 
-// =============================================================================
-// Asset publication behind the render thread
-// =============================================================================
-
-/* Asset systems publish between frames on the caller's thread. With a render
-   thread, each call first waits for the submitted frame, so publication never
-   overlaps native recording. */
-
-vkr_internal const VkrAssetPublisher *
-vkr_renderer_publisher_native(void *state) {
-  VkrRenderer *renderer = state;
-  vkr_renderer_join_render_thread(renderer);
-  return &renderer->native_publisher;
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_publications_idle(void *state) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->publications_idle(native->state);
-}
-
-vkr_internal uint64_t
-vkr_renderer_publisher_publication_generation(void *state) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->publication_generation(native->state);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_texture_upload_available(
-    void *state, uint64_t upload_bytes) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->texture_upload_available(native->state, upload_bytes);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_publish_geometry(
-    void *state, VkrGeometryHandle handle,
-    const struct VkrGeometryConfig *geometry) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->publish_geometry(native->state, handle, geometry);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_publish_loaded_mesh(
-    void *state, VkrGeometryHandle handle,
-    const struct VkrGeometryUpload *mesh) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->publish_loaded_mesh(native->state, handle, mesh);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_unpublish_geometry(
-    void *state, VkrGeometryHandle handle) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->unpublish_geometry(native->state, handle);
-}
-
-vkr_internal bool8_t
-vkr_renderer_publisher_begin_texture_upload_batch(void *state) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->begin_texture_upload_batch(native->state);
-}
-
-vkr_internal bool8_t
-vkr_renderer_publisher_end_texture_upload_batch(void *state) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->end_texture_upload_batch(native->state);
-}
-
-vkr_internal VkrRendererError vkr_renderer_publisher_publish_texture(
-    void *state, VkrTextureHandle handle,
-    const struct VkrTexturePreparedLoad *texture) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->publish_texture(native->state, handle, texture);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_publish_writable_texture(
-    void *state, VkrTextureHandle handle,
-    const VkrTextureDescription *description) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->publish_writable_texture(native->state, handle, description);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_update_texture_sampler(
-    void *state, VkrTextureHandle handle,
-    const VkrTextureDescription *description) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->update_texture_sampler(native->state, handle, description);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_bake_ibl_cubemap(
-    void *state, VkrTextureHandle source, VkrTextureHandle prefilter,
-    float32_t sh_deringing) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->bake_ibl_cubemap(native->state, source, prefilter,
-                                  sh_deringing);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_bake_atmosphere(
-    void *state, const VkrAtmosphereGpuParams *params, VkrTextureHandle source,
-    VkrTextureHandle prefilter, VkrTextureHandle transmittance,
-    VkrTextureHandle multiple_scattering, float32_t sh_deringing) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->bake_atmosphere(native->state, params, source, prefilter,
-                                 transmittance, multiple_scattering,
-                                 sh_deringing);
-}
-
-vkr_internal VkrAtmosphereBakeStatus
-vkr_renderer_publisher_atmosphere_bake_status(void *state,
-                                              VkrTextureHandle source) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->atmosphere_bake_status(native->state, source);
-}
-
-vkr_internal uint32_t
-vkr_renderer_publisher_ibl_sh_slot(void *state, VkrTextureHandle source) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->ibl_sh_slot(native->state, source);
-}
-
-vkr_internal bool8_t
-vkr_renderer_publisher_unpublish_texture(void *state, VkrTextureHandle handle) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->unpublish_texture(native->state, handle);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_publish_material(
-    void *state, VkrMaterialHandle handle, const struct VkrMaterial *material) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->publish_material(native->state, handle, material);
-}
-
-vkr_internal bool8_t vkr_renderer_publisher_unpublish_material(
-    void *state, VkrMaterialHandle handle) {
-  const VkrAssetPublisher *native = vkr_renderer_publisher_native(state);
-  return native->unpublish_material(native->state, handle);
-}
-
-/* Inline rendering publishes straight through the native table. Optional
-   native entries stay absent in the forwarding table. */
-vkr_internal void vkr_renderer_install_asset_publisher(VkrRenderer *renderer) {
-  const VkrAssetPublisher *native = &renderer->native_publisher;
-  if (!renderer->worker) {
-    renderer->asset_publisher = *native;
-    return;
-  }
-  renderer->asset_publisher = (VkrAssetPublisher){
-      .state = renderer,
-      .publications_idle = native->publications_idle
-                               ? vkr_renderer_publisher_publications_idle
-                               : NULL,
-      .publication_generation =
-          native->publication_generation
-              ? vkr_renderer_publisher_publication_generation
-              : NULL,
-      .texture_upload_available =
-          native->texture_upload_available
-              ? vkr_renderer_publisher_texture_upload_available
-              : NULL,
-      .publish_geometry = native->publish_geometry
-                              ? vkr_renderer_publisher_publish_geometry
-                              : NULL,
-      .publish_loaded_mesh = native->publish_loaded_mesh
-                                 ? vkr_renderer_publisher_publish_loaded_mesh
-                                 : NULL,
-      .unpublish_geometry = native->unpublish_geometry
-                                ? vkr_renderer_publisher_unpublish_geometry
-                                : NULL,
-      .begin_texture_upload_batch =
-          native->begin_texture_upload_batch
-              ? vkr_renderer_publisher_begin_texture_upload_batch
-              : NULL,
-      .end_texture_upload_batch =
-          native->end_texture_upload_batch
-              ? vkr_renderer_publisher_end_texture_upload_batch
-              : NULL,
-      .publish_texture = native->publish_texture
-                             ? vkr_renderer_publisher_publish_texture
-                             : NULL,
-      .publish_writable_texture =
-          native->publish_writable_texture
-              ? vkr_renderer_publisher_publish_writable_texture
-              : NULL,
-      .update_texture_sampler =
-          native->update_texture_sampler
-              ? vkr_renderer_publisher_update_texture_sampler
-              : NULL,
-      .bake_ibl_cubemap = native->bake_ibl_cubemap
-                              ? vkr_renderer_publisher_bake_ibl_cubemap
-                              : NULL,
-      .bake_atmosphere = native->bake_atmosphere
-                             ? vkr_renderer_publisher_bake_atmosphere
-                             : NULL,
-      .atmosphere_bake_status =
-          native->atmosphere_bake_status
-              ? vkr_renderer_publisher_atmosphere_bake_status
-              : NULL,
-      .ibl_sh_slot =
-          native->ibl_sh_slot ? vkr_renderer_publisher_ibl_sh_slot : NULL,
-      .unpublish_texture = native->unpublish_texture
-                               ? vkr_renderer_publisher_unpublish_texture
-                               : NULL,
-      .publish_material = native->publish_material
-                              ? vkr_renderer_publisher_publish_material
-                              : NULL,
-      .unpublish_material = native->unpublish_material
-                                ? vkr_renderer_publisher_unpublish_material
-                                : NULL,
-  };
-}
-
 vkr_internal uint32_t vkr_renderer_scaled_extent(uint32_t extent,
                                                  float32_t render_scale,
                                                  VkrUpscaleMode upscale_mode) {
@@ -1189,16 +982,23 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   if (render_thread_env && render_thread_env[0] != '\0') {
     render_thread = strcmp(render_thread_env, "0") != 0;
   }
+  if (!vkr_publication_queue_create(&renderer->publications)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    log_error("Failed to create the asset publication queue");
+    goto initialize_failure;
+  }
+  vkr_publication_queue_publisher(renderer, &renderer->asset_publisher);
   if (render_thread && !vkr_renderer_worker_create(renderer)) {
     *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
     log_error("Failed to start the render thread");
     goto initialize_failure;
   }
-  vkr_renderer_install_asset_publisher(renderer);
   log_info("Rendering %s", renderer->worker ? "on a render thread" : "inline");
   return true_v;
 
 initialize_failure:
+  vkr_renderer_worker_destroy(renderer);
+  vkr_publication_queue_destroy(&renderer->publications);
   if (renderer->metal_renderer || renderer->vulkan_renderer)
     vkr_renderer_backend_destroy(renderer);
   if (renderer->render_graph_allocator.ctx)
@@ -1210,6 +1010,7 @@ initialize_failure:
 void vkr_renderer_destroy(VkrRenderer *renderer) {
   vkr_renderer_wait_idle(renderer);
   vkr_renderer_worker_destroy(renderer);
+  vkr_publication_queue_destroy(&renderer->publications);
   vkr_renderer_backend_destroy(renderer);
   if (renderer->render_graph_allocator.ctx)
     vkr_dmemory_allocator_destroy(&renderer->render_graph_allocator);
@@ -2079,7 +1880,7 @@ bool32_t vkr_renderer_is_frame_active(VkrRenderer *renderer) {
 }
 
 VkrRendererError vkr_renderer_wait_idle(VkrRenderer *renderer) {
-  vkr_renderer_join_render_thread(renderer);
+  vkr_renderer_flush_publications(renderer);
   return vkr_renderer_backend_wait_idle(renderer);
 }
 
@@ -2432,7 +2233,14 @@ VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
                                           const VkrFrameConfig *config,
                                           VkrFrame *out_frame) {
   vkr_renderer_join_render_thread(renderer);
-  return vkr_renderer_acquire_frame(renderer, config, out_frame);
+  const VkrRendererError error =
+      vkr_renderer_acquire_frame(renderer, config, out_frame);
+  /* No frame will run the recorded publications; run them now, so assets
+     still progress while frames are skipped. */
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    vkr_renderer_flush_publications(renderer);
+  }
+  return error;
 }
 
 /* A submitted frame becomes the producer of the state its successor reuses. */
@@ -2738,15 +2546,22 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
   const float64_t start = vkr_platform_get_absolute_time();
   *result = (VkrRendererFrameResult){0};
   VkrFrameInput *packet = work->input;
+  VkrRendererError acquire_error = VKR_RENDERER_ERROR_NONE;
   if (work->acquire) {
-    const VkrRendererError acquire_error =
+    acquire_error =
         vkr_renderer_acquire_frame(renderer, &work->config, &work->frame);
     const float64_t acquired_at = vkr_platform_get_absolute_time();
     result->acquire_ns = (uint64_t)((acquired_at - start) * 1e9);
-    if (acquire_error != VKR_RENDERER_ERROR_NONE) {
-      result->error = acquire_error;
-      return;
-    }
+  }
+  /* Publications recorded before this frame run first, inside it when it was
+     acquired, so its input sees them. */
+  if (work->publications) {
+    vkr_publication_queue_run(renderer, work->publications);
+  }
+  if (acquire_error != VKR_RENDERER_ERROR_NONE) {
+    vkr_publication_queue_observe(renderer);
+    result->error = acquire_error;
+    return;
   }
   result->frame = work->frame;
   result->frame.renderer = NULL;
@@ -2762,6 +2577,7 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
     result->error = cancel_error != VKR_RENDERER_ERROR_NONE
                         ? cancel_error
                         : VKR_RENDERER_ERROR_FRAME_SKIPPED;
+    vkr_publication_queue_observe(renderer);
     return;
   }
 
@@ -2797,6 +2613,7 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
   if (hooks->finish) {
     hooks->finish(hooks->state, &work->frame, error);
   }
+  vkr_publication_queue_observe(renderer);
   result->error = error;
   result->render_ns =
       (uint64_t)((vkr_platform_get_absolute_time() - start) * 1e9) -
@@ -2806,7 +2623,8 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
 /* Runs `work` inline or hands it to the render thread. The caller already
    waited for the previous frame. */
 vkr_internal void vkr_renderer_start_work(VkrRenderer *renderer,
-                                          const VkrRendererWork *work) {
+                                          VkrRendererWork *work) {
+  work->publications = vkr_publication_queue_take(&renderer->publications);
   /* A result nobody collected belongs to an older frame; this one replaces
      it. */
   renderer->frame_result_ready = true_v;
@@ -2837,7 +2655,7 @@ VkrRendererError vkr_renderer_submit_frame(VkrFrame *frame,
         out_validation, VKR_RENDERER_ERROR_INVALID_PARAMETER, "frame",
         "must identify the current acquired frame");
   }
-  const VkrRendererWork work = {
+  VkrRendererWork work = {
       .frame = *frame,
       .input = packet,
       .hooks = hooks ? *hooks : (VkrFrameHooks){0},
@@ -2857,7 +2675,7 @@ VkrRendererError vkr_renderer_submit_unacquired_frame(
   if (renderer->frame_active) {
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
   }
-  const VkrRendererWork work = {
+  VkrRendererWork work = {
       .acquire = true_v,
       .config = *config,
       .input = packet,
@@ -2873,11 +2691,27 @@ bool8_t vkr_renderer_complete_frame(VkrRenderer *renderer,
   if (!renderer || !renderer->frame_result_ready) {
     return false_v;
   }
+  vkr_publication_queue_deliver(&renderer->publications);
   renderer->frame_result_ready = false_v;
   if (out_result) {
     *out_result = renderer->frame_result;
   }
   return true_v;
+}
+
+void vkr_renderer_flush_publications(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
+  if (!renderer) {
+    return;
+  }
+  VkrPublicationBatch *batch =
+      vkr_publication_queue_take(&renderer->publications);
+  if (!batch) {
+    return;
+  }
+  vkr_publication_queue_run(renderer, batch);
+  vkr_publication_queue_observe(renderer);
+  vkr_publication_queue_deliver(&renderer->publications);
 }
 
 bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer) {

@@ -905,14 +905,15 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_scene_frame(
   return prepare_err == VKR_RENDERER_ERROR_NONE;
 }
 
-/* Publishes completed asset work and advances texture streaming. Returns
-   false_v when publication fails. */
+/* Finalizes completed asset work and advances texture streaming. Their
+   publications are recorded; the thread rendering the next frame runs them
+   inside it. Serials and device memory are those last observed, because a
+   frame may be rendering. Returns false_v when recording fails. */
 vkr_internal bool8_t vkr_standard_scene_runtime_pump_frame_assets(
     VkrStandardSceneRuntime *application, const VkrFrame *setup) {
   const VkrResourceSubmissionState submission = {
-      .submit_serial = vkr_renderer_get_submit_serial(&application->renderer),
-      .completed_submit_serial =
-          vkr_renderer_get_completed_submit_serial(&application->renderer),
+      .submit_serial = application->submit_serial_seen,
+      .completed_submit_serial = application->completed_submit_serial_seen,
       .frame_active = true_v,
   };
   if (!vkr_render_assets_pump_publications(&application->assets, submission)) {
@@ -922,11 +923,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_pump_frame_assets(
   if (!materials->texture_stream_budget_user_configured &&
       (materials->texture_stream_active_count ||
        setup->number - 1u >= application->texture_memory_sample_frame + 60u)) {
-    VkrDeviceMemoryStats device_memory = {0};
-    if (vkr_renderer_get_device_memory_stats(&application->renderer,
-                                             &device_memory)) {
-      vkr_render_assets_refresh_texture_residency_budget(&application->assets,
-                                                         &device_memory);
+    if (application->device_memory_seen_valid) {
+      vkr_render_assets_refresh_texture_residency_budget(
+          &application->assets, &application->device_memory_seen);
       application->texture_memory_sample_frame = setup->number - 1u;
     }
   }
@@ -1931,18 +1930,21 @@ vkr_internal bool8_t vkr_standard_scene_runtime_prepare_acquired(
   draw->setup = &frame->setup;
   packet->frame.frame_index = (uint32_t)acquired->number;
 
-  const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
+  /* This thread owns the renderer now, and the frame's publications have run:
+     ask the backend directly. */
+  const VkrAssetPublisher *native = &application->renderer.native_publisher;
   draw->world_payload.publication_pending =
-      draw->world_payload.publication_pending ||
-      !publisher->publications_idle ||
-      !publisher->publications_idle(publisher->state);
+      draw->world_payload.publication_pending || !native->publications_idle ||
+      !native->publications_idle(native->state);
   draw->world_payload.publication_generation =
-      publisher->publication_generation
-          ? publisher->publication_generation(publisher->state)
+      native->publication_generation
+          ? native->publication_generation(native->state)
           : 1u;
   for (uint32_t i = 0u; i < draw->frame_lighting.ibl_probe_count; ++i) {
-    draw->frame_ibl_probes[i].sh_slot = vkr_render_assets_ibl_sh_slot(
-        &application->assets, draw->frame_ibl_probe_sources[i]);
+    draw->frame_ibl_probes[i].sh_slot =
+        native->ibl_sh_slot ? native->ibl_sh_slot(
+                                  native->state, draw->frame_ibl_probe_sources[i])
+                            : VKR_SH_SLOT_BLACK;
   }
 
   vkr_standard_scene_runtime_prepare_shadow_payloads(application, frame);
@@ -1971,6 +1973,18 @@ vkr_internal void vkr_standard_scene_runtime_finish_acquired(
   }
 }
 
+/* Takes the submission serials and device memory the asset pump reads. Call
+   only when no frame is rendering. */
+vkr_internal void vkr_standard_scene_runtime_sync_submission_state(
+    VkrStandardSceneRuntime *application) {
+  VkrRenderer *renderer = &application->renderer;
+  application->submit_serial_seen = vkr_renderer_get_submit_serial(renderer);
+  application->completed_submit_serial_seen =
+      vkr_renderer_get_completed_submit_serial(renderer);
+  application->device_memory_seen_valid = vkr_renderer_get_device_memory_stats(
+      renderer, &application->device_memory_seen);
+}
+
 /* Takes the renderer values the frame-loop thread reads while a frame may be
    rendering. Call only when no frame is rendering. */
 vkr_internal void vkr_standard_scene_runtime_sync_renderer_state(
@@ -1984,6 +1998,7 @@ vkr_internal void vkr_standard_scene_runtime_sync_renderer_state(
   application->frame_number_seen = renderer->frame_number;
   application->display_exposure = renderer->display_exposure;
   application->shadow_depth_range = renderer->timing_result.shadow_depth_range;
+  vkr_standard_scene_runtime_sync_submission_state(application);
 }
 
 /* Applies a completed frame's result: retained texture relief, editor output,
@@ -2096,15 +2111,13 @@ vkr_internal void vkr_standard_scene_runtime_complete_frame(
 }
 
 /* True when the frame may be built without acquiring it here: the render
-   thread renders it while the next frame is built. Frames that resize,
-   change the Scene output, or finalize or stream assets (which publish into
-   an acquired frame) acquire on this thread. */
+   thread renders it while the next frame is built. Frames that resize or
+   change the Scene output acquire on this thread, because their build needs
+   the new extent. */
 vkr_internal bool8_t
 vkr_standard_scene_runtime_can_decouple(VkrStandardSceneRuntime *application) {
   if (!vkr_renderer_render_thread_enabled(&application->renderer) ||
-      !application->target_known ||
-      application->assets.material_system.texture_stream_active_count > 0u ||
-      vkr_resource_system_has_pending_work()) {
+      !application->target_known) {
     return false_v;
   }
   VkrStandardSceneRuntimeSceneOutput scene_output = {0};
@@ -2162,11 +2175,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     application->target_window_height = setup->window_height;
     application->target_render_width = setup->render_width;
     application->target_render_height = setup->render_height;
-    if (!vkr_standard_scene_runtime_pump_frame_assets(application, setup)) {
-      vkr_standard_scene_runtime_cancel_frame(
-          application, setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-      return;
-    }
+    vkr_standard_scene_runtime_sync_submission_state(application);
   } else {
     /* The render thread acquires this frame; build it for the target the
        last frame used. */
@@ -2176,6 +2185,11 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     setup->window_height = application->target_window_height;
     setup->render_width = application->target_render_width;
     setup->render_height = application->target_render_height;
+  }
+  if (!vkr_standard_scene_runtime_pump_frame_assets(application, setup)) {
+    vkr_standard_scene_runtime_cancel_frame(
+        application, setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+    return;
   }
   frame->shadow.config = application->shadow_config;
   frame->shadow.invalidate_fit =
@@ -2285,6 +2299,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   application->frame_in_flight = frame;
   application->frame = frame == application->frames[0] ? application->frames[1]
                                                        : application->frames[0];
+  application->frames_submitted++;
+  application->frames_decoupled += frame->decoupled ? 1u : 0u;
   if (!render_thread) {
     vkr_standard_scene_runtime_complete_frame(application);
   }
@@ -2577,6 +2593,11 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
              "VkrStandardSceneRuntime is still running");
 
   log_info("VkrStandardSceneRuntime shutting down...");
+  if (vkr_renderer_render_thread_enabled(&application->renderer)) {
+    log_info("Render thread acquired %llu of %llu submitted frames",
+             (unsigned long long)application->frames_decoupled,
+             (unsigned long long)application->frames_submitted);
+  }
   /* A frame submitted just before the loop stopped has no frame left to apply
      its result to. */
   if (application->frame_in_flight) {
