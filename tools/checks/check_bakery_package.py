@@ -220,8 +220,8 @@ def main():
         stages = [event['source'] for event in report_events if event.get('ev') == 'start']
         assert sum(event.get('ev') == 'done' and event.get('status') == 'ok'
                    for event in report_events) == len(stages), report_events
-        assert stages == ['Validate', 'Finalize', 'Bake', 'Lower', 'Pack', 'Stage runtime',
-                          'Verify and report'], stages
+        assert stages == ['Validate', 'Scripts', 'Finalize', 'Bake', 'Lower', 'Pack',
+                          'Stage runtime', 'Verify and report'], stages
         report = json.loads(latest_report(workspace).read_text())
         assert report['status'] == 'complete' and report['output'] == str(out)
         assert report['package']['files'] == len(entries)

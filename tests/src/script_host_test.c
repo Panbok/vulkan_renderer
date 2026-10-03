@@ -310,7 +310,12 @@ static VkrEntity s_game_spawned;
 static void zone_start(VkrCtx *ctx, ZoneData *data) {
   data->spawned = vkr_spawn(ctx, &(VkrSpawnDesc){.name = "ZoneMarker"});
   assert(vkr_container_of(ctx, data->spawned).id == vkr_container_self(ctx).id);
-  s_zone_spawned[s_zone_starts++] = data->spawned;
+  /* The module stays registered for later suites; keep only the starts the
+     container test reads. */
+  if (s_zone_starts < ArrayCount(s_zone_spawned)) {
+    s_zone_spawned[s_zone_starts] = data->spawned;
+  }
+  s_zone_starts++;
 }
 
 static void game_start(VkrCtx *ctx, ZoneData *data) {
