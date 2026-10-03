@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -25,7 +25,17 @@ frame delta/discontinuities control completion-safe EV history. Each native
 renderer advances an exposure clock only when an exposure output is submitted
 and stores that clock with the output. Adaptation uses elapsed exposure-clock
 time since the selected completed history, bounded by the shared hitch limit;
-it does not apply only one frame's delta to an older state. Invalid history snaps
+it does not apply only one frame's delta to an older state. Vulkan passes the
+selected completed state to the resolve kernel as a host copy from that frame's
+readback, uploaded with the frame's roots
+([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c)).
+A GPU read of the old state instance keeps it in use until the reading frame
+completes. The oldest instances are the ones the shared history ring reuses,
+so with temporal history also live the ring waited for an in-flight frame
+every third frame. In the Bistro street view at 1920x1080 with TAA on the
+RX 6700 XT, frames alternated 10, 20 and 2 ms (p95 20.5 ms); with the host
+copy they take 11.0 ms (p95 11.5 ms) and the final color is unchanged. Metal
+still reads the state instance on the GPU. Invalid history snaps
 to target. Defaults lower exposure at 8 EV/s, raise it at 1 EV/s, and clamp the
 target to [-8,+24] EV so night scenes are reachable. The rate names describe displayed-image brightness.
 Tonemap consumes GPU state

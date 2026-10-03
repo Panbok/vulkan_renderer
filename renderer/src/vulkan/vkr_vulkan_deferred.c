@@ -3691,6 +3691,33 @@ bool8_t vkr_vk_prepare_exposure_histogram(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Copies the exposure state that submission `producer` wrote from its frame
+   slot's readback. A slot keeps that copy until it records another frame, and
+   a completed producer's slot has not recorded one before its retire value
+   changes. */
+vkr_internal bool8_t vkr_vk_completed_exposure_readback(
+    VkrVulkanRenderer *renderer, uint64_t producer,
+    VkrExposureGpuState *out_state) {
+  if (!producer || producer > renderer->completed_value)
+    return false_v;
+  for (uint32_t i = 0u; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
+    const VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
+    if (slot->retire_value != producer || !slot->exposure_requested ||
+        !slot->readback.allocation.mapped)
+      continue;
+    if (!vkr_vk_invalidate(renderer, &slot->readback.allocation,
+                           VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,
+                           sizeof(*out_state)))
+      return false_v;
+    MemCopy(out_state,
+            (const uint8_t *)slot->readback.allocation.mapped +
+                VKR_VULKAN_READBACK_EXPOSURE_STATE_OFFSET,
+            sizeof(*out_state));
+    return true_v;
+  }
+  return false_v;
+}
+
 bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass) {
@@ -3726,11 +3753,28 @@ bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
         previous = candidate;
     }
   }
+  /* The chosen record is complete, so its frame's readback also holds it. Its
+     host copy goes up with this frame's roots and the GPU never reads the old
+     instance again. A GPU read would keep that instance in use until this
+     frame completes, and the oldest history instances are the ones the
+     history ring reuses next, so the ring would wait for in-flight frames. */
+  VkrExposureGpuState host_previous = {0};
+  const bool8_t host_copy =
+      previous &&
+      vkr_vk_completed_exposure_readback(
+          renderer, previous->history_producer_submit_value, &host_previous);
+  uint64_t host_previous_address = 0u;
+  if (host_copy && !vkr_vk_deferred_push_root(
+                       renderer, &host_previous, sizeof(host_previous),
+                       _Alignof(VkrExposureGpuState), &host_previous_address))
+    return false_v;
   if (previous) {
-    slot->exposure_state_input = previous;
     root.metering.delta_seconds = vkr_exposure_history_delta(
         renderer->exposure_seconds + root.metering.delta_seconds,
         previous->history_exposure_seconds);
+  }
+  if (previous && !host_copy) {
+    slot->exposure_state_input = previous;
     const VkBufferMemoryBarrier2 barrier = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -3744,15 +3788,16 @@ bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
     };
     prepared->buffer_barrier = barrier;
     prepared->has_buffer_barrier = true_v;
-  } else {
+  } else if (!previous) {
     /* No completed record. The kernel still reads this address and discards the
        value through `history_valid`, so it points at the output instance rather
        than at nothing. */
     root.metering.history_valid = 0u;
   }
   root.state = output->buffer.address;
-  root.previous_state =
-      previous ? previous->buffer.address : output->buffer.address;
+  root.previous_state = host_copy  ? host_previous_address
+                        : previous ? previous->buffer.address
+                                   : output->buffer.address;
 
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanExposureRoot),
