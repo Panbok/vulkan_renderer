@@ -349,6 +349,9 @@ struct PackConfig {
   float normal_scale = 1.0f;
   float roughness_factor = 1.0f;
   bool roughness_source = false;
+  // Command-line paired bake: the first layer is the normal map, written
+  // here; the optional second is the metal-roughness map, written to output.
+  fs::path paired_normal_output;
   // Preview tier: mip levels larger than this extent are not stored; 0 keeps
   // every level.
   uint32_t max_extent = 0u;
@@ -496,6 +499,37 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
       }
       continue;
     }
+    if (arg == "--paired-normal") {
+      if (index + 1 >= argc) {
+        std::cerr << "Missing value for --paired-normal\n";
+        return ParseResult::kError;
+      }
+      out_config.paired_normal_output =
+          vkr_filesystem_native_utf8_path(argv[++index]);
+      out_config.normal_roughness = true;
+      out_config.layered_mode = true;
+      continue;
+    }
+    if (arg == "--normal-scale" || arg == "--roughness-factor") {
+      if (index + 1 >= argc) {
+        std::cerr << "Missing value for " << arg << "\n";
+        return ParseResult::kError;
+      }
+      const char *value = argv[++index];
+      char *end = nullptr;
+      const float parsed = std::strtof(value, &end);
+      if (end == value || *end != '\0' || !std::isfinite(parsed) ||
+          (arg == "--roughness-factor" && (parsed < 0.0f || parsed > 1.0f))) {
+        std::cerr << "Invalid " << arg << "\n";
+        return ParseResult::kError;
+      }
+      if (arg == "--normal-scale") {
+        out_config.normal_scale = parsed;
+      } else {
+        out_config.roughness_factor = parsed;
+      }
+      continue;
+    }
     if (arg == "--strict") {
       out_config.strict = true;
       continue;
@@ -598,6 +632,14 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
                  "optional\n";
     return ParseResult::kError;
   }
+  if (out_config.normal_roughness &&
+      (out_config.shape != TextureShape::k2D || out_config.layers.size() > 2u ||
+       out_config.cutout || out_config.texture_class_explicit)) {
+    std::cerr << "A paired bake takes --type 2d, the normal map and an "
+                 "optional metal-roughness --layer, and no --texture-class "
+                 "or cutout\n";
+    return ParseResult::kError;
+  }
 
   return ParseResult::kOk;
 }
@@ -619,6 +661,10 @@ void print_usage(const char *program_name) {
          " [--source-hash|--no-source-hash]\n";
   std::cout << "Cutout color mips: --alpha-cutoff <0..1>"
                " [--alpha-factor <0..1>] (explicit output/color class only)\n";
+  std::cout << "Paired normal/roughness: --paired-normal <normal.vkt>"
+               " --output <metal-roughness.vkt> --type 2d --layer <normal>"
+               " [--layer <metal-roughness>] [--normal-scale <s>]"
+               " [--roughness-factor <0..1>]\n";
 }
 
 std::string format_duration(double seconds) {
@@ -2638,6 +2684,28 @@ int vkr_vkt_packer_main(int argc, char **argv) {
         std::cerr << "Layer source does not exist: " << layer << "\n";
         return 1;
       }
+    }
+    if (config.normal_roughness) {
+      // The library bake the mesh cooker runs, at this command's encoding.
+      vkr_vkt_set_encoding(config.encoding);
+      const std::string normal = config.layers.front().u8string();
+      const std::string roughness_path =
+          config.layers.size() > 1u ? config.layers.back().u8string() : "";
+      VkrVktSource roughness = {};
+      roughness.path = roughness_path.c_str();
+      const VkrVktPackResult result = vkr_vkt_pack_normal_roughness(
+          normal.c_str(), config.layers.size() > 1u ? &roughness : nullptr,
+          config.paired_normal_output.u8string().c_str(),
+          config.output.u8string().c_str(), config.normal_scale,
+          config.roughness_factor);
+      if (result == VKR_VKT_PACK_INCOMPATIBLE) {
+        std::cerr << "The paired sources differ in extent\n";
+      }
+      std::cout << "vkt paired pack: normal=" << config.paired_normal_output
+                << " metal_roughness=" << config.output << " status="
+                << (result == VKR_VKT_PACK_SUCCESS ? "packed" : "failed")
+                << "\n";
+      return result == VKR_VKT_PACK_SUCCESS ? 0 : 1;
     }
     const TextureClass texture_class =
         config.texture_class_explicit

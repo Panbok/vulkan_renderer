@@ -624,8 +624,8 @@ test_material_pbr_alias_slots_and_inference(MaterialPbrTestContext *ctx) {
            "pipeline=world\n"
            "diffuse_texture=%s\n"
            "emission_texture=%s\n",
-           "assets/textures/detmoldura_02_color.png",
-           "assets/textures/detmoldura_02_color.png");
+           "tests/fixtures/rendering/diffuse_sheet/sheet_base_color.png",
+           "tests/fixtures/rendering/diffuse_sheet/sheet_base_color.png");
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};
@@ -758,7 +758,7 @@ test_material_texture_intent_query_normalization(MaterialPbrTestContext *ctx) {
            "type=pbr\n"
            "base_color_texture=%s\n"
            "base_color_colorspace=srgb\n",
-           "assets/textures/detmoldura_02_color.png");
+           "tests/fixtures/rendering/diffuse_sheet/sheet_base_color.png");
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};
@@ -800,7 +800,7 @@ vkr_internal void test_material_texture_intent_override_is_deterministic(
            "type=pbr\n"
            "base_color_texture=%s?cs=linear&tc=data_mask\n"
            "base_color_colorspace=srgb\n",
-           "assets/textures/detmoldura_02_color.png");
+           "tests/fixtures/rendering/diffuse_sheet/sheet_base_color.png");
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};

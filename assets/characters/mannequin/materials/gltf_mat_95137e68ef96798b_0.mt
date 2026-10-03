@@ -19,6 +19,6 @@ alpha_cutoff=0.500000
 shader=shader.pbr.world
 pipeline=world
 base_color_texture=./../textures/ef60d48121ece415.png?cs=srgb&tc=color_srgb
-metallic_roughness_texture=./../textures/mannequin_orm.png?tc=data_mask
+metallic_roughness_texture=./../textures/mannequin_paired_metalrough.vkt?tc=data_mask
 occlusion_texture=./../textures/9b51824141e57d20.png?tc=data_mask
-normal_texture=./../textures/mannequin_normal.png?tc=normal_rg
+normal_texture=./../textures/mannequin_paired_normal.vkt?tc=normal_rg

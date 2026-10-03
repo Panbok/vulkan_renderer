@@ -40,12 +40,12 @@ for that restricted graph; repository wrappers enable these options again.
 
 The app and editor are separate executables using `vkr_runtime` and
 `vkr_sample_runtime`. Repository builds compile `vkr_bakery` and run
-`vkr_bakery shaders` into `<build>/shaders`, and cook only the engine
-textures the app, harness, editor and player carry (`vkr_engine_textures`);
-they cook no other asset. Textures are host-native (ASTC on Apple silicon, BC
-on x86-64) and untracked, so a fresh checkout cooks its scenes and fixtures
-with `vkr_bakery build assets/bakery.json` before rendering them
-([ADR-012](adr/012-texture-compression-pipeline.md)). `build_test.sh` and
+`vkr_bakery shaders` into `<build>/shaders`, and cook only the tracked
+textures the engine content, default scene, fixture scenes and CPU tests read
+(`vkr_engine_textures`); they cook no other asset. Textures are host-native
+(ASTC on Apple silicon, BC on x86-64) and untracked, so a fresh checkout cooks
+downloaded scenes such as Bistro with `vkr_bakery build assets/bakery.json`
+before rendering them ([ADR-012](adr/012-texture-compression-pipeline.md)). `build_test.sh` and
 `build_test.bat` build and run the CPU tester in `build_debug` by default.
 
 Set `VKR_DEBUG_SANITIZER` to `default`, `address`, `thread`, `memory`, `leak` or

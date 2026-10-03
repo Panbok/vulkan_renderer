@@ -85,69 +85,6 @@
     {
       "source": "assets/textures",
       "optional": true
-    },
-    {
-      "source": "tests/fixtures/rendering/anisotropy/direction_y.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "data-mask"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/clearcoat/base_normal_plus_x.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "normal-rg"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/clearcoat/coat_mask_one.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "data-mask"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/clearcoat/coat_normal_minus_x.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "normal-rg"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/clearcoat/coat_normal_plus_x.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "normal-rg"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/diffuse_sheet/sheet_base_color.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "color-srgb"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/local_shadow_transmission/transmission_step.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "data-mask"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/sheen/sheen_color.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "color-srgb"
-      }
-    },
-    {
-      "source": "tests/fixtures/rendering/sheen/sheen_roughness.png",
-      "producer": "texture",
-      "recipe": {
-        "class": "data-mask"
-      }
     }
   ]
 }

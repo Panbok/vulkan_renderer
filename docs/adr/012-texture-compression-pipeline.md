@@ -44,10 +44,15 @@ stands. Mip 0 holds the source bytes either way, so a class inferred
 differently at cook time changes only the filtering of lower mips.
 
 The build cooks the engine textures every package and install carries (the
-UbuntuMono atlas and the mannequin's textures, listed in
-`cmake/vkr_engine_content.cmake`) beside their sources, through the
-`vkr_engine_textures` target the app, harness, editor and player depend on.
-Scene, fixture and repository textures cook through `assets/bakery.json`.
+UbuntuMono atlas and the mannequin's textures) and the tracked textures the
+default scene, fixture scenes and CPU tests read, all listed in
+`cmake/vkr_engine_content.cmake`, through the `vkr_engine_textures` target the
+app, harness, editor, player and CPU tester depend on. The mannequin's paired
+normal/roughness bake runs there too, through `vkr_bakery tool texture
+--paired-normal`, under fixed names its tracked material references; a
+mesh cook's bundle names pairs by their encoded bytes, which differ per host.
+Downloaded scenes and the rest of `assets/textures` cook through
+`assets/bakery.json`.
 
 On Apple silicon the ASTC encoding (`--encoding astc`, astcenc's `fastest`
 preset) stores 6x6 blocks for colours and data masks and 4x4 for normals and
@@ -264,11 +269,10 @@ decoder and basisu's BC7 and BC5 unpackers.
 
 Texture class is part of the asset contract: color, normal, and data textures
 take different block sizes and sRGB intent at cook time. Writable and resize
-paths must reject block-compressed textures. A fresh checkout renders
-nothing textured until `vkr_bakery` cooks it, and a `.vkt` cooked on one host
-does not load on the other family's GPUs. The mannequin samples its source
-normal and ORM images instead of paired bakes, whose hash-named copies were
-host-specific, so it loses the paired normal-variance roughness widening.
+paths must reject block-compressed textures. A fresh checkout's build
+cooks the engine, default-scene, fixture and test textures; a downloaded scene
+renders untextured until `vkr_bakery` cooks it, and a `.vkt` cooked on one host
+does not load on the other family's GPUs.
 
 Paired roughness outputs multiply full-resolution textures by distinct factor
 and scale combinations. Before normal outputs were shared, a managed Bistro

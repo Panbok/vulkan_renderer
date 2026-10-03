@@ -70,3 +70,7 @@ target_include_directories(vulkan_renderer_tester
         ${CMAKE_SOURCE_DIR}/vendor
         ${CMAKE_SOURCE_DIR}/tools
 )
+
+# Material tests read fixture textures the build cooks on this host (ADR-012).
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
+add_dependencies(vulkan_renderer_tester vkr_engine_textures)

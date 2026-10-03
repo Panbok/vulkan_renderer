@@ -109,8 +109,9 @@ tests that mirror implementation, mock success, or assert source wording. A
 build, CPU test, capture, native diagnostic, and timing report prove different
 claims. Inspect reports and diagnostics, not only exit codes.
 
-Use repository build wrappers; they compile shaders and cooker tools but do not
-cook or publish assets. Bakery or an explicit `vkr_bakery` command owns generation.
+Use repository build wrappers; they compile shaders and cooker tools and cook
+only the tracked textures the engine, default scene, fixtures and CPU tests
+read. Bakery or an explicit `vkr_bakery` command owns all other generation.
 Use normal Release with graphics validation variables unset for snapshots,
 baselines, and performance. Debug, API/GPU validation, and traces are focused
 diagnostics. Run one Metal validation process at a time and never run a broad

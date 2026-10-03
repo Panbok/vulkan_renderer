@@ -11,12 +11,10 @@ set(VKR_MANNEQUIN_FILES
     assets/characters/mannequin/textures/9b51824141e57d20.png.vkt
     assets/characters/mannequin/textures/ef60d48121ece415.png
     assets/characters/mannequin/textures/ef60d48121ece415.png.vkt
-    assets/characters/mannequin/textures/mannequin_normal.png
-    assets/characters/mannequin/textures/mannequin_normal.png.vkt
-    assets/characters/mannequin/textures/mannequin_orm.png
-    assets/characters/mannequin/textures/mannequin_orm.png.vkt)
+    assets/characters/mannequin/textures/mannequin_paired_metalrough.vkt
+    assets/characters/mannequin/textures/mannequin_paired_normal.vkt)
 set(VKR_MANNEQUIN_TEXTURES
     "assets/characters/mannequin/textures/9b51824141e57d20.png|data-mask"
-    "assets/characters/mannequin/textures/ef60d48121ece415.png|color-srgb"
-    "assets/characters/mannequin/textures/mannequin_normal.png|normal-rg"
-    "assets/characters/mannequin/textures/mannequin_orm.png|data-mask")
+    "assets/characters/mannequin/textures/ef60d48121ece415.png|color-srgb")
+set(VKR_MANNEQUIN_TEXTURE_PAIRS
+    "assets/characters/mannequin/textures/mannequin_normal.png|assets/characters/mannequin/textures/mannequin_orm.png|assets/characters/mannequin/textures/mannequin_paired_normal.vkt|assets/characters/mannequin/textures/mannequin_paired_metalrough.vkt|1|1")

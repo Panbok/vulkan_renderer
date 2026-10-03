@@ -7,10 +7,11 @@
 Cooks the glTF with explicit Bakery tool runs: the mesh in bundle mode, so
 its materials sit in ./materials and its textures in ./textures beside the
 .vkb, and the animation bank. Textures are host-native and untracked
-(ADR-012), so the materials name source images only: the paired normal and
-metal-roughness bakes give way to the source normal and ORM images, and every
-source image is test-cooked into its .vkt but not published. The build cooks
-them on each host from the engine content list. It then replaces the content
+(ADR-012), so the materials name nothing a cook names by content: each paired
+normal and metal-roughness bake gives way to fixed `mannequin_paired_*` names
+that the build bakes on each host from the source normal and ORM images, and
+every other source image is test-cooked into its .vkt but not published. The
+build cooks them from the engine content list. It then replaces the content
 directory (default assets/characters/mannequin) with the source glTF, the
 cooked mesh and bank, the materials, the source images, the clip table and
 the credits notice, and writes the FPS module's generated clip header and the
@@ -111,11 +112,13 @@ def _texture_classes(destination):
     classes = {}
     for material in sorted((destination / "materials").glob("*.mt")):
         for image, query in _material_textures(material):
+            if image.suffix == ".vkt":
+                continue
             classes[str(image.relative_to(destination))] = TEXTURE_CLASSES[query.get("tc", "color_srgb")]
     return classes
 
 
-def _content_list(content, runtime, classes):
+def _content_list(content, runtime, classes, pair):
     """The engine content's closure roots and every runtime file they reach:
     the mesh, bank and notice, the materials and the textures they name
     (with each source image's cooked .vkt). The source glTF and images stay
@@ -132,6 +135,10 @@ def _content_list(content, runtime, classes):
     lines.append("set(VKR_MANNEQUIN_TEXTURES")
     lines += [f'    "{content}/{name}|{texture_class}"' for name, texture_class in sorted(classes.items())]
     lines[-1] += ")"
+    normal, metal_roughness, normal_output, metal_roughness_output, scale, factor = pair
+    lines.append("set(VKR_MANNEQUIN_TEXTURE_PAIRS")
+    lines.append(f'    "{content}/{normal}|{content}/{metal_roughness}|{content}/{normal_output}|'
+                 f'{content}/{metal_roughness_output}|{scale:g}|{factor:g}")')
     return "\n".join(lines) + "\n"
 
 
@@ -144,19 +151,36 @@ def _material_textures(material):
             yield (material.parent / match.group(1)).resolve(), query
 
 
-def _use_source_pairs(staging):
-    """Point paired normal and metal-roughness bakes at their source images,
-    whose sidecars every host cooks."""
-    sources = {"normal_texture": "./../textures/mannequin_normal.png?tc=normal_rg",
-               "metallic_roughness_texture": "./../textures/mannequin_orm.png?tc=data_mask"}
-    for material in sorted((staging / "materials").glob("*.mt")):
+PAIR_NORMAL = "mannequin_paired_normal.vkt"
+PAIR_METAL_ROUGHNESS = "mannequin_paired_metalrough.vkt"
+
+
+def _use_build_pairs(staging):
+    """Point paired normal and metal-roughness bakes, named by their host's
+    encoded bytes, at fixed names the build bakes on every host. Returns the
+    content-relative pair the engine content list cooks: the glTF's normal
+    and metal-roughness images, the outputs, the normal scale and roughness
+    factor the bake folds in (the material keeps 1)."""
+    gltf = json.loads((staging / "mannequin.gltf").read_text(encoding="utf-8"))
+    if len(gltf["materials"]) != 1:
+        raise RuntimeError("The mannequin pair list expects one material")
+    material = gltf["materials"][0]
+    pbr = material.get("pbrMetallicRoughness", {})
+    image = lambda view: gltf["images"][gltf["textures"][view["index"]]["source"]]["uri"]
+    pair = (image(material["normalTexture"]), image(pbr["metallicRoughnessTexture"]),
+            f"textures/{PAIR_NORMAL}", f"textures/{PAIR_METAL_ROUGHNESS}",
+            material["normalTexture"].get("scale", 1), pbr.get("roughnessFactor", 1))
+    sources = {"normal_texture": f"./../textures/{PAIR_NORMAL}?tc=normal_rg",
+               "metallic_roughness_texture": f"./../textures/{PAIR_METAL_ROUGHNESS}?tc=data_mask"}
+    for path in sorted((staging / "materials").glob("*.mt")):
         lines = []
-        for line in material.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             key = line.split("=", 1)[0]
             if key in sources and line.split("?", 1)[0].endswith(".vkt"):
                 line = f"{key}={sources[key]}"
             lines.append(line)
-        material.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return pair
 
 
 def _cook_textures(bakery, staging):
@@ -201,7 +225,7 @@ def main():
               "--import-id", "mannequin"])
         _run([args.bakery, "tool", "animation", "--input", staging / "mannequin.gltf",
               "--output", staging / "mannequin.vka"])
-        _use_source_pairs(staging)
+        pair = _use_build_pairs(staging)
         _cook_textures(args.bakery, staging)
         destination = REPO / content
         if destination.exists():
@@ -226,7 +250,7 @@ def main():
     if content == CONTENT:
         (REPO / HEADER).write_text(_header(clips["clips"]), encoding="utf-8")
         (REPO / CONTENT_LIST).write_text(
-            _content_list(content, runtime, _texture_classes(destination.resolve())),
+            _content_list(content, runtime, _texture_classes(destination.resolve()), pair),
             encoding="utf-8")
     for path in sorted(destination.rglob("*")):
         if path.is_file():
