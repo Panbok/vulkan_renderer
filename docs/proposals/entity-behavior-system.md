@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-29
+updated: 2026-10-04
 authority: proposal
 ---
 
@@ -785,6 +785,10 @@ instance count and measured cost. This makes hidden ordering and accidental
 work visible before there is a graph editor.
 
 ### Second deliverable: connections and constrained state charts
+
+The [level design toolkit](level-design-toolkit.md#triggers-io-and-scripts)
+owns the connection model for placed entities: outputs, inputs, connections
+stored as child entities, and the router that drains sensor events.
 
 Expose coarse operations such as Request Fire, Request Reload, Apply Impulse,
 Set Camera Mode and Set Animation Parameter. A connection asset binds a typed

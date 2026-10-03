@@ -271,6 +271,7 @@ decisions before dependent implementation.
 | [Meshlet cluster culling](proposals/meshlet-cluster-culling.md) | Measured geometry-bound Bistro cost on M1 Pro and why finer culling has not paid: cook-time chunks cut local shadows 16% but added more per-draw cost elsewhere; cone culling buys 2–3%; a compacted-cluster path would need visibility-identity changes. |
 | [Static-scene batching](proposals/static-scene-batching.md) | Evaluate static geometry merging against current GPU draw preparation. |
 | [Terrain rendering](proposals/terrain-rendering.md) | Terrain data, tile ownership, LOD, and existing draw-path integration. |
+| [Level design toolkit](proposals/level-design-toolkit.md) | Hammer-style convex brushes compiled per world cell, then terrain, splines and scatter; one typed operation table for the viewport, Cmd bar and a local JSON socket with an MCP 2026-07-28 adapter for LLM agents; batches as one undo step, a pending changeset, level checks against the player capsule; Source-style triggers and IO that C scripts declare and a future visual graph reuses; phases from the agent channel to population. |
 | [Visibility-buffer MSAA](proposals/visibility-buffer-msaa.md) | Multisample visibility and resolve after a demonstrated quality need. |
 
 ## Maintaining this tree
