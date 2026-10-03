@@ -35,6 +35,11 @@ function(vkr_add_physics)
         "${CMAKE_SOURCE_DIR}/runtime/src/physics/vkr_physics.cpp")
     vkr_configure_library(vkr_physics)
     target_compile_features(vkr_physics PRIVATE cxx_std_17)
+    # Jolt sets its RTTI flag only in its own directory. Match it here: a class
+    # derived from a Jolt base with an out-of-line key function, such as
+    # JobSystemWithBarrier, otherwise needs typeinfo that Jolt never emits.
+    target_compile_options(vkr_physics PRIVATE
+        $<IF:$<CXX_COMPILER_ID:MSVC>,/GR-,-fno-rtti>)
     target_include_directories(vkr_physics PUBLIC "${CMAKE_SOURCE_DIR}/runtime/src"
                                                 "${CMAKE_SOURCE_DIR}/lib/src")
     target_link_libraries(vkr_physics PRIVATE Jolt)
