@@ -106,7 +106,7 @@ def main():
         job = jobs.Job(dict(base, operation='create_scene', scene_id=scene_id, scene_name='Arena',
                             models=[str(source / 'test.obj')], bakes={}), result_path, bakery)
         assert job.execute() == 0, job.output
-        document = json.loads(manifest.read_text())
+        document = json.loads(manifest.read_text(encoding='utf-8'))
         document['scenes'] = [{'id': scene_id, 'name': 'Arena', 'path': f'scenes/{scene_id}/scene.json'}]
         manifest.write_text(json.dumps(document))
 
@@ -149,7 +149,7 @@ def main():
         # Contents/Resources; other hosts keep them at the top.
         app = out / 'Fixture Game.app'
         runtime_root = app / 'Contents' / 'Resources' if sys.platform == 'darwin' else out
-        description = json.loads((runtime_root / 'bundle.json').read_text())
+        description = json.loads((runtime_root / 'bundle.json').read_text(encoding='utf-8'))
         assert description['version'] == 2 and description['config'] == 'shipping'
         suffix = '.exe' if description['platform'].startswith('windows') else ''
         if sys.platform == 'darwin':
@@ -222,8 +222,8 @@ def main():
                    for event in report_events) == len(stages), report_events
         assert stages == ['Validate', 'Scripts', 'Finalize', 'Bake', 'Lower', 'Pack',
                           'Stage runtime', 'Verify and report'], stages
-        report = json.loads(latest_report(workspace).read_text())
-        assert report['status'] == 'complete' and report['output'] == str(out)
+        report = json.loads(latest_report(workspace).read_text(encoding='utf-8'))
+        assert report["status"] == "complete" and Path(report["output"]) == out
         assert report['package']['files'] == len(entries)
         assert tree_digest(project) == workspace_before, 'a package build must not write the project'
 
@@ -232,7 +232,7 @@ def main():
                            for name in ('game.vkpak', 'engine.vkpak')}
         rebuilt = subprocess.run(command, capture_output=True, text=True, timeout=300)
         assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
-        report = json.loads(latest_report(workspace).read_text())
+        report = json.loads(latest_report(workspace).read_text(encoding='utf-8'))
         assert all(archive['reused'] for archive in report['package']['archives']), report
         assert {name: jobs.digest(runtime_root / 'content' / name) for name in archives_before} == archives_before
 
@@ -249,7 +249,7 @@ def main():
         world.write_text(json.dumps({'version': 2, 'entities': []}))
 
         # A window mode the player does not know is refused before packaging.
-        modes = json.loads((project / 'game.json').read_text())
+        modes = json.loads((project / 'game.json').read_text(encoding='utf-8'))
         modes['game']['window']['mode'] = 'exclusive'
         (project / 'game.json').write_text(json.dumps(modes))
         refused_mode = subprocess.run(command, capture_output=True, text=True, timeout=300)
@@ -272,7 +272,7 @@ def main():
         job = jobs.Job(dict(base, operation='import_project_assets', texture_tier='preview',
                             sources=[str(source / 'test.obj')]), result_path, bakery)
         assert job.execute() == 0, job.output
-        document = json.loads(manifest.read_text())
+        document = json.loads(manifest.read_text(encoding='utf-8'))
         document['assets'] = jobs.load_json(result_path)['project_assets']
         assert any(asset.get('texture_tier') == 'preview' for asset in document['assets'])
         manifest.write_text(json.dumps(document))
@@ -280,7 +280,7 @@ def main():
         finalized = subprocess.run(command, capture_output=True, text=True, timeout=300)
         assert finalized.returncode == 0, finalized.stdout + finalized.stderr
         assert manifest.read_bytes() == manifest_before, 'the editor publishes project.json'
-        report = json.loads(latest_report(workspace).read_text())
+        report = json.loads(latest_report(workspace).read_text(encoding='utf-8'))
         finalize = next(stage for stage in report['stages'] if stage['name'] == 'Finalize')
         assert 'detail' not in finalize, finalize
         assert report['project_assets'] and not any(
@@ -292,12 +292,16 @@ def main():
         # Cancellation once staging exists leaves no package.
         cancelled_out = root / 'builds' / 'Cancelled'
         staging = Path(str(cancelled_out) + '.staging')
+        # Windows has no SIGINT for another process; Ctrl+Break reaches a child
+        # in its own process group as SIGBREAK.
+        windows = sys.platform == 'win32'
         process = subprocess.Popen(command + ['--out', str(cancelled_out)], stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True)
+                                   stderr=subprocess.PIPE, text=True,
+                                   creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if windows else 0)
         deadline = time.monotonic() + 60
         while not staging.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.002)
-        process.send_signal(signal.SIGINT)
+        process.send_signal(signal.CTRL_BREAK_EVENT if windows else signal.SIGINT)
         stdout, stderr = process.communicate(timeout=120)
         assert process.returncode == 3, (process.returncode, stdout[-2000:], stderr[-2000:])
         assert any(json.loads(line).get('status') == 'cancelled' for line in stdout.splitlines()
