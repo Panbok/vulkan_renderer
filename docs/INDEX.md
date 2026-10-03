@@ -251,6 +251,7 @@ decisions before dependent implementation.
 | [Codebase audit remediation](proposals/codebase-audit-remediation.md) | Applied owner decisions and what remains after the 2026-09-23 audit: re-checking the Vulkan text baseline on a Vulkan machine, the Bistro re-cook, deferred items and host-unavailable checks. |
 | [Renderer features and performance audit](proposals/renderer-features-perf/renderer-features-perf.md) | Normal/fog corrections, optional material storage, screen-space and post-processing costs, and remaining native acceptance. |
 | [Conditional D3D12 backend evaluation](proposals/d3d12-backend-evaluation.md) | Conditions for considering a third backend. |
+| [Metal follow-ups from the Windows Vulkan sessions](proposals/metal-followups.md) | Metal builds and checks for Windows-only work: the script commits and macOS packaged scripts, the shared light-contribution flag, TAA frame pacing from exposure history, two fully filtered lights, the Metal texture layer limit, layer captures, open ADR-044 gates, and deferred cross-backend lighting work. |
 | [Dedicated transfer queue](proposals/dedicated-transfer-queue.md) | Independent upload submission and completion-safe publication. |
 | [Deformable scene effects](proposals/deformable-scene-effects.md) | A bounded deformation pilot with shared pass and history inputs. |
 | [Animation graph and baking extensions](proposals/compute-animation-and-editor.md) | Managed controller/sequence assets, fixed-step control, baking, GPU pose evaluation and preview extensions. |
