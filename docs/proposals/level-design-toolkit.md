@@ -386,138 +386,14 @@ linked prefabs once the behavior proposal defines their lifecycle.
 
 ## Specification
 
-This section is the implementation contract. Phases 0 and 1 are complete;
-later phases state their interfaces and gain detail when they start.
+This section is the implementation contract for the phases that remain.
+Later phases state their interfaces and gain detail when they start.
 
 ### Phase 0: agent channel
 
-**Owners.** `editor/src/editor_agent.c` owns the socket, connections and the
-request lifecycle. `editor/src/editor_ops.c` owns the operation table and runs
-operations on the UI thread during the editor's UI build. The runtime applies
-their scene edits after that build, as it applies every editor request. No
-operation runs on another thread, so the operation table needs no locks.
-
-**Socket.** On macOS and Linux the editor creates the directory
-`$TMPDIR/vkr` (`/tmp/vkr` without `TMPDIR`) with mode 0700 and listens on
-`editor-<uid>.sock` inside it with mode 0600. When a live editor already
-listens there, the second editor listens on `editor-<uid>-<pid>.sock` and
-prints that path in the Console. A stale socket file that refuses connection
-is removed. `--agent-socket <path>` and `VKR_EDITOR_AGENT_SOCKET` select the
-path; `--no-agent-socket` disables the listener. The editor polls the
-nonblocking socket once per UI frame, accepts at most 4 clients, and closes a
-client that sends a line longer than 1 MiB. Windows support is pending; the
-editor there reports the channel as unavailable.
-
-**Messages.** Each message is one line of UTF-8 JSON. A request is
-`{"v":1,"id":<number|string>,"op":"<name>","args":{...}}`. A response is
-`{"v":1,"id":<same>,"ok":true,"result":{...}}` or
-`{"v":1,"id":<same>,"ok":false,"error":{"code":"VKR-AGENT-NNNN","message":"..."}}`.
-Requests from all clients run first in, first out, one at a time. A request
-whose scene edits apply after the UI build, or whose capture renders later,
-answers on a later frame.
-
-| Code | Meaning |
-|---|---|
-| `VKR-AGENT-0001` | Malformed JSON or message shape |
-| `VKR-AGENT-0002` | Unknown operation |
-| `VKR-AGENT-0003` | Invalid or missing argument |
-| `VKR-AGENT-0004` | Entity or component not found, or a name is ambiguous |
-| `VKR-AGENT-0005` | The scene rejected an edit; the batch rolled back |
-| `VKR-AGENT-0006` | No scene is loaded, or the editor is busy with a load or Play |
-| `VKR-AGENT-0007` | Capture failed |
-| `VKR-AGENT-0008` | A limit was exceeded |
-
-**Entity references.** Results name an entity as
-`"<world>:<index>:<generation>"`. An argument that names an entity accepts
-that form, an exact entity name (an ambiguous name fails), or `"$k"` for the
-entity that operation `k` of the same batch created.
-
-**Operations.**
-
-| Operation | Arguments | Result |
-|---|---|---|
-| `ops.list` | | Every operation with its description and a JSON Schema for its arguments |
-| `editor.status` | | Project, loaded containers, selection, simulation state, pending changes |
-| `scene.describe` | `container`, `root`, `region` (`min`, `max`), `offset`, `limit` (at most 500) | Entities with ID, name, parent, component types, local transform and world bounds; brushes summarised with their face count and materials |
-| `entity.get` | `entity` | Transform, visibility and every component as named property values |
-| `entity.create` | `name`, `parent`, `container`, `position`, `rotation` (degrees XYZ), `scale`, `component` with `type` and `values` | Created entity |
-| `entity.set` | `entity`, `name`, `position`, `rotation`, `scale`, `visible` | |
-| `entity.delete` | `entity` | |
-| `entity.parent` | `entity`, `parent` (null for a root) | |
-| `component.add`, `component.set`, `component.remove` | `entity`, `type`, `values` | |
-| `batch` | `ops`, `review` (default true), `dry_run`, `label` | One result per operation; the change ID under review |
-| `changes.list`, `changes.accept`, `changes.reject` | `change` (accept without one accepts all) | |
-| `undo`, `redo` | | |
-| `query.raycast` | `origin`, `direction`, `max_distance` | Physics hit: entity, collider, position, normal, distance |
-| `query.bounds` | `entity` | World bounds of the entity and its descendants |
-| `view.capture` | `view` (`current`, `perspective`, `top`, `left`, `right`, `bottom`), `focus` (entity or `min`/`max`), `grid_labels` | PNG path, width and height |
-| `cmd` | `line` | Every `[cmd]` result line the statement printed |
-
-`component.set` takes property names from the type descriptor, so every
-component, including registered script components, accepts the same values
-as Details and Cmd paths. Values use the descriptor kinds: numbers, booleans,
-strings, enum names, and arrays of two to four numbers.
-
-**Batches and journal groups.** Every write operation outside a batch runs as
-a batch of one. A batch holds at most 256 operations and all of them edit one
-container. The editor validates every operation's arguments before it submits
-the batch. The runtime opens a journal group, applies the edits in order,
-resolves `$k` references, and closes the group. When an edit fails, the
-runtime undoes the group's applied entries, drops them, and reports the
-failing operation with the journal status. `dry_run` validates without
-submitting.
-
-`VkrSceneEditEntry` gains a `group` field. Undo and redo move over every entry
-of a group as one step. `VKR_SCENE_EDIT_UNDO_CAPACITY` rises from 128 to 1,024
-entries; eviction at capacity removes a whole group; a group that would exceed
-512 entries fails and rolls back.
-
-**Review.** A batch with `review` true becomes a pending change: its journal
-group, its container, its label and the entities it created or touched. The
-Changes panel lists pending changes with Accept, Reject and Focus, and the
-Scene outlines their entities. Accept removes the pending mark only. Reject
-undoes the group:
-
-- when the group is the newest content of its journal, as an ordinary grouped
-  undo that also drops the redo entries above it;
-- otherwise, only when no later entry in that journal touches an entity of the
-  group or a current descendant of one. The group's entries then undo in
-  reverse order and leave the journal.
-
-Reject otherwise fails and names the later edit. Pending marks live in memory.
-The edits themselves are ordinary scene edits, so the existing unsaved-edits
-prompt covers closing the scene, and closing it clears the marks.
-
-**Captures.** `view.capture` optionally switches the view and frames the
-focus, waits three frames, and captures `final_color`
-([vkr_capture.c](../../renderer/src/vkr_capture.c)) cropped to the Scene
-viewport, so grid labels and icons appear. The editor writes the PNG to
-`$TMPDIR/vkr/captures/` and keeps the newest 32 files. It restores the
-previous view and grid labels afterwards.
-
-**MCP adapter.** `tools/agent/vkr_mcp.c` builds `vkr_mcp`. It speaks MCP
-2026-07-28 over stdio, one JSON-RPC message per line, and connects to the
-editor socket (`--socket`, `VKR_EDITOR_AGENT_SOCKET`, or the default path).
-
-- `server/discover` returns the supported version `2026-07-28`, the `tools`
-  capability and the server identity.
-- Each request must carry `io.modelcontextprotocol/protocolVersion` equal to
-  `2026-07-28`; another value returns `UnsupportedProtocolVersion` (-32022)
-  with the supported versions.
-- `tools/list` maps each operation from `ops.list` to the tool
-  `vkr_<operation with dots as underscores>`, in table order, with
-  `ttlMs` 60000 and `cacheScope` `private`.
-- `tools/call` forwards the arguments. A result returns `structuredContent`
-  and the same JSON as text; an editor error returns `isError`. A capture also
-  returns the PNG as image content.
-- Every result carries `resultType` `complete` and the server identity in
-  `_meta`. Logs go to stderr.
-
-**Phase 0 evidence.** CPU tests for journal groups (grouped undo and redo,
-rollback, eviction of a whole group, out-of-order reject and its refusal) and
-for message parsing. A headless Bistro editor run drives the socket through
-`vkr_mcp`: create, set, batch with a `$k` reference, reject, capture and undo,
-with the scene state checked through `entity.get`.
+Implemented; [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)
+owns the socket, operations, batches, journal groups, review, captures and
+the MCP adapter. Later phases add their operations to the same table.
 
 ### Phase 1: brushes
 
@@ -605,7 +481,7 @@ the rules. Linked prefabs stay with ADR-076 and the behavior proposal.
 
 | Phase | Scope | Acceptance evidence |
 |---|---|---|
-| 0. Agent channel | Operation table over current tools (`create`, transforms, components, prefabs, Content placement); compound journal entry; socket; MCP adapter; `level.describe`; `view.capture`; pending changeset | A CPU test that undoes and redoes a mixed batch; a headless Bistro run whose socket batch, capture and undo match the Cmd results |
+| 0. Agent channel | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 1. Brush core | `brush` and `brush_face` components, box, wedge and cylinder, face materials and world UVs, grid, brush meshes and colliders, blockout operations | CPU tests for polygon building and convexity rejection; a brush block inside the Bistro scene walked by the player; Release frame cost on Bistro with 1,000 brushes before and after |
 | 2. Brush editing | Vertex, edge and face edits, clip, hollow, carve, extrude, brush entities, `level.lint` | Lint tests against named defects (narrow door, high step, steep ramp) |
 | 3. IO | `ENTITY` property kind, `io_connection`, the router with the sensor drain, `trigger`, `relay`, `timer`, `counter`, script `VKR_OUTPUTS` and `VKR_INPUTS`, trigger hooks, the IO trace and operations | CPU tests for delivery order, delay deadlines, fire limits, stale targets and the chain limit fault; a Bistro Play run in which a trigger opens a script door |

@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "editor_ops.h"
 #include "editor_projects.h"
 
 #include "editor_graphics.h"
@@ -127,6 +128,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
                        false_v},
     [CMD_PHYSICS] = {"Physics settings", VKR_UI_ICON_PHYSICS, NULL, false_v},
     [CMD_SCRIPT_EDITOR] = {"Script editor", VKR_UI_ICON_CODE, NULL, false_v},
+    [CMD_CHANGES] = {"Agent changes", VKR_UI_ICON_TERMINAL, NULL, false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, NULL,
                           false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, NULL, false_v},
@@ -288,6 +290,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->windows[VKR_EDITOR_WINDOW_ANIMATION].visible;
   case CMD_SCRIPT_EDITOR:
     return editor->windows[VKR_EDITOR_WINDOW_SCRIPT].visible;
+  case CMD_CHANGES:
+    return editor->windows[VKR_EDITOR_WINDOW_CHANGES].visible;
   case CMD_PHYSICS:
     return editor->windows[VKR_EDITOR_WINDOW_PHYSICS].visible;
   case CMD_GRAPHICS:
@@ -356,6 +360,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_SCRIPT_EDITOR:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_SCRIPT);
+    break;
+  case CMD_CHANGES:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_CHANGES);
     break;
   case CMD_GRAPHICS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_GRAPHICS);
@@ -494,6 +501,7 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_ANIMATION, true_v},
     {CMD_SCRIPT_EDITOR},
     {CMD_PHYSICS},
+    {CMD_CHANGES},
     {CMD_GRAPHICS},
     {CMD_LABELS, true_v},
     {CMD_LABELS_DIRECTIONAL, false_v, true_v},
@@ -1390,6 +1398,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Script editor");
     title_icon = VKR_UI_ICON_CODE;
     break;
+  case VKR_EDITOR_WINDOW_CHANGES:
+    title_text = string8_lit("Agent changes");
+    title_icon = VKR_UI_ICON_TERMINAL;
+    break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");
     title_icon = VKR_UI_ICON_ADD;
@@ -1625,6 +1637,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     if (editor_window_body_begin(ui, window, string8_lit("build.body"),
                                  &bounds)) {
       vkr_editor_build_settings_build(editor->build, editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_CHANGES) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("changes.body"),
+                                 &bounds)) {
+      vkr_editor_changes_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_PHYSICS) {

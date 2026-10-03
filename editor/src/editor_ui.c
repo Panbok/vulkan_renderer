@@ -1,3 +1,4 @@
+#include "editor_agent.h"
 #include "editor_internal.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
@@ -159,6 +160,11 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .placement = {.target = VKR_EDITOR_SNAP_SURFACE},
       .windows =
           {
+              [VKR_EDITOR_WINDOW_CHANGES] = {.position_pt = {300.0f, 90.0f},
+                                             .size_pt = {520.0f, 300.0f},
+                                             .z_order = 7u,
+                                             .visible = false_v,
+                                             .resizable = true_v},
               [VKR_EDITOR_WINDOW_PHYSICS] = {.position_pt = {180.0f, 80.0f},
                                              .size_pt = {760.0f, 620.0f},
                                              .z_order = 6u,
@@ -307,6 +313,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_build_update(editor->build, editor, frame);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_cmd_update(editor, frame);
+  vkr_editor_agent_update(editor->agent, editor, frame);
   vkr_editor_windows_register_input_layers(editor, frame->ui);
   vkr_editor_viewport_update(editor, frame);
   if (frame->mapping_valid) {

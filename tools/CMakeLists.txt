@@ -396,6 +396,12 @@ endif()
 # their shader catalog through it.
 add_subdirectory(bakery)
 
+# The MCP server for the editor's agent channel
+# (docs/proposals/level-design-toolkit.md).
+add_executable(vkr_mcp agent/vkr_mcp.c)
+vkr_require_declared_c_functions(vkr_mcp)
+target_link_libraries(vkr_mcp PRIVATE vkr_bakery_json)
+
 # The bakery finds this build tree's harness for package reflection bakes
 # unless one sits beside it, as in an editor distribution.
 if(TARGET vkr_harness)

@@ -2,16 +2,27 @@
 # renderer compiles its shader catalog through it; cooker producers and the
 # `tool` entries join only when VKR_BUILD_TOOLS provides the cooker libraries.
 
+# Bakery's JSON document tree and growable buffer. The editor's agent channel
+# and vkr_mcp parse their messages with it
+# (docs/proposals/level-design-toolkit.md).
+add_library(vkr_bakery_json STATIC vkr_bakery_json.c vkr_bakery_buffer.c)
+vkr_require_declared_c_functions(vkr_bakery_json)
+target_include_directories(vkr_bakery_json PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/lib/src")
+target_link_libraries(vkr_bakery_json PUBLIC vkr_foundation)
+if(NOT WIN32)
+    target_link_libraries(vkr_bakery_json PUBLIC m)
+endif()
+
 add_executable(vkr_bakery
     vkr_bakery_main.c
     vkr_bakery_commands.c
-    vkr_bakery_buffer.c
     vkr_bakery_cache.c
     vkr_bakery_diag.c
     vkr_bakery_events.c
     vkr_bakery_graph.c
     vkr_bakery_index.c
-    vkr_bakery_json.c
     vkr_bakery_os.c
     vkr_bakery_registry.c
     vkr_bakery_script.c
@@ -24,7 +35,7 @@ target_include_directories(vkr_bakery PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_BINARY_DIR}"
     "${CMAKE_SOURCE_DIR}/lib/src")
-target_link_libraries(vkr_bakery PRIVATE vkr_foundation)
+target_link_libraries(vkr_bakery PRIVATE vkr_foundation vkr_bakery_json)
 if(APPLE)
     # FSEvents watches files for the daemon.
     target_link_libraries(vkr_bakery PRIVATE "-framework CoreServices")

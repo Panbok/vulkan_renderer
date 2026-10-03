@@ -86,6 +86,10 @@ typedef struct VkrSampleViewState {
 typedef struct VkrSampleViewRequest {
   VkrSampleViewState value;
   bool8_t apply;
+  /* After `value` applies, frame the world box [frame_min, frame_max]. */
+  bool8_t frame_box;
+  Vec3 frame_min;
+  Vec3 frame_max;
 } VkrSampleViewRequest;
 
 /* Why the UI asked for a Scene pick; the answer carries it back. */
@@ -253,6 +257,62 @@ typedef struct VkrSampleScriptResult {
   char message[256];
 } VkrSampleScriptResult;
 
+/* Most edits one batch request may carry (docs/proposals/
+ * level-design-toolkit.md, phase 0). */
+#define VKR_SAMPLE_EDIT_BATCH_MAX 256u
+
+/* One edit of a batch. A nonnegative `entity_ref` or `parent_ref` names the
+ * entity that batch edit `k` created and replaces `request.entity` or
+ * `request.parent` when the batch applies. */
+typedef struct VkrSampleEditBatchItem {
+  VkrSceneEditRequest request;
+  int32_t entity_ref;
+  int32_t parent_ref;
+} VkrSampleEditBatchItem;
+
+/* Edits that apply in order as one journal group of `container`: 0 for the
+ * primary scene, 1 to VKR_SCENE_ADDITIVE_MAX for an added scene and
+ * VKR_SCENE_WORLD_ROOT_ID for the World. A failed edit rolls the group back.
+ * A nonzero `revert_group` instead reverts that closed group of `container`
+ * (vkr_scene_edit_group_revert) and `items` is ignored. Items are borrowed
+ * until runtime dispatch after this UI build. */
+typedef struct VkrSampleEditBatchRequest {
+  uint64_t token;
+  const VkrSampleEditBatchItem *items;
+  uint32_t count;
+  uint16_t container;
+  uint64_t revert_group;
+} VkrSampleEditBatchRequest;
+
+/* The outcome of the latest batch or revert, kept until the next one. */
+typedef struct VkrSampleEditBatchResult {
+  uint64_t token;
+  bool8_t ok;
+  /* Index of the edit that failed, or UINT32_MAX. */
+  uint32_t failed_index;
+  uint64_t group;
+  /* A revert's conflicting entity, or invalid. */
+  VkrEntityId conflict;
+  char message[192];
+  /* Per item: the entity a CREATE made, else invalid. */
+  VkrEntityId created[VKR_SAMPLE_EDIT_BATCH_MAX];
+} VkrSampleEditBatchResult;
+
+/* Captures the presented window color once (final_color). The runtime
+ * renders it with a later frame and lends the poll result to one build
+ * through `capture_ready`; it releases the capture after that build. */
+typedef struct VkrSampleCaptureRequest {
+  bool8_t request;
+  uint64_t token;
+} VkrSampleCaptureRequest;
+
+typedef struct VkrSampleCaptureReady {
+  uint64_t token;
+  bool8_t failed;
+  /* The final_color item; borrowed for this build only. */
+  const VkrCaptureItemResult *item;
+} VkrSampleCaptureReady;
+
 typedef struct VkrSampleUiFrame {
   VkrUiSystem *ui;
   VkrWindow *window;
@@ -285,6 +345,13 @@ typedef struct VkrSampleUiFrame {
   uint64_t scene_generation;
   const VkrSceneEditState *edits;
   VkrSceneEditRequest *scene_edit;
+  /** One batch or group revert, consumed after build; and the latest
+   * outcome, borrowed for the build. */
+  VkrSampleEditBatchRequest *edit_batch;
+  const VkrSampleEditBatchResult *edit_batch_result;
+  VkrSampleCaptureRequest *capture_request;
+  /** A finished capture, for this build only; NULL otherwise. */
+  const VkrSampleCaptureReady *capture_ready;
   VkrSampleSceneRequest *scene_request;
   /** Root World container and its journal, or NULL; entities carry
    * VKR_SCENE_WORLD_ROOT_ID in their world field. Edits of its entities use

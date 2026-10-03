@@ -58,6 +58,8 @@ typedef enum EditorCommand {
   CMD_SCENE_BAKE,
   /* The Script editor window (ADR-079). */
   CMD_SCRIPT_EDITOR,
+  /* Agent changes awaiting review (docs/proposals/level-design-toolkit.md). */
+  CMD_CHANGES,
   CMD_COUNT
 } EditorCommand;
 
@@ -195,6 +197,13 @@ void vkr_editor_window_set_visible(VkrEditorUi *editor,
  * runs one command per frame (see docs/editor-cmd.md). */
 /** Append `;`- or newline-separated commands; false when the queue is full. */
 bool8_t vkr_editor_cmd_enqueue(VkrEditorUi *editor, const char *script);
+/* Collects every [cmd] result line, newline-separated, into `buffer` until
+   vkr_editor_cmd_capture_end, which returns the collected length. */
+void vkr_editor_cmd_capture_begin(VkrEditorUi *editor, char *buffer,
+                                  uint32_t capacity);
+uint32_t vkr_editor_cmd_capture_end(VkrEditorUi *editor);
+/* The queue ran every statement and no wait, hold or input step remains. */
+bool8_t vkr_editor_cmd_idle(const VkrEditorUi *editor);
 /** Applies the next `ui.click`, `ui.drag` or `ui.key` step to the host's
  * input. */
 void vkr_editor_cmd_pointer_input(VkrEditorUi *editor, InputState *input);

@@ -12,6 +12,8 @@ add_executable(vkr_editor
     src/editor_windows.c
     src/editor_cmd.c
     src/editor_cmd_eval.c
+    src/editor_agent.c
+    src/editor_ops.c
     src/editor_viewport.c
     src/editor_animation.c
     src/editor_console.c
@@ -32,14 +34,18 @@ add_executable(vkr_editor
     src/editor_scripts.c
     src/editor_code.c
 )
-target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_SOURCE_DIR}/vendor")
 vkr_configure_application_target(vkr_editor)
+# The agent channel parses requests with Bakery's JSON tree and writes
+# captures as PNG (docs/proposals/level-design-toolkit.md).
+target_link_libraries(vkr_editor PRIVATE vkr_bakery_json vkr_image_write)
 
 # Every cooker, table, shader compile, project job, scene bake and material
 # preview runs through vkr_bakery; the harness and preview tool remain
 # separate renderer programs.
 add_dependencies(vkr_editor vkr_bakery vkr_harness vkr_asset_preview
-    vkr_script_sdk)
+    vkr_script_sdk vkr_mcp)
 # Build packages the open project with the player template beside
 # vkr_player (docs/proposals/project-packaging.md).
 if(TARGET vkr_player)
@@ -90,7 +96,7 @@ endforeach()
 
 # Editor distribution (docs/adr/078-project-build-and-packaging.md):
 # `cmake --install <build> --prefix <dir>` lays out one relocatable folder.
-#   vkr_editor, vkr_bakery, vkr_harness, vkr_asset_preview
+#   vkr_editor, vkr_bakery, vkr_harness, vkr_asset_preview, vkr_mcp
 #   libvulkan.1.dylib          macOS: the Vulkan loader the programs link
 #   resources/editor/          the bootstrap UI resources above
 #   shaders/<backend>/         the shader catalog
@@ -101,7 +107,7 @@ endforeach()
 # themselves, and keep writable state in per-user directories.
 include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
 add_dependencies(vkr_editor vkr_engine_textures)
-install(TARGETS vkr_editor vkr_bakery vkr_harness vkr_asset_preview
+install(TARGETS vkr_editor vkr_bakery vkr_harness vkr_asset_preview vkr_mcp
     RUNTIME DESTINATION . COMPONENT editor)
 if(APPLE)
     install(FILES "${VKR_VULKAN_LOADER}" DESTINATION .

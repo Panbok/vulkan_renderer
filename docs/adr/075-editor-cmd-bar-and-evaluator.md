@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-04
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -48,7 +48,9 @@ hold the queue: a script saves or discards first.
 `--headless` starts the editor without a window. Frames render into an
 offscreen present target (ADR-014) of the editor's 1680x1050 size in pixels at
 content scale 1, and the process takes no input or focus. The editor quits once
-its Cmd queue drains, discarding unsaved edits and saying so in a `[cmd]` line;
+its Cmd queue drains and no agent client is connected or waiting
+([ADR-084](084-agent-channel-and-level-design-toolkit.md)), discarding unsaved
+edits and saying so in a `[cmd]` line;
 `VKR_AUTOCLOSE_SECONDS` defaults to 600 s as a backstop. Without `--scene` or
 `--project <uuid>`, the project launcher shows and runs no Cmd statements, so
 only that backstop ends the run.
@@ -68,7 +70,7 @@ dependable channel for scripts.
 | `frame` | | Frame the selection |
 | `visibility.toggle` | | Hide or show the selection |
 | `panel` | `<outliner\|details\|console\|bakery\|content\|build> [on\|off\|toggle]` | Docked panels |
-| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script> [on\|off\|toggle]` | Floating windows |
+| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window (ADR-084) |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
 | `layout.reset` | | Default dock layout |

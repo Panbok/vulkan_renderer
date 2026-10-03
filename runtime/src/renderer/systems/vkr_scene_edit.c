@@ -423,6 +423,12 @@ static bool8_t edit_write(VkrScene *scene, VkrEntityId entity,
    references and scene-global settings do not inflate every history slot. */
 static void *edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity,
                                   uint64_t payload_size) {
+  if (s->group_open && s->group_entries >= VKR_SCENE_EDIT_GROUP_MAX) {
+    snprintf(s->status, sizeof(s->status),
+             "The edit group exceeds %u undo entries.",
+             VKR_SCENE_EDIT_GROUP_MAX);
+    return NULL;
+  }
   if (!s->undo) {
     s->undo = vkr_allocator_alloc(
         s->allocator, sizeof(*s->undo) * VKR_SCENE_EDIT_UNDO_CAPACITY,
@@ -458,22 +464,51 @@ uint64_t vkr_scene_edit_next_sequence(const VkrSceneEditState *s,
   return s->undo_cursor ? s->undo[s->undo_cursor - 1u].sequence : 0u;
 }
 
-static void edit_journal_append(VkrSceneEditState *s, VkrSceneEditEntry entry) {
-  entry.sequence = ++s_edit_sequence;
-  for (uint32_t i = s->undo_cursor; i < s->undo_count; ++i) {
+/* Frees entries [first, first + count) and closes the gap; the cursor
+   follows entries that move. */
+static void edit_journal_remove(VkrSceneEditState *s, uint32_t first,
+                                uint32_t count) {
+  if (!count) {
+    return;
+  }
+  for (uint32_t i = first; i < first + count; ++i) {
     vkr_allocator_free(s->allocator, s->undo[i].payload,
                        s->undo[i].payload_size, EDIT_TAG);
   }
-  s->undo_count = s->undo_cursor;
+  const uint32_t tail = s->undo_count - first - count;
+  MemCopy(s->undo + first, s->undo + first + count, tail * sizeof(*s->undo));
+  s->undo_count -= count;
+  if (s->undo_cursor >= first + count) {
+    s->undo_cursor -= count;
+  } else if (s->undo_cursor > first) {
+    s->undo_cursor = first;
+  }
+}
+
+/* Entries of the step that starts at `index`: its whole group, else one. */
+static uint32_t edit_journal_run(const VkrSceneEditState *s, uint32_t index) {
+  const uint64_t group = s->undo[index].group;
+  uint32_t end = index + 1u;
+  while (group && end < s->undo_count && s->undo[end].group == group) {
+    end++;
+  }
+  return end - index;
+}
+
+static void edit_journal_append(VkrSceneEditState *s, VkrSceneEditEntry entry) {
+  entry.sequence = ++s_edit_sequence;
+  entry.group = s->group_open;
+  edit_journal_remove(s, s->undo_cursor, s->undo_count - s->undo_cursor);
+  /* Eviction drops the oldest whole step, so no group is left partial. The
+     open group holds at most half of the capacity, so it is never evicted. */
   if (s->undo_count == VKR_SCENE_EDIT_UNDO_CAPACITY) {
-    vkr_allocator_free(s->allocator, s->undo[0].payload,
-                       s->undo[0].payload_size, EDIT_TAG);
-    MemCopy(s->undo, s->undo + 1,
-            (VKR_SCENE_EDIT_UNDO_CAPACITY - 1u) * sizeof(*s->undo));
-    s->undo_count--;
+    edit_journal_remove(s, 0u, edit_journal_run(s, 0u));
   }
   s->undo[s->undo_count++] = entry;
   s->undo_cursor = s->undo_count;
+  if (s->group_open) {
+    s->group_entries++;
+  }
   s->revision++;
   s->gesture = 0u;
   snprintf(s->status, sizeof(s->status),
@@ -539,7 +574,8 @@ bool8_t vkr_scene_edit_apply_gesture(VkrSceneEditState *s, VkrScene *scene,
   VkrSceneEditValues *last =
       s->undo_count && s->undo_cursor == s->undo_count &&
               s->undo[s->undo_count - 1u].kind == VKR_SCENE_EDIT_ENTRY_ENTITY &&
-              s->undo[s->undo_count - 1u].entity.u64 == entity.u64
+              s->undo[s->undo_count - 1u].entity.u64 == entity.u64 &&
+              s->undo[s->undo_count - 1u].group == s->group_open
           ? (VkrSceneEditValues *)s->undo[s->undo_count - 1u].payload
           : NULL;
   const bool8_t coalesce = gesture && s->gesture == gesture && last &&
@@ -1523,13 +1559,9 @@ static bool8_t edit_structure_write(VkrSceneEditState *s, VkrScene *scene,
   return false_v;
 }
 
-bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
-                            bool8_t redo) {
-  if (redo ? s->undo_cursor == s->undo_count : s->undo_cursor == 0u)
-    return false_v;
-  s->gesture = 0u;
-  VkrSceneEditEntry *entry =
-      &s->undo[redo ? s->undo_cursor : s->undo_cursor - 1u];
+/* Applies one entry's before (undo) or after (redo) state. */
+static bool8_t edit_entry_write(VkrSceneEditState *s, VkrScene *scene,
+                                VkrSceneEditEntry *entry, bool8_t redo) {
   if (entry->kind == VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH) {
     if (!edit_physics_batch_write(
             s, scene, entry->payload,
@@ -1560,12 +1592,217 @@ bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
       return false_v;
     }
   }
+  return true_v;
+}
+
+/* Moves the cursor over one entry. */
+static bool8_t edit_step(VkrSceneEditState *s, VkrScene *scene, bool8_t redo) {
+  VkrSceneEditEntry *entry =
+      &s->undo[redo ? s->undo_cursor : s->undo_cursor - 1u];
+  if (!edit_entry_write(s, scene, entry, redo)) {
+    return false_v;
+  }
   if (redo)
     s->undo_cursor++;
   else
     s->undo_cursor--;
+  return true_v;
+}
+
+bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
+                            bool8_t redo) {
+  if (s->group_open ||
+      (redo ? s->undo_cursor == s->undo_count : s->undo_cursor == 0u))
+    return false_v;
+  s->gesture = 0u;
+  /* A group's entries move together: undo walks it from its newest entry,
+     redo from its oldest. A failure stops inside the group, as it would
+     between two single entries. */
+  const uint64_t group =
+      s->undo[redo ? s->undo_cursor : s->undo_cursor - 1u].group;
+  do {
+    if (!edit_step(s, scene, redo)) {
+      s->revision++;
+      return false_v;
+    }
+  } while (group && (redo ? s->undo_cursor < s->undo_count &&
+                                s->undo[s->undo_cursor].group == group
+                          : s->undo_cursor > 0u &&
+                                s->undo[s->undo_cursor - 1u].group == group));
   s->revision++;
   snprintf(s->status, sizeof(s->status), "%s", redo ? "Redone." : "Undone.");
+  return true_v;
+}
+
+static uint64_t s_edit_group;
+
+uint64_t vkr_scene_edit_group_begin(VkrSceneEditState *s) {
+  if (s->group_open) {
+    return 0u;
+  }
+  s->group_open = ++s_edit_group;
+  s->group_entries = 0u;
+  s->gesture = 0u;
+  return s->group_open;
+}
+
+void vkr_scene_edit_group_end(VkrSceneEditState *s) {
+  s->group_open = 0u;
+  s->group_entries = 0u;
+}
+
+bool8_t vkr_scene_edit_group_rollback(VkrSceneEditState *s, VkrScene *scene) {
+  const uint64_t group = s->group_open;
+  bool8_t ok = true_v;
+  /* The open group's entries are the newest ones and the cursor sits above
+     them, because appending dropped every redo entry. */
+  while (group && s->undo_cursor > 0u &&
+         s->undo[s->undo_cursor - 1u].group == group) {
+    if (!edit_step(s, scene, false_v)) {
+      ok = false_v;
+      break;
+    }
+  }
+  if (ok) {
+    edit_journal_remove(s, s->undo_cursor, s->undo_count - s->undo_cursor);
+  }
+  vkr_scene_edit_group_end(s);
+  s->revision++;
+  return ok;
+}
+
+bool8_t vkr_scene_edit_group_present(const VkrSceneEditState *s,
+                                     uint64_t group) {
+  for (uint32_t i = 0; group && i < s->undo_count; ++i) {
+    if (s->undo[i].group == group) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Whether `entity` is one of `set` or, while alive, lies below one of them. */
+static bool8_t edit_entity_within(const VkrScene *scene, VkrEntityId entity,
+                                  const VkrEntityId *set, uint32_t count) {
+  VkrEntityId at = entity;
+  for (uint32_t depth = 0; at.u64 && depth < 256u; ++depth) {
+    for (uint32_t i = 0; i < count; ++i) {
+      if (set[i].u64 == at.u64) {
+        return true_v;
+      }
+    }
+    const SceneTransform *transform =
+        vkr_scene_entity_alive(scene, at)
+            ? vkr_scene_get_transform((VkrScene *)scene, at)
+            : NULL;
+    at = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return false_v;
+}
+
+/* Every entity an entry names: its own, a reparent's parents and, with
+   `object_parent`, the parent of a created or deleted object. Reverting a
+   creation or deletion does not change that parent, so a group does not
+   claim it; a later entry that names it as a parent still depends on it. */
+static uint32_t edit_entry_entities(const VkrSceneEditEntry *entry,
+                                    bool8_t object_parent, VkrEntityId out[4]) {
+  uint32_t count = 0u;
+  if (entry->entity.u64) {
+    out[count++] = entry->entity;
+  }
+  if (entry->kind == VKR_SCENE_EDIT_ENTRY_STRUCTURE) {
+    const EditStructure *structure = entry->payload;
+    const VkrEntityId parents[3] = {structure->parent[0], structure->parent[1],
+                                    object_parent
+                                        ? structure->object.transform.parent
+                                        : VKR_ENTITY_ID_INVALID};
+    for (uint32_t i = 0; i < 3u; ++i) {
+      if (parents[i].u64) {
+        out[count++] = parents[i];
+      }
+    }
+  }
+  return count;
+}
+
+bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *s, VkrScene *scene,
+                                    uint64_t group, VkrEntityId *out_conflict) {
+  if (out_conflict) {
+    *out_conflict = VKR_ENTITY_ID_INVALID;
+  }
+  if (!group || s->group_open) {
+    return false_v;
+  }
+  uint32_t first = UINT32_MAX;
+  for (uint32_t i = 0; i < s->undo_count; ++i) {
+    if (s->undo[i].group == group) {
+      first = i;
+      break;
+    }
+  }
+  if (first == UINT32_MAX) {
+    return false_v;
+  }
+  const uint32_t count = edit_journal_run(s, first);
+  const uint32_t end = first + count;
+  /* An undone group only leaves the redo entries. */
+  if (s->undo_cursor <= first) {
+    edit_journal_remove(s, s->undo_cursor, s->undo_count - s->undo_cursor);
+    s->revision++;
+    return true_v;
+  }
+  /* Later applied entries must not depend on what the group touched. */
+  VkrEntityId touched[4u * VKR_SCENE_EDIT_GROUP_MAX];
+  uint32_t touched_count = 0u;
+  for (uint32_t i = first; i < end; ++i) {
+    touched_count +=
+        edit_entry_entities(&s->undo[i], false_v, touched + touched_count);
+  }
+  for (uint32_t i = first; i < end; ++i) {
+    if (s->undo[i].kind == VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH) {
+      /* Physics batches change bodies across the scene; a group holding one
+         reverts only as the newest step. */
+      if (end != s->undo_cursor) {
+        snprintf(s->status, sizeof(s->status),
+                 "Physics edits revert only as the newest step.");
+        return false_v;
+      }
+    }
+  }
+  for (uint32_t i = end; i < s->undo_cursor; ++i) {
+    VkrEntityId named[4];
+    const uint32_t named_count =
+        edit_entry_entities(&s->undo[i], true_v, named);
+    if (s->undo[i].kind == VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH ||
+        s->undo[i].kind == VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS) {
+      snprintf(s->status, sizeof(s->status),
+               "A later physics edit may depend on this group.");
+      return false_v;
+    }
+    for (uint32_t n = 0; n < named_count; ++n) {
+      if (edit_entity_within(scene, named[n], touched, touched_count)) {
+        if (out_conflict) {
+          *out_conflict = named[n];
+        }
+        snprintf(s->status, sizeof(s->status),
+                 "A later edit changed what this group touched.");
+        return false_v;
+      }
+    }
+  }
+  edit_journal_remove(s, s->undo_cursor, s->undo_count - s->undo_cursor);
+  for (uint32_t i = end; i > first; --i) {
+    if (!edit_entry_write(s, scene, &s->undo[i - 1u], false_v)) {
+      /* Entries above the failure stay reverted; drop them so the journal
+         matches the scene. */
+      edit_journal_remove(s, i, end - i);
+      s->revision++;
+      return false_v;
+    }
+  }
+  edit_journal_remove(s, first, count);
+  s->revision++;
+  snprintf(s->status, sizeof(s->status), "Reverted.");
   return true_v;
 }
 

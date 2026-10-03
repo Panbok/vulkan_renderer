@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-04
 authority: context
 ---
 # Project vocabulary
@@ -160,6 +160,9 @@ Editor workflow terms:
 | Script module | `<module>.script.json` naming C sources that `vkr_bakery` compiles into a hot-reload library and a static archive; the editor loads the library, and packaged games do not yet. | [Producers](../tools/bakery/vkr_bakery_script.c) |
 | Shader catalog | Directory of compiled SPIR-V, MSL and metallib files with per-backend manifests that the renderer resolves shader files through. | [Catalog](../renderer/src/vkr_shader_catalog.c) |
 | Content | Folder browser over project, scene and editor assets, scenes, presets, the World and built-in objects, with tile and list views and texture/material previews. | [Content browser](../editor/src/editor_content.c) |
+| Agent channel | The editor's per-user socket of typed operations (`ops.list`) and the `vkr_mcp` adapter that serves them over MCP 2026-07-28. | [ADR-084](adr/084-agent-channel-and-level-design-toolkit.md) |
+| Journal group | Journal entries that undo and redo as one step; a batch of agent edits is one group. | [vkr_scene_edit.h](../runtime/src/renderer/systems/vkr_scene_edit.h) |
+| Pending change | A reviewed agent batch the designer has not accepted or rejected; Reject reverts its journal group. | [editor ops](../editor/src/editor_ops.h) |
 | Scene edit overlay | Authored overrides validated against source identities. Legacy saves use `<scene>.editor.json`; managed saves publish immutable overlay revisions referenced by the scene manifest. | [Scene edit owner](../runtime/src/renderer/systems/vkr_scene_edit.c), [project store](../editor/src/editor_project_store.c) |
 
 Object model terms ([ADR-076](adr/076-project-object-model.md)):

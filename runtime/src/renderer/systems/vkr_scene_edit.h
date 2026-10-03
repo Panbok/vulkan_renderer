@@ -6,7 +6,9 @@
 #include "renderer/systems/vkr_scene_types.h"
 
 #define VKR_SCENE_EDIT_NAME_CAPACITY 512u
-#define VKR_SCENE_EDIT_UNDO_CAPACITY 128u
+#define VKR_SCENE_EDIT_UNDO_CAPACITY 1024u
+/* Entries one journal group may hold; a larger group fails and rolls back. */
+#define VKR_SCENE_EDIT_GROUP_MAX 512u
 
 typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_NONE,
@@ -99,6 +101,9 @@ typedef struct VkrSceneEditEntry {
   /* Process-wide edit order; containers keep separate journals and undo
      picks the one holding the most recent entry. */
   uint64_t sequence;
+  /* Nonzero for every entry of one group, which undoes and redoes as one
+     step (vkr_scene_edit_group_begin). */
+  uint64_t group;
   VkrSceneEditEntryKind kind;
   void *payload;
   uint64_t payload_size;
@@ -126,6 +131,9 @@ typedef struct VkrSceneEditState {
   uint64_t saved_revision;
   /* Gesture that produced the newest undo entry; zero after any other edit. */
   uint64_t gesture;
+  /* Group that new entries join, zero when none is open, and its entries. */
+  uint64_t group_open;
+  uint32_t group_entries;
   /* Structure the overlay persists: created entities (dead ones are skipped
      on save) and deleted document entities by source identity. */
   VkrSceneEditCreated *created;
@@ -187,6 +195,23 @@ bool8_t vkr_scene_edit_record_external(VkrSceneEditState *state,
                                        VkrScene *scene, VkrEntityId entity,
                                        const VkrSceneEditValues *before,
                                        const VkrSceneEditValues *after);
+/* Opens a journal group: entries appended until vkr_scene_edit_group_end
+   undo and redo as one step. Groups do not nest; returns zero when one is
+   already open. */
+uint64_t vkr_scene_edit_group_begin(VkrSceneEditState *state);
+void vkr_scene_edit_group_end(VkrSceneEditState *state);
+/* Undoes the open group's entries, drops them and closes the group. */
+bool8_t vkr_scene_edit_group_rollback(VkrSceneEditState *state,
+                                      VkrScene *scene);
+/* Whether `group` still has entries in the journal. */
+bool8_t vkr_scene_edit_group_present(const VkrSceneEditState *state,
+                                     uint64_t group);
+/* Reverts a closed group and removes its entries, out of order when needed.
+   Entries above the undo cursor are dropped. Fails, naming the conflicting
+   entity in `out_conflict`, when a later applied entry touches an entity of
+   the group or a current descendant of one. */
+bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *state, VkrScene *scene,
+                                    uint64_t group, VkrEntityId *out_conflict);
 bool8_t vkr_scene_edit_undo(VkrSceneEditState *state, VkrScene *scene,
                             bool8_t redo);
 /** Sequence of the entry undo (or redo) would apply next, or zero. */

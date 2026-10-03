@@ -1,4 +1,5 @@
 #include "editor_application.h"
+#include "editor_agent.h"
 #include "editor_content.h"
 #include "editor_install.h"
 #include "editor_internal.h"
@@ -92,8 +93,11 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
       vkr_editor_scene_panels_create(&ui->retained_allocator);
   editor->ui.physics_settings =
       vkr_editor_physics_settings_create(&ui->retained_allocator);
+  editor->ui.agent = vkr_editor_agent_create(
+      &ui->retained_allocator, editor->agent_socket, !editor->agent_disabled);
   if (!editor->ui.bakery || !editor->ui.build || !editor->ui.scene_panels ||
-      !editor->ui.physics_settings || !editor->ui.scripts || !editor->ui.code)
+      !editor->ui.physics_settings || !editor->ui.scripts || !editor->ui.code ||
+      !editor->ui.agent)
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;
@@ -152,6 +156,8 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   }
   return true_v;
 cleanup:
+  vkr_editor_agent_destroy(editor->ui.agent);
+  editor->ui.agent = NULL;
   (void)vkr_editor_projects_destroy(editor->ui.projects, &editor->ui, dock);
   editor->ui.projects = NULL;
   vkr_ui_system_set_fonts(ui, VKR_FONT_HANDLE_INVALID, VKR_FONT_HANDLE_INVALID,
@@ -309,6 +315,8 @@ static bool8_t editor_application_shutdown(void *state,
    */
   vkr_editor_content_destroy(editor->ui.content);
   editor->ui.content = NULL;
+  vkr_editor_agent_destroy(editor->ui.agent);
+  editor->ui.agent = NULL;
   /* A running game stops with the editor; Bakery cancels a package job. */
   vkr_editor_build_destroy(editor->ui.build);
   editor->ui.build = NULL;
@@ -376,6 +384,10 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       editor->exec_script = argv[i + 1];
     if (strcmp(argv[i], "--headless") == 0)
       editor->headless = true_v;
+    if (strcmp(argv[i], "--agent-socket") == 0 && i + 1 < argc)
+      editor->agent_socket = argv[i + 1];
+    if (strcmp(argv[i], "--no-agent-socket") == 0)
+      editor->agent_disabled = true_v;
     if (strcmp(argv[i], "--scripts") == 0 && i + 1 < argc)
       editor->scripts_directory = argv[i + 1];
     if (strcmp(argv[i], "--scene-only") == 0)

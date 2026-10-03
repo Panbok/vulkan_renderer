@@ -41,6 +41,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_BUILD,
   /* Project script sources (ADR-079). */
   VKR_EDITOR_WINDOW_SCRIPT,
+  /* Agent changes awaiting review (docs/proposals/level-design-toolkit.md). */
+  VKR_EDITOR_WINDOW_CHANGES,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -357,6 +359,13 @@ typedef struct VkrEditorUi {
   float64_t cmd_hold_seconds;
   /* Headless: quit once the queue has drained. */
   bool8_t cmd_quit_when_done;
+  /* Borrowed buffer that collects [cmd] result lines while set. */
+  char *cmd_capture;
+  uint32_t cmd_capture_capacity;
+  uint32_t cmd_capture_length;
+  /* The agent channel and its operation table
+     (docs/proposals/level-design-toolkit.md). */
+  struct VkrEditorAgent *agent;
   /* `ui.click`, `ui.drag` and `ui.key` input steps, one per frame:
    * {kind, x px, y px, button or key} with kind 0 move, 1 press, 2 release,
    * 3 key press, 4 key release. The queue holds until they run. */

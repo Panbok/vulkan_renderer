@@ -196,6 +196,148 @@ static void edit_test_texture_limit(VkrAllocator *allocator, String8 path,
    liveness, parent links and world positions, checked after undo and redo and
    after an overlay save and reload into a freshly built document scene. A
    missing id remap shows as a redo that edits a destroyed entity. */
+/* Names `entity` through the journal; one ENTITY entry. */
+static void edit_test_rename(VkrSceneEditState *state, VkrScene *scene,
+                             VkrEntityId entity, const char *name) {
+  VkrSceneEditValues values;
+  assert(vkr_scene_edit_read(scene, entity, &values));
+  values.fields = VKR_SCENE_EDIT_NAME;
+  snprintf(values.name, sizeof(values.name), "%s", name);
+  assert(vkr_scene_edit_apply(state, scene, entity, &values));
+}
+
+static VkrEntityId edit_test_create(VkrSceneEditState *state, VkrScene *scene,
+                                    VkrEntityId parent, const char *name) {
+  VkrSceneEditValues values = {.fields = VKR_SCENE_EDIT_NAME |
+                                         VKR_SCENE_EDIT_TRANSFORM};
+  snprintf(values.name, sizeof(values.name), "%s", name);
+  values.rotation = vkr_quat_identity();
+  values.scale = vec3_one();
+  const VkrEntityId entity =
+      vkr_scene_edit_create(state, scene, parent, &values);
+  assert(entity.u64);
+  return entity;
+}
+
+static bool8_t edit_test_named(const VkrScene *scene, VkrEntityId entity,
+                               const char *name) {
+  const String8 current = vkr_scene_get_name(scene, entity);
+  return current.length == strlen(name) &&
+         MemCompare(current.str, name, current.length) == 0;
+}
+
+/* Journal groups: one undo step, rollback, out-of-order revert and its
+   refusal, the group limit and whole-group eviction. */
+static void edit_test_groups(void) {
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(64), GB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 8, &error));
+  VkrEntityId other = edit_test_entity(&scene, 0, "other");
+  vkr_scene_update(&scene, 0.0);
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, &allocator, 1);
+
+  /* A group of a create, a child create and a rename undoes and redoes as
+     one step. */
+  const uint64_t group = vkr_scene_edit_group_begin(&state);
+  assert(group && !vkr_scene_edit_group_begin(&state));
+  VkrEntityId room =
+      edit_test_create(&state, &scene, VKR_ENTITY_ID_INVALID, "room");
+  VkrEntityId wall = edit_test_create(&state, &scene, room, "wall");
+  edit_test_rename(&state, &scene, wall, "north wall");
+  assert(!vkr_scene_edit_undo(&state, &scene, false_v));
+  vkr_scene_edit_group_end(&state);
+  assert(state.undo_count == 3u && vkr_scene_edit_group_present(&state, group));
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(state.undo_cursor == 0u);
+  assert(!vkr_scene_entity_alive(&scene, room) &&
+         !vkr_scene_entity_alive(&scene, wall));
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(state.undo_cursor == 3u);
+  VkrEntityId found = VKR_ENTITY_ID_INVALID;
+  assert(edit_test_alive_named(&scene, "room", &room) == 1u);
+  assert(edit_test_alive_named(&scene, "north wall", &wall) == 1u);
+  assert(vkr_scene_get_transform(&scene, wall)->parent.u64 == room.u64);
+
+  /* Rollback undoes and drops the open group's entries only. */
+  assert(vkr_scene_edit_group_begin(&state));
+  VkrEntityId extra =
+      edit_test_create(&state, &scene, VKR_ENTITY_ID_INVALID, "extra");
+  edit_test_rename(&state, &scene, other, "renamed other");
+  assert(vkr_scene_edit_group_rollback(&state, &scene));
+  assert(!state.group_open && state.undo_count == 3u &&
+         state.undo_cursor == 3u);
+  assert(!vkr_scene_entity_alive(&scene, extra));
+  assert(edit_test_named(&scene, other, "other"));
+
+  /* A later unrelated edit does not stop an out-of-order revert; the group
+     leaves the journal and the later edit still undoes. */
+  edit_test_rename(&state, &scene, other, "later");
+  assert(vkr_scene_edit_group_revert(&state, &scene, group, NULL));
+  assert(!vkr_scene_edit_group_present(&state, group));
+  assert(state.undo_count == 1u && state.undo_cursor == 1u);
+  assert(edit_test_alive_named(&scene, "room", &found) == 0u);
+  assert(edit_test_alive_named(&scene, "north wall", &found) == 0u);
+  assert(edit_test_named(&scene, other, "later"));
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(edit_test_named(&scene, other, "other"));
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+
+  /* A later child of a grouped entity refuses the revert and names it. */
+  const uint64_t parent_group = vkr_scene_edit_group_begin(&state);
+  VkrEntityId hall =
+      edit_test_create(&state, &scene, VKR_ENTITY_ID_INVALID, "hall");
+  vkr_scene_edit_group_end(&state);
+  VkrEntityId lamp = edit_test_create(&state, &scene, hall, "lamp");
+  VkrEntityId conflict = VKR_ENTITY_ID_INVALID;
+  assert(!vkr_scene_edit_group_revert(&state, &scene, parent_group, &conflict));
+  assert(conflict.u64 == lamp.u64 || conflict.u64 == hall.u64);
+  assert(vkr_scene_entity_alive(&scene, hall));
+  /* Once the child's creation is undone, the group is the newest applied
+     step and reverts; the redo entry above it is dropped. */
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(vkr_scene_edit_group_revert(&state, &scene, parent_group, NULL));
+  assert(!vkr_scene_entity_alive(&scene, hall));
+  assert(state.undo_cursor == state.undo_count);
+
+  /* A group holds at most VKR_SCENE_EDIT_GROUP_MAX entries. */
+  vkr_scene_edit_reset(&state, &allocator, 1);
+  assert(vkr_scene_edit_group_begin(&state));
+  for (uint32_t i = 0; i < VKR_SCENE_EDIT_GROUP_MAX; ++i) {
+    edit_test_rename(&state, &scene, other, (i & 1u) ? "odd" : "even");
+  }
+  VkrSceneEditValues values;
+  assert(vkr_scene_edit_read(&scene, other, &values));
+  values.fields = VKR_SCENE_EDIT_NAME;
+  snprintf(values.name, sizeof(values.name), "over");
+  assert(!vkr_scene_edit_apply(&state, &scene, other, &values));
+  assert(vkr_scene_edit_group_rollback(&state, &scene));
+  assert(state.undo_count == 0u && edit_test_named(&scene, other, "later"));
+
+  /* Eviction at capacity drops the oldest group whole. */
+  const uint64_t oldest = vkr_scene_edit_group_begin(&state);
+  edit_test_rename(&state, &scene, other, "a");
+  edit_test_rename(&state, &scene, other, "b");
+  vkr_scene_edit_group_end(&state);
+  while (state.undo_count < VKR_SCENE_EDIT_UNDO_CAPACITY) {
+    edit_test_rename(&state, &scene, other,
+                     (state.undo_count & 1u) ? "c" : "d");
+  }
+  assert(vkr_scene_edit_group_present(&state, oldest));
+  edit_test_rename(&state, &scene, other, "e");
+  assert(!vkr_scene_edit_group_present(&state, oldest));
+  assert(state.undo_count == VKR_SCENE_EDIT_UNDO_CAPACITY - 1u);
+  (void)found;
+
+  vkr_scene_edit_reset(&state, &allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+}
+
 static void edit_test_structure(void) {
   VkrDMemory memory;
   assert(vkr_dmemory_create(MB(4), MB(8), &memory));
@@ -780,6 +922,7 @@ bool32_t run_scene_edit_tests(void) {
   vkr_scene_shutdown(&scene, NULL);
   vkr_dmemory_destroy(&memory);
   edit_test_structure();
+  edit_test_groups();
   printf("--- Scene Edit Tests Completed ---\n");
   return true_v;
 }

@@ -156,6 +156,17 @@ typedef struct State {
       physics_sensor_events[VKR_SCENE_PHYSICS_MAX_BODIES *
                             VKR_PHYSICS_SENSOR_EVENTS_PER_BODY];
   uint32_t physics_sensor_event_count;
+  /* The latest edit batch or group revert outcome the UI reads. */
+  VkrSampleEditBatchResult edit_batch_result;
+  /* One window capture the UI asked for: the renderer request while it
+     renders, then the poll result lent to one build until release. */
+  VkrCaptureItemRequest capture_item;
+  VkrCaptureBatchRequest capture_batch;
+  VkrCaptureRequestId capture_serial;
+  uint64_t capture_token;
+  bool8_t capture_pending;
+  VkrSampleCaptureReady capture_ready;
+  bool8_t capture_ready_valid;
 
   Arena *app_arena;
   Arena *event_arena;
@@ -4317,6 +4328,8 @@ typedef struct VkrSampleUiRequests {
   VkrSampleViewRequest view_request;
   VkrSamplePhysicsRequest physics_request;
   VkrSceneEditRequest scene_edit;
+  VkrSampleEditBatchRequest edit_batch;
+  VkrSampleCaptureRequest capture_request;
   VkrSampleSceneRequest scene_request;
   VkrSampleWorldRequest world_request;
   VkrSampleScriptRequest script_request;
@@ -4406,6 +4419,11 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scene_generation = application->scene_generation,
       .edits = &state->edits,
       .scene_edit = &requests->scene_edit,
+      .edit_batch = &requests->edit_batch,
+      .edit_batch_result = &state->edit_batch_result,
+      .capture_request = &requests->capture_request,
+      .capture_ready =
+          state->capture_ready_valid ? &state->capture_ready : NULL,
       .scene_request = &requests->scene_request,
       .world = application->world_scene,
       .world_edits = &state->world_edits,
@@ -4940,6 +4958,28 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
   }
 }
 
+/* The loaded container with world id `world` and its journal. */
+static bool8_t sample_container_edits(VkrStandardSceneRuntime *application,
+                                      uint32_t world, VkrScene **out_scene,
+                                      VkrSceneEditState **out_edits) {
+  VkrScene *scene = NULL;
+  VkrSceneEditState *edits = NULL;
+  if (world == VKR_SCENE_WORLD_ROOT_ID) {
+    scene = application->world_scene;
+    edits = &state->world_edits;
+  } else if (world == 0u) {
+    scene = application->active_scene;
+    edits = &state->edits;
+  } else if (world <= VKR_SCENE_ADDITIVE_MAX &&
+             state->additive_handles[world - 1u]) {
+    scene = vkr_scene_handle_get_scene(state->additive_handles[world - 1u]);
+    edits = &state->additive_edits[world - 1u];
+  }
+  *out_scene = scene;
+  *out_edits = edits;
+  return scene != NULL;
+}
+
 /* Structure requests (ADR-076) go to the container their entity or parent
    lives in; a root creation names its container. Returns false for other
    actions. */
@@ -4959,18 +4999,7 @@ static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
   const uint32_t world = anchor.u64 ? anchor.parts.world : request->container;
   VkrScene *scene = NULL;
   VkrSceneEditState *edits = NULL;
-  if (world == VKR_SCENE_WORLD_ROOT_ID) {
-    scene = application->world_scene;
-    edits = &state->world_edits;
-  } else if (world == 0u) {
-    scene = application->active_scene;
-    edits = &state->edits;
-  } else if (world <= VKR_SCENE_ADDITIVE_MAX &&
-             state->additive_handles[world - 1u]) {
-    scene = vkr_scene_handle_get_scene(state->additive_handles[world - 1u]);
-    edits = &state->additive_edits[world - 1u];
-  }
-  if (!scene) {
+  if (!sample_container_edits(application, world, &scene, &edits)) {
     return true_v;
   }
   switch (action) {
@@ -5033,6 +5062,237 @@ static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
     break;
   }
   return true_v;
+}
+
+/* Polls the window capture the UI asked for; a finished or failed one is
+   lent to the next build, which the release after that build ends. */
+static void sample_capture_poll(VkrStandardSceneRuntime *application) {
+  if (!state->capture_pending) {
+    return;
+  }
+  VkrCapturePollResult poll = {0};
+  const VkrCaptureStatus status = vkr_renderer_capture_poll(
+      &application->renderer, state->capture_batch.request_id, &poll);
+  /* Not yet submitted, or still rendering. */
+  if (status == VKR_CAPTURE_STATUS_PENDING ||
+      (status == VKR_CAPTURE_STATUS_NOT_FOUND &&
+       application->capture_request == &state->capture_batch)) {
+    return;
+  }
+  state->capture_pending = false_v;
+  state->capture_ready =
+      (VkrSampleCaptureReady){.token = state->capture_token, .failed = true_v};
+  if (status == VKR_CAPTURE_STATUS_READY && poll.item_count >= 1u &&
+      poll.items[0].data) {
+    state->capture_ready.item = &poll.items[0];
+    state->capture_ready.failed = false_v;
+  } else if (status == VKR_CAPTURE_STATUS_READY ||
+             status == VKR_CAPTURE_STATUS_FAILED) {
+    vkr_renderer_capture_release(&application->renderer,
+                                 state->capture_batch.request_id);
+  }
+  state->capture_ready_valid = true_v;
+}
+
+/* Ends the capture lent to this build and starts the one it asked for. The
+   harness owns the renderer's capture slot when it runs; the UI then gets a
+   failure. */
+static void sample_capture_after_build(VkrStandardSceneRuntime *application,
+                                       const VkrSampleCaptureRequest *request) {
+  if (state->capture_ready_valid) {
+    if (!state->capture_ready.failed) {
+      vkr_renderer_capture_release(&application->renderer,
+                                   state->capture_batch.request_id);
+    }
+    state->capture_ready_valid = false_v;
+  }
+  if (!request->request || state->capture_pending) {
+    return;
+  }
+  const VkrCaptureChannelId channel =
+      vkr_renderer_capture_channel_from_name("final_color");
+  if (application->capture_request || channel == VKR_CAPTURE_CHANNEL_INVALID) {
+    state->capture_ready =
+        (VkrSampleCaptureReady){.token = request->token, .failed = true_v};
+    state->capture_ready_valid = true_v;
+    return;
+  }
+  state->capture_item = (VkrCaptureItemRequest){.channel = channel};
+  /* The high bit keeps editor captures apart from the harness's ids. */
+  state->capture_batch = (VkrCaptureBatchRequest){
+      .request_id = (UINT64_C(1) << 63) | ++state->capture_serial,
+      .items = &state->capture_item,
+      .item_count = 1u,
+  };
+  state->capture_token = request->token;
+  state->capture_pending = true_v;
+  application->capture_request = &state->capture_batch;
+}
+
+/* Applies one batch item to the container's journal. A CREATE reports its
+   entity in `out_created`. */
+static bool8_t sample_batch_item(VkrStandardSceneRuntime *application,
+                                 VkrScene *scene, VkrSceneEditState *edits,
+                                 const VkrSceneEditRequest *request,
+                                 VkrEntityId *out_created) {
+  switch (request->action) {
+  case VKR_SCENE_EDIT_APPLY:
+    return vkr_scene_edit_apply(edits, scene, request->entity,
+                                &request->values);
+  case VKR_SCENE_EDIT_ADD_COMPONENT:
+    return vkr_scene_edit_add_component(edits, scene, request->entity,
+                                        request->values.component_type,
+                                        request->values.component);
+  case VKR_SCENE_EDIT_REMOVE_COMPONENT:
+    return vkr_scene_edit_remove_component(edits, scene, request->entity,
+                                           request->values.component_type);
+  case VKR_SCENE_EDIT_REPLACE_COMPONENT:
+    return vkr_scene_edit_replace_component(
+        edits, scene, request->entity, request->replaced_type,
+        request->values.component_type, request->values.component);
+  case VKR_SCENE_EDIT_CREATE:
+    *out_created =
+        vkr_scene_edit_create(edits, scene, request->parent, &request->values);
+    return out_created->u64 != 0u;
+  case VKR_SCENE_EDIT_DELETE:
+    if (!vkr_scene_edit_delete(edits, scene, request->entity)) {
+      return false_v;
+    }
+    if (state->selected_entity.u64 == request->entity.u64) {
+      vkr_standard_scene_runtime_clear_gizmo_handles(application);
+      state->gizmo_drag.active = false_v;
+      state->selected_entity = VKR_ENTITY_ID_INVALID;
+      state->has_selection = false_v;
+    }
+    return true_v;
+  case VKR_SCENE_EDIT_REPARENT:
+    return vkr_scene_edit_reparent(edits, scene, request->entity,
+                                   request->parent);
+  default:
+    snprintf(edits->status, sizeof(edits->status),
+             "This edit cannot join a batch.");
+    return false_v;
+  }
+}
+
+/* Applies a batch as one journal group, rolling it back on the first failed
+   edit, or reverts a closed group (docs/proposals/level-design-toolkit.md,
+   phase 0). Edits wait while the simulation runs, as Details edits do. */
+static void sample_edit_batch(VkrStandardSceneRuntime *application,
+                              const VkrSampleEditBatchRequest *batch) {
+  if (!batch->token) {
+    return;
+  }
+  VkrSampleEditBatchResult *result = &state->edit_batch_result;
+  MemZero(result, sizeof(*result));
+  result->token = batch->token;
+  result->failed_index = UINT32_MAX;
+  VkrScene *scene = NULL;
+  VkrSceneEditState *edits = NULL;
+  if (!sample_container_edits(application, batch->container, &scene, &edits)) {
+    snprintf(result->message, sizeof(result->message),
+             "That scene is not loaded.");
+    return;
+  }
+  if (application->editor_viewport.simulation_running) {
+    snprintf(result->message, sizeof(result->message),
+             "Stop the simulation before editing the scene.");
+    return;
+  }
+  if (state->gizmo_drag.active) {
+    vkr_standard_scene_runtime_finish_gizmo_edit(application);
+  }
+  if (batch->revert_group) {
+    result->group = batch->revert_group;
+    result->ok = vkr_scene_edit_group_revert(edits, scene, batch->revert_group,
+                                             &result->conflict);
+    if (state->has_selection &&
+        !vkr_scene_entity_alive(scene, state->selected_entity) &&
+        state->selected_entity.parts.world == batch->container) {
+      vkr_standard_scene_runtime_clear_gizmo_handles(application);
+      state->selected_entity = VKR_ENTITY_ID_INVALID;
+      state->has_selection = false_v;
+    }
+    snprintf(result->message, sizeof(result->message), "%s", edits->status);
+    return;
+  }
+  if (batch->count > VKR_SAMPLE_EDIT_BATCH_MAX || !batch->items) {
+    snprintf(result->message, sizeof(result->message),
+             "A batch holds at most %u edits.", VKR_SAMPLE_EDIT_BATCH_MAX);
+    return;
+  }
+  result->group = vkr_scene_edit_group_begin(edits);
+  if (!result->group) {
+    snprintf(result->message, sizeof(result->message),
+             "Another edit group is open.");
+    return;
+  }
+  for (uint32_t i = 0; i < batch->count; ++i) {
+    VkrSceneEditRequest request = batch->items[i].request;
+    const int32_t entity_ref = batch->items[i].entity_ref;
+    const int32_t parent_ref = batch->items[i].parent_ref;
+    /* References name earlier creations only. */
+    if ((entity_ref >= 0 && (uint32_t)entity_ref >= i) ||
+        (parent_ref >= 0 && (uint32_t)parent_ref >= i)) {
+      snprintf(edits->status, sizeof(edits->status),
+               "Edit %u refers to a later edit.", i);
+      result->failed_index = i;
+      break;
+    }
+    if (entity_ref >= 0) {
+      request.entity = result->created[entity_ref];
+    }
+    if (parent_ref >= 0) {
+      request.parent = result->created[parent_ref];
+    }
+    if ((entity_ref >= 0 && !request.entity.u64) ||
+        (parent_ref >= 0 && !request.parent.u64)) {
+      snprintf(edits->status, sizeof(edits->status),
+               "Edit %u refers to an edit that created nothing.", i);
+      result->failed_index = i;
+      break;
+    }
+    if (!sample_batch_item(application, scene, edits, &request,
+                           &result->created[i])) {
+      result->failed_index = i;
+      break;
+    }
+  }
+  if (result->failed_index != UINT32_MAX) {
+    snprintf(result->message, sizeof(result->message), "%s", edits->status);
+    (void)vkr_scene_edit_group_rollback(edits, scene);
+    MemZero(result->created, sizeof(result->created));
+    return;
+  }
+  vkr_scene_edit_group_end(edits);
+  result->ok = true_v;
+  snprintf(result->message, sizeof(result->message), "Applied %u edits.",
+           batch->count);
+}
+
+/* Moves `camera` so the box fills the view: back along its forward axis in
+   perspective, centred with a matching span in an orthographic view. */
+static void sample_frame_box(VkrCamera *camera, Vec3 lower, Vec3 upper) {
+  Vec3 target = vec3_scale(vec3_add(lower, upper), 0.5f);
+  float32_t radius = Max(0.25f, vec3_length(vec3_sub(upper, lower)) * 0.5f);
+  float32_t aspect = camera->cached_window_height
+                         ? (float32_t)camera->cached_window_width /
+                               camera->cached_window_height
+                         : 1.0f;
+  float32_t half_angle =
+      atanf(tanf(camera->zoom * 0.0087266463f) * Min(1.0f, aspect));
+  float32_t distance = radius / Max(0.01f, sinf(half_angle)) * 1.1f;
+  if (camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC) {
+    const float32_t half_height = radius * 1.1f / Min(1.0f, aspect);
+    camera->left_clip = -half_height * aspect;
+    camera->right_clip = half_height * aspect;
+    camera->bottom_clip = -half_height;
+    camera->top_clip = half_height;
+    camera->projection_dirty = true_v;
+    distance = 0.5f * (camera->near_clip + camera->far_clip);
+  }
+  camera->position = vec3_sub(target, vec3_scale(camera->forward, distance));
+  camera->view_dirty = true_v;
 }
 
 vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
@@ -5202,28 +5462,7 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
           upper = vec3_new(Max(upper.x, hi.x), Max(upper.y, hi.y),
                            Max(upper.z, hi.z));
         }
-        Vec3 target = vec3_scale(vec3_add(lower, upper), 0.5f);
-        float32_t radius =
-            Max(0.25f, vec3_length(vec3_sub(upper, lower)) * 0.5f);
-        float32_t aspect = camera->cached_window_height
-                               ? (float32_t)camera->cached_window_width /
-                                     camera->cached_window_height
-                               : 1.0f;
-        float32_t half_angle =
-            atanf(tanf(camera->zoom * 0.0087266463f) * Min(1.0f, aspect));
-        float32_t distance = radius / Max(0.01f, sinf(half_angle)) * 1.1f;
-        if (camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC) {
-          const float32_t half_height = radius * 1.1f / Min(1.0f, aspect);
-          camera->left_clip = -half_height * aspect;
-          camera->right_clip = half_height * aspect;
-          camera->bottom_clip = -half_height;
-          camera->top_clip = half_height;
-          camera->projection_dirty = true_v;
-          distance = 0.5f * (camera->near_clip + camera->far_clip);
-        }
-        camera->position =
-            vec3_sub(target, vec3_scale(camera->forward, distance));
-        camera->view_dirty = true_v;
+        sample_frame_box(camera, lower, upper);
       }
       break;
     }
@@ -5410,6 +5649,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   state->graphics.message =
       string8_create_from_cstr((const uint8_t *)state->graphics_message,
                                strlen(state->graphics_message));
+  sample_capture_poll(application);
   VkrSampleUiRequests requests = {
       .transport_action = VKR_SAMPLE_TRANSPORT_NONE,
       .close_response = VKR_SAMPLE_CLOSE_NONE,
@@ -5442,6 +5682,14 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     sample_graphics_apply_display(application, &state->graphics.settings);
   sample_editor_state_apply(application, &requests.editor_state_request);
   sample_view_apply(application, &requests.view_request);
+  if (requests.view_request.frame_box) {
+    VkrCamera *camera = vkr_camera_registry_get_by_handle(
+        &application->camera_system, application->active_camera);
+    if (camera) {
+      sample_frame_box(camera, requests.view_request.frame_min,
+                       requests.view_request.frame_max);
+    }
+  }
   sample_show_filter_apply(application);
   sample_grid_apply(application);
   if (requests.grid_fit_request.request) {
@@ -5507,6 +5755,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   }
   vkr_standard_scene_runtime_apply_scene_edit(application,
                                               &requests.scene_edit);
+  sample_edit_batch(application, &requests.edit_batch);
+  sample_capture_after_build(application, &requests.capture_request);
   vkr_standard_scene_runtime_apply_transport_action(application,
                                                     requests.transport_action);
   vkr_scene_physics_set_paused(

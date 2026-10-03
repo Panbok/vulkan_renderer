@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-03
+updated: 2026-10-04
 authority: architecture
 ---
 
@@ -172,7 +172,10 @@ A successful configure or build does not establish sanitizer runtime coverage.
 The application and editor are independent targets over `vkr_runtime` and the
 optional `vkr_sample_runtime`. The app owns its F6 debug overlay; the editor owns its
 dock composition, startup `--scene-only` mode and windowless `--headless`
-scripted runs (ADR-075). Neither executable imports the
+scripted runs (ADR-075), and an agent channel: a per-user socket of typed
+operations that apply as journal groups with designer review, and the
+`vkr_mcp` adapter that serves them to MCP clients (ADR-084). Neither
+executable imports the
 other's source. `core/vkr_subsystem_plan` resolves application boot dependencies;
 the GPU renderer does not own that subsystem policy. The editor has tab stacking, layout persistence, keyboard focus and icon-only
 independent simulation/render controls in a draggable Scene toolbar, alongside

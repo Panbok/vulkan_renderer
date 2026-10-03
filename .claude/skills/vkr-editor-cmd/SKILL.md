@@ -45,6 +45,20 @@ state, not window resize, DPI, input or presentation.
 Other process output can share a line with a result, so extract records with
 `grep -o` as above rather than anchoring at line start.
 
+## Agent channel
+
+[ADR-084](../../../docs/adr/084-agent-channel-and-level-design-toolkit.md)
+defines the socket, its operations and the `vkr_mcp` adapter. Use it when a
+task needs batches, entity creation, structured results or captures. Start the
+headless editor as above with `--agent-socket "$PWD/.scratch/<task>/editor.sock"`
+and an `--exec` of `wait.scene; wait 3`; it stays open while a client is
+connected. Send one JSON request per line
+(`{"v":1,"id":1,"op":"ops.list"}`) and read one response line per request;
+the first request should be `{"op":"cmd","args":{"line":"wait.scene"}}`.
+Through MCP, run `build_release/tools/vkr_mcp --socket <path>` and send MCP
+2026-07-28 requests with the version in `_meta`. Captures land in
+`$TMPDIR/vkr/captures/`; read the PNG to see the result.
+
 ## Read results
 
 Each statement prints `[cmd] > <statement>` and then `[cmd] <result>` or

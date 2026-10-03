@@ -1,3 +1,4 @@
+#include "editor_agent.h"
 #include "editor_internal.h"
 
 #include "core/logger.h"
@@ -57,14 +58,14 @@ static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD};
 
 static const char *const cmd_windows[] = {
-    "animation", "physics", "preferences", "draws",  "memory",
-    "help",      "create",  "build",       "script", NULL};
+    "animation", "physics", "preferences", "draws",   "memory", "help",
+    "create",    "build",   "script",      "changes", NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION, VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,  VKR_EDITOR_WINDOW_DRAWS,
     VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP,
     VKR_EDITOR_WINDOW_CREATE,    VKR_EDITOR_WINDOW_BUILD,
-    VKR_EDITOR_WINDOW_SCRIPT};
+    VKR_EDITOR_WINDOW_SCRIPT,    VKR_EDITOR_WINDOW_CHANGES};
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -282,9 +283,21 @@ static bool8_t cmd_switch(CmdContext *ctx, String8 word, bool8_t current,
  * agents (flushed per line), the Console when the build keeps that log level,
  * and, for failures, a toast. Release builds without editor logging compile
  * info and warning logs out, so stdout is the dependable channel. */
-static void cmd_report(bool8_t ok, const char *text) {
+static void cmd_report(VkrEditorUi *editor, bool8_t ok, const char *text) {
   fprintf(stdout, "[cmd] %s%s\n", ok ? "" : "error: ", text);
   fflush(stdout);
+  /* The agent's `cmd` operation collects the lines its statement prints. */
+  if (editor->cmd_capture && editor->cmd_capture_capacity) {
+    const int written =
+        snprintf(editor->cmd_capture + editor->cmd_capture_length,
+                 editor->cmd_capture_capacity - editor->cmd_capture_length,
+                 "%s%s\n", ok ? "" : "error: ", text);
+    if (written > 0) {
+      editor->cmd_capture_length =
+          Min(editor->cmd_capture_length + (uint32_t)written,
+              editor->cmd_capture_capacity - 1u);
+    }
+  }
   if (ok)
     log_info("%s", text);
   else
@@ -1873,7 +1886,7 @@ static bool8_t cmd_run_help(CmdContext *ctx, const CmdDef *def, String8 arg) {
     char line[256];
     snprintf(line, sizeof(line), "  %s %s  -  %s", cmd_defs[i].name,
              cmd_defs[i].usage, cmd_defs[i].help);
-    cmd_report(true_v, line);
+    cmd_report(ctx->editor, true_v, line);
   }
   snprintf(ctx->message, sizeof(ctx->message),
            "%u commands; separate several with ';'",
@@ -1890,7 +1903,7 @@ static bool8_t cmd_execute_line(VkrEditorUi *editor,
     return true_v;
   char echo[300];
   snprintf(echo, sizeof(echo), "> %.*s", (int)Min(line.length, 280u), line.str);
-  cmd_report(true_v, echo);
+  cmd_report(editor, true_v, echo);
   String8 arg = {0};
   const String8 name = cmd_split(line, &arg);
   const CmdDef *def = cmd_find(name);
@@ -1916,13 +1929,38 @@ static bool8_t cmd_execute_line(VkrEditorUi *editor,
     }
   }
   if (ctx.message[0]) {
-    cmd_report(ok, ctx.message);
+    cmd_report(editor, ok, ctx.message);
     vkr_editor_toast(
         editor, ok ? VKR_UI_ICON_TERMINAL : VKR_UI_ICON_WARNING_FILL,
         ok ? vkr_ui_theme()->accent_hover : vkr_ui_theme()->warning,
         ctx.message);
   }
   return ok;
+}
+
+void vkr_editor_cmd_capture_begin(VkrEditorUi *editor, char *buffer,
+                                  uint32_t capacity) {
+  editor->cmd_capture = buffer;
+  editor->cmd_capture_capacity = capacity;
+  editor->cmd_capture_length = 0u;
+  if (buffer && capacity) {
+    buffer[0] = '\0';
+  }
+}
+
+uint32_t vkr_editor_cmd_capture_end(VkrEditorUi *editor) {
+  const uint32_t length = editor->cmd_capture_length;
+  editor->cmd_capture = NULL;
+  editor->cmd_capture_capacity = 0u;
+  editor->cmd_capture_length = 0u;
+  return length;
+}
+
+bool8_t vkr_editor_cmd_idle(const VkrEditorUi *editor) {
+  return editor->cmd_queue_offset >= editor->cmd_queue_length &&
+         !editor->cmd_holding && editor->cmd_wait_seconds <= 0.0 &&
+         editor->cmd_wait_scene_seconds <= 0.0 &&
+         editor->cmd_pointer_next >= editor->cmd_pointer_count;
 }
 
 bool8_t vkr_editor_cmd_enqueue(VkrEditorUi *editor, const char *script) {
@@ -1932,7 +1970,7 @@ bool8_t vkr_editor_cmd_enqueue(VkrEditorUi *editor, const char *script) {
     editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
   const size_t length = strlen(script);
   if (editor->cmd_queue_length + length + 2u > sizeof(editor->cmd_queue)) {
-    cmd_report(false_v, "Cmd queue is full; dropped a script");
+    cmd_report(editor, false_v, "Cmd queue is full; dropped a script");
     return false_v;
   }
   MemCopy(editor->cmd_queue + editor->cmd_queue_length, script, length);
@@ -1972,7 +2010,7 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     } else {
       editor->cmd_wait_scene_seconds -= dt;
       if (editor->cmd_wait_scene_seconds <= 0.0) {
-        cmd_report(false_v,
+        cmd_report(editor, false_v,
                    "wait.scene timed out; dropped the remaining commands");
         editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
       }
@@ -1996,33 +2034,35 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     editor->cmd_holding = false_v;
     if (busy) {
       editor->cmd_holding_build = false_v;
-      cmd_report(false_v, "Job or scene load timed out; dropped the remaining "
-                          "commands");
+      cmd_report(editor, false_v,
+                 "Job or scene load timed out; dropped the remaining "
+                 "commands");
       editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
       return;
     }
     char text[64];
     snprintf(text, sizeof(text), "Settled after %.2f s",
              editor->cmd_hold_seconds);
-    cmd_report(true_v, text);
+    cmd_report(editor, true_v, text);
     if (editor->cmd_holding_build) {
       editor->cmd_holding_build = false_v;
       bool8_t succeeded = false_v;
       const char *result = vkr_editor_build_result(editor->build, &succeeded);
-      cmd_report(succeeded, result[0] ? result : "Build did not run");
+      cmd_report(editor, succeeded, result[0] ? result : "Build did not run");
     }
   }
   /* Nobody can close a headless editor, so the end of its script does. The
    * quit request skips the unsaved-edits check that `quit` makes. */
   if (editor->cmd_quit_when_done &&
       editor->cmd_queue_offset >= editor->cmd_queue_length &&
-      frame->quit_request) {
+      !vkr_editor_agent_busy(editor->agent) && frame->quit_request) {
     const bool8_t unsaved =
         frame->scene && frame->edits &&
         frame->edits->revision != frame->edits->saved_revision;
-    cmd_report(true_v, unsaved ? "Script finished; quitting and discarding "
-                                 "unsaved scene edits"
-                               : "Script finished; quitting");
+    cmd_report(editor, true_v,
+               unsaved ? "Script finished; quitting and discarding "
+                         "unsaved scene edits"
+                       : "Script finished; quitting");
     editor->cmd_quit_when_done = false_v;
     *frame->quit_request = true_v;
     return;

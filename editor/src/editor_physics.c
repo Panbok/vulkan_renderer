@@ -1,5 +1,7 @@
 #include "editor_physics.h"
+#include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_ops.h"
 #include "editor_ui.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
@@ -227,6 +229,51 @@ static uint32_t physics_player_start_count(const VkrSampleUiFrame *frame) {
               : 0u);
 }
 
+/* Box outlines of the entities in pending agent changes, in each entity's
+   local frame, so they follow it as it moves. */
+static void physics_pending_changes(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    uint32_t capacity) {
+  const VkrEditorOps *ops = vkr_editor_agent_ops(editor->agent);
+  const Vec4 color = {1.0f, 0.72f, 0.18f, 1.0f};
+  for (uint32_t c = 0; c < vkr_editor_ops_change_count(ops); ++c) {
+    const VkrEditorChange *change = vkr_editor_ops_change(ops, c);
+    for (uint32_t e = 0; e < change->entity_count; ++e) {
+      const VkrEntityId entity = change->entities[e];
+      const VkrScene *scene = vkr_editor_entity_scene(frame, entity);
+      Vec3 lo = {0};
+      Vec3 hi = {0};
+      if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+        continue;
+      }
+      if (!vkr_scene_entity_local_bounds(scene, entity, &lo, &hi)) {
+        /* An empty object shows as a half-meter marker. */
+        lo = vec3_new(-0.25f, -0.25f, -0.25f);
+        hi = vec3_new(0.25f, 0.25f, 0.25f);
+      }
+      for (uint32_t corner = 0; corner < 8; ++corner) {
+        const Vec3 from = {(corner & 1) ? hi.x : lo.x,
+                           (corner & 2) ? hi.y : lo.y,
+                           (corner & 4) ? hi.z : lo.z};
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+          if (corner & (1u << axis)) {
+            continue;
+          }
+          Vec3 to = from;
+          if (axis == 0) {
+            to.x = hi.x;
+          } else if (axis == 1) {
+            to.y = hi.y;
+          } else {
+            to.z = hi.z;
+          }
+          physics_line(editor, frame, entity, from, to, color, capacity);
+        }
+      }
+    }
+  }
+}
+
 void vkr_editor_physics_build(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame) {
   editor->physics_line_count = 0;
@@ -241,7 +288,9 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       frame->scene ? vkr_scene_physics_body_count(frame->scene) : 0u;
   const uint32_t starts =
       frame->scripts_running ? 0u : physics_player_start_count(frame);
-  if (!bodies && !starts) {
+  const uint32_t changes =
+      vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent));
+  if (!bodies && !starts && !changes) {
     return;
   }
   VkrUiSystem *ui = frame->ui;
@@ -270,16 +319,19 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
                 PHYSICS_RESERVED_NODES
           : 0u;
   const uint32_t capacity = Min(PHYSICS_LINE_MAX, available);
-  if ((frame->view_state.collision_display || starts) && !capacity) {
+  if ((frame->view_state.collision_display || starts || changes) && !capacity) {
     editor->physics_lines_truncated = true_v;
   }
-  if ((frame->view_state.collision_display || starts) && capacity) {
+  if ((frame->view_state.collision_display || starts || changes) && capacity) {
     editor->physics_lines = vkr_allocator_alloc(
         ui->frame_allocator, capacity * sizeof(*editor->physics_lines),
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (editor->physics_lines && starts) {
     physics_player_starts(editor, frame, capacity);
+  }
+  if (editor->physics_lines && changes) {
+    physics_pending_changes(editor, frame, capacity);
   }
   if (frame->view_state.collision_display && capacity && bodies) {
     if (editor->physics_lines) {
