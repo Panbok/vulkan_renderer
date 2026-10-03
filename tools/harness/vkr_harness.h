@@ -482,9 +482,11 @@ typedef struct VkrHarnessFingerprintField {
   char value[VKR_HARNESS_TEXT_MAX];
 } VkrHarnessFingerprintField;
 
+/* `identity` is a SHA-256 of the dependency's host-neutral content (ADR-051);
+   `size` is the file's byte count on this host. */
 typedef struct VkrHarnessSceneAsset {
   char path[VKR_HARNESS_PATH_MAX];
-  char sha256[VKR_HARNESS_DIGEST_MAX];
+  char identity[VKR_HARNESS_DIGEST_MAX];
   uint64_t size;
 } VkrHarnessSceneAsset;
 

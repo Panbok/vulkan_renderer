@@ -59,6 +59,15 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                const uint8_t *data, uint64_t size,
                                VkrMeshCookedDecoded *out_decoded);
 
+/**
+ * Reads a validated artifact's identity without decoding its ranges: the
+ * source fingerprint the cooker stored and the codec settings hash. Both are
+ * host-neutral, unlike the artifact bytes.
+ */
+bool8_t vkr_mesh_cooked_read_identity(const uint8_t *data, uint64_t size,
+                                      uint64_t *out_source_fingerprint,
+                                      uint8_t out_settings_hash[32]);
+
 /** Apply an optional adjacent .remap.json to decoded material references.
  * Missing sidecar preserves the original references; an existing sidecar must
  * map every nonempty reference exactly once. Mapped views borrow scratch until

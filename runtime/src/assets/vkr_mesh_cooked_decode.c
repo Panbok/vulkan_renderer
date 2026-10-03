@@ -762,6 +762,45 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
   return true_v;
 }
 
+bool8_t vkr_mesh_cooked_read_identity(const uint8_t *data, uint64_t size,
+                                      uint64_t *out_source_fingerprint,
+                                      uint8_t out_settings_hash[32]) {
+  if (!data || !out_source_fingerprint || !out_settings_hash ||
+      size < VKR_MESH_COOKED_HEADER_SIZE ||
+      size > VKR_MESH_COOKED_MAX_FILE_SIZE) {
+    return false_v;
+  }
+
+  uint8_t header_copy[VKR_MESH_COOKED_HEADER_SIZE];
+  MemCopy(header_copy, data, sizeof(header_copy));
+  const uint32_t stored_crc =
+      vkr_load_le_u32(header_copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET);
+  MemZero(header_copy + VKR_MESH_COOKED_HEADER_CRC_OFFSET, sizeof(uint32_t));
+  if (stored_crc != vkr_crc32(header_copy, sizeof(header_copy))) {
+    return false_v;
+  }
+
+  VkrByteReader reader = {.data = data, .size = size, .offset = 0};
+  VkrMeshCookedHeaderView header = {0};
+  uint64_t expected_string_offset = 0;
+  if (!vkr_mesh_cooked_read_header(&reader, &header) ||
+      !vkr_mesh_cooked_header_valid(&header, size) ||
+      !vkr_mesh_cooked_layout_valid(data, size, &header,
+                                    &expected_string_offset)) {
+    return false_v;
+  }
+
+  VkrByteReader source_reader = {.data = data,
+                                 .size = header.string_offset,
+                                 .offset = expected_string_offset};
+  if (!vkr_byte_reader_u64(&source_reader, out_source_fingerprint)) {
+    return false_v;
+  }
+  MemCopy(out_settings_hash, header.settings_hash,
+          sizeof(header.settings_hash));
+  return true_v;
+}
+
 bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                VkrAllocator *scratch_allocator,
                                const uint8_t *data, uint64_t size,

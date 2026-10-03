@@ -178,6 +178,23 @@ generation before publishing an immutable generation and atomically replacing
 `current.json`. Cross-backend comparison is explicit and still requires matching
 workload and policy fingerprints.
 
+The workload fingerprint's `case.scene_content` digests the scene's dependency
+closure by path and host-neutral identity
+([`vkr_harness_scene_manifest.c`](../../tools/harness/vkr_harness_scene_manifest.c)),
+so two hosts holding the same sources produce one digest. Text dependencies
+hash without the CR of CRLF line endings. A cooked `.vkt` hashes its image
+shape and KTX2 metadata, which records `vkr.source_hash` and the packing intent,
+without the writer and the block-encoder fields of `vkr.pack_settings`
+(`encoding`, `astc_rg`, and the retired `uastc`, `basis_rg`): ASTC on Apple and
+BC on x86-64 are the same workload (ADR-012). A cooked `.vkb` hashes its source
+fingerprint and codec settings (`vkr_mesh_cooked_read_identity`), and the glTF
+fingerprint itself ignores CR line endings (`vkr_cgltf_source_fingerprint`).
+Any other file, or a `.vkt` without a source hash, hashes its bytes. A change of
+block encoder on one host therefore shows in the pixel comparison rather than in
+the fingerprint. Introducing this identity on 2026-10-03 changed every workload
+fingerprint once, so each accepted generation needs one re-acceptance on the
+host that produced it ([Metal follow-ups](../proposals/metal-followups.md)).
+
 ## Metal crash diagnostics
 
 `VKR_METAL_DIAGNOSTICS_DIR` opts into a separate CPU observation log. The renderer

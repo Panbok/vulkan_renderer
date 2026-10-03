@@ -324,6 +324,11 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   assert(decoded.source.nodes.length == 3u &&
          decoded.source.meshes.length == 1u);
   assert(decoded.source.fingerprint == UINT64_C(0x123456789abcdef0));
+  uint64_t identity_fingerprint = 0u;
+  uint8_t identity_settings[32];
+  assert(vkr_mesh_cooked_read_identity(first, first_size, &identity_fingerprint,
+                                       identity_settings));
+  assert(identity_fingerprint == decoded.source.fingerprint);
   assert(decoded.source.animation_count == 2u);
   assert(decoded.source.nodes.data[1].parent == 0u);
   assert(decoded.source.nodes.data[2].mesh_variant == 0u);
@@ -493,6 +498,8 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   mutated[TEST_HEADER_SIZE + 32u] ^= 0x01u;
   assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, first_size,
                                  &decoded));
+  assert(!vkr_mesh_cooked_read_identity(
+      mutated, first_size, &identity_fingerprint, identity_settings));
 
   MemCopy(mutated, first, first_size);
   test_write_f32(mutated + TEST_HEADER_DECODE_BIAS_X_FIELD, 0.25f);

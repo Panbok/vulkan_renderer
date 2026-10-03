@@ -1,3 +1,5 @@
+#include "assets/vkr_mesh_cooked.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_json.h"
 #include "vkr_harness.h"
 
@@ -86,6 +88,186 @@ static int32_t vkr_harness_scene_asset_compare(const void *a, const void *b) {
   const VkrHarnessSceneAsset *lhs = a;
   const VkrHarnessSceneAsset *rhs = b;
   return string_compare(lhs->path, rhs->path);
+}
+
+/* Text dependencies, which a checkout may store with CRLF line endings. */
+static bool8_t vkr_harness_scene_text_asset(const char *path) {
+  static const char *extensions[] = {".json", ".gltf",    ".obj", ".mtl",
+                                     ".mt",   ".fontcfg", ".fnt"};
+  for (uint32_t i = 0u; i < ArrayCount(extensions); ++i) {
+    if (vkr_harness_scene_path_ends_with(path, extensions[i])) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* SHA-256 of the bytes with each CR that precedes LF removed, so an LF file
+   keeps its plain digest and a CRLF copy of it shares that digest. */
+static void vkr_harness_scene_text_identity(const uint8_t *bytes, uint64_t size,
+                                            char out[VKR_HARNESS_DIGEST_MAX]) {
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  uint64_t start = 0u;
+  for (uint64_t i = 0u; i + 1u < size; ++i) {
+    if (bytes[i] == '\r' && bytes[i + 1u] == '\n') {
+      vkr_sha256_update(&hash, bytes + start, i - start);
+      start = i + 1u;
+    }
+  }
+  vkr_sha256_update(&hash, bytes + start, size - start);
+  vkr_harness_sha256_end(&hash, out);
+}
+
+/* Whether a KTX2 key, which is case-sensitive, is `name`. */
+static bool8_t vkr_harness_scene_vkt_key_is(const uint8_t *key,
+                                            uint64_t key_length,
+                                            const char *name) {
+  return key_length == string_length(name) &&
+         MemCompare(key, name, key_length) == 0;
+}
+
+/* `vkr.pack_settings` fields that name the host's block encoder (ADR-012). */
+static bool8_t vkr_harness_scene_vkt_host_field(const uint8_t *field,
+                                                uint64_t length) {
+  static const char *prefixes[] = {
+      "encoding=", "astc_rg=", "uastc=", "basis_rg="};
+  for (uint32_t i = 0u; i < ArrayCount(prefixes); ++i) {
+    const uint64_t prefix_length = string_length(prefixes[i]);
+    if (length >= prefix_length &&
+        MemCompare(field, prefixes[i], prefix_length) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/**
+ * Identity of a cooked texture that does not depend on the host's block
+ * format: the image shape and the KTX2 metadata, which records the source hash
+ * and packing intent, without the writer and the encoder fields. Returns false
+ * for a file without `vkr.source_hash`, whose bytes then stand for it.
+ */
+static bool8_t
+vkr_harness_scene_vkt_identity(const uint8_t *bytes, uint64_t size,
+                               char out[VKR_HARNESS_DIGEST_MAX]) {
+  static const uint8_t identifier[12] = {0xABu, 'K',   'T',  'X',  ' ',   '2',
+                                         '0',   0xBBu, '\r', '\n', 0x1Au, '\n'};
+  if (size < 80u || MemCompare(bytes, identifier, sizeof(identifier)) != 0) {
+    return false_v;
+  }
+  const uint64_t kvd_offset = vkr_load_le_u32(bytes + 56u);
+  const uint64_t kvd_end = kvd_offset + vkr_load_le_u32(bytes + 60u);
+  if (kvd_end > size) {
+    return false_v;
+  }
+
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  static const char domain[] = "vkr.vkt.identity.v1";
+  vkr_sha256_update(&hash, domain, sizeof(domain));
+  /* Width, height, depth, layers and faces; the level count and format follow
+     the block size. */
+  vkr_sha256_update(&hash, bytes + 20u, 20u);
+  bool8_t has_source_hash = false_v;
+  uint64_t cursor = kvd_offset;
+  while (cursor + 4u <= kvd_end) {
+    const uint64_t length = vkr_load_le_u32(bytes + cursor);
+    const uint8_t *key = bytes + cursor + 4u;
+    if (length > kvd_end - cursor - 4u) {
+      return false_v;
+    }
+    uint64_t key_length = 0u;
+    while (key_length < length && key[key_length] != 0u) {
+      key_length++;
+    }
+    if (key_length == length) {
+      return false_v;
+    }
+    const uint8_t *value = key + key_length + 1u;
+    uint64_t value_length = length - key_length - 1u;
+    while (value_length > 0u && value[value_length - 1u] == 0u) {
+      value_length--;
+    }
+
+    if (!vkr_harness_scene_vkt_key_is(key, key_length, "KTXwriter")) {
+      vkr_sha256_update(&hash, key, key_length + 1u);
+      if (vkr_harness_scene_vkt_key_is(key, key_length, "vkr.pack_settings")) {
+        uint64_t field = 0u;
+        while (field <= value_length) {
+          uint64_t field_end = field;
+          while (field_end < value_length && value[field_end] != ';') {
+            field_end++;
+          }
+          if (!vkr_harness_scene_vkt_host_field(value + field,
+                                                field_end - field)) {
+            vkr_sha256_update(&hash, value + field, field_end - field);
+            vkr_sha256_update(&hash, ";", 1u);
+          }
+          field = field_end + 1u;
+        }
+      } else {
+        vkr_sha256_update(&hash, value, value_length);
+      }
+      vkr_sha256_update(&hash, "\n", 1u);
+      has_source_hash |=
+          vkr_harness_scene_vkt_key_is(key, key_length, "vkr.source_hash");
+    }
+    cursor += 4u + ((length + 3u) & ~(uint64_t)3u);
+  }
+  if (!has_source_hash) {
+    return false_v;
+  }
+  vkr_harness_sha256_end(&hash, out);
+  return true_v;
+}
+
+/* Identity of a cooked mesh: its source fingerprint and codec settings. */
+static bool8_t
+vkr_harness_scene_vkb_identity(const uint8_t *bytes, uint64_t size,
+                               char out[VKR_HARNESS_DIGEST_MAX]) {
+  uint64_t fingerprint = 0u;
+  uint8_t settings_hash[32];
+  if (!vkr_mesh_cooked_read_identity(bytes, size, &fingerprint,
+                                     settings_hash)) {
+    return false_v;
+  }
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  static const char domain[] = "vkr.vkb.identity.v1";
+  vkr_sha256_update(&hash, domain, sizeof(domain));
+  uint8_t fingerprint_bytes[8];
+  vkr_store_le_u64(fingerprint_bytes, fingerprint);
+  vkr_sha256_update(&hash, fingerprint_bytes, sizeof(fingerprint_bytes));
+  vkr_sha256_update(&hash, settings_hash, sizeof(settings_hash));
+  vkr_harness_sha256_end(&hash, out);
+  return true_v;
+}
+
+/**
+ * Content identity of one scene dependency, equal on every host that holds the
+ * same source content (ADR-051): text without CR line endings, a cooked
+ * texture's or mesh's source identity, and the bytes of everything else.
+ */
+static void vkr_harness_scene_asset_identity(const char *path,
+                                             const uint8_t *bytes,
+                                             uint64_t size,
+                                             char out[VKR_HARNESS_DIGEST_MAX]) {
+  if (vkr_harness_scene_text_asset(path)) {
+    vkr_harness_scene_text_identity(bytes, size, out);
+  } else if (!(vkr_harness_scene_path_ends_with(path, ".vkt") &&
+               vkr_harness_scene_vkt_identity(bytes, size, out)) &&
+             !(vkr_harness_scene_path_ends_with(path, ".vkb") &&
+               vkr_harness_scene_vkb_identity(bytes, size, out))) {
+    vkr_harness_sha256_bytes(bytes, size, out);
+  }
+}
+
+/* Whether the identity reads more than the file's bytes in order. */
+static bool8_t vkr_harness_scene_asset_derived_identity(const char *path) {
+  return vkr_harness_scene_text_asset(path) ||
+         vkr_harness_scene_path_ends_with(path, ".vkt") ||
+         vkr_harness_scene_path_ends_with(path, ".vkb");
 }
 
 static bool8_t vkr_harness_scene_generated_material_source(
@@ -393,13 +575,41 @@ typedef struct VkrHarnessSceneHashJob {
 static void *vkr_harness_scene_hash_worker(void *argument) {
   VkrHarnessSceneHashJob *job = argument;
   job->success = true_v;
+  /* Files whose identity is derived are read whole; the rest stream. */
+  Arena *file_arena = NULL;
   for (uint32_t i = job->begin; i < job->end; ++i) {
     VkrHarnessSceneAsset *asset = &job->manifest->assets[job->asset_indices[i]];
-    if (!vkr_harness_sha256_file_sized(job->absolute_paths[i], asset->sha256,
-                                       &asset->size)) {
+    if (!vkr_harness_scene_asset_derived_identity(asset->path)) {
+      if (!vkr_harness_sha256_file_sized(job->absolute_paths[i],
+                                         asset->identity, &asset->size)) {
+        job->success = false_v;
+        break;
+      }
+      continue;
+    }
+    if (!file_arena) {
+      file_arena = arena_create(MB(64), MB(4));
+      if (!file_arena) {
+        job->success = false_v;
+        break;
+      }
+    }
+    Scratch scratch = scratch_create(file_arena);
+    uint8_t *bytes = NULL;
+    const bool8_t read = vkr_harness_read_file(
+        job->absolute_paths[i], file_arena, &bytes, &asset->size);
+    if (read) {
+      vkr_harness_scene_asset_identity(asset->path, bytes, asset->size,
+                                       asset->identity);
+    }
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (!read) {
       job->success = false_v;
       break;
     }
+  }
+  if (file_arena) {
+    arena_destroy(file_arena);
   }
   return NULL;
 }
@@ -417,7 +627,7 @@ vkr_harness_scene_manifest_hash_missing(const char *resolved_root, Arena *arena,
   }
   uint32_t count = 0u;
   for (uint32_t i = 0u; i < manifest->asset_count; ++i) {
-    if (manifest->assets[i].sha256[0] != '\0') {
+    if (manifest->assets[i].identity[0] != '\0') {
       continue;
     }
     if (!vkr_harness_resolve_existing_path(
@@ -477,12 +687,9 @@ vkr_harness_scene_manifest_digest(VkrHarnessSceneManifest *manifest) {
         (uint8_t)(path_length >> 8u), (uint8_t)path_length};
     vkr_sha256_update(&hash, path_prefix, sizeof(path_prefix));
     vkr_sha256_update(&hash, asset->path, path_length);
-    vkr_sha256_update(&hash, asset->sha256, string_length(asset->sha256));
-    uint8_t size_bytes[8];
-    for (uint32_t b = 0; b < 8u; ++b) {
-      size_bytes[b] = (uint8_t)(asset->size >> ((7u - b) * 8u));
-    }
-    vkr_sha256_update(&hash, size_bytes, sizeof(size_bytes));
+    /* The identity alone: a file's byte count differs between hosts that
+       encode or check it out differently. */
+    vkr_sha256_update(&hash, asset->identity, string_length(asset->identity));
   }
   vkr_harness_sha256_end(&hash, manifest->sha256);
 }
@@ -778,7 +985,7 @@ bool8_t vkr_harness_scene_manifest_build_context(
       break;
     }
     asset->size = size;
-    vkr_harness_sha256_bytes(bytes, size, asset->sha256);
+    vkr_harness_scene_asset_identity(asset->path, bytes, size, asset->identity);
     const uint8_t *parse_bytes = bytes;
     uint64_t parse_size = size;
     if (is_glb) {
@@ -865,7 +1072,7 @@ vkr_harness_scene_manifest_write(const char *path,
   VkrJsonWriter *writer = &file.writer;
   bool8_t ok =
       vkr_json_writer_begin_object(writer) &&
-      vkr_harness_json_emit_u64(writer, "schema_version", 1u) &&
+      vkr_harness_json_emit_u64(writer, "schema_version", 2u) &&
       vkr_harness_json_emit_string(writer, "kind",
                                    "vkr.harness.scene-content-manifest") &&
       vkr_harness_json_emit_string(writer, "scene", manifest->scene) &&
@@ -876,8 +1083,8 @@ vkr_harness_scene_manifest_write(const char *path,
     ok = vkr_json_writer_begin_object(writer) &&
          vkr_harness_json_emit_string(writer, "path",
                                       manifest->assets[i].path) &&
-         vkr_harness_json_emit_string(writer, "sha256",
-                                      manifest->assets[i].sha256) &&
+         vkr_harness_json_emit_string(writer, "identity",
+                                      manifest->assets[i].identity) &&
          vkr_harness_json_emit_u64(writer, "bytes", manifest->assets[i].size) &&
          vkr_json_writer_end_object(writer);
   }

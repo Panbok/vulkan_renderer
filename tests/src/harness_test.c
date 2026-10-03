@@ -1,4 +1,5 @@
 #include "harness_test.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_subsystem_plan.h"
 
 #include "test_temp_dir.h"
@@ -14,7 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <direct.h>
+#else
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -3080,6 +3083,128 @@ static void test_harness_managed_workspace_closure(void) {
 }
 #endif
 
+/* Writes a minimal KTX2 file: the header and one key/value block holding a
+   writer, the source hash and pack settings, then `payload` as image data. */
+vkr_internal void harness_test_write_vkt(const char *path, uint32_t vk_format,
+                                         const char *writer,
+                                         const char *source_hash,
+                                         const char *pack_settings,
+                                         const char *payload) {
+  uint8_t kvd[512] = {0};
+  uint32_t kvd_length = 0u;
+  const char *keys[] = {"KTXwriter", "vkr.pack_settings", "vkr.source_hash"};
+  const char *values[] = {writer, pack_settings, source_hash};
+  for (uint32_t i = 0u; i < ArrayCount(keys); ++i) {
+    const uint32_t key_length = (uint32_t)strlen(keys[i]);
+    const uint32_t value_length = (uint32_t)strlen(values[i]);
+    const uint32_t length = key_length + 1u + value_length + 1u;
+    assert(kvd_length + 4u + length + 3u <= sizeof(kvd));
+    vkr_store_le_u32(kvd + kvd_length, length);
+    MemCopy(kvd + kvd_length + 4u, keys[i], key_length);
+    MemCopy(kvd + kvd_length + 4u + key_length + 1u, values[i], value_length);
+    kvd_length += 4u + ((length + 3u) & ~3u);
+  }
+
+  uint8_t file[80u + sizeof(kvd) + 64u] = {0};
+  static const uint8_t identifier[12] = {0xABu, 'K',   'T',  'X',  ' ',   '2',
+                                         '0',   0xBBu, '\r', '\n', 0x1Au, '\n'};
+  MemCopy(file, identifier, sizeof(identifier));
+  vkr_store_le_u32(file + 12u, vk_format);
+  vkr_store_le_u32(file + 20u, 4u);
+  vkr_store_le_u32(file + 24u, 4u);
+  vkr_store_le_u32(file + 36u, 1u);
+  vkr_store_le_u32(file + 40u, 1u);
+  vkr_store_le_u32(file + 56u, 80u);
+  vkr_store_le_u32(file + 60u, kvd_length);
+  MemCopy(file + 80u, kvd, kvd_length);
+  const uint32_t payload_length = (uint32_t)strlen(payload);
+  assert(payload_length <= 64u);
+  MemCopy(file + 80u + kvd_length, payload, payload_length);
+  VkrHarnessError error = {0};
+  assert(vkr_harness_atomic_write(path, file, 80u + kvd_length + payload_length,
+                                  &error));
+}
+
+/* The scene digest names source content, not one host's files: a CRLF
+   checkout of the scene and a texture cooked to another block format leave it
+   unchanged, while a changed texture source changes it. */
+vkr_internal void test_harness_scene_manifest_identity_is_host_neutral(void) {
+  printf("  Running test_harness_scene_manifest_identity_is_host_neutral...\n");
+  char root[VKR_HARNESS_PATH_MAX];
+  snprintf(root, sizeof(root), "%sbuild/vkr_scene_identity_%u",
+           PROJECT_SOURCE_DIR, vkr_platform_get_process_id());
+  VkrHarnessError error = {0};
+  char assets[VKR_HARNESS_PATH_MAX];
+  char scenes[VKR_HARNESS_PATH_MAX];
+  char textures[VKR_HARNESS_PATH_MAX];
+  snprintf(assets, sizeof(assets), "%s/assets", root);
+  snprintf(scenes, sizeof(scenes), "%s/assets/scenes", root);
+  snprintf(textures, sizeof(textures), "%s/assets/textures", root);
+  assert(vkr_harness_make_directories(scenes, &error));
+  assert(vkr_harness_make_directories(textures, &error));
+
+  char scene_path[VKR_HARNESS_PATH_MAX];
+  char texture_path[VKR_HARNESS_PATH_MAX];
+  char packed_path[VKR_HARNESS_PATH_MAX];
+  snprintf(scene_path, sizeof(scene_path), "%s/test.scene.json", scenes);
+  snprintf(texture_path, sizeof(texture_path), "%s/sky.png", textures);
+  snprintf(packed_path, sizeof(packed_path), "%s.vkt", texture_path);
+  const char *scene_lf = "{\n\"texture\":\"assets/textures/sky.png\",\n"
+                         "\"entities\":[]\n}\n";
+  const char *scene_crlf = "{\r\n\"texture\":\"assets/textures/sky.png\",\r\n"
+                           "\"entities\":[]\r\n}\r\n";
+  assert(
+      vkr_harness_atomic_write(scene_path, scene_lf, strlen(scene_lf), &error));
+  assert(vkr_harness_atomic_write(texture_path, "png-source", 10u, &error));
+  harness_test_write_vkt(packed_path, 146u, "libktx v4.4.2", "3a1ad895e4d52ca9",
+                         "asset=1;class=color_srgb;encoding=bc7-bc7e-"
+                         "veryfast-v1;mips=rgba8-area-srgb-v2",
+                         "bc7-blocks");
+
+  Arena *arena = arena_create(MB(8), MB(4));
+  assert(arena);
+  VkrHarnessSceneManifest bc_host = {0};
+  assert(vkr_harness_scene_manifest_build(root, "assets/scenes/test.scene.json",
+                                          arena, &bc_host, &error));
+  assert(bc_host.asset_count == 3u);
+
+  assert(vkr_harness_atomic_write(scene_path, scene_crlf, strlen(scene_crlf),
+                                  &error));
+  harness_test_write_vkt(packed_path, 186u, "libktx v4.3.0", "3a1ad895e4d52ca9",
+                         "asset=1;class=color_srgb;encoding=astc-6x6-fastest;"
+                         "mips=rgba8-area-srgb-v2",
+                         "astc-blocks-of-another-size");
+  VkrHarnessSceneManifest astc_host = {0};
+  assert(vkr_harness_scene_manifest_build(root, "assets/scenes/test.scene.json",
+                                          arena, &astc_host, &error));
+  assert(strcmp(bc_host.sha256, astc_host.sha256) == 0);
+
+  harness_test_write_vkt(packed_path, 186u, "libktx v4.3.0", "0000000000000001",
+                         "asset=1;class=color_srgb;encoding=astc-6x6-fastest;"
+                         "mips=rgba8-area-srgb-v2",
+                         "astc-blocks-of-another-size");
+  VkrHarnessSceneManifest new_source = {0};
+  assert(vkr_harness_scene_manifest_build(root, "assets/scenes/test.scene.json",
+                                          arena, &new_source, &error));
+  assert(strcmp(astc_host.sha256, new_source.sha256) != 0);
+  arena_destroy(arena);
+
+  const char *files[] = {packed_path, texture_path, scene_path};
+  for (uint32_t i = 0u; i < ArrayCount(files); ++i) {
+    FilePath file = vkr_harness_file_path(files[i]);
+    assert(file_remove(&file) == FILE_ERROR_NONE);
+  }
+  const char *directories[] = {textures, scenes, assets, root};
+  for (uint32_t i = 0u; i < ArrayCount(directories); ++i) {
+#if defined(_WIN32)
+    assert(_rmdir(directories[i]) == 0);
+#else
+    assert(rmdir(directories[i]) == 0);
+#endif
+  }
+  printf("  test_harness_scene_manifest_identity_is_host_neutral PASSED\n");
+}
+
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_json_integer_and_escaped_key_boundaries();
@@ -3100,6 +3225,7 @@ bool32_t run_harness_tests(void) {
   test_harness_scene_manifest_uppercase_obj_owner();
   test_harness_managed_workspace_closure();
 #endif
+  test_harness_scene_manifest_identity_is_host_neutral();
   test_harness_subsystem_plans();
   test_harness_case_profile_pairing();
   test_harness_assertion_verdict();
