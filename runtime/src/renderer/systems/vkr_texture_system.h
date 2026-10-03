@@ -33,7 +33,7 @@ typedef struct VkrTextureSystemConfig {
   const VkrAssetPublisher *asset_publisher;
   /* Largest base extent of a loaded 2D texture with a mip chain: loads skip
    * the mips above it. Zero loads every mip (ADR-083). A request's
-   * `max_extent=N` query can only tighten it. */
+   * `max_extent=N` query, zero for none, replaces it for that request. */
   uint32_t max_load_dimension;
 } VkrTextureSystemConfig;
 
@@ -257,8 +257,8 @@ bool8_t vkr_texture_system_publication_confirmed(VkrTextureSystem *system,
 
 /**
  * @brief True when loading a live texture's source again with the request
- * load limit `max_extent` (`max_extent=N`; zero for none), combined with the
- * system's limit, would store a different mip chain than the texture holds.
+ * load limit `max_extent` (`max_extent=N`; zero for none) would store a
+ * different mip chain than the texture holds.
  */
 bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
                                               VkrTextureHandle handle,

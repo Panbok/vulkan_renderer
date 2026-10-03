@@ -143,9 +143,10 @@ decode, for every KTX2 load. The texture then
 loads as its first mip within the limit; the kept mips move to 16-byte-aligned
 offsets at the front of the upload bytes. Cubemaps, arrays and single-level
 images load unchanged, and the smallest mip always remains. The Graphics
-setting `texture_resolution` selects 1024, 2048 or full resolution, applies
-at the next start, and defaults to 2048 on Metal and full resolution on Vulkan
-(ADR-083's memory floor). Cooked files do not change.
+setting `texture_resolution` selects 1024, 2048 or full resolution and
+defaults to 2048 on Metal and full resolution on Vulkan (ADR-083's memory
+floor). Scene material textures reload when it changes, as described below;
+other textures take it at the next start. Cooked files do not change.
 Bistro, measured on the M1 Pro (Metal Release, a one-repetition copy of
 `bistro_metal_production_040`, `local-windowed-gpu-single`, 2026-10-03):
 texture memory fell from 3.176 to 1.995 GB and driver allocation from 5.86 to
@@ -163,9 +164,13 @@ or with `scene.textures`, and undo restores it. The runtime reads it from the
 sidecar before the scene's materials stream
 ([sample runtime](../../runtime/src/vkr_sample_runtime.c)), then follows the
 container Play would simulate: the scene, or the World when no scene is open.
-Material texture requests carry it as a `max_extent=N` query, and the texture
-system applies the tighter of that and the Graphics limit
+Material texture requests carry the effective limit, the tighter of the live
+Graphics setting and the scene's, as a `max_extent=N` query, `max_extent=0`
+for full resolution. That query replaces the texture system's startup limit
 ([texture system](../../runtime/src/renderer/systems/vkr_texture_system.c)).
+Because the name says which limit a texture was loaded at, a reload never
+gets back the texture it replaces. A Graphics change therefore reloads
+material textures at once and needs no restart.
 Each texture records the larger side and level count of its stored chain, so a
 changed limit reloads only textures whose chain would differ; 1K textures stay
 loaded under a 2K limit. Reloads run through the material texture stream queue
@@ -176,7 +181,11 @@ released. Additive scenes follow the primary scene's limit.
 Bistro on the M1 Pro (Debug editor, headless, Graphics limit 2048, isolated
 settings, 2026-10-03): `stats.texture_mb` read 1099.55 MiB at full, 347.69 MiB
 45 s after `scene.textures 1024`, and 1099.55 MiB again 45 s after `undo`.
-Each of the three readings had no pending textures. Frame time and image quality were not measured.
+Each of the three readings had no pending textures. A second run with the
+same configuration changed the Graphics setting live: 1099.55 MiB at 2048,
+347.69 MiB at 1024 (`gfx.restart` false), 1778.27 MiB at full, 347.69 MiB at
+full with `scene.textures 1024`, and 1099.55 MiB again at 2048 after undoing
+the scene limit. Frame time and image quality were not measured.
 
 For ordinary texture jobs, the offline packer filters `color-srgb` RGB channels in linear light using the
 [sRGB transfer functions](https://registry.khronos.org/DataFormat/specs/1.4/dataformat.1.4.html),

@@ -318,8 +318,8 @@ static void test_texture_ktx2_native_block_decode(void) {
 /* A load limit drops the mips above it: the texture loads as its first mip
  * within the limit, with the kept levels' own blocks packed at aligned
  * offsets. A limit at or above the base extent leaves the chain unchanged,
- * and the smallest mip always remains. The system's limit and a request's
- * `max_extent` combine to the tighter one, and every load reports the stored
+ * and the smallest mip always remains. A request's `max_extent`, zero
+ * included, replaces the system's limit, and every load reports the stored
  * chain a later limit would shorten. */
 static void test_texture_ktx2_load_dimension_cap(void) {
   printf("  Running test_texture_ktx2_load_dimension_cap...\n");
@@ -335,13 +335,19 @@ static void test_texture_ktx2_load_dimension_cap(void) {
 
   const struct {
     uint32_t limit;
-    uint32_t request_limit;
+    const char *query;
     uint32_t extent;
     uint32_t first_level;
   } cases[] = {
-      {8u, 0u, 8u, 1u},   {4u, 0u, 4u, 2u},  {2u, 0u, 4u, 2u},
-      {16u, 0u, 16u, 0u}, {0u, 0u, 16u, 0u}, {0u, 8u, 8u, 1u},
-      {8u, 4u, 4u, 2u},   {4u, 8u, 4u, 2u},  {0u, 16u, 16u, 0u},
+      {8u, "", 8u, 1u},
+      {4u, "", 4u, 2u},
+      {2u, "", 4u, 2u},
+      {16u, "", 16u, 0u},
+      {0u, "", 16u, 0u},
+      {0u, "?max_extent=8", 8u, 1u},
+      {8u, "?cs=linear&max_extent=4", 4u, 2u},
+      {4u, "?max_extent=8", 8u, 1u},
+      {8u, "?max_extent=0", 16u, 0u},
   };
   Arena *arena = arena_create(KB(64), KB(64));
   assert(arena);
@@ -353,13 +359,8 @@ static void test_texture_ktx2_load_dimension_cap(void) {
         .config = {.max_load_dimension = cases[i].limit},
     };
     char request[128];
-    if (cases[i].request_limit) {
-      snprintf(request, sizeof(request),
-               "tests/tmp/capped-blocks.vkt?cs=linear&max_extent=%u",
-               cases[i].request_limit);
-    } else {
-      snprintf(request, sizeof(request), "tests/tmp/capped-blocks.vkt");
-    }
+    snprintf(request, sizeof(request), "tests/tmp/capped-blocks.vkt%s",
+             cases[i].query);
     const String8 source =
         string8_create_from_cstr((const uint8_t *)request, strlen(request));
     VkrTexturePreparedLoad prepared = {0};

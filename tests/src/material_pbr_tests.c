@@ -1772,6 +1772,16 @@ vkr_internal void test_material_texture_limit_reloads_changed_textures(
   assert(!vkr_texture_system_get_by_handle(&ctx->texture_system, limited));
   assert(system->texture_stream_resident_bytes == resident_bytes);
 
+  /* Material requests name their own limit, so the texture system's startup
+   * limit, here 4, does not cap a later, larger one. */
+  ctx->texture_system.config.max_load_dimension = 4u;
+  vkr_material_system_set_texture_extent_limit(system, 8u);
+  const VkrTextureHandle raised = material_pbr_test_pump_until_extent(
+      ctx, material, VKR_TEXTURE_SLOT_DIFFUSE, 8u);
+  texture = vkr_texture_system_get_by_handle(&ctx->texture_system, raised);
+  assert(texture->description.mip_levels == 2u);
+  ctx->texture_system.config.max_load_dimension = 0u;
+
   vkr_material_system_cancel_texture_streams(system, material);
   vkr_resource_system_shutdown();
   vkr_job_system_shutdown(&jobs);

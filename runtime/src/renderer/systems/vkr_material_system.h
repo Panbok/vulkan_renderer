@@ -63,8 +63,6 @@ typedef struct VkrMaterialTextureStream {
    * request. */
   char path[VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX];
   uint32_t path_length;
-  /* The load limit the last request carried; zero for none. */
-  uint32_t request_limit;
   /* A queued or loading stream that replaces this slot's resident texture
    * with one loaded at the current limit. */
   bool8_t reload;
@@ -143,8 +141,8 @@ typedef struct VkrMaterialSystem {
   uint64_t texture_stream_budget_bytes;
   uint64_t texture_stream_capacity_retry_high_water;
   bool8_t texture_stream_budget_user_configured;
-  /* Load limit (`max_extent=N`) of material texture requests; zero for
-   * none. The texture system's own limit still applies. */
+  /* Load limit (`max_extent=N`) of material texture requests, zero for
+   * none. It replaces the texture system's limit for these requests. */
   uint32_t texture_extent_limit;
   /* Resident textures may differ from what the limit loads. */
   bool8_t texture_reload_pending;
@@ -212,8 +210,9 @@ bool8_t vkr_material_system_replace(
 
 /**
  * Sets the load limit of material texture requests: the largest extent of a
- * loaded texture, zero for none, combined with the texture system's limit.
- * Later requests carry it. Resident textures whose mip chain it changes
+ * loaded texture, zero for none. It replaces the texture system's limit for
+ * these requests, so callers pass the effective limit. Later requests carry
+ * it. Resident textures whose mip chain it changes
  * reload through the bounded stream queue, recently drawn materials first,
  * and keep their texture bound until the reload binds.
  */

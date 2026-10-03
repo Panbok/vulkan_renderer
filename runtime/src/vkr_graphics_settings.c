@@ -104,7 +104,8 @@ static const VkrPropertyDesc s_graphics_properties[] = {
     {.name = "texture_resolution",
      .label = "Texture resolution",
      .tooltip = "Largest texture size to load; lower values use less memory. "
-                "Applies after restart",
+                "Scene materials reload at once; other textures change after "
+                "restart",
      .names = s_texture_resolution_names,
      .offset = GRAPHICS_OFFSET(texture_resolution),
      .kind = VKR_PROPERTY_U32,
@@ -366,8 +367,7 @@ bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
   return a->vsync != b->vsync || a->hdr != b->hdr ||
          a->temporal_upscaling != b->temporal_upscaling ||
          a->dynamic_resolution != b->dynamic_resolution ||
-         a->render_scale != b->render_scale ||
-         a->texture_resolution != b->texture_resolution;
+         a->render_scale != b->render_scale;
 }
 
 uint32_t vkr_graphics_settings_texture_max_dimension(

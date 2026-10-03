@@ -24,7 +24,8 @@ typedef struct VkrGraphicsSettings {
   bool8_t contact_shadows;
   /* Largest loaded texture extent: 0 is 1024, 1 is 2048, 2 is full
    * resolution. Metal defaults to 2048 for the unified-memory floor
-   * (ADR-083); a change applies at the next start. */
+   * (ADR-083). Scene material textures reload when it changes; other
+   * textures take it at the next start. */
   uint32_t texture_resolution;
   bool8_t screen_space_reflections, screen_space_gi, reflection_probes;
   bool8_t subsurface_scattering, fog, volumetric_fog;

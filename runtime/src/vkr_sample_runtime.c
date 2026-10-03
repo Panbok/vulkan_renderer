@@ -177,6 +177,9 @@ typedef struct State {
   VkrSampleUiClient ui;
   VkrGraphicsSettingsState graphics;
   VkrGraphicsSettings graphics_started;
+  /* Texture limit of the scene being loaded or open, zero for full; the
+     Graphics texture resolution also caps material textures. */
+  uint32_t scene_texture_extent;
   /* The renderer took the loaded presentation and scale settings. */
   bool8_t graphics_present_live;
   bool8_t graphics_scale_live;
@@ -1332,17 +1335,30 @@ static VkrScene *sample_simulated_scene(VkrStandardSceneRuntime *application,
   return handle ? vkr_scene_handle_get_scene(handle) : NULL;
 }
 
-/* Material textures load at the texture limit of the container Play would
- * simulate. While a scene loads, the limit its sidecar held when the load
- * began stays in effect. */
+/* Material textures load at the tighter of the live Graphics texture
+ * resolution and the scene's texture limit. */
+vkr_internal void
+sample_apply_texture_limit(VkrStandardSceneRuntime *application) {
+  const uint32_t graphics =
+      vkr_graphics_settings_texture_max_dimension(&state->graphics.settings);
+  const uint32_t scene_extent = state->scene_texture_extent;
+  uint32_t limit = graphics ? graphics : scene_extent;
+  if (graphics && scene_extent) {
+    limit = Min(graphics, scene_extent);
+  }
+  vkr_material_system_set_texture_extent_limit(
+      &application->assets.material_system, limit);
+}
+
+/* The scene's limit follows the container Play would simulate. While a scene
+ * loads, the limit its sidecar held when the load began stays in effect. */
 vkr_internal void
 sample_sync_texture_limit(VkrStandardSceneRuntime *application) {
   const VkrScene *scene = sample_simulated_scene(application, NULL);
   if (scene) {
-    vkr_material_system_set_texture_extent_limit(
-        &application->assets.material_system,
-        scene->settings.texture_max_extent);
+    state->scene_texture_extent = scene->settings.texture_max_extent;
   }
+  sample_apply_texture_limit(application);
 }
 
 vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
@@ -2075,8 +2091,8 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
       string8_create_from_cstr((const uint8_t *)state->sidecar_path,
                                strlen(state->sidecar_path)),
       &scene_settings);
-  vkr_material_system_set_texture_extent_limit(
-      &application->assets.material_system, scene_settings.texture_max_extent);
+  state->scene_texture_extent = scene_settings.texture_max_extent;
+  sample_apply_texture_limit(application);
 
   VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene_path,

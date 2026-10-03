@@ -492,8 +492,7 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
                               !settings.temporal_upscaling};
     snprintf(dynamic->text, sizeof(dynamic->text), "Dynamic resolution");
 
-    /* The scene's texture limit; the Graphics limit, applied at the next
-       start, still caps it. */
+    /* The scene's texture limit; the Graphics limit still caps it. */
     const VkrScene *scene = view_texture_scene(frame);
     const uint32_t graphics_limit =
         vkr_graphics_settings_texture_max_dimension(&settings);

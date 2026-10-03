@@ -286,34 +286,40 @@ static void vkr_material_system_remove_texture_stream(VkrMaterialSystem *system,
 /* Room for `&max_extent=` with ten digits and the terminator. */
 #define VKR_MATERIAL_TEXTURE_LIMIT_QUERY_MAX 24u
 
-/* The load limit a stream's requests carry: the system's, unless its path
- * leaves no room for the query. */
-static uint32_t
-vkr_material_stream_limit(const VkrMaterialSystem *system,
-                          const VkrMaterialTextureStream *stream) {
+/* Whether a stream's path leaves room for the load limit's query. A path
+ * without it loads under the texture system's own limit and never reloads. */
+static bool8_t
+vkr_material_stream_carries_limit(const VkrMaterialTextureStream *stream) {
   return stream->path_length + VKR_MATERIAL_TEXTURE_LIMIT_QUERY_MAX <=
-                 VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX
-             ? system->texture_extent_limit
-             : 0u;
+         VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX;
 }
 
-/* Writes the stream's next request into `path`: the material's request and,
- * with a limit, its `max_extent` query. */
+/* Whether `texture`, bound through `stream`, holds a different mip chain
+ * than a request at the current limit would load. */
+static bool8_t vkr_material_stream_stale(VkrMaterialSystem *system,
+                                         const VkrMaterialTextureStream *stream,
+                                         VkrTextureHandle texture) {
+  return vkr_material_stream_carries_limit(stream) &&
+         vkr_texture_system_load_limit_changes(system->texture_system, texture,
+                                               system->texture_extent_limit);
+}
+
+/* Writes the stream's next request into `path`: the material's request and
+ * its `max_extent` query, which names the limit, zero included, so requests
+ * at different limits never share a texture. */
 static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
                                            VkrMaterialTextureStream *stream) {
-  const uint32_t limit = vkr_material_stream_limit(system, stream);
   uint32_t length = stream->path_length;
-  if (limit != 0u) {
+  if (vkr_material_stream_carries_limit(stream)) {
     bool8_t has_query = false_v;
     for (uint32_t i = 0u; i < stream->path_length && !has_query; ++i) {
       has_query = stream->path[i] == '?';
     }
     length += (uint32_t)snprintf(
         stream->path + length, VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX - length,
-        "%cmax_extent=%u", has_query ? '&' : '?', limit);
+        "%cmax_extent=%u", has_query ? '&' : '?', system->texture_extent_limit);
   }
   stream->path[length] = '\0';
-  stream->request_limit = limit;
   return string8_create((uint8_t *)stream->path, length);
 }
 
@@ -756,7 +762,7 @@ static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
     system->texture_stream_resident_count++;
     system->texture_stream_resident_bytes += incoming;
     system->texture_stream_applied_total++;
-    if (stream->request_limit != vkr_material_stream_limit(system, stream)) {
+    if (vkr_material_stream_stale(system, stream, texture)) {
       system->texture_reload_pending = true_v;
     }
   }
@@ -996,9 +1002,8 @@ vkr_material_system_reload_needed(VkrMaterialSystem *system,
     const VkrMaterialTextureStream *stream = &system->texture_streams[i];
     if (stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT &&
         !stream->replacement && vkr_material_stream_same_slot(stream, reload)) {
-      return vkr_texture_system_load_limit_changes(
-          system->texture_system, stream->resident_texture,
-          vkr_material_stream_limit(system, reload));
+      return vkr_material_stream_stale(system, stream,
+                                       stream->resident_texture);
     }
   }
   return false_v;
@@ -1031,9 +1036,8 @@ vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
                                 system, stream) == system->texture_stream_epoch;
       if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
           stream->replacement || stream->reloading || drawn != (pass == 0u) ||
-          !vkr_texture_system_load_limit_changes(
-              system->texture_system, stream->resident_texture,
-              vkr_material_stream_limit(system, stream))) {
+          !vkr_material_stream_stale(system, stream,
+                                     stream->resident_texture)) {
         continue;
       }
       if (outstanding >= VKR_MATERIAL_TEXTURE_RELOAD_MAX ||
@@ -1366,8 +1370,8 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
     system->texture_stream_resident_count++;
     system->texture_stream_resident_bytes += incoming_bytes;
     system->texture_stream_applied_total++;
-    /* A request sent before the limit last changed may hold the old chain. */
-    if (stream->request_limit != vkr_material_stream_limit(system, stream)) {
+    /* A request sent before the limit last changed holds the old chain. */
+    if (vkr_material_stream_stale(system, stream, texture_handle)) {
       system->texture_reload_pending = true_v;
     }
     i = vkr_material_system_retire_slot_streams(system, i);

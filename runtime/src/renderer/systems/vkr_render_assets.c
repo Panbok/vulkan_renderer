@@ -79,6 +79,10 @@ bool8_t vkr_render_assets_initialize(
     log_error("Material assets initialization failed");
     return false_v;
   }
+  /* Material requests name their limit; until a scene sets one, it is the
+     startup limit every other texture loads with. */
+  vkr_material_system_set_texture_extent_limit(&assets->material_system,
+                                               texture_max_load_dimension);
   VkrMeshManagerConfig mesh_config = {.max_mesh_count = 16384};
   if (!vkr_mesh_manager_init(&assets->mesh_manager, &assets->geometry_system,
                              &assets->material_system, &mesh_config)) {

@@ -116,9 +116,15 @@ static const char *const eval_view_members[] = {"camera",
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion", NULL};
-static const char *const eval_gfx_members[] = {
-    "render_scale", "dynamic",        "vsync",    "preset",
-    "restart",      "invert_mouse_y", "high_dpi", NULL};
+static const char *const eval_gfx_members[] = {"render_scale",
+                                               "dynamic",
+                                               "vsync",
+                                               "preset",
+                                               "restart",
+                                               "invert_mouse_y",
+                                               "high_dpi",
+                                               "texture_resolution",
+                                               NULL};
 static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
                                                "epic", "custom", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
@@ -752,6 +758,11 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         return true_v;
       case 6:
         *out = eval_bool(settings->high_dpi);
+        return true_v;
+      case 7:
+        /* Texels; zero is full resolution. */
+        *out =
+            eval_number(vkr_graphics_settings_texture_max_dimension(settings));
         return true_v;
       default:
         break;
@@ -1424,6 +1435,20 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
       if (preset < 0 || preset >= (int32_t)VKR_GRAPHICS_PRESET_CUSTOM)
         return eval_fail(eval, "Unknown preset '%s'", value->text);
       vkr_graphics_settings_apply_preset(&settings, (VkrGraphicsPreset)preset);
+    } else if (index == 7 &&
+               eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member)) {
+      /* The one of the three choices whose texel limit is the value; zero
+         is full. */
+      VkrGraphicsSettings choice = settings;
+      bool8_t found = false_v;
+      for (uint32_t i = 0u; i < 3u && !found; ++i) {
+        choice.texture_resolution = i;
+        found = (float64_t)vkr_graphics_settings_texture_max_dimension(
+                    &choice) == value->number;
+      }
+      if (!found)
+        return eval_fail(eval, "Use 1024, 2048 or 0 for full resolution");
+      settings.texture_resolution = choice.texture_resolution;
     } else {
       return eval->error[0] ? false_v
                             : eval_fail(eval, "Cannot assign gfx.%.*s",

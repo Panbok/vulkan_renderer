@@ -67,8 +67,9 @@ typedef struct VkrTextureRequest {
   bool8_t has_explicit_colorspace;
   bool8_t has_explicit_class;
   bool8_t source_only;
-  /* `max_extent=N`: the request's load limit; zero leaves only the system's
-   * limit. */
+  /* `max_extent=N`: the request's own load limit, zero for none, which
+   * replaces the system's limit. */
+  bool8_t has_max_extent;
   uint32_t max_extent;
 } VkrTextureRequest;
 
@@ -303,10 +304,11 @@ vkr_internal bool8_t vkr_texture_scan_query_source_only(String8 query) {
   return source_only;
 }
 
-/* The last valid `max_extent` value; zero when absent or invalid. */
-vkr_internal uint32_t vkr_texture_scan_query_max_extent(String8 query) {
+/* Finds the last valid `max_extent` value; false when none is present. */
+vkr_internal bool8_t vkr_texture_scan_query_max_extent(String8 query,
+                                                       uint32_t *out_extent) {
   const String8 max_extent_key = string8_lit("max_extent");
-  uint32_t max_extent = 0u;
+  bool8_t found = false_v;
 
   uint64_t cursor = 0;
   String8 key = {0};
@@ -315,11 +317,12 @@ vkr_internal uint32_t vkr_texture_scan_query_max_extent(String8 query) {
     uint32_t parsed = 0u;
     if (string8_equalsi(&key, &max_extent_key) &&
         string8_to_u32(&value, &parsed)) {
-      max_extent = parsed;
+      *out_extent = parsed;
+      found = true_v;
     }
   }
 
-  return max_extent;
+  return found;
 }
 
 vkr_internal bool8_t vkr_texture_contains_token_ci(String8 name,
@@ -435,6 +438,9 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
     }
   }
 
+  uint32_t max_extent = 0u;
+  const bool8_t has_max_extent =
+      vkr_texture_scan_query_max_extent(query, &max_extent);
   return (VkrTextureRequest){
       .base_path = base_path,
       .colorspace = colorspace,
@@ -442,7 +448,8 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
       .has_explicit_colorspace = scan.has_explicit,
       .has_explicit_class = has_explicit_class,
       .source_only = vkr_texture_scan_query_source_only(query),
-      .max_extent = vkr_texture_scan_query_max_extent(query),
+      .has_max_extent = has_max_extent,
+      .max_extent = max_extent,
   };
 }
 
@@ -2211,14 +2218,6 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
 /* The 16-byte block size bounds the alignment the kept images retain. */
 #define VKR_TEXTURE_CAP_REGION_ALIGNMENT_MAX 16u
 
-/* The tighter of two load limits; zero is no limit. */
-vkr_internal uint32_t vkr_texture_combined_limit(uint32_t a, uint32_t b) {
-  if (a == 0u) {
-    return b;
-  }
-  return b == 0u ? a : Min(a, b);
-}
-
 /* Mips a load limit drops from a chain of `mip_levels` whose base level's
  * larger side is `extent`: the first kept mip is the first at or below the
  * limit, and the smallest mip always remains. */
@@ -2346,10 +2345,9 @@ bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
   if (!texture || texture->limit_source_mip_levels == 0u) {
     return false_v;
   }
-  const uint32_t skip = vkr_texture_limit_skip(
-      texture->limit_source_extent, texture->limit_source_mip_levels,
-      vkr_texture_combined_limit(system->config.max_load_dimension,
-                                 max_extent));
+  const uint32_t skip =
+      vkr_texture_limit_skip(texture->limit_source_extent,
+                             texture->limit_source_mip_levels, max_extent);
   return skip + texture->description.mip_levels !=
          texture->limit_source_mip_levels;
 }
@@ -2432,8 +2430,8 @@ bool8_t vkr_texture_system_prepare_load_from_file(
   if (has_upload_payload) {
     vkr_texture_decode_result_cap_extent(
         &decode_result,
-        vkr_texture_combined_limit(system->config.max_load_dimension,
-                                   request.max_extent),
+        request.has_max_extent ? request.max_extent
+                               : system->config.max_load_dimension,
         &limit_source_extent, &limit_source_mip_levels);
   }
 
