@@ -517,8 +517,13 @@ vkr_internal bool8_t vkr_bakery_mesh_collect(VkrBakeryTask *task,
         char name[64];
         (void)snprintf(name, sizeof(name), "side/%u", side_index++);
         const char *staged = vkr_bakery_task_stage(task, name);
-        ok = vkr_bakery_clone_or_copy(absolute, staged) &&
-             vkr_bakery_task_side_product(task, "side", staged, absolute);
+        if (!vkr_bakery_clone_or_copy(absolute, staged)) {
+          vkr_bakery_task_fail(task, "could not stage generated output %s",
+                               absolute);
+          ok = false_v;
+        } else {
+          ok = vkr_bakery_task_side_product(task, "side", staged, absolute);
+        }
       } else {
         vkr_bakery_task_discovered(task, absolute);
       }
