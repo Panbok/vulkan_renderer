@@ -72,6 +72,20 @@ bool8_t vkr_ui_draw_buffer_solid(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                  });
 }
 
+bool8_t vkr_ui_draw_buffer_gradient(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
+                                    Vec4 start, Vec4 end, bool8_t vertical) {
+  return vkr_ui_draw_buffer_push(
+      buffer, (VkrUiDrawCommand){
+                  .rect_px = rect_px,
+                  .uv_rect = {0.0f, 0.0f, 1.0f, 1.0f},
+                  .color = start,
+                  .border_color = end,
+                  .mode = VKR_UI_DRAW_MODE_QUAD,
+                  .gradient = vertical ? VKR_UI_DRAW_GRADIENT_VERTICAL
+                                       : VKR_UI_DRAW_GRADIENT_HORIZONTAL,
+              });
+}
+
 bool8_t vkr_ui_draw_buffer_polygon(VkrUiDrawBuffer *buffer,
                                    const Vec2 corners_px[4], Vec4 color) {
   VkrUiDrawCommand command = {.color = color, .mode = VKR_UI_DRAW_MODE_QUAD};
@@ -179,6 +193,9 @@ static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
       !isfinite(command.border_px) || command.border_px < 0.0f ||
       !isfinite(command.softness_px) || command.softness_px < 0.0f ||
       command.mode >= VKR_UI_DRAW_MODE_COUNT ||
+      command.gradient > VKR_UI_DRAW_GRADIENT_VERTICAL ||
+      (command.gradient &&
+       (command.mode != VKR_UI_DRAW_MODE_QUAD || command.corner_count)) ||
       !isfinite(command.screen_px_range) || command.screen_px_range < 0.0f)
     return false_v;
   if (command.corner_count) {
@@ -302,8 +319,15 @@ static void vkr_ui_draw_write_quad(const VkrUiDrawCommand *command,
                           {outer.x, outer.y},
                           {outer.x, -outer.y},
                           {-outer.x, -outer.y}};
+  /* Corners 1 and 2 are the right edge; 0 and 1 the bottom. */
+  const bool8_t ends[3][4] = {{false_v, false_v, false_v, false_v},
+                              {false_v, true_v, true_v, false_v},
+                              {true_v, true_v, false_v, false_v}};
   for (uint32_t i = 0u; i < 4u; ++i) {
     VkrUiVertex vertex = shared;
+    if (ends[command->gradient][i]) {
+      vertex.color = command->border_color;
+    }
     vertex.position = positions[i];
     vertex.texcoord = texcoords[i];
     vertex.local_px = locals[i];

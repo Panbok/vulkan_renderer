@@ -147,6 +147,8 @@ bool8_t vkr_ui_style_resolve(const VkrUiStyle *style, float32_t content_scale,
       .hover_background_color = style->hover_background_color,
       .active_background_color = style->active_background_color,
       .shadow_color = style->shadow_color,
+      .gradient_color = style->gradient_color,
+      .gradient = style->gradient,
       .shadow_offset_px = vec2_scale(style->shadow_offset_pt, content_scale),
       .shadow_blur_px = style->shadow_blur_pt * content_scale,
   };

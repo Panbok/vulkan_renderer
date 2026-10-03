@@ -5,6 +5,8 @@
 #define VKR_EDITOR_SCENE_TOOLBAR_LAYER 1u
 #define VKR_EDITOR_VIEW_TOOLBAR_LAYER 2u
 #define VKR_EDITOR_NAVIGATION_HEIGHT_PT VKR_UI_DOCK_TOOLBAR_PT
+/* Context menus and the color picker sit above floating windows. */
+#define VKR_EDITOR_POPUP_LAYER (VKR_EDITOR_WINDOW_COUNT + 3u)
 /* Cmd bar suggestions sit above menus and floating windows. */
 #define VKR_EDITOR_CMD_LAYER (VKR_EDITOR_WINDOW_COUNT + 4u)
 
@@ -162,6 +164,13 @@ void vkr_editor_context_open(VkrEditorUi *editor, VkrEditorContextKind kind,
    that just ran, if any; call once after each Details panel. */
 void vkr_editor_context_open_choice(VkrEditorUi *editor,
                                     struct VkrEditorDetails *details);
+/* Open the color picker a Details swatch asked for during the build that
+   just ran, if any; call once after each Details panel. */
+void vkr_editor_color_picker_open(VkrEditorUi *editor,
+                                  struct VkrEditorDetails *details);
+/* The open color picker popup; call after the panels each frame. */
+void vkr_editor_color_picker_build(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame);
 VkrUiRect vkr_editor_context_menu_rect(const VkrEditorUi *editor,
                                        const VkrUiSystem *ui);
 /* The open submenu's pixels, or an empty rect. */

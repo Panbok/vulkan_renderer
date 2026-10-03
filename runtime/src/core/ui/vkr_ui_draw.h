@@ -30,7 +30,16 @@ typedef struct VkrUiDrawCommand {
   float32_t screen_px_range;
   /** Normalized atlas distance range used by the MTSDF shader. */
   Vec2 sdf_unit_range;
+  /** A plain quad's fill blends `color` into `border_color` across it:
+   * VKR_UI_DRAW_GRADIENT_*. Vertex colors interpolate in linear space. */
+  uint32_t gradient;
 } VkrUiDrawCommand;
+
+enum {
+  VKR_UI_DRAW_GRADIENT_NONE = 0,
+  VKR_UI_DRAW_GRADIENT_HORIZONTAL, /* Left to right. */
+  VKR_UI_DRAW_GRADIENT_VERTICAL,   /* Top to bottom. */
+};
 
 typedef struct VkrUiDrawBuffer {
   VkrUiDrawCommand *commands;
@@ -63,6 +72,10 @@ bool8_t vkr_ui_draw_buffer_push(VkrUiDrawBuffer *buffer,
                                 VkrUiDrawCommand command);
 bool8_t vkr_ui_draw_buffer_solid(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                  Vec4 color);
+/** A plain quad blending `start` into `end`, left to right or top to bottom;
+ * colors are linear like the other commands'. */
+bool8_t vkr_ui_draw_buffer_gradient(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
+                                    Vec4 start, Vec4 end, bool8_t vertical);
 /** Convex icon quad with a one-device-pixel alpha fringe centered on its
  * edges.
  * Repeat the last corner for a triangle. Edges must support a 0.5px

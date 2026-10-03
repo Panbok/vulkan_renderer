@@ -64,6 +64,12 @@ typedef enum VkrPropertyFlags {
   /** STRING edited in a multi-line text area whose keystrokes apply as they
    * are typed. */
   VKR_PROPERTY_FLAG_MULTILINE = 1u << 4,
+  /** VEC4 holding linear RGBA, edited like a COLOR with a swatch and the
+   * color picker. */
+  VKR_PROPERTY_FLAG_COLOR = 1u << 5,
+  /** A COLOR or color VEC4 whose RGB is display-encoded sRGB rather than
+   * linear; alpha stays linear. */
+  VKR_PROPERTY_FLAG_SRGB = 1u << 6,
 } VkrPropertyFlags;
 
 /** Per-frame presentation state a type reports for one property. */

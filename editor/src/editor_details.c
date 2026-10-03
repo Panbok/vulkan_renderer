@@ -1,6 +1,7 @@
 #include "editor_details.h"
 
 #include "editor_internal.h"
+#include "vkr_color_transfer.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -72,6 +73,11 @@ void vkr_editor_details_cancel(VkrEditorDetails *details, VkrUiSystem *ui) {
   details->edit_original[0] = 0;
   details->choice_requested = false_v;
   details->choice_picked = false_v;
+  details->color_requested = false_v;
+  details->color_pending = false_v;
+  details->color_dragging = false_v;
+  /* An open picker closes once its field is gone. */
+  details->color_field = 0;
   details->gesture_active = false_v;
   details->gesture_held = false_v;
   details->gesture = 0u;
@@ -474,16 +480,17 @@ static bool8_t details_scalar_row(DetailsBuild *build, uint32_t index,
   return true_v;
 }
 
-/* sRGB swatch for a linear color, clamped to the displayable range. */
-static Vec4 details_swatch(Vec3 linear) {
-  float32_t rgb[3];
+/* Opaque display swatch of a color property's value, clamped to the
+   displayable range. */
+static Vec4 details_swatch(const VkrPropertyDesc *property,
+                           const float32_t floats[4]) {
+  Vec4 swatch = {0.0f, 0.0f, 0.0f, 1.0f};
   for (uint32_t i = 0; i < 3; ++i) {
-    const float32_t channel = linear.elements[i];
-    const float32_t c = Clamp(channel, 0.0f, 1.0f);
-    rgb[i] =
-        c <= 0.0031308f ? c * 12.92f : 1.055f * powf(c, 1.0f / 2.4f) - 0.055f;
+    const float32_t c = Clamp(floats[i], 0.0f, 1.0f);
+    swatch.elements[i] =
+        (property->flags & VKR_PROPERTY_FLAG_SRGB) ? c : vkr_linear_to_srgb(c);
   }
-  return (Vec4){rgb[0], rgb[1], rgb[2], 1.0f};
+  return swatch;
 }
 
 static void details_vector_row(DetailsBuild *build, uint32_t index,
@@ -492,7 +499,7 @@ static void details_vector_row(DetailsBuild *build, uint32_t index,
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrPropertyDesc *property = &build->type->properties[index];
   VkrUiSystem *ui = build->ui;
-  const bool8_t color = property->kind == VKR_PROPERTY_COLOR;
+  const bool8_t color = vkr_editor_details_is_color(property);
   const uint32_t count = property->kind == VKR_PROPERTY_QUAT
                              ? 3u
                              : vkr_property_components(property);
@@ -502,17 +509,45 @@ static void details_vector_row(DetailsBuild *build, uint32_t index,
                                theme->text_secondary};
   float32_t w = build->width;
   if (color) {
-    float32_t floats[4] = {0};
+    VkrEditorDetails *details = build->details;
+    const VkrUiId id =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("swatch"));
+    /* The picker's value applies here, one gesture per picker drag. */
+    if (details->color_field == id && !read_only) {
+      if (details->color_pending) {
+        (void)vkr_property_set_floats(property, build->value,
+                                      details->color_value.elements);
+        details->color_pending = false_v;
+      }
+      if (details->color_dragging) {
+        (void)details_gesture(details, id);
+      }
+    }
+    float32_t floats[4] = {0, 0, 0, 1};
     (void)vkr_property_get_floats(property, build->value, floats);
     VkrUiWidgetConfig swatch = vkr_editor_details_widget(
         w - DETAILS_PAD_PT - 22.0f, *y + 3.0f, 22.0f, DETAILS_ROW_PT - 6.0f);
-    swatch.style.background_color =
-        details_swatch((Vec3){floats[0], floats[1], floats[2], 0.0f});
+    swatch.style.background_color = details_swatch(property, floats);
+    swatch.style.hover_background_color = VKR_UI_COLOR_NONE;
+    swatch.style.active_background_color = VKR_UI_COLOR_NONE;
     swatch.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
     swatch.style.border_color = theme->border_strong;
     swatch.style.corner_radius_pt = (Vec4){4, 4, 4, 4};
-    swatch.tooltip = string8_lit("Linear RGB color");
-    vkr_ui_label(ui, string8_lit("swatch"), (String8){0}, &swatch);
+    swatch.tooltip = read_only ? details_cstr(property->tooltip)
+                               : string8_lit("Pick a color");
+    swatch.disabled = read_only;
+    if (vkr_ui_button(ui, string8_lit("swatch"), (String8){0}, &swatch) &&
+        !read_only) {
+      VkrUiRect rect = {0};
+      (void)vkr_ui_widget_rect(ui, id, &rect);
+      details->color_requested = true_v;
+      details->color_field = id;
+      details->color_property = property;
+      details->color_value = (Vec4){floats[0], floats[1], floats[2], floats[3]};
+      details->color_anchor_pt =
+          (Vec2){(rect.x + rect.width) / ui->content_scale,
+                 (rect.y + rect.height) / ui->content_scale};
+    }
     w -= 28.0f;
   }
   /* Narrow panels move the label above the fields so each axis keeps a
@@ -578,6 +613,12 @@ static void details_bool_row(DetailsBuild *build, uint32_t index, String8 label,
     *target = checked ? true_v : false_v;
   }
   *y += DETAILS_ROW_PT + 2.0f;
+}
+
+bool8_t vkr_editor_details_is_color(const VkrPropertyDesc *property) {
+  return property->kind == VKR_PROPERTY_COLOR ||
+         (property->kind == VKR_PROPERTY_VEC4 &&
+          (property->flags & VKR_PROPERTY_FLAG_COLOR));
 }
 
 /* Shown name of choice `i`: its label, else its name capitalized. */

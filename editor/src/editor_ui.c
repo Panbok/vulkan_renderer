@@ -435,6 +435,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     }
   }
   vkr_editor_context_menu_build(editor, frame);
+  vkr_editor_color_picker_build(editor, frame);
   /* A dragged Content item draws above every panel and drops on the Scene. */
   vkr_editor_content_set_drop_target(
       editor->content, frame->mapping_valid

@@ -86,6 +86,7 @@ void vkr_editor_graphics_build(VkrEditorUi *editor,
       &settings, frame->graphics, false_v);
   vkr_editor_details_end(details);
   vkr_editor_context_open_choice(editor, details);
+  vkr_editor_color_picker_open(editor, details);
 
   y += 10.0f;
   VkrUiWidgetConfig reset = vkr_editor_details_widget(

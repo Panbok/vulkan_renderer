@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define EDITOR_MENU_LAYER (VKR_EDITOR_WINDOW_COUNT + 3u)
+#define EDITOR_MENU_LAYER VKR_EDITOR_POPUP_LAYER
 #define EDITOR_MENU_WIDTH_PT 272.0f
 #define EDITOR_MENU_ROW_PT 26.0f
 #define EDITOR_MENU_SEPARATOR_PT 9.0f

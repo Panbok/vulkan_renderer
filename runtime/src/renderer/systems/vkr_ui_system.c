@@ -2913,6 +2913,16 @@ vkr_internal VkrUiRect vkr_ui_uniform_inset(VkrUiRect rect, float32_t inset) {
   return vkr_ui_rect_inset(rect, (VkrUiEdges){inset, inset, inset, inset});
 }
 
+#define VKR_UI_CHECKBOX_RADIUS_PT 3.0f
+
+/* A checkbox's square at the leading edge of its content, centered on it
+   vertically; its label follows. */
+vkr_internal VkrUiRect vkr_ui_checkbox_box(VkrUiRect content, float32_t scale) {
+  const float32_t size = Min(content.height, 15.0f * scale);
+  return (VkrUiRect){content.x, content.y + (content.height - size) * 0.5f,
+                     size, size};
+}
+
 vkr_internal uint32_t vkr_ui_bezier_segments(const VkrUiFrameNode *node) {
   const bool8_t straight =
       node->bezier_points[0].x == node->bezier_points[1].x &&
@@ -3325,7 +3335,15 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   const bool8_t uniform_border = edges.top == edges.right &&
                                  edges.top == edges.bottom &&
                                  edges.top == edges.left;
-  if (!vkr_ui_edges_have_extent(edges)) {
+  if (node->style.gradient) {
+    /* Authored sRGB endpoints blend in linear space. */
+    if (vkr_ui_color_visible(background) ||
+        vkr_ui_color_visible(node->style.gradient_color))
+      (void)vkr_ui_draw_buffer_gradient(
+          buffer, node->rect, vkr_ui_linear_color(background),
+          vkr_ui_linear_color(node->style.gradient_color),
+          node->style.gradient == VKR_UI_DRAW_GRADIENT_VERTICAL);
+  } else if (!vkr_ui_edges_have_extent(edges)) {
     vkr_ui_emit_rect(buffer, node->rect, background,
                      node->style.corner_radius_px);
   } else if (uniform_border) {
@@ -3469,10 +3487,9 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
     break;
   }
   case VKR_UI_NODE_CHECKBOX: {
-    const float32_t size = Min(content.height, 15.0f * scale);
-    const VkrUiRect box = {
-        content.x, content.y + (content.height - size) * 0.5f, size, size};
-    const float32_t radius = 3.0f * scale;
+    const VkrUiRect box = vkr_ui_checkbox_box(content, scale);
+    const float32_t size = box.width;
+    const float32_t radius = VKR_UI_CHECKBOX_RADIUS_PT * scale;
     const Vec4 radii = {radius, radius, radius, radius};
     Vec4 fill = node->checked
                     ? vkr_ui_color_mix(theme->accent, theme->accent_hover,
@@ -3576,12 +3593,20 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   default:
     break;
   }
-  /* Keyboard focus ring follows the widget's radii. Fields show focus through
-   * their border instead. */
+  /* Keyboard focus ring follows the widget's radii; a checkbox's rings its
+   * box, just outside it. Fields show focus through their border instead. */
   if (node->focusable && node->kind != VKR_UI_NODE_TEXT_FIELD &&
       retained->focus_t > 0.0f && system->focused_id == node->id) {
     const float32_t stroke = Max(1.0f, 1.5f * scale);
-    vkr_ui_emit_box(buffer, node->rect, (Vec4){0}, node->style.corner_radius_px,
+    VkrUiRect ring = node->rect;
+    Vec4 ring_radii = node->style.corner_radius_px;
+    if (node->kind == VKR_UI_NODE_CHECKBOX) {
+      const float32_t gap = 2.0f * scale;
+      ring = vkr_ui_uniform_inset(vkr_ui_checkbox_box(content, scale), -gap);
+      const float32_t radius = VKR_UI_CHECKBOX_RADIUS_PT * scale + gap;
+      ring_radii = (Vec4){radius, radius, radius, radius};
+    }
+    vkr_ui_emit_box(buffer, ring, (Vec4){0}, ring_radii,
                     vkr_ui_color_alpha(theme->focus_ring, retained->focus_t),
                     stroke);
   }

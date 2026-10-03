@@ -320,8 +320,9 @@ use the normal journal. Failed additions return to the form for correction.
 The dockable [Content browser](../editor/src/editor_content.c) refreshes managed
 inventories and owns a bounded thumbnail cache. It is a virtual file system:
 the project's `content.labels.json` holds a folder tree plus each item's folder
-and tags, and files never move. A left folder tree with tags, a clickable
-breadcrumb and back/forward/up navigate folders. Virtualized tiles or a sortable
+and tags, and files never move. A left folder tree with tags and
+back/forward/up navigate folders; one toolbar row holds actions, navigation,
+the search and sorting. Virtualized tiles or a sortable
 Name/Type/Location/Tags list show subfolders, then items: assets, scenes,
 presets, the World and one built-in item per creatable object. Dragging onto a
 folder moves an item; dropping on the viewport opens a scene, adds an object or

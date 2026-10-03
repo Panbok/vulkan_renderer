@@ -47,6 +47,7 @@ vkr_ui_tile_command_fingerprint(const VkrUiDrawCommand *command) {
   VKR_UI_TILE_HASH_FIELD(texture);
   VKR_UI_TILE_HASH_FIELD(screen_px_range);
   VKR_UI_TILE_HASH_FIELD(sdf_unit_range);
+  VKR_UI_TILE_HASH_FIELD(gradient);
 #undef VKR_UI_TILE_HASH_FIELD
   return hash;
 }

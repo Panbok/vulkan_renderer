@@ -3326,39 +3326,17 @@ static void content_tree_panel(VkrEditorContent *content, VkrUiSystem *ui,
   (void)vkr_ui_scroll_area_end(ui);
 }
 
-/* Back, forward, up, then one button per folder from the current folder's
-   root, Content or System, down to it. */
+/* Back, forward and up; the folder tree shows where the browser is. */
 static void content_build_navigation(VkrEditorContent *content,
                                      VkrUiSystem *ui) {
-  enum { SEGMENT_MAX = 6 };
-  uint32_t chain[SEGMENT_MAX];
-  uint32_t chain_count = 0u;
-  bool8_t elided = false_v;
-  /* Walk up from the current folder so the deepest folders stay visible. */
-  uint32_t node = content_tree_find(content, content->folder);
-  while (node != CONTENT_NONE) {
-    if (chain_count == SEGMENT_MAX) {
-      elided = true_v;
-      break;
-    }
-    MemCopy(chain + 1, chain, chain_count * sizeof(chain[0]));
-    chain[0] = node;
-    ++chain_count;
-    node = content->tree[node].parent;
-  }
-  VkrUiTrack columns[3 + SEGMENT_MAX + 1];
-  const uint32_t column_count = 3u + chain_count + 1u;
-  columns[0] = columns[1] = columns[2] = (VkrUiTrack){28, VKR_UI_TRACK_PX};
-  for (uint32_t i = 3; i < column_count - 1u; ++i) {
-    columns[i] = (VkrUiTrack){.unit = VKR_UI_TRACK_AUTO};
-  }
-  columns[column_count - 1u] = (VkrUiTrack){1, VKR_UI_TRACK_FR};
+  const VkrUiTrack columns[] = {
+      {28, VKR_UI_TRACK_PX}, {28, VKR_UI_TRACK_PX}, {28, VKR_UI_TRACK_PX}};
   VkrUiPanelConfig navigation = vkr_ui_panel_config_default();
   navigation.placement.column = 4;
   navigation.placement.row = 0;
   navigation.columns = columns;
-  navigation.column_count = column_count;
-  navigation.clip_children = true_v;
+  navigation.column_count = ArrayCount(columns);
+  navigation.style.gap_pt = 4;
   if (!vkr_ui_panel_begin(ui, string8_lit("navigation"), &navigation)) {
     return;
   }
@@ -3385,47 +3363,18 @@ static void content_build_navigation(VkrEditorContent *content,
   if (vkr_ui_button(ui, string8_lit("up"), (String8){0}, &up)) {
     content_open_folder(content, content->tree[parent].path);
   }
-  const VkrUiTheme *theme = vkr_ui_theme();
-  for (uint32_t i = 0; i < chain_count; ++i) {
-    const ContentFolder *folder = &content->tree[chain[i]];
-    VkrUiWidgetConfig crumb = content_widget(3 + i, 0);
-    vkr_editor_ghost_style(&crumb);
-    crumb.style.text_color =
-        i + 1u == chain_count ? theme->text : theme->text_secondary;
-    crumb.style.padding_pt = (VkrUiEdges){3, 4, 3, 4};
-    if (!i) {
-      crumb.icon = folder->icon;
-      crumb.icon_color = theme->accent_hover;
-    }
-    String8 text = !i ? string8_create_formatted(
-                            ui->frame_allocator, "%s%s", folder->label,
-                            elided ? "  /  \xe2\x80\xa6" : "")
-                      : string8_create_formatted(ui->frame_allocator, "/  %s",
-                                                 folder->label);
-    crumb.tooltip = string8_lit("Show this folder");
-    (void)vkr_ui_push_id_u64(ui, i);
-    const bool8_t drop =
-        content_drop_probe(content, ui, string8_lit("crumb"), folder->path,
-                           (VkrUiRect){0, 0, 1e9f, 1e9f});
-    if (drop) {
-      crumb.style.background_color = vkr_ui_color_alpha(theme->accent, 0.35f);
-    }
-    if (vkr_ui_button(ui, string8_lit("crumb"), text, &crumb)) {
-      content_open_folder(content, folder->path);
-    }
-    (void)vkr_ui_pop_id(ui);
-  }
   (void)vkr_ui_panel_end(ui);
 }
 
 static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
                                   float32_t width, float32_t height) {
-  const VkrUiTrack toolbar_rows[] = {{28, VKR_UI_TRACK_PX},
-                                     {28, VKR_UI_TRACK_PX}};
+  /* One row: actions, navigation, the search filling the middle, then
+     sorting and the view controls. */
+  const VkrUiTrack toolbar_rows[] = {{28, VKR_UI_TRACK_PX}};
   const VkrUiTrack toolbar_columns[] = {
-      {82, VKR_UI_TRACK_PX}, {32, VKR_UI_TRACK_PX}, {32, VKR_UI_TRACK_PX},
-      {32, VKR_UI_TRACK_PX}, {1, VKR_UI_TRACK_FR},  {100, VKR_UI_TRACK_PX},
-      {44, VKR_UI_TRACK_PX}};
+      {82, VKR_UI_TRACK_PX}, {32, VKR_UI_TRACK_PX},  {32, VKR_UI_TRACK_PX},
+      {32, VKR_UI_TRACK_PX}, {92, VKR_UI_TRACK_PX},  {1, VKR_UI_TRACK_FR},
+      {32, VKR_UI_TRACK_PX}, {100, VKR_UI_TRACK_PX}, {44, VKR_UI_TRACK_PX}};
   VkrUiPanelConfig tools = vkr_ui_panel_config_default();
   tools.placement.column = 0;
   tools.placement.row = 0;
@@ -3470,7 +3419,33 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
     vkr_editor_content_refresh(content);
   }
   content_build_navigation(content, ui);
-  VkrUiWidgetConfig details = content_widget(5, 0);
+  VkrUiTextEditBuffer query = {.data = content->query,
+                               .length = content->query_length,
+                               .capacity = sizeof(content->query)};
+  VkrUiPlacement search = VKR_UI_PLACEMENT_DEFAULT;
+  search.column = 5;
+  search.row = 0;
+  if (vkr_editor_search_field(
+          ui, string8_lit("search"), &query, search,
+          string8_lit("Search this folder"),
+          string8_lit("Search names, types, folders and tags below this "
+                      "folder"),
+          VKR_FONT_HANDLE_INVALID)) {
+    content->query_length = query.length;
+    content->filter_dirty = true_v;
+    content->first_row = 0;
+  }
+  VkrUiWidgetConfig sort = vkr_editor_icon_button_config(
+      6, 0,
+      content->reverse_sort ? VKR_UI_ICON_SORT_DESCENDING
+                            : VKR_UI_ICON_SORT_ASCENDING,
+      content->reverse_sort ? string8_lit("Sorted Z to A")
+                            : string8_lit("Sorted A to Z"));
+  if (vkr_ui_button(ui, string8_lit("sort"), (String8){0}, &sort)) {
+    content->reverse_sort = !content->reverse_sort;
+    content->filter_dirty = true_v;
+  }
+  VkrUiWidgetConfig details = content_widget(7, 0);
   vkr_editor_ghost_style(&details);
   details.icon = VKR_UI_ICON_SIDEBAR;
   details.icon_size_pt = 14;
@@ -3482,7 +3457,7 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
     content->details_hidden = !content->details_hidden;
   }
   VkrUiWidgetConfig size = vkr_editor_icon_button_config(
-      6, 0,
+      8, 0,
       content->size == CONTENT_SIZE_LIST ? VKR_UI_ICON_GRID
       : content->size == 128             ? VKR_UI_ICON_ZOOM_IN
                                          : VKR_UI_ICON_LIST,
@@ -3493,47 +3468,6 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
     content->size = content->size == CONTENT_SIZE_LIST ? 128
                     : content->size == 128             ? 256
                                                        : CONTENT_SIZE_LIST;
-  }
-  VkrUiTextEditBuffer query = {.data = content->query,
-                               .length = content->query_length,
-                               .capacity = sizeof(content->query)};
-  VkrUiPlacement search = VKR_UI_PLACEMENT_DEFAULT;
-  search.column = 0;
-  search.row = 1;
-  search.column_span = 5;
-  if (vkr_editor_search_field(
-          ui, string8_lit("search"), &query, search,
-          string8_lit("Search this folder"),
-          string8_lit("Search names, types, folders and tags below this "
-                      "folder"),
-          VKR_FONT_HANDLE_INVALID)) {
-    content->query_length = query.length;
-    content->filter_dirty = true_v;
-    content->first_row = 0;
-  }
-  VkrUiWidgetConfig tag = content_widget(5, 1);
-  vkr_editor_ghost_style(&tag);
-  tag.icon = VKR_UI_ICON_TAG;
-  tag.icon_size_pt = 13;
-  tag.style.text_color = vkr_ui_theme()->text;
-  tag.disabled = !content->tag_filter[0];
-  tag.tooltip = string8_lit("Clear the tag filter");
-  if (vkr_ui_button(ui, string8_lit("tag"),
-                    content_string(content->tag_filter[0] ? content->tag_filter
-                                                          : "Any tag"),
-                    &tag)) {
-    content->tag_filter[0] = '\0';
-    content->filter_dirty = true_v;
-  }
-  VkrUiWidgetConfig sort = vkr_editor_icon_button_config(
-      6, 1,
-      content->reverse_sort ? VKR_UI_ICON_SORT_DESCENDING
-                            : VKR_UI_ICON_SORT_ASCENDING,
-      content->reverse_sort ? string8_lit("Sorted Z to A")
-                            : string8_lit("Sorted A to Z"));
-  if (vkr_ui_button(ui, string8_lit("sort"), (String8){0}, &sort)) {
-    content->reverse_sort = !content->reverse_sort;
-    content->filter_dirty = true_v;
   }
   (void)vkr_ui_panel_end(ui);
 }
@@ -4889,7 +4823,7 @@ void vkr_editor_content_build(VkrEditorContent *content, VkrUiSystem *ui,
   const float32_t height = rect.height / scale;
   const bool8_t list = content->size == CONTENT_SIZE_LIST;
   const float32_t card_width = content->size == 256 ? 164.0f : 112.0f;
-  const float32_t tools_height = 64;
+  const float32_t tools_height = 36;
   const float32_t grid_height = Max(1.0f, height - tools_height - 22);
   /* A short panel shrinks the picture so a tile's name stays visible. */
   const float32_t card_height =

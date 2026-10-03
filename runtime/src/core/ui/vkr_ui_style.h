@@ -27,6 +27,10 @@ typedef struct VkrUiStyle {
   Vec4 shadow_color;
   Vec2 shadow_offset_pt;
   float32_t shadow_blur_pt;
+  /** A borderless, square-cornered background blends background_color into
+   * gradient_color: VKR_UI_DRAW_GRADIENT_* (vkr_ui_draw.h); zero is flat. */
+  Vec4 gradient_color;
+  uint32_t gradient;
 } VkrUiStyle;
 
 typedef struct VkrUiResolvedStyle {
@@ -46,6 +50,8 @@ typedef struct VkrUiResolvedStyle {
   Vec4 shadow_color;
   Vec2 shadow_offset_px;
   float32_t shadow_blur_px;
+  Vec4 gradient_color;
+  uint32_t gradient;
 } VkrUiResolvedStyle;
 
 /** Semantic color, size and spacing tokens shared by every UI surface.

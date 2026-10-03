@@ -46,6 +46,18 @@ typedef struct VkrEditorDetails {
   uint32_t choice_current;
   uint32_t choice_pick;
   Vec2 choice_anchor_pt;
+  /* A color swatch pressed during a build asks the owner to open the color
+   * picker beside `color_anchor_pt` (vkr_editor_color_picker_open). The
+   * picker sets `color_value`, in the property's stored units, with
+   * `color_pending`; the swatch's next build applies it, within one gesture
+   * while `color_dragging`. */
+  bool8_t color_requested;
+  bool8_t color_pending;
+  bool8_t color_dragging;
+  VkrUiId color_field;
+  const VkrPropertyDesc *color_property;
+  Vec4 color_value;
+  Vec2 color_anchor_pt;
 } VkrEditorDetails;
 
 typedef struct VkrEditorDetailsResult {
@@ -64,6 +76,10 @@ typedef struct VkrEditorDetailsResult {
  * last. End closes a gesture whose drag was released this frame. */
 void vkr_editor_details_begin(VkrEditorDetails *details);
 void vkr_editor_details_end(VkrEditorDetails *details);
+
+/* COLOR properties and VEC4s flagged as colors, which show a swatch that
+ * opens the color picker. */
+bool8_t vkr_editor_details_is_color(const VkrPropertyDesc *property);
 
 /* Drop any text entry and release its focus, e.g. when the selection
  * changes. */

@@ -70,6 +70,15 @@ a multi-line text area that applies each keystroke within one undo gesture,
 picks an enum of more than three values from a dropdown, and the viewport
 marks every text with an icon just above its glyphs, because empty or distant
 text is otherwise hard to find.
+
+Every color property shows a swatch that opens the color picker
+([`editor_color.c`](../../editor/src/editor_color.c)): `COLOR` values (linear
+RGB, possibly past 1) and `VEC4` values flagged `VKR_PROPERTY_FLAG_COLOR`
+(linear RGBA, or sRGB RGB with linear alpha under `VKR_PROPERTY_FLAG_SRGB`,
+as text color is). The picker edits the display color as hue, saturation,
+value and alpha, with a hex field, a palette and the session's recent
+colors; a linear color past 1 keeps its intensity. Each drag applies live as
+one undo step, and Escape restores the color it opened with.
 The animation component (clip, rate, loop, playing) belongs to an animated
 mesh's binding: setting it reconciles the player, restarting only when the
 clip or loop changes, and a clip outside the bound bank is rejected. It
@@ -222,11 +231,12 @@ type folders cannot be renamed, moved or deleted as folders.
 Labels that name a folder of the earlier layout (Objects, Editor, Scene
 assets) fall back to their item's default.
 
-Content has a folder tree with tags, a breadcrumb from the current root, back,
-forward and up, tile and list views, and a list header that sorts by name,
+Content has a folder tree with tags, back, forward and up, a one-row toolbar
+with the search and sort order, tile and list views, and a list header that sorts by name,
 type, location or tags. Each tile or row is one hit target for select,
 double-click, drag and right-click, and hovering shows a description. Search
-and tag filters list matching items below the current folder; a search from
+and tag filters list matching items below the current folder (choosing the
+chosen tag again clears its filter); a search from
 Content leaves out System. Dragging a project asset or folder onto a folder
 moves it. While an item is dragged, a translucent card with its icon and a
 name chip follows the pointer, highlighted where a drop takes effect. The

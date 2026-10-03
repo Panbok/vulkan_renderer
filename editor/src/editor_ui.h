@@ -120,6 +120,36 @@ typedef struct VkrEditorPlacement {
 } VkrEditorPlacement;
 
 /* A spawned object's world pose. */
+#define VKR_EDITOR_COLOR_RECENT_MAX 8u
+
+/* The color picker a Details swatch opened (editor_color.c). It edits a
+ * display-encoded HSV color and writes the property's stored units back
+ * through the swatch's VkrEditorDetails. */
+typedef struct VkrEditorColorPicker {
+  bool8_t open;
+  struct VkrEditorDetails *details;
+  VkrUiId field;
+  const VkrPropertyDesc *property;
+  Vec2 anchor_pt;
+  /* Hue, saturation and value in [0, 1] of the display color; hue and
+     saturation persist while value or saturation reach zero. */
+  float32_t hue;
+  float32_t saturation;
+  float32_t value;
+  float32_t alpha;
+  /* A linear color past 1 keeps this scale; the picker edits the
+     normalized color. */
+  float32_t intensity;
+  /* The stored value on opening; Escape restores it. */
+  Vec4 original;
+  /* 0 none, 1 the square, 2 the hue bar, 3 the alpha bar. */
+  uint32_t drag;
+  char hex[12];
+  /* Display RGBA of colors picked this session, newest first. */
+  Vec4 recent[VKR_EDITOR_COLOR_RECENT_MAX];
+  uint32_t recent_count;
+} VkrEditorColorPicker;
+
 typedef struct VkrEditorDropPose {
   Vec3 position;
   VkrQuat rotation;
@@ -356,6 +386,7 @@ typedef struct VkrEditorUi {
   float32_t grid_spacing; /* Drawn world cell size; zero without a grid. */
   uint32_t grid_line_count;
   VkrEditorGridLine grid_lines[VKR_EDITOR_GRID_LINE_CAPACITY];
+  VkrEditorColorPicker color_picker;
   /* Preferences window rows and scroll offset. */
   VkrEditorDetails preferences_details;
   float32_t preferences_scroll;

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-30
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -238,9 +238,9 @@ tokenizing up to 16 MiB, and virtualizes filtered asset cards. Its layout follow
 sources, search and asset-view organization described in Epic's
 [Content Browser interface](https://dev.epicgames.com/documentation/en-us/unreal-engine/content-browser-interface-in-unreal-engine).
 The left sources tree groups Scene, Project and Editor inventories into logical
-asset-type folders; it does not expose build-revision directories. Breadcrumbs
-navigate upward, the compact toolbar exposes Import, refresh and Back/Forward/Up
-navigation, and cards show
+asset-type folders; it does not expose build-revision directories. The
+compact one-row toolbar exposes Import, refresh, Back/Forward/Up navigation,
+the search and sorting, and cards show
 type-color strips, names and textual state. A right Details panel contains
 selection actions. Sources hide below 620 points; Details hide below 1040 points
 or 240 points of height and can be toggled independently. Search, type/scope,
