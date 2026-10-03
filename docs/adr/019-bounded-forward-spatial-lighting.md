@@ -117,7 +117,13 @@ multiple of `VKR_LOCAL_LIGHT_CONTRIBUTION_PERIOD`, four, which the shared
 ([`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)),
 so the newest sample is at most about six frames old. On Vulkan, RX 6700 XT,
 in the Bistro street view at 1920x1080 with TAA, mean `Lighting.Deferred`
-time fell from 3.68 to 3.54 ms and the final color did not change.
+time fell from 3.68 to 3.54 ms and the final color did not change. On Metal
+the flag clears the counter address, which the deferred kernel tests before
+its atomics. On the M1 Pro (Release, `local_shadow_cache_bistro_metal_indoor_walk`,
+`local-offscreen-perf-audit-gpu`, two children of 660 frames, non-authoritative),
+a period of one against four read mean `Lighting.Deferred.Fullscreen` 2.284
+against 2.257 ms with a 0.22 ms spread, within noise, and identical
+`lighting.local_shadow.*` values (72 lights, no fading).
 Shadowing never changes the measure. A sample is used only when it
 is at most eight frames old and comes from no earlier than the last snap;
 otherwise distance ranks. `VKR_LOCAL_SHADOW_FEEDBACK=0` restores distance
@@ -156,7 +162,16 @@ the High preset (`local_shadow_bistro_vulkan_street` at that size, one child
 of 240 frames under `local-offscreen-gpu-single`), `Shadow.LocalMask` fell
 from 2.84 to 2.66 ms and the GPU frame from 11.15 to 10.94 ms. The final
 color changed in 0.14% of pixels by more than 8 of 255, at the shadow edges
-of the third light, and a repeated capture of one build changed none.
+of the third light, and a repeated capture of one build changed none. On the
+M1 Pro (Metal Release, 1280x720, TAA, `local-offscreen-perf-audit-gpu`, two
+children each, non-authoritative), three against two lights read
+`Shadow.LocalMask` 3.094 against 2.805 ms and median frame 14.71 against
+14.33 ms in `local_shadow_taps_bistro_metal_street_taa`, and 1.314 against
+1.249 ms and 11.70 against 11.50 ms in
+`local_shadow_taps_bistro_metal_indoor_walk_taa`. The street capture changed
+in 0.10% of pixels by more than 8 of 255 (at most 33), along one pillar edge
+and not visible side by side, against a repeat floor of 5; the indoor capture
+changed at most 4.
 
 Under temporal reconstruction `Shadow.LocalMask` filters the full-filter
 lights with the first four taps of the progressive Poisson table instead of

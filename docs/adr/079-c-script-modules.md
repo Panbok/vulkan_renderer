@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-02
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -769,17 +769,33 @@ Windows 10, Ryzen 5 2600, Radeon RX 6700 XT, Vulkan, clang 20, 2026-10-02
     An edit outside a function reported "Build failed with 2 errors; the
     previous code keeps running". Stop returned to 5,990 entities.
 
+- macOS, Apple M1 Pro, Metal, 2026-10-03 (`36179ac0` and fixes):
+  - The Release link failed: `s_JobSystem` derives from Jolt's
+    `JobSystemWithBarrier`, whose typeinfo Jolt, built with `-fno-rtti`,
+    never emits; MSVC needs none. `vkr_physics` now builds without RTTI
+    like Jolt ([`vkr_physics.cmake`](../../cmake/vkr_physics.cmake)).
+    `./build_editor.sh Release` and `./build_test.sh` then pass, including
+    `script_reload_test.c`'s field migration of the project probe.
+  - A headless Release editor opened a managed project whose
+    `Scripts/Spinner` had never built: `script.status` reported "building"
+    in three consecutive frames, then "Scripts: Loaded" came before the
+    World (5 entities), and `create spinner` made an entity with `speed` 1.
+  - `vkr_bakery bundle` with the Debug player template staged
+    `Contents/Frameworks/libproject.dylib` (68,128 bytes, exporting
+    `vkr_module_Spinner` and `vkr_project_modules`, linking only
+    `libSystem`), `codesign --verify --strict` passed and
+    `game.script_library` is `../../Frameworks/libproject.dylib`. The
+    packaged player logged "Script library project loaded" before its World
+    loaded, left `Frameworks` unchanged and exited 0 at its autoclose timer.
+
 Unavailable:
 
-- macOS and Metal builds and runs of the SDK.
 - The Vulkan editor at this revision without the reserve workaround:
   `VKR_LOCAL_SHADOW_FACE_COUNT_MAX` 768 (`c87bce97`) makes the graph image
   table about 289 MiB, beyond the renderer's 98 MiB render-graph allocator.
 - The windowed Script editor: highlighting, diagnostics and completion over
   `sdk.h` and package headers were built but not exercised interactively,
   including completion from an installed editor's `sdk/`.
-- A macOS package with a script library: staging in `Contents/Frameworks`
-  and its signature were built but not run.
 - Timing: no frame-time claim.
 
 Earlier macOS evidence (Apple M1 Pro, Metal, 2026-09-29 and 2026-09-30)

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -395,6 +395,12 @@ World, so Bistro cases and baselines are unchanged.
   grid, so the auto-placed scroll area failed placement and every later frame
   failed to prepare; the scroll area now claims the cell explicitly. The run
   logged no frame preparation failure.
+- On 2026-10-03 a headless macOS Release editor (Apple M1 Pro, Metal) on
+  Bistro rested a cube on a second cube given a static physics body
+  (Surface: y 2.0 on a top at 1.5) and on the grid (Grid: y 0.5). In a
+  managed project, a created cube saved by `scene.save` to the scene's
+  version 5 `edits/` document under `created`, and a new session restored
+  it at its saved position.
 
 ## Alternatives considered
 

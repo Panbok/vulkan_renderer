@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -495,18 +495,22 @@ Debug Vulkan validation is clean for the XZ and ZY planes, depth-tested and
 drawn-through. The shared kernel strengthens the finest level's sparse lines
 toward major alpha when zoomed in past it; on Windows Vulkan this raised the
 near-camera line contrast of the FPS Arena floor from 69 to 97 at 1.7 m and
-from 44 to 68 at 0.25 m, and left 6.6 m unchanged. The Metal library was not
-compiled for that change. The domain is **UNALIGNED** until a same-revision
-comparison passes.
+from 44 to 68 at 0.25 m, and left 6.6 m unchanged. On 2026-10-03 the macOS
+Release build compiled the Metal library with that change, and the windowed
+Bistro editor drew the grid at 0.25 and 1.7 m above it with lines up to the
+camera, hidden under the raised pavement; no contrast was measured on Metal.
+The domain is **UNALIGNED** until a same-revision comparison passes.
 
 The picking resolve also stores the opaque device depth at the picked pixel,
 which the editor's grid fit unprojects. The Vulkan root grows to 80 bytes
 (`depth_texture`, `depth_output` at 64) and writes the readback buffer at offset
 8 through its device address; the Metal root grows to 144 bytes
 (`depth_output` at 128) and writes 4 bytes after the object id in a readback
-prefix grown to 32 bytes. Windows Vulkan fits Bistro's grid from that depth;
-the Metal side was not compiled on this host, so picking stays **UNALIGNED**
-until a native Metal build and pick run pass.
+prefix grown to 32 bytes. Windows Vulkan fits Bistro's grid from that depth.
+On 2026-10-03 the windowed macOS Release editor picked Bistro's `subset_9`
+with a click through Metal, and `grid.fit` after framing it read the GPU
+depth and set the grid 3.88 m high. Picking stays **UNALIGNED** until a
+same-revision comparison passes.
 
 Metal and Vulkan reject geometry range counts that cannot fit the existing
 32-bit temporal surface token before publication or narrowing loader counts.

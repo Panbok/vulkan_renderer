@@ -35,7 +35,14 @@ so with temporal history also live the ring waited for an in-flight frame
 every third frame. In the Bistro street view at 1920x1080 with TAA on the
 RX 6700 XT, frames alternated 10, 20 and 2 ms (p95 20.5 ms); with the host
 copy they take 11.0 ms (p95 11.5 ms) and the final color is unchanged. Metal
-still reads the state instance on the GPU. Invalid history snaps
+still reads the state instance on the GPU
+([`vkr_metal_packet_graph.inc`](../../renderer/src/metal/internal/vkr_metal_packet_graph.inc)):
+with two frame slots and a four-instance ring, once a frame waits for its
+slot only the previous frame is in flight, so the oldest instance's last
+reader has completed and selection does not wait. In
+`local_shadow_taps_bistro_metal_street_taa` (M1 Pro, 1280x720, TAA, two
+children of 300 frames) `frame.wall` read p50 14.33 and p95 16.02 ms with no
+repeating pattern. Invalid history snaps
 to target. Defaults lower exposure at 8 EV/s, raise it at 1 EV/s, and clamp the
 target to [-8,+24] EV so night scenes are reachable. The rate names describe displayed-image brightness.
 Tonemap consumes GPU state
