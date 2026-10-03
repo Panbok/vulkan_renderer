@@ -95,6 +95,8 @@ typedef struct VkrStandardSceneRuntimeConfig {
   bool8_t window_hidden;
   /* Editor-style top bar beneath a transparent native title bar. */
   bool8_t unified_title_bar;
+  /* One pixel per point instead of the display's backing scale. */
+  bool8_t window_high_dpi_disabled;
   bool8_t disable_skybox;
   /** Coarse renderer selection; zero-initialized preserves Vulkan. */
   VkrRendererBackendType renderer_backend;

@@ -184,6 +184,37 @@ static void vkr_window_dispatch_resize(PlatformState *state, uint32_t width,
   event_manager_dispatch(state->event_manager, event);
 }
 
+/* Pixels per point of the drawable: the backing scale, or one while the
+ * application has turned high-DPI rendering off. */
+static CGFloat vkr_window_pixel_scale(const PlatformState *state) {
+  if (state->owner->high_dpi_disabled) {
+    return 1.0;
+  }
+  return [state->window backingScaleFactor];
+}
+
+/* Drawable pixels of a content-view rectangle at the current pixel scale. */
+static NSSize vkr_window_framebuffer_size(const PlatformState *state,
+                                          NSRect content) {
+  if (state->owner->high_dpi_disabled) {
+    return content.size;
+  }
+  return [state->view convertRectToBacking:content].size;
+}
+
+/* Publishes the pixel scale and sizes the layer's drawable to the content
+ * view; the caller dispatches the resize. */
+static NSSize vkr_window_apply_pixel_scale(PlatformState *state) {
+  const CGFloat scale = vkr_window_pixel_scale(state);
+  vkr_window_content_scale_publish(state->owner, (float32_t)scale);
+  [state->layer setContentsScale:scale];
+
+  const NSSize framebuffer =
+      vkr_window_framebuffer_size(state, [state->view frame]);
+  [state->layer setDrawableSize:framebuffer];
+  return framebuffer;
+}
+
 // Key translation
 static Keys translate_keycode(uint32_t ns_keycode);
 
@@ -302,16 +333,9 @@ static void vkr_window_enter_borderless(PlatformState *state);
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
-  const CGFloat backingScale = [state->window backingScaleFactor];
-  vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
-  const NSRect contentRect = [state->view frame];
-  const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
-
-  // Update Metal layer drawable size for Retina displays
-  [state->layer setDrawableSize:framebufferRect.size];
-
-  vkr_window_dispatch_resize(state, (uint32_t)framebufferRect.size.width,
-                             (uint32_t)framebufferRect.size.height);
+  const NSSize framebuffer = vkr_window_apply_pixel_scale(state);
+  vkr_window_dispatch_resize(state, (uint32_t)framebuffer.width,
+                             (uint32_t)framebuffer.height);
 
   // Re-center cursor if in capture mode after window resize
   if (state->mouse_captured) {
@@ -322,16 +346,9 @@ static void vkr_window_enter_borderless(PlatformState *state);
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification {
   (void)notification;
   vkr_window_refresh_display_output(state);
-  const CGFloat backingScale = [state->window backingScaleFactor];
-  vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
-  [state->layer setContentsScale:backingScale];
-
-  const NSRect contentRect = [state->view frame];
-  const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
-  [state->layer setDrawableSize:framebufferRect.size];
-
-  vkr_window_dispatch_resize(state, (uint32_t)framebufferRect.size.width,
-                             (uint32_t)framebufferRect.size.height);
+  const NSSize framebuffer = vkr_window_apply_pixel_scale(state);
+  vkr_window_dispatch_resize(state, (uint32_t)framebuffer.width,
+                             (uint32_t)framebuffer.height);
 }
 
 - (void)windowDidChangeScreen:(NSNotification *)notification {
@@ -352,15 +369,9 @@ static void vkr_window_enter_borderless(PlatformState *state);
 
 - (void)windowDidDeminiaturize:(NSNotification *)notification {
   vkr_window_refresh_display_output(state);
-  const CGFloat backingScale = [state->window backingScaleFactor];
-  vkr_window_content_scale_publish(state->owner, (float32_t)backingScale);
-  const NSRect contentRect = [state->view frame];
-  const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
-
-  [state->layer setDrawableSize:framebufferRect.size];
-
-  vkr_window_dispatch_resize(state, (uint32_t)framebufferRect.size.width,
-                             (uint32_t)framebufferRect.size.height);
+  const NSSize framebuffer = vkr_window_apply_pixel_scale(state);
+  vkr_window_dispatch_resize(state, (uint32_t)framebuffer.width,
+                             (uint32_t)framebuffer.height);
 
   // [state->window deminiaturize:nil]; // Redundant, system already
   // deminiaturized
@@ -958,10 +969,10 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
       return false_v;
     }
 
-    // Configure for Retina displays - use full physical pixel resolution
-    CGFloat backingScale = [state->window backingScaleFactor];
-    vkr_window_content_scale_publish(window, (float32_t)backingScale);
-    [state->layer setContentsScale:backingScale];
+    // Retina displays render physical pixels unless high DPI is disabled
+    const CGFloat pixelScale = vkr_window_pixel_scale(state);
+    vkr_window_content_scale_publish(window, (float32_t)pixelScale);
+    [state->layer setContentsScale:pixelScale];
 
     // View creation
     state->view = [[ContentView alloc] initWithWindow:state->window
@@ -1000,12 +1011,11 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     [state->window setAcceptsMouseMovedEvents:YES];
     [state->window setRestorable:NO];
 
-    // Set initial drawable size for Retina displays
+    // Set initial drawable size at the pixel scale
     const NSRect contentRect =
         [state->window contentRectForFrameRect:[state->window frame]];
-    const NSRect framebufferRect =
-        [state->view convertRectToBacking:contentRect];
-    [state->layer setDrawableSize:framebufferRect.size];
+    [state->layer
+        setDrawableSize:vkr_window_framebuffer_size(state, contentRect)];
 
     if (![[NSRunningApplication currentApplication] isFinishedLaunching])
       [NSApp run];
@@ -1165,13 +1175,41 @@ VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
 
   PlatformState *state = (PlatformState *)window->platform_state;
 
-  const NSRect contentRect = [state->view frame];
-  const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
+  const NSSize framebuffer =
+      vkr_window_framebuffer_size(state, [state->view frame]);
 
   return (VkrWindowPixelSize){
-      .width = (uint32_t)framebufferRect.size.width,
-      .height = (uint32_t)framebufferRect.size.height,
+      .width = (uint32_t)framebuffer.width,
+      .height = (uint32_t)framebuffer.height,
   };
+}
+
+bool8_t vkr_window_high_dpi_switchable(void) {
+  return true_v;
+}
+
+bool8_t vkr_window_set_high_dpi(VkrWindow *window, bool8_t enabled) {
+  if (!window || !window->platform_state) {
+    return false_v;
+  }
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  const bool8_t disabled = enabled ? false_v : true_v;
+  if (window->high_dpi_disabled == disabled) {
+    return true_v;
+  }
+
+  @autoreleasepool {
+    if (!state->window || !state->view || !state->layer) {
+      return false_v;
+    }
+    window->high_dpi_disabled = disabled;
+    const NSSize framebuffer = vkr_window_apply_pixel_scale(state);
+    vkr_window_dispatch_resize(state, (uint32_t)framebuffer.width,
+                               (uint32_t)framebuffer.height);
+  }
+  vkr_window_publish_pixel_size(window);
+  return true_v;
 }
 
 VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window) {
@@ -1204,9 +1242,8 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
       return false_v;
     }
     [state->window setContentSize:NSMakeSize(width, height)];
-    const NSRect framebuffer =
-        [state->view convertRectToBacking:[state->view frame]];
-    [state->layer setDrawableSize:framebuffer.size];
+    [state->layer setDrawableSize:vkr_window_framebuffer_size(
+                                      state, [state->view frame])];
   }
   window->width = width;
   window->height = height;
@@ -1247,9 +1284,8 @@ bool8_t vkr_window_resize_centered(VkrWindow *window, uint32_t width,
     [state->window setFrame:frame display:YES];
 
     const NSRect content = [state->window contentRectForFrameRect:frame];
-    const NSRect framebuffer =
-        [state->view convertRectToBacking:[state->view frame]];
-    [state->layer setDrawableSize:framebuffer.size];
+    [state->layer setDrawableSize:vkr_window_framebuffer_size(
+                                      state, [state->view frame])];
     window->width = (uint32_t)content.size.width;
     window->height = (uint32_t)content.size.height;
   }

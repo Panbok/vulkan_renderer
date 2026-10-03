@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -152,6 +152,71 @@ new generations are accepted. Native Vulkan execution, EDR scaling and
 authoritative clean-tree timing remain open.
 
 
+## High-DPI rendering switch
+
+On 2026-10-03 the owner added a switch for the window's pixel density, so that
+Scene cost can be compared with and without Retina pixels. The machine-local
+Graphics setting `high_dpi` (Display group, default on) selects the drawable's
+pixels per point:
+
+| `high_dpi` | macOS drawable | Content scale | Result |
+|---|---|---|---|
+| on | backing scale, 2 on a Retina display | backing scale | Physical pixels, as before the switch |
+| off | 1 pixel per point | 1 | A quarter of the pixels at 2x; the compositor scales the image up, so the Scene and the UI both lose detail |
+
+The window is created at the saved density. `vkr_window_set_high_dpi` changes
+it on the window's thread: it publishes the content scale and pixel size,
+sizes the `CAMetalLayer` drawable and dispatches a resize, so the swapchain and
+the UI layout follow without a restart. Every macOS drawable-size path goes
+through one helper, so live resizes, display changes and mouse coordinates
+use the selected scale. Both backends present through this layer. Windows
+uses Per-Monitor V2 and always renders physical pixels:
+`vkr_window_high_dpi_switchable` is false there, the setting shows as
+disabled and loads as on. The editor Cmd bar reads and assigns
+`gfx.high_dpi` (ADR-075). Harness children do not read Graphics settings:
+windowed cases keep the backing scale, and offscreen cases set their pixels
+with `resolution`.
+
+The reason is cost. Scene passes scale with output pixels, so a Retina editor
+window costs far more than the 1280x720 output that most Bistro cases use.
+The following were measured on the M1 Pro, Metal Release, at the Bistro street
+view of `tools/cases/local/local_shadow_cache_bistro_metal_street.case.json`
+with `shadow_preset` high, `shadow_map_size` 2048 and TAA on, each a single
+`local-offscreen-gpu-single` run of 120 measured frames
+(`VKR_LOCAL_SHADOW_FADE_DISTANCE=0.001` for the rows without local shadows).
+They are local observations, not matched speed claims:
+
+| Output | Render scale | Local shadows | `frame.wall` p50 | Report SHA-256 |
+|---|---|---|---|---|
+| 1280x720 | 0.7 | all 72 lamps | 8.52 ms | `84559b8f534917454a8235198afc88c930484062eb55fe62351f6552ab6b09dd` |
+| 1280x720 | 0.7 | none | 6.64 ms | `39c13a0528ba8e2959a871078bc5511cf7942e74622d8a7942fefddc7a2fde95` |
+| 1280x720 | 1.0 | all 72 lamps | 14.33 ms | `6c4de5d971fc1da440c384f67935088e3e3b331aaf9916e16b9322fcc96a5566` |
+| 3024x1890 | 0.7 | all 72 lamps | 38.31 ms | `23cb8025288ba9641c5bfc4a42de0c9cbd5df4ccf2b9fe99bd14fb51d7a9e987` |
+| 3024x1890 | 0.7 | none | 28.61 ms | `45398084ca64bd1c3c4e4244016178925152d862d7a9daaf7b8d9635567b739b` |
+
+The frames are GPU-bound; `Lighting.Deferred` and `Shadow.LocalMask` grow
+from 1.67 and 1.48 ms at 1280x720 to 9.77 and 7.81 ms at 3024x1890.
+
+In the editor's default window on the same host, Bistro with the High preset,
+0.7 render scale, MetalFX without dynamic resolution and vsync off rendered
+the Scene at 1359x749 in 17.7 ms with `high_dpi` on and at 680x375 in 7.3 ms
+with it off (median of the last 120 frame intervals, `stats.frame_ms`).
+Switching back restored 1359x749 and 17.8 ms without a restart, with no
+errors in the log:
+
+```sh
+./build_release/editor/vkr_editor --scene assets/scenes/bistro.scene.json \
+  --exec 'wait.scene; gfx.dynamic = false; gfx.vsync = false;
+          gfx.preset = "high"; gfx.render_scale = 0.7; wait 20;
+          stats.render_width; stats.frame_ms; gfx.high_dpi = false; wait 8;
+          stats.render_width; stats.frame_ms; gfx.high_dpi = true; wait 8;
+          stats.render_width; stats.frame_ms; quit discard'
+```
+
+The run isolated `HOME`, `VKR_EDITOR_LAYOUT_PATH` and
+`VKR_GRAPHICS_SETTINGS_PATH` under `.scratch/`. Vulkan on macOS, image
+quality with the switch off and Windows behavior were not checked.
+
 ## Consequences
 
 Output transfer is shared while native surface formats differ. Correct source
@@ -197,7 +262,8 @@ Motion, cost and native diagnostic report SHA-256 values are respectively
 ## Alternatives considered
 
 Shader gamma plus sRGB attachment encoding is double conversion. Scaling the
-physical target to reduce Scene cost also degrades native UI. Blending authored
+physical target to reduce Scene cost also degrades native UI; the high-DPI
+switch accepts that loss only when the user turns it off. Blending authored
 sRGB values directly treats encoded values as linear.
 
 ## Revisit when
@@ -210,5 +276,7 @@ authorised with explicit transfer and coordinate semantics.
 [`vkr_color_transfer.c`](../../renderer/src/vkr_color_transfer.c),
 [`vkr_platform_windows.c`](../../lib/src/platform/vkr_platform_windows.c),
 [`vkr_window_windows.c`](../../runtime/src/platform/vkr_window_windows.c),
+[`vkr_window_macos.m`](../../runtime/src/platform/vkr_window_macos.m),
+[`vkr_graphics_settings.c`](../../runtime/src/vkr_graphics_settings.c),
 [`vkr_vulkan_target.c`](../../renderer/src/vulkan/vkr_vulkan_target.c), and
 [`tonemap.metal`](../../renderer/src/shaders/metal/msl/post/tonemap.metal).

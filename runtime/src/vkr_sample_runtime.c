@@ -393,6 +393,13 @@ static void sample_graphics_apply_display(VkrStandardSceneRuntime *application,
     }
     state->graphics_present_live = true_v;
   }
+  /* The window was created at the started density; a change resizes the
+     drawable, and the swapchain follows the resize. */
+  if (settings->high_dpi != state->graphics_started.high_dpi &&
+      vkr_application_host_is_windowed(&application->host) &&
+      vkr_window_set_high_dpi(&application->host.window, settings->high_dpi)) {
+    state->graphics_started.high_dpi = settings->high_dpi;
+  }
   float32_t live_min = 1.0f;
   float32_t live_max = 1.0f;
   vkr_renderer_render_scale_range(renderer, &live_min, &live_max);

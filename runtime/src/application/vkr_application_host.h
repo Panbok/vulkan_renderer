@@ -27,6 +27,7 @@ typedef struct VkrApplicationHostConfig {
   bool8_t windowed;
   bool8_t window_hidden;
   bool8_t unified_title_bar;
+  bool8_t window_high_dpi_disabled;
   float64_t fixed_delta_seconds;
 } VkrApplicationHostConfig;
 

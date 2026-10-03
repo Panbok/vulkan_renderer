@@ -278,6 +278,8 @@ static void test_graphics_preferences_type(void) {
       string8_lit("{\"version\":1,\"shadow_quality\":1,\"frame_limit\":60}"),
       &settings));
   assert(settings.shadow_quality == 1u && settings.frame_limit == 60u);
+  /* Files written before the high-DPI setting keep physical pixels. */
+  assert(settings.high_dpi);
   assert(!vkr_graphics_settings_read_json(
       string8_lit("{\"version\":1,\"shadow_quality\":4}"), &settings));
   assert(!vkr_graphics_settings_read_json(

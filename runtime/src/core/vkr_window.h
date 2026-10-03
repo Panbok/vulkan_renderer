@@ -117,6 +117,10 @@ typedef struct VkrWindow {
   /** Create-time opt-in: draw content beneath a transparent title bar so the
    * application's top bar hosts the native window controls (macOS). */
   bool8_t unified_title_bar;
+  /** Create-time and current state: render one pixel per point instead of
+   * the display's backing scale, a quarter of the pixels on a 2x Retina
+   * display. Change it after creation with vkr_window_set_high_dpi(). */
+  bool8_t high_dpi_disabled;
   /** One pending file drop: the platform fills it and sets the flag with
    * release order; vkr_window_take_file_drop copies it and clears the flag.
    * Drops arriving while one is pending are ignored. */
@@ -230,10 +234,29 @@ VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window);
  * @brief Gets one coherent content-scale snapshot.
  *
  * Windows publishes `GetDpiForWindow() / 96`; macOS publishes the window
- * backing scale. The value is finite and positive. A revision changes only
- * when the value changes, including a display transition without a resize.
+ * backing scale, or 1 while high-DPI rendering is off. The value is finite and
+ * positive. A revision changes only when the value changes, including a display
+ * transition without a resize.
  */
 VkrWindowContentScale vkr_window_get_content_scale(const VkrWindow *window);
+
+/** True where vkr_window_set_high_dpi() can turn high-DPI rendering off:
+ * macOS. Windows sizes the client area from the monitor DPI, so it always
+ * renders physical pixels. */
+bool8_t vkr_window_high_dpi_switchable(void);
+
+/**
+ * @brief Selects the drawable's pixels per point on the window's thread.
+ *
+ * Enabled renders the backing scale, such as 2 on a Retina display; disabled
+ * renders one pixel per point and the compositor scales the image up, so the
+ * Scene and the UI both lose detail. A change publishes the new content scale
+ * and pixel size and dispatches a resize event.
+ *
+ * @return `true_v` when the window now renders as requested; `false_v` for a
+ * window that was never created or a platform that cannot switch.
+ */
+bool8_t vkr_window_set_high_dpi(VkrWindow *window, bool8_t enabled);
 
 /** Takes the pending OS file drop into `out`; false when there is none. */
 bool8_t vkr_window_take_file_drop(VkrWindow *window, VkrWindowFileDrop *out);

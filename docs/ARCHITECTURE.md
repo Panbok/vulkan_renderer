@@ -1135,7 +1135,9 @@ snapshot feeds backend output selection and a 16-byte final/UI parameter
 record. Metal output and transition checks pass; native Windows/Vulkan evidence
 remains unavailable. Offscreen output stays SDR.
 
-Windows uses Per-Monitor V2 physical client pixels. SDR final shaders emit linear
+Windows uses Per-Monitor V2 physical client pixels. macOS renders the backing
+scale unless the Graphics setting `high_dpi` is off, which renders one pixel
+per point and can change without a restart. SDR final shaders emit linear
 RGB into sRGB attachments; UI/text authored colors decode once before linear blending.
 The frame's `image_sharpness` control is finite in `[0,1]`, with zero as an exact
 bypass. The sample initializes it to 0.25; zero-initialized packet callers and

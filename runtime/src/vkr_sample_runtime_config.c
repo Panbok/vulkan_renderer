@@ -1,6 +1,7 @@
 #include "vkr_sample_runtime_config.h"
 
 #include "containers/str.h"
+#include "core/vkr_window.h"
 #include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 #include <stdio.h>
@@ -170,6 +171,10 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
   if (!dynamic_available || !settings.temporal_upscaling) {
     settings.dynamic_resolution = false_v;
   }
+  const bool8_t high_dpi_available = vkr_window_high_dpi_switchable();
+  if (!high_dpi_available) {
+    settings.high_dpi = true_v;
+  }
 
   options->graphics_path = graphics_path;
   options->graphics = (VkrGraphicsSettingsState){
@@ -177,6 +182,7 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
       .temporal_upscaling_available = temporal_available,
       .dynamic_resolution_available = dynamic_available,
       .spatial_render_scale_available = metal,
+      .high_dpi_available = high_dpi_available,
       .temporal_upscaling_name =
           metal ? string8_lit("MetalFX") : string8_lit("FSR 3.1"),
   };
@@ -301,6 +307,7 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .height = height,
       .target_frame_rate = graphics->frame_limit,
       .unified_title_bar = paneled,
+      .window_high_dpi_disabled = !graphics->high_dpi,
       .app_arena_size = MB(1),
       .device_requirements =
           {

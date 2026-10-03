@@ -621,4 +621,8 @@ at a 0.75 render scale. With `render_scale` 0.75 (960x540, spatial upscaling to
 at the 95th percentile in two runs, and 11.1 ms median and 15.0 ms p95 at
 0.667, with no crossfading. `local_shadow_cache_bistro_metal_indoor_walk` now
 runs at 0.75 and `local_shadow_cache_bistro_vulkan_indoor_walk` keeps full
-resolution for the RX 6700 XT; native Vulkan remains unrun.
+resolution for the RX 6700 XT; native Vulkan remains unrun. These targets use
+1280x720 output. An editor Scene on a 2x Retina display renders about 2.3
+times those pixels in the default window and costs proportionally more; the
+Graphics setting `high_dpi` renders one pixel per point to compare the two
+(ADR-043).

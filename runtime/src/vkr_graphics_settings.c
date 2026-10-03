@@ -27,6 +27,13 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .tooltip = "Use the display's extended brightness range when available",
      .offset = GRAPHICS_OFFSET(hdr),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "high_dpi",
+     .label = "High-DPI rendering",
+     .tooltip = "Render every physical pixel of a Retina display; off renders "
+                "one pixel per point, a quarter of the pixels at 2x, with a "
+                "softer Scene and UI",
+     .offset = GRAPHICS_OFFSET(high_dpi),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "frame_limit",
      .label = "Frame limit",
      .tooltip = "0 leaves the frame rate unrestricted",
@@ -216,6 +223,10 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
         !state->spatial_render_scale_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
+  } else if (offset == offsetof(VkrGraphicsSettings, high_dpi)) {
+    if (state && !state->high_dpi_available) {
+      result.flags |= VKR_PROPERTY_STATE_DISABLED;
+    }
   } else if (offset == offsetof(VkrGraphicsSettings, soft_shadows) ||
              offset == offsetof(VkrGraphicsSettings, local_shadows)) {
     if (settings->shadow_quality == 0u) {
@@ -252,6 +263,7 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
   return (VkrGraphicsSettings){
       .vsync = true_v,
       .hdr = false_v,
+      .high_dpi = true_v,
       .temporal_upscaling = true_v,
       .dynamic_resolution = backend == VKR_RENDERER_BACKEND_TYPE_METAL,
       .anti_aliasing = true_v,

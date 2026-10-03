@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -150,7 +150,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
 | `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent) | none |
-| `gfx` | `render_scale`, `dynamic`, `vsync`, `preset` (`low`, `medium`, `high`, `epic`, `custom`), `restart` (read-only: a change waits for a restart), `invert_mouse_y` | `render_scale`, `dynamic`, `vsync`, `preset` (applied as the Scalability menu does), `invert_mouse_y` |
+| `gfx` | `render_scale`, `dynamic`, `vsync`, `preset` (`low`, `medium`, `high`, `epic`, `custom`), `restart` (read-only: a change waits for a restart), `invert_mouse_y`, `high_dpi` | `render_scale`, `dynamic`, `vsync`, `preset` (applied as the Scalability menu does), `invert_mouse_y`, `high_dpi` (macOS only; ADR-043) |
 
 Scene writes read the entity with `vkr_scene_edit_read`, change one component,
 validate it and submit an `APPLY` edit, so they undo, save and reject invalid

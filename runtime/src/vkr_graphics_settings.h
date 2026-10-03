@@ -10,6 +10,9 @@
  * post_process component (ADR-076). */
 typedef struct VkrGraphicsSettings {
   bool8_t vsync, hdr, temporal_upscaling, dynamic_resolution, anti_aliasing;
+  /* Render the display's physical pixels; off renders one pixel per point,
+   * a quarter of the pixels on a 2x Retina display. macOS only. */
+  bool8_t high_dpi;
   float32_t render_scale;
   uint32_t frame_limit;
   /* 0 off, 1 balanced, 2 high, 3 ultra: ten shadowed local lights on Vulkan,
@@ -38,6 +41,8 @@ typedef struct VkrGraphicsSettingsState {
   /* Whether render scale applies without temporal upscaling; otherwise the
      Scene renders at unit scale until temporal upscaling is enabled. */
   bool8_t spatial_render_scale_available;
+  /* Whether the platform window can turn high-DPI rendering off. */
+  bool8_t high_dpi_available;
   String8 temporal_upscaling_name;
   String8 message;
 } VkrGraphicsSettingsState;
