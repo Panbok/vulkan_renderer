@@ -18,6 +18,7 @@ extern "C" {
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Collision/CollisionDispatch.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -1395,6 +1396,29 @@ public:
   JPH::BodyID excluded;
 };
 
+/* Records one sensor overlap for this update, ordered by entity and
+   collider so either side reports the same pair. False when the pair
+   storage is full, which faults the world. */
+static bool sensor_pair_add(VkrPhysicsWorld *world,
+                            VkrPhysicsSensorEvent pair) {
+  if (pair.entity_a > pair.entity_b ||
+      (pair.entity_a == pair.entity_b && pair.collider_a > pair.collider_b)) {
+    std::swap(pair.entity_a, pair.entity_b);
+    std::swap(pair.collider_a, pair.collider_b);
+  }
+  for (const auto &existing : world->next_pairs) {
+    if (same_pair(existing, pair)) {
+      return true;
+    }
+  }
+  if (world->next_pairs.size() == world->next_pairs.capacity()) {
+    event_fault(world);
+    return false;
+  }
+  world->next_pairs.push_back(pair);
+  return true;
+}
+
 class s_SensorCollector final : public JPH::CollideShapeCollector {
 public:
   s_SensorCollector(VkrPhysicsWorld *world, JPH::BodyID sensor)
@@ -1406,32 +1430,58 @@ public:
     if (!world->pair_filter.ShouldCollide(layer_a, layer_b)) {
       return;
     }
-    VkrPhysicsSensorEvent pair = {
+    const VkrPhysicsSensorEvent pair = {
         bodies.GetUserData(sensor),
         bodies.GetShape(sensor)->GetSubShapeUserData(hit.mSubShapeID1),
         bodies.GetUserData(hit.mBodyID2),
         bodies.GetShape(hit.mBodyID2)->GetSubShapeUserData(hit.mSubShapeID2),
         false_v};
-    if (pair.entity_a > pair.entity_b ||
-        (pair.entity_a == pair.entity_b && pair.collider_a > pair.collider_b)) {
-      std::swap(pair.entity_a, pair.entity_b);
-      std::swap(pair.collider_a, pair.collider_b);
-    }
-    for (const auto &existing : world->next_pairs) {
-      if (same_pair(existing, pair)) {
-        return;
-      }
-    }
-    if (world->next_pairs.size() == world->next_pairs.capacity()) {
-      event_fault(world);
+    if (!sensor_pair_add(world, pair)) {
       ForceEarlyOut();
-      return;
     }
-    world->next_pairs.push_back(pair);
   }
   VkrPhysicsWorld *world;
   JPH::BodyID sensor;
 };
+
+/* Characters have no body for the narrow phase to find, so each sensor
+   tests their capsules directly. A character pair names its entity with
+   collider zero. */
+static bool8_t sensor_characters(VkrPhysicsWorld *world, JPH::BodyID sensor) {
+  auto &bodies = world->system.GetBodyInterfaceNoLock();
+  const JPH::ObjectLayer sensor_layer = bodies.GetObjectLayer(sensor);
+  const JPH::RefConst<JPH::Shape> sensor_shape = bodies.GetShape(sensor);
+  const JPH::Mat44 sensor_transform = bodies.GetCenterOfMassTransform(sensor);
+  for (const auto &slot : world->characters) {
+    if (!slot.character) {
+      continue;
+    }
+    const JPH::ObjectLayer character_layer = static_cast<JPH::ObjectLayer>(
+        slot.desc.collision_layer |
+        (static_cast<uint32_t>(slot.desc.collision_mask) << 16));
+    if (bodies.GetUserData(sensor) == slot.desc.entity_id ||
+        !world->pair_filter.ShouldCollide(sensor_layer, character_layer)) {
+      continue;
+    }
+    JPH::AnyHitCollisionCollector<JPH::CollideShapeCollector> hit;
+    JPH::CollisionDispatch::sCollideShapeVsShape(
+        sensor_shape, slot.character->GetShape(), JPH::Vec3::sReplicate(1),
+        JPH::Vec3::sReplicate(1), sensor_transform,
+        slot.character->GetCenterOfMassTransform(), JPH::SubShapeIDCreator(),
+        JPH::SubShapeIDCreator(), JPH::CollideShapeSettings(), hit);
+    if (!hit.HadHit()) {
+      continue;
+    }
+    const VkrPhysicsSensorEvent pair = {
+        bodies.GetUserData(sensor),
+        sensor_shape->GetSubShapeUserData(hit.mHit.mSubShapeID1),
+        slot.desc.entity_id, 0u, false_v};
+    if (!sensor_pair_add(world, pair)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
 
 static bool8_t update_sensors(VkrPhysicsWorld *world) {
   world->next_pairs.clear();
@@ -1449,7 +1499,7 @@ static bool8_t update_sensors(VkrPhysicsWorld *world) {
     world->system.GetNarrowPhaseQuery().CollideShape(
         shape, JPH::Vec3::sReplicate(1), transform, JPH::CollideShapeSettings(),
         transform.GetTranslation(), collector, {}, layer_filter, body_filter);
-    if (world->faulted) {
+    if (world->faulted || !sensor_characters(world, slot.id)) {
       return false_v;
     }
   }

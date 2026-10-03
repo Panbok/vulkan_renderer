@@ -241,13 +241,15 @@ void vkr_physics_world_destroy(VkrPhysicsWorld *world);
 const char *vkr_physics_last_error(const VkrPhysicsWorld *world);
 VkrPhysicsCharacterDesc vkr_physics_character_default(void);
 /* Cold world-owned CharacterVirtual lifetime. No inner rigid body: ordinary
- * rays, sensors and body contacts do not see characters. Character/character
- * collision is not enabled. Solid-body collision uses bilateral layer/mask
- * filtering; native character response can push dynamic bodies up to strength.
- * Standing and crouched capsules are prebuilt with identical foot anchors;
- * crouched cylinder half-height is 40% of the authored standing half-height.
- * Handles reject slot reuse and cross-world reuse; generations never wrap.
- * SDK allocation failure retains the world's existing process-OOM limitation.
+ * rays and body contacts do not see characters. Sensors test character
+ * capsules directly and report a character with collider zero.
+ * Character/character collision is not enabled. Solid-body collision uses
+ * bilateral layer/mask filtering; native character response can push dynamic
+ * bodies up to strength. Standing and crouched capsules are prebuilt with
+ * identical foot anchors; crouched cylinder half-height is 40% of the authored
+ * standing half-height. Handles reject slot reuse and cross-world reuse;
+ * generations never wrap. SDK allocation failure retains the world's existing
+ * process-OOM limitation.
  */
 bool8_t vkr_physics_character_create(VkrPhysicsWorld *world,
                                      const VkrPhysicsCharacterDesc *desc,

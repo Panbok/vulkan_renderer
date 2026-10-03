@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-30
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -161,9 +161,13 @@ ground following; the client supplies five-metre/second movement (1.5 m/s
 while Shift is held) and grounded jumping. In third person it turns the body
 towards its movement with an acceleration and a turn rate
 ([ADR-080](080-default-mannequin-character.md)); other views move at once.
-Jump buffering, coyote time and root motion remain policy work. Characters have no native inner-body proxy: rays, sensors and
-ordinary body-contact callbacks do not treat them as targets; character/character
-collision and damageable character proxies remain unimplemented.
+Jump buffering, coyote time and root motion remain policy work. Characters have no native inner-body proxy: rays and
+ordinary body-contact callbacks do not treat them as targets. Sensors test
+character capsules directly each tick and report the character's entity with
+collider zero, so trigger volumes see the player
+([vkr_physics.cpp](../../runtime/src/physics/vkr_physics.cpp), `sensor_characters`).
+Character/character collision and damageable character proxies remain
+unimplemented.
 
 Reset stages character replacements with the native world and publishes them only
 after success. Scene entity identity remains stable while old native handles

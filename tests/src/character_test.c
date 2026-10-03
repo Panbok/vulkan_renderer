@@ -236,6 +236,63 @@ static void test_character_bilateral_filter(void) {
   vkr_physics_world_destroy(world);
 }
 
+/* A sensor reports a character entering and leaving it, though the
+   character has no body. */
+static void test_character_sensor(void) {
+  VkrPhysicsWorld *world = vkr_physics_world_create(2);
+  assert(world != NULL);
+  const VkrPhysicsColliderDesc collider = {
+      .entity_id = 1100,
+      .shape = VKR_PHYSICS_BOX,
+      .rotation = {0, 0, 0, 1},
+      .scale = {1, 1, 1},
+      .half_extent = {1, 1, 1},
+      .enabled = true_v,
+  };
+  const VkrPhysicsBodyDesc sensor = {
+      .entity_id = 100,
+      .motion = VKR_PHYSICS_STATIC,
+      .position = {0, 1, 0},
+      .rotation = {0, 0, 0, 1},
+      .mass = 1,
+      .enabled = true_v,
+      .sensor = true_v,
+      .collision_layer = 1,
+      .collision_mask = 0xffff,
+      .colliders = &collider,
+      .collider_count = 1,
+  };
+  VkrPhysicsBody body = VKR_PHYSICS_BODY_INVALID;
+  assert(vkr_physics_body_create(world, &sensor, &body));
+  VkrPhysicsCharacterDesc desc = vkr_physics_character_default();
+  desc.entity_id = 10;
+  desc.foot_position[0] = 5;
+  VkrPhysicsCharacter character;
+  assert(vkr_physics_character_create(world, &desc, &character));
+  VkrPhysicsSensorEvent events[4];
+  uint32_t count = 0;
+  assert(vkr_physics_step(world, 1.0f / 60.0f));
+  assert(vkr_physics_sensor_events(world, events, 4, &count));
+  assert(count == 0);
+
+  /* One step carries the character 5 m into the sensor and another back. */
+  const float32_t moves[2] = {-300.0f, 300.0f};
+  for (uint32_t i = 0; i < 2; ++i) {
+    const VkrPhysicsCharacterInput input = {
+        .velocity = {moves[i], 0, 0},
+        .dt = 1.0f / 60.0f,
+    };
+    VkrPhysicsCharacterState state;
+    assert(vkr_physics_character_step(world, character, &input, &state));
+    assert(vkr_physics_step(world, 1.0f / 60.0f));
+    assert(vkr_physics_sensor_events(world, events, 4, &count));
+    assert(count == 1 && events[0].began == (i == 0));
+    assert(events[0].entity_a == 10 && events[0].collider_a == 0);
+    assert(events[0].entity_b == 100 && events[0].collider_b == 1100);
+  }
+  vkr_physics_world_destroy(world);
+}
+
 typedef struct CharacterSceneTest {
   VkrEntityId entity;
   uint32_t ticks;
@@ -357,6 +414,7 @@ bool32_t run_character_tests(void) {
   test_character_ground_wall_jump_and_sphere_query();
   test_character_crouch_clearance_and_foot_anchor();
   test_character_bilateral_filter();
+  test_character_sensor();
   test_character_scene_reset_and_evaluated_pose();
   test_character_explicit_spawn();
   printf("Character tests PASSED\n");
