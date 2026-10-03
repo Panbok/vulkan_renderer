@@ -397,6 +397,19 @@ static void vkr_window_enter_borderless(PlatformState *state);
   update_cursor_image(state);
 }
 
+/* The empty unified toolbar that heightens the title bar stays visible in
+   native fullscreen by default, as an opaque strip over the top bar the
+   application draws beneath the transparent title bar. It hides with the
+   menu bar instead and slides down only at the screen's top edge. */
+- (NSApplicationPresentationOptions)window:(NSWindow *)window
+      willUseFullScreenPresentationOptions:
+          (NSApplicationPresentationOptions)proposedOptions {
+  (void)window;
+  return proposedOptions | NSApplicationPresentationFullScreen |
+         NSApplicationPresentationAutoHideMenuBar |
+         NSApplicationPresentationAutoHideToolbar;
+}
+
 - (void)windowDidEnterFullScreen:(NSNotification *)notification {
   (void)notification;
   /* The green button enters fullscreen without a mode request. */
@@ -1603,6 +1616,9 @@ float32_t vkr_window_title_bar_inset(const VkrWindow *window) {
   if (!window || !window->platform_state || !window->unified_title_bar)
     return 0.0f;
   const PlatformState *state = (const PlatformState *)window->platform_state;
+  /* Fullscreen shows the window buttons only in the hidden title bar. */
+  if ([state->window styleMask] & NSWindowStyleMaskFullScreen)
+    return 0.0f;
   NSButton *zoom = [state->window standardWindowButton:NSWindowZoomButton];
   if (!zoom)
     return 0.0f;

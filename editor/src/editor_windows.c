@@ -782,9 +782,12 @@ static void editor_caption_buttons_build(const VkrSampleUiFrame *frame,
   }
 }
 
-/* Centered transport: play/pause, step, stop, live rendering and camera. */
+/* Play, step, stop, live rendering and the free camera, centered in the top
+   bar's `column` between flexible gaps, so it never covers the menus or the
+   status and command fields when the window narrows. */
 static void editor_transport_build(VkrEditorUi *editor,
-                                   const VkrSampleUiFrame *frame) {
+                                   const VkrSampleUiFrame *frame,
+                                   uint32_t column) {
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t button = EDITOR_TRANSPORT_BUTTON_PT;
@@ -806,11 +809,9 @@ static void editor_transport_build(VkrEditorUi *editor,
   const VkrUiTrack row = {.value = button, .unit = VKR_UI_TRACK_PX};
   VkrUiPanelConfig group = vkr_ui_panel_config_default();
   group.placement = VKR_UI_PLACEMENT_DEFAULT;
-  group.placement.column = group.placement.row = 0u;
-  group.placement.justify = group.placement.align = VKR_UI_ALIGN_START;
-  group.placement.margin_pt =
-      (VkrUiEdges){Max(0.0f, (VKR_EDITOR_NAVIGATION_HEIGHT_PT - height) * 0.5f),
-                   0, 0, (screen_w - width) * 0.5f};
+  group.placement.column = column;
+  group.placement.row = 0u;
+  group.placement.justify = group.placement.align = VKR_UI_ALIGN_CENTER;
   group.columns = columns;
   group.column_count = ArrayCount(columns);
   group.rows = &row;
@@ -904,6 +905,8 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
       {.unit = VKR_UI_TRACK_AUTO}, /* undo */
       {.unit = VKR_UI_TRACK_AUTO}, /* redo */
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+      {.unit = VKR_UI_TRACK_AUTO}, /* transport */
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.unit = VKR_UI_TRACK_AUTO}, /* Projects */
       {.unit = VKR_UI_TRACK_AUTO}, /* Scenes */
       {.unit = VKR_UI_TRACK_AUTO}, /* status */
@@ -991,8 +994,9 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
   editor_top_icon_button(editor, ui, frame, 11u, CMD_UNDO);
   editor_top_icon_button(editor, ui, frame, 12u, CMD_REDO);
 
+  editor_transport_build(editor, frame, 14u);
   if (projects)
-    vkr_editor_projects_navigation(editor->projects, editor, frame, 14u);
+    vkr_editor_projects_navigation(editor->projects, editor, frame, 16u);
 
   if ((float32_t)ui->target_width / ui->content_scale >= 980.0f) {
     const bool8_t running = frame->simulation_running;
@@ -1000,7 +1004,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
     VkrUiWidgetConfig status =
         vkr_editor_text_config(theme->font_caption, theme->text_secondary);
     status.placement = (VkrUiPlacement){
-        .column = 16u,
+        .column = 18u,
         .row = 0u,
         .column_span = 1u,
         .row_span = 1u,
@@ -1033,10 +1037,9 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
     vkr_ui_label(ui, string8_lit("status"), content, &status);
   }
 
-  vkr_editor_cmd_bar_build(editor, frame, 17u);
-  editor_caption_buttons_build(frame, 18u);
+  vkr_editor_cmd_bar_build(editor, frame, 19u);
+  editor_caption_buttons_build(frame, 20u);
   (void)vkr_ui_panel_end(ui);
-  editor_transport_build(editor, frame);
   (void)vkr_ui_input_layer_set(ui, 0u);
 }
 

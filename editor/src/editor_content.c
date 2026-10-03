@@ -2682,6 +2682,21 @@ static VkrUiWidgetConfig content_widget(uint32_t column, uint32_t row) {
 
 /* A cell-filling button whose icon and text sit at the start, since
    buttons center their content: an empty button under a label. */
+/* A labelled toolbar button at the icon buttons' height, centered in its
+   row and filling its column, so every control shares one line. */
+static VkrUiWidgetConfig content_toolbar_button(uint32_t column) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig config = content_widget(column, 0);
+  config.placement.justify = VKR_UI_ALIGN_STRETCH;
+  config.placement.align = VKR_UI_ALIGN_CENTER;
+  config.fill = true_v;
+  config.style.min_size_pt.y = config.style.max_size_pt.y =
+      theme->control_height;
+  config.style.padding_pt = (VkrUiEdges){0, 10, 0, 8};
+  config.icon_size_pt = 14;
+  return config;
+}
+
 static bool8_t content_start_button(VkrUiSystem *ui, String8 id, String8 text,
                                     const VkrUiWidgetConfig *config) {
   VkrUiWidgetConfig hit = *config;
@@ -3388,10 +3403,10 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
   if (!vkr_ui_panel_begin(ui, string8_lit("tools"), &tools)) {
     return;
   }
-  VkrUiWidgetConfig import = content_widget(0, 0);
+  VkrUiWidgetConfig import = content_toolbar_button(0);
   vkr_editor_primary_style(&import, VKR_FONT_HANDLE_INVALID);
+  import.style.padding_pt = (VkrUiEdges){0, 10, 0, 8};
   import.icon = VKR_UI_ICON_IMPORT;
-  import.icon_size_pt = 14;
   import.disabled = content->read_only || !content->project[0];
   import.tooltip = string8_lit("Import models, textures and fonts, or create a "
                                "scene");
@@ -3445,10 +3460,10 @@ static void content_build_toolbar(VkrEditorContent *content, VkrUiSystem *ui,
     content->reverse_sort = !content->reverse_sort;
     content->filter_dirty = true_v;
   }
-  VkrUiWidgetConfig details = content_widget(7, 0);
+  VkrUiWidgetConfig details = content_toolbar_button(7);
   vkr_editor_ghost_style(&details);
+  details.style.padding_pt = (VkrUiEdges){0, 10, 0, 8};
   details.icon = VKR_UI_ICON_SIDEBAR;
-  details.icon_size_pt = 14;
   details.tooltip = string8_lit("Show or hide the details panel");
   vkr_editor_toggle_style(&details, !content->details_hidden);
   details.disabled = width < 1040 || height < 240;

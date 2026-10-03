@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -98,13 +98,15 @@ sliders, resize and grab cursors for splitters and tab drags) through
 The top bar hosts the brand, File/Edit/View/Scene/Build/Develop/Help menus
 (Build and Develop from [ADR-078](078-project-build-and-packaging.md)), save/undo/redo,
 Projects/Scenes, a play-state pill with unsaved-edit state, the Cmd field, and
-a centered transport group (play/pause, step, stop, Scene rendering, camera
-capture). Menus are anchored popups that switch on hover while one is open, and
+a transport group (play/pause, step, stop, Scene rendering, camera capture)
+in its own column between two flexible gaps, centered between the left and
+right controls and never over them when the window narrows. Menus are anchored popups that switch on hover while one is open, and
 their items share the command table's names, icons and shortcuts. The paneled
 editor merges this bar with the title bar, and the UI publishes the bar's empty
 space as the drag region each frame so controls keep their clicks. On macOS the
 window draws under a transparent native title and keeps the system window
-buttons. On Windows `WM_NCCALCSIZE` removes the caption row but keeps the side
+buttons; native fullscreen auto-hides the title bar's empty unified toolbar,
+which would otherwise cover the top bar. On Windows `WM_NCCALCSIZE` removes the caption row but keeps the side
 and bottom resize borders, and insets a maximized window by its frame.
 `WM_NCHITTEST` answers `HTTOP` in the top resize band and `HTCAPTION` inside the
 published region. `WM_NCMOUSEMOVE` is forwarded to input, so hovering a control
