@@ -344,6 +344,18 @@ void vkr_rg_set_retained_state_provider(
 void vkr_rg_commit_retained_state(struct VkrRenderGraph *graph);
 
 /**
+ * @brief Layout of one image subresource after the compiled frame.
+ *
+ * Returns VKR_TEXTURE_LAYOUT_UNDEFINED when no pass touches the subresource or
+ * the handle, mip or layer is out of range. A capture of one layer or mip uses
+ * this rather than VkrRgImage.final_layout, which follows subresource 0.
+ */
+VkrTextureLayout
+vkr_rg_image_final_subresource_layout(const struct VkrRenderGraph *graph,
+                                      VkrRgImageHandle handle, uint32_t mip,
+                                      uint32_t layer);
+
+/**
  * @brief Declares one buffer use in a pass.
  */
 typedef struct VkrRgBufferUse {

@@ -166,14 +166,17 @@ bool8_t vkr_vk_prepare_capture(VkrVulkanRenderer *renderer,
         vkr_rg_image_handle_valid(handle)
             ? vector_get_VkrRgImage(&renderer->graph->images, handle.id - 1u)
             : NULL;
-    if (!instance || !graph_image ||
-        graph_image->final_layout == VKR_TEXTURE_LAYOUT_UNDEFINED)
-      return false_v;
     const VkrCaptureBackendItemPlan *plan = &slot->capture_plans[i];
+    /* A layer or mip capture copies that subresource, whose terminal layout
+       can differ from subresource 0's. */
+    const VkrTextureLayout final_layout = vkr_rg_image_final_subresource_layout(
+        renderer->graph, handle, plan->result.mip, plan->result.layer);
+    if (!instance || !graph_image ||
+        final_layout == VKR_TEXTURE_LAYOUT_UNDEFINED)
+      return false_v;
     const VkImageAspectFlags aspects =
         vkr_vk_format_aspects(instance->image.format);
-    const VkImageLayout old_layout =
-        vkr_vk_texture_layout(graph_image->final_layout);
+    const VkImageLayout old_layout = vkr_vk_texture_layout(final_layout);
     if (old_layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
       copy->transition = true_v;
       copy->barrier = (VkImageMemoryBarrier2){

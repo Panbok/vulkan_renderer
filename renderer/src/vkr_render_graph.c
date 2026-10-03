@@ -219,6 +219,26 @@ void vkr_rg_set_retained_state_provider(
       provider ? *provider : (VkrRgRetainedStateProvider){0};
 }
 
+VkrTextureLayout
+vkr_rg_image_final_subresource_layout(const VkrRenderGraph *graph,
+                                      VkrRgImageHandle handle, uint32_t mip,
+                                      uint32_t layer) {
+  if (!graph || !graph->subresource_states ||
+      !vkr_rg_image_handle_valid(handle) ||
+      handle.id > (uint32_t)graph->images.length)
+    return VKR_TEXTURE_LAYOUT_UNDEFINED;
+  const uint32_t index = handle.id - 1u;
+  const VkrRgImage *image = vector_get_VkrRgImage(&graph->images, index);
+  const uint32_t mips = image->desc.mip_levels ? image->desc.mip_levels : 1u;
+  const uint32_t layers = image->desc.layers ? image->desc.layers : 1u;
+  if (mip >= mips || layer >= layers)
+    return VKR_TEXTURE_LAYOUT_UNDEFINED;
+  return graph
+      ->subresource_states[graph->image_state_offsets[index] + mip * layers +
+                           layer]
+      .layout;
+}
+
 void vkr_rg_commit_retained_state(VkrRenderGraph *graph) {
   if (!graph || !graph->retained_provider.commit || !graph->subresource_states)
     return;
