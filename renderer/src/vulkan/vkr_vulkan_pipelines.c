@@ -2522,6 +2522,17 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VKR_VULKAN_PACKET_SHADER_COUNT, VK_FORMAT_UNDEFINED,
              VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, true_v) &&
          vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_SHADOW_FRAGMENT,
+             VK_FORMAT_UNDEFINED, VK_FORMAT_D16_UNORM, true_v, true_v, false_v,
+             true_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_OPAQUE,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_COUNT, VK_FORMAT_UNDEFINED,
+             VK_FORMAT_D16_UNORM, true_v, true_v, false_v, true_v) &&
+         vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_TRANSMISSION,
              VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_VERTEX,
              VKR_VULKAN_PACKET_SHADER_LOCAL_SHADOW_TRANSMISSION_FRAGMENT,

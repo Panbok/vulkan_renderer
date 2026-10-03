@@ -899,7 +899,7 @@ The offline baker captures six scene-linear views and records source provenance;
 normal scene loading uploads the cube and prepares SH/prefilter once. Ready local
 probes work without a global environment. Local shadows are a persistent
 cache: every shadow-casting light keeps its faces resident in one 4096-squared
-depth atlas array that all frames in flight share, with face sizes fixed by
+D16 depth atlas array that all frames in flight share, with face sizes fixed by
 light range and layers sized to the resident faces. Faces whose content is
 invalid or stale redraw by importance within the preset's per-frame face
 budget (High 30, Balanced 12, Ultra 60); a light's shadow fades in once its

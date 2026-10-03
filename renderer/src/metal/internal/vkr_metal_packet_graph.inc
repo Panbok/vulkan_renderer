@@ -1732,15 +1732,17 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
         break;
       }
     }
-    /* Every frame in flight shares one atlas and one set of transmission
+    /* Every frame in flight shares one D16 atlas and one set of transmission
      * arrays; the atlas reports its own layer count. */
     const uint32_t extent =
         resource == 0u
             ? VKR_LOCAL_SHADOW_ATLAS_SIZE
             : renderer->prepared_frame.local_shadow_transmission_map_size;
-    const VkrTextureFormat format = resource == 2u || resource == 4u
-                                        ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
-                                        : VKR_TEXTURE_FORMAT_D32_SFLOAT;
+    const VkrTextureFormat format =
+        resource == 0u ? VKR_TEXTURE_FORMAT_D16_UNORM
+        : resource == 2u || resource == 4u
+            ? VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
+            : VKR_TEXTURE_FORMAT_D32_SFLOAT;
     if (!slot || !slot->live || slot->graph_generation == 0u ||
         slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
         slot->desc.samples != VKR_SAMPLE_COUNT_1 ||

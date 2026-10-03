@@ -1169,9 +1169,12 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
        ++bucket) {
     const bool8_t opaque_bucket = (bucket & 2u) == 0u;
     const VkrVulkanPacketPipeline wanted_pipeline =
-        shadow ? (opaque_bucket
-                      ? VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE
-                      : VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW)
+        local_shadow
+            ? (opaque_bucket ? VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW_OPAQUE
+                             : VKR_VULKAN_PACKET_PIPELINE_LOCAL_SHADOW)
+        : shadow ? (opaque_bucket
+                        ? VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE
+                        : VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW)
         : (early_z_opaque && opaque_bucket)
             ? VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE
             : VKR_VULKAN_PACKET_PIPELINE_VISIBILITY;

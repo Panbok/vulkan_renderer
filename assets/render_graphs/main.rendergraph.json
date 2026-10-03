@@ -54,7 +54,7 @@
         "size_source": "local_shadow_atlas_size"
       },
       "layers_source": "local_shadow_atlas_layer_count",
-      "format": "D32_SFLOAT",
+      "format": "D16_UNORM",
       "usage": [
         "DEPTH_STENCIL_ATTACHMENT",
         "SAMPLED",

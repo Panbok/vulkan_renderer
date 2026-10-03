@@ -829,6 +829,28 @@ vkr_vk_report_candidate_formats(const VkrVulkanCandidate *candidate,
                     (srgb_format3.optimalTilingFeatures & target_floor) ==
                         target_floor,
                     "optimal tiling");
+
+  /* The local shadow atlas is D16 and its single-tap lights take one
+     linear-filtered comparison sample (ADR-019). */
+  VkFormatProperties3 depth16_format3 = {
+      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
+  };
+  VkFormatProperties2 depth16_format2 = {
+      .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+      .pNext = &depth16_format3,
+  };
+  vkGetPhysicalDeviceFormatProperties2(candidate->physical, VK_FORMAT_D16_UNORM,
+                                       &depth16_format2);
+  const VkFormatFeatureFlags2 shadow_atlas_floor =
+      VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT |
+      VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+      VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+      VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT;
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FORMAT,
+                    "D16_UNORM depth+sampled compare", true_v,
+                    (depth16_format3.optimalTilingFeatures &
+                     shadow_atlas_floor) == shadow_atlas_floor,
+                    "optimal tiling");
 }
 
 /* Whether the surface offers a usable BGRA8/RGBA8 sRGB format. Always false

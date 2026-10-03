@@ -23,7 +23,9 @@ address, shader 64-bit integers/draw parameters, the geometry-shader feature tha
 fragment `SV_PrimitiveID` needs, independent blending, timeline
 semaphores, descriptor indexing and runtime arrays, scalar layout, host query
 reset, dynamic rendering, synchronization2, maintenance features and shader
-demotion used by production. Require a graphics/compute/transfer queue family.
+demotion used by production. Require a graphics/compute/transfer queue family, and `D16_UNORM` depth
+attachment, sampling, comparison and linear filtering for the local shadow
+atlas (ADR-019).
 Windowed targets additionally require surface and swapchain support.
 
 `VK_EXT_descriptor_buffer` is mandatory. Resource and sampler descriptors use

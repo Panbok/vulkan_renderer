@@ -110,9 +110,9 @@ Measured the same way afterwards, each against a matched base build:
 - Skipping the glass transmission lookup of single-tap lights would save
   0.39 ms of mask and 0.41 ms of transmission shading, but it removes tinted
   shadows behind glass and shifts the street view's exposure, so it stays.
-- A D16 atlas in the graph alone was rejected by the local-shadow cache (five
-  lights shadowed, faces redrawn every frame); it needs host support, and the
-  mask's texture-sample limiter of 13% suggests little bandwidth to save.
+- The D16 atlas shipped with host support for its retained-content token
+  (ADR-019). It halves atlas memory; mask and local depth pass times did not
+  change, consistent with the mask's 13% texture-sample limiter.
 - Temporal reuse of `Shadow.LocalMask` slots was prototyped on Metal for a
   static camera: each light reuses its previous slot when the tag matches,
   and a rotating quarter of 8x8 tiles recomputes each frame (per-pixel 2x2

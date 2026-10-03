@@ -26,7 +26,7 @@ light passes through walls. Within 15 m of those cameras are 40 to 51 lamps.
 ## Current baseline
 
 Since 2026-10-02 the phase 1 cache is implemented per ADR-019: every
-shadow-casting light is resident in one shared multi-layer 4096² D32 atlas,
+shadow-casting light is resident in one shared multi-layer 4096² D16 atlas,
 with face sizes fixed by range; invalid and stale faces redraw by importance
 within the preset's face budget per frame, and a transmission pool of one layer
 per budgeted face serves the most important lights. Importance is measured
@@ -175,9 +175,9 @@ needs its own decision.
 - **Choices settled by measurement.** For each choice below, the
   highest-quality option that holds 60 FPS on every baseline host is taken;
   the recommendation applies when options tie:
-  1. Cache depth format and face size. All 72 Bistro lights have 432 faces:
-     216 MiB at 512² in D16, 432 MiB in D32; 54 MiB and 108 MiB at 256². D16
-     must also pass the pop-in and capture gates at these ranges.
+  1. Face size. All 72 Bistro lights have 432 faces: 216 MiB at 512² and
+     54 MiB at 256² in D16. The depth format is settled: the atlas is D16
+     (ADR-019).
   2. Transmission in the cache. Refractive casters add transmission arrays per
      face; 432 faces at 128² add about 189 MiB. Alternatives are a smaller
      resident set for transmission or opaque glass for cached lights.

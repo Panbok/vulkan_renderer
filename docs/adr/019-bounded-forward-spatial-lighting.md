@@ -45,7 +45,7 @@ Local shadows are a persistent cache, phase 1 of the
 [local shadow architecture](../proposals/local-shadow-architecture.md). Every
 shadow-casting light of the scene table is resident: a spot owns one
 perspective face and a point six, in +X, -X, +Y, -Y, +Z, -Z order. Each face
-is a square of one shared 4096-squared D32 atlas array that every frame in
+is a square of one shared 4096-squared D16 atlas array that every frame in
 flight samples. A face's side follows only its light's range: the power of two
 nearest the range times 64 texels per metre, from 128 to the preset's largest
 face, so a 7.5 m Bistro lamp takes 512 squared and the 15 m lamp 1024 squared
@@ -54,6 +54,18 @@ layers as its resident faces need, at most 32; the lowest-importance lights
 shrink only if they would exceed that. Squares pack in descending size by layer
 and first free aligned cell; power-of-two squares that fit by area always pack.
 A light whose size and layer count are unchanged keeps its squares.
+
+The atlas is D16 on both backends: Metal render pipelines carry no depth
+format, and Vulkan draws local faces with D16 variants of the shadow pipelines
+and requires D16 depth attachment, sampling, comparison and linear filtering
+(ADR-023). Receivers keep their texel-footprint bias. On Bistro (Metal Release,
+M1 Pro, 2026-10-03) it halved the atlas from 768 to 384 MiB (12 layers) with
+unchanged redraw counts and local-shadow pass times, and final colour against
+D32 stayed within the default snapshot gate in the street overview (1 pixel
+above 10/255), a street-level facade view (0.011% of pixels above 2/255) and
+`bistro_bright_spot_snapshot` (maximum 3/255). Depth steps grow with the square
+of the distance from the light, about 7 cm at 15 m for the 0.05 m near plane,
+so longer-range lights would need a larger near plane or more bias.
 
 A face's content is invalid when no successful submission drew it into its
 current square with its current projection in the current atlas image, or its
@@ -378,7 +390,7 @@ only and does not establish arbitrary wall or furniture occlusion.
 
 Lighting is bounded and independent of draw partitioning. Unshadowed lights and probe bounds can still leak illumination through geometry.
 Every resident face costs atlas memory whether or not it is on screen: each
-4096-squared D32 layer is 64 MiB, one image for all frames in flight. Bistro's
+4096-squared D16 layer is 32 MiB, one image for all frames in flight. Bistro's
 71 lamps of 7.5 m take 426 faces at 512 squared and its 15 m lamp six at 1024
 squared under High, eight layers or 512 MiB; the per-image atlas it replaces
 took 64 MiB per target image. These are storage figures from the layout, not

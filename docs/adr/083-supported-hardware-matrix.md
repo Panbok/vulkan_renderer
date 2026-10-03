@@ -91,7 +91,9 @@ Production Bistro targets a 16 GB Mac or a discrete GPU with 8 GB
 GPUs, remain supported for rendering. The texture resolution setting
 ([ADR-012](012-texture-compression-pipeline.md)) is their reduced tier: Metal
 defaults to the 2048 limit, which took Bistro's textures from 3.18 to 2.00 GB on
-the M1 Pro, and 1024 lowers it further.
+the M1 Pro, and 1024 lowers it further. The D16 local shadow atlas
+([ADR-019](019-bounded-forward-spatial-lighting.md)) takes Bistro's atlas from
+768 to 384 MiB on every device.
 
 The Metal managed allocation cap is two thirds of `recommendedMaxWorkingSetSize`
 (ADR-024). The 16 GB M1 Pro on macOS 26.6.2 reports 12,124 MiB, so its cap is

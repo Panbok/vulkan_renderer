@@ -620,7 +620,7 @@ void vkr_vulkan_renderer_retained_local_shadow_token(
   *out_token = (VkrRetainedLocalShadowToken){0};
   VkrVulkanGraphImage *opaque = vkr_vk_retained_local_shadow_image(
       renderer, "local_shadow_map", VKR_LOCAL_SHADOW_ATLAS_SIZE, 0u,
-      renderer->prepared_frame.shadow_depth_format);
+      VKR_TEXTURE_FORMAT_D16_UNORM);
   if (opaque) {
     out_token->resource_generation = opaque->graph_generation;
     out_token->atlas_layer_count = opaque->desc.layers;
