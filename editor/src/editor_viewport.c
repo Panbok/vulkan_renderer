@@ -116,6 +116,18 @@ static const struct {
 static const char *const view_snap_targets[VKR_EDITOR_SNAP_COUNT] = {
     "Free", "Surface", "Grid"};
 
+/* Quality popup rows of the open scene's texture limit
+   (VkrSceneSettings.texture_max_extent). */
+static const struct {
+  const char *name;
+  uint32_t extent;
+} view_texture_limits[] = {
+    {"Full resolution", 0u},
+    {"4K  (4096)", 4096u},
+    {"2K  (2048)", 2048u},
+    {"1K  (1024)", 1024u},
+};
+
 /* Grid popup: the toggles, cell size halving and doubling, then the grid's
    height with Fit to surface and Reset. */
 static const char *const view_grid_rows[] = {
@@ -227,6 +239,12 @@ static VkrGraphicsSettings view_graphics(const VkrEditorUi *editor,
     settings.render_scale = editor->view_scale_draft;
   }
   return settings;
+}
+
+/* The container whose texture limit applies: the open scene, else the World.
+ */
+static const VkrScene *view_texture_scene(const VkrSampleUiFrame *frame) {
+  return frame->scene ? frame->scene : frame->world;
 }
 
 /* Left chip labels: camera, view mode, grid spacing, Show, quality. */
@@ -473,6 +491,28 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
                   .disabled = !frame->graphics->dynamic_resolution_available ||
                               !settings.temporal_upscaling};
     snprintf(dynamic->text, sizeof(dynamic->text), "Dynamic resolution");
+
+    /* The scene's texture limit; the Graphics limit, applied at the next
+       start, still caps it. */
+    const VkrScene *scene = view_texture_scene(frame);
+    const uint32_t graphics_limit =
+        vkr_graphics_settings_texture_max_dimension(&settings);
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    if (graphics_limit) {
+      snprintf(rows[count++].text, sizeof(rows[0].text),
+               "Scene textures  (Graphics limit %u)", graphics_limit);
+    } else {
+      snprintf(rows[count++].text, sizeof(rows[0].text), "Scene textures");
+    }
+    for (uint32_t i = 0; i < ArrayCount(view_texture_limits); ++i) {
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){
+          .checked = scene && scene->settings.texture_max_extent ==
+                                  view_texture_limits[i].extent,
+          .disabled = !scene,
+      };
+      snprintf(row->text, sizeof(row->text), "%s", view_texture_limits[i].name);
+    }
     break;
   }
   case VIEW_POPUP_SNAP: {
@@ -783,6 +823,24 @@ static void view_quality_apply(const VkrSampleUiFrame *frame,
       (VkrGraphicsSettingsRequest){.settings = settings, .apply = true_v};
 }
 
+/* Saves `extent` as the texture limit of the open scene, or of the World
+   when none is open, as an undoable scene edit. */
+static void view_scene_textures_apply(const VkrSampleUiFrame *frame,
+                                      uint32_t extent) {
+  const VkrScene *scene = view_texture_scene(frame);
+  if (!scene || !frame->scene_edit ||
+      scene->settings.texture_max_extent == extent) {
+    return;
+  }
+  VkrSceneEditRequest request = {
+      .action = VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS,
+      .container = frame->scene ? 0u : (uint16_t)VKR_SCENE_WORLD_ROOT_ID,
+  };
+  request.scene_settings = scene->settings;
+  request.scene_settings.texture_max_extent = extent;
+  *frame->scene_edit = request;
+}
+
 /* Apply a clicked option row; returns whether the popup stays open. */
 static bool8_t view_popup_activate(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame,
@@ -837,8 +895,14 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
     return true_v;
   case VIEW_POPUP_QUALITY: {
     VkrGraphicsSettings settings = view_graphics(editor, frame);
-    /* Rows: header, the presets, Custom, header, slider, dynamic. */
-    if (index >= 1 && index <= VKR_GRAPHICS_PRESET_CUSTOM) {
+    /* Rows: header, the presets, Custom, header, slider, dynamic, then the
+       scene textures header and its limits. */
+    const uint32_t texture_row = VKR_GRAPHICS_PRESET_CUSTOM + 6u;
+    if (index >= texture_row &&
+        index < texture_row + ArrayCount(view_texture_limits)) {
+      view_scene_textures_apply(
+          frame, view_texture_limits[index - texture_row].extent);
+    } else if (index >= 1 && index <= VKR_GRAPHICS_PRESET_CUSTOM) {
       vkr_graphics_settings_apply_preset(&settings,
                                          (VkrGraphicsPreset)(index - 1u));
       view_quality_apply(frame, settings);

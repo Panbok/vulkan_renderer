@@ -1158,6 +1158,57 @@ static bool8_t cmd_run_scene_inherit(CmdContext *ctx, const CmdDef *def,
   return true_v;
 }
 
+/* The texture limit of the open scene, or of the World with no scene open:
+   reports it without an argument, else sets `full` or a power of two. */
+static bool8_t cmd_run_scene_textures(CmdContext *ctx, const CmdDef *def,
+                                      String8 arg) {
+  (void)def;
+  const VkrScene *scene =
+      ctx->frame->scene ? ctx->frame->scene : ctx->frame->world;
+  if (!scene) {
+    snprintf(ctx->message, sizeof(ctx->message), "No scene or World is open");
+    return false_v;
+  }
+  const char *owner = ctx->frame->scene ? "Scene" : "World";
+  const String8 value = cmd_split(arg, NULL);
+  if (!value.length) {
+    const uint32_t extent = scene->settings.texture_max_extent;
+    if (extent) {
+      snprintf(ctx->message, sizeof(ctx->message), "%s textures: %u", owner,
+               extent);
+    } else {
+      snprintf(ctx->message, sizeof(ctx->message),
+               "%s textures: full resolution", owner);
+    }
+    return true_v;
+  }
+  const String8 full = string8_lit("full");
+  uint32_t extent = 0u;
+  if (!string8_equalsi(&value, &full) &&
+      (!string8_to_u32(&value, &extent) || extent == 0u ||
+       !vkr_scene_texture_extent_valid(extent))) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Use full or a power of two from %u to %u",
+             VKR_SCENE_TEXTURE_EXTENT_MIN, VKR_SCENE_TEXTURE_EXTENT_MAX);
+    return false_v;
+  }
+  VkrSceneEditRequest request = {
+      .action = VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS,
+      .container = ctx->frame->scene ? 0u : (uint16_t)VKR_SCENE_WORLD_ROOT_ID,
+  };
+  request.scene_settings = scene->settings;
+  request.scene_settings.texture_max_extent = extent;
+  *ctx->frame->scene_edit = request;
+  if (extent) {
+    snprintf(ctx->message, sizeof(ctx->message), "%s textures load at %u",
+             owner, extent);
+  } else {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "%s textures load at full resolution", owner);
+  }
+  return true_v;
+}
+
 /* Filters the Content browser; an empty query shows every asset. */
 static bool8_t cmd_run_content_search(CmdContext *ctx, const CmdDef *def,
                                       String8 arg) {
@@ -1740,6 +1791,9 @@ static const CmdDef cmd_defs[] = {
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Whether the open scene uses the World's objects where it has none",
      cmd_run_scene_inherit, CMD_COUNT, 0u},
+    {"scene.textures", CMD_ARG_TEXT, "[full|4096|2048|1024]",
+     "Largest texture extent the open scene, or the World, loads (undoable)",
+     cmd_run_scene_textures, CMD_COUNT, 0u},
     {"content.import", CMD_ARG_TEXT,
      "<path> [world|new <name>|scene <name>|content]",
      "Import a file into the project's shared assets, or place a model in the "

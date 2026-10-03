@@ -67,6 +67,9 @@ typedef struct VkrTextureRequest {
   bool8_t has_explicit_colorspace;
   bool8_t has_explicit_class;
   bool8_t source_only;
+  /* `max_extent=N`: the request's load limit; zero leaves only the system's
+   * limit. */
+  uint32_t max_extent;
 } VkrTextureRequest;
 
 typedef struct VkrTextureQueryColorScanResult {
@@ -300,6 +303,25 @@ vkr_internal bool8_t vkr_texture_scan_query_source_only(String8 query) {
   return source_only;
 }
 
+/* The last valid `max_extent` value; zero when absent or invalid. */
+vkr_internal uint32_t vkr_texture_scan_query_max_extent(String8 query) {
+  const String8 max_extent_key = string8_lit("max_extent");
+  uint32_t max_extent = 0u;
+
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  while (string8_query_next_pair(query, &cursor, &key, &value)) {
+    uint32_t parsed = 0u;
+    if (string8_equalsi(&key, &max_extent_key) &&
+        string8_to_u32(&value, &parsed)) {
+      max_extent = parsed;
+    }
+  }
+
+  return max_extent;
+}
+
 vkr_internal bool8_t vkr_texture_contains_token_ci(String8 name,
                                                    String8 token) {
   if (!name.str || !token.str || token.length == 0 ||
@@ -372,8 +394,9 @@ vkr_internal VkrTextureClass vkr_texture_class_from_filename_heuristic(
 
 /**
  * @brief Parse a texture request into a base path and desired color space.
- * @note Consumes `cs` (colorspace), `tc`/`class` (texture class), and
- * `source=only` (bypass every `.vkt` candidate) query parameters.
+ * @note Consumes `cs` (colorspace), `tc`/`class` (texture class),
+ * `source=only` (bypass every `.vkt` candidate) and `max_extent` (load limit)
+ * query parameters.
  * @note Unknown `cs` values log once and default to linear.
  */
 vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
@@ -419,6 +442,7 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
       .has_explicit_colorspace = scan.has_explicit,
       .has_explicit_class = has_explicit_class,
       .source_only = vkr_texture_scan_query_source_only(query),
+      .max_extent = vkr_texture_scan_query_max_extent(query),
   };
 }
 
@@ -2187,15 +2211,41 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
 /* The 16-byte block size bounds the alignment the kept images retain. */
 #define VKR_TEXTURE_CAP_REGION_ALIGNMENT_MAX 16u
 
+/* The tighter of two load limits; zero is no limit. */
+vkr_internal uint32_t vkr_texture_combined_limit(uint32_t a, uint32_t b) {
+  if (a == 0u) {
+    return b;
+  }
+  return b == 0u ? a : Min(a, b);
+}
+
+/* Mips a load limit drops from a chain of `mip_levels` whose base level's
+ * larger side is `extent`: the first kept mip is the first at or below the
+ * limit, and the smallest mip always remains. */
+vkr_internal uint32_t vkr_texture_limit_skip(uint32_t extent,
+                                             uint32_t mip_levels,
+                                             uint32_t limit) {
+  uint32_t skip = 0u;
+  while (limit != 0u && skip + 1u < mip_levels &&
+         Max(1u, extent >> skip) > limit) {
+    ++skip;
+  }
+  return skip;
+}
+
 /* Drops the mips of a decoded 2D chain whose extent exceeds `max_dimension`,
  * so the texture loads as its first mip at or below the limit. The kept mips
  * move to the front of the upload bytes in offset order. Cubemaps, arrays,
  * single-level images and loads within the limit stay unchanged; the
- * smallest mip always remains. */
-vkr_internal void
-vkr_texture_decode_result_cap_extent(VkrTextureDecodeResult *result,
-                                     uint32_t max_dimension) {
-  if (max_dimension == 0u || result->upload_type != VKR_TEXTURE_TYPE_2D ||
+ * smallest mip always remains. A chain any limit can shorten reports its
+ * stored extent and level count, else zeros, so a later limit can tell
+ * whether reloading would change it. */
+vkr_internal void vkr_texture_decode_result_cap_extent(
+    VkrTextureDecodeResult *result, uint32_t max_dimension,
+    uint32_t *out_source_extent, uint32_t *out_source_mip_levels) {
+  *out_source_extent = 0u;
+  *out_source_mip_levels = 0u;
+  if (result->upload_type != VKR_TEXTURE_TYPE_2D ||
       result->upload_array_layers != 1u || result->upload_mip_levels <= 1u ||
       result->upload_region_count != result->upload_mip_levels ||
       result->upload_region_count > VKR_TEXTURE_CAP_MAX_REGIONS ||
@@ -2205,40 +2255,43 @@ vkr_texture_decode_result_cap_extent(VkrTextureDecodeResult *result,
 
   const uint32_t width = (uint32_t)result->width;
   const uint32_t height = (uint32_t)result->height;
-  uint32_t skip = 0u;
-  while (skip + 1u < result->upload_mip_levels &&
-         Max(Max(1u, width >> skip), Max(1u, height >> skip)) > max_dimension) {
-    ++skip;
+  const uint32_t skip = vkr_texture_limit_skip(
+      Max(width, height), result->upload_mip_levels, max_dimension);
+
+  /* Validate before changing anything, so a mismatched payload still loads
+   * every mip: each level must have exactly one region. */
+  VkrTextureUploadRegion *regions = result->upload_regions;
+  uint32_t levels_seen = 0u;
+  for (uint32_t i = 0u; i < result->upload_region_count; ++i) {
+    const uint32_t level = regions[i].mip_level;
+    if (level >= result->upload_mip_levels ||
+        (levels_seen & (1u << level)) != 0u) {
+      if (skip != 0u) {
+        log_error("Texture mip regions do not match the mip count; loading "
+                  "every mip");
+      }
+      return;
+    }
+    levels_seen |= 1u << level;
   }
+  *out_source_extent = Max(width, height);
+  *out_source_mip_levels = result->upload_mip_levels;
   if (skip == 0u) {
     return;
   }
 
-  /* Validate before changing anything, so a mismatched payload still loads
-   * every mip. The kept images keep the largest power-of-two alignment, up
-   * to the block size, that all their decoded offsets share. */
-  VkrTextureUploadRegion *regions = result->upload_regions;
-  uint32_t kept_count = 0u;
+  /* The kept images keep the largest power-of-two alignment, up to the block
+   * size, that all their decoded offsets share. */
   uint64_t alignment = VKR_TEXTURE_CAP_REGION_ALIGNMENT_MAX;
   for (uint32_t i = 0u; i < result->upload_region_count; ++i) {
-    if (regions[i].mip_level >= result->upload_mip_levels) {
-      kept_count = 0u;
-      break;
-    }
     if (regions[i].mip_level >= skip) {
-      ++kept_count;
       while (alignment > 1u && regions[i].byte_offset % alignment != 0u) {
         alignment /= 2u;
       }
     }
   }
-  if (kept_count != result->upload_mip_levels - skip) {
-    log_error("Texture mip regions do not match the mip count; loading "
-              "every mip");
-    return;
-  }
 
-  kept_count = 0u;
+  uint32_t kept_count = 0u;
   for (uint32_t i = 0u; i < result->upload_region_count; ++i) {
     if (regions[i].mip_level < skip) {
       continue;
@@ -2284,6 +2337,21 @@ vkr_texture_decode_result_cap_extent(VkrTextureDecodeResult *result,
   if (shrunk) {
     result->upload_data = shrunk;
   }
+}
+
+bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
+                                              VkrTextureHandle handle,
+                                              uint32_t max_extent) {
+  const VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || texture->limit_source_mip_levels == 0u) {
+    return false_v;
+  }
+  const uint32_t skip = vkr_texture_limit_skip(
+      texture->limit_source_extent, texture->limit_source_mip_levels,
+      vkr_texture_combined_limit(system->config.max_load_dimension,
+                                 max_extent));
+  return skip + texture->description.mip_levels !=
+         texture->limit_source_mip_levels;
 }
 
 void vkr_texture_system_release_prepared_load(
@@ -2359,9 +2427,14 @@ bool8_t vkr_texture_system_prepare_load_from_file(
     vkr_texture_decode_result_release(&decode_result);
     return false_v;
   }
+  uint32_t limit_source_extent = 0u;
+  uint32_t limit_source_mip_levels = 0u;
   if (has_upload_payload) {
-    vkr_texture_decode_result_cap_extent(&decode_result,
-                                         system->config.max_load_dimension);
+    vkr_texture_decode_result_cap_extent(
+        &decode_result,
+        vkr_texture_combined_limit(system->config.max_load_dimension,
+                                   request.max_extent),
+        &limit_source_extent, &limit_source_mip_levels);
   }
 
   int32_t width = decode_result.width;
@@ -2426,6 +2499,8 @@ bool8_t vkr_texture_system_prepare_load_from_file(
       .anisotropy_enable = false_v,
       .generation = VKR_INVALID_ID,
   };
+  out_prepared->limit_source_extent = limit_source_extent;
+  out_prepared->limit_source_mip_levels = limit_source_mip_levels;
 
   if (has_upload_payload) {
     out_prepared->upload_data = decode_result.upload_data;
@@ -2563,6 +2638,8 @@ bool8_t vkr_texture_system_finalize_prepared_load(
   MemZero(texture, sizeof(*texture));
   texture->description = prepared->description;
   texture->resident_bytes = prepared->upload_data_size;
+  texture->limit_source_extent = prepared->limit_source_extent;
+  texture->limit_source_mip_levels = prepared->limit_source_mip_levels;
   texture->description.id = free_slot_index + 1;
   if (texture->description.generation == VKR_INVALID_ID) {
     texture->description.generation = system->generation_counter++;

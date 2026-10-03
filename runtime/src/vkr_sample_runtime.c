@@ -1332,6 +1332,19 @@ static VkrScene *sample_simulated_scene(VkrStandardSceneRuntime *application,
   return handle ? vkr_scene_handle_get_scene(handle) : NULL;
 }
 
+/* Material textures load at the texture limit of the container Play would
+ * simulate. While a scene loads, the limit its sidecar held when the load
+ * began stays in effect. */
+vkr_internal void
+sample_sync_texture_limit(VkrStandardSceneRuntime *application) {
+  const VkrScene *scene = sample_simulated_scene(application, NULL);
+  if (scene) {
+    vkr_material_system_set_texture_extent_limit(
+        &application->assets.material_system,
+        scene->settings.texture_max_extent);
+  }
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
     VkrStandardSceneRuntime *application) {
   VkrSceneEditState *edits = NULL;
@@ -2053,6 +2066,17 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
     log_error("Failed to create scene load scratch scope");
     return;
   }
+
+  /* The scene's texture limit applies before its materials start streaming;
+     its sidecar is applied once the scene loads. */
+  VkrSceneSettings scene_settings = {0};
+  (void)vkr_scene_edit_peek_settings(
+      application->frame_allocator,
+      string8_create_from_cstr((const uint8_t *)state->sidecar_path,
+                               strlen(state->sidecar_path)),
+      &scene_settings);
+  vkr_material_system_set_texture_extent_limit(
+      &application->assets.material_system, scene_settings.texture_max_extent);
 
   VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene_path,
@@ -3385,6 +3409,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
   }
 
   (void)vkr_standard_scene_runtime_try_activate_scene_resource(application);
+  sample_sync_texture_limit(application);
   VkrSceneHandle simulated_handle = NULL;
   VkrScene *simulated = sample_simulated_scene(application, &simulated_handle);
   if (simulated) {

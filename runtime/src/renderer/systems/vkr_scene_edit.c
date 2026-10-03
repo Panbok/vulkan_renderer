@@ -4,6 +4,7 @@
 #include "renderer/systems/vkr_scene_types.h"
 
 #include "core/logger.h"
+#include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include <errno.h>
 #include <math.h>
@@ -632,7 +633,8 @@ vkr_scene_edit_apply_collision_layers(VkrSceneEditState *s, VkrScene *scene,
 bool8_t vkr_scene_edit_apply_scene_settings(VkrSceneEditState *s,
                                             VkrScene *scene,
                                             const VkrSceneSettings *settings) {
-  if (settings->inherit_world > 1u) {
+  if (settings->inherit_world > 1u ||
+      !vkr_scene_texture_extent_valid(settings->texture_max_extent)) {
     return false_v;
   }
   VkrSceneSettings *payload =
@@ -1695,6 +1697,24 @@ static bool8_t write_collision_layers(VkrJsonWriter *w,
   return vkr_json_writer_end_array(w) && vkr_json_writer_end_object(w);
 }
 
+/* `texture_max_extent` is written only when set, so files without the limit
+   keep their earlier form. */
+static bool8_t write_scene_settings(VkrJsonWriter *w,
+                                    const VkrSceneSettings *settings) {
+  if (!vkr_json_writer_name(w, string8_lit("scene_settings")) ||
+      !vkr_json_writer_begin_object(w) ||
+      !vkr_json_writer_name(w, string8_lit("inherit_world")) ||
+      !vkr_json_writer_bool(w, settings->inherit_world)) {
+    return false_v;
+  }
+  if (settings->texture_max_extent != 0u &&
+      (!vkr_json_writer_name(w, string8_lit("texture_max_extent")) ||
+       !vkr_json_writer_i64(w, settings->texture_max_extent))) {
+    return false_v;
+  }
+  return vkr_json_writer_end_object(w);
+}
+
 static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
 #define WRITE_INT(key, value)                                                  \
   (vkr_json_writer_name(w, string8_lit(key)) && vkr_json_writer_i64(w, (value)))
@@ -1982,10 +2002,7 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, const VkrScene *scene,
   VkrSceneCollisionLayers settings;
   vkr_scene_collision_layers_read(scene, &settings);
   if (!write_structure(w, s, scene) ||
-      !vkr_json_writer_name(w, string8_lit("scene_settings")) ||
-      !vkr_json_writer_begin_object(w) ||
-      !WRITE_BOOL("inherit_world", scene->settings.inherit_world) ||
-      !vkr_json_writer_end_object(w) ||
+      !write_scene_settings(w, &scene->settings) ||
       !vkr_json_writer_name(w, string8_lit("collision_settings")) ||
       !write_collision_layers(w, &settings) || !vkr_json_writer_end_object(w) ||
       !vkr_json_file_writer_commit(&file))
@@ -2256,6 +2273,26 @@ static bool8_t edit_json_key(EditJson *j, const char *expected, bool8_t comma) {
   return (!comma || edit_json_take(j, ',')) &&
          edit_json_string(j, key, sizeof(key)) && !strcmp(key, expected) &&
          edit_json_take(j, ':');
+}
+
+/* `scene_settings`: `inherit_world`, then an optional `texture_max_extent`
+   that earlier files omit. */
+static bool8_t edit_json_scene_settings(EditJson *j, VkrSceneSettings *out) {
+  if (!edit_json_take(j, '{') || !edit_json_key(j, "inherit_world", false_v) ||
+      !edit_json_bool(j, &out->inherit_world)) {
+    return false_v;
+  }
+  out->texture_max_extent = 0u;
+  if (edit_json_take(j, ',')) {
+    int64_t extent = 0;
+    if (!edit_json_key(j, "texture_max_extent", false_v) ||
+        !edit_json_int(j, 0, VKR_SCENE_TEXTURE_EXTENT_MAX, &extent) ||
+        !vkr_scene_texture_extent_valid((uint32_t)extent)) {
+      return false_v;
+    }
+    out->texture_max_extent = (uint32_t)extent;
+  }
+  return edit_json_take(j, '}');
 }
 
 static bool8_t edit_json_u64_hex(EditJson *j, uint64_t *value) {
@@ -3606,10 +3643,8 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
       }
       root_seen |= 32u;
     } else if (!strcmp(key, "scene_settings")) {
-      if ((root_seen & 16u) || !edit_json_take(&json, '{') ||
-          !edit_json_key(&json, "inherit_world", false_v) ||
-          !edit_json_bool(&json, &scene_settings.inherit_world) ||
-          !edit_json_take(&json, '}')) {
+      if ((root_seen & 16u) ||
+          !edit_json_scene_settings(&json, &scene_settings)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
         goto cleanup;
       }
@@ -3764,5 +3799,58 @@ cleanup:
     log_error("Editor overrides rejected: %.*s: %s", (int)path.length, path.str,
               s->status);
   }
+  return success;
+}
+
+bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
+                                     VkrSceneSettings *out_settings) {
+  *out_settings = (VkrSceneSettings){.inherit_world = true_v};
+  char cpath[1024];
+  if (path.length >= sizeof(cpath)) {
+    return false_v;
+  }
+  MemCopy(cpath, path.str, path.length);
+  cpath[path.length] = 0;
+  FILE *file = file_fopen(cpath, "rb");
+  if (!file) {
+    return errno == ENOENT;
+  }
+
+  bool8_t success = false_v;
+  uint8_t *bytes = NULL;
+  long length = 0;
+  if (fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) <= 0 ||
+      length > 16 * 1024 * 1024 || fseek(file, 0, SEEK_SET) != 0) {
+    goto cleanup;
+  }
+  bytes = vkr_allocator_alloc(allocator, (uint64_t)length, EDIT_TAG);
+  if (!bytes || fread(bytes, 1, (size_t)length, file) != (size_t)length) {
+    goto cleanup;
+  }
+
+  /* vkr_scene_edit_load validates the whole file; this reads one object. */
+  VkrJsonReader root = vkr_json_reader_create(bytes, (uint64_t)length);
+  VkrJsonReader object = {0};
+  success = true_v;
+  if (vkr_json_find_root_field(&root, "scene_settings") &&
+      vkr_json_enter_object(&root, &object)) {
+    VkrJsonReader field = object;
+    if (vkr_json_find_root_field(&field, "inherit_world")) {
+      (void)vkr_json_parse_bool(&field, &out_settings->inherit_world);
+    }
+    field = object;
+    int32_t extent = 0;
+    if (vkr_json_find_root_field(&field, "texture_max_extent") &&
+        vkr_json_parse_int(&field, &extent) && extent >= 0 &&
+        vkr_scene_texture_extent_valid((uint32_t)extent)) {
+      out_settings->texture_max_extent = (uint32_t)extent;
+    }
+  }
+
+cleanup:
+  if (bytes) {
+    vkr_allocator_free(allocator, bytes, (uint64_t)length, EDIT_TAG);
+  }
+  fclose(file);
   return success;
 }

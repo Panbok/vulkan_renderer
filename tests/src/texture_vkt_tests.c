@@ -318,7 +318,9 @@ static void test_texture_ktx2_native_block_decode(void) {
 /* A load limit drops the mips above it: the texture loads as its first mip
  * within the limit, with the kept levels' own blocks packed at aligned
  * offsets. A limit at or above the base extent leaves the chain unchanged,
- * and the smallest mip always remains. */
+ * and the smallest mip always remains. The system's limit and a request's
+ * `max_extent` combine to the tighter one, and every load reports the stored
+ * chain a later limit would shorten. */
 static void test_texture_ktx2_load_dimension_cap(void) {
   printf("  Running test_texture_ktx2_load_dimension_cap...\n");
 
@@ -333,21 +335,33 @@ static void test_texture_ktx2_load_dimension_cap(void) {
 
   const struct {
     uint32_t limit;
+    uint32_t request_limit;
     uint32_t extent;
     uint32_t first_level;
   } cases[] = {
-      {8u, 8u, 1u}, {4u, 4u, 2u}, {2u, 4u, 2u}, {16u, 16u, 0u}, {0u, 16u, 0u},
+      {8u, 0u, 8u, 1u},   {4u, 0u, 4u, 2u},  {2u, 0u, 4u, 2u},
+      {16u, 0u, 16u, 0u}, {0u, 0u, 16u, 0u}, {0u, 8u, 8u, 1u},
+      {8u, 4u, 4u, 2u},   {4u, 8u, 4u, 2u},  {0u, 16u, 16u, 0u},
   };
   Arena *arena = arena_create(KB(64), KB(64));
   assert(arena);
   VkrAllocator allocator = {.ctx = arena};
   assert(vkr_allocator_arena(&allocator));
-  const String8 source = string8_lit("tests/tmp/capped-blocks.vkt");
   for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
     VkrTextureSystem system = {
         .supports_texture_bc7 = true_v,
         .config = {.max_load_dimension = cases[i].limit},
     };
+    char request[128];
+    if (cases[i].request_limit) {
+      snprintf(request, sizeof(request),
+               "tests/tmp/capped-blocks.vkt?cs=linear&max_extent=%u",
+               cases[i].request_limit);
+    } else {
+      snprintf(request, sizeof(request), "tests/tmp/capped-blocks.vkt");
+    }
+    const String8 source =
+        string8_create_from_cstr((const uint8_t *)request, strlen(request));
     VkrTexturePreparedLoad prepared = {0};
     VkrRendererError error = VKR_RENDERER_ERROR_UNKNOWN;
     assert(vkr_texture_system_prepare_load_from_file(
@@ -359,6 +373,8 @@ static void test_texture_ktx2_load_dimension_cap(void) {
            prepared.description.height == cases[i].extent);
     assert(prepared.description.mip_levels == mip_count);
     assert(prepared.upload_region_count == mip_count);
+    assert(prepared.limit_source_extent == 16u);
+    assert(prepared.limit_source_mip_levels == 3u);
 
     uint64_t expected_size = 0u;
     for (uint32_t mip = 0u; mip < mip_count; ++mip) {

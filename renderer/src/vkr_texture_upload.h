@@ -22,4 +22,9 @@ typedef struct VkrTexturePreparedLoad {
      publication's completion, so the renderer's table records them without
      copying. A native table, which uploads before returning, ignores it. */
   bool8_t upload_retained;
+  /* The stored chain's larger base side and level count when a load limit
+     can drop its mips, else zeros. The texture system keeps them with the
+     texture; the renderer ignores them. */
+  uint32_t limit_source_extent;
+  uint32_t limit_source_mip_levels;
 } VkrTexturePreparedLoad;

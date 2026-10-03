@@ -658,7 +658,18 @@ typedef struct VkrSceneSettings {
   /** The root World's objects apply where the scene has none of its own;
       off scopes the scene to its own objects. */
   bool8_t inherit_world;
+  /** Largest extent of a material texture loaded while this scene is open,
+      a power of two from VKR_SCENE_TEXTURE_EXTENT_MIN to
+      VKR_SCENE_TEXTURE_EXTENT_MAX, or zero for full resolution. The Graphics
+      texture resolution still applies. */
+  uint32_t texture_max_extent;
 } VkrSceneSettings;
+
+#define VKR_SCENE_TEXTURE_EXTENT_MIN 256u
+#define VKR_SCENE_TEXTURE_EXTENT_MAX 16384u
+
+/** Whether `extent` is a valid VkrSceneSettings.texture_max_extent. */
+bool8_t vkr_scene_texture_extent_valid(uint32_t extent);
 
 /* Geometry kinds the editor's Show menu can leave undrawn. */
 #define VKR_SCENE_SHOW_HIDE_STATIC_MESHES (1u << 0)

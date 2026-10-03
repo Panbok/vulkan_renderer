@@ -42,6 +42,8 @@ VkrHashTable(VkrMaterialEntry);
 #define VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX 512u
 #define VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX 8u
 #define VKR_MATERIAL_REPLACEMENT_CAPACITY 512u
+/* Reloads toward a changed texture load limit queued or loading at once. */
+#define VKR_MATERIAL_TEXTURE_RELOAD_MAX 32u
 
 typedef enum VkrMaterialTextureResidencyState {
   VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED = 0,
@@ -56,7 +58,18 @@ typedef enum VkrMaterialTextureResidencyState {
 typedef struct VkrMaterialTextureStream {
   VkrMaterialHandle material;
   VkrTextureSlot slot;
+  /* The material's texture request, its first `path_length` bytes, followed
+   * by the load limit's query of the last request, so `path` names that
+   * request. */
   char path[VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX];
+  uint32_t path_length;
+  /* The load limit the last request carried; zero for none. */
+  uint32_t request_limit;
+  /* A queued or loading stream that replaces this slot's resident texture
+   * with one loaded at the current limit. */
+  bool8_t reload;
+  /* This resident stream has such a reload in progress. */
+  bool8_t reloading;
   VkrMaterialTextureResidencyState state;
   VkrResourceHandleInfo request;
   VkrTextureHandle resident_texture;
@@ -130,6 +143,11 @@ typedef struct VkrMaterialSystem {
   uint64_t texture_stream_budget_bytes;
   uint64_t texture_stream_capacity_retry_high_water;
   bool8_t texture_stream_budget_user_configured;
+  /* Load limit (`max_extent=N`) of material texture requests; zero for
+   * none. The texture system's own limit still applies. */
+  uint32_t texture_extent_limit;
+  /* Resident textures may differ from what the limit loads. */
+  bool8_t texture_reload_pending;
   uint64_t texture_stream_epoch;
   uint64_t *texture_material_last_used_epochs;
   VkrMaterialPublication *publications; /* max_material_count */
@@ -191,6 +209,16 @@ bool8_t vkr_material_system_replace(
     VkrMaterialSystem *system, VkrMaterialHandle material,
     const VkrMaterial *definition,
     const char *const texture_paths[VKR_TEXTURE_SLOT_COUNT]);
+
+/**
+ * Sets the load limit of material texture requests: the largest extent of a
+ * loaded texture, zero for none, combined with the texture system's limit.
+ * Later requests carry it. Resident textures whose mip chain it changes
+ * reload through the bounded stream queue, recently drawn materials first,
+ * and keep their texture bound until the reload binds.
+ */
+void vkr_material_system_set_texture_extent_limit(VkrMaterialSystem *system,
+                                                  uint32_t max_extent);
 
 /** Replacements still waiting for their textures or their publication. */
 uint32_t

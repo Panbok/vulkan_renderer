@@ -304,9 +304,10 @@ beside the primary scene and up to six additive scenes, all sharing one physics
 world, and retains its GPU-completion-based resource retirement.
 [ADR-076](adr/076-project-object-model.md) records this object model:
 descriptor-generated Details, structural undo, singleton resolution with a
-per-scene inherit-World setting, World-only physics and animation settings,
-presets, viewport documents, Set primary and the Outliner with scenes nested
-under the World.
+per-scene inherit-World setting, a per-scene texture limit
+([ADR-012](adr/012-texture-compression-pipeline.md)), World-only physics and
+animation settings, presets, viewport documents, Set primary and the Outliner
+with scenes nested under the World.
 
 The Outliner's Add entity form appends a model or directional, point, spot or
 rectangle light to the loaded writable managed scene. Model sources use the

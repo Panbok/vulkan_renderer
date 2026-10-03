@@ -224,6 +224,47 @@ vkr_internal bool8_t material_pbr_test_write_native_texture(
   return result == KTX_SUCCESS ? true_v : false_v;
 }
 
+/* An ASTC 4x4 2D texture of `extent` with `level_count` mips. */
+vkr_internal bool8_t material_pbr_test_write_mipped_texture(
+    const char *path, uint32_t extent, uint32_t level_count) {
+  const ktxTextureCreateInfo create_info = {
+      .vkFormat = VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+      .baseWidth = extent,
+      .baseHeight = extent,
+      .baseDepth = 1u,
+      .numDimensions = 2u,
+      .numLevels = level_count,
+      .numLayers = 1u,
+      .numFaces = 1u,
+      .isArray = KTX_FALSE,
+      .generateMipmaps = KTX_FALSE,
+  };
+  ktxTexture2 *texture = NULL;
+  KTX_error_code result = ktxTexture2_Create(
+      &create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
+  if (result != KTX_SUCCESS || !texture) {
+    return false_v;
+  }
+  uint8_t blocks[16u * 16u] = {0};
+  for (uint32_t level = 0u; level < level_count; ++level) {
+    const uint32_t blocks_per_side = Max(1u, (extent >> level) / 4u);
+    const uint32_t byte_count = blocks_per_side * blocks_per_side * 16u;
+    if (byte_count > sizeof(blocks)) {
+      ktxTexture_Destroy(ktxTexture(texture));
+      return false_v;
+    }
+    result = ktxTexture_SetImageFromMemory(ktxTexture(texture), level, 0u, 0u,
+                                           blocks, byte_count);
+    if (result != KTX_SUCCESS) {
+      ktxTexture_Destroy(ktxTexture(texture));
+      return false_v;
+    }
+  }
+  result = ktxTexture_WriteToNamedFile(ktxTexture(texture), path);
+  ktxTexture_Destroy(ktxTexture(texture));
+  return result == KTX_SUCCESS ? true_v : false_v;
+}
+
 vkr_internal void material_pbr_test_ensure_dirs(void) {
   char tests_tmp[1024];
   snprintf(tests_tmp, sizeof(tests_tmp), "%stests/tmp", PROJECT_SOURCE_DIR);
@@ -1607,6 +1648,138 @@ test_texture_request_owns_pending_publication(MaterialPbrTestContext *ctx) {
   printf("  test_texture_request_owns_pending_publication PASSED\n");
 }
 
+/* Pumps resource loads, completing every submission, and material streams
+ * until `slot` binds a texture of base `extent` and no stream of `material`
+ * is queued, loading or reloading. Returns the bound texture. */
+vkr_internal VkrTextureHandle material_pbr_test_pump_until_extent(
+    MaterialPbrTestContext *ctx, VkrMaterialHandle material,
+    VkrTextureSlot slot, uint32_t extent) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  /* Finalization runs inside a frame, and the frame's submission (serial 2)
+     has already completed. */
+  const VkrResourceSubmissionState submission = {.submit_serial = 1u,
+                                                 .completed_submit_serial = 2u,
+                                                 .frame_active = true_v};
+  for (uint32_t attempt = 0u; attempt < 500u; ++attempt) {
+    vkr_resource_system_pump(submission, NULL);
+    vkr_material_system_pump_texture_streams(system, 8u);
+    const VkrMaterial *live =
+        vkr_material_system_get_by_handle(system, material);
+    const VkrTexture *texture = vkr_texture_system_get_by_handle(
+        &ctx->texture_system, live->textures[slot].handle);
+    bool8_t settled = true_v;
+    for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+      const VkrMaterialTextureStream *stream = &system->texture_streams[i];
+      if (stream->material.id == material.id &&
+          (stream->reload ||
+           stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT)) {
+        settled = false_v;
+      }
+    }
+    if (settled && texture && texture->description.width == extent) {
+      return live->textures[slot].handle;
+    }
+    vkr_platform_sleep(2u);
+  }
+  assert(false && "material texture did not reach the expected extent");
+  return VKR_TEXTURE_HANDLE_INVALID;
+}
+
+/* A changed load limit reloads only the resident textures whose mip chain it
+ * changes. A slot keeps its texture until the reload binds, which releases
+ * the texture it replaced; clearing the limit restores the full chain. */
+vkr_internal void test_material_texture_limit_reloads_changed_textures(
+    MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_texture_limit_reloads_changed_textures...\n");
+  VkrJobSystem jobs = {0};
+  VkrJobSystemConfig config = vkr_job_system_config_default();
+  config.worker_count = 1u;
+  config.max_jobs = 64u;
+  config.queue_capacity = 64u;
+  assert(vkr_job_system_init(&config, &jobs));
+  assert(vkr_resource_system_init(&ctx->temp_allocator, &jobs, NULL));
+  assert(vkr_resource_system_register_loader(&ctx->texture_system,
+                                             vkr_texture_loader_create()));
+
+  const char *big = "tests/tmp/material_pbr/limit_big.vkt";
+  const char *small = "tests/tmp/material_pbr/limit_small.vkt";
+  char absolute[1024];
+  snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, big);
+  assert(material_pbr_test_write_mipped_texture(absolute, 16u, 3u));
+  snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, small);
+  assert(material_pbr_test_write_mipped_texture(absolute, 4u, 1u));
+
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle material = vkr_material_system_create_colored(
+      system, "texture_limit_material", vec4_one(), &error);
+  assert(material.id != 0u);
+  assert(vkr_material_system_stream_texture(
+      system, material, VKR_TEXTURE_SLOT_DIFFUSE,
+      "tests/tmp/material_pbr/limit_big.vkt?cs=linear&tc=color_linear"));
+  assert(vkr_material_system_stream_texture(
+      system, material, VKR_TEXTURE_SLOT_NORMAL,
+      "tests/tmp/material_pbr/limit_small.vkt?cs=linear&tc=color_linear"));
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, material);
+
+  const VkrTextureHandle full = material_pbr_test_pump_until_extent(
+      ctx, material, VKR_TEXTURE_SLOT_DIFFUSE, 16u);
+  const VkrTextureHandle unchanged = material_pbr_test_pump_until_extent(
+      ctx, material, VKR_TEXTURE_SLOT_NORMAL, 4u);
+  const VkrTexture *texture =
+      vkr_texture_system_get_by_handle(&ctx->texture_system, full);
+  assert(texture->description.mip_levels == 3u);
+  const uint64_t full_bytes = texture->resident_bytes;
+  const uint64_t resident_bytes = system->texture_stream_resident_bytes;
+  const uint32_t created = ctx->publisher_state.texture_create_calls;
+  const uint32_t destroyed = ctx->publisher_state.texture_destroy_calls;
+
+  /* Only the 16-texel texture reloads, at 8 with its two smaller mips. */
+  vkr_material_system_set_texture_extent_limit(system, 8u);
+  const VkrTextureHandle limited = material_pbr_test_pump_until_extent(
+      ctx, material, VKR_TEXTURE_SLOT_DIFFUSE, 8u);
+  assert(limited.id != full.id || limited.generation != full.generation);
+  texture = vkr_texture_system_get_by_handle(&ctx->texture_system, limited);
+  assert(texture->description.mip_levels == 2u);
+  assert(texture->resident_bytes < full_bytes);
+  assert(system->texture_stream_resident_bytes ==
+         resident_bytes - full_bytes + texture->resident_bytes);
+  const VkrMaterial *live = vkr_material_system_get_by_handle(system, material);
+  assert(live->textures[VKR_TEXTURE_SLOT_NORMAL].handle.id == unchanged.id);
+  assert(ctx->publisher_state.texture_create_calls == created + 1u);
+  assert(ctx->publisher_state.texture_destroy_calls == destroyed + 1u);
+  assert(!vkr_texture_system_get_by_handle(&ctx->texture_system, full));
+  uint32_t material_streams = 0u;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    const VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->material.id != material.id) {
+      continue;
+    }
+    material_streams++;
+    if (stream->slot == VKR_TEXTURE_SLOT_DIFFUSE) {
+      assert(strstr(stream->path, "tc=color_linear&max_extent=8") != NULL);
+    }
+  }
+  assert(material_streams == 2u);
+
+  /* Clearing the limit loads the full chain again. */
+  vkr_material_system_set_texture_extent_limit(system, 0u);
+  const VkrTextureHandle restored = material_pbr_test_pump_until_extent(
+      ctx, material, VKR_TEXTURE_SLOT_DIFFUSE, 16u);
+  texture = vkr_texture_system_get_by_handle(&ctx->texture_system, restored);
+  assert(texture->description.mip_levels == 3u);
+  assert(!vkr_texture_system_get_by_handle(&ctx->texture_system, limited));
+  assert(system->texture_stream_resident_bytes == resident_bytes);
+
+  vkr_material_system_cancel_texture_streams(system, material);
+  vkr_resource_system_shutdown();
+  vkr_job_system_shutdown(&jobs);
+  material_pbr_test_remove_file(big);
+  material_pbr_test_remove_file(small);
+  printf("  test_material_texture_limit_reloads_changed_textures PASSED\n");
+}
+
 vkr_internal void test_texture_publication_backpressure_is_retryable(
     MaterialPbrTestContext *ctx) {
   uint8_t pixels[4] = {255u, 255u, 255u, 255u};
@@ -1971,6 +2144,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_replacement_publishes_as_one(&context);
   test_compressed_texture_subresource_shapes(&context);
   test_texture_request_owns_pending_publication(&context);
+  test_material_texture_limit_reloads_changed_textures(&context);
   test_texture_publication_backpressure_is_retryable(&context);
   test_repeated_texture_finalize_reuses_canonical_handle(&context);
 

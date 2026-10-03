@@ -101,6 +101,7 @@ dependable channel for scripts.
 | `scene.primary` | `<slot\|name>` | Make an added project scene the primary scene, adding the previous primary back beside it |
 | `scene.instantiate` | `<name>` | Copy another project scene into the open one under a new root at the origin, as an unlinked prefab instance |
 | `scene.inherit` | `[on\|off\|toggle]` | Whether the open scene uses the World's objects |
+| `scene.textures` | `[full\|<power of two>]` | Report or set the texture limit of the open scene, or the World with none open (ADR-012); undoable |
 | `tab.new`, `tab.show` | `<n>` for `tab.show` | New World document, or switch viewport documents |
 | `content.search` | `[text]` | Search below the current Content folder |
 | `content.open`, `content.mkdir` | `<folder>` | Show a Content folder by path, shown name or shown path (`Level One`, `Level One/Textures`, `System/Objects`), or create a project folder with its parents |
@@ -149,7 +150,7 @@ fourth component (`sel.shape.color = (1, 0.2, 0.2)`).
 | `ui` | `zoom`, `reduce_motion` | all |
 | `sim` | `running`, `time` | `running` |
 | `scene` | `loaded`, `entities` | none |
-| `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent) | none |
+| `stats` | `frame_ms`, `frame_ms_p95` (median and 95th percentile of the last 120 frame intervals), `finalizing`, `replaced_materials` (finished materials the current or last background finalize applied), `pending_replacements`, `pending_textures`, `render_width`, `render_height` (the Scene's current internal extent), `texture_mb` (resident material textures in MiB) | none |
 | `gfx` | `render_scale`, `dynamic`, `vsync`, `preset` (`low`, `medium`, `high`, `epic`, `custom`), `restart` (read-only: a change waits for a restart), `invert_mouse_y`, `high_dpi` | `render_scale`, `dynamic`, `vsync`, `preset` (applied as the Scalability menu does), `invert_mouse_y`, `high_dpi` (macOS only; ADR-043) |
 
 Scene writes read the entity with `vkr_scene_edit_read`, change one component,

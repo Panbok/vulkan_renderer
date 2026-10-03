@@ -134,6 +134,64 @@ static void edit_test_document_ids(VkrAllocator *allocator, String8 path) {
   vkr_scene_edit_reset(&state, allocator, 0);
 }
 
+/* The scene's texture limit is an undoable scene setting that survives a
+   sidecar save and load, and the peek reads it before the scene loads. A file
+   without the key, the earlier form, keeps full resolution; a limit that is
+   not a supported power of two rejects the edit and the file. */
+static void edit_test_texture_limit(VkrAllocator *allocator, String8 path,
+                                    const char *cpath) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 23, 8, NULL));
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, allocator, 1);
+  VkrSceneSettings settings = scene.settings;
+  settings.texture_max_extent = 3000u;
+  assert(!vkr_scene_edit_apply_scene_settings(&state, &scene, &settings));
+  assert(scene.settings.texture_max_extent == 0u);
+  settings.texture_max_extent = 2048u;
+  assert(vkr_scene_edit_apply_scene_settings(&state, &scene, &settings));
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(scene.settings.texture_max_extent == 0u);
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(scene.settings.texture_max_extent == 2048u);
+
+  assert(vkr_scene_edit_save(&state, &scene, path));
+  char saved[4096];
+  FILE *file = file_fopen(cpath, "rb");
+  assert(file);
+  const size_t saved_size = fread(saved, 1, sizeof(saved) - 1u, file);
+  fclose(file);
+  saved[saved_size] = 0;
+  VkrSceneSettings peeked = {0};
+  assert(vkr_scene_edit_peek_settings(allocator, path, &peeked));
+  assert(peeked.texture_max_extent == 2048u && peeked.inherit_world);
+  scene.settings.texture_max_extent = 0u;
+  vkr_scene_edit_reset(&state, allocator, 1);
+  assert(vkr_scene_edit_load(&state, &scene, path));
+  assert(scene.settings.texture_max_extent == 2048u);
+
+  edit_test_replace(cpath, saved, saved_size, "2048", "3000");
+  assert(!vkr_scene_edit_load(&state, &scene, path));
+  assert(vkr_scene_edit_peek_settings(allocator, path, &peeked));
+  assert(peeked.texture_max_extent == 0u);
+
+  scene.settings.texture_max_extent = 0u;
+  vkr_scene_edit_reset(&state, allocator, 1);
+  assert(vkr_scene_edit_save(&state, &scene, path));
+  file = file_fopen(cpath, "rb");
+  assert(file);
+  const size_t earlier_size = fread(saved, 1, sizeof(saved) - 1u, file);
+  fclose(file);
+  saved[earlier_size] = 0;
+  assert(!strstr(saved, "texture_max_extent"));
+  scene.settings.texture_max_extent = 1024u;
+  assert(vkr_scene_edit_load(&state, &scene, path));
+  assert(scene.settings.texture_max_extent == 0u);
+
+  vkr_scene_edit_reset(&state, allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 /* Structural journal (ADR-076). Independent oracles: component bytes, entity
    liveness, parent links and world positions, checked after undo and redo and
    after an overlay save and reload into a freshly built document scene. A
@@ -311,6 +369,7 @@ static void edit_test_structure(void) {
   assert(vkr_scene_entity_alive(&scene, child));
 
   edit_test_document_ids(&allocator, file_path);
+  edit_test_texture_limit(&allocator, file_path, path);
 
   FilePath saved_path = {.path = file_path, .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_remove(&saved_path) == FILE_ERROR_NONE);

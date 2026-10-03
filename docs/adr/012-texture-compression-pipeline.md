@@ -155,6 +155,29 @@ most of the difference. Final colour against the unlimited load measured
 1/255) and 88.2 dB from a street-level facade view at 1920x1440 output, with
 three G-buffer albedo pixels above 10/255.
 
+Each scene also carries a texture limit, `VkrSceneSettings.texture_max_extent`
+(full, or a power of two from 256 to 16384), which applies live. It is saved
+as `scene_settings.texture_max_extent` in the scene's editor sidecar; the key
+is written only when set. The value is edited from the Scene's Quality popup
+or with `scene.textures`, and undo restores it. The runtime reads it from the
+sidecar before the scene's materials stream
+([sample runtime](../../runtime/src/vkr_sample_runtime.c)), then follows the
+container Play would simulate: the scene, or the World when no scene is open.
+Material texture requests carry it as a `max_extent=N` query, and the texture
+system applies the tighter of that and the Graphics limit
+([texture system](../../runtime/src/renderer/systems/vkr_texture_system.c)).
+Each texture records the larger side and level count of its stored chain, so a
+changed limit reloads only textures whose chain would differ; 1K textures stay
+loaded under a 2K limit. Reloads run through the material texture stream queue
+([material system](../../runtime/src/renderer/systems/vkr_material_system.c)),
+recently drawn materials first, with at most 32 queued or loading. The slot
+keeps its texture until the reload binds, and then the replaced texture is
+released. Additive scenes follow the primary scene's limit.
+Bistro on the M1 Pro (Debug editor, headless, Graphics limit 2048, isolated
+settings, 2026-10-03): `stats.texture_mb` read 1099.55 MiB at full, 347.69 MiB
+45 s after `scene.textures 1024`, and 1099.55 MiB again 45 s after `undo`.
+Each of the three readings had no pending textures. Frame time and image quality were not measured.
+
 For ordinary texture jobs, the offline packer filters `color-srgb` RGB channels in linear light using the
 [sRGB transfer functions](https://registry.khronos.org/DataFormat/specs/1.4/dataformat.1.4.html),
 then encodes each mip back to sRGB. Alpha and all

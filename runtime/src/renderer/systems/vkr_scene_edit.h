@@ -196,6 +196,12 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *state, const VkrScene *scene,
                             String8 path);
 bool8_t vkr_scene_edit_load(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
+/** Reads only `scene_settings` from the sidecar at `path`, before its scene
+    loads; vkr_scene_edit_load applies the validated settings later. A
+    missing file or object leaves the defaults. Returns false when the file
+    exists but cannot be read. */
+bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
+                                     VkrSceneSettings *out_settings);
 
 /** Add a world component with `value`, or the type's defaults when NULL. */
 bool8_t vkr_scene_edit_add_component(VkrSceneEditState *state, VkrScene *scene,

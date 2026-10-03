@@ -50,6 +50,10 @@ typedef struct VkrTexture {
   FilePath file_path;
   uint8_t *image;
   uint64_t resident_bytes;
+  /* The stored chain's larger base side and level count when a load limit
+     can drop its mips, else zeros (VkrTexturePreparedLoad). */
+  uint32_t limit_source_extent;
+  uint32_t limit_source_mip_levels;
   /* Counts the texture's image publication and, for a prefilter, its IBL
      bakes. */
   VkrPublicationState publication;

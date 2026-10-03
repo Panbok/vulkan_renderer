@@ -777,6 +777,12 @@ float32_t vkr_scene_animation_time_scale(const VkrScene *scene) {
              : 1.0f;
 }
 
+bool8_t vkr_scene_texture_extent_valid(uint32_t extent) {
+  return extent == 0u || (extent >= VKR_SCENE_TEXTURE_EXTENT_MIN &&
+                          extent <= VKR_SCENE_TEXTURE_EXTENT_MAX &&
+                          (extent & (extent - 1u)) == 0u);
+}
+
 bool8_t vkr_scene_type_allowed(const VkrScene *scene, const VkrTypeDesc *type) {
   return scene && type &&
          (!(type->flags & VKR_TYPE_FLAG_WORLD_ONLY) ||

@@ -125,10 +125,16 @@ static const char *const eval_sim_members[] = {"running", "time", NULL};
 static const char *const eval_scene_members[] = {"loaded", "entities", "added",
                                                  NULL};
 static const char *const eval_world_members[] = {"loaded", "entities", NULL};
-static const char *const eval_stats_members[] = {
-    "frame_ms",           "frame_ms_p95",         "finalizing",
-    "replaced_materials", "pending_replacements", "pending_textures",
-    "render_width",       "render_height",        NULL};
+static const char *const eval_stats_members[] = {"frame_ms",
+                                                 "frame_ms_p95",
+                                                 "finalizing",
+                                                 "replaced_materials",
+                                                 "pending_replacements",
+                                                 "pending_textures",
+                                                 "render_width",
+                                                 "render_height",
+                                                 "texture_mb",
+                                                 NULL};
 static const char *const eval_roots[] = {
     "sel",   "view",   "ui",   "sim",  "scene", "world",     "stats",
     "gfx",   "entity", "vec3", "len",  "sqrt",  "sin",       "cos",
@@ -818,6 +824,13 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       if (index == 6 || index == 7) {
         *out = eval_number(index == 6 ? frame->scene_render_width
                                       : frame->scene_render_height);
+        return true_v;
+      }
+      if (index == 8) {
+        /* Resident material textures, in MiB. */
+        *out = eval_number((float64_t)frame->assets->material_system
+                               .texture_stream_resident_bytes /
+                           (1024.0 * 1024.0));
         return true_v;
       }
     } else if (base->object == EVAL_OBJECT_SCENE ||
