@@ -40,23 +40,54 @@ def unit_text(source):
     return '\n'.join(parts)
 
 
+def split_command(command):
+    """A compile database command as the compiler receives it. Windows
+    commands follow the C runtime's quoting rules, under which backslashes in
+    paths are literal; POSIX shell splitting would remove them."""
+    if os.name != 'nt':
+        return shlex.split(command)
+    import ctypes
+    from ctypes import wintypes
+    split = ctypes.windll.shell32.CommandLineToArgvW
+    split.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    split.restype = ctypes.POINTER(wintypes.LPWSTR)
+    count = ctypes.c_int(0)
+    argv = split(command, ctypes.byref(count))
+    if not argv:
+        raise ctypes.WinError()
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
+
+
 def disabled_command(entry, wrapper):
     """The entry's compiler invocation, syntax-only, with metrics compiled
     out. The CMake PCH wrapper is replaced by an equivalent header with no
     precompiled file beside it, so the instrumented PCH is not reused."""
-    arguments = entry.get('arguments') or shlex.split(entry['command'])
+    arguments = entry.get('arguments') or split_command(entry['command'])
     out = []
-    skip = False
+    skip = 0
     for index, argument in enumerate(arguments):
         if skip:
-            skip = False
+            skip -= 1
             continue
         if argument in ('-o', '-MF', '-MT', '-MQ'):
-            skip = True
+            skip = 1
             continue
         if argument in ('-c', '-MD', '-MMD'):
             continue
         following = arguments[index + 1] if index + 1 < len(arguments) else ''
+        # Clang targeting MSVC receives the PCH through cc1 options:
+        # -Xclang -include-pch -Xclang <pch> -Xclang -include -Xclang <header>.
+        value = arguments[index + 3] if index + 3 < len(arguments) else ''
+        if (argument == '-Xclang' and
+                following in ('-include-pch', '-include') and
+                'cmake_pch' in value):
+            if following == '-include':
+                out += ['-include', wrapper]
+            skip = 3
+            continue
         if argument.startswith('-Xarch_') and 'cmake_pch' in following:
             # CMake may scope the PCH include to one architecture.
             continue
