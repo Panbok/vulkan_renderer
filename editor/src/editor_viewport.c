@@ -1,5 +1,6 @@
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_level.h"
 #include "editor_projects.h"
 
 #include "renderer/systems/vkr_gizmo_system.h"
@@ -656,6 +657,7 @@ static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       input_key_press_modifiers(frame->input, KEY_B) == 0u) {
     editor->brush_draw = !editor->brush_draw;
     editor->brush_dragging = false_v;
+    editor->clip_tool = false_v;
     ui->capture.keyboard = true_v;
   }
   /* The selection may live in the World or an added scene. */
@@ -696,6 +698,7 @@ static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
 
 static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
                             Vec3 *origin, Vec3 *direction);
+static bool8_t grid_eye(const VkrSampleUiFrame *frame, Vec3 *eye);
 
 /* The grid plane point under a window pixel, snapped to the grid cell. */
 static bool8_t brush_draw_point(const VkrSampleUiFrame *frame, Vec2 pixel,
@@ -727,8 +730,8 @@ static bool8_t brush_draw_point(const VkrSampleUiFrame *frame, Vec2 pixel,
 static void viewport_brush_draw(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
-  if (!editor->brush_draw || frame->scene_rendering_stopped ||
-      frame->mouse_captured) {
+  if (!editor->brush_draw || editor->clip_tool ||
+      frame->scene_rendering_stopped || frame->mouse_captured) {
     editor->brush_dragging = false_v;
     return;
   }
@@ -796,6 +799,287 @@ static void viewport_brush_draw(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
+/* The selected brush: the selection itself, or the brush of a selected
+   face. */
+static VkrEntityId viewport_selected_brush(const VkrSampleUiFrame *frame) {
+  const VkrEntityId selected = frame->selected_entity;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, selected);
+  if (!scene || !vkr_scene_entity_alive(scene, selected)) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  if (vkr_scene_get_typed(scene, selected, &vkr_scene_brush_type)) {
+    return selected;
+  }
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, selected, scene->comp_transform);
+  if (transform &&
+      vkr_scene_get_typed(scene, selected, &vkr_scene_brush_face_type) &&
+      vkr_scene_entity_alive(scene, transform->parent)) {
+    return transform->parent;
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+/* The parameter along the line `point + s * axis` (unit axis) closest to
+   the ray, and the distance between them; false when they are parallel. */
+static bool8_t face_axis_closest(Vec3 point, Vec3 axis, Vec3 origin,
+                                 Vec3 direction, float32_t *out_s,
+                                 float32_t *out_gap) {
+  const Vec3 w = vec3_sub(point, origin);
+  const float32_t b = vec3_dot(axis, direction);
+  const float32_t denominator = 1.0f - b * b;
+  if (denominator < 1.0e-4f) {
+    return false_v;
+  }
+  const float32_t d = vec3_dot(axis, w);
+  const float32_t e = vec3_dot(direction, w);
+  const float32_t s = (b * e - d) / denominator;
+  const float32_t t = (e - b * d) / denominator;
+  const Vec3 on_axis = vec3_add(point, vec3_scale(axis, s));
+  const Vec3 on_ray = vec3_add(origin, vec3_scale(direction, t));
+  *out_s = s;
+  *out_gap = t > 0.0f ? vec3_length(vec3_sub(on_axis, on_ray)) : INFINITY;
+  return true_v;
+}
+
+/* The selected face's move handle: a drag on the arrow out of the face
+   center moves the face along its normal in 0.25 m steps, and the release
+   applies it through brush.move_face. */
+static void viewport_face_handle(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 const VkrScene *scene, Vec3 mouse_origin,
+                                 Vec3 mouse_direction, bool8_t has_ray,
+                                 bool8_t inside) {
+  VkrUiSystem *ui = frame->ui;
+  VkrBrushGeometry *geometry = vkr_allocator_alloc(
+      ui->frame_allocator, sizeof(*geometry), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  Vec3 corners[VKR_BRUSH_POLYGON_MAX];
+  const uint32_t count = geometry ? vkr_editor_brush_face_outline(
+                                        scene, frame->selected_entity, geometry,
+                                        corners, VKR_BRUSH_POLYGON_MAX)
+                                  : 0u;
+  if (count < 3u) {
+    editor->face_dragging = false_v;
+    return;
+  }
+  /* Newell's normal and the corner average. */
+  Vec3 center = {0};
+  Vec3 normal = {0};
+  for (uint32_t i = 0; i < count; ++i) {
+    const Vec3 a = corners[i];
+    const Vec3 b = corners[(i + 1u) % count];
+    normal.x += (a.y - b.y) * (a.z + b.z);
+    normal.y += (a.z - b.z) * (a.x + b.x);
+    normal.z += (a.x - b.x) * (a.y + b.y);
+    center = vec3_add(center, a);
+  }
+  center = vec3_scale(center, 1.0f / (float32_t)count);
+  if (vec3_length(normal) < 1.0e-6f) {
+    return;
+  }
+  normal = vec3_normalize(normal);
+  Vec3 eye = {0};
+  const float32_t view_distance =
+      grid_eye(frame, &eye) ? vec3_length(vec3_sub(eye, center)) : 10.0f;
+  /* The arrow keeps about the same size on screen. */
+  const float32_t length = Max(0.25f, 0.12f * view_distance);
+  if (!editor->face_dragging) {
+    editor->face_handle_center = center;
+    editor->face_handle_normal = normal;
+    editor->face_handle_length = length;
+  }
+  editor->face_handle_valid = true_v;
+  float32_t s = 0.0f;
+  float32_t gap = INFINITY;
+  const bool8_t on_axis =
+      has_ray &&
+      face_axis_closest(editor->face_handle_center, editor->face_handle_normal,
+                        mouse_origin, mouse_direction, &s, &gap);
+  const bool8_t hovered = on_axis && s >= 0.0f &&
+                          s <= editor->face_handle_length &&
+                          gap < 0.04f * view_distance;
+  const Vec4 image = frame->mapping.image_rect_px;
+  if (editor->face_dragging || (hovered && inside)) {
+    /* The Scene stops picking objects under the handle. */
+    (void)vkr_ui_input_layer_register(
+        ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+        (VkrUiRect){image.x, image.y, image.z, image.w});
+  }
+  if (!editor->face_dragging) {
+    if (hovered && inside && ui->mouse_pressed) {
+      editor->face_dragging = true_v;
+      editor->face_drag_start = s;
+      editor->face_drag_distance = 0.0f;
+    }
+    return;
+  }
+  if (on_axis) {
+    editor->face_drag_distance =
+        roundf((s - editor->face_drag_start) / 0.25f) * 0.25f;
+  }
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+    editor->face_dragging = false_v;
+    return;
+  }
+  if (input_is_button_down(frame->input, BUTTON_LEFT) && !ui->mouse_released) {
+    return;
+  }
+  editor->face_dragging = false_v;
+  if (fabsf(editor->face_drag_distance) < 1.0e-3f) {
+    return;
+  }
+  const VkrEntityId face = frame->selected_entity;
+  char line[256];
+  snprintf(line, sizeof(line),
+           "{\"v\":1,\"id\":\"face\",\"op\":\"brush.move_face\","
+           "\"args\":{\"face\":\"%u:%u:%u\",\"distance\":%g,"
+           "\"review\":false}}",
+           (unsigned)face.parts.world, (unsigned)face.parts.index,
+           (unsigned)face.parts.generation, editor->face_drag_distance);
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
+/* Face editing (docs/proposals/level-design-toolkit.md, phase 2): Alt+click
+   selects the brush face under the pointer instead of its object, a drag on
+   the selected face's handle moves it, and Alt+Up or Alt+Down moves it
+   0.25 m out or in along its normal, 1 m with Shift, through
+   brush.move_face. */
+static void viewport_face_tools(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  editor->face_handle_valid = false_v;
+  if (frame->scene_rendering_stopped || frame->mouse_captured ||
+      editor->cmd_active || editor->menu != VKR_EDITOR_MENU_NONE ||
+      editor->brush_draw || editor->clip_tool) {
+    editor->face_dragging = false_v;
+    return;
+  }
+  const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
+                      input_is_key_down(frame->input, KEY_RMENU);
+  const Vec4 image = frame->mapping.image_rect_px;
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
+                         mouse.x < image.x + image.z &&
+                         mouse.y < image.y + image.w;
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  const bool8_t has_ray = viewport_ray(frame, mouse, &origin, &direction);
+  if (alt && inside && !editor->face_dragging) {
+    /* The Scene image stops picking objects while Alt is held. */
+    (void)vkr_ui_input_layer_register(
+        ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+        (VkrUiRect){image.x, image.y, image.z, image.w});
+    VkrEntityId face = VKR_ENTITY_ID_INVALID;
+    if (ui->mouse_pressed && has_ray &&
+        vkr_editor_brush_pick(frame, origin, direction, 100000.0f, &face)) {
+      *frame->scene_edit = (VkrSceneEditRequest){
+          .action = VKR_SCENE_EDIT_SELECT, .entity = face};
+    }
+  }
+  const bool8_t scene_focus =
+      frame->scene_keyboard_focus && *frame->scene_keyboard_focus;
+  const VkrEntityId selected = frame->selected_entity;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, selected);
+  if (!scene || !vkr_scene_entity_alive(scene, selected) ||
+      !vkr_scene_get_typed(scene, selected, &vkr_scene_brush_face_type)) {
+    editor->face_dragging = false_v;
+    return;
+  }
+  if (!alt || editor->face_dragging) {
+    viewport_face_handle(editor, frame, scene, origin, direction, has_ray,
+                         inside);
+  }
+  if (!scene_focus && ui->focused_id != VKR_UI_ID_NONE) {
+    return;
+  }
+  static const Keys keys[] = {KEY_UP, KEY_DOWN};
+  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
+    const uint8_t modifiers = input_key_press_modifiers(frame->input, keys[i]);
+    if (!input_key_just_pressed(frame->input, keys[i]) ||
+        (modifiers & (VKR_INPUT_MOD_ALT | VKR_INPUT_MOD_CONTROL |
+                      VKR_INPUT_MOD_SUPER)) != VKR_INPUT_MOD_ALT) {
+      continue;
+    }
+    const float32_t step =
+        (modifiers & VKR_INPUT_MOD_SHIFT) != 0 ? 1.0f : 0.25f;
+    char line[256];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"face\",\"op\":\"brush.move_face\","
+             "\"args\":{\"face\":\"%u:%u:%u\",\"distance\":%g,"
+             "\"review\":false}}",
+             (unsigned)selected.parts.world, (unsigned)selected.parts.index,
+             (unsigned)selected.parts.generation, i == 0u ? step : -step);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+    ui->capture.keyboard = true_v;
+  }
+}
+
+/* Brush clipping: the first click on the grid plane sets one end of the
+   cut and the second cuts the selected brush with the vertical plane
+   through both points, keeping both pieces. Escape drops the first point,
+   or turns the tool off. */
+static void viewport_clip_tool(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  if (!editor->clip_tool || frame->scene_rendering_stopped ||
+      frame->mouse_captured) {
+    editor->clip_has_first = false_v;
+    return;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  (void)vkr_ui_input_layer_register(
+      ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+      (VkrUiRect){image.x, image.y, image.z, image.w});
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+    if (editor->clip_has_first) {
+      editor->clip_has_first = false_v;
+    } else {
+      editor->clip_tool = false_v;
+    }
+    return;
+  }
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
+                         mouse.x < image.x + image.z &&
+                         mouse.y < image.y + image.w;
+  Vec3 point = {0};
+  if (!brush_draw_point(frame, mouse, &point)) {
+    return;
+  }
+  editor->clip_current = point;
+  if (!ui->mouse_pressed || !inside || editor->menu != VKR_EDITOR_MENU_NONE) {
+    return;
+  }
+  if (!editor->clip_has_first) {
+    editor->clip_first = point;
+    editor->clip_has_first = true_v;
+    return;
+  }
+  editor->clip_has_first = false_v;
+  const Vec3 along = vec3_new(point.x - editor->clip_first.x, 0.0f,
+                              point.z - editor->clip_first.z);
+  if (vec3_length(along) < 1.0e-3f) {
+    return;
+  }
+  const VkrEntityId brush = viewport_selected_brush(frame);
+  if (!brush.u64) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
+                     "Select a brush to clip");
+    return;
+  }
+  const Vec3 normal = vec3_normalize(vec3_new(-along.z, 0.0f, along.x));
+  char line[320];
+  snprintf(line, sizeof(line),
+           "{\"v\":1,\"id\":\"clip\",\"op\":\"brush.clip\",\"args\":{"
+           "\"brush\":\"%u:%u:%u\",\"point\":[%g,%g,%g],"
+           "\"normal\":[%g,%g,%g],\"keep\":\"both\",\"review\":false}}",
+           (unsigned)brush.parts.world, (unsigned)brush.parts.index,
+           (unsigned)brush.parts.generation, editor->clip_first.x,
+           editor->clip_first.y, editor->clip_first.z, normal.x, normal.y,
+           normal.z);
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
 void vkr_editor_viewport_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
@@ -806,6 +1090,8 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
   }
   view_shortcuts(editor, frame);
   viewport_brush_draw(editor, frame);
+  viewport_clip_tool(editor, frame);
+  viewport_face_tools(editor, frame);
   const ViewHeaderLayout layout = view_header_layout(editor, frame);
   const float32_t scale = ui->content_scale;
   if (frame->mouse_captured || editor->cmd_active ||

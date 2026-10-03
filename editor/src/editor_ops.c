@@ -2,6 +2,7 @@
 
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_level.h"
 
 #include "core/logger.h"
 #include "core/vkr_json.h"
@@ -410,6 +411,11 @@ static VkrBakeryJson *ops_entity(OpsContext *ctx, const VkrScene *scene,
             ops_string(ctx, vkr_scene_get_name(scene, entity)));
   }
   return object;
+}
+
+static bool8_t ops_in_box(Vec3 lo, Vec3 hi, Vec3 box_min, Vec3 box_max) {
+  return lo.x <= box_max.x && hi.x >= box_min.x && lo.y <= box_max.y &&
+         hi.y >= box_min.y && lo.z <= box_max.z && hi.z >= box_min.z;
 }
 
 /* World box of an entity's loaded meshes and shapes and its descendants'. */
@@ -1677,6 +1683,593 @@ static bool8_t ops_build_set_material(OpsContext *ctx,
   return true_v;
 }
 
+// -----------------------------------------------------------------------------
+// Brush editing (docs/proposals/level-design-toolkit.md, phase 2)
+// -----------------------------------------------------------------------------
+
+/* A brush as its faces read it: planes, face entities and their values. */
+typedef struct OpsBrushRead {
+  VkrEntityId entity;
+  VkrEntityId parent;
+  const SceneTransform *transform;
+  SceneBrushRole role;
+  uint32_t count;
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  SceneBrushFace values[VKR_BRUSH_FACE_MAX];
+} OpsBrushRead;
+
+static bool8_t ops_brush_read(OpsContext *ctx, const VkrScene *scene,
+                              VkrEntityId entity, OpsBrushRead *out) {
+  const SceneBrushSettings *settings =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
+  const SceneTransform *transform = ops_transform(scene, entity);
+  if (!settings || !transform) {
+    return ops_fail(ctx, OPS_INVALID, "That entity is not a brush");
+  }
+  out->entity = entity;
+  out->parent = transform->parent;
+  out->transform = transform;
+  out->role = settings->role;
+  const uint32_t total =
+      vkr_scene_brush_faces(scene, entity, out->faces, VKR_BRUSH_FACE_MAX);
+  if (total > VKR_BRUSH_FACE_MAX) {
+    return ops_fail(ctx, OPS_INVALID, "The brush has more than %u faces",
+                    VKR_BRUSH_FACE_MAX);
+  }
+  out->count = total;
+  for (uint32_t i = 0; i < total; ++i) {
+    out->values[i] = *(const SceneBrushFace *)vkr_scene_get_typed(
+        scene, out->faces[i], &vkr_scene_brush_face_type);
+    out->planes[i] = (VkrBrushPlane){.normal = out->values[i].normal,
+                                     .distance = out->values[i].distance};
+  }
+  return true_v;
+}
+
+static bool8_t ops_brush_arg(OpsContext *ctx, OpsBatch *batch,
+                             const VkrBakeryJson *args, const char *key,
+                             OpsBrushRead *out) {
+  OpsRef ref;
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, key), key, &ref)) {
+    return false_v;
+  }
+  if (ref.item >= 0) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'%s' must exist before this request; edit it in a later "
+                    "one",
+                    key);
+  }
+  return ops_brush_read(ctx, ops_scene(ctx->frame, ref.container), ref.entity,
+                        out);
+}
+
+/* A face entity named directly, or by `brush` and `side`. */
+static bool8_t ops_face_arg(OpsContext *ctx, OpsBatch *batch,
+                            const VkrBakeryJson *args, OpsBrushRead *brush,
+                            uint32_t *out_face) {
+  const VkrBakeryJson *face = vkr_bakery_json_get(args, "face");
+  if (face) {
+    OpsRef ref;
+    if (!ops_ref(ctx, batch, face, "face", &ref) || ref.item >= 0) {
+      return ref.item >= 0 ? ops_fail(ctx, OPS_INVALID,
+                                      "'face' must exist before this request")
+                           : false_v;
+    }
+    const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+    if (!vkr_scene_get_typed(scene, ref.entity, &vkr_scene_brush_face_type) ||
+        !ops_brush_read(ctx, scene, ops_parent(scene, ref.entity), brush)) {
+      return ops_fail(ctx, OPS_INVALID, "'face' must name a brush face");
+    }
+    for (uint32_t i = 0; i < brush->count; ++i) {
+      if (brush->faces[i].u64 == ref.entity.u64) {
+        *out_face = i;
+        return true_v;
+      }
+    }
+    return ops_fail(ctx, OPS_NOT_FOUND, "The face is not on its brush");
+  }
+  if (!ops_brush_arg(ctx, batch, args, "brush", brush)) {
+    return false_v;
+  }
+  VkrBakeryJson *selectors = vkr_bakery_json_array(ops_arena(ctx));
+  const VkrBakeryJson *side = vkr_bakery_json_get(args, "side");
+  if (!side || side->type != VKR_BAKERY_JSON_STRING) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "Name a 'face', or a 'brush' and a 'side' (top, bottom, "
+                    "+x, -x, +z, -z)");
+  }
+  vkr_bakery_json_append(selectors,
+                         vkr_bakery_json_clone(ops_arena(ctx), side));
+  /* The face whose normal points most along the side. */
+  float32_t best = 0.7f;
+  *out_face = UINT32_MAX;
+  for (uint32_t i = 0; i < brush->count; ++i) {
+    if (!ops_face_matches(&brush->values[i], selectors)) {
+      continue;
+    }
+    const Vec3 n = vec3_normalize(brush->values[i].normal);
+    const float32_t score = Max(Max(fabsf(n.x), fabsf(n.y)), fabsf(n.z));
+    if (score >= best) {
+      best = score;
+      *out_face = i;
+    }
+  }
+  return *out_face != UINT32_MAX
+             ? true_v
+             : ops_fail(ctx, OPS_NOT_FOUND, "No face of the brush faces '%s'",
+                        side->string.length ? (const char *)side->string.str
+                                            : "");
+}
+
+/* Replaces `brush` with `pieces`, which lie in its space; each piece face
+   copies the material and projection of the face its source names (target
+   faces first, then `extra` faces), or `fallback` for a new plane. Returns
+   the first new brush's item, or UINT32_MAX when there are no pieces. */
+static bool8_t
+ops_brush_replace(OpsContext *ctx, OpsBatch *batch, const OpsBrushRead *brush,
+                  const VkrBrushPiece *pieces, uint32_t piece_count,
+                  const SceneBrushFace *extra, uint32_t extra_count,
+                  const SceneBrushFace *fallback, bool8_t delete_original,
+                  const char *suffix, uint32_t *out_item) {
+  const VkrScene *scene = ops_scene(ctx->frame, brush->entity.parts.world);
+  OpsBrushArgs args = {.parent = {.entity = brush->parent, .item = -1},
+                       .container = brush->entity.parts.world,
+                       .role = brush->role};
+  *out_item = UINT32_MAX;
+  const String8 base = vkr_scene_get_name(scene, brush->entity);
+  for (uint32_t p = 0; p < piece_count; ++p) {
+    const char *materials[VKR_BRUSH_FACE_MAX];
+    const SceneBrushFace *sources[VKR_BRUSH_FACE_MAX];
+    for (uint32_t f = 0; f < pieces[p].count; ++f) {
+      const uint32_t source = pieces[p].source[f];
+      sources[f] = source < brush->count ? &brush->values[source]
+                   : source != VKR_BRUSH_SOURCE_NEW &&
+                           source - brush->count < extra_count
+                       ? &extra[source - brush->count]
+                       : fallback;
+      materials[f] = sources[f]->material;
+    }
+    /* Pieces of one brush read as its parts unless the caller names them. */
+    char name[96];
+    snprintf(name, sizeof(name), "%.*s%s", (int)Min(base.length, 80u),
+             (const char *)base.str,
+             suffix             ? suffix
+             : piece_count > 1u ? " part"
+                                : "");
+    uint32_t item = 0u;
+    if (!ops_brush_add(ctx, batch, &args, -1, name, brush->transform->position,
+                       brush->transform->rotation, pieces[p].planes,
+                       pieces[p].count, materials, &item)) {
+      return false_v;
+    }
+    /* Carry each face's texture projection along with its material. */
+    for (uint32_t f = 0; f < pieces[p].count; ++f) {
+      SceneBrushFace *face = (SceneBrushFace *)ctx->ops->items[item + 1u + f]
+                                 .request.values.component;
+      face->uv_offset = sources[f]->uv_offset;
+      face->uv_scale = sources[f]->uv_scale;
+      face->uv_rotation = sources[f]->uv_rotation;
+      face->uv_world = sources[f]->uv_world;
+    }
+    *out_item = *out_item == UINT32_MAX ? item : *out_item;
+  }
+  if (!delete_original) {
+    return true_v;
+  }
+  VkrSampleEditBatchItem *item = ops_batch_add(
+      ctx, batch, brush->entity.parts.world, VKR_SCENE_EDIT_DELETE);
+  if (!item) {
+    return false_v;
+  }
+  item->request.entity = brush->entity;
+  return true_v;
+}
+
+static bool8_t ops_brush_unscaled(OpsContext *ctx, const OpsBrushRead *brush) {
+  return vec3_length(vec3_sub(brush->transform->scale, vec3_one())) < 1.0e-4f
+             ? true_v
+             : ops_fail(ctx, OPS_INVALID,
+                        "Editing needs an unscaled brush; move its faces "
+                        "instead of scaling it");
+}
+
+static bool8_t ops_build_move_face(OpsContext *ctx, const VkrBakeryJson *args,
+                                   OpsBatch *batch) {
+  OpsBrushRead *brush =
+      arena_alloc(ops_arena(ctx), sizeof(*brush), ARENA_MEMORY_TAG_STRUCT);
+  uint32_t face = 0u;
+  float64_t distance = 0.0;
+  if (!brush || !ops_face_arg(ctx, batch, args, brush, &face)) {
+    return brush ? false_v : ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  if (!ops_arg_number(args, "distance", &distance) || !isfinite(distance)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'distance' in meters moves the face along its normal");
+  }
+  /* The plane's normal may not be unit length. */
+  const float32_t length = vec3_length(brush->planes[face].normal);
+  brush->planes[face].distance += (float32_t)distance * length;
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  uint32_t failed = UINT32_MAX;
+  const VkrBrushError error =
+      geometry ? vkr_brush_build(brush->planes, brush->count, geometry, &failed)
+               : VKR_BRUSH_ERROR_FLAT;
+  if (error != VKR_BRUSH_OK) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "Moving the face that far breaks the brush: %s",
+                    vkr_brush_error_text(error));
+  }
+  VkrSampleEditBatchItem *item = ops_batch_add(
+      ctx, batch, brush->entity.parts.world, VKR_SCENE_EDIT_APPLY);
+  if (!item) {
+    return false_v;
+  }
+  item->request.entity = brush->faces[face];
+  item->request.values.fields = VKR_SCENE_EDIT_COMPONENT;
+  item->request.values.component_type = &vkr_scene_brush_face_type;
+  SceneBrushFace *value = (SceneBrushFace *)item->request.values.component;
+  *value = brush->values[face];
+  value->distance = brush->planes[face].distance;
+  batch->op_target[batch->op_count] = brush->faces[face];
+  return true_v;
+}
+
+static bool8_t ops_build_extrude(OpsContext *ctx, const VkrBakeryJson *args,
+                                 OpsBatch *batch) {
+  OpsBrushRead *brush =
+      arena_alloc(ops_arena(ctx), sizeof(*brush), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPiece *piece =
+      arena_alloc(ops_arena(ctx), sizeof(*piece), ARENA_MEMORY_TAG_STRUCT);
+  uint32_t face = 0u;
+  float64_t distance = 0.0;
+  if (!brush || !geometry || !piece) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  if (!ops_face_arg(ctx, batch, args, brush, &face) ||
+      !ops_brush_unscaled(ctx, brush)) {
+    return false_v;
+  }
+  if (!ops_arg_number(args, "distance", &distance) || !(distance > 0.0)) {
+    return ops_fail(ctx, OPS_INVALID, "'distance' must be positive meters");
+  }
+  if (vkr_brush_build(brush->planes, brush->count, geometry, NULL) !=
+          VKR_BRUSH_OK ||
+      !vkr_brush_extrude(geometry, brush->planes, face, (float32_t)distance,
+                         piece)) {
+    return ops_fail(ctx, OPS_INVALID, "The face cannot be extruded");
+  }
+  uint32_t item = 0u;
+  if (!ops_brush_replace(ctx, batch, brush, piece, 1u, NULL, 0u,
+                         &brush->values[face], false_v, " extrusion", &item)) {
+    return false_v;
+  }
+  batch->op_item[batch->op_count] = item;
+  return true_v;
+}
+
+/* A world-space plane in a brush's space; the brush is unscaled. */
+static VkrBrushPlane ops_plane_to_brush(const OpsBrushRead *brush,
+                                        Vec3 world_normal, Vec3 world_point) {
+  const Mat4 inverse = mat4_inverse_affine(brush->transform->world);
+  const Vec3 point = mat4_mul_vec3(inverse, world_point);
+  const Vec4 normal =
+      mat4_mul_vec4(inverse, vec3_to_vec4(vec3_normalize(world_normal), 0.0f));
+  const Vec3 n = vec3_normalize(vec3_new(normal.x, normal.y, normal.z));
+  return (VkrBrushPlane){.normal = n, .distance = vec3_dot(n, point)};
+}
+
+static bool8_t ops_build_clip(OpsContext *ctx, const VkrBakeryJson *args,
+                              OpsBatch *batch) {
+  OpsBrushRead *brush =
+      arena_alloc(ops_arena(ctx), sizeof(*brush), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPiece *pieces = arena_alloc(ops_arena(ctx), 2u * sizeof(*pieces),
+                                      ARENA_MEMORY_TAG_STRUCT);
+  if (!brush || !geometry || !pieces) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  Vec3 normal = {0};
+  Vec3 point = {0};
+  bool8_t has_normal = false_v;
+  bool8_t has_point = false_v;
+  if (!ops_brush_arg(ctx, batch, args, "brush", brush) ||
+      !ops_brush_unscaled(ctx, brush) ||
+      !ops_arg_vec3(ctx, args, "normal", &normal, &has_normal) ||
+      !ops_arg_vec3(ctx, args, "point", &point, &has_point)) {
+    return false_v;
+  }
+  if (!has_normal || !has_point || vec3_length(normal) < 1.0e-4f) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "brush.clip needs a world 'point' on the plane and its "
+                    "'normal'");
+  }
+  String8 keep = string8_lit("both");
+  (void)vkr_bakery_json_get_string(args, "keep", &keep);
+  const bool8_t back = ops_equals(keep, "back") || ops_equals(keep, "both");
+  const bool8_t front = ops_equals(keep, "front") || ops_equals(keep, "both");
+  if (!back && !front) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'keep' is back (behind the normal), front or both");
+  }
+  const VkrBrushPlane plane = ops_plane_to_brush(brush, normal, point);
+  /* Each side is the brush plus the plane, facing that side. */
+  uint32_t count = 0u;
+  for (uint32_t side = 0; side < 2u; ++side) {
+    if ((side == 0u && !back) || (side == 1u && !front)) {
+      continue;
+    }
+    VkrBrushPiece *piece = &pieces[count];
+    *piece = (VkrBrushPiece){.count = brush->count};
+    for (uint32_t i = 0; i < brush->count; ++i) {
+      piece->planes[i] = brush->planes[i];
+      piece->source[i] = i;
+    }
+    piece->planes[piece->count] =
+        side == 0u
+            ? plane
+            : (VkrBrushPlane){vec3_scale(plane.normal, -1.0f), -plane.distance};
+    piece->source[piece->count++] = VKR_BRUSH_SOURCE_NEW;
+    if (piece->count <= VKR_BRUSH_FACE_MAX &&
+        vkr_brush_prune(piece, geometry)) {
+      count++;
+    }
+  }
+  if (count < (uint32_t)(back + front)) {
+    return ops_fail(ctx, OPS_INVALID, "The plane does not cut the brush");
+  }
+  uint32_t item = 0u;
+  if (!ops_brush_replace(ctx, batch, brush, pieces, count, NULL, 0u,
+                         &brush->values[0], true_v, NULL, &item)) {
+    return false_v;
+  }
+  batch->op_item[batch->op_count] = item;
+  return true_v;
+}
+
+/* Carves `cutter`, in world space through its own transform, out of
+   `target`; replaces the target with its pieces. */
+static bool8_t ops_carve_one(OpsContext *ctx, OpsBatch *batch,
+                             const OpsBrushRead *target,
+                             const OpsBrushRead *cutter, uint32_t *out_item,
+                             bool8_t *out_touched) {
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPiece *pieces =
+      arena_alloc(ops_arena(ctx), VKR_BRUSH_FACE_MAX * sizeof(*pieces),
+                  ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPlane local[VKR_BRUSH_FACE_MAX];
+  if (!geometry || !pieces) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  /* The cutter's planes, through world space, in the target's space. */
+  for (uint32_t i = 0; i < cutter->count; ++i) {
+    const float32_t length = vec3_length(cutter->planes[i].normal);
+    const Vec3 n = vec3_scale(cutter->planes[i].normal, 1.0f / length);
+    const Vec3 on_plane = vec3_scale(n, cutter->planes[i].distance / length);
+    const Vec4 world_normal = mat4_mul_vec4(
+        mat4_transpose(mat4_inverse_affine(cutter->transform->world)),
+        vec3_to_vec4(n, 0.0f));
+    local[i] = ops_plane_to_brush(
+        target, vec3_new(world_normal.x, world_normal.y, world_normal.z),
+        mat4_mul_vec3(cutter->transform->world, on_plane));
+  }
+  const uint32_t count =
+      vkr_brush_carve(target->planes, target->count, local, cutter->count,
+                      pieces, VKR_BRUSH_FACE_MAX, geometry);
+  *out_touched = count != UINT32_MAX;
+  if (count == UINT32_MAX) {
+    return true_v;
+  }
+  return ops_brush_replace(ctx, batch, target, pieces, count, cutter->values,
+                           cutter->count, &target->values[0], true_v, NULL,
+                           out_item);
+}
+
+static bool8_t ops_build_carve(OpsContext *ctx, const VkrBakeryJson *args,
+                               OpsBatch *batch) {
+  OpsBrushRead *cutter =
+      arena_alloc(ops_arena(ctx), sizeof(*cutter), ARENA_MEMORY_TAG_STRUCT);
+  OpsBrushRead *target =
+      arena_alloc(ops_arena(ctx), sizeof(*target), ARENA_MEMORY_TAG_STRUCT);
+  if (!cutter || !target) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  if (!ops_brush_arg(ctx, batch, args, "cutter", cutter) ||
+      !ops_brush_unscaled(ctx, cutter)) {
+    return false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, cutter->entity.parts.world);
+  uint32_t first = UINT32_MAX;
+  uint32_t carved = 0u;
+  if (vkr_bakery_json_get(args, "target")) {
+    bool8_t touched = false_v;
+    if (!ops_brush_arg(ctx, batch, args, "target", target) ||
+        !ops_brush_unscaled(ctx, target) ||
+        !ops_carve_one(ctx, batch, target, cutter, &first, &touched)) {
+      return false_v;
+    }
+    carved = touched;
+  } else {
+    /* As in Hammer, the cutter carves every brush it touches. */
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    if (!ops_world_bounds(scene, cutter->entity, &lo, &hi)) {
+      return ops_fail(ctx, OPS_INVALID, "The cutter has not built yet");
+    }
+    for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+      const VkrEntityId other = vkr_entity_id_from_index(scene->world, i);
+      Vec3 a = {0};
+      Vec3 b = {0};
+      bool8_t touched = false_v;
+      uint32_t item = UINT32_MAX;
+      if (other.u64 == cutter->entity.u64 ||
+          !vkr_scene_entity_alive(scene, other) ||
+          !vkr_scene_get_typed(scene, other, &vkr_scene_brush_type) ||
+          !ops_world_bounds(scene, other, &a, &b) ||
+          !ops_in_box(a, b, lo, hi)) {
+        continue;
+      }
+      if (!ops_brush_read(ctx, scene, other, target) ||
+          !ops_brush_unscaled(ctx, target) ||
+          !ops_carve_one(ctx, batch, target, cutter, &item, &touched)) {
+        return false_v;
+      }
+      carved += touched;
+      first = first == UINT32_MAX ? item : first;
+    }
+  }
+  if (!carved) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "The cutter touches no brush");
+  }
+  if (!ops_arg_bool(args, "keep_cutter", false_v)) {
+    VkrSampleEditBatchItem *item = ops_batch_add(
+        ctx, batch, cutter->entity.parts.world, VKR_SCENE_EDIT_DELETE);
+    if (!item) {
+      return false_v;
+    }
+    item->request.entity = cutter->entity;
+  }
+  if (first != UINT32_MAX) {
+    batch->op_item[batch->op_count] = first;
+  }
+  return true_v;
+}
+
+static bool8_t ops_build_hollow(OpsContext *ctx, const VkrBakeryJson *args,
+                                OpsBatch *batch) {
+  OpsBrushRead *brush =
+      arena_alloc(ops_arena(ctx), sizeof(*brush), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPiece *pieces =
+      arena_alloc(ops_arena(ctx), VKR_BRUSH_FACE_MAX * sizeof(*pieces),
+                  ARENA_MEMORY_TAG_STRUCT);
+  float64_t thickness = 0.25;
+  if (!brush || !geometry || !pieces) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  if (!ops_brush_arg(ctx, batch, args, "brush", brush) ||
+      !ops_brush_unscaled(ctx, brush)) {
+    return false_v;
+  }
+  (void)ops_arg_number(args, "thickness", &thickness);
+  /* The inside is the brush with every face moved in by the thickness. */
+  VkrBrushPlane inner[VKR_BRUSH_FACE_MAX];
+  for (uint32_t i = 0; i < brush->count; ++i) {
+    const float32_t length = vec3_length(brush->planes[i].normal);
+    inner[i] = (VkrBrushPlane){.normal = brush->planes[i].normal,
+                               .distance = brush->planes[i].distance -
+                                           (float32_t)thickness * length};
+  }
+  if (!(thickness > 0.0) ||
+      vkr_brush_build(inner, brush->count, geometry, NULL) != VKR_BRUSH_OK) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'thickness' must be positive and leave an inside");
+  }
+  const uint32_t count =
+      vkr_brush_carve(brush->planes, brush->count, inner, brush->count, pieces,
+                      VKR_BRUSH_FACE_MAX, geometry);
+  if (count == 0u || count == UINT32_MAX) {
+    return ops_fail(ctx, OPS_INVALID, "The brush cannot be hollowed");
+  }
+  uint32_t item = 0u;
+  if (!ops_brush_replace(ctx, batch, brush, pieces, count, brush->values,
+                         brush->count, &brush->values[0], true_v, NULL,
+                         &item)) {
+    return false_v;
+  }
+  batch->op_item[batch->op_count] = item;
+  return true_v;
+}
+
+static bool8_t ops_build_merge(OpsContext *ctx, const VkrBakeryJson *args,
+                               OpsBatch *batch) {
+  const VkrBakeryJson *list = vkr_bakery_json_get(args, "brushes");
+  if (!list || list->type != VKR_BAKERY_JSON_ARRAY || list->count < 2u ||
+      list->count > 8u) {
+    return ops_fail(ctx, OPS_INVALID, "'brushes' lists 2 to 8 brushes");
+  }
+  OpsBrushRead *brushes = arena_alloc(
+      ops_arena(ctx), list->count * sizeof(*brushes), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPiece *piece =
+      arena_alloc(ops_arena(ctx), sizeof(*piece), ARENA_MEMORY_TAG_STRUCT);
+  SceneBrushFace *values =
+      arena_alloc(ops_arena(ctx), 8u * VKR_BRUSH_FACE_MAX * sizeof(*values),
+                  ARENA_MEMORY_TAG_STRUCT);
+  if (!brushes || !geometry || !piece || !values) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  /* Every brush's planes in the first brush's space. */
+  VkrBrushPlane *planes =
+      arena_alloc(ops_arena(ctx), 8u * VKR_BRUSH_FACE_MAX * sizeof(*planes),
+                  ARENA_MEMORY_TAG_STRUCT);
+  const VkrBrushPlane *lists[8];
+  uint32_t counts[8];
+  uint32_t total = 0u;
+  uint32_t index = 0u;
+  for (const VkrBakeryJson *entry = list->first; entry;
+       entry = entry->next, ++index) {
+    OpsRef ref;
+    if (!planes || !ops_ref(ctx, batch, entry, "brushes", &ref) ||
+        ref.item >= 0 ||
+        !ops_brush_read(ctx, ops_scene(ctx->frame, ref.container), ref.entity,
+                        &brushes[index]) ||
+        !ops_brush_unscaled(ctx, &brushes[index]) ||
+        ref.container != brushes[0].entity.parts.world) {
+      return ctx->call->error_code
+                 ? false_v
+                 : ops_fail(ctx, OPS_INVALID,
+                            "Merged brushes must exist in one scene");
+    }
+    for (uint32_t i = 0; i < brushes[index].count; ++i) {
+      const VkrBrushPlane plane = brushes[index].planes[i];
+      const float32_t length = vec3_length(plane.normal);
+      const Vec3 n = vec3_scale(plane.normal, 1.0f / length);
+      const Vec4 world_normal = mat4_mul_vec4(
+          mat4_transpose(mat4_inverse_affine(brushes[index].transform->world)),
+          vec3_to_vec4(n, 0.0f));
+      planes[total + i] = ops_plane_to_brush(
+          &brushes[0], vec3_new(world_normal.x, world_normal.y, world_normal.z),
+          mat4_mul_vec3(brushes[index].transform->world,
+                        vec3_scale(n, plane.distance / length)));
+      values[total + i] = brushes[index].values[i];
+    }
+    lists[index] = planes + total;
+    counts[index] = brushes[index].count;
+    total += brushes[index].count;
+  }
+  if (!vkr_brush_merge(lists, counts, index, piece, geometry)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "The brushes overlap, leave a gap or form a shape that "
+                    "is not convex");
+  }
+  /* Sources index the concatenated planes; give them all as extra faces. */
+  OpsBrushRead merged = brushes[0];
+  merged.count = 0u;
+  uint32_t item = 0u;
+  if (!ops_brush_replace(ctx, batch, &merged, piece, 1u, values, total,
+                         &brushes[0].values[0], false_v, "", &item)) {
+    return false_v;
+  }
+  for (uint32_t b = 0; b < index; ++b) {
+    VkrSampleEditBatchItem *removal = ops_batch_add(
+        ctx, batch, brushes[b].entity.parts.world, VKR_SCENE_EDIT_DELETE);
+    if (!removal) {
+      return false_v;
+    }
+    removal->request.entity = brushes[b].entity;
+  }
+  batch->op_item[batch->op_count] = item;
+  return true_v;
+}
+
 // =============================================================================
 // Changes
 // =============================================================================
@@ -2062,11 +2655,6 @@ static VkrBakeryJson *ops_brush_summary(OpsContext *ctx, const VkrScene *scene,
   }
   ops_set(ctx, summary, "materials", materials);
   return summary;
-}
-
-static bool8_t ops_in_box(Vec3 lo, Vec3 hi, Vec3 box_min, Vec3 box_max) {
-  return lo.x <= box_max.x && hi.x >= box_min.x && lo.y <= box_max.y &&
-         hi.y >= box_min.y && lo.z <= box_max.z && hi.z >= box_min.z;
 }
 
 static bool8_t ops_under(const VkrScene *scene, VkrEntityId entity,
@@ -2678,6 +3266,179 @@ static bool8_t ops_capture_write(OpsContext *ctx, OpsPendingCapture *pending,
   return true_v;
 }
 
+// -----------------------------------------------------------------------------
+// Level checks (docs/proposals/level-design-toolkit.md, phase 2)
+// -----------------------------------------------------------------------------
+
+/* The default capsule with any overrides the arguments carry. */
+static bool8_t ops_arg_capsule(OpsContext *ctx, const VkrBakeryJson *args,
+                               VkrEditorLevelCapsule *out) {
+  *out = vkr_editor_level_capsule_default();
+  float64_t value = 0.0;
+  if (ops_arg_number(args, "radius", &value)) {
+    out->radius = (float32_t)value;
+  }
+  if (ops_arg_number(args, "height", &value)) {
+    out->height = (float32_t)value;
+  }
+  if (ops_arg_number(args, "step_up", &value)) {
+    out->step_up = (float32_t)value;
+  }
+  if (ops_arg_number(args, "max_slope", &value)) {
+    out->max_slope_radians = (float32_t)value * 0.01745329252f;
+  }
+  if (!(out->radius > 0.05f) || !(out->height > 2.0f * out->radius) ||
+      !(out->step_up >= 0.0f) || !(out->max_slope_radians > 0.0f) ||
+      out->max_slope_radians >= 1.5707963f) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "The capsule needs radius > 0.05, height > 2 radius, "
+                    "step_up >= 0 and max_slope (degrees) between 0 and 90");
+  }
+  return true_v;
+}
+
+/* The first enabled Player Start of a scene, as the walk's start. */
+static bool8_t ops_player_start(const VkrScene *scene, Vec3 *out) {
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const ScenePlayerStart *start =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_scene_get_typed(scene, entity, &vkr_scene_player_start_type)
+            : NULL;
+    const SceneTransform *transform =
+        start && start->enabled ? ops_transform(scene, entity) : NULL;
+    if (transform) {
+      *out = mat4_position(transform->world);
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
+  Vec3 min = {0};
+  Vec3 max = {0};
+  bool8_t has_min = false_v;
+  bool8_t has_max = false_v;
+  uint16_t container = 0u;
+  VkrEditorLevelCapsule capsule;
+  if (!region || region->type != VKR_BAKERY_JSON_OBJECT ||
+      !ops_arg_vec3(ctx, region, "min", &min, &has_min) ||
+      !ops_arg_vec3(ctx, region, "max", &max, &has_max) || !has_min ||
+      !has_max || max.x <= min.x || max.y <= min.y || max.z <= min.z) {
+    if (!ctx->call->error_code) {
+      ops_fail(ctx, OPS_INVALID,
+               "'region' is {\"min\": [..], \"max\": [..]}, a box with "
+               "volume");
+    }
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ops_arg_container(ctx, args, &container) ||
+      !ops_arg_capsule(ctx, args, &capsule)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  Vec3 start = {0};
+  bool8_t has_start = false_v;
+  if (!ops_arg_vec3(ctx, args, "start", &start, &has_start)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!has_start) {
+    has_start = ops_player_start(scene, &start);
+  }
+  float64_t limit = 100.0;
+  (void)ops_arg_number(args, "limit", &limit);
+  const uint32_t capacity = (uint32_t)vkr_clamp_f64(limit, 1.0, 500.0);
+  VkrEditorLevelIssue *issues = arena_alloc(
+      ops_arena(ctx), capacity * sizeof(*issues), ARENA_MEMORY_TAG_STRUCT);
+  if (!issues) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrEditorLevelStats stats = {0};
+  const uint32_t found = vkr_editor_level_lint(scene, min, max, &capsule,
+                                               has_start ? &start : NULL,
+                                               issues, capacity, &stats);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < Min(found, capacity); ++i) {
+    VkrBakeryJson *issue = vkr_bakery_json_object(arena);
+    ops_set(ctx, issue, "kind",
+            vkr_bakery_json_cstr(arena,
+                                 vkr_editor_level_issue_name(issues[i].kind)));
+    ops_set(ctx, issue, "position", ops_vec3(ctx, issues[i].position));
+    ops_set(ctx, issue, "value", ops_number(ctx, issues[i].value));
+    if (issues[i].entity.u64) {
+      ops_set(ctx, issue, "entity", ops_entity(ctx, scene, issues[i].entity));
+    }
+    if (issues[i].other.u64) {
+      ops_set(ctx, issue, "other", ops_entity(ctx, scene, issues[i].other));
+    }
+    vkr_bakery_json_append(list, issue);
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "cell", ops_number(ctx, stats.cell));
+  ops_set(ctx, result, "samples", vkr_bakery_json_int(arena, stats.samples));
+  ops_set(ctx, result, "walkable", vkr_bakery_json_int(arena, stats.walkable));
+  if (has_start) {
+    ops_set(ctx, result, "start", ops_vec3(ctx, start));
+    ops_set(ctx, result, "reachable",
+            vkr_bakery_json_int(arena, stats.reachable));
+  }
+  ops_set(ctx, result, "found", vkr_bakery_json_int(arena, found));
+  ops_set(ctx, result, "issues", list);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_reachable(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  Vec3 from = {0};
+  Vec3 to = {0};
+  bool8_t has_from = false_v;
+  bool8_t has_to = false_v;
+  uint16_t container = 0u;
+  VkrEditorLevelCapsule capsule;
+  if (!ops_arg_vec3(ctx, args, "from", &from, &has_from) ||
+      !ops_arg_vec3(ctx, args, "to", &to, &has_to) ||
+      !ops_arg_container(ctx, args, &container) ||
+      !ops_arg_capsule(ctx, args, &capsule)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!has_from || !has_to) {
+    ops_fail(ctx, OPS_INVALID,
+             "query.reachable needs floor points 'from' "
+             "and 'to'");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Vec3 path[512];
+  uint32_t count = 0u;
+  float32_t length = 0.0f;
+  const bool8_t reached = vkr_editor_level_reachable(
+      ops_scene(ctx->frame, container), from, to, &capsule, path,
+      ArrayCount(path), &count, &length);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *points = vkr_bakery_json_array(arena);
+  /* At most 32 points along the route. */
+  const uint32_t stride = Max(1u, (count + 31u) / 32u);
+  for (uint32_t i = 0; i < count; i += stride) {
+    vkr_bakery_json_append(points, ops_vec3(ctx, path[i]));
+  }
+  if (count && (count - 1u) % stride) {
+    vkr_bakery_json_append(points, ops_vec3(ctx, path[count - 1u]));
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "reachable",
+          vkr_bakery_json_bool(arena, reached));
+  if (reached) {
+    ops_set(ctx, ctx->call->result, "length", ops_number(ctx, length));
+    ops_set(ctx, ctx->call->result, "path", points);
+  }
+  return VKR_EDITOR_OP_DONE;
+}
+
 /* view.camera: place the perspective camera at `eye` looking at `target`. */
 static VkrEditorOpStatus ops_run_camera(OpsContext *ctx) {
   const VkrSampleUiFrame *frame = ctx->frame;
@@ -2906,6 +3667,13 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
   "{\"type\":\"string\",\"description\":\"Material file; empty uses the dev "  \
   "grid\"},\"grid\":{\"type\":\"number\",\"description\":\"Snap step in "      \
   "meters; 0 turns snapping off\"}"
+#define OPS_CAPSULE_SCHEMA                                                     \
+  "\"radius\":{\"type\":\"number\"},\"height\":{\"type\":\"number\"},"         \
+  "\"step_up\":{\"type\":\"number\"},\"max_slope\":{\"type\":\"number\","      \
+  "\"description\":\"Degrees\"}"
+#define OPS_SIDE_SCHEMA                                                        \
+  "\"side\":{\"type\":\"string\",\"enum\":[\"top\",\"bottom\",\"+x\","         \
+  "\"-x\",\"+z\",\"-z\"]}"
 #define OPS_VALUES_SCHEMA                                                      \
   "{\"type\":\"object\",\"description\":\"Property values by descriptor "      \
   "name, as scene documents store them\"}"
@@ -3023,6 +3791,49 @@ static const OpsDef s_ops[] = {
      "\"items\":{\"type\":\"string\"}}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"brush\",\"material\"]}",
      NULL, ops_build_set_material},
+    {"brush.move_face",
+     "Move one face along its normal by 'distance' meters (negative moves "
+     "it in). Name the 'face', or a 'brush' and its 'side'.",
+     "{\"type\":\"object\",\"properties\":{\"face\":" OPS_ENTITY_SCHEMA
+     ",\"brush\":" OPS_ENTITY_SCHEMA "," OPS_SIDE_SCHEMA
+     ",\"distance\":{\"type\":\"number\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"distance\"]}",
+     NULL, ops_build_move_face},
+    {"brush.extrude", "Grow a new brush out of a face by 'distance' meters.",
+     "{\"type\":\"object\",\"properties\":{\"face\":" OPS_ENTITY_SCHEMA
+     ",\"brush\":" OPS_ENTITY_SCHEMA "," OPS_SIDE_SCHEMA
+     ",\"distance\":{\"type\":\"number\",\"exclusiveMinimum\":0}"
+     "," OPS_REVIEW_SCHEMA "},\"required\":[\"distance\"]}",
+     NULL, ops_build_extrude},
+    {"brush.clip",
+     "Cut a brush with the world plane through 'point' facing 'normal'; "
+     "'keep' the back (behind the normal), the front or both pieces.",
+     "{\"type\":\"object\",\"properties\":{\"brush\":" OPS_ENTITY_SCHEMA
+     ",\"point\":" OPS_VEC3_SCHEMA ",\"normal\":" OPS_VEC3_SCHEMA
+     ",\"keep\":{\"type\":\"string\",\"enum\":[\"back\",\"front\","
+     "\"both\"]}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"brush\",\"point\",\"normal\"]}",
+     NULL, ops_build_clip},
+    {"brush.hollow",
+     "Turn a brush into walls of 'thickness' meters around its inside.",
+     "{\"type\":\"object\",\"properties\":{\"brush\":" OPS_ENTITY_SCHEMA
+     ",\"thickness\":{\"type\":\"number\",\"exclusiveMinimum\":0}"
+     "," OPS_REVIEW_SCHEMA "},\"required\":[\"brush\"]}",
+     NULL, ops_build_hollow},
+    {"brush.carve",
+     "Subtract the 'cutter' brush from 'target', or from every brush it "
+     "touches; each becomes non-overlapping convex pieces. The cutter is "
+     "deleted unless keep_cutter.",
+     "{\"type\":\"object\",\"properties\":{\"cutter\":" OPS_ENTITY_SCHEMA
+     ",\"target\":" OPS_ENTITY_SCHEMA ",\"keep_cutter\":{\"type\":"
+     "\"boolean\"}," OPS_REVIEW_SCHEMA "},\"required\":[\"cutter\"]}",
+     NULL, ops_build_carve},
+    {"brush.merge",
+     "Join 2 to 8 touching brushes into one, when their union is convex.",
+     "{\"type\":\"object\",\"properties\":{\"brushes\":{\"type\":"
+     "\"array\",\"items\":" OPS_ENTITY_SCHEMA ",\"minItems\":2,"
+     "\"maxItems\":8}," OPS_REVIEW_SCHEMA "},\"required\":[\"brushes\"]}",
+     NULL, ops_build_merge},
     {"blockout.room",
      "Create a closed room under a group: floor, ceiling and four walls of "
      "'wall' thickness around an interior box from 'min' (interior corner) "
@@ -3086,6 +3897,26 @@ static const OpsDef s_ops[] = {
      "\"container\":" OPS_CONTAINER_SCHEMA "},\"required\":[\"origin\","
      "\"direction\"]}",
      ops_run_raycast, NULL},
+    {"level.lint",
+     "Check a region's walkable floor against the player capsule: steps too "
+     "high, slopes too steep, low ceilings, gaps too narrow, edges into the "
+     "void, areas the start (or the Player Start) cannot reach, overlapping "
+     "solid brushes and brushes that did not build.",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
+     "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA
+     "},\"required\":[\"min\",\"max\"]},\"start\":" OPS_VEC3_SCHEMA
+     ",\"container\":" OPS_CONTAINER_SCHEMA "," OPS_CAPSULE_SCHEMA
+     ",\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500}},"
+     "\"required\":[\"region\"]}",
+     ops_run_lint, NULL},
+    {"query.reachable",
+     "Whether the player capsule can walk from one floor point to another, "
+     "with the route.",
+     "{\"type\":\"object\",\"properties\":{\"from\":" OPS_VEC3_SCHEMA
+     ",\"to\":" OPS_VEC3_SCHEMA ",\"container\":" OPS_CONTAINER_SCHEMA
+     "," OPS_CAPSULE_SCHEMA "},\"required\":[\"from\",\"to\"]}",
+     ops_run_reachable, NULL},
     {"query.bounds", "World bounds of an entity and its descendants.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
      "},\"required\":[\"entity\"]}",

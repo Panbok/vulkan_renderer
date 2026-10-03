@@ -47,7 +47,9 @@ hold the queue: a script saves or discards first.
 
 `--headless` starts the editor without a window. Frames render into an
 offscreen present target (ADR-014) of the editor's 1680x1050 size in pixels at
-content scale 1, and the process takes no input or focus. The editor quits once
+content scale 1, and the process takes no input or focus. The host still
+clears input edges after every frame, so a scripted `ui.*` press reads as
+pressed for one frame, as it does with a window. The editor quits once
 its Cmd queue drains and no agent client is connected or waiting
 ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), discarding unsaved
 edits and saying so in a `[cmd]` line;
@@ -70,7 +72,7 @@ dependable channel for scripts.
 | `frame` | | Frame the selection |
 | `visibility.toggle` | | Hide or show the selection |
 | `panel` | `<outliner\|details\|console\|bakery\|content\|build> [on\|off\|toggle]` | Docked panels |
-| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window (ADR-084) |
+| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window and `level` the Level checks window (ADR-084) |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
 | `layout.reset` | | Default dock layout |
@@ -83,6 +85,7 @@ dependable channel for scripts.
 | `tool` | `<select\|move\|rotate\|scale>` | Transform tool |
 | `grid` | `[on\|off\|toggle]` | World grid |
 | `brush.draw` | `[on\|off\|toggle]` | Brush drawing in the Scene (B; ADR-084) |
+| `brush.clip_tool` | `[on\|off\|toggle]` | The clip tool in the Scene (ADR-084); it and brush drawing exclude each other |
 | `op` | `<operation> [json object]` | Run an operation of the agent table (ADR-084); its result prints as an `[agent]` log line |
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |
 | `grid.height` | `<y>` | Grid world height (shows the grid) |
@@ -96,7 +99,7 @@ dependable channel for scripts.
 | `script.goto`, `script.type` | `<line>`, `<text>` | Move the Script editor's caret to a line, or type ASCII text at it as the keyboard would, completion included |
 | `script.save`, `script.status` | | Save the active Script editor tab, which rebuilds and hot reloads its module; report each module's build and load state and the diagnostic count |
 | `script.attach`, `script.edit` | `<type\|none>`, | Set the selection's script slot to a loaded script type or remove it (undoable, one entry); open the selection's script source |
-| `ui.click`, `ui.drag`, `ui.key`, `ui.type` | `<x> <y> [count] [right]`, `<x0> <y0> <x1> <y1>`, `[cmd+\|alt+\|ctrl+\|shift+]<key>`, `<text>` | Synthetic input in window points, one step per frame before the UI reads input: a left, double or right click; a left drag that holds while a pick resolves; a key (`up`, `down`, `left`, `right`, `enter`, `escape`, `tab`, `backspace`, `delete`, `home`, `end`, `a`, `c`, `v`, `x`, `y` or `z`) with held modifiers; or up to 32 typed ASCII characters for the focused field. The queue holds until the steps ran |
+| `ui.click`, `ui.drag`, `ui.key`, `ui.type` | `<x> <y> [count] [right\|alt]`, `<x0> <y0> <x1> <y1>`, `[cmd+\|alt+\|ctrl+\|shift+]<key>`, `<text>` | Synthetic input in window points, one step per frame before the UI reads input: a left, double or right click, with Alt held for `alt`; a left drag that holds while a pick resolves; a key (`up`, `down`, `left`, `right`, `enter`, `escape`, `tab`, `backspace`, `delete`, `home`, `end`, `a`, `c`, `v`, `x`, `y` or `z`) with held modifiers; or up to 32 typed ASCII characters for the focused field. The queue holds until the steps ran |
 | `component.add`, `component.remove` | `<type>` | Add or remove a live world component, or `physics_body`, on the selection (undoable); World-only types only on World objects |
 | `physics.motion` | `<static\|kinematic\|dynamic>` | Set the selection's physics body motion (undoable) |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |

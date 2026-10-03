@@ -62,6 +62,10 @@ typedef enum EditorCommand {
   CMD_CHANGES,
   /* Brush drawing in the Scene (B). */
   CMD_BRUSH_DRAW,
+  /* Brush clipping in the Scene. */
+  CMD_BRUSH_CLIP,
+  /* The Level checks window. */
+  CMD_LEVEL_CHECKS,
   CMD_COUNT
 } EditorCommand;
 

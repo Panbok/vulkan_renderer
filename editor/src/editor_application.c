@@ -317,6 +317,8 @@ static bool8_t editor_application_shutdown(void *state,
   editor->ui.content = NULL;
   vkr_editor_agent_destroy(editor->ui.agent);
   editor->ui.agent = NULL;
+  free(editor->ui.level_report);
+  editor->ui.level_report = NULL;
   /* A running game stops with the editor; Bakery cancels a package job. */
   vkr_editor_build_destroy(editor->ui.build);
   editor->ui.build = NULL;

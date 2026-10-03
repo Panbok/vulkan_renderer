@@ -1,6 +1,7 @@
 #include "editor_physics.h"
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_level.h"
 #include "editor_ops.h"
 #include "editor_ui.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -305,6 +306,100 @@ static void physics_brush_draft(VkrEditorUi *editor,
   }
 }
 
+/* Whether the selection is a brush face. */
+static bool8_t physics_face_selected(const VkrSampleUiFrame *frame) {
+  const VkrScene *scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
+  return scene && vkr_scene_entity_alive(scene, frame->selected_entity) &&
+         vkr_scene_get_typed(scene, frame->selected_entity,
+                             &vkr_scene_brush_face_type);
+}
+
+/* Level tool outlines in world space: the selected brush face, the cut the
+   clip tool previews, and the issues and region of the last level check
+   while the Level checks window is open. */
+static void physics_level_tools(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame,
+                                uint32_t capacity) {
+  if (physics_face_selected(frame)) {
+    VkrBrushGeometry *geometry =
+        vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*geometry),
+                            VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    Vec3 corners[VKR_BRUSH_POLYGON_MAX];
+    const uint32_t count =
+        geometry ? vkr_editor_brush_face_outline(
+                       vkr_editor_entity_scene(frame, frame->selected_entity),
+                       frame->selected_entity, geometry, corners,
+                       VKR_BRUSH_POLYGON_MAX)
+                 : 0u;
+    const Vec4 color = {1.0f, 0.85f, 0.2f, 1.0f};
+    for (uint32_t i = 0; i < count; ++i) {
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID, corners[i],
+                   corners[(i + 1u) % count], color, capacity);
+    }
+    if (editor->face_handle_valid) {
+      /* The move handle, and the face where a drag would put it. */
+      const Vec3 tip = vec3_add(
+          editor->face_handle_center,
+          vec3_scale(editor->face_handle_normal, editor->face_handle_length));
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                   editor->face_handle_center, tip,
+                   (Vec4){0.35f, 0.75f, 1.0f, 1.0f}, capacity);
+    }
+    if (editor->face_dragging && editor->face_drag_distance != 0.0f) {
+      const Vec3 offset =
+          vec3_scale(editor->face_handle_normal, editor->face_drag_distance);
+      for (uint32_t i = 0; i < count; ++i) {
+        physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                     vec3_add(corners[i], offset),
+                     vec3_add(corners[(i + 1u) % count], offset),
+                     (Vec4){0.35f, 0.75f, 1.0f, 1.0f}, capacity);
+      }
+    }
+  }
+  if (editor->clip_tool && editor->clip_has_first) {
+    const Vec4 color = {1.0f, 0.35f, 0.35f, 1.0f};
+    const Vec3 a = editor->clip_first;
+    const Vec3 b = editor->clip_current;
+    const Vec3 up = {0.0f, 4.0f, 0.0f};
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, b, color, capacity);
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, vec3_add(a, up),
+                 vec3_add(b, up), color, capacity);
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, vec3_add(a, up),
+                 color, capacity);
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, b, vec3_add(b, up),
+                 color, capacity);
+  }
+  const VkrEditorLevelReport *report = editor->level_report;
+  if (!report || !report->checked ||
+      !editor->windows[VKR_EDITOR_WINDOW_LEVEL].visible) {
+    return;
+  }
+  const Vec4 marker = {1.0f, 0.3f, 0.25f, 1.0f};
+  const Vec3 offsets[3] = {
+      {0.25f, 0.0f, 0.0f}, {0.0f, 0.25f, 0.0f}, {0.0f, 0.0f, 0.25f}};
+  for (uint32_t i = 0; i < report->count; ++i) {
+    /* A half-meter cross at each issue. */
+    const Vec3 at = report->issues[i].position;
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                   vec3_sub(at, offsets[axis]), vec3_add(at, offsets[axis]),
+                   marker, capacity);
+    }
+  }
+  /* The checked region's floor rectangle. */
+  const Vec4 region = {0.55f, 0.55f, 0.6f, 1.0f};
+  const Vec3 lo = report->min;
+  const Vec3 hi = report->max;
+  const Vec3 corners[4] = {
+      vec3_new(lo.x, lo.y, lo.z), vec3_new(hi.x, lo.y, lo.z),
+      vec3_new(hi.x, lo.y, hi.z), vec3_new(lo.x, lo.y, hi.z)};
+  for (uint32_t i = 0; i < 4u; ++i) {
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, corners[i],
+                 corners[(i + 1u) % 4u], region, capacity);
+  }
+}
+
 void vkr_editor_physics_build(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame) {
   editor->physics_line_count = 0;
@@ -321,9 +416,16 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       frame->scripts_running ? 0u : physics_player_start_count(frame);
   /* Pending agent changes and a brush being drawn draw in this overlay too
      (docs/proposals/level-design-toolkit.md). */
+  const VkrEditorLevelReport *report = editor->level_report;
   const uint32_t changes =
       vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
-      (editor->brush_dragging ? 1u : 0u);
+      (editor->brush_dragging ? 1u : 0u) +
+      (editor->clip_tool && editor->clip_has_first ? 1u : 0u) +
+      (physics_face_selected(frame) ? 1u : 0u) +
+      (report && report->checked &&
+               editor->windows[VKR_EDITOR_WINDOW_LEVEL].visible
+           ? 1u
+           : 0u);
   if (!bodies && !starts && !changes) {
     return;
   }
@@ -369,6 +471,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     if (editor->brush_dragging) {
       physics_brush_draft(editor, frame, capacity);
     }
+    physics_level_tools(editor, frame, capacity);
   }
   if (frame->view_state.collision_display && capacity && bodies) {
     if (editor->physics_lines) {

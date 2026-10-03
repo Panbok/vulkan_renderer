@@ -5,19 +5,20 @@ authority: proposal
 ---
 # Level design toolkit
 
-The remaining phases of the level design toolkit. The agent channel and
-brushes are implemented and recorded in
+The remaining phases of the level design toolkit. The agent channel,
+brushes, brush editing and level checks are implemented and recorded in
 [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md); this
-proposal keeps brush editing and level checks, Source-style triggers and IO
-that C scripts declare, heightfield terrain, and splines and scatter. Every
+proposal keeps Source-style triggers and IO that C scripts declare,
+heightfield terrain, splines and scatter, and the brush tools no phase
+covers yet. Every
 phase adds its operations to the ADR-084 operation table, so the viewport, the
 Cmd bar and agents share them.
 
 ## Settled decisions
 
 The owner settled these on 2026-10-04. Decisions of the implemented phases
-(brushes, the agent channel, MCP 2026-07-28 only, the C adapter, review and
-brush storage) are recorded in ADR-084.
+(brushes, the agent channel, MCP 2026-07-28 only, the C adapter, review,
+brush storage, brush editing and level checks) are recorded in ADR-084.
 
 | Decision | Choice | Rejected alternatives |
 |---|---|---|
@@ -30,10 +31,12 @@ brush storage) are recorded in ADR-084.
 
 ## Current baseline
 
-- **Agent channel and brushes.** ADR-084: typed operations over a local
-  socket and `vkr_mcp`, batches as journal groups with review, captures,
-  brush components with generated meshes and generated collision bodies, and
-  blockout operations.
+- **Agent channel, brushes and level checks.** ADR-084: typed operations
+  over a local socket and `vkr_mcp`, batches as journal groups with review,
+  captures, brush components with generated meshes and generated collision
+  bodies, blockout operations, face moves, extrude, clip, hollow, carve and
+  merge, face handles and the clip tool, and `level.lint` and
+  `query.reachable` against the player capsule.
 - **Collision.** Colliders are boxes, spheres, capsules, convex hulls and
   triangle meshes; sensors exist; a body holds at most
   `VKR_PHYSICS_MAX_COLLIDERS` (32) colliders
@@ -58,9 +61,9 @@ brush storage) are recorded in ADR-084.
   ([vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)), and no property
   kind references an entity. A component cannot hold a list of connections or
   a field that points to another entity.
-- **Not present.** Brush editing operations, level checks, terrain
-  ([Terrain rendering](terrain-rendering.md) is a proposal), splines, scatter
-  and entity IO. The
+- **Not present.** Brush vertex and edge edits, glTF export of a blockout,
+  terrain ([Terrain rendering](terrain-rendering.md) is a proposal), splines,
+  scatter and entity IO. The
   [behavior proposal](entity-behavior-system.md#second-deliverable-connections-and-constrained-state-charts)
   plans connection assets that bind a typed event to an action on an entity.
 
@@ -93,24 +96,13 @@ The scene document stores authored data only. Generated meshes and
 collision are derived data that the scene rebuilds when the data loads or
 changes, in the editor and in a packaged game.
 
-### Brush editing
+### Later brush tools
 
-Editing operations change brushes in place, each one journal group: face
-moves (`brush.move_face`), vertex moves, clip by a plane, hollow, face
-extrude, merge, and carve, which replaces the target with convex pieces once
-and keeps no boolean tree. Scene tools add face selection with move handles
-and a clip tool. Export to glTF hands a blockout to an artist; Replace with
-mesh swaps a brush group for the finished model and keeps its brushes as
-collision only.
-
-### Level checks
-
-`level.lint` checks a region against the player character's capsule and limits:
-openings narrower than the capsule, ceilings lower than its height, steps
-higher than `step_up`, slopes steeper than `max_slope_radians`, unreachable
-spawns, overlapping solid brushes and open edges into the void.
-`query.reachable(a, b)` answers one path question. The same checks appear in an
-editor panel for designers.
+Face moves, extrude, clip, hollow, carve and merge are implemented (ADR-084).
+No phase yet covers vertex and edge moves, which must keep a brush convex by
+splitting it or refusing the move; export to glTF, which hands a blockout to
+an artist; or Replace with mesh, which swaps a brush group for the finished
+model and keeps its brushes as collision only.
 
 ### Gameplay volumes
 
@@ -278,13 +270,9 @@ level makes that cost visible.
 
 ### Phase 2: brush editing and level checks
 
-Operations `brush.clip` (plane), `brush.hollow` (`thickness`), `brush.carve`
-(`cutter` brush), `brush.extrude` (`face`, `distance`), `brush.move_face`
-(`face`, `distance`) and `brush.merge` (brushes whose convex hull loses no
-volume). Scene tools: face selection, face move handles and the clip tool.
-`level.lint` and `query.reachable` as described in [Level checks](#level-checks);
-reachability flood-fills walkable samples at the capsule radius with the
-character's `step_up` and `max_slope_radians`.
+Implemented; [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)
+owns the editing operations, face selection, face handles, the clip tool,
+`level.lint`, `query.reachable` and the Level checks window.
 
 ### Phase 3: IO
 
@@ -315,7 +303,7 @@ the rules. Linked prefabs stay with ADR-076 and the behavior proposal.
 |---|---|---|
 | 0. Agent channel | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 1. Brush core | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
-| 2. Brush editing | Vertex, edge and face edits, clip, hollow, carve, extrude, brush entities, `level.lint` | Lint tests against named defects (narrow door, high step, steep ramp) |
+| 2. Brush editing | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 3. IO | `ENTITY` property kind, `io_connection`, the router with the sensor drain, `trigger`, `relay`, `timer`, `counter`, script `VKR_OUTPUTS` and `VKR_INPUTS`, trigger hooks, the IO trace and operations | CPU tests for delivery order, delay deadlines, fire limits, stale targets and the chain limit fault; a Bistro Play run in which a trigger opens a script door |
 | 4. Terrain | Terrain-rendering decisions, sculpt and paint, height field collision, region operations | Defined by the terrain-rendering proposal |
 | 5. Population | Splines and seeded scatter; linked prefabs stay with ADR-076 | A residency bound for M1 under the 16 GB floor ([ADR-083](../adr/083-supported-hardware-matrix.md)) |

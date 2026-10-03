@@ -7,10 +7,11 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The agent channel and brushes (phases 0 and 1 of the
+Accepted (partial). The agent channel, brushes, brush editing and level
+checks (phases 0 to 2 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
-implemented. Brush editing, level checks, IO, terrain and population remain
-in that proposal until they ship.
+implemented. IO, terrain and population remain in that proposal until they
+ship.
 
 ## Context
 
@@ -223,6 +224,61 @@ on the grid plane outlines a box one grid cell high and the release creates
 it; Escape cancels the drag, then ends drawing. Cmd `op <operation> [json]`
 runs any operation of the table.
 
+### Brush editing
+
+Editing operations replace brushes in one journal group, keeping each
+derived face's material and texture settings from the face it copies
+([vkr_brush.c](../../runtime/src/level/vkr_brush.c), `VkrBrushPiece`):
+
+| Operation | Result |
+|---|---|
+| `brush.move_face` | Moves one face (`face`, or `brush` and `side`) along its normal by `distance`; refused when the solid would break |
+| `brush.extrude` | A new brush grown out of a face by `distance` |
+| `brush.clip` | Cuts a brush with the world plane through `point` facing `normal`, keeping `back`, `front` or `both` pieces |
+| `brush.hollow` | Replaces a brush with walls of `thickness` around its inside |
+| `brush.carve` | Subtracts a `cutter` from `target`, or from every brush it touches, as non-overlapping convex pieces, at most one per cutter face; deletes the cutter unless `keep_cutter` |
+| `brush.merge` | Joins 2 to 8 brushes into one when their union is convex: the merged solid's volume must equal the sum of theirs |
+
+Carving keeps no boolean tree: pieces are ordinary brushes. Operations work
+on unscaled brushes, since a scaled brush's planes are not the planes the
+designer sees.
+
+In the Scene, Alt+click selects the brush face under the pointer instead of
+its object. A selected face shows its outline and a move handle along its
+normal: a drag moves the face in 0.25 m steps, and Alt+Up or Alt+Down moves
+it 0.25 m out or in (1 m with Shift). The clip tool (View > Clip brushes,
+Cmd `brush.clip_tool`) cuts the selected brush with the vertical plane
+through two clicks on the grid plane and keeps both pieces. All three submit
+the operations above through the agent queue, so they undo like agent work.
+
+### Level checks
+
+[editor_level.c](../../editor/src/editor_level.c) samples a region on a grid
+of capsule-radius cells (at most 65,536) with physics raycasts. Each cell
+keeps every floor a downward ray finds from start heights one capsule height
+apart, so floors under roofs count. A floor is walkable when its slope is
+within `max_slope_radians`, a capsule's height fits above it and side rays
+find no wall closer than the radius. Neighbouring floors connect when the step
+up is within `step_up`, a drop is at most 4 m, and nothing blocks the way at
+knee height. Only collision counts; geometry without collision is invisible
+to the checks. The capsule defaults to `vkr_physics_character_default`
+(radius 0.3 m, height 1.8 m, `step_up` 0.35 m, 45°) and each request may
+override it.
+
+`level.lint` reports steps too high, slopes too steep, ceilings lower than the
+capsule, gaps narrower than its diameter, walkable edges with no floor within
+4 m below, walkable areas the `start` (or the first enabled Player Start)
+cannot reach, overlapping solid brushes and brushes that did not build. Each
+issue names its position, the entity at fault and the step height, slope,
+headroom or gap; issues of one kind on one entity within 8 m merge.
+`query.reachable` flood-fills from `from` and returns whether `to` is
+reachable with one route and its length.
+
+The Level checks window (View > Level checks, Cmd `window level`) runs the
+lint over 40 m around the point the Scene's center looks at, lists issues
+nearest first with Focus, and marks them with crosses in the Scene while it
+is open.
+
 ## Consequences
 
 Agents and scripts reach every editor feature through typed operations, with
@@ -280,6 +336,18 @@ material then).
   trigger `brush.box`, collision raycasts hitting the room's ceiling and
   passing through the doorway, rejected flat and ambiguous requests, a brush
   drawn with `ui.drag`, and top and perspective captures.
+- `./build_test.sh` suite `brush` covers carve (pieces, no overlap, the
+  disjoint and swallowed cases), prune, extrude and merge, with volumes
+  conserved (2026-10-04, macOS Debug).
+- Headless macOS Release on Bistro (2026-10-04): a doorway carved through a
+  wall, a hollowed block, an extruded and face-moved step, a merge, a clip
+  keeping both pieces and a refused face move that would break the solid. A
+  defect course got one issue each for a 0.62 m step, a 51° ramp, 1.25 m of
+  headroom, a 0.37 m gap, two overlapping brushes and an unreachable island;
+  `query.reachable` found a 38.7 m route and refused the island. In the
+  Scene, `ui.click ... alt` selected a face, `ui.key alt+up` and a handle drag
+  moved it by 0.25 m and 2.75 m, the clip tool split a brush, and the Level
+  checks window listed and marked the course's issues.
 - Indicative cost, not a harness claim: the headless Release editor on an
   M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
   8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000

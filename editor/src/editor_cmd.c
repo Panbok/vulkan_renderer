@@ -59,13 +59,14 @@ static const VkrUiDockPanelKind cmd_panel_kinds[] = {
 
 static const char *const cmd_windows[] = {
     "animation", "physics", "preferences", "draws",   "memory", "help",
-    "create",    "build",   "script",      "changes", NULL};
+    "create",    "build",   "script",      "changes", "level",  NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION, VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,  VKR_EDITOR_WINDOW_DRAWS,
     VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP,
     VKR_EDITOR_WINDOW_CREATE,    VKR_EDITOR_WINDOW_BUILD,
-    VKR_EDITOR_WINDOW_SCRIPT,    VKR_EDITOR_WINDOW_CHANGES};
+    VKR_EDITOR_WINDOW_SCRIPT,    VKR_EDITOR_WINDOW_CHANGES,
+    VKR_EDITOR_WINDOW_LEVEL};
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -310,15 +311,21 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg);
 
 static bool8_t cmd_run_brush_draw(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
-  (void)def;
+  /* value 0 switches drawing, 1 the clip tool. */
+  bool8_t *tool =
+      def->value ? &ctx->editor->clip_tool : &ctx->editor->brush_draw;
   bool8_t next = false_v;
-  if (!cmd_switch(ctx, cmd_split(arg, NULL), ctx->editor->brush_draw, &next)) {
+  if (!cmd_switch(ctx, cmd_split(arg, NULL), *tool, &next)) {
     return false_v;
   }
-  ctx->editor->brush_draw = next;
+  /* One brush tool holds the Scene mouse at a time. */
+  ctx->editor->brush_draw = false_v;
+  ctx->editor->clip_tool = false_v;
+  *tool = next;
   ctx->editor->brush_dragging = false_v;
-  snprintf(ctx->message, sizeof(ctx->message), "Brush drawing %s",
-           next ? "on" : "off");
+  ctx->editor->clip_has_first = false_v;
+  snprintf(ctx->message, sizeof(ctx->message), "Brush %s %s",
+           def->value ? "clipping" : "drawing", next ? "on" : "off");
   return true_v;
 }
 
@@ -784,7 +791,8 @@ static bool8_t cmd_run_script_open(CmdContext *ctx, const CmdDef *def,
 
 /* Synthetic pointer input at a window position in points: moves there, then
  * clicks `count` times (two makes a double click) with the left button, or
- * once with the right. For scripted checks of mouse-only interactions. */
+ * once with the right. `alt` holds Alt through the left clicks. For scripted
+ * checks of mouse-only interactions. */
 static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
                                 String8 arg) {
   (void)def;
@@ -796,9 +804,11 @@ static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
   char button[16] = {0};
   const int32_t read = sscanf(text, "%f %f %d %15s", &x, &y, &count, button);
   const bool8_t right = !strcmp(button, "right");
-  if (read < 2 || count < 1 || count > 3 || !isfinite(x) || !isfinite(y)) {
+  const bool8_t alt = !strcmp(button, "alt");
+  if (read < 2 || count < 1 || count > 3 || !isfinite(x) || !isfinite(y) ||
+      (read == 4 && !right && !alt)) {
     snprintf(ctx->message, sizeof(ctx->message),
-             "ui.click needs <x> <y> [count] [right] in points");
+             "ui.click needs <x> <y> [count] [right|alt] in points");
     return false_v;
   }
   VkrEditorUi *editor = ctx->editor;
@@ -807,6 +817,13 @@ static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
   const int32_t py = (int32_t)(y * scale);
   editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
   int32_t(*steps)[4] = editor->cmd_pointer_steps;
+  if (alt) {
+    int32_t *step = steps[editor->cmd_pointer_count++];
+    step[0] = 3;
+    step[1] = px;
+    step[2] = py;
+    step[3] = KEY_LMENU;
+  }
   steps[editor->cmd_pointer_count][0] = 0;
   steps[editor->cmd_pointer_count][1] = px;
   steps[editor->cmd_pointer_count++][2] = py;
@@ -821,6 +838,13 @@ static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
       step[2] = py;
       step[3] = right ? BUTTON_RIGHT : BUTTON_LEFT;
     }
+  }
+  if (alt) {
+    int32_t *step = steps[editor->cmd_pointer_count++];
+    step[0] = 4;
+    step[1] = px;
+    step[2] = py;
+    step[3] = KEY_LMENU;
   }
   snprintf(ctx->message, sizeof(ctx->message), "%s at (%.0f, %.0f)",
            right        ? "Right click"
@@ -1751,6 +1775,10 @@ static const CmdDef cmd_defs[] = {
     {"brush.draw", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Draw box brushes by dragging on the grid plane (B)", cmd_run_brush_draw,
      CMD_COUNT, 0u},
+    {"brush.clip_tool", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Cut the selected brush with the vertical plane through two grid "
+     "clicks",
+     cmd_run_brush_draw, CMD_COUNT, 1u},
     {"grid.labels", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Show or hide the grid's cell numbers and letters", cmd_run_view,
      CMD_COUNT, 2u},
@@ -1802,7 +1830,7 @@ static const CmdDef cmd_defs[] = {
      cmd_run_script_attach, CMD_COUNT, 0u},
     {"script.edit", CMD_ARG_NONE, "", "Open the selection's script source",
      cmd_run_script_edit, CMD_COUNT, 0u},
-    {"ui.click", CMD_ARG_TEXT, "<x> <y> [count] [right]",
+    {"ui.click", CMD_ARG_TEXT, "<x> <y> [count] [right|alt]",
      "Click the window at a point, as the mouse would", cmd_run_ui_click,
      CMD_COUNT, 0u},
     {"ui.key", CMD_ARG_TEXT, "[cmd+|alt+|ctrl+|shift+]<key>",

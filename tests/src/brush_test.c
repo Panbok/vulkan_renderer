@@ -93,6 +93,89 @@ static void brush_test_solids(VkrBrushGeometry *geometry) {
          VKR_BRUSH_ERROR_FACE_COUNT);
 }
 
+/* Carve, prune, extrude and merge keep volume and convexity. */
+static void brush_test_editing(VkrBrushGeometry *geometry) {
+  VkrBrushPlane wall[6];
+  VkrBrushPlane door[6];
+  (void)vkr_brush_box_planes(vec3_new(0.0f, 0.0f, 0.0f),
+                             vec3_new(4.0f, 3.0f, 0.25f), wall);
+  (void)vkr_brush_box_planes(vec3_new(1.5f, 0.0f, -1.0f),
+                             vec3_new(2.5f, 2.0f, 1.0f), door);
+  VkrBrushPiece *pieces = malloc(sizeof(*pieces) * 6u);
+  assert(pieces);
+  /* A doorway through a wall leaves the wall's volume minus the opening,
+     in pieces that do not overlap. */
+  const uint32_t count =
+      vkr_brush_carve(wall, 6u, door, 6u, pieces, 6u, geometry);
+  assert(count >= 3u && count <= 6u);
+  float32_t volume = 0.0f;
+  for (uint32_t i = 0; i < count; ++i) {
+    assert(vkr_brush_build(pieces[i].planes, pieces[i].count, geometry, NULL) ==
+           VKR_BRUSH_OK);
+    volume += geometry->volume;
+    for (uint32_t p = 0; p < pieces[i].count; ++p) {
+      assert(pieces[i].source[p] < 12u);
+    }
+  }
+  assert(brush_test_near(volume, 4.0f * 3.0f * 0.25f - 1.0f * 2.0f * 0.25f,
+                         1.0e-3f));
+  /* A cutter beside the wall does not touch it; one around it removes it. */
+  VkrBrushPlane far[6];
+  (void)vkr_brush_box_planes(vec3_new(10.0f, 0.0f, 0.0f),
+                             vec3_new(11.0f, 1.0f, 1.0f), far);
+  assert(vkr_brush_carve(wall, 6u, far, 6u, pieces, 6u, geometry) ==
+         UINT32_MAX);
+  VkrBrushPlane around[6];
+  (void)vkr_brush_box_planes(vec3_new(-1.0f, -1.0f, -1.0f),
+                             vec3_new(5.0f, 4.0f, 1.0f), around);
+  assert(vkr_brush_carve(wall, 6u, around, 6u, pieces, 6u, geometry) == 0u);
+
+  /* Pruning drops a plane that bounds nothing. */
+  VkrBrushPiece box = {0};
+  box.count = vkr_brush_box_planes(vec3_zero(), vec3_one(), box.planes);
+  box.planes[box.count] = (VkrBrushPlane){vec3_new(1.0f, 0.0f, 0.0f), 2.0f};
+  box.count++;
+  for (uint32_t i = 0; i < box.count; ++i) {
+    box.source[i] = i;
+  }
+  assert(vkr_brush_prune(&box, geometry) && box.count == 6u);
+  for (uint32_t i = 0; i < box.count; ++i) {
+    assert(box.source[i] != 6u);
+  }
+
+  /* Extruding a box's top by 2 m stacks a 2 m prism on it. */
+  VkrBrushPlane base[6];
+  (void)vkr_brush_box_planes(vec3_zero(), vec3_new(2.0f, 1.0f, 3.0f), base);
+  assert(vkr_brush_build(base, 6u, geometry, NULL) == VKR_BRUSH_OK);
+  VkrBrushPiece prism = {0};
+  assert(vkr_brush_extrude(geometry, base, 2u, 2.0f, &prism));
+  assert(vkr_brush_build(prism.planes, prism.count, geometry, NULL) ==
+         VKR_BRUSH_OK);
+  assert(brush_test_near(geometry->volume, 2.0f * 2.0f * 3.0f, 1.0e-3f));
+  assert(brush_test_near(geometry->min.y, 1.0f, 1.0e-4f) &&
+         brush_test_near(geometry->max.y, 3.0f, 1.0e-4f));
+
+  /* Two touching boxes merge; boxes with a gap or overlap do not. */
+  VkrBrushPlane left[6];
+  VkrBrushPlane right[6];
+  (void)vkr_brush_box_planes(vec3_zero(), vec3_new(1.0f, 1.0f, 1.0f), left);
+  (void)vkr_brush_box_planes(vec3_new(1.0f, 0.0f, 0.0f),
+                             vec3_new(3.0f, 1.0f, 1.0f), right);
+  const VkrBrushPlane *both[2] = {left, right};
+  const uint32_t counts[2] = {6u, 6u};
+  VkrBrushPiece merged = {0};
+  assert(vkr_brush_merge(both, counts, 2u, &merged, geometry));
+  assert(merged.count == 6u &&
+         brush_test_near(geometry->volume, 3.0f, 1.0e-3f));
+  (void)vkr_brush_box_planes(vec3_new(1.5f, 0.0f, 0.0f),
+                             vec3_new(3.0f, 1.0f, 1.0f), right);
+  assert(!vkr_brush_merge(both, counts, 2u, &merged, geometry));
+  (void)vkr_brush_box_planes(vec3_new(0.5f, 0.0f, 0.0f),
+                             vec3_new(3.0f, 1.0f, 1.0f), right);
+  assert(!vkr_brush_merge(both, counts, 2u, &merged, geometry));
+  free(pieces);
+}
+
 static void brush_test_uv(void) {
   /* A +X wall reads left to right toward -Z, and down the image is down. */
   const Vec2 uv =
@@ -123,6 +206,7 @@ bool32_t run_brush_tests(void) {
   VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
   assert(geometry);
   brush_test_solids(geometry);
+  brush_test_editing(geometry);
   brush_test_uv();
   free(geometry);
   printf("--- Brush Tests Completed ---\n");

@@ -43,6 +43,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_SCRIPT,
   /* Agent changes awaiting review (docs/proposals/level-design-toolkit.md). */
   VKR_EDITOR_WINDOW_CHANGES,
+  /* Level checks against the player capsule. */
+  VKR_EDITOR_WINDOW_LEVEL,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -366,6 +368,23 @@ typedef struct VkrEditorUi {
   /* The agent channel and its operation table
      (docs/proposals/level-design-toolkit.md). */
   struct VkrEditorAgent *agent;
+  /* The Level checks window's last report (editor_level.h). */
+  struct VkrEditorLevelReport *level_report;
+  /* Brush clipping: two clicks on the grid plane cut the selected brush
+     with the vertical plane through them. */
+  bool8_t clip_tool;
+  bool8_t clip_has_first;
+  Vec3 clip_first;
+  Vec3 clip_current;
+  /* The selected brush face's move handle, along its world normal from the
+     face center; a drag moves the face by `face_drag_distance`. */
+  bool8_t face_handle_valid;
+  bool8_t face_dragging;
+  Vec3 face_handle_center;
+  Vec3 face_handle_normal;
+  float32_t face_handle_length;
+  float32_t face_drag_start;
+  float32_t face_drag_distance;
   /* Brush drawing: a left drag on the grid plane draws a box brush between
      the press and the release, one grid cell high. */
   bool8_t brush_draw;

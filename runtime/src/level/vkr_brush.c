@@ -80,8 +80,21 @@ const char *vkr_brush_error_text(VkrBrushError error) {
   return "invalid";
 }
 
+/* Builds the polygons. With `empty` set, a face whose polygon vanishes is
+   marked there and skipped instead of failing the build; every surviving
+   polygon is still clipped by every plane. */
+static VkrBrushError brush_build(const VkrBrushPlane *planes, uint32_t count,
+                                 VkrBrushGeometry *out, uint32_t *out_face,
+                                 bool8_t *empty);
+
 VkrBrushError vkr_brush_build(const VkrBrushPlane *planes, uint32_t count,
                               VkrBrushGeometry *out, uint32_t *out_face) {
+  return brush_build(planes, count, out, out_face, NULL);
+}
+
+static VkrBrushError brush_build(const VkrBrushPlane *planes, uint32_t count,
+                                 VkrBrushGeometry *out, uint32_t *out_face,
+                                 bool8_t *empty) {
   if (out_face) {
     *out_face = UINT32_MAX;
   }
@@ -155,10 +168,20 @@ VkrBrushError vkr_brush_build(const VkrBrushPlane *planes, uint32_t count,
       welded_count--;
     }
     if (welded_count < 3u) {
+      if (empty) {
+        empty[face] = true_v;
+        out->polygons[face] = (VkrBrushPolygon){.first = out->vertex_count};
+        out->normals[face] =
+            vec3_new((float32_t)n.x, (float32_t)n.y, (float32_t)n.z);
+        continue;
+      }
       if (out_face) {
         *out_face = face;
       }
       return VKR_BRUSH_ERROR_EMPTY_FACE;
+    }
+    if (empty) {
+      empty[face] = false_v;
     }
     BrushPoint area = {0.0, 0.0, 0.0};
     out->polygons[face] =
@@ -296,4 +319,162 @@ uint32_t vkr_brush_cylinder_planes(Vec3 center, float32_t radius,
   out[count++] = brush_plane(0.0f, 1.0f, 0.0f, center.y + height);
   out[count++] = brush_plane(0.0f, -1.0f, 0.0f, -center.y);
   return count;
+}
+
+// =============================================================================
+// Editing
+// =============================================================================
+
+static VkrBrushPlane brush_flip(VkrBrushPlane plane) {
+  return (VkrBrushPlane){.normal = vec3_scale(plane.normal, -1.0f),
+                         .distance = -plane.distance};
+}
+
+static void brush_piece_remove(VkrBrushPiece *piece, uint32_t index) {
+  for (uint32_t i = index + 1u; i < piece->count; ++i) {
+    piece->planes[i - 1u] = piece->planes[i];
+    piece->source[i - 1u] = piece->source[i];
+  }
+  piece->count--;
+}
+
+static bool8_t brush_piece_push(VkrBrushPiece *piece, VkrBrushPlane plane,
+                                uint32_t source) {
+  if (piece->count >= VKR_BRUSH_FACE_MAX) {
+    return false_v;
+  }
+  piece->planes[piece->count] = plane;
+  piece->source[piece->count++] = source;
+  return true_v;
+}
+
+bool8_t vkr_brush_prune(VkrBrushPiece *piece, VkrBrushGeometry *scratch) {
+  /* A surviving polygon is clipped by every plane, so a face that vanishes
+     bounds nothing and may go; when every face vanishes the half-spaces
+     share no volume. */
+  bool8_t empty[VKR_BRUSH_FACE_MAX];
+  MemZero(empty, sizeof(empty));
+  if (piece->count < VKR_BRUSH_FACE_MIN ||
+      brush_build(piece->planes, piece->count, scratch, NULL, empty) !=
+          VKR_BRUSH_OK ||
+      !scratch->vertex_count) {
+    return false_v;
+  }
+  for (uint32_t i = piece->count; i-- > 0;) {
+    if (empty[i]) {
+      brush_piece_remove(piece, i);
+    }
+  }
+  return vkr_brush_build(piece->planes, piece->count, scratch, NULL) ==
+         VKR_BRUSH_OK;
+}
+
+uint32_t vkr_brush_carve(const VkrBrushPlane *target, uint32_t target_count,
+                         const VkrBrushPlane *cutter, uint32_t cutter_count,
+                         VkrBrushPiece *out, uint32_t capacity,
+                         VkrBrushGeometry *scratch) {
+  /* The intersection decides whether the cutter touches the target. */
+  VkrBrushPiece remaining = {0};
+  for (uint32_t i = 0; i < target_count; ++i) {
+    (void)brush_piece_push(&remaining, target[i], i);
+  }
+  VkrBrushPiece overlap = remaining;
+  for (uint32_t j = 0; j < cutter_count; ++j) {
+    if (!brush_piece_push(&overlap, cutter[j], target_count + j)) {
+      return 0u;
+    }
+  }
+  if (!vkr_brush_prune(&overlap, scratch)) {
+    return UINT32_MAX;
+  }
+  /* Each cutter plane splits off the part of what remains outside it. */
+  uint32_t written = 0u;
+  for (uint32_t j = 0; j < cutter_count && written < capacity; ++j) {
+    VkrBrushPiece piece = remaining;
+    if (!brush_piece_push(&piece, brush_flip(cutter[j]), target_count + j)) {
+      return written;
+    }
+    if (vkr_brush_prune(&piece, scratch)) {
+      out[written++] = piece;
+    }
+    if (!brush_piece_push(&remaining, cutter[j], target_count + j) ||
+        !vkr_brush_prune(&remaining, scratch)) {
+      break;
+    }
+  }
+  return written;
+}
+
+bool8_t vkr_brush_extrude(const VkrBrushGeometry *geometry,
+                          const VkrBrushPlane *planes, uint32_t face,
+                          float32_t distance, VkrBrushPiece *out) {
+  if (face >= geometry->face_count || !(distance > 0.0f)) {
+    return false_v;
+  }
+  const VkrBrushPolygon polygon = geometry->polygons[face];
+  const Vec3 normal = geometry->normals[face];
+  const float32_t length = vec3_length(planes[face].normal);
+  const float32_t base = planes[face].distance / length;
+  *out = (VkrBrushPiece){0};
+  (void)brush_piece_push(out, brush_flip((VkrBrushPlane){normal, base}), face);
+  (void)brush_piece_push(out, (VkrBrushPlane){normal, base + distance}, face);
+  for (uint32_t i = 0; i < polygon.count; ++i) {
+    const Vec3 a = geometry->vertices[polygon.first + i];
+    const Vec3 b = geometry->vertices[polygon.first + (i + 1u) % polygon.count];
+    /* The polygon winds counterclockwise seen from outside, so edge x normal
+       points away from its interior. */
+    const Vec3 side = vec3_normalize(vec3_cross(vec3_sub(b, a), normal));
+    if (!brush_piece_push(out, (VkrBrushPlane){side, vec3_dot(side, a)},
+                          VKR_BRUSH_SOURCE_NEW)) {
+      return false_v;
+    }
+  }
+  return out->count >= VKR_BRUSH_FACE_MIN;
+}
+
+bool8_t vkr_brush_merge(const VkrBrushPlane *const *planes,
+                        const uint32_t *counts, uint32_t brush_count,
+                        VkrBrushPiece *out, VkrBrushGeometry *scratch) {
+  /* Every input's vertices, and the sum of the input volumes. */
+  enum { MERGE_VERTEX_MAX = 2048 };
+  Vec3 vertices[MERGE_VERTEX_MAX];
+  uint32_t vertex_count = 0u;
+  float32_t volume = 0.0f;
+  for (uint32_t b = 0; b < brush_count; ++b) {
+    if (vkr_brush_build(planes[b], counts[b], scratch, NULL) != VKR_BRUSH_OK ||
+        vertex_count + scratch->vertex_count > MERGE_VERTEX_MAX) {
+      return false_v;
+    }
+    volume += scratch->volume;
+    MemCopy(vertices + vertex_count, scratch->vertices,
+            scratch->vertex_count * sizeof(*vertices));
+    vertex_count += scratch->vertex_count;
+  }
+  /* A convex union's faces lie on input faces: keep the input planes every
+     vertex lies behind, once each. */
+  *out = (VkrBrushPiece){0};
+  uint32_t source = 0u;
+  for (uint32_t b = 0; b < brush_count; ++b) {
+    for (uint32_t i = 0; i < counts[b]; ++i, ++source) {
+      const float32_t length = vec3_length(planes[b][i].normal);
+      const Vec3 n = vec3_scale(planes[b][i].normal, 1.0f / length);
+      const float32_t d = planes[b][i].distance / length;
+      bool8_t bounding = true_v;
+      for (uint32_t v = 0; v < vertex_count && bounding; ++v) {
+        bounding = vec3_dot(n, vertices[v]) <= d + 1.0e-3f;
+      }
+      for (uint32_t k = 0; k < out->count && bounding; ++k) {
+        bounding = vec3_dot(out->planes[k].normal, n) < 0.9999f ||
+                   fabsf(out->planes[k].distance - d) > 1.0e-3f;
+      }
+      if (bounding && !brush_piece_push(out, (VkrBrushPlane){n, d}, source)) {
+        return false_v;
+      }
+    }
+  }
+  if (!vkr_brush_prune(out, scratch)) {
+    return false_v;
+  }
+  /* Overlapping or non-convex inputs change the volume. */
+  return fabsf(scratch->volume - volume) <= 1.0e-3f * Max(volume, 1.0f);
 }

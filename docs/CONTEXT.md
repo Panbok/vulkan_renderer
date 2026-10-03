@@ -162,6 +162,7 @@ Editor workflow terms:
 | Content | Folder browser over project, scene and editor assets, scenes, presets, the World and built-in objects, with tile and list views and texture/material previews. | [Content browser](../editor/src/editor_content.c) |
 | Brush / brush face | A convex solid entity with a `brush` component / one of its child entities with `brush_face`, a plane in the brush's space with a material and texture projection. | [ADR-084](adr/084-agent-channel-and-level-design-toolkit.md) |
 | Generated body | A static or sensor physics body a scene builds from authored data, such as brush collision, outside snapshots, documents and Reset. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h) |
+| Level checks | `level.lint` and `query.reachable`: a region's walkable floor sampled with physics raycasts and judged against the player capsule's size, `step_up` and slope limit. | [ADR-084](adr/084-agent-channel-and-level-design-toolkit.md) |
 | Agent channel | The editor's per-user socket of typed operations (`ops.list`) and the `vkr_mcp` adapter that serves them over MCP 2026-07-28. | [ADR-084](adr/084-agent-channel-and-level-design-toolkit.md) |
 | Journal group | Journal entries that undo and redo as one step; a batch of agent edits is one group. | [vkr_scene_edit.h](../runtime/src/renderer/systems/vkr_scene_edit.h) |
 | Pending change | A reviewed agent batch the designer has not accepted or rejected; Reject reverts its journal group. | [editor ops](../editor/src/editor_ops.h) |

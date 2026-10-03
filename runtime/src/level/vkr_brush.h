@@ -82,3 +82,44 @@ uint32_t vkr_brush_wedge_planes(Vec3 min, Vec3 max, uint32_t slope_axis,
 uint32_t vkr_brush_cylinder_planes(Vec3 center, float32_t radius,
                                    float32_t height, uint32_t sides,
                                    VkrBrushPlane *out);
+
+/* A derived brush: its planes and, per plane, the input it copies. A source
+   below the target's plane count names a target face; one at or above it
+   names cutter face `source - target_count`; VKR_BRUSH_SOURCE_NEW marks a
+   plane the operation made. */
+#define VKR_BRUSH_SOURCE_NEW UINT32_MAX
+
+typedef struct VkrBrushPiece {
+  uint32_t count;
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  uint32_t source[VKR_BRUSH_FACE_MAX];
+} VkrBrushPiece;
+
+/* Drops planes that bound no face, keeping the others in order. Returns
+   false when what remains is not a valid solid. `scratch` holds the last
+   build. */
+bool8_t vkr_brush_prune(VkrBrushPiece *piece, VkrBrushGeometry *scratch);
+
+/* The parts of `target` outside `cutter`, as non-overlapping convex pieces:
+   one per cutter plane at most. Returns how many it wrote, 0 when nothing
+   of the target lies outside, or UINT32_MAX when the solids do not
+   overlap. */
+uint32_t vkr_brush_carve(const VkrBrushPlane *target, uint32_t target_count,
+                         const VkrBrushPlane *cutter, uint32_t cutter_count,
+                         VkrBrushPiece *out, uint32_t capacity,
+                         VkrBrushGeometry *scratch);
+
+/* A prism grown from face `face` of the built `geometry` by `distance`
+   meters along the face normal. Its back plane copies the face flipped
+   (source `face`), its front plane copies it moved (source `face`), and its
+   sides are new. */
+bool8_t vkr_brush_extrude(const VkrBrushGeometry *geometry,
+                          const VkrBrushPlane *planes, uint32_t face,
+                          float32_t distance, VkrBrushPiece *out);
+
+/* One brush equal to the union of `brush_count` brushes in one space, when
+   that union is convex and the brushes do not overlap; sources index the
+   concatenated input planes. */
+bool8_t vkr_brush_merge(const VkrBrushPlane *const *planes,
+                        const uint32_t *counts, uint32_t brush_count,
+                        VkrBrushPiece *out, VkrBrushGeometry *scratch);
