@@ -85,13 +85,22 @@ vkr_internal bool8_t vkr_vk_collect_slot_timings(VkrVulkanRenderer *renderer,
       (float64_t)vkr_vulkan_device_properties(renderer->device)
           ->properties.limits.timestampPeriod /
       1000000.0;
+  /* Passes are recorded in execution order. A pass's top-of-pipe stamp can
+     land while earlier passes still run, since its barrier blocks only the
+     stages that read their output, but its bottom-of-pipe stamp waits for all
+     earlier work. Overlap is therefore counted once, in the earlier pass. */
+  uint64_t previous_end = 0u;
   for (uint32_t i = 0; i < slot->pass_timing_count; ++i) {
     const size_t query_index = (size_t)i * 2u;
-    const uint64_t begin = timestamps[query_index];
+    uint64_t begin = timestamps[query_index];
     const uint64_t end = timestamps[query_index + 1u];
     slot->pass_timings[i].valid = end >= begin;
-    if (slot->pass_timings[i].valid)
+    if (slot->pass_timings[i].valid) {
+      if (previous_end > begin)
+        begin = Min(previous_end, end);
+      previous_end = Max(previous_end, end);
       slot->pass_timings[i].gpu_ms = (float64_t)(end - begin) * timestamp_ms;
+    }
   }
   slot->timing_collected = true_v;
   return true_v;

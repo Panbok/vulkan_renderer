@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -141,6 +141,19 @@ earlier pass
 Before, `World.Blend.Fullscreen` with no transparent draws read 7.4 ms in the
 Bistro street view, and the pass sum exceeded the frame; after, it reads
 0.05 ms. Compute intervals are unchanged.
+
+Vulkan writes a pass's begin stamp at the top of the pipe before its barrier
+and its end stamp at the bottom of the pipe, which waits for all earlier work.
+A pass that does not depend on its predecessor therefore began timing while
+that predecessor still ran. Since 2026-10-03 every Vulkan interval, compute or
+graphics, starts no earlier than the end of the previous timed pass
+([`vkr_vulkan_renderer.c`](../../renderer/src/vulkan/vkr_vulkan_renderer.c)).
+Before, in the Vulkan Bistro street view at 1280x720 (RX 6700 XT,
+`local_shadow_bistro_vulkan_street`), `AO.PrefilterDepth.0` read 1.94 ms
+behind `Shadow.LocalMask` and `HZB.BuildMip.7` 1.62 ms behind
+`Lighting.Deferred`, and the pass sum was 11.78 ms against a 5.95 ms frame;
+after, they read 0.009 and 0.004 ms and the sum is 5.95 ms against 5.98 ms.
+Compare Vulkan pass rows only between reports on the same side of that change.
 
 The pass catalog freezes once the set of pass names from the requested scene
 stays unchanged for eight completed frames. Retained shadow cascades and local
