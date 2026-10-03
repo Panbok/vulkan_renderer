@@ -63,7 +63,14 @@ M1 Pro, 2026-10-03) it halved the atlas from 768 to 384 MiB (12 layers) with
 unchanged redraw counts and local-shadow pass times, and final colour against
 D32 stayed within the default snapshot gate in the street overview (1 pixel
 above 10/255), a street-level facade view (0.011% of pixels above 2/255) and
-`bistro_bright_spot_snapshot` (maximum 3/255). Depth steps grow with the square
+`bistro_bright_spot_snapshot` (maximum 3/255). On Vulkan (RX 6700 XT, driver
+26.6.3, Release, 2026-10-03) the same comparison at `b7fd519f`, with only the
+atlas format and its two pipelines switched back to D32, failed the default gate
+in `local_shadow_bistro_vulkan_street_capture`: mean error 0.000199 (limit
+0.000392), but 0.65% of pixels above 2/255 (limit 0.1%) and a maximum of 60/255.
+Two D16 runs differed in 0.0011% of pixels. The differences lie on foliage
+cutouts and thin geometry edges; the captures show no acne or light leaks.
+Depth steps grow with the square
 of the distance from the light, about 7 cm at 15 m for the 0.05 m near plane,
 so longer-range lights would need a larger near plane or more bias.
 

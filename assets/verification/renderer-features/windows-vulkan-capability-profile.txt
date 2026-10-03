@@ -1,17 +1,27 @@
-Windows Vulkan capability profile — 2026-09-11
+Windows Vulkan capability profile — 2026-10-03
 
 ADR-023 requires the Vulkan 1.4 feature/limit profile to be queried, reported
-and enabled before the backend is selected. Until this run the report was built
-only as a pass/fail predicate and never emitted, so no build could show it.
+and enabled before the backend is selected. vkr_vk_select_device emits the
+selected device's report at INFO.
 
-Binary:  build_release/app/vulkan_renderer.exe (Release, VKR_EDITOR_LOGGING=ON
-         so the INFO report is not filtered out; stock build_release.bat keeps
+Binary:  build_debug/app/vulkan_renderer.exe at b7fd519f (Debug, LOG_LEVEL=4,
+         so the INFO report is printed; stock build_release.bat keeps
          LOG_LEVEL=1 and prints errors only)
 Device:  AMD Radeon RX 6700 XT
 Driver:  AMD proprietary driver 26.6.3 (AMD proprietary shader compiler)
 API:     1.4.315
-Result:  every required entry present; the renderer reached the frame loop with
-         no errors. Optional entries are listed with their actual state.
+Result:  every required entry present, including the D16 local shadow atlas
+         format (ADR-019); the renderer reached the frame loop with no errors.
+         Optional entries are listed with their actual state.
+
+The report below is verbatim from the hidden-window run
+`p21_vulkan_bistro_windowed_validation.case.json` with `local-windowed.json`.
+That case leaves FSR 3.1 off, so it omits the FSR-only entry. The offscreen
+`fsr31_bistro_static.case.json` run adds it as:
+
+  Vulkan capability feature FSR.shaderStorageImageExtendedFormats: present (required) enabled
+
+and reports the window entries as "offscreen omitted".
 
 Vulkan capability profile: AMD Radeon RX 6700 XT driver=AMD proprietary driver (26.6.3 (AMD proprietary shader compiler)) api=1.4.315 queue_family=0 entries=62
 Vulkan capability api apiVersion: present (required) actual=1.4.315 minimum=1.4.0
@@ -19,7 +29,6 @@ Vulkan capability device-extension VK_EXT_descriptor_buffer: present (required) 
 Vulkan capability feature shaderInt64: present (required) enabled
 Vulkan capability feature geometryShader: present (required) enabled
 Vulkan capability feature independentBlend: present (required) enabled
-Vulkan capability feature FSR.shaderStorageImageExtendedFormats: present (required) enabled
 Vulkan capability feature samplerAnisotropy: present (optional) enabled when selected
 Vulkan capability feature shaderDrawParameters: present (required) enabled
 Vulkan capability feature bufferDeviceAddress: present (required) enabled
@@ -40,13 +49,13 @@ Vulkan capability feature descriptorBuffer: present (required) enabled
 Vulkan capability feature hostImageCopy: absent (optional) unavailable
 Vulkan capability feature descriptorBufferCaptureReplay: absent (optional) unavailable
 Vulkan capability queue graphics+compute+transfer: present (required) family=0 flags=G|C|T|P
-Vulkan capability limit maxPerStageDescriptorSampledImages: present (required) actual=4294967295 minimum=16398
-Vulkan capability limit maxDescriptorSetSampledImages: present (required) actual=4294967295 minimum=16398
+Vulkan capability limit maxPerStageDescriptorSampledImages: present (required) actual=4294967295 minimum=16399
+Vulkan capability limit maxDescriptorSetSampledImages: present (required) actual=4294967295 minimum=16399
 Vulkan capability limit maxPerStageDescriptorSamplers: present (required) actual=4294967295 minimum=2048
 Vulkan capability limit maxDescriptorSetSamplers: present (required) actual=4294967295 minimum=2048
 Vulkan capability limit maxPerStageDescriptorStorageImages: present (required) actual=4294967295 minimum=1024
 Vulkan capability limit maxDescriptorSetStorageImages: present (required) actual=4294967295 minimum=1024
-Vulkan capability limit maxPerStageResources: present (required) actual=4294967295 minimum=17423
+Vulkan capability limit maxPerStageResources: present (required) actual=4294967295 minimum=17424
 Vulkan capability limit maxPushConstantsSize: present (required) actual=256 minimum=16
 Vulkan capability limit maxBoundDescriptorSets: present (required) actual=32 minimum=2
 Vulkan capability limit maxDescriptorBufferBindings: present (required) actual=32 minimum=2
@@ -63,6 +72,7 @@ Vulkan capability limit optimalBufferCopyOffsetAlignment: present (optional) act
 Vulkan capability limit optimalBufferCopyRowPitchAlignment: present (optional) actual=1
 Vulkan capability format R8G8B8A8_UNORM sampled+transfer-dst: present (required) optimal tiling
 Vulkan capability format R8G8B8A8_SRGB color+transfer-src: present (required) optimal tiling
+Vulkan capability format D16_UNORM depth+sampled compare: present (required) optimal tiling
 Vulkan capability instance-extension VK_KHR_surface: present (required) window floor
 Vulkan capability instance-extension VK_KHR_win32_surface: present (required) window floor
 Vulkan capability instance-extension VK_EXT_swapchain_colorspace: present (optional) optional extended-linear presentation
@@ -73,6 +83,6 @@ Vulkan capability device-create vkCreateDevice: present (required) VkResult=0
 Vulkan capability device-create descriptor-buffer function table: present (required) all required entry points resolved
 Vulkan capability layout resource descriptor-buffer layout support: present (required) vkGetDescriptorSetLayoutSupport
 Vulkan capability layout sampler descriptor-buffer layout support: present (required) vkGetDescriptorSetLayoutSupport
-Vulkan capability limit resource descriptor layout bytes: present (required) actual=557504 maximum=4294967295
+Vulkan capability limit resource descriptor layout bytes: present (required) actual=557536 maximum=4294967295
 Vulkan capability limit sampler descriptor layout bytes: present (required) actual=32768 maximum=4294967295
-Vulkan capability limit descriptor buffer address spaces: present (required) resource=557504 sampler=32768
+Vulkan capability limit descriptor buffer address spaces: present (required) resource=557536 sampler=32768

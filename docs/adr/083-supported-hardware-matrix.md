@@ -51,7 +51,7 @@ checked Windows drivers expose.
 | Apple8 | M2 series | 8 GB unified | None |
 | Apple9 | M3, M4 series | 8 GB unified (M3), 16 GB (M4) | None |
 | Apple10 | M5 series | Not recorded | None |
-| AMD RDNA 2 | RX 6000 | 4 GB (RX 6400, RX 6500 XT) | RX 6700 XT 12 GB, Windows (reference) |
+| AMD RDNA 2 | RX 6000 | 4 GB (RX 6400, RX 6500 XT) | RX 6700 XT 12 GB, Windows 10, driver 26.6.3, Vulkan 1.4.315 (reference) |
 | AMD RDNA 3, RDNA 4 | RX 7000, RX 9000 | Not recorded | None |
 | NVIDIA Ampere | RTX 30 | 4 GB (laptop RTX 3050) | None |
 | NVIDIA Ada, Blackwell | RTX 40, RTX 50 | Not recorded | None |
@@ -103,7 +103,13 @@ The Metal managed allocation cap is two thirds of `recommendedMaxWorkingSetSize`
 Mac is not measured. The cap also holds render targets, geometry, and transfer
 rings, so textures receive less than the full cap. Vulkan has no device-memory
 cap. It relies on the texture pressure policy (ADR-024), and a 12 GB RX 6700 XT
-holds Bistro.
+holds Bistro. Release `win_bistro_production` with
+`local-offscreen-gpu-single.json` on that GPU (driver 26.6.3, `b7fd519f`, BC
+textures) measured the M1 Pro's texture totals: 3.176 GB at full resolution, the
+Vulkan default, and 1.995 GB at a 2048 limit. `memory.gpu.bytes.peak` was 4.84
+and 3.56 GB; the driver reported no heap usage (`memory.gpu.heap_usage_valid`
+0). At about 4.5 GiB, the full-resolution peak does not need Vulkan to default
+to 2048. No 8 GB discrete GPU has run Bistro.
 
 ### Rules for performance and graphics work
 

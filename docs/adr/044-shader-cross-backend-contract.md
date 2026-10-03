@@ -346,6 +346,15 @@ plus one; zero means unshadowed. CPU point-face orientation and shared face-ray
 reconstruction use the same canonical negative projection-Y convention.
 Local shadow parity remains **UNALIGNED** until matched native Vulkan and Metal
 captures and diagnostics pass. Production compilation does not close that gate.
+The first cross-backend run (RX 6700 XT, driver 26.6.3, `b7fd519f`, against the
+M1 Pro generations of `local_shadow_bistro_{street,indoor}_capture`) returned
+exit 4 before any pixel verdict: `--cross-backend` relaxes only the environment
+fingerprint, and the workload fingerprint's `case.scene_content` hashes the
+host-native cooked textures (ASTC on Apple, BC on x86-64) and, on Windows, a
+CRLF checkout of `bistro.scene.json`. A direct comparison of the canonical
+captures, outside the gate, measured mean errors of 0.0027 (street) and 0.0056
+(indoor) against the cases' 0.0005 limit. Vulkan's automatic exposure was 1.8%
+and 2.7% higher, and the differences follow texture detail and geometry edges.
 Both backends run the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
 with its own 128-byte root: frame, G-buffer inputs, visible rows, inverse
 view-projection, extent, the contact-shadow noise index (byte 120 on Metal,

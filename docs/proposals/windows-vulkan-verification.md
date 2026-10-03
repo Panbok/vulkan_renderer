@@ -11,137 +11,70 @@ ADRs define the feature contracts. A successful build or compiled SPIR-V
 reflection does not prove native Vulkan execution, synchronization, display
 behavior, or Metal/Vulkan pixel parity.
 
-## 2026-10-03 handoff: Metal follow-up results and cross-backend captures
+## 2026-10-03 Windows execution record
 
-The Mac ran the [Metal follow-ups](metal-followups.md) of the Windows Vulkan
-sessions at `36179ac0` and published the first Metal baselines for a
-cross-backend local-shadow comparison (`1b6c1d05`). Two of its fixes change
-shared files that no Windows build has compiled. Do these steps after the
-host-native texture handoff below, on the RX 6700 XT, one GPU process at a
-time. Load `vkr-harness`.
+This record covers the two 2026-10-03 handoffs: the host-native textures, D16
+atlas and hardware matrix (commits `29715c9b` through `d1868d99`) and the Metal
+follow-ups (`b2cff32b`, `bd5e50ad`, `1b6c1d05`). It ran at `b7fd519f` on an AMD
+Radeon RX 6700 XT, driver 26.6.3, Vulkan 1.4.315, Windows 10, Ryzen 5 2600 with
+16 GB of RAM, one GPU process at a time. Reports are local; run paths are under
+`build/_artifacts/`.
 
-1. **Build with the physics RTTI change.** `b2cff32b` compiles
-   `vkr_physics` with `/GR-` on MSVC, matching Jolt
-   ([`vkr_physics.cmake`](../../cmake/vkr_physics.cmake)); macOS failed to
-   link the job adapter without it. Run `build_release.bat` and
-   `build_test.bat`, then `python tools\checks\check_bakery_package.py
-   --bakery build_debug\tools\bakery\vkr_bakery.exe`, which now expects the
-   `Scripts` stage (`bd5e50ad`). Done when both builds, the tester's physics
-   suite (it steps bodies through the job adapter) and the package check
-   pass.
-2. **Cross-backend local-shadow captures.** Pull the Metal generations under
-   `tools\baselines\local.offscreen\local.bistro.local_shadow.street_capture`
-   and `...indoor_capture`. Run each case with the Release harness:
+| Step | Result | Evidence |
+| --- | --- | --- |
+| Before image | `smoke.bistro.vulkan.text.snapshot` at `aeebb57a`, the pre-pull revision, in a separate worktree: 14 of 14 captures, `missing_baseline` | `snapshot/20261003T140104.231Z-0041c6` / `c8822068b6a2a1a8433f3c9054296168dee62f6c3020fe224869ef8a7b874e06` |
+| Recook | `vkr_bakery build assets\bakery.json`: 1678 of 1678 actions after the fixes below. Release Bistro children print neither the Basis nor the "has no cooked `.vkt`" error | street and indoor snapshots below |
+| Build and CPU tests | `build_release.bat` and `build_test.bat` pass; the physics suite and `test_obj_face_storage_grows_geometrically` pass | `build_test.bat` exit 0 |
+| Checks | `report_long_functions`, `check_metrics_disabled` (14 of 14 units), `check_editor_texture_tiers` (x86-64 branch: host encoding and UASTC rejection) and `check_spec_gloss_memo` pass. `check_bakery_bundle` and `check_bakery_package` are unavailable without a `zstd` command-line tool. `check_bakery_serve` and `check_bakery_script` do not apply: serve is unavailable on Windows and the script check loads a macOS dylib | `--bakery build_debug\tools\bakery\vkr_bakery.exe` |
+| BC outputs | Every `.vkt` cooked on this host is BC7 sRGB (146), BC7 UNORM (145) or BC5 (141); paired normal/roughness outputs record `vmf-alpha2-v2`. 402 older Basis files under `assets/textures/generated/normalrough_v1/` and six `normalrough_v2/normal_a377259d*` files are untracked and unreferenced | `p21_vulkan_bistro_windowed_validation`, Debug: pass, validation layer with synchronization, no VUID or error, three images, `immediate` — `profile/20261003T152636.284Z-0020a5` / `54714c6f3290fe6a9040078e5809431be12e20d5c2d822aa6d79423fc9602c5b` |
+| D16 atlas | The capability report lists `D16_UNORM depth+sampled compare` present. Debug `local_shadow_bistro_vulkan_street_ultra_validation`: both repetitions pass with no VUID, synchronization hazard or error. The run is incomplete only for `determinism.work_volume_mismatch` on `visibility.hzb.history_rejection.incomplete`, whose 0/1 phase differs between repetitions. D16 against D32 fails the default gate ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)) | `profile/20261003T153031.825Z-002ffc` / `feafa309d2541e2b829f3da709d3febf728de8d528d686b89efddd7280f71ca1`; D16 `snapshot/20261003T154045.331Z-0024a6` / `9b8ce4c4205928838e3b2114ad0c9339bbbee80cf587f46d149a689d5594b148`; D32 `snapshot/20261003T154253.572Z-0030d1` / `913868f75b8d684a0e71e1f8d00ec5356bbbfc637d599075e6f7a5d1722ff81c` |
+| Vulkan text baseline | After the recook: `missing_baseline`. Against the before image, mean error is 0.0007 to 0.0024 per capture; the differences lie on foliage cutouts and local shadow edges. Accepted generation `683333909dc5c3fb464adbc16701b2a8ee571be05338067d0439eb9848576f60`; `compare --run` passes | `snapshot/20261003T154533.726Z-00204f` / `f3bd7607f95a19e17f344d4944d0e5a86a3d3ae51611e58a95f8b92f365fd090`; `compare/20261003T155438.610Z-001587` / `128589322fb4662b052de6a18861422345b22cfca2a656618513ab7064f6e2a7` |
+| Hardware matrix | RDNA 2 row and [capability profile](../../assets/verification/renderer-features/windows-vulkan-capability-profile.txt) updated ([ADR-083](../adr/083-supported-hardware-matrix.md)) | FSR entry: `profile/20261003T155453.534Z-00091b` / `5f6ffe139c2380a87a8fdc95a35804f7597cb49c4fa291ec12c2e7cc9db3c2ec` |
+| Memory floor | Textures 3.176 GB at full resolution and 1.995 GB at 2048; peaks 4.84 and 3.56 GB ([ADR-083](../adr/083-supported-hardware-matrix.md)) | `profile/20261003T155717.083Z-002d3a` / `8d895b4ae299d9502408cbec901d4bd327bf89541838359951668a01f478fdac`; `profile/20261003T155846.795Z-000812` / `6c579d8cb48d5fe1a658e92263a50b8b191787e1edb6bd40ac20a0c1fb09e283` |
+| Cross-backend local shadows | Exit 4 for both cases: the workload fingerprints differ ([ADR-044](../adr/044-shader-cross-backend-contract.md)) | street `snapshot/20261003T151320.506Z-0013f3` / `f4d3fa0ad318b90d4220bd6b0a906477df331d720d3edea7c92069c39ea4f947`; indoor `snapshot/20261003T151634.384Z-001c25` / `2c90dd177456e1007f2b49ba095b49a031aa565616440e94f77c586cca160508` |
 
-   ```bat
-   build_release\tools\vkr_harness.exe snapshot ^
-     --case tools\cases\local\local_shadow_bistro_street_capture.case.json ^
-     --profile tools\profiles\local-offscreen.json --cross-backend
-   build_release\tools\vkr_harness.exe snapshot ^
-     --case tools\cases\local\local_shadow_bistro_indoor_capture.case.json ^
-     --profile tools\profiles\local-offscreen.json --cross-backend
-   ```
+The recook needed four fixes. OBJ faces reserved exact capacity in arenas, which
+keep each superseded block, so storage grew quadratically: `falcon.obj` peaked at
+7,298 MiB and San Miguel above 11 GB, freezing the host. With geometric growth
+they peak at 13 and 4,875 MiB. The plain and light-range cooks of
+`bistro-lights.gltf` shared fixed `.tmp` names for generated materials and
+textures; Windows refuses the second open. Temporaries now carry the process ID.
+Mesh sources now check out with LF line endings, because a cooked `.vkb`
+fingerprints the source bytes. Bakery copies a mesh job's generated outputs into
+its cache before publication. When that copy failed (here, a full system drive)
+the job reported only "mesh failed"; it now names the file. Bakery's mesh
+estimate, 512 MiB plus ten times the source size, predicts 1,445 MiB for a
+Bistro cook that peaks at about 3.1 GB.
 
-   A multi-config build may place the harness under
-   `build_release\tools\Release\`. The cases leave `renderer.backend`
-   unpinned, disable TAA so the mask keeps its fixed nine taps, and use the
-   Bistro snapshot policy: at most 0.002% of pixels may differ, with a mean
-   error of at most 0.0005. A repeat Metal snapshot of each passed with no
-   failing pixel. Exit `4` means a workload or policy fingerprint differs;
-   compare the `comparison` fingerprints of both reports before changing
-   anything. Record the verdict, `max_absolute_error`, `failed_pixel_ratio`,
-   report SHA-256, device and driver in
-   [ADR-044](../adr/044-shader-cross-backend-contract.md)'s local shadow
-   paragraph. If the gate fails, keep the run directory, inspect the
-   emitted diff and report where the pixels differ; do not publish a Vulkan
-   generation or loosen the case policy without the owner.
+Three procedure differences from the handoff:
 
-## 2026-10-03 handoff: host-native textures, D16 atlas and hardware matrix
+- `validation-windowed.json` requires `fifo`, but the p21 case pins
+  `immediate`, so the harness refuses the pairing. `local-windowed.json` has
+  the same policy with `immediate`.
+- The D32 comparison switched the atlas format and its two local-shadow
+  pipelines at `b7fd519f` instead of building `29715c9b`. That revision also
+  predates the host-native texture change, so it would have compared more than
+  the atlas.
+- The capability report came from the Debug build, which logs at INFO, rather
+  than a separate Release configure with `VKR_EDITOR_LOGGING=ON`.
 
-Commits `29715c9b` through `d1868d99` changed texture storage, the local
-shadow atlas and the build. They ran only on an M1 Pro with Metal; no x86-64
-build, Windows host or Vulkan device has run them. Work through the steps in
-order on the RX 6700 XT, then repeat steps 1-4 and 6 on an NVIDIA Ampere (RTX
-30) GPU when one is available. Load `vkr-harness`; add `vkr-validation` for
-step 4 and `vkr-performance` for step 7. Use Bistro for every scene run and
-run one GPU process at a time.
+The three tracked fixtures `tests/fixtures/rendering/{editor_lights,editor_nodes,specgloss_factor_parity}.vkb`
+recook with a different `source_hash` on any host: their dependency digests match
+the current inputs, but the stored aggregate matches none. Recook them on the Mac.
 
-0. **Capture the before image first.** Before pulling, on the revision this
-   host already builds, run `tools\cases\smoke\bistro_snapshot.case.json`
-   (`smoke.bistro.vulkan.text.snapshot`) with
-   `tools\profiles\local-offscreen.json` and keep the run directory. Step 1
-   replaces the textures this run renders, so it cannot be repeated later.
-1. **Recook.** The runtime no longer transcodes or falls back to source
-   images: a Basis (UASTC) `.vkt` logs a rebuild message and keeps its
-   default texture, and a source without a `.vkt` logs "has no cooked `.vkt`".
-   This host's Bistro textures were cooked as UASTC, the former Windows
-   default, or under retired `.bc` names. Pull, run `build_release.bat`, then
-   `build_release\tools\bakery\vkr_bakery.exe build assets\bakery.json`, and
-   re-import editor workspaces that hold UASTC textures. The build now cooks
-   the engine, default-scene, fixture and CPU-test textures and the
-   mannequin's paired normal/roughness bake (`vkr_engine_textures` in
-   `cmake/vkr_engine_content.cmake`). Done when a Bistro run's child stdout and
-   stderr contain neither message.
-2. **CPU tests and checks.** Run `build_test.bat`; 639 cases pass on macOS at
-   `d1868d99`. The Windows wrapper runs only the format, path-boundary and
-   path-contract checks, so also run each remaining check that `build_test.sh`
-   lists, with `--bakery build_debug\tools\bakery\vkr_bakery.exe`.
-   `check_editor_texture_tiers.py` takes its x86-64 branch here for the first
-   time: BC under host-neutral final names, `-bc-fast` fast names and the
-   rejection of `uastc`. Item 7 of [Windows asset builds](windows-asset-builds.md)
-   lists the checks that already failed on Windows.
-3. **BC outputs.** Read `vkFormat` (little-endian `uint32` at byte 12) of
-   cooked `.vkt` files: sRGB colour is BC7 sRGB (146), data masks and linear
-   colour BC7 UNORM (145), normals BC5 UNORM (141). The `vkr.pack_settings`
-   value names the BC profile, and
-   `assets\characters\mannequin\textures\mannequin_paired_metalrough.vkt`
-   records `normal_roughness=vmf-alpha2-v2`. An explicit `tc`/`cs` query
-   selects the sRGB or UNORM BC7 format (`vkr_texture_native_view_format`); the
-   CPU tests cover the selection, not the Vulkan image. Run the Debug
-   `p21_vulkan_bistro_windowed_validation.case.json` with
-   `validation-windowed.json` and require no validation message for texture
-   image creation, views or uploads.
-4. **D16 local shadow atlas.** Vulkan draws local shadow faces with D16
-   pipeline variants and requires D16 attachment, sampling, comparison and
-   linear filtering ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)).
-   With a Release configure that sets `VKR_EDITOR_LOGGING=ON`, the capability
-   report must list `D16_UNORM depth+sampled compare` as present. Run
-   `local_shadow_bistro_vulkan_street_ultra_validation.case.json` with the
-   Debug harness and `local-offscreen.json`; require the child's `Vulkan
-   validation enabled` line and no API or synchronization error. Then run the
-   Release `local_shadow_bistro_vulkan_street_capture.case.json` snapshot at
-   `d1868d99` and at `29715c9b`, the last D32 revision, built in a separate
-   worktree that holds copies of this checkout's cooked Bistro (the harness
-   rejects scene paths that resolve outside the worktree). Final colour must
-   stay within the default snapshot gate, as it did on Metal; look for acne
-   and light leaks 10-15 m from lights, where D16 depth steps reach about
-   7 cm.
-5. **Vulkan text baseline.** After step 1, rerun the step 0 case. Expect
-   `missing_baseline`: `case.scene_content` changed. Compare its captures with
-   step 0's to isolate this change; the accepted generation dates from
-   2026-08-07 and also predates the display-linear post target (below). The
-   user authorized re-accepting baselines this change affects after review:
-   run `baseline propose` with a reason naming both, accept the reviewed plan,
-   rerun `compare --run`, and commit the new generation to main.
-6. **Hardware matrix rows.** Record the capability report at current main for
-   RDNA 2, and for Ampere, RDNA 3 or RDNA 4 when available, in
-   [ADR-083](../adr/083-supported-hardware-matrix.md)'s native evidence column
-   with device, driver and Vulkan API version. Update
-   `assets/verification/renderer-features/windows-vulkan-capability-profile.txt`
-   when the RDNA 2 entries change.
-7. **Discrete memory floor.** ADR-083's 8 GB discrete floor is unmeasured, and
-   Vulkan has no device-memory budget. Run the Release
-   `win_bistro_production.case.json` with `local-offscreen-gpu-single.json`,
-   once as checked in (full resolution, the Vulkan default) and once from a
-   local copy that sets `renderer.texture_max_load_dimension` to 2048. Record
-   `memory.gpu.owner.texture.bytes.live`, `memory.gpu.bytes.peak` and, when
-   `memory.gpu.heap_usage_valid` is 1, `memory.gpu.heaps.bytes.used.current`.
-   The M1 Pro measured 3.176 GB of Bistro textures at full resolution and
-   1.995 GB at 2048. If the full-resolution total exceeds about 7 GiB, ask the
-   user whether Vulkan should default to 2048 below 12 GB, as Metal does.
+Open items:
 
-Record each step's commands, report SHA-256, device and driver here, and
-update the owning ADR when a result changes its claim.
+- Decide whether a cross-backend comparison may cover host-native cooked
+  content. Until then, `--cross-backend` cannot compare Metal and Vulkan Bistro
+  captures.
+- `win_bistro_production.case.json` still asserts `post.exposure.target_ev`
+  at most 0 and `post.exposure.multiplier` at most 1. Since `ba889215` Vulkan
+  exposure adapts and reports 2.08 and 4.22, so both production runs fail only
+  on these assertions.
+- Install a `zstd` command-line tool and run `check_bakery_bundle.py` and
+  `check_bakery_package.py`.
+- Repeat build, recook, CPU tests, BC outputs, the D16 atlas and the hardware
+  matrix row on an NVIDIA Ampere (RTX 30) GPU.
 
 ## 2026-09-12 Windows execution record
 
