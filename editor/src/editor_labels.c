@@ -21,7 +21,7 @@ static Vec4 editor_label_tint(Vec3 linear) {
 
 /* One icon's presentation. Abstract objects (the sun, sky and fog layers,
  * post process) have no meaningful place, so they stack at the world origin;
- * local lights, fog boxes and probes follow their transforms. */
+ * local lights, fog boxes, probes and text follow their transforms. */
 typedef struct EditorLabelKind {
   VkrUiIcon icon;
   Vec4 tint;
@@ -88,12 +88,17 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
                              rectangle->enabled, false_v};
     return editor->labels_point;
   }
+  /* Text marks its place too: an empty, distant or tiny text is otherwise
+     hard to find and pick. */
+  if (vkr_scene_get_typed(scene, entity, &vkr_scene_text_type)) {
+    *out = (EditorLabelKind){
+        VKR_UI_ICON_TEXT, (Vec4){0.62f, 0.78f, 0.98f, 1.0f}, true_v, false_v};
+    return editor->labels_text;
+  }
   const VkrTypeDesc *type = NULL;
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
-    /* Shapes, text and animated meshes are visible geometry and need no
-       icon. */
-    if (type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
-        type == &vkr_scene_animation_type ||
+    /* Shapes and animated meshes are visible geometry and need no icon. */
+    if (type == &vkr_scene_shape_type || type == &vkr_scene_animation_type ||
         vkr_scene_world_type_registered(type) ||
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;
@@ -166,12 +171,19 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
     *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT,
                                                .entity = entity};
   }
+  /* A text's origin is its box corner; the icon marks its center, where the
+     gizmo pivots. */
+  const SceneText3D *text =
+      vkr_entity_get_component(scene->world, entity, scene->comp_text3d);
   editor->label_anchors[editor->label_anchor_count++] = (VkrEditorLabelAnchor){
       .widget =
           vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("object")),
       .entity = entity,
       .scene = scene,
       .stack = placed ? UINT32_MAX : build->stacked++,
+      .pivot = text ? vec3_new(text->world_width * 0.5f,
+                               text->world_height * 0.5f, 0.0f)
+                    : vec3_zero(),
   };
   (void)vkr_ui_pop_id(ui);
 }
@@ -399,8 +411,11 @@ void vkr_editor_labels_project(VkrEditorUi *editor,
             : NULL;
     const bool8_t anchored =
         loaded && (anchor.stack != UINT32_MAX || transform);
-    const Vec3 position =
-        transform ? mat4_position(transform->world) : vec3_zero();
+    const Vec4 world =
+        transform
+            ? mat4_mul_vec4(transform->world, vec3_to_vec4(anchor.pivot, 1.0f))
+            : (Vec4){0.0f, 0.0f, 0.0f, 1.0f};
+    const Vec3 position = vec3_new(world.x, world.y, world.z);
     const Vec4 clip = anchored ? mat4_mul_vec4(frame->view_projection,
                                                vec3_to_vec4(position, 1.0f))
                                : (Vec4){0};

@@ -1360,7 +1360,8 @@ vkr_internal bool8_t vkr_ui_text_edit_insert(VkrUiTextEditBuffer *buffer,
                                              uint32_t *cursor,
                                              uint32_t *selection,
                                              uint32_t codepoint) {
-  if (codepoint < 0x20u || codepoint == 0x7fu)
+  /* Line breaks reach here only from multiline fields. */
+  if ((codepoint < 0x20u && codepoint != '\n') || codepoint == 0x7fu)
     return false_v;
   uint8_t encoded[4];
   const uint8_t encoded_length =
@@ -1570,10 +1571,12 @@ vkr_internal bool8_t vkr_ui_text_history_step(VkrUiSystem *system,
   return true_v;
 }
 
-/* Paste the clipboard over the selection, as typed characters. */
+/* Paste the clipboard over the selection, as typed characters; a multiline
+   field keeps line breaks, taking CR LF and CR as one. */
 vkr_internal bool8_t vkr_ui_text_paste(VkrUiSystem *system,
                                        VkrUiTextEditBuffer *buffer,
-                                       VkrUiRetainedState *retained) {
+                                       VkrUiRetainedState *retained,
+                                       bool8_t multiline) {
   // This bounded paste copy expires with the caller's frame scratch.
   uint8_t *paste =
       vkr_allocator_alloc(system->frame_allocator, buffer->capacity,
@@ -1589,13 +1592,16 @@ vkr_internal bool8_t vkr_ui_text_paste(VkrUiSystem *system,
     const VkrCodepoint cp = vkr_utf8_decode(paste + offset, length - offset);
     if (cp.byte_length == 0u)
       break;
-    if (cp.value >= 0x20u && cp.value != 0x7fu) {
+    const bool8_t crlf =
+        cp.value == '\r' && offset + 1u < length && paste[offset + 1u] == '\n';
+    const uint32_t value = multiline && cp.value == '\r' ? '\n' : cp.value;
+    if ((value >= 0x20u && value != 0x7fu) || (multiline && value == '\n')) {
       if (!vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
-                                   &retained->text_selection, cp.value))
+                                   &retained->text_selection, value))
         break;
       changed = true_v;
     }
-    offset += cp.byte_length;
+    offset += cp.byte_length + (crlf ? 1u : 0u);
   }
   return changed;
 }
@@ -1619,7 +1625,8 @@ vkr_internal bool8_t vkr_ui_text_erase(VkrUiSystem *system,
    text changed; `moved` reports caret moves without edits. */
 vkr_internal bool8_t vkr_ui_text_field_keys(
     VkrUiSystem *system, VkrUiFrameNode *node, VkrUiTextEditBuffer *buffer,
-    bool8_t read_only, VkrUiTextCommand command, bool8_t *out_moved) {
+    bool8_t read_only, bool8_t multiline, VkrUiTextCommand command,
+    bool8_t *out_moved) {
   VkrUiRetainedState *retained = node->retained;
   InputState *input = system->input;
   bool8_t changed = false_v;
@@ -1666,7 +1673,7 @@ vkr_internal bool8_t vkr_ui_text_field_keys(
     break;
   case VKR_UI_TEXT_COMMAND_PASTE:
     if (!read_only)
-      changed |= vkr_ui_text_paste(system, buffer, retained);
+      changed |= vkr_ui_text_paste(system, buffer, retained, multiline);
     break;
   case VKR_UI_TEXT_COMMAND_DELETE:
     if (!read_only)
@@ -1695,6 +1702,13 @@ vkr_internal bool8_t vkr_ui_text_field_keys(
         system->text_edit_cursor = retained->text_cursor;
       }
     }
+  }
+  if (multiline && !read_only && !shortcut &&
+      vkr_ui_key_repeat(system, KEY_ENTER)) {
+    vkr_ui_text_checkpoint(system, buffer, retained, VKR_UI_TEXT_EDIT_OTHER);
+    if (vkr_ui_text_edit_insert(buffer, &retained->text_cursor,
+                                &retained->text_selection, '\n'))
+      changed = true_v;
   }
   selection_begin = Min(retained->text_cursor, retained->text_selection);
   selection_end = Max(retained->text_cursor, retained->text_selection);
@@ -1951,7 +1965,7 @@ bool8_t vkr_ui_text_field(VkrUiSystem *system, String8 id_label,
     system->focused_is_text = true_v;
     bool8_t moved = false_v;
     changed = vkr_ui_text_field_keys(system, node, buffer, config->read_only,
-                                     command, &moved);
+                                     config->multiline, command, &moved);
     // Typing or keyboard navigation takes ownership of the caret. A later
     // mouse-up must not reselect text at the old pointer position.
     if (changed || moved)

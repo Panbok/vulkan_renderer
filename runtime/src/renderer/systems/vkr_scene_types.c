@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "core/vkr_text.h"
 #include "vkr_bloom.h"
 #include "vkr_dof.h"
 #include "vkr_exposure.h"
@@ -1358,21 +1359,27 @@ const VkrTypeDesc vkr_scene_shape_type = {
     .defaults = shape_defaults,
 };
 
+static const char *const s_text_align_names[] = {"left", "center", "right",
+                                                 NULL};
+
 static const VkrPropertyDesc s_text_properties[] = {
     {.name = "content",
      .label = "Text",
+     .tooltip = "Shown as you type; Enter starts a new line",
      .offset = TYPE_OFFSET(SceneTextSettings, content),
      .capacity = sizeof(((SceneTextSettings *)0)->content),
-     .kind = VKR_PROPERTY_STRING},
-    {.name = "font_size",
-     .label = "Font size",
-     .tooltip = "Text texture pixels per em",
-     .unit = "px",
-     .offset = TYPE_OFFSET(SceneTextSettings, font_size),
+     .kind = VKR_PROPERTY_STRING,
+     .flags = VKR_PROPERTY_FLAG_MULTILINE},
+    {.name = "size",
+     .label = "Size",
+     .tooltip = "Em height at unit scale",
+     .group = "Style",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneTextSettings, size),
      .kind = VKR_PROPERTY_F32,
-     .min = 4.0f,
-     .max = 512.0f,
-     .step = 0.5f},
+     .min = 0.01f,
+     .max = 100.0f,
+     .step = 0.005f},
     {.name = "color",
      .label = "Color",
      .tooltip = "RGBA",
@@ -1381,14 +1388,42 @@ static const VkrPropertyDesc s_text_properties[] = {
      .min = 0.0f,
      .max = 1.0f,
      .step = 0.005f},
+    {.name = "align",
+     .label = "Alignment",
+     .tooltip = "Alignment of each line within the text block",
+     .names = s_text_align_names,
+     .offset = TYPE_OFFSET(SceneTextSettings, align),
+     .kind = VKR_PROPERTY_ENUM},
+    {.name = "line_spacing",
+     .label = "Line spacing",
+     .tooltip = "Multiple of the font's line height",
+     .offset = TYPE_OFFSET(SceneTextSettings, line_spacing),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.5f,
+     .max = 4.0f,
+     .step = 0.01f},
+    {.name = "letter_spacing",
+     .label = "Letter spacing",
+     .tooltip = "Extra space after each character",
+     .unit = "em",
+     .offset = TYPE_OFFSET(SceneTextSettings, letter_spacing),
+     .kind = VKR_PROPERTY_F32,
+     .min = -0.5f,
+     .max = 2.0f,
+     .step = 0.002f},
 };
+
+/* Font pixels per em in the slot's texture box, before size in meters. */
+static const char *const s_text_retired[] = {"font_size", NULL};
 
 static void text_defaults(void *value) {
   SceneTextSettings *text = value;
   MemZero(text, sizeof(*text));
   snprintf(text->content, sizeof(text->content), "Text");
-  text->font_size = 32.0f;
+  text->size = 0.5f;
   text->color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
+  text->align = VKR_TEXT_ALIGN_CENTER;
+  text->line_spacing = 1.0f;
 }
 
 const VkrTypeDesc vkr_scene_text_type = {
@@ -1399,6 +1434,7 @@ const VkrTypeDesc vkr_scene_text_type = {
     .property_count = ArrayCount(s_text_properties),
     .size = sizeof(SceneTextSettings),
     .align = _Alignof(SceneTextSettings),
+    .retired = s_text_retired,
     .defaults = text_defaults,
 };
 

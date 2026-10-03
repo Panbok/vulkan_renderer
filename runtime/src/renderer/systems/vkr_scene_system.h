@@ -211,9 +211,14 @@ typedef struct SceneShapeSettings {
  * the entity's world text slot, keeping its font and texture size.
  */
 typedef struct SceneTextSettings {
-  char content[256];
-  float32_t font_size;
+  char content[256]; /* UTF-8; '\n' starts a line. */
+  /* Em height in meters at unit scale; the slot's texture box is one meter
+     wide, so this is font pixels per texture width. */
+  float32_t size;
   Vec4 color;
+  uint32_t align; /* VKR_TEXT_ALIGN_LEFT, _CENTER or _RIGHT, per line. */
+  float32_t line_spacing;   /* Multiple of the font's line height. */
+  float32_t letter_spacing; /* Extra advance per glyph in ems. */
 } SceneTextSettings;
 
 /**
@@ -1281,13 +1286,16 @@ bool8_t vkr_scene_untrack_instance(VkrScene *scene,
  * @brief Configuration for adding a text3d component to an entity.
  */
 typedef struct VkrSceneText3DConfig {
-  String8 text;            // Text content (passed through to world resources)
-  VkrFontHandle font;      // Font handle (or invalid for default)
-  float32_t font_size;     // Text-target pixels per em (0 = font default)
-  Vec4 color;              // Text color RGBA
-  uint32_t texture_width;  // Texture width (0 = auto)
-  uint32_t texture_height; // Texture height (0 = auto)
-  float32_t uv_inset_px;   // Half-texel inset to avoid bleeding (0 = default)
+  String8 text;             // Text content (passed through to world resources)
+  VkrFontHandle font;       // Font handle (or invalid for default)
+  float32_t font_size;      // Text-target pixels per em (0 = font default)
+  Vec4 color;               // Text color RGBA
+  uint32_t texture_width;   // Texture width (0 = auto)
+  uint32_t texture_height;  // Texture height (0 = auto)
+  float32_t uv_inset_px;    // Half-texel inset to avoid bleeding (0 = default)
+  uint32_t align;           // VkrTextAlign of each line in the block
+  float32_t line_spacing;   // Line height multiplier (0 = 1)
+  float32_t letter_spacing; // Extra pixels between glyphs
 } VkrSceneText3DConfig;
 
 #define VKR_SCENE_TEXT3D_CONFIG_DEFAULT                                        \
@@ -1297,7 +1305,10 @@ typedef struct VkrSceneText3DConfig {
                          .color = {1.0f, 1.0f, 1.0f, 1.0f},                    \
                          .texture_width = 512,                                 \
                          .texture_height = 128,                                \
-                         .uv_inset_px = 0.5f}
+                         .uv_inset_px = 0.5f,                                  \
+                         .align = 0u,                                          \
+                         .line_spacing = 1.0f,                                 \
+                         .letter_spacing = 0.0f}
 
 /**
  * @brief Add a text3d component to an entity.

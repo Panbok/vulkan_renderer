@@ -3515,15 +3515,21 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
     } else {
       payload->load_result.text3d_count++;
       /* The authored values become the editable text component; applying it
-         keeps the slot's font and texture size. */
+         keeps the slot's font and texture box. The box is one meter wide, so
+         font pixels per box width are the em height in meters, and lines
+         keep the left alignment this block always had. */
+      const uint32_t box_width = text_import->texture_width
+                                     ? text_import->texture_width
+                                     : VKR_TEXT_3D_DEFAULT_TEXTURE_SIZE;
       SceneTextSettings settings;
       vkr_type_defaults(&vkr_scene_text_type, &settings);
       string_format(settings.content, sizeof(settings.content), "%.*s",
                     (int)Min(text_import->text.length,
                              (uint64_t)sizeof(settings.content) - 1u),
                     text_import->text.str);
-      settings.font_size = text_import->font_size;
+      settings.size = text_import->font_size / (float32_t)box_width;
       settings.color = text_import->color;
+      settings.align = VKR_TEXT_ALIGN_LEFT;
       if (!vkr_scene_set_typed(scene, entity, &vkr_scene_text_type,
                                &settings)) {
         log_warn("Scene loader: entity %u text is not editable", entity_index);

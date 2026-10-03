@@ -39,6 +39,8 @@ vkr_internal bool8_t vkr_text_3d_compute_layout(VkrText3D *text_3d,
 
   VkrTextStyle style =
       vkr_text_style_new(text_3d->font, font_size, text_3d->color);
+  style.line_height = text_3d->line_spacing;
+  style.letter_spacing = text_3d->letter_spacing;
   style = vkr_text_style_with_font_data(&style, font);
 
   VkrText text_for_layout = vkr_text_from_view(text_3d->text, &style);
@@ -186,6 +188,8 @@ vkr_internal VkrText3DContentBounds vkr_text_3d_compute_content_bounds(
   return bounds;
 }
 
+/* Center the glyph ink in the texture box, so the box center stays the
+   text's visual center (the gizmo pivot) whatever the text's extent. */
 vkr_internal void vkr_text_3d_compute_content_offsets(
     const VkrText3D *text_3d, const VkrText3DContentBounds *bounds,
     float32_t *out_offset_x, float32_t *out_offset_y) {
@@ -199,30 +203,12 @@ vkr_internal void vkr_text_3d_compute_content_offsets(
     return;
   }
 
-  float32_t content_w = bounds->max_x - bounds->min_x;
-  float32_t content_h = bounds->max_y - bounds->min_y;
-
-  if (text_3d->texture_width > 0) {
-    if (content_w < (float32_t)text_3d->texture_width) {
-      *out_offset_x = ((float32_t)text_3d->texture_width - content_w) * 0.5f -
-                      bounds->min_x;
-    } else if (bounds->min_x < 0.0f) {
-      *out_offset_x = -bounds->min_x;
-    }
-  } else {
-    *out_offset_x = -bounds->min_x;
-  }
-
-  if (text_3d->texture_height > 0) {
-    if (content_h < (float32_t)text_3d->texture_height) {
-      *out_offset_y = ((float32_t)text_3d->texture_height - content_h) * 0.5f -
-                      bounds->min_y;
-    } else if (bounds->min_y < 0.0f) {
-      *out_offset_y = -bounds->min_y;
-    }
-  } else {
-    *out_offset_y = -bounds->min_y;
-  }
+  const float32_t content_w = bounds->max_x - bounds->min_x;
+  const float32_t content_h = bounds->max_y - bounds->min_y;
+  *out_offset_x =
+      ((float32_t)text_3d->texture_width - content_w) * 0.5f - bounds->min_x;
+  *out_offset_y =
+      ((float32_t)text_3d->texture_height - content_h) * 0.5f - bounds->min_y;
 }
 
 vkr_internal void vkr_text_3d_generate_vertices(
@@ -488,6 +474,8 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d, VkrFontSystem *font_system,
   text_3d->color = cfg.color;
   text_3d->linear_color = vkr_srgb_color_to_linear(cfg.color);
   text_3d->uv_inset_px = cfg.uv_inset_px;
+  text_3d->line_spacing = cfg.line_spacing;
+  text_3d->letter_spacing = cfg.letter_spacing;
   text_3d->text = vkr_text_3d_copy_text(allocator, cfg.text);
 
   text_3d->texture_width = cfg.texture_width;
@@ -501,7 +489,7 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d, VkrFontSystem *font_system,
 
   text_3d->layout_options = vkr_text_layout_options_default();
   text_3d->layout_options.word_wrap = false_v;
-  text_3d->layout_options.anchor.horizontal = VKR_TEXT_ALIGN_LEFT;
+  text_3d->layout_options.anchor.horizontal = cfg.align;
   text_3d->layout_options.anchor.vertical = VKR_TEXT_BASELINE_TOP;
 
   text_3d->transform = vkr_transform_identity();

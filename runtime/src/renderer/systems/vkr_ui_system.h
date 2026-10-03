@@ -271,6 +271,8 @@ typedef struct VkrUiWidgetConfig {
   bool8_t disabled;
   /** Text fields retain selection and copying while rejecting mutation. */
   bool8_t read_only;
+  /** Text fields take Enter and pasted line breaks as new lines. */
+  bool8_t multiline;
   /** Keep STRETCH placement for a text widget so it fills its grid cell,
    * for example a search field spanning a toolbar column. */
   bool8_t fill;

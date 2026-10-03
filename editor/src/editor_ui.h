@@ -75,6 +75,8 @@ typedef struct VkrEditorLabelAnchor {
   /* Place in the column of abstract objects at the world origin, or
      UINT32_MAX to follow the entity's position. */
   uint32_t stack;
+  /* Entity-local point a placed icon marks: the origin, or a text's center. */
+  Vec3 pivot;
 } VkrEditorLabelAnchor;
 
 typedef struct VkrEditorPhysicsLine VkrEditorPhysicsLine;
@@ -120,6 +122,8 @@ typedef struct VkrEditorPlacement {
 typedef struct VkrEditorDropPose {
   Vec3 position;
   VkrQuat rotation;
+  /* Where the placing ray starts: the camera. */
+  Vec3 eye;
 } VkrEditorDropPose;
 
 /* Cmd evaluator value; objects name editor data roots (view, ui, sim, scene)
@@ -271,9 +275,10 @@ typedef struct VkrEditorUi {
   bool8_t labels_spot;
   bool8_t labels_point;
   /* Abstract one-per-world objects (sky, fog, post process) stacked at the
-     origin; placed volumes, probes and markers; empty objects. */
+     origin; placed volumes, probes and markers; text; empty objects. */
   bool8_t labels_environment;
   bool8_t labels_markers;
+  bool8_t labels_text;
   bool8_t labels_empty;
   VkrEditorPlacement placement;
   /* Empty objects of the primary scene, the World and each added scene, in

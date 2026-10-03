@@ -16,7 +16,9 @@
 #define VKR_EDITOR_DETAILS_SECTION_PT 28.0f
 /* Icon actions on a section header. */
 #define VKR_EDITOR_DETAILS_ACTION_PT 22.0f
-#define VKR_EDITOR_DETAILS_TEXT_CAPACITY 96u
+/* Holds the longest STRING property, so a text area keeps its in-field undo
+ * (VKR_UI_TEXT_UNDO_BYTES). */
+#define VKR_EDITOR_DETAILS_TEXT_CAPACITY 256u
 
 /* Caller-owned editing state, reused across frames by one panel. At most one
  * text field is being typed into at a time. */
@@ -39,7 +41,8 @@ typedef struct VkrEditorDetails {
 typedef struct VkrEditorDetailsResult {
   /* The value changed during this build and passed validation. Text entry
    * changes the value only when it finishes (Enter or focus loss), so every
-   * change is ready to apply. */
+   * change is ready to apply; a multi-line text area applies each keystroke
+   * within one gesture. */
   bool8_t changed;
   /* Nonzero while a continuous gesture owns the change. */
   uint64_t gesture;

@@ -981,6 +981,27 @@ uint16_t vkr_editor_create_container(const VkrSampleUiFrame *frame) {
   return frame->world ? VKR_SCENE_WORLD_ROOT_ID : UINT16_MAX;
 }
 
+/* A new text turns about its up axis to face the camera, and its origin, the
+   corner of its one meter wide box, moves so the box center lands on the
+   placed point. */
+static void editor_place_text(VkrSceneEditValues *values,
+                              const VkrEditorDropPose *pose) {
+  const VkrQuat inverse = vkr_quat_conjugate(pose->rotation);
+  const Vec3 to_eye =
+      vkr_quat_rotate_vec3(inverse, vec3_sub(pose->eye, pose->position));
+  if (to_eye.x * to_eye.x + to_eye.z * to_eye.z > 1e-6f) {
+    const VkrQuat face = vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f),
+                                                  atan2f(to_eye.x, to_eye.z));
+    values->rotation = vkr_quat_normalize(vkr_quat_mul(pose->rotation, face));
+  }
+  const VkrSceneText3DConfig box = VKR_SCENE_TEXT3D_CONFIG_DEFAULT;
+  const Vec3 center = vec3_new(
+      0.5f, 0.5f * (float32_t)box.texture_height / (float32_t)box.texture_width,
+      0.0f);
+  values->position = vec3_sub(values->position,
+                              vkr_quat_rotate_vec3(values->rotation, center));
+}
+
 bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame, uint32_t kind,
                                   uint16_t container, const Vec2 *drop_px) {
@@ -1018,11 +1039,13 @@ bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
     values.fields |= VKR_SCENE_EDIT_COMPONENT;
   }
   /* A shape is centred on its origin, so it rests half its height above the
-     snap point. */
+     snap point; a text's center rises an em above it. */
+  const bool8_t text = object->type == &vkr_scene_text_type;
   const float32_t base =
       object->type == &vkr_scene_shape_type
           ? ((const SceneShapeSettings *)values.component)->dimensions.y * 0.5f
-          : 0.0f;
+      : text ? ((const SceneTextSettings *)values.component)->size
+             : 0.0f;
   const Vec4 image = frame->mapping.image_rect_px;
   const Vec2 pixel =
       drop_px ? *drop_px
@@ -1033,6 +1056,9 @@ bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
     values.position = pose.position;
     values.rotation = pose.rotation;
     values.scale = vec3_one();
+    if (text) {
+      editor_place_text(&values, &pose);
+    }
   }
   *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_CREATE,
                                              .values = values,

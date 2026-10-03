@@ -154,6 +154,7 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_point = true_v,
       .labels_environment = true_v,
       .labels_markers = true_v,
+      .labels_text = true_v,
       .labels_empty = true_v,
       .placement = {.target = VKR_EDITOR_SNAP_SURFACE},
       .windows =

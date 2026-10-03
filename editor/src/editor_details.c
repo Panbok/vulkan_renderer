@@ -645,9 +645,96 @@ static void details_choice_row(DetailsBuild *build, uint32_t index,
   *y += DETAILS_ROW_PT + 2.0f;
 }
 
+/* Multi-line text area under its label, growing from three to eight lines.
+ * Each keystroke applies to the value, in one gesture while the area keeps
+ * focus; Escape restores the text the entry started from. */
+static void details_text_area(DetailsBuild *build, uint32_t index,
+                              String8 label, float32_t *y, bool8_t read_only,
+                              String8 tooltip) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = build->ui;
+  VkrEditorDetails *details = build->details;
+  const VkrPropertyDesc *property = &build->type->properties[index];
+  char *target = (char *)build->value + property->offset;
+  const float32_t w = build->width;
+  details_label(build, index, 0u, label, *y, w - DETAILS_PAD_PT * 2.0f, false_v,
+                tooltip);
+  *y += DETAILS_ROW_PT;
+
+  const VkrUiId id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("area"));
+  bool8_t focused = ui->focused_id == id && !read_only;
+  if (details->edit_field == id && !focused) {
+    details->edit_field = 0;
+  }
+  if (focused && details->edit_field == id &&
+      input_key_just_pressed(build->input, KEY_ESCAPE)) {
+    MemCopy(target, details->edit_original,
+            strlen(details->edit_original) + 1u);
+    (void)details_gesture(details, id);
+    details->edit_field = 0;
+    ui->focused_id = 0;
+    focused = false_v;
+  }
+  if (focused && details->edit_field != id) {
+    details->edit_field = id;
+    details_edit_text_reset(build, index, 0u);
+  }
+
+  char display[VKR_EDITOR_DETAILS_TEXT_CAPACITY];
+  VkrUiTextEditBuffer buffer;
+  if (details->edit_field == id) {
+    buffer = (VkrUiTextEditBuffer){(uint8_t *)details->edit_text,
+                                   (uint32_t)strlen(details->edit_text),
+                                   sizeof(details->edit_text)};
+  } else {
+    snprintf(display, sizeof(display), "%s", target);
+    buffer = (VkrUiTextEditBuffer){(uint8_t *)display,
+                                   (uint32_t)strlen(display), sizeof(display)};
+  }
+  uint32_t lines = 1u;
+  for (uint32_t i = 0; i < buffer.length; ++i) {
+    lines += buffer.data[i] == '\n' ? 1u : 0u;
+  }
+  float32_t line_pt =
+      vkr_ui_code_cell_size(ui, VKR_FONT_HANDLE_INVALID, theme->font_body).y;
+  if (!(line_pt > 0.0f)) {
+    line_pt = theme->font_body * 1.25f;
+  }
+  const float32_t height = (float32_t)Clamp(lines, 3u, 8u) * line_pt + 12.0f;
+  VkrUiWidgetConfig config = vkr_editor_details_widget(
+      DETAILS_PAD_PT, *y, w - DETAILS_PAD_PT * 2.0f, height);
+  config.style.padding_pt = (VkrUiEdges){5, 6, 5, 6};
+  config.style.font_size_pt = theme->font_body;
+  config.read_only = read_only;
+  config.multiline = true_v;
+  config.tooltip = tooltip;
+  vkr_editor_field_style(&config);
+  const bool8_t typed =
+      vkr_ui_text_field(ui, string8_lit("area"), &buffer, &config);
+  if (details->edit_field == id && ui->focused_id == id) {
+    build->focused = true_v;
+    (void)details_gesture(details, id);
+    if (typed) {
+      if (buffer.length < property->capacity) {
+        MemCopy(target, details->edit_text, buffer.length + 1u);
+      } else {
+        snprintf(details->error, sizeof(details->error),
+                 "%s is longer than %u bytes.", property->label,
+                 property->capacity - 1u);
+      }
+    }
+  }
+  *y += height + 4.0f;
+}
+
 static void details_string_row(DetailsBuild *build, uint32_t index,
                                String8 label, float32_t *y, bool8_t read_only,
                                String8 tooltip) {
+  if (build->type->properties[index].flags & VKR_PROPERTY_FLAG_MULTILINE) {
+    details_text_area(build, index, label, y, read_only, tooltip);
+    return;
+  }
   const float32_t w = build->width;
   const float32_t label_w = vkr_editor_details_label_width(w);
   const float32_t left = DETAILS_PAD_PT + label_w;

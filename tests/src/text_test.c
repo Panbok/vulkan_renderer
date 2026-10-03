@@ -960,6 +960,77 @@ vkr_internal void test_ui_text_field_character_input_and_repeat(void) {
   printf("  test_ui_text_field_character_input_and_repeat PASSED\n");
 }
 
+vkr_internal bool8_t test_ui_multiline_frame(VkrUiSystem *system,
+                                             InputState *input,
+                                             VkrUiTextEditBuffer *buffer,
+                                             bool8_t multiline) {
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&allocator);
+  assert(vkr_allocator_scope_is_valid(&scope));
+  assert(vkr_ui_begin(system, &allocator, NULL, 200u, 100u, input, false_v,
+                      1.0 / 60.0, NULL));
+  VkrUiWidgetConfig config = vkr_ui_widget_config_default();
+  config.multiline = multiline;
+  config.text.font_size = 10;
+  const bool8_t changed =
+      vkr_ui_text_field(system, string8_lit("lines"), buffer, &config);
+  (void)vkr_ui_end(system);
+  VkrPreparedUiDrawList draw_list = {0};
+  assert(vkr_ui_system_prepare_draw_list(system, &allocator, 200u, 100u,
+                                         &draw_list));
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return changed;
+}
+
+/* Enter starts a line only in a multiline field; a single-line field keeps
+   its text on one line. */
+vkr_internal void test_ui_text_field_multiline_enter(void) {
+  printf("  Running test_ui_text_field_multiline_enter...\n");
+  setup_suite();
+  TestCookedFont fixture;
+  test_cooked_font_init(&fixture);
+  VkrFontSystem fonts = {0};
+  fonts.fonts = (Array_VkrFont){.length = 1u, .data = &fixture.font};
+  fonts.default_mtsdf_font_handle = (VkrFontHandle){
+      .id = fixture.font.id, .generation = fixture.font.generation};
+  for (uint32_t mode = 0; mode < 2u; ++mode) {
+    const bool8_t multiline = mode == 1u;
+    VkrUiSystem system = {0};
+    assert(vkr_ui_system_init(&system, &fonts));
+    vkr_ui_system_set_offscreen_size(&system, true_v, 200u, 100u);
+    EventManager events = {0};
+    assert(event_manager_create(&events));
+    InputState input = input_init(&events);
+    uint8_t bytes[16] = {0};
+    VkrUiTextEditBuffer edit = {.data = bytes, .capacity = sizeof(bytes)};
+    (void)test_ui_multiline_frame(&system, &input, &edit, multiline);
+
+    input_process_mouse_move(&input, 10, 10);
+    input_process_button(&input, BUTTON_LEFT, true_v);
+    assert(input_process_char(&input, 'A'));
+    assert(test_ui_multiline_frame(&system, &input, &edit, multiline));
+    input_update(&input);
+    input_process_button(&input, BUTTON_LEFT, false_v);
+    input_process_key(&input, KEY_ENTER, true_v);
+    assert(test_ui_multiline_frame(&system, &input, &edit, multiline) ==
+           multiline);
+    input_update(&input);
+    input_process_key(&input, KEY_ENTER, false_v);
+    assert(input_process_char(&input, 'B'));
+    assert(test_ui_multiline_frame(&system, &input, &edit, multiline));
+
+    const char *expected = multiline ? "A\nB" : "AB";
+    assert(edit.length == strlen(expected));
+    assert(MemCompare(edit.data, expected, edit.length) == 0);
+    assert(edit.data[edit.length] == 0u);
+
+    input_shutdown(&input);
+    event_manager_destroy(&events);
+    vkr_ui_system_shutdown(&system);
+  }
+  teardown_suite();
+  printf("  test_ui_text_field_multiline_enter PASSED\n");
+}
+
 vkr_internal bool8_t test_ui_readonly_frame(VkrUiSystem *system,
                                             InputState *input,
                                             VkrUiTextEditBuffer *buffer,
@@ -1517,6 +1588,7 @@ bool32_t run_text_tests(void) {
   test_ui_label_baseline_is_content_independent();
   test_ui_system_reuses_unchanged_draw_geometry();
   test_ui_text_field_character_input_and_repeat();
+  test_ui_text_field_multiline_enter();
   test_ui_readonly_selection_and_mutation();
   test_ui_input_layer_blocks_click_through();
   test_ui_slider_final_pointer_position();

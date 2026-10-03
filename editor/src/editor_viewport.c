@@ -103,6 +103,7 @@ static const struct {
      offsetof(VkrEditorUi, labels_environment)},
     {"Volumes, probes and markers", VIEW_SHOW_ICON_KIND,
      offsetof(VkrEditorUi, labels_markers)},
+    {"Text objects", VIEW_SHOW_ICON_KIND, offsetof(VkrEditorUi, labels_text)},
     {"Empty objects", VIEW_SHOW_ICON_KIND, offsetof(VkrEditorUi, labels_empty)},
     {"Overlays", VIEW_SHOW_HEADER, 0},
     {"Grid", VIEW_SHOW_GRID, 0},
@@ -1557,6 +1558,7 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
     return false_v;
   }
   if (frame->scene_edit->action != VKR_SCENE_EDIT_NONE) {
+  out->eye = origin;
     snprintf(message, message_size, "Another scene edit is pending");
     return false_v;
   }

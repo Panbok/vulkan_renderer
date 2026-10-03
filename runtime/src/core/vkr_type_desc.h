@@ -61,6 +61,9 @@ typedef enum VkrPropertyFlags {
   VKR_PROPERTY_FLAG_TRANSIENT = 1u << 2,
   /** Details draws a slider across [min, max]. */
   VKR_PROPERTY_FLAG_SLIDER = 1u << 3,
+  /** STRING edited in a multi-line text area whose keystrokes apply as they
+   * are typed. */
+  VKR_PROPERTY_FLAG_MULTILINE = 1u << 4,
 } VkrPropertyFlags;
 
 /** Per-frame presentation state a type reports for one property. */

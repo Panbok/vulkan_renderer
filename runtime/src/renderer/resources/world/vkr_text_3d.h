@@ -23,6 +23,9 @@ typedef struct VkrText3DConfig {
   uint32_t texture_height; // Texture height (0 = auto-size)
   // Bitmap-only atlas bleed inset. MTSDF generator bounds remain exact.
   float32_t uv_inset_px;
+  VkrTextAlign align;       // Line alignment within the text block
+  float32_t line_spacing;   // Line height multiplier (0 = 1)
+  float32_t letter_spacing; // Extra pixels between glyphs
 } VkrText3DConfig;
 
 #define VKR_TEXT_3D_CONFIG_DEFAULT                                             \
@@ -32,7 +35,10 @@ typedef struct VkrText3DConfig {
                     .color = {1.0f, 1.0f, 1.0f, 1.0f},                         \
                     .texture_width = 0,                                        \
                     .texture_height = 0,                                       \
-                    .uv_inset_px = 0.5f}
+                    .uv_inset_px = 0.5f,                                       \
+                    .align = VKR_TEXT_ALIGN_LEFT,                              \
+                    .line_spacing = 1.0f,                                      \
+                    .letter_spacing = 0.0f}
 
 /**
  * @brief 3D text resource.
@@ -41,11 +47,13 @@ typedef struct VkrText3D {
   VkrAllocator *allocator;    // Allocator for memory management
   VkrFontSystem *font_system; // Font system
 
-  String8 text;        // Owned text content
-  VkrFontHandle font;  // Font to use (or invalid for default)
-  float32_t font_size; // Text-target pixels per em (0 = font default)
-  Vec4 color;          // Authored sRGB RGB and linear alpha.
-  Vec4 linear_color;   // Retained linear RGB and linear alpha.
+  String8 text;             // Owned text content
+  VkrFontHandle font;       // Font to use (or invalid for default)
+  float32_t font_size;      // Text-target pixels per em (0 = font default)
+  Vec4 color;               // Authored sRGB RGB and linear alpha.
+  Vec4 linear_color;        // Retained linear RGB and linear alpha.
+  float32_t line_spacing;   // Line height multiplier (0 = 1)
+  float32_t letter_spacing; // Extra pixels between glyphs
 
   VkrTextLayout layout;                // Computed glyph positions
   VkrTextLayoutOptions layout_options; // Word wrap, max dimensions, anchor
