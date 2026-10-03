@@ -3,3 +3,10 @@
 # They also keep LF on checkout: `git apply` rejects CRLF copies of patches
 # whose targets are LF, and core.autocrlf would otherwise convert them.
 vendor/*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+
+# Mesh sources keep LF on checkout: a cooked .vkb records a fingerprint of the
+# source bytes, so a CRLF copy cooks to a different artifact on Windows and
+# rewrites the tracked fixtures.
+*.gltf text eol=lf
+*.obj text eol=lf
+*.mtl text eol=lf
