@@ -9,7 +9,6 @@
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_entry.h"
 #include "platform/vkr_platform.h"
-#include "renderer/systems/vkr_texture_transcode_cache.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,30 +91,19 @@ static bool8_t player_user_directory(const VkrPlayer *player, const char *base,
   return file_ensure_directory(allocator, &path);
 }
 
-/* Per-user Graphics preferences and caches below the platform's settings and
-   cache directories; Windows keeps caches in a Cache folder of their own. */
+/* Per-user Graphics preferences below the platform's settings directory. */
 static bool8_t player_user_paths(VkrPlayer *player, VkrAllocator *allocator) {
   char settings_base[VKR_PLAYER_PATH_CAPACITY];
-  char cache_base[VKR_PLAYER_PATH_CAPACITY];
   if (!vkr_platform_user_directory(VKR_PLATFORM_USER_SETTINGS, settings_base,
-                                   sizeof(settings_base)) ||
-      !vkr_platform_user_directory(VKR_PLATFORM_USER_CACHE, cache_base,
-                                   sizeof(cache_base))) {
+                                   sizeof(settings_base))) {
     return false_v;
   }
-#if defined(_WIN32)
-  const char *cache_leaf = "/Cache";
-#else
-  const char *cache_leaf = "";
-#endif
   char settings[VKR_PLAYER_PATH_CAPACITY];
   return player_user_directory(player, settings_base, "", allocator,
                                settings) &&
          (uint32_t)snprintf(player->settings_path,
                             sizeof(player->settings_path), "%s/settings.json",
-                            settings) < sizeof(player->settings_path) &&
-         player_user_directory(player, cache_base, cache_leaf, allocator,
-                               player->cache_root);
+                            settings) < sizeof(player->settings_path);
 }
 
 bool8_t vkr_player_load(VkrPlayer *player) {
@@ -201,11 +189,10 @@ bool8_t vkr_player_load(VkrPlayer *player) {
   if (!ok) {
     fprintf(stderr, "The game package description is invalid\n");
   } else if (!player_user_paths(player, &allocator)) {
-    /* The game still runs; preferences and caches stay with the package. */
-    fprintf(stderr, "No per-user settings or cache folder; the package folder "
-                    "holds them\n");
+    /* The game still runs; preferences stay with the package. */
+    fprintf(stderr, "No per-user settings folder; the package folder holds "
+                    "them\n");
     player->settings_path[0] = '\0';
-    player->cache_root[0] = '\0';
   }
   vkr_allocator_release_global_accounting(&allocator);
   arena_destroy(arena);
@@ -226,9 +213,6 @@ VKR_MAIN(argc, argv) {
 #if !VKR_PLAYER_SHIPPING
   log_max_level_set(LOG_LEVEL_INFO);
 #endif
-  if (player.cache_root[0]) {
-    vkr_texture_transcode_cache_set_root(player.cache_root);
-  }
   VkrSampleRuntimeConfig config = vkr_sample_runtime_config_default();
   config.title = player.name[0] ? player.name : "Game";
   config.presentation.window_width_pt = player.window_width;

@@ -28,9 +28,6 @@ tmpfile=$(mktemp)
 trap 'rm -f "$tmpfile"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-export VKR_TEXTURE_VKT_STRICT=0
-export VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1
-export VKR_TEXTURE_VKT_ALLOW_LEGACY=1
 
 for i in {1..50}; do
     if "${TEST_BIN}" > "$tmpfile" 2>&1; then

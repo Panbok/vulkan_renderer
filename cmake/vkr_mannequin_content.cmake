@@ -7,9 +7,16 @@ set(VKR_MANNEQUIN_INCLUDE
     assets/characters/mannequin/NOTICE.md)
 set(VKR_MANNEQUIN_FILES
     assets/characters/mannequin/materials/gltf_mat_95137e68ef96798b_0.mt
-    assets/characters/mannequin/textures/0a1aacd66b1268cb.vkt
-    assets/characters/mannequin/textures/8e6042b8d8f91344.vkt
     assets/characters/mannequin/textures/9b51824141e57d20.png
     assets/characters/mannequin/textures/9b51824141e57d20.png.vkt
     assets/characters/mannequin/textures/ef60d48121ece415.png
-    assets/characters/mannequin/textures/ef60d48121ece415.png.vkt)
+    assets/characters/mannequin/textures/ef60d48121ece415.png.vkt
+    assets/characters/mannequin/textures/mannequin_normal.png
+    assets/characters/mannequin/textures/mannequin_normal.png.vkt
+    assets/characters/mannequin/textures/mannequin_orm.png
+    assets/characters/mannequin/textures/mannequin_orm.png.vkt)
+set(VKR_MANNEQUIN_TEXTURES
+    "assets/characters/mannequin/textures/9b51824141e57d20.png|data-mask"
+    "assets/characters/mannequin/textures/ef60d48121ece415.png|color-srgb"
+    "assets/characters/mannequin/textures/mannequin_normal.png|normal-rg"
+    "assets/characters/mannequin/textures/mannequin_orm.png|data-mask")

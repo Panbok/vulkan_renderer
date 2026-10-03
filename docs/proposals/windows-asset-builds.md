@@ -74,8 +74,8 @@ and a repeat finalization in 5.6 s.
 
 ## Decision boundaries
 
-- UASTC stays the format of repository `.vkt` files and bundles; `bc` and
-  `astc` are workspace formats built for the host.
+- Every `.vkt` is host-native since UASTC was removed (ADR-012): BC on
+  Windows, cooked there, and bundles build on their own platform.
 - Per-file flushes stay (2026-09-28); relaxing them needs an index that
   rehashes after an unclean shutdown.
 - User files are always copied into snapshots, never linked.

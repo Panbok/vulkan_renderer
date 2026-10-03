@@ -99,6 +99,9 @@ add_executable(vkr_harness
     harness/vkr_harness_samples.c
     harness/vkr_harness_snapshot.c
 )
+# Harness children run the sample runtime, which spawns the engine mannequin.
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
+add_dependencies(vkr_harness vkr_engine_textures)
 vkr_require_declared_c_functions(vkr_harness)
 # The child opens a renderer target and reaches the same unoptimized dispatch.
 vkr_set_main_stack_reserve(vkr_harness)

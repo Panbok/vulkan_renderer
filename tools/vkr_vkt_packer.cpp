@@ -337,8 +337,7 @@ struct PackConfig {
   bool force = false;
   bool verbose = false;
   bool progress = true;
-  uint32_t basis_threads = 0;
-  ktx_pack_uastc_flags uastc_level = KTX_PACK_UASTC_LEVEL_FASTER;
+  uint32_t threads = 0;
   bool write_source_hash = true;
   bool cutout = false;
   // The texture of an opaque material: alpha is one before filtering.
@@ -353,15 +352,10 @@ struct PackConfig {
   // Preview tier: mip levels larger than this extent are not stored; 0 keeps
   // every level.
   uint32_t max_extent = 0u;
-  // Native ASTC 4x4 or BC7/BC5 blocks, which the runtime uploads without
-  // transcoding, for hosts that sample them directly; transcodable UASTC
-  // otherwise.
-  VkrVktEncoding encoding = VKR_VKT_ENCODING_UASTC;
+  // Native ASTC or BC7/BC5 blocks, which the runtime uploads as stored; the
+  // host's encoding unless the command names one.
+  VkrVktEncoding encoding = vkr_vkt_host_encoding();
 };
-
-bool is_native(const PackConfig &config) {
-  return config.encoding != VKR_VKT_ENCODING_UASTC;
-}
 
 std::string to_lower_ascii(std::string value);
 
@@ -423,53 +417,7 @@ bool parse_uint32_nonzero(const std::string &value, uint32_t *out_value) {
   return true;
 }
 
-bool parse_uastc_level(const std::string &value, ktx_pack_uastc_flags *out) {
-  if (!out) {
-    return false;
-  }
-
-  const std::string normalized = to_lower_ascii(value);
-  if (normalized == "0" || normalized == "fastest") {
-    *out = KTX_PACK_UASTC_LEVEL_FASTEST;
-    return true;
-  }
-  if (normalized == "1" || normalized == "faster") {
-    *out = KTX_PACK_UASTC_LEVEL_FASTER;
-    return true;
-  }
-  if (normalized == "2" || normalized == "default") {
-    *out = KTX_PACK_UASTC_LEVEL_DEFAULT;
-    return true;
-  }
-  if (normalized == "3" || normalized == "slower") {
-    *out = KTX_PACK_UASTC_LEVEL_SLOWER;
-    return true;
-  }
-  if (normalized == "4" || normalized == "veryslow") {
-    *out = KTX_PACK_UASTC_LEVEL_VERYSLOW;
-    return true;
-  }
-  return false;
-}
-
-const char *uastc_level_to_string(ktx_pack_uastc_flags level) {
-  switch (level & KTX_PACK_UASTC_LEVEL_MASK) {
-  case KTX_PACK_UASTC_LEVEL_FASTEST:
-    return "fastest";
-  case KTX_PACK_UASTC_LEVEL_FASTER:
-    return "faster";
-  case KTX_PACK_UASTC_LEVEL_DEFAULT:
-    return "default";
-  case KTX_PACK_UASTC_LEVEL_SLOWER:
-    return "slower";
-  case KTX_PACK_UASTC_LEVEL_VERYSLOW:
-    return "veryslow";
-  default:
-    return "default";
-  }
-}
-
-uint32_t resolve_basis_thread_count(uint32_t configured_threads) {
+uint32_t resolve_thread_count(uint32_t configured_threads) {
   if (configured_threads > 0u) {
     return configured_threads;
   }
@@ -568,23 +516,23 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
       out_config.progress = false;
       continue;
     }
-    if (arg == "--basis-threads") {
+    if (arg == "--threads") {
       if (index + 1 >= argc) {
-        std::cerr << "Missing value for --basis-threads\n";
+        std::cerr << "Missing value for --threads\n";
         return ParseResult::kError;
       }
       const std::string value = to_lower_ascii(argv[++index]);
       if (value == "auto") {
-        out_config.basis_threads = 0;
+        out_config.threads = 0;
         continue;
       }
       uint32_t parsed = 0;
       if (!parse_uint32_nonzero(value, &parsed)) {
-        std::cerr << "Invalid --basis-threads value '" << value
+        std::cerr << "Invalid --threads value '" << value
                   << "' (expected positive integer or 'auto')\n";
         return ParseResult::kError;
       }
-      out_config.basis_threads = parsed;
+      out_config.threads = parsed;
       continue;
     }
     if (arg == "--encoding") {
@@ -595,7 +543,7 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
       const std::string value = to_lower_ascii(argv[++index]);
       if (!vkr_vkt_parse_encoding(value.c_str(), &out_config.encoding)) {
         std::cerr << "Invalid --encoding value '" << value
-                  << "' (expected uastc|astc|astc-fast|bc|bc-fast; astc-fast "
+                  << "' (expected astc|astc-fast|bc|bc-fast; astc-fast "
                      "needs Apple's system encoder, bc an x86-64 build)\n";
         return ParseResult::kError;
       }
@@ -612,20 +560,6 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
         return ParseResult::kError;
       }
       out_config.max_extent = parsed;
-      continue;
-    }
-    if (arg == "--uastc-level") {
-      if (index + 1 >= argc) {
-        std::cerr << "Missing value for --uastc-level\n";
-        return ParseResult::kError;
-      }
-      const std::string value = argv[++index];
-      if (!parse_uastc_level(value, &out_config.uastc_level)) {
-        std::cerr
-            << "Invalid --uastc-level value '" << value
-            << "' (expected fastest|faster|default|slower|veryslow or 0..4)\n";
-        return ParseResult::kError;
-      }
       continue;
     }
     if (arg == "--source-hash") {
@@ -679,9 +613,8 @@ void print_usage(const char *program_name) {
          " [--texture-class <color-srgb|color-linear|normal-rg|data-mask>]"
          " [options]\n"
          "Options: [--strict] [--force] [--verbose]"
-         " [--progress|--no-progress] [--basis-threads <auto|n>]"
-         " [--uastc-level <fastest|faster|default|slower|veryslow>]"
-         " [--encoding <uastc|astc|astc-fast|bc|bc-fast>]"
+         " [--progress|--no-progress] [--threads <auto|n>]"
+         " [--encoding <astc|astc-fast|bc|bc-fast>]"
          " [--max-extent <pixels>]"
          " [--source-hash|--no-source-hash]\n";
   std::cout << "Cutout color mips: --alpha-cutoff <0..1>"
@@ -1049,18 +982,12 @@ std::string pack_settings_identity(TextureClass texture_class,
     if (texture_class == TextureClass::kNormalRg) {
       settings << ";astc_rg=alpha-one";
     }
-  } else if (config.encoding == VKR_VKT_ENCODING_BC ||
-             config.encoding == VKR_VKT_ENCODING_BC_FAST) {
-    settings << ";encoding=" << bc_profile(texture_class, config.encoding);
   } else {
-    settings << ";uastc=" << uastc_level_to_string(config.uastc_level);
+    settings << ";encoding=" << bc_profile(texture_class, config.encoding);
   }
   settings << ";mips=rgba8-area-srgb-v2;flip=vertical";
   if (config.max_extent) {
     settings << ";max_extent=" << config.max_extent;
-  }
-  if (texture_class == TextureClass::kNormalRg) {
-    settings << ";basis_rg=source-ra-v1";
   }
   if (config.opaque) {
     settings << ";alpha=opaque-v1";
@@ -1871,11 +1798,9 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
   create_info.generateMipmaps = KTX_FALSE;
 
   // bc7e, rgbcx and astcenc read each level where the packer built it; only
-  // libktx's Basis encoder and Apple's read the texture's storage, so only
-  // they pay for a copy of every level into fresh memory.
-  const bool levels_in_place = config.encoding == VKR_VKT_ENCODING_ASTC ||
-                               config.encoding == VKR_VKT_ENCODING_BC ||
-                               config.encoding == VKR_VKT_ENCODING_BC_FAST;
+  // Apple's encoder reads the texture's storage, so only it pays for a copy of
+  // every level into fresh memory.
+  const bool levels_in_place = config.encoding != VKR_VKT_ENCODING_ASTC_FAST;
   const ImageTexels level_texels = [&](uint32_t level, uint32_t layer,
                                        uint32_t face) {
     return sources[layer * face_count + face]
@@ -1922,10 +1847,9 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
         break;
       }
     }
-    // Native normals keep X and Y in R and G, which shaders sample. The
-    // alpha copy of G serves only Basis two-channel transcodes; a constant
-    // alpha encodes ASTC faster and more accurately (Bistro pair normals:
-    // 1.4x, +2 dB in RG), and BC5 stores no alpha.
+    // Normals keep X and Y in R and G, which shaders sample. A constant alpha
+    // encodes ASTC faster and more accurately (Bistro pair normals: 1.4x,
+    // +2 dB in RG), and BC5 stores no alpha.
     if (result == KTX_SUCCESS && texture_class == TextureClass::kNormalRg &&
         config.encoding == VKR_VKT_ENCODING_ASTC) {
       for (PackedSource &source : sources) {
@@ -1969,28 +1893,18 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
       }
     }
 
-    ktxBasisParams basis_params = {};
-    basis_params.structSize = sizeof(basis_params);
-    basis_params.compressionLevel = KTX_ETC1S_DEFAULT_COMPRESSION_LEVEL;
-    basis_params.uastc = KTX_TRUE;
-    basis_params.threadCount = config.basis_threads;
-    basis_params.uastcFlags = config.uastc_level;
-    basis_params.uastcRDO = KTX_FALSE;
     if (config.encoding == VKR_VKT_ENCODING_ASTC) {
       // astcenc "fastest" beat UASTC "faster", the former final tier, on
       // Bistro's colours, paired normals and metal-roughness (52.6/40.1/49.2
       // against 52.2/38.5/47.4 dB) at 4 to 9 times its speed (ADR-077).
       encoded.reset(compress_astc(texture, level_texels, texture_class,
                                   astc_block_side(texture_class, config),
-                                  config.basis_threads, &result));
+                                  config.threads, &result));
     } else if (config.encoding == VKR_VKT_ENCODING_ASTC_FAST) {
       encoded.reset(compress_astc_system(texture, &result));
-    } else if (config.encoding == VKR_VKT_ENCODING_BC ||
-               config.encoding == VKR_VKT_ENCODING_BC_FAST) {
+    } else {
       encoded.reset(compress_bc(texture, level_texels, texture_class,
                                 config.encoding, &result));
-    } else {
-      result = ktxTexture2_CompressBasisEx(texture, &basis_params);
     }
     if (result != KTX_SUCCESS) {
       std::cerr << "Failed to compress layered texture: "
@@ -2095,11 +2009,6 @@ bool pack_texture_set_to_vkt(const std::vector<SourceImage> &source_images,
     source.height = image.height;
     source.alpha =
         analyze_alpha(image.pixels.data(), source.width, source.height);
-    if (texture_class == TextureClass::kNormalRg) {
-      vkr_vkt_prepare_normal_rg_for_basis(image.pixels.data(),
-                                          static_cast<size_t>(source.width) *
-                                              source.height);
-    }
     source.levels = build_mip_chain_rgba8(std::move(image.pixels), source.width,
                                           source.height, texture_class, config);
     if (sources.empty()) {
@@ -2377,10 +2286,6 @@ int vkr_vkt_parse_encoding(const char *name, VkrVktEncoding *out) {
   if (!name || !out) {
     return 0;
   }
-  if (std::strcmp(name, "uastc") == 0) {
-    *out = VKR_VKT_ENCODING_UASTC;
-    return 1;
-  }
   if (std::strcmp(name, "astc") == 0) {
     *out = VKR_VKT_ENCODING_ASTC;
     return 1;
@@ -2404,7 +2309,15 @@ int vkr_vkt_parse_encoding(const char *name, VkrVktEncoding *out) {
   return 0;
 }
 
-static std::atomic<int> g_vkr_vkt_encoding{VKR_VKT_ENCODING_UASTC};
+VkrVktEncoding vkr_vkt_host_encoding(void) {
+#if defined(VKR_VKT_HAS_BC7E)
+  return VKR_VKT_ENCODING_BC;
+#else
+  return VKR_VKT_ENCODING_ASTC;
+#endif
+}
+
+static std::atomic<int> g_vkr_vkt_encoding{vkr_vkt_host_encoding()};
 
 void vkr_vkt_set_encoding(VkrVktEncoding encoding) {
   g_vkr_vkt_encoding.store(encoding);
@@ -2415,10 +2328,12 @@ VkrVktEncoding vkr_vkt_encoding(void) {
 }
 
 const char *vkr_vkt_variant_suffix(void) {
-  static const char *const suffixes[10] = {
-      "",           ".preview",           ".astc", ".astc.preview",
-      ".astc-fast", ".astc-fast.preview", ".bc",   ".bc.preview",
-      ".bc-fast",   ".bc-fast.preview"};
+  // Each host has one final encoding, so its outputs share host-neutral
+  // names; settings identities keep hosts apart. The editor-only fast
+  // encodings coexist with them under their own names.
+  static const char *const suffixes[8] = {
+      "", ".preview", ".astc-fast", ".astc-fast.preview",
+      "", ".preview", ".bc-fast",   ".bc-fast.preview"};
   return suffixes[vkr_vkt_encoding() * 2 + (vkr_vkt_preview_tier() ? 1 : 0)];
 }
 
@@ -2482,11 +2397,10 @@ namespace {
 PackConfig process_pack_config() {
   PackConfig config;
   if (vkr_vkt_preview_tier()) {
-    config.uastc_level = KTX_PACK_UASTC_LEVEL_FASTEST;
     config.max_extent = VKR_VKT_PREVIEW_MAX_EXTENT;
   }
   config.encoding = vkr_vkt_encoding();
-  config.basis_threads = resolve_basis_thread_count(config.basis_threads);
+  config.threads = resolve_thread_count(config.threads);
   return config;
 }
 
@@ -2667,7 +2581,7 @@ VkrVktPackResult vkr_vkt_pack_normal_roughness(
     std::vector<PackedSource> roughness(1);
     build_normal_roughness_mips(normal_image, roughness_image, config,
                                 normal.front(), roughness.front());
-    // Normal alpha is the Basis RG carrier, not surface transparency.
+    // Normal alpha is not surface transparency.
     const AlphaAnalysis roughness_alpha =
         analyze_alpha(roughness_image.pixels.data(), roughness_image.width,
                       roughness_image.height);
@@ -2717,7 +2631,7 @@ int vkr_vkt_packer_main(int argc, char **argv) {
     return 1;
   }
 
-  config.basis_threads = resolve_basis_thread_count(config.basis_threads);
+  config.threads = resolve_thread_count(config.threads);
   if (config.layered_mode) {
     for (const fs::path &layer : config.layers) {
       if (!fs::exists(layer) || !fs::is_regular_file(layer)) {
@@ -2768,17 +2682,11 @@ int vkr_vkt_packer_main(int argc, char **argv) {
                                          config.input_dir.u8string());
   {
     std::ostringstream encode_config_line;
-    static const char *const encodings[] = {"", "astc-6x6-4x4-fastest",
-                                            "astc-4x4-system", "bc7-bc5",
-                                            "bc7-bc5-fast"};
-    encode_config_line << "Encode config: "
-                       << (is_native(config)
-                               ? std::string("encoding=") +
-                                     encodings[config.encoding]
-                               : std::string("uastc_level=") +
-                                     uastc_level_to_string(config.uastc_level))
-                       << " basis_threads=" << config.basis_threads
-                       << " source_hash="
+    static const char *const encodings[] = {
+        "astc-6x6-4x4-fastest", "astc-4x4-system", "bc7-bc5", "bc7-bc5-fast"};
+    encode_config_line << "Encode config: encoding="
+                       << encodings[config.encoding]
+                       << " threads=" << config.threads << " source_hash="
                        << (config.write_source_hash ? "enabled" : "disabled");
     log_progress_line(config.progress, encode_config_line.str());
   }

@@ -187,7 +187,7 @@ vkr_internal bool8_t vkr_bakery_require_source(VkrBakeryGraph *graph,
 // =============================================================================
 
 vkr_internal const char *const vkr_bakery_texture_fields[] = {
-    "class",        "shape",        "layers",   "uastc_level", "tier",
+    "class",        "shape",        "layers",   "tier",
     "alpha_cutoff", "alpha_factor", "encoding", NULL};
 
 /* Reads width and height from PNG, JPEG, BMP or TGA headers. */
@@ -261,45 +261,38 @@ vkr_internal bool8_t vkr_bakery_texture_plan(VkrBakeryGraph *graph,
   const char *shape = vkr_bakery_recipe_string(recipe, "shape", "2d");
   const char *tier = vkr_bakery_recipe_string(recipe, "tier", "final");
   const bool8_t preview = strcmp(tier, "preview") == 0;
-  const char *level = vkr_bakery_recipe_string(recipe, "uastc_level",
-                                               preview ? "fastest" : "faster");
-  const char *encoding = vkr_bakery_recipe_string(recipe, "encoding", "uastc");
-  VkrVktEncoding encoding_value = VKR_VKT_ENCODING_UASTC;
+  /* The host's encoding unless the recipe names one; the resolved name joins
+     the key, so each host caches its own blocks. */
+  const char *encoding = vkr_bakery_recipe_string(
+      recipe, "encoding",
+      vkr_vkt_host_encoding() == VKR_VKT_ENCODING_BC ? "bc" : "astc");
+  VkrVktEncoding encoding_value = vkr_vkt_host_encoding();
   const bool8_t encoding_ok = vkr_vkt_parse_encoding(encoding, &encoding_value);
-  const bool8_t native = encoding_value != VKR_VKT_ENCODING_UASTC;
   if (!class_ok || (!preview && strcmp(tier, "final") != 0) || !encoding_ok ||
       (strcmp(shape, "2d") && strcmp(shape, "2d-array") &&
        strcmp(shape, "cube") && strcmp(shape, "cube-array"))) {
     vkr_bakery_plan_diag(graph, action, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
                          "class must be color-srgb|color-linear|normal-rg|"
                          "data-mask, shape 2d|2d-array|cube|cube-array, tier "
-                         "final|preview, encoding uastc|astc|astc-fast|bc|"
-                         "bc-fast (astc-fast needs Apple's system encoder, bc "
-                         "an x86-64 build)");
+                         "final|preview, encoding astc|astc-fast|bc|bc-fast "
+                         "(astc-fast needs Apple's system encoder, bc an "
+                         "x86-64 build)");
     return false_v;
   }
-  /* At the preview tier's mip floor, decoding, mips and writing outweigh
-     the threaded block encode: one Bistro import's 185 encodes took 83 s of
-     CPU in 70 s of summed wall time. Such actions share the cores, bounded
-     by workers and the memory budget, instead of taking a machine slot. */
-  if (preview || native) {
-    action->exclusive_cores = false_v;
-  }
+  /* Native block encodes are fast enough that decoding, mips and writing
+     outweigh the threaded encode: one Bistro preview import's 185 encodes
+     took 83 s of CPU in 70 s of summed wall time. Texture actions share the
+     cores, bounded by workers and the memory budget, instead of taking a
+     machine slot. */
+  action->exclusive_cores = false_v;
   /* Resolved values join the key so class inference is explicit. */
   vkr_bakery_json_set(arena, recipe, "class",
                       vkr_bakery_json_cstr(arena, texture_class));
   vkr_bakery_json_set(arena, recipe, "shape",
                       vkr_bakery_json_cstr(arena, shape));
   vkr_bakery_json_set(arena, recipe, "tier", vkr_bakery_json_cstr(arena, tier));
-  if (native) {
-    vkr_bakery_json_set(arena, recipe, "encoding",
-                        vkr_bakery_json_cstr(arena, encoding));
-  } else {
-    /* UASTC is the default; an explicit field must not change its key. */
-    (void)vkr_bakery_json_remove(recipe, "encoding");
-    vkr_bakery_json_set(arena, recipe, "uastc_level",
-                        vkr_bakery_json_cstr(arena, level));
-  }
+  vkr_bakery_json_set(arena, recipe, "encoding",
+                      vkr_bakery_json_cstr(arena, encoding));
   const VkrBakeryJson *layers = vkr_bakery_json_get(recipe, "layers");
   if (layers) {
     char directory[VKR_BAKERY_PATH_CAPACITY];
@@ -327,19 +320,15 @@ vkr_internal bool8_t vkr_bakery_texture_plan(VkrBakeryGraph *graph,
   char default_output[VKR_BAKERY_PATH_CAPACITY];
   (void)snprintf(default_output, sizeof(default_output), "%s.vkt",
                  action->source);
-  if (native) {
-    vkr_bakery_action_label(graph, action, "%s %s %s", encoding, texture_class,
-                            shape);
-  } else {
-    vkr_bakery_action_label(graph, action, "UASTC %s %s %s", level,
-                            texture_class, shape);
-  }
+  vkr_bakery_action_label(graph, action, "%s %s %s", encoding, texture_class,
+                          shape);
   return vkr_bakery_default_output(graph, action, "vkt", default_output);
 }
 
 vkr_internal uint64_t
 vkr_bakery_texture_estimate(const VkrBakeryAction *action) {
-  /* Measured: a 4096x4096 UASTC encode peaks at 752 MB, 45 bytes/pixel. */
+  /* Measured on the former UASTC encoder: a 4096x4096 encode peaked at
+     752 MB, 45 bytes/pixel. The native encoders stay below that bound. */
   uint64_t pixels = 0u;
   for (uint32_t i = 0u; i < action->input_count; ++i) {
     uint32_t width = 0u;
@@ -377,15 +366,8 @@ vkr_internal bool8_t vkr_bakery_texture_run(VkrBakeryTask *task) {
   }
   arguments[count++] = "--texture-class";
   arguments[count++] = vkr_bakery_recipe_string(recipe, "class", "color-srgb");
-  const char *encoding = vkr_bakery_recipe_string(recipe, "encoding", "uastc");
-  if (strcmp(encoding, "uastc") != 0) {
-    arguments[count++] = "--encoding";
-    arguments[count++] = encoding;
-  } else {
-    arguments[count++] = "--uastc-level";
-    arguments[count++] =
-        vkr_bakery_recipe_string(recipe, "uastc_level", "faster");
-  }
+  arguments[count++] = "--encoding";
+  arguments[count++] = vkr_bakery_recipe_string(recipe, "encoding", "astc");
   char max_extent[16];
   if (strcmp(vkr_bakery_recipe_string(recipe, "tier", "final"), "preview") ==
       0) {
@@ -397,7 +379,7 @@ vkr_internal bool8_t vkr_bakery_texture_run(VkrBakeryTask *task) {
   }
   arguments[count++] = "--strict";
   arguments[count++] = "--no-progress";
-  arguments[count++] = "--basis-threads";
+  arguments[count++] = "--threads";
   arguments[count++] = "auto";
   char cutoff[32];
   char factor[32];
@@ -432,7 +414,8 @@ const VkrBakeryProducer vkr_bakery_producer_texture = {
     .version = 1u,
     .identity = VKR_BAKERY_IDENTITY_TEXTURE,
     .flags = VKR_BAKERY_PRODUCER_EXCLUSIVE_CORES,
-    .summary = "PNG/JPEG/BMP/TGA image to KTX2 UASTC .vkt (ADR-012).",
+    .summary = "PNG/JPEG/BMP/TGA image to a host-native ASTC or BC KTX2 .vkt "
+               "(ADR-012).",
     .recipe_fields = vkr_bakery_texture_fields,
     .plan = vkr_bakery_texture_plan,
     .estimate_peak_mib = vkr_bakery_texture_estimate,

@@ -70,7 +70,7 @@ path depends on the capability.
 | Memory | Unified | Unified | Unified | Discrete; ReBAR or a 256 MiB BAR | Discrete; ReBAR | Vulkan falls back to host memory when the mapped heap is full (ADR-024) |
 | BC formats | Yes | Yes | Yes | Yes | Yes | x86-64 managed imports |
 | ASTC LDR | Yes | Yes | Yes | No | No | Apple managed imports |
-| ETC2/EAC | Yes | Yes | Yes | No | No | Transcode targets only |
+| ETC2/EAC | Yes | Yes | Yes | No | No | Not used |
 | SIMD or subgroup width | 32 | 32 | 32 | 64 by default; 32 to 64 | 32 | Wave intrinsics without subgroup-size control |
 | 64-bit atomics | No | Min and max only, macOS | Full set | Buffer and image | Buffer and image | Not used |
 | Mesh shaders | Direct draws only | Direct draws only | Direct, indirect and ICB draws | `VK_EXT_mesh_shader` | `VK_EXT_mesh_shader` | Not used |

@@ -15,7 +15,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
+rem Tests consume fixtures cooked on this host by vkr_bakery build assets/bakery.json.
 set "VKR_BUILD_TARGET=vulkan_renderer_tester"
 set "VKR_BUILD_LABEL=VKR CPU tests"
 call "%~dp0build.bat" Debug
@@ -41,10 +41,6 @@ if errorlevel 1 (
 rem Return to the original directory
 popd
 
-rem Unit fixtures intentionally exercise source and legacy compatibility.
-set "VKR_TEXTURE_VKT_STRICT=0"
-set "VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1"
-set "VKR_TEXTURE_VKT_ALLOW_LEGACY=1"
 
 rem Execute the test runner (single-config first, then multi-config fallback).
 set "TEST_EXE=%BUILD_DIR%\tests\vulkan_renderer_tester.exe"

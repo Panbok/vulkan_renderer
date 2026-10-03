@@ -11,3 +11,6 @@ add_executable(vulkan_renderer
 )
 target_include_directories(vulkan_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 vkr_configure_application_target(vulkan_renderer)
+# The sample spawns the engine mannequin, whose textures are cooked per host.
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
+add_dependencies(vulkan_renderer vkr_engine_textures)

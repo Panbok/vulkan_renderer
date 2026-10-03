@@ -36,18 +36,11 @@ typedef struct VkrTextureSystemConfig {
   uint32_t max_load_dimension;
 } VkrTextureSystemConfig;
 
-typedef enum VkrTextureVktContainerType {
-  VKR_TEXTURE_VKT_CONTAINER_UNKNOWN = 0,
-  VKR_TEXTURE_VKT_CONTAINER_LEGACY_RAW,
-  VKR_TEXTURE_VKT_CONTAINER_KTX2,
-} VkrTextureVktContainerType;
-
 /**
- * @brief Semantic texture classes used by transcode target selection.
+ * @brief Semantic texture classes a request names (`tc=`).
  *
- * These classes express sampling intent, not source file encoding. Selection
- * logic uses them to keep normals/data linear and to choose class-appropriate
- * compressed families.
+ * These classes express sampling intent, not source file encoding: normals
+ * and data stay linear.
  */
 typedef enum VkrTextureClass {
   VKR_TEXTURE_CLASS_COLOR_SRGB = 0,
@@ -82,26 +75,13 @@ typedef struct VkrTextureSystem {
   VkrTextureHandle default_specular_texture; // flat specular fallback
   VkrTextureHandle default_emissive_texture; // black emissive fallback
 
-  VkrJobSystem *job_system;                      // For async texture loading
-  struct VkrTextureCacheWriteGuard *cache_guard; // Internal cache write guard
-  VkrAtomicUint64 transcode_cache_hits;
-  VkrAtomicUint64 transcode_cache_misses;
-  VkrAtomicUint64 transcode_cache_writes;
+  VkrJobSystem *job_system; // For async texture loading
 
-  // Device-dependent transcode policy inputs for KTX2/UASTC decode.
-  VkrDeviceTypeFlags device_types;   // Device type bits used as preference hint
-  bool8_t supports_texture_astc_4x4; // Whether ASTC 4x4 is supported
-  bool8_t supports_texture_bc7;      // Whether BC7 is supported
-  bool8_t supports_texture_etc2;     // Whether ETC2 RGBA is supported
-  bool8_t supports_texture_bc5;      // Whether BC5 is supported
-  bool8_t supports_texture_eac_rg11; // Whether EAC RG11 is supported
-
-  // Runtime rollout controls for `.vkt` migration.
-  bool8_t strict_vkt_only_mode;     // Disable source-image fallback.
-  bool8_t allow_legacy_vkt;         // Allow legacy raw `.vkt` read path.
-  bool8_t allow_source_fallback;    // Permit source image decode when `.vkt`
-                                    // is missing/invalid.
-  bool8_t allow_legacy_cache_write; // Permit writing legacy raw sidecar cache.
+  // Native block families the device samples; a `.vkt` of another family is
+  // refused with an instruction to rebuild it on this host.
+  bool8_t supports_texture_astc_4x4; // ASTC LDR, every block size
+  bool8_t supports_texture_bc7;
+  bool8_t supports_texture_bc5;
 } VkrTextureSystem;
 
 /**
@@ -131,15 +111,6 @@ void vkr_texture_build_resolution_candidates(VkrAllocator *allocator,
                                              String8 *out_source_path);
 
 /**
- * @brief Classifies `.vkt` bytes as legacy raw cache, KTX2, or unknown.
- * @param bytes The bytes to classify
- * @param size The size of the bytes
- * @return The container type
- */
-VkrTextureVktContainerType
-vkr_texture_detect_vkt_container(const uint8_t *bytes, uint64_t size);
-
-/**
  * @brief Parses `?cs=srgb|linear` and returns whether the request is sRGB.
  *
  * Unknown values keep the provided default.
@@ -149,37 +120,6 @@ vkr_texture_detect_vkt_container(const uint8_t *bytes, uint64_t size);
  */
 bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
                                          bool8_t default_srgb);
-
-/**
- * @brief Selects transcode target format with deterministic fallback ordering.
- * @param texture_class Texture data class used to pick a target ladder
- * @param request_srgb Whether the request is sRGB
- * @param device_types Device type bits used for preference ordering
- * @param supports_astc_4x4 Whether ASTC 4x4 is supported
- * @param supports_bc7 Whether BC7 is supported
- * @param supports_etc2 Whether ETC2 RGBA is supported
- * @param supports_bc5 Whether BC5 is supported
- * @param supports_eac_rg11 Whether EAC RG11 is supported
- * @return The transcode target format
- *
- * @note Every format this can return must satisfy
- * vkr_texture_format_has_ktx_transcode_target. A format without a transcode
- * target fails .vkt loading outright.
- */
-VkrTextureFormat vkr_texture_select_transcode_target_format(
-    VkrTextureClass texture_class, bool8_t request_srgb,
-    VkrDeviceTypeFlags device_types, bool8_t supports_astc_4x4,
-    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5,
-    bool8_t supports_eac_rg11);
-
-/**
- * @brief Whether a KTX2 payload can be transcoded to this format.
- *
- * Exposed so the selector's output can be checked against the transcode
- * mapper's coverage without leaking libktx types across this boundary. A
- * selector result that fails this predicate fails .vkt loading at runtime.
- */
-bool8_t vkr_texture_format_has_ktx_transcode_target(VkrTextureFormat format);
 
 // =============================================================================
 // Initialization / Shutdown

@@ -48,8 +48,9 @@ dependency and simulation boundary.
 `runtime/src/assets/`, offline producers in `tools/assets/`, and renderer code
 directly in `renderer/src/`.
 
-Runtime image decoding, transcode caches and dynamic system-font rasterization
-remain available. Offline mesh optimization, font atlas/MSDF generation and
+Runtime image decoding of explicit `source=only` requests and dynamic
+system-font rasterization remain available; cooked textures upload as stored
+host-native blocks (ADR-012). Offline mesh optimization, font atlas/MSDF generation and
 texture encoding belong to tools.
 
 Custom clients may link `renderer_lib` directly and own their loop and frame

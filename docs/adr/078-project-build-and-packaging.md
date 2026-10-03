@@ -121,9 +121,9 @@ over the monitor, since the renderer requests no exclusive fullscreen. Leaving
 either mode restores the previous frame, and resize events carry the new extent
 to the swapchain. Graphics preferences read `game.graphics`
 as defaults and live in `%APPDATA%/<company>/<name>/settings.json` or
-Application Support. The texture transcode cache moves to `%LOCALAPPDATA%` or
-`~/Library/Caches` through `vkr_texture_transcode_cache_set_root`; otherwise the
-first Bistro run wrote 2.9 GB into the install folder.
+Application Support. A package carries host-native textures that load as
+stored, so it writes no texture cache (ADR-012); each platform's package
+builds on that platform.
 
 **Editor.** A Build menu (Build, Build and Run, Build Settings..., Open Last
 Build, Build log) and a Develop menu (Bakery, Draws and render graph, Memory)
@@ -168,8 +168,8 @@ render graph comes from content, the editor passes that root to its jobs as
 `--root`, working directory and legacy root, and the harness runs children in
 it. [`editor_install.c`](../../editor/src/editor_install.c) takes each
 companion program from beside the editor, else from the build tree. An
-installed editor keeps its transcode cache in `<cache>/VKR/asset_cache` and
-pre-workspace Bakery logs in `<cache>/VKR/bakery`, where `<cache>` is
+installed editor keeps pre-workspace Bakery logs in `<cache>/VKR/bakery`, where
+`<cache>` is
 `%LOCALAPPDATA%` or `~/Library/Caches`
 (`vkr_platform_user_directory`). It has no shader sources, so the shader
 watcher stays off. A package may not lie in or name the installed content, as

@@ -6,7 +6,6 @@
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
-#include "renderer/systems/vkr_texture_transcode_cache.h"
 
 #include "ktx.h"
 #include "stb_image.h"
@@ -21,8 +20,6 @@
 // subsequent loads. Cache files are stored alongside source files with .vkt
 // extension.
 
-#define VKR_TEXTURE_CACHE_MAGIC 0x564B5448u /* 'VKTH' in little-endian */
-#define VKR_TEXTURE_CACHE_VERSION 3u        /* Bump when format changes */
 #define VKR_TEXTURE_CACHE_EXT ".vkt"
 #define VKR_TEXTURE_SYSTEM_ASYNC_DMEMORY_INITIAL MB(1)
 #define VKR_TEXTURE_SYSTEM_ASYNC_DMEMORY_RESERVE MB(16)
@@ -38,75 +35,6 @@
 
 vkr_internal String8 vkr_texture_strip_resource_key_prefix(String8 name);
 
-/**
- * @brief Header for the texture cache file
- * @note Cache stores raw RGBA bytes; color space is selected at upload time.
- * @param magic The magic number for the cache file
- * @param version The version of the cache file
- * @param source_mtime The modification time of the source file
- * @param width The width of the texture
- * @param height The height of the texture
- * @param channels The number of channels in the texture
- * @param has_transparency Whether any alpha value is not fully opaque
- */
-typedef struct VkrTextureCacheHeader {
-  uint32_t magic;
-  uint32_t version;
-  uint64_t source_mtime; // Source file modification time for invalidation
-  uint32_t width;
-  uint32_t height;
-  uint32_t channels; // Always 4 (RGBA) after processing
-  uint8_t has_transparency;
-  uint8_t padding[3];
-  // Followed by: width * height * channels bytes of raw pixel data
-} VkrTextureCacheHeader;
-
-/**
- * @brief Converts a 32-bit value from host endianness to little endian
- * @param value The value to convert
- * @return The converted value
- */
-vkr_internal uint32_t vkr_texture_host_to_little_u32(uint32_t value) {
-  const union {
-    uint32_t u32;
-    uint8_t u8[4];
-  } endian_check = {0x01020304};
-  const bool8_t is_little_endian = (endian_check.u8[0] == 0x04);
-
-  if (is_little_endian) {
-    return value;
-  } else {
-    return ((value & 0xFF000000) >> 24) | ((value & 0x00FF0000) >> 8) |
-           ((value & 0x0000FF00) << 8) | ((value & 0x000000FF) << 24);
-  }
-}
-
-/**
- * @brief Converts a 64-bit value from host endianness to little endian
- * @param value The value to convert
- * @return The converted value
- */
-vkr_internal uint64_t vkr_texture_host_to_little_u64(uint64_t value) {
-  const union {
-    uint32_t u32;
-    uint8_t u8[4];
-  } endian_check = {0x01020304};
-  const bool8_t is_little_endian = (endian_check.u8[0] == 0x04);
-
-  if (is_little_endian) {
-    return value;
-  } else {
-    return ((value & 0xFF00000000000000ULL) >> 56) |
-           ((value & 0x00FF000000000000ULL) >> 40) |
-           ((value & 0x0000FF0000000000ULL) >> 24) |
-           ((value & 0x000000FF00000000ULL) >> 8) |
-           ((value & 0x00000000FF000000ULL) << 8) |
-           ((value & 0x0000000000FF0000ULL) << 24) |
-           ((value & 0x000000000000FF00ULL) << 40) |
-           ((value & 0x00000000000000FFULL) << 56);
-  }
-}
-
 // Generate cache path from source path (e.g., "textures/foo.png" ->
 // "textures/foo.png.vkt")
 vkr_internal String8 vkr_texture_cache_path(VkrAllocator *allocator,
@@ -119,89 +47,6 @@ vkr_internal String8 vkr_texture_cache_path(VkrAllocator *allocator,
   return string8_create_formatted(allocator, "%.*s%s",
                                   (int32_t)source_path.length, source_path.str,
                                   VKR_TEXTURE_CACHE_EXT);
-}
-
-typedef struct VkrTextureCacheWriteEntry {
-  uint8_t active;
-} VkrTextureCacheWriteEntry;
-VkrHashTable(VkrTextureCacheWriteEntry);
-
-typedef struct VkrTextureCacheWriteGuard {
-  VkrMutex mutex;
-  VkrHashTable_VkrTextureCacheWriteEntry inflight;
-} VkrTextureCacheWriteGuard;
-
-vkr_internal bool8_t vkr_texture_cache_guard_try_acquire(
-    VkrTextureCacheWriteGuard *guard, const char *key) {
-  if (!guard || !key) {
-    return true_v;
-  }
-
-  if (!vkr_mutex_lock(guard->mutex)) {
-    return false_v;
-  }
-
-  if (vkr_hash_table_contains_VkrTextureCacheWriteEntry(&guard->inflight,
-                                                        key)) {
-    vkr_mutex_unlock(guard->mutex);
-    return false_v;
-  }
-
-  VkrTextureCacheWriteEntry entry = {.active = 1};
-  bool8_t inserted = vkr_hash_table_insert_VkrTextureCacheWriteEntry(
-      &guard->inflight, key, entry);
-  vkr_mutex_unlock(guard->mutex);
-  return inserted;
-}
-
-vkr_internal void
-vkr_texture_cache_guard_release(VkrTextureCacheWriteGuard *guard,
-                                const char *key) {
-  if (!guard || !key) {
-    return;
-  }
-
-  if (!vkr_mutex_lock(guard->mutex)) {
-    return;
-  }
-
-  vkr_hash_table_remove_VkrTextureCacheWriteEntry(&guard->inflight, key);
-  vkr_mutex_unlock(guard->mutex);
-}
-
-/**
- * @brief Parses common truthy/falsy environment values.
- *
- * Empty or unknown values keep the provided default so rollout toggles can
- * evolve without crashing older launch scripts.
- */
-vkr_internal bool8_t vkr_texture_env_flag(const char *name,
-                                          bool8_t default_value) {
-  if (!name || name[0] == '\0') {
-    return default_value;
-  }
-
-  const char *value = getenv(name);
-  if (!value || value[0] == '\0') {
-    return default_value;
-  }
-
-  switch (value[0]) {
-  case '1':
-  case 'y':
-  case 'Y':
-  case 't':
-  case 'T':
-    return true_v;
-  case '0':
-  case 'n':
-  case 'N':
-  case 'f':
-  case 'F':
-    return false_v;
-  default:
-    return default_value;
-  }
 }
 
 /**
@@ -618,145 +463,12 @@ void vkr_texture_build_resolution_candidates(VkrAllocator *allocator,
   }
 }
 
-VkrTextureVktContainerType
-vkr_texture_detect_vkt_container(const uint8_t *bytes, uint64_t size) {
-  vkr_local_persist const uint8_t ktx2_signature[12] = {
-      0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
-
-  if (!bytes || size < 4) {
-    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
-  }
-
-  if (size >= sizeof(ktx2_signature) &&
-      MemCompare(bytes, ktx2_signature, sizeof(ktx2_signature)) == 0) {
-    return VKR_TEXTURE_VKT_CONTAINER_KTX2;
-  }
-
-  const uint32_t magic = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
-                         ((uint32_t)bytes[2] << 16) |
-                         ((uint32_t)bytes[3] << 24);
-  if (magic == VKR_TEXTURE_CACHE_MAGIC) {
-    return VKR_TEXTURE_VKT_CONTAINER_LEGACY_RAW;
-  }
-
-  return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
-}
-
 bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
                                          bool8_t default_srgb) {
   String8 query = {0};
   (void)string8_split_query(request_path, &query);
   return vkr_texture_scan_query_colorspace(query, default_srgb, false_v)
       .prefers_srgb;
-}
-
-vkr_internal bool8_t
-vkr_texture_device_prefers_discrete(VkrDeviceTypeFlags device_types) {
-  return bitset8_is_set(&device_types, VKR_DEVICE_TYPE_DISCRETE_BIT);
-}
-
-vkr_internal VkrTextureFormat vkr_texture_color_family_format(
-    bool8_t request_srgb, VkrTextureFormat unorm, VkrTextureFormat srgb) {
-  return request_srgb ? srgb : unorm;
-}
-
-VkrTextureFormat vkr_texture_select_transcode_target_format(
-    VkrTextureClass texture_class, bool8_t request_srgb,
-    VkrDeviceTypeFlags device_types, bool8_t supports_astc_4x4,
-    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5,
-    bool8_t supports_eac_rg11) {
-  const bool8_t prefer_discrete =
-      vkr_texture_device_prefers_discrete(device_types);
-
-  if (texture_class == VKR_TEXTURE_CLASS_NORMAL_RG) {
-    if (prefer_discrete) {
-      if (supports_bc5) {
-        return VKR_TEXTURE_FORMAT_BC5_UNORM;
-      }
-      if (supports_astc_4x4) {
-        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
-      }
-    } else {
-      if (supports_astc_4x4) {
-        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
-      }
-      if (supports_bc5) {
-        return VKR_TEXTURE_FORMAT_BC5_UNORM;
-      }
-    }
-    if (supports_eac_rg11) {
-      return VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM;
-    }
-    // Not R8G8_UNORM: libktx has no uncompressed two-channel transcode target,
-    // so selecting it produced KTX_TTF_NOSELECTION and failed every strict
-    // .vkt load on devices with neither BC5 nor ASTC. RGBA32 wastes two
-    // channels but is always transcodable.
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
-  }
-
-  if (texture_class == VKR_TEXTURE_CLASS_DATA_MASK) {
-    if (prefer_discrete) {
-      if (supports_bc7) {
-        return VKR_TEXTURE_FORMAT_BC7_UNORM;
-      }
-      if (supports_astc_4x4) {
-        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
-      }
-      if (supports_etc2) {
-        return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM;
-      }
-    } else {
-      if (supports_astc_4x4) {
-        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
-      }
-      if (supports_etc2) {
-        return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM;
-      }
-      if (supports_bc7) {
-        return VKR_TEXTURE_FORMAT_BC7_UNORM;
-      }
-    }
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
-  }
-
-  // Color classes can use sRGB or UNORM variants based on request intent.
-  const bool8_t allow_srgb = (texture_class == VKR_TEXTURE_CLASS_COLOR_SRGB);
-  const bool8_t use_srgb = allow_srgb ? request_srgb : false_v;
-
-  if (prefer_discrete) {
-    if (supports_bc7) {
-      return vkr_texture_color_family_format(
-          use_srgb, VKR_TEXTURE_FORMAT_BC7_UNORM, VKR_TEXTURE_FORMAT_BC7_SRGB);
-    }
-    if (supports_astc_4x4) {
-      return vkr_texture_color_family_format(use_srgb,
-                                             VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
-                                             VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
-    }
-    if (supports_etc2) {
-      return vkr_texture_color_family_format(
-          use_srgb, VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM,
-          VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB);
-    }
-  } else {
-    if (supports_astc_4x4) {
-      return vkr_texture_color_family_format(use_srgb,
-                                             VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
-                                             VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
-    }
-    if (supports_etc2) {
-      return vkr_texture_color_family_format(
-          use_srgb, VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM,
-          VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB);
-    }
-    if (supports_bc7) {
-      return vkr_texture_color_family_format(
-          use_srgb, VKR_TEXTURE_FORMAT_BC7_UNORM, VKR_TEXTURE_FORMAT_BC7_SRGB);
-    }
-  }
-
-  return use_srgb ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
-                  : VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
 }
 
 /**
@@ -820,252 +532,12 @@ vkr_internal VkrTextureAlphaAnalysis vkr_texture_analyze_alpha(
   return analysis;
 }
 
-vkr_internal bool8_t vkr_texture_has_transparency(const uint8_t *pixels,
-                                                  uint64_t pixel_count,
-                                                  uint32_t channels) {
-  return vkr_texture_analyze_alpha(pixels, pixel_count, channels)
-      .has_transparency;
-}
-
-vkr_internal bool8_t
-vkr_texture_format_is_block_compressed(VkrTextureFormat format) {
-  VkrTextureFormatInfo info = {0};
-  return vkr_texture_format_get_info(format, &info) && info.is_block_compressed;
-}
-
 vkr_internal uint32_t
 vkr_texture_channel_count_from_format(VkrTextureFormat format) {
   VkrTextureFormatInfo info = {0};
   return vkr_texture_format_get_info(format, &info)
              ? (uint32_t)info.channel_count
              : VKR_TEXTURE_RGBA_CHANNELS;
-}
-
-vkr_internal ktx_transcode_fmt_e
-vkr_texture_ktx_transcode_format_from_texture_format(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-    return KTX_TTF_BC7_RGBA;
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-    return KTX_TTF_BC5_RG;
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-    return KTX_TTF_ETC2_RGBA;
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-    return KTX_TTF_ASTC_4x4_RGBA;
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return KTX_TTF_ETC2_EAC_RG11;
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
-    return KTX_TTF_RGBA32;
-  default:
-    return KTX_TTF_NOSELECTION;
-  }
-}
-
-bool8_t vkr_texture_format_has_ktx_transcode_target(VkrTextureFormat format) {
-  return vkr_texture_ktx_transcode_format_from_texture_format(format) !=
-                 KTX_TTF_NOSELECTION
-             ? true_v
-             : false_v;
-}
-
-/**
- * @brief Writes decoded texture data to cache file
- * @param allocator The allocator to use
- * @param cache_path The path to the cache file
- * @param source_mtime The modification time of the source file
- * @param width The width of the texture
- * @param height The height of the texture
- * @param channels The number of channels in the texture
- * @param has_transparency Whether the texture has transparency
- * @param pixel_data The pixel data of the texture
- * @return true on success, false on failure
- */
-vkr_internal bool8_t vkr_texture_cache_write(
-    VkrAllocator *allocator, String8 cache_path, uint64_t source_mtime,
-    uint32_t width, uint32_t height, uint32_t channels,
-    bool8_t has_transparency, const uint8_t *pixel_data) {
-  assert_log(allocator != NULL, "Allocator is NULL");
-
-  if (!cache_path.str || !pixel_data) {
-    return false_v;
-  }
-
-  String8 query = {0};
-  cache_path = string8_split_query(cache_path, &query);
-  (void)query;
-  cache_path = vkr_texture_strip_resource_key_prefix(cache_path);
-  if (!cache_path.str || cache_path.length == 0) {
-    return false_v;
-  }
-
-  String8 normalized_cache_path = string8_create_formatted(
-      allocator, "%.*s", (int32_t)cache_path.length, cache_path.str);
-  if (!normalized_cache_path.str || normalized_cache_path.length == 0) {
-    return false_v;
-  }
-
-  FilePath fp = vkr_asset_path_file(allocator, normalized_cache_path);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_WRITE);
-  bitset8_set(&mode, FILE_MODE_TRUNCATE);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-
-  FileHandle fh = {0};
-  FileError ferr = file_open(&fp, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
-    return false_v;
-  }
-
-  VkrTextureCacheHeader header = {
-      .magic = vkr_texture_host_to_little_u32(VKR_TEXTURE_CACHE_MAGIC),
-      .version = vkr_texture_host_to_little_u32(VKR_TEXTURE_CACHE_VERSION),
-      .source_mtime = vkr_texture_host_to_little_u64(source_mtime),
-      .width = vkr_texture_host_to_little_u32(width),
-      .height = vkr_texture_host_to_little_u32(height),
-      .channels = vkr_texture_host_to_little_u32(channels),
-      .has_transparency = has_transparency ? 1 : 0,
-      .padding = {0, 0, 0},
-  };
-
-  uint64_t written = 0;
-  FileError write_err =
-      file_write(&fh, sizeof(header), (const uint8_t *)&header, &written);
-  if (write_err != FILE_ERROR_NONE || written != sizeof(header)) {
-    file_close(&fh);
-    return false_v;
-  }
-
-  uint64_t pixel_size = (uint64_t)width * (uint64_t)height * (uint64_t)channels;
-  write_err = file_write(&fh, pixel_size, pixel_data, &written);
-  file_close(&fh);
-
-  if (write_err != FILE_ERROR_NONE || written != pixel_size) {
-    return false_v;
-  }
-
-  return true_v;
-}
-
-/**
- * @brief Reads texture from cache file. Returns allocated pixel data on
- * success. Caller must free with stbi_image_free() for consistency with decode
- * path.
- * @param allocator The allocator to use
- * @param cache_path The path to the cache file
- * @param validate_source_mtime Whether source_mtime mismatch should reject
- * cache usage
- * @param source_mtime The modification time of the source file
- * @param out_width The width of the texture
- * @param out_height The height of the texture
- * @param out_channels The number of channels in the texture
- * @param out_has_transparency Whether any alpha value is not fully opaque
- */
-vkr_internal bool8_t vkr_texture_cache_read(
-    VkrAllocator *allocator, String8 cache_path, bool8_t validate_source_mtime,
-    uint64_t source_mtime, uint32_t *out_width, uint32_t *out_height,
-    uint32_t *out_channels, bool8_t *out_has_transparency,
-    uint8_t **out_pixel_data) {
-  assert_log(allocator != NULL, "Allocator is NULL");
-
-  if (!cache_path.str || !out_pixel_data) {
-    return false_v;
-  }
-
-  String8 query = {0};
-  cache_path = string8_split_query(cache_path, &query);
-  (void)query;
-  cache_path = vkr_texture_strip_resource_key_prefix(cache_path);
-  if (!cache_path.str || cache_path.length == 0) {
-    return false_v;
-  }
-
-  String8 normalized_cache_path = string8_create_formatted(
-      allocator, "%.*s", (int32_t)cache_path.length, cache_path.str);
-  if (!normalized_cache_path.str || normalized_cache_path.length == 0) {
-    return false_v;
-  }
-
-  FilePath fp = vkr_asset_path_file(allocator, normalized_cache_path);
-
-  if (!file_exists(&fp)) {
-    return false_v;
-  }
-
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-
-  FileHandle fh = {0};
-  FileError ferr = file_open(&fp, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
-    return false_v;
-  }
-
-  uint64_t bytes_read = 0;
-  uint8_t *header_buf = NULL;
-  FileError read_err = file_read(&fh, allocator, sizeof(VkrTextureCacheHeader),
-                                 &bytes_read, &header_buf);
-  if (read_err != FILE_ERROR_NONE ||
-      bytes_read != sizeof(VkrTextureCacheHeader) || !header_buf) {
-    file_close(&fh);
-    return false_v;
-  }
-  VkrTextureCacheHeader header;
-  MemCopy(&header, header_buf, sizeof(header));
-
-  uint32_t magic = vkr_texture_host_to_little_u32(header.magic);
-  uint32_t version = vkr_texture_host_to_little_u32(header.version);
-  uint64_t cached_mtime = vkr_texture_host_to_little_u64(header.source_mtime);
-
-  if (magic != VKR_TEXTURE_CACHE_MAGIC ||
-      version != VKR_TEXTURE_CACHE_VERSION) {
-    file_close(&fh);
-    return false_v;
-  }
-
-  if (validate_source_mtime && cached_mtime != source_mtime) {
-    file_close(&fh);
-    return false_v;
-  }
-
-  uint32_t width = vkr_texture_host_to_little_u32(header.width);
-  uint32_t height = vkr_texture_host_to_little_u32(header.height);
-  uint32_t channels = vkr_texture_host_to_little_u32(header.channels);
-  if (width == 0 || height == 0 || width > VKR_TEXTURE_MAX_DIMENSION ||
-      height > VKR_TEXTURE_MAX_DIMENSION || channels == 0 || channels > 4) {
-    file_close(&fh);
-    return false_v;
-  }
-
-  uint64_t pixel_size = (uint64_t)width * (uint64_t)height * (uint64_t)channels;
-
-  uint8_t *temp_pixels = NULL;
-  read_err = file_read(&fh, allocator, pixel_size, &bytes_read, &temp_pixels);
-  file_close(&fh);
-
-  if (read_err != FILE_ERROR_NONE || bytes_read != pixel_size || !temp_pixels) {
-    return false_v;
-  }
-
-  // Allocate using malloc so caller can free with stbi_image_free (which uses
-  // free)
-  uint8_t *pixels = (uint8_t *)malloc((size_t)pixel_size);
-  if (!pixels) {
-    return false_v;
-  }
-  MemCopy(pixels, temp_pixels, (size_t)pixel_size);
-
-  *out_width = width;
-  *out_height = height;
-  *out_channels = channels;
-  *out_has_transparency = header.has_transparency != 0;
-  *out_pixel_data = pixels;
-
-  return true_v;
 }
 
 uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system) {
@@ -1259,44 +731,10 @@ bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
     return false_v;
   }
 
-  out_system->device_types = bitset8_create();
-  out_system->supports_texture_astc_4x4 = false_v;
-  out_system->supports_texture_bc7 = false_v;
-  out_system->supports_texture_etc2 = false_v;
-  out_system->supports_texture_bc5 = false_v;
-  out_system->supports_texture_eac_rg11 = false_v;
-  out_system->device_types = device_info->device_types;
   out_system->supports_texture_astc_4x4 =
       device_info->supports_texture_astc_4x4;
   out_system->supports_texture_bc7 = device_info->supports_texture_bc7;
-  out_system->supports_texture_etc2 = device_info->supports_texture_etc2;
   out_system->supports_texture_bc5 = device_info->supports_texture_bc5;
-  out_system->supports_texture_eac_rg11 =
-      device_info->supports_texture_eac_rg11;
-
-  out_system->strict_vkt_only_mode =
-      vkr_texture_env_flag("VKR_TEXTURE_VKT_STRICT", true_v);
-  out_system->allow_source_fallback =
-      vkr_texture_env_flag("VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK",
-                           out_system->strict_vkt_only_mode ? false_v : true_v);
-  out_system->allow_legacy_vkt =
-      vkr_texture_env_flag("VKR_TEXTURE_VKT_ALLOW_LEGACY",
-                           out_system->strict_vkt_only_mode ? false_v : true_v);
-  out_system->allow_legacy_cache_write =
-      vkr_texture_env_flag("VKR_TEXTURE_VKT_WRITE_LEGACY_CACHE", false_v);
-
-  if (out_system->strict_vkt_only_mode) {
-    out_system->allow_source_fallback = false_v;
-    out_system->allow_legacy_vkt = false_v;
-    out_system->allow_legacy_cache_write = false_v;
-  }
-
-  log_info("Texture `.vkt` policy: strict=%u, allow_source_fallback=%u, "
-           "allow_legacy=%u, allow_legacy_cache_write=%u",
-           (uint32_t)out_system->strict_vkt_only_mode,
-           (uint32_t)out_system->allow_source_fallback,
-           (uint32_t)out_system->allow_legacy_vkt,
-           (uint32_t)out_system->allow_legacy_cache_write);
 
   out_system->textures = array_create_VkrTexture(&out_system->allocator,
                                                  config->max_texture_count);
@@ -1326,35 +764,6 @@ bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
   MemZero((void *)out_system->texture_keys_by_index,
           sizeof(*out_system->texture_keys_by_index) *
               config->max_texture_count);
-  out_system->cache_guard =
-      (struct VkrTextureCacheWriteGuard *)vkr_allocator_alloc(
-          &out_system->allocator, sizeof(VkrTextureCacheWriteGuard),
-          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-  if (!out_system->cache_guard) {
-    log_error("Failed to allocate texture cache write guard");
-    vkr_texture_system_shutdown(out_system);
-    return false_v;
-  }
-
-  MemZero(out_system->cache_guard, sizeof(VkrTextureCacheWriteGuard));
-  if (!vkr_mutex_create(&out_system->allocator,
-                        &out_system->cache_guard->mutex)) {
-    log_error("Failed to create texture cache write guard mutex");
-    vkr_texture_system_shutdown(out_system);
-    return false_v;
-  }
-
-  uint64_t guard_capacity =
-      Max(16ULL, (uint64_t)config->max_texture_count * 2ULL);
-  out_system->cache_guard->inflight =
-      vkr_hash_table_create_VkrTextureCacheWriteEntry(&out_system->allocator,
-                                                      guard_capacity);
-  if (!out_system->cache_guard->inflight.entries) {
-    log_error("Failed to create texture cache write guard hash table");
-    vkr_texture_system_shutdown(out_system);
-    return false_v;
-  }
-
   out_system->next_free_index = 0;
   out_system->generation_counter = 1;
 
@@ -1477,13 +886,6 @@ void vkr_texture_system_shutdown(VkrTextureSystem *system) {
                  texture->description.id, texture->description.generation);
       }
     }
-  }
-
-  if (system->cache_guard) {
-    vkr_hash_table_destroy_VkrTextureCacheWriteEntry(
-        &system->cache_guard->inflight);
-    vkr_mutex_destroy(&system->allocator, &system->cache_guard->mutex);
-    system->cache_guard = NULL;
   }
 
   array_destroy_VkrTexture(&system->textures);
@@ -2109,90 +1511,6 @@ vkr_internal bool8_t vkr_texture_ktx_metadata_bool(ktxTexture *texture,
   return default_value;
 }
 
-vkr_internal bool8_t vkr_texture_ktx_metadata_string(ktxTexture *texture,
-                                                     const char *key,
-                                                     String8 *out_value) {
-  if (out_value) {
-    *out_value = (String8){0};
-  }
-  if (!texture || !key || !out_value) {
-    return false_v;
-  }
-
-  unsigned int value_len = 0;
-  void *value = NULL;
-  if (ktxHashList_FindValue(&texture->kvDataHead, key, &value_len, &value) !=
-          KTX_SUCCESS ||
-      !value || value_len == 0) {
-    return false_v;
-  }
-
-  const uint8_t *bytes = (const uint8_t *)value;
-  uint64_t len = 0;
-  while (len < value_len && bytes[len] != '\0') {
-    len++;
-  }
-  if (len == 0) {
-    return false_v;
-  }
-
-  *out_value = (String8){.str = (uint8_t *)bytes, .length = len};
-  return true_v;
-}
-
-vkr_internal VkrTextureColorSpace vkr_texture_ktx_metadata_colorspace(
-    ktxTexture *texture, VkrTextureColorSpace default_value,
-    bool8_t *out_found) {
-  if (out_found) {
-    *out_found = false_v;
-  }
-
-  String8 value = {0};
-  if (!vkr_texture_ktx_metadata_string(texture, "vkr.colorspace_hint",
-                                       &value)) {
-    return default_value;
-  }
-
-  const String8 srgb = string8_lit("srgb");
-  const String8 linear = string8_lit("linear");
-  if (string8_equalsi(&value, &srgb)) {
-    if (out_found) {
-      *out_found = true_v;
-    }
-    return VKR_TEXTURE_COLORSPACE_SRGB;
-  }
-  if (string8_equalsi(&value, &linear)) {
-    if (out_found) {
-      *out_found = true_v;
-    }
-    return VKR_TEXTURE_COLORSPACE_LINEAR;
-  }
-
-  return default_value;
-}
-
-vkr_internal VkrTextureClass vkr_texture_ktx_metadata_class(
-    ktxTexture *texture, VkrTextureClass default_value, bool8_t *out_found) {
-  if (out_found) {
-    *out_found = false_v;
-  }
-
-  String8 value = {0};
-  if (!vkr_texture_ktx_metadata_string(texture, "vkr.texture_class", &value)) {
-    return default_value;
-  }
-
-  VkrTextureClass parsed = default_value;
-  if (!vkr_texture_class_from_string(value, &parsed)) {
-    return default_value;
-  }
-
-  if (out_found) {
-    *out_found = true_v;
-  }
-  return parsed;
-}
-
 /** State of one KTX2 decode. The file bytes and request are borrowed. The
  * decode always destroys `ktx_texture`; it frees the malloc'd `upload_data`
  * and `upload_regions` unless it succeeds and the result owns them. */
@@ -2201,8 +1519,7 @@ typedef struct VkrTextureKtx2Decode {
   VkrTextureSystem *system;
   String8 vkt_path;
   const char *path_cstr;
-  const uint8_t *file_data;
-  uint64_t file_size;
+  /* The request's sampling intent; see vkr_texture_native_view_format. */
   VkrTextureColorSpace colorspace;
   bool8_t has_explicit_colorspace;
   VkrTextureClass texture_class;
@@ -2364,100 +1681,6 @@ vkr_texture_ktx2_decode_direct(VkrTextureKtx2Decode *decode) {
   return true_v;
 }
 
-/* Resolves the effective colorspace and texture class (explicit request, else
- * KTX metadata) and selects a device format with its libktx transcode target.
- * A target of KTX_TTF_NOSELECTION fails the decode. */
-vkr_internal VkrTextureFormat vkr_texture_ktx2_select_transcode_target(
-    const VkrTextureKtx2Decode *decode,
-    ktx_transcode_fmt_e *out_transcode_format) {
-  VkrTextureSystem *system = decode->system;
-  ktxTexture *base_texture = decode->base_texture;
-  const VkrTextureColorSpace colorspace = decode->colorspace;
-  const bool8_t has_explicit_colorspace = decode->has_explicit_colorspace;
-  const VkrTextureClass texture_class = decode->texture_class;
-  const bool8_t has_explicit_class = decode->has_explicit_class;
-  bool8_t metadata_class_found = false_v;
-  VkrTextureColorSpace effective_colorspace =
-      has_explicit_colorspace
-          ? colorspace
-          : vkr_texture_ktx_metadata_colorspace(base_texture, colorspace, NULL);
-  VkrTextureClass effective_class =
-      has_explicit_class
-          ? texture_class
-          : vkr_texture_ktx_metadata_class(base_texture, texture_class,
-                                           &metadata_class_found);
-
-  // If class metadata is absent, keep filename-driven non-color classes
-  // (normal/data), but realign color class to effective colorspace metadata.
-  if (!has_explicit_class && !metadata_class_found &&
-      (effective_class == VKR_TEXTURE_CLASS_COLOR_SRGB ||
-       effective_class == VKR_TEXTURE_CLASS_COLOR_LINEAR)) {
-    effective_class = (effective_colorspace == VKR_TEXTURE_COLORSPACE_SRGB)
-                          ? VKR_TEXTURE_CLASS_COLOR_SRGB
-                          : VKR_TEXTURE_CLASS_COLOR_LINEAR;
-  }
-
-  const bool8_t request_srgb =
-      (effective_colorspace == VKR_TEXTURE_COLORSPACE_SRGB);
-  const VkrTextureFormat target_format =
-      vkr_texture_select_transcode_target_format(
-          effective_class, request_srgb, system->device_types,
-          system->supports_texture_astc_4x4, system->supports_texture_bc7,
-          system->supports_texture_etc2, system->supports_texture_bc5,
-          system->supports_texture_eac_rg11);
-  const ktx_transcode_fmt_e target_transcode_format =
-      vkr_texture_ktx_transcode_format_from_texture_format(target_format);
-  *out_transcode_format = target_transcode_format;
-  if (target_transcode_format == KTX_TTF_NOSELECTION) {
-    // The selector picked a format libktx cannot transcode to. That is a bug in
-    // the selector, not a property of this texture, so say so loudly rather
-    // than failing the load silently.
-    log_error("No KTX2 transcode target for the format selected for '%s' "
-              "(texture class %d, format %d); this device's capability "
-              "combination is unhandled by the transcode selector",
-              decode->path_cstr, (int)effective_class, (int)target_format);
-    decode->out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-  }
-  return target_format;
-}
-
-/* Serves the decode from the transcode cache when it already holds this
- * source transcoded to `target_format`. */
-vkr_internal bool8_t vkr_texture_ktx2_load_cached_transcode(
-    const VkrTextureKtx2Decode *decode, VkrTextureFormat target_format) {
-  ktxTexture *base_texture = decode->base_texture;
-  VkrTextureDecodeResult *out_result = decode->out_result;
-  VkrTextureTranscodeCacheRecord cached = {0};
-  if (!vkr_texture_transcode_cache_load(
-          decode->allocator, decode->file_data, decode->file_size,
-          target_format, base_texture->baseWidth, base_texture->baseHeight,
-          base_texture->numLevels, decode->physical_layers, &cached)) {
-    return false_v;
-  }
-
-  vkr_atomic_uint64_fetch_add(&decode->system->transcode_cache_hits, 1u,
-                              VKR_MEMORY_ORDER_RELAXED);
-  out_result->upload_data = cached.data;
-  out_result->upload_data_size = cached.data_size;
-  out_result->upload_regions = cached.regions;
-  out_result->upload_region_count = cached.region_count;
-  out_result->upload_mip_levels = cached.mip_levels;
-  out_result->upload_array_layers = cached.array_layers;
-  out_result->upload_format = cached.format;
-  out_result->upload_type = decode->texture_type;
-  out_result->upload_is_compressed = cached.is_compressed;
-  out_result->width = (int32_t)cached.width;
-  out_result->height = (int32_t)cached.height;
-  out_result->original_channels = (int32_t)cached.channels;
-  out_result->has_transparency = cached.has_transparency;
-  out_result->alpha_mask = cached.alpha_mask;
-  out_result->loaded_from_cache = true_v;
-  out_result->success = true_v;
-  cached.data = NULL;
-  cached.regions = NULL;
-  return true_v;
-}
-
 /* Copies every mip, layer and face of the texture's device-ready payload into
  * upload storage owned by the decode. */
 vkr_internal bool8_t vkr_texture_ktx2_copy_upload(VkrTextureKtx2Decode *decode,
@@ -2533,23 +1756,6 @@ vkr_internal bool8_t vkr_texture_ktx2_copy_upload(VkrTextureKtx2Decode *decode,
   return true_v;
 }
 
-/* Transcodes the Basis payload, then copies it into upload storage. */
-vkr_internal bool8_t vkr_texture_ktx2_transcode_upload(
-    VkrTextureKtx2Decode *decode, ktx_transcode_fmt_e target_transcode_format,
-    ktx_size_t *out_data_size, uint32_t *out_region_count) {
-  const ktxResult ktx_result = ktxTexture2_TranscodeBasis(
-      decode->ktx_texture, target_transcode_format, 0);
-  if (ktx_result != KTX_SUCCESS) {
-    log_error("Failed to transcode KTX2 texture '%s' to '%s': %s",
-              decode->path_cstr,
-              ktxTranscodeFormatString(target_transcode_format),
-              ktxErrorString(ktx_result));
-    decode->out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return false_v;
-  }
-  return vkr_texture_ktx2_copy_upload(decode, out_data_size, out_region_count);
-}
-
 /* Block formats a workspace import stores for its host (ADR-012): native
  * ASTC 4x4 and 6x6 on ASTC hosts, BC7 and BC5 on BC hosts. */
 typedef struct VkrTextureNativeBlockFormat {
@@ -2604,10 +1810,52 @@ vkr_internal bool8_t vkr_texture_system_samples_format(
   }
 }
 
-/* Uploads a native block payload without transcoding; the file already holds
- * the device format, so the transcode cache is not involved. A device that
- * cannot sample the format refuses it: the asset must be rebuilt for this
- * platform. */
+/* The sRGB or UNORM variant of a native block format that a request samples
+ * through: an explicit `cs=` names the colour space and an explicit `tc=` the
+ * class, else the file's own format stands for both. Only a colour-sRGB class
+ * in sRGB samples the sRGB variant; normals and data stay UNORM. The blocks
+ * are the same in both variants. */
+vkr_internal VkrTextureFormat vkr_texture_native_view_format(
+    const VkrTextureKtx2Decode *decode, VkrTextureFormat stored) {
+  VkrTextureFormat unorm = stored;
+  VkrTextureFormat srgb = stored;
+  switch (stored) {
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    unorm = VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+    srgb = VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB;
+    break;
+  case VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB:
+    unorm = VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM;
+    srgb = VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB;
+    break;
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+    unorm = VKR_TEXTURE_FORMAT_BC7_UNORM;
+    srgb = VKR_TEXTURE_FORMAT_BC7_SRGB;
+    break;
+  default:
+    return stored;
+  }
+  if (!decode->has_explicit_colorspace && !decode->has_explicit_class) {
+    return stored;
+  }
+  const bool8_t stored_srgb = stored == srgb;
+  const bool8_t colour_srgb =
+      decode->has_explicit_class
+          ? decode->texture_class == VKR_TEXTURE_CLASS_COLOR_SRGB
+          : stored_srgb;
+  const bool8_t sample_srgb =
+      decode->has_explicit_colorspace
+          ? decode->colorspace == VKR_TEXTURE_COLORSPACE_SRGB
+          : stored_srgb;
+  return colour_srgb && sample_srgb ? srgb : unorm;
+}
+
+/* Uploads a native block payload as stored, through the sRGB or UNORM view
+ * the request samples. A device that cannot sample the format refuses it: the
+ * asset must be rebuilt on this platform. */
 vkr_internal bool8_t vkr_texture_ktx2_decode_native(
     VkrTextureKtx2Decode *decode, const VkrTextureNativeBlockFormat *native) {
   ktxTexture *base_texture = decode->base_texture;
@@ -2624,7 +1872,8 @@ vkr_internal bool8_t vkr_texture_ktx2_decode_native(
   if (!vkr_texture_ktx2_copy_upload(decode, &data_size, &region_count)) {
     return false_v;
   }
-  const VkrTextureFormat format = native->format;
+  const VkrTextureFormat format =
+      vkr_texture_native_view_format(decode, native->format);
   out_result->upload_data = decode->upload_data;
   out_result->upload_data_size = data_size;
   out_result->upload_regions = decode->upload_regions;
@@ -2645,78 +1894,6 @@ vkr_internal bool8_t vkr_texture_ktx2_decode_native(
   out_result->success = true_v;
   decode->upload_data = NULL;
   decode->upload_regions = NULL;
-  return true_v;
-}
-
-/* Transcodes a Basis-compressed KTX2 texture to the selected device format,
- * serving it from and refreshing the transcode cache. */
-vkr_internal bool8_t
-vkr_texture_ktx2_decode_transcoded(VkrTextureKtx2Decode *decode) {
-  VkrTextureSystem *system = decode->system;
-  ktxTexture *base_texture = decode->base_texture;
-  VkrTextureDecodeResult *out_result = decode->out_result;
-  ktx_transcode_fmt_e target_transcode_format = KTX_TTF_NOSELECTION;
-  const VkrTextureFormat target_format =
-      vkr_texture_ktx2_select_transcode_target(decode,
-                                               &target_transcode_format);
-  if (target_transcode_format == KTX_TTF_NOSELECTION) {
-    return false_v;
-  }
-
-  const bool8_t has_transparency = vkr_texture_ktx_metadata_bool(
-      base_texture, "vkr.has_transparency", false_v);
-  const bool8_t alpha_mask =
-      vkr_texture_ktx_metadata_bool(base_texture, "vkr.alpha_mask", false_v);
-  if (vkr_texture_ktx2_load_cached_transcode(decode, target_format)) {
-    return true_v;
-  }
-  vkr_atomic_uint64_fetch_add(&system->transcode_cache_misses, 1u,
-                              VKR_MEMORY_ORDER_RELAXED);
-
-  ktx_size_t ktx_data_size = 0;
-  uint32_t region_count = 0;
-  if (!vkr_texture_ktx2_transcode_upload(decode, target_transcode_format,
-                                         &ktx_data_size, &region_count)) {
-    return false_v;
-  }
-
-  out_result->upload_data = decode->upload_data;
-  out_result->upload_data_size = ktx_data_size;
-  out_result->upload_regions = decode->upload_regions;
-  out_result->upload_region_count = region_count;
-  out_result->upload_mip_levels = base_texture->numLevels;
-  out_result->upload_array_layers = decode->physical_layers;
-  out_result->upload_format = target_format;
-  out_result->upload_type = decode->texture_type;
-  out_result->upload_is_compressed =
-      vkr_texture_format_is_block_compressed(target_format);
-  out_result->width = (int32_t)base_texture->baseWidth;
-  out_result->height = (int32_t)base_texture->baseHeight;
-  out_result->original_channels =
-      (int32_t)vkr_texture_channel_count_from_format(target_format);
-  out_result->has_transparency = has_transparency;
-  out_result->alpha_mask = alpha_mask;
-  const VkrTextureTranscodeCacheRecord cache_record = {
-      .width = base_texture->baseWidth,
-      .height = base_texture->baseHeight,
-      .channels = out_result->original_channels,
-      .format = target_format,
-      .mip_levels = base_texture->numLevels,
-      .array_layers = decode->physical_layers,
-      .is_compressed = out_result->upload_is_compressed,
-      .has_transparency = has_transparency,
-      .alpha_mask = alpha_mask,
-      .data = decode->upload_data,
-      .data_size = ktx_data_size,
-      .regions = decode->upload_regions,
-      .region_count = region_count,
-  };
-  if (vkr_texture_transcode_cache_store(decode->allocator, decode->file_data,
-                                        decode->file_size, &cache_record)) {
-    vkr_atomic_uint64_fetch_add(&system->transcode_cache_writes, 1u,
-                                VKR_MEMORY_ORDER_RELAXED);
-  }
-  out_result->success = true_v;
   return true_v;
 }
 
@@ -2762,8 +1939,6 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
       .system = system,
       .vkt_path = vkt_path,
       .path_cstr = path_cstr,
-      .file_data = file_data,
-      .file_size = file_size,
       .colorspace = colorspace,
       .has_explicit_colorspace = has_explicit_colorspace,
       .texture_class = texture_class,
@@ -2798,7 +1973,10 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
   } else if (!ktxTexture2_NeedsTranscoding(decode.ktx_texture)) {
     success = vkr_texture_ktx2_decode_direct(&decode);
   } else {
-    success = vkr_texture_ktx2_decode_transcoded(&decode);
+    log_error("Texture '%s' holds Basis blocks, which the runtime no longer "
+              "transcodes; rebuild it with vkr_bakery on this host",
+              path_cstr);
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
 
 cleanup:
@@ -2862,114 +2040,11 @@ vkr_internal bool8_t vkr_texture_path_exists(VkrAllocator *allocator,
 }
 
 /**
- * @brief Probes the `.vkt` container type from the file signature.
- */
-vkr_internal VkrTextureVktContainerType
-vkr_texture_probe_vkt_container(VkrAllocator *allocator, String8 vkt_path) {
-  char *path_cstr = vkr_texture_path_to_cstr(allocator, vkt_path);
-  if (!path_cstr) {
-    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
-  }
-
-  FilePath fp = vkr_asset_path_file(
-      allocator,
-      string8_create_from_cstr((const uint8_t *)path_cstr, strlen(path_cstr)));
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  bitset8_set(&mode, FILE_MODE_BINARY);
-
-  FileHandle fh = {0};
-  if (file_open(&fp, mode, &fh) != FILE_ERROR_NONE) {
-    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
-  }
-
-  uint8_t *probe = NULL;
-  uint64_t bytes_read = 0;
-  const uint64_t probe_size = 16;
-  FileError read_err =
-      file_read(&fh, allocator, probe_size, &bytes_read, &probe);
-  file_close(&fh);
-
-  if (read_err != FILE_ERROR_NONE || !probe || bytes_read == 0) {
-    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
-  }
-
-  return vkr_texture_detect_vkt_container(probe, bytes_read);
-}
-
-/**
- * @brief Populates result from a legacy `.vkt` cache file.
- *
- * For sidecar legacy caches, callers should pass source mtime validation.
- * Direct legacy `.vkt` requests can disable mtime validation to preserve
- * compatibility when source files are unavailable.
- */
-vkr_internal bool8_t vkr_texture_try_read_legacy_cache(
-    VkrAllocator *allocator, VkrTextureSystem *system, String8 cache_path,
-    bool8_t validate_source_mtime, uint64_t source_mtime,
-    const char *cache_guard_key, VkrTextureDecodeResult *out_result) {
-  uint32_t cached_width = 0;
-  uint32_t cached_height = 0;
-  uint32_t cached_channels = 0;
-  bool8_t cached_transparency = false_v;
-  uint8_t *cached_pixels = NULL;
-
-  if (!vkr_texture_cache_read(allocator, cache_path, validate_source_mtime,
-                              source_mtime, &cached_width, &cached_height,
-                              &cached_channels, &cached_transparency,
-                              &cached_pixels)) {
-    return false_v;
-  }
-
-  if (!cached_transparency && cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
-    uint64_t pixel_count = (uint64_t)cached_width * (uint64_t)cached_height;
-    if (vkr_texture_has_transparency(cached_pixels, pixel_count,
-                                     cached_channels)) {
-      cached_transparency = true_v;
-      VkrTextureCacheWriteGuard *cache_guard =
-          system ? system->cache_guard : NULL;
-      bool8_t cache_lock_acquired = true_v;
-      if (cache_guard && cache_guard_key) {
-        cache_lock_acquired =
-            vkr_texture_cache_guard_try_acquire(cache_guard, cache_guard_key);
-      }
-      if (cache_lock_acquired) {
-        const uint64_t mtime_to_write =
-            validate_source_mtime ? source_mtime : 0;
-        vkr_texture_cache_write(allocator, cache_path, mtime_to_write,
-                                cached_width, cached_height, cached_channels,
-                                cached_transparency, cached_pixels);
-        if (cache_guard && cache_guard_key) {
-          vkr_texture_cache_guard_release(cache_guard, cache_guard_key);
-        }
-      }
-    }
-  }
-
-  out_result->decoded_pixels = cached_pixels;
-  out_result->width = (int32_t)cached_width;
-  out_result->height = (int32_t)cached_height;
-  out_result->original_channels = (int32_t)cached_channels;
-  out_result->has_transparency = cached_transparency;
-  out_result->alpha_mask = false_v;
-  if (cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
-    uint64_t pixel_count = (uint64_t)cached_width * (uint64_t)cached_height;
-    out_result->alpha_mask =
-        vkr_texture_analyze_alpha(cached_pixels, pixel_count, cached_channels)
-            .alpha_mask;
-  }
-  out_result->loaded_from_cache = true_v;
-  out_result->success = true_v;
-  return true_v;
-}
-
-/**
- * @brief Decodes a source image file and optionally refreshes sidecar cache.
+ * @brief Decodes a source image file: the `source=only` requests of
+ * generated UI images and the faces of a cubemap source.
  */
 vkr_internal bool8_t vkr_texture_decode_from_source_image(
-    VkrAllocator *allocator, VkrTextureSystem *system, String8 source_path,
-    bool8_t flip_vertical, String8 sidecar_cache_path,
-    bool8_t allow_cache_write, const char *cache_guard_key,
+    VkrAllocator *allocator, String8 source_path, bool8_t flip_vertical,
     VkrTextureDecodeResult *out_result) {
   char *source_cstr = vkr_texture_path_to_cstr(allocator, source_path);
   if (!source_cstr) {
@@ -2980,12 +2055,6 @@ vkr_internal bool8_t vkr_texture_decode_from_source_image(
   FilePath source_fp = vkr_asset_path_file(
       allocator, string8_create_from_cstr((const uint8_t *)source_cstr,
                                           strlen(source_cstr)));
-  FileStats source_stats = {0};
-  if (file_stats(&source_fp, &source_stats) != FILE_ERROR_NONE) {
-    log_error("Failed to stat texture file: %s", source_cstr);
-    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
 
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -3052,26 +2121,6 @@ vkr_internal bool8_t vkr_texture_decode_from_source_image(
   out_result->has_transparency = alpha.has_transparency;
   out_result->alpha_mask = alpha.alpha_mask;
 
-  if (allow_cache_write && sidecar_cache_path.str) {
-    VkrTextureCacheWriteGuard *cache_guard =
-        system ? system->cache_guard : NULL;
-    bool8_t cache_lock_acquired = true_v;
-    if (cache_guard && cache_guard_key) {
-      cache_lock_acquired =
-          vkr_texture_cache_guard_try_acquire(cache_guard, cache_guard_key);
-    }
-    if (cache_lock_acquired) {
-      vkr_texture_cache_write(
-          allocator, sidecar_cache_path, source_stats.last_modified,
-          (uint32_t)out_result->width, (uint32_t)out_result->height,
-          VKR_TEXTURE_RGBA_CHANNELS, out_result->has_transparency,
-          out_result->decoded_pixels);
-      if (cache_guard && cache_guard_key) {
-        vkr_texture_cache_guard_release(cache_guard, cache_guard_key);
-      }
-    }
-  }
-
   out_result->success = true_v;
   return true_v;
 }
@@ -3109,176 +2158,27 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
       result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
       return false_v;
     }
-    return vkr_texture_decode_from_source_image(
-        scratch_allocator, job->system, source_path, job->flip_vertical,
-        (String8){0}, false_v, NULL, result);
+    return vkr_texture_decode_from_source_image(scratch_allocator, source_path,
+                                                job->flip_vertical, result);
   }
 
-  const bool8_t has_direct_vkt =
-      direct_vkt.str && vkr_texture_path_exists(scratch_allocator, direct_vkt);
-  const bool8_t has_sidecar_vkt =
-      sidecar_vkt.str &&
-      vkr_texture_path_exists(scratch_allocator, sidecar_vkt);
-
-  String8 selected_vkt = {0};
-  bool8_t selected_is_direct = false_v;
-  if (has_direct_vkt) {
-    selected_vkt = direct_vkt;
-    selected_is_direct = true_v;
-  } else if (has_sidecar_vkt) {
-    selected_vkt = sidecar_vkt;
-  }
-
-  char *source_cstr = vkr_texture_path_to_cstr(scratch_allocator, source_path);
-  char *selected_vkt_cstr =
-      selected_vkt.str
-          ? vkr_texture_path_to_cstr(scratch_allocator, selected_vkt)
-          : NULL;
-  const bool8_t strict_vkt_only =
-      job->system ? job->system->strict_vkt_only_mode : false_v;
-  const bool8_t allow_legacy_vkt =
-      job->system ? job->system->allow_legacy_vkt : true_v;
-  const bool8_t allow_source_fallback =
-      job->system ? job->system->allow_source_fallback : true_v;
-  bool8_t allow_sidecar_cache_write =
-      (job->system && job->system->allow_legacy_cache_write) ? true_v : false_v;
-
-  if (selected_vkt.str) {
-    VkrTextureVktContainerType container =
-        vkr_texture_probe_vkt_container(scratch_allocator, selected_vkt);
-
-    switch (container) {
-    case VKR_TEXTURE_VKT_CONTAINER_LEGACY_RAW: {
-      if (!allow_legacy_vkt) {
-        if (selected_is_direct || !allow_source_fallback) {
-          log_error("Legacy `.vkt` support is disabled for '%s'",
-                    selected_vkt_cstr ? selected_vkt_cstr : "");
-          result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-          return false_v;
-        }
-        log_warn("Ignoring legacy sidecar `.vkt` for '%s' because legacy "
-                 "support is disabled. Falling back to source image decode.",
-                 source_cstr ? source_cstr : "");
-        allow_sidecar_cache_write = false_v;
-        break;
-      }
-
-      vkr_local_persist bool8_t warned_legacy = false_v;
-      if (!warned_legacy) {
-        log_warn("Legacy raw `.vkt` cache detected. Migrate to KTX2/UASTC "
-                 "assets.");
-        warned_legacy = true_v;
-      }
-
-      bool8_t validate_source_mtime = false_v;
-      uint64_t source_mtime = 0;
-      if (!selected_is_direct && source_cstr) {
-        FilePath source_fp = vkr_asset_path_file(
-            scratch_allocator,
-            string8_create_from_cstr((const uint8_t *)source_cstr,
-                                     strlen(source_cstr)));
-        FileStats source_stats = {0};
-        if (file_stats(&source_fp, &source_stats) == FILE_ERROR_NONE) {
-          validate_source_mtime = true_v;
-          source_mtime = source_stats.last_modified;
-        }
-      }
-
-      const char *cache_guard_key =
-          source_cstr ? source_cstr : selected_vkt_cstr;
-      if (vkr_texture_try_read_legacy_cache(
-              scratch_allocator, job->system, selected_vkt,
-              validate_source_mtime, source_mtime, cache_guard_key, result)) {
-        return true_v;
-      }
-
-      if (selected_is_direct || !allow_source_fallback) {
-        log_error("Failed to read legacy `.vkt` file: %s",
-                  selected_vkt_cstr ? selected_vkt_cstr : "");
-        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        return false_v;
-      }
-      break;
-    }
-
-    case VKR_TEXTURE_VKT_CONTAINER_KTX2:
-      if (vkr_texture_decode_from_ktx2(
-              scratch_allocator, job->system, selected_vkt, job->colorspace,
-              job->has_explicit_colorspace, job->texture_class,
-              job->has_explicit_class, result)) {
-        return true_v;
-      }
-      if (selected_is_direct) {
-        log_error("Failed to decode KTX2 `.vkt` texture '%s'",
-                  selected_vkt_cstr ? selected_vkt_cstr : "");
-        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        return false_v;
-      }
-      if (!allow_source_fallback || strict_vkt_only) {
-        log_error("Failed to decode sidecar `.vkt` texture '%s' and source "
-                  "fallback is disabled",
-                  selected_vkt_cstr ? selected_vkt_cstr : "");
-        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        return false_v;
-      }
-      log_warn("Failed to decode KTX2 sidecar `.vkt` for '%s'. Falling back "
-               "to source image decode.",
-               source_cstr ? source_cstr : "");
-      allow_sidecar_cache_write = false_v;
-      break;
-
-    case VKR_TEXTURE_VKT_CONTAINER_UNKNOWN:
-    default:
-      if (selected_is_direct) {
-        log_error("Unsupported `.vkt` container for '%s'",
-                  selected_vkt_cstr ? selected_vkt_cstr : "");
-        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        return false_v;
-      }
-      if (!allow_source_fallback || strict_vkt_only) {
-        log_error("Unsupported sidecar `.vkt` container for '%s' and source "
-                  "fallback is disabled",
-                  selected_vkt_cstr ? selected_vkt_cstr : "");
-        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-        return false_v;
-      }
-      log_warn("Unknown sidecar `.vkt` format for '%s'. Falling back to "
-               "source image decode.",
-               source_cstr ? source_cstr : "");
-      allow_sidecar_cache_write = false_v;
-      break;
-    }
-  }
-
-  if (!selected_vkt.str && !allow_source_fallback) {
-    log_error("Texture request '%s' has no `.vkt` asset and source fallback "
-              "is disabled",
-              source_cstr ? source_cstr : "");
+  /* A request loads its cooked host-native `.vkt`: the path itself when it
+     names one, else the source's `<source>.vkt` sidecar. */
+  const String8 selected_vkt = direct_vkt.str ? direct_vkt : sidecar_vkt;
+  if (!selected_vkt.str ||
+      !vkr_texture_path_exists(scratch_allocator, selected_vkt)) {
+    char *requested = vkr_texture_path_to_cstr(
+        scratch_allocator, selected_vkt.str ? selected_vkt : source_path);
+    log_error("Texture '%s' has no cooked `.vkt`; build its assets with "
+              "vkr_bakery on this host",
+              requested ? requested : "");
     result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
     return false_v;
   }
-
-  if (!selected_vkt.str && allow_source_fallback) {
-    vkr_local_persist bool8_t warned_source_fallback = false_v;
-    if (!warned_source_fallback) {
-      log_warn("Source-image fallback is enabled. Missing `.vkt` files will "
-               "still load from authoring textures. Set "
-               "`VKR_TEXTURE_VKT_STRICT=1` to enforce `.vkt`-only runtime.");
-      warned_source_fallback = true_v;
-    }
-  }
-
-  if (!source_path.str ||
-      !vkr_texture_path_exists(scratch_allocator, source_path)) {
-    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
-
-  const String8 sidecar_path_for_write =
-      sidecar_vkt.str ? sidecar_vkt : (String8){0};
-  return vkr_texture_decode_from_source_image(
-      scratch_allocator, job->system, source_path, job->flip_vertical,
-      sidecar_path_for_write, allow_sidecar_cache_write, source_cstr, result);
+  return vkr_texture_decode_from_ktx2(
+      scratch_allocator, job->system, selected_vkt, job->colorspace,
+      job->has_explicit_colorspace, job->texture_class, job->has_explicit_class,
+      result);
 }
 
 /* Mip regions a capped 2D load can hold: one per level of the largest

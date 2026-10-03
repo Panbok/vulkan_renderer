@@ -242,7 +242,7 @@ Native BC7/BC5 derived textures and Windows import measurements are in
 [ADR-077](../adr/077-asset-build-system.md); remaining import work is in
 [Windows asset builds](windows-asset-builds.md).
 
-- [ ] Run `vkr_bakery.exe cook assets\textures` and verify KTX2/UASTC outputs for base
+- [ ] Run `vkr_bakery.exe cook assets\textures` and verify native BC7/BC5 KTX2 outputs for base
   color, alpha-cutout coverage, and paired normal/roughness variants. Exercise
   opaque, single-sided cutout, double-sided cutout, transmission, and normal
   map fixtures through the Vulkan visibility and material assertions. The

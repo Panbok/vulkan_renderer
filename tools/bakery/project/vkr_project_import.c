@@ -1411,12 +1411,10 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
                           vkr_bakery_json_cstr(graph.arena, job->texture_preview
                                                                 ? "preview"
                                                                 : "final"));
-      if (job->texture_encoding != VKR_VKT_ENCODING_UASTC) {
-        vkr_bakery_json_set(
-            graph.arena, recipe, "encoding",
-            vkr_bakery_json_cstr(graph.arena,
-                                 vkr_project_texture_encoding_name(job)));
-      }
+      vkr_bakery_json_set(
+          graph.arena, recipe, "encoding",
+          vkr_bakery_json_cstr(graph.arena,
+                               vkr_project_texture_encoding_name(job)));
       VkrBakeryAction *action =
           vkr_bakery_graph_add(&graph, vkr_bakery_producer_find("texture"),
                                texture.source, recipe, texture.destination);

@@ -40,7 +40,12 @@ for that restricted graph; repository wrappers enable these options again.
 
 The app and editor are separate executables using `vkr_runtime` and
 `vkr_sample_runtime`. Repository builds compile `vkr_bakery` and run
-`vkr_bakery shaders` into `<build>/shaders`; they never cook assets. `build_test.sh` and
+`vkr_bakery shaders` into `<build>/shaders`, and cook only the engine
+textures the app, harness, editor and player carry (`vkr_engine_textures`);
+they cook no other asset. Textures are host-native (ASTC on Apple silicon, BC
+on x86-64) and untracked, so a fresh checkout cooks its scenes and fixtures
+with `vkr_bakery build assets/bakery.json` before rendering them
+([ADR-012](adr/012-texture-compression-pipeline.md)). `build_test.sh` and
 `build_test.bat` build and run the CPU tester in `build_debug` by default.
 
 Set `VKR_DEBUG_SANITIZER` to `default`, `address`, `thread`, `memory`, `leak` or
@@ -169,7 +174,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [006](adr/006-cpu-memory-allocators.md) | CPU allocation by lifetime | implemented |
 | [009](adr/009-frame-synchronization.md) | Separate submission and presentation completion | implemented |
 | [010](adr/010-ecs-scene-system.md) | ECS-owned scene state with glTF node identities and a retained render mirror | implemented |
-| [012](adr/012-texture-compression-pipeline.md) | KTX2/UASTC texture artifacts with capability-selected transcode; native ASTC (6x6 colours and data masks, 4x4 normals) for workspace textures on Apple silicon, from the system encoder for editor-only textures; a runtime texture load limit, 2048 by default on Metal | implemented |
+| [012](adr/012-texture-compression-pipeline.md) | Host-native KTX2 texture artifacts cooked per host and loaded as stored, with no transcode, source fallback or tracked `.vkt`: ASTC (6x6 colours and data masks, 4x4 normals) on Apple silicon and BC7/BC5 on x86-64, from the system encoder for editor-only textures; a runtime texture load limit, 2048 by default on Metal | implemented |
 | [014](adr/014-offscreen-present-target.md) | Window and offscreen targets share frame submission | implemented |
 | [015](adr/015-metrics-module.md) | Bounded typed metrics and pinned snapshots | implemented |
 | [017](adr/017-prepared-specular-glossiness-lowering.md) | Prepare PBR materials before publication | implemented |

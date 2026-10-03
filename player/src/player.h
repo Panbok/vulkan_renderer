@@ -26,8 +26,6 @@ typedef struct VkrPlayer {
   char startup_scene[VKR_PLAYER_PATH_CAPACITY];
   char startup_overlay[VKR_PLAYER_PATH_CAPACITY];
   char settings_path[VKR_PLAYER_PATH_CAPACITY];
-  /* Per-user texture transcode cache; the install folder stays read-only. */
-  char cache_root[VKR_PLAYER_PATH_CAPACITY];
   VkrPlayerFont fonts[VKR_PLAYER_MAX_FONTS];
   uint32_t font_count;
   uint32_t window_width;

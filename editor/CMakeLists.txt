@@ -93,6 +93,7 @@ endforeach()
 # The programs find each other, the content and the catalog beside
 # themselves, and keep writable state in per-user directories.
 include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
+add_dependencies(vkr_editor vkr_engine_textures)
 install(TARGETS vkr_editor vkr_bakery vkr_harness vkr_asset_preview
     RUNTIME DESTINATION . COMPONENT editor)
 if(APPLE)

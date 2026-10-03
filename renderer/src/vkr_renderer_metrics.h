@@ -174,9 +174,6 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId mesh_cache_atvr_after;
   VkrMetricId mesh_fetch_overfetch_before;
   VkrMetricId mesh_fetch_overfetch_after;
-  VkrMetricId texture_transcode_cache_hits;
-  VkrMetricId texture_transcode_cache_misses;
-  VkrMetricId texture_transcode_cache_writes;
   VkrMetricId material_texture_stream_pending;
   VkrMetricId material_texture_stream_in_flight;
   VkrMetricId material_texture_stream_resident;
@@ -361,9 +358,6 @@ typedef struct VkrApplicationMetricsSnapshot {
   uint64_t lighting_point_grid_references;
   uint64_t lighting_point_grid_max_lights_per_cell;
   uint64_t lighting_point_grid_global_lights;
-  uint64_t texture_transcode_cache_hits;
-  uint64_t texture_transcode_cache_misses;
-  uint64_t texture_transcode_cache_writes;
   uint64_t material_texture_stream_pending;
   uint64_t material_texture_stream_demanded_missing;
   uint64_t material_texture_stream_demanded_evicted;

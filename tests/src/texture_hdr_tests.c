@@ -27,11 +27,10 @@ static void test_hdr_source_is_rejected(void) {
   assert(vkr_allocator_arena(&allocator));
 
   VkrTextureSystem system = {0};
-  system.allow_source_fallback = true_v;
   VkrTexturePreparedLoad prepared = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   assert(!vkr_texture_system_prepare_load_from_file(
-      &system, string8_lit("build/test_hdr_source_rejected.bin"),
+      &system, string8_lit("build/test_hdr_source_rejected.bin?source=only"),
       VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared, &error));
   assert(error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
   assert(prepared.upload_data == NULL);

@@ -67,10 +67,8 @@ from it.
   and material workers take every logical core up to 16.
 - **Scheduler.** [Workers](../../tools/bakery/vkr_bakery_graph.c) run ready
   actions in priority order under `--jobs` and a memory budget from each
-  producer's peak estimate; final-tier UASTC encodes share two all-core
-  slots, while preview-tier and native (ASTC, BC) encodes, which stay near
-  one core, run
-  like any other action.
+  producer's peak estimate; texture encodes (ASTC, BC), which stay near one
+  core, run like any other action.
   SIGINT/SIGTERM cancel pending actions and terminate children without
   publishing partial products.
 - **Isolation.** Cookers are static libraries linked into `vkr_bakery` and run
@@ -113,10 +111,8 @@ from it.
   again finds them instead of encoding them; the runner packs only textures
   still named by source image. Repository cooks, whose runtime reads
   materials' images as sources, keep writing converted PNGs. Material files,
-  cutout variants and paired normal/roughness bakes run on eight workers at
-  the preview tier and with native encodings (ASTC, BC) and on three at the
-  final UASTC tier,
-  publishing results in material order. The cooker hashes each bundle
+  cutout variants and paired normal/roughness bakes run on every logical core
+  up to 16 workers, publishing results in material order. The cooker hashes each bundle
   dependency once, in parallel, with SHA-256: the digest's first 64 bits name
   the bundle copy and the cooked mesh's dependency table records the digest
   without reading the copy again.
@@ -124,26 +120,27 @@ from it.
   on x86-64 cores that have them (AMD Zen, Intel Goldmont and Ice Lake on),
   selected once by CPUID.
 - **Texture tiers and encodings.** A request's `texture_tier` (`final` by
-  default, `preview`, `deferred`) and `texture_encoding` (`uastc`, `astc` or
-  `astc-fast`, `bc` or `bc-fast`; by default ASTC on Apple silicon, BC on
-  x86-64 and UASTC elsewhere, per
+  default, `preview`, `deferred`) and `texture_encoding` (`astc` or
+  `astc-fast`, `bc` or `bc-fast`; by default the host's: ASTC on Apple
+  silicon and BC on x86-64, per
   [ADR-012](012-texture-compression-pipeline.md)) select how material textures
   and the mesh cooker's derived textures are built (`--texture-tier`,
   `--texture-encoding`). `texture_encode_speed` `fast` turns `astc` into
   `astc-fast`, Apple's system encoder, and `bc` into `bc-fast`, bc7e's
   fastest colour profile, as Unreal's editor encodes new textures at its
-  `Fast` speed and cooks at `Final`; UASTC has no fast encoder and ignores
-  it. The editor sends `fast` on every project job, so
+  `Fast` speed and cooks at `Final`. The editor sends `fast` on every
+  project job, so
   textures only it shows take the faster encoder, while explicit and
   command-line requests keep astcenc. A project package finalizes preview and
   deferred assets at the final speed for a shipping profile but ships
   already-final `astc-fast` textures as encoded (ADR-078). Preview keeps a 1,024-pixel mip floor: levels larger
-  than that are not stored (`--max-extent`, part of the settings identity),
-  and UASTC previews use its fastest level. `deferred` builds no texture: the
+  than that are not stored (`--max-extent`, part of the settings identity).
+  `deferred` builds no texture: the
   cooker keeps material factors, resolves and copies no image, and a scene
-  opens at once. Every tier and encoding has its own names (`-preview`,
-  `-astc`, `.astc.preview`, `-astc-fast`, ...) and keys, so one never
-  replaces another. A
+  opens at once. The preview tier and the fast encodings take their own
+  names (`-preview`, `-astc-fast`, `-bc-fast`, ...) and keys, so one never
+  replaces another; the final tier's names carry no encoding, since each host
+  has one final encoding and settings identities keep hosts apart. A
   mesh record imported at the preview or deferred tier carries
   `"texture_tier"`, and every scene result reports those records as
   `preview_assets`. `finalize_textures` rebuilds them at the final tier as one
@@ -254,12 +251,7 @@ from it.
   `$VKR_CONTENT` or a `bundle.json` beside the executable mounts a bundle, and
   `$VKR_CONTENT_PACKS` overlays archives on the repository root.
   `$VKR_VFS_RECORD` appends every content read to a file. With a bundle
-  mounted, the render graph also comes from content, and the texture
-  transcode cache defaults to the content root. Transcode cache entries are
-  named by the `.vkt` content hash and target format, so a texture reached
-  through several paths (projects, repeated imports, bundles) transcodes and
-  stores once; before, each path added its own entry, about 3.4 GiB per new
-  Bistro import.
+  mounted, the render graph also comes from content.
 - **Bundles.** `vkr_bakery bundle <recipe> --out <dir> [--app <executable>]
   [--shaders <catalog>]` ([bundle](../../tools/bakery/vkr_bakery_bundle.c))
   writes `content/<name>.vkpak`, copies the runtime and shader catalog beside

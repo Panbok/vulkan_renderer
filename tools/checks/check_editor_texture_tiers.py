@@ -5,17 +5,14 @@ A scene imported with `texture_tier: preview` publishes preview-named textures
 and derived bakes, marks its mesh record and reports `preview_assets`.
 `finalize_textures` republishes the same asset identity at the final tier,
 and its materials and textures then match a scene imported at the final tier
-directly. These run with `texture_encoding: uastc`, as on a host without
-ASTC. With `texture_encoding: astc` preview and final imports hold native
-ASTC textures under their own names, 6x6 colours and 4x4 normals, and on x86-64 builds, where it is
-the default, `texture_encoding: bc` holds BC7 colours and data and BC5
-normals. A `deferred` import names no
-texture until `finalize_textures` adds final ones to the same asset, and a
-finalize given a `ready_log` records every material it rebuilt, with the
-published definition, before it exits. On
-macOS, `texture_encode_speed: fast` encodes ASTC with the system encoder
-under `-astc-fast` names, BC turns into `-bc-fast` colours, and UASTC
-imports stay unchanged.
+directly. Every import uses the host's native encoding unless the request
+names one: ASTC on Apple silicon (6x6 colours, 4x4 normals) and BC7/BC5 on
+x86-64, under host-neutral final names. `uastc` is rejected. A `deferred`
+import names no texture until `finalize_textures` adds final ones to the same
+asset, and a finalize given a `ready_log` records every material it rebuilt,
+with the published definition, before it exits. `texture_encode_speed: fast`
+encodes with the host's faster encoder under `-astc-fast` or `-bc-fast`
+names.
 """
 import argparse
 import base64
@@ -122,7 +119,7 @@ def main():
             assert job.execute() == 0, job.output
             return jobs.load_json(result_path)
 
-        def create(tier, encoding='uastc', speed=None):
+        def create(tier, encoding=None, speed=None):
             request = {'version': 1, 'operation': 'create_scene', 'workspace_root': str(workspace),
                        'project_path': str(manifest), 'scene_id': str(uuid.uuid4()),
                        'scene_name': f'Model {tier}', 'models': [str(sources / 'model.gltf')],
@@ -135,18 +132,30 @@ def main():
                 request['texture_encode_speed'] = speed
             return run(request, f'create-{tier}-{encoding}-{speed}')
 
+        def formats(result, record, references):
+            mesh = Path(result['scene_path']).parent / record['artifacts'][0]['path']
+            return {struct.unpack('<I', (mesh.parent / 'materials' / reference)
+                                  .read_bytes()[12:16])[0] for reference in references}
+
+        # The host's encoding: ASTC on Apple silicon (6x6 colours, vkFormat
+        # 165 unorm and 166 sRGB; 4x4 normals, 157 and 158), BC on x86-64
+        # (BC7 colours and data, 145 and 146; BC5 normals, 141).
+        bc_host = platform.machine().lower() in ('amd64', 'x86_64')
+        host_formats = {141, 145, 146} if bc_host else ASTC_FORMATS
+        host_required = {141, 146} if bc_host else {157, 166}
+
         preview = create('preview')
         assert preview['preview_assets'] == 1, preview
         record, _, references = scene_state(preview)
         assert record['texture_tier'] == 'preview'
         assert any(reference.endswith('-preview.vkt') for reference in references), references
+        assert formats(preview, record, references) <= host_formats
         generated = workspace / 'cache' / 'generated' / 'normalrough_v2'
         assert list(generated.glob('*.preview.vkt')), 'Preview pair bake is named apart'
 
         finalized = run({'version': 1, 'operation': 'finalize_textures',
                          'workspace_root': str(workspace), 'project_path': str(manifest),
-                         'scene_id': preview['scene_id'], 'scene_path': preview['scene_path'],
-                         'texture_encoding': 'uastc'},
+                         'scene_id': preview['scene_id'], 'scene_path': preview['scene_path']},
                         'finalize')
         assert finalized['preview_assets'] == 0, finalized
         final_record, final_materials, final_references = scene_state(finalized)
@@ -154,77 +163,52 @@ def main():
         assert not any('preview' in reference for reference in final_references), final_references
         assert [path for path in generated.glob('*.vkt') if not path.name.endswith('.preview.vkt')]
 
+        # Final names are host-neutral: no encoding suffix.
         direct = create(None)
         assert direct['preview_assets'] == 0
-        _, direct_materials, _ = scene_state(direct)
+        record, direct_materials, references = scene_state(direct)
         assert final_materials == direct_materials, 'Finalized textures differ from a final import'
-
-        def formats(result, record, references):
-            mesh = Path(result['scene_path']).parent / record['artifacts'][0]['path']
-            return {struct.unpack('<I', (mesh.parent / 'materials' / reference)
-                                  .read_bytes()[12:16])[0] for reference in references}
-
-        # Native ASTC: preview and final textures are named apart; colours
-        # hold ASTC 6x6 blocks (vkFormat 165 unorm, 166 sRGB) and normals
-        # ASTC 4x4 (157, 158).
-        astc_preview = create('preview', 'astc')
-        assert astc_preview['preview_assets'] == 1, astc_preview
-        record, _, references = scene_state(astc_preview)
-        assert any(reference.endswith('-astc-preview.vkt') for reference in references), references
-        assert list(generated.glob('*.astc.preview.vkt')), 'ASTC preview pair bake is named apart'
-        assert formats(astc_preview, record, references) <= ASTC_FORMATS
-        astc_final = create(None, 'astc')
-        assert astc_final['preview_assets'] == 0, astc_final
-        record, _, references = scene_state(astc_final)
         packed = [reference for reference in references if '-color-' in reference]
-        assert packed and all(reference.endswith('-astc.vkt') for reference in packed), packed
-        assert list(generated.glob('*.astc.vkt')), 'ASTC pair bake is named apart'
-        final_formats = formats(astc_final, record, references)
-        assert final_formats <= ASTC_FORMATS and {157, 166} <= final_formats, final_formats
+        assert packed and all(not reference.endswith(('-astc.vkt', '-bc.vkt'))
+                              for reference in packed), packed
+        direct_formats = formats(direct, record, references)
+        assert direct_formats <= host_formats and host_required <= direct_formats, direct_formats
+        mesh = Path(direct['scene_path']).parent / record['artifacts'][0]['path']
+        texture_bytes = [(mesh.parent / 'materials' / reference).read_bytes()
+                         for reference in references]
+        profiles = ((b'bc7-bc7e-veryfast-v1', b'bc5-rgbcx-v1') if bc_host
+                    else (b'astc-6x6-fastest', b'astc-4x4-fastest'))
+        for profile in profiles:
+            assert any(profile in data for data in texture_bytes), profile
+        explicit = create(None, 'bc' if bc_host else 'astc')
+        assert scene_state(explicit)[1] == direct_materials, 'The host encoding is not the default'
 
-        # Fast encode speed: UASTC has no fast encoder and ignores it; on
-        # macOS ASTC comes from the system encoder under its own names and
-        # settings identity, never replacing astcenc outputs.
-        _, fast_uastc_materials, _ = scene_state(create(None, 'uastc', 'fast'))
-        assert fast_uastc_materials == direct_materials, 'Fast speed changed UASTC textures'
-        if platform.system() == 'Darwin':
-            astc_fast = create(None, 'astc', 'fast')
-            record, _, references = scene_state(astc_fast)
-            packed = [reference for reference in references if '-color-' in reference]
-            assert packed and all(reference.endswith('-astc-fast.vkt') for reference in packed), packed
-            fast_bakes = list(generated.glob('*.astc-fast.vkt'))
-            assert fast_bakes and list(generated.glob('*.astc.vkt')), 'Fast pair bake is named apart'
-            assert all(b'astc-4x4-system' in bake.read_bytes() for bake in fast_bakes)
-            assert formats(astc_fast, record, references) <= {157, 158}
+        # UASTC is gone: a request naming it fails.
+        bad = jobs.Job({'version': 1, 'operation': 'create_scene',
+                        'workspace_root': str(workspace), 'project_path': str(manifest),
+                        'scene_id': str(uuid.uuid4()), 'scene_name': 'No UASTC', 'models': [],
+                        'bakes': {}, 'texture_encoding': 'uastc'},
+                       root / 'no-uastc.json', bakery=args.bakery, environment=environment)
+        assert bad.execute() == 1, 'uastc is no longer an encoding'
 
-        # Native BC, built on x86-64 only: BC7 colours and data (vkFormat 145
-        # unorm, 146 sRGB) and BC5 normals (141) under -bc names, with
-        # identities naming each class's encoder. It is the default encoding
-        # there, and the fast speed encodes colours with bc7e's fastest
-        # profile under -bc-fast names.
-        if platform.machine().lower() in ('amd64', 'x86_64'):
-            bc_final = create(None, 'bc')
-            record, bc_materials, references = scene_state(bc_final)
-            packed = [reference for reference in references if '-color-' in reference]
-            assert packed and all(reference.endswith('-bc.vkt') for reference in packed), packed
-            assert formats(bc_final, record, references) == {141, 145, 146}
-            mesh = Path(bc_final['scene_path']).parent / record['artifacts'][0]['path']
-            texture_bytes = [(mesh.parent / 'materials' / reference).read_bytes()
-                             for reference in references]
-            for profile in (b'bc7-bc7e-veryfast-v1', b'bc7-bc7e-default-v1', b'bc5-rgbcx-v1'):
-                assert any(profile in data for data in texture_bytes), profile
-            assert list(generated.glob('*.bc.vkt')), 'BC pair bake is named apart'
-            _, default_materials, _ = scene_state(create(None, None))
-            assert default_materials == bc_materials, 'BC is not the default encoding'
-            bc_fast = create(None, 'bc', 'fast')
-            record, _, references = scene_state(bc_fast)
-            packed = [reference for reference in references if '-color-' in reference]
-            assert packed and all(reference.endswith('-bc-fast.vkt') for reference in packed), packed
-            assert list(generated.glob('*.bc-fast.vkt')), 'Fast BC pair bake is named apart'
-            mesh = Path(bc_fast['scene_path']).parent / record['artifacts'][0]['path']
+        # Fast encode speed: the host's faster encoder, under its own names and
+        # settings identity, never replacing the final outputs.
+        fast = create(None, None, 'fast')
+        record, _, references = scene_state(fast)
+        suffix = '-bc-fast.vkt' if bc_host else '-astc-fast.vkt'
+        packed = [reference for reference in references if '-color-' in reference]
+        assert packed and all(reference.endswith(suffix) for reference in packed), packed
+        fast_bakes = list(generated.glob('*.bc-fast.vkt' if bc_host else '*.astc-fast.vkt'))
+        assert fast_bakes, 'Fast pair bake is named apart'
+        mesh = Path(fast['scene_path']).parent / record['artifacts'][0]['path']
+        if bc_host:
             assert b'bc7-bc7e-ultrafast-v1' in (mesh.parent / 'materials' / packed[0]).read_bytes()
-            assert formats(bc_fast, record, references) == {141, 145, 146}
+            assert formats(fast, record, references) == {141, 145, 146}
         else:
+            assert all(b'astc-4x4-system' in bake.read_bytes() for bake in fast_bakes)
+            assert formats(fast, record, references) <= {157, 158}
+
+        if not bc_host:
             bad = jobs.Job({'version': 1, 'operation': 'create_scene',
                             'workspace_root': str(workspace), 'project_path': str(manifest),
                             'scene_id': str(uuid.uuid4()), 'scene_name': 'No BC', 'models': [],
@@ -233,8 +217,8 @@ def main():
             assert bad.execute() == 1, 'bc needs the x86-64 encoders'
 
         # Deferred: materials keep their factors and name no texture, and the
-        # asset awaits finalization, which adds final ASTC textures.
-        deferred = create('deferred', 'astc')
+        # asset awaits finalization, which adds final host textures.
+        deferred = create('deferred')
         assert deferred['preview_assets'] == 1, deferred
         deferred_record, _, deferred_references = scene_state(deferred)
         assert deferred_record['texture_tier'] == 'deferred' and not deferred_references
@@ -242,12 +226,12 @@ def main():
         filled = run({'version': 1, 'operation': 'finalize_textures',
                       'workspace_root': str(workspace), 'project_path': str(manifest),
                       'scene_id': deferred['scene_id'], 'scene_path': deferred['scene_path'],
-                      'texture_encoding': 'astc', 'ready_log': str(ready),
+                      'ready_log': str(ready),
                       'material_priority': ['not_a_material']}, 'finalize-deferred')
         assert filled['preview_assets'] == 0, filled
         filled_record, _, filled_references = scene_state(filled)
         assert filled_record['id'] == deferred_record['id'] and 'texture_tier' not in filled_record
-        assert filled_references and formats(filled, filled_record, filled_references) <= ASTC_FORMATS
+        assert filled_references and formats(filled, filled_record, filled_references) <= host_formats
         filled_mesh = Path(filled['scene_path']).parent / filled_record['artifacts'][0]['path']
         assert len(jobs.ready_records(ready, filled_mesh.parent / 'materials')) == 1
 
@@ -263,8 +247,8 @@ def main():
 
         library = run({'version': 1, 'operation': 'import_project_assets',
                        'workspace_root': str(workspace), 'project_path': str(manifest),
-                       'sources': [str(sources / 'model.gltf')], 'texture_tier': 'deferred',
-                       'texture_encoding': 'astc'}, 'library-import')
+                       'sources': [str(sources / 'model.gltf')], 'texture_tier': 'deferred'},
+                      'library-import')
         assert library['preview_assets'] == 1, library
         library_mesh = next(item for item in library['project_assets'] if item['kind'] == 'mesh')
         assert library_mesh['texture_tier'] == 'deferred'
@@ -275,7 +259,7 @@ def main():
         library_ready = root / 'library-ready.jsonl'
         library_final = run({'version': 1, 'operation': 'finalize_project_assets',
                              'workspace_root': str(workspace), 'project_path': str(manifest),
-                             'texture_encoding': 'astc', 'ready_log': str(library_ready)},
+                             'ready_log': str(library_ready)},
                             'library-finalize')
         assert library_final['preview_assets'] == 0, library_final
         assert library_final['finalized_assets'] == [library_mesh['id']], library_final
@@ -286,7 +270,7 @@ def main():
         assert len(jobs.ready_records(library_ready, mesh.parent / 'materials')) == 1
         assert references and {struct.unpack('<I', (mesh.parent / 'materials' / reference)
                                               .read_bytes()[12:16])[0]
-                               for reference in references} <= ASTC_FORMATS, references
+                               for reference in references} <= host_formats, references
         assert not list((project / '.staging').iterdir())
 
         rejected = root / 'rejected.json'
@@ -314,7 +298,7 @@ def main():
                        rejected, bakery=args.bakery, environment=environment)
         assert bad.execute() == 1 and 'material_priority' in rejected.read_text()
     print('Texture tiers: preview import, preview naming, finalize to the final tier, '
-          'equality with a final import, native ASTC, native BC, fast encode speed, deferred scene, '
+          'equality with a final import, host encoding, UASTC rejection, fast encode speed, deferred scene, '
           'ready log and project library imports passed')
 
 

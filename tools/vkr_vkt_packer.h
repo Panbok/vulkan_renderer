@@ -81,43 +81,47 @@ int vkr_vkt_output_digest(const char *path, unsigned char out_digest[32],
 #define VKR_VKT_PREVIEW_MAX_EXTENT 1024u
 
 // Process setting for the in-process packs above: nonzero selects the
-// "preview" tier (UASTC fastest, levels up to VKR_VKT_PREVIEW_MAX_EXTENT).
-// Settings identities record the level, and callers name preview outputs apart
+// "preview" tier (levels up to VKR_VKT_PREVIEW_MAX_EXTENT). Settings
+// identities record the extent, and callers name preview outputs apart
 // from final ones, so neither ever substitutes for the other.
 void vkr_vkt_set_preview_tier(int preview);
 int vkr_vkt_preview_tier(void);
 
-// Block encoding of packed textures. Identities record it.
+// Block encoding of packed textures. Identities record it. Every encoding is
+// native: the runtime uploads its blocks as stored.
 typedef enum VkrVktEncoding {
-  // Transcodable UASTC, for every host.
-  VKR_VKT_ENCODING_UASTC = 0,
-  // Native ASTC 4x4 from astcenc at its "fastest" preset.
-  VKR_VKT_ENCODING_ASTC = 1,
-  // Native ASTC 4x4 from Apple's system encoder: several times faster than
-  // astcenc and a few dB below it, for textures only the editor shows.
-  // Available on Apple platforms only.
-  VKR_VKT_ENCODING_ASTC_FAST = 2,
-  // Native BC7 (colour and data, bc7e) and BC5 (normals, rgbcx), for hosts
-  // whose GPUs sample BC. Built on x86-64 only.
-  VKR_VKT_ENCODING_BC = 3,
+  // ASTC from astcenc at its "fastest" preset: 6x6 colours and data masks,
+  // 4x4 normals and alpha-tested colours.
+  VKR_VKT_ENCODING_ASTC = 0,
+  // ASTC 4x4 from Apple's system encoder: several times faster than astcenc
+  // and a few dB below it, for textures only the editor shows. Available on
+  // Apple platforms only.
+  VKR_VKT_ENCODING_ASTC_FAST = 1,
+  // BC7 (colour and data, bc7e) and BC5 (normals, rgbcx), for hosts whose
+  // GPUs sample BC. Built on x86-64 only.
+  VKR_VKT_ENCODING_BC = 2,
   // BC with bc7e's fastest colour profile, for textures only the editor
   // shows; data and normals encode as in VKR_VKT_ENCODING_BC.
-  VKR_VKT_ENCODING_BC_FAST = 4
+  VKR_VKT_ENCODING_BC_FAST = 3
 } VkrVktEncoding;
 
-// Parses "uastc", "astc", "astc-fast", "bc" or "bc-fast". Returns 0 for any
-// other name, for "astc-fast" where the system encoder is unavailable and for
-// the BC encodings where their encoders are not built.
+// The host's final encoding: BC where the BC encoders are built (x86-64),
+// ASTC otherwise (Apple silicon).
+VkrVktEncoding vkr_vkt_host_encoding(void);
+
+// Parses "astc", "astc-fast", "bc" or "bc-fast". Returns 0 for any other
+// name, for "astc-fast" where the system encoder is unavailable and for the
+// BC encodings where their encoders are not built.
 int vkr_vkt_parse_encoding(const char *name, VkrVktEncoding *out);
 
-// Process setting for the in-process packs above (UASTC by default).
+// Process setting for the in-process packs above (the host encoding by
+// default).
 void vkr_vkt_set_encoding(VkrVktEncoding encoding);
 VkrVktEncoding vkr_vkt_encoding(void);
 
 // File-name suffix that keeps in-process pack outputs of each setting apart:
-// "", ".preview", ".astc", ".astc.preview", ".astc-fast",
-// ".astc-fast.preview", ".bc", ".bc.preview", ".bc-fast" or
-// ".bc-fast.preview".
+// "" or ".preview" for the final encodings, whose names are host-neutral, and
+// ".astc-fast", ".astc-fast.preview", ".bc-fast" or ".bc-fast.preview".
 const char *vkr_vkt_variant_suffix(void);
 
 int vkr_vkt_packer_main(int argc, char **argv);

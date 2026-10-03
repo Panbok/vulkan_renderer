@@ -443,12 +443,10 @@ typedef struct VkrDeviceInformation {
   VkrDeviceQueueFlags device_queues;
   VkrSamplerFilterFlags sampler_filters;
   float64_t max_sampler_anisotropy;
+  /** ASTC LDR, which covers every block size. */
   bool8_t supports_texture_astc_4x4;
   bool8_t supports_texture_bc7;
-  bool8_t supports_texture_etc2;
   bool8_t supports_texture_bc5;
-  /** EAC RG11: the only compressed two-channel target on ETC2-class GPUs. */
-  bool8_t supports_texture_eac_rg11;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
   uint32_t vendor_id;

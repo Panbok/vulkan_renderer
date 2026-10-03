@@ -17,9 +17,6 @@ if errorlevel 1 (
 echo.
 echo === Running tests 50 times ===
 
-set VKR_TEXTURE_VKT_STRICT=0
-set VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1
-set VKR_TEXTURE_VKT_ALLOW_LEGACY=1
 
 set passed=0
 set failed=0

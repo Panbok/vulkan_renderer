@@ -77,11 +77,7 @@ vkr_internal int vkr_harness_spawn_child(
   if (prewarm) {
     arguments[argument_count++] = "--prewarm";
   }
-  char asset_cache_path[VKR_HARNESS_PATH_MAX];
-  string_format(asset_cache_path, sizeof(asset_cache_path),
-                "%s/build/_asset_cache", repo_root);
   const VkrPlatformEnvironmentVariable environment_defaults[] = {
-      {.name = "VKR_ASSET_CACHE_ROOT", .value = asset_cache_path},
       {.name = "VKR_DISPLAY_OUTPUT", .value = renderer->display_output},
       {.name = "VKR_TONEMAP_DISABLED",
        .value = renderer->tonemap_enabled ? "0" : "1"},

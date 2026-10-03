@@ -168,8 +168,8 @@ injection remain unrun.
 The subsequent library split passes independent renderer/runtime library builds,
 app/editor Release builds, and the same two serial Metal API-validation cases.
 The shipped app has no glTF importer, offline mesh/font cooker, mesh optimizer
-or KTX texture encoder symbols. Runtime decoding, transcode caches and dynamic
-system-font rasterization remain supported.
+or KTX texture encoder symbols. Runtime decoding and dynamic system-font
+rasterization remain supported.
 
 Bistro loads resolved lights from its cooked artifact and produces color/depth
 captures. No compatible baseline is available for this split, so those captures

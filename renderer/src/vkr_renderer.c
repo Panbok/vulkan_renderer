@@ -1429,12 +1429,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM),
       .supports_texture_bc7 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC7_UNORM),
-      .supports_texture_etc2 = vkr_vulkan_renderer_texture_format_supported(
-          renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM),
       .supports_texture_bc5 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC5_UNORM),
-      .supports_texture_eac_rg11 = vkr_vulkan_renderer_texture_format_supported(
-          renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM),
       .actual_target_kind = renderer->present_target.kind,
       .actual_present_mode = present_mode,
       .actual_target_image_count = renderer->present_target.image_count,

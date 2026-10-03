@@ -138,27 +138,18 @@ vkr_internal bool8_t vkr_project_job_init(VkrProjectJob *job) {
   job->texture_preview = tier && strcmp(tier, "preview") == 0;
   job->texture_deferred = tier && strcmp(tier, "deferred") == 0;
   /* Workspace-derived textures use the host's native encoding unless the
-     request names one: ASTC 4x4 where the GPU samples it (Apple silicon),
-     BC7/BC5 where the packer has the BC encoders (x86-64 builds), whose GPUs
-     all sample BC, and transcodable UASTC elsewhere. Every encoding has a
-     preview tier. */
+     request names one: ASTC on Apple silicon, BC7/BC5 on x86-64 builds,
+     whose GPUs all sample BC. Every encoding has a preview tier. */
   const char *encoding =
       vkr_project_json_text(job->request, "texture_encoding");
-  job->texture_encoding = VKR_VKT_ENCODING_UASTC;
-  if (VKR_PROJECT_NATIVE_ASTC) {
-    job->texture_encoding = VKR_VKT_ENCODING_ASTC;
-  } else {
-    (void)vkr_vkt_parse_encoding("bc", &job->texture_encoding);
-  }
+  job->texture_encoding = vkr_vkt_host_encoding();
   if (encoding && !vkr_vkt_parse_encoding(encoding, &job->texture_encoding)) {
-    return vkr_project_fail(job, "texture_encoding must be uastc, astc, "
-                                 "astc-fast, bc or bc-fast (astc-fast needs "
-                                 "Apple's system encoder, bc an x86-64 "
-                                 "build)");
+    return vkr_project_fail(job, "texture_encoding must be astc, astc-fast, "
+                                 "bc or bc-fast (astc-fast needs Apple's "
+                                 "system encoder, bc an x86-64 build)");
   }
-  /* `texture_encode_speed` "fast" selects the faster native encoder where
-     one exists (astc-fast, bc-fast), as the editor asks for textures only it
-     shows; UASTC has no fast encoding and ignores it. */
+  /* `texture_encode_speed` "fast" selects the faster native encoder (astc-fast,
+     bc-fast), as the editor asks for textures only it shows. */
   const char *speed =
       vkr_project_json_text(job->request, "texture_encode_speed");
   if (speed && strcmp(speed, "fast") != 0 && strcmp(speed, "final") != 0) {

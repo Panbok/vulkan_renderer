@@ -60,15 +60,6 @@ VkrApplicationMetricsSnapshot vkr_application_metrics_snapshot(
           lighting->point_light_grid.max_lights_per_cell,
       .lighting_point_grid_global_lights =
           lighting->point_light_grid.global_light_count,
-      .texture_transcode_cache_hits =
-          vkr_atomic_uint64_load(&assets->texture_system.transcode_cache_hits,
-                                 VKR_MEMORY_ORDER_RELAXED),
-      .texture_transcode_cache_misses =
-          vkr_atomic_uint64_load(&assets->texture_system.transcode_cache_misses,
-                                 VKR_MEMORY_ORDER_RELAXED),
-      .texture_transcode_cache_writes =
-          vkr_atomic_uint64_load(&assets->texture_system.transcode_cache_writes,
-                                 VKR_MEMORY_ORDER_RELAXED),
       .material_texture_stream_pending = texture_streams.pending_count,
       .material_texture_stream_demanded_missing =
           texture_streams.demanded_missing_count,

@@ -443,16 +443,15 @@ uint32_t vkr_project_tier_arguments(const VkrProjectJob *job,
 }
 
 const char *vkr_project_texture_encoding_name(const VkrProjectJob *job) {
-  static const char *const names[5] = {"uastc", "astc", "astc-fast", "bc",
-                                       "bc-fast"};
+  static const char *const names[4] = {"astc", "astc-fast", "bc", "bc-fast"};
   return names[job->texture_encoding];
 }
 
 const char *vkr_project_texture_suffix(const VkrProjectJob *job) {
-  static const char *const suffixes[10] = {
-      "",           "-preview",           "-astc", "-astc-preview",
-      "-astc-fast", "-astc-fast-preview", "-bc",   "-bc-preview",
-      "-bc-fast",   "-bc-fast-preview"};
+  /* Final encodings share host-neutral names; the fast ones keep theirs. */
+  static const char *const suffixes[8] = {
+      "", "-preview", "-astc-fast", "-astc-fast-preview",
+      "", "-preview", "-bc-fast",   "-bc-fast-preview"};
   return suffixes[job->texture_encoding * 2u +
                   (job->texture_preview ? 1u : 0u)];
 }

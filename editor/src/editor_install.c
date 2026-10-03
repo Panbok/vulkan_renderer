@@ -2,7 +2,6 @@
 
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
-#include "renderer/systems/vkr_texture_transcode_cache.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,17 +57,6 @@ void vkr_editor_install_resolve(void) {
                                file_exists(&file);
     (void)snprintf(vkr_editor_tools[i], sizeof(vkr_editor_tools[i]), "%s",
                    use_beside ? beside : built);
-  }
-
-  /* A repository build shares the repository's build/_asset_cache; an
-     installed editor cannot write below its content. */
-  const char *cache_override = getenv("VKR_ASSET_CACHE_ROOT");
-  char cache[VKR_EDITOR_INSTALL_PATH_CAPACITY];
-  if (!vkr_content_root_is_repository() &&
-      (!cache_override || !cache_override[0]) &&
-      vkr_editor_user_path(VKR_PLATFORM_USER_CACHE, "asset_cache", cache,
-                           sizeof(cache))) {
-    vkr_texture_transcode_cache_set_root(cache);
   }
 }
 

@@ -29,6 +29,7 @@ vkr_add_player(vkr_player_shipping TRUE)
 add_dependencies(vkr_player vkr_player_shipping)
 
 include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
+add_dependencies(vkr_player vkr_engine_textures)
 set(VKR_PLAYER_TEMPLATE "$<TARGET_FILE_DIR:vkr_player>")
 foreach(resource IN LISTS VKR_ENGINE_FILES)
     get_filename_component(directory "${resource}" DIRECTORY)

@@ -181,13 +181,15 @@ vkr_internal bool8_t material_pbr_test_write_text_file(const char *path,
   return written == len ? true_v : false_v;
 }
 
-vkr_internal bool8_t material_pbr_test_write_uastc_texture(
+/* Writes a 4x4 texture of native ASTC 4x4 blocks with the given layers and
+ * faces; each image is one block whose bytes name its layer and face. */
+vkr_internal bool8_t material_pbr_test_write_native_texture(
     const char *path, uint32_t layer_count, uint32_t face_count) {
   if (!path || layer_count == 0u || (face_count != 1u && face_count != 6u)) {
     return false_v;
   }
   const ktxTextureCreateInfo create_info = {
-      .vkFormat = VK_FORMAT_R8G8B8A8_UNORM,
+      .vkFormat = VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
       .baseWidth = 4u,
       .baseHeight = 4u,
       .baseDepth = 1u,
@@ -204,33 +206,20 @@ vkr_internal bool8_t material_pbr_test_write_uastc_texture(
   if (result != KTX_SUCCESS || !texture) {
     return false_v;
   }
-  uint8_t pixels[4u * 4u * 4u];
+  uint8_t block[16] = {0};
   for (uint32_t layer = 0u; layer < layer_count; ++layer) {
     for (uint32_t face = 0u; face < face_count; ++face) {
-      for (uint32_t i = 0u; i < sizeof(pixels); i += 4u) {
-        pixels[i + 0u] = (uint8_t)(32u + layer * 17u);
-        pixels[i + 1u] = (uint8_t)(48u + face * 19u);
-        pixels[i + 2u] = (uint8_t)(64u + layer + face);
-        pixels[i + 3u] = 255u;
-      }
+      block[0] = (uint8_t)layer;
+      block[1] = (uint8_t)face;
       result = ktxTexture_SetImageFromMemory(ktxTexture(texture), 0u, layer,
-                                             face, pixels, sizeof(pixels));
+                                             face, block, sizeof(block));
       if (result != KTX_SUCCESS) {
         ktxTexture_Destroy(ktxTexture(texture));
         return false_v;
       }
     }
   }
-  ktxBasisParams basis = {
-      .structSize = sizeof(ktxBasisParams),
-      .uastc = KTX_TRUE,
-      .threadCount = 1u,
-      .uastcFlags = KTX_PACK_UASTC_LEVEL_DEFAULT,
-  };
-  result = ktxTexture2_CompressBasisEx(texture, &basis);
-  if (result == KTX_SUCCESS) {
-    result = ktxTexture_WriteToNamedFile(ktxTexture(texture), path);
-  }
+  result = ktxTexture_WriteToNamedFile(ktxTexture(texture), path);
   ktxTexture_Destroy(ktxTexture(texture));
   return result == KTX_SUCCESS ? true_v : false_v;
 }
@@ -288,7 +277,12 @@ material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
       .max_texture_count = 256,
       .asset_publisher = &ctx->asset_publisher,
   };
-  const VkrDeviceInformation device_info = {0};
+  /* Native `.vkt` loads need a device family; these tests never upload. */
+  const VkrDeviceInformation device_info = {
+      .supports_texture_astc_4x4 = true_v,
+      .supports_texture_bc7 = true_v,
+      .supports_texture_bc5 = true_v,
+  };
   if (!vkr_texture_system_init(&device_info, &texture_cfg, NULL,
                                &ctx->texture_system)) {
     material_pbr_test_shutdown_publisher(ctx);
@@ -1430,7 +1424,6 @@ test_compressed_texture_subresource_shapes(MaterialPbrTestContext *ctx) {
       {"texture_cube.vkt", 1u, 6u, VKR_TEXTURE_TYPE_CUBE_MAP, 6u},
       {"texture_cube_array.vkt", 2u, 6u, VKR_TEXTURE_TYPE_CUBE_MAP_ARRAY, 12u},
   };
-  ctx->texture_system.supports_texture_astc_4x4 = true_v;
   for (uint32_t c = 0u; c < ArrayCount(cases); ++c) {
     char relative_path[256] = {0};
     char absolute_path[1024] = {0};
@@ -1439,8 +1432,8 @@ test_compressed_texture_subresource_shapes(MaterialPbrTestContext *ctx) {
     snprintf(absolute_path, sizeof(absolute_path), "%s%s", PROJECT_SOURCE_DIR,
              relative_path);
     material_pbr_test_remove_file(relative_path);
-    assert(material_pbr_test_write_uastc_texture(absolute_path, cases[c].layers,
-                                                 cases[c].faces) == true_v);
+    assert(material_pbr_test_write_native_texture(
+               absolute_path, cases[c].layers, cases[c].faces) == true_v);
 
     char request_path[320] = {0};
     snprintf(request_path, sizeof(request_path), "%s?cs=linear&tc=color_linear",
@@ -1497,7 +1490,7 @@ test_texture_request_owns_pending_publication(MaterialPbrTestContext *ctx) {
   const char *relative = "tests/tmp/material_pbr/request_owned.vkt";
   char absolute[1024];
   snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, relative);
-  assert(material_pbr_test_write_uastc_texture(absolute, 1u, 1u));
+  assert(material_pbr_test_write_native_texture(absolute, 1u, 1u));
   const String8 path = string8_create_from_cstr((const uint8_t *)relative,
                                                 string_length(relative));
 

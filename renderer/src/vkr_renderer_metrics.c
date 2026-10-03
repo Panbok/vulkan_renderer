@@ -647,15 +647,6 @@ vkr_internal bool8_t vkr_renderer_metrics_register_assets(
   VKR_REGISTER_F64(mesh_fetch_overfetch_after,
                    "asset.mesh.fetch_overfetch_after", VKR_METRIC_DOMAIN_ASSET,
                    VKR_METRIC_UNIT_RATIO);
-  VKR_REGISTER_U64(texture_transcode_cache_hits,
-                   "asset.texture.transcode_cache.hits_total",
-                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(texture_transcode_cache_misses,
-                   "asset.texture.transcode_cache.misses_total",
-                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(texture_transcode_cache_writes,
-                   "asset.texture.transcode_cache.writes_total",
-                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(material_texture_stream_pending,
                    "asset.material.texture_stream.pending",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
@@ -1664,12 +1655,6 @@ vkr_internal void vkr_renderer_metrics_collect_assets(
                   ? (float64_t)mesh->bytes_fetched_after /
                         (float64_t)mesh->analyzed_vertex_bytes_after
                   : 0.0);
-  VKR_SET_U64(texture_transcode_cache_hits,
-              context->application.texture_transcode_cache_hits);
-  VKR_SET_U64(texture_transcode_cache_misses,
-              context->application.texture_transcode_cache_misses);
-  VKR_SET_U64(texture_transcode_cache_writes,
-              context->application.texture_transcode_cache_writes);
   VKR_SET_U64(material_texture_stream_pending,
               context->application.material_texture_stream_pending);
   VKR_SET_U64(material_texture_stream_demanded_missing,

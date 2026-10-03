@@ -124,12 +124,6 @@ typedef struct VkrProjectJob {
    names packed textures; a revision without it is scanned. */
 #define VKR_PROJECT_PACKED_MARKER ".textures-packed"
 
-#if defined(__APPLE__) && defined(__aarch64__)
-#define VKR_PROJECT_NATIVE_ASTC true_v
-#else
-#define VKR_PROJECT_NATIVE_ASTC false_v
-#endif
-
 // =============================================================================
 // Failure, cancellation and progress
 // =============================================================================
@@ -184,8 +178,8 @@ bool8_t vkr_project_identifier(VkrProjectJob *job, const VkrBakeryJson *value,
  * entries); returns the count appended to `arguments`. */
 uint32_t vkr_project_tier_arguments(const VkrProjectJob *job,
                                     const char **arguments);
-/** Tool spelling of the job's texture encoding: "uastc", "astc",
- * "astc-fast", "bc" or "bc-fast". */
+/** Tool spelling of the job's texture encoding: "astc", "astc-fast", "bc" or
+ * "bc-fast". */
 const char *vkr_project_texture_encoding_name(const VkrProjectJob *job);
 /** After a finalize publishes `records`, appends a ready record for every
  * material of theirs the cook did not record, from its published file under
@@ -193,9 +187,9 @@ const char *vkr_project_texture_encoding_name(const VkrProjectJob *job);
 void vkr_project_record_ready_remaining(VkrProjectJob *job,
                                         VkrBakeryJson *const *records,
                                         uint32_t count, const char *root);
-/** Name suffix of job-packed textures at the job's tier and encoding: "",
- * "-preview", "-astc", "-astc-preview", "-astc-fast", "-astc-fast-preview",
- * "-bc", "-bc-preview", "-bc-fast" or "-bc-fast-preview". */
+/** Name suffix of job-packed textures at the job's tier and encoding: "" or
+ * "-preview" for the final encodings, whose names are host-neutral, and
+ * "-astc-fast", "-astc-fast-preview", "-bc-fast" or "-bc-fast-preview". */
 const char *vkr_project_texture_suffix(const VkrProjectJob *job);
 /** Records of `records` (an asset array) still at the preview or deferred
  * tier. */

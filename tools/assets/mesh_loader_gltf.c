@@ -877,7 +877,7 @@ vkr_mesh_loader_gltf_bake_normal_roughness_variant(
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     goto cleanup;
   }
-  /* A preview-tier or ASTC bake never takes a final UASTC bake's name. */
+  /* A preview-tier or fast-encoded bake never takes a final bake's name. */
   const char *tier = vkr_vkt_variant_suffix();
   String8 normal_variant = string8_create_formatted(
       info->load_allocator, "%.*s_normal%s.vkt", (int32_t)normal_recipe.length,
@@ -2961,13 +2961,10 @@ typedef struct VkrMeshLoaderGltfMaterialJob {
 #define VKR_GLTF_CONVERT_ARENA_RESERVE GB(4)
 #define VKR_GLTF_CONVERT_ARENA_COMMIT MB(16)
 
-/* A final-tier UASTC paired bake encodes on every core, so a few materials at
-   once keep the cores busy through its serial stretches while bounding
-   memory. At the preview tier's mip floor, or with the far cheaper native
-   encoders, decoding and mips weigh as much as the block encode, so each
-   logical core takes a material, up to the worker array's 16. */
-#define VKR_GLTF_MATERIAL_MAX_WORKERS 3u
-#define VKR_GLTF_MATERIAL_WIDE_MAX_WORKERS 16u
+/* With the native block encoders, decoding and mips weigh as much as the
+   encode, so each logical core takes a material, up to the worker array's
+   16. */
+#define VKR_GLTF_MATERIAL_MAX_WORKERS 16u
 
 vkr_internal void *vkr_mesh_loader_gltf_material_worker(void *argument) {
   VkrMeshLoaderGltfMaterialJob *job = argument;
@@ -3177,12 +3174,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
   /* The workers' sources do not change during the cook, so each is read and
      hashed once however many packs name it. */
   vkr_vkt_begin_file_hash_scope();
-  vkr_mesh_loader_gltf_run_workers(
-      info, count,
-      vkr_vkt_preview_tier() || vkr_vkt_encoding() != VKR_VKT_ENCODING_UASTC
-          ? VKR_GLTF_MATERIAL_WIDE_MAX_WORKERS
-          : VKR_GLTF_MATERIAL_MAX_WORKERS,
-      vkr_mesh_loader_gltf_material_worker, &job);
+  vkr_mesh_loader_gltf_run_workers(info, count, VKR_GLTF_MATERIAL_MAX_WORKERS,
+                                   vkr_mesh_loader_gltf_material_worker, &job);
   vkr_vkt_end_file_hash_scope();
 
   /* Results publish in material order, as a serial cook would. */

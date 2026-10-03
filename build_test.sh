@@ -7,7 +7,7 @@ python3 "$(dirname "$0")/tools/checks/check_path_boundaries.py"
 python3 "$(dirname "$0")/tools/checks/report_long_functions.py" --quiet \
   --max-lines 300
 
-# Tests consume the checked-in cooked fixtures. Bakery owns regeneration.
+# Tests consume fixtures cooked on this host by vkr_bakery build assets/bakery.json.
 VKR_BUILD_TARGET=vulkan_renderer_tester VKR_BUILD_LABEL="VKR CPU tests" \
   "$(dirname "$0")/build.sh" Debug
 # check_bakery_package.py packages a project with the Debug player template.
@@ -58,7 +58,4 @@ if [ ! -x "${TEST_BIN}" ]; then
 fi
 
 # Execute the test runner
-export VKR_TEXTURE_VKT_STRICT=0
-export VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK=1
-export VKR_TEXTURE_VKT_ALLOW_LEGACY=1
 exec "${TEST_BIN}" "$@"

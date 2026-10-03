@@ -6,11 +6,15 @@
 
 Cooks the glTF with explicit Bakery tool runs: the mesh in bundle mode, so
 its materials sit in ./materials and its textures in ./textures beside the
-.vkb, every source-image texture a material names into its .vkt, and the
-animation bank. It then replaces the content directory (default
-assets/characters/mannequin) with the source glTF, the cooked files, the clip
-table and the credits notice, and writes the FPS module's generated clip
-header and the engine content list. Nothing else in the repository changes.
+.vkb, and the animation bank. Textures are host-native and untracked
+(ADR-012), so the materials name source images only: the paired normal and
+metal-roughness bakes give way to the source normal and ORM images, and every
+source image is test-cooked into its .vkt but not published. The build cooks
+them on each host from the engine content list. It then replaces the content
+directory (default assets/characters/mannequin) with the source glTF, the
+cooked mesh and bank, the materials, the source images, the clip table and
+the credits notice, and writes the FPS module's generated clip header and the
+engine content list. Nothing else in the repository changes.
 """
 
 import argparse
@@ -102,7 +106,16 @@ def _header(clips):
 ROOTS = ["mannequin.vkb", "mannequin.vka", "NOTICE.md"]
 
 
-def _content_list(content, runtime):
+def _texture_classes(destination):
+    """Content-relative source image -> Bakery class, from material queries."""
+    classes = {}
+    for material in sorted((destination / "materials").glob("*.mt")):
+        for image, query in _material_textures(material):
+            classes[str(image.relative_to(destination))] = TEXTURE_CLASSES[query.get("tc", "color_srgb")]
+    return classes
+
+
+def _content_list(content, runtime, classes):
     """The engine content's closure roots and every runtime file they reach:
     the mesh, bank and notice, the materials and the textures they name
     (with each source image's cooked .vkt). The source glTF and images stay
@@ -116,6 +129,9 @@ def _content_list(content, runtime):
     lines.append("set(VKR_MANNEQUIN_FILES")
     lines += [f"    {content}/{name}" for name in runtime if name not in ROOTS]
     lines[-1] += ")"
+    lines.append("set(VKR_MANNEQUIN_TEXTURES")
+    lines += [f'    "{content}/{name}|{texture_class}"' for name, texture_class in sorted(classes.items())]
+    lines[-1] += ")"
     return "\n".join(lines) + "\n"
 
 
@@ -126,6 +142,21 @@ def _material_textures(material):
         if match:
             query = dict(part.split("=", 1) for part in match.group(2).split("&") if "=" in part)
             yield (material.parent / match.group(1)).resolve(), query
+
+
+def _use_source_pairs(staging):
+    """Point paired normal and metal-roughness bakes at their source images,
+    whose sidecars every host cooks."""
+    sources = {"normal_texture": "./../textures/mannequin_normal.png?tc=normal_rg",
+               "metallic_roughness_texture": "./../textures/mannequin_orm.png?tc=data_mask"}
+    for material in sorted((staging / "materials").glob("*.mt")):
+        lines = []
+        for line in material.read_text(encoding="utf-8").splitlines():
+            key = line.split("=", 1)[0]
+            if key in sources and line.split("?", 1)[0].endswith(".vkt"):
+                line = f"{key}={sources[key]}"
+            lines.append(line)
+        material.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _cook_textures(bakery, staging):
@@ -170,6 +201,7 @@ def main():
               "--import-id", "mannequin"])
         _run([args.bakery, "tool", "animation", "--input", staging / "mannequin.gltf",
               "--output", staging / "mannequin.vka"])
+        _use_source_pairs(staging)
         _cook_textures(args.bakery, staging)
         destination = REPO / content
         if destination.exists():
@@ -179,19 +211,23 @@ def main():
         # and every texture the materials name.
         keep = ["mannequin.gltf", "mannequin.bin", "mannequin.vkb", "mannequin.vka"]
         keep += [f"materials/{p.name}" for p in sorted((staging / "materials").glob("*.mt"))]
-        keep += [f"textures/{p.name}" for p in sorted((staging / "textures").glob("*")) if p.is_file()]
+        keep += [f"textures/{p.name}" for p in sorted((staging / "textures").glob("*"))
+                 if p.is_file() and p.suffix != ".vkt"]
         for name in keep:
             (destination / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(staging / name, destination / name)
     (destination / "mannequin.clips.json").write_text(json.dumps(clips, indent=2) + "\n", encoding="utf-8")
     (destination / "NOTICE.md").write_text(NOTICE, encoding="utf-8")
     runtime = _runtime_files(destination.resolve())
-    missing = [name for name in runtime if not (destination / name).is_file()]
+    missing = [name for name in runtime
+               if not name.endswith(".vkt") and not (destination / name).is_file()]
     if missing:
         raise RuntimeError("Published content lacks " + ", ".join(missing))
     if content == CONTENT:
         (REPO / HEADER).write_text(_header(clips["clips"]), encoding="utf-8")
-        (REPO / CONTENT_LIST).write_text(_content_list(content, runtime), encoding="utf-8")
+        (REPO / CONTENT_LIST).write_text(
+            _content_list(content, runtime, _texture_classes(destination.resolve())),
+            encoding="utf-8")
     for path in sorted(destination.rglob("*")):
         if path.is_file():
             print(f"{path.relative_to(REPO)}  {path.stat().st_size} bytes")

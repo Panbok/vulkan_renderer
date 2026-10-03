@@ -154,10 +154,6 @@ VKR_MAIN(argc, argv) {
     if (ktxTexture_LoadImageData(ktxTexture(ktx), NULL, 0) != KTX_SUCCESS) {
       goto cleanup;
     }
-    if (ktxTexture2_NeedsTranscoding(ktx) &&
-        ktxTexture2_TranscodeBasis(ktx, KTX_TTF_RGBA32, 0) != KTX_SUCCESS) {
-      goto cleanup;
-    }
     image.width = ktx->baseWidth;
     image.height = ktx->baseHeight;
     // Vulkan format numeric values are part of the KTX2 file contract.

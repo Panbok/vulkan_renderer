@@ -21,7 +21,7 @@ build_novcpkg
 assets/textures/*
 !assets/textures/bistro_indoor_probe_*.png
 !assets/textures/UbuntuMono21px_0.png
-!assets/textures/UbuntuMono21px_0.png.vkt
+!assets/textures/editor-light-labels.png
 assets/models/*
 !assets/models/*.vkr.json
 assets/meters
@@ -80,3 +80,7 @@ assets/*.spv
 .vkr-graphics-settings.json.*.tmp
 __pycache__/
 *.pyc
+
+# Cooked textures are host-native (ASTC on Apple silicon, BC on x86-64) and
+# cooked locally by vkr_bakery; only their sources are tracked (ADR-012).
+*.vkt

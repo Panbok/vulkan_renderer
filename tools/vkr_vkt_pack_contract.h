@@ -40,13 +40,3 @@ static inline int vkr_vkt_filename_is_normal_rg(const char *name,
   }
   return 0;
 }
-
-// BasisU's BC5/EAC_RG11 targets source their second output channel from alpha.
-// Retain G for RGBA targets and mirror it to A for two-channel targets.
-static inline void vkr_vkt_prepare_normal_rg_for_basis(uint8_t *pixels,
-                                                       size_t pixel_count) {
-  for (size_t pixel_index = 0; pixel_index < pixel_count; ++pixel_index) {
-    uint8_t *pixel = pixels + pixel_index * 4u;
-    pixel[3] = pixel[1];
-  }
-}
