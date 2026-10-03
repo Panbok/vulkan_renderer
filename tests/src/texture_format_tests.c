@@ -25,6 +25,11 @@ static bool32_t test_compressed_format_region_sizes(void) {
          64u);
   assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM, 1u,
                                         1u) == 16u);
+  /* 13x7 texels span 3x2 blocks of 6x6. */
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB, 13u,
+                                        7u) == 96u);
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM, 6u,
+                                        6u) == 16u);
   assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_COUNT, 1u, 1u) ==
          0u);
   printf("  test_compressed_format_region_sizes PASSED\\n");

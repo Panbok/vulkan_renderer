@@ -7,7 +7,7 @@ and derived bakes, marks its mesh record and reports `preview_assets`.
 and its materials and textures then match a scene imported at the final tier
 directly. These run with `texture_encoding: uastc`, as on a host without
 ASTC. With `texture_encoding: astc` preview and final imports hold native
-ASTC 4x4 textures under their own names, and on x86-64 builds, where it is
+ASTC textures under their own names, 6x6 colours and 4x4 normals, and on x86-64 builds, where it is
 the default, `texture_encoding: bc` holds BC7 colours and data and BC5
 normals. A `deferred` import names no
 texture until `finalize_textures` adds final ones to the same asset, and a
@@ -30,6 +30,9 @@ import uuid
 import zlib
 
 import project_jobs as jobs
+
+# Native ASTC vkFormats: 4x4 unorm and sRGB, then 6x6 unorm and sRGB.
+ASTC_FORMATS = {157, 158, 165, 166}
 
 
 def write_png(path, width, height, seed):
@@ -161,21 +164,23 @@ def main():
             return {struct.unpack('<I', (mesh.parent / 'materials' / reference)
                                   .read_bytes()[12:16])[0] for reference in references}
 
-        # Native ASTC: preview and final textures are named apart and hold
-        # ASTC 4x4 blocks (vkFormat 157 unorm, 158 sRGB).
+        # Native ASTC: preview and final textures are named apart; colours
+        # hold ASTC 6x6 blocks (vkFormat 165 unorm, 166 sRGB) and normals
+        # ASTC 4x4 (157, 158).
         astc_preview = create('preview', 'astc')
         assert astc_preview['preview_assets'] == 1, astc_preview
         record, _, references = scene_state(astc_preview)
         assert any(reference.endswith('-astc-preview.vkt') for reference in references), references
         assert list(generated.glob('*.astc.preview.vkt')), 'ASTC preview pair bake is named apart'
-        assert formats(astc_preview, record, references) <= {157, 158}
+        assert formats(astc_preview, record, references) <= ASTC_FORMATS
         astc_final = create(None, 'astc')
         assert astc_final['preview_assets'] == 0, astc_final
         record, _, references = scene_state(astc_final)
         packed = [reference for reference in references if '-color-' in reference]
         assert packed and all(reference.endswith('-astc.vkt') for reference in packed), packed
         assert list(generated.glob('*.astc.vkt')), 'ASTC pair bake is named apart'
-        assert formats(astc_final, record, references) <= {157, 158}
+        final_formats = formats(astc_final, record, references)
+        assert final_formats <= ASTC_FORMATS and {157, 166} <= final_formats, final_formats
 
         # Fast encode speed: UASTC has no fast encoder and ignores it; on
         # macOS ASTC comes from the system encoder under its own names and
@@ -242,7 +247,7 @@ def main():
         assert filled['preview_assets'] == 0, filled
         filled_record, _, filled_references = scene_state(filled)
         assert filled_record['id'] == deferred_record['id'] and 'texture_tier' not in filled_record
-        assert filled_references and formats(filled, filled_record, filled_references) <= {157, 158}
+        assert filled_references and formats(filled, filled_record, filled_references) <= ASTC_FORMATS
         filled_mesh = Path(filled['scene_path']).parent / filled_record['artifacts'][0]['path']
         assert len(jobs.ready_records(ready, filled_mesh.parent / 'materials')) == 1
 
@@ -281,7 +286,7 @@ def main():
         assert len(jobs.ready_records(library_ready, mesh.parent / 'materials')) == 1
         assert references and {struct.unpack('<I', (mesh.parent / 'materials' / reference)
                                               .read_bytes()[12:16])[0]
-                               for reference in references} <= {157, 158}, references
+                               for reference in references} <= ASTC_FORMATS, references
         assert not list((project / '.staging').iterdir())
 
         rejected = root / 'rejected.json'

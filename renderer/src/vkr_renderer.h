@@ -575,6 +575,10 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT,
   /** Exact reflected-hit payloads and paired stable temporal identities. */
   VKR_TEXTURE_FORMAT_R32G32B32A32_UINT,
+  /** 3.56-bit ASTC for Apple-host colour and data masks (ADR-012); any ASTC
+   * LDR device samples it. Appended so stored format values stay stable. */
+  VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM,
+  VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;

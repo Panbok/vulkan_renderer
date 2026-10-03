@@ -1023,6 +1023,15 @@ const char *bc_profile(TextureClass texture_class, VkrVktEncoding encoding) {
                                               : "bc7-bc7e-veryfast-v1";
 }
 
+// ASTC block side of each class under the `astc` encoding (ADR-012). Colours
+// and data masks take 6x6, 3.56 bits per texel against 8: on one in six of
+// Bistro's images astcenc "fastest" scored 43.8 against 51.5 dB on colours and
+// 51.4 against 72.6 dB on metal-roughness. Normals and alpha-tested colours,
+// whose alpha decides coverage, keep 4x4.
+uint32_t astc_block_side(TextureClass texture_class, const PackConfig &config) {
+  return texture_class == TextureClass::kNormalRg || config.cutout ? 4u : 6u;
+}
+
 std::string pack_settings_identity(TextureClass texture_class,
                                    TextureShape shape,
                                    const PackConfig &config) {
@@ -1030,7 +1039,8 @@ std::string pack_settings_identity(TextureClass texture_class,
   settings << "asset=1;shape=" << texture_shape_metadata_value(shape)
            << ";class=" << texture_class_metadata_value(texture_class);
   if (config.encoding == VKR_VKT_ENCODING_ASTC) {
-    settings << ";encoding=astc-4x4-fastest";
+    const uint32_t side = astc_block_side(texture_class, config);
+    settings << ";encoding=astc-" << side << "x" << side << "-fastest";
     if (texture_class == TextureClass::kNormalRg) {
       settings << ";astc_rg=alpha-one-db39-c1-v2";
     }
@@ -1431,19 +1441,23 @@ bool encode_block_images(ktxTexture2 *source, ktxTexture2 *encoded,
       encoded, encode);
 }
 
-// Encodes every image of an RGBA8 texture to ASTC 4x4 with astcenc, as
-// ktxTexture2_CompressAstcEx does at its "fastest" level, and moves the
+// Encodes every image of an RGBA8 texture to ASTC with square blocks of
+// `block_side` (4 or 6) using astcenc, as ktxTexture2_CompressAstcEx does at
+// its "fastest" level, and moves the
 // key/value data to the returned texture. Normals (R, G; B zero, A one) aim
 // at 39 dB with one candidate instead of the preset's 43: on Bistro's baked
 // normals that encoded 1.8 times faster and still scored above UASTC
 // "faster" (41.2 against 40.9 dB in RG), where the preset kept searching
 // blocks that never reach its target. libktx exposes neither setting.
 ktxTexture2 *compress_astc(ktxTexture2 *source, const ImageTexels &texels,
-                           TextureClass texture_class, uint32_t thread_count,
-                           KTX_error_code *out_result) {
-  ktxTexture2 *encoded =
-      create_block_texture(source, VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
-                           VK_FORMAT_ASTC_4x4_SRGB_BLOCK, out_result);
+                           TextureClass texture_class, uint32_t block_side,
+                           uint32_t thread_count, KTX_error_code *out_result) {
+  const bool wide = block_side == 6u;
+  ktxTexture2 *encoded = create_block_texture(
+      source,
+      wide ? VK_FORMAT_ASTC_6x6_UNORM_BLOCK : VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+      wide ? VK_FORMAT_ASTC_6x6_SRGB_BLOCK : VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
+      out_result);
   if (!encoded) {
     return nullptr;
   }
@@ -1452,8 +1466,8 @@ ktxTexture2 *compress_astc(ktxTexture2 *source, const ImageTexels &texels,
 
   const bool srgb = source->vkFormat == VK_FORMAT_R8G8B8A8_SRGB;
   astcenc_config astc_config;
-  if (astcenc_config_init(srgb ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR, 4u, 4u,
-                          1u, ASTCENC_PRE_FASTEST, 0u,
+  if (astcenc_config_init(srgb ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR,
+                          block_side, block_side, 1u, ASTCENC_PRE_FASTEST, 0u,
                           &astc_config) != ASTCENC_SUCCESS) {
     *out_result = KTX_INVALID_OPERATION;
     return nullptr;
@@ -1967,6 +1981,7 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
       // Bistro's colours, paired normals and metal-roughness (52.6/40.1/49.2
       // against 52.2/38.5/47.4 dB) at 4 to 9 times its speed (ADR-077).
       encoded.reset(compress_astc(texture, level_texels, texture_class,
+                                  astc_block_side(texture_class, config),
                                   config.basis_threads, &result));
     } else if (config.encoding == VKR_VKT_ENCODING_ASTC_FAST) {
       encoded.reset(compress_astc_system(texture, &result));
@@ -2753,8 +2768,9 @@ int vkr_vkt_packer_main(int argc, char **argv) {
                                          config.input_dir.u8string());
   {
     std::ostringstream encode_config_line;
-    static const char *const encodings[] = {
-        "", "astc-4x4-fastest", "astc-4x4-system", "bc7-bc5", "bc7-bc5-fast"};
+    static const char *const encodings[] = {"", "astc-6x6-4x4-fastest",
+                                            "astc-4x4-system", "bc7-bc5",
+                                            "bc7-bc5-fast"};
     encode_config_line << "Encode config: "
                        << (is_native(config)
                                ? std::string("encoding=") +

@@ -33,6 +33,8 @@
 #define VKR_KTX2_VK_FORMAT_BC7_SRGB_BLOCK 146u
 #define VKR_KTX2_VK_FORMAT_ASTC_4x4_UNORM_BLOCK 157u
 #define VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK 158u
+#define VKR_KTX2_VK_FORMAT_ASTC_6x6_UNORM_BLOCK 165u
+#define VKR_KTX2_VK_FORMAT_ASTC_6x6_SRGB_BLOCK 166u
 
 vkr_internal String8 vkr_texture_strip_resource_key_prefix(String8 name);
 
@@ -2549,7 +2551,7 @@ vkr_internal bool8_t vkr_texture_ktx2_transcode_upload(
 }
 
 /* Block formats a workspace import stores for its host (ADR-012): native
- * ASTC 4x4 on ASTC hosts, BC7 and BC5 on BC hosts. */
+ * ASTC 4x4 and 6x6 on ASTC hosts, BC7 and BC5 on BC hosts. */
 typedef struct VkrTextureNativeBlockFormat {
   uint32_t vk_format;
   VkrTextureFormat format;
@@ -2562,6 +2564,10 @@ vkr_global const VkrTextureNativeBlockFormat
          VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM, "ASTC 4x4"},
         {VKR_KTX2_VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
          VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB, "ASTC 4x4"},
+        {VKR_KTX2_VK_FORMAT_ASTC_6x6_UNORM_BLOCK,
+         VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM, "ASTC 6x6"},
+        {VKR_KTX2_VK_FORMAT_ASTC_6x6_SRGB_BLOCK,
+         VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB, "ASTC 6x6"},
         {VKR_KTX2_VK_FORMAT_BC7_UNORM_BLOCK, VKR_TEXTURE_FORMAT_BC7_UNORM,
          "BC7"},
         {VKR_KTX2_VK_FORMAT_BC7_SRGB_BLOCK, VKR_TEXTURE_FORMAT_BC7_SRGB, "BC7"},
@@ -2582,8 +2588,11 @@ vkr_texture_native_block_format(uint32_t vk_format) {
 vkr_internal bool8_t vkr_texture_system_samples_format(
     const VkrTextureSystem *system, VkrTextureFormat format) {
   switch (format) {
+  /* ASTC LDR support covers every block size on Metal and Vulkan. */
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB:
     return system->supports_texture_astc_4x4;
   case VKR_TEXTURE_FORMAT_BC7_UNORM:
   case VKR_TEXTURE_FORMAT_BC7_SRGB:

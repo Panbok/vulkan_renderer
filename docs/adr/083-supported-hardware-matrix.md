@@ -91,7 +91,9 @@ Production Bistro targets a 16 GB Mac or a discrete GPU with 8 GB
 GPUs, remain supported for rendering. The texture resolution setting
 ([ADR-012](012-texture-compression-pipeline.md)) is their reduced tier: Metal
 defaults to the 2048 limit, which took Bistro's textures from 3.18 to 2.00 GB on
-the M1 Pro, and 1024 lowers it further. The D16 local shadow atlas
+the M1 Pro, and 1024 lowers it further. Managed imports on Apple silicon
+encode colours and data masks as ASTC 6x6 (ADR-012), 2.25 times smaller than
+4x4. The D16 local shadow atlas
 ([ADR-019](019-bounded-forward-spatial-lighting.md)) takes Bistro's atlas from
 768 to 384 MiB on every device.
 

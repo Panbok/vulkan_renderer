@@ -241,6 +241,13 @@ static void test_texture_ktx2_native_block_decode(void) {
       {VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
        VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB,
        {.supports_texture_astc_4x4 = true_v}},
+      /* At 8x8 and 4x4, 6x6 blocks number the same as 4x4 blocks. */
+      {VK_FORMAT_ASTC_6x6_SRGB_BLOCK,
+       VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB,
+       {.supports_texture_astc_4x4 = true_v}},
+      {VK_FORMAT_ASTC_6x6_UNORM_BLOCK,
+       VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM,
+       {.supports_texture_astc_4x4 = true_v}},
       {VK_FORMAT_BC7_SRGB_BLOCK,
        VKR_TEXTURE_FORMAT_BC7_SRGB,
        {.supports_texture_bc7 = true_v}},

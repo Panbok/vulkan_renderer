@@ -23,21 +23,35 @@ sRGB intent, device class, and advertised BC7, BC5, ASTC, ETC2, and EAC RG11
 support. Every selected target has a libktx transcode mapping; RGBA32 is the
 terminal fallback.
 
-Textures a workspace derives for its own host may instead hold native ASTC 4x4
-blocks (`--encoding astc`, astcenc's `fastest` preset). Managed imports choose
+Textures a workspace derives for its own host may instead hold native ASTC
+blocks (`--encoding astc`, astcenc's `fastest` preset): 6x6 for colours and
+data masks, 4x4 for normals and alpha-tested colours. Managed imports choose
 this encoding on Apple silicon, whose GPUs sample ASTC under Metal and
 MoltenVK; x86-64 hosts choose BC (below), other hosts UASTC, and repository
 `.vkt` files and bundles keep UASTC, so one file still serves every device. On Bistro's converted colours, paired normals
 and metallic-roughness, `fastest` measured 52.6, 40.1 and 49.2 dB against 52.2,
 38.5 and 47.4 dB for UASTC `faster`, at four to nine times its speed. The
-settings identity records `encoding=astc-4x4-fastest`, so an ASTC file never
-satisfies a UASTC recipe. Native ASTC normals store alpha as one instead of the
+settings identity records `encoding=astc-6x6-fastest` or `astc-4x4-fastest`,
+so an ASTC file never satisfies a UASTC recipe, and files encoded before 6x6
+re-encode. Native ASTC normals store alpha as one instead of the
 G copy, which only Basis two-channel transcodes read; every shader samples XY.
 The packer calls astcenc directly, since libktx exposes no search limits: other
 classes keep the preset, and normals stop searching a block at 39 dB with one
 candidate. On baked Bistro normals that encoded 1.8 times faster and scored
 41.2 dB in RG against 40.9 for UASTC `faster`.
-A third encoding, `astc-fast`, encodes the same ASTC 4x4 format with Apple's
+The 6x6 blocks cost 3.56 bits per texel against 8, which cuts colour and
+data-mask memory by 2.25 times for the M1 memory floor (ADR-083). On one in
+six of Bistro's level-0 images (31 colours, 158 Mpx; 32 metal-roughness masks,
+133 Mpx; astcenc `fastest`, 2026-10-03), colours measured 43.8 against
+51.5 dB for 4x4 (worst image 33.6 against 40.4 dB) and masks 51.4 against
+72.6 dB (worst 39.6 against 59.6 dB), at 1.2 and 1.4 times the encode speed.
+Alpha-tested colours lost about 10 dB in RGB at 6x6 and keep 4x4, since
+their alpha decides coverage; normals keep 4x4 because their error enters
+shading directly. On Metal a 1024² Bistro colour rendered from 6x6 blocks
+measured 46.5 dB in final colour against its UASTC transcode, and 47.5 dB
+as a linear texture. ASTC LDR support covers every block size, so the
+existing ASTC capability gates 6x6 on both backends.
+A third encoding, `astc-fast`, encodes every class as ASTC 4x4 with Apple's
 system encoder (AppleTextureEncoder, macOS only), with channels weighed
 equally and blocks accepted below a mean square error of 2^-12. It is for
 textures only the editor shows (ADR-077's `texture_encode_speed`): on Bistro's

@@ -18,6 +18,8 @@ static const VkrTextureFormatInfo
                                                    false_v},
         [VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM] = {4, 4, 4, 16, true_v, false_v},
         [VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB] = {4, 4, 4, 16, true_v, false_v},
+        [VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM] = {4, 6, 6, 16, true_v, false_v},
+        [VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB] = {4, 6, 6, 16, true_v, false_v},
         [VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM] = {2, 4, 4, 16, true_v, false_v},
         [VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT] = {4, 1, 1, 8, false_v,
                                                     false_v},
