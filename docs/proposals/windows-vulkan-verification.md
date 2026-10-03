@@ -62,19 +62,29 @@ The three tracked fixtures `tests/fixtures/rendering/{editor_lights,editor_nodes
 recook with a different `source_hash` on any host: their dependency digests match
 the current inputs, but the stored aggregate matches none. Recook them on the Mac.
 
-Open items:
+Follow-up the same day:
 
-- Decide whether a cross-backend comparison may cover host-native cooked
-  content. Until then, `--cross-backend` cannot compare Metal and Vulkan Bistro
-  captures.
-- `win_bistro_production.case.json` still asserts `post.exposure.target_ev`
-  at most 0 and `post.exposure.multiplier` at most 1. Since `ba889215` Vulkan
-  exposure adapts and reports 2.08 and 4.22, so both production runs fail only
-  on these assertions.
-- Install a `zstd` command-line tool and run `check_bakery_bundle.py` and
-  `check_bakery_package.py`.
-- Repeat build, recook, CPU tests, BC outputs, the D16 atlas and the hardware
-  matrix row on an NVIDIA Ampere (RTX 30) GPU.
+- The scene content digest is now host-neutral
+  ([ADR-051](../adr/051-renderer-harness-and-evidence.md)), and the glTF source
+  fingerprint ignores CR line endings. The Vulkan text generation was
+  re-accepted under the new fingerprint (`f184f283648e494618ecad6ffcf0713d8012d849b8bd3f86c96d10c02fc00e94`).
+  The cross-backend local-shadow comparison waits for the Mac to re-accept its
+  generations ([Metal follow-ups](metal-followups.md)).
+- Three runs of `smoke.bistro.vulkan.text.snapshot` with identical inputs
+  differ in captures 5, 8, 9, 12 and 13, by up to 6.3% of pixels (peak
+  157/255), on foliage and pot shadows near the lamps. The accepted generation
+  therefore fails some later runs until that variation is fixed.
+- `win_bistro_production.case.json` asserted the 2026-08-28 exposure (target
+  EV about -0.16). Later exposure and lighting changes moved it to 2.08 EV,
+  multiplier 4.22; the assertions now bracket those values and pass.
+- With `zstd` installed, `check_bakery_bundle.py` passes, and
+  `check_bakery_package.py` passes after two Windows fixes: it read the UTF-8
+  report with the system code page, and it cancelled with SIGINT, which Windows
+  cannot send to another process. Bakery now also cancels on Ctrl+Break
+  (`SIGBREAK`), which reaches a child started in its own process group.
+
+Open item: repeat build, recook, CPU tests, BC outputs, the D16 atlas and the
+hardware matrix row on an NVIDIA Ampere (RTX 30) GPU.
 
 ## 2026-09-12 Windows execution record
 

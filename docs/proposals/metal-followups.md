@@ -36,9 +36,27 @@ They use the Bistro snapshot comparison policy: at most 0.002% of pixels may
 differ, by any amount, with a mean error of at most 0.0005. Their first Metal
 generations (`local.offscreen`, M1 Pro, 2026-10-03) are published under
 [`tools/baselines/local.offscreen`](../../tools/baselines/local.offscreen); a
-repeat Metal snapshot of each passed with no failing pixel. On Windows, run
-each case with `vkr_harness snapshot --profile
-tools/profiles/local-offscreen.json --cross-backend` and record the result in
+repeat Metal snapshot of each passed with no failing pixel.
+
+The first Windows run could not compare them: the workload fingerprint hashed
+the cooked BC and ASTC textures, which differ by design. The scene content
+digest is now host-neutral ([ADR-051](../adr/051-renderer-harness-and-evidence.md)),
+which changed every workload fingerprint once. On the Mac:
+
+1. Build at the revision that carries the change and recook Bistro's meshes;
+   the glTF source fingerprint now ignores CR line endings, and LF sources keep
+   their fingerprints.
+2. Snapshot and re-accept the four Metal generations: both local-shadow
+   captures, `smoke.bistro.metal.text.snapshot` and
+   `smoke.sh_ibl.single_probe.snapshot`. Commit and push them.
+3. Run `smoke.bistro.metal.text.snapshot` twice and compare the two runs'
+   captures. On Vulkan, three runs with identical inputs differ in captures
+   5, 8, 9, 12 and 13, by up to 6.3% of pixels (peak 157/255), on foliage and
+   pot shadows near the lamps. The local-light contribution readback, which picks the fully
+   filtered lights, is the suspected source.
+
+Windows then runs each local-shadow case with `vkr_harness snapshot --profile
+tools/profiles/local-offscreen.json --cross-backend` and records the result in
 ADR-044.
 
 ## Deferred cross-backend work
