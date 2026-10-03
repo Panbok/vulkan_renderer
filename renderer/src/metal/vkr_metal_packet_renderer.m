@@ -51,8 +51,11 @@ enum {
   VKR_METAL_PACKET_TIMEOUT_MS = 5000,
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
   VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
-  /* The local shadow face array is the largest layered graph image. */
-  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+  /* The local shadow transmission arrays, one layer per face of the face
+     budget, are the largest layered graph images. Faces beyond the budget live
+     in squares of the atlas, whose layers are fewer. Every graph image
+     instance sizes its per-layer views and retained states by this bound. */
+  VKR_METAL_PACKET_MAX_TEXTURE_LAYERS = VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
   VKR_METAL_PACKET_GRAPH_INSTANCE_MAX = 8,
   VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
       VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
@@ -106,6 +109,11 @@ _Static_assert(VKR_TEXTURE_MAX_DIMENSION ==
                "Metal sampler mip-domain bound must match texture limits");
 _Static_assert(VKR_TEXTURE_MAX_DIMENSION <= UINT16_MAX,
                "Packed transmission pixels require 16-bit coordinates");
+_Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
+                       VKR_METAL_PACKET_MAX_TEXTURE_LAYERS &&
+                   VKR_LOCAL_SHADOW_MASK_LAYER_COUNT <=
+                       VKR_METAL_PACKET_MAX_TEXTURE_LAYERS,
+               "a layered local shadow graph image exceeds the graph layers");
 
 vkr_internal uint64_t vkr_metal_packet_align_up(uint64_t value,
                                                 uint64_t alignment);
