@@ -1362,6 +1362,24 @@ const VkrTypeDesc vkr_scene_shape_type = {
 static const char *const s_text_align_names[] = {"left", "center", "right",
                                                  NULL};
 
+/* Engine text fonts, named by their configuration `<name>.fontcfg` in the
+   font directory, which also registers them in the font system. The first
+   is the font system's default MTSDF font. A package carries another one
+   only when a scene's text uses it. */
+static const char *const s_text_font_names[] = {
+    "UbuntuMono-cooked", "UbuntuMono-Bold-cooked", "Inter-Regular-cooked",
+    "Inter-SemiBold-cooked", NULL};
+static const char *const s_text_font_labels[] = {
+    "Ubuntu Mono", "Ubuntu Mono Bold", "Inter", "Inter SemiBold", NULL};
+
+_Static_assert(ArrayCount(s_text_font_names) - 1u == VKR_SCENE_TEXT_FONT_COUNT,
+               "every engine text font has a scene reference slot");
+
+const char *vkr_scene_text_font_name(uint32_t font) {
+  return font < ArrayCount(s_text_font_names) - 1u ? s_text_font_names[font]
+                                                   : NULL;
+}
+
 static const VkrPropertyDesc s_text_properties[] = {
     {.name = "content",
      .label = "Text",
@@ -1370,10 +1388,16 @@ static const VkrPropertyDesc s_text_properties[] = {
      .capacity = sizeof(((SceneTextSettings *)0)->content),
      .kind = VKR_PROPERTY_STRING,
      .flags = VKR_PROPERTY_FLAG_MULTILINE},
+    {.name = "font",
+     .label = "Font",
+     .group = "Style",
+     .names = s_text_font_names,
+     .labels = s_text_font_labels,
+     .offset = TYPE_OFFSET(SceneTextSettings, font),
+     .kind = VKR_PROPERTY_ENUM},
     {.name = "size",
      .label = "Size",
      .tooltip = "Em height at unit scale",
-     .group = "Style",
      .unit = "m",
      .offset = TYPE_OFFSET(SceneTextSettings, size),
      .kind = VKR_PROPERTY_F32,

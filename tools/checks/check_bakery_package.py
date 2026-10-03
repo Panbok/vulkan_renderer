@@ -7,8 +7,8 @@ places a collider that names a cooked collision file by a workspace path. The
 package is read with the independent `.vkpak` parser of
 check_bakery_bundle.py. The check asserts that no archived document names an
 absolute or workspace path, the World and startup scene ship, the World's
-bytes are unchanged and its overlay is rewritten to content identities, the
-archives validate, a failed build keeps the earlier package, a refused output
+bytes are unchanged and its overlay is rewritten to content identities, a
+text font ships only because the World's text uses it, the archives validate, a failed build keeps the earlier package, a refused output
 folder is left alone, and a cancelled build leaves no package.
 """
 import argparse
@@ -110,8 +110,8 @@ def main():
         document['scenes'] = [{'id': scene_id, 'name': 'Arena', 'path': f'scenes/{scene_id}/scene.json'}]
         manifest.write_text(json.dumps(document))
 
-        # The World: one sun, and an overlay collider naming a cooked shape by
-        # its workspace path.
+        # The World: one sun, a sign set in a text font past the default, and
+        # an overlay collider naming a cooked shape by its workspace path.
         triangle_gltf(root / 'shape.gltf')
         (project / 'collision').mkdir()
         cooked = project / 'collision' / 'shape.vkc'
@@ -122,7 +122,10 @@ def main():
         world.write_text(json.dumps({'version': 2, 'entities': [{
             'name': 'Directional Light', 'parent': None,
             'transform': {'pos': [0, 3, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
-            'directional_light': {'enabled': True, 'intensity': 3}}]}))
+            'directional_light': {'enabled': True, 'intensity': 3}}, {
+            'name': 'Sign', 'parent': None,
+            'transform': {'pos': [0, 1, 0], 'rot': [0, 0, 0, 1], 'scale': [1, 1, 1]},
+            'components': {'text': {'content': 'Fixture', 'font': 'Inter-SemiBold-cooked'}}}]}))
         workspace_shape = f'projects/{project_id}/collision/shape.vkc'
         (project / 'world.editor.json').write_text(json.dumps({'version': 4, 'overrides': [{
             'scene_entity': 0, 'gltf_node': -1, 'source_fingerprint': '0' * 16, 'fields': 0,
@@ -215,6 +218,12 @@ def main():
         assert materials and textures, sorted(entries)
         fonts = {font['name']: font['config'] for font in game_object['fonts']}
         assert fonts['default-scene-font'] in entries
+        # A text font ships only because the World's sign uses it, under the
+        # name the runtime acquires.
+        assert fonts['Inter-SemiBold-cooked'] == 'assets/fonts/Inter-SemiBold-cooked.fontcfg'
+        assert {'assets/fonts/Inter-SemiBold-cooked.fontcfg',
+                'assets/fonts/Inter-SemiBold-cooked.vkfa'} <= set(entries)
+        assert not any('Inter-Regular' in name for name in entries), sorted(entries)
         assert 'assets/render_graphs/main.rendergraph.json' in entries
         report_events = [json.loads(line) for line in built.stdout.splitlines() if line.startswith('{')]
         stages = [event['source'] for event in report_events if event.get('ev') == 'start']
@@ -238,6 +247,7 @@ def main():
 
         # A failed stage keeps the earlier package.
         package_before = tree_digest(out)
+        world_bytes = world.read_bytes()
         world.write_text(json.dumps({'version': 2, 'entities': [{'name': 'Bad', 'mesh': {'path': str(cooked)}}]}))
         failed = subprocess.run(command, capture_output=True, text=True, timeout=300)
         assert failed.returncode == 1, failed.stdout + failed.stderr
@@ -246,7 +256,11 @@ def main():
                                  if line.startswith('{'))), failed.stdout
         assert tree_digest(out) == package_before
         assert not Path(str(out) + '.staging').exists()
-        world.write_text(json.dumps({'version': 2, 'entities': []}))
+        # The World loses its sun but keeps the sign: game content changes
+        # while the engine archive keeps the sign's font.
+        signed = json.loads(world_bytes)
+        signed['entities'] = [entity for entity in signed['entities'] if entity['name'] == 'Sign']
+        world.write_text(json.dumps(signed))
 
         # A window mode the player does not know is refused before packaging.
         modes = json.loads((project / 'game.json').read_text(encoding='utf-8'))
@@ -308,7 +322,7 @@ def main():
                    if line.startswith('{')), stdout
         assert not cancelled_out.exists() and not staging.exists()
     print('Bakery package: layout, two archives, portable documents, byte-identical World, rewritten '
-          'overlay, startup scene, stage events, report, kept package on failure, refused folder, '
+          'overlay, used text font, startup scene, stage events, report, kept package on failure, refused folder, '
           'finalized project inventory, archive reuse and cancellation passed')
 
 

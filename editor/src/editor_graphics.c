@@ -85,6 +85,7 @@ void vkr_editor_graphics_build(VkrEditorUi *editor,
       details, ui, frame->input, width, &y, &vkr_graphics_settings_type,
       &settings, frame->graphics, false_v);
   vkr_editor_details_end(details);
+  vkr_editor_context_open_choice(editor, details);
 
   y += 10.0f;
   VkrUiWidgetConfig reset = vkr_editor_details_widget(

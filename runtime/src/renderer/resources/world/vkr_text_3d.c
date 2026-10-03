@@ -353,6 +353,7 @@ vkr_internal bool8_t vkr_text_3d_generate_geometry(VkrText3D *text_3d,
   }
   uint32_t glyph_count = (uint32_t)text_3d->layout.glyphs.length;
   if (glyph_count == 0) {
+    text_3d->ink_height = 0.0f;
     text_3d->quad_count = 0;
     text_3d->vertex_count = 0;
     text_3d->index_count = 0;
@@ -426,6 +427,7 @@ vkr_internal bool8_t vkr_text_3d_generate_geometry(VkrText3D *text_3d,
   float32_t offset_x = 0.0f;
   float32_t offset_y = 0.0f;
   vkr_text_3d_compute_content_offsets(text_3d, &bounds, &offset_x, &offset_y);
+  text_3d->ink_height = bounds.have_bounds ? bounds.max_y - bounds.min_y : 0.0f;
 
   uint32_t vertex_count = 0;
   uint32_t index_count = 0;

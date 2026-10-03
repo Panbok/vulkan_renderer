@@ -112,8 +112,9 @@ install(DIRECTORY "${VKR_SHADER_CATALOG_DIR}/"
     DESTINATION shaders COMPONENT editor)
 install(DIRECTORY "${VKR_SCRIPT_SDK_DIR}/"
     DESTINATION sdk COMPONENT editor)
-# Probe bakes copy the offscreen profile into each job.
-foreach(resource IN LISTS VKR_ENGINE_FILES ITEMS
+# Probe bakes copy the offscreen profile into each job. Text fonts install
+# beside engine content so packages can carry the ones their text uses.
+foreach(resource IN LISTS VKR_ENGINE_FILES VKR_TEXT_FONT_FILES ITEMS
         tools/profiles/local-offscreen.json)
     get_filename_component(directory "${resource}" DIRECTORY)
     install(FILES "${CMAKE_SOURCE_DIR}/${resource}"

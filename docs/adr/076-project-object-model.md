@@ -58,13 +58,18 @@ same descriptor path in the Preferences window.
 Shape, text and animation components hold authored values, so Details, Cmd
 and undo edit them like any component. Setting a shape rebuilds its generated
 mesh, setting text replaces its text slot, and removing either releases them.
-Text holds its content, size as the em height in meters, color, per-line
-alignment, line spacing and letter spacing in ems; a scene's `text3d` block
-lowers to it with size `font_size / texture_width` and left alignment, so
-existing text renders unchanged. Details edits the content in a multi-line
-text area that applies each keystroke within one undo gesture, and the
-viewport marks every text with an icon at its center, because empty or
-distant text is otherwise hard to find.
+Text holds its content, font, size as the em height in meters, color,
+per-line alignment, line spacing and letter spacing in ems; a scene's
+`text3d` block lowers to it with size `font_size / texture_width` and left
+alignment, so existing text renders unchanged. The font names an engine
+configuration `assets/fonts/<font>.fontcfg` (Ubuntu Mono, the default; Ubuntu
+Mono Bold, Inter and Inter SemiBold); the scene loads another on first use
+and holds it until shutdown, and a package carries it only when text uses it
+([ADR-078](078-project-build-and-packaging.md)). Details edits the content in
+a multi-line text area that applies each keystroke within one undo gesture,
+picks an enum of more than three values from a dropdown, and the viewport
+marks every text with an icon just above its glyphs, because empty or distant
+text is otherwise hard to find.
 The animation component (clip, rate, loop, playing) belongs to an animated
 mesh's binding: setting it reconciles the player, restarting only when the
 clip or loop changes, and a clip outside the bound bank is rejected. It

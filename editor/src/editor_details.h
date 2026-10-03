@@ -36,6 +36,16 @@ typedef struct VkrEditorDetails {
   bool8_t gesture_held;
   /* Validation message for the last rejected change, or empty. */
   char error[160];
+  /* An enum dropdown pressed during a build asks the panel's owner to open
+   * its menu below `choice_anchor_pt` (vkr_editor_context_open_choice); the
+   * menu's pick applies to `choice_field` on its next build. */
+  bool8_t choice_requested;
+  bool8_t choice_picked;
+  VkrUiId choice_field;
+  const VkrPropertyDesc *choice_property;
+  uint32_t choice_current;
+  uint32_t choice_pick;
+  Vec2 choice_anchor_pt;
 } VkrEditorDetails;
 
 typedef struct VkrEditorDetailsResult {

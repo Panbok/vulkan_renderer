@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -80,7 +80,9 @@ a mesh's `.remap.json`.
 **Package layout.** `bundle.json` version 2 keeps version 1's members, drops
 `scene`, and adds `game`: `world`, `world_overlay`, `startup_scene`,
 `startup_overlay`, `scenes[]`, `fonts[]` (`default-scene-font` falls back to the
-engine's UbuntuMono configuration), `window`, `graphics`, `script_library`
+engine's UbuntuMono configuration; each text font past the default that a
+scene, overlay or World text names joins under its name, from
+`assets/fonts/<name>.fontcfg`), `window`, `graphics`, `script_library`
 (the script library relative to the content root, present only when the
 project has scripts), and `startup_camera`,
 the startup scene's editor viewport recall without selection. The
@@ -103,8 +105,9 @@ to the template. The engine resource list lives in
 under `<build>/player`. So are `template.json` and `engine/assets`, which hold
 the render graph and runtime fonts of the former Bistro recipe with the files
 they name, including the Windows UI font configuration
-(`NotoSansCJK-Windows.fontcfg`) the runtime loads there, and the default
-mannequin with its credits notice
+(`NotoSansCJK-Windows.fontcfg`) the runtime loads there, the text fonts past
+the default (`VKR_TEXT_FONT_FILES`, packed only when text uses them), and the
+default mannequin with its credits notice
 ([ADR-080](080-default-mannequin-character.md)). On macOS the template's `lib/` holds the Vulkan loader, which the
 players link as `@rpath/libvulkan.1.dylib`; a package copies it into
 `Contents/Frameworks` and signs it before the application, and the players'

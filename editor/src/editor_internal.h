@@ -158,6 +158,10 @@ void vkr_editor_toasts_build(VkrEditorUi *editor,
    the caller then sets the target it acts on, such as `context_entity`. */
 void vkr_editor_context_open(VkrEditorUi *editor, VkrEditorContextKind kind,
                              Vec2 position_pt);
+/* Open the choice menu a Details enum dropdown asked for during the build
+   that just ran, if any; call once after each Details panel. */
+void vkr_editor_context_open_choice(VkrEditorUi *editor,
+                                    struct VkrEditorDetails *details);
 VkrUiRect vkr_editor_context_menu_rect(const VkrEditorUi *editor,
                                        const VkrUiSystem *ui);
 /* The open submenu's pixels, or an empty rect. */

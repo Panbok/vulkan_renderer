@@ -70,6 +70,8 @@ void vkr_editor_details_cancel(VkrEditorDetails *details, VkrUiSystem *ui) {
   details->edit_field = 0;
   details->edit_text[0] = 0;
   details->edit_original[0] = 0;
+  details->choice_requested = false_v;
+  details->choice_picked = false_v;
   details->gesture_active = false_v;
   details->gesture_held = false_v;
   details->gesture = 0u;
@@ -578,13 +580,34 @@ static void details_bool_row(DetailsBuild *build, uint32_t index, String8 label,
   *y += DETAILS_ROW_PT + 2.0f;
 }
 
-/* Named choices as a segmented control; read-only choices show the name. */
+/* Shown name of choice `i`: its label, else its name capitalized. */
+static String8 details_choice_text(VkrUiSystem *ui,
+                                   const VkrPropertyDesc *property,
+                                   uint32_t i) {
+  const uint32_t count = vkr_property_enum_count(property);
+  if (i >= count) {
+    return string8_lit("?");
+  }
+  if (property->labels) {
+    return details_cstr(property->labels[i]);
+  }
+  String8 text =
+      string8_create_formatted(ui->frame_allocator, "%s", property->names[i]);
+  if (text.length && text.str[0] >= 'a' && text.str[0] <= 'z') {
+    text.str[0] = (uint8_t)(text.str[0] - 'a' + 'A');
+  }
+  return text;
+}
+
+/* Named choices: up to three as a segmented control, more as a dropdown
+ * whose menu the panel's owner opens; read-only choices show the name. */
 static void details_choice_row(DetailsBuild *build, uint32_t index,
                                String8 label, float32_t *y, bool8_t read_only,
                                String8 tooltip) {
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrPropertyDesc *property = &build->type->properties[index];
   VkrUiSystem *ui = build->ui;
+  VkrEditorDetails *details = build->details;
   const float32_t w = build->width;
   const float32_t label_w = vkr_editor_details_label_width(w);
   const float32_t left = DETAILS_PAD_PT + label_w;
@@ -594,22 +617,45 @@ static void details_choice_row(DetailsBuild *build, uint32_t index,
   (void)vkr_property_get_number(property, build->value, &current);
   details_label(build, index, 0u, label, *y, label_w - 4.0f, false_v, tooltip);
   if (read_only || count == 0u) {
-    const uint32_t selected = (uint32_t)current;
-    const char *name = selected < count ? property->names[selected] : "?";
     VkrUiWidgetConfig text =
         vkr_editor_details_widget(left, *y, available, DETAILS_ROW_PT - 2.0f);
     text.style.padding_pt = (VkrUiEdges){5, 6, 5, 6};
     text.style.font_size_pt = theme->font_body;
     text.style.text_color = theme->text;
-    char capitalized[64];
-    snprintf(capitalized, sizeof(capitalized), "%s", name);
-    if (capitalized[0] >= 'a' && capitalized[0] <= 'z') {
-      capitalized[0] = (char)(capitalized[0] - 'a' + 'A');
+    vkr_ui_label(ui, string8_lit("choice"),
+                 details_choice_text(ui, property, (uint32_t)current), &text);
+    *y += DETAILS_ROW_PT + 2.0f;
+    return;
+  }
+  if (count > 3u) {
+    const VkrUiId id =
+        vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("dropdown"));
+    if (details->choice_picked && details->choice_field == id) {
+      (void)vkr_property_set_number(property, build->value,
+                                    (float64_t)details->choice_pick);
+      details->choice_picked = false_v;
     }
-    vkr_ui_label(
-        ui, string8_lit("choice"),
-        string8_create_formatted(ui->frame_allocator, "%s", capitalized),
-        &text);
+    VkrUiWidgetConfig button = vkr_editor_details_widget(
+        left, *y + 1.0f, available, DETAILS_ROW_PT - 4.0f);
+    vkr_editor_field_style(&button);
+    button.style.font_size_pt = theme->font_body;
+    button.style.padding_pt = (VkrUiEdges){2, 8, 2, 8};
+    button.leading = true_v;
+    button.trailing_icon = VKR_UI_ICON_CHEVRON_DOWN;
+    button.tooltip = tooltip;
+    if (vkr_ui_button(ui, string8_lit("dropdown"),
+                      details_choice_text(ui, property, (uint32_t)current),
+                      &button)) {
+      VkrUiRect rect = {0};
+      (void)vkr_ui_widget_rect(ui, id, &rect);
+      details->choice_requested = true_v;
+      details->choice_field = id;
+      details->choice_property = property;
+      details->choice_current = (uint32_t)current;
+      details->choice_anchor_pt =
+          (Vec2){rect.x / ui->content_scale,
+                 (rect.y + rect.height) / ui->content_scale};
+    }
     *y += DETAILS_ROW_PT + 2.0f;
     return;
   }
@@ -627,16 +673,9 @@ static void details_choice_row(DetailsBuild *build, uint32_t index,
     button.style.background_color =
         selected ? vkr_ui_color_alpha(theme->accent, 0.22f) : theme->raised;
     button.tooltip = tooltip;
-    char capitalized[64];
-    snprintf(capitalized, sizeof(capitalized), "%s", property->names[i]);
-    if (capitalized[0] >= 'a' && capitalized[0] <= 'z') {
-      capitalized[0] = (char)(capitalized[0] - 'a' + 'A');
-    }
     (void)vkr_ui_push_id_u64(ui, i);
-    if (vkr_ui_button(
-            ui, string8_lit("option"),
-            string8_create_formatted(ui->frame_allocator, "%s", capitalized),
-            &button) &&
+    if (vkr_ui_button(ui, string8_lit("option"),
+                      details_choice_text(ui, property, i), &button) &&
         !selected) {
       (void)vkr_property_set_number(property, build->value, (float64_t)i);
     }

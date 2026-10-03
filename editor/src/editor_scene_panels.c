@@ -3942,6 +3942,7 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
   p->inspector_height = y + 16;
 
   vkr_editor_details_end(&p->details);
+  vkr_editor_context_open_choice(editor, &p->details);
 
   /* Component rows apply each finished entry, toggle or drag step at once; a
    * drag folds into one undo entry through its gesture. */

@@ -1999,6 +1999,15 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   // Send destroy messages for all text3d entities to world resources.
   // Must happen before ECS world destruction since we need to query components.
   scene_text3d_shutdown(scene, assets);
+  /* Fonts stay loaded after release, so text drawn by frames still in
+     flight keeps its atlas. */
+  for (uint32_t i = 0; assets && i < VKR_SCENE_TEXT_FONT_COUNT; ++i) {
+    if (scene->text_fonts[i].id) {
+      vkr_font_system_release_by_handle(&assets->font_system,
+                                        scene->text_fonts[i]);
+      scene->text_fonts[i] = VKR_FONT_HANDLE_INVALID;
+    }
+  }
 
   scene_owned_meshes_shutdown(scene, assets);
 
@@ -3876,6 +3885,30 @@ SceneText3D *vkr_scene_get_text3d(VkrScene *scene, VkrEntityId entity) {
                                                      scene->comp_text3d);
 }
 
+Vec3 vkr_scene_text_marker_local(const VkrScene *scene, VkrEntityId entity) {
+  const SceneText3D *text = scene && scene->world
+                                ? vkr_entity_get_component_if_alive_const(
+                                      scene->world, entity, scene->comp_text3d)
+                                : NULL;
+  if (!text) {
+    return vec3_zero();
+  }
+  /* Glyphs are centered in the box, so their top is half their height above
+     its center. */
+  float32_t top = text->world_height * 0.5f;
+  const VkrWorldResources *resources =
+      scene->assets ? &scene->assets->world_resources : NULL;
+  if (resources && text->text_index < resources->text_slots.length &&
+      resources->text_slots.data[text->text_index].active) {
+    const VkrText3D *slot = &resources->text_slots.data[text->text_index].text;
+    if (slot->texture_height > 0u) {
+      top += 0.5f * slot->ink_height * text->world_height /
+             (float32_t)slot->texture_height;
+    }
+  }
+  return vec3_new(text->world_width * 0.5f, top, 0.0f);
+}
+
 bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
                                 String8 text) {
   if (!scene || !scene->world || !scene->assets)
@@ -3959,9 +3992,50 @@ vkr_internal void scene_text_release(VkrScene *scene, VkrEntityId entity) {
   scene_invalidate_queries(scene);
 }
 
-/* Apply the entity's authored text: replace its slot's content and style,
-   keeping the font and texture box, or create the text. The box is one
-   meter wide, so an em of `size` meters is `size` times its width in font
+/* Engine text font `font`: the default MTSDF font, or another loaded from
+   its configuration on first use and then held by the scene. A package
+   loads the fonts its scenes use at startup, so this finds them by name.
+   A font that cannot load falls back to the default, once with a warning. */
+vkr_internal VkrFontHandle scene_text_font(VkrScene *scene, uint32_t font) {
+  VkrFontSystem *fonts = &scene->assets->font_system;
+  const char *name = vkr_scene_text_font_name(font);
+  if (font == 0u || !name || (scene->text_font_failed & (1u << font))) {
+    return fonts->default_mtsdf_font_handle;
+  }
+  if (scene->text_fonts[font].id) {
+    return scene->text_fonts[font];
+  }
+  const String8 key =
+      string8_create_from_cstr((const uint8_t *)name, strlen(name));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_font_system_get_by_name(fonts, key)) {
+    char file[96];
+    snprintf(file, sizeof(file), "%s.fontcfg", name);
+    VkrAllocator *scratch = &scene->assets->scratch_allocator;
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+    const bool8_t loaded = vkr_font_system_load_from_file(
+        fonts, key, vkr_font_system_bootstrap_path(fonts, file, scratch),
+        &error);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    if (!loaded) {
+      log_warn("Scene: text font '%s' did not load; text uses the default",
+               name);
+      scene->text_font_failed |= 1u << font;
+      return fonts->default_mtsdf_font_handle;
+    }
+  }
+  scene->text_fonts[font] =
+      vkr_font_system_acquire(fonts, key, false_v, &error);
+  if (!scene->text_fonts[font].id) {
+    scene->text_font_failed |= 1u << font;
+    return fonts->default_mtsdf_font_handle;
+  }
+  return scene->text_fonts[font];
+}
+
+/* Apply the entity's authored text: replace its slot's content, font and
+   style, keeping the texture box, or create the text. The box is one meter
+   wide, so an em of `size` meters is `size` times its width in font
    pixels. */
 vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
   const SceneTextSettings *settings =
@@ -3983,6 +4057,7 @@ vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
     const float32_t font_size =
         settings->size * (float32_t)config.texture_width;
     config.text = content;
+    config.font = scene_text_font(scene, settings->font);
     config.font_size = font_size;
     config.color = settings->color;
     config.align = settings->align;
@@ -3999,7 +4074,7 @@ vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
   const VkrText3D *slot = &resources->text_slots.data[text->text_index].text;
   const float32_t font_size = settings->size * (float32_t)slot->texture_width;
   VkrText3DConfig config = {
-      .font = slot->font,
+      .font = scene_text_font(scene, settings->font),
       .font_size = font_size,
       .color = settings->color,
       .texture_width = slot->texture_width,

@@ -210,8 +210,12 @@ typedef struct SceneShapeSettings {
  * Authored 3D text values (ADR-076), a typed component. Setting it replaces
  * the entity's world text slot, keeping its font and texture size.
  */
+#define VKR_SCENE_TEXT_FONT_COUNT 4u
+
 typedef struct SceneTextSettings {
   char content[256]; /* UTF-8; '\n' starts a line. */
+  /* Index into the engine text fonts (vkr_scene_text_font_name). */
+  uint32_t font;
   /* Em height in meters at unit scale; the slot's texture box is one meter
      wide, so this is font pixels per texture width. */
   float32_t size;
@@ -811,6 +815,11 @@ typedef struct VkrScene {
   VkrSubsurfaceBinding subsurface;
   VkrSceneReflectionProbe reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t reflection_probe_count;
+  /** Engine text fonts the scene's text uses past the default, one
+      reference each until shutdown; a font whose load failed is marked and
+      not retried. */
+  VkrFontHandle text_fonts[VKR_SCENE_TEXT_FONT_COUNT];
+  uint32_t text_font_failed;
 } VkrScene;
 
 // ============================================================================
@@ -1344,6 +1353,12 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
  * @return Pointer to component, or NULL if entity lacks text3d.
  */
 SceneText3D *vkr_scene_get_text3d(VkrScene *scene, VkrEntityId entity);
+
+/**
+ * @brief Entity-local point centered just above a text's glyphs, where an
+ * editor marker sits; the box center while the text has no geometry.
+ */
+Vec3 vkr_scene_text_marker_local(const VkrScene *scene, VkrEntityId entity);
 
 /**
  * @brief Update text content for a text3d entity.

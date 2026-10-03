@@ -1750,6 +1750,8 @@ typedef enum EditorContextAction {
   CONTEXT_SCRIPT_EDIT,
   /* A text field's command; `value` is its VkrUiTextCommand. */
   CONTEXT_TEXT_COMMAND,
+  /* A Details enum dropdown's pick; `value` indexes its names. */
+  CONTEXT_CHOICE_SET,
 } EditorContextAction;
 
 typedef enum EditorContextRow {
@@ -1794,6 +1796,18 @@ void vkr_editor_context_open(VkrEditorUi *editor, VkrEditorContextKind kind,
   editor->context_sub_rect_px = (VkrUiRect){0};
   editor->context_at_pixel = false_v;
   editor->menu = VKR_EDITOR_MENU_NONE;
+}
+
+void vkr_editor_context_open_choice(VkrEditorUi *editor,
+                                    VkrEditorDetails *details) {
+  if (!details->choice_requested) {
+    return;
+  }
+  details->choice_requested = false_v;
+  details->choice_picked = false_v;
+  vkr_editor_context_open(editor, VKR_EDITOR_CONTEXT_CHOICE,
+                          details->choice_anchor_pt);
+  editor->context_details = details;
 }
 
 /* Attaches a module made by "New script" to the object that asked for it
@@ -2154,6 +2168,22 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
     return entity_alive
                ? editor_context_script_items(editor, frame, scene, items)
                : 0u;
+  case VKR_EDITOR_CONTEXT_CHOICE: {
+    const VkrEditorDetails *details = editor->context_details;
+    const VkrPropertyDesc *property = details ? details->choice_property : NULL;
+    const uint32_t choices = property ? vkr_property_enum_count(property) : 0u;
+    uint32_t count = 0u;
+    for (uint32_t i = 0; i < choices && i < EDITOR_CONTEXT_ITEM_CAPACITY; ++i) {
+      context_push(
+          items, &count,
+          (EditorContextItem){.label = property->labels ? property->labels[i]
+                                                        : property->names[i],
+                              .action = CONTEXT_CHOICE_SET,
+                              .value = i,
+                              .checked = i == details->choice_current});
+    }
+    return count;
+  }
   case VKR_EDITOR_CONTEXT_PRESET: {
     uint8_t value[VKR_TYPE_VALUE_MAX];
     if (!editor->context_type ||
@@ -2456,6 +2486,12 @@ static void editor_context_run(VkrEditorUi *editor,
   case CONTEXT_TEXT_COMMAND:
     vkr_ui_text_field_command(frame->ui, editor->context_text_field,
                               (VkrUiTextCommand)item->value);
+    break;
+  case CONTEXT_CHOICE_SET:
+    if (editor->context_details) {
+      editor->context_details->choice_pick = item->value;
+      editor->context_details->choice_picked = true_v;
+    }
     break;
   case CONTEXT_CONSOLE_CLEAR:
     vkr_editor_console_clear(&editor->console);

@@ -69,6 +69,7 @@ typedef struct VkrText3D {
   uint32_t vertex_count;      // Shaped vertex count
   uint32_t index_count;       // Shaped index count
   uint32_t geometry_revision; // Changes after rebuild
+  float32_t ink_height;       // Glyph extent in texture pixels, centered
   uint32_t quad_count;        // Number of glyph quads
   uint32_t vertex_capacity;   // Allocated vertex count
   uint32_t index_capacity;    // Allocated index count

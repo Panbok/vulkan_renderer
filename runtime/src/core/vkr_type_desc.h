@@ -96,6 +96,8 @@ typedef struct VkrPropertyDesc {
    * serializes the name. A U32 with names displays them as choices but
    * serializes the number, keeping numeric documents compatible. */
   const char *const *names;
+  /** Display names parallel to `names`; NULL shows the names. */
+  const char *const *labels;
   uint32_t offset;
   /** STRING byte capacity including the terminator. */
   uint32_t capacity;

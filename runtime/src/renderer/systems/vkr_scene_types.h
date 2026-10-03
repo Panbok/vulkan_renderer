@@ -40,6 +40,10 @@ extern const VkrTypeDesc vkr_scene_player_start_type;
 /** Read-only SceneMeshInfo rows; not a component type. */
 extern const VkrTypeDesc vkr_scene_mesh_info_type;
 
+/* Name of engine text font `font` (SceneTextSettings.font), or NULL past
+   the last. */
+const char *vkr_scene_text_font_name(uint32_t font);
+
 ScenePostProcess vkr_scene_post_process_defaults(void);
 
 /** World component types by index, stored and edited generically; NULL past

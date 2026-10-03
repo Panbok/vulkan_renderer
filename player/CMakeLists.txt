@@ -31,7 +31,9 @@ add_dependencies(vkr_player vkr_player_shipping)
 include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
 add_dependencies(vkr_player vkr_engine_textures)
 set(VKR_PLAYER_TEMPLATE "$<TARGET_FILE_DIR:vkr_player>")
-foreach(resource IN LISTS VKR_ENGINE_FILES)
+# Text fonts sit beside engine content; a package carries one only when a
+# scene's text names it, because packing follows references.
+foreach(resource IN LISTS VKR_ENGINE_FILES VKR_TEXT_FONT_FILES)
     get_filename_component(directory "${resource}" DIRECTORY)
     add_custom_command(TARGET vkr_player POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory

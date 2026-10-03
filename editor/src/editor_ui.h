@@ -75,7 +75,8 @@ typedef struct VkrEditorLabelAnchor {
   /* Place in the column of abstract objects at the world origin, or
      UINT32_MAX to follow the entity's position. */
   uint32_t stack;
-  /* Entity-local point a placed icon marks: the origin, or a text's center. */
+  /* Entity-local point a placed icon marks: the origin, or the top center of
+     a text's glyphs. */
   Vec3 pivot;
 } VkrEditorLabelAnchor;
 
@@ -188,6 +189,8 @@ typedef enum VkrEditorContextKind {
   /* Undo, Redo, Cut, Copy, Paste, Delete and Select All for the text field
      `context_text_field`. */
   VKR_EDITOR_CONTEXT_TEXT,
+  /* The choices of the Details enum dropdown `context_details` asked for. */
+  VKR_EDITOR_CONTEXT_CHOICE,
 } VkrEditorContextKind;
 
 typedef struct VkrEditorUi {
@@ -231,6 +234,8 @@ typedef struct VkrEditorUi {
   Vec2 context_pixel;
   /* Component type a preset menu acts on. */
   const VkrTypeDesc *context_type;
+  /* Details panel whose enum dropdown a choice menu acts on. */
+  struct VkrEditorDetails *context_details;
   /* Text field a text menu acts on, and what it could offer when opened. */
   VkrUiId context_text_field;
   VkrUiTextFieldState context_text_state;

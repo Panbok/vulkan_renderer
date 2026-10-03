@@ -119,9 +119,13 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
     goto cleanup;
   }
   // The font system retains storage until UI text borrowers have shut down.
-  if (!editor_load_font(ui, "editor-text", "Inter-Regular-cooked.fontcfg",
+  // The Inter faces register under their text-font names, so scene text set
+  // in Inter shares these atlases.
+  if (!editor_load_font(ui, "Inter-Regular-cooked",
+                        "Inter-Regular-cooked.fontcfg",
                         &editor->ui.text_font) ||
-      !editor_load_font(ui, "editor-heading", "Inter-SemiBold-cooked.fontcfg",
+      !editor_load_font(ui, "Inter-SemiBold-cooked",
+                        "Inter-SemiBold-cooked.fontcfg",
                         &editor->ui.heading_font) ||
       !editor_load_font(ui, "editor-icons", "Phosphor-cooked.fontcfg",
                         &editor->ui.icon_font) ||

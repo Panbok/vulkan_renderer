@@ -3530,6 +3530,25 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
       settings.size = text_import->font_size / (float32_t)box_width;
       settings.color = text_import->color;
       settings.align = VKR_TEXT_ALIGN_LEFT;
+      /* The block names a font by its registered name; the default MTSDF
+         font registers as UbuntuMono-mtsdf and a project's scene font as
+         default-scene-font. Another font draws with the default. */
+      const String8 font_name = text_import->font_name;
+      for (uint32_t text_font = 1u; vkr_scene_text_font_name(text_font);
+           ++text_font) {
+        if (vkr_string8_equals_cstr(&font_name,
+                                    vkr_scene_text_font_name(text_font))) {
+          settings.font = text_font;
+        }
+      }
+      if (font_name.length && settings.font == 0u &&
+          !vkr_string8_equals_cstr(&font_name, "UbuntuMono-mtsdf") &&
+          !vkr_string8_equals_cstr(&font_name, "default-scene-font") &&
+          !vkr_string8_equals_cstr(&font_name, vkr_scene_text_font_name(0u))) {
+        log_warn("Scene loader: entity %u text font '%.*s' is not a text "
+                 "font; it draws with Ubuntu Mono",
+                 entity_index, (int)font_name.length, font_name.str);
+      }
       if (!vkr_scene_set_typed(scene, entity, &vkr_scene_text_type,
                                &settings)) {
         log_warn("Scene loader: entity %u text is not editable", entity_index);

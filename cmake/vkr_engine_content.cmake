@@ -24,6 +24,20 @@ set(VKR_ENGINE_FILES
     assets/fonts/NotoSansCJK-Regular.ttc
     ${VKR_MANNEQUIN_FILES})
 
+# Engine text fonts past the default (SceneTextSettings.font): roots and
+# every file they reach. A package carries one only when a scene's text
+# names it, since packing follows references from the roots above; player
+# templates and an installed editor's content root hold them all.
+set(VKR_TEXT_FONT_INCLUDE
+    assets/fonts/UbuntuMono-Bold-cooked.fontcfg
+    assets/fonts/Inter-Regular-cooked.fontcfg
+    assets/fonts/Inter-SemiBold-cooked.fontcfg)
+set(VKR_TEXT_FONT_FILES
+    ${VKR_TEXT_FONT_INCLUDE}
+    assets/fonts/UbuntuMono-Bold-cooked.vkfa
+    assets/fonts/Inter-Regular-cooked.vkfa
+    assets/fonts/Inter-SemiBold-cooked.vkfa)
+
 # Engine textures the files above name, as `source|class`, and paired
 # normal/roughness bakes, as `normal|metal-roughness|normal output|
 # metal-roughness output|normal scale|roughness factor`. Textures are

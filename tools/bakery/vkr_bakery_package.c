@@ -1064,6 +1064,46 @@ vkr_internal void vkr_package_collect_fonts(VkrPackage *package,
   }
 }
 
+/* Scene text names an engine text font by its configuration's file stem
+   (SceneTextSettings.font, ADR-076); the default, UbuntuMono-cooked, is
+   engine content. A package carries each other font its documents' text
+   uses under that name, which the player registers at startup. */
+vkr_internal void vkr_package_collect_text_fonts(VkrPackage *package,
+                                                 const VkrBakeryJson *value) {
+  if (!value || (value->type != VKR_BAKERY_JSON_OBJECT &&
+                 value->type != VKR_BAKERY_JSON_ARRAY)) {
+    return;
+  }
+  const VkrBakeryJson *components =
+      value->type == VKR_BAKERY_JSON_OBJECT
+          ? vkr_bakery_json_get(value, "components")
+          : NULL;
+  const VkrBakeryJson *font =
+      vkr_bakery_json_get(vkr_bakery_json_get(components, "text"), "font");
+  if (font && font->type == VKR_BAKERY_JSON_STRING && font->string.length &&
+      font->string.length < 64u) {
+    bool8_t plain = true_v;
+    for (uint64_t i = 0u; i < font->string.length; ++i) {
+      const uint8_t c = font->string.str[i];
+      plain &= (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '-' || c == '_';
+    }
+    const char *name =
+        vkr_package_printf(package, "%.*s", (int)font->string.length,
+                           (const char *)font->string.str);
+    if (plain && strcmp(name, "UbuntuMono-cooked") != 0) {
+      vkr_bakery_json_set(
+          package->arena, package->fonts, name,
+          vkr_bakery_json_cstr(
+              package->arena,
+              vkr_package_printf(package, "assets/fonts/%s.fontcfg", name)));
+    }
+  }
+  for (const VkrBakeryJson *child = value->first; child; child = child->next) {
+    vkr_package_collect_text_fonts(package, child);
+  }
+}
+
 /* Portable lowering of one included scene; its runtime document and overlay
    take their identities below the staged content. */
 vkr_internal bool8_t vkr_package_lower_scene(VkrPackage *package,
@@ -1080,6 +1120,11 @@ vkr_internal bool8_t vkr_package_lower_scene(VkrPackage *package,
   const char *overlay = vkr_package_text(package, result, "edit_path");
   const VkrBakeryJson *document =
       runtime ? vkr_package_read_json(package, runtime, true_v) : NULL;
+  /* Editor-created text lives in the overlay. */
+  vkr_package_collect_text_fonts(package, document);
+  vkr_package_collect_text_fonts(
+      package,
+      overlay ? vkr_package_read_json(package, overlay, false_v) : NULL);
   if (!document || !overlay ||
       !vkr_package_place(package, runtime, scene->identity) ||
       !vkr_package_place(package, overlay, scene->overlay)) {
@@ -1116,6 +1161,14 @@ vkr_internal bool8_t vkr_package_lower_world(VkrPackage *package) {
   const char *overlay = vkr_package_text(package, result, "edit_path");
   package->world = "";
   package->world_overlay = "";
+  if (world && world[0]) {
+    vkr_package_collect_text_fonts(
+        package, vkr_package_read_json(package, world, false_v));
+  }
+  if (overlay && overlay[0]) {
+    vkr_package_collect_text_fonts(
+        package, vkr_package_read_json(package, overlay, false_v));
+  }
   if (world && world[0]) {
     if (!vkr_package_place(package, world, "project/world.scene.json")) {
       return false_v;

@@ -171,19 +171,15 @@ static void editor_label_build(EditorLabelBuild *build, VkrEntityId entity) {
     *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT,
                                                .entity = entity};
   }
-  /* A text's origin is its box corner; the icon marks its center, where the
-     gizmo pivots. */
-  const SceneText3D *text =
-      vkr_entity_get_component(scene->world, entity, scene->comp_text3d);
   editor->label_anchors[editor->label_anchor_count++] = (VkrEditorLabelAnchor){
       .widget =
           vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("object")),
       .entity = entity,
       .scene = scene,
       .stack = placed ? UINT32_MAX : build->stacked++,
-      .pivot = text ? vec3_new(text->world_width * 0.5f,
-                               text->world_height * 0.5f, 0.0f)
-                    : vec3_zero(),
+      /* A text's origin is its box corner; its icon sits just above its
+         glyphs. */
+      .pivot = vkr_scene_text_marker_local(scene, entity),
   };
   (void)vkr_ui_pop_id(ui);
 }
