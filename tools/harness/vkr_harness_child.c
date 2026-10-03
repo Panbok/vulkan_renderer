@@ -799,6 +799,9 @@ vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
                                       : application->scene_generation + 1u;
   vkr_scene_handle_full_sync(child->scene_resource.as.scene,
                              &application->assets);
+  /* Bootstrap: the next frame's number is exact once the frame the render
+     thread holds has finished. */
+  vkr_renderer_join_render_thread(&application->renderer);
   child->scene_first_frame_index = application->renderer.frame_number + 1u;
   child->scene_active = true_v;
   return true_v;
@@ -1092,6 +1095,14 @@ vkr_harness_child_build_ui(VkrStandardSceneRuntime *application,
   (void)vkr_ui_end(&application->ui_system);
 }
 
+/* Bootstrap only: the number the next frame will get, exact once the frame
+   the render thread holds has finished. The measured phase never waits. */
+vkr_internal uint64_t
+vkr_harness_child_next_frame(VkrStandardSceneRuntime *application) {
+  vkr_renderer_join_render_thread(&application->renderer);
+  return application->renderer.frame_number + 1u;
+}
+
 vkr_internal void vkr_harness_child_update(void *state,
                                            VkrStandardSceneRuntime *application,
                                            float64_t delta) {
@@ -1195,17 +1206,14 @@ vkr_internal void vkr_harness_child_update(void *state,
     vkr_standard_scene_runtime_close(application);
     return;
   }
-  const uint64_t completed_submit_serial =
-      vkr_renderer_get_completed_submit_serial(&application->renderer);
-  const bool8_t frame_active =
-      vkr_renderer_is_frame_active(&application->renderer);
-  const uint64_t submit_serial =
-      vkr_renderer_get_submit_serial(&application->renderer);
+  /* Serials the runtime observed when the last frame completed, so update
+     never waits for the frame the render thread is rendering. No frame is
+     acquired here; finalization runs in the runtime's frame pump. */
   vkr_resource_system_pump(
       (VkrResourceSubmissionState){
-          .submit_serial = submit_serial,
-          .completed_submit_serial = completed_submit_serial,
-          .frame_active = frame_active,
+          .submit_serial = application->submit_serial_seen,
+          .completed_submit_serial = application->completed_submit_serial_seen,
+          .frame_active = false_v,
       },
       NULL);
   if (!child->scene_active) {
@@ -1218,14 +1226,14 @@ vkr_internal void vkr_harness_child_update(void *state,
   if (!vkr_harness_child_renderer_publications_ready(application)) {
     return;
   }
-  const uint64_t next_frame = application->renderer.frame_number + 1u;
   if (!child->pass_catalog_ready) {
     if (!vkr_harness_child_prepare_pass_catalog(application))
       return;
   } else if (!child->phase_started &&
-             next_frame %
+             vkr_harness_child_next_frame(application) %
                      vkr_harness_temporal_alignment(&application->renderer) ==
                  0u) {
+    const uint64_t next_frame = vkr_harness_child_next_frame(application);
     /* Bootstrap duration must not choose the animation clock, cloud wind
        offset, raster jitter, GTAO or SSGI phase consumed by authored warmup,
        including zero-warmup cases. Reset players and the wind after asset
