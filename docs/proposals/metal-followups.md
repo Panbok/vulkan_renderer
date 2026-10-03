@@ -27,9 +27,19 @@ The `transmission_bistro_exterior_door` snapshot (Metal Release,
 ## Remaining: cross-backend captures
 
 Every ADR-044 domain stays UNALIGNED until matched Metal and Vulkan captures
-pass. Publishing a Metal baseline generation of the local-shadow capture
-cases lets Windows run `snapshot --cross-backend`. Publication needs the
-owner's authorization.
+pass. Two backend-neutral Bistro cases capture local shadows without TAA, in
+the street view and at the indoor owner camera:
+[`local_shadow_bistro_street_capture`](../../tools/cases/local/local_shadow_bistro_street_capture.case.json)
+and
+[`local_shadow_bistro_indoor_capture`](../../tools/cases/local/local_shadow_bistro_indoor_capture.case.json).
+They use the Bistro snapshot comparison policy: at most 0.002% of pixels may
+differ, by any amount, with a mean error of at most 0.0005. Their first Metal
+generations (`local.offscreen`, M1 Pro, 2026-10-03) are published under
+[`tools/baselines/local.offscreen`](../../tools/baselines/local.offscreen); a
+repeat Metal snapshot of each passed with no failing pixel. On Windows, run
+each case with `vkr_harness snapshot --profile
+tools/profiles/local-offscreen.json --cross-backend` and record the result in
+ADR-044.
 
 ## Deferred cross-backend work
 
