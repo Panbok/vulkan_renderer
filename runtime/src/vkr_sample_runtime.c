@@ -2174,9 +2174,10 @@ vkr_internal void vkr_standard_scene_runtime_update_memory_text(
       vkr_standard_scene_runtime_memory_text_append(&write, &remaining,
                                                     "\nGPU device memory\n");
 
-  VkrDeviceMemoryStats gpu = {0};
-  const bool8_t have_gpu =
-      vkr_renderer_get_device_memory_stats(&application->renderer, &gpu);
+  /* Taken when the last frame completed, so the overlay never waits for the
+     frame the render thread is rendering. */
+  const VkrDeviceMemoryStats gpu = application->device_memory_seen;
+  const bool8_t have_gpu = application->device_memory_seen_valid;
   uint64_t resident_bytes = 0u;
   char ram[64] = "RAM (resident): unavailable";
   char vram[64] = "GPU memory (managed): unavailable";

@@ -168,8 +168,12 @@ stayed byte-identical to the unmodified build, inline and threaded, and a
 ThreadSanitizer threaded run of the Bistro text case and the CPU test suite
 reported no races.
 
-Update code that calls a renderer function or publishes waits for the frame
-and loses the overlap, without losing correctness. The harness child pumps
+Update code that calls a renderer function waits for the frame and loses
+the overlap, without losing correctness. Logging every such wait in the app's
+`--gameplay` run and a headless editor session on Bistro found only frame
+completion, scene unload and an explicit device-memory log line; the
+sample's memory overlay reads the device memory cached at completion. The
+harness child pumps
 resources with the renderer's submit serials in every update, which must wait
 for the in-flight frame, so a threaded harness profile counts the render
 thread's frame, including its slot wait, under `cpu.update`; harness reports

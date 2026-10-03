@@ -16,11 +16,10 @@ The render thread is off by default.
 
 ## Proposed change
 
-- Move the renderer calls that update code still makes into cached values or
-  commands, starting with the harness child's per-update resource pump, which
-  reads the renderer's submit serials and so waits for the in-flight frame.
-  Editor and sample code that queries the renderer during update is audited
-  the same way.
+- Pump the harness child's resources with serials cached at completion, as
+  the standard runtime does: its per-update pump reads the renderer's submit
+  serials and so waits for the in-flight frame. The app and editor already
+  wait only at completion.
 - Hand loaded texture payloads to the queue instead of copying them: the
   request already keeps its payload until confirmation, so the copy only adds
   the second batch's memory (peak loading memory 3.9 GiB threaded against
