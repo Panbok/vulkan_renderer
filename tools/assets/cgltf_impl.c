@@ -59,3 +59,23 @@ cgltf_file_options vkr_cgltf_file_options(void) {
   return (cgltf_file_options){.read = vkr_cgltf_read,
                               .release = cgltf_default_file_release};
 }
+
+uint64_t vkr_cgltf_source_fingerprint(const cgltf_data *data) {
+  uint64_t hash = UINT64_C(14695981039346656037);
+  const uint8_t *json = (const uint8_t *)data->json;
+  for (cgltf_size i = 0; i < data->json_size; ++i) {
+    /* JSON forbids a raw CR inside a string, so a CR before LF is line-ending
+       whitespace. Skipping it keeps CRLF and LF copies on one fingerprint. */
+    if (json[i] == '\r' && i + 1u < data->json_size && json[i + 1u] == '\n') {
+      continue;
+    }
+    hash = (hash ^ json[i]) * UINT64_C(1099511628211);
+  }
+  for (cgltf_size b = 0; b < data->buffers_count; ++b) {
+    const uint8_t *bytes = data->buffers[b].data;
+    for (cgltf_size i = 0; i < data->buffers[b].size; ++i) {
+      hash = (hash ^ bytes[i]) * UINT64_C(1099511628211);
+    }
+  }
+  return hash;
+}

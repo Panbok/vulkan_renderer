@@ -4014,8 +4014,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_scene(
       .meshes =
           array_create_VkrMeshSourceMesh(info->load_allocator, mesh_capacity),
       .animation_count = (uint32_t)data->animations_count,
-      .fingerprint = vkr_mesh_source_hash(UINT64_C(14695981039346656037),
-                                          data->json, data->json_size),
+      .fingerprint = vkr_cgltf_source_fingerprint(data),
   };
   if ((data->nodes_count && !source->nodes.data) ||
       (mesh_capacity && !source->meshes.data))
@@ -4053,9 +4052,6 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_scene(
       has_decal[m] |= offset != 0.0f;
     }
   }
-  for (cgltf_size i = 0; i < data->buffers_count; ++i)
-    source->fingerprint = vkr_mesh_source_hash(
-        source->fingerprint, data->buffers[i].data, data->buffers[i].size);
   if (data->skins_count > 65536u) {
     return false_v;
   }

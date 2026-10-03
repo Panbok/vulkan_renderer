@@ -365,19 +365,7 @@ bool8_t vkr_animation_import_gltf(VkrAllocator *result_allocator,
   asset.node_count = (uint32_t)data->nodes_count;
   asset.skin_count = (uint32_t)data->skins_count;
   asset.clip_count = (uint32_t)data->animations_count;
-  asset.source_fingerprint = UINT64_C(14695981039346656037);
-  for (uint64_t i = 0; i < data->json_size; ++i) {
-    asset.source_fingerprint =
-        (asset.source_fingerprint ^ (uint8_t)data->json[i]) *
-        UINT64_C(1099511628211);
-  }
-  for (cgltf_size b = 0; b < data->buffers_count; ++b) {
-    const uint8_t *bytes = data->buffers[b].data;
-    for (uint64_t i = 0; i < data->buffers[b].size; ++i) {
-      asset.source_fingerprint =
-          (asset.source_fingerprint ^ bytes[i]) * UINT64_C(1099511628211);
-    }
-  }
+  asset.source_fingerprint = vkr_cgltf_source_fingerprint(data);
   message = "Invalid animation hierarchy or allocation failure";
   if (!animation_import_nodes(result_allocator, scratch_allocator, data,
                               &asset)) {

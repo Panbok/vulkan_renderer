@@ -55,6 +55,9 @@ folded factors are emitted.
 Cooked version 17 stores original glTF node indices, names, parent links, exact
 local matrices, selected-scene membership, source mesh spans, punctual lights,
 camera/skin references, animation count and a source-content fingerprint.
+The fingerprint (`vkr_cgltf_source_fingerprint`, shared with `.vka` and `.vkc`
+cooks) hashes the glTF JSON without the CR of CRLF line endings and the loaded
+buffers, so CRLF and LF copies of one source cook to one fingerprint.
 Runtime `.vkb` loading needs no authoring file to recover node identities.
 Scene-specific light range overrides are resolved by the offline mesh cooker
 through repeatable `--light-range <definition>=<meters>` arguments. Main Bistro

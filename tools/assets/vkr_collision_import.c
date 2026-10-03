@@ -225,17 +225,7 @@ bool8_t vkr_collision_import_gltf(VkrAllocator *result, VkrAllocator *scratch,
       vertex_cursor += count;
     }
   }
-  uint64_t fingerprint = UINT64_C(14695981039346656037);
-  for (cgltf_size i = 0; i < data->json_size; ++i) {
-    fingerprint =
-        (fingerprint ^ (uint8_t)data->json[i]) * UINT64_C(1099511628211);
-  }
-  for (cgltf_size b = 0; b < data->buffers_count; ++b) {
-    const uint8_t *buffer = data->buffers[b].data;
-    for (cgltf_size i = 0; i < data->buffers[b].size; ++i) {
-      fingerprint = (fingerprint ^ buffer[i]) * UINT64_C(1099511628211);
-    }
-  }
+  const uint64_t fingerprint = vkr_cgltf_source_fingerprint(data);
   VkrCollisionGeometry geometry = {.kind = kind,
                                    .positions = positions,
                                    .vertex_count = vertex_cursor,
