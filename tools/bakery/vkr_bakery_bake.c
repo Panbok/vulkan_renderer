@@ -1451,6 +1451,7 @@ vkr_internal const char *vkr_bake_relative(VkrBake *bake, const char *root,
 
 typedef struct VkrBakeManifestAsset {
   const char *path;
+  /* What the aggregate folds: the byte digest (schema 1) or identity. */
   const char *sha256;
   uint64_t bytes;
 } VkrBakeManifestAsset;
@@ -1460,7 +1461,12 @@ vkr_internal int vkr_bake_compare_assets(const void *lhs, const void *rhs) {
                 ((const VkrBakeManifestAsset *)rhs)->path);
 }
 
-/* Validates a harness scene-content manifest; collects its asset paths. */
+/* Validates a harness scene-content manifest; collects its asset paths.
+ * Schema 1 records each asset's byte digest and folds it, with its byte
+ * count, into the aggregate. Schema 2 records a host-neutral identity
+ * (ADR-051) that only the harness can derive, and folds the identity alone;
+ * the bake then records each asset's byte digest beside it, so a stored
+ * manifest still detects any later change to a scene input. */
 vkr_internal bool8_t vkr_bake_scene_manifest(VkrBake *bake,
                                              const VkrBakeryJson *manifest,
                                              const char *scene,
@@ -1472,11 +1478,12 @@ vkr_internal bool8_t vkr_bake_scene_manifest(VkrBake *bake,
     return vkr_bake_fail(bake, "Scene-content manifest is not an object");
   }
   if (!vkr_bake_int(vkr_bakery_json_get(manifest, "schema_version"), &schema) ||
-      schema != 1 ||
+      (schema != 1 && schema != 2) ||
       !vkr_bakery_json_is_string(vkr_bakery_json_get(manifest, "kind"),
                                  VKR_BAKE_SCENE_MANIFEST_KIND)) {
     return vkr_bake_fail(bake, "Unexpected scene-content manifest contract");
   }
+  const bool8_t identities = schema == 2;
   const char *manifest_scene = vkr_bake_text(manifest, "scene");
   if (!manifest_scene || !manifest_scene[0]) {
     return vkr_bake_fail(bake, "Scene-content manifest is missing its scene");
@@ -1501,9 +1508,11 @@ vkr_internal bool8_t vkr_bake_scene_manifest(VkrBake *bake,
     return vkr_bake_fail(bake, "Out of memory");
   }
   uint32_t count = 0u;
-  for (const VkrBakeryJson *asset = assets->first; asset; asset = asset->next) {
+  for (VkrBakeryJson *asset = assets->first; asset; asset = asset->next) {
     const char *relative = vkr_bake_text(asset, "path");
-    if (asset->type != VKR_BAKERY_JSON_OBJECT || !relative) {
+    const char *identity = identities ? vkr_bake_text(asset, "identity") : NULL;
+    if (asset->type != VKR_BAKERY_JSON_OBJECT || !relative ||
+        (identities && !identity)) {
       return vkr_bake_fail(bake, "Scene-content manifest contains an invalid "
                                  "asset");
     }
@@ -1520,14 +1529,20 @@ vkr_internal bool8_t vkr_bake_scene_manifest(VkrBake *bake,
     const char *recorded = vkr_bake_text(asset, "sha256");
     if (bytes < 0 || !vkr_bakery_stat(path, &info) ||
         info.size != (uint64_t)bytes || !vkr_bake_digest(bake, path, digest) ||
-        !recorded || strcmp(recorded, digest) != 0) {
+        (recorded && strcmp(recorded, digest) != 0) ||
+        (!recorded && !identities)) {
       return vkr_bake_fail(bake, "Scene input changed since the harness "
                                  "manifest was written");
     }
+    if (!recorded) {
+      recorded = vkr_bake_printf(bake, "%s", digest);
+      vkr_bakery_json_set(arena, asset, "sha256",
+                          vkr_bakery_json_cstr(arena, recorded));
+    }
     vkr_bakery_json_set(arena, out_paths, path,
                         vkr_bakery_json_bool(arena, true_v));
-    entries[count++] =
-        (VkrBakeManifestAsset){relative, recorded, (uint64_t)bytes};
+    entries[count++] = (VkrBakeManifestAsset){
+        relative, identities ? identity : recorded, (uint64_t)bytes};
   }
   qsort(entries, count, sizeof(entries[0]), vkr_bake_compare_assets);
   VkrSha256 state;
@@ -1537,14 +1552,17 @@ vkr_internal bool8_t vkr_bake_scene_manifest(VkrBake *bake,
     const uint8_t length_bytes[4] = {(uint8_t)(length >> 24),
                                      (uint8_t)(length >> 16),
                                      (uint8_t)(length >> 8), (uint8_t)length};
-    uint8_t size_bytes[8];
-    for (uint32_t b = 0u; b < 8u; ++b) {
-      size_bytes[b] = (uint8_t)(entries[i].bytes >> (56u - b * 8u));
-    }
     vkr_sha256_update(&state, length_bytes, sizeof(length_bytes));
     vkr_sha256_update(&state, entries[i].path, length);
     vkr_sha256_update(&state, entries[i].sha256, strlen(entries[i].sha256));
-    vkr_sha256_update(&state, size_bytes, sizeof(size_bytes));
+    /* Schema 2 leaves the byte count out: it differs between hosts. */
+    if (!identities) {
+      uint8_t size_bytes[8];
+      for (uint32_t b = 0u; b < 8u; ++b) {
+        size_bytes[b] = (uint8_t)(entries[i].bytes >> (56u - b * 8u));
+      }
+      vkr_sha256_update(&state, size_bytes, sizeof(size_bytes));
+    }
   }
   uint8_t hash[32];
   vkr_sha256_final(&state, hash);
