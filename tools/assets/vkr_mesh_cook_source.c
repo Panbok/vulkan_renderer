@@ -1035,6 +1035,18 @@ vkr_mesh_loader_finalize_all_buckets(VkrMeshLoaderState *state) {
   return true_v;
 }
 
+/* Capacity for `required` elements, growing the current capacity. Builders
+   live in arenas, whose reallocations keep the old storage, so reserving
+   exactly per face made a face list's memory quadratic in its length. */
+vkr_internal uint64_t vkr_mesh_loader_grown_capacity(uint64_t capacity,
+                                                     uint64_t required) {
+  if (required <= capacity) {
+    return capacity;
+  }
+  return Max(required, Min((uint64_t)UINT32_MAX,
+                           capacity * DEFAULT_VECTOR_RESIZE_FACTOR));
+}
+
 vkr_internal bool8_t vkr_mesh_loader_push_face(
     VkrMeshLoaderState *state, VkrMeshLoaderSubsetBuilder *builder,
     uint32_t token_count, String8 *tokens) {
@@ -1048,10 +1060,14 @@ vkr_internal bool8_t vkr_mesh_loader_push_face(
   const uint64_t index_count = (uint64_t)(token_count - 2u) * 3u;
   if (builder->vertices.length + token_count > UINT32_MAX ||
       builder->indices.length + index_count > UINT32_MAX ||
-      !vector_reserve_VkrVertex3d(&builder->vertices,
-                                  builder->vertices.length + token_count) ||
+      !vector_reserve_VkrVertex3d(
+          &builder->vertices, vkr_mesh_loader_grown_capacity(
+                                  builder->vertices.capacity,
+                                  builder->vertices.length + token_count)) ||
       !vector_reserve_uint32_t(&builder->indices,
-                               builder->indices.length + index_count)) {
+                               vkr_mesh_loader_grown_capacity(
+                                   builder->indices.capacity,
+                                   builder->indices.length + index_count))) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1374,17 +1390,9 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
   const uint64_t index_count = builder->indices.length + primitive->index_count;
   // Keep retained arena storage linear when many primitives share a material.
   const uint64_t vertex_capacity =
-      vertex_count > builder->vertices.capacity
-          ? Max(vertex_count,
-                Min((uint64_t)UINT32_MAX,
-                    builder->vertices.capacity * DEFAULT_VECTOR_RESIZE_FACTOR))
-          : builder->vertices.capacity;
+      vkr_mesh_loader_grown_capacity(builder->vertices.capacity, vertex_count);
   const uint64_t index_capacity =
-      index_count > builder->indices.capacity
-          ? Max(index_count,
-                Min((uint64_t)UINT32_MAX,
-                    builder->indices.capacity * DEFAULT_VECTOR_RESIZE_FACTOR))
-          : builder->indices.capacity;
+      vkr_mesh_loader_grown_capacity(builder->indices.capacity, index_count);
   if (vertex_count > UINT32_MAX || index_count > UINT32_MAX ||
       !vector_reserve_VkrVertex3d(&builder->vertices, vertex_capacity) ||
       !vector_reserve_uint32_t(&builder->indices, index_capacity) ||

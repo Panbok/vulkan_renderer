@@ -713,6 +713,58 @@ static void test_cooked_optimization_preserves_triangles(void) {
   printf("  test_cooked_optimization_preserves_triangles PASSED\n");
 }
 
+/* An OBJ's faces append to per-material builders held in arenas, which keep a
+   reallocation's old storage. Reserving each face exactly made that storage
+   quadratic: 16384 triangles need about 26 GB that way and a few MiB with
+   geometric growth, so the cook must fit 64 MiB arenas. */
+static void test_obj_face_storage_grows_geometrically(void) {
+  printf("  Running test_obj_face_storage_grows_geometrically...\n");
+  static const char source_path[] = "build/vkr_mesh_face_growth.obj";
+  static const char cooked_path[] = "build/vkr_mesh_face_growth.vkb";
+  enum { columns = 128, rows = 64 };
+  FILE *file = fopen(source_path, "wb");
+  assert(file != NULL);
+  fprintf(file, "o grid\nvn 0 0 1\n");
+  for (uint32_t y = 0; y <= rows; ++y) {
+    for (uint32_t x = 0; x <= columns; ++x) {
+      fprintf(file, "v %u %u 0\n", x, y);
+    }
+  }
+  for (uint32_t y = 0; y < rows; ++y) {
+    for (uint32_t x = 0; x < columns; ++x) {
+      const uint32_t corner = y * (columns + 1u) + x + 1u;
+      const uint32_t above = corner + columns + 1u;
+      fprintf(file, "f %u//1 %u//1 %u//1\n", corner, corner + 1u, above + 1u);
+      fprintf(file, "f %u//1 %u//1 %u//1\n", corner, above + 1u, above);
+    }
+  }
+  assert(fclose(file) == 0);
+
+  Arena *source_arena = arena_create(MB(64), MB(2));
+  Arena *scratch_arena = arena_create(MB(64), MB(2));
+  assert(source_arena != NULL && scratch_arena != NULL);
+  VkrAllocator source = {.ctx = source_arena};
+  assert(vkr_allocator_arena(&source));
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&scratch));
+  VkrMeshCookStats stats = {0};
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_mesh_cook_source(string8_lit(source_path),
+                              string8_lit(cooked_path), &source, &scratch,
+                              &stats, &error));
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(stats.index_count == columns * rows * 6u);
+  assert(stats.vertex_count == (columns + 1u) * (rows + 1u));
+
+  assert(remove(source_path) == 0);
+  assert(remove(cooked_path) == 0);
+  vkr_allocator_release_global_accounting(&source);
+  vkr_allocator_release_global_accounting(&scratch);
+  arena_destroy(source_arena);
+  arena_destroy(scratch_arena);
+  printf("  test_obj_face_storage_grows_geometrically PASSED\n");
+}
+
 static void test_metadata_only_gltf_cooked_load_without_source(void) {
   static const char source_path[] = "build/vkr_metadata_nodes.gltf";
   static const char cooked_path[] = "build/vkr_metadata_nodes.vkb";
@@ -785,6 +837,7 @@ bool32_t run_mesh_cooked_tests(void) {
   test_tangent_generation_repairs_parallel_accumulation();
   test_mesh_cooked_round_trip_and_malformed_boundaries();
   test_cooked_optimization_preserves_triangles();
+  test_obj_face_storage_grows_geometrically();
   test_metadata_only_gltf_cooked_load_without_source();
   printf("--- Mesh Cooked Tests Completed ---\n");
   return true_v;
