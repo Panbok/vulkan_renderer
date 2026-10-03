@@ -115,9 +115,10 @@ typedef struct VkrStandardSceneRuntimeConfig {
   /** Boot intent only: `profile`, `requested_mask`, and `excluded_mask` are
       read and the closure is recomputed. Zero-initialized means full boot. */
   VkrSubsystemPlan subsystem_plan;
-  /** Render submitted frames on the renderer's thread while the next frame
-      updates. VKR_RENDER_THREAD=0 or 1 overrides it. */
-  bool8_t render_thread;
+  /** Render each frame on the frame-loop thread instead of the renderer's
+      thread, which renders it while the next frame is built.
+      VKR_RENDER_THREAD=0 or 1 overrides it. */
+  bool8_t inline_rendering;
 } VkrStandardSceneRuntimeConfig;
 
 typedef struct VkrStandardSceneRuntimeMetricIds {

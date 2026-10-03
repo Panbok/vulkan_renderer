@@ -977,9 +977,10 @@ typedef struct VkrRendererBackendConfig {
   bool8_t gpu_assisted_validation;
   uint32_t capture_ring_capacity;
   uint64_t capture_max_batch_bytes;
-  /** Renders submitted frames on a renderer-owned thread; see
-   * vkr_renderer_submit_frame. VKR_RENDER_THREAD=0 or 1 overrides it. */
-  bool8_t render_thread;
+  /** Renders submitted frames on the calling thread instead of the
+   * renderer-owned render thread; see vkr_renderer_submit_frame.
+   * VKR_RENDER_THREAD=0 or 1 overrides it. */
+  bool8_t inline_rendering;
 } VkrRendererBackendConfig;
 
 typedef enum VkrPresentTargetAttachment {

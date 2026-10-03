@@ -7,7 +7,8 @@ authority: adr
 
 ## Status
 
-Accepted. Off by default; see Revisit when.
+Accepted. On by default; `inline_rendering` or `VKR_RENDER_THREAD=0`
+renders inline.
 
 ## Context
 
@@ -24,11 +25,11 @@ during synchronous scene loads.
 
 ## Decision
 
-`VkrRendererBackendConfig.render_thread`, or `VKR_RENDER_THREAD=0|1`, gives
-`VkrRenderer` its own worker thread with an 8 MiB stack, the stack the main
-thread already provides; a default secondary-thread stack overflows during
-Metal image realization. `VkrStandardSceneRuntimeConfig.render_thread`
-forwards the choice; nothing enables it by default.
+`VkrRenderer` gets its own worker thread with an 8 MiB stack, the stack the
+main thread already provides; a default secondary-thread stack overflows
+during Metal image realization. `VkrRendererBackendConfig.inline_rendering`,
+forwarded from `VkrStandardSceneRuntimeConfig.inline_rendering`, renders on
+the calling thread instead; `VKR_RENDER_THREAD=0|1` overrides either.
 
 `vkr_renderer_submit_frame()` consumes the acquired `VkrFrame` and hands
 input validation, frame preparation, graph realization, recording, submission
@@ -46,7 +47,10 @@ on itself.
 Asset publication does not wait. `VkrRenderer.asset_publisher` is the
 renderer's own table, threaded or not: each publish, unpublish, sampler
 update or bake call records an ordered command with copies of its payload
-(`vkr_publication_queue.c`) and returns whether it was recorded. Submitting a
+(`vkr_publication_queue.c`) and returns whether it was recorded. A loaded
+texture's bytes are the exception: its request keeps the decoded payload
+until the publication settles, even when canceled meanwhile, so the command
+borrows them (`VkrTexturePreparedLoad.upload_retained`). Submitting a
 frame hands the recorded batch to the thread that renders it, which runs the
 commands through the backend's table in order before preparing that frame,
 inside the frame once acquired, so Vulkan uploads still record into an
@@ -161,9 +165,12 @@ thread acquired 782 of 783 submitted frames, the remaining one being the
 first. A newly published resource is confirmed when the frame that ran its
 command completes, so meshes, loaded textures and baked environments appear
 one frame later inline and two frames later threaded than they did when
-publication was synchronous. Copying payloads into the queue raised the peak
-resident memory of loading Bistro from 3.3 GiB inline to 3.9 GiB threaded.
-With confirmation in place the five `bistro_shadow_motion_snapshot` captures
+publication was synchronous. While loaded texture bytes were still copied
+into the queue, peak resident memory while loading Bistro reached 3.9 GiB
+threaded against 3.3 GiB inline. Borrowing them, single samples of the
+`bistro_shadow_motion_snapshot` child's peak were 3.62 GiB threaded and
+3.77 GiB inline, against 3.84 and 3.59 GiB for the copying build; these
+peaks vary by about 0.2 GiB between runs. With confirmation in place the five `bistro_shadow_motion_snapshot` captures
 stayed byte-identical to the unmodified build, inline and threaded, and a
 ThreadSanitizer threaded run of the Bistro text case and the CPU test suite
 reported no races.
@@ -173,11 +180,25 @@ the overlap, without losing correctness. Logging every such wait in the app's
 `--gameplay` run and a headless editor session on Bistro found only frame
 completion, scene unload and an explicit device-memory log line; the
 sample's memory overlay reads the device memory cached at completion. The
-harness child pumps
-resources with the renderer's submit serials in every update, which must wait
-for the in-flight frame, so a threaded harness profile counts the render
-thread's frame, including its slot wait, under `cpu.update`; harness reports
-cannot show the overlap.
+harness child pumps resources with the serials cached at completion and
+reads the renderer's frame number, which needs the wait, only while it
+aligns the measured phase; during the phase it waits only to poll captures
+and, in submission-timing profiles, GPU submission timings. `cpu.update`
+then measures update alone: 0.29 ms mean threaded against 0.31 ms inline in
+the case below.
+
+The thread is on by default at the owner's direction (2026-10-03), without a
+measured speed-up. In matched local profiles of
+`bistro_metal_production_040` (`local-windowed`, Release, M1 Pro, 1,500
+samples each, same build) `frame.wall` mean and p95 were 13.44 and 20.19 ms
+threaded against 13.48 and 20.50 ms inline; acquisition (`cpu.render_prepare`,
+about 10 ms) dominates both, so the frame is bound by the GPU and
+presentation, not by the frame-loop thread. Every frame of the threaded
+profile was decoupled. The deterministic `bistro_shadow_motion_snapshot`
+captures stayed byte-identical to the previous build in both modes; the
+texture-streaming `bistro_metal_text_snapshot` captures varied between runs
+of the previous build by up to 1.7 % of pixels, and both modes stayed in that
+range.
 
 The ThreadSanitizer runs exposed a pre-existing race: the resource system
 freed request keys and unload names from its shared allocator after releasing
@@ -205,9 +226,9 @@ rendering again.
 
 ## Revisit when
 
-A CPU-bound workload shows a measured benefit, which decides the default; the
-harness update stops querying the renderer every frame; or a native Vulkan
-run is available.
+A workload shows the thread costing frame time or memory; a CPU-bound
+workload is available to measure its benefit; or a native Vulkan run is
+available, including texture admission against the Vulkan upload capacity.
 
 ## Code evidence
 
@@ -222,5 +243,6 @@ run is available.
 - [frame storage, completion and copies](../../runtime/src/application/vkr_standard_scene_runtime.c)
 - [window pixel size for the render surface](../../runtime/src/core/vkr_window.c)
 - [Metal drawable acquisition](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc)
+- [harness child update without waits](../../tools/harness/vkr_harness_child.c)
 - [thread stack size](../../lib/src/core/vkr_threads.h)
 - [resource-system allocator frees](../../runtime/src/renderer/systems/vkr_resource_system.c)

@@ -977,7 +977,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     goto initialize_failure;
   }
 
-  bool8_t render_thread = backend_config && backend_config->render_thread;
+  bool8_t render_thread = !backend_config || !backend_config->inline_rendering;
   const char *render_thread_env = getenv("VKR_RENDER_THREAD");
   if (render_thread_env && render_thread_env[0] != '\0') {
     render_thread = strcmp(render_thread_env, "0") != 0;

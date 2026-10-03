@@ -491,7 +491,7 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       .capture_enabled = config->capture_enabled,
       .capture_ring_capacity = config->capture_ring_capacity,
       .capture_max_batch_bytes = config->capture_max_batch_bytes,
-      .render_thread = config->render_thread,
+      .inline_rendering = config->inline_rendering,
   };
   VkrNativeSurface native_surface = {0};
   const VkrNativeSurface *surface = NULL;
