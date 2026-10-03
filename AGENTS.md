@@ -83,6 +83,8 @@ conditional references needed for the current step:
 - `vkr-editor-cmd` to drive the editor by text or scripted `--exec` runs.
 - `vkr-harness` for cases, profiles, captures, reports, and baselines; add
   `vkr-performance` for timing claims or `vkr-validation` for native diagnostics.
+- `unslop` for reports, explanations, and other output the user reads beyond
+  a short answer.
 - `compress-codebase` for broad simplification, `vkr-docs` for authoritative
   documentation, and `writing-for-agents` for skills or agent instructions.
 - `grilling` only when the user asks to be challenged.
