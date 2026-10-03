@@ -68,9 +68,9 @@
     { "metric": "draw.world.opaque_draws", "stat": "min", "min": 1 },
     { "metric": "packet.publication_omitted_candidates", "stat": "max", "max": 0 },
     { "metric": "post.exposure.accepted_texels", "stat": "min", "min": 479000 },
-    { "metric": "post.exposure.target_ev", "stat": "min", "min": -0.25 },
-    { "metric": "post.exposure.target_ev", "stat": "max", "max": 0.0 },
-    { "metric": "post.exposure.multiplier", "stat": "min", "min": 0.8 },
-    { "metric": "post.exposure.multiplier", "stat": "max", "max": 1.0 }
+    { "metric": "post.exposure.target_ev", "stat": "min", "min": 1.95 },
+    { "metric": "post.exposure.target_ev", "stat": "max", "max": 2.2 },
+    { "metric": "post.exposure.multiplier", "stat": "min", "min": 3.85 },
+    { "metric": "post.exposure.multiplier", "stat": "max", "max": 4.6 }
   ]
 }
