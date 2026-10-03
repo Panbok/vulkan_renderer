@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REPORT TITLE</title>
+<style>
+  /* Role colors --a, --b, --c are the first three slots of the dataviz
+     reference palette; that trio passes its all-pairs CVD and normal-vision
+     checks in both modes. Give each role one concept for the whole page. */
+  :root {
+    color-scheme: light;
+    --bg: #fcfcfb;
+    --panel: #f3f2ef;
+    --text: #0b0b0b;
+    --text-2: #52514e;
+    --line: #d9d8d3;
+    --a: #2a78d6;
+    --b: #eb6834;
+    --c: #1baf7a;
+    --key-bg: #ffe9a8;
+    --ok: #0ca30c;
+    --warn: #d03b3b;
+    --code-bg: #f6f8fa;
+    --code-line: #e7e9ec;
+    --sx-comment: #6e7781;
+    --sx-string: #0a3069;
+    --sx-number: #0550ae;
+    --sx-keyword: #cf222e;
+    --sx-type: #953800;
+    --sx-function: #8250df;
+    --sx-macro: #0550ae;
+    --sx-pre: #cf222e;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #1a1a19;
+      --panel: #242423;
+      --text: #ffffff;
+      --text-2: #c3c2b7;
+      --line: #3d3c39;
+      --a: #3987e5;
+      --b: #d95926;
+      --c: #199e70;
+      --key-bg: #5a4a10;
+      --ok: #0ca30c;
+      --warn: #e66767;
+      --code-bg: #121211;
+      --code-line: #2a2a28;
+      --sx-comment: #8b949e;
+      --sx-string: #a5d6ff;
+      --sx-number: #79c0ff;
+      --sx-keyword: #ff7b72;
+      --sx-type: #ffa657;
+      --sx-function: #d2a8ff;
+      --sx-macro: #79c0ff;
+      --sx-pre: #ff7b72;
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow-wrap: anywhere;
+  }
+
+  main {
+    max-width: 78ch;
+    margin: 0 auto;
+  }
+
+  h1 {
+    font-size: 1.65rem;
+    line-height: 1.2;
+    margin: 0.5rem 0 0.25rem;
+  }
+
+  h2 {
+    font-size: 1.3rem;
+    margin: 2.5rem 0 0.6rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--line);
+  }
+
+  h3 {
+    font-size: 1.05rem;
+    margin: 1.4rem 0 0.4rem;
+  }
+
+  p {
+    margin: 0.6rem 0;
+  }
+
+  a {
+    color: var(--a);
+  }
+
+  .meta {
+    color: var(--text-2);
+    font-size: 0.88rem;
+    margin: 0 0 0.75rem;
+  }
+
+  /* Role legend, role text marks and key marks. */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0.75rem 0;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+  }
+
+  .chip::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    border-radius: 3px;
+    background: var(--role, var(--text-2));
+  }
+
+  .a {
+    --role: var(--a);
+  }
+
+  .b {
+    --role: var(--b);
+  }
+
+  .c {
+    --role: var(--c);
+  }
+
+  .r {
+    font-weight: 600;
+    padding: 0 0.2em;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--role) 16%, transparent);
+    box-shadow: inset 0 -2px 0 var(--role);
+  }
+
+  mark.key {
+    background: var(--key-bg);
+    color: var(--text);
+    font-weight: 600;
+    padding: 0 0.2em;
+    border-radius: 3px;
+  }
+
+  code {
+    font: 0.86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0 0.3em;
+  }
+
+  /* Key cards: the page's main points, one short headline each. */
+  .keys {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin: 1rem 0;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-top: 4px solid var(--role, var(--text-2));
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+
+  .card b {
+    display: block;
+    font-size: 1.15rem;
+    line-height: 1.3;
+  }
+
+  .card span {
+    color: var(--text-2);
+    font-size: 0.9rem;
+  }
+
+  /* Callouts carry an icon and a label, so color is never the only signal. */
+  .callout {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 8px;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 1rem 0;
+    background: color-mix(in srgb, var(--tone) 12%, var(--bg));
+    border-left: 4px solid var(--tone);
+  }
+
+  .callout::before {
+    font-size: 1.2rem;
+    line-height: 1.4;
+  }
+
+  .callout > div > :first-child {
+    margin-top: 0;
+  }
+
+  .callout > div > :last-child {
+    margin-bottom: 0;
+  }
+
+  .callout.key {
+    --tone: var(--a);
+  }
+
+  .callout.key::before {
+    content: "★";
+    color: var(--a);
+  }
+
+  .callout.ok {
+    --tone: var(--ok);
+  }
+
+  .callout.ok::before {
+    content: "✓";
+    color: var(--ok);
+  }
+
+  .callout.warn {
+    --tone: var(--warn);
+  }
+
+  .callout.warn::before {
+    content: "⚠";
+    color: var(--warn);
+  }
+
+  /* Evidence tags. */
+  .tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 0.1em 0.45em;
+    margin-right: 0.35em;
+    vertical-align: 0.12em;
+    border: 1px solid var(--line);
+    color: var(--text-2);
+  }
+
+  /* Tables. A role class on a row or header cell colors its edge. */
+  .scroll {
+    overflow-x: auto;
+    margin: 0.75rem 0;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.92rem;
+    overflow-wrap: normal;
+  }
+
+  th,
+  td {
+    text-align: left;
+    vertical-align: top;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  th {
+    font-weight: 700;
+  }
+
+  th.a,
+  th.b,
+  th.c {
+    box-shadow: inset 0 -3px 0 var(--role);
+  }
+
+  tr.a > td:first-child,
+  tr.b > td:first-child,
+  tr.c > td:first-child {
+    box-shadow: inset 4px 0 0 var(--role);
+    padding-left: 14px;
+  }
+
+  td code {
+    overflow-wrap: anywhere;
+  }
+
+  /* Code blocks: real excerpts with their source path. */
+  figure {
+    margin: 1rem 0;
+  }
+
+  figcaption {
+    color: var(--text-2);
+    font-size: 0.88rem;
+    margin-bottom: 0.4rem;
+  }
+
+  figure.code figcaption {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+  }
+
+  pre {
+    margin: 0;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 0;
+    overflow-x: auto;
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: normal;
+  }
+
+  pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    display: block;
+    min-width: max-content;
+  }
+
+  pre .ln {
+    display: block;
+    padding: 0 12px 0 0;
+    border-left: 3px solid transparent;
+  }
+
+  pre .ln::before {
+    content: attr(data-n);
+    display: inline-block;
+    width: 3.2em;
+    padding-right: 0.9em;
+    text-align: right;
+    color: var(--sx-comment);
+    opacity: 0.7;
+    user-select: none;
+  }
+
+  pre .ln.mark {
+    background: var(--code-line);
+    border-left-color: var(--a);
+  }
+
+  .sx-comment {
+    color: var(--sx-comment);
+    font-style: italic;
+  }
+
+  .sx-string {
+    color: var(--sx-string);
+  }
+
+  .sx-number {
+    color: var(--sx-number);
+  }
+
+  .sx-keyword {
+    color: var(--sx-keyword);
+  }
+
+  .sx-type {
+    color: var(--sx-type);
+  }
+
+  .sx-function {
+    color: var(--sx-function);
+  }
+
+  .sx-macro {
+    color: var(--sx-macro);
+    font-weight: 600;
+  }
+
+  .sx-pre {
+    color: var(--sx-pre);
+  }
+
+  /* SVG diagrams: draw top to bottom in a viewBox about 340 wide. */
+  .diagram {
+    max-width: 560px;
+    margin: 0 auto;
+  }
+
+  .diagram svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    color: var(--text-2);
+  }
+
+  svg .box {
+    fill: var(--panel);
+    stroke: var(--line);
+    stroke-width: 1.2;
+  }
+
+  svg .box.a,
+  svg .box.b,
+  svg .box.c {
+    fill: color-mix(in srgb, var(--role) 16%, var(--bg));
+    stroke: var(--role);
+    stroke-width: 1.6;
+  }
+
+  svg .t {
+    fill: var(--text);
+    font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  svg .s {
+    fill: var(--text-2);
+    font: 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  svg .m {
+    fill: var(--text-2);
+    font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  svg .edge {
+    stroke: var(--text-2);
+    stroke-width: 1.4;
+    fill: none;
+  }
+
+  svg .edge.a,
+  svg .edge.b,
+  svg .edge.c {
+    stroke: var(--role);
+    stroke-width: 1.8;
+  }
+
+  svg .arrowhead {
+    fill: var(--text-2);
+  }
+
+  /* Bars: one row per value, labels always visible. */
+  .bars {
+    display: grid;
+    gap: 10px;
+    margin: 0.5rem 0;
+  }
+
+  .bar-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .bar-label {
+    font-size: 0.9rem;
+  }
+
+  .bar-track {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .bar {
+    height: 20px;
+    background: var(--role, var(--a));
+    border-radius: 0 4px 4px 0;
+  }
+
+  .bar-value {
+    font-size: 0.88rem;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+
+  /* Tabs: CSS-only, up to four panels. */
+  .tabs {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 1rem 0;
+  }
+
+  .tabs > input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .tabs > label {
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-2);
+    border-bottom: 3px solid var(--line);
+  }
+
+  .tabs > input:checked + label {
+    color: var(--text);
+    border-bottom-color: var(--role, var(--a));
+  }
+
+  .tabs > input:focus-visible + label {
+    outline: 2px solid var(--a);
+    outline-offset: -2px;
+  }
+
+  .tabs > .panel {
+    display: none;
+    width: 100%;
+    order: 1;
+    padding-top: 0.5rem;
+  }
+
+  .tabs > input:nth-of-type(1):checked ~ .panel:nth-of-type(1),
+  .tabs > input:nth-of-type(2):checked ~ .panel:nth-of-type(2),
+  .tabs > input:nth-of-type(3):checked ~ .panel:nth-of-type(3),
+  .tabs > input:nth-of-type(4):checked ~ .panel:nth-of-type(4) {
+    display: block;
+  }
+
+  /* Collapsible detail. */
+  details {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin: 0.75rem 0;
+    background: var(--panel);
+  }
+
+  summary {
+    cursor: pointer;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    font-weight: 600;
+  }
+
+  details > :not(summary) {
+    padding: 0 14px;
+  }
+
+  details ol,
+  details ul {
+    padding-left: 2rem;
+  }
+
+  nav a {
+    display: inline-block;
+    min-height: 32px;
+    padding: 6px 0;
+    text-decoration: none;
+  }
+
+  @media (min-width: 720px) {
+    body {
+      padding: 32px;
+    }
+
+    h1 {
+      font-size: 2rem;
+    }
+
+    .keys {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .bar-row {
+      grid-template-columns: 220px 1fr;
+      align-items: center;
+    }
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position: absolute" aria-hidden="true">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0 0 L10 5 L0 10 z"></path>
+    </marker>
+  </defs>
+</svg>
+<main>
+<!-- BEGIN CONTENT: replace everything up to END CONTENT. Delete unused examples. -->
+
+<h1>REPORT TITLE</h1>
+<p class="meta">YYYY-MM-DD · commit <code>abcdef12</code> · Question: QUESTION</p>
+
+<div class="legend">
+  <span class="chip a">ROLE A</span>
+  <span class="chip b">ROLE B</span>
+  <span class="chip c">ROLE C</span>
+</div>
+
+<div class="keys">
+  <div class="card a"><b>Headline one</b><span>One short supporting line.</span></div>
+  <div class="card b"><b>Headline two</b><span>One short supporting line.</span></div>
+</div>
+
+<div class="callout key"><div><p><b>Key point.</b> The one rule or result the reader must keep.</p></div></div>
+<div class="callout warn"><div><p><b>Warning.</b> A defect, a risk or an unavailable check.</p></div></div>
+<div class="callout ok"><div><p><b>Verified.</b> A check that passed, with its command.</p></div></div>
+
+<p>Prose names a role with <span class="r a">ROLE A</span> and marks the decisive phrase with <mark class="key">one key mark</mark>.</p>
+
+<figure class="code">
+  <figcaption>path/to/file.c:120</figcaption>
+  <pre data-lang="c" data-start="120" data-mark="122"><code>bool8_t example(VkrThing *thing) {
+  // Real excerpt; escape &lt; &gt; &amp; in the source text.
+  return thing-&gt;count &gt; 0u;
+}</code></pre>
+</figure>
+
+<figure>
+  <figcaption>One-sentence caption that states the relation shown.</figcaption>
+  <div class="diagram">
+    <svg viewBox="0 0 340 120" role="img" aria-label="DESCRIBE THE DIAGRAM">
+      <rect class="box a" x="10" y="8" width="320" height="40" rx="8"></rect>
+      <text class="t" x="20" y="33">Producer</text>
+      <line class="edge" x1="170" y1="48" x2="170" y2="70" marker-end="url(#arrow)"></line>
+      <rect class="box b" x="10" y="72" width="320" height="40" rx="8"></rect>
+      <text class="t" x="20" y="97">Consumer</text>
+    </svg>
+  </div>
+</figure>
+
+<div class="tabs">
+  <input type="radio" name="tabs-1" id="tabs-1-a" checked><label class="a" for="tabs-1-a">Option A</label>
+  <input type="radio" name="tabs-1" id="tabs-1-b"><label class="b" for="tabs-1-b">Option B</label>
+  <div class="panel"><p>Panel A.</p></div>
+  <div class="panel"><p>Panel B.</p></div>
+</div>
+
+<div class="bars" role="list">
+  <div class="bar-row a" role="listitem">
+    <span class="bar-label">Series label</span>
+    <span class="bar-track"><span class="bar" style="width: 70%"></span><span class="bar-value">1,234</span></span>
+  </div>
+</div>
+
+<!-- END CONTENT -->
+</main>
+<script>
+  /* Minimal highlighter for c (also objc, metal, slang, hlsl, glsl), json and
+     sh. It reads each pre's text, so authors write plain escaped code. */
+  (() => {
+    const c_keywords = "if else for while do switch case default break continue return goto struct enum union typedef static const volatile extern inline sizeof void true false NULL nullptr kernel vertex fragment device constant thread threadgroup using namespace template auto register restrict _Static_assert static_assert in out inout uniform cbuffer import module";
+    const rules = {
+      c: [
+        ["comment", /\/\/[^\n]*|\/\*[\s\S]*?\*\//y],
+        ["string", /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/y],
+        ["pre", /#[ \t]*(?:include|define|undef|if|ifdef|ifndef|elif|else|endif|pragma|error)\b[^\n]*/y],
+        ["number", /\b(?:0[xX][\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)[uUlLfFhH]*\b/y],
+        ["keyword", new RegExp("\\b(?:" + c_keywords.split(" ").join("|") + ")\\b", "y")],
+        ["type", /\b(?:[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*|\w+_t|bool|char|short|int|long|float|double|unsigned|signed|half|u?int[234]|float[234](?:x[234])?|half[234])\b/y],
+        ["macro", /\b[A-Z][A-Z0-9_]{2,}\b/y],
+        ["function", /\b[a-z_]\w*(?=\s*\()/y],
+      ],
+      json: [
+        ["type", /"(?:[^"\\]|\\.)*"(?=\s*:)/y],
+        ["string", /"(?:[^"\\]|\\.)*"/y],
+        ["number", /-?\b\d+\.?\d*(?:[eE][+-]?\d+)?\b/y],
+        ["keyword", /\b(?:true|false|null)\b/y],
+      ],
+      sh: [
+        ["comment", /(?:^|(?<=\s))#[^\n]*/y],
+        ["string", /"(?:[^"\\]|\\.)*"|'[^']*'/y],
+        ["macro", /\$\{?\w+\}?/y],
+        ["keyword", /(?<=\s|^)--?[A-Za-z][\w-]*/y],
+      ],
+    };
+    const alias = { objc: "c", metal: "c", slang: "c", hlsl: "c", glsl: "c", cpp: "c", bash: "sh", zsh: "sh" };
+    const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    const tokenize = (text, lang_rules) => {
+      const tokens = [];
+      let plain = "";
+      let i = 0;
+      while (i < text.length) {
+        let hit = null;
+        for (const [kind, re] of lang_rules) {
+          re.lastIndex = i;
+          const m = re.exec(text);
+          if (m && m[0].length > 0) {
+            hit = [kind, m[0]];
+            break;
+          }
+        }
+        if (hit) {
+          if (plain) {
+            tokens.push([null, plain]);
+            plain = "";
+          }
+          tokens.push(hit);
+          i += hit[1].length;
+        } else {
+          const word = /\w+|[^\w]/y;
+          word.lastIndex = i;
+          const w = word.exec(text)[0];
+          plain += w;
+          i += w.length;
+        }
+      }
+      if (plain) {
+        tokens.push([null, plain]);
+      }
+      return tokens;
+    };
+
+    const parse_marks = (spec) => {
+      const marks = new Set();
+      for (const part of (spec || "").split(",")) {
+        const [lo, hi] = part.split("-").map(Number);
+        if (!Number.isFinite(lo)) {
+          continue;
+        }
+        for (let n = lo; n <= (Number.isFinite(hi) ? hi : lo); n++) {
+          marks.add(n);
+        }
+      }
+      return marks;
+    };
+
+    for (const pre of document.querySelectorAll("pre[data-lang]")) {
+      const code = pre.querySelector("code") || pre;
+      const lang = alias[pre.dataset.lang] || pre.dataset.lang;
+      const lang_rules = rules[lang];
+      const text = code.textContent.replace(/\n$/, "");
+      const tokens = lang_rules ? tokenize(text, lang_rules) : [[null, text]];
+      const lines = [""];
+      for (const [kind, value] of tokens) {
+        value.split("\n").forEach((piece, index) => {
+          if (index > 0) {
+            lines.push("");
+          }
+          if (piece) {
+            lines[lines.length - 1] += kind ? `<span class="sx-${kind}">${escape(piece)}</span>` : escape(piece);
+          }
+        });
+      }
+      const start = Number(pre.dataset.start || 1);
+      const marks = parse_marks(pre.dataset.mark);
+      code.innerHTML = lines
+        .map((html, index) => {
+          const n = start + index;
+          return `<span class="ln${marks.has(n) ? " mark" : ""}" data-n="${n}">${html || " "}</span>`;
+        })
+        .join("");
+    }
+  })();
+</script>
+</body>
+</html>
