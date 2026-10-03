@@ -646,7 +646,7 @@ passes; Metal ignores inactive FSR declarations. Disabled
 declarations do not block startup. There is one GPU-driven world topology;
 no retained-forward/legacy world branch remains.
 
-Shared native pass and timing storage covers the main graph's 282-pass maximum.
+Shared native pass and timing storage covers the main graph's 410-pass maximum.
 The no-TAA path can expand beyond either temporal upscaler because it restores
 culling HZB generation. The graph-expansion test checks the full supported repeat
 envelope before native emission; [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
