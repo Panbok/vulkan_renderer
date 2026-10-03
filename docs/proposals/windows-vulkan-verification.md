@@ -11,6 +11,51 @@ ADRs define the feature contracts. A successful build or compiled SPIR-V
 reflection does not prove native Vulkan execution, synchronization, display
 behavior, or Metal/Vulkan pixel parity.
 
+## 2026-10-03 handoff: Metal follow-up results and cross-backend captures
+
+The Mac ran the [Metal follow-ups](metal-followups.md) of the Windows Vulkan
+sessions at `36179ac0` and published the first Metal baselines for a
+cross-backend local-shadow comparison (`1b6c1d05`). Two of its fixes change
+shared files that no Windows build has compiled. Do these steps after the
+host-native texture handoff below, on the RX 6700 XT, one GPU process at a
+time. Load `vkr-harness`.
+
+1. **Build with the physics RTTI change.** `b2cff32b` compiles
+   `vkr_physics` with `/GR-` on MSVC, matching Jolt
+   ([`vkr_physics.cmake`](../../cmake/vkr_physics.cmake)); macOS failed to
+   link the job adapter without it. Run `build_release.bat` and
+   `build_test.bat`, then `python tools\checks\check_bakery_package.py
+   --bakery build_debug\tools\bakery\vkr_bakery.exe`, which now expects the
+   `Scripts` stage (`bd5e50ad`). Done when both builds, the tester's physics
+   suite (it steps bodies through the job adapter) and the package check
+   pass.
+2. **Cross-backend local-shadow captures.** Pull the Metal generations under
+   `tools\baselines\local.offscreen\local.bistro.local_shadow.street_capture`
+   and `...indoor_capture`. Run each case with the Release harness:
+
+   ```bat
+   build_release\tools\vkr_harness.exe snapshot ^
+     --case tools\cases\local\local_shadow_bistro_street_capture.case.json ^
+     --profile tools\profiles\local-offscreen.json --cross-backend
+   build_release\tools\vkr_harness.exe snapshot ^
+     --case tools\cases\local\local_shadow_bistro_indoor_capture.case.json ^
+     --profile tools\profiles\local-offscreen.json --cross-backend
+   ```
+
+   A multi-config build may place the harness under
+   `build_release\tools\Release\`. The cases leave `renderer.backend`
+   unpinned, disable TAA so the mask keeps its fixed nine taps, and use the
+   Bistro snapshot policy: at most 0.002% of pixels may differ, with a mean
+   error of at most 0.0005. A repeat Metal snapshot of each passed with no
+   failing pixel. Exit `4` means a workload or policy fingerprint differs;
+   compare the `comparison` fingerprints of both reports before changing
+   anything. Record the verdict, `max_absolute_error`, `failed_pixel_ratio`,
+   report SHA-256, device and driver in
+   [ADR-044](../adr/044-shader-cross-backend-contract.md)'s local shadow
+   paragraph. If the gate fails, keep the run directory, inspect the
+   emitted diff and report where the pixels differ; do not publish a Vulkan
+   generation or loosen the case policy without the owner.
+
 ## 2026-10-03 handoff: host-native textures, D16 atlas and hardware matrix
 
 Commits `29715c9b` through `d1868d99` changed texture storage, the local
