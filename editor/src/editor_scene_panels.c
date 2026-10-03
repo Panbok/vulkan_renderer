@@ -1,4 +1,5 @@
 #include "editor_scene_panels.h"
+#include "editor_agent.h"
 
 #include "core/vkr_json.h"
 #include "editor_details.h"
@@ -389,7 +390,10 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
     for (uint32_t i = slots; i-- > 0;) {
       const uint32_t index = base + 1u + i;
       EditorTreeNode *n = &p->nodes[index];
-      if (!n->entity.u64)
+      /* Brush faces belong to their brush; Details and agents edit them
+         (docs/proposals/level-design-toolkit.md). */
+      if (!n->entity.u64 ||
+          vkr_scene_get_typed(s, n->entity, &vkr_scene_brush_face_type))
         continue;
       n->next = p->nodes[n->parent].child;
       p->nodes[n->parent].child = index;
@@ -643,6 +647,10 @@ typedef struct EditorObjectKind {
   bool8_t spot;
   /* Menu heading the kind is listed under. */
   const char *group;
+  /* Brush and blockout kinds run an agent operation instead
+     (docs/proposals/level-design-toolkit.md): 1 box, 2 wedge, 3 cylinder,
+     4 room. */
+  uint32_t brush;
 } EditorObjectKind;
 
 /* Labels match the names the loader gives legacy world blocks. Scripts are
@@ -662,6 +670,14 @@ static const EditorObjectKind s_object_kinds[] = {
      &vkr_scene_directional_light_type, false_v, "Lights"},
     {"player_start", "Player Start", VKR_UI_ICON_PERSON_WALK,
      &vkr_scene_player_start_type, false_v, "Gameplay"},
+    {"brush_box", "Brush Box", VKR_UI_ICON_SHAPES, &vkr_scene_brush_type,
+     false_v, "Level", 1u},
+    {"brush_wedge", "Brush Wedge", VKR_UI_ICON_SHAPES, &vkr_scene_brush_type,
+     false_v, "Level", 2u},
+    {"brush_cylinder", "Brush Cylinder", VKR_UI_ICON_SHAPES,
+     &vkr_scene_brush_type, false_v, "Level", 3u},
+    {"blockout_room", "Blockout Room", VKR_UI_ICON_BOUNDING_BOX,
+     &vkr_scene_brush_type, false_v, "Level", 4u},
     {"atmosphere", "Sky Atmosphere", VKR_UI_ICON_PLANET,
      &vkr_scene_atmosphere_type, false_v, "Environment"},
     {"clouds", "Volumetric Clouds", VKR_UI_ICON_CLOUD, &vkr_scene_clouds_type,
@@ -1002,6 +1018,58 @@ static void editor_place_text(VkrSceneEditValues *values,
                               vkr_quat_rotate_vec3(values->rotation, center));
 }
 
+/* A brush kind runs its agent operation at the placement point, snapped to
+   the brush grid, without review: the designer made it. */
+static bool8_t editor_request_brush(const VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    uint32_t brush, uint16_t container,
+                                    const Vec2 *drop_px) {
+  if (container == UINT16_MAX || !editor->agent) {
+    return false_v;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  const Vec2 pixel =
+      drop_px ? *drop_px
+              : (Vec2){image.x + image.z * 0.5f, image.y + image.w * 0.5f};
+  VkrEditorDropPose pose;
+  if (!vkr_editor_viewport_place(editor, frame, pixel, 0.0f, &pose)) {
+    return false_v;
+  }
+  const Vec3 p = vec3_new(roundf(pose.position.x * 4.0f) * 0.25f,
+                          roundf(pose.position.y * 4.0f) * 0.25f,
+                          roundf(pose.position.z * 4.0f) * 0.25f);
+  char target[16];
+  if (container == VKR_SCENE_WORLD_ROOT_ID) {
+    snprintf(target, sizeof(target), "\"world\"");
+  } else if (container == 0u) {
+    snprintf(target, sizeof(target), "\"primary\"");
+  } else {
+    snprintf(target, sizeof(target), "%u", (unsigned)container);
+  }
+  char line[512];
+  if (brush == 4u) {
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"create\",\"op\":\"blockout.room\",\"args\":"
+             "{\"min\":[%g,%g,%g],\"size\":[6,3,6],\"container\":%s,"
+             "\"review\":false}}",
+             p.x - 3.0f, p.y, p.z - 3.0f, target);
+  } else if (brush == 3u) {
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"create\",\"op\":\"brush.cylinder\",\"args\":"
+             "{\"center\":[%g,%g,%g],\"radius\":1,\"height\":2,"
+             "\"sides\":12,\"container\":%s,\"review\":false}}",
+             p.x, p.y, p.z, target);
+  } else {
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"create\",\"op\":\"%s\",\"args\":"
+             "{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
+             "\"review\":false}}",
+             brush == 2u ? "brush.wedge" : "brush.box", p.x - 1.0f, p.y,
+             p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f, target);
+  }
+  return vkr_editor_agent_submit(editor->agent, line);
+}
+
 bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame, uint32_t kind,
                                   uint16_t container, const Vec2 *drop_px) {
@@ -1010,6 +1078,10 @@ bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
     return false_v;
   }
   const EditorObjectKind *object = &kind_value;
+  if (object->brush) {
+    return editor_request_brush(editor, frame, object->brush, container,
+                                drop_px);
+  }
   /* World-only settings always go to the World. */
   if (object->type && (object->type->flags & VKR_TYPE_FLAG_WORLD_ONLY)) {
     container = frame->world ? VKR_SCENE_WORLD_ROOT_ID : UINT16_MAX;

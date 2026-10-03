@@ -21,12 +21,23 @@ set(VKR_ENGINE_INCLUDE
     assets/fonts/UbuntuMono-R.ttf.license.md
     assets/fonts/UbuntuMono-Bold.ttf.license.md
     assets/fonts/Inter-OFL.txt
+    # Dev grid materials brush faces use by default
+    # (docs/proposals/level-design-toolkit.md).
+    assets/materials/dev/dev_grid.mt
+    assets/materials/dev/dev_floor.mt
+    assets/materials/dev/dev_wall.mt
+    assets/materials/dev/dev_orange.mt
+    assets/materials/dev/dev_blue.mt
+    assets/materials/dev/dev_trigger.mt
+    assets/materials/dev/dev_clip.mt
     ${VKR_MANNEQUIN_INCLUDE})
 set(VKR_ENGINE_FILES
     ${VKR_ENGINE_INCLUDE}
     assets/fonts/UbuntuMono-cooked.vkfa
     assets/fonts/UbuntuMono21px.fnt
     assets/textures/UbuntuMono21px_0.png.vkt
+    assets/textures/dev/dev_grid.png
+    assets/textures/dev/dev_grid.png.vkt
     assets/fonts/NotoSansCJK-Regular.ttc
     ${VKR_MANNEQUIN_FILES})
 
@@ -52,6 +63,7 @@ set(VKR_TEXT_FONT_FILES
 # package or install copies them.
 set(VKR_ENGINE_TEXTURES
     "assets/textures/UbuntuMono21px_0.png|color-srgb"
+    "assets/textures/dev/dev_grid.png|color-srgb"
     ${VKR_MANNEQUIN_TEXTURES})
 set(VKR_ENGINE_TEXTURE_PAIRS
     ${VKR_MANNEQUIN_TEXTURE_PAIRS})

@@ -1669,6 +1669,125 @@ const VkrTypeDesc vkr_scene_player_start_type = {
     .defaults = player_start_defaults,
 };
 
+/* ---- Brushes ---- */
+
+_Static_assert(sizeof(SceneBrushRole) == sizeof(uint32_t),
+               "ENUM properties store four bytes");
+
+static const char *const s_brush_role_names[] = {"solid", "visual", "clip",
+                                                 "trigger", NULL};
+static const char *const s_brush_role_labels[] = {
+    "Solid", "Visual only", "Clip (collision only)", "Trigger", NULL};
+
+static const VkrPropertyDesc s_brush_properties[] = {
+    {.name = "role",
+     .label = "Role",
+     .tooltip = "Solid renders and collides; Visual only renders; Clip only "
+                "collides; Trigger is a sensor volume",
+     .names = s_brush_role_names,
+     .labels = s_brush_role_labels,
+     .offset = TYPE_OFFSET(SceneBrushSettings, role),
+     .kind = VKR_PROPERTY_ENUM},
+};
+
+static void brush_defaults(void *value) {
+  *(SceneBrushSettings *)value =
+      (SceneBrushSettings){.role = SCENE_BRUSH_ROLE_SOLID};
+}
+
+const VkrTypeDesc vkr_scene_brush_type = {
+    .name = "brush",
+    .label = "Brush",
+    .category = "Level",
+    .properties = s_brush_properties,
+    .property_count = ArrayCount(s_brush_properties),
+    .size = sizeof(SceneBrushSettings),
+    .align = _Alignof(SceneBrushSettings),
+    .defaults = brush_defaults,
+};
+
+static const VkrPropertyDesc s_brush_face_properties[] = {
+    {.name = "normal",
+     .label = "Normal",
+     .tooltip = "Outward plane normal in the brush's space",
+     .group = "Plane",
+     .offset = TYPE_OFFSET(SceneBrushFace, normal),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = -1.0f,
+     .max = 1.0f,
+     .step = 0.01f},
+    {.name = "distance",
+     .label = "Distance",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneBrushFace, distance),
+     .kind = VKR_PROPERTY_F32,
+     .step = 0.0625f},
+    {.name = "material",
+     .label = "Material file",
+     .group = "Surface",
+     .tooltip = "Empty uses the dev grid material",
+     .offset = TYPE_OFFSET(SceneBrushFace, material),
+     .capacity = sizeof(((SceneBrushFace *)0)->material),
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "uv_offset",
+     .label = "Texture offset",
+     .offset = TYPE_OFFSET(SceneBrushFace, uv_offset),
+     .kind = VKR_PROPERTY_VEC2,
+     .step = 0.01f},
+    {.name = "uv_scale",
+     .label = "Texture size",
+     .tooltip = "Meters one texture repeat covers",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneBrushFace, uv_scale),
+     .kind = VKR_PROPERTY_VEC2,
+     .min = 0.001f,
+     .max = 10000.0f,
+     .step = 0.01f},
+    {.name = "uv_rotation",
+     .label = "Texture rotation",
+     .offset = TYPE_OFFSET(SceneBrushFace, uv_rotation),
+     .kind = VKR_PROPERTY_ANGLE,
+     .min = -360.0f,
+     .max = 360.0f},
+    {.name = "uv_world",
+     .label = "World-aligned texture",
+     .offset = TYPE_OFFSET(SceneBrushFace, uv_world),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void brush_face_defaults(void *value) {
+  *(SceneBrushFace *)value = (SceneBrushFace){
+      .normal = vec3_new(0.0f, 1.0f, 0.0f),
+      .distance = 0.5f,
+      .uv_scale = vec2_new(1.0f, 1.0f),
+      .uv_world = true_v,
+  };
+}
+
+static bool8_t brush_face_validate(const void *value, char *error,
+                                   uint32_t capacity) {
+  const SceneBrushFace *face = value;
+  if (vec3_length(face->normal) < 1.0e-4f) {
+    if (error) {
+      snprintf(error, capacity, "A face normal must not be zero");
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+const VkrTypeDesc vkr_scene_brush_face_type = {
+    .name = "brush_face",
+    .label = "Brush face",
+    .category = "Level",
+    .properties = s_brush_face_properties,
+    .property_count = ArrayCount(s_brush_face_properties),
+    .size = sizeof(SceneBrushFace),
+    .align = _Alignof(SceneBrushFace),
+    .defaults = brush_face_defaults,
+    .validate = brush_face_validate,
+};
+
 static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_environment_type,
     &vkr_scene_atmosphere_type,
@@ -1686,6 +1805,8 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_text_type,
     &vkr_scene_animation_type,
     &vkr_scene_player_start_type,
+    &vkr_scene_brush_type,
+    &vkr_scene_brush_face_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -1749,5 +1870,6 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_physics_settings_type ||
          type == &vkr_scene_animation_settings_type ||
          type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
-         type == &vkr_scene_player_start_type;
+         type == &vkr_scene_player_start_type ||
+         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type;
 }

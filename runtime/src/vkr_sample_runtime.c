@@ -4168,12 +4168,19 @@ vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
    after it changed; an unchanged filter costs one compare per scene. */
 static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   const uint32_t hidden = state->view_state.hidden_kinds;
+  /* Clip and trigger brushes draw while the editor edits, not during Play
+     or in a game (docs/proposals/level-design-toolkit.md). */
+  const bool8_t volumes = application->editor_viewport.enabled &&
+                          !application->editor_viewport.simulation_running;
+  VkrScene *world = vkr_scene_handle_get_scene(state->world_handle);
   vkr_scene_set_editor_hidden_kinds(application->active_scene, hidden);
-  vkr_scene_set_editor_hidden_kinds(
-      vkr_scene_handle_get_scene(state->world_handle), hidden);
+  vkr_scene_set_editor_volumes(application->active_scene, volumes);
+  vkr_scene_set_editor_hidden_kinds(world, hidden);
+  vkr_scene_set_editor_volumes(world, volumes);
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
-    vkr_scene_set_editor_hidden_kinds(
-        vkr_scene_handle_get_scene(state->additive_handles[i]), hidden);
+    VkrScene *additive = vkr_scene_handle_get_scene(state->additive_handles[i]);
+    vkr_scene_set_editor_hidden_kinds(additive, hidden);
+    vkr_scene_set_editor_volumes(additive, volumes);
   }
 }
 

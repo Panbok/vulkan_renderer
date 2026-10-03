@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-04
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -87,6 +87,11 @@ restore the binding. Details also shows read-only Mesh rows (asset, first
 material, submeshes, vertices, triangles, bounds, load state, shadow
 mobility) generated from `vkr_scene_mesh_info_type`, which describes a view
 of the mesh instance, not a component.
+
+Brushes ([ADR-084](084-agent-channel-and-level-design-toolkit.md)) are
+`brush` world components whose faces are child entities with `brush_face`;
+the Outliner and Content hide faces, the Create menu's Level group adds
+brushes and blockout rooms, and a brush's delete takes its faces.
 
 Modules outside the renderer, such as script modules
 ([ADR-079](079-c-script-modules.md)), register their own component descriptors

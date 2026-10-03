@@ -194,6 +194,45 @@ typedef struct ScenePlayerStart {
   bool8_t enabled;
 } ScenePlayerStart;
 
+/* How a brush takes part in the level (docs/proposals/
+ * level-design-toolkit.md): solid renders and collides, visual only renders,
+ * clip only collides, and trigger is a sensor volume. Clip and trigger brushes
+ * draw only while the editor edits the scene. */
+typedef enum SceneBrushRole {
+  SCENE_BRUSH_ROLE_SOLID = 0,
+  SCENE_BRUSH_ROLE_VISUAL,
+  SCENE_BRUSH_ROLE_CLIP,
+  SCENE_BRUSH_ROLE_TRIGGER,
+  SCENE_BRUSH_ROLE_COUNT,
+} SceneBrushRole;
+
+/* A convex brush, a typed component. Its faces are direct children that
+ * carry SceneBrushFace; any change to the brush, a face, the set of faces
+ * or the brush's transform rebuilds its mesh and collision. */
+typedef struct SceneBrushSettings {
+  SceneBrushRole role;
+} SceneBrushSettings;
+
+#define SCENE_BRUSH_MATERIAL_CAPACITY 256u
+
+/* One face of a brush: the plane `dot(normal, p) = distance` in the brush's
+ * local space bounds the solid, which lies on the side the normal points
+ * away from. */
+typedef struct SceneBrushFace {
+  Vec3 normal;
+  float32_t distance;
+  /* Material file; empty uses the dev grid material. */
+  char material[SCENE_BRUSH_MATERIAL_CAPACITY];
+  /* Repeats added after scaling, meters per repeat and rotation (radians)
+     of the projected texture. */
+  Vec2 uv_offset;
+  Vec2 uv_scale;
+  float32_t uv_rotation;
+  /* Project in world space, so neighbouring brushes line up; false
+     projects in brush space, so the texture moves with the brush. */
+  bool8_t uv_world;
+} SceneBrushFace;
+
 /**
  * Authored shape values (ADR-076), a typed component. Setting it rebuilds
  * the entity's generated geometry and mesh; removing it releases them.
@@ -654,6 +693,9 @@ typedef struct VkrSceneComponentType {
  */
 typedef struct s_VkrSceneAnimation VkrSceneAnimation;
 typedef struct s_VkrScenePhysics VkrScenePhysics;
+/* Brush rebuild state (vkr_scene_brush.h). */
+typedef struct s_VkrSceneBrushes VkrSceneBrushes;
+struct VkrSubMeshDesc;
 typedef struct s_VkrScenePhysicsSet VkrScenePhysicsSet;
 typedef struct VkrSceneCollisionLayers VkrSceneCollisionLayers;
 
@@ -776,6 +818,11 @@ typedef struct VkrScene {
   /** Editor Show filter (VKR_SCENE_SHOW_HIDE_*): geometry kinds the viewport
       neither draws nor picks, without editing the scene. Zero shows all. */
   uint32_t editor_hidden_kinds;
+  /** Clip and trigger brushes draw only while this holds: the editor sets it
+      while it edits the scene; games and Play leave it off. */
+  bool8_t editor_volumes;
+  /** Brush rebuild state, created with the first brush. */
+  VkrSceneBrushes *brushes;
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
   /** Offset of this container's picking range; local render ids stay small
@@ -1394,6 +1441,19 @@ typedef struct VkrSceneShapeConfig {
     .color = {1.0f, 1.0f, 1.0f, 1.0f}, .material_name = {0},                   \
     .material_path = {0}                                                       \
   }
+
+/* Attaches a generated mesh of `submesh_count` submeshes to `entity` as its
+ * runtime shape: transform, visibility, picking and Show-filter sync follow
+ * the shape path. The mesh acquires its own references; the caller keeps and
+ * later releases its own. The entity must have no generated mesh. */
+bool8_t vkr_scene_attach_generated_mesh(VkrScene *scene, VkrEntityId entity,
+                                        const struct VkrSubMeshDesc *submeshes,
+                                        uint32_t submesh_count,
+                                        VkrSceneError *out_error);
+/* Releases `entity`'s generated mesh, if any. */
+void vkr_scene_detach_generated_mesh(VkrScene *scene, VkrEntityId entity);
+/* Whether clip and trigger brushes draw (VkrScene.editor_volumes). */
+void vkr_scene_set_editor_volumes(VkrScene *scene, bool8_t visible);
 
 /**
  * @brief Add a shape component to an entity.

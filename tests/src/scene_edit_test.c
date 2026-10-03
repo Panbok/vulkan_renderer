@@ -304,6 +304,40 @@ static void edit_test_groups(void) {
   assert(!vkr_scene_entity_alive(&scene, hall));
   assert(state.undo_cursor == state.undo_count);
 
+  /* A brush leaves with its faces in one step, and undo returns them under
+     the restored brush. */
+  VkrSceneEditValues brush_values = {.fields = VKR_SCENE_EDIT_NAME |
+                                               VKR_SCENE_EDIT_TRANSFORM |
+                                               VKR_SCENE_EDIT_COMPONENT};
+  snprintf(brush_values.name, sizeof(brush_values.name), "brush");
+  brush_values.rotation = vkr_quat_identity();
+  brush_values.scale = vec3_one();
+  brush_values.component_type = &vkr_scene_brush_type;
+  vkr_type_defaults(&vkr_scene_brush_type, brush_values.component);
+  VkrEntityId brush = vkr_scene_edit_create(
+      &state, &scene, VKR_ENTITY_ID_INVALID, &brush_values);
+  assert(brush.u64);
+  for (uint32_t i = 0; i < 2u; ++i) {
+    VkrSceneEditValues face = brush_values;
+    snprintf(face.name, sizeof(face.name), "face %u", i);
+    face.component_type = &vkr_scene_brush_face_type;
+    vkr_type_defaults(&vkr_scene_brush_face_type, face.component);
+    assert(vkr_scene_edit_create(&state, &scene, brush, &face).u64);
+  }
+  const char *refusal = NULL;
+  assert(vkr_scene_edit_can_delete(&scene, brush, &refusal));
+  const uint32_t before_delete = state.undo_count;
+  assert(vkr_scene_edit_delete(&state, &scene, brush));
+  assert(!vkr_scene_entity_alive(&scene, brush));
+  assert(edit_test_alive_named(&scene, "face 0", &found) == 0u);
+  assert(state.undo_count == before_delete + 3u);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(edit_test_alive_named(&scene, "brush", &brush) == 1u);
+  assert(edit_test_alive_named(&scene, "face 1", &found) == 1u);
+  assert(vkr_scene_get_transform(&scene, found)->parent.u64 == brush.u64);
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(!vkr_scene_entity_alive(&scene, brush));
+
   /* A group holds at most VKR_SCENE_EDIT_GROUP_MAX entries. */
   vkr_scene_edit_reset(&state, &allocator, 1);
   assert(vkr_scene_edit_group_begin(&state));

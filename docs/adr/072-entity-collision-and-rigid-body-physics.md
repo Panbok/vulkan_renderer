@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-02
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -124,6 +124,10 @@ the body's authoring origin across center-of-mass conversion. Friction combines
 with the geometric mean, restitution with the maximum, and restitution has a
 1 m/s bounce threshold. CCD selects Jolt's linear-cast motion quality for
 supported solid bodies; it does not make discrete sensors continuous.
+
+Scenes may also hold generated static and sensor bodies, such as brush
+collision, that the scene builds from authored data and never stores
+([ADR-084](084-agent-channel-and-level-design-toolkit.md)).
 
 CharacterVirtual capsules share the native world and scene lifetime.
 [ADR-073](073-native-gameplay-foundation.md) owns their C interface, reset,

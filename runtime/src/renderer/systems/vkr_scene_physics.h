@@ -269,6 +269,20 @@ bool8_t vkr_scene_physics_contact_events(VkrScene *scene,
                                          uint32_t capacity, uint32_t *count);
 
 bool8_t vkr_scene_physics_mutations_allowed(const VkrScene *scene);
+
+/* Static or sensor bodies the scene generates from authored data, such as
+   brush collision (docs/proposals/level-design-toolkit.md). They are not
+   authored state: snapshots, documents, the journal and Reset never see
+   them, and shutdown destroys them. `key` names one body at the world
+   origin and replaces any earlier body under it; queries report `entity`
+   for the body and each collider's own entity. Colliders and their
+   geometry are borrowed only during the call. */
+bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
+                                        VkrEntityId entity,
+                                        const VkrPhysicsColliderDesc *colliders,
+                                        uint32_t collider_count, bool8_t sensor,
+                                        const char **error);
+void vkr_scene_physics_generated_remove(VkrScene *scene, uint64_t key);
 bool8_t vkr_scene_physics_matrix_allowed(const VkrScene *scene,
                                          VkrEntityId entity, Mat4 local);
 bool8_t vkr_scene_physics_raycast_query(VkrScene *scene, Vec3 origin,

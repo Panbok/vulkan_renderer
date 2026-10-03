@@ -7,10 +7,10 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The agent channel (phase 0 of the
-[level design toolkit](../proposals/level-design-toolkit.md)) is implemented.
-Brushes, level checks, IO, terrain and population remain in that proposal
-until they ship.
+Accepted (partial). The agent channel and brushes (phases 0 and 1 of the
+[level design toolkit](../proposals/level-design-toolkit.md)) are
+implemented. Brush editing, level checks, IO, terrain and population remain
+in that proposal until they ship.
 
 ## Context
 
@@ -162,6 +162,67 @@ The adapter reconnects once per call, so it survives an editor restart. It
 links Bakery's JSON tree, which the `vkr_bakery_json` library now shares with
 Bakery and the editor.
 
+### Brushes
+
+A brush is an entity with a `brush` component (`role`: solid, visual, clip
+or trigger) whose direct children carry `brush_face`: an outward `normal` and
+`distance` in the brush's space, a `material` file, and texture `uv_offset`,
+`uv_scale` (meters per repeat), `uv_rotation` and `uv_world`
+([vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)).
+Faces are entities because a component value holds at most 1,024 bytes and
+descriptors have no arrays. The journal refuses transform edits of a face,
+deleting a brush deletes its faces in one journal group, the Outliner and
+Content hide faces, and object icons skip brushes.
+
+[vkr_brush.c](../../runtime/src/level/vkr_brush.c) builds a brush on the CPU:
+each face plane's square is clipped by every other plane in double
+precision, vertices weld within 1e-4 m, and a brush with fewer than 4 or more
+than 64 faces, a zero or non-finite plane, a face that does not touch the
+solid, an open solid or one without volume fails with the reason and the
+face. UVs project on the world axis plane nearest the face, as Hammer does:
+floors use X and Z, walls read left to right from outside with up the world.
+It also generates box, wedge and cylinder planes.
+
+[vkr_scene_brush.c](../../runtime/src/renderer/systems/vkr_scene_brush.c)
+rebuilds a brush after a change to it or its faces, or after its transform
+moved and then rested for two updates, at most 256 brushes per update. A
+rebuild makes one generated mesh with one submesh per face material (16 at
+most), attached as the entity's runtime shape through
+`vkr_scene_attach_generated_mesh`, so transform sync, picking, visibility and
+the Show filter follow the shape path. Materials load once per scene and
+path; an empty path uses `assets/materials/dev/dev_grid.mt`, one of seven dev
+grid materials shipped as engine content. Clip and trigger brushes draw only
+while `VkrScene.editor_volumes` is set, which the editor runtime sets while
+it edits and clears during Play; games leave it off.
+
+Solid and clip brushes add their world-space convex hull to their 32 m world
+cell; each cell holds static bodies of at most 32 hulls each, so a raycast's
+collider names the brush. A trigger brush owns a sensor hull. These are
+generated bodies (`vkr_scene_physics_generated_set`): the scene creates and
+destroys them, and snapshots, documents, the journal and Reset never see
+them. The first generated body creates a scene's physics state when the
+scene had none.
+
+Operations `brush.box`, `brush.wedge`, `brush.cylinder`, `brush.stairs`
+(solid steps of at most `step_height` under a group yawed from `from` toward
+`to`), `brush.set_material` (faces by `top`, `bottom`, `sides`, `+x`, `-x`,
+`+z`, `-z`), `blockout.room` (floor, ceiling and four walls around an
+interior box), `blockout.corridor` (open ends, yawed from `from` toward `to`)
+and `blockout.doorway` (an unscaled axis-aligned box wall becomes up to three
+brushes around an opening) build ordinary brushes. Every operation snaps
+corners to `grid` (1/16 m unless set; 0 turns snapping off) and validates the
+solid before submission. `scene.describe` and `entity.get` summarise a
+brush's role, face count, build status and materials and list faces only with
+`faces`. `view.camera` places the perspective camera, and `view.capture`
+accepts `eye` and `target`.
+
+In the editor, the Create menu's Level group adds Brush Box, Brush Wedge,
+Brush Cylinder and Blockout Room at the placement point. Brush drawing (B,
+View > Draw brushes, Cmd `brush.draw`) takes the Scene's mouse: a left drag
+on the grid plane outlines a box one grid cell high and the release creates
+it; Escape cancels the drag, then ends drawing. Cmd `op <operation> [json]`
+runs any operation of the table.
+
 ## Consequences
 
 Agents and scripts reach every editor feature through typed operations, with
@@ -182,10 +243,21 @@ Scene as rendered, not what the editor shows while rendering is stopped.
   renderer.
 - Supporting the 2025-11-25 handshake as well was declined by the owner.
 
+An MCP client that sends only 2025-11-25 or older requests cannot connect;
+it gets an explicit `UnsupportedProtocolVersion`. The socket admits only the
+user's own processes, which can already edit the project's files.
+
+Brush meshes are not merged: a level pays one draw per brush. A
+measurement put that at about 0.4 µs per brush (see Evidence). Brush
+collision follows the brush only after its transform rests, so a dragged
+brush collides at its old place until the drag ends.
+
 ## Revisit when
 
-A Windows listener is needed, an agent needs notifications pushed to it, or
-reviews must survive a scene reload.
+A Windows listener is needed, an agent needs notifications pushed to it,
+reviews must survive a scene reload, or a level's brush count makes the
+per-brush draw cost visible next to its other geometry (merge per cell and
+material then).
 
 ## Evidence
 
@@ -199,4 +271,17 @@ reviews must survive a scene reload.
   Agent changes window with Focus, Reject and Accept and the orange outlines
   in a whole-window capture, the -32022 answers to `initialize` and to an older
   version, and 21 tools from `tools/list`.
+- `./build_test.sh` suite `brush` covers box, wedge and cylinder volumes,
+  winding and plane residuals, the open, empty-face, non-finite, flat and
+  face-count rejections and UV projection; suite `scene_edit` covers a
+  brush's delete with its faces and its undo (2026-10-04, macOS Debug).
+- Headless macOS Release on Bistro (2026-10-04): `blockout.room`,
+  `blockout.doorway`, `brush.stairs`, `brush.wedge`, `brush.cylinder` and a
+  trigger `brush.box`, collision raycasts hitting the room's ceiling and
+  passing through the doorway, rejected flat and ambiguous requests, a brush
+  drawn with `ui.drag`, and top and perspective captures.
+- Indicative cost, not a harness claim: the headless Release editor on an
+  M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
+  8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000
+  visible box brushes, from the editor's `stats.frame_ms` over 120 frames.
 - Windows and native Vulkan are unverified.

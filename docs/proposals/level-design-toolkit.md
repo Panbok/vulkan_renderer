@@ -5,67 +5,43 @@ authority: proposal
 ---
 # Level design toolkit
 
-A level design toolkit for the editor that designers and LLM agents use
-together. Architecture and blockout use convex brushes in the style of Source's
-Hammer, TrenchBroom and Chisel's Rockwall 2. Outdoor ground uses a heightfield
-terrain later. Every tool is one typed operation that the viewport, the Cmd bar
-and an agent socket call, so validation and undo are the same for each caller.
+The remaining phases of the level design toolkit. The agent channel and
+brushes are implemented and recorded in
+[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md); this
+proposal keeps brush editing and level checks, Source-style triggers and IO
+that C scripts declare, heightfield terrain, and splines and scatter. Every
+phase adds its operations to the ADR-084 operation table, so the viewport, the
+Cmd bar and agents share them.
 
 ## Settled decisions
 
-The owner settled these on 2026-10-04:
+The owner settled these on 2026-10-04. Decisions of the implemented phases
+(brushes, the agent channel, MCP 2026-07-28 only, the C adapter, review and
+brush storage) are recorded in ADR-084.
 
 | Decision | Choice | Rejected alternatives |
 |---|---|---|
-| Geometry for architecture | Convex brushes. Carve splits brushes once and keeps no boolean tree. | Live CSG booleans (UE BSP, Godot CSG); editable meshes (ProBuilder, UE Modeling Mode) |
 | First target | Indoor blockout with brushes; terrain follows | Terrain first; both tracks in parallel |
-| Agent connection | A local newline-delimited JSON socket in the editor, with an MCP adapter | Extending only the Cmd bar; a built-in chat panel tied to one LLM provider |
-| MCP revision | Only the 2026-07-28 revision, the newest stable release on 2026-10-04. A client must send 2026-07-28 requests to connect | Also answering the 2025-11-25 `initialize` handshake for older clients |
-| Adapter location | A C executable in `tools/` that the build wrappers produce beside the editor. It implements the small stdio subset of MCP that it needs, so it needs no Node or Python SDK at run time | An adapter written on an MCP SDK in another language |
-| Agent edit review | A pending changeset by default; direct application as an option | Direct edits with undo only |
 | Triggers and IO | Source-style outputs, inputs and connections, declared by engine components and by C script components through `sdk.h` | IO as a separate system that scripts cannot extend |
 | Visual scripting | Later work. IO and its value kinds must let a future graph asset, in the style of Unreal Blueprints, use the same router | Designing the graph editor now |
-| Brush storage | One entity per brush, under group entities that the Outliner collapses; each face is a child entity, because a component cannot hold a face list | One component that holds many brushes; a new array property kind |
-| Brush limits | 64 faces per brush; generators split anything larger. If measurement requires merging, cells start at 32 m | Unbounded faces |
-| Changeset persistence | In memory only; closing the scene prompts before it discards pending items | Saving pending items with the scene overlay |
 | Invalid connections | Report and skip, so a level plays with one broken connection | Refusing Play until every connection resolves |
 | Connection targets | An entity in the source's own container, because entity references never cross containers (ADR-076). Named targets across containers can come later | Cross-container references now |
 | IO timing | Routing in fixed ticks, so delays and order do not depend on the frame rate | Routing once per rendered frame |
 
 ## Current baseline
 
-- **Text control.** The Cmd bar, `--exec` and `--headless` drive the editor by
-  text and print `[cmd]` lines
-  ([ADR-075](../adr/075-editor-cmd-bar-and-evaluator.md),
-  [editor_cmd.c](../../editor/src/editor_cmd.c)). A line holds at most 255
-  bytes, one statement runs per frame, a statement makes at most one scene
-  edit, and expressions cannot create entities. Results are text, and the
-  editor cannot return an image.
-- **Object model.** Entities are an ID plus components. Type descriptors drive
-  Details, JSON, validation, undo and Cmd paths, and modules register new
-  component types ([ADR-076](../adr/076-project-object-model.md),
-  [vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)).
-- **Edit journal.** [vkr_scene_edit.h](../../runtime/src/renderer/systems/vkr_scene_edit.h)
-  records apply, create, delete, reparent and component edits.
-  `vkr_scene_edit_apply_gesture` merges consecutive edits of one entity and
-  field set; `vkr_scene_edit_apply_physics_batch` groups physics changes. No
-  entry groups arbitrary structural edits across entities into one undo step.
-- **Generated geometry.** The `shape` component has one type, `cube`, and
-  setting it rebuilds a generated mesh
-  ([vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)).
-  `vkr_geometry_system_create` accepts vertex and index data
-  ([vkr_geometry_system.h](../../runtime/src/renderer/systems/vkr_geometry_system.h)).
+- **Agent channel and brushes.** ADR-084: typed operations over a local
+  socket and `vkr_mcp`, batches as journal groups with review, captures,
+  brush components with generated meshes and generated collision bodies, and
+  blockout operations.
 - **Collision.** Colliders are boxes, spheres, capsules, convex hulls and
   triangle meshes; sensors exist; a body holds at most
   `VKR_PHYSICS_MAX_COLLIDERS` (32) colliders
-  ([ADR-072](../adr/072-entity-collision-and-rigid-body-physics.md),
-  [vkr_physics.h](../../runtime/src/physics/vkr_physics.h)). VKR does not wrap
-  Jolt's height field shape.
+  ([ADR-072](../adr/072-entity-collision-and-rigid-body-physics.md)). VKR does
+  not wrap Jolt's height field shape.
 - **Player metrics.** `VkrPhysicsCharacterDesc` holds the capsule radius and
-  half-height, `max_slope_radians`, `step_up` and `step_down`.
-- **Socket precedent.** `vkr_bakery serve` speaks newline-delimited JSON over a
-  local stream socket
-  ([vkr_bakery_serve.c](../../tools/bakery/vkr_bakery_serve.c)).
+  half-height, `max_slope_radians`, `step_up` and `step_down`
+  ([vkr_physics.h](../../runtime/src/physics/vkr_physics.h)).
 - **Prefabs.** `scene.instantiate` copies a project scene under a new root
   without a link to its source.
 - **Sensor events.** Physics reports sensor begin and end pairs
@@ -82,8 +58,9 @@ The owner settled these on 2026-10-04:
   ([vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)), and no property
   kind references an entity. A component cannot hold a list of connections or
   a field that points to another entity.
-- **Not present.** Brushes, terrain ([Terrain rendering](terrain-rendering.md)
-  is a proposal), splines, scatter and entity IO. The
+- **Not present.** Brush editing operations, level checks, terrain
+  ([Terrain rendering](terrain-rendering.md) is a proposal), splines, scatter
+  and entity IO. The
   [behavior proposal](entity-behavior-system.md#second-deliverable-connections-and-constrained-state-charts)
   plans connection assets that bind a typed event to an action on an entity.
 
@@ -107,128 +84,24 @@ compact form that an agent can edit reliably.
 
 | Layer | Holds | Compiles to |
 |---|---|---|
-| Brushes | Convex solids with per-face materials | One mesh and one convex collider per brush, merged per world cell if measurement requires it |
+| Brushes (ADR-084) | Convex solids with per-face materials | One mesh per brush; convex hulls in static bodies per world cell |
 | Terrain | Heightfield tiles, weight layers, holes | Terrain tiles and height field collision |
 | Placement | Props, splines, seeded scatter rules | Mesh instances |
 | Gameplay | Brush entities, point entities, IO connections | Sensor bodies, movers and runtime connections |
 
-The scene document stores authored data only. Generated meshes and colliders
-are derived data that the scene rebuilds from that data when it loads or
+The scene document stores authored data only. Generated meshes and
+collision are derived data that the scene rebuilds when the data loads or
 changes, in the editor and in a packaged game.
 
-### Brush data
+### Brush editing
 
-A brush is an entity with a `brush` component. Each face of the brush is a
-direct child entity with a `brush_face` component. A face holds one plane in
-the brush's local space, a material reference (the `shape` component's
-material name and path fields are the model), and UV offset, scale and
-rotation. Faces are world-aligned by default, as in Hammer, so a resize keeps
-texel density and neighbouring walls line up. Vertices snap to a power-of-two
-grid in meters, from 0.0625 m to 8 m.
-
-Faces are entities because a component value holds at most
-`VKR_TYPE_VALUE_MAX` (1,024) bytes and descriptors cannot describe arrays
-([vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)). The same pattern
-already stores colliders (ADR-072). Each face then gets Details rows, undo,
-JSON, Cmd paths and agent operations from its descriptor, and selecting a face
-is selecting an entity.
-
-Validation at the face and brush boundary rejects non-finite planes, brushes
-with fewer than 4 or more than 64 faces, faces that do not bound a polygon, and
-open or zero-volume solids. Mesh and collider generation then consume only
-valid brushes.
-
-Generators emit ordinary brushes: box, wedge, cylinder, cone, stairs and arch.
-Editing operations are face moves, vertex moves, clip by a plane, hollow, face
-extrude, merge and carve. Carve replaces the target with convex pieces once
-and records one undo step.
-
-### Brush meshes and collision
-
-Each valid brush owns one generated mesh with one submesh per distinct face
-material, as the `shape` component owns its cube. A brush rebuilds at most once
-per frame, after every edit of that frame has applied. A solid brush owns a
-static physics body with one convex hull collider built from its vertices.
-
-The phase 1 evidence measures the frame cost of 1,000 brushes placed in the
-Bistro scene. Per-brush meshes stay when that cost is within the per-draw cost
-of Bistro's own static meshes. Otherwise the scene merges brushes per 32 m world
-cell and per material, removes faces hidden between touching solid brushes,
-and resolves picks inside a cell on the CPU against brush planes.
-
-Export to glTF hands a blockout to an artist. Replace with mesh swaps a brush
-group for the finished model and keeps its brushes as collision only.
-
-### Operation layer
-
-Each tool is a named operation with typed, bounded arguments, for example
-`brush.create`, `brush.clip`, `face.set_material`, `blockout.room`,
-`io.connect` and `query.raycast`. One table defines its name, arguments,
-validation, result and journal entry. The viewport tools, the Cmd bar and the
-agent socket call the same table. The Cmd bar keeps its current commands; new
-toolkit commands are operations exposed through it.
-
-A batch is one compound journal entry: one undo step that may create, edit and
-delete several entities. This entry is new journal work. A `dry_run` flag
-validates a batch without changing the scene.
-
-Intent operations let an agent state what it wants while the engine computes
-geometry: `blockout.room`, `blockout.corridor`, `blockout.doorway` and
-`blockout.stairs(from, to)`. Each emits ordinary brushes that a designer edits
-afterwards.
-
-### Agent channel
-
-The editor listens on a per-user local socket (a Unix socket with mode 0600, a
-named pipe on Windows) and speaks newline-delimited JSON. A request carries an
-ID, an operation or a batch, and optional `changeset` and `dry_run` fields. A
-response carries the same ID, created entity IDs, results or an error code with
-a message. It never listens on TCP.
-
-A small adapter executable translates MCP over stdio to that socket, so Claude
-Code or any MCP client connects without code in the editor that knows about a
-model provider. It implements only the
-[2026-07-28 revision](https://modelcontextprotocol.io/specification/2026-07-28/changelog),
-which the SDKs label v2:
-
-- **Stateless requests.** The revision has no `initialize` handshake. Each
-  request carries its protocol version and client capabilities in `_meta`, and
-  the adapter answers `server/discover` with its versions, capabilities and
-  identity. An unsupported version returns `UnsupportedProtocolVersionError`.
-- **Handles as arguments.** The protocol keeps no session. The changeset ID,
-  entity IDs and capture IDs are server-minted handles that tools take as
-  ordinary arguments, so any request can name the changeset it extends.
-- **Tools.** `tools/list` returns the operation table in a fixed order with
-  `ttlMs` and `cacheScope`. Results set `resultType` to `complete`, return JSON
-  as `structuredContent` with an `outputSchema`, and return captures as image
-  content.
-- **Long operations.** A scene load, bake or build reports progress on its
-  request. The tasks extension (`io.modelcontextprotocol/tasks`) is optional
-  for work that outlives one request.
-- **Not used.** The adapter implements none of the deprecated Roots, Sampling
-  and Logging features. It logs to stderr.
-
-The editor socket protocol stays VKR's own and independent of MCP revisions;
-only the adapter changes when MCP changes.
-
-Perception operations:
-
-- `level.describe(region)` returns rooms, openings, materials, entities and
-  connections in a compact form.
-- `query.raycast`, `query.bounds` and `query.at(point)` answer spatial
-  questions.
-- `view.capture` returns a PNG of a top-down orthographic map with grid labels,
-  or a camera view. It renders through the offscreen present target
-  ([ADR-014](../adr/014-offscreen-present-target.md)).
-
-### Pending changeset
-
-By default, agent operations land in a pending changeset instead of the edit
-journal. The viewport draws pending items as ghosts, and a Changes panel lists
-them. Accept moves the chosen items into the journal as one undo step; Reject
-drops them. Validation runs when the item enters the changeset and again on
-accept, because the scene can change in between. A request may ask for direct
-application when the designer allows it.
+Editing operations change brushes in place, each one journal group: face
+moves (`brush.move_face`), vertex moves, clip by a plane, hollow, face
+extrude, merge, and carve, which replaces the target with convex pieces once
+and keeps no boolean tree. Scene tools add face selection with move handles
+and a clip tool. Export to glTF hands a blockout to an artist; Replace with
+mesh swaps a brush group for the finished model and keeps its brushes as
+collision only.
 
 ### Level checks
 
@@ -241,11 +114,11 @@ editor panel for designers.
 
 ### Gameplay volumes
 
-A brush entity is a brush group with a role: trigger, player clip, volume or
-mover. A trigger builds a sensor body. Point entities include the existing
-Player Start, spawns and markers. Until brushes exist, a `trigger` uses the
-entity's existing box, sphere or capsule sensor collider, so IO does not wait
-for the brush phases.
+Brush roles (ADR-084) already give solid, visual, clip and trigger volumes;
+a trigger brush owns a sensor body. Movers and other gameplay roles come with
+IO. Point entities include the existing Player Start, spawns and markers. A
+`trigger` component may use a trigger brush or the entity's own box, sphere
+or capsule sensor collider.
 
 ### Triggers, IO and scripts
 
@@ -387,7 +260,7 @@ linked prefabs once the behavior proposal defines their lifecycle.
 ## Specification
 
 This section is the implementation contract for the phases that remain.
-Later phases state their interfaces and gain detail when they start.
+Each phase gains detail when it starts.
 
 ### Phase 0: agent channel
 
@@ -397,52 +270,11 @@ the MCP adapter. Later phases add their operations to the same table.
 
 ### Phase 1: brushes
 
-**Components.** `brush` (category Level) holds `role`: `solid` (renders and
-collides), `visual` (renders only), `clip` (collides only) and `trigger`
-(sensor body; renders only in the editor). `brush_face` holds `normal` (unit,
-brush local space), `distance` (the plane is `dot(normal, p) = distance`),
-`material` (a material path, empty for the default), `uv_offset` and
-`uv_scale` (meters per texture repeat), `uv_rotation`, and `uv_world`
-(true projects in world space, false in brush space). Face entities have an
-identity transform. The editor refuses transform edits on them and the
-Outliner hides them under their brush.
-
-**Geometry.** `runtime/src/level/vkr_brush.c` builds a brush's polygons on the
-CPU: for each face it clips a large square on its plane by every other plane,
-then welds vertices within 1e-4 m. It rejects a face whose polygon is empty, a
-brush whose polygons do not close, and a brush with zero volume. UVs project
-each vertex onto the two texture axes of the face's dominant normal axis, as
-Hammer does, rotated by `uv_rotation`, divided by `uv_scale` and shifted by
-`uv_offset`. Tangents follow the U axis.
-
-**Scene integration.** A change to a `brush` or `brush_face` component, a
-face's creation or deletion, or a brush transform change marks the brush
-dirty. Scene update rebuilds each dirty brush once: one geometry with one
-submesh per distinct material, owned and released like the shape mesh. The
-build of an invalid brush keeps no mesh and reports the reason in Details.
-Roles `solid` and `clip` own a static body whose one collider is a convex hull
-of the brush's vertices, built in memory without a cooked asset.
-
-**Operations.** `brush.box` (`min`, `max`), `brush.wedge` (`min`, `max`,
-`slope` toward `+x`, `-x`, `+z` or `-z`), `brush.cylinder` (`center`,
-`radius`, `height`, `sides` 3 to 32), `brush.stairs` (`from`, `to`, `width`,
-`step_height`) and `brush.set_material` (`brush`, `material`, `faces`). Each
-creator also takes `name`, `parent`, `role` and `material` and snaps its
-corners to the current grid unless `snap` is false. Blockout operations emit a
-group entity with brushes: `blockout.room` (`min`, `size`, `wall`, `material`,
-`floor_material`, `ceiling`), `blockout.corridor` (`from`, `to`, `width`,
-`height`, `wall`) and `blockout.doorway` (`wall`, `offset`, `width`,
-`height`), which splits a box wall into the pieces around the opening.
-
-**Editor.** The Create menu and Cmd `create` gain Brush box, Brush wedge and
-Brush cylinder. A box drag tool in the Scene draws a brush on the grid plane
-between two clicked corners, with the height from the grid spacing.
-
-**Phase 1 evidence.** CPU tests for polygon building, rejection of open and
-zero-volume brushes, UV projection, and the blockout generators' brush
-counts and bounds. A Bistro editor run that builds a room and walks the
-player through its doorway. Release frame cost on Bistro with 1,000 brushes,
-against Bistro without them, which decides the cell merge.
+Implemented; [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)
+owns the components, geometry, rebuild, generated collision, operations and
+editor tools. Brush meshes stay per brush: the phase 1 measurement found
+about 0.4 µs per visible brush on Bistro, so the cell merge waits until a
+level makes that cost visible.
 
 ### Phase 2: brush editing and level checks
 
@@ -482,24 +314,17 @@ the rules. Linked prefabs stay with ADR-076 and the behavior proposal.
 | Phase | Scope | Acceptance evidence |
 |---|---|---|
 | 0. Agent channel | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
-| 1. Brush core | `brush` and `brush_face` components, box, wedge and cylinder, face materials and world UVs, grid, brush meshes and colliders, blockout operations | CPU tests for polygon building and convexity rejection; a brush block inside the Bistro scene walked by the player; Release frame cost on Bistro with 1,000 brushes before and after |
+| 1. Brush core | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 2. Brush editing | Vertex, edge and face edits, clip, hollow, carve, extrude, brush entities, `level.lint` | Lint tests against named defects (narrow door, high step, steep ramp) |
 | 3. IO | `ENTITY` property kind, `io_connection`, the router with the sensor drain, `trigger`, `relay`, `timer`, `counter`, script `VKR_OUTPUTS` and `VKR_INPUTS`, trigger hooks, the IO trace and operations | CPU tests for delivery order, delay deadlines, fire limits, stale targets and the chain limit fault; a Bistro Play run in which a trigger opens a script door |
 | 4. Terrain | Terrain-rendering decisions, sculpt and paint, height field collision, region operations | Defined by the terrain-rendering proposal |
-| 5. Population | Splines, seeded scatter, linked prefabs | A residency bound for M1 under the 16 GB floor ([ADR-083](../adr/083-supported-hardware-matrix.md)) |
+| 5. Population | Splines and seeded scatter; linked prefabs stay with ADR-076 | A residency bound for M1 under the 16 GB floor ([ADR-083](../adr/083-supported-hardware-matrix.md)) |
 
 ## Risks
 
-- One draw per brush can cost too much. Phase 1 measures it on Bistro and adds the cell merge if it does.
 - LLM agents make arithmetic and orientation errors in 3D. Intent operations,
   grid snapping, `level.lint`, labelled top-down captures and the review step
   each reduce this; none removes it.
-- An MCP client that sends only 2025-11-25 or older requests cannot connect.
-  The adapter answers it with `UnsupportedProtocolVersionError`, so the failure
-  is explicit.
-- A socket opens the editor to other local processes. The user-only socket mode
-  limits access to the user's own processes, which can already edit the
-  project files.
 
 ## Sources
 

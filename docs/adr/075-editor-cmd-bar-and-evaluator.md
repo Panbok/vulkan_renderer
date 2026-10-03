@@ -82,6 +82,8 @@ dependable channel for scripts.
 | `view.mode` | `<lit\|unlit\|detail-lighting\|lighting-only\|wireframe>` | Render mode |
 | `tool` | `<select\|move\|rotate\|scale>` | Transform tool |
 | `grid` | `[on\|off\|toggle]` | World grid |
+| `brush.draw` | `[on\|off\|toggle]` | Brush drawing in the Scene (B; ADR-084) |
+| `op` | `<operation> [json object]` | Run an operation of the agent table (ADR-084); its result prints as an `[agent]` log line |
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |
 | `grid.height` | `<y>` | Grid world height (shows the grid) |
 | `grid.fit` | | Lift the grid onto the surface at the Scene's centre: collision, else the GPU depth there |

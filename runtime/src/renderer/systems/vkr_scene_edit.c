@@ -310,6 +310,12 @@ static bool8_t edit_prepare(VkrScene *scene, VkrEntityId entity,
   if (physics_owner.u64 && physics_owner.u64 != entity.u64) {
     return false_v;
   }
+  /* A brush face is a plane in its brush's space; it moves with the brush
+     (docs/proposals/level-design-toolkit.md). */
+  if ((v->fields & VKR_SCENE_EDIT_TRANSFORM) &&
+      vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type)) {
+    return false_v;
+  }
   if ((v->fields & VKR_SCENE_EDIT_TRANSFORM) && current.physics.present &&
       !vkr_scene_physics_is_paused(scene)) {
     return false_v;
@@ -880,16 +886,28 @@ static bool8_t edit_world_type(const VkrTypeDesc *type) {
   return vkr_scene_world_type_live(type);
 }
 
-static bool8_t edit_has_children(const VkrScene *scene, VkrEntityId entity) {
+/* Whether `entity` has a child; a brush's faces do not count when
+   `brush_faces` is false, because deleting the brush deletes them. */
+static bool8_t edit_has_children_except(const VkrScene *scene,
+                                        VkrEntityId entity,
+                                        bool8_t brush_faces) {
+  const bool8_t brush =
+      vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) != NULL;
   for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
     const VkrEntityId other = vkr_entity_id_from_index(scene->world, i);
     const SceneTransform *transform =
         vkr_entity_get_component(scene->world, other, scene->comp_transform);
-    if (transform && transform->parent.u64 == entity.u64) {
+    if (transform && transform->parent.u64 == entity.u64 &&
+        (brush_faces || !brush ||
+         !vkr_scene_get_typed(scene, other, &vkr_scene_brush_face_type))) {
       return true_v;
     }
   }
   return false_v;
+}
+
+static bool8_t edit_has_children(const VkrScene *scene, VkrEntityId entity) {
+  return edit_has_children_except(scene, entity, true_v);
 }
 
 /* The entity is made only of parts an EditObject snapshot restores. */
@@ -920,9 +938,11 @@ static bool8_t edit_deletable_parts(const VkrScene *scene, VkrEntityId entity,
       known = id == scene->types[t].id &&
               scene->types[t].type != &vkr_scene_animation_type;
     }
-    /* Generated shape and text state is rebuilt from its typed component. */
+    /* Generated shape, brush and text state is rebuilt from its typed
+       component. */
     known |= (id == scene->comp_shape &&
-              vkr_scene_get_typed(scene, entity, &vkr_scene_shape_type)) ||
+              (vkr_scene_get_typed(scene, entity, &vkr_scene_shape_type) ||
+               vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type))) ||
              (id == scene->comp_text3d &&
               vkr_scene_get_typed(scene, entity, &vkr_scene_text_type));
     if (!known) {
@@ -941,7 +961,7 @@ bool8_t vkr_scene_edit_can_delete(const VkrScene *scene, VkrEntityId entity,
   if (!edit_deletable_parts(scene, entity, reason)) {
     return false_v;
   }
-  if (edit_has_children(scene, entity)) {
+  if (edit_has_children_except(scene, entity, false_v)) {
     *reason = "Delete or move its children first.";
     return false_v;
   }
@@ -1409,6 +1429,9 @@ VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
   return entity;
 }
 
+static bool8_t edit_delete_one(VkrSceneEditState *s, VkrScene *scene,
+                               VkrEntityId entity);
+
 bool8_t vkr_scene_edit_delete(VkrSceneEditState *s, VkrScene *scene,
                               VkrEntityId entity) {
   const char *reason = NULL;
@@ -1416,6 +1439,41 @@ bool8_t vkr_scene_edit_delete(VkrSceneEditState *s, VkrScene *scene,
     snprintf(s->status, sizeof(s->status), "%s", reason);
     return false_v;
   }
+  if (!edit_has_children(scene, entity)) {
+    return edit_delete_one(s, scene, entity);
+  }
+  /* A brush leaves with its faces, as one step: faces first, so undo
+     restores the brush before them. */
+  const bool8_t own_group = !s->group_open;
+  if (own_group) {
+    (void)vkr_scene_edit_group_begin(s);
+  }
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; ok && i < scene->world->dir.living; ++i) {
+    const VkrEntityId face = vkr_entity_id_from_index(scene->world, i);
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, face, scene->comp_transform);
+    if (transform && transform->parent.u64 == entity.u64 &&
+        vkr_scene_entity_alive(scene, face)) {
+      ok = edit_delete_one(s, scene, face);
+    }
+  }
+  ok = ok && edit_delete_one(s, scene, entity);
+  if (own_group) {
+    if (ok) {
+      vkr_scene_edit_group_end(s);
+    } else {
+      char status[sizeof(s->status)];
+      snprintf(status, sizeof(status), "%s", s->status);
+      (void)vkr_scene_edit_group_rollback(s, scene);
+      snprintf(s->status, sizeof(s->status), "%s", status);
+    }
+  }
+  return ok;
+}
+
+static bool8_t edit_delete_one(VkrSceneEditState *s, VkrScene *scene,
+                               VkrEntityId entity) {
   EditStructure *structure = &s_edit_structure;
   MemZero(structure, sizeof(*structure));
   structure->op = EDIT_STRUCTURE_DELETE;

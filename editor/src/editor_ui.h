@@ -366,6 +366,13 @@ typedef struct VkrEditorUi {
   /* The agent channel and its operation table
      (docs/proposals/level-design-toolkit.md). */
   struct VkrEditorAgent *agent;
+  /* Brush drawing: a left drag on the grid plane draws a box brush between
+     the press and the release, one grid cell high. */
+  bool8_t brush_draw;
+  bool8_t brush_dragging;
+  Vec3 brush_draw_start;
+  Vec3 brush_draw_end;
+  float32_t brush_draw_height;
   /* `ui.click`, `ui.drag` and `ui.key` input steps, one per frame:
    * {kind, x px, y px, button or key} with kind 0 move, 1 press, 2 release,
    * 3 key press, 4 key release. The queue holds until they run. */

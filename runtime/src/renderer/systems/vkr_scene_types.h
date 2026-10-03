@@ -37,6 +37,9 @@ extern const VkrTypeDesc vkr_scene_text_type;
 extern const VkrTypeDesc vkr_scene_animation_type;
 /** Player Start (ADR-079): the spawn pose a game script reads. */
 extern const VkrTypeDesc vkr_scene_player_start_type;
+/* Brushes and their faces (docs/proposals/level-design-toolkit.md). */
+extern const VkrTypeDesc vkr_scene_brush_type;
+extern const VkrTypeDesc vkr_scene_brush_face_type;
 /** Read-only SceneMeshInfo rows; not a component type. */
 extern const VkrTypeDesc vkr_scene_mesh_info_type;
 

@@ -5,6 +5,7 @@
 #include "animation_loader_tests.h"
 #include "animation_player_tests.h"
 #include "animation_tests.h"
+#include "brush_test.h"
 #include "camera_rig_test.h"
 #include "character_test.h"
 #include "collision_asset_test.h"
@@ -102,6 +103,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_resource_async_state_tests),
     VKR_TEST_SUITE(run_scene_loader_tests),
     VKR_TEST_SUITE(run_scene_edit_tests),
+    VKR_TEST_SUITE(run_brush_tests),
     VKR_TEST_SUITE(run_editor_project_store_tests),
     VKR_TEST_SUITE(run_gltf_importer_tests),
     VKR_TEST_SUITE(run_animation_tests),

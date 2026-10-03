@@ -4,6 +4,7 @@
  */
 
 #include "vkr_scene_system.h"
+#include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
@@ -1992,6 +1993,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
     return;
 
   vkr_scene_physics_shutdown(scene);
+  vkr_scene_brush_shutdown(scene);
   vkr_scene_collision_layers_shutdown(scene);
   vkr_scene_animation_shutdown(scene);
   vkr_scene_models_shutdown(scene);
@@ -2048,6 +2050,7 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
   }
 
   vkr_scene_update_transforms(scene);
+  vkr_scene_brush_update(scene);
   if (!vkr_scene_physics_simulated_body_count(scene) &&
       !scene->simulation.enabled) {
     vkr_scene_animation_update(scene, dt);
@@ -2512,6 +2515,7 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   }
   vkr_scene_animation_entity_destroying(scene, entity);
   vkr_scene_model_entity_destroying(scene, entity);
+  vkr_scene_brush_entity_destroying(scene, entity);
   /* Generated shape meshes and text slots belong to the entity. */
   scene_shape_release(scene, entity);
   scene_text_release(scene, entity);
@@ -2890,6 +2894,7 @@ void vkr_scene_set_parent(VkrScene *scene, VkrEntityId entity,
   scene->structure_revision++;
   t->flags |= SCENE_TRANSFORM_DIRTY_HIERARCHY | SCENE_TRANSFORM_DIRTY_WORLD;
   scene->hierarchy_dirty = true;
+  vkr_scene_brush_parent_changed(scene, entity, old_parent, parent);
 }
 
 bool8_t vkr_scene_set_mesh_renderer(VkrScene *scene, VkrEntityId entity,
@@ -3331,6 +3336,13 @@ bool8_t vkr_scene_entity_visible(const VkrScene *scene, VkrEntityId entity) {
   return true_v;
 }
 
+void vkr_scene_set_editor_volumes(VkrScene *scene, bool8_t visible) {
+  if (scene && scene->editor_volumes != visible) {
+    scene->editor_volumes = visible;
+    scene->render_full_sync_needed = true;
+  }
+}
+
 void vkr_scene_set_editor_hidden_kinds(VkrScene *scene, uint32_t hidden_kinds) {
   hidden_kinds &= VKR_SCENE_SHOW_HIDE_ALL;
   if (scene && scene->editor_hidden_kinds != hidden_kinds) {
@@ -3343,6 +3355,14 @@ void vkr_scene_set_editor_hidden_kinds(VkrScene *scene, uint32_t hidden_kinds) {
    draws. An animation component marks an animated mesh. */
 vkr_internal bool8_t scene_kind_shown(const VkrScene *scene, VkrEntityId entity,
                                       bool8_t shape) {
+  if (shape && !scene->editor_volumes) {
+    const SceneBrushSettings *brush =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
+    if (brush && (brush->role == SCENE_BRUSH_ROLE_CLIP ||
+                  brush->role == SCENE_BRUSH_ROLE_TRIGGER)) {
+      return false_v;
+    }
+  }
   const uint32_t hidden = scene->editor_hidden_kinds;
   if (!hidden) {
     return true_v;
@@ -4095,7 +4115,9 @@ vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
 /* Typed components whose authored values drive generated runtime state. */
 vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
                                       const VkrTypeDesc *type) {
-  if (type == &vkr_scene_shape_type) {
+  if (type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type) {
+    vkr_scene_brush_changed(scene, entity, type);
+  } else if (type == &vkr_scene_shape_type) {
     scene_shape_rebuild(scene, entity);
   } else if (type == &vkr_scene_text_type) {
     scene_text_rebuild(scene, entity);
@@ -4141,18 +4163,6 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
       *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
     return false_v;
   }
-
-  // Get transform for mesh position
-  const SceneTransform *transform =
-      (const SceneTransform *)vkr_entity_get_component(scene->world, entity,
-                                                       scene->comp_transform);
-  VkrTransform mesh_transform = vkr_transform_identity();
-  if (transform) {
-    mesh_transform = vkr_transform_from_position_scale_rotation(
-        transform->position, transform->scale, transform->rotation);
-  }
-  /* Adding SceneShape can move the entity to another archetype. */
-  const Mat4 mesh_model = transform ? transform->world : mat4_identity();
 
   // Acquire or create material for shape
   VkrMaterialHandle mat = assets->material_system.default_material;
@@ -4232,14 +4242,56 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
       .owns_material = owns_material,
   };
 
-  /* A shape is authored scene content like a loaded mesh: its
+  const bool8_t attached = vkr_scene_attach_generated_mesh(
+      scene, entity, &submesh_desc, 1u, out_error);
+  /* The mesh acquired its own references, or none on failure. Drop this
+   * function's factory and acquisition references either way. */
+  vkr_geometry_system_release(&assets->geometry_system, geom);
+  if (owns_material)
+    vkr_material_system_release(&assets->material_system, mat);
+  if (!attached) {
+    return false_v;
+  }
+  SceneShape *comp =
+      vkr_entity_get_component_mut(scene->world, entity, scene->comp_shape);
+  if (comp) {
+    comp->type = config->type;
+    comp->dimensions = config->dimensions;
+    comp->color = config->color;
+  }
+  return true_v;
+}
+
+bool8_t vkr_scene_attach_generated_mesh(VkrScene *scene, VkrEntityId entity,
+                                        const struct VkrSubMeshDesc *submeshes,
+                                        uint32_t submesh_count,
+                                        VkrSceneError *out_error) {
+  struct VkrRenderAssets *assets = scene ? scene->assets : NULL;
+  if (!assets || !submeshes || !submesh_count ||
+      !vkr_entity_is_alive(scene->world, entity)) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_INVALID_ENTITY;
+    return false_v;
+  }
+  const SceneTransform *transform =
+      (const SceneTransform *)vkr_entity_get_component(scene->world, entity,
+                                                       scene->comp_transform);
+  VkrTransform mesh_transform = vkr_transform_identity();
+  if (transform) {
+    mesh_transform = vkr_transform_from_position_scale_rotation(
+        transform->position, transform->scale, transform->rotation);
+  }
+  /* Adding SceneShape can move the entity to another archetype. */
+  const Mat4 mesh_model = transform ? transform->world : mat4_identity();
+
+  /* A generated mesh is authored scene content like a loaded mesh: its
      transform and geometry change only through mesh-manager calls that bump
      the static generation, so retained shadows stay reusable while it
      rests. */
   VkrMeshDesc mesh_desc = {
       .transform = mesh_transform,
-      .submeshes = &submesh_desc,
-      .submesh_count = 1,
+      .submeshes = submeshes,
+      .submesh_count = submesh_count,
       .shadow_mobility = VKR_SHADOW_CASTER_MOBILITY_STATIC,
   };
 
@@ -4248,22 +4300,12 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
   if (!vkr_mesh_manager_add(&assets->mesh_manager, &mesh_desc, &mesh_index,
                             &mesh_err)) {
     String8 err_str = vkr_renderer_get_error_string(mesh_err);
-    log_error("Scene: failed to add shape to mesh manager: %s",
+    log_error("Scene: failed to add a generated mesh: %s",
               string8_cstr(&err_str));
-    if (owns_material) {
-      vkr_material_system_release(&assets->material_system, mat);
-    }
-    vkr_geometry_system_release(&assets->geometry_system, geom);
     if (out_error)
       *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
     return false_v;
   }
-
-  /* Mesh creation acquired its own references. Drop this function's factory
-   * or acquisition references before any later failure removes the mesh. */
-  vkr_geometry_system_release(&assets->geometry_system, geom);
-  if (owns_material)
-    vkr_material_system_release(&assets->material_system, mat);
 
   // Track mesh ownership
   if (!vkr_scene_track_mesh(scene, mesh_index, out_error)) {
@@ -4272,14 +4314,10 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
     return false_v;
   }
 
-  // Add shape component
   SceneShape comp = {
-      .type = config->type,
-      .dimensions = config->dimensions,
-      .color = config->color,
+      .type = SCENE_SHAPE_TYPE_CUBE,
       .mesh_index = mesh_index,
   };
-
   if (!vkr_entity_add_component(scene->world, entity, scene->comp_shape,
                                 &comp)) {
     vkr_scene_release_mesh(scene, mesh_index);
@@ -4290,22 +4328,19 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
     return false_v;
   }
 
-  // Shapes use mesh-slot indices. Set up render_id, visibility, and model
-  // on the mesh for picking to work. Transform sync requires a query for
-  // shapes.
+  // Generated meshes use mesh-slot indices. Set up render_id, visibility,
+  // and model on the mesh for picking to work. Transform sync requires a
+  // query for shapes.
   uint32_t render_id = 0;
   if (!vkr_scene_ensure_render_id(scene, entity, &render_id)) {
-    log_warn("Scene: failed to assign render id for shape entity");
+    log_warn("Scene: failed to assign render id for a generated mesh");
   }
 
-  // Set up mesh for picking and visibility
   bool8_t is_visible = vkr_scene_entity_visible(scene, entity) &&
                        scene_kind_shown(scene, entity, true_v);
   vkr_mesh_manager_set_render_id(&assets->mesh_manager, mesh_index,
                                  scene_picking_render_id(scene, render_id));
   vkr_mesh_manager_set_visible(&assets->mesh_manager, mesh_index, is_visible);
-
-  // Set model matrix from transform
   vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index, mesh_model);
 
   scene_invalidate_queries(scene);
@@ -4313,6 +4348,10 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
   return true_v;
+}
+
+void vkr_scene_detach_generated_mesh(VkrScene *scene, VkrEntityId entity) {
+  scene_shape_release(scene, entity);
 }
 
 // ============================================================================

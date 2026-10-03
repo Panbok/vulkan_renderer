@@ -51,9 +51,21 @@ typedef struct PhysicsStagedJoints {
   VkrPhysicsJoint handles[VKR_SCENE_PHYSICS_MAX_JOINTS];
 } PhysicsStagedJoints;
 
+/* A static or sensor body the scene generates from authored data. */
+typedef struct ScenePhysicsGenerated {
+  uint64_t key;
+  VkrPhysicsBody body;
+} ScenePhysicsGenerated;
+
+/* Generated bodies one scene may hold; brush collision uses one per world
+   cell and one per trigger brush. */
+#define SCENE_PHYSICS_GENERATED_MAX 1024u
+
 struct s_VkrScenePhysics {
   VkrDMemory memory;
   VkrPhysicsWorld *world;
+  ScenePhysicsGenerated generated[SCENE_PHYSICS_GENERATED_MAX];
+  uint32_t generated_count;
   ScenePhysicsBody *bodies;
   ScenePhysicsBody *reset_bodies;
   VkrScenePhysicsPrepared *prepared;
@@ -2654,6 +2666,9 @@ void vkr_scene_physics_shutdown(VkrScene *scene) {
     if (physics->shared_world) {
       /* Other scenes keep simulating; remove only this scene's natives. */
       physics_remove_old_joints(scene);
+      for (uint32_t i = 0; i < physics->generated_count; ++i) {
+        vkr_physics_body_destroy(physics->world, physics->generated[i].body);
+      }
       for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
         if (body->body != VKR_PHYSICS_BODY_INVALID) {
           vkr_physics_body_destroy(physics->world, body->body);
@@ -3176,4 +3191,79 @@ bool8_t vkr_scene_physics_sweep(VkrScene *scene, VkrEntityId owner,
                              delta, filter, hit);
   }
   return false_v;
+}
+
+// =============================================================================
+// Generated bodies (docs/proposals/level-design-toolkit.md)
+// =============================================================================
+
+static int32_t physics_generated_find(const VkrScenePhysics *physics,
+                                      uint64_t key) {
+  for (uint32_t i = 0; i < physics->generated_count; ++i) {
+    if (physics->generated[i].key == key) {
+      return (int32_t)i;
+    }
+  }
+  return -1;
+}
+
+void vkr_scene_physics_generated_remove(VkrScene *scene, uint64_t key) {
+  VkrScenePhysics *physics = scene ? scene->physics : NULL;
+  if (!physics || physics->dispatching) {
+    return;
+  }
+  const int32_t index = physics_generated_find(physics, key);
+  if (index < 0) {
+    return;
+  }
+  (void)vkr_physics_body_destroy(physics->world,
+                                 physics->generated[index].body);
+  physics->generated[index] = physics->generated[--physics->generated_count];
+}
+
+bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
+                                        VkrEntityId entity,
+                                        const VkrPhysicsColliderDesc *colliders,
+                                        uint32_t collider_count, bool8_t sensor,
+                                        const char **error) {
+  /* Generated collision is the first physics some scenes have. */
+  if (!scene || !physics_ensure(scene, error)) {
+    return false_v;
+  }
+  VkrScenePhysics *physics = scene->physics;
+  if (physics->dispatching) {
+    return physics_fail(error, "Physics cannot change during event dispatch");
+  }
+  if (!key || !colliders || !collider_count ||
+      collider_count > VKR_PHYSICS_MAX_COLLIDERS) {
+    return physics_fail(error, "Generated collision needs 1 to 32 colliders");
+  }
+  vkr_scene_physics_generated_remove(scene, key);
+  if (physics->generated_count == SCENE_PHYSICS_GENERATED_MAX) {
+    return physics_fail(error, "Too many generated collision bodies");
+  }
+  const VkrScenePhysicsSnapshot defaults = vkr_scene_physics_default();
+  const VkrPhysicsBodyDesc desc = {
+      .entity_id = entity.u64,
+      .motion = VKR_PHYSICS_STATIC,
+      .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+      .mass = 1.0f,
+      .friction = defaults.body.friction,
+      .restitution = defaults.body.restitution,
+      .gravity_factor = 1.0f,
+      .enabled = true_v,
+      .allow_sleep = true_v,
+      .sensor = sensor,
+      .collision_layer = defaults.collision_layer,
+      .collision_mask = defaults.collision_mask,
+      .colliders = colliders,
+      .collider_count = collider_count,
+  };
+  VkrPhysicsBody body = VKR_PHYSICS_BODY_INVALID;
+  if (!vkr_physics_body_create(physics->world, &desc, &body)) {
+    return physics_fail(error, "The generated collision body was rejected");
+  }
+  physics->generated[physics->generated_count++] =
+      (ScenePhysicsGenerated){.key = key, .body = body};
+  return true_v;
 }

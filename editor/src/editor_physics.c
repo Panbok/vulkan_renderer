@@ -274,6 +274,37 @@ static void physics_pending_changes(VkrEditorUi *editor,
   }
 }
 
+/* The box a brush drag outlines, in world space (no entity). */
+static void physics_brush_draft(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame,
+                                uint32_t capacity) {
+  const Vec3 a = editor->brush_draw_start;
+  const Vec3 b = editor->brush_draw_end;
+  const Vec3 lo = vec3_new(Min(a.x, b.x), a.y, Min(a.z, b.z));
+  const Vec3 hi =
+      vec3_new(Max(a.x, b.x), a.y + editor->brush_draw_height, Max(a.z, b.z));
+  const Vec4 color = {0.35f, 0.75f, 1.0f, 1.0f};
+  for (uint32_t corner = 0; corner < 8; ++corner) {
+    const Vec3 from = {(corner & 1) ? hi.x : lo.x, (corner & 2) ? hi.y : lo.y,
+                       (corner & 4) ? hi.z : lo.z};
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      if (corner & (1u << axis)) {
+        continue;
+      }
+      Vec3 to = from;
+      if (axis == 0) {
+        to.x = hi.x;
+      } else if (axis == 1) {
+        to.y = hi.y;
+      } else {
+        to.z = hi.z;
+      }
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
+                   capacity);
+    }
+  }
+}
+
 void vkr_editor_physics_build(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame) {
   editor->physics_line_count = 0;
@@ -288,8 +319,11 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       frame->scene ? vkr_scene_physics_body_count(frame->scene) : 0u;
   const uint32_t starts =
       frame->scripts_running ? 0u : physics_player_start_count(frame);
+  /* Pending agent changes and a brush being drawn draw in this overlay too
+     (docs/proposals/level-design-toolkit.md). */
   const uint32_t changes =
-      vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent));
+      vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
+      (editor->brush_dragging ? 1u : 0u);
   if (!bodies && !starts && !changes) {
     return;
   }
@@ -332,6 +366,9 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   }
   if (editor->physics_lines && changes) {
     physics_pending_changes(editor, frame, capacity);
+    if (editor->brush_dragging) {
+      physics_brush_draft(editor, frame, capacity);
+    }
   }
   if (frame->view_state.collision_display && capacity && bodies) {
     if (editor->physics_lines) {
@@ -425,14 +462,18 @@ void vkr_editor_physics_project(VkrEditorUi *editor,
                                            image.z / scale, image.w / scale});
   for (uint32_t i = 0; i < editor->physics_line_count; ++i) {
     const VkrEditorPhysicsLine *line = &editor->physics_lines[i];
-    const VkrScene *scene = vkr_editor_entity_scene(frame, line->entity);
+    const VkrScene *scene =
+        line->entity.u64 ? vkr_editor_entity_scene(frame, line->entity) : NULL;
     const SceneTransform *transform =
         scene ? vkr_entity_get_component_if_alive_const(
                     scene->world, line->entity, scene->comp_transform)
               : NULL;
     Vec2 points[4] = {{0}, {0}, {0}, {0}};
-    if (transform) {
-      const Mat4 mvp = mat4_mul(frame->view_projection, transform->world);
+    /* A line without an entity lies in world space. */
+    if (transform || !line->entity.u64) {
+      const Mat4 mvp = transform
+                           ? mat4_mul(frame->view_projection, transform->world)
+                           : frame->view_projection;
       Vec4 a = mat4_mul_vec4(mvp, vec3_to_vec4(line->from, 1));
       Vec4 b = mat4_mul_vec4(mvp, vec3_to_vec4(line->to, 1));
       bool8_t visible = true_v;

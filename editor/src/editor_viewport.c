@@ -1,3 +1,4 @@
+#include "editor_agent.h"
 #include "editor_internal.h"
 #include "editor_projects.h"
 
@@ -650,6 +651,13 @@ static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       ui->capture.keyboard = true_v;
     }
   }
+  /* B turns brush drawing on and off. */
+  if (input_key_just_pressed(frame->input, KEY_B) &&
+      input_key_press_modifiers(frame->input, KEY_B) == 0u) {
+    editor->brush_draw = !editor->brush_draw;
+    editor->brush_dragging = false_v;
+    ui->capture.keyboard = true_v;
+  }
   /* The selection may live in the World or an added scene. */
   const VkrScene *scene =
       vkr_editor_entity_scene(frame, frame->selected_entity);
@@ -686,6 +694,108 @@ static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   }
 }
 
+static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
+                            Vec3 *origin, Vec3 *direction);
+
+/* The grid plane point under a window pixel, snapped to the grid cell. */
+static bool8_t brush_draw_point(const VkrSampleUiFrame *frame, Vec2 pixel,
+                                Vec3 *out) {
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  if (!viewport_ray(frame, pixel, &origin, &direction) ||
+      fabsf(direction.y) < 1.0e-5f) {
+    return false_v;
+  }
+  const float32_t height = frame->view_state.grid_height;
+  const float32_t t = (height - origin.y) / direction.y;
+  if (!(t > 0.0f)) {
+    return false_v;
+  }
+  const float32_t cell = frame->view_state.grid_spacing > 0.0f
+                             ? frame->view_state.grid_spacing
+                             : 1.0f;
+  const Vec3 point = vec3_add(origin, vec3_scale(direction, t));
+  *out = vec3_new(roundf(point.x / cell) * cell, height,
+                  roundf(point.z / cell) * cell);
+  return true_v;
+}
+
+/* Brush drawing (docs/proposals/level-design-toolkit.md): while it is on,
+   the Scene image takes the mouse from picking, a left drag outlines the
+   box on the grid plane and the release creates it through brush.box.
+   Escape cancels a drag, or turns drawing off. */
+static void viewport_brush_draw(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  if (!editor->brush_draw || frame->scene_rendering_stopped ||
+      frame->mouse_captured) {
+    editor->brush_dragging = false_v;
+    return;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  (void)vkr_ui_input_layer_register(
+      ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+      (VkrUiRect){image.x, image.y, image.z, image.w});
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+    if (editor->brush_dragging) {
+      editor->brush_dragging = false_v;
+    } else {
+      editor->brush_draw = false_v;
+    }
+    return;
+  }
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
+                         mouse.x < image.x + image.z &&
+                         mouse.y < image.y + image.w;
+  Vec3 point = {0};
+  if (!editor->brush_dragging) {
+    if (ui->mouse_pressed && inside && editor->menu == VKR_EDITOR_MENU_NONE &&
+        brush_draw_point(frame, mouse, &point)) {
+      editor->brush_dragging = true_v;
+      editor->brush_draw_start = point;
+      editor->brush_draw_end = point;
+      editor->brush_draw_height = frame->view_state.grid_spacing > 0.0f
+                                      ? frame->view_state.grid_spacing
+                                      : 1.0f;
+    }
+    return;
+  }
+  if (brush_draw_point(frame, mouse, &point)) {
+    editor->brush_draw_end = point;
+  }
+  if (input_is_button_down(frame->input, BUTTON_LEFT) && !ui->mouse_released) {
+    return;
+  }
+  editor->brush_dragging = false_v;
+  const Vec3 a = editor->brush_draw_start;
+  const Vec3 b = editor->brush_draw_end;
+  if (fabsf(b.x - a.x) < 1.0e-3f || fabsf(b.z - a.z) < 1.0e-3f) {
+    return;
+  }
+  const uint16_t container = vkr_editor_create_container(frame);
+  if (container == UINT16_MAX) {
+    return;
+  }
+  char target[16];
+  if (container == VKR_SCENE_WORLD_ROOT_ID) {
+    snprintf(target, sizeof(target), "\"world\"");
+  } else {
+    snprintf(target, sizeof(target), "%u", (unsigned)container);
+  }
+  if (container == 0u) {
+    snprintf(target, sizeof(target), "\"primary\"");
+  }
+  char line[320];
+  snprintf(line, sizeof(line),
+           "{\"v\":1,\"id\":\"draw\",\"op\":\"brush.box\",\"args\":{"
+           "\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
+           "\"grid\":0,\"review\":false}}",
+           Min(a.x, b.x), a.y, Min(a.z, b.z), Max(a.x, b.x),
+           a.y + editor->brush_draw_height, Max(a.z, b.z), target);
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
 void vkr_editor_viewport_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
@@ -695,6 +805,7 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
     return;
   }
   view_shortcuts(editor, frame);
+  viewport_brush_draw(editor, frame);
   const ViewHeaderLayout layout = view_header_layout(editor, frame);
   const float32_t scale = ui->content_scale;
   if (frame->mouse_captured || editor->cmd_active ||

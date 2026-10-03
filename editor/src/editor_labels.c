@@ -97,8 +97,10 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
   }
   const VkrTypeDesc *type = NULL;
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
-    /* Shapes and animated meshes are visible geometry and need no icon. */
+    /* Shapes, brushes and animated meshes are visible geometry and need no
+       icon. */
     if (type == &vkr_scene_shape_type || type == &vkr_scene_animation_type ||
+        type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
         vkr_scene_world_type_registered(type) ||
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;

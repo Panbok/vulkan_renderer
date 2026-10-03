@@ -60,6 +60,8 @@ typedef enum EditorCommand {
   CMD_SCRIPT_EDITOR,
   /* Agent changes awaiting review (docs/proposals/level-design-toolkit.md). */
   CMD_CHANGES,
+  /* Brush drawing in the Scene (B). */
+  CMD_BRUSH_DRAW,
   CMD_COUNT
 } EditorCommand;
 

@@ -306,6 +306,22 @@ static void cmd_report(VkrEditorUi *editor, bool8_t ok, const char *text) {
 
 /* ---- Runners ---- */
 
+static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg);
+
+static bool8_t cmd_run_brush_draw(CmdContext *ctx, const CmdDef *def,
+                                  String8 arg) {
+  (void)def;
+  bool8_t next = false_v;
+  if (!cmd_switch(ctx, cmd_split(arg, NULL), ctx->editor->brush_draw, &next)) {
+    return false_v;
+  }
+  ctx->editor->brush_draw = next;
+  ctx->editor->brush_dragging = false_v;
+  snprintf(ctx->message, sizeof(ctx->message), "Brush drawing %s",
+           next ? "on" : "off");
+  return true_v;
+}
+
 static bool8_t cmd_run_command(CmdContext *ctx, const CmdDef *def,
                                String8 arg) {
   (void)arg;
@@ -567,6 +583,36 @@ static bool8_t cmd_run_motion(CmdContext *ctx, const CmdDef *def, String8 arg) {
 }
 
 static bool8_t cmd_run_help(CmdContext *ctx, const CmdDef *def, String8 arg);
+
+/* Queues one operation of the agent table (ADR-084) as the editor's own
+   request; Cmd and agents then share one implementation. */
+static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg) {
+  (void)def;
+  String8 rest = {0};
+  const String8 name = cmd_split(arg, &rest);
+  rest = cmd_trim(rest);
+  if (!name.length || name.length > 64u ||
+      (rest.length && rest.str[0] != '{')) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Usage: op <operation> [json object]");
+    return false_v;
+  }
+  char line[1400];
+  const int length =
+      snprintf(line, sizeof(line),
+               "{\"v\":1,\"id\":\"cmd\",\"op\":\"%.*s\",\"args\":%.*s}",
+               (int)name.length, name.str, rest.length ? (int)rest.length : 2,
+               rest.length ? (const char *)rest.str : "{}");
+  if (length <= 0 || (size_t)length >= sizeof(line) ||
+      !vkr_editor_agent_submit(ctx->editor->agent, line)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "The operation could not be queued");
+    return false_v;
+  }
+  snprintf(ctx->message, sizeof(ctx->message), "Queued %.*s", (int)name.length,
+           name.str);
+  return true_v;
+}
 
 static bool8_t cmd_run_echo(CmdContext *ctx, const CmdDef *def, String8 arg) {
   (void)def;
@@ -1702,6 +1748,9 @@ static const CmdDef cmd_defs[] = {
      CMD_COUNT, 0u},
     {"grid", CMD_ARG_SWITCH, "[on|off|toggle]", "Show or hide the world grid",
      cmd_run_view, CMD_COUNT, 0u},
+    {"brush.draw", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Draw box brushes by dragging on the grid plane (B)", cmd_run_brush_draw,
+     CMD_COUNT, 0u},
     {"grid.labels", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Show or hide the grid's cell numbers and letters", cmd_run_view,
      CMD_COUNT, 2u},
@@ -1850,6 +1899,11 @@ static const CmdDef cmd_defs[] = {
      cmd_run_help, CMD_COUNT, 0u},
     {"echo", CMD_ARG_TEXT, "<text>", "Print text to the Console", cmd_run_echo,
      CMD_COUNT, 0u},
+    {"op", CMD_ARG_TEXT, "<operation> [json arguments]",
+     "Run an agent operation, such as op brush.box "
+     "{\"min\":[0,0,0],\"max\":[2,2,2]}; its result prints as an [agent] "
+     "line",
+     cmd_run_op, CMD_COUNT, 0u},
     {"wait", CMD_ARG_NUMBER, "<seconds>", "Pause the command queue",
      cmd_run_wait, CMD_COUNT, 0u},
     {"quit", CMD_ARG_TEXT, "[discard]",

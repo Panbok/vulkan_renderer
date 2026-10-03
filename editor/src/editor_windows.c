@@ -129,6 +129,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_PHYSICS] = {"Physics settings", VKR_UI_ICON_PHYSICS, NULL, false_v},
     [CMD_SCRIPT_EDITOR] = {"Script editor", VKR_UI_ICON_CODE, NULL, false_v},
     [CMD_CHANGES] = {"Agent changes", VKR_UI_ICON_TERMINAL, NULL, false_v},
+    [CMD_BRUSH_DRAW] = {"Draw brushes", VKR_UI_ICON_SHAPES, "B", false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, NULL,
                           false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, NULL, false_v},
@@ -292,6 +293,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->windows[VKR_EDITOR_WINDOW_SCRIPT].visible;
   case CMD_CHANGES:
     return editor->windows[VKR_EDITOR_WINDOW_CHANGES].visible;
+  case CMD_BRUSH_DRAW:
+    return editor->brush_draw;
   case CMD_PHYSICS:
     return editor->windows[VKR_EDITOR_WINDOW_PHYSICS].visible;
   case CMD_GRAPHICS:
@@ -363,6 +366,10 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_CHANGES:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_CHANGES);
+    break;
+  case CMD_BRUSH_DRAW:
+    editor->brush_draw = !editor->brush_draw;
+    editor->brush_dragging = false_v;
     break;
   case CMD_GRAPHICS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_GRAPHICS);
@@ -502,6 +509,7 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_SCRIPT_EDITOR},
     {CMD_PHYSICS},
     {CMD_CHANGES},
+    {CMD_BRUSH_DRAW},
     {CMD_GRAPHICS},
     {CMD_LABELS, true_v},
     {CMD_LABELS_DIRECTIONAL, false_v, true_v},
