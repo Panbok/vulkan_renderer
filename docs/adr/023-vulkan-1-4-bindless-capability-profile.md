@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-07
+updated: 2026-10-03
 authority: adr
 ---
 
@@ -19,7 +19,8 @@ and synchronization required by the selected renderer.
 
 Select Vulkan 1.4 on Windows only after querying, reporting and enabling the
 required feature/limit profile in `vkr_vulkan_device.c`. Require buffer device
-address, shader 64-bit integers/draw parameters, independent blending, timeline
+address, shader 64-bit integers/draw parameters, the geometry-shader feature that
+fragment `SV_PrimitiveID` needs, independent blending, timeline
 semaphores, descriptor indexing and runtime arrays, scalar layout, host query
 reset, dynamic rendering, synchronization2, maintenance features and shader
 demotion used by production. Require a graphics/compute/transfer queue family.
@@ -49,6 +50,7 @@ Swapchain maintenance is optional and supplies present fences when available.
 Sampler anisotropy is optional: enable the queried feature on the selected
 device, include it in sampler cache identity, and clamp requests to the lesser
 of 16 and the device limit. Report a maximum of 1 when unavailable.
+ADR-083 lists the supported architectures and their capability differences.
 The baseline completion proof is described in ADR-009. Memory pooling and slot
 publication follow ADR-024. The removed Vulkan 1.2 backend is not a supported
 compatibility path; Linux is not enabled by current implementation selection.

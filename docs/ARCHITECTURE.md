@@ -11,6 +11,9 @@ Windows. Both consume explicit frame inputs and one authored render graph. Nativ
 implementations own GPU resources, pipelines, commands and completion; shared
 code owns portable contracts and scene-facing systems. Linux, D3D12 and the
 retired Vulkan 1.2 renderer are not current execution paths.
+Supported devices are Apple M1 and newer, AMD RDNA 2 and newer, and NVIDIA
+Ampere and newer; [ADR-083](adr/083-supported-hardware-matrix.md) records their
+capability differences and the memory floor.
 
 This document describes code present on 2026-09-13. It does not certify a fresh
 native run or a performance result. [INDEX](INDEX.md) locates accepted decisions
