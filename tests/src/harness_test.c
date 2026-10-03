@@ -2104,12 +2104,15 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.asset_context ==
          VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
   assert(strcmp(summary.profile.id, "legacy.v15.profile") == 0);
+  /* Versions before 17 predate the texture load limit and loaded every mip. */
+  assert(summary.case_manifest.renderer.texture_max_load_dimension == 0u);
 
   report.case_manifest.single_capture_session = true_v;
   report.case_manifest.capture_count = 1u;
   report.case_manifest.captures[0].at_frame = 8u;
   report.case_manifest.captures[0].has_camera_mode = true_v;
   report.case_manifest.captures[0].camera_mode = VKR_HARNESS_CAMERA_CUBEMAP_NY;
+  report.case_manifest.renderer.texture_max_load_dimension = 2048u;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -2119,7 +2122,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 16u);
+  assert(current_version == 17u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
   assert(summary.case_manifest.single_capture_session);
@@ -2128,6 +2131,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
          summary.case_manifest.captures[0].camera_mode ==
              VKR_HARNESS_CAMERA_CUBEMAP_NY);
   assert(summary.case_manifest.renderer.physics_fixture);
+  assert(summary.case_manifest.renderer.texture_max_load_dimension == 2048u);
   assert(summary.case_manifest.asset_context ==
          VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
   assert(summary.case_manifest.renderer.editor_stop_frame == 1u);

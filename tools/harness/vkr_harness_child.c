@@ -1466,6 +1466,8 @@ vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
               ? VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR
               : VKR_DISPLAY_OUTPUT_SDR,
       .render_scale = case_manifest->renderer.render_scale,
+      .texture_max_load_dimension =
+          case_manifest->renderer.texture_max_load_dimension,
       .upscale_mode =
           string_equals(case_manifest->renderer.upscaler, "metalfx_temporal")
               ? VKR_UPSCALE_MODE_METALFX_TEMPORAL

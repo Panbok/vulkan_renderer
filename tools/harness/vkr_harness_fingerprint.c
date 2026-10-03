@@ -230,6 +230,11 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
   if (renderer->render_scale != 1.0f) {
     ADD("renderer.render_scale", "%.9g", renderer->render_scale);
   }
+  /* Zero, the full chain, preserves identities authored before the limit. */
+  if (renderer->texture_max_load_dimension != 0u) {
+    ADD("renderer.texture_max_load_dimension", "%u",
+        renderer->texture_max_load_dimension);
+  }
   const char *upscaler = renderer->upscaler[0] ? renderer->upscaler : "spatial";
   if (!string_equals(upscaler, "spatial")) {
     ADD("renderer.upscaler", "%s", upscaler);

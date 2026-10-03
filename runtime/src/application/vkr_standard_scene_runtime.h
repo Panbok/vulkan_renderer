@@ -110,6 +110,9 @@ typedef struct VkrStandardSceneRuntimeConfig {
   VkrDynamicResolutionConfig dynamic_resolution;
   bool8_t capture_enabled;
   const char *bootstrap_font_directory;
+  /** Largest loaded texture extent; mips above it are skipped at load. Zero
+      loads every mip. */
+  uint32_t texture_max_load_dimension;
   uint32_t capture_ring_capacity;
   uint64_t capture_max_batch_bytes;
   /** Boot intent only: `profile`, `requested_mask`, and `excluded_mask` are

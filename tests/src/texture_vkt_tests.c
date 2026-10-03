@@ -175,18 +175,21 @@ static void test_texture_ktx2_rgba16f_cube_decode(void) {
   printf("  test_texture_ktx2_rgba16f_cube_decode PASSED\n");
 }
 
-/* Writes an 8x8 two-level texture of 16-byte 4x4 blocks in `vk_format` whose
- * every block starts with its level and block index, so a wrong region offset
- * or a transcode of the payload changes the markers read back. */
+/* Writes a square texture of 16-byte 4x4 blocks in `vk_format` with
+ * `level_count` levels from `base_extent` (at most 16). Every block starts
+ * with its level and block index, so a wrong region offset or a transcode of
+ * the payload changes the markers read back. */
 static bool8_t texture_vkt_test_write_blocks(const char *path,
-                                             uint32_t vk_format) {
+                                             uint32_t vk_format,
+                                             uint32_t base_extent,
+                                             uint32_t level_count) {
   const ktxTextureCreateInfo create_info = {
       .vkFormat = vk_format,
-      .baseWidth = 8u,
-      .baseHeight = 8u,
+      .baseWidth = base_extent,
+      .baseHeight = base_extent,
       .baseDepth = 1u,
       .numDimensions = 2u,
-      .numLevels = 2u,
+      .numLevels = level_count,
       .numLayers = 1u,
       .numFaces = 1u,
       .isArray = KTX_FALSE,
@@ -198,9 +201,10 @@ static bool8_t texture_vkt_test_write_blocks(const char *path,
   if (result != KTX_SUCCESS || !texture) {
     return false_v;
   }
-  for (uint32_t level = 0u; level < 2u; ++level) {
-    const uint32_t block_count = level == 0u ? 4u : 1u;
-    uint8_t blocks[4u * 16u] = {0};
+  for (uint32_t level = 0u; level < level_count; ++level) {
+    const uint32_t blocks_per_side = Max(1u, (base_extent >> level) / 4u);
+    const uint32_t block_count = blocks_per_side * blocks_per_side;
+    uint8_t blocks[16u * 16u] = {0};
     for (uint32_t block = 0u; block < block_count; ++block) {
       blocks[block * 16u] = (uint8_t)(0xa0u + level);
       blocks[block * 16u + 1u] = (uint8_t)block;
@@ -254,7 +258,8 @@ static void test_texture_ktx2_native_block_decode(void) {
   const String8 source = string8_lit("tests/tmp/native-blocks.vkt");
   for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
     remove(source_path);
-    assert(texture_vkt_test_write_blocks(source_path, cases[i].vk_format));
+    assert(
+        texture_vkt_test_write_blocks(source_path, cases[i].vk_format, 8u, 2u));
 
     VkrTextureSystem system = cases[i].supported;
     VkrTexturePreparedLoad prepared = {0};
@@ -302,6 +307,82 @@ static void test_texture_ktx2_native_block_decode(void) {
   arena_destroy(arena);
   remove(source_path);
   printf("  test_texture_ktx2_native_block_decode PASSED\n");
+}
+
+/* A load limit drops the mips above it: the texture loads as its first mip
+ * within the limit, with the kept levels' own blocks packed at aligned
+ * offsets. A limit at or above the base extent leaves the chain unchanged,
+ * and the smallest mip always remains. */
+static void test_texture_ktx2_load_dimension_cap(void) {
+  printf("  Running test_texture_ktx2_load_dimension_cap...\n");
+
+  char tmp_dir[1024];
+  snprintf(tmp_dir, sizeof(tmp_dir), "%stests/tmp", PROJECT_SOURCE_DIR);
+  assert(texture_vkt_test_make_dir(tmp_dir));
+  char source_path[1024];
+  snprintf(source_path, sizeof(source_path), "%s/capped-blocks.vkt", tmp_dir);
+  remove(source_path);
+  assert(texture_vkt_test_write_blocks(source_path, VK_FORMAT_BC7_UNORM_BLOCK,
+                                       16u, 3u));
+
+  const struct {
+    uint32_t limit;
+    uint32_t extent;
+    uint32_t first_level;
+  } cases[] = {
+      {8u, 8u, 1u}, {4u, 4u, 2u}, {2u, 4u, 2u}, {16u, 16u, 0u}, {0u, 16u, 0u},
+  };
+  Arena *arena = arena_create(KB(64), KB(64));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  const String8 source = string8_lit("tests/tmp/capped-blocks.vkt");
+  for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
+    VkrTextureSystem system = {
+        .supports_texture_bc7 = true_v,
+        .config = {.max_load_dimension = cases[i].limit},
+    };
+    VkrTexturePreparedLoad prepared = {0};
+    VkrRendererError error = VKR_RENDERER_ERROR_UNKNOWN;
+    assert(vkr_texture_system_prepare_load_from_file(
+        &system, source, VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared,
+        &error));
+    assert(error == VKR_RENDERER_ERROR_NONE);
+    const uint32_t mip_count = 3u - cases[i].first_level;
+    assert(prepared.description.width == cases[i].extent &&
+           prepared.description.height == cases[i].extent);
+    assert(prepared.description.mip_levels == mip_count);
+    assert(prepared.upload_region_count == mip_count);
+
+    uint64_t expected_size = 0u;
+    for (uint32_t mip = 0u; mip < mip_count; ++mip) {
+      const uint32_t level = cases[i].first_level + mip;
+      const uint32_t blocks_per_side = Max(1u, (16u >> level) / 4u);
+      const VkrTextureUploadRegion *region = NULL;
+      for (uint32_t r = 0u; r < prepared.upload_region_count; ++r) {
+        if (prepared.upload_regions[r].mip_level == mip) {
+          region = &prepared.upload_regions[r];
+        }
+      }
+      assert(region);
+      assert(region->width == Max(1u, cases[i].extent >> mip));
+      assert(region->byte_size == blocks_per_side * blocks_per_side * 16u);
+      assert(region->byte_offset % 16u == 0u);
+      assert(region->byte_offset + region->byte_size <=
+             prepared.upload_data_size);
+      const uint8_t *blocks = prepared.upload_data + region->byte_offset;
+      for (uint32_t block = 0u; block < region->byte_size / 16u; ++block) {
+        assert(blocks[block * 16u] == 0xa0u + level);
+        assert(blocks[block * 16u + 1u] == block);
+      }
+      expected_size += region->byte_size;
+    }
+    assert(prepared.upload_data_size == expected_size);
+    vkr_texture_system_release_prepared_load(&prepared);
+  }
+  arena_destroy(arena);
+  remove(source_path);
+  printf("  test_texture_ktx2_load_dimension_cap PASSED\n");
 }
 
 static void test_texture_vkt_path_detection(void) {
@@ -873,6 +954,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_query_colorspace_policy();
   test_texture_ktx2_rgba16f_cube_decode();
   test_texture_ktx2_native_block_decode();
+  test_texture_ktx2_load_dimension_cap();
   test_texture_source_only_bypasses_strict_vkt_policy();
   test_texture_transcode_target_policy();
   test_normal_rg_basis_channel_contract();

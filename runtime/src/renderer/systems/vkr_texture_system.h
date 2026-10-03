@@ -31,6 +31,9 @@ VkrHashTable(VkrTextureEntry);
 typedef struct VkrTextureSystemConfig {
   uint32_t max_texture_count;
   const VkrAssetPublisher *asset_publisher;
+  /* Largest base extent of a loaded 2D texture with a mip chain: loads skip
+   * the mips above it. Zero loads every mip (ADR-083). */
+  uint32_t max_load_dimension;
 } VkrTextureSystemConfig;
 
 typedef enum VkrTextureVktContainerType {

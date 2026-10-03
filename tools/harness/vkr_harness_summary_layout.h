@@ -14,8 +14,8 @@
 
 #include <stddef.h>
 
-/** Stored version the writer emits (VkrHarnessCaptureSummaryHeaderV16). */
-#define VKR_HARNESS_CAPTURE_SUMMARY_VERSION 16u
+/** Stored version the writer emits (VkrHarnessCaptureSummaryHeaderV17). */
+#define VKR_HARNESS_CAPTURE_SUMMARY_VERSION 17u
 
 /* Capture checkpoint of versions 2 through 15, before per-checkpoint cubemap
  * faces. */
@@ -1467,8 +1467,102 @@ typedef struct VkrHarnessCaptureSummaryHeaderV14 {
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV14;
 
-/* Version 15's case: the current renderer config, with version-15 capture
- * checkpoints and no capture session. */
+/* Renderer config of versions 15 and 16, before the texture load limit. */
+typedef struct VkrHarnessRendererConfigV16 {
+  bool8_t editor;
+  bool8_t skybox;
+  bool8_t text_fixture;
+  /** Whether temporal reconstruction and camera jitter are enabled. */
+  bool8_t taa_enabled;
+  bool8_t shadow_pcf_early_out;
+  bool8_t shadow_sdsm;
+  char backend[16];
+  char shadow_preset[32];
+  uint32_t shadow_cascades;
+  /** Effective receiver tap count after the optional case field is resolved. */
+  uint32_t shadow_pcf_samples;
+  uint32_t shadow_map_size;
+  float32_t shadow_split_lambda;
+  char render_mode[24];
+  char exposure_mode[16];
+  float32_t manual_exposure;
+  float32_t exposure_compensation_ev;
+  /** Measure-relative frame that explicitly resets automatic adaptation. */
+  uint32_t exposure_reset_frame;
+  /** Bloom is opt-in for deterministic cases; production defaults do not leak
+   * into a harness workload. */
+  bool8_t bloom_enabled;
+  float32_t bloom_threshold;
+  float32_t bloom_knee;
+  float32_t bloom_intensity;
+  /** GTAO is opt-in and must carry its complete deterministic control tuple. */
+  bool8_t gtao_enabled;
+  float32_t gtao_radius;
+  float32_t gtao_power;
+  uint32_t shadow_debug_mode;
+  /** Cold probe-count control used by the SH scaling fixture. UINT32_MAX means
+   * "do not clamp". */
+  uint32_t ibl_probe_limit;
+  /** Whether the fullscreen ACES tonemap stage is enabled. */
+  bool8_t tonemap_enabled;
+  /** Whether the fullscreen FXAA stage is enabled. */
+  bool8_t fxaa_enabled;
+  /** Enables the capture-only fifth transmission peel on every case frame. */
+  bool8_t transmission_depth_diagnostic_enabled;
+  /** Internal renderer resolution relative to the present target. */
+  float32_t render_scale;
+  /** Renderer-reported scene extent. Output-only; manifests cannot author it.
+   */
+  uint32_t render_width;
+  uint32_t render_height;
+  /** Reconstruction implementation: `spatial`, `metalfx_temporal`, or `fsr31`.
+   */
+  char upscaler[24];
+  /** Completion-driven MetalFX resolution policy. FSR 3.1 uses fixed scale. */
+  bool8_t dynamic_resolution;
+  float32_t dynamic_resolution_min_scale;
+  float32_t dynamic_resolution_max_scale;
+  float32_t dynamic_resolution_target_frame_ms;
+  /** Authored case-frame indices including warmup, excluding bootstrap.
+   * UINT32_MAX disables the action. Stop at zero also stops bootstrap, before
+   * the first scene frame. Resume must follow the configured stop. */
+  uint32_t editor_stop_frame;
+  uint32_t editor_resume_frame;
+  /** Image-space sharpness after reconstruction. Zero disables the control. */
+  float32_t image_sharpness;
+  /** `agx` is the default; `aces_fitted` preserves the prior presentation. */
+  char display_transform[16];
+  float32_t white_balance_temperature;
+  float32_t white_balance_tint;
+  float32_t color_contrast;
+  float32_t color_saturation;
+  /** Half-resolution opaque reflections; opt-in for deterministic cases. */
+  bool8_t ssr_enabled;
+  bool8_t ssgi_enabled;
+  /** Requested presentation policy; offscreen targets remain SDR. */
+  char display_output[24];
+  /** Opaque-depth depth of field. Disabled cases leave scene color unchanged.
+   */
+  bool8_t dof_enabled;
+  /** Focus plane distance in metres. */
+  float32_t dof_focus_distance;
+  /** Photographic aperture denominator. */
+  float32_t dof_f_stop;
+  /** Optional velocity-based opaque motion blur. */
+  bool8_t motion_blur_enabled;
+  /** Shutter interval in degrees; zero bypasses motion blur. */
+  float32_t motion_blur_shutter_angle;
+  /** Optional scene entity translated deterministically before each frame. */
+  char motion_blur_entity[VKR_HARNESS_ID_MAX];
+  /** Entity translation velocity in metres per second. */
+  float32_t motion_blur_entity_velocity_x;
+  float32_t motion_blur_entity_velocity_y;
+  float32_t motion_blur_entity_velocity_z;
+  bool8_t physics_fixture;
+} VkrHarnessRendererConfigV16;
+
+/* Version 15's case: the version-16 renderer config, with version-15
+ * capture checkpoints and no capture session. */
 typedef struct VkrHarnessCaseV15 {
   uint32_t schema_version;
   char manifest_path[VKR_HARNESS_PATH_MAX];
@@ -1494,7 +1588,7 @@ typedef struct VkrHarnessCaseV15 {
   uint32_t repetitions;
   uint32_t repetition_timeout_ms;
   uint32_t asset_ready_timeout_ms;
-  VkrHarnessRendererConfig renderer;
+  VkrHarnessRendererConfigV16 renderer;
   VkrHarnessCamera camera;
   VkrHarnessCaptureV15 captures[VKR_HARNESS_MAX_CAPTURES];
   uint32_t capture_count;
@@ -1529,7 +1623,71 @@ typedef struct VkrHarnessCaptureSummaryHeaderV15 {
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV15;
 
+/* Version 16's case: the version-16 renderer config. */
+typedef struct VkrHarnessCaseV16 {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV16 renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  /** `capture_session: "single"`: one child takes every checkpoint in frame
+   * order instead of one child per checkpoint. */
+  bool8_t single_capture_session;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
+  float32_t content_scale;
+  VkrHarnessAssetContext asset_context;
+} VkrHarnessCaseV16;
+
 typedef struct VkrHarnessCaptureSummaryHeaderV16 {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV16 case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV16;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV17 {
   uint8_t magic[8];
   uint32_t version;
   uint32_t capture_count;
@@ -1550,7 +1708,7 @@ typedef struct VkrHarnessCaptureSummaryHeaderV16 {
   VkrHarnessCase case_manifest;
   VkrHarnessProfile profile;
   VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV16;
+} VkrHarnessCaptureSummaryHeaderV17;
 
 /* Stored summaries are an ABI, so their sizes are pinned. Every stored type
  * uses fixed-width members and Vec3 is explicitly 16-byte aligned, so the
@@ -1584,6 +1742,11 @@ VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV13, 78320u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV14, 78320u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV15, 78320u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV16, 78576u);
+VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV17, 78576u);
+_Static_assert(sizeof(VkrHarnessRendererConfigV16) ==
+                   offsetof(VkrHarnessRendererConfig,
+                            texture_max_load_dimension),
+               "Version-16 renderer prefix drift");
 _Static_assert(sizeof(VkrHarnessCaptureV15) == 1064u &&
                    sizeof(VkrHarnessCapture) == 1072u,
                "Capture checkpoint layout drift");

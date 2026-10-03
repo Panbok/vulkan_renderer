@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-29
+updated: 2026-10-03
 authority: adr
 ---
 # ADR-012: KTX2/UASTC texture artifacts with capability-selected transcode
@@ -96,6 +96,23 @@ finalized scene against the one before these changes: PSNR 67.2 dB, mean
 The loader uploads a native ASTC, BC7 or BC5 payload without transcoding or
 the transcode cache, and a device that cannot sample the format refuses it
 with an instruction to rebuild the asset on that platform.
+
+A load limit drops the mips of a 2D texture above a maximum extent after
+decode, for every KTX2 path including cached transcodes. The texture then
+loads as its first mip within the limit; the kept mips move to 16-byte-aligned
+offsets at the front of the upload bytes. Cubemaps, arrays and single-level
+images load unchanged, and the smallest mip always remains. The Graphics
+setting `texture_resolution` selects 1024, 2048 or full resolution, applies
+at the next start, and defaults to 2048 on Metal and full resolution on Vulkan
+(ADR-083's memory floor). Cooked files do not change.
+Bistro, measured on the M1 Pro (Metal Release, a one-repetition copy of
+`bistro_metal_production_040`, `local-windowed-gpu-single`, 2026-10-03):
+texture memory fell from 3.176 to 1.995 GB and driver allocation from 5.86 to
+4.65 GB (reports `a6f36ee8…`, `a477dc1b…`). Its 74 textures at 4096² hold
+most of the difference. Final colour against the unlimited load measured
+109.5 dB PSNR from the street overview of `bistro_windowed_snapshot` (maximum
+1/255) and 88.2 dB from a street-level facade view at 1920x1440 output, with
+three G-buffer albedo pixels above 10/255.
 
 For ordinary texture jobs, the offline packer filters `color-srgb` RGB channels in linear light using the
 [sRGB transfer functions](https://registry.khronos.org/DataFormat/specs/1.4/dataformat.1.4.html),

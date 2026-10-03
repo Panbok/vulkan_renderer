@@ -241,8 +241,8 @@ directories (ADR-078).
 Settings > Graphics has a left tab rail for Display, Quality, Lighting, Effects,
 and Color and a clipped, scrollable right content area. The editor emits typed
 `VkrGraphicsSettingsRequest` values; the sample runtime validates and owns their
-application. Vsync, HDR and temporal upscaling changes show a restart-required
-notice; render scale and dynamic resolution do too unless the renderer's live
+application. Vsync, HDR, temporal upscaling and texture resolution changes
+show a restart-required notice; render scale and dynamic resolution do too unless the renderer's live
 range covers them (ADR-027). Other controls apply live and
 invalidate the affected histories. Legacy app/scene settings load from
 `VKR_GRAPHICS_SETTINGS_PATH` or `.vkr-graphics-settings.json`, debounce saves, and

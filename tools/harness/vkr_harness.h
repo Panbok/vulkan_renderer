@@ -343,6 +343,8 @@ typedef struct VkrHarnessRendererConfig {
   float32_t motion_blur_entity_velocity_y;
   float32_t motion_blur_entity_velocity_z;
   bool8_t physics_fixture;
+  /** Largest loaded texture extent: 0 loads every mip, else 1024 or 2048. */
+  uint32_t texture_max_load_dimension;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

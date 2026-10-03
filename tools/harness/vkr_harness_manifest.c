@@ -943,6 +943,26 @@ vkr_internal bool8_t vkr_harness_parse_renderer_upscaling(
   return true_v;
 }
 
+/** Parses the texture load limit. Zero, the default, loads every mip, so
+ * cases authored before the limit keep their workload. */
+vkr_internal bool8_t vkr_harness_parse_renderer_textures(
+    const VkrHarnessJsonDocument *doc, int32_t token,
+    VkrHarnessRendererConfig *renderer, VkrHarnessError *error) {
+  uint64_t limit = 0u;
+  if (!vkr_harness_manifest_u64(doc, token, "texture_max_load_dimension",
+                                false_v, &limit, error)) {
+    return false_v;
+  }
+  if (limit != 0u && limit != 1024u && limit != 2048u) {
+    vkr_harness_error_set(error, "renderer.texture_max_load_dimension",
+                          "$.renderer.texture_max_load_dimension",
+                          "Texture load limit must be 0, 1024 or 2048");
+    return false_v;
+  }
+  renderer->texture_max_load_dimension = (uint32_t)limit;
+  return true_v;
+}
+
 /** Parses the shadow controls, defaulting each to the selected preset. */
 vkr_internal bool8_t vkr_harness_parse_renderer_shadows(
     const VkrHarnessJsonDocument *doc, int32_t token,
@@ -1009,6 +1029,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "transmission_depth_diagnostic_enabled",
       "image_sharpness",
       "render_scale",
+      "texture_max_load_dimension",
       "upscaler",
       "dynamic_resolution",
       "dynamic_resolution_min_scale",
@@ -1099,7 +1120,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       !vkr_harness_apply_renderer_controls(renderer, &fields, error) ||
       !vkr_harness_parse_renderer_upscaling(doc, token, renderer, &fields,
                                             error) ||
-      !vkr_harness_parse_renderer_shadows(doc, token, renderer, error)) {
+      !vkr_harness_parse_renderer_shadows(doc, token, renderer, error) ||
+      !vkr_harness_parse_renderer_textures(doc, token, renderer, error)) {
     return false_v;
   }
   return true_v;

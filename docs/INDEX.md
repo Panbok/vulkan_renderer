@@ -169,7 +169,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [006](adr/006-cpu-memory-allocators.md) | CPU allocation by lifetime | implemented |
 | [009](adr/009-frame-synchronization.md) | Separate submission and presentation completion | implemented |
 | [010](adr/010-ecs-scene-system.md) | ECS-owned scene state with glTF node identities and a retained render mirror | implemented |
-| [012](adr/012-texture-compression-pipeline.md) | KTX2/UASTC texture artifacts with capability-selected transcode; native ASTC 4x4 for workspace textures on Apple silicon, from the system encoder for editor-only textures | implemented |
+| [012](adr/012-texture-compression-pipeline.md) | KTX2/UASTC texture artifacts with capability-selected transcode; native ASTC 4x4 for workspace textures on Apple silicon, from the system encoder for editor-only textures; a runtime texture load limit, 2048 by default on Metal | implemented |
 | [014](adr/014-offscreen-present-target.md) | Window and offscreen targets share frame submission | implemented |
 | [015](adr/015-metrics-module.md) | Bounded typed metrics and pinned snapshots | implemented |
 | [017](adr/017-prepared-specular-glossiness-lowering.md) | Prepare PBR materials before publication | implemented |

@@ -8,8 +8,8 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The reduced texture tier for devices below the memory floor
-and a Vulkan device-memory budget are not implemented. Only the two reference
+Accepted (partial). A Vulkan device-memory budget is not implemented, and no
+device below the memory floor has a Bistro measurement. Only the two reference
 devices have native evidence.
 
 ## Context
@@ -88,8 +88,10 @@ and register-pressure results measured on the M1 Pro do not predict Apple9.
 
 Production Bistro targets a 16 GB Mac or a discrete GPU with 8 GB
 (decided 2026-10-03). Devices below the floor, 8 GB Macs and 4 to 6 GB discrete
-GPUs, remain supported for rendering, but Bistro there needs a reduced texture
-tier that does not yet exist.
+GPUs, remain supported for rendering. The texture resolution setting
+([ADR-012](012-texture-compression-pipeline.md)) is their reduced tier: Metal
+defaults to the 2048 limit, which took Bistro's textures from 3.18 to 2.00 GB on
+the M1 Pro, and 1024 lowers it further.
 
 The Metal managed allocation cap is two thirds of `recommendedMaxWorkingSetSize`
 (ADR-024). The 16 GB M1 Pro on macOS 26.6.2 reports 12,124 MiB, so its cap is

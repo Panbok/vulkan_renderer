@@ -68,6 +68,12 @@ with per-checkpoint sessions and no face overrides. The
 faces: on Bistro at 64² it took 14.2 s against 83.7 s for six sessions, with
 five faces byte-identical and 18 binary16 components of `nx` one ULP apart.
 
+`renderer.texture_max_load_dimension` (0, 1024 or 2048; default 0) selects the
+texture load limit of [ADR-012](012-texture-compression-pipeline.md). Nonzero
+values enter the workload fingerprint; zero preserves existing identities.
+Capture-summary version 17 stores it in former padding before the camera;
+readers migrate versions 2–16 with the limit at zero, which loaded every mip.
+
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible
 baselines. `autotest` keeps these two results separate. `compare` rechecks a

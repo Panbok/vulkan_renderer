@@ -8,6 +8,10 @@
 
 static const char *const s_shadow_quality_names[] = {"off", "balanced", "high",
                                                      "ultra", NULL};
+static const char *const s_texture_resolution_names[] = {"1024", "2048", "full",
+                                                         NULL};
+/* Texel limits of `texture_resolution`; zero loads every mip. */
+static const uint32_t s_texture_resolution_limits[] = {1024u, 2048u, 0u};
 
 #define GRAPHICS_OFFSET(field) (uint32_t)offsetof(VkrGraphicsSettings, field)
 
@@ -90,6 +94,15 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .tooltip = "Add fine shadows where objects meet surfaces near lights",
      .offset = GRAPHICS_OFFSET(contact_shadows),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "texture_resolution",
+     .label = "Texture resolution",
+     .tooltip = "Largest texture size to load; lower values use less memory. "
+                "Applies after restart",
+     .names = s_texture_resolution_names,
+     .offset = GRAPHICS_OFFSET(texture_resolution),
+     .kind = VKR_PROPERTY_U32,
+     .min = 0.0f,
+     .max = 2.0f},
     {.name = "ambient_occlusion",
      .label = "Ambient occlusion",
      .tooltip = "Add contact shading where surfaces meet",
@@ -247,6 +260,10 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .render_scale =
           backend == VKR_RENDERER_BACKEND_TYPE_METAL ? 1.0f : 2.0f / 3.0f,
       .shadow_quality = 2,
+      /* Full-resolution Bistro textures take 3.2 GB of a 16 GB Mac's 8 GiB
+         managed budget (ADR-083). */
+      .texture_resolution =
+          backend == VKR_RENDERER_BACKEND_TYPE_METAL ? 1u : 2u,
       .soft_shadows = true_v,
       .local_shadows = true_v,
       .ambient_occlusion = true_v,
@@ -337,7 +354,16 @@ bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
   return a->vsync != b->vsync || a->hdr != b->hdr ||
          a->temporal_upscaling != b->temporal_upscaling ||
          a->dynamic_resolution != b->dynamic_resolution ||
-         a->render_scale != b->render_scale;
+         a->render_scale != b->render_scale ||
+         a->texture_resolution != b->texture_resolution;
+}
+
+uint32_t vkr_graphics_settings_texture_max_dimension(
+    const VkrGraphicsSettings *settings) {
+  const uint32_t index =
+      Min(settings->texture_resolution,
+          (uint32_t)ArrayCount(s_texture_resolution_limits) - 1u);
+  return s_texture_resolution_limits[index];
 }
 
 float32_t

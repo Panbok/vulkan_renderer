@@ -3272,6 +3272,111 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
       sidecar_path_for_write, allow_sidecar_cache_write, source_cstr, result);
 }
 
+/* Mip regions a capped 2D load can hold: one per level of the largest
+ * supported extent. */
+#define VKR_TEXTURE_CAP_MAX_REGIONS 32u
+/* The 16-byte block size bounds the alignment the kept images retain. */
+#define VKR_TEXTURE_CAP_REGION_ALIGNMENT_MAX 16u
+
+/* Drops the mips of a decoded 2D chain whose extent exceeds `max_dimension`,
+ * so the texture loads as its first mip at or below the limit. The kept mips
+ * move to the front of the upload bytes in offset order. Cubemaps, arrays,
+ * single-level images and loads within the limit stay unchanged; the
+ * smallest mip always remains. */
+vkr_internal void
+vkr_texture_decode_result_cap_extent(VkrTextureDecodeResult *result,
+                                     uint32_t max_dimension) {
+  if (max_dimension == 0u || result->upload_type != VKR_TEXTURE_TYPE_2D ||
+      result->upload_array_layers != 1u || result->upload_mip_levels <= 1u ||
+      result->upload_region_count != result->upload_mip_levels ||
+      result->upload_region_count > VKR_TEXTURE_CAP_MAX_REGIONS ||
+      result->width <= 0 || result->height <= 0) {
+    return;
+  }
+
+  const uint32_t width = (uint32_t)result->width;
+  const uint32_t height = (uint32_t)result->height;
+  uint32_t skip = 0u;
+  while (skip + 1u < result->upload_mip_levels &&
+         Max(Max(1u, width >> skip), Max(1u, height >> skip)) > max_dimension) {
+    ++skip;
+  }
+  if (skip == 0u) {
+    return;
+  }
+
+  /* Validate before changing anything, so a mismatched payload still loads
+   * every mip. The kept images keep the largest power-of-two alignment, up
+   * to the block size, that all their decoded offsets share. */
+  VkrTextureUploadRegion *regions = result->upload_regions;
+  uint32_t kept_count = 0u;
+  uint64_t alignment = VKR_TEXTURE_CAP_REGION_ALIGNMENT_MAX;
+  for (uint32_t i = 0u; i < result->upload_region_count; ++i) {
+    if (regions[i].mip_level >= result->upload_mip_levels) {
+      kept_count = 0u;
+      break;
+    }
+    if (regions[i].mip_level >= skip) {
+      ++kept_count;
+      while (alignment > 1u && regions[i].byte_offset % alignment != 0u) {
+        alignment /= 2u;
+      }
+    }
+  }
+  if (kept_count != result->upload_mip_levels - skip) {
+    log_error("Texture mip regions do not match the mip count; loading "
+              "every mip");
+    return;
+  }
+
+  kept_count = 0u;
+  for (uint32_t i = 0u; i < result->upload_region_count; ++i) {
+    if (regions[i].mip_level < skip) {
+      continue;
+    }
+    regions[kept_count] = regions[i];
+    regions[kept_count].mip_level -= skip;
+    ++kept_count;
+  }
+
+  /* Insertion sort by byte offset. Every decoded offset is a multiple of
+   * `alignment`, so the aligned cursor never passes the next image's start:
+   * moving the images in offset order never overwrites one not yet moved. */
+  uint32_t order[VKR_TEXTURE_CAP_MAX_REGIONS];
+  for (uint32_t i = 0u; i < kept_count; ++i) {
+    uint32_t slot = i;
+    while (slot > 0u &&
+           regions[order[slot - 1u]].byte_offset > regions[i].byte_offset) {
+      order[slot] = order[slot - 1u];
+      --slot;
+    }
+    order[slot] = i;
+  }
+
+  uint64_t cursor = 0u;
+  for (uint32_t i = 0u; i < kept_count; ++i) {
+    VkrTextureUploadRegion *region = &regions[order[i]];
+    cursor = AlignPow2(cursor, alignment);
+    if (cursor != region->byte_offset) {
+      MemCopy(result->upload_data + cursor,
+              result->upload_data + region->byte_offset,
+              (size_t)region->byte_size);
+      region->byte_offset = cursor;
+    }
+    cursor += region->byte_size;
+  }
+
+  result->upload_region_count = kept_count;
+  result->upload_mip_levels = kept_count;
+  result->upload_data_size = cursor;
+  result->width = (int32_t)Max(1u, width >> skip);
+  result->height = (int32_t)Max(1u, height >> skip);
+  uint8_t *shrunk = (uint8_t *)realloc(result->upload_data, (size_t)cursor);
+  if (shrunk) {
+    result->upload_data = shrunk;
+  }
+}
+
 void vkr_texture_system_release_prepared_load(
     VkrTexturePreparedLoad *prepared) {
   if (!prepared) {
@@ -3344,6 +3449,10 @@ bool8_t vkr_texture_system_prepare_load_from_file(
     *out_error = decode_result.error;
     vkr_texture_decode_result_release(&decode_result);
     return false_v;
+  }
+  if (has_upload_payload) {
+    vkr_texture_decode_result_cap_extent(&decode_result,
+                                         system->config.max_load_dimension);
   }
 
   int32_t width = decode_result.width;

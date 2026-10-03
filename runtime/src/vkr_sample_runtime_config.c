@@ -347,5 +347,7 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .bootstrap_font_directory = options->bootstrap_font_directory[0]
                                       ? options->bootstrap_font_directory
                                       : NULL,
+      .texture_max_load_dimension =
+          vkr_graphics_settings_texture_max_dimension(graphics),
   };
 }

@@ -18,7 +18,7 @@ bool8_t vkr_render_assets_initialize(
     VkrRenderAssets *assets, const VkrAssetPublisher *publisher,
     const VkrDeviceInformation *device_info, VkrJobSystem *job_system,
     const VkrRendererMetricsProducerConfig *metrics_producers,
-    const char *bootstrap_font_directory) {
+    const char *bootstrap_font_directory, uint32_t texture_max_load_dimension) {
   if (!assets || !publisher || !device_info)
     return false_v;
   MemZero(assets, sizeof(*assets));
@@ -62,6 +62,7 @@ bool8_t vkr_render_assets_initialize(
   VkrTextureSystemConfig texture_config = {
       .max_texture_count = 16384,
       .asset_publisher = assets->asset_publisher,
+      .max_load_dimension = texture_max_load_dimension,
   };
   if (!vkr_texture_system_init(device_info, &texture_config, job_system,
                                &assets->texture_system)) {

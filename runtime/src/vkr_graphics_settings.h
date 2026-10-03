@@ -19,6 +19,10 @@ typedef struct VkrGraphicsSettings {
   /* Screen-space contact shadows for the nearest local lights, on either
    * backend; the Epic preset enables them. */
   bool8_t contact_shadows;
+  /* Largest loaded texture extent: 0 is 1024, 1 is 2048, 2 is full
+   * resolution. Metal defaults to 2048 for the unified-memory floor
+   * (ADR-083); a change applies at the next start. */
+  uint32_t texture_resolution;
   bool8_t screen_space_reflections, screen_space_gi, reflection_probes;
   bool8_t subsurface_scattering, fog, volumetric_fog;
   bool8_t bloom, depth_of_field, motion_blur;
@@ -70,6 +74,9 @@ extern const VkrTypeDesc vkr_graphics_settings_type;
 VkrGraphicsSettings
 vkr_graphics_settings_defaults(VkrRendererBackendType backend);
 bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings);
+/* The texture load limit in texels that `settings` selects; zero is none. */
+uint32_t vkr_graphics_settings_texture_max_dimension(
+    const VkrGraphicsSettings *settings);
 bool8_t
 vkr_graphics_settings_restart_required(const VkrGraphicsSettings *requested,
                                        const VkrGraphicsSettings *started);

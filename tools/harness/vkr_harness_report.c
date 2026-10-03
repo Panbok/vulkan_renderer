@@ -404,6 +404,8 @@ vkr_internal bool8_t vkr_harness_report_write_renderer_features(
                                    renderer->shadow_split_lambda) &&
          vkr_harness_json_emit_u64(writer, "shadow_map_size",
                                    renderer->shadow_map_size) &&
+         vkr_harness_json_emit_u64(writer, "texture_max_load_dimension",
+                                   renderer->texture_max_load_dimension) &&
          vkr_harness_json_emit_string(writer, "exposure_mode",
                                       renderer->exposure_mode) &&
          vkr_harness_json_emit_f64(writer, "manual_exposure",
