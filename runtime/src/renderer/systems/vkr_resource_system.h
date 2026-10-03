@@ -171,10 +171,13 @@ struct VkrResourceLoader {
    * @brief Optional query of a finalized resource's publication.
    *
    * When provided, the request keeps its payload after `finalize_async`
-   * succeeds and becomes READY only once this reports CONFIRMED. RETRY
-   * finalizes the retained payload again; FAILED fails the request with
-   * `*out_error`. Called from `vkr_resource_system_pump` with the request table
-   * locked, so it must not call the resource system.
+   * succeeds, the publication may borrow it, and the request becomes READY
+   * only once this reports CONFIRMED. A canceled request keeps the payload
+   * until this stops reporting PENDING. RETRY finalizes the retained payload
+   * again and FAILED fails the request with `*out_error`; for both the loader
+   * has already released what `finalize_async` produced. Called from
+   * `vkr_resource_system_pump` with the request table locked, so it must not
+   * call the resource system.
    *
    * @param self The loader
    * @param handle The handle `finalize_async` produced

@@ -1553,6 +1553,58 @@ vkr_internal void test_resource_async_publication_confirms_before_ready(
   printf("  test_resource_async_publication_confirms_before_ready PASSED\n");
 }
 
+/* A canceled request keeps a payload its unsettled publication may still
+ * borrow, then releases it with the resource once the publication settles. */
+vkr_internal void test_resource_async_cancel_waits_for_publication(
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
+    ResourceAsyncBudgetContext *ctx) {
+  printf("  Running test_resource_async_cancel_waits_for_publication...\n");
+
+  String8 path = string8_lit("tests/assets/cancel.publish.mock");
+  VkrResourceHandleInfo handle = {0};
+  VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
+  submission->frame_active = false_v;
+  ctx->publication_calls = 0u;
+  ctx->publication_script[0] = VKR_RESOURCE_PUBLICATION_PENDING;
+  ctx->publication_script[1] = VKR_RESOURCE_PUBLICATION_PENDING;
+  ctx->publication_script[2] = VKR_RESOURCE_PUBLICATION_CONFIRMED;
+  ctx->publication_script[3] = VKR_RESOURCE_PUBLICATION_CONFIRMED;
+  const uint32_t release_before =
+      atomic_load_explicit(&ctx->release_calls, memory_order_relaxed);
+  const uint32_t unload_before =
+      atomic_load_explicit(&ctx->unload_calls, memory_order_relaxed);
+
+  assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path, allocator,
+                                  &handle, &load_error) == true_v);
+  VkrRendererError prepared_error = VKR_RENDERER_ERROR_UNKNOWN;
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_PENDING_GPU,
+                                       &prepared_error) == true_v);
+  submission->frame_active = true_v;
+  submission->submit_serial = 180u;
+  submission->completed_submit_serial = 181u;
+  vkr_resource_system_pump(*submission, NULL);
+  assert(ctx->publication_calls == 1u);
+
+  vkr_resource_system_unload(&handle, path);
+  vkr_resource_system_pump(*submission, NULL);
+  assert(ctx->publication_calls == 2u);
+  assert(atomic_load_explicit(&ctx->release_calls, memory_order_relaxed) ==
+         release_before);
+  assert(atomic_load_explicit(&ctx->unload_calls, memory_order_relaxed) ==
+         unload_before);
+
+  vkr_resource_system_pump(*submission, NULL);
+  assert(ctx->publication_calls == 3u);
+  assert(atomic_load_explicit(&ctx->release_calls, memory_order_relaxed) ==
+         release_before + 1u);
+  assert(atomic_load_explicit(&ctx->unload_calls, memory_order_relaxed) ==
+         unload_before + 1u);
+
+  submission->frame_active = false_v;
+  printf("  test_resource_async_cancel_waits_for_publication PASSED\n");
+}
+
 bool32_t run_resource_async_state_tests(void) {
   printf("--- Running Resource Async State tests... ---\n");
 
@@ -1688,6 +1740,8 @@ bool32_t run_resource_async_state_tests(void) {
                                             &budget_ctx);
   test_resource_async_publication_confirms_before_ready(&submission, &allocator,
                                                         &publish_ctx);
+  test_resource_async_cancel_waits_for_publication(&submission, &allocator,
+                                                   &publish_ctx);
   test_scene_async_load_smoke(&submission, &allocator, &scene_ctx);
   test_scene_reload_async_cancel(&submission, &allocator, &scene_ctx);
 

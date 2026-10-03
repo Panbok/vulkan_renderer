@@ -1915,6 +1915,29 @@ vkr_internal bool8_t vkr_resource_system_pump_completion_locked(
 
 /* Releases canceled, unreferenced request `i`, unloading its resource and
  * payload outside the mutex. */
+/* True while the renderer may still read the payload of a finalized request
+ * whose publication has not settled, so the payload must not be released.
+ * Settlement clears the wait; a loader that discarded the resource on RETRY
+ * or FAILED leaves nothing to unload. */
+vkr_internal bool8_t vkr_resource_system_publication_unsettled_locked(
+    VkrResourceAsyncRequest *request) {
+  if (!request->awaiting_publication) {
+    return false_v;
+  }
+  VkrResourceLoader *loader = &vkr_resource_system->loaders[request->loader_id];
+  VkrRendererError publication_error = VKR_RENDERER_ERROR_NONE;
+  const VkrResourcePublication publication = loader->publication_state(
+      loader, &request->loaded_info, &publication_error);
+  if (publication == VKR_RESOURCE_PUBLICATION_PENDING) {
+    return true_v;
+  }
+  request->awaiting_publication = false_v;
+  if (publication != VKR_RESOURCE_PUBLICATION_CONFIRMED) {
+    vkr_resource_system_reset_handle_info(&request->loaded_info);
+  }
+  return false_v;
+}
+
 vkr_internal bool8_t vkr_resource_system_pump_release_canceled_locked(
     uint32_t i, VkrResourcePump *pump) {
   VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
@@ -2151,6 +2174,7 @@ vkr_resource_system_pump_publication_locked(uint32_t i, VkrResourcePump *pump) {
   const uint32_t payload_loader_id = request->loader_id;
   request->async_payload = NULL;
   if (publication == VKR_RESOURCE_PUBLICATION_FAILED) {
+    vkr_resource_system_reset_handle_info(&request->loaded_info);
     request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
     request->last_error = publication_error != VKR_RENDERER_ERROR_NONE
                               ? publication_error
@@ -2176,6 +2200,9 @@ vkr_internal bool8_t
 vkr_resource_system_pump_pending_gpu_locked(uint32_t i, VkrResourcePump *pump) {
   VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
   if (request->cancel_requested && request->ref_count == 0) {
+    if (vkr_resource_system_publication_unsettled_locked(request)) {
+      return true_v;
+    }
     request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
     request->last_error = VKR_RENDERER_ERROR_NONE;
     vkr_resource_system_record_request_load(vkr_resource_system, request,
@@ -2298,7 +2325,9 @@ void vkr_resource_system_pump(VkrResourceSubmissionState submission,
     if (request->load_state == VKR_RESOURCE_LOAD_STATE_CANCELED &&
         request->ref_count == 0 && !request->cpu_job_in_flight &&
         !request->callback_in_flight) {
-      locked = vkr_resource_system_pump_release_canceled_locked(i, &pump);
+      if (!vkr_resource_system_publication_unsettled_locked(request)) {
+        locked = vkr_resource_system_pump_release_canceled_locked(i, &pump);
+      }
     } else if (request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU) {
       locked = vkr_resource_system_pump_pending_cpu_locked(i, &pump);
     } else if (request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU ||

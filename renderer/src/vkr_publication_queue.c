@@ -294,6 +294,10 @@ vkr_publication_record_texture(void *state, VkrTextureHandle handle,
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
   command->texture = *texture;
+  queue->recording->upload_bytes += texture->upload_data_size;
+  if (texture->upload_retained) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
   command->texture.upload_data = vkr_publication_copy_bulk(
       renderer, texture->upload_data, texture->upload_data_size);
   command->texture.upload_regions =
@@ -305,7 +309,6 @@ vkr_publication_record_texture(void *state, VkrTextureHandle handle,
     command->discarded = true_v;
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
-  queue->recording->upload_bytes += texture->upload_data_size;
   return VKR_RENDERER_ERROR_NONE;
 }
 
