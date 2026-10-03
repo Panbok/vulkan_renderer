@@ -14,7 +14,7 @@ content. Then write the words in controlled English.
 |---|---|
 | Direct answer or short status | Prose in chat |
 | Two or more items compared on two or more attributes | Table |
-| Order, data flow, ownership, lifetime, state, or dependency | ASCII diagram |
+| Order, data flow, ownership, lifetime, state, or dependency | ASCII diagram, 44 columns or fewer |
 | Deep topic: several sections that need diagrams, tables, or charts, or chat output longer than about 80 lines | HTML page plus a chat summary |
 
 Typical deep topics are performance investigations, rendering techniques,
@@ -51,8 +51,10 @@ unless the user asks for it. Agent instructions use compact wording on purpose.
 
 ## Draw diagrams
 
-Put chat diagrams in a fenced `text` block no wider than 80 columns. Draw boxes
-and arrows with ASCII characters. Label nodes with the exact pass, resource,
+Put chat diagrams in a fenced `text` block no wider than 44 columns. The user
+reads chat on a phone, a laptop, and a desktop, and 44 columns fit all three.
+Draw flows from top to bottom with ASCII boxes and arrows. Move a diagram that
+cannot fit 44 columns into an HTML page. Label nodes with the exact pass, resource,
 thread, or function names. Show one relation in each diagram, such as the pass
 order or the owner of a buffer over the frame. Put a one-sentence caption above
 the diagram that states what it shows. Do not draw a diagram for a sequence of
