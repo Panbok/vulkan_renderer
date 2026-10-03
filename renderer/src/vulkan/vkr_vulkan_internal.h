@@ -235,8 +235,11 @@ enum {
   VKR_VULKAN_SENTINEL_UPLOAD_SIZE = 4,
   VKR_VULKAN_SWAPCHAIN_IMAGE_MAX = 8,
   VKR_VULKAN_RETIRED_SWAPCHAIN_MAX = 8,
-  /* The local shadow face array is the largest layered graph image. */
-  VKR_VULKAN_GRAPH_LAYER_MAX = VKR_LOCAL_SHADOW_FACE_COUNT_MAX,
+  /* The local shadow transmission arrays, one layer per face of the face
+     budget, are the largest layered graph images. Faces beyond the budget live
+     in squares of the atlas, whose layers are fewer. Every graph image
+     instance sizes its per-layer views and retained states by this bound. */
+  VKR_VULKAN_GRAPH_LAYER_MAX = VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
   VKR_VULKAN_TEXTURE_MIP_MAX = 16,
   VKR_VULKAN_PENDING_IBL_BAKE_MAX = 32,
   /* Submissions whose pre-exposure a history consumer can look up. It spans
@@ -1655,6 +1658,11 @@ _Static_assert(offsetof(VkrVulkanTransmissionMaterialGpuRow,
                "Vulkan transmission material sampler ABI drift");
 _Static_assert(sizeof(VkrVulkanPushConstants) == 16u,
                "Push-constant ABI drift");
+_Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
+                       VKR_VULKAN_GRAPH_LAYER_MAX &&
+                   VKR_LOCAL_SHADOW_MASK_LAYER_COUNT <=
+                       VKR_VULKAN_GRAPH_LAYER_MAX,
+               "a layered local shadow graph image exceeds the graph layers");
 _Static_assert(sizeof(VkrVulkanCullRoot) == 208u,
                "Deferred cull-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, view_projections) == 48u,
