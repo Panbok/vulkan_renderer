@@ -1494,6 +1494,7 @@ bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
   if (!viewport_ray(frame, pixel, &origin, &direction)) {
     return false_v;
   }
+  out->eye = origin;
   const float32_t yaw = placement->yaw_degrees * (VKR_PI / 180.0f);
   const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
   Vec3 normal = up;
@@ -1558,7 +1559,6 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
     return false_v;
   }
   if (frame->scene_edit->action != VKR_SCENE_EDIT_NONE) {
-  out->eye = origin;
     snprintf(message, message_size, "Another scene edit is pending");
     return false_v;
   }

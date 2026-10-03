@@ -3809,15 +3809,15 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
       .texture_width = config->texture_width,
       .texture_height = config->texture_height,
       .uv_inset_px = config->uv_inset_px,
+      .align = (VkrTextAlign)config->align,
+      .line_spacing = config->line_spacing,
+      .letter_spacing = config->letter_spacing,
   };
 
   VkrWorldTextCreateData payload = {
       .text_id = text_id,
       .content = config->text,
       .config = &text_config,
-      .align = (VkrTextAlign)config->align,
-      .line_spacing = config->line_spacing,
-      .letter_spacing = config->letter_spacing,
       .transform = text_transform,
       .owner = entity,
   };
@@ -3974,40 +3974,40 @@ vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
   VkrWorldResources *resources = &scene->assets->world_resources;
   if (!text) {
     VkrSceneText3DConfig config = VKR_SCENE_TEXT3D_CONFIG_DEFAULT;
+    const float32_t font_size =
+        settings->size * (float32_t)config.texture_width;
     config.text = content;
     config.font_size = font_size;
     config.color = settings->color;
-    VkrSceneError error = VKR_SCENE_ERROR_NONE;
-    (void)vkr_scene_set_text3d(scene, entity, &config, &error);
-    return;
-    const float32_t font_size =
-        settings->size * (float32_t)config.texture_width;
-  }
-  if (!resources->initialized ||
-      text->text_index >= resources->text_slots.length) {
     config.align = settings->align;
     config.line_spacing = settings->line_spacing;
     config.letter_spacing = settings->letter_spacing * font_size;
+    VkrSceneError error = VKR_SCENE_ERROR_NONE;
+    (void)vkr_scene_set_text3d(scene, entity, &config, &error);
+    return;
+  }
+  if (!resources->initialized ||
+      text->text_index >= resources->text_slots.length) {
     return;
   }
   const VkrText3D *slot = &resources->text_slots.data[text->text_index].text;
+  const float32_t font_size = settings->size * (float32_t)slot->texture_width;
   VkrText3DConfig config = {
       .font = slot->font,
       .font_size = font_size,
       .color = settings->color,
       .texture_width = slot->texture_width,
       .texture_height = slot->texture_height,
-  const float32_t font_size = settings->size * (float32_t)slot->texture_width;
       .uv_inset_px = slot->uv_inset_px,
+      .align = (VkrTextAlign)settings->align,
+      .line_spacing = settings->line_spacing,
+      .letter_spacing = settings->letter_spacing * font_size,
   };
   VkrWorldTextCreateData payload = {.text_id = text->text_index,
                                     .content = content,
                                     .config = &config,
                                     .transform = slot->transform,
                                     .owner = entity};
-      .align = (VkrTextAlign)settings->align,
-      .line_spacing = settings->line_spacing,
-      .letter_spacing = settings->letter_spacing * font_size,
   (void)vkr_world_resources_text_create(scene->assets, resources, &payload);
 }
 
