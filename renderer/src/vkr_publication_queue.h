@@ -30,6 +30,8 @@ typedef struct VkrPublicationBatch {
   VkrPublicationCommand *tail;
   VkrPublicationBlock *blocks;
   uint32_t count;
+  /* Texture upload bytes the batch's publications retain. */
+  uint64_t upload_bytes;
 } VkrPublicationBatch;
 
 /** Completions one batch produced, in command order. */
@@ -57,6 +59,7 @@ typedef struct VkrPublicationSource {
 typedef struct VkrPublicationSnapshot {
   bool8_t idle;
   uint64_t generation;
+  uint64_t texture_upload_capacity;
   VkrPublicationSource sources[VKR_PUBLICATION_SOURCE_MAX];
   uint32_t source_count;
 } VkrPublicationSnapshot;
@@ -77,6 +80,9 @@ typedef struct VkrPublicationQueue {
   VkrPublicationCompletionList *delivered;
   VkrPublicationSnapshot render_snapshot;
   VkrPublicationSnapshot snapshot;
+  /* A frame took a batch that no delivered snapshot observed yet. */
+  bool8_t batch_in_flight;
+  uint64_t in_flight_upload_bytes;
   /* An open texture upload batch records its begin marker with its first
      texture, so an empty batch records nothing. */
   bool8_t texture_batch_open;
@@ -104,5 +110,6 @@ void vkr_publication_queue_run(VkrRenderer *renderer,
 void vkr_publication_queue_observe(VkrRenderer *renderer);
 
 /** Hands produced completions and the render-side snapshot to the
- * frame-loop thread. Call while no frame is rendering. */
+ * frame-loop thread, after any completions it has not polled yet. Call while
+ * no frame is rendering. */
 void vkr_publication_queue_deliver(VkrPublicationQueue *queue);

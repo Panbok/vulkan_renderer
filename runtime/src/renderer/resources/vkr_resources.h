@@ -7,6 +7,7 @@
 #include "filesystem/filesystem.h"
 #include "math/mat.h"
 #include "math/vkr_transform.h"
+#include "vkr_asset_publisher.h"
 #include "vkr_buffer.h"
 #include "vkr_renderer.h"
 
@@ -37,6 +38,9 @@ typedef struct VkrGeometry {
 
   char name[GEOMETRY_NAME_MAX_LENGTH];
   char material_name[MATERIAL_NAME_MAX_LENGTH];
+
+  /* Counts the geometry's buffer publications. */
+  VkrPublicationState publication;
 } VkrGeometry;
 Array(VkrGeometry);
 
@@ -46,6 +50,9 @@ typedef struct VkrTexture {
   FilePath file_path;
   uint8_t *image;
   uint64_t resident_bytes;
+  /* Counts the texture's image publication and, for a prefilter, its IBL
+     bakes. */
+  VkrPublicationState publication;
 } VkrTexture;
 Array(VkrTexture);
 
@@ -127,6 +134,8 @@ typedef struct VkrMesh {
 
   /** Shadow-caster mobility contract; see VkrShadowCasterMobility. */
   VkrShadowCasterMobility shadow_mobility;
+  /* PENDING until every submesh geometry and material is confirmed. */
+  bool8_t awaiting_publication;
 } VkrMesh;
 Array(VkrMesh);
 
@@ -232,12 +241,15 @@ typedef struct VkrMeshAsset {
   /**
    * Asset readiness state for async mesh loading.
    *
-   * `PENDING` means submesh/material/geometry payload is not finalized yet.
-   * `FAILED` keeps `last_error` until the asset is released/reloaded.
+   * `PENDING` means submesh/material/geometry payload is not finalized yet,
+   * or, with `awaiting_publication`, that its geometry or materials are not
+   * confirmed yet. `FAILED` keeps `last_error` until the asset is
+   * released/reloaded.
    */
   VkrMeshLoadingState loading_state;
   VkrRendererError last_error;
   uint64_t pending_request_id; // Resource-system request id while pending.
+  bool8_t awaiting_publication;
 
   uint32_t ref_count; // Number of live instances referencing this asset
 } VkrMeshAsset;

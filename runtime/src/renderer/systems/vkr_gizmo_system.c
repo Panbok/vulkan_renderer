@@ -178,6 +178,18 @@ void vkr_gizmo_system_shutdown(VkrGizmoSystem *system,
   system->initialized = false_v;
 }
 
+bool8_t vkr_gizmo_system_published(const VkrGizmoSystem *system,
+                                   struct VkrRenderAssets *assets) {
+  for (uint32_t i = 0; i < ArrayCount(system->geometries); ++i) {
+    const VkrGeometry *geometry = vkr_geometry_system_get_by_handle(
+        &assets->geometry_system, system->geometries[i]);
+    if (!geometry || !vkr_publication_state_confirmed(&geometry->publication)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 void vkr_gizmo_system_set_target(VkrGizmoSystem *system, VkrEntityId entity,
                                  Vec3 position, VkrQuat orientation) {
   assert_log(system != NULL, "System is NULL");

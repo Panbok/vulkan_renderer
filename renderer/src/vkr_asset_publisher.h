@@ -24,13 +24,61 @@ typedef enum VkrPublicationKind {
 } VkrPublicationKind;
 
 /** The result of one recorded publication. `id` and `generation` are the
- * geometry, texture or material handle it named; bakes name their source. */
+ * geometry, texture or material handle it named; an IBL bake names its
+ * prefilter and an atmosphere bake its source. */
 typedef struct VkrPublicationCompletion {
   VkrPublicationKind kind;
   uint32_t id;
   uint32_t generation;
   VkrRendererError error;
 } VkrPublicationCompletion;
+
+/**
+ * What the frame-loop thread knows about one resource's recorded commands.
+ * The owning asset system counts each command it records and each completion
+ * that names the resource. `error` is the first failure among the commands
+ * recorded since the resource last settled, so a later attempt starts clean.
+ * A resource is confirmed once nothing is outstanding and nothing failed.
+ */
+typedef struct VkrPublicationState {
+  uint32_t outstanding;
+  VkrRendererError error;
+} VkrPublicationState;
+
+static inline void vkr_publication_state_recorded(VkrPublicationState *state) {
+  if (state->outstanding == 0u) {
+    state->error = VKR_RENDERER_ERROR_NONE;
+  }
+  state->outstanding++;
+}
+
+static inline void vkr_publication_state_complete(VkrPublicationState *state,
+                                                  VkrRendererError error) {
+  if (state->outstanding > 0u) {
+    state->outstanding--;
+  }
+  if (state->error == VKR_RENDERER_ERROR_NONE) {
+    state->error = error;
+  }
+}
+
+struct VkrAssetPublisher;
+
+/* Counts a command recorded through `publisher` against `state`. A native
+   table, which reports no completions, has already published. */
+static inline void
+vkr_publication_state_recorded_by(const struct VkrAssetPublisher *publisher,
+                                  VkrPublicationState *state);
+
+static inline bool8_t
+vkr_publication_state_settled(const VkrPublicationState *state) {
+  return state->outstanding == 0u;
+}
+
+static inline bool8_t
+vkr_publication_state_confirmed(const VkrPublicationState *state) {
+  return state->outstanding == 0u && state->error == VKR_RENDERER_ERROR_NONE;
+}
 
 /**
  * Coarse resource-publication seam selected once with the renderer.
@@ -41,11 +89,12 @@ typedef struct VkrPublicationCompletion {
  * instead: the thread that renders the next frame runs the commands in order
  * before preparing that frame, and every result arrives later through
  * `poll_completion`. A publish, unpublish or bake call returns whether it was
- * recorded. Recording copies the payload, except a texture's upload data and
- * regions, which stay borrowed until that texture's completion. A resource is
- * usable once its completion reports success; frames never reference one
- * before that. Queries report what the thread rendering the last frame
- * observed.
+ * recorded; recording copies the payload. A publication that succeeds is
+ * resolvable in the frame it was recorded for, but only its completion tells
+ * whether it succeeded, so asset systems track each resource with a
+ * VkrPublicationState and admit loaded meshes, loaded textures and baked
+ * environments into frames once confirmed. Queries report what the thread
+ * rendering the last frame observed.
  */
 typedef struct VkrAssetPublisher {
   void *state;
@@ -56,8 +105,12 @@ typedef struct VkrAssetPublisher {
   bool8_t (*publications_idle)(void *state);
   /** Monotonic nonzero stamp for geometry/material resolvability changes. */
   uint64_t (*publication_generation)(void *state);
-  /** True when a prepared texture payload can be retained for publication. */
+  /** True when a prepared texture payload can be retained for publication.
+   * NULL in a native table. */
   bool8_t (*texture_upload_available)(void *state, uint64_t upload_bytes);
+  /** Prepared texture bytes a native table can retain now, UINT64_MAX when
+   * unbounded. NULL in the renderer's table. */
+  uint64_t (*texture_upload_capacity)(void *state);
   bool8_t (*publish_geometry)(void *state, VkrGeometryHandle handle,
                               const struct VkrGeometryConfig *geometry);
   bool8_t (*publish_loaded_mesh)(void *state, VkrGeometryHandle handle,
@@ -100,3 +153,11 @@ typedef struct VkrAssetPublisher {
                               const struct VkrMaterial *material);
   bool8_t (*unpublish_material)(void *state, VkrMaterialHandle handle);
 } VkrAssetPublisher;
+
+static inline void
+vkr_publication_state_recorded_by(const VkrAssetPublisher *publisher,
+                                  VkrPublicationState *state) {
+  if (publisher->poll_completion) {
+    vkr_publication_state_recorded(state);
+  }
+}

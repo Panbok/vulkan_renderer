@@ -311,6 +311,11 @@ void vkr_gizmo_system_set_active_handle(VkrGizmoSystem *system,
 Vec3 vkr_gizmo_system_axis(const VkrGizmoSystem *system, VkrGizmoMode mode,
                            uint32_t axis);
 
+/* True once every gizmo shape's publication is confirmed, so frames may name
+ * them. */
+bool8_t vkr_gizmo_system_published(const VkrGizmoSystem *system,
+                                   struct VkrRenderAssets *assets);
+
 /* Builds borrowed frame records in caller storage. One gizmo unit spans
  * screen_size × pixel_scale displayed window pixels, independent of scene
  * render scale. Matrices are unjittered. Draws run far to near with the hovered

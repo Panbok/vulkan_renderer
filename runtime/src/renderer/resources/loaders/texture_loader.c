@@ -159,6 +159,34 @@ vkr_internal bool8_t vkr_texture_loader_finalize_async(
   return true_v;
 }
 
+/* A busy or exhausted upload path is retried from the retained payload;
+   the failed texture is released so the next finalize recreates it. */
+vkr_internal VkrResourcePublication vkr_texture_loader_publication_state(
+    VkrResourceLoader *self, const VkrResourceHandleInfo *handle,
+    VkrRendererError *out_error) {
+  VkrTextureSystem *system = (VkrTextureSystem *)self->resource_system;
+  VkrTexture *texture =
+      vkr_texture_system_get_by_handle(system, handle->as.texture);
+  if (!texture) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return VKR_RESOURCE_PUBLICATION_FAILED;
+  }
+  if (!vkr_publication_state_settled(&texture->publication)) {
+    return VKR_RESOURCE_PUBLICATION_PENDING;
+  }
+  const VkrRendererError error = texture->publication.error;
+  if (error == VKR_RENDERER_ERROR_NONE) {
+    return VKR_RESOURCE_PUBLICATION_CONFIRMED;
+  }
+  (void)vkr_texture_system_release_by_handle(system, handle->as.texture);
+  if (error == VKR_RENDERER_ERROR_RESOURCE_BUSY ||
+      error == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
+    return VKR_RESOURCE_PUBLICATION_RETRY;
+  }
+  *out_error = error;
+  return VKR_RESOURCE_PUBLICATION_FAILED;
+}
+
 vkr_internal bool8_t vkr_texture_loader_estimate_async_finalize_cost(
     VkrResourceLoader *self, String8 name, void *payload,
     VkrResourceAsyncFinalizeCost *out_cost) {
@@ -215,6 +243,7 @@ VkrResourceLoader vkr_texture_loader_create(void) {
   loader.finalize_async = vkr_texture_loader_finalize_async;
   loader.estimate_async_finalize_cost =
       vkr_texture_loader_estimate_async_finalize_cost;
+  loader.publication_state = vkr_texture_loader_publication_state;
   loader.release_async_payload = vkr_texture_loader_release_async_payload;
   loader.unload = vkr_texture_loader_unload;
   return loader;

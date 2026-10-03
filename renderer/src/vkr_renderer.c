@@ -2236,8 +2236,10 @@ VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
   const VkrRendererError error =
       vkr_renderer_acquire_frame(renderer, config, out_frame);
   /* No frame will run the recorded publications; run them now, so assets
-     still progress while frames are skipped. */
-  if (error != VKR_RENDERER_ERROR_NONE) {
+     still progress while frames are skipped. A frame already in progress
+     runs them itself. */
+  if (error != VKR_RENDERER_ERROR_NONE &&
+      error != VKR_RENDERER_ERROR_FRAME_IN_PROGRESS) {
     vkr_renderer_flush_publications(renderer);
   }
   return error;

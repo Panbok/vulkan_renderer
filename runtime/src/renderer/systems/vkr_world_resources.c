@@ -84,6 +84,25 @@ vkr_world_resources_has_retained_ibl_publisher(const VkrRenderAssets *assets) {
          assets->asset_publisher->ibl_sh_slot;
 }
 
+/* Records an IBL bake and counts it against the prefilter, which frames use
+   once the bake is confirmed. */
+vkr_internal bool8_t vkr_world_resources_bake_ibl(VkrRenderAssets *assets,
+                                                  VkrTextureHandle source,
+                                                  VkrTextureHandle prefilter,
+                                                  float32_t sh_deringing) {
+  const VkrAssetPublisher *publisher = assets->asset_publisher;
+  if (!publisher->bake_ibl_cubemap(publisher->state, source, prefilter,
+                                   sh_deringing)) {
+    return false_v;
+  }
+  VkrTexture *texture =
+      vkr_texture_system_get_by_handle(&assets->texture_system, prefilter);
+  if (texture) {
+    vkr_publication_state_recorded_by(publisher, &texture->publication);
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_world_resources_create_writable_texture(
     VkrRenderAssets *assets, String8 name, VkrTextureType type, uint32_t width,
     uint32_t height, bool8_t with_mips, VkrTextureFormat format,
@@ -254,9 +273,9 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
           VKR_IBL_PREFILTER_SIZE, VKR_IBL_PREFILTER_SIZE, true_v,
           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
           &environment->prefilter_cubemap) ||
-      !assets->asset_publisher->bake_ibl_cubemap(
-          assets->asset_publisher->state, environment->source_cubemap,
-          environment->prefilter_cubemap, environment->sh_deringing)) {
+      !vkr_world_resources_bake_ibl(assets, environment->source_cubemap,
+                                    environment->prefilter_cubemap,
+                                    environment->sh_deringing)) {
     goto failed;
   }
   environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_READY;
@@ -638,9 +657,9 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
             VKR_IBL_PREFILTER_SIZE, VKR_IBL_PREFILTER_SIZE, true_v,
             VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
             &probe->prefilter_cubemap) ||
-        !assets->asset_publisher->bake_ibl_cubemap(
-            assets->asset_publisher->state, probe->source_cubemap,
-            probe->prefilter_cubemap, probe->sh_deringing)) {
+        !vkr_world_resources_bake_ibl(assets, probe->source_cubemap,
+                                      probe->prefilter_cubemap,
+                                      probe->sh_deringing)) {
       vkr_world_resources_fail_reflection_probe(assets, probe);
       all_prepared = false_v;
       continue;

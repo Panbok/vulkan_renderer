@@ -19,12 +19,14 @@ and lifetime rules.
 
 `VkrResourceSystem` tracks requests through pending CPU, dependency, GPU,
 ready, failed, and canceled states. A loader may prepare a CPU-only payload on
-a worker. Only `vkr_resource_system_pump()` invokes its finalizer, after the
-application has acquired a frame and supplied explicit submission/completion
-state, so GPU publication and asset-system mutation stay on the frame-loop
-thread that runs the host loop. Here "render thread" in the title means that
-thread; ADR-082's render thread never publishes, and every publication waits for
-the frame it is rendering. The resource system owns a prepared payload until exactly one
+a worker. Only `vkr_resource_system_pump()` invokes its finalizer, with
+explicit submission/completion state, so asset-system mutation stays on the
+frame-loop thread that runs the host loop; "render thread" in the title means
+that thread. Finalizers record their publications through the renderer's
+asset publisher; the thread that renders the next frame runs them inside that
+acquired frame (ADR-082). A loader with a `publication_state` callback keeps
+its payload until the publication is confirmed, and finalizes it again when
+the upload path was busy or out of memory. The resource system owns a prepared payload until exactly one
 release callback runs, including cancellation and failure paths. An executing
 callback pins its request slot, path and payload against cancellation release;
 the pump reacquires the request view after callbacks because worker dependency

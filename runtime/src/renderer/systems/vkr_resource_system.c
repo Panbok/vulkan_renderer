@@ -22,6 +22,8 @@ typedef struct VkrResourceAsyncRequest {
   bool8_t callback_in_flight;
   uint64_t gpu_submit_serial;
   void *async_payload;
+  /* Finalized; the payload stays until the loader confirms publication. */
+  bool8_t awaiting_publication;
   VkrResourceHandleInfo loaded_info;
   uint64_t metrics_start_ns;
   uint64_t metrics_bytes;
@@ -2092,7 +2094,6 @@ vkr_resource_system_pump_finalize_locked(uint32_t i, VkrResourcePump *pump) {
   }
 
   uint32_t payload_loader_id = request->loader_id;
-  request->async_payload = NULL;
 
   finalized_info.loader_id = loader->id;
   finalized_info.load_state = VKR_RESOURCE_LOAD_STATE_READY;
@@ -2103,10 +2104,15 @@ vkr_resource_system_pump_finalize_locked(uint32_t i, VkrResourcePump *pump) {
       &finalize_cost, &pump->used_gpu_upload_ops, &pump->used_gpu_upload_bytes,
       pump->effective_budget);
 
-  vkr_mutex_unlock(vkr_resource_system->mutex);
-  vkr_resource_system_release_async_payload(payload_loader_id, payload_ptr);
-  if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
-    return VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST;
+  if (loader->publication_state) {
+    request->awaiting_publication = true_v;
+  } else {
+    request->async_payload = NULL;
+    vkr_mutex_unlock(vkr_resource_system->mutex);
+    vkr_resource_system_release_async_payload(payload_loader_id, payload_ptr);
+    if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+      return VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST;
+    }
   }
   request = &vkr_resource_system->requests[i];
   request->callback_in_flight = false_v;
@@ -2119,6 +2125,48 @@ vkr_resource_system_pump_finalize_locked(uint32_t i, VkrResourcePump *pump) {
     return VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
   }
   return VKR_RESOURCE_PUMP_FINALIZE_FINALIZED;
+}
+
+/* Waits for the loader to report request `i`'s publication. Confirmation
+ * releases the payload and continues to the submit-serial wait; RETRY
+ * finalizes the retained payload again on a later pump. */
+vkr_internal VkrResourcePumpFinalize
+vkr_resource_system_pump_publication_locked(uint32_t i, VkrResourcePump *pump) {
+  VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
+  VkrResourceLoader *loader = &vkr_resource_system->loaders[request->loader_id];
+  VkrRendererError publication_error = VKR_RENDERER_ERROR_NONE;
+  const VkrResourcePublication publication = loader->publication_state(
+      loader, &request->loaded_info, &publication_error);
+  if (publication == VKR_RESOURCE_PUBLICATION_PENDING) {
+    return VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
+  }
+  request->awaiting_publication = false_v;
+  if (publication == VKR_RESOURCE_PUBLICATION_RETRY) {
+    vkr_resource_system_reset_handle_info(&request->loaded_info);
+    request->gpu_submit_serial = 0;
+    return VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
+  }
+
+  void *payload_ptr = request->async_payload;
+  const uint32_t payload_loader_id = request->loader_id;
+  request->async_payload = NULL;
+  if (publication == VKR_RESOURCE_PUBLICATION_FAILED) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
+    request->last_error = publication_error != VKR_RENDERER_ERROR_NONE
+                              ? publication_error
+                              : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                            VKR_METRIC_EVENT_STATUS_FAILED);
+    pump->finalize_budget--;
+  }
+  vkr_mutex_unlock(vkr_resource_system->mutex);
+  vkr_resource_system_release_async_payload(payload_loader_id, payload_ptr);
+  if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+    return VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST;
+  }
+  return publication == VKR_RESOURCE_PUBLICATION_CONFIRMED
+             ? VKR_RESOURCE_PUMP_FINALIZE_FINALIZED
+             : VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST;
 }
 
 /* Advances request `i` while it waits on GPU work or dependencies: release
@@ -2151,7 +2199,8 @@ vkr_resource_system_pump_pending_gpu_locked(uint32_t i, VkrResourcePump *pump) {
     return true_v;
   }
 
-  if (request->async_payload && request->gpu_submit_serial == 0) {
+  if (request->async_payload && !request->awaiting_publication &&
+      request->gpu_submit_serial == 0) {
     const VkrResourcePumpFinalize finalize =
         vkr_resource_system_pump_finalize_locked(i, pump);
     if (finalize == VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST) {
@@ -2166,6 +2215,18 @@ vkr_resource_system_pump_pending_gpu_locked(uint32_t i, VkrResourcePump *pump) {
 
   if (request->gpu_submit_serial == 0) {
     request->gpu_submit_serial = pump->submit_serial;
+  }
+
+  if (request->awaiting_publication) {
+    const VkrResourcePumpFinalize publication =
+        vkr_resource_system_pump_publication_locked(i, pump);
+    if (publication == VKR_RESOURCE_PUMP_FINALIZE_LOCK_LOST) {
+      return false_v;
+    }
+    if (publication == VKR_RESOURCE_PUMP_FINALIZE_NEXT_REQUEST) {
+      return true_v;
+    }
+    request = &vkr_resource_system->requests[i];
   }
 
   if (request->gpu_submit_serial == 0 ||

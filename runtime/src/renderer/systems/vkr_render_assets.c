@@ -318,11 +318,74 @@ void vkr_render_assets_refresh_texture_residency_budget(
   }
 }
 
+/* The record a completion counts against; NULL for unpublications, sampler
+   updates and atmosphere bakes, which nothing waits on, and for a resource
+   destroyed since, whose slot has a newer generation. */
+vkr_internal VkrPublicationState *vkr_render_assets_publication_state(
+    VkrRenderAssets *assets, const VkrPublicationCompletion *completion) {
+  switch (completion->kind) {
+  case VKR_PUBLICATION_GEOMETRY:
+  case VKR_PUBLICATION_LOADED_MESH: {
+    VkrGeometry *geometry = vkr_geometry_system_get_by_handle(
+        &assets->geometry_system,
+        (VkrGeometryHandle){.id = completion->id,
+                            .generation = completion->generation});
+    return geometry ? &geometry->publication : NULL;
+  }
+  case VKR_PUBLICATION_TEXTURE:
+  case VKR_PUBLICATION_WRITABLE_TEXTURE:
+  case VKR_PUBLICATION_IBL_BAKE: {
+    VkrTexture *texture = vkr_texture_system_get_by_handle(
+        &assets->texture_system,
+        (VkrTextureHandle){.id = completion->id,
+                           .generation = completion->generation});
+    return texture ? &texture->publication : NULL;
+  }
+  case VKR_PUBLICATION_MATERIAL:
+    return vkr_material_system_publication(
+        &assets->material_system,
+        (VkrMaterialHandle){.id = completion->id,
+                            .generation = completion->generation});
+  case VKR_PUBLICATION_UNPUBLISH_GEOMETRY:
+  case VKR_PUBLICATION_TEXTURE_SAMPLER:
+  case VKR_PUBLICATION_UNPUBLISH_TEXTURE:
+  case VKR_PUBLICATION_ATMOSPHERE_BAKE:
+  case VKR_PUBLICATION_UNPUBLISH_MATERIAL:
+    break;
+  }
+  return NULL;
+}
+
+/* Applies the completions of the last collected frame before anything reads
+   publication state this frame. */
+vkr_internal void
+vkr_render_assets_apply_publication_completions(VkrRenderAssets *assets) {
+  const VkrAssetPublisher *publisher = assets->asset_publisher;
+  if (!publisher->poll_completion) {
+    return;
+  }
+  VkrPublicationCompletion completion = {0};
+  while (publisher->poll_completion(publisher->state, &completion)) {
+    VkrPublicationState *state =
+        vkr_render_assets_publication_state(assets, &completion);
+    if (state) {
+      vkr_publication_state_complete(state, completion.error);
+    }
+    if (completion.error != VKR_RENDERER_ERROR_NONE) {
+      String8 error = vkr_renderer_get_error_string(completion.error);
+      log_warn("Asset publication %u for %u:%u failed: %s",
+               (uint32_t)completion.kind, completion.id, completion.generation,
+               string8_cstr(&error));
+    }
+  }
+}
+
 bool8_t
 vkr_render_assets_pump_publications(VkrRenderAssets *assets,
                                     VkrResourceSubmissionState submission) {
   if (!assets || !assets->resource_system_initialized)
     return false_v;
+  vkr_render_assets_apply_publication_completions(assets);
   const VkrAssetPublisher *publisher = assets->asset_publisher;
   const bool8_t batching = publisher->begin_texture_upload_batch != NULL;
   if (batching != (publisher->end_texture_upload_batch != NULL) ||

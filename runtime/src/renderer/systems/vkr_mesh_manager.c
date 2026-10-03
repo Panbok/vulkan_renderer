@@ -226,8 +226,14 @@ vkr_internal bool8_t vkr_mesh_manager_publish_loaded_mesh(
   };
   const bool8_t published =
       publisher->publish_loaded_mesh(publisher->state, geometry, &upload);
-  if (published)
+  if (published) {
+    VkrGeometry *record =
+        vkr_geometry_system_get_by_handle(manager->geometry_system, geometry);
+    if (record) {
+      vkr_publication_state_recorded_by(publisher, &record->publication);
+    }
     return true_v;
+  }
 
   log_error("MeshManager: failed to publish merged geometry %u:%u", geometry.id,
             geometry.generation);
@@ -787,6 +793,89 @@ vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
   }
 }
 
+/* The loading state one submesh's geometry and material allow: LOADED once
+ * both are confirmed, FAILED once either settled with an error, PENDING
+ * otherwise. A resource with no recorded state was published at once. */
+vkr_internal VkrMeshLoadingState vkr_mesh_manager_submesh_publication(
+    VkrMeshManager *manager, VkrGeometryHandle geometry_handle,
+    VkrMaterialHandle material_handle, VkrRendererError *out_error) {
+  const VkrGeometry *geometry = vkr_geometry_system_get_by_handle(
+      manager->geometry_system, geometry_handle);
+  const VkrPublicationState *states[] = {
+      geometry ? &geometry->publication : NULL,
+      vkr_material_system_publication(manager->material_system,
+                                      material_handle),
+  };
+  VkrMeshLoadingState loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  for (uint32_t i = 0u; i < ArrayCount(states); ++i) {
+    if (!states[i]) {
+      continue;
+    }
+    if (!vkr_publication_state_settled(states[i])) {
+      loading_state = VKR_MESH_LOADING_STATE_PENDING;
+    } else if (states[i]->error != VKR_RENDERER_ERROR_NONE) {
+      *out_error = states[i]->error;
+      return VKR_MESH_LOADING_STATE_FAILED;
+    }
+  }
+  return loading_state;
+}
+
+vkr_internal VkrMeshLoadingState vkr_mesh_manager_asset_publication(
+    VkrMeshManager *manager, const VkrMeshAsset *asset,
+    VkrRendererError *out_error) {
+  VkrMeshLoadingState loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  for (uint64_t i = 0u; i < asset->submeshes.length; ++i) {
+    const VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[i];
+    const VkrMeshLoadingState submesh_state =
+        vkr_mesh_manager_submesh_publication(manager, submesh->geometry,
+                                             submesh->material, out_error);
+    if (submesh_state == VKR_MESH_LOADING_STATE_FAILED) {
+      return submesh_state;
+    }
+    if (submesh_state == VKR_MESH_LOADING_STATE_PENDING) {
+      loading_state = submesh_state;
+    }
+  }
+  return loading_state;
+}
+
+vkr_internal VkrMeshLoadingState vkr_mesh_manager_mesh_publication(
+    VkrMeshManager *manager, const VkrMesh *mesh, VkrRendererError *out_error) {
+  VkrMeshLoadingState loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  for (uint64_t i = 0u; i < mesh->submeshes.length; ++i) {
+    const VkrSubMesh *submesh = &mesh->submeshes.data[i];
+    const VkrMeshLoadingState submesh_state =
+        vkr_mesh_manager_submesh_publication(manager, submesh->geometry,
+                                             submesh->material, out_error);
+    if (submesh_state == VKR_MESH_LOADING_STATE_FAILED) {
+      return submesh_state;
+    }
+    if (submesh_state == VKR_MESH_LOADING_STATE_PENDING) {
+      loading_state = submesh_state;
+    }
+  }
+  return loading_state;
+}
+
+/* Gives a built asset the state its publications allow; a PENDING asset
+ * waits for completions in vkr_mesh_manager_pump_async. */
+vkr_internal VkrMeshLoadingState vkr_mesh_manager_settle_asset_publication(
+    VkrMeshManager *manager, VkrMeshAsset *asset) {
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  asset->loading_state =
+      vkr_mesh_manager_asset_publication(manager, asset, &error);
+  asset->last_error = error;
+  asset->awaiting_publication =
+      asset->loading_state == VKR_MESH_LOADING_STATE_PENDING;
+  if (asset->loading_state == VKR_MESH_LOADING_STATE_FAILED) {
+    String8 message = vkr_renderer_get_error_string(error);
+    log_error("MeshManager: publication of mesh asset %u:%u failed: %s",
+              asset->id, asset->generation, string8_cstr(&message));
+  }
+  return asset->loading_state;
+}
+
 vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(
     VkrMeshManager *manager, uint32_t slot, VkrMeshAsset *asset) {
   assert_log(manager != NULL, "Manager is NULL");
@@ -866,11 +955,16 @@ vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(
   }
 
   asset->pending_request_id = 0;
-  asset->last_error = VKR_RENDERER_ERROR_NONE;
-  asset->loading_state = VKR_MESH_LOADING_STATE_LOADED;
-  vkr_mesh_manager_note_topology_change(manager);
+  const VkrMeshLoadingState published =
+      vkr_mesh_manager_settle_asset_publication(manager, asset);
+  if (published == VKR_MESH_LOADING_STATE_PENDING) {
+    return true_v;
+  }
+  if (published == VKR_MESH_LOADING_STATE_LOADED) {
+    vkr_mesh_manager_note_topology_change(manager);
+  }
   vkr_mesh_manager_refresh_instances_for_asset(manager, slot);
-  return true_v;
+  return published == VKR_MESH_LOADING_STATE_LOADED;
 }
 
 vkr_internal void vkr_mesh_manager_release_handles(VkrMeshManager *manager,
@@ -1364,7 +1458,17 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   new_mesh.temporal_generation = manager->mesh_temporal_generation_counter++;
   new_mesh.visible = true_v;
   new_mesh.shadow_mobility = desc->shadow_mobility;
-  new_mesh.loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  VkrRendererError publication_error = VKR_RENDERER_ERROR_NONE;
+  new_mesh.loading_state =
+      vkr_mesh_manager_mesh_publication(manager, &new_mesh, &publication_error);
+  new_mesh.awaiting_publication =
+      new_mesh.loading_state == VKR_MESH_LOADING_STATE_PENDING;
+  if (new_mesh.loading_state == VKR_MESH_LOADING_STATE_FAILED) {
+    vkr_mesh_manager_cleanup_submesh_array(manager, &submesh_array,
+                                           built_count);
+    *out_error = publication_error;
+    return false_v;
+  }
 
   vkr_mesh_compute_local_bounds(&new_mesh);
   vkr_mesh_update_world_bounds(&new_mesh);
@@ -1825,8 +1929,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
 
   if (result) {
     VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, mesh_index);
-    if (mesh) {
-      mesh->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+    if (mesh && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
       vkr_mesh_manager_note_topology_change(manager);
     }
     if (out_error) {
@@ -2214,7 +2317,42 @@ void vkr_mesh_manager_pump_async(VkrMeshManager *manager) {
         asset->loading_state != VKR_MESH_LOADING_STATE_PENDING) {
       continue;
     }
-    (void)vkr_mesh_manager_sync_pending_asset(manager, i, asset);
+    if (!asset->awaiting_publication) {
+      (void)vkr_mesh_manager_sync_pending_asset(manager, i, asset);
+      continue;
+    }
+    const VkrMeshLoadingState published =
+        vkr_mesh_manager_settle_asset_publication(manager, asset);
+    if (published == VKR_MESH_LOADING_STATE_PENDING) {
+      continue;
+    }
+    if (published == VKR_MESH_LOADING_STATE_LOADED) {
+      vkr_mesh_manager_note_topology_change(manager);
+    }
+    vkr_mesh_manager_refresh_instances_for_asset(manager, i);
+  }
+
+  for (uint32_t i = 0; i < manager->mesh_count; ++i) {
+    const uint32_t slot = manager->mesh_live_indices.data[i];
+    VkrMesh *mesh = &manager->meshes.data[slot];
+    if (!mesh->awaiting_publication) {
+      continue;
+    }
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    const VkrMeshLoadingState published =
+        vkr_mesh_manager_mesh_publication(manager, mesh, &error);
+    if (published == VKR_MESH_LOADING_STATE_PENDING) {
+      continue;
+    }
+    mesh->awaiting_publication = false_v;
+    mesh->loading_state = published;
+    if (published == VKR_MESH_LOADING_STATE_LOADED) {
+      vkr_mesh_manager_note_topology_change(manager);
+    } else {
+      String8 message = vkr_renderer_get_error_string(error);
+      log_error("MeshManager: publication of mesh %u failed: %s", slot,
+                string8_cstr(&message));
+    }
   }
 }
 
@@ -3078,9 +3216,8 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
 
   manager->asset_count++;
 
-  asset->loading_state = VKR_MESH_LOADING_STATE_LOADED;
-  asset->last_error = VKR_RENDERER_ERROR_NONE;
   asset->pending_request_id = 0;
+  (void)vkr_mesh_manager_settle_asset_publication(manager, asset);
 
   return (VkrMeshAssetHandle){.id = asset->id, .generation = asset->generation};
 }

@@ -1250,11 +1250,15 @@ vkr_internal void vkr_standard_scene_runtime_prepare_environment(
       .clouds = vkr_cloud_settings_defaults(),
   };
   draw->has_sky = false_v;
+  /* A prefilter is sampled once its publication and bake are confirmed. */
+  const bool8_t environment_ready =
+      active_scene &&
+      active_scene->environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_READY &&
+      vkr_texture_system_publication_confirmed(
+          &application->assets.texture_system,
+          active_scene->environment.prefilter_cubemap);
   const VkrSceneEnvironment *environment =
-      active_scene && active_scene->environment.bake_state ==
-                          VKR_SCENE_ENV_BAKE_STATE_READY
-          ? &active_scene->environment
-          : NULL;
+      environment_ready ? &active_scene->environment : NULL;
   const bool8_t sky_light = environment && environment->enabled;
 
   /* The published generation's medium travels with the lookup textures it
@@ -1485,8 +1489,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           &active_scene->reflection_probes[i];
       if (!probe->enabled ||
           probe->bake_state != VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY ||
-          probe->prefilter_cubemap.id == 0 ||
-          probe->prefilter_cubemap.generation == VKR_INVALID_ID) {
+          !vkr_texture_system_publication_confirmed(
+              &application->assets.texture_system, probe->prefilter_cubemap)) {
         continue;
       }
       /* The SH slot is the renderer's; it resolves once the frame is
@@ -1942,9 +1946,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_prepare_acquired(
           : 1u;
   for (uint32_t i = 0u; i < draw->frame_lighting.ibl_probe_count; ++i) {
     draw->frame_ibl_probes[i].sh_slot =
-        native->ibl_sh_slot ? native->ibl_sh_slot(
-                                  native->state, draw->frame_ibl_probe_sources[i])
-                            : VKR_SH_SLOT_BLACK;
+        native->ibl_sh_slot
+            ? native->ibl_sh_slot(native->state,
+                                  draw->frame_ibl_probe_sources[i])
+            : VKR_SH_SLOT_BLACK;
   }
 
   vkr_standard_scene_runtime_prepare_shadow_payloads(application, frame);
@@ -2237,10 +2242,13 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   if (draw->has_editor && !draw->scene_stopped) {
     application->gizmo_system.pixel_scale =
         application->ui_system.content_scale;
-    draw->editor_payload.overlay_draw_count = vkr_gizmo_system_build_draws(
-        &application->gizmo_system, application->globals.view,
-        application->globals.projection, &draw->editor_mapping,
-        frame->overlay_draws);
+    if (vkr_gizmo_system_published(&application->gizmo_system,
+                                   &application->assets)) {
+      draw->editor_payload.overlay_draw_count = vkr_gizmo_system_build_draws(
+          &application->gizmo_system, application->globals.view,
+          application->globals.projection, &draw->editor_mapping,
+          frame->overlay_draws);
+    }
     draw->editor_payload.overlay_draws = frame->overlay_draws;
     vkr_standard_scene_runtime_prepare_selection_outline(application, draw);
   }

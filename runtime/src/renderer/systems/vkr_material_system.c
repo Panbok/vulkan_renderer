@@ -232,7 +232,23 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
     }
     return false_v;
   }
+  VkrMaterialPublication *publication = &system->publications[handle.id - 1u];
+  if (publication->generation != handle.generation) {
+    *publication = (VkrMaterialPublication){.generation = handle.generation};
+  }
+  vkr_publication_state_recorded_by(system->asset_publisher,
+                                    &publication->state);
   return true_v;
+}
+
+VkrPublicationState *vkr_material_system_publication(VkrMaterialSystem *system,
+                                                     VkrMaterialHandle handle) {
+  if (handle.id == 0u || handle.id > system->config.max_material_count) {
+    return NULL;
+  }
+  VkrMaterialPublication *publication = &system->publications[handle.id - 1u];
+  return publication->generation == handle.generation ? &publication->state
+                                                      : NULL;
 }
 
 bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
@@ -1312,6 +1328,10 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
       (uint64_t)config->max_material_count *
           sizeof(*system->texture_material_last_used_epochs),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->publications = vkr_allocator_alloc(
+      &system->allocator,
+      (uint64_t)config->max_material_count * sizeof(*system->publications),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   system->replacements =
       vkr_allocator_alloc(&system->allocator,
                           (uint64_t)VKR_MATERIAL_REPLACEMENT_CAPACITY *
@@ -1324,7 +1344,7 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                               sizeof(VkrMaterialTextureStream),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!system->texture_streams || !system->texture_material_last_used_epochs ||
-      !system->replacements) {
+      !system->publications || !system->replacements) {
     vkr_material_system_shutdown(system);
     return false_v;
   }
@@ -1335,6 +1355,8 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   MemZero(system->texture_material_last_used_epochs,
           (uint64_t)config->max_material_count *
               sizeof(*system->texture_material_last_used_epochs));
+  MemZero(system->publications,
+          (uint64_t)config->max_material_count * sizeof(*system->publications));
   if (system->texture_stream_budget_bytes == UINT64_MAX) {
     log_info("Material texture residency budget: unlimited, %u in flight",
              VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX);

@@ -404,11 +404,13 @@ render thread (off by default, `VKR_RENDER_THREAD=1`) renders frame N while
 the frame-loop thread builds frame N+1. A steady-state frame is decoupled:
 `vkr_renderer_submit_unacquired_frame()` lets the render thread acquire it,
 and `VkrFrameHooks` resolve shadow reuse and other acquisition-dependent
-input there, so the render thread owns the shadow system. Frames that resize,
-change the Scene output or finalize or stream assets are acquired on the
-frame-loop thread first. Every other renderer call and asset publication waits
-for the frame being rendered. See
-[ADR-082](adr/082-renderer-owned-render-thread.md).
+input there, so the render thread owns the shadow system. Frames that resize
+or change the Scene output are acquired on the frame-loop thread first. Asset
+publications are recorded as ordered commands that the thread rendering the
+next frame runs before preparing it; their completions return to the asset
+systems, which let frames name a mesh, loaded texture or baked environment only
+once its publication is confirmed. Every other renderer call waits for the
+frame being rendered. See [ADR-082](adr/082-renderer-owned-render-thread.md).
 
 `VkrFrame` identifies one acquisition and supplies resolved target facts. It must
 not be copied or modified; its renderer must outlive it. Consumed or stale frame
@@ -589,7 +591,7 @@ draw/dispatch recorders return `void`. Native object/encoder creation, command-b
 begin/end, acquisition, submission and completion retain their failure boundaries. See [ADR-004](adr/004-stateless-render-packet.md).
 
 Workers perform CPU-only resource preparation. Finalization on the frame-loop
-thread owns GPU publication; its upload budgets allow an oversized first upload to progress.
+thread records GPU publication; its upload budgets allow an oversized first upload to progress.
 Required dependency/publication failure prevents scene activation.
 Materials initially publish semantic defaults and request textures incrementally;
 ready textures replace material rows. `vkr_material_system_replace` swaps a live

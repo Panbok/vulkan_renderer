@@ -171,22 +171,29 @@ vkr_internal bool8_t vkr_vk_enqueue_texture_initialization(
   return true_v;
 }
 
-vkr_internal bool8_t
-vkr_vk_asset_texture_upload_available(void *state, uint64_t upload_bytes) {
+/* With nothing retained, one texture may exceed the pending limit; the
+   staging reservation still bounds it. */
+vkr_internal uint64_t vkr_vk_asset_texture_upload_capacity(void *state) {
   VkrVulkanRenderer *renderer = state;
-  if (!renderer || !upload_bytes || upload_bytes > UINT64_MAX - 64u)
-    return false_v;
+  if (!renderer) {
+    return 0u;
+  }
 
   const uint64_t retained = renderer->pending_texture_upload_bytes;
   const uint64_t limit = renderer->config.max_pending_texture_upload_bytes;
-  if (upload_bytes > limit ? retained != 0u : retained > limit - upload_bytes)
-    return false_v;
+  const uint64_t pending_capacity = retained == 0u     ? UINT64_MAX
+                                    : retained < limit ? limit - retained
+                                                       : 0u;
 
   VkrDMemory *memory = &renderer->publication_staging_memory;
-  const uint64_t required = upload_bytes + 64u;
   const uint64_t free_space = vkr_dmemory_get_free_space(memory);
   const uint64_t growth = memory->reserve_size - memory->total_size;
-  return required <= free_space || required - free_space <= growth;
+  const uint64_t staging_space =
+      free_space > UINT64_MAX - growth ? UINT64_MAX : free_space + growth;
+  const uint64_t staging_capacity =
+      staging_space > 64u ? staging_space - 64u : 0u;
+  return pending_capacity < staging_capacity ? pending_capacity
+                                             : staging_capacity;
 }
 
 vkr_internal bool8_t vkr_vk_upload_prepared_texture(
@@ -2967,8 +2974,8 @@ void vkr_vulkan_renderer_get_asset_publisher(VkrVulkanRenderer *renderer,
                                  vkr_vk_asset_publications_idle,
                              .publication_generation =
                                  vkr_vk_candidate_publication_generation,
-                             .texture_upload_available =
-                                 vkr_vk_asset_texture_upload_available,
+                             .texture_upload_capacity =
+                                 vkr_vk_asset_texture_upload_capacity,
                              .publish_geometry =
                                   vkr_vk_asset_publish_geometry,
                               .publish_loaded_mesh =

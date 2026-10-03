@@ -57,6 +57,9 @@ typedef struct ResourceAsyncBudgetContext {
   String8 cancel_path;
   atomic_uint unload_calls;
   atomic_uint token_counter;
+  /* Publication states reported in order; CONFIRMED once exhausted. */
+  VkrResourcePublication publication_script[4];
+  uint32_t publication_calls;
 } ResourceAsyncBudgetContext;
 
 typedef struct ResourceAsyncBudgetPayload {
@@ -480,6 +483,24 @@ resource_async_budget_unload(VkrResourceLoader *self,
   atomic_fetch_add_explicit(&ctx->unload_calls, 1u, memory_order_relaxed);
   (void)handle;
   (void)name;
+}
+
+vkr_internal bool8_t resource_async_publish_can_load(VkrResourceLoader *self,
+                                                     String8 name) {
+  (void)self;
+  return name.str && string8_contains_cstr(&name, ".publish.mock");
+}
+
+vkr_internal VkrResourcePublication resource_async_publish_state(
+    VkrResourceLoader *self, const VkrResourceHandleInfo *handle,
+    VkrRendererError *out_error) {
+  (void)handle;
+  (void)out_error;
+  ResourceAsyncBudgetContext *ctx = self->resource_system;
+  const uint32_t call = ctx->publication_calls++;
+  return call < ArrayCount(ctx->publication_script)
+             ? ctx->publication_script[call]
+             : VKR_RESOURCE_PUBLICATION_CONFIRMED;
 }
 
 vkr_internal bool8_t resource_async_scene_can_load(VkrResourceLoader *self,
@@ -1475,6 +1496,63 @@ test_scene_reload_async_cancel(VkrResourceSubmissionState *submission,
   printf("  test_scene_reload_async_cancel PASSED\n");
 }
 
+/* A finalized resource is READY only once its publication is confirmed, and
+ * a retried publication finalizes the payload the request kept. */
+vkr_internal void test_resource_async_publication_confirms_before_ready(
+    VkrResourceSubmissionState *submission, VkrAllocator *allocator,
+    ResourceAsyncBudgetContext *ctx) {
+  printf(
+      "  Running test_resource_async_publication_confirms_before_ready...\n");
+
+  String8 path = string8_lit("tests/assets/confirm.publish.mock");
+  VkrResourceHandleInfo handle = {0};
+  VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
+  submission->frame_active = false_v;
+  ctx->publication_calls = 0u;
+  ctx->publication_script[0] = VKR_RESOURCE_PUBLICATION_PENDING;
+  ctx->publication_script[1] = VKR_RESOURCE_PUBLICATION_RETRY;
+  ctx->publication_script[2] = VKR_RESOURCE_PUBLICATION_PENDING;
+  ctx->publication_script[3] = VKR_RESOURCE_PUBLICATION_CONFIRMED;
+
+  assert(vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, path, allocator,
+                                  &handle, &load_error) == true_v);
+  assert(load_error == VKR_RENDERER_ERROR_NONE);
+  VkrRendererError prepared_error = VKR_RENDERER_ERROR_UNKNOWN;
+  assert(resource_async_wait_for_state(submission, &handle,
+                                       VKR_RESOURCE_LOAD_STATE_PENDING_GPU,
+                                       &prepared_error) == true_v);
+
+  submission->frame_active = true_v;
+  submission->submit_serial = 170u;
+  submission->completed_submit_serial = 171u;
+  /* Finalize, pending; retry; finalize again, pending; confirmed. */
+  const uint32_t expected_finalizes[] = {1u, 1u, 2u, 2u};
+  for (uint32_t pump = 0u; pump < 3u; ++pump) {
+    vkr_resource_system_pump(*submission, NULL);
+    VkrRendererError state_error = VKR_RENDERER_ERROR_UNKNOWN;
+    assert(vkr_resource_system_get_state(&handle, &state_error) ==
+           VKR_RESOURCE_LOAD_STATE_PENDING_GPU);
+    assert(atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed) ==
+           expected_finalizes[pump]);
+    assert(atomic_load_explicit(&ctx->release_calls, memory_order_relaxed) ==
+           0u);
+  }
+
+  vkr_resource_system_pump(*submission, NULL);
+  VkrRendererError ready_error = VKR_RENDERER_ERROR_UNKNOWN;
+  assert(vkr_resource_system_get_state(&handle, &ready_error) ==
+         VKR_RESOURCE_LOAD_STATE_READY);
+  assert(ready_error == VKR_RENDERER_ERROR_NONE);
+  assert(ctx->publication_calls == 4u);
+  assert(atomic_load_explicit(&ctx->finalize_calls, memory_order_relaxed) ==
+         expected_finalizes[3]);
+  assert(atomic_load_explicit(&ctx->release_calls, memory_order_relaxed) == 1u);
+
+  vkr_resource_system_unload(&handle, path);
+  submission->frame_active = false_v;
+  printf("  test_resource_async_publication_confirms_before_ready PASSED\n");
+}
+
 bool32_t run_resource_async_state_tests(void) {
   printf("--- Running Resource Async State tests... ---\n");
 
@@ -1546,6 +1624,23 @@ bool32_t run_resource_async_state_tests(void) {
   assert(vkr_resource_system_register_loader(&budget_ctx, budget_loader) ==
          true_v);
 
+  ResourceAsyncBudgetContext publish_ctx = {
+      .finalize_ops = 1,
+      .finalize_bytes = 2048u,
+  };
+  VkrResourceLoader publish_loader = {
+      .type = VKR_RESOURCE_TYPE_SCENE,
+      .can_load = resource_async_publish_can_load,
+      .prepare_async = resource_async_budget_prepare,
+      .finalize_async = resource_async_budget_finalize,
+      .estimate_async_finalize_cost = resource_async_budget_estimate_cost,
+      .publication_state = resource_async_publish_state,
+      .release_async_payload = resource_async_budget_release_payload,
+      .unload = resource_async_budget_unload,
+  };
+  assert(vkr_resource_system_register_loader(&publish_ctx, publish_loader) ==
+         true_v);
+
   ResourceAsyncSceneContext scene_ctx = {
       .prepare_calls = 0,
       .finalize_calls = 0,
@@ -1591,6 +1686,8 @@ bool32_t run_resource_async_state_tests(void) {
                                                     &budget_ctx);
   test_resource_async_busy_finalize_retries(&submission, &allocator,
                                             &budget_ctx);
+  test_resource_async_publication_confirms_before_ready(&submission, &allocator,
+                                                        &publish_ctx);
   test_scene_async_load_smoke(&submission, &allocator, &scene_ctx);
   test_scene_reload_async_cancel(&submission, &allocator, &scene_ctx);
 

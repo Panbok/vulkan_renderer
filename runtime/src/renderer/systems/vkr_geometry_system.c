@@ -556,6 +556,8 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return geometry_creation_failure(system, geom, handle);
   }
+  vkr_publication_state_recorded_by(system->asset_publisher,
+                                    &geom->publication);
 
   VkrGeometryEntry life_entry = {
       .id = handle.id - 1,

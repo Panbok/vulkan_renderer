@@ -305,6 +305,13 @@ VkrTexture *vkr_texture_system_get_by_handle(VkrTextureSystem *system,
                                              VkrTextureHandle handle);
 
 /**
+ * @brief True when a live texture's publications, including IBL bakes into
+ * it, are confirmed, so a frame may sample it.
+ */
+bool8_t vkr_texture_system_publication_confirmed(VkrTextureSystem *system,
+                                                 VkrTextureHandle handle);
+
+/**
  * @brief Gets a texture by index
  * @param system The texture system to get the texture from
  * @param index The index of the texture to get

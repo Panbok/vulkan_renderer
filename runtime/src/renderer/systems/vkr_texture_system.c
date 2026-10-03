@@ -1112,8 +1112,10 @@ vkr_internal bool8_t vkr_texture_system_publish_prepared(
     *out_error = publish_error;
     return false_v;
   }
-  *out_backend_handle =
-      (VkrTextureOpaqueHandle)&system->textures.data[logical_handle.id - 1];
+  VkrTexture *texture = &system->textures.data[logical_handle.id - 1];
+  vkr_publication_state_recorded_by(system->asset_publisher,
+                                    &texture->publication);
+  *out_backend_handle = (VkrTextureOpaqueHandle)texture;
   return true_v;
 }
 
@@ -1637,6 +1639,8 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   } else if (system->asset_publisher->publish_writable_texture(
                  system->asset_publisher->state, logical_handle, &desc_copy)) {
     handle = (VkrTextureOpaqueHandle)texture;
+    vkr_publication_state_recorded_by(system->asset_publisher,
+                                      &texture->publication);
   } else {
     renderer_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
@@ -1899,6 +1903,13 @@ VkrTexture *vkr_texture_system_get_by_handle(VkrTextureSystem *system,
   if (texture->description.generation != handle.generation)
     return NULL;
   return texture;
+}
+
+bool8_t vkr_texture_system_publication_confirmed(VkrTextureSystem *system,
+                                                 VkrTextureHandle handle) {
+  const VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  return texture && texture->handle &&
+         vkr_publication_state_confirmed(&texture->publication);
 }
 
 VkrTexture *vkr_texture_system_get_by_index(VkrTextureSystem *system,

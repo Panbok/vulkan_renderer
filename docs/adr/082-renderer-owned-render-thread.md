@@ -39,11 +39,44 @@ followed by complete. Without a worker, submit renders before returning, so
 inline rendering keeps the previous behavior.
 
 At most one frame is with the worker. Every public renderer entry point,
-capture poll and release, metrics collection and asset-publisher call waits
-for that frame first, so renderer and native state have one user at a time.
-With a worker, `asset_publisher` forwards to the backend's table after that
-wait; inline rendering keeps the backend table. The worker never waits on
-itself.
+capture poll and release and metrics collection waits for that frame first,
+so renderer and native state have one user at a time. The worker never waits
+on itself.
+
+Asset publication does not wait. `VkrRenderer.asset_publisher` is the
+renderer's own table, threaded or not: each publish, unpublish, sampler
+update or bake call records an ordered command with copies of its payload
+(`vkr_publication_queue.c`) and returns whether it was recorded. Submitting a
+frame hands the recorded batch to the thread that renders it, which runs the
+commands through the backend's table in order before preparing that frame,
+inside the frame once acquired, so Vulkan uploads still record into an
+acquired frame (ADR-045). A frame that is not acquired, `wait_idle` and
+destruction run the batch at once. Every command yields a completion naming
+its resource and the native result; completing the frame delivers them with a
+snapshot of what asset code queries without waiting (publication idle and
+generation, texture upload capacity, bake status and SH slots). Completions
+the asset systems have not polled yet are kept, and the queue is idle only
+once no batch is recorded or in flight and every completion was polled.
+
+A publication that succeeds is resolvable in the frame it was recorded for;
+only its completion says whether it did. The geometry, texture and material
+systems count each command they record and each completion against the
+resource (`VkrPublicationState`), keeping the first failure since the
+resource last settled. Frames name a resource only once it is confirmed:
+
+- a mesh asset or mesh stays PENDING until every submesh geometry and material
+  is confirmed, then becomes LOADED, or FAILED when one failed;
+- a loaded texture's request keeps its payload and becomes READY only once
+  the loader confirms the publication; a busy or out-of-memory result releases
+  the texture and finalizes the retained payload again, and texture admission
+  uses the capacity the last frame observed less the bytes recorded since;
+- the environment and reflection probes are used once their prefilter's
+  publication and IBL bake are confirmed, and gizmo draws once their shapes
+  are;
+- an atmosphere bake the backend rejects reports FAILED through its status.
+
+Backends still omit world draws whose geometry or material is unresolved,
+which covers a material republished with a replaced texture that fails.
 
 `vkr_renderer_submit_unacquired_frame()` hands the worker a frame it acquires
 itself with the caller's `VkrFrameConfig`, so the caller never waits for
@@ -67,10 +100,10 @@ of the `draw_frame` stack. With a worker, a frame is either:
   builds the next; the previous frame completes just before this one is
   submitted. Every steady-state frame is decoupled.
 - coupled: the frame-loop thread completes the previous frame and acquires
-  this one itself, as inline rendering does. Frames that resize, change the
-  Scene output extent, or have pending asset finalization or active texture
-  streams are coupled, because finalization publishes into an acquired frame
-  (ADR-045) and the build needs the new extent.
+  this one itself, as inline rendering does. Frames that resize or change the
+  Scene output extent are coupled, because the build needs the new extent.
+  Loading and texture streaming do not couple frames; their publications
+  travel with the frame.
 
 Work that needs the acquisition runs in the `prepare` hook: the renderer's
 publication generation and pending state, probe SH slots, the shadow fit,
@@ -122,8 +155,18 @@ acquisition. The frame rate stays GPU-bound.
 Results of frame N apply after frame N+1 is built when threaded: editor
 viewport output size, Scene error recovery and picking readback transitions
 are one frame later. Shadow commits still precede the next shadow decision.
-Loading and texture streaming keep frames coupled until publication no
-longer needs the frame-loop thread; see the proposal.
+
+Loading frames are decoupled too: in the threaded Bistro text case the render
+thread acquired 782 of 783 submitted frames, the remaining one being the
+first. A newly published resource is confirmed when the frame that ran its
+command completes, so meshes, loaded textures and baked environments appear
+one frame later inline and two frames later threaded than they did when
+publication was synchronous. Copying payloads into the queue raised the peak
+resident memory of loading Bistro from 3.3 GiB inline to 3.9 GiB threaded.
+With confirmation in place the five `bistro_shadow_motion_snapshot` captures
+stayed byte-identical to the unmodified build, inline and threaded, and a
+ThreadSanitizer threaded run of the Bistro text case and the CPU test suite
+reported no races.
 
 Update code that calls a renderer function or publishes waits for the frame
 and loses the overlap, without losing correctness. The harness child pumps
@@ -149,10 +192,12 @@ Keeping acquisition on the frame-loop thread leaves its frame-slot wait on
 the main thread. Moving the shadow decision into the `prepare` hook instead
 lets every steady-state frame acquire on the render thread.
 
-Coupling only the frames that finalize or stream assets keeps ADR-045's
-finalization rule; an ordered asynchronous publication queue that removes
-those couplings is proposed. A render-side asset lock was rejected: it would
-cover every asset-system access on the frame-loop thread.
+Coupling the frames that finalize or stream assets kept loading on the
+frame-loop thread's acquisition; the publication queue replaced it. A
+render-side asset lock was rejected: it would cover every asset-system access
+on the frame-loop thread. Waiting for each publication's result inside its
+call would keep synchronous creation unchanged but serialize loading with
+rendering again.
 
 ## Revisit when
 
@@ -163,6 +208,11 @@ run is available.
 ## Code evidence
 
 - [worker, waits, submit and complete](../../renderer/src/vkr_renderer.c)
+- [publication commands, completions and snapshot](../../renderer/src/vkr_publication_queue.c)
+- [publication contract and state](../../renderer/src/vkr_asset_publisher.h)
+- [completion dispatch](../../runtime/src/renderer/systems/vkr_render_assets.c)
+- [mesh confirmation](../../runtime/src/renderer/systems/vkr_mesh_manager.c)
+- [texture request confirmation and retry](../../runtime/src/renderer/resources/loaders/texture_loader.c)
 - [public API](../../renderer/src/vkr_renderer.h)
 - [result and worker state](../../renderer/src/vkr_renderer_internal.h)
 - [frame storage, completion and copies](../../runtime/src/application/vkr_standard_scene_runtime.c)

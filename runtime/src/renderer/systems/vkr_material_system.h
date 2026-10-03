@@ -87,6 +87,13 @@ typedef struct VkrMaterialTextureStreamStats {
   uint64_t failed_total;
 } VkrMaterialTextureStreamStats;
 
+/** Publication bookkeeping of one material slot for the material whose
+ * generation it names. */
+typedef struct VkrMaterialPublication {
+  uint32_t generation;
+  VkrPublicationState state;
+} VkrMaterialPublication;
+
 typedef struct VkrMaterialSystem {
   // Internal arenas owned by the material system
   Arena *arena;             // persistent allocations (materials, names, maps)
@@ -125,6 +132,7 @@ typedef struct VkrMaterialSystem {
   bool8_t texture_stream_budget_user_configured;
   uint64_t texture_stream_epoch;
   uint64_t *texture_material_last_used_epochs;
+  VkrMaterialPublication *publications; /* max_material_count */
   uint64_t texture_stream_applied_total;
   uint64_t texture_stream_failed_total;
   uint64_t texture_stream_evicted_total;
@@ -298,6 +306,11 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
                                     VkrRendererError *out_error);
 
 /** Retire the GPU material associated with an exact shared handle. */
+/** Publication state of a published material, NULL when none was recorded
+ * for this generation. */
+VkrPublicationState *vkr_material_system_publication(VkrMaterialSystem *system,
+                                                     VkrMaterialHandle handle);
+
 bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
                                       VkrMaterialHandle handle);
 

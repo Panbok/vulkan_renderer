@@ -69,6 +69,15 @@ typedef struct VkrResourceAsyncFinalizeCost {
   uint64_t gpu_upload_bytes;
 } VkrResourceAsyncFinalizeCost;
 
+/** Where a finalized resource's asynchronous publication stands. */
+typedef enum VkrResourcePublication {
+  VKR_RESOURCE_PUBLICATION_PENDING = 0,
+  VKR_RESOURCE_PUBLICATION_CONFIRMED,
+  /* The loader discarded the resource; finalize the payload again. */
+  VKR_RESOURCE_PUBLICATION_RETRY,
+  VKR_RESOURCE_PUBLICATION_FAILED,
+} VkrResourcePublication;
+
 typedef struct VkrResourceLoader VkrResourceLoader;
 typedef struct VkrResourceSystem
     VkrResourceSystem; // forward decl for loader callbacks
@@ -157,6 +166,24 @@ struct VkrResourceLoader {
   bool8_t (*estimate_async_finalize_cost)(
       VkrResourceLoader *self, String8 name, void *payload,
       VkrResourceAsyncFinalizeCost *out_cost);
+
+  /**
+   * @brief Optional query of a finalized resource's publication.
+   *
+   * When provided, the request keeps its payload after `finalize_async`
+   * succeeds and becomes READY only once this reports CONFIRMED. RETRY
+   * finalizes the retained payload again; FAILED fails the request with
+   * `*out_error`. Called from `vkr_resource_system_pump` with the request table
+   * locked, so it must not call the resource system.
+   *
+   * @param self The loader
+   * @param handle The handle `finalize_async` produced
+   * @param out_error The publication error when FAILED
+   * @return The publication state
+   */
+  VkrResourcePublication (*publication_state)(
+      VkrResourceLoader *self, const VkrResourceHandleInfo *handle,
+      VkrRendererError *out_error);
 
   /**
    * @brief Optional payload release callback for async prepare/finalize.
