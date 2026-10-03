@@ -6,6 +6,7 @@
 #include "containers/str.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_platform.h"
 #include "vkr_color_transfer.h"
 
 #include <assert.h>
@@ -1747,8 +1748,8 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   gltf_test_remove_file(generated_base_path);
   gltf_test_remove_file(generated_mr_path);
   char generated_mr_temp_path[1024];
-  snprintf(generated_mr_temp_path, sizeof(generated_mr_temp_path), "%s.tmp",
-           generated_mr_path);
+  snprintf(generated_mr_temp_path, sizeof(generated_mr_temp_path), "%s.tmp.%u",
+           generated_mr_path, vkr_platform_get_process_id());
   assert(gltf_test_make_dir(generated_mr_temp_path) == true_v);
   vector_clear_String8(&generated_asset_paths);
   error = VKR_RENDERER_ERROR_NONE;

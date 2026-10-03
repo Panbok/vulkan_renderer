@@ -1055,7 +1055,8 @@ vkr_internal void vkr_mesh_loader_gltf_publish_prepared_spec_gloss(
 /* Publishes `bytes` at `output_path` through a temporary file. Two
    materials that convert to identical pixels publish one path, possibly from
    two workers at once. Encoding runs unlocked; publication is serialized, and
-   the second publisher finds the file present. */
+   the second publisher finds the file present. The lock covers one process;
+   another cook of the same source writes its own temporary file. */
 vkr_internal bool8_t vkr_mesh_loader_gltf_publish_bytes(
     const VkrMeshLoaderGltfParseInfo *info, String8 output_path,
     const uint8_t *bytes, uint64_t size, bool8_t *out_created) {
@@ -1064,9 +1065,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_publish_bytes(
                                   VKR_MEMORY_ORDER_ACQUIRE)) {
     vkr_platform_sleep(0u);
   }
-  String8 temp_path =
-      string8_create_formatted(info->scratch_allocator, "%.*s.tmp",
-                               (int32_t)output_path.length, output_path.str);
+  String8 temp_path = string8_create_formatted(
+      info->scratch_allocator, "%.*s.tmp.%u", (int32_t)output_path.length,
+      output_path.str, vkr_platform_get_process_id());
   FilePath temp =
       file_path_create((const char *)temp_path.str, info->scratch_allocator,
                        vkr_mesh_loader_gltf_path_is_absolute(temp_path)
@@ -2550,7 +2551,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_texture_lines(
   return ok;
 }
 
-/* Writes `text` to `path` through a synced temporary file and a rename. */
+/* Writes `text` to `path` through a synced temporary file and a rename. Two
+   cooks of one source (a manifest's plain and light-range targets) publish the
+   same materials at once, so the temporary name carries the process. */
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_text_atomic(
     const VkrMeshLoaderGltfParseInfo *info, String8 path,
     const VkrMeshLoaderGltfText *text) {
@@ -2558,8 +2561,9 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_text_atomic(
       (const char *)path.str, info->load_allocator,
       vkr_mesh_loader_gltf_path_is_absolute(path) ? FILE_PATH_TYPE_ABSOLUTE
                                                   : FILE_PATH_TYPE_RELATIVE);
-  String8 temp_path = string8_create_formatted(info->load_allocator, "%.*s.tmp",
-                                               (int32_t)path.length, path.str);
+  String8 temp_path = string8_create_formatted(
+      info->load_allocator, "%.*s.tmp.%u", (int32_t)path.length, path.str,
+      vkr_platform_get_process_id());
   FilePath temp_file_path =
       file_path_create((const char *)temp_path.str, info->load_allocator,
                        vkr_mesh_loader_gltf_path_is_absolute(temp_path)
