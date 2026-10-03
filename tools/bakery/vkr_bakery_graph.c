@@ -11,8 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* One process-wide cancellation flag: SIGINT/SIGTERM and the daemon set it,
- * tasks poll it and process_run stops running tools when it is raised. */
+/* One process-wide cancellation flag: SIGINT/SIGTERM (and SIGBREAK, Windows'
+ * Ctrl+Break) and the daemon set it, tasks poll it and process_run stops
+ * running tools when it is raised. */
 VkrAtomicBool vkr_bakery_cancel_requested = false;
 
 #define VKR_BAKERY_TOOL_TIMEOUT_MS (2u * 60u * 60u * 1000u)
@@ -1413,6 +1414,11 @@ void vkr_bakery_install_cancel_signals(void) {
                                                  : vkr_bakery_signal_handler;
   signal(SIGINT, handler);
   signal(SIGTERM, handler);
+#if defined(_WIN32)
+  /* A process started in its own group ignores Ctrl+C; its owner interrupts
+     it with Ctrl+Break, which the C runtime raises as SIGBREAK. */
+  signal(SIGBREAK, handler);
+#endif
 }
 
 bool8_t vkr_bakery_graph_execute(VkrBakeryGraph *graph) {

@@ -127,6 +127,9 @@ vkr_internal int vkr_bakery_tool_exec(int argc, char **argv) {
   }
   signal(SIGINT, vkr_bakery_exec_signal);
   signal(SIGTERM, vkr_bakery_exec_signal);
+#if defined(_WIN32)
+  signal(SIGBREAK, vkr_bakery_exec_signal);
+#endif
   const VkrPlatformProcessConfig config = {
       .executable = argv[1],
       .arguments = (const char *const *)(argv + 2),
