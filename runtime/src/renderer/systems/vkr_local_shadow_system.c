@@ -414,6 +414,200 @@ vkr_local_shadow_adopt_new_pool(VkrLocalShadowCache *cache,
   }
 }
 
+/* Scores every valid light and sizes its faces by range. With `feedback`,
+ * measured contribution scores the light; otherwise distance does. */
+vkr_internal uint32_t vkr_local_shadow_gather_candidates(
+    const VkrLocalShadowCacheInput *input,
+    const VkrLocalLightContributionSample *feedback,
+    VkrLocalShadowCandidate *candidates) {
+  const VkrLocalShadowCamera *camera = input->camera;
+  uint32_t candidate_count = 0u;
+  for (uint32_t i = 0u; i < Min(input->light_count, VKR_MAX_SCENE_POINT_LIGHTS);
+       ++i) {
+    const VkrPointLight *light = &input->lights[i];
+    uint32_t face_count;
+    float32_t half_fov;
+    if (!vkr_local_shadow_light_valid(light, &face_count, &half_fov))
+      continue;
+    const Vec3 delta = vec3_sub(light->position, camera->position);
+    const float32_t distance_squared = vec3_length_squared(delta);
+    /* Shadows fade out with camera distance, which bounds the shadowed lights
+     * a pixel filters; a faded light stays resident and fades back in. */
+    float32_t distance_fade = (input->fade_distance - sqrtf(distance_squared)) /
+                              VKR_LOCAL_SHADOW_FADE_BAND_METRES;
+    distance_fade =
+        isfinite(distance_fade) ? Clamp(distance_fade, 0.0f, 1.0f) : 0.0f;
+    const float32_t near_distance =
+        light->range * VKR_LOCAL_SHADOW_NEAR_RANGE_FRACTION;
+    const float32_t luminance = light->color.x * 0.2126f +
+                                light->color.y * 0.7152f +
+                                light->color.z * 0.0722f;
+    float32_t score =
+        feedback
+            ? vkr_local_shadow_feedback_score(feedback, i, light->render_id)
+            : Max(luminance, 0.0f) * Max(light->intensity, 0.0f) *
+                  light->range * light->range /
+                  Max(distance_squared, near_distance * near_distance);
+    if (!isfinite(score) || score < 0.0f)
+      score = 0.0f;
+    candidates[candidate_count++] = (VkrLocalShadowCandidate){
+        .light_index = i,
+        .render_id = light->render_id,
+        .light_kind = (uint32_t)light->kind,
+        .face_count = face_count,
+        .half_fov = half_fov,
+        .score = score,
+        .distance_fade = distance_fade,
+        .face_size =
+            vkr_local_shadow_face_size_for_range(light->range, input->map_size),
+    };
+  }
+  return candidate_count;
+}
+
+/* Content is invalid once its projection, square or pool changed, and
+ * stale while a dynamic caster, a publication or a static-world change may
+ * have altered it. Stale content still shows while it waits to redraw. */
+vkr_internal void vkr_local_shadow_classify_content(
+    const VkrLocalShadowCache *cache, const VkrLocalShadowCacheInput *input,
+    VkrLocalShadowCandidate *candidates, uint32_t candidate_count,
+    uint32_t valid_layers, uint32_t transmission_layer_count) {
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    VkrLocalShadowCandidate *candidate = &candidates[i];
+    const VkrPointLight *light = &input->lights[candidate->light_index];
+    vkr_local_shadow_write_views(light, candidate, 0.0f, false_v,
+                                 candidate->views);
+    const VkrLocalShadowCacheLight *previous =
+        candidate->previous ? &cache->lights[candidate->previous - 1u] : NULL;
+    bool8_t opaque_valid = previous != NULL;
+    bool8_t transmission_valid = candidate->transmission_layers[0] != 0u;
+    bool8_t stale = input->contents_unstable ||
+                    (input->dynamic_overlap &&
+                     input->dynamic_overlap[candidate->light_index]);
+    for (uint32_t face = 0u; previous && face < candidate->face_count; ++face) {
+      const VkrLocalShadowFaceHistory *history = &previous->faces[face];
+      const uint32_t layer = candidate->face_cells[face] >> 16u;
+      opaque_valid =
+          opaque_valid && history->last_submit_value != 0u &&
+          history->resource_generation == input->token.resource_generation &&
+          (valid_layers & (UINT32_C(1) << layer)) != 0u &&
+          vkr_local_shadow_view_projection_equal(&history->view,
+                                                 &candidate->views[face]);
+      const uint32_t transmission = candidate->transmission_layers[face];
+      transmission_valid =
+          transmission_valid && history->transmission_layer == transmission &&
+          transmission - 1u < transmission_layer_count &&
+          MemCompare(history->transmission_resource_generations,
+                     input->token.transmission_resource_generations,
+                     sizeof(history->transmission_resource_generations)) == 0;
+      stale = stale || !history->static_only_contents ||
+              history->static_generation != input->static_generation ||
+              history->publication_generation != input->publication_generation;
+    }
+    candidate->opaque_valid = opaque_valid;
+    candidate->transmission_valid = transmission_valid && opaque_valid;
+    candidate->render_class =
+        !opaque_valid ? VKR_LOCAL_SHADOW_RENDER_INVALID
+        : candidate->wants_transmission && !candidate->transmission_valid
+            ? VKR_LOCAL_SHADOW_RENDER_TRANSMISSION
+        : stale ? VKR_LOCAL_SHADOW_RENDER_STALE
+                : VKR_LOCAL_SHADOW_RENDER_NONE;
+  }
+}
+
+/* Publishes the shown lights' views; render slots list drawn faces with
+ * transmission first. */
+vkr_internal void vkr_local_shadow_publish(
+    const VkrLocalShadowCache *cache, VkrLocalShadowCache *next,
+    const VkrLocalShadowCacheInput *input, VkrLocalShadowCandidate *candidates,
+    uint32_t candidate_count, const float32_t *strengths,
+    const bool8_t *reduced, uint64_t feedback_after_frame, uint32_t layer_count,
+    bool8_t identity_valid, VkrLocalShadowPendingHistory *pending,
+    VkrLocalShadowPassPayload *out) {
+  const VkrLocalShadowCamera *camera = input->camera;
+  MemZero(next, sizeof(*next));
+  next->light_count = candidate_count;
+  next->atlas_layer_count = layer_count;
+  next->face_budget = out->face_budget;
+  next->camera_view = camera->view;
+  next->camera_position = camera->position;
+  next->feedback_after_frame = feedback_after_frame;
+  next->valid = identity_valid;
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    VkrLocalShadowCandidate *candidate = &candidates[i];
+    const VkrPointLight *light = &input->lights[candidate->light_index];
+    const VkrLocalShadowCacheLight *previous =
+        candidate->previous ? &cache->lights[candidate->previous - 1u] : NULL;
+    VkrLocalShadowCacheLight *entry = &next->lights[i];
+    *entry = (VkrLocalShadowCacheLight){
+        .render_id = candidate->render_id,
+        .light_kind = candidate->light_kind,
+        .face_count = candidate->face_count,
+        .face_size = candidate->face_size,
+        .strength = strengths[i],
+        .distance_fade = candidate->distance_fade,
+        .reduced = reduced[i],
+    };
+    MemCopy(entry->face_cells, candidate->face_cells,
+            sizeof(entry->face_cells));
+    MemCopy(entry->transmission_layers, candidate->transmission_layers,
+            sizeof(entry->transmission_layers));
+    if (previous)
+      MemCopy(entry->faces, previous->faces, sizeof(entry->faces));
+    /* A drawn light is a view whatever its strength, since render slots name
+     * views; receivers skip a light at zero strength. */
+    const float32_t strength = strengths[i] * candidate->distance_fade;
+    if (strength <= 0.0f && !candidate->render)
+      continue;
+
+    /* Receivers sample transmission only once its layers hold this light. */
+    if (!candidate->render && !candidate->transmission_valid)
+      MemZero(candidate->transmission_layers,
+              sizeof(candidate->transmission_layers));
+    const uint32_t first_view = out->view_count;
+    vkr_local_shadow_write_views(light, candidate, strength, reduced[i],
+                                 &out->views[first_view]);
+    out->light_first_view[candidate->light_index] = first_view + 1u;
+    out->view_count += candidate->face_count;
+  }
+  for (uint32_t pass = 0u; pass < 2u; ++pass) {
+    const bool8_t transmission_pass = pass == 0u;
+    for (uint32_t i = 0u; i < candidate_count; ++i) {
+      const VkrLocalShadowCandidate *candidate = &candidates[i];
+      if (!candidate->render ||
+          (candidate->transmission_layers[0] != 0u) != transmission_pass)
+        continue;
+      const uint32_t first_view =
+          out->light_first_view[candidate->light_index] - 1u;
+      for (uint32_t face = 0u; face < candidate->face_count; ++face) {
+        out->render_views[out->render_count++] = first_view + face;
+        pending->faces[pending->face_count++] = (VkrLocalShadowPendingFace){
+            .light = i,
+            .face = face,
+            .history =
+                {
+                    .view = out->views[first_view + face],
+                    .static_generation = input->static_generation,
+                    .publication_generation = input->publication_generation,
+                    .resource_generation = input->token.resource_generation,
+                    .transmission_layer = candidate->transmission_layers[face],
+                    .static_only_contents =
+                        !input->contents_unstable &&
+                        !(input->dynamic_overlap &&
+                          input->dynamic_overlap[candidate->light_index]),
+                },
+        };
+        MemCopy(pending->faces[pending->face_count - 1u]
+                    .history.transmission_resource_generations,
+                input->token.transmission_resource_generations,
+                sizeof(input->token.transmission_resource_generations));
+      }
+      if (transmission_pass)
+        out->transmission_render_count = out->render_count;
+    }
+  }
+}
+
 void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
                                     VkrLocalShadowCache *scratch,
                                     const VkrLocalShadowCacheInput *input,
@@ -466,47 +660,8 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
                    : VKR_LOCAL_SHADOW_INCUMBENT_BONUS;
 
   VkrLocalShadowCandidate candidates[VKR_MAX_SCENE_POINT_LIGHTS];
-  uint32_t candidate_count = 0u;
-  for (uint32_t i = 0u; i < Min(input->light_count, VKR_MAX_SCENE_POINT_LIGHTS);
-       ++i) {
-    const VkrPointLight *light = &input->lights[i];
-    uint32_t face_count;
-    float32_t half_fov;
-    if (!vkr_local_shadow_light_valid(light, &face_count, &half_fov))
-      continue;
-    const Vec3 delta = vec3_sub(light->position, camera->position);
-    const float32_t distance_squared = vec3_length_squared(delta);
-    /* Shadows fade out with camera distance, which bounds the shadowed lights
-     * a pixel filters; a faded light stays resident and fades back in. */
-    float32_t distance_fade = (input->fade_distance - sqrtf(distance_squared)) /
-                              VKR_LOCAL_SHADOW_FADE_BAND_METRES;
-    distance_fade =
-        isfinite(distance_fade) ? Clamp(distance_fade, 0.0f, 1.0f) : 0.0f;
-    const float32_t near_distance =
-        light->range * VKR_LOCAL_SHADOW_NEAR_RANGE_FRACTION;
-    const float32_t luminance = light->color.x * 0.2126f +
-                                light->color.y * 0.7152f +
-                                light->color.z * 0.0722f;
-    float32_t score =
-        use_feedback
-            ? vkr_local_shadow_feedback_score(feedback, i, light->render_id)
-            : Max(luminance, 0.0f) * Max(light->intensity, 0.0f) *
-                  light->range * light->range /
-                  Max(distance_squared, near_distance * near_distance);
-    if (!isfinite(score) || score < 0.0f)
-      score = 0.0f;
-    candidates[candidate_count++] = (VkrLocalShadowCandidate){
-        .light_index = i,
-        .render_id = light->render_id,
-        .light_kind = (uint32_t)light->kind,
-        .face_count = face_count,
-        .half_fov = half_fov,
-        .score = score,
-        .distance_fade = distance_fade,
-        .face_size =
-            vkr_local_shadow_face_size_for_range(light->range, input->map_size),
-    };
-  }
+  const uint32_t candidate_count = vkr_local_shadow_gather_candidates(
+      input, use_feedback ? feedback : NULL, candidates);
   vkr_local_shadow_sort_candidates_by_render_id(candidates, candidate_count);
   bool8_t identity_valid = true_v;
   for (uint32_t i = 0u; i < candidate_count; ++i) {
@@ -594,50 +749,8 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
     }
   }
 
-  /* Content is invalid once its projection, square or pool changed, and
-   * stale while a dynamic caster, a publication or a static-world change may
-   * have altered it. Stale content still shows while it waits to redraw. */
-  for (uint32_t i = 0u; i < candidate_count; ++i) {
-    VkrLocalShadowCandidate *candidate = &candidates[i];
-    const VkrPointLight *light = &input->lights[candidate->light_index];
-    vkr_local_shadow_write_views(light, candidate, 0.0f, false_v,
-                                 candidate->views);
-    const VkrLocalShadowCacheLight *previous =
-        candidate->previous ? &cache->lights[candidate->previous - 1u] : NULL;
-    bool8_t opaque_valid = previous != NULL;
-    bool8_t transmission_valid = candidate->transmission_layers[0] != 0u;
-    bool8_t stale = input->contents_unstable ||
-                    (input->dynamic_overlap &&
-                     input->dynamic_overlap[candidate->light_index]);
-    for (uint32_t face = 0u; previous && face < candidate->face_count; ++face) {
-      const VkrLocalShadowFaceHistory *history = &previous->faces[face];
-      const uint32_t layer = candidate->face_cells[face] >> 16u;
-      opaque_valid =
-          opaque_valid && history->last_submit_value != 0u &&
-          history->resource_generation == input->token.resource_generation &&
-          (valid_layers & (UINT32_C(1) << layer)) != 0u &&
-          vkr_local_shadow_view_projection_equal(&history->view,
-                                                 &candidate->views[face]);
-      const uint32_t transmission = candidate->transmission_layers[face];
-      transmission_valid =
-          transmission_valid && history->transmission_layer == transmission &&
-          transmission - 1u < transmission_layer_count &&
-          MemCompare(history->transmission_resource_generations,
-                     input->token.transmission_resource_generations,
-                     sizeof(history->transmission_resource_generations)) == 0;
-      stale = stale || !history->static_only_contents ||
-              history->static_generation != input->static_generation ||
-              history->publication_generation != input->publication_generation;
-    }
-    candidate->opaque_valid = opaque_valid;
-    candidate->transmission_valid = transmission_valid && opaque_valid;
-    candidate->render_class =
-        !opaque_valid ? VKR_LOCAL_SHADOW_RENDER_INVALID
-        : candidate->wants_transmission && !candidate->transmission_valid
-            ? VKR_LOCAL_SHADOW_RENDER_TRANSMISSION
-        : stale ? VKR_LOCAL_SHADOW_RENDER_STALE
-                : VKR_LOCAL_SHADOW_RENDER_NONE;
-  }
+  vkr_local_shadow_classify_content(cache, input, candidates, candidate_count,
+                                    valid_layers, transmission_layer_count);
 
   /* Faces draw in complete lights within the face budget: invalid lights,
    * then lights waiting for transmission, then stale content, each by
@@ -715,92 +828,11 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
   for (uint32_t i = 0u; i < candidate_count; ++i)
     reduced[order[i]] = i >= VKR_LOCAL_SHADOW_FULL_FILTER_LIGHT_COUNT;
 
-  /* Publishes the shown lights' views; render slots list drawn faces with
-   * transmission first. */
-  VkrLocalShadowCache *next = scratch;
-  MemZero(next, sizeof(*next));
-  next->light_count = candidate_count;
-  next->atlas_layer_count = layer_count;
-  next->face_budget = face_budget;
-  next->camera_view = camera->view;
-  next->camera_position = camera->position;
-  next->feedback_after_frame = feedback_after_frame;
-  next->valid = identity_valid;
-  for (uint32_t i = 0u; i < candidate_count; ++i) {
-    VkrLocalShadowCandidate *candidate = &candidates[i];
-    const VkrPointLight *light = &input->lights[candidate->light_index];
-    const VkrLocalShadowCacheLight *previous =
-        candidate->previous ? &cache->lights[candidate->previous - 1u] : NULL;
-    VkrLocalShadowCacheLight *entry = &next->lights[i];
-    *entry = (VkrLocalShadowCacheLight){
-        .render_id = candidate->render_id,
-        .light_kind = candidate->light_kind,
-        .face_count = candidate->face_count,
-        .face_size = candidate->face_size,
-        .strength = strengths[i],
-        .distance_fade = candidate->distance_fade,
-        .reduced = reduced[i],
-    };
-    MemCopy(entry->face_cells, candidate->face_cells,
-            sizeof(entry->face_cells));
-    MemCopy(entry->transmission_layers, candidate->transmission_layers,
-            sizeof(entry->transmission_layers));
-    if (previous)
-      MemCopy(entry->faces, previous->faces, sizeof(entry->faces));
-    /* A drawn light is a view whatever its strength, since render slots name
-     * views; receivers skip a light at zero strength. */
-    const float32_t strength = strengths[i] * candidate->distance_fade;
-    if (strength <= 0.0f && !candidate->render)
-      continue;
-
-    /* Receivers sample transmission only once its layers hold this light. */
-    if (!candidate->render && !candidate->transmission_valid)
-      MemZero(candidate->transmission_layers,
-              sizeof(candidate->transmission_layers));
-    const uint32_t first_view = out->view_count;
-    vkr_local_shadow_write_views(light, candidate, strength, reduced[i],
-                                 &out->views[first_view]);
-    out->light_first_view[candidate->light_index] = first_view + 1u;
-    out->view_count += candidate->face_count;
-  }
-  for (uint32_t pass = 0u; pass < 2u; ++pass) {
-    const bool8_t transmission_pass = pass == 0u;
-    for (uint32_t i = 0u; i < candidate_count; ++i) {
-      const VkrLocalShadowCandidate *candidate = &candidates[i];
-      if (!candidate->render ||
-          (candidate->transmission_layers[0] != 0u) != transmission_pass)
-        continue;
-      const uint32_t first_view =
-          out->light_first_view[candidate->light_index] - 1u;
-      for (uint32_t face = 0u; face < candidate->face_count; ++face) {
-        out->render_views[out->render_count++] = first_view + face;
-        pending->faces[pending->face_count++] = (VkrLocalShadowPendingFace){
-            .light = i,
-            .face = face,
-            .history =
-                {
-                    .view = out->views[first_view + face],
-                    .static_generation = input->static_generation,
-                    .publication_generation = input->publication_generation,
-                    .resource_generation = input->token.resource_generation,
-                    .transmission_layer = candidate->transmission_layers[face],
-                    .static_only_contents =
-                        !input->contents_unstable &&
-                        !(input->dynamic_overlap &&
-                          input->dynamic_overlap[candidate->light_index]),
-                },
-        };
-        MemCopy(pending->faces[pending->face_count - 1u]
-                    .history.transmission_resource_generations,
-                input->token.transmission_resource_generations,
-                sizeof(input->token.transmission_resource_generations));
-      }
-      if (transmission_pass)
-        out->transmission_render_count = out->render_count;
-    }
-  }
+  vkr_local_shadow_publish(cache, scratch, input, candidates, candidate_count,
+                           strengths, reduced, feedback_after_frame,
+                           layer_count, identity_valid, pending, out);
   pending->active = true_v;
-  MemCopy(cache, next, sizeof(*cache));
+  MemCopy(cache, scratch, sizeof(*cache));
 }
 
 void vkr_local_shadow_cache_commit(VkrLocalShadowCache *cache,

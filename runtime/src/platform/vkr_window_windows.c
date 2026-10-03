@@ -75,6 +75,82 @@ typedef struct PlatformState {
   WINDOWPLACEMENT windowed_placement;
 } PlatformState;
 
+/* Cursor motion: absolute while free; while captured, the delta from the
+ * last position minus any warp moves the virtual cursor, unless raw input
+ * carries captured motion. */
+static void window_handle_mouse_move(PlatformState *state, LPARAM lparam) {
+  int32_t x = GET_X_LPARAM(lparam);
+  int32_t y = GET_Y_LPARAM(lparam);
+
+  if (state->mouse_captured && state->raw_mouse) {
+    // WM_INPUT carries captured motion; the clipped cursor does not move.
+    return;
+  }
+  if (state->mouse_captured) {
+    // In capture mode, use delta movement for virtual cursor
+    if (state->first_mouse_move) {
+      state->mouse_last_x = x;
+      state->mouse_last_y = y;
+      state->first_mouse_move = false_v;
+    }
+
+    float64_t dx =
+        (float64_t)(x - state->mouse_last_x) - state->cursor_warp_delta_x;
+    float64_t dy =
+        (float64_t)(y - state->mouse_last_y) - state->cursor_warp_delta_y;
+
+    // Get current virtual cursor position from input state
+    int32_t current_x, current_y;
+    input_get_mouse_position(state->input_state, &current_x, &current_y);
+
+    // Update virtual position with delta
+    int32_t new_x = current_x + (int32_t)dx;
+    int32_t new_y = current_y - (int32_t)dy; // Invert Y axis
+
+    input_process_mouse_move(state->input_state, new_x, new_y);
+
+    state->mouse_last_x = x;
+    state->mouse_last_y = y;
+
+    // Track physical cursor position for re-centering logic
+    state->last_cursor_pos_x = x;
+    state->last_cursor_pos_y = y;
+  } else {
+    // Normal mode, use absolute position
+    input_process_mouse_move(state->input_state, x, y);
+  }
+
+  // Reset warp deltas
+  state->cursor_warp_delta_x = 0.0;
+  state->cursor_warp_delta_y = 0.0;
+}
+
+/* Publishes the dropped files' UTF-8 paths at the drop point. */
+static void window_handle_drop_files(PlatformState *state, WPARAM wparam) {
+  // Client pixels, the same space as WM_MOUSEMOVE.
+  HDROP drop = (HDROP)wparam;
+  POINT point = {0};
+  (void)DragQueryPoint(drop, &point);
+  if (vkr_window_file_drop_begin(state->owner, point.x, point.y)) {
+    const UINT count = DragQueryFileW(drop, 0xFFFFFFFFu, NULL, 0u);
+    for (UINT i = 0; i < count; ++i) {
+      wchar_t wide[VKR_WINDOW_DROP_PATH_CAPACITY];
+      char path[VKR_WINDOW_DROP_PATH_CAPACITY];
+      if (!DragQueryFileW(drop, i, wide, VKR_WINDOW_DROP_PATH_CAPACITY)) {
+        continue;
+      }
+      const int32_t length = WideCharToMultiByte(
+          CP_UTF8, 0, wide, -1, path, (int32_t)sizeof(path), NULL, NULL);
+      if (length > 1) {
+        vkr_window_file_drop_add(state->owner, path, (uint64_t)length - 1u);
+      }
+    }
+    vkr_window_file_drop_publish(state->owner);
+    input_process_mouse_move(state->input_state, point.x, point.y);
+  }
+  DragFinish(drop);
+}
+
 // Forward declarations
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                     LPARAM lparam);
@@ -1065,53 +1141,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     return DefWindowProc(hwnd, msg, wparam, lparam);
   }
 
-  case WM_MOUSEMOVE: {
-    int32_t x = GET_X_LPARAM(lparam);
-    int32_t y = GET_Y_LPARAM(lparam);
-
-    if (state->mouse_captured && state->raw_mouse) {
-      // WM_INPUT carries captured motion; the clipped cursor does not move.
-      return FALSE;
-    }
-    if (state->mouse_captured) {
-      // In capture mode, use delta movement for virtual cursor
-      if (state->first_mouse_move) {
-        state->mouse_last_x = x;
-        state->mouse_last_y = y;
-        state->first_mouse_move = false_v;
-      }
-
-      float64_t dx =
-          (float64_t)(x - state->mouse_last_x) - state->cursor_warp_delta_x;
-      float64_t dy =
-          (float64_t)(y - state->mouse_last_y) - state->cursor_warp_delta_y;
-
-      // Get current virtual cursor position from input state
-      int32_t current_x, current_y;
-      input_get_mouse_position(state->input_state, &current_x, &current_y);
-
-      // Update virtual position with delta
-      int32_t new_x = current_x + (int32_t)dx;
-      int32_t new_y = current_y - (int32_t)dy; // Invert Y axis
-
-      input_process_mouse_move(state->input_state, new_x, new_y);
-
-      state->mouse_last_x = x;
-      state->mouse_last_y = y;
-
-      // Track physical cursor position for re-centering logic
-      state->last_cursor_pos_x = x;
-      state->last_cursor_pos_y = y;
-    } else {
-      // Normal mode, use absolute position
-      input_process_mouse_move(state->input_state, x, y);
-    }
-
-    // Reset warp deltas
-    state->cursor_warp_delta_x = 0.0;
-    state->cursor_warp_delta_y = 0.0;
+  case WM_MOUSEMOVE:
+    window_handle_mouse_move(state, lparam);
     return FALSE;
-  }
 
   case WM_SETCURSOR:
     if (LOWORD(lparam) == HTCLIENT) {
@@ -1120,31 +1152,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     }
     return DefWindowProc(hwnd, msg, wparam, lparam);
 
-  case WM_DROPFILES: {
-    // Client pixels, the same space as WM_MOUSEMOVE.
-    HDROP drop = (HDROP)wparam;
-    POINT point = {0};
-    (void)DragQueryPoint(drop, &point);
-    if (vkr_window_file_drop_begin(state->owner, point.x, point.y)) {
-      const UINT count = DragQueryFileW(drop, 0xFFFFFFFFu, NULL, 0u);
-      for (UINT i = 0; i < count; ++i) {
-        wchar_t wide[VKR_WINDOW_DROP_PATH_CAPACITY];
-        char path[VKR_WINDOW_DROP_PATH_CAPACITY];
-        if (!DragQueryFileW(drop, i, wide, VKR_WINDOW_DROP_PATH_CAPACITY)) {
-          continue;
-        }
-        const int32_t length = WideCharToMultiByte(
-            CP_UTF8, 0, wide, -1, path, (int32_t)sizeof(path), NULL, NULL);
-        if (length > 1) {
-          vkr_window_file_drop_add(state->owner, path, (uint64_t)length - 1u);
-        }
-      }
-      vkr_window_file_drop_publish(state->owner);
-      input_process_mouse_move(state->input_state, point.x, point.y);
-    }
-    DragFinish(drop);
+  case WM_DROPFILES:
+    window_handle_drop_files(state, wparam);
     return 0;
-  }
   case WM_MOUSEWHEEL: {
     int16_t delta = GET_WHEEL_DELTA_WPARAM(wparam);
     int8_t wheel_delta = (int8_t)(delta / WHEEL_DELTA);
