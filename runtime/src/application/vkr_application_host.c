@@ -184,7 +184,8 @@ void vkr_application_host_run(VkrApplicationHost *host) {
     if (host->callbacks.frame_complete)
       host->callbacks.frame_complete(host->callbacks.state, &frame_with_delta);
     host->last_frame_time = frame_with_delta.elapsed_seconds;
-    if (host->config.windowed)
+    /* A headless run's synthetic input needs its edges cleared too. */
+    if (host->config.windowed || host->window.input_state.is_initialized)
       input_update(&host->window.input_state);
   }
   bitset8_clear(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING);
