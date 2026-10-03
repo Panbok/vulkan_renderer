@@ -9,10 +9,13 @@ Durable conclusions go to `docs/` through `vkr-docs`.
 - Copy [assets/report-template.html](assets/report-template.html) to
   `.scratch/reports/<YYYY-MM-DD>-<topic>.html`. The `.scratch/` directory is
   ignored by git.
-- Keep the template's CSS and script. Set `<title>`, then replace everything
-  between `BEGIN CONTENT` and `END CONTENT`. Delete examples that you do not use.
-- Inline all CSS, JavaScript, SVG, and data. Do not load a CDN, an external
-  font, or any network resource. The page must open offline.
+- Keep the template's CSS. Set `<title>`, then replace everything between
+  `BEGIN CONTENT` and `END CONTENT`. Delete examples that you do not use.
+- Inline all CSS, SVG, and data. Do not load a CDN, an external font, or any
+  network resource. The page must open offline.
+- Do not make content depend on JavaScript. Quick Look, phone file viewers,
+  and chat previews do not run it. Use CSS for tabs and `<details>` for
+  collapsible content.
 - Do not commit the page, link to it from `docs/`, or cite it as evidence.
 - Use a new file name for a new topic. Overwrite only a page that you made for
   the same topic in this task, because parallel sessions share `.scratch/`.
@@ -43,8 +46,12 @@ The user takes in a diagram, a code excerpt, or a chart faster than prose.
 - Copy excerpts from the source without edits. Put the source path and first
   line in the caption, set `data-start` to that line, and mark the decisive
   lines with `data-mark`, for example `data-mark="29,31-33"`.
-- Escape `<`, `>`, and `&` in the excerpt text. The script highlights `c`,
-  `objc`, `metal`, `slang`, `hlsl`, `glsl`, `json`, and `sh`.
+- Escape `<`, `>`, and `&` in the excerpt text. Set `data-lang` to `c`,
+  `objc`, `metal`, `slang`, `hlsl`, `glsl`, `cpp`, `json`, or `sh`.
+- Run `.codex/skills/unslop/scripts/highlight_report.py <page>` after the
+  last code edit. It writes the highlighting into the file as static markup.
+  A block that it already processed has `data-highlighted`; to edit that
+  block, replace it with a fresh excerpt and run the script again.
 - Keep an excerpt to about 25 contiguous lines. Write "pseudocode" in the
   caption of any code that is not a source excerpt.
 
@@ -80,11 +87,12 @@ Keep these properties when you add content:
 ## Delivery
 
 1. Check that every number and excerpt on the page matches its source.
-2. Run `.codex/skills/unslop/scripts/check_mobile.sh <page> <png>` and look at
+2. Check that each `<pre data-lang>` block has `data-highlighted`.
+3. Run `.codex/skills/unslop/scripts/check_mobile.sh <page> <png>` and look at
    the screenshot. Fix the page until the script prints `PASS`. The script
    needs Google Chrome. When the script exits with 2, report that the mobile
    check is unavailable.
-3. On macOS, open the page with `open <absolute path>`.
-4. In chat, give a summary of ten lines or fewer in controlled English. State
+4. On macOS, open the page with `open <absolute path>`.
+5. In chat, give a summary of ten lines or fewer in controlled English. State
    the result, any decision that the user must make, and the absolute path of
    the page.
