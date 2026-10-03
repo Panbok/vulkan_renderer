@@ -15,7 +15,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-rem Tests consume fixtures cooked on this host by vkr_bakery build assets/bakery.json.
+rem The tester target cooks the fixture textures it reads (vkr_engine_textures).
 set "VKR_BUILD_TARGET=vulkan_renderer_tester"
 set "VKR_BUILD_LABEL=VKR CPU tests"
 call "%~dp0build.bat" Debug

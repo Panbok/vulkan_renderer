@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-29
+updated: 2026-10-03
 authority: proposal
 ---
 # Windows asset builds
@@ -10,7 +10,8 @@ workspace copies, extent-duplication clones and the x86 SHA-256 path shipped
 ([ADR-012](../adr/012-texture-compression-pipeline.md),
 [ADR-077](../adr/077-asset-build-system.md), which records the measurements).
 Native renderer evidence stays in the
-[Windows/Vulkan checklist](windows-vulkan-verification.md).
+[Windows/Vulkan checklist](windows-vulkan-verification.md), whose 2026-10-03
+handoff covers recooking this host's textures after UASTC's removal.
 
 ## Handoff notes for the implementer
 
@@ -62,8 +63,8 @@ and a repeat finalization in 5.6 s.
    snapshot and revision placement against the NTFS hard links and confirm
    published bytes are identical to a copy.
 6. **BC re-render determinism.** Two BC renders of one scene differed in one
-   pixel (77 dB) while UASTC renders were identical; find whether texture
-   streaming order or the upload path causes it.
+   pixel (77 dB) while the former UASTC renders were identical; find whether
+   texture streaming order or the upload path causes it.
 7. **Windows check portability.** `check_editor_scene_deletion.py` and
    `check_editor_project_jobs.py` fail on Windows before and after this work
    (line endings and path separators in the checks);
@@ -84,5 +85,6 @@ and a repeat finalization in 5.6 s.
 
 - The scan comparisons above, with the numbers in ADR-077.
 - For any profile change, per-class PSNR and Mpx/s on dumped Bistro pre-encode
-  data against the current profile and UASTC `faster`, and a Bistro render
+  data against the current profile and the former UASTC `faster` bar
+  recorded in ADR-012, and a Bistro render
   comparison through the harness.

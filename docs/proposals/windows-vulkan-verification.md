@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-01
+updated: 2026-10-03
 authority: proposal
 ---
 
@@ -10,6 +10,93 @@ This checklist records evidence still required on a Windows Vulkan host. The
 ADRs define the feature contracts. A successful build or compiled SPIR-V
 reflection does not prove native Vulkan execution, synchronization, display
 behavior, or Metal/Vulkan pixel parity.
+
+## 2026-10-03 handoff: host-native textures, D16 atlas and hardware matrix
+
+Commits `29715c9b` through `d1868d99` changed texture storage, the local
+shadow atlas and the build. They ran only on an M1 Pro with Metal; no x86-64
+build, Windows host or Vulkan device has run them. Work through the steps in
+order on the RX 6700 XT, then repeat steps 1-4 and 6 on an NVIDIA Ampere (RTX
+30) GPU when one is available. Load `vkr-harness`; add `vkr-validation` for
+step 4 and `vkr-performance` for step 7. Use Bistro for every scene run and
+run one GPU process at a time.
+
+0. **Capture the before image first.** Before pulling, on the revision this
+   host already builds, run `tools\cases\smoke\bistro_snapshot.case.json`
+   (`smoke.bistro.vulkan.text.snapshot`) with
+   `tools\profiles\local-offscreen.json` and keep the run directory. Step 1
+   replaces the textures this run renders, so it cannot be repeated later.
+1. **Recook.** The runtime no longer transcodes or falls back to source
+   images: a Basis (UASTC) `.vkt` logs a rebuild message and keeps its
+   default texture, and a source without a `.vkt` logs "has no cooked `.vkt`".
+   This host's Bistro textures were cooked as UASTC, the former Windows
+   default, or under retired `.bc` names. Pull, run `build_release.bat`, then
+   `build_release\tools\bakery\vkr_bakery.exe build assets\bakery.json`, and
+   re-import editor workspaces that hold UASTC textures. The build now cooks
+   the engine, default-scene, fixture and CPU-test textures and the
+   mannequin's paired normal/roughness bake (`vkr_engine_textures` in
+   `cmake/vkr_engine_content.cmake`). Done when a Bistro run's child stdout and
+   stderr contain neither message.
+2. **CPU tests and checks.** Run `build_test.bat`; 639 cases pass on macOS at
+   `d1868d99`. The Windows wrapper runs only the format, path-boundary and
+   path-contract checks, so also run each remaining check that `build_test.sh`
+   lists, with `--bakery build_debug\tools\bakery\vkr_bakery.exe`.
+   `check_editor_texture_tiers.py` takes its x86-64 branch here for the first
+   time: BC under host-neutral final names, `-bc-fast` fast names and the
+   rejection of `uastc`. Item 7 of [Windows asset builds](windows-asset-builds.md)
+   lists the checks that already failed on Windows.
+3. **BC outputs.** Read `vkFormat` (little-endian `uint32` at byte 12) of
+   cooked `.vkt` files: sRGB colour is BC7 sRGB (146), data masks and linear
+   colour BC7 UNORM (145), normals BC5 UNORM (141). The `vkr.pack_settings`
+   value names the BC profile, and
+   `assets\characters\mannequin\textures\mannequin_paired_metalrough.vkt`
+   records `normal_roughness=vmf-alpha2-v2`. An explicit `tc`/`cs` query
+   selects the sRGB or UNORM BC7 format (`vkr_texture_native_view_format`); the
+   CPU tests cover the selection, not the Vulkan image. Run the Debug
+   `p21_vulkan_bistro_windowed_validation.case.json` with
+   `validation-windowed.json` and require no validation message for texture
+   image creation, views or uploads.
+4. **D16 local shadow atlas.** Vulkan draws local shadow faces with D16
+   pipeline variants and requires D16 attachment, sampling, comparison and
+   linear filtering ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)).
+   With a Release configure that sets `VKR_EDITOR_LOGGING=ON`, the capability
+   report must list `D16_UNORM depth+sampled compare` as present. Run
+   `local_shadow_bistro_vulkan_street_ultra_validation.case.json` with the
+   Debug harness and `local-offscreen.json`; require the child's `Vulkan
+   validation enabled` line and no API or synchronization error. Then run the
+   Release `local_shadow_bistro_vulkan_street_capture.case.json` snapshot at
+   `d1868d99` and at `29715c9b`, the last D32 revision, built in a separate
+   worktree that holds copies of this checkout's cooked Bistro (the harness
+   rejects scene paths that resolve outside the worktree). Final colour must
+   stay within the default snapshot gate, as it did on Metal; look for acne
+   and light leaks 10-15 m from lights, where D16 depth steps reach about
+   7 cm.
+5. **Vulkan text baseline.** After step 1, rerun the step 0 case. Expect
+   `missing_baseline`: `case.scene_content` changed. Compare its captures with
+   step 0's to isolate this change; the accepted generation dates from
+   2026-08-07 and also predates the display-linear post target (below). The
+   user authorized re-accepting baselines this change affects after review:
+   run `baseline propose` with a reason naming both, accept the reviewed plan,
+   rerun `compare --run`, and commit the new generation to main.
+6. **Hardware matrix rows.** Record the capability report at current main for
+   RDNA 2, and for Ampere, RDNA 3 or RDNA 4 when available, in
+   [ADR-083](../adr/083-supported-hardware-matrix.md)'s native evidence column
+   with device, driver and Vulkan API version. Update
+   `assets/verification/renderer-features/windows-vulkan-capability-profile.txt`
+   when the RDNA 2 entries change.
+7. **Discrete memory floor.** ADR-083's 8 GB discrete floor is unmeasured, and
+   Vulkan has no device-memory budget. Run the Release
+   `win_bistro_production.case.json` with `local-offscreen-gpu-single.json`,
+   once as checked in (full resolution, the Vulkan default) and once from a
+   local copy that sets `renderer.texture_max_load_dimension` to 2048. Record
+   `memory.gpu.owner.texture.bytes.live`, `memory.gpu.bytes.peak` and, when
+   `memory.gpu.heap_usage_valid` is 1, `memory.gpu.heaps.bytes.used.current`.
+   The M1 Pro measured 3.176 GB of Bistro textures at full resolution and
+   1.995 GB at 2048. If the full-resolution total exceeds about 7 GiB, ask the
+   user whether Vulkan should default to 2048 below 12 GB, as Metal does.
+
+Record each step's commands, report SHA-256, device and driver here, and
+update the owning ADR when a result changes its claim.
 
 ## 2026-09-12 Windows execution record
 
@@ -98,9 +185,11 @@ three-image hidden-window witness.
   untyped root address, and the SSR/SSGI composite address-padding names all
   disagreed with the host records. All roots now reflect and match. Reflection
   failures name their module, so a mismatch identifies its shader.
-- [x] Confirm build wrappers compile cooker tools without invoking cooking; run
-  cooker jobs only through Bakery or an explicit cooker wrapper. The Debug,
-  Release and editor wrappers link every cooker executable and invoke none.
+- [x] Confirm build wrappers compile cooker tools and cook only the
+  `vkr_engine_textures` set; run other cooker jobs through Bakery or an
+  explicit cooker wrapper. Before 2026-10-03 the Debug, Release and editor
+  wrappers linked every cooker executable and invoked none; the texture cooks
+  are the handoff's step 1.
 - [x] Build and run the CPU suite with `build_test.bat`. It had never compiled
   on Windows: `far`, `near` (minwindef.h) and `small` (rpcndr.h) are Windows SDK
   macros that captured local variables in four test files. These cannot be
@@ -242,8 +331,9 @@ Native BC7/BC5 derived textures and Windows import measurements are in
 [ADR-077](../adr/077-asset-build-system.md); remaining import work is in
 [Windows asset builds](windows-asset-builds.md).
 
-- [ ] Run `vkr_bakery.exe cook assets\textures` and verify native BC7/BC5 KTX2 outputs for base
-  color, alpha-cutout coverage, and paired normal/roughness variants. Exercise
+- [ ] Run `vkr_bakery.exe cook assets\textures` and verify native BC7/BC5 KTX2
+  outputs (handoff step 3) for base color, alpha-cutout coverage, and paired
+  normal/roughness variants. Exercise
   opaque, single-sided cutout, double-sided cutout, transmission, and normal
   map fixtures through the Vulkan visibility and material assertions. The
   format and variant contract is [ADR-012](../adr/012-texture-compression-pipeline.md).

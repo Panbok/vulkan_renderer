@@ -7,7 +7,7 @@ python3 "$(dirname "$0")/tools/checks/check_path_boundaries.py"
 python3 "$(dirname "$0")/tools/checks/report_long_functions.py" --quiet \
   --max-lines 300
 
-# Tests consume fixtures cooked on this host by vkr_bakery build assets/bakery.json.
+# The tester target cooks the fixture textures it reads (vkr_engine_textures).
 VKR_BUILD_TARGET=vulkan_renderer_tester VKR_BUILD_LABEL="VKR CPU tests" \
   "$(dirname "$0")/build.sh" Debug
 # check_bakery_package.py packages a project with the Debug player template.
