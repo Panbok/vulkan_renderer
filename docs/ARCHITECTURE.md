@@ -399,12 +399,15 @@ per-draw dispatch table, frontend pipeline registry or generic command RHI.
    recorded-but-unsubmitted work. Input rejection also cancels.
 5. Completed submission results feed timing, readback, retirement and history.
 
-The frame-loop thread runs the host loop and every step above except the work
-in step 3. The optional render thread (off by default,
-`VKR_RENDER_THREAD=1`) renders frame N while the frame-loop thread runs frame
-N+1's update; the runtime completes frame N after that update and before
-camera, lighting, shadow, asset and extraction work. Every other renderer call
-and asset publication waits for the frame being rendered. See
+The frame-loop thread runs the host loop and builds each frame. The optional
+render thread (off by default, `VKR_RENDER_THREAD=1`) renders frame N while
+the frame-loop thread builds frame N+1. A steady-state frame is decoupled:
+`vkr_renderer_submit_unacquired_frame()` lets the render thread acquire it,
+and `VkrFrameHooks` resolve shadow reuse and other acquisition-dependent
+input there, so the render thread owns the shadow system. Frames that resize,
+change the Scene output or finalize or stream assets are acquired on the
+frame-loop thread first. Every other renderer call and asset publication waits
+for the frame being rendered. See
 [ADR-082](adr/082-renderer-owned-render-thread.md).
 
 `VkrFrame` identifies one acquisition and supplies resolved target facts. It must

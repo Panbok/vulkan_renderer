@@ -24,7 +24,8 @@ below are starting points for checking a definition, not alternate API specs.
 | Frame slot | Bounded in-flight storage and command resources whose reuse requires GPU completion. | [Vulkan frame slots](../renderer/src/vulkan/vkr_vulkan_internal.h), [Metal command slots](../renderer/src/metal/vkr_metal_packet_renderer.m) |
 | Submit serial | Monotonic identity used to associate completion, timing, and retirement with submitted work. CPU frame identity is recorded separately. | [vkr_renderer_impl.h](../renderer/src/vkr_renderer_impl.h) |
 | Frame-loop thread | The thread running the application host loop (the main thread): update, extraction, acquisition, asset publication and frame completion. Older documents call it the render thread. | [vkr_application_host.c](../runtime/src/application/vkr_application_host.c) |
-| Render thread | Optional renderer-owned worker that renders a submitted frame while the frame-loop thread updates the next; every other renderer call waits for it. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
+| Render thread | Optional renderer-owned worker that acquires and renders a submitted frame while the frame-loop thread builds the next; every other renderer call waits for it. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
+| Decoupled frame | A frame built from the previous frame's target values and acquired by the render thread; coupled frames are acquired on the frame-loop thread. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
 | Present target | Window/swapchain or ordinary-image offscreen output, with explicit extent and attachment properties. | [vkr_renderer.h](../renderer/src/vkr_renderer.h) |
 
 ## Graph and lifetime

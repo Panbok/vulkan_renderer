@@ -106,6 +106,10 @@ typedef struct VkrWindow {
   /** Atomic `{revision, IEEE-754 scale bits}` snapshot published by the
    * platform boundary. Consumers must use vkr_window_get_content_scale(). */
   VkrAtomicUint64 content_scale_state;
+  /** Atomic `{width, height}` of the drawable in pixels, published on the
+   * window's thread by vkr_window_publish_pixel_size() so a render thread can
+   * read it without calling into the platform's UI toolkit. */
+  VkrAtomicUint64 pixel_size_state;
   /** Create the native window without activating or showing it. */
   bool8_t hidden;
   /** UI-thread opt-in: native close requests wait for resolve_close. */
@@ -208,6 +212,12 @@ void vkr_window_resolve_close(VkrWindow *window, bool8_t confirm);
  * for a window that was never created, as in an offscreen application.
  */
 VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window);
+
+/**
+ * @brief Publishes the current pixel size for the render surface. Call on the
+ * window's thread after creation and after each vkr_window_update().
+ */
+void vkr_window_publish_pixel_size(VkrWindow *window);
 
 /** Build a borrowed renderer surface descriptor for this window. The window
  * remains the descriptor context and must outlive the renderer. */

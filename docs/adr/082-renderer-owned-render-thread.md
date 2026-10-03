@@ -43,29 +43,59 @@ capture poll and release, metrics collection and asset-publisher call waits
 for that frame first, so renderer and native state have one user at a time.
 With a worker, `asset_publisher` forwards to the backend's table after that
 wait; inline rendering keeps the backend table. The worker never waits on
-itself. Acquisition stays on the frame-loop thread: the command-slot wait,
-the Metal drawable and `CAMetalLayer` size, and Vulkan image acquisition do
-not move.
+itself.
+
+`vkr_renderer_submit_unacquired_frame()` hands the worker a frame it acquires
+itself with the caller's `VkrFrameConfig`, so the caller never waits for
+frame-slot reuse; the result reports the acquisition and its time. A frame
+whose acquired extent differs from its input is cancelled with
+`VKR_RENDERER_ERROR_FRAME_SKIPPED`. `VkrFrameHooks` let the caller finish the
+input after acquisition (`prepare`) and react to submission or cancellation
+(`finish`), on whichever thread renders the frame. Metal then acquires the
+drawable on the render thread: it changes `CAMetalLayer.drawableSize` only
+when the size changes, inside an explicit `CATransaction`, and the window
+publishes its pixel size from the main thread (`vkr_window_publish_pixel_size`)
+so acquisition never calls AppKit.
 
 The frame input and every array it references stay borrowed and unmodified
-until completion. The standard scene runtime keeps them in runtime-owned
-frame storage (draw context, acquired frame, editor overlays, packet) instead
-of the `draw_frame` stack. With a worker it:
+until completion. The standard scene runtime keeps two frames of storage
+(draw context, acquired frame, editor overlays, packet, shadow inputs) instead
+of the `draw_frame` stack. With a worker, a frame is either:
 
-- completes the previous frame after the update callback and before camera,
-  lighting, shadow, asset pumping and extraction, so the update overlaps
-  rendering and everything the packet borrows from those systems is stable;
+- decoupled: built from the target extent and render scale the last frame
+  used, then acquired by the render thread, while the frame-loop thread
+  builds the next; the previous frame completes just before this one is
+  submitted. Every steady-state frame is decoupled.
+- coupled: the frame-loop thread completes the previous frame and acquires
+  this one itself, as inline rendering does. Frames that resize, change the
+  Scene output extent, or have pending asset finalization or active texture
+  streams are coupled, because finalization publishes into an acquired frame
+  (ADR-045) and the build needs the new extent.
+
+Work that needs the acquisition runs in the `prepare` hook: the renderer's
+publication generation and pending state, probe SH slots, the shadow fit,
+cascade and local-shadow resolution, and picking scale. The render thread
+therefore owns the shadow system; the frame-loop thread chooses its
+configuration and fit invalidation (`shadow_config`,
+`vkr_standard_scene_runtime_invalidate_shadow_fit`) and captures the camera,
+light, caster bounds and SDSM sample into the frame. `finish` commits or
+discards shadow reuse. The runtime also:
+
 - alternates two frame-scratch arenas; a submitted frame's scratch scope
   closes at its completion;
-- copies skinning bind vertices, influences and palettes, world-text geometry
-  and the capture request into frame scratch, because the update may change
-  or free them;
-- settles only the capture or picking request the completed frame carried,
-  because the next update may already have issued a new one;
+- copies skinning bind vertices, influences and palettes, world-text geometry,
+  lights, the UI draw list and the capture request into frame scratch,
+  because the next frame's update and build change or free them;
+- reads target extents, render extents, display exposure and the SDSM sample
+  from values cached when the last frame completed, not from the renderer;
+- carries a capture request only once, and settles only the capture or
+  picking request the completed frame carried;
 - closes a metrics frame at completion and opens the next, so a published
   frame's renderer results, pass table and `cpu_frame_index` describe one
-  rendered frame. `cpu.render_submit` is then the worker's render time and
-  `cpu.render_wait` the frame-loop thread's wait at completion.
+  rendered frame. `cpu.render_submit` is then the worker's render time,
+  `cpu.render_prepare` its acquisition of a decoupled frame,
+  `cpu.render_wait` the frame-loop thread's wait at completion and
+  `frame.decoupled` whether the render thread acquired the frame.
 
 ## Consequences
 
@@ -83,14 +113,24 @@ GPU-bound: inline and threaded `frame.wall` medians were 45.8 and 45.5 ms
 showed the render work leaving the main thread (14 % of samples inline) while
 update ran beside it and the main thread waited 11 % at completion.
 
-Results of frame N apply after update N+1 when threaded: editor viewport
-output size, Scene error recovery and picking readback transitions are one
-update later. Shadow commits still precede the next shadow decision.
+Every measured frame of the threaded Bistro orbit and of ThreadSanitizer
+runs was decoupled (`frame.decoupled` 1). In the app's `--gameplay` Bistro
+run the render thread spent 83 % of its samples acquiring, that is, waiting
+for a frame slot, and the main thread waited at completion instead of in
+acquisition. The frame rate stays GPU-bound.
+
+Results of frame N apply after frame N+1 is built when threaded: editor
+viewport output size, Scene error recovery and picking readback transitions
+are one frame later. Shadow commits still precede the next shadow decision.
+Loading and texture streaming keep frames coupled until publication no
+longer needs the frame-loop thread; see the proposal.
 
 Update code that calls a renderer function or publishes waits for the frame
-and loses the overlap, without losing correctness. The harness child queries
-the renderer in every update, so a threaded harness profile counts the render
-time under `cpu.update`; harness reports cannot yet show the overlap.
+and loses the overlap, without losing correctness. The harness child pumps
+resources with the renderer's submit serials in every update, which must wait
+for the in-flight frame, so a threaded harness profile counts the render
+thread's frame, including its slot wait, under `cpu.update`; harness reports
+cannot show the overlap.
 
 The ThreadSanitizer runs exposed a pre-existing race: the resource system
 freed request keys and unload names from its shared allocator after releasing
@@ -105,12 +145,14 @@ handoff window, with a renderer status snapshot, needs every caller audited
 and kept correct by convention. Waiting inside the renderer keeps existing
 callers correct and lets overlap grow as update-time renderer calls move.
 
-Acquiring on the render thread would move `CAMetalLayer` work off the main
-thread and add no overlap, because extraction needs the acquired frame.
+Keeping acquisition on the frame-loop thread leaves its frame-slot wait on
+the main thread. Moving the shadow decision into the `prepare` hook instead
+lets every steady-state frame acquire on the render thread.
 
-A fully decoupled game thread that never waits for acquisition would move
-shadow reuse, asset pumping and texture streaming to the render thread and
-replace ADR-045. It is not justified while measured frames are GPU-bound.
+Coupling only the frames that finalize or stream assets keeps ADR-045's
+finalization rule; an ordered asynchronous publication queue that removes
+those couplings is proposed. A render-side asset lock was rejected: it would
+cover every asset-system access on the frame-loop thread.
 
 ## Revisit when
 
@@ -124,5 +166,7 @@ run is available.
 - [public API](../../renderer/src/vkr_renderer.h)
 - [result and worker state](../../renderer/src/vkr_renderer_internal.h)
 - [frame storage, completion and copies](../../runtime/src/application/vkr_standard_scene_runtime.c)
+- [window pixel size for the render surface](../../runtime/src/core/vkr_window.c)
+- [Metal drawable acquisition](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc)
 - [thread stack size](../../lib/src/core/vkr_threads.h)
 - [resource-system allocator frees](../../runtime/src/renderer/systems/vkr_resource_system.c)

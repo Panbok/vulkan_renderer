@@ -72,8 +72,29 @@ VkrWindowContentScale vkr_window_get_content_scale(const VkrWindow *window) {
 vkr_internal VkrSurfaceSize
 vkr_window_render_surface_pixel_size(void *context) {
   VkrWindow *window = context;
+  /* The render thread may ask; only the window's thread may query the
+     platform, so it publishes the size. Before the first publication the
+     caller is the window's thread creating the renderer. */
+  const uint64_t packed = vkr_atomic_uint64_load(&window->pixel_size_state,
+                                                 VKR_MEMORY_ORDER_ACQUIRE);
+  if (packed == 0u) {
+    const VkrWindowPixelSize size = vkr_window_get_pixel_size(window);
+    return (VkrSurfaceSize){.width = size.width, .height = size.height};
+  }
+  return (VkrSurfaceSize){
+      .width = (uint32_t)(packed >> 32u),
+      .height = (uint32_t)packed,
+  };
+}
+
+void vkr_window_publish_pixel_size(VkrWindow *window) {
+  if (!window || !window->platform_state) {
+    return;
+  }
   const VkrWindowPixelSize size = vkr_window_get_pixel_size(window);
-  return (VkrSurfaceSize){.width = size.width, .height = size.height};
+  vkr_atomic_uint64_store(&window->pixel_size_state,
+                          ((uint64_t)size.width << 32u) | size.height,
+                          VKR_MEMORY_ORDER_RELEASE);
 }
 
 vkr_internal VkrDisplayOutputSnapshot

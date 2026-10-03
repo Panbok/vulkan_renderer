@@ -1657,6 +1657,28 @@ vkr_resource_system_get_state(const VkrResourceHandleInfo *info,
   return state;
 }
 
+bool8_t vkr_resource_system_has_pending_work(void) {
+  if (!vkr_resource_system) {
+    return false_v;
+  }
+  if (!vkr_mutex_lock(vkr_resource_system->mutex)) {
+    return true_v;
+  }
+  bool8_t pending = vkr_resource_system->completion_count > 0u;
+  for (uint32_t i = 0u; !pending && i < vkr_resource_system->request_capacity;
+       ++i) {
+    const VkrResourceAsyncRequest *request = &vkr_resource_system->requests[i];
+    pending =
+        request->in_use &&
+        (request->cancel_requested ||
+         request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
+         request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES ||
+         request->load_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU);
+  }
+  vkr_mutex_unlock(vkr_resource_system->mutex);
+  return pending;
+}
+
 bool8_t vkr_resource_system_is_ready(const VkrResourceHandleInfo *info) {
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   return vkr_resource_system_get_state(info, &err) ==

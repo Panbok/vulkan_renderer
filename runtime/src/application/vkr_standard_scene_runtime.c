@@ -50,25 +50,59 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
   /* The caller's capture request this frame carries. */
   const VkrCaptureBatchRequest *capture_request;
   VkrCaptureRequestId capture_request_id;
+  /* Picking source extent; the request is scaled once the frame is acquired. */
+  uint32_t picking_source_width;
+  uint32_t picking_source_height;
   VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX];
+  /* Source cubemap of each probe; its SH slot resolves after acquisition. */
+  VkrTextureHandle frame_ibl_probe_sources[VKR_FRAME_IBL_PROBE_MAX];
   VkrFrameLighting frame_lighting;
   VkrAnimationPreviewInput animation_preview;
   bool8_t has_animation_preview;
 } VkrStandardSceneRuntimeDrawContext;
 
+/* Shadow work a frame performs once acquired, from values the frame-loop
+   thread captured. Only the thread rendering a frame uses the shadow system,
+   because with a render thread the next frame is being built meanwhile. */
+typedef struct VkrStandardSceneRuntimeShadowInput {
+  VkrShadowConfig config;
+  bool8_t invalidate_fit;
+  /* False without an active camera or while the Scene is stopped. */
+  bool8_t update;
+  VkrCamera camera;
+  bool8_t light_enabled;
+  Vec3 light_direction;
+  float32_t sun_angular_diameter_degrees;
+  VkrShadowCasterDepthBounds caster_bounds;
+  VkrShadowDepthRangeSample depth_range;
+  uint64_t frame_index;
+  uint64_t scene_generation;
+  bool8_t directional_disabled;
+  bool8_t local_disabled;
+  bool8_t soft_disabled;
+  float64_t delta;
+  /* Time the frame-loop thread spent measuring caster bounds. */
+  uint64_t measure_ns;
+} VkrStandardSceneRuntimeShadowInput;
+
 /* Storage for one frame's packet, owned by the runtime. The renderer borrows
    it until the frame completes: before draw_frame returns when rendering
-   inline, after the next frame's update with a render thread. */
+   inline, after the next frame is built with a render thread. */
 struct VkrStandardSceneRuntimeFrame {
+  VkrStandardSceneRuntime *application;
   VkrFrame setup;
   VkrStandardSceneRuntimeDrawContext draw;
   VkrEditorOverlayDraw overlay_draws[VKR_EDITOR_OVERLAY_DRAW_MAX];
   /* The capture request as submitted; its owner may change it meanwhile. */
   VkrCaptureBatchRequest capture;
   VkrFrameInput packet;
+  VkrStandardSceneRuntimeShadowInput shadow;
+  /* Shadow fit and resolve time on the thread that rendered the frame. */
+  uint64_t shadow_ns;
   /* Frame scratch scope the packet borrows; closed at completion. */
   VkrAllocatorScope scratch_scope;
-  bool8_t submitted;
+  /* Built from cached target values; the render thread acquires it. */
+  bool8_t decoupled;
 };
 
 vkr_internal bool8_t vkr_standard_scene_runtime_register_duration_metric(
@@ -142,6 +176,16 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
       !vkr_standard_scene_runtime_register_duration_metric(
           application->metrics, "cpu.render_wait", VKR_METRIC_DOMAIN_FRAME,
           false_v, &ids->render_wait) ||
+      !vkr_metrics_register(application->metrics,
+                            &(VkrMetricDescription){
+                                .name = string8_lit("frame.decoupled"),
+                                .domain = VKR_METRIC_DOMAIN_FRAME,
+                                .kind = VKR_METRIC_KIND_COUNTER,
+                                .unit = VKR_METRIC_UNIT_COUNT,
+                                .scalar = VKR_METRIC_SCALAR_U64,
+                                .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+                            },
+                            &ids->decoupled) ||
       !vkr_renderer_metrics_register(&application->renderer_metrics,
                                      application->metrics)) {
     return false_v;
@@ -208,13 +252,22 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
     }
   }
   application->frame_allocator = &application->frame_allocators[0];
-  application->frame = vkr_allocator_alloc(&application->app_allocator,
-                                           sizeof(*application->frame),
-                                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-  if (!application->frame) {
-    return false_v;
+  for (uint32_t i = 0u; i < ArrayCount(application->frames); ++i) {
+    application->frames[i] = vkr_allocator_alloc(
+        &application->app_allocator, sizeof(*application->frames[i]),
+        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    if (!application->frames[i]) {
+      return false_v;
+    }
+    MemZero(application->frames[i], sizeof(*application->frames[i]));
+    application->frames[i]->application = application;
   }
-  MemZero(application->frame, sizeof(*application->frame));
+  application->frame = application->frames[0];
+  application->frame_in_flight = NULL;
+  application->target_window_width = application->renderer.last_window_width;
+  application->target_window_height = application->renderer.last_window_height;
+  application->target_generation_seen = application->renderer.target_generation;
+  application->target_known = false_v;
   VkrDeviceInformation device = {0};
   vkr_renderer_get_device_information(&application->renderer, &device,
                                       application->frame_arenas[0]);
@@ -247,6 +300,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
   VkrShadowConfig shadow_config = VKR_SHADOW_CONFIG_DEFAULT;
   if (!vkr_shadow_system_init(&application->shadow_system, &shadow_config))
     return false_v;
+  application->shadow_config = application->shadow_system.config;
   if (vkr_subsystem_plan_includes(plan, VKR_RENDERER_SUBSYSTEM_UI) &&
       !vkr_ui_system_init(&application->ui_system,
                           &application->assets.font_system))
@@ -326,7 +380,10 @@ vkr_internal void vkr_standard_scene_runtime_rendering_shutdown(
     application->frame_arenas[i] = NULL;
   }
   application->frame_allocator = NULL;
+  application->frames[0] = NULL;
+  application->frames[1] = NULL;
   application->frame = NULL;
+  application->frame_in_flight = NULL;
 }
 
 bool8_t
@@ -579,6 +636,11 @@ bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
          !vkr_ui_rect_has_area(content);
 }
 
+void vkr_standard_scene_runtime_invalidate_shadow_fit(
+    VkrStandardSceneRuntime *runtime) {
+  runtime->shadow_fit_invalidate_requested = true_v;
+}
+
 bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
     VkrStandardSceneRuntime *application, uint32_t window_width,
     uint32_t window_height, VkrViewportMapping *out_mapping) {
@@ -586,16 +648,18 @@ bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
   if (!out_mapping || !vkr_standard_scene_runtime_editor_viewport_panel_rect(
                           application, window_width, window_height, &panel))
     return false_v;
+  /* The render extent is the one the last acquisition chose; reading the
+     renderer's would race the render thread's next acquisition. */
   const bool8_t renderer_scaled_scene =
-      application->renderer.scene_output_extent_overridden ||
-      application->renderer.render_scale != 1.0f ||
       application->renderer.upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
-      application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31;
-  if (renderer_scaled_scene && application->renderer.render_width > 0u &&
-      application->renderer.render_height > 0u) {
+      application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
+      application->renderer.scene_output_extent_overridden ||
+      application->renderer.render_scale != 1.0f;
+  if (renderer_scaled_scene && application->target_render_width > 0u &&
+      application->target_render_height > 0u) {
     return vkr_editor_viewport_mapping_from_panel_rect_and_target(
         panel, application->editor_viewport.fit_mode,
-        application->renderer.render_width, application->renderer.render_height,
+        application->target_render_width, application->target_render_height,
         out_mapping);
   }
   return vkr_editor_viewport_mapping_from_panel_rect(
@@ -605,10 +669,24 @@ bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
       out_mapping);
 }
 
-vkr_internal VkrRendererError vkr_standard_scene_runtime_configure_scene_output(
-    VkrStandardSceneRuntime *application) {
-  if (!application)
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+typedef enum VkrStandardSceneRuntimeSceneOutputMode {
+  VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_KEEP = 0,
+  VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_RESTORE,
+  VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_SET,
+} VkrStandardSceneRuntimeSceneOutputMode;
+
+/* The Scene output extent the next frame needs. */
+typedef struct VkrStandardSceneRuntimeSceneOutput {
+  VkrStandardSceneRuntimeSceneOutputMode mode;
+  uint32_t width;
+  uint32_t height;
+  bool8_t memory_relief;
+} VkrStandardSceneRuntimeSceneOutput;
+
+vkr_internal VkrRendererError vkr_standard_scene_runtime_scene_output_request(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeSceneOutput *out_request) {
+  *out_request = (VkrStandardSceneRuntimeSceneOutput){0};
   if (application->renderer.backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31)
     return VKR_RENDERER_ERROR_NONE;
@@ -620,13 +698,18 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_configure_scene_output(
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
   /* Unit-scale editor scenes already use the packet's mapped viewport. */
-  if (paneled && application->renderer.render_scale == 1.0f &&
-      application->renderer.upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
-      application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31 &&
-      application->scene_output_scale == 1.0f)
-    return vkr_renderer_restore_scene_output_extent(&application->renderer);
-  if (!paneled && application->scene_output_scale == 1.0f)
-    return vkr_renderer_restore_scene_output_extent(&application->renderer);
+  /* Only MetalFX's dynamic resolution changes the scale during acquisition,
+     so the scale is read only when that cannot happen. */
+  if ((paneled &&
+       application->renderer.upscale_mode !=
+           VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
+       application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31 &&
+       application->renderer.render_scale == 1.0f &&
+       application->scene_output_scale == 1.0f) ||
+      (!paneled && application->scene_output_scale == 1.0f)) {
+    out_request->mode = VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_RESTORE;
+    return VKR_RENDERER_ERROR_NONE;
+  }
 
   /* Temporal scalers recreate completion-protected output on release. Keep the
      previous Scene output while a dock gesture is live, then resize once.
@@ -643,21 +726,67 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_configure_scene_output(
   const VkrWindowPixelSize pixels =
       vkr_standard_scene_runtime_is_windowed(application)
           ? vkr_window_get_pixel_size(&application->host.window)
-          : (VkrWindowPixelSize){application->renderer.last_window_width,
-                                 application->renderer.last_window_height};
+          : (VkrWindowPixelSize){application->target_window_width,
+                                 application->target_window_height};
   Vec4 panel = {0, 0, (float32_t)pixels.width, (float32_t)pixels.height};
   if (paneled && !vkr_standard_scene_runtime_editor_viewport_panel_rect(
                      application, pixels.width, pixels.height, &panel))
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   const float32_t scale = application->scene_output_scale;
-  const uint32_t width =
-      vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.z * scale));
-  const uint32_t height =
-      vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.w * scale));
-  return vkr_renderer_set_scene_output_extent(
-      &application->renderer, width, height,
-      application->scene_memory_relief_generation !=
-          application->assets.material_system.texture_stream_relief_generation);
+  *out_request = (VkrStandardSceneRuntimeSceneOutput){
+      .mode = VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_SET,
+      .width = vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.z * scale)),
+      .height = vkr_max_u32(1u, (uint32_t)vkr_round_f32(panel.w * scale)),
+      .memory_relief =
+          application->scene_memory_relief_generation !=
+          application->assets.material_system.texture_stream_relief_generation,
+  };
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+/* True when applying `request` would change nothing. The override flag and an
+   overridden extent change only through calls on this thread, so reading them
+   does not race the render thread's acquisition. */
+vkr_internal bool8_t vkr_standard_scene_runtime_scene_output_settled(
+    const VkrStandardSceneRuntime *application,
+    const VkrStandardSceneRuntimeSceneOutput *request) {
+  const VkrRenderer *renderer = &application->renderer;
+  switch (request->mode) {
+  case VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_RESTORE:
+    return !renderer->scene_output_extent_overridden;
+  case VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_SET:
+    return renderer->scene_output_extent_overridden &&
+           renderer->scene_output_width == request->width &&
+           renderer->scene_output_height == request->height &&
+           !request->memory_relief;
+  case VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_KEEP:
+  default:
+    return true_v;
+  }
+}
+
+vkr_internal VkrRendererError vkr_standard_scene_runtime_configure_scene_output(
+    VkrStandardSceneRuntime *application) {
+  if (!application) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+  VkrStandardSceneRuntimeSceneOutput request = {0};
+  const VkrRendererError error =
+      vkr_standard_scene_runtime_scene_output_request(application, &request);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+  switch (request.mode) {
+  case VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_RESTORE:
+    return vkr_renderer_restore_scene_output_extent(&application->renderer);
+  case VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_SET:
+    return vkr_renderer_set_scene_output_extent(&application->renderer,
+                                                request.width, request.height,
+                                                request.memory_relief);
+  case VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_KEEP:
+  default:
+    return VKR_RENDERER_ERROR_NONE;
+  }
 }
 
 /* A failed packet has already cancelled its speculative uses. Retry once on
@@ -686,13 +815,15 @@ vkr_internal bool8_t vkr_standard_scene_runtime_reduce_scene_resolution(
   return true_v;
 }
 
-/* Release the acquired target and discard unsubmitted shadow reuse state. */
+/* Releases a frame acquired on this thread before its submission. Shadow
+   reuse state is untouched: it resolves only once the frame is submitted. */
 vkr_internal void
 vkr_standard_scene_runtime_cancel_frame(VkrStandardSceneRuntime *application,
                                         VkrFrame *frame,
                                         VkrRendererError error) {
-  const VkrRendererError cancel_error = vkr_renderer_cancel_frame(frame);
-  vkr_shadow_system_discard_frame(&application->shadow_system);
+  const VkrRendererError cancel_error = frame->renderer
+                                            ? vkr_renderer_cancel_frame(frame)
+                                            : VKR_RENDERER_ERROR_NONE;
   application->last_renderer_error =
       cancel_error != VKR_RENDERER_ERROR_NONE ? cancel_error : error;
   String8 message =
@@ -702,38 +833,65 @@ vkr_standard_scene_runtime_cancel_frame(VkrStandardSceneRuntime *application,
     vkr_application_host_close(&application->host);
 }
 
-/* Applies a pending resize, configures the Scene output and acquires the
-   frame. Returns false_v when nothing was acquired; failures other than a
-   skipped frame are reported and handled here. */
+/* Acquisition parameters from the frame-loop thread's shadow configuration. */
+vkr_internal VkrFrameConfig
+vkr_standard_scene_runtime_frame_config(const VkrStandardSceneRuntime *app) {
+  const bool8_t shadows = app->shadow_system.initialized;
+  const VkrShadowConfig *config = &app->shadow_config;
+  return (VkrFrameConfig){
+      .shadow_map_size =
+          shadows ? vkr_shadow_config_get_max_map_size(config) : 2048u,
+      .shadow_cascade_count = shadows ? config->cascade_count : 1u,
+      .local_shadow_map_size = shadows ? config->local_shadow_map_size
+                                       : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
+      .local_shadow_face_budget =
+          shadows ? Min(config->local_shadow_face_budget,
+                        VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX)
+                  : VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+  };
+}
+
+/* Reports a failed acquisition. A minimized or resizing window skips frames
+   as a matter of course on every tick, so a skipped frame does not log. */
+vkr_internal void
+vkr_standard_scene_runtime_handle_acquire_error(VkrStandardSceneRuntime *app,
+                                                VkrRendererError error) {
+  app->last_renderer_error = error;
+  if (error == VKR_RENDERER_ERROR_NONE ||
+      error == VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+    return;
+  }
+  String8 message = vkr_renderer_get_error_string(error);
+  log_error("Failed to prepare renderer frame: %s", string8_cstr(&message));
+  const bool8_t reduced =
+      vkr_standard_scene_runtime_reduce_scene_resolution(app, error);
+  if (!reduced && app->editor_viewport.enabled &&
+      !vkr_standard_scene_runtime_editor_scene_rendering_stopped(app) &&
+      error != VKR_RENDERER_ERROR_DEVICE_ERROR &&
+      error != VKR_RENDERER_ERROR_CAPTURE_BUSY &&
+      error != VKR_RENDERER_ERROR_RESOURCE_BUSY) {
+    app->editor_viewport.scene_error = error;
+    app->editor_viewport.scene_rendering_stopped = true_v;
+    vkr_picking_cancel(&app->picking);
+    vkr_window_set_mouse_capture(&app->host.window, false_v);
+  }
+  if (!app->editor_viewport.enabled && !reduced &&
+      error == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
+    log_error("Scene memory recovery exhausted; stopping application");
+    vkr_application_host_close(&app->host);
+  }
+  if (error == VKR_RENDERER_ERROR_DEVICE_ERROR) {
+    log_fatal("Renderer device is unusable; stopping");
+    vkr_application_host_close(&app->host);
+  }
+}
+
+/* Configures the Scene output and acquires the frame on this thread. Returns
+   false_v when nothing was acquired; the failure is reported here. */
 vkr_internal bool8_t vkr_standard_scene_runtime_begin_scene_frame(
     VkrStandardSceneRuntime *application, VkrFrame *setup) {
-  const uint64_t resize = vkr_atomic_uint64_exchange(
-      &application->pending_resize_mailbox, 0u, VKR_MEMORY_ORDER_ACQ_REL);
-  if (resize)
-    vkr_renderer_resize(&application->renderer, (uint32_t)(resize >> 32u),
-                        (uint32_t)resize);
-  const VkrFrameConfig frame_config = {
-      .shadow_map_size = application->shadow_system.initialized
-                             ? vkr_shadow_config_get_max_map_size(
-                                   &application->shadow_system.config)
-                             : 2048u,
-      .shadow_cascade_count =
-          application->shadow_system.initialized
-              ? application->shadow_system.config.cascade_count
-              : 1u,
-      .local_shadow_map_size =
-          application->shadow_system.initialized
-              ? application->shadow_system.config.local_shadow_map_size
-              : VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,
-      .local_shadow_face_budget =
-          application->shadow_system.initialized
-              ? Min(application->shadow_system.config.local_shadow_face_budget,
-                    VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX)
-              : VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
-  };
-  application->assets.material_system.texture_stream_memory_recovery_enabled =
-      application->editor_viewport.enabled ||
-      application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL;
+  const VkrFrameConfig frame_config =
+      vkr_standard_scene_runtime_frame_config(application);
   VkrRendererError prepare_err = VKR_RENDERER_ERROR_NONE;
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.render_prepare) {
@@ -743,40 +901,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_scene_frame(
       prepare_err = vkr_renderer_begin_frame(&application->renderer,
                                              &frame_config, setup);
   }
-  application->last_renderer_error = prepare_err;
-  if (prepare_err != VKR_RENDERER_ERROR_NONE) {
-    // A minimized or resizing window skips frames as a matter of course; this
-    // path runs every tick while minimized, so it must not log.
-    if (prepare_err != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
-      String8 err = vkr_renderer_get_error_string(prepare_err);
-      log_error("Failed to prepare renderer frame: %s", string8_cstr(&err));
-      const bool8_t reduced =
-          vkr_standard_scene_runtime_reduce_scene_resolution(application,
-                                                             prepare_err);
-      if (!reduced && application->editor_viewport.enabled &&
-          !vkr_standard_scene_runtime_editor_scene_rendering_stopped(
-              application) &&
-          prepare_err != VKR_RENDERER_ERROR_DEVICE_ERROR &&
-          prepare_err != VKR_RENDERER_ERROR_CAPTURE_BUSY &&
-          prepare_err != VKR_RENDERER_ERROR_RESOURCE_BUSY) {
-        application->editor_viewport.scene_error = prepare_err;
-        application->editor_viewport.scene_rendering_stopped = true_v;
-        vkr_picking_cancel(&application->picking);
-        vkr_window_set_mouse_capture(&application->host.window, false_v);
-      }
-      if (!application->editor_viewport.enabled && !reduced &&
-          prepare_err == VKR_RENDERER_ERROR_OUT_OF_MEMORY) {
-        log_error("Scene memory recovery exhausted; stopping application");
-        vkr_application_host_close(&application->host);
-      }
-      if (prepare_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
-        log_fatal("Renderer device is unusable; stopping");
-        vkr_application_host_close(&application->host);
-      }
-    }
-    return false_v;
-  }
-  return true_v;
+  vkr_standard_scene_runtime_handle_acquire_error(application, prepare_err);
+  return prepare_err == VKR_RENDERER_ERROR_NONE;
 }
 
 /* Publishes completed asset work and advances texture streaming. Returns
@@ -815,19 +941,15 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
   VkrVisibilityStats visibility_stats = {0};
-  const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
   VkrRendererError world_error = VKR_RENDERER_ERROR_NONE;
+  /* The renderer's publication state joins the payload once the frame is
+     acquired (vkr_standard_scene_runtime_prepare_acquired). */
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.world_payload_build) {
     if (!draw->scene_stopped)
       world_error = vkr_scene_build_world_draws(
           &application->assets.mesh_manager,
-          &application->assets.material_system,
-          !publisher->publications_idle ||
-              !publisher->publications_idle(publisher->state),
-          publisher->publication_generation
-              ? publisher->publication_generation(publisher->state)
-              : 1u,
+          &application->assets.material_system, false_v, 1u,
           application->globals.view, application->globals.projection,
           draw->scratch, &draw->world_payload, &visibility_stats);
   }
@@ -843,10 +965,30 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
 /* Resolves directional cascades and local shadow views, then lowers the
    cascades and the shadow config into the shadow pass payload. */
 vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
-    VkrStandardSceneRuntime *application,
-    VkrStandardSceneRuntimeDrawContext *draw, float64_t delta) {
+    VkrStandardSceneRuntime *application, VkrStandardSceneRuntimeFrame *frame) {
+  VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
+  const VkrStandardSceneRuntimeShadowInput *input = &frame->shadow;
   const VkrFrame *setup = draw->setup;
-  if (!application->disable_directional_shadows &&
+  if (application->shadow_system.initialized) {
+    application->shadow_system.config = input->config;
+    if (input->invalidate_fit) {
+      vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+    }
+  }
+  if (input->update) {
+    const float64_t update_start = vkr_platform_get_absolute_time();
+    vkr_shadow_system_set_depth_range_sample(
+        &application->shadow_system,
+        input->depth_range.submit_value > 0u ? &input->depth_range : NULL,
+        input->frame_index, input->scene_generation);
+    vkr_shadow_system_update(&application->shadow_system, &input->camera,
+                             input->light_enabled, input->light_direction,
+                             &input->caster_bounds);
+    frame->shadow_ns =
+        (uint64_t)((vkr_platform_get_absolute_time() - update_start) *
+                   1000000000.0);
+  }
+  if (!input->directional_disabled &&
       draw->world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
     vkr_shadow_system_resolve_frame(
@@ -860,14 +1002,14 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     vkr_shadow_system_discard_frame(&application->shadow_system);
   }
 
-  if (!draw->scene_stopped && !application->disable_local_shadows &&
+  if (!draw->scene_stopped && !input->local_disabled &&
       draw->world_payload.gpu_shadow_candidate_count > 0u &&
       application->shadow_system.initialized) {
     const VkrLocalShadowCamera camera = {
-        .view = application->globals.view,
-        .position = application->globals.view_position,
-        .delta_seconds = (float32_t)delta,
-        .frame_index = application->renderer.frame_number,
+        .view = frame->packet.globals.view,
+        .position = frame->packet.globals.view_position,
+        .delta_seconds = (float32_t)input->delta,
+        .frame_index = setup->number,
     };
     application->shadow_system.light_contribution_ranking_disabled =
         application->disable_local_shadow_feedback;
@@ -879,8 +1021,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         &application->renderer.timing_result.local_light_contribution);
     vkr_shadow_system_resolve_local_shadows(
         &application->shadow_system, setup->retained_local_shadow,
-        &draw->world_payload, application->lighting_system.point_lights,
-        application->lighting_system.point_light_count, &camera,
+        &draw->world_payload, draw->frame_lighting.point_lights,
+        draw->frame_lighting.point_light_count, &camera,
         &draw->local_shadow_payload);
   }
 
@@ -891,12 +1033,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     const VkrShadowConfig *shadow_config = &application->shadow_system.config;
     const float32_t inverse_map_size =
         1.0f / (float32_t)shadow_config->shadow_map_size;
-    const float32_t sun_tan_half_angle =
-        tanf((application->disable_soft_shadows
-                  ? 0.0f
-                  : application->lighting_system.directional
-                        .sun_angular_diameter_degrees) *
-             0.008726646259971648f);
+    const float32_t sun_tan_half_angle = tanf(
+        (input->soft_disabled ? 0.0f : input->sun_angular_diameter_degrees) *
+        0.008726646259971648f);
     shadow_payload->cascade_count = shadow_cascade_count;
     shadow_payload->sdsm_enabled = shadow_config->sdsm_enabled;
     shadow_payload->cascade_render_mask = shadow_frame->cascade_render_mask;
@@ -942,9 +1081,25 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
   }
 }
 
+/* The capture request this frame carries: the caller's, unless the frame still
+   rendering already carries it. */
+vkr_internal const VkrCaptureBatchRequest *
+vkr_standard_scene_runtime_frame_capture(
+    const VkrStandardSceneRuntime *application) {
+  const VkrCaptureBatchRequest *request = application->capture_request;
+  const VkrStandardSceneRuntimeFrame *in_flight = application->frame_in_flight;
+  if (request && in_flight && in_flight->draw.capture_request == request &&
+      in_flight->draw.capture_request_id == request->request_id) {
+    return NULL;
+  }
+  return request;
+}
+
 vkr_internal void vkr_standard_scene_runtime_prepare_picking_payload(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrCaptureBatchRequest *capture =
+      vkr_standard_scene_runtime_frame_capture(application);
   draw->has_picking =
       !draw->scene_stopped &&
       application->picking.state == VKR_PICKING_STATE_RENDER_PENDING;
@@ -952,12 +1107,10 @@ vkr_internal void vkr_standard_scene_runtime_prepare_picking_payload(
      frame, so the request itself schedules it. The catalog names the dependency
      as a subsystem; matching on the channel name instead would silently stop
      working the moment a channel is renamed. */
-  if (!draw->scene_stopped && !draw->has_picking &&
-      application->capture_request) {
-    for (uint32_t i = 0; i < application->capture_request->item_count; ++i) {
+  if (!draw->scene_stopped && !draw->has_picking && capture) {
+    for (uint32_t i = 0; i < capture->item_count; ++i) {
       const VkrCaptureChannelDescription *channel =
-          vkr_renderer_capture_channel_get(
-              application->capture_request->items[i].channel);
+          vkr_renderer_capture_channel_get(capture->items[i].channel);
       if (channel && channel->required_feature == VKR_CAPTURE_FEATURE_PICKING) {
         draw->has_picking = true_v;
         break;
@@ -1025,25 +1178,33 @@ vkr_internal void vkr_standard_scene_runtime_prepare_editor_viewport(
   }
 }
 
-/* Maps the requested picking pixel into a scaled Scene render extent. */
-vkr_internal void vkr_standard_scene_runtime_scale_picking_payload(
+/* Records the extent the requested picking pixel refers to. */
+vkr_internal void vkr_standard_scene_runtime_prepare_picking_source(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
   const VkrFrame *setup = draw->setup;
+  draw->picking_source_width =
+      draw->editor_enabled ? application->picking.width : setup->window_width;
+  draw->picking_source_height =
+      draw->editor_enabled ? application->picking.height : setup->window_height;
+}
+
+/* Maps the requested picking pixel into the acquired frame's scaled Scene
+   render extent. Runs on the thread rendering the frame, where the scale the
+   acquisition chose is current. */
+vkr_internal void vkr_standard_scene_runtime_scale_picking_payload(
+    const VkrRenderer *renderer, VkrStandardSceneRuntimeDrawContext *draw) {
+  const VkrFrame *setup = draw->setup;
   if (draw->has_picking &&
-      (application->renderer.scene_output_extent_overridden ||
-       application->renderer.render_scale != 1.0f ||
-       application->renderer.upscale_mode ==
-           VKR_UPSCALE_MODE_METALFX_TEMPORAL)) {
-    const uint32_t source_width =
-        draw->editor_enabled ? application->picking.width : setup->window_width;
-    const uint32_t source_height = draw->editor_enabled
-                                       ? application->picking.height
-                                       : setup->window_height;
+      (renderer->scene_output_extent_overridden ||
+       renderer->render_scale != 1.0f ||
+       renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL)) {
     draw->picking_payload.x = vkr_standard_scene_runtime_picking_pixel(
-        draw->picking_payload.x, source_width, setup->render_width);
+        draw->picking_payload.x, draw->picking_source_width,
+        setup->render_width);
     draw->picking_payload.y = vkr_standard_scene_runtime_picking_pixel(
-        draw->picking_payload.y, source_height, setup->render_height);
+        draw->picking_payload.y, draw->picking_source_height,
+        setup->render_height);
   }
 }
 
@@ -1283,6 +1444,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
   const bool8_t submission_gpu_timing =
       application->metrics->config.submission_gpu_timings;
   const bool8_t gpu_timing = pass_gpu_timing || submission_gpu_timing;
+  const VkrCaptureBatchRequest *capture =
+      vkr_standard_scene_runtime_frame_capture(application);
   draw->debug_payload = (VkrGpuDebugPayload){
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = pass_gpu_timing,
@@ -1292,13 +1455,11 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
           application->transmission_depth_diagnostic_enabled,
       .shadow_debug_mode =
           draw->scene_stopped ? 0u : application->shadow_debug_mode,
-      .capture = application->capture_request,
+      .capture = capture,
   };
-  draw->capture_request = application->capture_request;
-  draw->capture_request_id = application->capture_request
-                                 ? application->capture_request->request_id
-                                 : 0u;
-  draw->debug_ptr = (gpu_timing || application->capture_request ||
+  draw->capture_request = capture;
+  draw->capture_request_id = capture ? capture->request_id : 0u;
+  draw->debug_ptr = (gpu_timing || capture ||
                      application->transmission_depth_diagnostic_enabled ||
                      application->shadow_debug_mode != 0u)
                         ? &draw->debug_payload
@@ -1329,9 +1490,11 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           probe->prefilter_cubemap.generation == VKR_INVALID_ID) {
         continue;
       }
+      /* The SH slot is the renderer's; it resolves once the frame is
+         acquired. */
+      draw->frame_ibl_probe_sources[frame_ibl_probe_count] =
+          probe->source_cubemap;
       frame_ibl_probes[frame_ibl_probe_count++] = (VkrFrameIblProbe){
-          .sh_slot = vkr_render_assets_ibl_sh_slot(&application->assets,
-                                                   probe->source_cubemap),
           .prefilter = probe->prefilter_cubemap,
           .center = probe->center,
           .extents = probe->extents,
@@ -1416,7 +1579,7 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
       .version = VKR_FRAME_INPUT_VERSION,
       .frame =
           {
-              .frame_index = (uint32_t)application->renderer.frame_number,
+              .frame_index = (uint32_t)setup->number,
               .delta_time = delta,
               .window_width = setup->window_width,
               .window_height = setup->window_height,
@@ -1528,11 +1691,6 @@ vkr_internal void vkr_standard_scene_runtime_finish_submit(
           scaled_scene ? application->renderer.scene_output_height
                        : draw->viewport_height;
     }
-    vkr_shadow_system_commit_frame(
-        &application->shadow_system,
-        vkr_renderer_get_submit_serial(&application->renderer));
-  } else {
-    vkr_shadow_system_discard_frame(&application->shadow_system);
   }
   for (uint32_t cascade = 0u; cascade < shadow_frame->cascade_count;
        ++cascade) {
@@ -1641,10 +1799,10 @@ vkr_standard_scene_runtime_scratch_copy(VkrAllocator *scratch,
   return copy;
 }
 
-/* With a render thread the renderer reads the packet while the next frame
-   updates. Copies what that update may change or free: animation palettes
-   and bind poses, world text geometry and the capture request. Returns
-   false_v when scratch is exhausted. */
+/* With a render thread the renderer reads the packet while the next frame is
+   built. Copies what that work may change or free: animation palettes and
+   bind poses, world text geometry, the lights, the UI draw list and the
+   capture request. Returns false_v when scratch is exhausted. */
 vkr_internal bool8_t
 vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
   VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
@@ -1698,6 +1856,49 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
     world->text_draws = text_draws;
   }
 
+  VkrFrameLighting *lighting = &draw->frame_lighting;
+  if (lighting->point_light_count) {
+    lighting->point_lights = vkr_standard_scene_runtime_scratch_copy(
+        scratch, lighting->point_lights,
+        (uint64_t)lighting->point_light_count *
+            sizeof(*lighting->point_lights));
+    if (!lighting->point_lights) {
+      return false_v;
+    }
+  }
+  if (lighting->point_light_grid) {
+    lighting->point_light_grid = vkr_standard_scene_runtime_scratch_copy(
+        scratch, lighting->point_light_grid,
+        sizeof(*lighting->point_light_grid));
+    if (!lighting->point_light_grid) {
+      return false_v;
+    }
+  }
+  if (lighting->rectangle_light_count) {
+    lighting->rectangle_lights = vkr_standard_scene_runtime_scratch_copy(
+        scratch, lighting->rectangle_lights,
+        (uint64_t)lighting->rectangle_light_count *
+            sizeof(*lighting->rectangle_lights));
+    if (!lighting->rectangle_lights) {
+      return false_v;
+    }
+  }
+
+  /* The UI system rewrites its cached draw list when it builds the next. */
+  VkrPreparedUiDrawList *ui = &draw->ui_payload.draw_list;
+  if (ui->vertex_count) {
+    ui->vertices = vkr_standard_scene_runtime_scratch_copy(
+        scratch, ui->vertices,
+        (uint64_t)ui->vertex_count * sizeof(*ui->vertices));
+    ui->indices = vkr_standard_scene_runtime_scratch_copy(
+        scratch, ui->indices, (uint64_t)ui->index_count * sizeof(*ui->indices));
+    ui->batches = vkr_standard_scene_runtime_scratch_copy(
+        scratch, ui->batches, (uint64_t)ui->batch_count * sizeof(*ui->batches));
+    if (!ui->vertices || !ui->indices || !ui->batches) {
+      return false_v;
+    }
+  }
+
   const VkrCaptureBatchRequest *capture = draw->debug_payload.capture;
   if (capture) {
     frame->capture = *capture;
@@ -1712,42 +1913,147 @@ vkr_standard_scene_runtime_own_frame_data(VkrStandardSceneRuntimeFrame *frame) {
   return true_v;
 }
 
-/* Applies a completed frame's result: retained shadow and texture relief,
-   editor output, picking and capture state, renderer metrics and Scene error
-   recovery. Then releases the scratch the packet borrowed. */
+/* Completes the parts of a frame that need its acquisition: publication
+   state, probe SH slots, shadows and the picking pixel. Runs on the thread
+   rendering the frame, the only one that uses the shadow system while it
+   renders. */
+vkr_internal bool8_t vkr_standard_scene_runtime_prepare_acquired(
+    void *state, const VkrFrame *acquired, VkrFrameInput *packet) {
+  VkrStandardSceneRuntimeFrame *frame = state;
+  VkrStandardSceneRuntime *application = frame->application;
+  VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
+  if (frame->decoupled &&
+      acquired->target_generation != frame->setup.target_generation) {
+    frame->shadow.invalidate_fit = true_v;
+  }
+  frame->setup = *acquired;
+  frame->setup.renderer = NULL;
+  draw->setup = &frame->setup;
+  packet->frame.frame_index = (uint32_t)acquired->number;
+
+  const VkrAssetPublisher *publisher = &application->renderer.asset_publisher;
+  draw->world_payload.publication_pending =
+      draw->world_payload.publication_pending ||
+      !publisher->publications_idle ||
+      !publisher->publications_idle(publisher->state);
+  draw->world_payload.publication_generation =
+      publisher->publication_generation
+          ? publisher->publication_generation(publisher->state)
+          : 1u;
+  for (uint32_t i = 0u; i < draw->frame_lighting.ibl_probe_count; ++i) {
+    draw->frame_ibl_probes[i].sh_slot = vkr_render_assets_ibl_sh_slot(
+        &application->assets, draw->frame_ibl_probe_sources[i]);
+  }
+
+  vkr_standard_scene_runtime_prepare_shadow_payloads(application, frame);
+  packet->shadow = draw->has_shadow ? &draw->shadow_payload : NULL;
+  packet->local_shadow = draw->local_shadow_payload.view_count
+                             ? &draw->local_shadow_payload
+                             : NULL;
+  vkr_standard_scene_runtime_scale_picking_payload(&application->renderer,
+                                                   draw);
+  return true_v;
+}
+
+/* Keeps a submitted frame's shadow reuse state, or drops it for a frame that
+   did not submit. */
+vkr_internal void vkr_standard_scene_runtime_finish_acquired(
+    void *state, const VkrFrame *acquired, VkrRendererError error) {
+  (void)acquired;
+  VkrStandardSceneRuntimeFrame *frame = state;
+  VkrStandardSceneRuntime *application = frame->application;
+  if (error == VKR_RENDERER_ERROR_NONE) {
+    vkr_shadow_system_commit_frame(
+        &application->shadow_system,
+        vkr_renderer_get_submit_serial(&application->renderer));
+  } else {
+    vkr_shadow_system_discard_frame(&application->shadow_system);
+  }
+}
+
+/* Takes the renderer values the frame-loop thread reads while a frame may be
+   rendering. Call only when no frame is rendering. */
+vkr_internal void vkr_standard_scene_runtime_sync_renderer_state(
+    VkrStandardSceneRuntime *application) {
+  const VkrRenderer *renderer = &application->renderer;
+  application->target_window_width = renderer->last_window_width;
+  application->target_window_height = renderer->last_window_height;
+  application->target_render_width = renderer->render_width;
+  application->target_render_height = renderer->render_height;
+  application->target_generation_seen = renderer->target_generation;
+  application->frame_number_seen = renderer->frame_number;
+  application->display_exposure = renderer->display_exposure;
+  application->shadow_depth_range = renderer->timing_result.shadow_depth_range;
+}
+
+/* Applies a completed frame's result: retained texture relief, editor output,
+   picking and capture state, renderer metrics and Scene error recovery.
+   Then releases the scratch the packet borrowed. */
 vkr_internal void
 vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
                                         VkrStandardSceneRuntimeFrame *frame,
                                         VkrRendererFrameResult *result) {
   const VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
-  VkrRendererFrameMetrics *metrics = &result->metrics;
-  application->frame_metrics = *metrics;
-  vkr_standard_scene_runtime_finish_submit(application, draw, result->error,
-                                           metrics);
+  vkr_standard_scene_runtime_sync_renderer_state(application);
+
+  /* A decoupled frame the render thread could not acquire, or acquired for
+     another target extent, never ran: report it like an acquisition here and
+     acquire on this thread next. */
+  if (frame->decoupled && (!result->acquired ||
+                           result->error == VKR_RENDERER_ERROR_FRAME_SKIPPED)) {
+    application->target_known = false_v;
+    vkr_standard_scene_runtime_handle_acquire_error(application, result->error);
+  } else {
+    VkrRendererFrameMetrics *metrics = &result->metrics;
+    application->frame_metrics = *metrics;
+    if (frame->setup.target_generation != application->last_target_generation &&
+        result->acquired) {
+      application->last_target_generation = frame->setup.target_generation;
+      if (application->ui_system.initialized) {
+        vkr_ui_system_resize(&application->ui_system, frame->setup.window_width,
+                             frame->setup.window_height);
+      }
+    }
+    vkr_standard_scene_runtime_finish_submit(application, draw, result->error,
+                                             metrics);
 #if VKR_METRICS_ENABLED
-  /* Inline rendering timed the submit call itself; a render thread reports
-     the time it spent on the frame. */
-  if (vkr_renderer_render_thread_enabled(&application->renderer)) {
-    vkr_metrics_duration_add_ns(application->metrics,
-                                application->metric_ids.render_submit,
-                                result->render_ns);
-  }
-  VkrRendererMetricsCollectContext metrics_context = {
-      .application = vkr_application_metrics_snapshot(
-          &application->assets, &application->ui_system,
-          &application->lighting_system, &application->shadow_system),
-      .renderer = &application->renderer,
-      .frame_metrics = metrics,
-      .visibility = &application->visibility_stats,
-      .job_system = &application->job_system,
-      .cpu_frame_index = frame->packet.frame.frame_index,
-      .submit_serial = vkr_renderer_get_submit_serial(&application->renderer),
-  };
-  vkr_renderer_metrics_collect(&application->renderer_metrics,
-                               &metrics_context);
+    /* Inline rendering timed the submit call itself; a render thread reports
+       the time it spent on the frame, and on acquiring a decoupled one. */
+    if (vkr_renderer_render_thread_enabled(&application->renderer)) {
+      vkr_metrics_duration_add_ns(application->metrics,
+                                  application->metric_ids.render_submit,
+                                  result->render_ns);
+      if (frame->decoupled) {
+        vkr_metrics_duration_add_ns(application->metrics,
+                                    application->metric_ids.render_prepare,
+                                    result->acquire_ns);
+      }
+    }
+    if (frame->shadow.update) {
+      vkr_metrics_duration_add_ns(application->metrics,
+                                  application->metric_ids.shadow_update,
+                                  frame->shadow.measure_ns + frame->shadow_ns);
+    }
+    vkr_metrics_counter_add(application->metrics,
+                            application->metric_ids.decoupled,
+                            frame->decoupled ? 1u : 0u);
+    VkrRendererMetricsCollectContext metrics_context = {
+        .application = vkr_application_metrics_snapshot(
+            &application->assets, &application->ui_system,
+            &application->lighting_system, &application->shadow_system),
+        .renderer = &application->renderer,
+        .frame_metrics = metrics,
+        .visibility = &application->visibility_stats,
+        .job_system = &application->job_system,
+        .cpu_frame_index = frame->packet.frame.frame_index,
+        .submit_serial = vkr_renderer_get_submit_serial(&application->renderer),
+    };
+    vkr_renderer_metrics_collect(&application->renderer_metrics,
+                                 &metrics_context);
 #endif
-  vkr_standard_scene_runtime_handle_scene_error(
-      application, draw, result->error, &result->validation);
+    vkr_standard_scene_runtime_handle_scene_error(
+        application, draw, result->error, &result->validation);
+  }
   application->completed_frame_submit_serial =
       vkr_renderer_get_submit_serial(&application->renderer);
   if (vkr_allocator_scope_is_valid(&frame->scratch_scope)) {
@@ -1761,13 +2067,15 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
    still rendering. Does nothing when no frame awaits completion. */
 vkr_internal void vkr_standard_scene_runtime_complete_frame(
     VkrStandardSceneRuntime *application) {
-  VkrStandardSceneRuntimeFrame *frame = application->frame;
-  if (!frame || !frame->submitted) {
+  VkrStandardSceneRuntimeFrame *frame = application->frame_in_flight;
+  if (!frame) {
     return;
   }
-  frame->submitted = false_v;
+  application->frame_in_flight = NULL;
   VkrRendererFrameResult result = {0};
-  if (vkr_renderer_render_thread_enabled(&application->renderer)) {
+  const bool8_t render_thread =
+      vkr_renderer_render_thread_enabled(&application->renderer);
+  if (render_thread) {
     VKR_METRICS_SCOPE_NS(application->metrics,
                          application->metric_ids.render_wait) {
       vkr_renderer_complete_frame(&application->renderer, &result);
@@ -1777,14 +2085,33 @@ vkr_internal void vkr_standard_scene_runtime_complete_frame(
   }
   vkr_standard_scene_runtime_finish_frame(application, frame, &result);
   /* Inline frames close their metrics frame at the end of the loop
-     iteration. A render thread finishes a frame during the next iteration,
+     iteration. A render thread finishes a frame during a later iteration,
      whose remaining work belongs to the next frame. */
-  if (vkr_renderer_render_thread_enabled(&application->renderer)) {
+  if (render_thread) {
     vkr_metrics_end_frame(application->metrics);
     vkr_metrics_begin_frame(application->metrics,
                             application->renderer.frame_number + 1u,
                             application->completed_frame_submit_serial);
   }
+}
+
+/* True when the frame may be built without acquiring it here: the render
+   thread renders it while the next frame is built. Frames that resize,
+   change the Scene output, or finalize or stream assets (which publish into
+   an acquired frame) acquire on this thread. */
+vkr_internal bool8_t
+vkr_standard_scene_runtime_can_decouple(VkrStandardSceneRuntime *application) {
+  if (!vkr_renderer_render_thread_enabled(&application->renderer) ||
+      !application->target_known ||
+      application->assets.material_system.texture_stream_active_count > 0u ||
+      vkr_resource_system_has_pending_work()) {
+    return false_v;
+  }
+  VkrStandardSceneRuntimeSceneOutput scene_output = {0};
+  return vkr_standard_scene_runtime_scene_output_request(
+             application, &scene_output) == VKR_RENDERER_ERROR_NONE &&
+         vkr_standard_scene_runtime_scene_output_settled(application,
+                                                         &scene_output);
 }
 
 void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
@@ -1794,28 +2121,66 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
                         VKR_APPLICATION_HOST_FLAG_RUNNING) &&
          "VkrStandardSceneRuntime is not running");
 
+  const bool8_t render_thread =
+      vkr_renderer_render_thread_enabled(&application->renderer);
+  if (!application->frame_in_flight) {
+    vkr_standard_scene_runtime_sync_renderer_state(application);
+  }
+  const uint64_t resize = vkr_atomic_uint64_exchange(
+      &application->pending_resize_mailbox, 0u, VKR_MEMORY_ORDER_ACQ_REL);
+  if (resize) {
+    vkr_renderer_resize(&application->renderer, (uint32_t)(resize >> 32u),
+                        (uint32_t)resize);
+    application->target_known = false_v;
+  }
+  application->assets.material_system.texture_stream_memory_recovery_enabled =
+      application->editor_viewport.enabled ||
+      application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL;
+
   VkrStandardSceneRuntimeFrame *frame = application->frame;
-  vkr_standard_scene_runtime_complete_frame(application);
+  frame->decoupled = vkr_standard_scene_runtime_can_decouple(application);
+  frame->shadow_ns = 0u;
   VkrFrame *setup = &frame->setup;
   *setup = (VkrFrame){0};
-  if (!vkr_standard_scene_runtime_begin_scene_frame(application, setup)) {
-    return;
+  bool8_t target_changed = false_v;
+  if (!frame->decoupled) {
+    vkr_standard_scene_runtime_complete_frame(application);
+    if (!vkr_standard_scene_runtime_begin_scene_frame(application, setup)) {
+      return;
+    }
+    target_changed =
+        application->last_target_generation != setup->target_generation;
+    if (target_changed) {
+      application->last_target_generation = setup->target_generation;
+      if (application->ui_system.initialized) {
+        vkr_ui_system_resize(&application->ui_system, setup->window_width,
+                             setup->window_height);
+      }
+    }
+    application->target_known = true_v;
+    application->target_window_width = setup->window_width;
+    application->target_window_height = setup->window_height;
+    application->target_render_width = setup->render_width;
+    application->target_render_height = setup->render_height;
+    if (!vkr_standard_scene_runtime_pump_frame_assets(application, setup)) {
+      vkr_standard_scene_runtime_cancel_frame(
+          application, setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
+      return;
+    }
+  } else {
+    /* The render thread acquires this frame; build it for the target the
+       last frame used. */
+    setup->number = application->frame_number_seen + 1u;
+    setup->target_generation = application->last_target_generation;
+    setup->window_width = application->target_window_width;
+    setup->window_height = application->target_window_height;
+    setup->render_width = application->target_render_width;
+    setup->render_height = application->target_render_height;
   }
-
-  const bool8_t target_changed =
-      application->last_target_generation != setup->target_generation;
-  if (target_changed) {
-    application->last_target_generation = setup->target_generation;
-    if (application->ui_system.initialized)
-      vkr_ui_system_resize(&application->ui_system, setup->window_width,
-                           setup->window_height);
-    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
-  }
-  if (!vkr_standard_scene_runtime_pump_frame_assets(application, setup)) {
-    vkr_standard_scene_runtime_cancel_frame(
-        application, setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
-    return;
-  }
+  frame->shadow.config = application->shadow_config;
+  frame->shadow.invalidate_fit =
+      application->shadow_fit_invalidate_requested || target_changed;
+  application->shadow_fit_invalidate_requested = false_v;
 
   VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
   *draw = (VkrStandardSceneRuntimeDrawContext){
@@ -1834,10 +2199,9 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     return;
   }
 
-  vkr_standard_scene_runtime_prepare_shadow_payloads(application, draw, delta);
   vkr_standard_scene_runtime_prepare_picking_payload(application, draw);
   vkr_standard_scene_runtime_prepare_editor_viewport(application, draw);
-  vkr_standard_scene_runtime_scale_picking_payload(application, draw);
+  vkr_standard_scene_runtime_prepare_picking_source(application, draw);
   draw->active_scene = vkr_standard_scene_runtime_render_scene(application);
   vkr_standard_scene_runtime_prepare_environment(application, draw);
 
@@ -1877,8 +2241,6 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         &draw->animation_preview);
   }
 
-  const bool8_t render_thread =
-      vkr_renderer_render_thread_enabled(&application->renderer);
   if (render_thread && !vkr_standard_scene_runtime_own_frame_data(frame)) {
     vkr_standard_scene_runtime_cancel_frame(
         application, setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
@@ -1887,16 +2249,29 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   frame->packet =
       vkr_standard_scene_runtime_build_frame_input(application, draw, delta);
 
+  const VkrFrameHooks hooks = {
+      .state = frame,
+      .prepare = vkr_standard_scene_runtime_prepare_acquired,
+      .finish = vkr_standard_scene_runtime_finish_acquired,
+  };
   VkrValidationError validation = {0};
   VkrRendererError submit_error = VKR_RENDERER_ERROR_NONE;
-  if (render_thread) {
+  if (frame->decoupled) {
+    /* The previous frame finishes only now, after this one was built beside
+       it. */
+    vkr_standard_scene_runtime_complete_frame(application);
+    const VkrFrameConfig config =
+        vkr_standard_scene_runtime_frame_config(application);
+    submit_error = vkr_renderer_submit_unacquired_frame(
+        &application->renderer, &config, &frame->packet, &hooks);
+  } else if (render_thread) {
     submit_error =
-        vkr_renderer_submit_frame(setup, &frame->packet, &validation);
+        vkr_renderer_submit_frame(setup, &frame->packet, &hooks, &validation);
   } else {
     VKR_METRICS_SCOPE_NS(application->metrics,
                          application->metric_ids.render_submit) {
       submit_error =
-          vkr_renderer_submit_frame(setup, &frame->packet, &validation);
+          vkr_renderer_submit_frame(setup, &frame->packet, &hooks, &validation);
     }
   }
   if (submit_error != VKR_RENDERER_ERROR_NONE) {
@@ -1907,7 +2282,9 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     vkr_standard_scene_runtime_finish_frame(application, frame, &result);
     return;
   }
-  frame->submitted = true_v;
+  application->frame_in_flight = frame;
+  application->frame = frame == application->frames[0] ? application->frames[1]
+                                                       : application->frames[0];
   if (!render_thread) {
     vkr_standard_scene_runtime_complete_frame(application);
   }
@@ -1938,10 +2315,6 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
       application->callbacks.update(application->callbacks.state, application,
                                     delta);
   }
-  /* The update above overlapped the previous frame's rendering. The steps
-     below change lighting, shadow and renderer state that frame reads, so it
-     completes first. */
-  vkr_standard_scene_runtime_complete_frame(application);
 
   if (!bitset8_is_set(&application->host.flags,
                       VKR_APPLICATION_HOST_FLAG_RUNNING) ||
@@ -2004,32 +2377,37 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           vkr_scene_atmosphere_frame_key_light(render_scene);
       vkr_lighting_system_apply_atmosphere_light(
           &application->lighting_system, key.toward, key.irradiance,
-          key.angular_diameter_degrees,
-          vkr_renderer_get_display_exposure(&application->renderer));
+          key.angular_diameter_degrees, application->display_exposure);
     }
   }
 
+  /* The frame fits and resolves shadows once acquired, on the thread that
+     renders it; capture what it needs from this frame's state now. */
+  VkrStandardSceneRuntimeShadowInput *shadow = &application->frame->shadow;
+  *shadow = (VkrStandardSceneRuntimeShadowInput){
+      .light_enabled = application->lighting_system.directional.enabled &&
+                       !application->disable_directional_shadows,
+      .light_direction = application->lighting_system.directional.direction,
+      .sun_angular_diameter_degrees =
+          application->lighting_system.directional.sun_angular_diameter_degrees,
+      .depth_range = application->shadow_depth_range,
+      .frame_index = application->frame_number_seen,
+      .scene_generation = application->scene_generation,
+      .directional_disabled = application->disable_directional_shadows,
+      .local_disabled = application->disable_local_shadows,
+      .soft_disabled = application->disable_soft_shadows,
+      .delta = delta,
+  };
   if (camera &&
       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application)) {
-    VKR_METRICS_SCOPE_NS(application->metrics,
-                         application->metric_ids.shadow_update) {
-      VkrShadowCasterDepthBounds caster_bounds = {0};
-      vkr_scene_measure_caster_bounds(&application->assets.mesh_manager,
-                                      &caster_bounds);
-      const VkrShadowDepthRangeSample *sdsm_sample =
-          application->renderer.timing_result.shadow_depth_range.submit_value >
-                  0u
-              ? &application->renderer.timing_result.shadow_depth_range
-              : NULL;
-      vkr_shadow_system_set_depth_range_sample(
-          &application->shadow_system, sdsm_sample,
-          application->renderer.frame_number, application->scene_generation);
-      vkr_shadow_system_update(
-          &application->shadow_system, camera,
-          application->lighting_system.directional.enabled &&
-              !application->disable_directional_shadows,
-          application->lighting_system.directional.direction, &caster_bounds);
-    }
+    const float64_t measure_start = vkr_platform_get_absolute_time();
+    vkr_scene_measure_caster_bounds(&application->assets.mesh_manager,
+                                    &shadow->caster_bounds);
+    shadow->camera = *camera;
+    shadow->update = true_v;
+    shadow->measure_ns =
+        (uint64_t)((vkr_platform_get_absolute_time() - measure_start) *
+                   1000000000.0);
   }
 
   if (camera) {
@@ -2076,9 +2454,11 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
 
   vkr_standard_scene_runtime_draw_frame(application, delta);
   /* A frame still rendering keeps its scratch until it completes; the next
-     frame takes the other arena. */
-  if (application->frame->submitted) {
-    application->frame->scratch_scope = frame_scope;
+     frame takes the other arena. An older frame still in flight already
+     holds its own scope. */
+  VkrStandardSceneRuntimeFrame *in_flight = application->frame_in_flight;
+  if (in_flight && !vkr_allocator_scope_is_valid(&in_flight->scratch_scope)) {
+    in_flight->scratch_scope = frame_scope;
     frame_scope = (VkrAllocatorScope){0};
     application->frame_allocator =
         application->frame_allocator == &application->frame_allocators[0]
@@ -2111,7 +2491,7 @@ vkr_internal void vkr_standard_scene_runtime_host_frame_complete(
                              application->metric_ids.frame_wall,
                              host_frame->absolute_time_seconds);
   /* A frame still rendering closes its metrics frame when it completes. */
-  if (!application->frame->submitted) {
+  if (!application->frame_in_flight) {
     vkr_metrics_end_frame(application->metrics);
   }
 }
@@ -2199,9 +2579,9 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
   log_info("VkrStandardSceneRuntime shutting down...");
   /* A frame submitted just before the loop stopped has no frame left to apply
      its result to. */
-  if (application->frame && application->frame->submitted) {
+  if (application->frame_in_flight) {
     vkr_renderer_complete_frame(&application->renderer, NULL);
-    application->frame->submitted = false_v;
+    application->frame_in_flight = NULL;
   }
   vkr_application_host_shutdown(&application->host);
 

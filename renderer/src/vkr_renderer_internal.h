@@ -101,9 +101,26 @@ struct VkrRendererFrameResult {
   VkrRendererError error;
   VkrRendererFrameMetrics metrics;
   VkrValidationError validation;
+  /** The acquisition the frame used; `acquired` is false when acquiring
+   * failed. `frame.renderer` is NULL because the frame was consumed. */
+  VkrFrame frame;
+  bool8_t acquired;
+  /** CPU time of an acquisition the renderer made itself, including the wait
+   * for frame-slot reuse. */
+  uint64_t acquire_ns;
   /** CPU time of validation, preparation, recording, submission and present. */
   uint64_t render_ns;
 };
+
+/* One submitted frame's work for the thread that renders it. */
+typedef struct VkrRendererWork {
+  /* True when the work acquires the frame itself with `config`. */
+  bool8_t acquire;
+  VkrFrameConfig config;
+  VkrFrame frame;
+  VkrFrameInput *input;
+  VkrFrameHooks hooks;
+} VkrRendererWork;
 
 typedef struct VkrRendererWorker VkrRendererWorker;
 

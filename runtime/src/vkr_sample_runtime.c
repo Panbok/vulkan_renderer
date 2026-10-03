@@ -343,17 +343,15 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
   application->host.window.input_state.invert_look_y = settings->invert_mouse_y;
   /* Ultra's extra local-shadow filtering was measured affordable only on the
    * Vulkan desktop host (ADR-019); Metal keeps High's budget. */
-  application->shadow_system.config =
+  application->shadow_config =
       settings->shadow_quality == 1 ? VKR_SHADOW_CONFIG_BALANCED
-      : settings->shadow_quality == 3 &&
-              application->renderer.backend_type ==
-                  VKR_RENDERER_BACKEND_TYPE_VULKAN
+      : settings->shadow_quality == 3 && application->renderer.backend_type ==
+                                             VKR_RENDERER_BACKEND_TYPE_VULKAN
           ? vkr_shadow_config_ultra()
           : VKR_SHADOW_CONFIG_HIGH;
   /* Contact shadows follow their own setting on both backends, so Metal can
      enable them under High's local-shadow budget. */
-  application->shadow_system.config.local_shadow_contact =
-      settings->contact_shadows;
+  application->shadow_config.local_shadow_contact = settings->contact_shadows;
   const bool8_t temporal =
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
       settings->anti_aliasing;
@@ -435,7 +433,7 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
   state->graphics_changed_at = vkr_platform_get_absolute_time();
   sample_graphics_apply_live(application, &settings);
   if (lighting_changed) {
-    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+    vkr_standard_scene_runtime_invalidate_shadow_fit(application);
     vkr_renderer_invalidate_temporal_history(&application->renderer);
   }
 }
@@ -1953,7 +1951,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
        no longer exist, so it is not a previous value of the same quantity. The
        configuration stamps cannot catch this: they are all identical across a
        scene swap. */
-    vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+    vkr_standard_scene_runtime_invalidate_shadow_fit(application);
     float64_t elapsed =
         vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
             application);
@@ -2102,7 +2100,7 @@ vkr_internal void vkr_standard_scene_runtime_unload_scene_system(
   application->scene_generation = application->scene_generation == UINT64_MAX
                                       ? 1u
                                       : application->scene_generation + 1u;
-  vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
+  vkr_standard_scene_runtime_invalidate_shadow_fit(application);
   vkr_standard_scene_runtime_log_backend_allocator_stats(application, "unload",
                                                          NULL);
   vkr_standard_scene_runtime_log_device_memory_stats(application, "unload");
@@ -4120,16 +4118,16 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .scene_output_scale = application->scene_output_scale,
       .scene_render_width = application->editor_viewport.enabled
                                 ? application->editor_viewport.rendered_width
-                                : application->renderer.render_width,
+                                : application->target_render_width,
       .scene_render_height = application->editor_viewport.enabled
                                  ? application->editor_viewport.rendered_height
-                                 : application->renderer.render_height,
+                                 : application->target_render_height,
       .scene_output_width = application->editor_viewport.enabled
                                 ? application->editor_viewport.output_width
-                                : application->renderer.last_window_width,
+                                : application->target_window_width,
       .scene_output_height = application->editor_viewport.enabled
                                  ? application->editor_viewport.output_height
-                                 : application->renderer.last_window_height,
+                                 : application->target_window_height,
       .graphics = &state->graphics,
       .graphics_request = &requests->graphics_request,
       .transport_action = &requests->transport_action,
@@ -5141,9 +5139,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                     vkr_standard_scene_runtime_is_windowed(application)
                         ? &application->host.window
                         : NULL,
-                    application->renderer.last_window_width,
-                    application->renderer.last_window_height,
-                    state->input_state,
+                    application->target_window_width,
+                    application->target_window_height, state->input_state,
                     vkr_window_is_mouse_captured(&application->host.window),
                     delta, &root)) {
     application->ui_capture = (VkrUiInputCapture){0};

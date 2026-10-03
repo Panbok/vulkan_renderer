@@ -1236,19 +1236,42 @@ vkr_renderer_render_frame(VkrFrame *frame, const VkrFrameInput *input,
 typedef struct VkrRendererFrameResult VkrRendererFrameResult;
 
 /**
+ * Caller work that depends on the acquired frame. Both run on the thread that
+ * renders the frame: the render thread when there is one, else the caller.
+ */
+typedef struct VkrFrameHooks {
+  void *state;
+  /** After acquisition and before validation: completes the parts of `input`
+   * that need the acquired frame. Returning false cancels the frame. */
+  bool8_t (*prepare)(void *state, const VkrFrame *frame, VkrFrameInput *input);
+  /** After the frame is submitted or cancelled, when `prepare` ran. */
+  void (*finish)(void *state, const VkrFrame *frame, VkrRendererError error);
+} VkrFrameHooks;
+
+/**
  * Starts the work of vkr_renderer_render_frame and consumes the acquired
  * frame. Returns an error, and produces no result, only when `frame` does not
- * identify the current acquisition.
+ * identify the current acquisition. `hooks` may be NULL.
  *
  * With a render thread the work continues after return: `input` and every
- * array it references stay borrowed and unmodified until
+ * array it references stay borrowed, and changed only by `hooks`, until
  * vkr_renderer_complete_frame collects the result. Every other renderer call,
  * including the asset publisher's, first waits for that work. Without a render
  * thread the frame renders before return.
  */
 VkrRendererError vkr_renderer_submit_frame(VkrFrame *frame,
-                                           const VkrFrameInput *input,
+                                           VkrFrameInput *input,
+                                           const VkrFrameHooks *hooks,
                                            VkrValidationError *out_validation);
+/**
+ * Like vkr_renderer_submit_frame for a frame the renderer acquires itself
+ * with `config`, so the caller never waits for frame-slot reuse. The result
+ * reports the acquisition. A frame whose acquired target extent differs from
+ * `input` is cancelled with VKR_RENDERER_ERROR_FRAME_SKIPPED.
+ */
+VkrRendererError vkr_renderer_submit_unacquired_frame(
+    VkrRenderer *renderer, const VkrFrameConfig *config, VkrFrameInput *input,
+    const VkrFrameHooks *hooks);
 /** Waits for the submitted frame and moves its result out. Returns false when
  * no submitted frame awaits collection. */
 bool8_t vkr_renderer_complete_frame(VkrRenderer *renderer,

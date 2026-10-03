@@ -364,9 +364,9 @@ vkr_harness_child_resize_round_trip(VkrStandardSceneRuntime *application) {
 
   if (child->resize_outbound_requested && !child->resize_outbound_observed &&
       child->completed_frames >= 2u) {
-    if (application->renderer.last_window_width !=
+    if (application->target_window_width !=
             child->resize_outbound_pixel_width ||
-        application->renderer.last_window_height !=
+        application->target_window_height !=
             child->resize_outbound_pixel_height) {
       vkr_harness_child_fail(application, "resize.outbound_not_observed");
       return false_v;
@@ -396,9 +396,8 @@ vkr_harness_child_resize_round_trip(VkrStandardSceneRuntime *application) {
   }
 
   if (child->resize_restore_requested && child->completed_frames >= 3u) {
-    if (application->renderer.last_window_width !=
-            child->resize_restore_pixel_width ||
-        application->renderer.last_window_height !=
+    if (application->target_window_width != child->resize_restore_pixel_width ||
+        application->target_window_height !=
             child->resize_restore_pixel_height) {
       vkr_harness_child_fail(application, "resize.restore_not_observed");
       return false_v;
@@ -1040,14 +1039,13 @@ vkr_harness_child_build_ui(VkrStandardSceneRuntime *application,
   root.rows = rows;
   root.row_count = ArrayCount(rows);
   root.style.padding_pt = (VkrUiEdges){32.0f, 32.0f, 32.0f, 32.0f};
-  if (!vkr_ui_begin(&application->ui_system, application->frame_allocator,
-                    vkr_standard_scene_runtime_is_windowed(application)
-                        ? &application->host.window
-                        : NULL,
-                    application->renderer.last_window_width,
-                    application->renderer.last_window_height,
-                    &application->host.window.input_state, false_v, delta,
-                    &root))
+  if (!vkr_ui_begin(
+          &application->ui_system, application->frame_allocator,
+          vkr_standard_scene_runtime_is_windowed(application)
+              ? &application->host.window
+              : NULL,
+          application->target_window_width, application->target_window_height,
+          &application->host.window.input_state, false_v, delta, &root))
     return;
 
   const struct {
@@ -1528,6 +1526,7 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   if (!vkr_shadow_system_init(&application->shadow_system, &shadow_config)) {
     return false_v;
   }
+  application->shadow_config = application->shadow_system.config;
   if (string_equals(case_manifest->renderer.render_mode, "lighting")) {
     application->globals.render_mode = VKR_RENDER_MODE_LIGHTING;
   } else if (string_equals(case_manifest->renderer.render_mode, "normal")) {

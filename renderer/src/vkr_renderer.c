@@ -62,14 +62,11 @@ struct VkrRendererWorker {
      before a waiter's acquire. */
   VkrAtomicUint32 state;
   bool8_t stop;
-  /* The submitted frame, copied because submission consumes the caller's. */
-  VkrFrame frame;
-  const VkrFrameInput *input;
+  VkrRendererWork work;
 };
 
 vkr_internal void vkr_renderer_render_submitted(VkrRenderer *renderer,
-                                                VkrFrame *frame,
-                                                const VkrFrameInput *packet,
+                                                VkrRendererWork *work,
                                                 VkrRendererFrameResult *result);
 
 void vkr_renderer_join_render_thread(const VkrRenderer *renderer) {
@@ -104,7 +101,7 @@ vkr_internal void *vkr_renderer_worker_main(void *arg) {
     }
     vkr_mutex_unlock(worker->mutex);
 
-    vkr_renderer_render_submitted(renderer, &worker->frame, worker->input,
+    vkr_renderer_render_submitted(renderer, &worker->work,
                                   &renderer->frame_result);
 
     vkr_mutex_lock(worker->mutex);
@@ -2406,10 +2403,8 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
 #endif
 }
 
-VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
-                                          const VkrFrameConfig *config,
-                                          VkrFrame *out_frame) {
-  vkr_renderer_join_render_thread(renderer);
+vkr_internal VkrRendererError vkr_renderer_acquire_frame(
+    VkrRenderer *renderer, const VkrFrameConfig *config, VkrFrame *out_frame) {
   if (!renderer || !out_frame || !config || config->shadow_map_size == 0u ||
       config->shadow_cascade_count == 0u ||
       config->shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX ||
@@ -2431,6 +2426,13 @@ VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
     out_frame->render_height = renderer->render_height;
   }
   return error;
+}
+
+VkrRendererError vkr_renderer_begin_frame(VkrRenderer *renderer,
+                                          const VkrFrameConfig *config,
+                                          VkrFrame *out_frame) {
+  vkr_renderer_join_render_thread(renderer);
+  return vkr_renderer_acquire_frame(renderer, config, out_frame);
 }
 
 /* A submitted frame becomes the producer of the state its successor reuses. */
@@ -2727,40 +2729,105 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
 #endif
 }
 
-/* The frame's work on whichever thread renders it: validate, then render or
+/* The frame's work on whichever thread renders it: acquire when the caller
+   did not, complete the input through the hooks, validate, then render or
    cancel the acquisition. */
 vkr_internal void
-vkr_renderer_render_submitted(VkrRenderer *renderer, VkrFrame *frame,
-                              const VkrFrameInput *packet,
+vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
                               VkrRendererFrameResult *result) {
   const float64_t start = vkr_platform_get_absolute_time();
   *result = (VkrRendererFrameResult){0};
-  VkrRendererError error =
-      vkr_frame_input_validate(packet, &result->validation);
+  VkrFrameInput *packet = work->input;
+  if (work->acquire) {
+    const VkrRendererError acquire_error =
+        vkr_renderer_acquire_frame(renderer, &work->config, &work->frame);
+    const float64_t acquired_at = vkr_platform_get_absolute_time();
+    result->acquire_ns = (uint64_t)((acquired_at - start) * 1e9);
+    if (acquire_error != VKR_RENDERER_ERROR_NONE) {
+      result->error = acquire_error;
+      return;
+    }
+  }
+  result->frame = work->frame;
+  result->frame.renderer = NULL;
+  result->acquired = true_v;
+
+  /* An input built for another target extent cannot render into this one;
+     the caller rebuilds it for the extent this result reports. */
+  if (work->acquire &&
+      (packet->frame.window_width != work->frame.window_width ||
+       packet->frame.window_height != work->frame.window_height)) {
+    const VkrRendererError cancel_error =
+        vkr_renderer_backend_cancel_frame(renderer);
+    result->error = cancel_error != VKR_RENDERER_ERROR_NONE
+                        ? cancel_error
+                        : VKR_RENDERER_ERROR_FRAME_SKIPPED;
+    return;
+  }
+
+  const VkrFrameHooks *hooks = &work->hooks;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (hooks->prepare && !hooks->prepare(hooks->state, &work->frame, packet)) {
+    error = vkr_renderer_validation_fail(
+        &result->validation, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED,
+        "frame", "the caller could not complete the frame input");
+  }
+  if (error == VKR_RENDERER_ERROR_NONE) {
+    error = vkr_frame_input_validate(packet, &result->validation);
+  }
   if (error == VKR_RENDERER_ERROR_NONE &&
-      (packet->frame.window_width != frame->window_width ||
-       packet->frame.window_height != frame->window_height))
+      (packet->frame.window_width != work->frame.window_width ||
+       packet->frame.window_height != work->frame.window_height)) {
     error = vkr_renderer_validation_fail(
         &result->validation, VKR_RENDERER_ERROR_INVALID_PARAMETER,
         "frame_input.frame", "target extent must match the acquired frame");
+  }
   if (error != VKR_RENDERER_ERROR_NONE) {
     const VkrRendererError cancel_error =
         vkr_renderer_backend_cancel_frame(renderer);
-    if (cancel_error != VKR_RENDERER_ERROR_NONE)
+    if (cancel_error != VKR_RENDERER_ERROR_NONE) {
       error = vkr_renderer_validation_fail(
           &result->validation, cancel_error, "frame",
           "failed to cancel the acquired frame after input rejection");
+    }
   } else {
     error = vkr_renderer_backend_render_frame(
         renderer, packet, &result->metrics, &result->validation);
   }
+  if (hooks->finish) {
+    hooks->finish(hooks->state, &work->frame, error);
+  }
   result->error = error;
   result->render_ns =
-      (uint64_t)((vkr_platform_get_absolute_time() - start) * 1e9);
+      (uint64_t)((vkr_platform_get_absolute_time() - start) * 1e9) -
+      result->acquire_ns;
+}
+
+/* Runs `work` inline or hands it to the render thread. The caller already
+   waited for the previous frame. */
+vkr_internal void vkr_renderer_start_work(VkrRenderer *renderer,
+                                          const VkrRendererWork *work) {
+  /* A result nobody collected belongs to an older frame; this one replaces
+     it. */
+  renderer->frame_result_ready = true_v;
+  VkrRendererWorker *worker = renderer->worker;
+  if (!worker) {
+    VkrRendererWork inline_work = *work;
+    vkr_renderer_render_submitted(renderer, &inline_work,
+                                  &renderer->frame_result);
+    return;
+  }
+  vkr_mutex_lock(worker->mutex);
+  worker->work = *work;
+  vkr_atomic_uint32_store(&worker->state, VKR_RENDERER_WORKER_BUSY,
+                          VKR_MEMORY_ORDER_RELEASE);
+  vkr_cond_broadcast(worker->cond);
+  vkr_mutex_unlock(worker->mutex);
 }
 
 VkrRendererError vkr_renderer_submit_frame(VkrFrame *frame,
-                                           const VkrFrameInput *packet,
+                                           VkrFrameInput *packet,
+                                           const VkrFrameHooks *hooks,
                                            VkrValidationError *out_validation) {
   VkrRenderer *renderer = frame ? frame->renderer : NULL;
   vkr_renderer_join_render_thread(renderer);
@@ -2770,24 +2837,33 @@ VkrRendererError vkr_renderer_submit_frame(VkrFrame *frame,
         out_validation, VKR_RENDERER_ERROR_INVALID_PARAMETER, "frame",
         "must identify the current acquired frame");
   }
-  /* A result nobody collected belongs to an older frame; this one replaces
-     it. */
-  renderer->frame_result_ready = true_v;
-  VkrRendererWorker *worker = renderer->worker;
-  if (!worker) {
-    vkr_renderer_render_submitted(renderer, frame, packet,
-                                  &renderer->frame_result);
-    frame->renderer = NULL;
-    return VKR_RENDERER_ERROR_NONE;
-  }
-  vkr_mutex_lock(worker->mutex);
-  worker->frame = *frame;
-  worker->input = packet;
-  vkr_atomic_uint32_store(&worker->state, VKR_RENDERER_WORKER_BUSY,
-                          VKR_MEMORY_ORDER_RELEASE);
-  vkr_cond_broadcast(worker->cond);
-  vkr_mutex_unlock(worker->mutex);
+  const VkrRendererWork work = {
+      .frame = *frame,
+      .input = packet,
+      .hooks = hooks ? *hooks : (VkrFrameHooks){0},
+  };
   frame->renderer = NULL;
+  vkr_renderer_start_work(renderer, &work);
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError vkr_renderer_submit_unacquired_frame(
+    VkrRenderer *renderer, const VkrFrameConfig *config, VkrFrameInput *packet,
+    const VkrFrameHooks *hooks) {
+  vkr_renderer_join_render_thread(renderer);
+  if (!renderer || !config || !packet) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+  if (renderer->frame_active) {
+    return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
+  }
+  const VkrRendererWork work = {
+      .acquire = true_v,
+      .config = *config,
+      .input = packet,
+      .hooks = hooks ? *hooks : (VkrFrameHooks){0},
+  };
+  vkr_renderer_start_work(renderer, &work);
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -2813,8 +2889,10 @@ vkr_renderer_render_frame(VkrFrame *frame, const VkrFrameInput *packet,
                           VkrRendererFrameMetrics *out_metrics,
                           VkrValidationError *out_validation_error) {
   VkrRenderer *renderer = frame ? frame->renderer : NULL;
-  const VkrRendererError submit_error =
-      vkr_renderer_submit_frame(frame, packet, out_validation_error);
+  /* The work only reads the input; without hooks nothing changes it. */
+  VkrFrameInput input = packet ? *packet : (VkrFrameInput){0};
+  const VkrRendererError submit_error = vkr_renderer_submit_frame(
+      frame, packet ? &input : NULL, NULL, out_validation_error);
   if (submit_error != VKR_RENDERER_ERROR_NONE) {
     return submit_error;
   }

@@ -139,6 +139,9 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   // Time the update thread waits for the render thread to finish the
   // previous frame; zero when rendering inline.
   VkrMetricId render_wait;
+  // 1 for a frame the render thread acquired itself, while the next frame
+  // was built; 0 for a frame acquired on the frame-loop thread.
+  VkrMetricId decoupled;
 } VkrStandardSceneRuntimeMetricIds;
 
 struct VkrStandardSceneRuntime;
@@ -188,12 +191,33 @@ typedef struct VkrStandardSceneRuntime {
   VkrAllocator frame_allocators[2];
   /** The current frame's scratch, one of frame_allocators. */
   VkrAllocator *frame_allocator;
-  /* Packet storage of the frame being built or rendered. */
+  /* Packet storage for two frames: with a render thread one is rendering
+     while the other is built. `frame` is the one being built and
+     `frame_in_flight` the submitted one awaiting completion, or NULL. */
+  VkrStandardSceneRuntimeFrame *frames[2];
   VkrStandardSceneRuntimeFrame *frame;
+  VkrStandardSceneRuntimeFrame *frame_in_flight;
   /* The last completed frame's renderer metrics. */
   VkrRendererFrameMetrics frame_metrics;
   /* Submit serial observed when the last frame completed. */
   uint64_t completed_frame_submit_serial;
+  /* Renderer values the frame-loop thread uses while the render thread may
+     be rendering, taken when the last frame completed (or acquired). */
+  uint32_t target_window_width;
+  uint32_t target_window_height;
+  uint32_t target_render_width;
+  uint32_t target_render_height;
+  uint64_t target_generation_seen;
+  uint64_t frame_number_seen;
+  float32_t display_exposure;
+  VkrShadowDepthRangeSample shadow_depth_range;
+  /* With a render thread, decoupled frames are built from these values and
+     acquired by the render thread; false forces an acquired frame next. */
+  bool8_t target_known;
+  /* Shadow configuration the frame-loop thread chooses; frames apply it to
+     the shadow system, which the render thread may be using. */
+  VkrShadowConfig shadow_config;
+  bool8_t shadow_fit_invalidate_requested;
   VkrGizmoSystem gizmo_system;
   VkrLightingSystem lighting_system;
   VkrShadowSystem shadow_system;
@@ -284,6 +308,10 @@ vkr_internal INLINE bool8_t vkr_standard_scene_runtime_is_windowed(
 
 bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
     const VkrStandardSceneRuntime *runtime);
+/** Discards shadow fit history before the next frame; see
+ * vkr_shadow_system_invalidate_fit_history. */
+void vkr_standard_scene_runtime_invalidate_shadow_fit(
+    VkrStandardSceneRuntime *runtime);
 bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
     VkrStandardSceneRuntime *runtime, uint32_t window_width,
     uint32_t window_height, VkrViewportMapping *out_mapping);

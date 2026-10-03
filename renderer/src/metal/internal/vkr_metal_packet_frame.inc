@@ -4448,8 +4448,17 @@ bool8_t vkr_metal_packet_renderer_prepare_frame(
     renderer->prepared_frame.image_index =
         (uint32_t)(renderer->active_command_slot - renderer->command_slots);
     if (renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
-      renderer->layer.drawableSize =
+      /* A render thread acquires frames too. Layer properties change only
+         with the size, inside an explicit transaction, because a thread
+         without a run loop never commits an implicit one. */
+      const CGSize drawable_size =
           CGSizeMake(frame_info->target_width, frame_info->target_height);
+      if (!CGSizeEqualToSize(renderer->layer.drawableSize, drawable_size)) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        renderer->layer.drawableSize = drawable_size;
+        [CATransaction commit];
+      }
       renderer->drawable = [[renderer->layer nextDrawable] retain];
       if (!renderer->drawable ||
           renderer->drawable.texture.width != frame_info->target_width ||

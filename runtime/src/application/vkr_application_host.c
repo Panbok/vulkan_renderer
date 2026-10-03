@@ -73,6 +73,7 @@ bool8_t vkr_application_host_create(VkrApplicationHost *host,
                            config->x, config->y, config->width, config->height))
       goto cleanup;
     window_ready = true_v;
+    vkr_window_publish_pixel_size(&host->window);
     if (!vkr_gamepad_init(&host->gamepad, &host->window.input_state))
       goto cleanup;
     gamepad_ready = true_v;
@@ -148,6 +149,7 @@ void vkr_application_host_run(VkrApplicationHost *host) {
 
     if (host->config.windowed) {
       window_running = vkr_window_update(&host->window);
+      vkr_window_publish_pixel_size(&host->window);
       vkr_gamepad_poll_all(&host->gamepad);
     }
     if (!window_running) {
