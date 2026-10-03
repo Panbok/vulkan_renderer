@@ -69,9 +69,23 @@ and a repeat finalization in 5.6 s.
    `check_editor_project_jobs.py` fail on Windows before and after this work
    (line endings and path separators in the checks);
    `check_editor_workspace_cleanup.py` needs the symbolic-link privilege.
+   On 2026-10-03 `check_metrics_disabled.py`, `check_bakery_bundle.py`,
+   `check_bakery_package.py`, `check_editor_texture_tiers.py`,
+   `check_spec_gloss_memo.py` and `report_long_functions.py` passed on Windows
+   (the bundle and package checks need a `zstd` command-line tool).
+   `check_bakery_serve.py` does not apply, because `vkr_bakery serve` is not
+   available on Windows, and `check_bakery_script.py` loads a macOS dylib.
+   `build_test.bat` runs only the format, path-boundary and path-contract
+   checks; it does not build the Debug player template or run the others
+   that `build_test.sh` runs.
 8. **Other hosts.** bc7e is built for x86-64 only; an ARM build (ISPC
    `neon-i32x4`) would make `bc` available on Apple silicon, whose Metal GPUs
    sample BC, and needs a Metal load of a BC texture.
+9. **Mesh memory estimate.** Bakery schedules mesh cooks with an estimate of
+   512 MiB plus ten times the source size (`vkr_bakery_mesh_estimate`). It
+   predicts 1,445 MiB for a `bistro-lights.gltf` cook that peaks at about
+   3.1 GB, and the plain and light-range targets run together, so the default
+   budget can admit more work than a 16 GB host holds.
 
 ## Decision boundaries
 
