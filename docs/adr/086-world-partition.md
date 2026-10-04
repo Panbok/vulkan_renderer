@@ -218,6 +218,14 @@ two more frames redraw; the mesh now re-attaches after the upload. At
 `f01956ee` a resident 1 km terrain on the same flight measured p95 8.7 ms,
 so the earlier report that it hitched too did not reproduce.
 
+Retained shadows now follow only publications that can reach a drawn caster
+([ADR-019](019-bounded-forward-spatial-lighting.md)), and adding or removing a
+drawn mesh is a topology change. Each re-attached terrain mesh therefore
+moves the static-world generation, which still marks every local face and
+cascade stale: the same flight measured p95 14.5–29.9 ms (max 30.2–48.1 ms)
+over five readings. Shadow staleness bounded by where the static change
+happened remains.
+
 CPU tests: the heightfield suite (a 2,048-cell streamed field that loads only
 its overview, edits, saves in place and reloads a tile), the scene edit
 partition test (cell documents, byte-identical unedited cells, the unload
@@ -240,8 +248,8 @@ rebase to −4,096 m that Reset returned to 0.
 
 ## Revisit when
 
-- Local shadow staleness follows only publications that reach drawn casters,
-  or a matched Release report shows streaming hitches below one frame.
+- Static shadow changes carry the bounds of what changed, or a matched
+  Release report shows streaming hitches below one frame.
 - A Windows/Vulkan run of the
   [handoff](../proposals/level-toolkit-windows-vulkan-handoff.md) passes.
 - Imported scenes, the World or added scenes need to stream.

@@ -23,9 +23,9 @@ implemented work are in the
 - `vkr_bakery bake proxies` builds per-cell proxies from brushes only.
 - During Play the origin rebases past 4 km and Reset restores it exactly.
 - Moving over a streamed terrain with local shadows on raises the frame p95
-  from about 6 ms to about 30 ms on an M1 Pro: each tile upload advances the
-  global publication generation and every local shadow face redraws
-  ([ADR-086](../adr/086-world-partition.md#evidence)).
+  from about 6 ms to 15–30 ms on an M1 Pro: each re-attached terrain mesh
+  moves the static-world generation, and every local shadow face and cascade
+  redraws ([ADR-086](../adr/086-world-partition.md#evidence)).
 
 ## Goal
 
@@ -37,7 +37,7 @@ where imported content streams as well as authored content.
 
 | Item | Scope | Acceptance evidence |
 |---|---|---|
-| Hitch budget | Scope local shadow staleness to publications that reach drawn casters (ADR-019 policy), so far tile uploads redraw no face; then budget the remaining per-change costs (mesh re-attachment of every tile, the collision window rebuild) | A matched Release report on M1 Pro: frame p95 within 10% of Bistro alone while gliding at 30 m/s over an 8 km terrain |
+| Hitch budget | Bound static shadow staleness by where the change happened (the footprints of terrain tiles that start or stop drawing), so far streaming redraws no local face and only the cascades it reaches; then budget the remaining per-change costs (mesh re-attachment of every tile, the collision window rebuild) | A matched Release report on M1 Pro: frame p95 within 10% of Bistro alone while gliding at 30 m/s over an 8 km terrain |
 | Imported content | Split imported scene documents into cells at import, so Bistro-sized content streams | A converted Bistro renders as before and unloads by cell |
 | More containers | Partition the root World and added scenes | Headless runs stream all three container kinds |
 | Script state | Keep a behaviour's state across its cell unloading and loading again during a session | A gameplay script in a streamed cell resumes its state after its cell returns |

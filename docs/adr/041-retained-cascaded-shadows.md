@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -24,7 +24,11 @@ scene-bounds Z fitting clipped against each final cascade XY rectangle.
 
 Track static/dynamic caster and publication generations. Pack static candidate
 and instance rows per completion-protected slot; refresh on publication changes
-and copy dynamic ranges independently. Each physical target-image cascade keeps
+and copy dynamic ranges independently. Retained depth follows the caster
+publication generation instead
+(`VkrWorldPassPayload.caster_publication_generation`): texture, sampler and
+material completions, not geometry uploads, whose meshes join the caster set
+through the static generation. Each physical target-image cascade keeps
 its submitted fit and signature. A guard-contained static cascade with valid
 retained content can omit its authored pass only when its actual submitted fit
 matches the common desired projection. The newest compatible submitted static
@@ -35,7 +39,8 @@ Dynamic overlap, generation drift,
 invalid contents or incomplete publication forces rendering. Scene-authored
 meshes and editor shapes are static casters, because their transforms and
 geometry change only through mesh-manager calls that bump the static
-generation; an edit therefore redraws once. Runtime-created instances and
+generation, adding and removing a drawn mesh included; an edit therefore
+redraws once. Runtime-created instances and
 skinned meshes stay dynamic, and a dynamic caster that overlaps a cascade or
 local light redraws it every frame. Pending fits and
 content validity commit only after successful submit. Reused cascades publish

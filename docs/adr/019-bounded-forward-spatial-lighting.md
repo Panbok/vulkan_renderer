@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -76,8 +76,11 @@ so longer-range lights would need a larger near plane or more bias.
 
 A face's content is invalid when no successful submission drew it into its
 current square with its current projection in the current atlas image, or its
-layer was cleared, and stale when the static-world or publication generation
-changed since it was drawn, a dynamic caster's bounds reach the light, the
+layer was cleared, and stale when the static-world generation or the caster
+publication generation changed since it was drawn (completed texture,
+sampler and material publications; a geometry publication cannot change a
+drawn caster, since a mesh draws only after its geometry has published and
+adding or removing a drawn mesh moves the static-world generation), a dynamic caster's bounds reach the light, the
 dynamic-bounds scan is unavailable, or an asset publication is in flight.
 Stale content keeps showing while it waits to redraw. The preset's face budget
 bounds the faces drawn per frame: High 30, Balanced 12 and Ultra 60. Complete
