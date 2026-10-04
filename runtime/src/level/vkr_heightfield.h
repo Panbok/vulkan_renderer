@@ -133,6 +133,9 @@ typedef enum VkrHeightfieldOpKind {
   /* An image of heights over [`min`, `max`]: each sample takes `height` plus
      `strength` times the image value, or with `add` gains it. */
   VKR_HEIGHTFIELD_OP_STAMP,
+  /* A road: a ramp `width` wide from each of `path_count` points, offset by
+     `a`, to the next, blending over `falloff`. */
+  VKR_HEIGHTFIELD_OP_ROAD,
   VKR_HEIGHTFIELD_OP_KIND_COUNT,
 } VkrHeightfieldOpKind;
 
@@ -159,6 +162,9 @@ typedef struct VkrHeightfieldOp {
   uint32_t image_width;
   uint32_t image_height;
   bool8_t add;
+  /* Roads: points of the centreline, borrowed for the call. */
+  const Vec3 *path;
+  uint32_t path_count;
 } VkrHeightfieldOp;
 
 /* The samples `op` may change, before it runs; false when none. */

@@ -131,6 +131,25 @@ static void heightfield_test_operations(void) {
   assert(near(vkr_heightfield_at(&field, 47u, 32u), 5.0f, step));
   assert(near(vkr_heightfield_at(&field, 52u, 32u), 10.0f, step));
 
+  /* A road follows its centreline's heights inside its width and leaves
+     ground past its falloff alone. */
+  const Vec3 path[3] = {vec3_new(-20.0f, 1.0f, 20.0f),
+                        vec3_new(0.0f, 3.0f, 20.0f),
+                        vec3_new(20.0f, 3.0f, 20.0f)};
+  op = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_ROAD,
+                          .width = 4.0f,
+                          .falloff = 2.0f,
+                          .path = path,
+                          .path_count = 3u};
+  assert(vkr_heightfield_op_rect(&field, &op, &predicted));
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  assert(MemCompare(&predicted, &touched, sizeof(touched)) == 0);
+  assert(near(vkr_heightfield_at(&field, 22u, 52u), 2.0f, step));
+  assert(near(vkr_heightfield_at(&field, 42u, 51u), 3.0f, step));
+  assert(near(vkr_heightfield_at(&field, 42u, 59u), 0.0f, step));
+  op.path_count = 1u;
+  assert(!vkr_heightfield_op_rect(&field, &op, &predicted));
+
   /* Painting keeps the four weights summing to one. */
   op = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_BRUSH,
                           .brush = VKR_HEIGHTFIELD_PAINT,

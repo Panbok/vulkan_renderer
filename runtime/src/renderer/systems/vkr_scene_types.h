@@ -37,10 +37,15 @@ extern const VkrTypeDesc vkr_scene_text_type;
 extern const VkrTypeDesc vkr_scene_animation_type;
 /** Player Start (ADR-079): the spawn pose a game script reads. */
 extern const VkrTypeDesc vkr_scene_player_start_type;
-/* Brushes and their faces (docs/proposals/level-design-toolkit.md). */
+/* Brushes and their faces (ADR-084). */
 extern const VkrTypeDesc vkr_scene_brush_type;
 extern const VkrTypeDesc vkr_scene_brush_face_type;
 extern const VkrTypeDesc vkr_scene_terrain_type;
+/* Population (ADR-084). */
+extern const VkrTypeDesc vkr_scene_spline_type;
+extern const VkrTypeDesc vkr_scene_spline_point_type;
+extern const VkrTypeDesc vkr_scene_spline_mesh_type;
+extern const VkrTypeDesc vkr_scene_scatter_type;
 /* Entity IO (ADR-084). */
 extern const VkrTypeDesc vkr_scene_trigger_type;
 extern const VkrTypeDesc vkr_scene_relay_type;

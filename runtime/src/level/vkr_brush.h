@@ -3,7 +3,7 @@
 #include "defines.h"
 #include "math/vec.h"
 
-/* Convex brush geometry (docs/proposals/level-design-toolkit.md, phase 1).
+/* Convex brush geometry (ADR-084).
  * A brush is the intersection of half-spaces `dot(normal, p) <= distance`
  * in the brush's local space; each plane is one face. Building clips a large
  * square on every plane by all the others, in double precision, and rejects

@@ -23,6 +23,7 @@
 #include "scene_simulation_test.h"
 #include "script_host_test.h"
 #include "script_reload_test.h"
+#include "spline_test.h"
 #include "type_desc_test.h"
 #include "weapon_test.h"
 
@@ -107,6 +108,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_scene_edit_tests),
     VKR_TEST_SUITE(run_brush_tests),
     VKR_TEST_SUITE(run_heightfield_tests),
+    VKR_TEST_SUITE(run_spline_tests),
     VKR_TEST_SUITE(run_io_tests),
     VKR_TEST_SUITE(run_editor_project_store_tests),
     VKR_TEST_SUITE(run_gltf_importer_tests),

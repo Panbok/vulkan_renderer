@@ -276,8 +276,7 @@ typedef struct VkrSampleScriptResult {
   char message[256];
 } VkrSampleScriptResult;
 
-/* Most edits one batch request may carry (docs/proposals/
- * level-design-toolkit.md, phase 0). */
+/* Most edits one batch request may carry (ADR-084). */
 #define VKR_SAMPLE_EDIT_BATCH_MAX 256u
 
 /* One edit of a batch. A nonnegative `entity_ref` or `parent_ref` names the

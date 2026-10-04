@@ -3221,7 +3221,7 @@ bool8_t vkr_scene_physics_sweep(VkrScene *scene, VkrEntityId owner,
 }
 
 // =============================================================================
-// Generated bodies (docs/proposals/level-design-toolkit.md)
+// Generated bodies (ADR-084)
 // =============================================================================
 
 /* Floats a collider's geometry positions hold: three per vertex, or one

@@ -2,7 +2,7 @@
 
 #include "editor_ui.h"
 
-/* The agent channel (docs/proposals/level-design-toolkit.md, phase 0): a
+/* The agent channel (ADR-084): a
  * per-user local socket that speaks newline-delimited JSON requests and runs
  * them through the operation table (editor_ops.h) on the UI thread. */
 typedef struct VkrEditorAgent VkrEditorAgent;

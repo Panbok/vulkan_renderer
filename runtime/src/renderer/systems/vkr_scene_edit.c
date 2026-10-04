@@ -312,7 +312,7 @@ static bool8_t edit_prepare(VkrScene *scene, VkrEntityId entity,
     return false_v;
   }
   /* A brush face is a plane in its brush's space; it moves with the brush
-     (docs/proposals/level-design-toolkit.md). */
+     (ADR-084). */
   if ((v->fields & VKR_SCENE_EDIT_TRANSFORM) &&
       vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type)) {
     return false_v;

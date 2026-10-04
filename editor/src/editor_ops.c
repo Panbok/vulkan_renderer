@@ -13,6 +13,7 @@
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
@@ -959,7 +960,7 @@ static bool8_t ops_build_component_remove(OpsContext *ctx,
 }
 
 // =============================================================================
-// Brushes (docs/proposals/level-design-toolkit.md, phase 1)
+// Brushes (ADR-084)
 // =============================================================================
 
 /* Brush corners snap to 1/16 m unless `grid` says otherwise. */
@@ -1697,7 +1698,7 @@ static bool8_t ops_build_set_material(OpsContext *ctx,
 }
 
 // -----------------------------------------------------------------------------
-// Brush editing (docs/proposals/level-design-toolkit.md, phase 2)
+// Brush editing (ADR-084)
 // -----------------------------------------------------------------------------
 
 /* A brush as its faces read it: planes, face entities and their values. */
@@ -2793,6 +2794,18 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
       }
       ops_set(ctx, row, "terrain", summary);
     }
+    if (vkr_scene_get_typed(scene, entity, &vkr_scene_spline_mesh_type) ||
+        vkr_scene_get_typed(scene, entity, &vkr_scene_scatter_type)) {
+      VkrBakeryJson *summary = vkr_bakery_json_object(arena);
+      const char *status = vkr_scene_population_status(scene, entity);
+      ops_set(ctx, summary, "copies",
+              ops_number(ctx, (float32_t)vkr_scene_population_instances(
+                                  scene, entity)));
+      if (status) {
+        ops_set(ctx, summary, "status", vkr_bakery_json_cstr(arena, status));
+      }
+      ops_set(ctx, row, "population", summary);
+    }
     vkr_bakery_json_append(entities, row);
   }
   char slot[16];
@@ -3305,7 +3318,7 @@ static bool8_t ops_capture_write(OpsContext *ctx, OpsPendingCapture *pending,
 }
 
 // -----------------------------------------------------------------------------
-// Level checks (docs/proposals/level-design-toolkit.md, phase 2)
+// Level checks (ADR-084)
 // -----------------------------------------------------------------------------
 
 /* The default capsule with any overrides the arguments carry. */
@@ -4120,6 +4133,291 @@ static VkrEditorOpStatus ops_run_terrain_sample(OpsContext *ctx) {
 }
 
 // =============================================================================
+// Population (ADR-084)
+// =============================================================================
+
+/* World points of `key`: 2 to VKR_SPLINE_POINT_MAX [x, y, z] arrays. */
+static uint32_t ops_arg_points(OpsContext *ctx, const VkrBakeryJson *args,
+                               const char *key, Vec3 *out) {
+  const VkrBakeryJson *points = vkr_bakery_json_get(args, key);
+  if (!points || points->type != VKR_BAKERY_JSON_ARRAY || points->count < 2u ||
+      points->count > VKR_SPLINE_POINT_MAX) {
+    ops_fail(ctx, OPS_INVALID, "'%s' is 2 to %u [x, y, z] points", key,
+             VKR_SPLINE_POINT_MAX);
+    return 0u;
+  }
+  uint32_t count = 0u;
+  for (const VkrBakeryJson *entry = points->first; entry; entry = entry->next) {
+    float32_t parts[3] = {0};
+    if (entry->type != VKR_BAKERY_JSON_ARRAY || entry->count != 3u) {
+      ops_fail(ctx, OPS_INVALID, "Each point of '%s' is [x, y, z]", key);
+      return 0u;
+    }
+    uint32_t i = 0u;
+    for (const VkrBakeryJson *part = entry->first; part; part = part->next) {
+      parts[i++] = (float32_t)(part->type == VKR_BAKERY_JSON_INT
+                                   ? (float64_t)part->integer
+                                   : part->number);
+    }
+    if (!isfinite(parts[0]) || !isfinite(parts[1]) || !isfinite(parts[2])) {
+      ops_fail(ctx, OPS_INVALID, "Points of '%s' must be finite", key);
+      return 0u;
+    }
+    out[count++] = vec3_new(parts[0], parts[1], parts[2]);
+  }
+  return count;
+}
+
+/* Appends an ADD_COMPONENT of `type`, read from `values`, to the batch's
+   created entity `item`. */
+static bool8_t ops_add_created_component(OpsContext *ctx, OpsBatch *batch,
+                                         uint16_t container, uint32_t item,
+                                         const VkrTypeDesc *type,
+                                         const VkrBakeryJson *values) {
+  VkrSampleEditBatchItem *add =
+      ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_ADD_COMPONENT);
+  if (!add) {
+    return false_v;
+  }
+  const OpsRef ref = {.container = container, .item = (int32_t)item};
+  ops_item_target(add, &ref);
+  add->request.values.component_type = type;
+  vkr_type_defaults(type, add->request.values.component);
+  if (!ops_component_read(ctx, type, values, add->request.values.component)) {
+    return false_v;
+  }
+  char error[160] = {0};
+  if (!vkr_type_validate(type, add->request.values.component, error,
+                         sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "%s: %s", type->name, error);
+  }
+  return true_v;
+}
+
+/* spline.create: a spline entity at its first point and a child
+   spline_point per point; `mesh` adds a spline_mesh. */
+static bool8_t ops_build_spline_create(OpsContext *ctx,
+                                       const VkrBakeryJson *args,
+                                       OpsBatch *batch) {
+  uint16_t container = 0u;
+  Vec3 points[VKR_SPLINE_POINT_MAX];
+  if (!ops_arg_container(ctx, args, &container)) {
+    return false_v;
+  }
+  const uint32_t count = ops_arg_points(ctx, args, "points", points);
+  if (!count) {
+    return false_v;
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  const uint32_t spline_item = batch->count - 1u;
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields =
+      VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "Spline");
+  String8 name = {0};
+  if (vkr_bakery_json_get_string(args, "name", &name) && name.length &&
+      name.length < sizeof(values->name)) {
+    snprintf(values->name, sizeof(values->name), "%.*s", (int)name.length,
+             name.str);
+  }
+  values->position = points[0];
+  values->rotation = vkr_quat_identity();
+  values->scale = vec3_one();
+  values->component_type = &vkr_scene_spline_type;
+  *(SceneSpline *)values->component =
+      (SceneSpline){.closed = ops_arg_bool(args, "closed", false_v)};
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrSampleEditBatchItem *point =
+        ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_CREATE);
+    if (!point) {
+      return false_v;
+    }
+    point->parent_ref = (int32_t)spline_item;
+    VkrSceneEditValues *point_values = &point->request.values;
+    point_values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM |
+                           VKR_SCENE_EDIT_COMPONENT;
+    snprintf(point_values->name, sizeof(point_values->name), "Point %u",
+             i + 1u);
+    point_values->position = vec3_sub(points[i], points[0]);
+    point_values->rotation = vkr_quat_identity();
+    point_values->scale = vec3_one();
+    point_values->component_type = &vkr_scene_spline_point_type;
+    *(SceneSplinePoint *)point_values->component =
+        (SceneSplinePoint){.order = (float32_t)i};
+  }
+  const VkrBakeryJson *mesh = vkr_bakery_json_get(args, "mesh");
+  if (mesh && !ops_add_created_component(ctx, batch, container, spline_item,
+                                         &vkr_scene_spline_mesh_type, mesh)) {
+    return false_v;
+  }
+  batch->op_item[batch->op_count] = spline_item;
+  return true_v;
+}
+
+/* scatter.create: an entity whose box drops seeded copies of a mesh. */
+static bool8_t ops_build_scatter_create(OpsContext *ctx,
+                                        const VkrBakeryJson *args,
+                                        OpsBatch *batch) {
+  uint16_t container = 0u;
+  if (!ops_arg_container(ctx, args, &container)) {
+    return false_v;
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields =
+      VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "Scatter");
+  String8 name = {0};
+  if (vkr_bakery_json_get_string(args, "name", &name) && name.length &&
+      name.length < sizeof(values->name)) {
+    snprintf(values->name, sizeof(values->name), "%.*s", (int)name.length,
+             name.str);
+  }
+  if (!ops_arg_vec3(ctx, args, "position", &values->position, NULL)) {
+    return false_v;
+  }
+  values->rotation = vkr_quat_identity();
+  values->scale = vec3_one();
+  values->component_type = &vkr_scene_scatter_type;
+  vkr_type_defaults(&vkr_scene_scatter_type, values->component);
+  if (!ops_component_read(ctx, &vkr_scene_scatter_type,
+                          vkr_bakery_json_get(args, "values"),
+                          values->component)) {
+    return false_v;
+  }
+  char error[160] = {0};
+  if (!vkr_type_validate(&vkr_scene_scatter_type, values->component, error,
+                         sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "scatter: %s", error);
+  }
+  batch->op_item[batch->op_count] = batch->count - 1u;
+  return ops_validate_values(ctx, values);
+}
+
+/* The world points of an existing spline argument `key`. */
+static uint32_t ops_spline_points(OpsContext *ctx, const OpsBatch *batch,
+                                  const VkrBakeryJson *args, const char *key,
+                                  OpsRef *ref, Vec3 *out, bool8_t *closed) {
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, key), key, ref)) {
+    return 0u;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref->container);
+  const uint32_t count =
+      ref->item < 0 ? vkr_scene_spline_world_points(
+                          scene, ref->entity, out, VKR_SPLINE_POINT_MAX, closed)
+                    : 0u;
+  if (count < 2u) {
+    ops_fail(ctx, OPS_INVALID,
+             "'%s' must name an existing spline with at least two points", key);
+    return 0u;
+  }
+  return count;
+}
+
+/* terrain.road: flattens a band along a spline, following its heights. */
+static bool8_t ops_build_terrain_road(OpsContext *ctx,
+                                      const VkrBakeryJson *args,
+                                      OpsBatch *batch) {
+  OpsRef ref;
+  OpsRef spline;
+  const VkrHeightfield *field = NULL;
+  Vec3 points[VKR_SPLINE_POINT_MAX];
+  bool8_t closed = false_v;
+  if (!ops_terrain_arg(ctx, batch, args, &ref, &field)) {
+    return false_v;
+  }
+  const uint32_t count =
+      ops_spline_points(ctx, batch, args, "spline", &spline, points, &closed);
+  if (!count) {
+    return false_v;
+  }
+  float64_t width = 6.0;
+  float64_t falloff = 4.0;
+  float64_t offset = 0.0;
+  (void)ops_arg_number(args, "width", &width);
+  (void)ops_arg_number(args, "falloff", &falloff);
+  (void)ops_arg_number(args, "offset", &offset);
+  if (!(width > 0.0) || !(falloff >= 0.0) || !isfinite(offset)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "terrain.road needs a positive 'width' and a "
+                    "non-negative 'falloff'");
+  }
+  /* The centreline every half spacing, so curves stay round. */
+  const float32_t spacing = Max(0.5f, field->spacing * 0.5f);
+  const uint32_t capacity = 8192u;
+  VkrSplineSample *samples =
+      arena_alloc(ops_arena(ctx), sizeof(VkrSplineSample) * capacity,
+                  ARENA_MEMORY_TAG_ARRAY);
+  Vec3 *path = arena_alloc(ops_arena(ctx), sizeof(Vec3) * capacity,
+                           ARENA_MEMORY_TAG_ARRAY);
+  if (!samples || !path) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  const uint32_t sampled =
+      vkr_spline_sample(points, count, closed, spacing, samples, capacity);
+  for (uint32_t i = 0; i < sampled; ++i) {
+    path[i] =
+        vec3_add(samples[i].position, vec3_new(0.0f, (float32_t)offset, 0.0f));
+  }
+  const VkrHeightfieldOp op = {.kind = VKR_HEIGHTFIELD_OP_ROAD,
+                               .width = (float32_t)width,
+                               .falloff = (float32_t)falloff,
+                               .path = path,
+                               .path_count = sampled};
+  return ops_terrain_item(ctx, batch, &ref, &op) != NULL;
+}
+
+/* spline.sample: points along a spline every `spacing` metres. */
+static VkrEditorOpStatus ops_run_spline_sample(OpsContext *ctx) {
+  OpsRef ref;
+  Vec3 points[VKR_SPLINE_POINT_MAX];
+  bool8_t closed = false_v;
+  const uint32_t count = ops_spline_points(ctx, NULL, ctx->call->args, "spline",
+                                           &ref, points, &closed);
+  if (!count) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t spacing = 1.0;
+  (void)ops_arg_number(ctx->call->args, "spacing", &spacing);
+  if (!(spacing >= 0.05)) {
+    ops_fail(ctx, OPS_INVALID, "'spacing' is at least 0.05 m");
+    return VKR_EDITOR_OP_DONE;
+  }
+  const uint32_t capacity = 2048u;
+  VkrSplineSample *samples =
+      arena_alloc(ops_arena(ctx), sizeof(VkrSplineSample) * capacity,
+                  ARENA_MEMORY_TAG_ARRAY);
+  if (!samples) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  const uint32_t sampled = vkr_spline_sample(
+      points, count, closed, (float32_t)spacing, samples, capacity);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < sampled; ++i) {
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    ops_set(ctx, row, "position", ops_vec3(ctx, samples[i].position));
+    ops_set(ctx, row, "tangent", ops_vec3(ctx, samples[i].tangent));
+    ops_set(ctx, row, "distance", ops_number(ctx, samples[i].distance));
+    vkr_bakery_json_append(list, row);
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "length",
+          ops_number(ctx, vkr_spline_length(points, count, closed)));
+  ops_set(ctx, ctx->call->result, "samples", list);
+  return VKR_EDITOR_OP_DONE;
+}
+
+// =============================================================================
 // Entity IO (vkr_io_router.h)
 // =============================================================================
 
@@ -4739,6 +5037,41 @@ static const OpsDef s_ops[] = {
      "\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":2,"
      "\"maxItems\":2}}},\"required\":[\"terrain\",\"points\"]}",
      ops_run_terrain_sample, NULL},
+    {"spline.create",
+     "Create a spline through 'points' (world [x, y, z], 2 to 256) as an "
+     "entity at the first point with a child spline_point per point; "
+     "'closed' loops it. 'mesh' (spline_mesh values: mesh, mesh_index, "
+     "spacing, scale, offset, follow_slope) repeats a cooked mesh along it.",
+     "{\"type\":\"object\",\"properties\":{\"points\":{\"type\":\"array\","
+     "\"items\":" OPS_VEC3_SCHEMA ",\"minItems\":2,\"maxItems\":256},"
+     "\"closed\":{\"type\":\"boolean\"},\"name\":{\"type\":\"string\"},"
+     "\"mesh\":{\"type\":\"object\"},\"container\":" OPS_CONTAINER_SCHEMA
+     "," OPS_REVIEW_SCHEMA "},\"required\":[\"points\"]}",
+     NULL, ops_build_spline_create},
+    {"spline.sample",
+     "Points along a spline every 'spacing' metres (default 1): position, "
+     "unit tangent and distance, and the spline's length.",
+     "{\"type\":\"object\",\"properties\":{\"spline\":" OPS_ENTITY_SCHEMA
+     ",\"spacing\":{\"type\":\"number\"}},\"required\":[\"spline\"]}",
+     ops_run_spline_sample, NULL},
+    {"scatter.create",
+     "Create a scatter at 'position' whose box drops seeded copies of a "
+     "cooked mesh onto the ground below; 'values' sets the scatter "
+     "component (mesh, mesh_index, count up to 2048, seed, extents, "
+     "scale_min, scale_max, align_to_surface, random_yaw).",
+     "{\"type\":\"object\",\"properties\":{\"position\":" OPS_VEC3_SCHEMA
+     ",\"name\":{\"type\":\"string\"},\"values\":{\"type\":\"object\"},"
+     "\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA "}}",
+     NULL, ops_build_scatter_create},
+    {"terrain.road",
+     "Shape a road 'width' metres wide (default 6) along an existing "
+     "spline, following its heights plus 'offset', blending over "
+     "'falloff' metres (default 4), as one undo step.",
+     "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
+     ",\"spline\":" OPS_ENTITY_SCHEMA ",\"width\":{\"type\":\"number\"},"
+     "\"falloff\":{\"type\":\"number\"},\"offset\":{\"type\":\"number\"}"
+     "," OPS_REVIEW_SCHEMA "},\"required\":[\"terrain\",\"spline\"]}",
+     NULL, ops_build_terrain_road},
     {"io.connect",
      "Connect the source's 'output' to the 'input' of 'target' in the same "
      "scene: when the source fires it, the target receives the input after "

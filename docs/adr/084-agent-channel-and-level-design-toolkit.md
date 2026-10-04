@@ -8,13 +8,12 @@ authority: adr
 ## Status
 
 Accepted (partial). The agent channel, brushes, brush editing, level
-checks and entity IO (phases 0 to 3 of the
+checks, entity IO, terrain and population (phases 0 to 5 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
-implemented. Terrain (phase 4) is implemented: heightfields, editing, the
-agent operations, tile meshes with geomorphing levels
-([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)), the four-layer
-terrain material and height field collision. `terrain.road` and population
-remain in the toolkit proposal.
+implemented, with terrain tile levels in
+[ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md). The toolkit
+proposal keeps the tools no phase covered; native Vulkan execution is
+unverified.
 
 ## Context
 
@@ -456,6 +455,55 @@ times the strength in metres per second. The Create menu's Level group adds
 a 256 m Terrain. Cmd `terrain.tool` and `window terrain` reach the same
 tool.
 
+### Population
+
+A spline is an entity with a `spline` component (`closed`) whose child
+entities with `spline_point` (`order`) are its control points, in the spline
+entity's space ([vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)).
+The curve ([vkr_spline.c](../../runtime/src/level/vkr_spline.c)) is a
+centripetal Catmull-Rom spline through the points in order, which neither
+overshoots nor loops between uneven points; an open curve reflects each end
+point's neighbour past it. Samples sit at equal arc length, measured over 32
+chords per segment, and an open curve's last sample is its last point.
+Points are ordinary children, so the transform tools move them.
+
+Two rules place runtime copies of a cooked mesh (a `.vkb` path and a source
+mesh index), each with a rotation in the copy's frame and a scale:
+
+- **`spline_mesh`**, on a spline, places a copy every `spacing` metres along
+  it with an `offset` in the copy's frame (x right, y up, z along), upright
+  unless it follows the slope.
+- **`scatter`** places `count` seeded copies (up to 2048) in its entity's
+  box: each drops straight down from the box's top onto the first physics
+  surface, upright or leaning to the surface's normal, with a random yaw
+  and a scale between `scale_min` and `scale_max`. A column that meets
+  nothing places no copy.
+
+The scene owns the copies
+([vkr_scene_population.c](../../runtime/src/renderer/systems/vkr_scene_population.c)):
+mesh manager instances that documents never store. Each update hashes a
+rule's inputs (its component, its entity's transform and visibility, a
+spline's points, and for a scatter every terrain's revision) and rebuilds
+the rule when the hash changes. The same mesh and count only move; anything
+else recreates the copies. A scatter waits while any terrain's collision is
+rebuilding. Copies pick as their rule's entity, through the render bridge.
+A scene holds at most 64 rules and 4,096 copies; a rule asking for more
+gets the remainder and a status saying so. A copy costs 184 bytes of CPU
+memory and, per frame, a 144-byte instance row and a 48-byte candidate per
+submesh, so the bound stays under 1 MB of each on the 16 GB floor
+([ADR-083](083-supported-hardware-matrix.md)).
+
+| Operation | Purpose |
+|---|---|
+| `spline.create` | A spline through 2 to 256 world points, with an optional `spline_mesh` |
+| `spline.sample` | Positions, tangents and distances along a spline, and its length |
+| `scatter.create` | A scatter entity with its component values |
+| `terrain.road` | Shape a road of a width along a spline, following its heights, as one terrain edit (`VKR_HEIGHTFIELD_OP_ROAD`, a ramp per sampled segment) |
+
+`scene.describe` reports a rule's copies and status. In the Scene, splines
+draw as curves, the selected one brighter, and a selected scatter shows its
+box; the Create menu's Level group adds a Spline and a Scatter.
+
 ## Consequences
 
 Agents and scripts reach every editor feature through typed operations, with
@@ -479,6 +527,12 @@ Scene as rendered, not what the editor shows while rendering is stopped.
 An MCP client that sends only 2025-11-25 or older requests cannot connect;
 it gets an explicit `UnsupportedProtocolVersion`. The socket admits only the
 user's own processes, which can already edit the project's files.
+
+Population copies have no collision and no saved state: a game that needs
+either authors entities instead. A scatter does not see brushes moved after
+it placed its copies until its own inputs or a terrain change; changing its
+seed places it anew. Linked prefabs and meshes bent along a spline remain in
+the toolkit proposal.
 
 `terrain.create` writes the heightfield file at once, so undoing it or
 leaving the scene unsaved leaves the file behind. A terrain keeps all its
@@ -573,6 +627,19 @@ material then).
   --scalar-block-layout`. Metal's startup reflection accepted its terrain
   row; the Vulkan reflection check and native Vulkan execution are
   unverified.
+- `./build_test.sh` suite `spline` covers a straight curve's exact length,
+  spacing and last sample, and a closed curve through eight points of a
+  circle: it passes through each point, stays within 1.5% of the radius
+  between them, and measures the circumference within 0.4 m; suite
+  `heightfield` covers a road following its centreline's heights inside
+  its width and leaving ground past its falloff (2026-10-04, macOS Debug).
+- Headless macOS Release on Bistro (2026-10-04): on a 256 m hilly terrain,
+  `spline.create` with a `spline_mesh` of Bistro's trash can placed 23
+  copies along a 174 m spline; `terrain.road` cut a 6 m road through a hill
+  that the terrain samples at 1.05 m and 1.47 m where the spline is 1.0 m
+  and 1.5 m high, leaving the hilltop at 9.5 m; `scatter.create` dropped 30
+  copies of a Bistro tree mesh onto the hills. A capture shows the upright
+  copies, the road, the trees on the hills and the spline's curve.
 - Indicative cost, not a harness claim: the headless Release editor on an
   M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
   8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000

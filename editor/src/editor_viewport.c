@@ -723,7 +723,7 @@ static bool8_t brush_draw_point(const VkrSampleUiFrame *frame, Vec2 pixel,
   return true_v;
 }
 
-/* Brush drawing (docs/proposals/level-design-toolkit.md): while it is on,
+/* Brush drawing (ADR-084): while it is on,
    the Scene image takes the mouse from picking, a left drag outlines the
    box on the grid plane and the release creates it through brush.box.
    Escape cancels a drag, or turns drawing off. */
@@ -939,7 +939,7 @@ static void viewport_face_handle(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
-/* Face editing (docs/proposals/level-design-toolkit.md, phase 2): Alt+click
+/* Face editing (ADR-084): Alt+click
    selects the brush face under the pointer instead of its object, a drag on
    the selected face's handle moves it, and Alt+Up or Alt+Down moves it
    0.25 m out or in along its normal, 1 m with Shift, through

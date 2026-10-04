@@ -4217,7 +4217,7 @@ vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
 static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   const uint32_t hidden = state->view_state.hidden_kinds;
   /* Clip and trigger brushes draw while the editor edits, not during Play
-     or in a game (docs/proposals/level-design-toolkit.md). */
+     or in a game (ADR-084). */
   const bool8_t volumes = application->editor_viewport.enabled &&
                           !application->editor_viewport.simulation_running;
   VkrScene *world = vkr_scene_handle_get_scene(state->world_handle);
@@ -5237,7 +5237,7 @@ static bool8_t sample_batch_item(VkrStandardSceneRuntime *application,
 }
 
 /* Applies a batch as one journal group, rolling it back on the first failed
-   edit, or reverts a closed group (docs/proposals/level-design-toolkit.md,
+   edit, or reverts a closed group (ADR-084,
    phase 0). Edits wait while the simulation runs, as Details edits do. */
 static void sample_edit_batch(VkrStandardSceneRuntime *application,
                               const VkrSampleEditBatchRequest *batch) {

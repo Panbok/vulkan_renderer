@@ -3,13 +3,12 @@
 #include "editor_ui.h"
 #include "level/vkr_brush.h"
 
-/* Level checks against the player capsule (docs/proposals/
- * level-design-toolkit.md, phase 2). A region's walkable floor is sampled on
- * a grid of capsule-radius cells with physics raycasts: every floor a
- * downward ray finds from start heights one capsule height apart, so rooms
- * under roofs count. A floor is walkable when its slope is within the limit
- * and the capsule fits on it. Neighbouring floors connect when the step up
- * is within `step_up`, a drop is at most VKR_EDITOR_LEVEL_DROP_MAX, and
+/* Level checks against the player capsule (ADR-084). A region's walkable floor
+ * is sampled on a grid of capsule-radius cells with physics raycasts: every
+ * floor a downward ray finds from start heights one capsule height apart, so
+ * rooms under roofs count. A floor is walkable when its slope is within the
+ * limit and the capsule fits on it. Neighbouring floors connect when the step
+ * up is within `step_up`, a drop is at most VKR_EDITOR_LEVEL_DROP_MAX, and
  * nothing blocks the way at knee height. Only collision counts: geometry
  * without collision is invisible to the checks. */
 

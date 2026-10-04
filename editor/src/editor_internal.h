@@ -58,7 +58,7 @@ typedef enum EditorCommand {
   CMD_SCENE_BAKE,
   /* The Script editor window (ADR-079). */
   CMD_SCRIPT_EDITOR,
-  /* Agent changes awaiting review (docs/proposals/level-design-toolkit.md). */
+  /* Agent changes awaiting review (ADR-084). */
   CMD_CHANGES,
   /* Brush drawing in the Scene (B). */
   CMD_BRUSH_DRAW,

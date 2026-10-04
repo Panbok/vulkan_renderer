@@ -4,10 +4,10 @@
 #include "memory/arena.h"
 #include "vkr_bakery_json.h"
 
-/* The operation table the agent channel runs (docs/proposals/
- * level-design-toolkit.md, phase 0). Operations run on the UI thread during
- * the editor's build; scene edits travel as one VkrSampleEditBatchRequest
- * that the runtime applies after the build as one journal group. */
+/* The operation table the agent channel runs (ADR-084). Operations run on the
+ * UI thread during the editor's build; scene edits travel as one
+ * VkrSampleEditBatchRequest that the runtime applies after the build as one
+ * journal group. */
 typedef struct VkrEditorOps VkrEditorOps;
 
 typedef enum VkrEditorOpStatus {

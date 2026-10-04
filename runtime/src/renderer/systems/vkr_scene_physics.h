@@ -271,7 +271,7 @@ bool8_t vkr_scene_physics_contact_events(VkrScene *scene,
 bool8_t vkr_scene_physics_mutations_allowed(const VkrScene *scene);
 
 /* Static or sensor bodies the scene generates from authored data, such as
-   brush collision (docs/proposals/level-design-toolkit.md). They are not
+   brush collision (ADR-084). They are not
    authored state: snapshots, documents, the journal and Reset never see
    them, and shutdown destroys them. `key` names one body at the world
    origin and replaces any earlier body under it; queries report `entity`

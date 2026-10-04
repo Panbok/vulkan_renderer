@@ -3,7 +3,7 @@
 #include "core/vkr_type_desc.h"
 #include "renderer/systems/vkr_scene_system.h"
 
-/* Scene brushes (docs/proposals/level-design-toolkit.md, phase 1). A brush is
+/* Scene brushes (ADR-084). A brush is
  * an entity with a `brush` component whose direct children carry
  * `brush_face`. The scene rebuilds a changed brush once per update, after
  * its transform has rested for two updates: one generated mesh with a

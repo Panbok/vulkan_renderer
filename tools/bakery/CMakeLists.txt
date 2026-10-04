@@ -3,8 +3,7 @@
 # `tool` entries join only when VKR_BUILD_TOOLS provides the cooker libraries.
 
 # Bakery's JSON document tree and growable buffer. The editor's agent channel
-# and vkr_mcp parse their messages with it
-# (docs/proposals/level-design-toolkit.md).
+# and vkr_mcp parse their messages with it (ADR-084).
 add_library(vkr_bakery_json STATIC vkr_bakery_json.c vkr_bakery_buffer.c)
 vkr_require_declared_c_functions(vkr_bakery_json)
 target_include_directories(vkr_bakery_json PUBLIC

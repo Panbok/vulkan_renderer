@@ -1850,6 +1850,209 @@ const VkrTypeDesc vkr_scene_terrain_type = {
 };
 
 // =============================================================================
+// Population (ADR-084)
+// =============================================================================
+
+static const VkrPropertyDesc s_spline_properties[] = {
+    {.name = "closed",
+     .label = "Closed",
+     .tooltip = "The curve returns from its last point to its first",
+     .offset = TYPE_OFFSET(SceneSpline, closed),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+const VkrTypeDesc vkr_scene_spline_type = {
+    .name = "spline",
+    .label = "Spline",
+    .category = "Level",
+    .properties = s_spline_properties,
+    .property_count = ArrayCount(s_spline_properties),
+    .size = sizeof(SceneSpline),
+    .align = _Alignof(SceneSpline),
+};
+
+static const VkrPropertyDesc s_spline_point_properties[] = {
+    {.name = "order",
+     .label = "Order",
+     .tooltip = "The curve visits its points from the lowest order up",
+     .offset = TYPE_OFFSET(SceneSplinePoint, order),
+     .kind = VKR_PROPERTY_F32,
+     .min = -1.0e6f,
+     .max = 1.0e6f,
+     .step = 1.0f},
+};
+
+const VkrTypeDesc vkr_scene_spline_point_type = {
+    .name = "spline_point",
+    .label = "Spline point",
+    .category = "Level",
+    .properties = s_spline_point_properties,
+    .property_count = ArrayCount(s_spline_point_properties),
+    .size = sizeof(SceneSplinePoint),
+    .align = _Alignof(SceneSplinePoint),
+};
+
+static const VkrPropertyDesc s_spline_mesh_properties[] = {
+    {.name = "mesh",
+     .label = "Mesh",
+     .tooltip = "Cooked .vkb whose mesh repeats along the spline",
+     .offset = TYPE_OFFSET(SceneSplineMesh, mesh),
+     .capacity = SCENE_POPULATION_MESH_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "mesh_index",
+     .label = "Mesh index",
+     .tooltip = "Source mesh in the file, counting from 0",
+     .offset = TYPE_OFFSET(SceneSplineMesh, mesh_index),
+     .kind = VKR_PROPERTY_U32,
+     .max = 65535.0f},
+    {.name = "spacing",
+     .label = "Spacing",
+     .unit = "m",
+     .tooltip = "Distance between copies along the curve",
+     .offset = TYPE_OFFSET(SceneSplineMesh, spacing),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.05f,
+     .max = 1000.0f,
+     .step = 0.1f},
+    {.name = "scale",
+     .label = "Scale",
+     .offset = TYPE_OFFSET(SceneSplineMesh, scale),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = 0.001f,
+     .max = 1000.0f,
+     .step = 0.05f},
+    {.name = "offset",
+     .label = "Offset",
+     .unit = "m",
+     .tooltip = "Offset in each copy's frame: x right, y up, z along",
+     .offset = TYPE_OFFSET(SceneSplineMesh, offset),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = -1000.0f,
+     .max = 1000.0f,
+     .step = 0.05f},
+    {.name = "rotation",
+     .label = "Rotation",
+     .unit = "\xc2\xb0",
+     .tooltip = "Turn of the mesh within each copy's frame, about X, Y, Z",
+     .offset = TYPE_OFFSET(SceneSplineMesh, rotation),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = -360.0f,
+     .max = 360.0f,
+     .step = 1.0f},
+    {.name = "follow_slope",
+     .label = "Follow slope",
+     .tooltip = "Copies tilt with the curve instead of standing upright",
+     .offset = TYPE_OFFSET(SceneSplineMesh, follow_slope),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void spline_mesh_defaults(void *value) {
+  *(SceneSplineMesh *)value =
+      (SceneSplineMesh){.spacing = 2.0f, .scale = vec3_new(1.0f, 1.0f, 1.0f)};
+}
+
+const VkrTypeDesc vkr_scene_spline_mesh_type = {
+    .name = "spline_mesh",
+    .label = "Spline mesh",
+    .category = "Level",
+    .properties = s_spline_mesh_properties,
+    .property_count = ArrayCount(s_spline_mesh_properties),
+    .size = sizeof(SceneSplineMesh),
+    .align = _Alignof(SceneSplineMesh),
+    .defaults = spline_mesh_defaults,
+};
+
+static const VkrPropertyDesc s_scatter_properties[] = {
+    {.name = "mesh",
+     .label = "Mesh",
+     .tooltip = "Cooked .vkb whose mesh the scatter places",
+     .offset = TYPE_OFFSET(SceneScatter, mesh),
+     .capacity = SCENE_POPULATION_MESH_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "mesh_index",
+     .label = "Mesh index",
+     .tooltip = "Source mesh in the file, counting from 0",
+     .offset = TYPE_OFFSET(SceneScatter, mesh_index),
+     .kind = VKR_PROPERTY_U32,
+     .max = 65535.0f},
+    {.name = "count",
+     .label = "Count",
+     .tooltip = "Copies to place; at most 2048",
+     .offset = TYPE_OFFSET(SceneScatter, count),
+     .kind = VKR_PROPERTY_U32,
+     .max = 2048.0f},
+    {.name = "seed",
+     .label = "Seed",
+     .tooltip = "Another seed places the copies anew",
+     .offset = TYPE_OFFSET(SceneScatter, seed),
+     .kind = VKR_PROPERTY_U32},
+    {.name = "extents",
+     .label = "Extents",
+     .unit = "m",
+     .tooltip = "Half sizes of the box copies land in",
+     .offset = TYPE_OFFSET(SceneScatter, extents),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = 0.01f,
+     .max = 10000.0f,
+     .step = 0.5f},
+    {.name = "scale_min",
+     .label = "Scale min",
+     .offset = TYPE_OFFSET(SceneScatter, scale_min),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.001f,
+     .max = 1000.0f,
+     .step = 0.05f},
+    {.name = "scale_max",
+     .label = "Scale max",
+     .offset = TYPE_OFFSET(SceneScatter, scale_max),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.001f,
+     .max = 1000.0f,
+     .step = 0.05f},
+    {.name = "rotation",
+     .label = "Rotation",
+     .unit = "\xc2\xb0",
+     .tooltip = "Turn of the mesh within each copy's frame, about X, Y, Z",
+     .offset = TYPE_OFFSET(SceneScatter, rotation),
+     .kind = VKR_PROPERTY_VEC3,
+     .min = -360.0f,
+     .max = 360.0f,
+     .step = 1.0f},
+    {.name = "align_to_surface",
+     .label = "Align to surface",
+     .tooltip = "Copies lean to the ground's normal",
+     .offset = TYPE_OFFSET(SceneScatter, align_to_surface),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "random_yaw",
+     .label = "Random yaw",
+     .tooltip = "Copies turn about their up axis at random",
+     .offset = TYPE_OFFSET(SceneScatter, random_yaw),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void scatter_defaults(void *value) {
+  *(SceneScatter *)value = (SceneScatter){
+      .count = 64u,
+      .seed = 1u,
+      .extents = vec3_new(10.0f, 10.0f, 10.0f),
+      .scale_min = 0.8f,
+      .scale_max = 1.2f,
+      .random_yaw = true_v,
+  };
+}
+
+const VkrTypeDesc vkr_scene_scatter_type = {
+    .name = "scatter",
+    .label = "Scatter",
+    .category = "Level",
+    .properties = s_scatter_properties,
+    .property_count = ArrayCount(s_scatter_properties),
+    .size = sizeof(SceneScatter),
+    .align = _Alignof(SceneScatter),
+    .defaults = scatter_defaults,
+};
+
+// =============================================================================
 // Entity IO (ADR-084)
 // =============================================================================
 
@@ -2111,6 +2314,10 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_counter_type,
     &vkr_scene_io_connection_type,
     &vkr_scene_terrain_type,
+    &vkr_scene_spline_type,
+    &vkr_scene_spline_point_type,
+    &vkr_scene_spline_mesh_type,
+    &vkr_scene_scatter_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -2179,5 +2386,7 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_timer_type || type == &vkr_scene_counter_type ||
          type == &vkr_scene_io_connection_type ||
-         type == &vkr_scene_terrain_type;
+         type == &vkr_scene_terrain_type || type == &vkr_scene_spline_type ||
+         type == &vkr_scene_spline_point_type ||
+         type == &vkr_scene_spline_mesh_type || type == &vkr_scene_scatter_type;
 }

@@ -53,12 +53,16 @@ typedef struct TerrainRecord {
   VkrGeometryHandle tiles[TERRAIN_TILES_MAX];
   uint64_t dirty_tiles[TERRAIN_TILES_MAX / 64u];
   uint32_t serial;
+  /* Times the samples or products were marked changed. */
+  uint64_t marks;
   char status[160];
 } TerrainRecord;
 
 struct s_VkrSceneTerrains {
   TerrainRecord records[VKR_SCENE_TERRAIN_MAX];
   uint32_t record_count;
+  /* Terrains removed so far; with each record's marks it is the revision. */
+  uint64_t removed;
 };
 
 // =============================================================================
@@ -125,6 +129,7 @@ static void terrain_material_key(const SceneTerrain *terrain, char *out,
 }
 
 static void terrain_mark_all(TerrainRecord *record) {
+  record->marks++;
   MemSet(record->dirty_tiles, 0xFF, sizeof(record->dirty_tiles));
   record->mesh_dirty = true_v;
   record->collision_dirty = true_v;
@@ -133,6 +138,7 @@ static void terrain_mark_all(TerrainRecord *record) {
 
 /* Marks the tiles whose vertices or normals `rect` reaches. */
 static void terrain_mark(TerrainRecord *record, VkrHeightfieldRect rect) {
+  record->marks++;
   const uint32_t tiles = terrain_tiles(record);
   /* Normals read one neighbour, and edge samples belong to two tiles. */
   const uint32_t x0 = rect.x0 > 1u ? rect.x0 - 2u : 0u;
@@ -231,7 +237,28 @@ void vkr_scene_terrain_entity_destroying(VkrScene *scene, VkrEntityId entity) {
     return;
   }
   terrain_release(scene, record);
+  state->removed += record->marks + 1u;
   *record = state->records[--state->record_count];
+}
+
+uint64_t vkr_scene_terrain_revision(const VkrScene *scene) {
+  const VkrSceneTerrains *state = scene ? scene->terrains : NULL;
+  uint64_t revision = state ? state->removed : 0u;
+  for (uint32_t i = 0; state && i < state->record_count; ++i) {
+    revision += state->records[i].marks;
+  }
+  return revision;
+}
+
+bool8_t vkr_scene_terrain_settled(const VkrScene *scene) {
+  const VkrSceneTerrains *state = scene ? scene->terrains : NULL;
+  for (uint32_t i = 0; state && i < state->record_count; ++i) {
+    const TerrainRecord *record = &state->records[i];
+    if (record->loaded && (record->mesh_dirty || record->collision_dirty)) {
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 const VkrHeightfield *vkr_scene_terrain_field(const VkrScene *scene,

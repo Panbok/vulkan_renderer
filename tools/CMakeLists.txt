@@ -396,8 +396,7 @@ endif()
 # their shader catalog through it.
 add_subdirectory(bakery)
 
-# The MCP server for the editor's agent channel
-# (docs/proposals/level-design-toolkit.md).
+# The MCP server for the editor's agent channel (ADR-084).
 add_executable(vkr_mcp agent/vkr_mcp.c)
 vkr_require_declared_c_functions(vkr_mcp)
 target_link_libraries(vkr_mcp PRIVATE vkr_bakery_json)

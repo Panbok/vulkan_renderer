@@ -14,7 +14,7 @@ typedef struct VkrEditorApplication {
   /** `--headless`: no window; the editor quits when its Cmd script ends. */
   bool8_t headless;
   /** `--agent-socket <path>` and `--no-agent-socket`: the agent channel's
-   * socket (docs/proposals/level-design-toolkit.md). */
+   * socket (ADR-084). */
   const char *agent_socket;
   bool8_t agent_disabled;
   /** `--scripts <dir>`: a Scripts folder of C modules to build, load and

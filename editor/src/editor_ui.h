@@ -41,7 +41,7 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_BUILD,
   /* Project script sources (ADR-079). */
   VKR_EDITOR_WINDOW_SCRIPT,
-  /* Agent changes awaiting review (docs/proposals/level-design-toolkit.md). */
+  /* Agent changes awaiting review (ADR-084). */
   VKR_EDITOR_WINDOW_CHANGES,
   /* Level checks against the player capsule. */
   VKR_EDITOR_WINDOW_LEVEL,
@@ -368,7 +368,7 @@ typedef struct VkrEditorUi {
   uint32_t cmd_capture_capacity;
   uint32_t cmd_capture_length;
   /* The agent channel and its operation table
-     (docs/proposals/level-design-toolkit.md). */
+     (ADR-084). */
   struct VkrEditorAgent *agent;
   /* The Level checks window's last report (editor_level.h). */
   struct VkrEditorLevelReport *level_report;

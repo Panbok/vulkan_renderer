@@ -6,6 +6,7 @@
 #include "editor_terrain.h"
 #include "editor_ui.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <math.h>
 #include <stdio.h>
@@ -390,6 +391,86 @@ static bool8_t physics_face_selected(const VkrSampleUiFrame *frame) {
 /* Level tool outlines in world space: the selected brush face, the cut the
    clip tool previews, and the issues and region of the last level check
    while the Level checks window is open. */
+/* Splines as curves, the selected one finer and brighter, and the selected
+   scatter's box (ADR-084). Counts
+   the lines when `draw` is false. */
+static uint32_t physics_population_lines(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         uint32_t capacity, bool8_t draw) {
+  const VkrScene *scene = frame->scene;
+  if (!scene) {
+    return 0u;
+  }
+  VkrEntityId selected_spline = frame->selected_entity;
+  const SceneTransform *selected_transform =
+      vkr_scene_entity_alive(scene, selected_spline)
+          ? vkr_entity_get_component(scene->world, selected_spline,
+                                     scene->comp_transform)
+          : NULL;
+  if (selected_transform && vkr_scene_get_typed(scene, selected_spline,
+                                                &vkr_scene_spline_point_type)) {
+    selected_spline = selected_transform->parent;
+  }
+  uint32_t count = 0u;
+  Vec3 points[VKR_SPLINE_POINT_MAX];
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    if (!vkr_scene_entity_alive(scene, entity) ||
+        !vkr_scene_get_typed(scene, entity, &vkr_scene_spline_type)) {
+      continue;
+    }
+    bool8_t closed = false_v;
+    const uint32_t point_count = vkr_scene_spline_world_points(
+        scene, entity, points, VKR_SPLINE_POINT_MAX, &closed);
+    const uint32_t segments = vkr_spline_segment_count(point_count, closed);
+    const bool8_t selected = entity.u64 == selected_spline.u64;
+    const uint32_t chords = selected ? 12u : 4u;
+    const Vec4 color = selected ? (Vec4){1.0f, 0.72f, 0.2f, 1.0f}
+                                : (Vec4){0.7f, 0.75f, 0.85f, 1.0f};
+    for (uint32_t s = 0; s < segments; ++s) {
+      Vec3 from =
+          vkr_spline_evaluate(points, point_count, closed, s, 0.0f, NULL);
+      for (uint32_t c = 1; c <= chords; ++c) {
+        const Vec3 to =
+            vkr_spline_evaluate(points, point_count, closed, s,
+                                (float32_t)c / (float32_t)chords, NULL);
+        if (draw) {
+          physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
+                       capacity);
+        }
+        count++;
+        from = to;
+      }
+    }
+  }
+  const SceneScatter *scatter =
+      selected_transform ? vkr_scene_get_typed(scene, frame->selected_entity,
+                                               &vkr_scene_scatter_type)
+                         : NULL;
+  if (scatter) {
+    const Vec3 e = scatter->extents;
+    Vec3 corners[8];
+    for (uint32_t c = 0; c < 8u; ++c) {
+      corners[c] =
+          mat4_mul_vec3(selected_transform->world,
+                        vec3_new((c & 1u) ? e.x : -e.x, (c & 2u) ? e.y : -e.y,
+                                 (c & 4u) ? e.z : -e.z));
+    }
+    static const uint8_t edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7},
+                                         {0, 2}, {1, 3}, {4, 6}, {5, 7},
+                                         {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    for (uint32_t edge = 0; edge < 12u; ++edge) {
+      if (draw) {
+        physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                     corners[edges[edge][0]], corners[edges[edge][1]],
+                     (Vec4){0.45f, 0.9f, 0.5f, 1.0f}, capacity);
+      }
+      count++;
+    }
+  }
+  return count;
+}
+
 static void physics_level_tools(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 uint32_t capacity) {
@@ -495,7 +576,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   const uint32_t starts =
       frame->scripts_running ? 0u : physics_player_start_count(frame);
   /* Pending agent changes and a brush being drawn draw in this overlay too
-     (docs/proposals/level-design-toolkit.md). */
+     (ADR-084). */
   const VkrEditorLevelReport *report = editor->level_report;
   const uint32_t changes =
       vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
@@ -508,7 +589,8 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
            ? 1u
            : 0u) +
       (frame->scripts_running ? 0u
-                              : physics_io_lines(editor, frame, 0u, false_v));
+                              : physics_io_lines(editor, frame, 0u, false_v)) +
+      physics_population_lines(editor, frame, 0u, false_v);
   if (!bodies && !starts && !changes) {
     return;
   }
@@ -558,6 +640,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     if (!frame->scripts_running) {
       (void)physics_io_lines(editor, frame, capacity, true_v);
     }
+    (void)physics_population_lines(editor, frame, capacity, true_v);
   }
   if (frame->view_state.collision_display && capacity && bodies) {
     if (editor->physics_lines) {

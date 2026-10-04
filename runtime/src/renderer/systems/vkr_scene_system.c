@@ -6,6 +6,7 @@
 #include "vkr_scene_system.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_model.h"
+#include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
@@ -2000,6 +2001,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
 
   vkr_scene_physics_shutdown(scene);
   vkr_scene_brush_shutdown(scene);
+  vkr_scene_population_shutdown(scene);
   vkr_scene_terrain_shutdown(scene);
   vkr_scene_collision_layers_shutdown(scene);
   vkr_scene_animation_shutdown(scene);
@@ -2059,6 +2061,7 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
   vkr_scene_update_transforms(scene);
   vkr_scene_brush_update(scene);
   vkr_scene_terrain_update(scene);
+  vkr_scene_population_update(scene);
   if (!vkr_scene_physics_simulated_body_count(scene) &&
       !scene->simulation.enabled) {
     vkr_scene_animation_update(scene, dt);
@@ -2525,6 +2528,7 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   vkr_scene_model_entity_destroying(scene, entity);
   vkr_scene_brush_entity_destroying(scene, entity);
   vkr_scene_terrain_entity_destroying(scene, entity);
+  vkr_scene_population_entity_destroying(scene, entity);
   /* Generated shape meshes and text slots belong to the entity. */
   scene_shape_release(scene, entity);
   scene_text_release(scene, entity);
@@ -3523,6 +3527,14 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
   }
 }
 
+vkr_internal void render_sync_population_owner(void *context,
+                                               VkrEntityId entity) {
+  RenderSyncContext *ctx = context;
+  scene_render_bridge_update_mapping(
+      ctx->bridge, vkr_scene_get_render_id(ctx->scene, entity), entity,
+      vkr_scene_entity_visible(ctx->scene, entity));
+}
+
 vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
                                            struct VkrRenderAssets *assets,
                                            VkrScene *scene) {
@@ -3623,6 +3635,8 @@ vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
                                        render_sync_point_light_cb, &ctx);
   vkr_entity_query_compiled_each_chunk(&scene->query_shapes,
                                        render_sync_shape_cb, &ctx);
+  /* Population instances pick as their rule's entity. */
+  vkr_scene_population_each_owner(scene, render_sync_population_owner, &ctx);
 
   scene->render_dirty_count = 0;
   scene->render_full_sync_needed = false;
@@ -4128,6 +4142,9 @@ vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
     vkr_scene_brush_changed(scene, entity, type);
   } else if (type == &vkr_scene_terrain_type) {
     vkr_scene_terrain_changed(scene, entity);
+  } else if (type == &vkr_scene_spline_mesh_type ||
+             type == &vkr_scene_scatter_type) {
+    vkr_scene_population_changed(scene, entity, type);
   } else if (type == &vkr_scene_shape_type) {
     scene_shape_rebuild(scene, entity);
   } else if (type == &vkr_scene_text_type) {

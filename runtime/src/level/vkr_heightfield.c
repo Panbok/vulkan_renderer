@@ -414,6 +414,23 @@ bool8_t vkr_heightfield_op_rect(const VkrHeightfield *field,
         vec2_new(Max(op->a.x, op->b.x) + reach, Max(op->a.z, op->b.z) + reach),
         out);
   }
+  case VKR_HEIGHTFIELD_OP_ROAD: {
+    if (!op->path || op->path_count < 2u || !(op->width > 0.0f)) {
+      return false_v;
+    }
+    const float32_t reach = 0.5f * op->width + Max(0.0f, op->falloff);
+    Vec2 lo = vec2_new(INFINITY, INFINITY);
+    Vec2 hi = vec2_new(-INFINITY, -INFINITY);
+    for (uint32_t i = 0; i < op->path_count; ++i) {
+      const Vec3 p = vec3_add(op->path[i], op->a);
+      lo = vec2_new(Min(lo.x, p.x), Min(lo.y, p.z));
+      hi = vec2_new(Max(hi.x, p.x), Max(hi.y, p.z));
+    }
+    return isfinite(lo.x) && isfinite(lo.y) && isfinite(hi.x) &&
+           isfinite(hi.y) &&
+           heightfield_rect(field, vec2_new(lo.x - reach, lo.y - reach),
+                            vec2_new(hi.x + reach, hi.y + reach), out);
+  }
   default:
     return false_v;
   }
@@ -462,6 +479,19 @@ bool8_t vkr_heightfield_op_apply(VkrHeightfield *field,
                                   : op->height + value * op->strength,
                           1.0f);
       }
+    }
+    return true_v;
+  }
+  case VKR_HEIGHTFIELD_OP_ROAD: {
+    if (!vkr_heightfield_op_rect(field, op, touched)) {
+      return false_v;
+    }
+    /* Segments run in order, so a later one shapes the samples two share. */
+    for (uint32_t i = 0; i + 1u < op->path_count; ++i) {
+      VkrHeightfieldRect segment;
+      (void)vkr_heightfield_ramp(field, vec3_add(op->path[i], op->a),
+                                 vec3_add(op->path[i + 1u], op->a), op->width,
+                                 op->falloff, &segment);
     }
     return true_v;
   }

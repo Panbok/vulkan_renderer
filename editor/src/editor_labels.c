@@ -103,6 +103,8 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
         type == &vkr_scene_io_connection_type ||
         type == &vkr_scene_terrain_type ||
+        type == &vkr_scene_spline_point_type ||
+        type == &vkr_scene_spline_mesh_type ||
         vkr_scene_world_type_registered(type) ||
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;

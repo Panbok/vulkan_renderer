@@ -67,6 +67,12 @@ uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
                                         uint32_t capacity,
                                         VkrGpuGeometryLodRow *out_lod);
 
+/* Grows with every change to any terrain's samples, so things resting on
+   terrain can tell they must settle again. */
+uint64_t vkr_scene_terrain_revision(const VkrScene *scene);
+/* Whether every terrain's mesh and collision match its samples. */
+bool8_t vkr_scene_terrain_settled(const VkrScene *scene);
+
 /* Absolute path of a heightfield file the component names. */
 bool8_t vkr_scene_terrain_resolve(const VkrScene *scene, const char *relative,
                                   char *out, uint32_t capacity);

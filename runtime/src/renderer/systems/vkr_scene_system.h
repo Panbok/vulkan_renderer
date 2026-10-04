@@ -186,10 +186,9 @@ typedef struct ScenePlayerStart {
   bool8_t enabled;
 } ScenePlayerStart;
 
-/* How a brush takes part in the level (docs/proposals/
- * level-design-toolkit.md): solid renders and collides, visual only renders,
- * clip only collides, and trigger is a sensor volume. Clip and trigger brushes
- * draw only while the editor edits the scene. */
+/* How a brush takes part in the level (ADR-084): solid renders and collides,
+ * visual only renders, clip only collides, and trigger is a sensor volume. Clip
+ * and trigger brushes draw only while the editor edits the scene. */
 typedef enum SceneBrushRole {
   SCENE_BRUSH_ROLE_SOLID = 0,
   SCENE_BRUSH_ROLE_VISUAL,
@@ -242,6 +241,53 @@ typedef struct SceneTerrain {
   char layer3[SCENE_TERRAIN_MATERIAL_CAPACITY];
   float32_t texture_size;
 } SceneTerrain;
+
+/* Population (ADR-084). A `spline`
+ * curve passes through its `spline_point` child entities in `order`, in the
+ * spline entity's space. A `spline_mesh` on a spline repeats a cooked mesh
+ * along it; a `scatter` places seeded instances of one in its entity's box,
+ * dropped onto the first surface below. Instances are runtime data rebuilt
+ * from these rules; documents store only the rules. */
+#define SCENE_POPULATION_MESH_CAPACITY 256u
+
+typedef struct SceneSpline {
+  bool8_t closed;
+} SceneSpline;
+
+typedef struct SceneSplinePoint {
+  float32_t order;
+} SceneSplinePoint;
+
+typedef struct SceneSplineMesh {
+  /* Cooked .vkb and the source mesh in it, counting from 0. */
+  char mesh[SCENE_POPULATION_MESH_CAPACITY];
+  uint32_t mesh_index;
+  /* Metres between copies along the curve. */
+  float32_t spacing;
+  Vec3 scale;
+  /* Offset from the curve in each copy's frame: x right, y up, z along. */
+  Vec3 offset;
+  /* Turn of the mesh within each copy's frame, degrees about X, Y, Z. */
+  Vec3 rotation;
+  /* Copies tilt with the curve's slope instead of staying upright. */
+  bool8_t follow_slope;
+} SceneSplineMesh;
+
+typedef struct SceneScatter {
+  char mesh[SCENE_POPULATION_MESH_CAPACITY];
+  uint32_t mesh_index;
+  uint32_t count;
+  uint32_t seed;
+  /* Half sizes of the box, centred on the entity, that copies land in. */
+  Vec3 extents;
+  float32_t scale_min;
+  float32_t scale_max;
+  /* Turn of the mesh within each copy's frame, degrees about X, Y, Z. */
+  Vec3 rotation;
+  /* Copies lean to the surface's normal instead of standing upright. */
+  bool8_t align_to_surface;
+  bool8_t random_yaw;
+} SceneScatter;
 
 /* Entity IO (ADR-084): engine components whose outputs connections wire to
  * other entities' inputs. The script host's router runs them during a
@@ -888,6 +934,9 @@ typedef struct VkrScene {
   VkrSceneBrushes *brushes;
   /** Terrain state, created with the first terrain (vkr_scene_terrain.h). */
   struct s_VkrSceneTerrains *terrains;
+  /** Population state, created with the first spline mesh or scatter
+      (vkr_scene_population.h). */
+  struct s_VkrScenePopulation *population;
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
   /** Offset of this container's picking range; local render ids stay small

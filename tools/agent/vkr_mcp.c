@@ -1,5 +1,5 @@
 /* vkr_mcp: an MCP server over stdio for the VKR editor's agent channel
- * (docs/proposals/level-design-toolkit.md, phase 0).
+ * (ADR-084).
  *
  * It speaks MCP revision 2026-07-28 only: one JSON-RPC message per line,
  * no initialize handshake, and the protocol version in each request's
