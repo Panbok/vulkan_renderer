@@ -1373,6 +1373,18 @@ void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
   system->pending_local_history = (VkrLocalShadowPendingHistory){0};
 }
 
+/* The publications retained shadows follow: those that can change a caster
+   already drawing, or every publication when the frame does not say. */
+vkr_internal uint64_t
+vkr_shadow_caster_publication_generation(const VkrWorldPassPayload *world) {
+  if (!world) {
+    return 0u;
+  }
+  return world->caster_publication_generation
+             ? world->caster_publication_generation
+             : world->publication_generation;
+}
+
 vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
     const VkrShadowCascadeHistory *history,
     const VkrWorldPassPayload *candidates, uint64_t resource_generation,
@@ -1381,7 +1393,7 @@ vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
          history->static_generation ==
              (candidates ? candidates->static_generation : 0u) &&
          history->publication_generation ==
-             (candidates ? candidates->publication_generation : 0u) &&
+             vkr_shadow_caster_publication_generation(candidates) &&
          history->caster_bounds_generation ==
              (candidates ? candidates->caster_bounds_generation : 0u) &&
          history->bias_signature == bias_signature &&
@@ -1586,7 +1598,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         .rendered_view_projection = out_data->view_projection[cascade],
         .static_generation = candidates ? candidates->static_generation : 0u,
         .publication_generation =
-            candidates ? candidates->publication_generation : 0u,
+            vkr_shadow_caster_publication_generation(candidates),
         .caster_bounds_generation =
             candidates ? candidates->caster_bounds_generation : 0u,
         .bias_signature = bias_signature,
@@ -1660,7 +1672,8 @@ void vkr_shadow_system_resolve_local_shadows(
       .dynamic_overlap = dynamic_overlap,
       .token = retained_token,
       .static_generation = candidates->static_generation,
-      .publication_generation = candidates->publication_generation,
+      .publication_generation =
+          vkr_shadow_caster_publication_generation(candidates),
       .contents_unstable =
           dynamic_scan_failed || candidates->publication_pending,
       .refractive_casters = candidates->transmission_gpu_candidate_count > 0u,

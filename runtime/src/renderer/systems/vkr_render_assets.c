@@ -23,6 +23,9 @@ bool8_t vkr_render_assets_initialize(
     return false_v;
   MemZero(assets, sizeof(*assets));
   assets->asset_publisher = publisher;
+  /* A native table reports no completions; frames then follow the
+     publisher's own generation. */
+  assets->caster_publication_generation = publisher->poll_completion ? 1u : 0u;
   assets->job_system = job_system;
   assets->arena = arena_create(MB(64));
   if (!assets->arena)
@@ -361,6 +364,30 @@ vkr_internal VkrPublicationState *vkr_render_assets_publication_state(
   return NULL;
 }
 
+/* Whether a completed publication of `kind` can change the shadow of a
+   caster already drawing. Geometry cannot: meshes draw only once their
+   geometry has published, and their arrival is a topology change. Lighting
+   bakes write no caster's material. */
+vkr_internal bool8_t
+vkr_render_assets_reaches_casters(VkrPublicationKind kind) {
+  switch (kind) {
+  case VKR_PUBLICATION_TEXTURE:
+  case VKR_PUBLICATION_WRITABLE_TEXTURE:
+  case VKR_PUBLICATION_TEXTURE_SAMPLER:
+  case VKR_PUBLICATION_UNPUBLISH_TEXTURE:
+  case VKR_PUBLICATION_MATERIAL:
+  case VKR_PUBLICATION_UNPUBLISH_MATERIAL:
+    return true_v;
+  case VKR_PUBLICATION_GEOMETRY:
+  case VKR_PUBLICATION_LOADED_MESH:
+  case VKR_PUBLICATION_UNPUBLISH_GEOMETRY:
+  case VKR_PUBLICATION_IBL_BAKE:
+  case VKR_PUBLICATION_ATMOSPHERE_BAKE:
+    break;
+  }
+  return false_v;
+}
+
 /* Applies the completions of the last collected frame before anything reads
    publication state this frame. */
 vkr_internal void
@@ -375,6 +402,9 @@ vkr_render_assets_apply_publication_completions(VkrRenderAssets *assets) {
         vkr_render_assets_publication_state(assets, &completion);
     if (state) {
       vkr_publication_state_complete(state, completion.error);
+    }
+    if (vkr_render_assets_reaches_casters(completion.kind)) {
+      assets->caster_publication_generation++;
     }
     if (completion.error != VKR_RENDERER_ERROR_NONE) {
       String8 error = vkr_renderer_get_error_string(completion.error);

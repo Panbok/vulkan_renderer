@@ -48,6 +48,9 @@ typedef struct VkrRenderAssets {
   VkrArenaPool mtsdf_font_arena_pool;
   VkrMetricEventProducer ibl_convolution_metrics;
   bool8_t texture_pressure_active;
+  /* Completed publications that can change an admitted shadow caster
+     (VkrWorldPassPayload.caster_publication_generation). Main thread only. */
+  uint64_t caster_publication_generation;
   /* Container world ids requested for scene paths (ADR-076); the scene loader
      creates a requested path's scene with that id and picking range. Main
      thread only. */

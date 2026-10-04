@@ -649,6 +649,21 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
   vkr_shadow_system_discard_frame(&system);
   payload.static_generation--;
 
+  /* A publication no drawn caster uses, such as a streamed tile's geometry,
+   * keeps the content; one that can reach a caster makes it stale. */
+  payload.caster_publication_generation = payload.publication_generation;
+  payload.publication_generation++;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local.render_count == 0u && local.view_count == 1u);
+  payload.caster_publication_generation++;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local.render_count == 1u && local.view_count == 1u);
+  vkr_shadow_system_discard_frame(&system);
+  payload.publication_generation--;
+  payload.caster_publication_generation = 0u;
+
   /* A moved light's content is invalid: it hides until it draws, and the
    * brighter light takes the only face of the budget first. */
   VkrPointLight lights[2] = {
@@ -1233,6 +1248,23 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   assert(frame.cascade_render_mask == cascade_mask(&system));
   vkr_shadow_system_discard_frame(&system);
   payload.publication_generation--;
+
+  /* With the caster publication generation, a publication no drawn caster
+     uses, such as a streamed tile's geometry, keeps the content and one
+     that can reach a caster redraws it. */
+  payload.caster_publication_generation = payload.publication_generation;
+  payload.publication_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+  vkr_shadow_system_discard_frame(&system);
+  payload.caster_publication_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == cascade_mask(&system));
+  vkr_shadow_system_discard_frame(&system);
+  payload.publication_generation--;
+  payload.caster_publication_generation = 0u;
 
   payload.caster_bounds_generation++;
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,

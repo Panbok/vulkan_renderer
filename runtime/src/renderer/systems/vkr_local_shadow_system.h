@@ -19,6 +19,8 @@ typedef struct VkrLocalShadowCacheInput {
   const bool8_t *dynamic_overlap;
   VkrRetainedLocalShadowToken token;
   uint64_t static_generation;
+  /** VkrWorldPassPayload.caster_publication_generation: publications that
+   * can change an admitted caster. */
   uint64_t publication_generation;
   /** A dynamic-caster scan was unavailable or an asset publication is in
    * flight, so drawn content may change without a generation change. */

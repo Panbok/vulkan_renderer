@@ -997,6 +997,8 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   if (world_error != VKR_RENDERER_ERROR_NONE) {
     return world_error;
   }
+  draw->world_payload.caster_publication_generation =
+      application->assets.caster_publication_generation;
   vkr_material_system_refresh_texture_stream_demand(
       &application->assets.material_system);
   application->visibility_stats = visibility_stats;

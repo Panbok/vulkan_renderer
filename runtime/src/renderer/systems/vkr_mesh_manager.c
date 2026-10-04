@@ -1498,6 +1498,11 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   array_set_VkrMesh(&manager->meshes, slot, new_mesh);
   array_set_uint32_t(&manager->mesh_live_indices, new_mesh.live_index, slot);
   manager->mesh_count++;
+  /* A mesh that draws at once joins the caster set now; one awaiting
+     publication joins it when vkr_mesh_manager_pump_async admits it. */
+  if (new_mesh.loading_state == VKR_MESH_LOADING_STATE_LOADED) {
+    vkr_mesh_manager_note_topology_change(manager);
+  }
 
   if (out_index) {
     *out_index = slot;
@@ -1958,6 +1963,10 @@ bool8_t vkr_mesh_manager_remove(VkrMeshManager *manager, uint32_t index) {
   }
 
   uint32_t live_index = mesh->live_index;
+  /* Removing a drawn mesh is a topology change, as for an instance: retained
+     shadows may still hold its depth. */
+  const bool8_t drawn =
+      mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED;
 
   vkr_mesh_manager_release_handles(manager, mesh);
   array_destroy_VkrSubMesh(&mesh->submeshes);
@@ -1978,6 +1987,9 @@ bool8_t vkr_mesh_manager_remove(VkrMeshManager *manager, uint32_t index) {
 
   if (manager->free_count < manager->free_indices.length) {
     manager->free_indices.data[manager->free_count++] = index;
+  }
+  if (drawn) {
+    vkr_mesh_manager_note_topology_change(manager);
   }
 
   return true_v;

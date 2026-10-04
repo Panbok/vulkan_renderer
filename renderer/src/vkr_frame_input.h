@@ -332,6 +332,14 @@ typedef struct VkrWorldPassPayload {
   uint64_t dynamic_generation;
   /** Selected-backend geometry/material resolvability generation. */
   uint64_t publication_generation;
+  /**
+   * Advances once a publication that can change an admitted caster's shadow
+   * has completed: a texture, sampler or material. A geometry publication
+   * cannot, because a mesh draws only after its geometry has published and
+   * its arrival is a topology change, so streamed or rebuilt geometry leaves
+   * retained shadows valid. Zero follows `publication_generation`.
+   */
+  uint64_t caster_publication_generation;
   uint64_t caster_bounds_generation;
   bool8_t publication_pending;
 } VkrWorldPassPayload;
