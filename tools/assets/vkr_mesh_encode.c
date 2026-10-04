@@ -744,7 +744,7 @@ vkr_internal bool8_t vkr_mesh_cooked_write_header(
   for (uint32_t i = 0; i < 3u; ++i)
     ok = ok &&
          vkr_byte_writer_f32(writer, header->geometry_decode.position_scale[i]);
-  ok = ok && vkr_byte_writer_u32(writer, header->geometry_decode.reserved);
+  ok = ok && vkr_byte_writer_u32(writer, header->geometry_decode.lod_record);
   ok = ok && vkr_byte_writer_f32(writer, info->budgets.position_relative);
   ok = ok && vkr_byte_writer_f32(writer, info->budgets.normal_degrees);
   ok = ok && vkr_byte_writer_f32(writer, info->budgets.tangent_degrees);
@@ -815,7 +815,7 @@ vkr_internal bool8_t vkr_mesh_cooked_write_range_directory(
     for (uint32_t axis = 0; axis < 3u; ++axis)
       ok =
           ok && vkr_byte_writer_f32(writer, range->decode.position_scale[axis]);
-    ok = ok && vkr_byte_writer_u32(writer, range->decode.reserved);
+    ok = ok && vkr_byte_writer_u32(writer, range->decode.lod_record);
   }
   return ok;
 }

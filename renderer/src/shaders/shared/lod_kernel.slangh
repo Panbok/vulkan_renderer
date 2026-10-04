@@ -1,0 +1,88 @@
+// Shared level-of-detail selection and visible-row LOD state (ADR-084).
+// Culling projects each level's model-space error onto the view: a level is
+// acceptable while its projected error stays at or below one (the view scale
+// already divides by the threshold). Classification picks the coarsest
+// acceptable level of the monotonic chain, and a morphing view also derives
+// how far the range has morphed toward the next level now and one frame
+// earlier. Encoding stores that state above the visible row's candidate
+// flags, where raster, resolve and picking read it. The host mirror is
+// renderer/src/vkr_gpu_abi.h.
+#ifndef VKR_LOD_KERNEL_SLANGH
+#define VKR_LOD_KERNEL_SLANGH
+
+#define VKR_GPU_LOD_VIEW_CONSTANT 1u
+#define VKR_GPU_LOD_VIEW_MORPH 2u
+#define VKR_GPU_LOD_MORPH_START 0.75f
+#define VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID 1u
+#define VKR_GPU_DRAW_CANDIDATE_FLAG_MASK 15u
+// Bits of a classification word below the LOD state: the bucket (Metal stores
+// bucket + 1, zero rejecting) or Vulkan's rejection sentinel.
+#define VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK 15u
+#define VKR_GPU_DRAW_GEOMORPH_BIT 128u
+#define VKR_GPU_DRAW_LOD_SHIFT 8u
+#define VKR_GPU_DRAW_LOD_MASK 7u
+#define VKR_GPU_DRAW_MORPH_SHIFT 11u
+#define VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT 19u
+// Nearest distance a view measures, so a camera inside a bound stays finite.
+#define VKR_GPU_LOD_DISTANCE_MIN 1e-3f
+
+// Distance from `position` to the nearest point of a world-space sphere.
+float vkr_lod_distance(float3 position, float3 center, float radius)
+{
+    return max(length(center - position) - radius, VKR_GPU_LOD_DISTANCE_MIN);
+}
+
+// A world-space error's projected size for a view of `scale` and `flags`.
+float vkr_lod_projected(float error, float scale, uint flags, float distance)
+{
+    return (flags & VKR_GPU_LOD_VIEW_CONSTANT) != 0u
+               ? error * scale
+               : error * scale / distance;
+}
+
+// How far a level has morphed toward the next one, from the next level's
+// projected error: zero until the view reaches VKR_GPU_LOD_MORPH_START of
+// the distance at which the next level is acceptable, one there.
+float vkr_lod_morph(float next_projected)
+{
+    if (!(next_projected > 0.0f))
+    {
+        return 1.0f;
+    }
+    float share = 1.0f / next_projected;
+    return saturate((share - VKR_GPU_LOD_MORPH_START) /
+                    (1.0f - VKR_GPU_LOD_MORPH_START));
+}
+
+uint vkr_gpu_draw_lod_state(uint level, float morph, float previous_morph,
+                            bool geomorph)
+{
+    uint state = (level & VKR_GPU_DRAW_LOD_MASK) << VKR_GPU_DRAW_LOD_SHIFT;
+    state |= uint(saturate(morph) * 255.0f + 0.5f) << VKR_GPU_DRAW_MORPH_SHIFT;
+    state |= uint(saturate(previous_morph) * 255.0f + 0.5f)
+             << VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT;
+    return geomorph ? state | VKR_GPU_DRAW_GEOMORPH_BIT : state;
+}
+
+uint vkr_gpu_draw_lod_level(uint state_flags)
+{
+    return (state_flags >> VKR_GPU_DRAW_LOD_SHIFT) & VKR_GPU_DRAW_LOD_MASK;
+}
+
+bool vkr_gpu_draw_geomorph(uint state_flags)
+{
+    return (state_flags & VKR_GPU_DRAW_GEOMORPH_BIT) != 0u;
+}
+
+float vkr_gpu_draw_morph(uint state_flags)
+{
+    return float((state_flags >> VKR_GPU_DRAW_MORPH_SHIFT) & 255u) / 255.0f;
+}
+
+float vkr_gpu_draw_previous_morph(uint state_flags)
+{
+    return float((state_flags >> VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT) & 255u) /
+           255.0f;
+}
+
+#endif

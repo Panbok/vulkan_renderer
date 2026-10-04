@@ -376,6 +376,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t gpu_draw_geometry_rows_gpu;
   uint64_t gpu_draw_views_gpu;
   uint64_t transmission_gpu_draw_view_gpu;
+  uint64_t gpu_draw_lod_views_gpu;
+  uint64_t transmission_gpu_draw_lod_view_gpu;
   uint64_t transmission_gpu_draw_root_gpu;
   uint64_t gpu_draw_icb_argument_gpu;
   uint64_t gpu_draw_icb_argument_stride;

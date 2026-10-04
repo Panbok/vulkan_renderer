@@ -22,7 +22,7 @@ struct VkrMetalPacketGpuDrawRoot {
   uint view_count;
   uint encode_view_index;
   texture2d<float, access::read> hzb;
-  ulong reserved_2;
+  constant VkrGpuLodView *lod_views;
   float4x4 history_view_projection;
   uint2 hzb_extent;
   uint hzb_mip_count;
@@ -431,7 +431,19 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                               memory_order_relaxed);
     return;
   }
-  root.classifications[classification_index] = bucket + 1u;
+  /* The LOD state rides above the bucket (ADR-084). */
+  const device VkrMetalPacketInstance &instance =
+      root.instances[candidate.instance_index];
+  const device VkrGpuGeometryRow &geometry =
+      root.geometry_rows[candidate.geometry_index];
+  /* A candidate without valid bounds has no distance and keeps level 0. */
+  uint lod_state = (candidate_flags & 1u) == 0u ? 0u : vkr_gpu_lod_select(
+      vkr_gpu_geometry_lod_row(geometry.decode_address, candidate.decode_index),
+      root.lod_views[view_index],
+      (instance.model * float4(candidate.local_bounding_sphere.xyz, 1.0)).xyz,
+      candidate.local_bounding_sphere.w * instance.normal_column1.w,
+      instance.normal_column1.w);
+  root.classifications[classification_index] = (bucket + 1u) | lod_state;
   atomic_fetch_add_explicit(&state.bucket_counts[bucket], 1u,
                             memory_order_relaxed);
 }
@@ -481,7 +493,8 @@ vkr_metal_packet_gpu_draw_encode_impl(constant VkrMetalPacketGpuDrawRoot &root,
   if (classification == 0u)
     return;
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
-  uint bucket = classification - 1u;
+  uint bucket = (classification & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) - 1u;
+  uint lod_state = classification & ~VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK;
   uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
                                                1u, memory_order_relaxed);
   uint bucket_capacity = root.visible_capacity / 8u;
@@ -493,24 +506,34 @@ vkr_metal_packet_gpu_draw_encode_impl(constant VkrMetalPacketGpuDrawRoot &root,
       state.execution_ranges[bucket].x - command_base + local_index;
 
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
-  root.visible_rows[view_base + visible_index] = {
-      candidate.geometry_index, candidate.material_index,
-      candidate.instance_index, candidate.first_index,
-      candidate.index_count,    candidate.vertex_offset,
-      candidate.decode_index,   candidate.state_flags};
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[candidate.geometry_index];
+  /* The selected level's indices replace the range's (ADR-084). */
+  uint first_index = candidate.first_index;
+  uint index_count = candidate.index_count;
+  uint level = vkr_gpu_draw_lod_level(lod_state);
+  if (level != 0u) {
+    const device VkrGpuGeometryLodRow *row = vkr_gpu_geometry_lod_row(
+        geometry.decode_address, candidate.decode_index);
+    first_index += row->levels[level].first_index;
+    index_count = row->levels[level].index_count;
+  }
+  root.visible_rows[view_base + visible_index] = {
+      candidate.geometry_index, candidate.material_index,
+      candidate.instance_index, first_index,
+      index_count,              candidate.vertex_offset,
+      candidate.decode_index,   candidate.state_flags | lod_state};
   device uint *indices = reinterpret_cast<device uint *>(
-      geometry.index_address + ulong(candidate.first_index) * sizeof(uint));
+      geometry.index_address + ulong(first_index) * sizeof(uint));
 
   render_command command(icb->command_buffer, command_base + visible_index);
   if (!InheritBuffers) {
     command.set_vertex_buffer(&root.draw_roots[view_index], 0u);
     command.set_fragment_buffer(&root.draw_roots[view_index], 1u);
   }
-  command.draw_indexed_primitives(primitive_type::triangle,
-                                  candidate.index_count, indices, 1u,
-                                  candidate.vertex_offset, visible_index);
+  command.draw_indexed_primitives(primitive_type::triangle, index_count,
+                                  indices, 1u, candidate.vertex_offset,
+                                  visible_index);
 }
 
 kernel void vkr_metal_packet_gpu_draw_encode(
@@ -875,9 +898,16 @@ static void vkr_metal_packet_gbuffer_resolve(
         vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
     vertices[corner] = vkr_apply_deformation(
         vertices[corner], instance.deformation_address, uint(vertex_index));
+    /* Terrain tiles morph as the raster did (ADR-084). */
+    float previous_height;
+    vertices[corner] = vkr_gpu_terrain_morph(
+        vertices[corner], vertex_rows + geometry.first_vertex, decode,
+        uint(vertex_index), visible.state_flags, previous_height);
     previous_positions[corner] = vkr_previous_deformed_position(
         vertices[corner].position, instance.previous_deformation_address,
         uint(vertex_index));
+    previous_positions[corner].y +=
+        previous_height - vertices[corner].position.y;
     float3 position = vertices[corner].position;
     clip[corner] =
         root.view_projection * (instance.model * float4(position, 1.0));
@@ -2414,9 +2444,16 @@ static bool vkr_metal_packet_resolve_transmission_surface(
         vertex_rows[geometry.first_vertex + uint(vertex_index)], decode);
     vertices[corner] = vkr_apply_deformation(
         vertices[corner], instance.deformation_address, uint(vertex_index));
+    /* Terrain tiles morph as the raster did (ADR-084). */
+    float previous_height;
+    vertices[corner] = vkr_gpu_terrain_morph(
+        vertices[corner], vertex_rows + geometry.first_vertex, decode,
+        uint(vertex_index), visible.state_flags, previous_height);
     previous_positions[corner] = vkr_previous_deformed_position(
         vertices[corner].position, instance.previous_deformation_address,
         uint(vertex_index));
+    previous_positions[corner].y +=
+        previous_height - vertices[corner].position.y;
     float3 position = vertices[corner].position;
     clip[corner] =
         root.view_projection * (instance.model * float4(position, 1.0));

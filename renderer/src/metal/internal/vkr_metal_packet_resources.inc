@@ -295,21 +295,33 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
               create_info ? create_info->index_count : 0u);
     return false_v;
   }
-  for (uint32_t decode_index = 0; decode_index < create_info->decode_count;
-       ++decode_index) {
-    if (!vkr_packed_geometry_decode_is_valid(
-            &create_info->decodes[decode_index]))
-      return false_v;
-  }
-  for (uint32_t submesh_index = 0; submesh_index < create_info->submesh_count;
+  /* Decode records first, then the LOD rows they reference. */
+  uint32_t record_decode_count = 0u;
+  if (!vkr_packed_geometry_metadata_is_valid(create_info->decodes,
+                                             create_info->decode_count,
+                                             &record_decode_count) ||
+      create_info->default_index_count > create_info->index_count)
+    return false_v;
+  const VkrMetalPacketSubmeshCreateInfo default_submesh = {
+      .index_count = create_info->default_index_count
+                         ? create_info->default_index_count
+                         : create_info->index_count,
+  };
+  const uint32_t checked_submeshes = Max(create_info->submesh_count, 1u);
+  for (uint32_t submesh_index = 0; submesh_index < checked_submeshes;
        ++submesh_index) {
     const VkrMetalPacketSubmeshCreateInfo *submesh =
-        &create_info->submeshes[submesh_index];
+        create_info->submesh_count ? &create_info->submeshes[submesh_index]
+                                   : &default_submesh;
     if (submesh->index_count == 0 ||
         submesh->first_index > create_info->index_count ||
         submesh->index_count >
             create_info->index_count - submesh->first_index ||
-        submesh->decode_index >= create_info->decode_count)
+        submesh->decode_index >= record_decode_count ||
+        !vkr_packed_geometry_lod_ranges_are_valid(
+            create_info->decodes, submesh->decode_index, submesh->first_index,
+            submesh->index_count, submesh->vertex_offset, create_info->indices,
+            create_info->index_count, create_info->vertex_count))
       return false_v;
     for (uint32_t index = 0; index < submesh->index_count; ++index) {
       const int64_t vertex =
@@ -428,10 +440,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
               (uint64_t)create_info->submesh_count * sizeof(*submeshes));
       slot->submesh_count = create_info->submesh_count;
     } else {
-      submeshes[0] = (VkrMetalPacketSubmeshCreateInfo){
-          .index_count = create_info->index_count,
-          .decode_index = 0u,
-      };
+      submeshes[0] = default_submesh;
       slot->submesh_count = 1;
     }
     slot->last_use_submit_value = renderer->submit_value;
@@ -633,6 +642,7 @@ bool8_t vkr_metal_packet_renderer_publish_geometry(
                    .decode_count = geometry->decode_count,
                    .indices = geometry->indices,
                    .index_count = geometry->index_count,
+                   .default_index_count = geometry->range_index_count,
                },
                requested, &published) &&
            published.id == requested.id &&
@@ -2226,6 +2236,8 @@ typedef struct VkrMetalPacketUploadPlan {
   uint64_t gpu_draw_views_offset;
   uint64_t transmission_gpu_draw_view_offset;
   uint64_t transmission_gpu_draw_view_bytes;
+  /* One VkrGpuLodView per culling view, then the transmission view's. */
+  uint64_t gpu_draw_lod_views_offset;
   uint64_t gpu_draw_candidates_offset;
   uint64_t transmission_gpu_draw_candidates_offset;
   uint64_t gpu_draw_geometry_rows_offset;
@@ -2598,10 +2610,15 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       plan->source_transmission_gpu_draw_count > 0u
           ? sizeof(VkrMetalPacketGpuDrawView)
           : 0u;
-  plan->gpu_draw_candidates_offset =
+  plan->gpu_draw_lod_views_offset =
       vkr_metal_packet_align_up(plan->transmission_gpu_draw_view_offset +
                                     plan->transmission_gpu_draw_view_bytes,
-                                AlignOf(VkrGpuCandidateDrawRow));
+                                AlignOf(VkrGpuLodView));
+  const uint64_t gpu_draw_lod_view_bytes =
+      (uint64_t)(plan->gpu_draw_view_count + 1u) * sizeof(VkrGpuLodView);
+  plan->gpu_draw_candidates_offset = vkr_metal_packet_align_up(
+      plan->gpu_draw_lod_views_offset + gpu_draw_lod_view_bytes,
+      AlignOf(VkrGpuCandidateDrawRow));
   const uint64_t gpu_draw_candidate_bytes =
       (uint64_t)plan->gpu_draw_stage_count * sizeof(VkrGpuCandidateDrawRow);
   plan->transmission_gpu_draw_candidates_offset = vkr_metal_packet_align_up(
@@ -3240,6 +3257,11 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
     vkr_metal_packet_pack_gpu_draw_view(
         &views[0], &camera, VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE,
         renderer->prepared_frame.hzb_history_valid, renderer->frustum_enabled);
+    vkr_packet_write_lod_views(
+        packet, &renderer->prepared_frame,
+        (VkrGpuLodView *)(cpu + plan->gpu_draw_lod_views_offset),
+        plan->gpu_draw_view_count);
+    upload->gpu_draw_lod_views_gpu = gpu + plan->gpu_draw_lod_views_offset;
     for (uint32_t cascade = 0u;
          cascade < renderer->prepared_frame.shadow_cascade_count; ++cascade) {
       const VkrFrustum shadow = vkr_frustum_from_matrix(
@@ -3289,6 +3311,12 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
         renderer->frustum_enabled);
     upload->transmission_gpu_draw_view_gpu =
         gpu + plan->transmission_gpu_draw_view_offset;
+    /* Transmission draws keep level 0; terrain never transmits. */
+    const uint64_t lod_view_offset =
+        plan->gpu_draw_lod_views_offset +
+        (uint64_t)plan->gpu_draw_view_count * sizeof(VkrGpuLodView);
+    *(VkrGpuLodView *)(cpu + lod_view_offset) = (VkrGpuLodView){0};
+    upload->transmission_gpu_draw_lod_view_gpu = gpu + lod_view_offset;
   }
 }
 

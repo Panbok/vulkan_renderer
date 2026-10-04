@@ -1,6 +1,7 @@
 #include "vkr_packet_constants.h"
 
 #include "vkr_ibl_math.h"
+#include "vkr_render_graph.h"
 
 VkrPacketFrameConstants
 vkr_packet_derive_frame_constants(const VkrPreparedFrame *packet,
@@ -123,4 +124,39 @@ vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
                             pbr->attenuation_distance},
       .alpha_mode = (uint32_t)alpha_mode,
   };
+}
+
+/* LOD policy of each culling view in their order: the camera, cascades, then
+   opaque and transmitting local faces (ADR-084). */
+void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
+                                const VkrRenderGraphFrameInfo *frame,
+                                VkrGpuLodView *out_views, uint32_t view_count) {
+  out_views[0] = vkr_gpu_lod_view(
+      packet->temporal.current_view_projection,
+      (float32_t)frame->scene_output_height * frame->render_scale,
+      packet->input.globals.view_position,
+      packet->temporal.previous_view_position, true_v);
+  const uint32_t cascade_count = frame->shadow_cascade_count;
+  for (uint32_t view = 1u; view < view_count; ++view) {
+    if (view <= cascade_count) {
+      out_views[view] = vkr_gpu_lod_view(
+          packet->input.shadow->cascades[view - 1u].light_view_projection,
+          (float32_t)frame->shadow_map_size, vec3_zero(), vec3_zero(), false_v);
+      continue;
+    }
+    const uint32_t slot =
+        (view - 1u - cascade_count) % Max(frame->local_shadow_render_count, 1u);
+    const VkrLocalShadowView *face =
+        &packet->input.local_shadow
+             ->views[packet->input.local_shadow->render_views[slot]];
+    const Vec3 light =
+        vec3_new(face->light_position_near.x, face->light_position_near.y,
+                 face->light_position_near.z);
+    /* projection_params.y is one face texel; faces differ in size. */
+    const float32_t face_size = face->projection_params.y > 0.0f
+                                    ? 1.0f / face->projection_params.y
+                                    : (float32_t)frame->local_shadow_map_size;
+    out_views[view] = vkr_gpu_lod_view(face->light_view_projection, face_size,
+                                       light, light, false_v);
+  }
 }

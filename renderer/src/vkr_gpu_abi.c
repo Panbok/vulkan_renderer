@@ -169,6 +169,19 @@ vkr_global const VkrGpuAbiField vkr_gpu_visible_draw_row_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuVisibleDrawRow, state_flags, "state_flags", 28),
 };
 
+vkr_global const VkrGpuAbiField vkr_gpu_geometry_lod_row_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryLodRow, level_count, "level_count", 0),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryLodRow, flags, "flags", 4),
+    VKR_GPU_ABI_FIELD(VkrGpuGeometryLodRow, levels, "levels", 16),
+};
+
+vkr_global const VkrGpuAbiField vkr_gpu_lod_view_fields[] = {
+    VKR_GPU_ABI_FIELD(VkrGpuLodView, position_scale, "position_scale", 0),
+    VKR_GPU_ABI_FIELD(VkrGpuLodView, previous_position, "previous_position",
+                      16),
+    VKR_GPU_ABI_FIELD(VkrGpuLodView, flags, "flags", 32),
+};
+
 vkr_global const VkrGpuAbiField vkr_gpu_point_light_row_fields[] = {
     VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p0, "p0", 0),
     VKR_GPU_ABI_FIELD(VkrGpuPointLightRow, p1, "p1", 16),
@@ -241,6 +254,11 @@ vkr_global const VkrGpuAbiRecord
         [VKR_GPU_ABI_RECTANGLE_LIGHT_ROW] = VKR_GPU_ABI_RECORD(
             VkrGpuRectangleLightRow, "VkrGpuRectangleLightRow", 64, 16,
             vkr_gpu_rectangle_light_row_fields),
+        [VKR_GPU_ABI_GEOMETRY_LOD_ROW] =
+            VKR_GPU_ABI_RECORD(VkrGpuGeometryLodRow, "VkrGpuGeometryLodRow",
+                               128, 4, vkr_gpu_geometry_lod_row_fields),
+        [VKR_GPU_ABI_LOD_VIEW] = VKR_GPU_ABI_RECORD(
+            VkrGpuLodView, "VkrGpuLodView", 48, 16, vkr_gpu_lod_view_fields),
 };
 
 const VkrGpuAbiRecord *vkr_gpu_abi_record(VkrGpuAbiRecordId id) {
@@ -272,6 +290,31 @@ Vec4 vkr_gpu_material_anisotropy(float32_t strength, float32_t rotation) {
       remainderf(rotation, 6.28318530717958647692f);
   return (Vec4){strength, cosf(normalized_rotation), sinf(normalized_rotation),
                 0.0f};
+}
+
+VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
+                               Vec3 position, Vec3 previous_position,
+                               bool8_t morph) {
+  /* Row 1 maps metres to clip Y; row 3 is the perspective divide, zero in
+     x, y and z for an orthographic projection. */
+  const Mat4 m = view_projection;
+  const float32_t row1 =
+      sqrtf(m.cols[0].y * m.cols[0].y + m.cols[1].y * m.cols[1].y +
+            m.cols[2].y * m.cols[2].y);
+  const bool8_t constant =
+      fabsf(m.cols[0].w) + fabsf(m.cols[1].w) + fabsf(m.cols[2].w) < 1e-6f;
+  float32_t scale = 0.5f * image_rows * row1 / VKR_GPU_LOD_THRESHOLD;
+  if (!isfinite(scale) || scale < 0.0f) {
+    scale = 0.0f;
+  }
+  return (VkrGpuLodView){
+      .position_scale = vec4_new(position.x, position.y, position.z, scale),
+      .previous_position = vec4_new(previous_position.x, previous_position.y,
+                                    previous_position.z, 0.0f),
+      .flags = constant ? VKR_GPU_LOD_VIEW_CONSTANT
+               : morph  ? VKR_GPU_LOD_VIEW_MORPH
+                        : 0u,
+  };
 }
 
 bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {

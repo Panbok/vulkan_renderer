@@ -144,7 +144,7 @@ VkrGeometryQuantizationBudgets vkr_packed_geometry_default_budgets(void) {
 bool8_t
 vkr_packed_geometry_decode_is_valid(const VkrGpuGeometryDecodeRecord *decode) {
   if (!decode || decode->flags != VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
-      decode->reserved != 0u) {
+      decode->lod_record != 0u) {
     return false_v;
   }
   for (uint32_t axis = 0u; axis < 3u; ++axis) {
@@ -153,6 +153,104 @@ vkr_packed_geometry_decode_is_valid(const VkrGpuGeometryDecodeRecord *decode) {
         decode->position_scale[axis] < 0.0f ||
         !isfinite(decode->position_bias[axis] + decode->position_scale[axis])) {
       return false_v;
+    }
+  }
+  return true_v;
+}
+
+bool8_t
+vkr_packed_geometry_metadata_is_valid(const VkrGpuGeometryDecodeRecord *records,
+                                      uint32_t record_count,
+                                      uint32_t *out_decode_count) {
+  if (!records || record_count == 0u) {
+    return false_v;
+  }
+  uint32_t decode_count = record_count;
+  uint32_t lod_count = 0u;
+  for (uint32_t i = 0u; i < decode_count; ++i) {
+    VkrGpuGeometryDecodeRecord decode = records[i];
+    const uint32_t lod_record = decode.lod_record;
+    decode.lod_record = 0u;
+    if (!vkr_packed_geometry_decode_is_valid(&decode)) {
+      return false_v;
+    }
+    if (lod_record == 0u) {
+      continue;
+    }
+    /* Rows follow every decode record, in the order of their decodes. */
+    if (lod_record <= i || lod_record > record_count) {
+      return false_v;
+    }
+    decode_count = lod_count == 0u ? lod_record : decode_count;
+    if (lod_record !=
+        decode_count + lod_count * (uint32_t)VKR_GPU_GEOMETRY_LOD_RECORDS) {
+      return false_v;
+    }
+    lod_count++;
+  }
+  if (record_count - decode_count !=
+      lod_count * (uint32_t)VKR_GPU_GEOMETRY_LOD_RECORDS) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < decode_count; ++i) {
+    const VkrGpuGeometryLodRow *row = vkr_packed_geometry_lod_row(records, i);
+    if (!row) {
+      continue;
+    }
+    if (row->level_count == 0u ||
+        row->level_count > VKR_GPU_GEOMETRY_LOD_LEVEL_MAX ||
+        (row->flags & ~VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID) != 0u) {
+      return false_v;
+    }
+    float32_t previous = 0.0f;
+    for (uint32_t level = 0u; level < row->level_count; ++level) {
+      const float32_t error = row->levels[level].error;
+      if (!isfinite(error) || error < previous ||
+          row->levels[level].index_count == 0u ||
+          row->levels[level].index_count % 3u != 0u) {
+        return false_v;
+      }
+      previous = error;
+    }
+  }
+  if (out_decode_count) {
+    *out_decode_count = decode_count;
+  }
+  return true_v;
+}
+
+const VkrGpuGeometryLodRow *
+vkr_packed_geometry_lod_row(const VkrGpuGeometryDecodeRecord *records,
+                            uint32_t decode_index) {
+  const uint32_t lod_record = records[decode_index].lod_record;
+  return lod_record ? (const VkrGpuGeometryLodRow *)&records[lod_record] : NULL;
+}
+
+bool8_t vkr_packed_geometry_lod_ranges_are_valid(
+    const VkrGpuGeometryDecodeRecord *records, uint32_t decode_index,
+    uint32_t first_index, uint32_t range_index_count, int32_t vertex_offset,
+    const uint32_t *indices, uint32_t index_count, uint32_t vertex_count) {
+  const VkrGpuGeometryLodRow *row =
+      vkr_packed_geometry_lod_row(records, decode_index);
+  if (!row) {
+    return true_v;
+  }
+  if (row->levels[0].first_index != 0u ||
+      row->levels[0].index_count != range_index_count) {
+    return false_v;
+  }
+  for (uint32_t level = 1u; level < row->level_count; ++level) {
+    const uint64_t first =
+        (uint64_t)first_index + row->levels[level].first_index;
+    const uint64_t end = first + row->levels[level].index_count;
+    if (end > index_count) {
+      return false_v;
+    }
+    for (uint64_t i = first; i < end; ++i) {
+      const int64_t vertex = (int64_t)indices[i] + vertex_offset;
+      if (vertex < 0 || (uint64_t)vertex >= vertex_count) {
+        return false_v;
+      }
     }
   }
   return true_v;

@@ -34,6 +34,11 @@ vkr_metal_packet_vertex_data(uint vertex_id, uint instance_id,
     VkrMetalPacketInstance instance =
         frame.instances[visible.instance_index + (gpu_draw ? 0u : instance_id)];
     vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_id);
+    // Terrain tiles morph toward their next level (ADR-084).
+    float previous_height;
+    vertex = vkr_gpu_terrain_morph(vertex, vertices + geometry.first_vertex,
+                                   decode[visible.decode_index], vertex_id,
+                                   visible.state_flags, previous_height);
     VkrMetalPacketVertexData output;
     float4 world_position = mul(instance.model, float4(vertex.position, 1.0));
     output.position = mul(frame.view_projection, world_position);
@@ -53,6 +58,7 @@ vkr_metal_packet_vertex_data(uint vertex_id, uint instance_id,
     // This varying supplies previous-frame object space to the motion fragment.
     output.object_position = vkr_previous_deformed_position(
         vertex.position, instance.previous_deformation_address, vertex_id);
+    output.object_position.y += previous_height - vertex.position.y;
     output.temporal_index = instance.temporal_index;
     output.temporal_generation = instance.temporal_generation;
     output.temporal_flags = instance.deformation_address != 0 &&

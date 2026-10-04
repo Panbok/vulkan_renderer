@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Terrain samples (ADR-084). Oracles are hand-computed heights at named
@@ -214,11 +215,78 @@ static void heightfield_test_journal(void) {
   printf("  heightfield_test_journal PASSED\n");
 }
 
+/* Every level of a tile covers its 64 x 64 cells once, counter-clockwise
+   from above, and reports its largest height difference from the samples:
+   a spike at an odd sample is that tall at level 1 and flat ground costs
+   only the cell-size floor. */
+static void heightfield_test_tile_levels(void) {
+  printf("  Running heightfield_test_tile_levels...\n");
+  const uint32_t side = VKR_GPU_TERRAIN_TILE_SIDE;
+  const uint32_t vertex_count = side * side + 4u * side;
+  static VkrVertex3d
+      vertices[VKR_GPU_TERRAIN_TILE_SIDE * VKR_GPU_TERRAIN_TILE_SIDE +
+               4u * VKR_GPU_TERRAIN_TILE_SIDE];
+  for (uint32_t z = 0; z < side; ++z) {
+    for (uint32_t x = 0; x < side; ++x) {
+      vertices[z * side + x] = (VkrVertex3d){
+          .position = {(float32_t)x * 2.0f, 0.0f, (float32_t)z * 2.0f}};
+    }
+  }
+  /* Skirt vertices hang below their edge samples. */
+  for (uint32_t i = side * side; i < vertex_count; ++i) {
+    vertices[i] = (VkrVertex3d){.position = {0.0f, -4.0f, 0.0f}};
+  }
+  vertices[1u * side + 1u].position.y = 3.0f;
+  const uint32_t capacity = vkr_scene_terrain_tile_index_count();
+  uint32_t *indices = malloc(sizeof(uint32_t) * capacity);
+  assert(indices);
+  VkrGpuGeometryLodRow lod;
+  const uint32_t count =
+      vkr_scene_terrain_tile_indices(vertices, 2.0f, indices, capacity, &lod);
+  assert(count == capacity);
+  assert(lod.level_count == VKR_SCENE_TERRAIN_LOD_LEVELS &&
+         lod.flags == VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID);
+  assert(lod.levels[0].first_index == 0u && lod.levels[0].error == 0.0f);
+  for (uint32_t level = 0; level < lod.level_count; ++level) {
+    const VkrGpuGeometryLodLevel range = lod.levels[level];
+    float32_t area = 0.0f;
+    for (uint32_t t = 0; t < range.index_count; t += 3u) {
+      const uint32_t *tri = &indices[range.first_index + t];
+      assert(tri[0] < vertex_count && tri[1] < vertex_count &&
+             tri[2] < vertex_count);
+      if (tri[0] >= side * side || tri[1] >= side * side ||
+          tri[2] >= side * side) {
+        continue;
+      }
+      const Vec3 a = vkr_vertex_unpack_vec3(vertices[tri[0]].position);
+      const Vec3 b = vkr_vertex_unpack_vec3(vertices[tri[1]].position);
+      const Vec3 c = vkr_vertex_unpack_vec3(vertices[tri[2]].position);
+      /* Seen from +Y, counter-clockwise has a negative x-z cross. */
+      const float32_t cross =
+          (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
+      assert(cross < 0.0f);
+      area -= 0.5f * cross;
+    }
+    assert(near(area, 128.0f * 128.0f, 1.0e-2f));
+    if (level > 0u) {
+      assert(range.error >= lod.levels[level - 1u].error);
+    }
+  }
+  /* Level 1 drops the spike: 3 m against a 0.4 m floor. */
+  assert(near(lod.levels[1].error, 3.0f, 1.0e-5f));
+  /* Flat elsewhere: level 6's floor is a tenth of its 128 m cells, above
+     the spike. */
+  assert(near(lod.levels[6].error, 12.8f, 1.0e-4f));
+  free(indices);
+  printf("  heightfield_test_tile_levels PASSED\n");
+}
+
 bool32_t run_heightfield_tests(void) {
   printf("--- Starting Heightfield Tests ---\n");
   heightfield_test_file();
   heightfield_test_operations();
   heightfield_test_journal();
+  heightfield_test_tile_levels();
   printf("--- Heightfield Tests Completed ---\n");
   return true_v;
 }

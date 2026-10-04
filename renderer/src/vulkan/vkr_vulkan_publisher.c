@@ -1851,16 +1851,22 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
           UINT64_MAX / sizeof(VkrGpuGeometryDecodeRecord) ||
       geometry->index_size != sizeof(uint32_t))
     return false_v;
-  for (uint32_t i = 0; i < geometry->decode_count; ++i) {
-    if (!vkr_packed_geometry_decode_is_valid(&geometry->decodes[i]))
-      return false_v;
-  }
+  /* Decode records first, then the LOD rows they reference. */
+  uint32_t record_decode_count = 0u;
+  if (!vkr_packed_geometry_metadata_is_valid(
+          geometry->decodes, geometry->decode_count, &record_decode_count))
+    return false_v;
   for (uint32_t i = 0; i < submesh_count; ++i) {
     if (!submeshes[i].index_count ||
         submeshes[i].first_index > geometry->index_count ||
         submeshes[i].index_count >
             geometry->index_count - submeshes[i].first_index ||
-        submeshes[i].decode_index >= geometry->decode_count)
+        submeshes[i].decode_index >= record_decode_count ||
+        !vkr_packed_geometry_lod_ranges_are_valid(
+            geometry->decodes, submeshes[i].decode_index,
+            submeshes[i].first_index, submeshes[i].index_count,
+            submeshes[i].vertex_offset, (const uint32_t *)geometry->indices,
+            geometry->index_count, geometry->vertex_count))
       return false_v;
   }
   VkrVulkanPublishedGeometry *record =
@@ -2037,8 +2043,11 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry(
     void *state, VkrGeometryHandle handle, const VkrGeometryConfig *geometry) {
   if (!geometry)
     return false_v;
+  if (geometry->range_index_count > geometry->index_count)
+    return false_v;
   const VkrGeometryUploadRange submesh = {
-      .index_count = geometry->index_count,
+      .index_count = geometry->range_index_count ? geometry->range_index_count
+                                                 : geometry->index_count,
       .decode_index = 0u,
   };
   return vkr_vk_asset_publish_geometry_internal(state, handle, geometry,

@@ -139,6 +139,9 @@ typedef struct VkrMetalPacketMeshCreateInfo {
   uint32_t index_count;
   const VkrMetalPacketSubmeshCreateInfo *submeshes;
   uint32_t submesh_count;
+  /** Indices of the one default range when `submesh_count` is zero; zero
+      draws them all. */
+  uint32_t default_index_count;
 } VkrMetalPacketMeshCreateInfo;
 
 /** Focused immutable material publication input for the Metal GPU table. */

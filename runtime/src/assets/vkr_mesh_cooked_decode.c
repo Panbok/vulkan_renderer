@@ -99,7 +99,7 @@ vkr_mesh_cooked_decode_equal(const VkrGpuGeometryDecodeRecord *a,
          a->position_scale[0] == b->position_scale[0] &&
          a->position_scale[1] == b->position_scale[1] &&
          a->position_scale[2] == b->position_scale[2] &&
-         a->reserved == b->reserved;
+         a->lod_record == b->lod_record;
 }
 
 static bool8_t
@@ -285,7 +285,7 @@ vkr_internal bool8_t vkr_mesh_cooked_read_header(
   for (uint32_t i = 0; i < 3u; ++i)
     ok = ok && vkr_byte_reader_f32(reader,
                                    &header->geometry_decode.position_scale[i]);
-  ok = ok && vkr_byte_reader_u32(reader, &header->geometry_decode.reserved);
+  ok = ok && vkr_byte_reader_u32(reader, &header->geometry_decode.lod_record);
   ok = ok && vkr_byte_reader_f32(reader, &header->budgets.position_relative);
   ok = ok && vkr_byte_reader_f32(reader, &header->budgets.normal_degrees);
   ok = ok && vkr_byte_reader_f32(reader, &header->budgets.tangent_degrees);
@@ -647,7 +647,7 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
     for (uint32_t axis = 0; axis < 3u; ++axis)
       ok = ok &&
            vkr_byte_reader_f32(reader, &range->decode.position_scale[axis]);
-    ok = ok && vkr_byte_reader_u32(reader, &range->decode.reserved);
+    ok = ok && vkr_byte_reader_u32(reader, &range->decode.lod_record);
     if (!ok) {
       return false_v;
     }

@@ -569,7 +569,7 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, encode_view_index,
                   "encode_view_index", 76),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_texture_id, "hzb", 80),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_2, "reserved_2", 88),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, lod_views, "lod_views", 88),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, history_view_projection,
                   "history_view_projection", 96),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, hzb_extent, "hzb_extent", 160),

@@ -1110,7 +1110,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
       transmission ? 1u : renderer->gpu_draw_icb_view_group_size;
   root->views = transmission ? upload->transmission_gpu_draw_view_gpu
                              : upload->gpu_draw_views_gpu;
-  if (!root->views)
+  root->lod_views = transmission ? upload->transmission_gpu_draw_lod_view_gpu
+                                 : upload->gpu_draw_lod_views_gpu;
+  if (!root->views || !root->lod_views)
     return false_v;
 
   if (classify) {
@@ -1124,6 +1126,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
       return false_v;
     root->candidates = candidates->resource.gpu_address;
     root->instances = instances_gpu;
+    /* Decode records lead classification to each range's LOD row. */
+    root->geometry_rows = upload->gpu_draw_geometry_rows_gpu;
     root->classifications = classifications->resource.gpu_address;
     root->compaction_state = state->resource.gpu_address;
     const VkrMetalPacketImageInstance *history =

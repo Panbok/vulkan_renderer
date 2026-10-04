@@ -91,6 +91,9 @@ typedef struct VkrTemporalFrameInput {
 typedef struct VkrTemporalFrame {
   Mat4 jittered_projection;
   Mat4 current_view_projection;
+  /** The camera position of the last committed frame, or the current one
+      without history. */
+  Vec3 previous_view_position;
   Vec2 jitter_pixels;
   uint32_t reset_reasons;
   bool8_t history_valid;

@@ -1393,9 +1393,7 @@ These are limits of current code or retained acceptance, not scheduled promises:
 - Deformation/procedural/particle motion and broad animation/disocclusion coverage
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, a general effects system, asynchronous graph queues
-  and fully graph-declared IBL baking are not production features. Terrain
-  tiles render at full resolution; tile LOD is proposed
-  ([Terrain rendering](proposals/terrain-rendering.md)).
+  and fully graph-declared IBL baking are not production features.
 - Baked diffuse volumes have CPU room classification, multi-bounce and glass
   transport, portable assets, scene loading and Metal execution. Native Vulkan
   execution remains unavailable; see [ADR-054](adr/054-baked-diffuse-volumes.md).
@@ -1410,7 +1408,9 @@ These are limits of current code or retained acceptance, not scheduled promises:
   Vulkan execution remains unavailable; see
   [ADR-068](adr/068-profiled-surface-diffusion.md).
 - Arbitrary indirect-light occlusion outside valid baked-volume
-  coverage, meshlets, automatic mesh LOD and shader hot reload are absent.
+  coverage, meshlets, cooked mesh levels and shader hot reload are absent; the
+  GPU LOD table serves terrain tiles only
+  ([ADR-085](adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)).
   [Meshlet cluster culling](proposals/meshlet-cluster-culling.md) records the
   measured geometry-bound cost and why finer culling has not paid yet.
 - Native source exists for both backends, but same-revision crossed transmission,

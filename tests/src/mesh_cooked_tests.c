@@ -118,11 +118,62 @@ static void test_packed_geometry_validation_contract(void) {
   assert(!vkr_packed_geometry_vertices_are_valid(&invalid, 1u, &decode));
 
   VkrGpuGeometryDecodeRecord invalid_decode = decode;
-  invalid_decode.reserved = 1u;
+  invalid_decode.lod_record = 1u;
   assert(!vkr_packed_geometry_decode_is_valid(&invalid_decode));
   invalid_decode = decode;
   invalid_decode.position_scale[0] = INFINITY;
   assert(!vkr_packed_geometry_decode_is_valid(&invalid_decode));
+
+  /* Metadata: decode records, then the LOD rows they reference in order,
+     four records each (ADR-084). */
+  VkrGpuGeometryDecodeRecord records[1u + VKR_GPU_GEOMETRY_LOD_RECORDS];
+  records[0] = decode;
+  records[0].lod_record = 1u;
+  VkrGpuGeometryLodRow row = {
+      .level_count = 2u,
+      .flags = VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID,
+      .levels = {{.first_index = 0u, .index_count = 3u, .error = 0.0f},
+                 {.first_index = 3u, .index_count = 3u, .error = 0.5f}},
+  };
+  MemCopy(&records[1], &row, sizeof(row));
+  uint32_t decode_count = 0u;
+  assert(vkr_packed_geometry_metadata_is_valid(records, ArrayCount(records),
+                                               &decode_count));
+  assert(decode_count == 1u &&
+         vkr_packed_geometry_lod_row(records, 0u)->level_count == 2u);
+  const uint32_t indices[6] = {0u, 1u, 2u, 2u, 1u, 0u};
+  assert(vkr_packed_geometry_lod_ranges_are_valid(records, 0u, 0u, 3u, 0,
+                                                  indices, 6u, 3u));
+  /* Level 0 must be the range, and later levels stay inside the buffer. */
+  assert(!vkr_packed_geometry_lod_ranges_are_valid(records, 0u, 0u, 6u, 0,
+                                                   indices, 6u, 3u));
+  assert(!vkr_packed_geometry_lod_ranges_are_valid(records, 0u, 0u, 3u, 0,
+                                                   indices, 5u, 3u));
+  assert(!vkr_packed_geometry_lod_ranges_are_valid(records, 0u, 0u, 3u, 0,
+                                                   indices, 6u, 2u));
+  /* A row nobody references, one before its decode record, a shrinking
+     error or too many levels are rejected. */
+  assert(vkr_packed_geometry_metadata_is_valid(&decode, 1u, NULL));
+  VkrGpuGeometryDecodeRecord broken[ArrayCount(records)];
+  MemCopy(broken, records, sizeof(records));
+  broken[0].lod_record = 0u;
+  assert(
+      !vkr_packed_geometry_metadata_is_valid(broken, ArrayCount(broken), NULL));
+  MemCopy(broken, records, sizeof(records));
+  broken[0].lod_record = 2u;
+  assert(
+      !vkr_packed_geometry_metadata_is_valid(broken, ArrayCount(broken), NULL));
+  VkrGpuGeometryLodRow bad = row;
+  bad.levels[1].error = -1.0f;
+  MemCopy(&broken[1], &bad, sizeof(bad));
+  broken[0].lod_record = 1u;
+  assert(
+      !vkr_packed_geometry_metadata_is_valid(broken, ArrayCount(broken), NULL));
+  bad = row;
+  bad.level_count = VKR_GPU_GEOMETRY_LOD_LEVEL_MAX + 1u;
+  MemCopy(&broken[1], &bad, sizeof(bad));
+  assert(
+      !vkr_packed_geometry_metadata_is_valid(broken, ArrayCount(broken), NULL));
 
   vertices[0].normal = (VkrPackedVec3){2.0f, 0.0f, 0.0f};
   vertices[0].tangent = vec4_new(2.0f, 0.0f, 0.0f, 1.0f);

@@ -16,12 +16,39 @@ struct VkrPackedStaticVertex
     uint words[8];
 };
 
+#include "lod_kernel.slangh"
+#include "terrain_kernel.slangh"
+
 struct VkrGpuGeometryDecodeRecord
 {
     float3 position_bias;
     uint flags;
     float3 position_scale;
+    uint lod_record;
+};
+
+struct VkrGpuGeometryLodLevel
+{
+    uint first_index;
+    uint index_count;
+    float error;
     uint reserved;
+};
+
+struct VkrGpuGeometryLodRow
+{
+    uint level_count;
+    uint flags;
+    uint2 reserved;
+    VkrGpuGeometryLodLevel levels[7];
+};
+
+struct VkrGpuLodView
+{
+    float4 position_scale;
+    float4 previous_position;
+    uint flags;
+    uint3 reserved;
 };
 
 struct VkrGpuDecodedVertex
@@ -140,5 +167,99 @@ uint vkr_gpu_draw_state_bucket(uint state_flags)
 
 uint vkr_gpu_draw_candidate_flags(uint state_flags)
 {
-    return state_flags >> 3u;
+    return (state_flags >> 3u) & VKR_GPU_DRAW_CANDIDATE_FLAG_MASK;
+}
+
+// The LOD row of decode record `decode_index` of `records`, or null.
+VkrGpuGeometryLodRow* vkr_gpu_geometry_lod_row(
+    VkrGpuGeometryDecodeRecord* records, uint decode_index)
+{
+    uint lod_record = records[decode_index].lod_record;
+    if (lod_record == 0u)
+    {
+        return nullptr;
+    }
+    return (VkrGpuGeometryLodRow*)(records + lod_record);
+}
+
+// A candidate's LOD state in `view` (vkr_gpu_draw_lod_state): the coarsest
+// level whose error, grown by the instance's `error_scale`, projects to at
+// most one, and in a morphing view how far a terrain grid has morphed
+// toward the next level now and one frame earlier.
+uint vkr_gpu_lod_select(VkrGpuGeometryLodRow* row, VkrGpuLodView view,
+                        float3 center, float radius, float error_scale)
+{
+    float scale = view.position_scale.w * error_scale;
+    if (row == nullptr || !(scale > 0.0f) || row.level_count < 2u)
+    {
+        return 0u;
+    }
+    float distance =
+        vkr_lod_distance(view.position_scale.xyz, center, radius);
+    uint level = 0u;
+    for (uint candidate = 1u; candidate < row.level_count; ++candidate)
+    {
+        if (vkr_lod_projected(row.levels[candidate].error, scale, view.flags,
+                              distance) > 1.0f)
+        {
+            break;
+        }
+        level = candidate;
+    }
+    bool geomorph =
+        (row.flags & VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID) != 0u &&
+        (view.flags & VKR_GPU_LOD_VIEW_MORPH) != 0u &&
+        (view.flags & VKR_GPU_LOD_VIEW_CONSTANT) == 0u &&
+        level + 1u < row.level_count;
+    if (!geomorph)
+    {
+        return vkr_gpu_draw_lod_state(level, 0.0f, 0.0f, false);
+    }
+    float next_error = row.levels[level + 1u].error;
+    float previous_distance =
+        vkr_lod_distance(view.previous_position.xyz, center, radius);
+    return vkr_gpu_draw_lod_state(
+        level, vkr_lod_morph(vkr_lod_projected(next_error, scale, 0u, distance)),
+        vkr_lod_morph(
+            vkr_lod_projected(next_error, scale, 0u, previous_distance)),
+        true);
+}
+
+// A decoded terrain tile vertex morphed toward its row's next level, and its
+// morphed height one frame earlier in `out_previous_height`.
+VkrGpuDecodedVertex vkr_gpu_terrain_morph(VkrGpuDecodedVertex decoded,
+                                          VkrPackedStaticVertex* vertices,
+                                          VkrGpuGeometryDecodeRecord decode,
+                                          uint vertex_index, uint state_flags,
+                                          out float out_previous_height)
+{
+    out_previous_height = decoded.position.y;
+    float morph = vkr_gpu_draw_morph(state_flags);
+    float previous_morph = vkr_gpu_draw_previous_morph(state_flags);
+    if (!vkr_gpu_draw_geomorph(state_flags) ||
+        (morph <= 0.0f && previous_morph <= 0.0f))
+    {
+        return decoded;
+    }
+    uint4 topology = vkr_terrain_morph_vertices(
+        vertex_index, vkr_gpu_draw_lod_level(state_flags));
+    if (topology.w == 0u)
+    {
+        return decoded;
+    }
+    VkrGpuDecodedVertex grid =
+        topology.x == vertex_index
+            ? decoded
+            : vkr_decode_packed_vertex(vertices[topology.x], decode);
+    VkrGpuDecodedVertex a = vkr_decode_packed_vertex(vertices[topology.y], decode);
+    VkrGpuDecodedVertex b = vkr_decode_packed_vertex(vertices[topology.z], decode);
+    out_previous_height = vkr_terrain_morph_height(
+        decoded.position.y, grid.position.y, a.position.y, b.position.y,
+        previous_morph);
+    decoded.position.y = vkr_terrain_morph_height(
+        decoded.position.y, grid.position.y, a.position.y, b.position.y, morph);
+    decoded.normal = vkr_terrain_morph_normal(decoded.normal, a.normal, b.normal,
+                                             morph);
+    decoded.color = vkr_terrain_morph_color(decoded.color, a.color, b.color, morph);
+    return decoded;
 }

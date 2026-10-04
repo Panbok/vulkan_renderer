@@ -84,3 +84,11 @@ vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
 /* A terrain layer's surface row: x metallic, y roughness, z normal scale,
    w occlusion strength, unclamped like the common row's surface. */
 Vec4 vkr_packet_terrain_layer_surface(const VkrMaterialLayer *layer);
+
+typedef struct VkrRenderGraphFrameInfo VkrRenderGraphFrameInfo;
+
+/* The LOD policy of each culling view in their order: the camera, the
+   cascades, then the opaque and transmitting local faces (ADR-084). */
+void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
+                                const VkrRenderGraphFrameInfo *frame,
+                                VkrGpuLodView *out_views, uint32_t view_count);

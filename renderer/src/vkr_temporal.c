@@ -508,6 +508,8 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
   VkrTemporalFrame frame = {
       .jittered_projection = input->projection,
       .current_view_projection = mat4_mul(input->projection, input->view),
+      .previous_view_position =
+          state->valid ? state->view_position : input->view_position,
       .reset_reasons = input->explicit_reset_reasons,
       .enabled = input->enabled,
   };

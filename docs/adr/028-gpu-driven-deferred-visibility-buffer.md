@@ -80,7 +80,8 @@ barrier. Command-generation-to-indirect-execution dependencies remain separate.
 World work has one topology and one representation. Indirect submission and
 visibility resolve require ABI and native GPU evidence. Exact HZB history gates
 limit reuse under motion. A GPU-driven topology does not imply mesh shaders,
-meshlets or automatic LOD.
+meshlets or automatic LOD; ranges with detail levels select them during
+culling ([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)).
 
 ## Alternatives considered
 

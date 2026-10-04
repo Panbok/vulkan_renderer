@@ -68,7 +68,8 @@ struct VkrVkCullRoot
     uint transmission_required_flags;
     uint local_shadow_excluded_flags;
     uint reserved;
-    uint reserved_tail[4];
+    VkrGpuLodView *lod_views;
+    VkrVkGeometryRow *geometry_rows;
 };
 
 struct VkrVkRasterRoot
@@ -684,7 +685,17 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
                        ignored);
         return;
     }
-    root.classifications[classification_index] = bucket;
+    // The LOD state rides above the bucket (ADR-084); a candidate without
+    // valid bounds has no distance and keeps level 0.
+    uint lod_state = (candidate_flags & 1u) == 0u
+        ? 0u
+        : vkr_gpu_lod_select(
+              vkr_gpu_geometry_lod_row(
+                  root.geometry_rows[candidate.geometry_index].decode,
+                  candidate.decode_index),
+              root.lod_views[view_index], world_center.xyz, world_radius,
+              instance.normal_column1.w);
+    root.classifications[classification_index] = bucket | lod_state;
     uint ignored;
     InterlockedAdd(root.states[view_index].bucket_counts[bucket], 1u, ignored);
 }
@@ -725,7 +736,9 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
         return;
     uint classification_index =
         view_index * root.candidate_capacity + candidate_index;
-    uint bucket = root.classifications[classification_index];
+    uint classification = root.classifications[classification_index];
+    uint bucket = classification & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK;
+    uint lod_state = classification & ~VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK;
     if (bucket >= VKR_VK_DRAW_BUCKET_COUNT)
         return;
     uint local_index;
@@ -738,24 +751,36 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     if (visible_index >= root.candidate_capacity)
         return;
     VkrGpuCandidateDrawRow candidate = root.candidates[candidate_index];
+    // The selected level's indices replace the range's (ADR-084).
+    uint first_index = candidate.first_index;
+    uint index_count = candidate.index_count;
+    uint level = vkr_gpu_draw_lod_level(lod_state);
+    if (level != 0u)
+    {
+        VkrGpuGeometryLodRow *row = vkr_gpu_geometry_lod_row(
+            root.geometry_rows[candidate.geometry_index].decode,
+            candidate.decode_index);
+        first_index += row.levels[level].first_index;
+        index_count = row.levels[level].index_count;
+    }
     VkrGpuVisibleDrawRow visible;
     visible.geometry_index = candidate.geometry_index;
     visible.material_index = candidate.material_index;
     visible.instance_index = candidate.instance_index;
-    visible.first_index = candidate.first_index;
-    visible.index_count = candidate.index_count;
+    visible.first_index = first_index;
+    visible.index_count = index_count;
     visible.vertex_offset = candidate.vertex_offset;
     visible.decode_index = candidate.decode_index;
-    visible.state_flags = candidate.state_flags;
+    visible.state_flags = candidate.state_flags | lod_state;
     root.visible[view_index * root.candidate_capacity + visible_index] =
         visible;
     uint argument_index = (view_index * VKR_VK_DRAW_BUCKET_COUNT + bucket) *
                               root.command_partition_capacity +
                           local_index;
     VkrVkIndirectCommand command;
-    command.index_count = candidate.index_count;
+    command.index_count = index_count;
     command.instance_count = 1u;
-    command.first_index = candidate.first_index;
+    command.first_index = first_index;
     command.vertex_offset = candidate.vertex_offset;
     command.first_instance = 0u;
     root.commands[argument_index] = command;
@@ -798,6 +823,12 @@ VkrVkVisibilityOutput vk_visibility_vertex(uint vertex_id : SV_VertexID,
         geometry.decode[visible.decode_index]);
     VkrVulkanInstance instance = root.frame.instances[visible.instance_index];
     vertex = vkr_apply_deformation(vertex, instance.deformation_address, vertex_id);
+    // Terrain tiles morph toward their next level (ADR-084).
+    float previous_height;
+    vertex = vkr_gpu_terrain_morph(vertex, geometry.vertices + geometry.first_vertex,
+                                   geometry.decode[visible.decode_index],
+                                   vertex_id, visible.state_flags,
+                                   previous_height);
     VkrVkVisibilityOutput output;
     output.position = mul(root.frame.view_projection,
                           mul(instance.model, float4(vertex.position, 1.0f)));
@@ -1178,6 +1209,18 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     a = vkr_apply_deformation(a, instance.deformation_address, uint(ia));
     b = vkr_apply_deformation(b, instance.deformation_address, uint(ib));
     c = vkr_apply_deformation(c, instance.deformation_address, uint(ic));
+    // Terrain tiles morph as the raster did (ADR-084).
+    float previous_height_a;
+    float previous_height_b;
+    float previous_height_c;
+    VkrPackedStaticVertex *tile_vertices =
+        source.vertices + geometry.first_vertex;
+    a = vkr_gpu_terrain_morph(a, tile_vertices, decode, uint(ia),
+                              visible.state_flags, previous_height_a);
+    b = vkr_gpu_terrain_morph(b, tile_vertices, decode, uint(ib),
+                              visible.state_flags, previous_height_b);
+    c = vkr_gpu_terrain_morph(c, tile_vertices, decode, uint(ic),
+                              visible.state_flags, previous_height_c);
     float4 wa = mul(instance.model, float4(a.position, 1.0f));
     float4 wb = mul(instance.model, float4(b.position, 1.0f));
     float4 wc = mul(instance.model, float4(c.position, 1.0f));
@@ -1323,6 +1366,10 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
         vkr_previous_deformed_position(a.position, instance.previous_deformation_address, uint(ia)) * perspective.x +
         vkr_previous_deformed_position(b.position, instance.previous_deformation_address, uint(ib)) * perspective.y +
         vkr_previous_deformed_position(c.position, instance.previous_deformation_address, uint(ic)) * perspective.z;
+    surface.previous_object_position.y +=
+        (previous_height_a - a.position.y) * perspective.x +
+        (previous_height_b - b.position.y) * perspective.y +
+        (previous_height_c - c.position.y) * perspective.z;
     surface.object_normal = object_normal;
     surface.object_tangent = object_tangent;
     surface.emissive = emissive;

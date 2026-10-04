@@ -2,6 +2,7 @@
 
 #include "level/vkr_heightfield.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "vkr_gpu_abi.h"
 
 /* Scene terrains (ADR-084). An entity with a `terrain` component loads its
  * heightfield file and keeps the samples in memory: edits change them there,
@@ -19,6 +20,8 @@
 /* Updates a terrain waits after its last edit before it rebuilds its
    collision. */
 #define VKR_SCENE_TERRAIN_COLLISION_SETTLE 8u
+/* Detail levels of a tile: 64 cells a side down to one. */
+#define VKR_SCENE_TERRAIN_LOD_LEVELS 7u
 
 typedef struct s_VkrSceneTerrains VkrSceneTerrains;
 
@@ -50,6 +53,19 @@ bool8_t vkr_scene_terrain_write(VkrScene *scene, VkrEntityId entity,
                                 VkrHeightfieldRect rect,
                                 const uint16_t *heights,
                                 const uint32_t *weights);
+
+/* Indices every level of a tile needs. */
+uint32_t vkr_scene_terrain_tile_index_count(void);
+/* A tile's indices for every level (ADR-084) over `vertices`: its 65 x 65
+   grid, then a skirt vertex below each edge vertex, edges -Z, +X, +Z, -X.
+   Level L draws every 2^L-th grid line, cells split along their +X to +Z
+   diagonal, and its skirt. Fills the LOD row with each level's range and
+   error (`spacing` sets the error floor of coarser levels) and returns the
+   index count, or zero when `capacity` is too small. */
+uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
+                                        float32_t spacing, uint32_t *indices,
+                                        uint32_t capacity,
+                                        VkrGpuGeometryLodRow *out_lod);
 
 /* Absolute path of a heightfield file the component names. */
 bool8_t vkr_scene_terrain_resolve(const VkrScene *scene, const char *relative,

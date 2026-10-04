@@ -10,11 +10,11 @@ authority: adr
 Accepted (partial). The agent channel, brushes, brush editing, level
 checks and entity IO (phases 0 to 3 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
-implemented. Of terrain (phase 4), heightfields, editing, the agent
-operations, tile meshes, the four-layer terrain material and height field
-collision are implemented; tile LOD remains in
-[Terrain rendering](../proposals/terrain-rendering.md). Population remains in
-the toolkit proposal.
+implemented. Terrain (phase 4) is implemented: heightfields, editing, the
+agent operations, tile meshes with geomorphing levels
+([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)), the four-layer
+terrain material and height field collision. `terrain.road` and population
+remain in the toolkit proposal.
 
 ## Context
 
@@ -388,7 +388,9 @@ writes each changed terrain's file. Each update rebuilds the marked tiles:
 
 - **Mesh.** One generated mesh holds a submesh per tile, each with its own
   geometry: a 65 by 65 vertex grid with a skirt two spacings deep around it,
-  so that tiles cull one by one and no gap opens between them. UVs are
+  so that tiles cull one by one and no gap opens between them. Each tile
+  carries seven detail levels that the GPU selects and morphs between
+  ([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)). UVs are
   local x and z over the texture size, and each vertex color holds its
   sample's four layer weights.
 - **Material.** The terrain owns one terrain material that blends its four
@@ -424,7 +426,7 @@ rejects one that is not opaque.
 The accepted design carried weights in a weight texture. Vertex colors carry
 them instead: a vertex is a sample, so the resolution is the same, painting
 already rebuilds the touched tiles, and no texture upload path is needed.
-Coarser tile LOD levels will thin the weights with their vertices.
+Coarser tile levels thin the weights with their vertices.
 
 A terrain sits at its entity's position and ignores rotation and scale.
 Its local space is metres from its centre, with heights above the entity.
@@ -481,8 +483,10 @@ user's own processes, which can already edit the project's files.
 `terrain.create` writes the heightfield file at once, so undoing it or
 leaving the scene unsaved leaves the file behind. A terrain keeps all its
 samples resident: the largest, 1,025 samples a side, holds 6 MiB of samples
-and 256 tile geometries. Streaming terrain and scene content by cells is
-future World Partition work.
+and 256 tile geometries. The owner chose all-resident terrain up to 1 km at
+1 m spacing; streaming terrain and scene content by cells over the
+tile-chunked file is future World Partition work. Imported, cooked terrain
+meshes were declined in favour of heightfields built in the scene.
 
 Brush meshes are not merged: a level pays one draw per brush. A
 measurement put that at about 0.4 µs per brush (see Evidence). Brush

@@ -334,7 +334,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint32_t view_count;
   uint32_t encode_view_index;
   uint64_t hzb_texture_id;
-  uint64_t reserved_2;
+  /** One VkrGpuLodView per culling view (ADR-084). */
+  uint64_t lod_views;
   Mat4 history_view_projection;
   uint32_t hzb_extent[2];
   uint32_t hzb_mip_count;

@@ -578,7 +578,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   uint32_t transmission_required_flags;
   uint32_t local_shadow_excluded_flags;
   uint32_t reserved;
-  uint32_t reserved_tail[4];
+  /** One VkrGpuLodView per culling view, and the geometry rows whose
+      decode records lead to LOD rows (ADR-084). */
+  uint64_t lod_views;
+  uint64_t geometry_rows;
 } VkrVulkanCullRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
@@ -1703,6 +1706,8 @@ _Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
                "a layered local shadow graph image exceeds the graph layers");
 _Static_assert(sizeof(VkrVulkanCullRoot) == 208u,
                "Deferred cull-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanCullRoot, lod_views) == 192u,
+               "Vulkan cull root LOD view ABI drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, view_projections) == 48u,
                "Deferred cull-root address ABI drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, hzb_textures) == 80u,

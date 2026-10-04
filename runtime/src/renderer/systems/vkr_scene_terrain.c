@@ -20,6 +20,15 @@
 /* Skirts reach this many sample spacings below each tile edge, so tiles at
    different detail never show a gap between them. */
 #define TERRAIN_SKIRT_SPACINGS 2.0f
+/* A coarser level's error is at least this share of its cell size. */
+#define TERRAIN_LOD_CELL_ERROR 0.1f
+
+_Static_assert(VKR_HEIGHTFIELD_TILE_CELLS + 1u == VKR_GPU_TERRAIN_TILE_SIDE,
+               "Shaders morph tiles of VKR_GPU_TERRAIN_TILE_SIDE samples");
+_Static_assert(VKR_SCENE_TERRAIN_LOD_LEVELS <= VKR_GPU_GEOMETRY_LOD_LEVEL_MAX &&
+                   (VKR_HEIGHTFIELD_TILE_CELLS >>
+                    (VKR_SCENE_TERRAIN_LOD_LEVELS - 1u)) == 1u,
+               "Tile levels halve 64 cells down to one");
 
 typedef struct TerrainRecord {
   VkrEntityId entity;
@@ -329,6 +338,121 @@ static Vec4 terrain_weights(const VkrHeightfield *field, uint32_t x,
       (float32_t)((w >> 16u) & 0xFFu) / 255.0f, (float32_t)(w >> 24u) / 255.0f);
 }
 
+/* Grid position of sample `i` along tile edge `edge` (-Z, +X, +Z, -X). */
+static void terrain_edge_sample(uint32_t edge, uint32_t i, uint32_t *out_x,
+                                uint32_t *out_z) {
+  const uint32_t last = VKR_HEIGHTFIELD_TILE_CELLS;
+  *out_x = edge == 0u ? i : edge == 1u ? last : edge == 2u ? last - i : 0u;
+  *out_z = edge == 0u ? 0u : edge == 1u ? i : edge == 2u ? last : last - i;
+}
+
+/* Largest height difference between a tile's samples and the surface of
+   the level drawing every `stride`-th grid line. */
+static float32_t terrain_level_error(const VkrVertex3d *vertices, uint32_t side,
+                                     uint32_t stride) {
+  float32_t error = 0.0f;
+  for (uint32_t z = 0; z < side; ++z) {
+    for (uint32_t x = 0; x < side; ++x) {
+      const uint32_t x0 = Min(x / stride * stride, side - 1u - stride);
+      const uint32_t z0 = Min(z / stride * stride, side - 1u - stride);
+      const float32_t u = (float32_t)(x - x0) / (float32_t)stride;
+      const float32_t v = (float32_t)(z - z0) / (float32_t)stride;
+      const float32_t ha = vertices[z0 * side + x0].position.y;
+      const float32_t hb = vertices[z0 * side + x0 + stride].position.y;
+      const float32_t hc = vertices[(z0 + stride) * side + x0].position.y;
+      const float32_t hd =
+          vertices[(z0 + stride) * side + x0 + stride].position.y;
+      /* The cell splits along its +X to +Z diagonal. */
+      const float32_t surface =
+          u + v <= 1.0f ? ha + u * (hb - ha) + v * (hc - ha)
+                        : hd + (1.0f - u) * (hc - hd) + (1.0f - v) * (hb - hd);
+      error = Max(error, fabsf(vertices[z * side + x].position.y - surface));
+    }
+  }
+  return error;
+}
+
+uint32_t vkr_scene_terrain_tile_index_count(void) {
+  /* A level of n cells a side has n squared cells and 4n skirt quads, six
+     indices each. */
+  uint32_t index_count = 0u;
+  for (uint32_t level = 0; level < VKR_SCENE_TERRAIN_LOD_LEVELS; ++level) {
+    const uint32_t cells = VKR_HEIGHTFIELD_TILE_CELLS >> level;
+    index_count += (cells * cells + 4u * cells) * 6u;
+  }
+  return index_count;
+}
+
+uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
+                                        float32_t spacing, uint32_t *indices,
+                                        uint32_t capacity,
+                                        VkrGpuGeometryLodRow *out_lod) {
+  const uint32_t side = VKR_HEIGHTFIELD_TILE_CELLS + 1u;
+  const uint32_t grid = side * side;
+  if (capacity < vkr_scene_terrain_tile_index_count()) {
+    return 0u;
+  }
+  /* Level L draws every 2^L-th grid line with level 0's diagonal (ADR-084);
+     its error is its surface's largest height difference from the samples,
+     at least a share of its cell size so that painted weights thin out
+     with distance too. */
+  VkrGpuGeometryLodRow lod = {.level_count = VKR_SCENE_TERRAIN_LOD_LEVELS,
+                              .flags = VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID};
+  uint32_t count = 0u;
+  for (uint32_t level = 0; level < VKR_SCENE_TERRAIN_LOD_LEVELS; ++level) {
+    const uint32_t stride = 1u << level;
+    const uint32_t first = count;
+    for (uint32_t z = 0; z < VKR_HEIGHTFIELD_TILE_CELLS; z += stride) {
+      for (uint32_t x = 0; x < VKR_HEIGHTFIELD_TILE_CELLS; x += stride) {
+        const uint32_t a = z * side + x;
+        const uint32_t b = a + stride;
+        const uint32_t c = a + stride * side;
+        const uint32_t d = c + stride;
+        /* Counter-clockwise seen from above. */
+        indices[count++] = a;
+        indices[count++] = c;
+        indices[count++] = b;
+        indices[count++] = b;
+        indices[count++] = c;
+        indices[count++] = d;
+      }
+    }
+    for (uint32_t edge = 0; edge < 4u; ++edge) {
+      for (uint32_t i = 0; i < VKR_HEIGHTFIELD_TILE_CELLS; i += stride) {
+        uint32_t xa = 0u;
+        uint32_t za = 0u;
+        uint32_t xb = 0u;
+        uint32_t zb = 0u;
+        terrain_edge_sample(edge, i, &xa, &za);
+        terrain_edge_sample(edge, i + stride, &xb, &zb);
+        const uint32_t top_a = za * side + xa;
+        const uint32_t top_b = zb * side + xb;
+        const uint32_t low_a = grid + edge * side + i;
+        const uint32_t low_b = grid + edge * side + i + stride;
+        indices[count++] = top_a;
+        indices[count++] = top_b;
+        indices[count++] = low_a;
+        indices[count++] = low_a;
+        indices[count++] = top_b;
+        indices[count++] = low_b;
+      }
+    }
+    lod.levels[level] = (VkrGpuGeometryLodLevel){
+        .first_index = first,
+        .index_count = count - first,
+        .error = Max(terrain_level_error(vertices, side, stride),
+                     TERRAIN_LOD_CELL_ERROR * spacing *
+                         (level ? (float32_t)stride : 0.0f)),
+    };
+    if (level > 0u) {
+      lod.levels[level].error =
+          Max(lod.levels[level].error, lod.levels[level - 1u].error);
+    }
+  }
+  *out_lod = lod;
+  return count;
+}
+
 /* One tile's geometry: its 65 x 65 samples and a skirt down from each edge,
    in the terrain's local space. */
 static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
@@ -339,9 +463,7 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
   const uint32_t side = VKR_HEIGHTFIELD_TILE_CELLS + 1u;
   const uint32_t grid = side * side;
   const uint32_t vertex_count = grid + 4u * side;
-  const uint32_t index_count =
-      VKR_HEIGHTFIELD_TILE_CELLS * VKR_HEIGHTFIELD_TILE_CELLS * 6u +
-      4u * VKR_HEIGHTFIELD_TILE_CELLS * 6u;
+  const uint32_t index_count = vkr_scene_terrain_tile_index_count();
   VkrVertex3d *vertices =
       vkr_allocator_alloc(&assets->scratch_allocator,
                           vertex_count * sizeof(*vertices), TERRAIN_TAG);
@@ -375,69 +497,22 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
       hi = vec3_new(Max(hi.x, p.x), Max(hi.y, p.y), Max(hi.z, p.z));
     }
   }
-  uint32_t count = 0u;
-  for (uint32_t z = 0; z < VKR_HEIGHTFIELD_TILE_CELLS; ++z) {
-    for (uint32_t x = 0; x < VKR_HEIGHTFIELD_TILE_CELLS; ++x) {
-      const uint32_t a = z * side + x;
-      const uint32_t b = a + 1u;
-      const uint32_t c = a + side;
-      const uint32_t d = c + 1u;
-      /* Counter-clockwise seen from above. */
-      indices[count++] = a;
-      indices[count++] = c;
-      indices[count++] = b;
-      indices[count++] = b;
-      indices[count++] = c;
-      indices[count++] = d;
-    }
-  }
   /* Skirts: each edge's samples again, lowered, facing out. Edges run
      -Z, +X, +Z, -X; a skirt vertex keeps its edge sample's normal. */
   for (uint32_t edge = 0; edge < 4u; ++edge) {
-    const uint32_t base = grid + edge * side;
     for (uint32_t i = 0; i < side; ++i) {
-      const uint32_t x = edge == 0u   ? i
-                         : edge == 1u ? side - 1u
-                         : edge == 2u ? side - 1u - i
-                                      : 0u;
-      const uint32_t z = edge == 0u   ? 0u
-                         : edge == 1u ? i
-                         : edge == 2u ? side - 1u
-                                      : side - 1u - i;
+      uint32_t x = 0u;
+      uint32_t z = 0u;
+      terrain_edge_sample(edge, i, &x, &z);
       VkrVertex3d v = vertices[z * side + x];
       v.position.y -= skirt;
-      vertices[base + i] = v;
+      vertices[grid + edge * side + i] = v;
       lo.y = Min(lo.y, v.position.y);
     }
-    for (uint32_t i = 0; i < VKR_HEIGHTFIELD_TILE_CELLS; ++i) {
-      const uint32_t xa = edge == 0u   ? i
-                          : edge == 1u ? side - 1u
-                          : edge == 2u ? side - 1u - i
-                                       : 0u;
-      const uint32_t za = edge == 0u   ? 0u
-                          : edge == 1u ? i
-                          : edge == 2u ? side - 1u
-                                       : side - 1u - i;
-      const uint32_t xb = edge == 0u   ? i + 1u
-                          : edge == 1u ? side - 1u
-                          : edge == 2u ? side - 2u - i
-                                       : 0u;
-      const uint32_t zb = edge == 0u   ? 0u
-                          : edge == 1u ? i + 1u
-                          : edge == 2u ? side - 1u
-                                       : side - 2u - i;
-      const uint32_t top_a = za * side + xa;
-      const uint32_t top_b = zb * side + xb;
-      const uint32_t low_a = base + i;
-      const uint32_t low_b = base + i + 1u;
-      indices[count++] = top_a;
-      indices[count++] = top_b;
-      indices[count++] = low_a;
-      indices[count++] = low_a;
-      indices[count++] = top_b;
-      indices[count++] = low_b;
-    }
   }
+  VkrGpuGeometryLodRow lod = {0};
+  const uint32_t count = vkr_scene_terrain_tile_indices(
+      vertices, field->spacing, indices, index_count, &lod);
   VkrGeometryConfig config = {
       .vertex_size = sizeof(VkrVertex3d),
       .vertex_count = vertex_count,
@@ -445,6 +520,8 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
       .index_size = sizeof(uint32_t),
       .index_count = count,
       .indices = indices,
+      .range_index_count = lod.levels[0].index_count,
+      .lod = lod,
       .center = vec3_scale(vec3_add(lo, hi), 0.5f),
       .min_extents = lo,
       .max_extents = hi,

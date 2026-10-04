@@ -8,8 +8,8 @@ authority: proposal
 The remaining phases of the level design toolkit. The agent channel,
 brushes, brush editing, level checks, entity IO and terrain editing are
 implemented and recorded in
-[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md); the terrain
-material and tile LOD remain in [Terrain rendering](terrain-rendering.md).
+[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md), with terrain
+levels in [ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md).
 This proposal keeps splines and scatter, `terrain.road`, the brush tools no
 phase covers yet, and the IO work that follows it. Every phase adds its
 operations to the ADR-084 operation table, so the viewport, the Cmd bar and
@@ -118,7 +118,6 @@ Entity IO is implemented (ADR-084). What follows it:
 
 ### Terrain and population
 
-Terrain rendering finishes in [Terrain rendering](terrain-rendering.md).
 Holes for brush-built entrances need the height field's hole samples and a
 cut in the tile meshes. `terrain.road(spline)` flattens a band along a
 spline once splines exist. Population adds splines
@@ -158,11 +157,12 @@ editor sections and the operations.
 
 ### Phase 4: terrain
 
-Editing is implemented;
+Implemented;
 [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md#terrain) owns
-the heightfield, the scene's terrains, the journal entry, the operations and
-the sculpt tool. The terrain material and tile LOD follow
-[Terrain rendering](terrain-rendering.md); `terrain.road` ships with phase 5.
+the heightfield, the scene's terrains, the material, the journal entry, the
+operations and the sculpt tool, and
+[ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md) the tile
+levels. `terrain.road` ships with phase 5.
 
 ### Phase 5: population
 
@@ -180,7 +180,7 @@ the rules. Linked prefabs stay with ADR-076 and the behavior proposal.
 | 1. Brush core | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 2. Brush editing | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 3. IO | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
-| 4. Terrain | Editing implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md#terrain)); material and LOD in [Terrain rendering](terrain-rendering.md) | Defined by the terrain-rendering proposal |
+| 4. Terrain | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md#terrain), [ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)) | Recorded in those ADRs |
 | 5. Population | Splines, seeded scatter and `terrain.road`; linked prefabs stay with ADR-076 | A residency bound for M1 under the 16 GB floor ([ADR-083](../adr/083-supported-hardware-matrix.md)) |
 
 ## Risks

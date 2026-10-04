@@ -3,6 +3,9 @@
 // ORM and tangent-space normal samples and its row factors; the blend is the
 // weighted sum, then the normal is renormalized and roughness clamped as the
 // common material path clamps it. Sampling stays with each backend.
+#ifndef VKR_TERRAIN_KERNEL_SLANGH
+#define VKR_TERRAIN_KERNEL_SLANGH
+
 struct VkrTerrainSurface
 {
     float4 base;
@@ -61,3 +64,86 @@ VkrTerrainSurface vkr_terrain_finish(VkrTerrainSurface sum)
     sum.occlusion = saturate(sum.occlusion);
     return sum;
 }
+
+// Terrain tile geomorphing (ADR-084). A tile is VKR_GPU_TERRAIN_TILE_SIDE
+// squared grid vertices, then one skirt vertex below each edge vertex, edges
+// in -Z, +X, +Z, -X order. Level L draws every 2^L-th grid line, each cell
+// split along the diagonal from its +X corner to its +Z corner. A vertex
+// level L + 1 drops lies on an edge or that diagonal of level L + 1, and
+// morphs to the midpoint of the two level L + 1 vertices there, so a fully
+// morphed level L matches level L + 1.
+#define VKR_GPU_TERRAIN_TILE_SIDE 65u
+
+// x: the grid vertex `tile_vertex` follows (itself, or the edge vertex above a
+// skirt vertex); y, z: the level L + 1 vertices it morphs between; w: 1 when
+// level L + 1 drops it, else 0.
+uint4 vkr_terrain_morph_vertices(uint tile_vertex, uint level)
+{
+    uint side = VKR_GPU_TERRAIN_TILE_SIDE;
+    uint grid_vertex = tile_vertex;
+    if (tile_vertex >= side * side)
+    {
+        uint skirt = tile_vertex - side * side;
+        uint edge = skirt / side;
+        uint along = skirt % side;
+        uint edge_x = edge == 0u ? along
+                    : edge == 1u ? side - 1u
+                    : edge == 2u ? side - 1u - along
+                                 : 0u;
+        uint edge_z = edge == 0u ? 0u
+                    : edge == 1u ? along
+                    : edge == 2u ? side - 1u
+                                 : side - 1u - along;
+        grid_vertex = edge_z * side + edge_x;
+    }
+    uint x = grid_vertex % side;
+    uint z = grid_vertex / side;
+    uint stride = 1u << level;
+    uint next_stride = stride << 1u;
+    bool odd_x = (x % next_stride) != 0u;
+    bool odd_z = (z % next_stride) != 0u;
+    if (!odd_x && !odd_z)
+    {
+        return uint4(grid_vertex, grid_vertex, grid_vertex, 0u);
+    }
+    if (odd_x && odd_z)
+    {
+        return uint4(grid_vertex, (z - stride) * side + x + stride,
+                     (z + stride) * side + x - stride, 1u);
+    }
+    if (odd_x)
+    {
+        return uint4(grid_vertex, z * side + x - stride,
+                     z * side + x + stride, 1u);
+    }
+    return uint4(grid_vertex, (z - stride) * side + x,
+                 (z + stride) * side + x, 1u);
+}
+
+// A morphed height: the vertex moves by `morph` of the way from its grid
+// vertex's height to the midpoint of `a` and `b`.
+float vkr_terrain_morph_height(float height, float grid_height, float a,
+                               float b, float morph)
+{
+    return height + morph * (0.5f * (a + b) - grid_height);
+}
+
+float3 vkr_terrain_morph_normal(float3 normal, float3 a, float3 b,
+                                float morph)
+{
+    float3 target = a + b;
+    float target_squared = dot(target, target);
+    target = target_squared > 1e-12f ? target * rsqrt(target_squared)
+                                     : normal;
+    float3 morphed = normal + (target - normal) * morph;
+    float morphed_squared = dot(morphed, morphed);
+    return morphed_squared > 1e-12f ? morphed * rsqrt(morphed_squared)
+                                    : normal;
+}
+
+float4 vkr_terrain_morph_color(float4 color, float4 a, float4 b, float morph)
+{
+    return color + (0.5f * (a + b) - color) * morph;
+}
+
+#endif

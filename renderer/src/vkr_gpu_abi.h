@@ -160,13 +160,96 @@ typedef struct VkrGpuGeometryDecodeRecord {
   float32_t position_bias[3];
   uint32_t flags;
   float32_t position_scale[3];
-  uint32_t reserved;
+  /** Record offset, from the geometry's first decode record, of this range's
+      VkrGpuGeometryLodRow; zero when the range has one level. */
+  uint32_t lod_record;
 } VkrGpuGeometryDecodeRecord;
 
 _Static_assert(sizeof(VkrPackedStaticVertex) == 32,
                "Packed static vertex ABI must be 32 bytes");
 _Static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
                "Geometry decode record ABI must be 32 bytes");
+
+/* Detail levels of one range (ADR-084). Level 0 is the range itself; each
+   later level holds fewer indices over the same vertices and a larger
+   model-space error. Culling picks a level per candidate and view, and
+   encoding draws that level's indices. */
+#define VKR_GPU_GEOMETRY_LOD_LEVEL_MAX 7u
+/* The range is a terrain tile: VKR_GPU_TERRAIN_TILE_SIDE squared grid
+   vertices, then a skirt vertex below each edge vertex, edges in -Z, +X, +Z,
+   -X order. Level L draws every 2^L-th grid line with the same diagonal, and
+   a vertex that level L + 1 drops can morph onto it. */
+#define VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID 0x1u
+#define VKR_GPU_TERRAIN_TILE_SIDE 65u
+
+typedef struct VkrGpuGeometryLodLevel {
+  /** First index relative to the range's first index. */
+  uint32_t first_index;
+  uint32_t index_count;
+  /** Largest model-space distance from level 0's surface, in metres. */
+  float32_t error;
+  uint32_t reserved;
+} VkrGpuGeometryLodLevel;
+
+/** A range's levels; occupies four decode records after its decode record. */
+typedef struct VkrGpuGeometryLodRow {
+  uint32_t level_count;
+  uint32_t flags;
+  uint32_t reserved[2];
+  VkrGpuGeometryLodLevel levels[VKR_GPU_GEOMETRY_LOD_LEVEL_MAX];
+} VkrGpuGeometryLodRow;
+
+#define VKR_GPU_GEOMETRY_LOD_RECORDS                                           \
+  (sizeof(VkrGpuGeometryLodRow) / sizeof(VkrGpuGeometryDecodeRecord))
+
+_Static_assert(sizeof(VkrGpuGeometryLodLevel) == 16,
+               "Geometry LOD level ABI must be 16 bytes");
+_Static_assert(sizeof(VkrGpuGeometryLodRow) == 128,
+               "Geometry LOD row ABI must be 128 bytes");
+
+/* A view projects a level's error onto its image without distance (an
+   orthographic camera or cascade) instead of dividing by it. */
+#define VKR_GPU_LOD_VIEW_CONSTANT 0x1u
+/* A view morphs terrain grids toward their next level (the camera). */
+#define VKR_GPU_LOD_VIEW_MORPH 0x2u
+/* A level begins morphing toward the next at this share of the distance at
+   which the next level takes over. */
+#define VKR_GPU_LOD_MORPH_START 0.75f
+
+/** Level-of-detail policy of one culling view. */
+typedef struct VkrGpuLodView {
+  /** xyz: view position; w: image size of one metre of error at unit
+      distance (or at any distance for a constant view) over the error
+      threshold. Zero draws level 0. */
+  Vec4 position_scale;
+  /** xyz: the view position one frame earlier, for motion vectors. */
+  Vec4 previous_position;
+  uint32_t flags;
+  uint32_t reserved[3];
+} VkrGpuLodView;
+
+_Static_assert(sizeof(VkrGpuLodView) == 48, "LOD view ABI must be 48 bytes");
+
+/* Projected error, in pixels or texels, at which the next level takes over. */
+#define VKR_GPU_LOD_THRESHOLD 1.0f
+
+/** The LOD policy of a view whose `view_projection` covers `image_rows`
+    rows: perspective projections scale with distance from `position`,
+    orthographic ones are constant. `morph` lets terrain grids morph (the
+    camera); `previous_position` is the view's position one frame earlier. */
+VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
+                               Vec3 position, Vec3 previous_position,
+                               bool8_t morph);
+
+/* The LOD state encoding writes above a visible row's candidate flags: the
+   level, the morph factor toward the next level now and one frame earlier
+   (8-bit unorm each), and whether the range morphs as a terrain grid. */
+#define VKR_GPU_DRAW_CANDIDATE_FLAG_MASK 0xFu
+#define VKR_GPU_DRAW_GEOMORPH_BIT (1u << 7u)
+#define VKR_GPU_DRAW_LOD_SHIFT 8u
+#define VKR_GPU_DRAW_LOD_MASK 0x7u
+#define VKR_GPU_DRAW_MORPH_SHIFT 11u
+#define VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT 19u
 
 /** Compute output indexed in geometry-local vertex order. */
 typedef struct VkrDeformedVertex {
@@ -388,6 +471,8 @@ typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_LOCAL_SHADOW_VIEW,
   VKR_GPU_ABI_COLOR_GRADING,
   VKR_GPU_ABI_RECTANGLE_LIGHT_ROW,
+  VKR_GPU_ABI_GEOMETRY_LOD_ROW,
+  VKR_GPU_ABI_LOD_VIEW,
   VKR_GPU_ABI_RECORD_COUNT,
 } VkrGpuAbiRecordId;
 

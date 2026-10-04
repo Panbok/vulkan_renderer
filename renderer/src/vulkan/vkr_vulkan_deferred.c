@@ -510,9 +510,21 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
                 renderer->prepared_frame.local_shadow_transmission_render_count;
   uint64_t views_address = 0u;
   uint64_t planes_address = 0u;
+  uint64_t lod_views_address = 0u;
   Mat4 *views = NULL;
   if (pipeline == VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY) {
     const VkrPreparedFrame *packet = renderer->graph->packet;
+    /* Transmission culling keeps level 0; terrain never transmits. */
+    VkrGpuLodView *lod_views = vkr_vk_frame_upload_allocate(
+        slot, (uint64_t)view_count * sizeof(*lod_views),
+        _Alignof(VkrGpuLodView), &lod_views_address, NULL);
+    if (!lod_views)
+      return false_v;
+    if (transmission)
+      lod_views[0] = (VkrGpuLodView){0};
+    else
+      vkr_packet_write_lod_views(packet, &renderer->prepared_frame, lod_views,
+                                 view_count);
     views = vkr_vk_frame_upload_allocate(slot,
                                          (uint64_t)view_count * sizeof(*views),
                                          _Alignof(Mat4), &views_address, NULL);
@@ -568,6 +580,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
                                 : slot->gpu_candidate_instances,
       .view_projections = views_address,
       .frustum_planes = planes_address,
+      .lod_views = lod_views_address,
+      .geometry_rows = slot->gpu_geometry_rows,
       .candidate_count = transmission ? slot->transmission_gpu_candidate_count
                                       : slot->gpu_candidate_count,
       .view_count = view_count,

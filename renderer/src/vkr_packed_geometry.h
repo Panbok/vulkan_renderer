@@ -21,9 +21,32 @@ typedef struct VkrGeometryQuantizationMetrics {
 
 VkrGeometryQuantizationBudgets vkr_packed_geometry_default_budgets(void);
 
-/** Validates the fixed static-v1 decode record before GPU publication. */
+/** Validates the fixed static-v1 decode record before GPU publication; a
+    standalone record, as cooked files hold, has no LOD row. */
 bool8_t
 vkr_packed_geometry_decode_is_valid(const VkrGpuGeometryDecodeRecord *decode);
+
+/** Validates a geometry's metadata records: decode records, then the LOD rows
+    they reference in the same order, four records each (ADR-084). Returns
+    the decode record count in `out_decode_count`. */
+bool8_t
+vkr_packed_geometry_metadata_is_valid(const VkrGpuGeometryDecodeRecord *records,
+                                      uint32_t record_count,
+                                      uint32_t *out_decode_count);
+
+/** The LOD row of decode record `decode_index`, or NULL for one level. The
+    metadata must have passed vkr_packed_geometry_metadata_is_valid. */
+const VkrGpuGeometryLodRow *
+vkr_packed_geometry_lod_row(const VkrGpuGeometryDecodeRecord *records,
+                            uint32_t decode_index);
+
+/** Whether every level of a range's LOD row (if any) draws indices inside
+    the geometry's `index_count` that reach vertices below `vertex_count`,
+    and level 0 is the range itself. */
+bool8_t vkr_packed_geometry_lod_ranges_are_valid(
+    const VkrGpuGeometryDecodeRecord *records, uint32_t decode_index,
+    uint32_t first_index, uint32_t range_index_count, int32_t vertex_offset,
+    const uint32_t *indices, uint32_t index_count, uint32_t vertex_count);
 
 /** Validates reserved fields and file-controlled float payloads. */
 bool8_t vkr_packed_geometry_vertices_are_valid(

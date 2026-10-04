@@ -475,19 +475,28 @@ vkr_internal bool8_t vkr_geometry_prepare_packed_config(
   const VkrGeometryQuantizationBudgets budgets =
       vkr_packed_geometry_default_budgets();
   VkrGeometryQuantizationMetrics quantization = {0};
-  VkrGpuGeometryDecodeRecord *decode = vkr_allocator_alloc(
-      &system->allocator, sizeof(*decode), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  /* A range with levels carries its LOD row after its decode record. */
+  const uint32_t record_count =
+      source->lod.level_count > 1u ? 1u + (uint32_t)VKR_GPU_GEOMETRY_LOD_RECORDS
+                                   : 1u;
+  VkrGpuGeometryDecodeRecord *decode =
+      vkr_allocator_alloc(&system->allocator, sizeof(*decode) * record_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!decode)
     return false_v;
   if (!vkr_packed_geometry_pack(vertices, source->vertex_count, min, max,
                                 &budgets, packed, decode, &quantization)) {
     return false_v;
   }
+  if (record_count > 1u) {
+    decode[0].lod_record = 1u;
+    MemCopy(&decode[1], &source->lod, sizeof(source->lod));
+  }
   out_config->vertex_size = sizeof(VkrPackedStaticVertex);
   out_config->vertices = packed;
   out_config->vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1;
   out_config->decodes = decode;
-  out_config->decode_count = 1u;
+  out_config->decode_count = record_count;
   out_config->index_size = sizeof(uint32_t);
   out_config->indices = indices ? indices : source->indices;
   return true_v;
