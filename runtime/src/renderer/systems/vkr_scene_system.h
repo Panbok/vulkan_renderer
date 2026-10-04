@@ -245,6 +245,24 @@ typedef struct SceneTerrain {
   float32_t stream_radius;
 } SceneTerrain;
 
+/* World partition (ADR-086). A scene with a `world_partition` component
+ * streams its editor-created root entities by square cells of the ground
+ * plane around its streaming sources; `always_loaded` keeps an entity in the
+ * scene's persistent layer instead. Sizes are metres. */
+typedef struct SceneWorldPartition {
+  float32_t cell_size;
+  /* Cells within this distance of a source load. */
+  float32_t load_radius;
+  /* Unloaded cells within this distance draw their proxies. */
+  float32_t proxy_radius;
+  /* Cells loaded at once; the farthest beyond it unload first. */
+  uint32_t cell_budget;
+} SceneWorldPartition;
+
+typedef struct SceneAlwaysLoaded {
+  bool8_t enabled;
+} SceneAlwaysLoaded;
+
 /* Population (ADR-084). A `spline`
  * curve passes through its `spline_point` child entities in `order`, in the
  * spline entity's space. A `spline_mesh` on a spline repeats a cooked mesh
@@ -943,6 +961,9 @@ typedef struct VkrScene {
   /** Population state, created with the first spline mesh or scatter
       (vkr_scene_population.h). */
   struct s_VkrScenePopulation *population;
+  /** World partition cells, created with the first one
+      (vkr_scene_partition.h). */
+  struct s_VkrScenePartition *partition;
   /** Points content streams around (world partition): the editor camera or
       each player, set by the host before each update. */
   Vec3 stream_sources[VKR_SCENE_STREAM_SOURCES_MAX];

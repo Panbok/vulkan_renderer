@@ -335,6 +335,35 @@ static void io_test_problems(void) {
   printf("  io_test_problems PASSED\n");
 }
 
+/* A refresh after entities came (as a world partition cell loads) routes
+ * their connections and keeps a counter's value: without the carried state
+ * the next add would report 1 again. */
+static void io_test_refresh(void) {
+  printf("  Running io_test_refresh...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneCounter range = {.start = 0, .min = 0, .max = 10};
+  const VkrEntityId counter =
+      io_test_entity(&test, "counter", &vkr_scene_counter_type, &range);
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  (void)io_test_connect(&test, counter, "on_changed", probe, "record", "", 0.0f,
+                        0u);
+  io_test_publish(&test);
+  const VkrIoEndpoint add = io_test_input_of(&test, counter, "add");
+  const VkrIoValue one = {.kind = VKR_IO_I32, .i32 = 1};
+  assert(vkr_io_router_send(&test.router, counter, add, &one, false_v));
+  assert(test.record_count == 1u && test.records[0].value == 1);
+  const VkrEntityId later = io_test_entity(&test, "later", &s_probe_type, NULL);
+  (void)io_test_connect(&test, counter, "on_changed", later, "record", "", 0.0f,
+                        0u);
+  assert(vkr_io_router_refresh(&test.router));
+  assert(vkr_io_router_send(&test.router, counter, add, &one, false_v));
+  assert(test.record_count == 3u && test.records[1].value == 2 &&
+         test.records[2].value == 2 && test.records[2].target.u64 == later.u64);
+  io_test_end(&test);
+  printf("  io_test_refresh PASSED\n");
+}
+
 bool32_t run_io_tests(void) {
   printf("--- Starting IO Tests ---\n");
   io_test_order();
@@ -342,6 +371,7 @@ bool32_t run_io_tests(void) {
   io_test_stale_target();
   io_test_chain_fault();
   io_test_counter();
+  io_test_refresh();
   io_test_timer();
   io_test_problems();
   printf("--- IO Tests Completed ---\n");

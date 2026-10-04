@@ -155,7 +155,7 @@ bool8_t vkr_editor_project_json_read_file(const char *path,
 bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
                                               uint64_t *expected_fingerprint,
                                               struct VkrSceneEditState *edits,
-                                              const struct VkrScene *scene,
+                                              struct VkrScene *scene,
                                               VkrAllocator *scratch_allocator,
                                               VkrEditorProjectError *error);
 uint64_t vkr_editor_project_document_fingerprint(String8 bytes);

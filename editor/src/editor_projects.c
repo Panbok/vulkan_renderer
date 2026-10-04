@@ -6474,7 +6474,7 @@ void vkr_editor_projects_build(VkrEditorProjects *projects, VkrEditorUi *editor,
 
 bool8_t vkr_editor_projects_save_scene(VkrEditorProjects *projects,
                                        VkrSceneEditState *edits,
-                                       const VkrScene *scene,
+                                       VkrScene *scene,
                                        String8 runtime_scene_path) {
   if (!projects || projects->read_only || !projects->scene_manifest_path[0] ||
       !string8_equals(&runtime_scene_path,

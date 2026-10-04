@@ -29,6 +29,7 @@
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_ui_system.h"
@@ -42,6 +43,8 @@
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 /* Deadline for a headless run that sets no VKR_AUTOCLOSE_SECONDS. */
 #define VKR_SAMPLE_HEADLESS_AUTOCLOSE_SECONDS 600.0
+/* Milliseconds of cell loads one frame may spend (ADR-086). */
+#define VKR_SAMPLE_PARTITION_BUDGET_MS 2.0
 
 static VkrSampleRuntimePreferences
 sample_preferences_snapshot(VkrStandardSceneRuntime *application);
@@ -230,6 +233,10 @@ typedef struct State {
   String8 scene_path;
   char scene_path_storage[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   char sidecar_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
+  /* World partition (ADR-086): the journal revision and scene structure the
+     primary scene's cells were last tracked at. */
+  uint64_t partition_revision;
+  uint64_t partition_structure;
   char physics_asset_root[1024];
   char scene_status[512];
   bool8_t modal;
@@ -341,6 +348,9 @@ vkr_global State *state = NULL;
 
 static uint32_t sample_additive_slot(VkrEntityId entity);
 static void sample_scripts_stop(VkrStandardSceneRuntime *application);
+static void sample_partition_open(VkrScene *scene);
+static void sample_partition_session(VkrStandardSceneRuntime *application,
+                                     bool8_t begin);
 static void sample_script_request(VkrStandardSceneRuntime *application,
                                   const VkrSampleScriptRequest *request,
                                   VkrSceneEditValues *frame_edit);
@@ -2013,6 +2023,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
                                 string8_create((uint8_t *)state->sidecar_path,
                                                strlen(state->sidecar_path)));
     }
+    sample_partition_open(scene);
     /* A fit from the previous scene is framed by a camera and caster set that
        no longer exist, so it is not a previous value of the same quantity. The
        configuration stamps cannot catch this: they are all identical across a
@@ -3136,6 +3147,7 @@ static void sample_io_request(VkrStandardSceneRuntime *application,
  * boundary. A failure keeps the scene paused and reports why. */
 static void sample_scripts_start(VkrStandardSceneRuntime *application) {
   state->script_start_attempted = true_v;
+  sample_partition_session(application, true_v);
   const char *error = NULL;
   VkrScene *scene = sample_simulated_scene(application, NULL);
   /* A World played alone steps the shared physics itself. */
@@ -3469,6 +3481,136 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
   vkr_scene_handle_sync(handle, &application->assets);
 }
 
+/* A partitioned primary scene's cell documents sit beside its document:
+   `<scene>.scene.json` keeps them in `<scene>.scene.cells/`. */
+static void sample_partition_open(VkrScene *scene) {
+  char root[1024];
+  const char *path = state->scene_path_storage;
+  const bool8_t absolute = path[0] == '/' || path[0] == '\\' ||
+                           (strlen(path) > 1u && path[1] == ':');
+  size_t length = strlen(path);
+  if (length > 5u && strcmp(path + length - 5u, ".json") == 0) {
+    length -= 5u;
+  }
+  const int written =
+      snprintf(root, sizeof(root), "%s%.*s.cells",
+               absolute ? "" : vkr_content_root(), (int)length, path);
+  vkr_scene_edit_set_cells_root(
+      &state->edits,
+      length && written > 0 && (size_t)written < sizeof(root)
+          ? string8_create_from_cstr((const uint8_t *)root, strlen(root))
+          : (String8){0});
+  state->partition_revision = UINT64_MAX;
+  if (!vkr_scene_edit_cells_open(&state->edits, scene)) {
+    snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+             state->edits.status);
+  }
+}
+
+/* A session's IO router follows the connections and engine components
+   cells brought or took away. */
+static void sample_partition_routed(bool8_t changed) {
+  if (changed && state->scripts.io.published &&
+      !vkr_io_router_refresh(&state->scripts.io)) {
+    log_warn("World partition: the IO router kept its earlier routes");
+  }
+}
+
+/* Streams the primary scene's cells around its sources: cells that left
+   unload when no edit needs them, then the nearest missing ones load within
+   the frame budget. */
+static void sample_partition_update(VkrStandardSceneRuntime *application) {
+  VkrScene *scene = application->active_scene;
+  SceneWorldPartition settings;
+  if (!scene || !state->scene_resource.as.scene ||
+      !vkr_scene_partition_settings(scene, &settings)) {
+    return;
+  }
+  VkrSceneEditState *edits = &state->edits;
+  /* Objects moved into a cell bring its document in first. */
+  if (state->partition_revision != edits->revision ||
+      state->partition_structure != scene->structure_revision) {
+    if (!vkr_scene_edit_cells_track(edits, scene)) {
+      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+               edits->status);
+    }
+    state->partition_revision = edits->revision;
+    state->partition_structure = scene->structure_revision;
+  }
+  VkrScenePartitionPlan plan;
+  vkr_scene_partition_plan(scene, &settings, &plan);
+  if (!plan.load_count && !plan.unload_count) {
+    return;
+  }
+  const float64_t start = vkr_platform_get_absolute_time();
+  const float64_t budget = VKR_SAMPLE_PARTITION_BUDGET_MS / 1000.0;
+  const uint64_t structure = scene->structure_revision;
+  for (uint32_t i = 0; i < plan.unload_count; ++i) {
+    if (vkr_scene_edit_cell_unloadable(edits, scene, plan.unload[i])) {
+      vkr_scene_edit_cell_unload(edits, scene, plan.unload[i]);
+    }
+  }
+  /* One load always runs, so a slow frame still makes progress. */
+  for (uint32_t i = 0; i < plan.load_count; ++i) {
+    if (i && vkr_platform_get_absolute_time() - start > budget) {
+      break;
+    }
+    if (!vkr_scene_edit_cell_load(edits, scene, plan.load[i])) {
+      /* An unreadable document stays unloaded rather than retried each
+         frame; the status says which. */
+      VkrScenePartitionCellRecord *record =
+          vkr_scene_partition_cell(scene, plan.load[i], false_v);
+      if (record) {
+        record->flags &= ~(uint32_t)VKR_SCENE_PARTITION_CELL_ON_DISK;
+      }
+      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
+               edits->status);
+    }
+  }
+  sample_partition_routed(structure != scene->structure_revision);
+  state->partition_structure = scene->structure_revision;
+}
+
+/* Play keeps the cells it starts with while the scene has unsaved edits, so
+   Reset finds them as they were; a saved scene streams freely and Reset
+   brings its starting cells back from their documents. */
+static void sample_partition_session(VkrStandardSceneRuntime *application,
+                                     bool8_t begin) {
+  VkrScene *scene = application->active_scene;
+  SceneWorldPartition settings;
+  if (!scene || !vkr_scene_partition_settings(scene, &settings)) {
+    return;
+  }
+  const bool8_t dirty = state->edits.revision != state->edits.saved_revision;
+  const uint64_t structure = scene->structure_revision;
+  uint32_t count = 0u;
+  vkr_scene_partition_cells(scene, &count);
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrScenePartitionCellRecord *record = vkr_scene_partition_cell(
+        scene, vkr_scene_partition_cells(scene, &count)[i].cell, false_v);
+    const bool8_t loaded = record->flags & VKR_SCENE_PARTITION_CELL_LOADED;
+    if (begin) {
+      record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_PINNED |
+                                   VKR_SCENE_PARTITION_CELL_BEFORE_PLAY);
+      if (loaded) {
+        record->flags |= VKR_SCENE_PARTITION_CELL_BEFORE_PLAY |
+                         (dirty ? VKR_SCENE_PARTITION_CELL_PINNED : 0u);
+      }
+      continue;
+    }
+    const bool8_t before = record->flags & VKR_SCENE_PARTITION_CELL_BEFORE_PLAY;
+    record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_PINNED |
+                                 VKR_SCENE_PARTITION_CELL_BEFORE_PLAY);
+    if (loaded && !before &&
+        vkr_scene_edit_cell_unloadable(&state->edits, scene, record->cell)) {
+      vkr_scene_edit_cell_unload(&state->edits, scene, record->cell);
+    } else if (!loaded && before) {
+      (void)vkr_scene_edit_cell_load(&state->edits, scene, record->cell);
+    }
+  }
+  sample_partition_routed(structure != scene->structure_revision);
+}
+
 /* Every loaded container streams around the camera that draws the
    viewport, the editor's or a game's. */
 static void sample_stream_sources(VkrStandardSceneRuntime *application) {
@@ -3500,6 +3642,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
   (void)vkr_standard_scene_runtime_try_activate_scene_resource(application);
   sample_sync_texture_limit(application);
   sample_stream_sources(application);
+  sample_partition_update(application);
   VkrSceneHandle simulated_handle = NULL;
   VkrScene *simulated = sample_simulated_scene(application, &simulated_handle);
   if (simulated) {
@@ -5598,6 +5741,7 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     vkr_window_set_mouse_capture(&application->host.window, false_v);
     VkrScene *simulated = sample_simulated_scene(application, NULL);
     vkr_scene_physics_set_paused(simulated, true_v);
+    sample_partition_session(application, false_v);
     if (simulated && !vkr_scene_physics_reset(simulated, &error)) {
       snprintf(state->scene_status, sizeof(state->scene_status), "%s",
                error ? error : "Physics reset failed.");

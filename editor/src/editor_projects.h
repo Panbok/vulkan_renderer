@@ -43,7 +43,7 @@ void vkr_editor_projects_navigation(VkrEditorProjects *projects,
 
 bool8_t vkr_editor_projects_save_scene(VkrEditorProjects *projects,
                                        VkrSceneEditState *edits,
-                                       const VkrScene *scene,
+                                       VkrScene *scene,
                                        String8 runtime_scene_path);
 void vkr_editor_projects_scene_action(VkrEditorProjects *projects,
                                       VkrEditorUi *editor,

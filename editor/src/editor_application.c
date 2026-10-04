@@ -298,7 +298,7 @@ editor_application_build(void *state, const VkrSampleUiFrame *frame) {
 
 static bool8_t editor_application_save_scene(void *state,
                                              VkrSceneEditState *edits,
-                                             const VkrScene *scene,
+                                             VkrScene *scene,
                                              String8 runtime_scene_path) {
   VkrEditorApplication *editor = state;
   return vkr_editor_projects_save_scene(editor->ui.projects, edits, scene,

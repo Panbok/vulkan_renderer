@@ -5,6 +5,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_edit.h"
+#include "renderer/systems/vkr_scene_types.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -572,6 +573,170 @@ static void edit_test_structure(void) {
 /* A build cannot detect partial file acceptance or mutations before a later
    identity conflict. These literal files have independent scene-value oracles;
    the real scene allocator and serializer also exercise name ownership. */
+/* The text of file `path`, or an empty string when it is missing. */
+static size_t edit_test_read(const char *path, char *out, size_t capacity) {
+  FILE *file = file_fopen(path, "rb");
+  if (!file) {
+    out[0] = '\0';
+    return 0u;
+  }
+  const size_t size = fread(out, 1, capacity - 1u, file);
+  fclose(file);
+  out[size] = '\0';
+  return size;
+}
+
+static VkrEntityId edit_test_create_at(VkrSceneEditState *state,
+                                       VkrScene *scene, VkrEntityId parent,
+                                       const char *name, Vec3 position) {
+  const VkrEntityId entity = edit_test_create(state, scene, parent, name);
+  VkrSceneEditValues values;
+  assert(vkr_scene_edit_read(scene, entity, &values));
+  values.fields = VKR_SCENE_EDIT_TRANSFORM;
+  values.position = position;
+  assert(vkr_scene_edit_apply(state, scene, entity, &values));
+  return entity;
+}
+
+/* World partition cells (ADR-086). Oracles: which document holds each
+   object after a save, byte-identical documents for cells no edit reached,
+   the journal and unsaved-edit rules that refuse an unload, and the objects
+   and parent links a cell's load brings back. */
+static void edit_test_partition(VkrAllocator *allocator) {
+  char root[1024];
+  char sidecar[1024];
+  char near[1100];
+  char far[1100];
+  char index[1100];
+  snprintf(root, sizeof(root), PROJECT_SOURCE_DIR "tests/tmp/cells_%u",
+           vkr_platform_get_process_id());
+  snprintf(sidecar, sizeof(sidecar),
+           PROJECT_SOURCE_DIR "tests/tmp/cells_%u.editor.json",
+           vkr_platform_get_process_id());
+  snprintf(near, sizeof(near), "%s/0_0.json", root);
+  snprintf(far, sizeof(far), "%s/2_-1.json", root);
+  snprintf(index, sizeof(index), "%s/index.json", root);
+  const String8 sidecar_path =
+      string8_create_from_cstr((const uint8_t *)sidecar, strlen(sidecar));
+  const String8 root_path =
+      string8_create_from_cstr((const uint8_t *)root, strlen(root));
+
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 23, 8, NULL));
+  SceneWorldPartition partition;
+  vkr_type_defaults(&vkr_scene_world_partition_type, &partition);
+  assert(vkr_scene_create_typed_entity(&scene, string8_lit("Partition"),
+                                       &vkr_scene_world_partition_type,
+                                       &partition)
+             .u64);
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, allocator, 1);
+  vkr_scene_edit_set_cells_root(&state, root_path);
+  assert(vkr_scene_edit_cells_open(&state, &scene));
+  const VkrEntityId crate = edit_test_create_at(
+      &state, &scene, (VkrEntityId){0}, "crate", vec3_new(10, 0, 10));
+  const VkrEntityId tower = edit_test_create_at(
+      &state, &scene, (VkrEntityId){0}, "tower", vec3_new(300, 0, -20));
+  (void)edit_test_create_at(&state, &scene, tower, "flag", vec3_new(0, 5, 0));
+  const VkrEntityId keep = edit_test_create_at(&state, &scene, (VkrEntityId){0},
+                                               "keep", vec3_new(900, 0, 900));
+  SceneAlwaysLoaded always = {.enabled = true_v};
+  assert(vkr_scene_edit_add_component(&state, &scene, keep,
+                                      &vkr_scene_always_loaded_type, &always));
+  vkr_scene_update_transforms(&scene);
+  assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
+
+  static char text[16384];
+  assert(edit_test_read(sidecar, text, sizeof(text)));
+  assert(strstr(text, "\"keep\"") && !strstr(text, "\"crate\"") &&
+         !strstr(text, "\"tower\""));
+  assert(edit_test_read(near, text, sizeof(text)));
+  assert(strstr(text, "\"crate\"") && !strstr(text, "\"tower\""));
+  assert(edit_test_read(far, text, sizeof(text)));
+  assert(strstr(text, "\"tower\"") && strstr(text, "\"flag\""));
+  static char far_before[16384];
+  const size_t far_size = edit_test_read(far, far_before, sizeof(far_before));
+  assert(edit_test_read(index, text, sizeof(text)));
+  assert(strstr(text, "[0,0]") && strstr(text, "[2,-1]"));
+
+  /* Moving the crate rewrites its cell alone. */
+  VkrSceneEditValues values;
+  assert(vkr_scene_edit_read(&scene, crate, &values));
+  values.fields = VKR_SCENE_EDIT_TRANSFORM;
+  values.position = vec3_new(20, 0, 10);
+  assert(vkr_scene_edit_apply(&state, &scene, crate, &values));
+  vkr_scene_update_transforms(&scene);
+  assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
+  assert(edit_test_read(far, text, sizeof(text)) == far_size &&
+         MemCompare(text, far_before, far_size) == 0);
+  assert(edit_test_read(near, text, sizeof(text)) && strstr(text, "20"));
+  /* The journal names the tower, so its cell stays. */
+  assert(!vkr_scene_edit_cell_unloadable(&state, &scene,
+                                         (VkrScenePartitionCell){2, -1}));
+  vkr_scene_edit_reset(&state, allocator, 1);
+  vkr_scene_shutdown(&scene, NULL);
+
+  /* A fresh scene loads the persistent layer, then cells on demand. */
+  assert(vkr_scene_init(&scene, allocator, 24, 8, NULL));
+  assert(vkr_scene_create_typed_entity(&scene, string8_lit("Partition"),
+                                       &vkr_scene_world_partition_type,
+                                       &partition)
+             .u64);
+  vkr_scene_edit_reset(&state, allocator, 1);
+  vkr_scene_edit_set_cells_root(&state, root_path);
+  assert(vkr_scene_edit_load(&state, &scene, sidecar_path));
+  assert(vkr_scene_edit_cells_open(&state, &scene));
+  VkrEntityId found;
+  assert(edit_test_alive_named(&scene, "keep", &found) == 1u);
+  assert(edit_test_alive_named(&scene, "tower", &found) == 0u);
+  const VkrScenePartitionCell far_cell = {2, -1};
+  const VkrScenePartitionCellRecord *record =
+      vkr_scene_partition_cell(&scene, far_cell, false_v);
+  assert(record && record->flags == VKR_SCENE_PARTITION_CELL_ON_DISK);
+  assert(vkr_scene_edit_cell_load(&state, &scene, far_cell));
+  VkrEntityId tower_loaded;
+  VkrEntityId flag_loaded;
+  assert(edit_test_alive_named(&scene, "tower", &tower_loaded) == 1u);
+  assert(edit_test_alive_named(&scene, "flag", &flag_loaded) == 1u);
+  assert(vkr_scene_get_transform(&scene, flag_loaded)->parent.u64 ==
+         tower_loaded.u64);
+  vkr_scene_update_transforms(&scene);
+  assert(vkr_scene_edit_cell_unloadable(&state, &scene, far_cell));
+  /* An unsaved edit anywhere keeps every cell; once saved, a journal that
+     names none of the cell's objects lets it go. */
+  VkrEntityId keep_loaded;
+  assert(edit_test_alive_named(&scene, "keep", &keep_loaded) == 1u);
+  edit_test_rename(&state, &scene, keep_loaded, "castle");
+  assert(!vkr_scene_edit_cell_unloadable(&state, &scene, far_cell));
+  assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
+  assert(edit_test_read(far, text, sizeof(text)) == far_size &&
+         MemCompare(text, far_before, far_size) == 0);
+  assert(vkr_scene_edit_cell_unloadable(&state, &scene, far_cell));
+  vkr_scene_edit_cell_unload(&state, &scene, far_cell);
+  assert(edit_test_alive_named(&scene, "tower", &found) == 0u);
+  assert(edit_test_alive_named(&scene, "flag", &found) == 0u);
+  assert(!(vkr_scene_partition_cell(&scene, far_cell, false_v)->flags &
+           VKR_SCENE_PARTITION_CELL_LOADED));
+  /* Saving with the cell unloaded keeps its document. */
+  vkr_scene_update_transforms(&scene);
+  assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
+  assert(edit_test_read(far, text, sizeof(text)) == far_size &&
+         MemCompare(text, far_before, far_size) == 0);
+  vkr_scene_edit_reset(&state, allocator, 1);
+  vkr_scene_shutdown(&scene, NULL);
+
+  const char *paths[] = {near, far, index, sidecar};
+  for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
+    FilePath file = {.path = string8_create_from_cstr((const uint8_t *)paths[i],
+                                                      strlen(paths[i])),
+                     .type = FILE_PATH_TYPE_ABSOLUTE};
+    (void)file_remove(&file);
+  }
+  /* POSIX removes the emptied directory; elsewhere it stays behind. */
+  (void)remove(root);
+  printf("  edit_test_partition PASSED\n");
+}
+
 bool32_t run_scene_edit_tests(void) {
   printf("--- Starting Scene Edit Tests ---\n");
   VkrDMemory memory;
@@ -972,6 +1137,13 @@ bool32_t run_scene_edit_tests(void) {
   vkr_dmemory_destroy(&memory);
   edit_test_structure();
   edit_test_groups();
+  VkrDMemory partition_memory;
+  assert(vkr_dmemory_create(MB(16), MB(64), &partition_memory));
+  VkrAllocator partition_allocator = {.ctx = &partition_memory};
+  vkr_dmemory_allocator_create(&partition_allocator);
+  edit_test_partition(&partition_allocator);
+  vkr_dmemory_allocator_destroy(&partition_allocator);
+  vkr_dmemory_destroy(&partition_memory);
   printf("--- Scene Edit Tests Completed ---\n");
   return true_v;
 }

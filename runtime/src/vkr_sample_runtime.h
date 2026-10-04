@@ -447,8 +447,7 @@ typedef struct VkrSampleUiClient {
   /** Managed editor publication; absent callbacks retain legacy sidecar saves.
    */
   bool8_t (*save_scene_edits)(void *state, VkrSceneEditState *edits,
-                              const VkrScene *scene,
-                              String8 runtime_scene_path);
+                              VkrScene *scene, String8 runtime_scene_path);
   /** Optional projection of current UI anchors after Scene camera input. */
   void (*project_scene)(void *state, const VkrSampleUiFrame *frame);
   bool8_t (*shutdown)(void *state, const VkrUiDockTree *dock, VkrUiSystem *ui);

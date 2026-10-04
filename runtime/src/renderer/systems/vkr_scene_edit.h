@@ -2,6 +2,7 @@
 
 #include "level/vkr_heightfield.h"
 #include "renderer/systems/vkr_scene_collision_layers.h"
+#include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_scene_types.h"
@@ -154,6 +155,10 @@ typedef struct VkrSceneEditState {
   uint32_t deleted_count;
   uint32_t deleted_capacity;
   bool8_t sidecar_conflict;
+  /* World partition (ADR-086): the directory of the scene's cell
+     documents, empty when it has none, and the cell size its table uses. */
+  char cells_root[1024];
+  float32_t cell_size;
   char status[192];
 } VkrSceneEditState;
 
@@ -233,7 +238,7 @@ bool8_t vkr_scene_edit_undo(VkrSceneEditState *state, VkrScene *scene,
 /** Sequence of the entry undo (or redo) would apply next, or zero. */
 uint64_t vkr_scene_edit_next_sequence(const VkrSceneEditState *state,
                                       bool8_t redo);
-bool8_t vkr_scene_edit_save(VkrSceneEditState *state, const VkrScene *scene,
+bool8_t vkr_scene_edit_save(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
 bool8_t vkr_scene_edit_load(VkrSceneEditState *state, VkrScene *scene,
                             String8 path);
@@ -290,3 +295,31 @@ bool8_t vkr_scene_edit_apply_physics_batch(VkrSceneEditState *state,
                                            VkrScene *scene,
                                            const VkrScenePhysicsChange *changes,
                                            uint32_t count);
+
+/* World partition cells (ADR-086). A partitioned scene's objects that
+ * stream with a cell live in `<cells_root>/<x>_<z>.json` instead of the
+ * overlay, as `{"version":1,"cell":[x,z],"created":[records]}` with the
+ * overlay's record schema; `index.json` lists the documents, their cell
+ * size and the next overlay id, so ids stay unique across unloaded cells.
+ * Saving writes each loaded cell whose bytes changed and removes the documents
+ * of loaded cells left empty; unloaded cells keep theirs. */
+void vkr_scene_edit_set_cells_root(VkrSceneEditState *state, String8 root);
+/* Reads the cell index into the scene's cell table. */
+bool8_t vkr_scene_edit_cells_open(VkrSceneEditState *state, VkrScene *scene);
+/* Creates the objects of `cell`'s document and marks it loaded; an id a
+   loaded object holds is replaced. A cell without a document loads
+   empty. */
+bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *state, VkrScene *scene,
+                                 VkrScenePartitionCell cell);
+/* Whether `cell` can unload without losing an edit: nothing is unsaved and
+   no journal entry names one of its objects. */
+bool8_t vkr_scene_edit_cell_unloadable(const VkrSceneEditState *state,
+                                       const VkrScene *scene,
+                                       VkrScenePartitionCell cell);
+/* Destroys `cell`'s objects, forgets their overlay ids and marks it
+   unloaded. */
+void vkr_scene_edit_cell_unload(VkrSceneEditState *state, VkrScene *scene,
+                                VkrScenePartitionCell cell);
+/* Marks every cell holding objects loaded, merging its document first, and
+   after a cell size change loads every cell to be saved anew. */
+bool8_t vkr_scene_edit_cells_track(VkrSceneEditState *state, VkrScene *scene);

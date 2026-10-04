@@ -2189,7 +2189,7 @@ uint32_t vkr_editor_project_world_meshes(const char *world_path,
 bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
                                               uint64_t *expected_fingerprint,
                                               VkrSceneEditState *edits,
-                                              const VkrScene *scene,
+                                              VkrScene *scene,
                                               VkrAllocator *scratch_allocator,
                                               VkrEditorProjectError *error) {
   if (!manifest_path || !expected_fingerprint || !*expected_fingerprint ||

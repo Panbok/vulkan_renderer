@@ -2302,6 +2302,92 @@ const VkrTypeDesc vkr_scene_io_connection_type = {
     .align = _Alignof(SceneIoConnection),
 };
 
+// =============================================================================
+// World partition (ADR-086)
+// =============================================================================
+
+static const VkrPropertyDesc s_world_partition_properties[] = {
+    {.name = "cell_size",
+     .label = "Cell size",
+     .unit = "m",
+     .tooltip = "Side of one square cell of the ground plane; created root "
+                "objects stream with the cell holding their position",
+     .offset = TYPE_OFFSET(SceneWorldPartition, cell_size),
+     .kind = VKR_PROPERTY_F32,
+     .min = 64.0f,
+     .max = 1024.0f,
+     .step = 64.0f},
+    {.name = "load_radius",
+     .label = "Load radius",
+     .unit = "m",
+     .tooltip = "Cells within this distance of the camera or a player load",
+     .offset = TYPE_OFFSET(SceneWorldPartition, load_radius),
+     .kind = VKR_PROPERTY_F32,
+     .min = 64.0f,
+     .max = 8192.0f,
+     .step = 64.0f},
+    {.name = "proxy_radius",
+     .label = "Proxy radius",
+     .unit = "m",
+     .tooltip = "Unloaded cells within this distance draw their proxy",
+     .offset = TYPE_OFFSET(SceneWorldPartition, proxy_radius),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 16384.0f,
+     .step = 256.0f},
+    {.name = "cell_budget",
+     .label = "Cell budget",
+     .tooltip = "Cells loaded at once; past it the farthest unload first",
+     .offset = TYPE_OFFSET(SceneWorldPartition, cell_budget),
+     .kind = VKR_PROPERTY_U32,
+     .min = 1.0f,
+     .max = 4096.0f,
+     .step = 1.0f},
+};
+
+static void world_partition_defaults(void *value) {
+  *(SceneWorldPartition *)value = (SceneWorldPartition){.cell_size = 128.0f,
+                                                        .load_radius = 384.0f,
+                                                        .proxy_radius = 2048.0f,
+                                                        .cell_budget = 256u};
+}
+
+const VkrTypeDesc vkr_scene_world_partition_type = {
+    .name = "world_partition",
+    .label = "World partition",
+    .category = "Level",
+    .flags = VKR_TYPE_FLAG_SINGLETON,
+    .properties = s_world_partition_properties,
+    .property_count = ArrayCount(s_world_partition_properties),
+    .size = sizeof(SceneWorldPartition),
+    .align = _Alignof(SceneWorldPartition),
+    .defaults = world_partition_defaults,
+};
+
+static const VkrPropertyDesc s_always_loaded_properties[] = {
+    {.name = "enabled",
+     .label = "Always loaded",
+     .tooltip = "Keeps this object and its children loaded in a partitioned "
+                "scene instead of streaming with its cell",
+     .offset = TYPE_OFFSET(SceneAlwaysLoaded, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void always_loaded_defaults(void *value) {
+  *(SceneAlwaysLoaded *)value = (SceneAlwaysLoaded){.enabled = true_v};
+}
+
+const VkrTypeDesc vkr_scene_always_loaded_type = {
+    .name = "always_loaded",
+    .label = "Always loaded",
+    .category = "Level",
+    .properties = s_always_loaded_properties,
+    .property_count = ArrayCount(s_always_loaded_properties),
+    .size = sizeof(SceneAlwaysLoaded),
+    .align = _Alignof(SceneAlwaysLoaded),
+    .defaults = always_loaded_defaults,
+};
+
 static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_environment_type,
     &vkr_scene_atmosphere_type,
@@ -2331,6 +2417,8 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_spline_point_type,
     &vkr_scene_spline_mesh_type,
     &vkr_scene_scatter_type,
+    &vkr_scene_world_partition_type,
+    &vkr_scene_always_loaded_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -2401,5 +2489,8 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_io_connection_type ||
          type == &vkr_scene_terrain_type || type == &vkr_scene_spline_type ||
          type == &vkr_scene_spline_point_type ||
-         type == &vkr_scene_spline_mesh_type || type == &vkr_scene_scatter_type;
+         type == &vkr_scene_spline_mesh_type ||
+         type == &vkr_scene_scatter_type ||
+         type == &vkr_scene_world_partition_type ||
+         type == &vkr_scene_always_loaded_type;
 }

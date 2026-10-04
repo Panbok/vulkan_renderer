@@ -510,19 +510,14 @@ static void io_warn_cycles(VkrIoRouter *router) {
   }
 }
 
-bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
-                              uint32_t scene_count,
-                              const VkrIoRouterHooks *hooks,
-                              VkrAllocator *allocator) {
-  vkr_io_router_clear(router);
-  *router = (VkrIoRouter){
-      .allocator = allocator, .hooks = *hooks, .trace = router->trace};
-  scene_count = Min(scene_count, VKR_IO_SCENE_MAX);
-  for (uint32_t s = 0; s < scene_count; ++s) {
-    if (scenes[s] && (s == 0u || scenes[s] != scenes[0])) {
-      router->scenes[router->scene_count++] = scenes[s];
-    }
-  }
+/* Resolves every connection and engine component of the router's scenes
+   into newly reserved lists. */
+static bool8_t io_router_lists(VkrIoRouter *router) {
+  router->connection_count = 0u;
+  router->trigger_count = 0u;
+  router->relay_count = 0u;
+  router->timer_count = 0u;
+  router->counter_count = 0u;
   const uint32_t connections = io_count_typed(
       router->scenes, router->scene_count, &vkr_scene_io_connection_type);
   const uint32_t triggers = io_count_typed(router->scenes, router->scene_count,
@@ -545,15 +540,7 @@ bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
   router->relays = io_alloc(router, relays, sizeof(IoRelay), &ok);
   router->timers = io_alloc(router, timers, sizeof(IoTimer), &ok);
   router->counters = io_alloc(router, counters, sizeof(IoCounter), &ok);
-  router->queue = io_alloc(router, VKR_IO_QUEUE_MAX, sizeof(IoDelivery), &ok);
-  router->delayed = io_alloc(router, VKR_IO_QUEUE_MAX, sizeof(IoDelivery), &ok);
-  router->fired = io_alloc(router, VKR_IO_QUEUE_MAX, sizeof(IoFired), &ok);
-  router->event_capacity =
-      VKR_SCENE_PHYSICS_MAX_BODIES * VKR_PHYSICS_SENSOR_EVENTS_PER_BODY;
-  router->events = io_alloc(router, router->event_capacity,
-                            sizeof(VkrPhysicsSensorEvent), &ok);
   if (!ok) {
-    vkr_io_router_clear(router);
     return false_v;
   }
 
@@ -630,9 +617,90 @@ bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
   qsort(router->connections, router->connection_count, sizeof(IoConnection),
         io_connection_compare);
   io_warn_cycles(router);
+  return true_v;
+}
+
+bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
+                              uint32_t scene_count,
+                              const VkrIoRouterHooks *hooks,
+                              VkrAllocator *allocator) {
+  vkr_io_router_clear(router);
+  *router = (VkrIoRouter){
+      .allocator = allocator, .hooks = *hooks, .trace = router->trace};
+  scene_count = Min(scene_count, VKR_IO_SCENE_MAX);
+  for (uint32_t s = 0; s < scene_count; ++s) {
+    if (scenes[s] && (s == 0u || scenes[s] != scenes[0])) {
+      router->scenes[router->scene_count++] = scenes[s];
+    }
+  }
+  bool8_t ok = io_router_lists(router);
+  router->queue = io_alloc(router, VKR_IO_QUEUE_MAX, sizeof(IoDelivery), &ok);
+  router->delayed = io_alloc(router, VKR_IO_QUEUE_MAX, sizeof(IoDelivery), &ok);
+  router->fired = io_alloc(router, VKR_IO_QUEUE_MAX, sizeof(IoFired), &ok);
+  router->event_capacity =
+      VKR_SCENE_PHYSICS_MAX_BODIES * VKR_PHYSICS_SENSOR_EVENTS_PER_BODY;
+  router->events = io_alloc(router, router->event_capacity,
+                            sizeof(VkrPhysicsSensorEvent), &ok);
+  if (!ok) {
+    vkr_io_router_clear(router);
+    return false_v;
+  }
   router->published = true_v;
   return true_v;
 }
+
+/* The runtime state of an engine component the previous lists held for the
+   same entity carries over. */
+#define IO_CARRY(list, count)                                                  \
+  for (uint32_t n = 0; n < router->count; ++n) {                               \
+    for (uint32_t o = 0; o < previous.count; ++o) {                            \
+      if (previous.list[o].entity.u64 == router->list[n].entity.u64) {         \
+        router->list[n] = previous.list[o];                                    \
+        break;                                                                 \
+      }                                                                        \
+    }                                                                          \
+  }
+
+bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
+  if (!router->published) {
+    return true_v;
+  }
+  const VkrIoRouter previous = *router;
+  router->problems = 0u;
+  if (!io_router_lists(router)) {
+    /* Keep routing what was published. */
+    io_free(router, router->connections, router->capacities[0],
+            sizeof(IoConnection));
+    io_free(router, router->triggers, router->capacities[1], sizeof(IoTrigger));
+    io_free(router, router->relays, router->capacities[2], sizeof(IoRelay));
+    io_free(router, router->timers, router->capacities[3], sizeof(IoTimer));
+    io_free(router, router->counters, router->capacities[4], sizeof(IoCounter));
+    *router = previous;
+    return false_v;
+  }
+  IO_CARRY(triggers, trigger_count)
+  IO_CARRY(relays, relay_count)
+  IO_CARRY(timers, timer_count)
+  IO_CARRY(counters, counter_count)
+  /* Fire counts of connections that stayed carry over too. */
+  for (uint32_t n = 0; n < router->connection_count; ++n) {
+    for (uint32_t o = 0; o < previous.connection_count; ++o) {
+      if (previous.connections[o].entity.u64 ==
+          router->connections[n].entity.u64) {
+        router->connections[n].fired = previous.connections[o].fired;
+        break;
+      }
+    }
+  }
+  io_free(router, previous.connections, previous.capacities[0],
+          sizeof(IoConnection));
+  io_free(router, previous.triggers, previous.capacities[1], sizeof(IoTrigger));
+  io_free(router, previous.relays, previous.capacities[2], sizeof(IoRelay));
+  io_free(router, previous.timers, previous.capacities[3], sizeof(IoTimer));
+  io_free(router, previous.counters, previous.capacities[4], sizeof(IoCounter));
+  return true_v;
+}
+#undef IO_CARRY
 
 void vkr_io_router_clear(VkrIoRouter *router) {
   if (!router->allocator) {

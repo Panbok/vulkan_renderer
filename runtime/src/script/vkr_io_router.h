@@ -153,6 +153,11 @@ bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
                               uint32_t scene_count,
                               const VkrIoRouterHooks *hooks,
                               VkrAllocator *allocator);
+/** Resolves the router's scenes anew after entities came or went, as world
+ * partition cells do during a session. Engine components and connections
+ * that stayed keep their runtime state, and pending deliveries stay queued.
+ * False, routing as before, when storage could not be reserved. */
+bool8_t vkr_io_router_refresh(VkrIoRouter *router);
 /** Frees everything publication reserved; pending deliveries and fire
  * counts end with it. */
 void vkr_io_router_clear(VkrIoRouter *router);
