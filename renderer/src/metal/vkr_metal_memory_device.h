@@ -19,8 +19,13 @@ _Static_assert((uint32_t)VKR_METAL_RESOURCE_KIND_TEXTURE ==
                "Texture resource and allocator class values must match");
 
 typedef enum VkrMetalRingKind {
+  /* Frame uploads, rotating with the frame command slots. */
   VKR_METAL_RING_KIND_UPLOAD = 0,
   VKR_METAL_RING_KIND_READBACK,
+  /* Asset publication uploads, rotating with their own command slots so a
+     publication never waits for a frame. Its buffer is allocated at first
+     use, as large as `upload_ring_size` or the largest slice requested. */
+  VKR_METAL_RING_KIND_PUBLICATION,
 } VkrMetalRingKind;
 
 typedef struct VkrMetalMemoryDeviceConfig {

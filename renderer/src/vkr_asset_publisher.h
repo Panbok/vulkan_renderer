@@ -118,7 +118,8 @@ typedef struct VkrAssetPublisher {
   bool8_t (*publish_loaded_mesh)(void *state, VkrGeometryHandle handle,
                                  const struct VkrGeometryUpload *mesh);
   bool8_t (*unpublish_geometry)(void *state, VkrGeometryHandle handle);
-  /** Opens/closes one render-thread batch for ordinary texture publications. */
+  /** Opens/closes one render-thread upload batch: ordinary texture
+   * publications and runs of geometry publications share its submission. */
   bool8_t (*begin_texture_upload_batch)(void *state);
   bool8_t (*end_texture_upload_batch)(void *state);
   VkrRendererError (*publish_texture)(

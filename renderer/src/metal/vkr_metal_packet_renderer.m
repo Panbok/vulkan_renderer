@@ -600,6 +600,8 @@ typedef struct VkrMetalPacketCommandSlot {
   bool8_t candidate_residency_pending;
 } VkrMetalPacketCommandSlot;
 
+/* Command slots uploads rotate through, one per upload ring slot. */
+#define VKR_METAL_PACKET_UPLOAD_SLOT_COUNT_MAX 4u
 #define VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_MAX 64u
 #define VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES MB(32)
 typedef struct VkrMetalPacketTextureUploadBatch {
@@ -610,6 +612,8 @@ typedef struct VkrMetalPacketTextureUploadBatch {
   uint64_t capacity;
   uint64_t used;
   uint32_t texture_count;
+  /* Buffer copies, such as geometry, the batch also carries. */
+  uint32_t buffer_count;
   bool8_t enabled;
   bool8_t active;
 } VkrMetalPacketTextureUploadBatch;
@@ -696,9 +700,16 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketResult *completed_timing_results;
   VkrMetalPacketCommitFeedbackRecord *commit_feedback_records;
   VkrMetalPacketCommandSlot *active_command_slot;
-  /* Acquired frame storage stays unavailable to uploads until render/cancel. */
+  /* Acquired frame storage; later frame acquisition skips it until
+     render/cancel. */
   VkrMetalPacketCommandSlot *reserved_frame_slot;
   uint32_t command_slot_count;
+  /* Uploads rotate through their own slots, one per upload ring slot, so a
+     publication waits only for an earlier upload, never for a frame. */
+  VkrMetalPacketCommandSlot
+      upload_slots[VKR_METAL_PACKET_UPLOAD_SLOT_COUNT_MAX];
+  uint32_t upload_slot_count;
+  uint32_t next_upload_slot;
   uint32_t history_instance_count;
   uint32_t history_output_index;
   uint32_t selected_froxel_history_instance;

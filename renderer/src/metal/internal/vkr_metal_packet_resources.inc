@@ -1281,14 +1281,15 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
             : aligned_upload_size;
     /* Only growth needs an early flush. Ordinary batch admission remains owned
        by upload_texture_batched below. */
-    if (upload_capacity > vkr_metal_memory_device_ring_slot_capacity(
-                              renderer->memory, VKR_METAL_RING_KIND_UPLOAD) &&
+    if (upload_capacity >
+            vkr_metal_memory_device_ring_slot_capacity(
+                renderer->memory, VKR_METAL_RING_KIND_PUBLICATION) &&
         renderer->texture_upload_batch.active &&
         !vkr_metal_packet_texture_upload_batch_flush(renderer, false_v))
       return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     const VkrMetalMemoryStatus upload_capacity_status =
         vkr_metal_packet_ensure_ring_capacity(
-            renderer, VKR_METAL_RING_KIND_UPLOAD, upload_capacity);
+            renderer, VKR_METAL_RING_KIND_PUBLICATION, upload_capacity);
     const VkrRendererError upload_capacity_error =
         vkr_metal_packet_allocation_error(upload_capacity_status);
     if (upload_capacity_status != VKR_METAL_MEMORY_STATUS_OK) {

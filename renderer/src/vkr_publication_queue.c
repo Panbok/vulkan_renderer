@@ -626,10 +626,28 @@ void vkr_publication_queue_run(VkrRenderer *renderer,
   VkrPublicationQueue *queue = &renderer->publications;
   const VkrAssetPublisher *native = &renderer->native_publisher;
   void *state = native->state;
+  /* Consecutive geometry publications share one upload batch, so a run of
+     streamed tiles costs one submission rather than one per buffer. */
+  const bool8_t batches =
+      native->begin_texture_upload_batch && native->end_texture_upload_batch;
+  bool8_t texture_batch = false_v;
+  bool8_t geometry_batch = false_v;
   for (const VkrPublicationCommand *command = batch->head; command;
        command = command->next) {
     if (command->discarded) {
       continue;
+    }
+    const bool8_t uploads_geometry =
+        command->kind == VKR_PUBLICATION_GEOMETRY ||
+        command->kind == VKR_PUBLICATION_LOADED_MESH;
+    if (geometry_batch && !uploads_geometry) {
+      if (!native->end_texture_upload_batch(state)) {
+        log_error("Asset geometry upload batch submission failed");
+      }
+      geometry_batch = false_v;
+    } else if (batches && uploads_geometry && !geometry_batch &&
+               !texture_batch) {
+      geometry_batch = native->begin_texture_upload_batch(state);
     }
     const VkrGeometryHandle geometry = {.id = command->id,
                                         .generation = command->generation};
@@ -657,6 +675,7 @@ void vkr_publication_queue_run(VkrRenderer *renderer,
             !native->begin_texture_upload_batch(state)) {
           log_error("Asset texture upload batch initialization failed");
         }
+        texture_batch = true_v;
         continue;
       }
       if (command->end_texture_batch) {
@@ -664,6 +683,7 @@ void vkr_publication_queue_run(VkrRenderer *renderer,
             !native->end_texture_upload_batch(state)) {
           log_error("Asset texture upload batch submission failed");
         }
+        texture_batch = false_v;
         continue;
       }
       error = native->publish_texture(state, texture, &command->texture);
@@ -716,6 +736,9 @@ void vkr_publication_queue_run(VkrRenderer *renderer,
       break;
     }
     vkr_publication_complete(queue, command, error);
+  }
+  if (geometry_batch && !native->end_texture_upload_batch(state)) {
+    log_error("Asset geometry upload batch submission failed");
   }
   vkr_publication_batch_reset(batch);
 }

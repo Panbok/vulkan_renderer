@@ -109,6 +109,11 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
                 renderer, &renderer->command_slots[i], false_v))
           return false_v;
       }
+      for (uint32_t i = 0; i < renderer->upload_slot_count; ++i) {
+        if (!vkr_metal_packet_complete_command_slot(
+                renderer, &renderer->upload_slots[i], true_v))
+          return false_v;
+      }
       if (renderer->commit_feedback_records) {
         const CFTimeInterval deadline =
             CACurrentMediaTime() +
@@ -657,7 +662,7 @@ vkr_metal_packet_discard_texture_upload_batch(VkrMetalPacketRenderer *renderer)
     batch->encoder = nil;
     [renderer->command_buffer endCommandBuffer];
     vkr_metal_memory_device_cancel_ring(
-        renderer->memory, VKR_METAL_RING_KIND_UPLOAD, batch->slice);
+        renderer->memory, VKR_METAL_RING_KIND_PUBLICATION, batch->slice);
     vkr_metal_packet_release_unsubmitted_command_slot(renderer);
     *batch = (VkrMetalPacketTextureUploadBatch){0};
     vkr_metal_packet_discard_unsubmitted_uses(renderer);
@@ -709,6 +714,12 @@ vkr_metal_packet_release_command_slots(VkrMetalPacketRenderer *renderer)
       [slot->buffer release];
       [slot->allocator release];
     }
+  }
+  for (uint32_t i = 0; i < renderer->upload_slot_count; ++i) {
+    [renderer->upload_slots[i].buffer release];
+    [renderer->upload_slots[i].allocator release];
+    renderer->upload_slots[i].buffer = nil;
+    renderer->upload_slots[i].allocator = nil;
   }
 }
 

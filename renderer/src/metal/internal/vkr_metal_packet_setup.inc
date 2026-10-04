@@ -2486,6 +2486,45 @@ vkr_internal bool8_t vkr_metal_packet_upload(
   return vkr_metal_packet_submit_upload(renderer, encoder, slice);
 }
 
+/* Appends `size` bytes for `destination` to the open upload batch, in
+   chunks across as many batches as they need. Returns false with
+   `*out_batched` clear when no batch could start, so the caller uploads them
+   alone. */
+vkr_internal bool8_t vkr_metal_packet_upload_buffer_batched(
+    VkrMetalPacketRenderer *renderer, const uint8_t *bytes, uint64_t size,
+    id<MTLBuffer> destination, uint64_t destination_offset,
+    bool8_t *out_batched) API_AVAILABLE(macos(26.0)) {
+  *out_batched = false_v;
+  VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
+  for (uint64_t offset = 0; offset < size;) {
+    uint64_t at =
+        vkr_metal_packet_align_up(batch->used, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+    if (batch->active && at >= batch->capacity) {
+      if (!vkr_metal_packet_texture_upload_batch_flush(renderer, false_v))
+        return false_v;
+      batch = &renderer->texture_upload_batch;
+    }
+    if (!batch->active) {
+      if (!vkr_metal_packet_texture_upload_batch_start(
+              renderer, VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES))
+        return false_v;
+      at = 0u;
+    }
+    *out_batched = true_v;
+    const uint64_t chunk = Min(size - offset, batch->capacity - at);
+    MemCopy((uint8_t *)batch->upload.cpu_address + at, bytes + offset, chunk);
+    [batch->encoder copyFromBuffer:batch->upload_buffer
+                      sourceOffset:batch->slice.offset + at
+                          toBuffer:destination
+                 destinationOffset:destination_offset + offset
+                              size:chunk];
+    batch->used = at + chunk;
+    batch->buffer_count++;
+    offset += chunk;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks_at(
     VkrMetalPacketRenderer *renderer, const void *source, uint64_t size,
     id<MTLBuffer> destination, uint64_t destination_offset)
@@ -2493,6 +2532,16 @@ vkr_internal bool8_t vkr_metal_packet_upload_buffer_chunks_at(
   if (!renderer || !source || size == 0 || !destination ||
       renderer->upload_slot_size == 0)
     return false_v;
+  /* A publication run's buffers share one submission while a batch is
+     open, rather than one command slot each. */
+  if (renderer->texture_upload_batch.enabled) {
+    bool8_t batched = false_v;
+    if (vkr_metal_packet_upload_buffer_batched(
+            renderer, source, size, destination, destination_offset, &batched))
+      return true_v;
+    if (batched)
+      return false_v;
+  }
 
   const uint8_t *bytes = source;
   for (uint64_t offset = 0; offset < size;) {
@@ -2755,6 +2804,9 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->max_draws = config->max_draws;
   renderer->max_instances = config->max_instances;
   renderer->command_slot_count = config->frame_slot_count;
+  /* One upload slot per upload ring slot (ring_slot_count below). */
+  renderer->upload_slot_count =
+      Min(config->frame_slot_count, VKR_METAL_PACKET_UPLOAD_SLOT_COUNT_MAX);
   /* At most N-1 command slots remain in flight. Their distinct outputs plus
      one shared temporal input and one shared HZB input can occupy N+1
      instances, so one additional output must remain completion-safe. */
@@ -2921,6 +2973,13 @@ vkr_internal bool8_t vkr_metal_packet_create_command_slots(
                                                  error:nil];
     command_slots_created =
         slot->allocator && slot->buffer && slot->timestamp_heap;
+  }
+  for (uint32_t i = 0; command_slots_created && i < renderer->upload_slot_count;
+       ++i) {
+    VkrMetalPacketCommandSlot *slot = &renderer->upload_slots[i];
+    slot->allocator = [renderer->device newCommandAllocator];
+    slot->buffer = [renderer->device newCommandBuffer];
+    command_slots_created = slot->allocator && slot->buffer;
   }
   renderer->timestamp_frequency = [renderer->device queryTimestampFrequency];
   [timestamp_descriptor release];

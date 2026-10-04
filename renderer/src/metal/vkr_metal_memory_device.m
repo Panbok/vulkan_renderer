@@ -40,6 +40,7 @@ struct VkrMetalMemoryDevice {
   uint64_t transfer_ring_allocated_size;
   id<MTLBuffer> upload_buffer;
   id<MTLBuffer> readback_buffer;
+  id<MTLBuffer> publication_buffer;
   id<MTLResidencySet> residency;
   id<MTLResource> *native_resources;
   uint64_t *logical_lengths;
@@ -47,6 +48,7 @@ struct VkrMetalMemoryDevice {
   void *core_storage;
   void *upload_ring_storage;
   void *readback_ring_storage;
+  void *publication_ring_storage;
   /** Owns every host allocation above; retained for the sized frees. */
   VkrAllocator *allocator;
   VkrMetalDiagnostics *diagnostics;
@@ -58,8 +60,10 @@ struct VkrMetalMemoryDevice {
   VkrMetalMemoryCore *core;
   VkrMetalSubmitRing upload_ring;
   VkrMetalSubmitRing readback_ring;
+  VkrMetalSubmitRing publication_ring;
   VkrMetalAddressPair upload_addresses;
   VkrMetalAddressPair readback_addresses;
+  VkrMetalAddressPair publication_addresses;
   uint32_t max_allocations;
   uint32_t heap_slot_count;
   uint64_t native_live_resources;
@@ -69,6 +73,8 @@ struct VkrMetalMemoryDevice {
   uint64_t upload_ring_oversize_failures;
   uint64_t readback_ring_max_requested_bytes;
   uint64_t readback_ring_oversize_failures;
+  uint64_t publication_ring_max_requested_bytes;
+  uint64_t publication_ring_oversize_failures;
   uint64_t upload_ring_max_size;
   uint64_t readback_ring_max_size;
   VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
@@ -180,7 +186,8 @@ bool8_t vkr_metal_memory_device_reconcile_external(VkrMetalMemoryDevice *device,
     return false_v;
   if (allocated_bytes > reserved_bytes &&
       !vkr_metal_memory_has_budget(device, allocated_bytes - reserved_bytes)) {
-    vkr_metal_memory_budget_reject(device, allocated_bytes - reserved_bytes, true_v);
+    vkr_metal_memory_budget_reject(device, allocated_bytes - reserved_bytes,
+                                   true_v);
     return false_v;
   }
   device->external_allocation_count -= reserved_bytes != 0;
@@ -335,8 +342,8 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
   const uint64_t available =
       device->managed_budget_size - vkr_metal_memory_managed_size(device);
   if (size_align.size > available) {
-    vkr_metal_memory_budget_reject(
-        device, size_align.size, group != VKR_METAL_HEAP_SCENE_IMAGES);
+    vkr_metal_memory_budget_reject(device, size_align.size,
+                                   group != VKR_METAL_HEAP_SCENE_IMAGES);
     return VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES;
   }
   uint64_t size = Max((uint64_t)size_align.size, device->heap_chunk_size);
@@ -355,9 +362,9 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
   descriptor.hazardTrackingMode = MTLHazardTrackingModeUntracked;
   id<MTLHeap> native_heap = [device->device newHeapWithDescriptor:descriptor];
   uint64_t charged_size = native_heap
-      ? Max((uint64_t)native_heap.size,
-            (uint64_t)native_heap.currentAllocatedSize)
-      : 0u;
+                              ? Max((uint64_t)native_heap.size,
+                                    (uint64_t)native_heap.currentAllocatedSize)
+                              : 0u;
   /* Native heap size can round above the remaining budget. Drop optional
      chunk headroom and retry the exact resource size before rejecting it. */
   if (native_heap && charged_size > available && size > size_align.size) {
@@ -365,10 +372,9 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
     size = size_align.size;
     descriptor.size = size;
     native_heap = [device->device newHeapWithDescriptor:descriptor];
-    charged_size = native_heap
-        ? Max((uint64_t)native_heap.size,
-              (uint64_t)native_heap.currentAllocatedSize)
-        : 0u;
+    charged_size = native_heap ? Max((uint64_t)native_heap.size,
+                                     (uint64_t)native_heap.currentAllocatedSize)
+                               : 0u;
   }
   [descriptor release];
   if (!native_heap) {
@@ -378,8 +384,8 @@ vkr_internal VkrMetalMemoryStatus vkr_metal_memory_place(
   if (native_heap.size < size ||
       !vkr_metal_memory_has_budget(device, charged_size)) {
     [native_heap release];
-    vkr_metal_memory_budget_reject(
-        device, charged_size, group != VKR_METAL_HEAP_SCENE_IMAGES);
+    vkr_metal_memory_budget_reject(device, charged_size,
+                                   group != VKR_METAL_HEAP_SCENE_IMAGES);
     return VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES;
   }
   VkrMetalMemoryStatus status =
@@ -507,6 +513,8 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
         vkr_metal_memory_device_alloc(config->allocator, ring_storage_size);
     memory->readback_ring_storage =
         vkr_metal_memory_device_alloc(config->allocator, ring_storage_size);
+    memory->publication_ring_storage =
+        vkr_metal_memory_device_alloc(config->allocator, ring_storage_size);
     memory->native_resources = vkr_metal_memory_device_alloc(
         config->allocator, memory->native_resources_size);
     memory->logical_lengths = vkr_metal_memory_device_alloc(
@@ -515,8 +523,8 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
         config->allocator, memory->logical_owners_size);
     if (!memory->heaps || !memory->resource_heaps || !memory->core_storage ||
         !memory->upload_ring_storage || !memory->readback_ring_storage ||
-        !memory->native_resources || !memory->logical_lengths ||
-        !memory->logical_owners ||
+        !memory->publication_ring_storage || !memory->native_resources ||
+        !memory->logical_lengths || !memory->logical_owners ||
         vkr_metal_memory_create(&core_config, memory->core_storage,
                                 core_storage_size,
                                 &memory->core) != VKR_METAL_MEMORY_STATUS_OK ||
@@ -527,6 +535,10 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
         vkr_metal_submit_ring_create(
             &memory->readback_ring, config->readback_ring_size,
             config->ring_slot_count, memory->readback_ring_storage,
+            ring_storage_size) != VKR_METAL_MEMORY_STATUS_OK ||
+        vkr_metal_submit_ring_create(
+            &memory->publication_ring, config->upload_ring_size,
+            config->ring_slot_count, memory->publication_ring_storage,
             ring_storage_size) != VKR_METAL_MEMORY_STATUS_OK) {
       vkr_metal_memory_device_destroy(memory);
       return VKR_METAL_MEMORY_STATUS_NATIVE_ALLOCATION_FAILED;
@@ -550,7 +562,8 @@ vkr_metal_memory_device_create(const VkrMetalMemoryDeviceConfig *config,
     }
     memory->transfer_ring_allocated_size = upload_size;
     if (!vkr_metal_memory_has_budget(memory, config->readback_ring_size)) {
-      vkr_metal_memory_budget_reject(memory, config->readback_ring_size, true_v);
+      vkr_metal_memory_budget_reject(memory, config->readback_ring_size,
+                                     true_v);
       vkr_metal_memory_device_destroy(memory);
       return VKR_METAL_MEMORY_STATUS_OUT_OF_BYTES;
     }
@@ -675,8 +688,8 @@ VkrMetalMemoryStatus vkr_metal_memory_device_create_texture(
   VkrMetalPlacement placement = {0};
   uint32_t heap_index = 0;
   VkrMetalMemoryStatus status = vkr_metal_memory_place(
-      device, size_align, VKR_METAL_RESOURCE_KIND_TEXTURE, owner, &handle, &placement,
-      &heap_index);
+      device, size_align, VKR_METAL_RESOURCE_KIND_TEXTURE, owner, &handle,
+      &placement, &heap_index);
   if (status != VKR_METAL_MEMORY_STATUS_OK) {
     [descriptor release];
     return status;
@@ -821,6 +834,11 @@ vkr_internal VkrMetalSubmitRing *vkr_metal_memory_select_ring(
     *out_buffer = device->readback_buffer;
     return &device->readback_ring;
   }
+  if (ring_kind == VKR_METAL_RING_KIND_PUBLICATION) {
+    *out_addresses = &device->publication_addresses;
+    *out_buffer = device->publication_buffer;
+    return &device->publication_ring;
+  }
   return NULL;
 }
 
@@ -839,10 +857,15 @@ VkrMetalMemoryStatus vkr_metal_memory_device_acquire_ring(
     return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
   uint64_t *max_requested = ring_kind == VKR_METAL_RING_KIND_UPLOAD
                                 ? &device->upload_ring_max_requested_bytes
+                            : ring_kind == VKR_METAL_RING_KIND_PUBLICATION
+                                ? &device->publication_ring_max_requested_bytes
                                 : &device->readback_ring_max_requested_bytes;
-  uint64_t *oversize_failures = ring_kind == VKR_METAL_RING_KIND_UPLOAD
-                                    ? &device->upload_ring_oversize_failures
-                                    : &device->readback_ring_oversize_failures;
+  uint64_t *oversize_failures =
+      ring_kind == VKR_METAL_RING_KIND_UPLOAD
+          ? &device->upload_ring_oversize_failures
+      : ring_kind == VKR_METAL_RING_KIND_PUBLICATION
+          ? &device->publication_ring_oversize_failures
+          : &device->readback_ring_oversize_failures;
   *max_requested = Max(*max_requested, requested_size);
   if (requested_size > ring->slot_size)
     (*oversize_failures)++;
@@ -879,9 +902,14 @@ vkr_metal_memory_device_ring_slot_capacity(const VkrMetalMemoryDevice *device,
     return 0u;
   if (ring_kind == VKR_METAL_RING_KIND_READBACK && !device->readback_buffer)
     return 0u;
+  if (ring_kind == VKR_METAL_RING_KIND_PUBLICATION &&
+      !device->publication_buffer)
+    return 0u;
   return ring_kind == VKR_METAL_RING_KIND_UPLOAD ? device->upload_ring.slot_size
          : ring_kind == VKR_METAL_RING_KIND_READBACK
              ? device->readback_ring.slot_size
+         : ring_kind == VKR_METAL_RING_KIND_PUBLICATION
+             ? device->publication_ring.slot_size
              : 0u;
 }
 
@@ -904,6 +932,11 @@ VkrMetalMemoryStatus vkr_metal_memory_device_grow_ring(
     buffer = &device->readback_buffer;
     ring = &device->readback_ring;
     max_size = device->readback_ring_max_size;
+  } else if (ring_kind == VKR_METAL_RING_KIND_PUBLICATION) {
+    addresses = &device->publication_addresses;
+    buffer = &device->publication_buffer;
+    ring = &device->publication_ring;
+    max_size = device->upload_ring_max_size;
   } else {
     return VKR_METAL_MEMORY_STATUS_INVALID_ARGUMENT;
   }
@@ -924,13 +957,14 @@ VkrMetalMemoryStatus vkr_metal_memory_device_grow_ring(
     total_size = Min(total_size * 2u, max_size);
   }
   const uint64_t old_total_size = ring->total_size;
-  const VkrGpuAllocationOwner owner = ring_kind == VKR_METAL_RING_KIND_UPLOAD
+  const bool8_t staging = ring_kind != VKR_METAL_RING_KIND_READBACK;
+  const VkrGpuAllocationOwner owner = staging
                                           ? VKR_GPU_ALLOCATION_OWNER_STAGING
                                           : VKR_GPU_ALLOCATION_OWNER_READBACK;
   const uint64_t old_size =
       *buffer ? Max(old_total_size, (uint64_t)(*buffer).allocatedSize) : 0u;
   const MTLResourceOptions options =
-      ring_kind == VKR_METAL_RING_KIND_UPLOAD
+      staging
           ? MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined
           : MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache;
   if (total_size > device->managed_budget_size -
@@ -969,11 +1003,13 @@ VkrMetalMemoryStatus vkr_metal_memory_device_grow_ring(
   const uint64_t acquires = ring->acquires;
   const uint64_t reuses = ring->reuses;
   const uint64_t busy_failures = ring->busy_failures;
-  (void)vkr_metal_submit_ring_create(ring, total_size, ring->slot_count,
-                                     ring_kind == VKR_METAL_RING_KIND_UPLOAD
-                                         ? device->upload_ring_storage
-                                         : device->readback_ring_storage,
-                                     device->ring_storage_size);
+  (void)vkr_metal_submit_ring_create(
+      ring, total_size, ring->slot_count,
+      ring_kind == VKR_METAL_RING_KIND_UPLOAD ? device->upload_ring_storage
+      : ring_kind == VKR_METAL_RING_KIND_PUBLICATION
+          ? device->publication_ring_storage
+          : device->readback_ring_storage,
+      device->ring_storage_size);
   ring->acquires = acquires;
   ring->reuses = reuses;
   ring->busy_failures = busy_failures;
@@ -1090,6 +1126,7 @@ void vkr_metal_memory_device_destroy(VkrMetalMemoryDevice *device) {
     vkr_metal_memory_release(device->residency);
     vkr_metal_memory_release(device->readback_buffer);
     vkr_metal_memory_release(device->upload_buffer);
+    vkr_metal_memory_release(device->publication_buffer);
     if (device->heaps) {
       for (uint32_t i = 0; i < device->heap_slot_count; ++i)
         vkr_metal_memory_release(device->heaps[i].heap);
@@ -1109,6 +1146,8 @@ void vkr_metal_memory_device_destroy(VkrMetalMemoryDevice *device) {
   vkr_metal_memory_device_free(allocator, device->readback_ring_storage,
                                device->ring_storage_size);
   vkr_metal_memory_device_free(allocator, device->upload_ring_storage,
+                               device->ring_storage_size);
+  vkr_metal_memory_device_free(allocator, device->publication_ring_storage,
                                device->ring_storage_size);
   vkr_metal_memory_device_free(allocator, device->core_storage,
                                device->core_storage_size);
