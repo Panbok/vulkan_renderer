@@ -26,9 +26,10 @@ Track static/dynamic caster and publication generations. Pack static candidate
 and instance rows per completion-protected slot; refresh on publication changes
 and copy dynamic ranges independently. Retained depth follows the caster
 publication generation instead
-(`VkrWorldPassPayload.caster_publication_generation`): texture, sampler and
-material completions, not geometry uploads, whose meshes join the caster set
-through the static generation. A static change whose listed box misses a
+(`VkrWorldPassPayload.caster_publication_generation`): the completions of
+material, texture and sampler publications a shadow reads
+([ADR-019](019-bounded-forward-spatial-lighting.md)), not geometry uploads,
+whose meshes join the caster set through the static generation. A static change whose listed box misses a
 retained cascade's fit volume, tested as a dynamic caster's sphere is, leaves
 that cascade valid and moves it to the new generation. Each physical target-image cascade keeps
 its submitted fit and signature. A guard-contained static cascade with valid

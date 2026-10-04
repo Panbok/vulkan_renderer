@@ -53,8 +53,9 @@ path from an old camera cannot be reprojected to the current camera.
 
 Injection selects compatible completed history, reprojects its local values and
 rejects changed medium, projection, grid, lighting or shadow content. Content
-changes count when they can reach the fog: texture, sampler and material
-publications, not geometry uploads, and static changes whose boxes meet the
+changes count when they can reach the fog: the caster publications shadows
+read ([ADR-019](019-bounded-forward-spatial-lighting.md)), not geometry
+uploads, and static changes whose boxes meet the
 sphere of `max_distance` around the camera
 (`vkr_froxel_fog_static_generation`). What only resamples the same shadows
 keeps history: cascade refits, local shadow faces moving in the atlas or

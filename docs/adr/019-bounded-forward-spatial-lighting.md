@@ -78,10 +78,18 @@ A face's content is invalid when no successful submission drew it into its
 current square with its current projection in the current atlas image, or its
 layer was cleared, and stale when a static-world change since it was drawn
 reaches the light's range sphere, or the caster publication generation
-changed (completed texture, sampler and material publications; a geometry
-publication cannot change a drawn caster, since a mesh draws only after its
-geometry has published and adding or removing a drawn mesh is a static
-change). The world payload lists each static change with the world box it
+changed. That generation counts the completed publications a shadow reads:
+a material's first publication, an unpublication that no republication
+follows in the same frame, a change in its alpha mode, culling,
+transmission or pipeline, any publication of a cutout, blended or
+transmissive material, and a texture or sampler such a material samples
+(`vkr_material_system_take_shadow_change`,
+`vkr_material_system_shadow_reads_texture`). An opaque material's shadow
+reads its geometry alone, so streaming its textures in redraws no shadow;
+before, each such republication redrew every local face in range and every
+cascade. A geometry publication cannot change a drawn caster either, since a
+mesh draws only after its geometry has published and adding or removing a
+drawn mesh is a static change. The world payload lists each static change with the world box it
 may alter (`VkrWorldPassPayload.static_changes`): a mesh's arrival or
 departure its bounding box, a terrain swap the footprints of the tiles that
 changed. A change the list does not bound, or content older than the list,
