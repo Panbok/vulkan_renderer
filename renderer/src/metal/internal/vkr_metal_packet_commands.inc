@@ -513,11 +513,6 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
   [renderer->queue commit:submissions count:1];
   vkr_metal_packet_advance_revision(&renderer->radiance_revision);
   [renderer->queue signalEvent:renderer->completion value:submit_value];
-  /* Metal 4 does not order separate command buffers. Later work waits on
-     the GPU for the textures, instead of this thread waiting for every
-     earlier frame to finish. */
-  if (holds_textures)
-    [renderer->queue waitForEvent:renderer->completion value:submit_value];
   VKR_METAL_DIAGNOSTIC(renderer, "upload_batch_commit_end", "slot=%u",
                        (uint32_t)(slot - renderer->upload_slots));
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
@@ -540,7 +535,11 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
   vkr_metal_packet_detach_active_command_slot(renderer);
   *batch =
       (VkrMetalPacketTextureUploadBatch){.enabled = finish ? false_v : true_v};
-  return true_v;
+  /* A finished batch holding textures returns once they are on the GPU,
+     which texture publication relies on; buffer copies, as single uploads
+     do, return at once. */
+  return !finish || !holds_textures ||
+         vkr_metal_packet_wait(renderer, submit_value);
 }
 
 bool8_t vkr_metal_packet_renderer_begin_texture_upload_batch(
