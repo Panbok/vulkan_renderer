@@ -76,6 +76,12 @@ bool8_t vkr_scene_terrain_apply(VkrScene *scene, VkrEntityId entity,
    does before an edit. */
 bool8_t vkr_scene_terrain_require(VkrScene *scene, VkrEntityId entity,
                                   VkrHeightfieldRect rect);
+/* The highest terrain surface under world point `top` and at or above
+   height `bottom`, from the samples, which load as needed: its world
+   position and normal. False where no loaded terrain lies there. Unlike a
+   physics ray, it finds a streamed terrain away from its body. */
+bool8_t vkr_scene_terrain_ground(VkrScene *scene, Vec3 top, float32_t bottom,
+                                 Vec3 *out_position, Vec3 *out_normal);
 /* Writes samples back, as undo and redo do. */
 bool8_t vkr_scene_terrain_write(VkrScene *scene, VkrEntityId entity,
                                 VkrHeightfieldRect rect,

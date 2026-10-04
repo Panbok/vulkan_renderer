@@ -465,11 +465,7 @@ bool8_t vkr_json_file_writer_commit(VkrJsonFileWriter *file_writer) {
     return false_v;
   }
 
-#if defined(PLATFORM_WINDOWS)
-  const bool8_t durable = _commit(_fileno(file_writer->file)) == 0;
-#else
-  const bool8_t durable = fsync(fileno(file_writer->file)) == 0;
-#endif
+  const bool8_t durable = file_flush_durable(file_writer->file);
   const bool8_t closed = fclose(file_writer->file) == 0;
   file_writer->file = NULL;
   if (!durable || !closed) {

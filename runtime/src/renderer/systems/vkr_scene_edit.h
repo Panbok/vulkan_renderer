@@ -150,6 +150,9 @@ typedef struct VkrSceneEditState {
   uint64_t saved_revision;
   /* Gesture that produced the newest undo entry; zero after any other edit. */
   uint64_t gesture;
+  /* Group a gesture outside an open group gave its entries once it outgrew
+     one entry, as a long terrain stroke does; zero otherwise. */
+  uint64_t gesture_group;
   /* Group that new entries join, zero when none is open, and its entries. */
   uint64_t group_open;
   uint32_t group_entries;
@@ -310,19 +313,23 @@ bool8_t vkr_scene_edit_apply_physics_batch(VkrSceneEditState *state,
  * overlay's record schema; `index.json` lists the documents, their cell
  * size and the next overlay id, so ids stay unique across unloaded cells.
  * Saving writes each loaded cell whose bytes changed and removes the documents
- * of loaded cells left empty; unloaded cells keep theirs. */
+ * of loaded cells left empty; unloaded cells keep theirs. Every document
+ * and the overlay are written beside their files before any replaces its
+ * file, and a save refuses an object whose cell's document did not load. */
 void vkr_scene_edit_set_cells_root(VkrSceneEditState *state, String8 root);
 /* Reads the cell index into the scene's cell table. */
 bool8_t vkr_scene_edit_cells_open(VkrSceneEditState *state, VkrScene *scene);
 /* Creates the objects of `cell`'s document and marks it loaded; an id a
-   loaded object holds is replaced. A cell without a document loads
-   empty. */
+   loaded object holds is replaced, and roots move by the scene's origin
+   offset. A cell without a document, or whose listed document is missing,
+   loads empty; an unreadable one is marked so and stays unloaded. */
 bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *state, VkrScene *scene,
                                  VkrScenePartitionCell cell);
-/* Whether `cell` can unload without losing an edit: nothing is unsaved and
-   no journal entry names one of its objects. */
-bool8_t vkr_scene_edit_cell_unloadable(const VkrSceneEditState *state,
-                                       const VkrScene *scene,
+/* Whether `cell` can unload without losing an edit: no journal entry names
+   one of its objects, and nothing is unsaved or the cell holds what its
+   document does. The comparison is remembered until the next edit. */
+bool8_t vkr_scene_edit_cell_unloadable(VkrSceneEditState *state,
+                                       VkrScene *scene,
                                        VkrScenePartitionCell cell);
 /* Destroys `cell`'s objects, forgets their overlay ids and marks it
    unloaded. */

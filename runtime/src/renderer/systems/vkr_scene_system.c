@@ -2141,6 +2141,8 @@ Vec3 vkr_scene_restore_origin(VkrScene *scene) {
     return vec3_zero();
   }
   const uint32_t living = scene->world->dir.living;
+  /* The first shift saved roots in index order, the order of this walk. */
+  uint32_t saved = 0u;
   for (uint32_t i = 0; i < living; ++i) {
     const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
     SceneTransform *transform =
@@ -2152,11 +2154,13 @@ Vec3 vkr_scene_restore_origin(VkrScene *scene) {
       continue;
     }
     Vec3 position = vec3_add(transform->position, offset);
-    for (uint32_t s = 0; s < scene->origin_saved_count; ++s) {
-      if (scene->origin_saved[s].entity.u64 == entity.u64) {
-        position = scene->origin_saved[s].position;
-        break;
-      }
+    while (saved < scene->origin_saved_count &&
+           scene->origin_saved[saved].entity.parts.index < i) {
+      saved++;
+    }
+    if (saved < scene->origin_saved_count &&
+        scene->origin_saved[saved].entity.u64 == entity.u64) {
+      position = scene->origin_saved[saved].position;
     }
     transform->position = position;
     transform->flags |= SCENE_TRANSFORM_DIRTY_LOCAL;

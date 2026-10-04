@@ -222,6 +222,30 @@ static int partition_candidate_compare(const void *a, const void *b) {
   return da < db ? -1 : da > db ? 1 : 0;
 }
 
+/* Keeps the VKR_SCENE_PARTITION_PLAN_MAX nearest (or, with `farthest`, the
+   farthest) candidates offered: a full list replaces its worst entry. */
+static void partition_candidate_offer(PartitionCandidate *list, uint32_t *count,
+                                      PartitionCandidate candidate,
+                                      bool8_t farthest) {
+  if (*count < VKR_SCENE_PARTITION_PLAN_MAX) {
+    list[(*count)++] = candidate;
+    return;
+  }
+  uint32_t worst = 0u;
+  for (uint32_t i = 1u; i < *count; ++i) {
+    const bool8_t worse = farthest ? list[i].distance < list[worst].distance
+                                   : list[i].distance > list[worst].distance;
+    if (worse) {
+      worst = i;
+    }
+  }
+  const bool8_t better = farthest ? candidate.distance > list[worst].distance
+                                  : candidate.distance < list[worst].distance;
+  if (better) {
+    list[worst] = candidate;
+  }
+}
+
 /* Metres from the nearest streaming source to the cell's square. */
 static float32_t partition_distance(const VkrScene *scene,
                                     const SceneWorldPartition *settings,
@@ -265,29 +289,12 @@ void vkr_scene_partition_plan(const VkrScene *scene,
                              VKR_SCENE_PARTITION_CELL_HELD)) &&
           distance > keep) {
         /* The farthest go first when the list is full. */
-        if (unload_count < VKR_SCENE_PARTITION_PLAN_MAX) {
-          unloads[unload_count++] = candidate;
-        } else {
-          for (uint32_t u = 0; u < unload_count; ++u) {
-            if (unloads[u].distance < distance) {
-              unloads[u] = candidate;
-              break;
-            }
-          }
-        }
+        partition_candidate_offer(unloads, &unload_count, candidate, true_v);
       }
     } else if ((record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK) &&
+               !(record->flags & VKR_SCENE_PARTITION_CELL_UNREADABLE) &&
                distance <= settings->load_radius) {
-      if (load_count < VKR_SCENE_PARTITION_PLAN_MAX) {
-        loads[load_count++] = candidate;
-      } else {
-        for (uint32_t l = 0; l < load_count; ++l) {
-          if (loads[l].distance > distance) {
-            loads[l] = candidate;
-            break;
-          }
-        }
-      }
+      partition_candidate_offer(loads, &load_count, candidate, false_v);
     }
   }
   qsort(loads, load_count, sizeof(*loads), partition_candidate_compare);
@@ -315,8 +322,10 @@ void vkr_scene_partition_plan(const VkrScene *scene,
       if ((record->flags & VKR_SCENE_PARTITION_CELL_LOADED) &&
           !(record->flags & (VKR_SCENE_PARTITION_CELL_PINNED |
                              VKR_SCENE_PARTITION_CELL_HELD)) &&
-          distance <= keep && far_count < VKR_SCENE_PARTITION_PLAN_MAX) {
-        far[far_count++] = (PartitionCandidate){distance, record->cell};
+          distance <= keep) {
+        partition_candidate_offer(far, &far_count,
+                                  (PartitionCandidate){distance, record->cell},
+                                  true_v);
       }
     }
     qsort(far, far_count, sizeof(*far), partition_candidate_compare);

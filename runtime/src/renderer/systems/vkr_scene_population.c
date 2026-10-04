@@ -13,6 +13,9 @@
 #include <string.h>
 
 #define POPULATION_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
+/* Metres terrain samples must lie above a ray's hit to replace it, past the
+   gap between a height field body's triangles and the bilinear samples. */
+#define POPULATION_GROUND_TOLERANCE 0.05f
 
 typedef enum PopulationKind {
   POPULATION_SPLINE_MESH = 0,
@@ -334,7 +337,8 @@ static uint32_t population_spline_models(const VkrScene *scene,
 
 /* Seeded copies in the scatter's box, each dropped straight down onto the
    first surface below the box's top; a column that meets nothing places
-   none. */
+   none. A streamed terrain has collision only near its streaming sources,
+   so terrain samples answer where they lie above what the ray met. */
 static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
                                           const SceneScatter *rule, Mat4 *out,
                                           uint32_t capacity) {
@@ -354,14 +358,22 @@ static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
     const Vec3 bottom = mat4_mul_vec3(
         transform->world,
         vec3_new(u * rule->extents.x, -rule->extents.y, v * rule->extents.z));
-    VkrPhysicsRayHit hit;
-    if (!vkr_scene_physics_raycast(scene, top, vec3_sub(bottom, top), &hit)) {
+    VkrPhysicsRayHit hit = {0};
+    const bool8_t struck =
+        vkr_scene_physics_raycast(scene, top, vec3_sub(bottom, top), &hit);
+    Vec3 position = vec3_new(hit.position[0], hit.position[1], hit.position[2]);
+    Vec3 normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
+    Vec3 ground = vec3_zero();
+    Vec3 ground_normal = vec3_zero();
+    if (vkr_scene_terrain_ground(scene, top, bottom.y, &ground,
+                                 &ground_normal) &&
+        (!struck || ground.y > position.y + POPULATION_GROUND_TOLERANCE)) {
+      position = ground;
+      normal = ground_normal;
+    } else if (!struck) {
       continue;
     }
-    const Vec3 position =
-        vec3_new(hit.position[0], hit.position[1], hit.position[2]);
     Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
-    const Vec3 normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
     if (rule->align_to_surface && vec3_length(normal) > 1.0e-4f) {
       up = vec3_normalize(normal);
     }

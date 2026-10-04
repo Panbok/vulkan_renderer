@@ -119,7 +119,9 @@ void vkr_editor_partition_window_build(VkrEditorUi *editor,
       }
       const uint32_t flags = record ? record->flags : 0u;
       Vec4 colour = vkr_ui_color_alpha(theme->field, 0.6f);
-      if (flags & VKR_SCENE_PARTITION_CELL_PINNED) {
+      if (flags & VKR_SCENE_PARTITION_CELL_UNREADABLE) {
+        colour = vkr_ui_color_alpha(theme->error, 0.6f);
+      } else if (flags & VKR_SCENE_PARTITION_CELL_PINNED) {
         colour = theme->accent;
       } else if (flags & VKR_SCENE_PARTITION_CELL_LOADED) {
         colour = vkr_ui_color_alpha(theme->success, 0.6f);
@@ -140,11 +142,12 @@ void vkr_editor_partition_window_build(VkrEditorUi *editor,
       }
       square.tooltip = string8_create_formatted(
           ui->frame_allocator, "Cell %d,%d: %s", cell.x, cell.z,
-          flags & VKR_SCENE_PARTITION_CELL_PINNED    ? "pinned for editing"
-          : flags & VKR_SCENE_PARTITION_CELL_LOADED  ? "loaded"
-          : record && record->proxy.u64              ? "proxy"
-          : flags & VKR_SCENE_PARTITION_CELL_ON_DISK ? "saved, not loaded"
-                                                     : "empty");
+          flags & VKR_SCENE_PARTITION_CELL_UNREADABLE ? "document unreadable"
+          : flags & VKR_SCENE_PARTITION_CELL_PINNED   ? "pinned for editing"
+          : flags & VKR_SCENE_PARTITION_CELL_LOADED   ? "loaded"
+          : record && record->proxy.u64               ? "proxy"
+          : flags & VKR_SCENE_PARTITION_CELL_ON_DISK  ? "saved, not loaded"
+                                                      : "empty");
       (void)vkr_ui_push_id_u64(ui,
                                (uint64_t)(row * PARTITION_MAP_CELLS + column));
       if (vkr_ui_button(ui, string8_lit("partition.cell"), (String8){0},

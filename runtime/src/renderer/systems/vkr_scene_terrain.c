@@ -43,8 +43,9 @@
 /* Fine tiles a side the body of several far-apart sources may span; past
    it the body covers the first source alone. */
 #define TERRAIN_BODY_TILES_MAX 16u
-/* Tiles one streaming step orders by distance. */
-#define TERRAIN_STREAM_CANDIDATES 2048u
+/* The nearest missing tiles one streaming step considers; the frame budget
+   builds far fewer. */
+#define TERRAIN_STREAM_CANDIDATES 64u
 
 _Static_assert(VKR_HEIGHTFIELD_TILE_CELLS + 1u == VKR_GPU_TERRAIN_TILE_SIDE,
                "Shaders morph tiles of VKR_GPU_TERRAIN_TILE_SIDE samples");
@@ -435,6 +436,51 @@ bool8_t vkr_scene_terrain_require(VkrScene *scene, VkrEntityId entity,
   return samples && rect.x1 < samples && rect.z1 < samples &&
          rect.x0 <= rect.x1 && rect.z0 <= rect.z1 &&
          vkr_heightfield_load_rect(&record->field, rect);
+}
+
+bool8_t vkr_scene_terrain_ground(VkrScene *scene, Vec3 top, float32_t bottom,
+                                 Vec3 *out_position, Vec3 *out_normal) {
+  VkrSceneTerrains *state = scene ? scene->terrains : NULL;
+  bool8_t found = false_v;
+  for (uint32_t i = 0; state && i < state->record_count; ++i) {
+    TerrainRecord *record = &state->records[i];
+    const SceneTransform *transform = vkr_entity_get_component(
+        scene->world, record->entity, scene->comp_transform);
+    if (!record->loaded || !transform) {
+      continue;
+    }
+    VkrHeightfield *field = &record->field;
+    const Vec3 origin = mat4_position(transform->world);
+    const float32_t x = top.x - origin.x;
+    const float32_t z = top.z - origin.z;
+    const float32_t d = field->spacing;
+    /* The cells under the point and their neighbours, which the normal
+       reads. */
+    VkrHeightfieldRect rect;
+    float32_t height = 0.0f;
+    if (!vkr_heightfield_rect_around(field, x, z, 2.0f * d, &rect) ||
+        !vkr_heightfield_load_rect(field, rect) ||
+        !vkr_heightfield_sample(field, x, z, &height)) {
+      continue;
+    }
+    const float32_t y = origin.y + height;
+    if (y > top.y || y < bottom || (found && y <= out_position->y)) {
+      continue;
+    }
+    float32_t left = height;
+    float32_t right = height;
+    float32_t back = height;
+    float32_t front = height;
+    (void)vkr_heightfield_sample(field, x - d, z, &left);
+    (void)vkr_heightfield_sample(field, x + d, z, &right);
+    (void)vkr_heightfield_sample(field, x, z - d, &back);
+    (void)vkr_heightfield_sample(field, x, z + d, &front);
+    *out_position = vec3_new(top.x, y, top.z);
+    *out_normal =
+        vec3_normalize(vec3_new(left - right, 2.0f * d, back - front));
+    found = true_v;
+  }
+  return found;
 }
 
 bool8_t vkr_scene_terrain_write(VkrScene *scene, VkrEntityId entity,
@@ -1248,39 +1294,47 @@ typedef struct TerrainCandidate {
   uint32_t index;
 } TerrainCandidate;
 
-static int terrain_candidate_compare(const void *a, const void *b) {
-  const float32_t da = ((const TerrainCandidate *)a)->distance;
-  const float32_t db = ((const TerrainCandidate *)b)->distance;
-  return da < db ? -1 : da > db ? 1 : 0;
-}
-
-/* Missing fine tiles within `radius` of a source, nearest first. */
+/* The missing fine tiles within `radius` of a source, at most `capacity`
+   of them and the nearest first. Each tile of the sources' window counts
+   once, however many sources reach it. */
 static uint32_t terrain_candidates(const TerrainRecord *record,
                                    const Vec2 *sources, uint32_t count,
                                    float32_t radius, TerrainCandidate *out,
                                    uint32_t capacity) {
-  const uint32_t tiles = terrain_tiles(record);
+  const int32_t tiles = (int32_t)terrain_tiles(record);
   const float32_t size =
       (float32_t)VKR_HEIGHTFIELD_TILE_CELLS * record->field.spacing;
-  uint32_t found = 0u;
+  int32_t x0 = tiles;
+  int32_t z0 = tiles;
+  int32_t x1 = -1;
+  int32_t z1 = -1;
   for (uint32_t s = 0; s < count; ++s) {
-    const int32_t x0 = (int32_t)floorf((sources[s].x - radius) / size);
-    const int32_t z0 = (int32_t)floorf((sources[s].y - radius) / size);
-    const int32_t x1 = (int32_t)floorf((sources[s].x + radius) / size);
-    const int32_t z1 = (int32_t)floorf((sources[s].y + radius) / size);
-    for (int32_t tz = Max(z0, 0); tz <= Min(z1, (int32_t)tiles - 1); ++tz) {
-      for (int32_t tx = Max(x0, 0); tx <= Min(x1, (int32_t)tiles - 1); ++tx) {
-        const uint32_t index = (uint32_t)tz * tiles + (uint32_t)tx;
-        const bool8_t wanted = !record->tiles[index].id;
-        const float32_t distance = terrain_source_distance(
-            sources, count, (float32_t)tx * size, (float32_t)tz * size, size);
-        if (wanted && distance <= radius && found < capacity) {
-          out[found++] = (TerrainCandidate){distance, index};
-        }
+    x0 = Min(x0, (int32_t)floorf((sources[s].x - radius) / size));
+    z0 = Min(z0, (int32_t)floorf((sources[s].y - radius) / size));
+    x1 = Max(x1, (int32_t)floorf((sources[s].x + radius) / size));
+    z1 = Max(z1, (int32_t)floorf((sources[s].y + radius) / size));
+  }
+  uint32_t found = 0u;
+  for (int32_t tz = Max(z0, 0); tz <= Min(z1, tiles - 1); ++tz) {
+    for (int32_t tx = Max(x0, 0); tx <= Min(x1, tiles - 1); ++tx) {
+      const uint32_t index = (uint32_t)tz * (uint32_t)tiles + (uint32_t)tx;
+      if (record->tiles[index].id) {
+        continue;
       }
+      const float32_t distance = terrain_source_distance(
+          sources, count, (float32_t)tx * size, (float32_t)tz * size, size);
+      if (distance > radius ||
+          (found == capacity && distance >= out[found - 1u].distance)) {
+        continue;
+      }
+      /* Insertion into the sorted list, dropping its farthest when full. */
+      uint32_t at = found < capacity ? found++ : found - 1u;
+      for (; at > 0u && out[at - 1u].distance > distance; --at) {
+        out[at] = out[at - 1u];
+      }
+      out[at] = (TerrainCandidate){distance, index};
     }
   }
-  qsort(out, found, sizeof(*out), terrain_candidate_compare);
   return found;
 }
 

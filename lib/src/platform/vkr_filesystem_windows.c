@@ -6,6 +6,7 @@
 #include "core/logger.h"
 
 #include <errno.h>
+#include <io.h>
 #include <wchar.h>
 
 #define VKR_WINDOWS_PATH_WCHARS 32768u
@@ -501,6 +502,10 @@ FileError file_sync(FileHandle *handle) {
   }
   return FlushFileBuffers((HANDLE)handle->handle) ? FILE_ERROR_NONE
                                                   : FILE_ERROR_IO_ERROR;
+}
+
+bool8_t file_flush_durable(FILE *file) {
+  return file && fflush(file) == 0 && _commit(_fileno(file)) == 0;
 }
 
 FileError file_remove(const FilePath *path) {

@@ -61,6 +61,9 @@ typedef struct VkrHeightfield {
   VkrAllocator *allocator;
   /* The open file of a streamed field (FILE *), NULL otherwise. */
   void *file;
+  /* A streamed field whose file could only be opened for reading, as in a
+     packaged game; saving it fails. */
+  bool8_t read_only;
 } VkrHeightfield;
 
 /* An inclusive rectangle of samples. */
@@ -262,13 +265,25 @@ bool8_t vkr_heightfield_op_apply(VkrHeightfield *field,
                                  VkrAllocator *scratch,
                                  VkrHeightfieldRect *touched);
 
-/* Writes a resident field to `path` atomically; a streamed field writes its
-   dirty tiles and overview in place. False with the reason in `error`. */
+/* Writes a resident field to `path` atomically. A streamed field, whose
+   `path` must be the file it was opened from, first writes its dirty tiles
+   and overview to the journal beside it (vkr_heightfield_journal_write),
+   then into the file in place, then removes the journal. False with the
+   reason in `error`. */
 bool8_t vkr_heightfield_save(VkrHeightfield *field, const char *path,
                              char *error, uint32_t capacity);
+/* The first step of a streamed save: `<path>.journal` holds the dirty
+   resident tiles and the overview, stored on the disk, with a checksum
+   that tells a complete journal from a torn one. */
+bool8_t vkr_heightfield_journal_write(const VkrHeightfield *field,
+                                      const char *path, char *error,
+                                      uint32_t capacity);
 /* Opens a field written by vkr_heightfield_save or _create_file: every tile
    of a field up to VKR_HEIGHTFIELD_RESIDENT_CELLS, or else only the
-   overview, keeping the file open to stream tiles. */
+   overview, keeping the file open to stream tiles, read-only when it cannot
+   be written. A complete journal left by a save cut short is written into
+   the file first; a torn one, written before the file was touched, is
+   dropped. */
 bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
                              VkrAllocator *allocator, char *error,
                              uint32_t capacity);

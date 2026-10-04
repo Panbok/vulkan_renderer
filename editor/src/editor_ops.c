@@ -3265,6 +3265,9 @@ static VkrEditorOpStatus ops_run_partition_describe(OpsContext *ctx) {
         vkr_bakery_json_bool(arena, flags & VKR_SCENE_PARTITION_CELL_ON_DISK));
     ops_set(ctx, row, "proxy",
             vkr_bakery_json_bool(arena, record->proxy.u64 != 0u));
+    ops_set(ctx, row, "unreadable",
+            vkr_bakery_json_bool(arena,
+                                 flags & VKR_SCENE_PARTITION_CELL_UNREADABLE));
     vkr_bakery_json_append(cells, row);
   }
   ops_set(ctx, result, "known", ops_number(ctx, (float64_t)count));

@@ -702,12 +702,21 @@ static void edit_test_partition(VkrAllocator *allocator) {
          tower_loaded.u64);
   vkr_scene_update_transforms(&scene);
   assert(vkr_scene_edit_cell_unloadable(&state, &scene, far_cell));
-  /* An unsaved edit anywhere keeps every cell; once saved, a journal that
-     names none of the cell's objects lets it go. */
+  /* An unsaved edit elsewhere leaves a cell that holds what its document
+     does free to go; one whose objects moved outside the journal, as a
+     simulation moves them, stays. */
   VkrEntityId keep_loaded;
   assert(edit_test_alive_named(&scene, "keep", &keep_loaded) == 1u);
   edit_test_rename(&state, &scene, keep_loaded, "castle");
+  assert(vkr_scene_edit_cell_unloadable(&state, &scene, far_cell));
+  edit_test_rename(&state, &scene, keep_loaded, "fort");
+  assert(vkr_scene_set_transform(&scene, tower_loaded, vec3_new(310, 0, -20),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_update_transforms(&scene);
   assert(!vkr_scene_edit_cell_unloadable(&state, &scene, far_cell));
+  assert(vkr_scene_set_transform(&scene, tower_loaded, vec3_new(300, 0, -20),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_update_transforms(&scene);
   assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
   assert(edit_test_read(far, text, sizeof(text)) == far_size &&
          MemCompare(text, far_before, far_size) == 0);
@@ -722,6 +731,60 @@ static void edit_test_partition(VkrAllocator *allocator) {
   assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
   assert(edit_test_read(far, text, sizeof(text)) == far_size &&
          MemCompare(text, far_before, far_size) == 0);
+
+  /* A cell loading while the origin is rebased (ADR-086) places its roots
+     that far from their documents; children keep their parent offsets, and
+     membership stays in document space. */
+  SceneWorldPartition settings;
+  assert(vkr_scene_partition_settings(&scene, &settings));
+  scene.origin_offset = vec3_new(4096.0f, 0.0f, 0.0f);
+  assert(vkr_scene_edit_cell_load(&state, &scene, far_cell));
+  assert(edit_test_alive_named(&scene, "tower", &tower_loaded) == 1u);
+  assert(edit_test_alive_named(&scene, "flag", &flag_loaded) == 1u);
+  vkr_scene_update_transforms(&scene);
+  const Vec3 tower_at =
+      mat4_position(vkr_scene_get_transform(&scene, tower_loaded)->world);
+  const Vec3 flag_at =
+      mat4_position(vkr_scene_get_transform(&scene, flag_loaded)->world);
+  assert(tower_at.x == 300.0f - 4096.0f && tower_at.z == -20.0f);
+  assert(flag_at.x == tower_at.x && flag_at.y == tower_at.y + 5.0f);
+  VkrScenePartitionCell at;
+  assert(
+      vkr_scene_partition_entity_cell(&scene, &settings, tower_loaded, &at) &&
+      at.x == far_cell.x && at.z == far_cell.z);
+  vkr_scene_edit_cell_unload(&state, &scene, far_cell);
+  scene.origin_offset = vec3_zero();
+
+  /* An unreadable document stays listed and untouched: streaming does not
+     load it, and a save refuses an object that would land in it. */
+  edit_test_write(far, "{", 1u);
+  assert(!vkr_scene_edit_cell_load(&state, &scene, far_cell));
+  assert(vkr_scene_partition_cell(&scene, far_cell, false_v)->flags &
+         VKR_SCENE_PARTITION_CELL_UNREADABLE);
+  const Vec3 source = vec3_new(300.0f, 0.0f, -20.0f);
+  vkr_scene_set_stream_sources(&scene, &source, 1u);
+  VkrScenePartitionPlan plan;
+  vkr_scene_partition_plan(&scene, &settings, &plan);
+  for (uint32_t i = 0; i < plan.load_count; ++i) {
+    assert(plan.load[i].x != far_cell.x || plan.load[i].z != far_cell.z);
+  }
+  assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
+  assert(edit_test_read(index, text, sizeof(text)) && strstr(text, "[2,-1]"));
+  assert(edit_test_read(far, text, sizeof(text)) == 1u && text[0] == '{');
+  (void)edit_test_create_at(&state, &scene, (VkrEntityId){0}, "barrel",
+                            vec3_new(320, 0, -30));
+  vkr_scene_update_transforms(&scene);
+  assert(!vkr_scene_edit_save(&state, &scene, sidecar_path));
+  assert(edit_test_read(far, text, sizeof(text)) == 1u && text[0] == '{');
+
+  /* A listed document that is missing loads as an empty cell. */
+  FilePath far_file = {
+      .path = string8_create_from_cstr((const uint8_t *)far, strlen(far)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&far_file) == FILE_ERROR_NONE);
+  assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
+  assert(edit_test_read(far, text, sizeof(text)) &&
+         strstr(text, "\"barrel\"") && !strstr(text, "\"tower\""));
   vkr_scene_edit_reset(&state, allocator, 1);
   vkr_scene_shutdown(&scene, NULL);
 

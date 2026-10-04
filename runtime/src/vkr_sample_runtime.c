@@ -245,6 +245,10 @@ typedef struct State {
      primary scene's cells were last tracked at. */
   uint64_t partition_revision;
   uint64_t partition_structure;
+  /* The proxies directory's modification time plus one, zero while it is
+     missing: a change means a bake may have built proxies for cells that
+     had none. */
+  uint64_t partition_proxy_stamp;
   char physics_asset_root[1024];
   char scene_status[512];
   bool8_t modal;
@@ -3510,6 +3514,7 @@ static void sample_partition_open(VkrScene *scene) {
           ? string8_create_from_cstr((const uint8_t *)root, strlen(root))
           : (String8){0});
   state->partition_revision = UINT64_MAX;
+  state->partition_proxy_stamp = 0u;
   if (!vkr_scene_edit_cells_open(&state->edits, scene)) {
     snprintf(state->scene_status, sizeof(state->scene_status), "%s",
              state->edits.status);
@@ -3527,14 +3532,29 @@ static void sample_partition_routed(bool8_t changed) {
 
 /* Unloaded cells within the proxy radius draw the proxy the bakery built
    (`vkr_bakery bake proxies`) on a runtime-only entity at the cell's
-   corner; a loaded or distant cell drops it. */
+   corner; a loaded or distant cell drops it. A cell the bakery left
+   without one looks again once the proxies directory changes. */
 static void sample_partition_proxies(VkrScene *scene,
                                      const SceneWorldPartition *settings) {
+  char directory[1100];
+  snprintf(directory, sizeof(directory), "%s/proxies", state->edits.cells_root);
+  const FilePath proxies = {.path = string8_create_from_cstr(
+                                (const uint8_t *)directory, strlen(directory)),
+                            .type = FILE_PATH_TYPE_ABSOLUTE};
+  FileStats stats = {0};
+  const uint64_t stamp = file_stats(&proxies, &stats) == FILE_ERROR_NONE
+                             ? stats.last_modified + 1u
+                             : 0u;
+  const bool8_t rebaked = stamp != state->partition_proxy_stamp;
+  state->partition_proxy_stamp = stamp;
   uint32_t count = 0u;
   vkr_scene_partition_cells(scene, &count);
   for (uint32_t i = 0; i < count; ++i) {
     VkrScenePartitionCellRecord *record = vkr_scene_partition_cell(
         scene, vkr_scene_partition_cells(scene, &count)[i].cell, false_v);
+    if (rebaked) {
+      record->flags &= ~(uint32_t)VKR_SCENE_PARTITION_CELL_NO_PROXY;
+    }
     const bool8_t wanted =
         vkr_scene_partition_proxy_wanted(scene, settings, record);
     if (!wanted && record->proxy.u64) {
@@ -3627,13 +3647,8 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
       break;
     }
     if (!vkr_scene_edit_cell_load(edits, scene, plan.load[i])) {
-      /* An unreadable document stays unloaded rather than retried each
-         frame; the status says which. */
-      VkrScenePartitionCellRecord *record =
-          vkr_scene_partition_cell(scene, plan.load[i], false_v);
-      if (record) {
-        record->flags &= ~(uint32_t)VKR_SCENE_PARTITION_CELL_ON_DISK;
-      }
+      /* An unreadable document stays unloaded, and listed, rather than
+         retried each frame; the status says which. */
       snprintf(state->scene_status, sizeof(state->scene_status), "%s",
                edits->status);
     }

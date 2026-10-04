@@ -15,6 +15,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(PLATFORM_WINDOWS)
+#include <sys/stat.h>
+#endif
+
 /* Terrain samples (ADR-084). Oracles are hand-computed heights at named
  * points, a byte-exact file round trip, and the samples undo restores. */
 
@@ -246,6 +250,41 @@ static void heightfield_test_journal(void) {
                                                     strlen(relative)),
                    .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_remove(&file) == FILE_ERROR_NONE);
+
+  /* A stroke across a 1 km terrain continues in a second entry once its
+     rectangle would pass 512 x 512 samples, and still undoes as one; a
+     step inside the new entry's rectangle folds into it. */
+  assert(vkr_heightfield_create(&field, 1024u, 1.0f, -50.0f, 50.0f, 0.0f,
+                                &test.allocator));
+  assert(vkr_heightfield_save(&field, relative, error, sizeof(error)));
+  vkr_heightfield_destroy(&field, &test.allocator);
+  assert(vkr_scene_init(&scene, &test.allocator, 0, 8, NULL));
+  entity = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, entity, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_update_transforms(&scene);
+  assert(
+      vkr_scene_set_typed(&scene, entity, &vkr_scene_terrain_type, &terrain));
+  live = vkr_scene_terrain_field(&scene, entity);
+  assert(live && live->cells == 1024u);
+  vkr_scene_edit_reset(&state, &test.allocator, 1);
+  op.a = vec3_new(-500.0f, 0.0f, -500.0f);
+  assert(vkr_scene_edit_terrain(&state, &scene, entity, &op, 9u));
+  op.a = vec3_new(500.0f, 0.0f, 500.0f);
+  assert(vkr_scene_edit_terrain(&state, &scene, entity, &op, 9u));
+  op.a = vec3_new(501.0f, 0.0f, 500.0f);
+  assert(vkr_scene_edit_terrain(&state, &scene, entity, &op, 9u));
+  assert(state.undo_count == 2u && state.undo[0].group &&
+         state.undo[0].group == state.undo[1].group);
+  assert(vkr_heightfield_at(live, 12u, 12u) > 0.9f &&
+         vkr_heightfield_at(live, 1012u, 1012u) > 0.9f);
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  assert(fabsf(vkr_heightfield_at(live, 12u, 12u)) < 0.01f &&
+         fabsf(vkr_heightfield_at(live, 1012u, 1012u)) < 0.01f &&
+         fabsf(vkr_heightfield_at(live, 1013u, 1012u)) < 0.01f);
+  vkr_scene_edit_reset(&state, &test.allocator, 0);
+  vkr_scene_shutdown(&scene, NULL);
+  assert(file_remove(&file) == FILE_ERROR_NONE);
   heightfield_test_end(&test);
   printf("  heightfield_test_journal PASSED\n");
 }
@@ -373,6 +412,86 @@ static void heightfield_test_streamed(void) {
   assert(vkr_heightfield_weights_at(&field, 200u, 260u) == 0xFF00u);
   assert(near(vkr_heightfield_at(&field, 210u, 260u), 5.0f, 0.01f));
   vkr_heightfield_destroy(&field, &test.allocator);
+
+  /* A save cut short after its journal finishes when the file opens again:
+     samples only the journal holds come back, and the journal goes. */
+  char journal[1100];
+  snprintf(journal, sizeof(journal), "%s.journal", path);
+  const FilePath journal_file = {.path = string8_create_from_cstr(
+                                     (const uint8_t *)journal, strlen(journal)),
+                                 .type = FILE_PATH_TYPE_ABSOLUTE};
+  const float32_t written[2] = {60.0f, 80.0f};
+  for (uint32_t pass = 0; pass < 2u; ++pass) {
+    assert(vkr_heightfield_load(&field, path, &test.allocator, error,
+                                sizeof(error)));
+    assert(vkr_heightfield_load_rect(&field, rect));
+    const uint16_t value = vkr_heightfield_quantize(&field, written[pass]);
+    for (uint32_t i = 0; i < ArrayCount(heights); ++i) {
+      heights[i] = value;
+    }
+    vkr_heightfield_write_rect(&field, rect, heights, weights);
+    assert(vkr_heightfield_journal_write(&field, path, error, sizeof(error)));
+    vkr_heightfield_destroy(&field, &test.allocator);
+    if (pass == 1u) {
+      /* A torn journal, cut before its footer, leaves the file as it was. */
+      FILE *torn = file_fopen(journal, "rb");
+      assert(torn && fseek(torn, 0, SEEK_END) == 0);
+      const long size = ftell(torn);
+      char *bytes = malloc((size_t)size);
+      assert(bytes && fseek(torn, 0, SEEK_SET) == 0 &&
+             fread(bytes, 1, (size_t)size, torn) == (size_t)size);
+      fclose(torn);
+      torn = file_fopen(journal, "wb");
+      assert(torn &&
+             fwrite(bytes, 1, (size_t)size - 1u, torn) == (size_t)size - 1u);
+      fclose(torn);
+      free(bytes);
+    }
+    assert(vkr_heightfield_load(&field, path, &test.allocator, error,
+                                sizeof(error)));
+    assert(!file_exists(&journal_file));
+    assert(vkr_heightfield_tile_load(&field, 3u, 4u));
+    assert(near(vkr_heightfield_at(&field, 200u, 260u), 60.0f, 0.01f));
+    assert(near(vkr_heightfield_overview_at(&field, 12u, 16u), 60.0f, 0.01f));
+    vkr_heightfield_destroy(&field, &test.allocator);
+  }
+
+#if !defined(PLATFORM_WINDOWS)
+  /* A file it may not write still streams, and saving it fails. */
+  assert(chmod(path, 0444) == 0);
+  assert(vkr_heightfield_load(&field, path, &test.allocator, error,
+                              sizeof(error)));
+  assert(field.read_only && vkr_heightfield_tile_load(&field, 3u, 4u));
+  assert(near(vkr_heightfield_at(&field, 200u, 260u), 60.0f, 0.01f));
+  vkr_heightfield_write_rect(&field, rect, heights, weights);
+  assert(!vkr_heightfield_save(&field, path, error, sizeof(error)));
+  vkr_heightfield_destroy(&field, &test.allocator);
+  assert(chmod(path, 0644) == 0);
+#endif
+
+  /* The ground under any point of a streamed terrain comes from its
+     samples, loaded on demand, where no physics body reaches: sample
+     (200, 260) lies at local (-824, -764). */
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &test.allocator, 0, 8, NULL));
+  const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
+  assert(vkr_scene_set_transform(&scene, entity, vec3_new(0.0f, 10.0f, 0.0f),
+                                 vkr_quat_identity(), vec3_one()));
+  vkr_scene_update_transforms(&scene);
+  SceneTerrain terrain;
+  vkr_type_defaults(&vkr_scene_terrain_type, &terrain);
+  snprintf(terrain.heightfield, sizeof(terrain.heightfield), "%s", path);
+  assert(
+      vkr_scene_set_typed(&scene, entity, &vkr_scene_terrain_type, &terrain));
+  assert(vkr_scene_terrain_field(&scene, entity)->resident_tiles == 0u);
+  Vec3 ground = vec3_zero();
+  Vec3 normal = vec3_zero();
+  assert(vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
+                                  -500.0f, &ground, &normal));
+  assert(near(ground.y, 70.0f, 0.01f) && normal.y > 0.999f);
+  assert(!vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 60.0f, -764.0f),
+                                   -500.0f, &ground, &normal));
+  vkr_scene_shutdown(&scene, NULL);
 
   FilePath file = {
       .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),

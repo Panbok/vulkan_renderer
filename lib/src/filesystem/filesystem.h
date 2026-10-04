@@ -339,6 +339,16 @@ void file_close(FileHandle *handle);
 bool8_t file_exists(const FilePath *path);
 
 /**
+ * @brief Flushes a stream's buffered writes and asks the system to store
+ * them on the disk, as a writer does before a rename makes its file
+ * current.
+ *
+ * @param file An open stream written by the caller. Must not be NULL.
+ * @return `true` when both the flush and the store succeed.
+ */
+bool8_t file_flush_durable(FILE *file);
+
+/**
  * @brief Retrieves file statistics without opening the
  * file.
  *

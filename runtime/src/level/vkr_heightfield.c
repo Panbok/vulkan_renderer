@@ -1,5 +1,6 @@
 #include "level/vkr_heightfield.h"
 
+#include "core/logger.h"
 #include "filesystem/filesystem.h"
 
 #include <math.h>
@@ -483,7 +484,8 @@ bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
         break;
       }
       case VKR_HEIGHTFIELD_FLATTEN:
-        heightfield_blend(field, sx, sz, height, strength * w);
+        heightfield_blend(field, sx, sz, height,
+                          Min(1.0f, Max(0.0f, strength)) * w);
         break;
       case VKR_HEIGHTFIELD_PAINT:
         heightfield_paint(field, sx, sz, layer,
@@ -805,11 +807,239 @@ static bool8_t heightfield_store_tile(VkrHeightfield *field, uint32_t index) {
   return true_v;
 }
 
+// =============================================================================
+// Journal
+// =============================================================================
+
+/* `<file>.journal`: this header, then per tile its uint32 index and samples,
+   then the overview's heights and weights, then the footer, whose checksum
+   covers every byte before it. */
+typedef struct HeightfieldJournalHeader {
+  char magic[8];
+  uint32_t tiles_per_side;
+  uint32_t tile_count;
+  uint64_t overview_count;
+} HeightfieldJournalHeader;
+
+typedef struct HeightfieldJournalFooter {
+  char magic[8];
+  uint64_t checksum;
+} HeightfieldJournalFooter;
+
+static const char s_journal_magic[8] = {'V', 'K', 'R', 'H', 'F', 'J', 'N', '1'};
+static const char s_journal_end[8] = {'V', 'K', 'R', 'H', 'F', 'J', 'N', 'E'};
+
+#define HEIGHTFIELD_FNV_OFFSET 0xcbf29ce484222325ull
+#define HEIGHTFIELD_FNV_PRIME 0x100000001b3ull
+
+static uint64_t heightfield_hash(uint64_t hash, const void *bytes,
+                                 size_t size) {
+  const uint8_t *at = bytes;
+  for (size_t i = 0; i < size; ++i) {
+    hash = (hash ^ at[i]) * HEIGHTFIELD_FNV_PRIME;
+  }
+  return hash;
+}
+
+static bool8_t heightfield_journal_path(const char *path, char *out,
+                                        uint32_t capacity) {
+  const int written = snprintf(out, capacity, "%s.journal", path);
+  return written > 0 && (uint32_t)written < capacity;
+}
+
+static void heightfield_remove(const char *path) {
+  const FilePath file = {
+      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  (void)file_remove(&file);
+}
+
+/* Writes `size` bytes and folds them into `hash`. */
+static bool8_t heightfield_journal_put(FILE *file, uint64_t *hash,
+                                       const void *bytes, size_t size) {
+  *hash = heightfield_hash(*hash, bytes, size);
+  return fwrite(bytes, 1u, size, file) == size;
+}
+
+bool8_t vkr_heightfield_journal_write(const VkrHeightfield *field,
+                                      const char *path, char *error,
+                                      uint32_t capacity) {
+  char journal[1100];
+  if (!heightfield_journal_path(path, journal, sizeof(journal))) {
+    return heightfield_fail(error, capacity, "The terrain path is too long");
+  }
+  const uint32_t tiles = field->tiles_per_side * field->tiles_per_side;
+  HeightfieldJournalHeader header = {
+      .tiles_per_side = field->tiles_per_side,
+      .overview_count = heightfield_overview_count(field->cells)};
+  MemCopy(header.magic, s_journal_magic, sizeof(header.magic));
+  for (uint32_t i = 0; i < tiles; ++i) {
+    header.tile_count += field->tiles[i] && field->tile_dirty[i];
+  }
+  FILE *file = file_fopen(journal, "wb");
+  if (!file) {
+    return heightfield_fail(error, capacity,
+                            "The terrain journal could not be created");
+  }
+  uint64_t hash = HEIGHTFIELD_FNV_OFFSET;
+  bool8_t ok = heightfield_journal_put(file, &hash, &header, sizeof(header));
+  for (uint32_t i = 0; ok && i < tiles; ++i) {
+    if (field->tiles[i] && field->tile_dirty[i]) {
+      ok = heightfield_journal_put(file, &hash, &i, sizeof(i)) &&
+           heightfield_journal_put(file, &hash, field->tiles[i],
+                                   sizeof(VkrHeightfieldTile));
+    }
+  }
+  ok = ok &&
+       heightfield_journal_put(file, &hash, field->overview_heights,
+                               header.overview_count * sizeof(uint16_t)) &&
+       heightfield_journal_put(file, &hash, field->overview_weights,
+                               header.overview_count * sizeof(uint32_t));
+  HeightfieldJournalFooter footer = {.checksum = hash};
+  MemCopy(footer.magic, s_journal_end, sizeof(footer.magic));
+  ok = ok && fwrite(&footer, sizeof(footer), 1u, file) == 1u;
+  ok = file_flush_durable(file) && ok;
+  ok = fclose(file) == 0 && ok;
+  if (!ok) {
+    heightfield_remove(journal);
+    return heightfield_fail(error, capacity,
+                            "The terrain journal could not be written");
+  }
+  return true_v;
+}
+
+/* Reads `size` bytes and folds them into `hash`. */
+static bool8_t heightfield_journal_take(FILE *file, uint64_t *hash, void *bytes,
+                                        size_t size) {
+  if (fread(bytes, 1u, size, file) != size) {
+    return false_v;
+  }
+  *hash = heightfield_hash(*hash, bytes, size);
+  return true_v;
+}
+
+/* Whether the journal `file` is whole and belongs to a file of
+   `tiles_per_side` tiles and `overview_count` overview samples: its size,
+   magic numbers and checksum agree. Leaves `file` at its first entry. */
+static bool8_t heightfield_journal_whole(FILE *file, uint32_t tiles_per_side,
+                                         uint64_t overview_count,
+                                         HeightfieldJournalHeader *header) {
+  uint64_t hash = HEIGHTFIELD_FNV_OFFSET;
+  if (!heightfield_journal_take(file, &hash, header, sizeof(*header)) ||
+      MemCompare(header->magic, s_journal_magic, sizeof(header->magic)) != 0 ||
+      header->tiles_per_side != tiles_per_side ||
+      header->overview_count != overview_count ||
+      header->tile_count > tiles_per_side * tiles_per_side) {
+    return false_v;
+  }
+  const uint64_t body = (uint64_t)header->tile_count *
+                            (sizeof(uint32_t) + sizeof(VkrHeightfieldTile)) +
+                        overview_count * (sizeof(uint16_t) + sizeof(uint32_t));
+  if (FSEEK64(file, 0, SEEK_END) != 0 ||
+      FTELL64(file) != (int64_t)(sizeof(*header) + body +
+                                 sizeof(HeightfieldJournalFooter)) ||
+      FSEEK64(file, (int64_t)sizeof(*header), SEEK_SET) != 0) {
+    return false_v;
+  }
+  uint8_t chunk[4096];
+  for (uint64_t left = body; left;) {
+    const size_t size = (size_t)Min(left, (uint64_t)sizeof(chunk));
+    if (!heightfield_journal_take(file, &hash, chunk, size)) {
+      return false_v;
+    }
+    left -= size;
+  }
+  HeightfieldJournalFooter footer;
+  return fread(&footer, sizeof(footer), 1u, file) == 1u &&
+         MemCompare(footer.magic, s_journal_end, sizeof(footer.magic)) == 0 &&
+         footer.checksum == hash &&
+         FSEEK64(file, (int64_t)sizeof(*header), SEEK_SET) == 0;
+}
+
+/* Writes whole `journal`'s tiles and overview into `target`. */
+static bool8_t
+heightfield_journal_apply(FILE *journal, FILE *target,
+                          const HeightfieldJournalHeader *header) {
+  const uint32_t tiles = header->tiles_per_side * header->tiles_per_side;
+  VkrHeightfieldTile tile;
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; ok && i < header->tile_count; ++i) {
+    uint32_t index = 0u;
+    ok = fread(&index, sizeof(index), 1u, journal) == 1u && index < tiles &&
+         fread(&tile, sizeof(tile), 1u, journal) == 1u &&
+         FSEEK64(target, (int64_t)heightfield_tile_offset(index), SEEK_SET) ==
+             0 &&
+         fwrite(&tile, sizeof(tile), 1u, target) == 1u;
+  }
+  /* The overview, heights then weights, sit right after the tiles in both. */
+  ok = ok &&
+       FSEEK64(target, (int64_t)heightfield_tile_offset(tiles), SEEK_SET) == 0;
+  const uint64_t bytes =
+      header->overview_count * (sizeof(uint16_t) + sizeof(uint32_t));
+  for (uint64_t left = bytes; ok && left;) {
+    const size_t size = (size_t)Min(left, (uint64_t)sizeof(tile));
+    ok = fread(&tile, 1u, size, journal) == size &&
+         fwrite(&tile, 1u, size, target) == size;
+    left -= size;
+  }
+  return ok && file_flush_durable(target);
+}
+
+/* Finishes or drops the journal a streamed save of `path` left behind.
+   False when a whole journal could not be written into the file. */
+static bool8_t heightfield_journal_recover(const char *path) {
+  char journal_path[1100];
+  if (!heightfield_journal_path(path, journal_path, sizeof(journal_path))) {
+    return true_v;
+  }
+  FILE *journal = file_fopen(journal_path, "rb");
+  if (!journal) {
+    return true_v;
+  }
+  FILE *target = file_fopen(path, "r+b");
+  const bool8_t writable = target != NULL;
+  if (!target) {
+    target = file_fopen(path, "rb");
+  }
+  HeightfieldHeader file_header;
+  const bool8_t target_ok =
+      target && fread(&file_header, sizeof(file_header), 1u, target) == 1u &&
+      file_header.version == HEIGHTFIELD_VERSION &&
+      file_header.cells <= VKR_HEIGHTFIELD_CELLS_MAX;
+  HeightfieldJournalHeader header;
+  const bool8_t whole =
+      target_ok && heightfield_journal_whole(
+                       journal, file_header.tiles_per_side,
+                       heightfield_overview_count(file_header.cells), &header);
+  /* A torn journal was written before the file was touched. */
+  const bool8_t ok =
+      !whole ||
+      (writable && heightfield_journal_apply(journal, target, &header));
+  fclose(journal);
+  if (target) {
+    fclose(target);
+  }
+  if (ok) {
+    heightfield_remove(journal_path);
+    log_warn("Terrain: %s %s", path,
+             whole ? "finished a save cut short"
+                   : "dropped the torn journal of a save cut short");
+  }
+  return ok;
+}
+
 bool8_t vkr_heightfield_save(VkrHeightfield *field, const char *path,
                              char *error, uint32_t capacity) {
   const uint32_t tiles = field->tiles_per_side * field->tiles_per_side;
   if (field->file) {
-    /* A streamed field writes its changed tiles and the overview in place. */
+    if (field->read_only) {
+      return heightfield_fail(error, capacity, "The terrain file is read-only");
+    }
+    /* A streamed field writes its changed tiles and the overview to the
+       journal, then in place; a save cut short finishes at the next open. */
+    if (!vkr_heightfield_journal_write(field, path, error, capacity)) {
+      return false_v;
+    }
     bool8_t ok = true_v;
     for (uint32_t i = 0; ok && i < tiles; ++i) {
       if (field->tiles[i] && field->tile_dirty[i]) {
@@ -820,10 +1050,16 @@ bool8_t vkr_heightfield_save(VkrHeightfield *field, const char *path,
          FSEEK64(field->file, (int64_t)heightfield_tile_offset(tiles),
                  SEEK_SET) == 0 &&
          heightfield_write_overview(field, field->file) &&
-         fflush(field->file) == 0;
-    return ok ? true_v
-              : heightfield_fail(error, capacity,
-                                 "The terrain file could not be written");
+         file_flush_durable(field->file);
+    if (!ok) {
+      return heightfield_fail(error, capacity,
+                              "The terrain file could not be written");
+    }
+    char journal[1100];
+    if (heightfield_journal_path(path, journal, sizeof(journal))) {
+      heightfield_remove(journal);
+    }
+    return true_v;
   }
   char temp[1100];
   if (snprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
@@ -853,6 +1089,11 @@ bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
                              VkrAllocator *allocator, char *error,
                              uint32_t capacity) {
   MemZero(out, sizeof(*out));
+  if (!heightfield_journal_recover(path)) {
+    return heightfield_fail(error, capacity,
+                            "The terrain file holds a save cut short that "
+                            "could not be finished");
+  }
   FILE *file = file_fopen(path, "rb");
   if (!file) {
     return heightfield_fail(error, capacity,
@@ -901,6 +1142,11 @@ bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
             overview;
     fclose(file);
     out->file = ok ? file_fopen(path, "r+b") : NULL;
+    if (ok && !out->file) {
+      /* A packaged game may not write its terrain; it still streams. */
+      out->file = file_fopen(path, "rb");
+      out->read_only = out->file != NULL;
+    }
     ok = ok && out->file;
   }
   if (!ok) {

@@ -457,8 +457,9 @@ static void *edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity,
 }
 
 /* Edits happen on the UI thread; one counter orders every container's
-   journal. */
+   journal, and another names their undo groups. */
 static uint64_t s_edit_sequence;
+static uint64_t s_edit_group;
 
 uint64_t vkr_scene_edit_next_sequence(const VkrSceneEditState *s,
                                       bool8_t redo) {
@@ -697,6 +698,10 @@ bool8_t vkr_scene_edit_apply_scene_settings(VkrSceneEditState *s,
   return true_v;
 }
 
+/* Samples a terrain stroke's entry may cover before the stroke continues in
+   another entry: 3 MiB of payload. */
+#define EDIT_TERRAIN_FOLD_SAMPLES (512u * 512u)
+
 /* A terrain entry's payload: the rectangle, its weights before and after,
    then its heights before and after, so every array stays aligned. */
 typedef struct EditTerrainPayload {
@@ -744,19 +749,34 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
     return false_v;
   }
   /* A stroke's next step folds into its entry: the entry grows to cover both
-     rectangles and keeps the samples from before the stroke. */
+     rectangles and keeps the samples from before the stroke. Once that
+     rectangle would pass EDIT_TERRAIN_FOLD_SAMPLES, the step starts another
+     entry of the stroke's group instead, so a long stroke does not copy an
+     ever larger rectangle at each step and still undoes as one. */
   VkrSceneEditEntry *last = s->undo_count && s->undo_cursor == s->undo_count
                                 ? &s->undo[s->undo_count - 1u]
                                 : NULL;
-  const bool8_t fold = gesture && s->gesture == gesture && last &&
-                       last->kind == VKR_SCENE_EDIT_ENTRY_TERRAIN &&
-                       last->entity.u64 == entity.u64 &&
-                       last->group == s->group_open;
-  EditTerrainPayload *previous = fold ? last->payload : NULL;
+  const bool8_t stroke = gesture && s->gesture == gesture && last &&
+                         last->kind == VKR_SCENE_EDIT_ENTRY_TERRAIN &&
+                         last->entity.u64 == entity.u64 &&
+                         (last->group == s->group_open ||
+                          (last->group && last->group == s->gesture_group));
   VkrHeightfieldRect whole = rect;
-  if (previous) {
-    (void)vkr_heightfield_rect_union(field, previous->rect, rect, &whole);
+  bool8_t fold = stroke;
+  if (stroke) {
+    const EditTerrainPayload *stroked = last->payload;
+    (void)vkr_heightfield_rect_union(field, stroked->rect, rect, &whole);
+    /* The union contains the entry's rectangle; equal counts mean equal. */
+    fold = vkr_heightfield_rect_count(whole) <= EDIT_TERRAIN_FOLD_SAMPLES ||
+           vkr_heightfield_rect_count(whole) ==
+               vkr_heightfield_rect_count(stroked->rect);
+    whole = fold ? whole : rect;
   }
+  if (stroke && !fold && !s->group_open && !last->group) {
+    s->gesture_group = ++s_edit_group;
+    last->group = s->gesture_group;
+  }
+  EditTerrainPayload *previous = fold ? last->payload : NULL;
   /* A streamed terrain loads the samples the entry keeps. */
   if (!vkr_scene_terrain_require(scene, entity, whole)) {
     snprintf(s->status, sizeof(s->status),
@@ -812,11 +832,17 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
     s->revision++;
     return true_v;
   }
+  const uint64_t stroke_group = stroke && !s->group_open ? last->group : 0u;
   edit_journal_append(s,
                       (VkrSceneEditEntry){.kind = VKR_SCENE_EDIT_ENTRY_TERRAIN,
                                           .entity = entity,
                                           .payload = payload,
                                           .payload_size = size});
+  if (stroke_group) {
+    s->undo[s->undo_count - 1u].group = stroke_group;
+  } else {
+    s->gesture_group = 0u;
+  }
   s->gesture = gesture;
   return true_v;
 }
@@ -1848,8 +1874,6 @@ bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
   return true_v;
 }
 
-static uint64_t s_edit_group;
-
 uint64_t vkr_scene_edit_group_begin(VkrSceneEditState *s) {
   if (s->group_open) {
     return 0u;
@@ -2437,7 +2461,32 @@ static int32_t hex_digit(uint8_t c) {
   return -1;
 }
 
-static bool8_t edit_cells_save(VkrSceneEditState *s, VkrScene *scene);
+/* What a save does to one loaded or stale cell: its flags afterwards, and
+   whether a new document waits beside the old or the old one goes. */
+typedef struct EditCellChange {
+  uint32_t record;
+  uint32_t flags;
+  bool8_t staged;
+  bool8_t remove;
+} EditCellChange;
+
+/* A save's cell documents and index, written beside the files they replace
+   before any replaces them, so a failure leaves every document as it was. */
+typedef struct EditCellsSave {
+  bool8_t active;
+  EditCellChange *changes;
+  uint32_t change_count;
+  uint32_t change_capacity;
+  bool8_t index_staged;
+  char index_path[1100];
+} EditCellsSave;
+
+static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
+                                EditCellsSave *save);
+static void edit_cells_discard(VkrSceneEditState *s, VkrScene *scene,
+                               EditCellsSave *save);
+static bool8_t edit_cells_commit(VkrSceneEditState *s, VkrScene *scene,
+                                 EditCellsSave *save);
 
 bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
                             String8 path) {
@@ -2497,10 +2546,20 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
   if (!write_structure(w, s, scene) ||
       !write_scene_settings(w, &scene->settings) ||
       !vkr_json_writer_name(w, string8_lit("collision_settings")) ||
-      !write_collision_layers(w, &settings) || !vkr_json_writer_end_object(w) ||
-      !vkr_json_file_writer_commit(&file))
+      !write_collision_layers(w, &settings) || !vkr_json_writer_end_object(w))
     goto failed;
-  if (!edit_cells_save(s, scene)) {
+  /* Cell documents are written beside their files first: an object moving
+     between the overlay and a cell is never missing from both. */
+  EditCellsSave cells;
+  if (!edit_cells_stage(s, scene, &cells)) {
+    vkr_json_file_writer_abort(&file);
+    return false_v;
+  }
+  if (!vkr_json_file_writer_commit(&file)) {
+    edit_cells_discard(s, scene, &cells);
+    goto failed;
+  }
+  if (!edit_cells_commit(s, scene, &cells)) {
     return false_v;
   }
   s->saved_revision = s->revision;
@@ -4432,21 +4491,42 @@ static bool8_t edit_read_file(VkrSceneEditState *s, const char *path,
   return ok;
 }
 
-/* Replaces `path` with `bytes` unless it already holds them. */
-static bool8_t edit_write_file(const char *path, const EditBuffer *buffer,
-                               VkrSceneEditState *s) {
+/* Whether the file at `path` holds exactly `buffer`'s bytes. */
+static bool8_t edit_file_holds(VkrSceneEditState *s, const char *path,
+                               const EditBuffer *buffer) {
   EditBuffer current;
-  if (edit_read_file(s, path, &current)) {
-    const bool8_t same =
-        current.length == buffer->length &&
-        MemCompare(current.bytes, buffer->bytes, buffer->length) == 0;
-    edit_buffer_free(&current);
-    if (same) {
-      return true_v;
-    }
+  if (!edit_read_file(s, path, &current)) {
+    return false_v;
+  }
+  const bool8_t same =
+      current.length == buffer->length &&
+      MemCompare(current.bytes, buffer->bytes, buffer->length) == 0;
+  edit_buffer_free(&current);
+  return same;
+}
+
+static FilePath edit_file_path(const char *path) {
+  return (FilePath){
+      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+}
+
+static bool8_t edit_temp_path(const char *path, char *out, uint32_t capacity) {
+  const int written = snprintf(out, capacity, "%s.tmp", path);
+  return written > 0 && (uint32_t)written < capacity;
+}
+
+/* Writes `buffer` to `<path>.tmp` and stores it on the disk, unless `path`
+   already holds it; `*out_staged` says whether a file waits to replace
+   `path`. */
+static bool8_t edit_stage_file(VkrSceneEditState *s, const char *path,
+                               const EditBuffer *buffer, bool8_t *out_staged) {
+  *out_staged = false_v;
+  if (edit_file_holds(s, path, buffer)) {
+    return true_v;
   }
   char temp[1100];
-  if (snprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
+  if (!edit_temp_path(path, temp, sizeof(temp))) {
     return false_v;
   }
   FILE *file = file_fopen(temp, "wb");
@@ -4455,19 +4535,39 @@ static bool8_t edit_write_file(const char *path, const EditBuffer *buffer,
   }
   bool8_t ok = fwrite(buffer->bytes, 1u, (size_t)buffer->length, file) ==
                (size_t)buffer->length;
-  ok = fflush(file) == 0 && ok;
+  ok = file_flush_durable(file) && ok;
   ok = fclose(file) == 0 && ok;
-  FilePath from = {
-      .path = string8_create_from_cstr((const uint8_t *)temp, strlen(temp)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
-  FilePath to = {
-      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
-  if (!ok || file_rename(&from, &to, true_v) != FILE_ERROR_NONE) {
+  if (!ok) {
+    const FilePath staged = edit_file_path(temp);
+    (void)file_remove(&staged);
+    return false_v;
+  }
+  *out_staged = true_v;
+  return true_v;
+}
+
+/* Replaces `path` with the file edit_stage_file staged for it. */
+static bool8_t edit_promote_file(const char *path) {
+  char temp[1100];
+  if (!edit_temp_path(path, temp, sizeof(temp))) {
+    return false_v;
+  }
+  const FilePath from = edit_file_path(temp);
+  const FilePath to = edit_file_path(path);
+  if (file_rename(&from, &to, true_v) != FILE_ERROR_NONE) {
     (void)file_remove(&from);
     return false_v;
   }
   return true_v;
+}
+
+/* Removes the file edit_stage_file staged for `path`. */
+static void edit_discard_file(const char *path) {
+  char temp[1100];
+  if (edit_temp_path(path, temp, sizeof(temp))) {
+    const FilePath staged = edit_file_path(temp);
+    (void)file_remove(&staged);
+  }
 }
 
 static bool8_t edit_cell_path(const VkrSceneEditState *s,
@@ -4600,6 +4700,26 @@ static void edit_cell_remap_ids(VkrSceneEditState *s, EditStructureLoad *load) {
   }
 }
 
+/* Moves the staged root objects by -`offset`: a world whose origin is
+   rebased (ADR-086) holds its roots that far from their documents. */
+static void edit_cell_rebase(EditStructureLoad *load, Vec3 offset) {
+  if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) {
+    return;
+  }
+  for (uint32_t i = 0; i < load->object_count; ++i) {
+    EditObject *object = &load->objects[i];
+    bool8_t child = false_v;
+    for (uint32_t l = 0; l < load->link_count && !child; ++l) {
+      child = load->links[l].created_child == object->created_id &&
+              (load->links[l].parent.kind == EDIT_PARENT_CREATED ||
+               load->links[l].parent.kind == EDIT_PARENT_DOCUMENT);
+    }
+    if (!child) {
+      object->transform.position = vec3_sub(object->transform.position, offset);
+    }
+  }
+}
+
 bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
                                  VkrScenePartitionCell cell) {
   VkrScenePartitionCellRecord *record =
@@ -4611,12 +4731,28 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
   if (record->flags & VKR_SCENE_PARTITION_CELL_LOADED) {
     return true_v;
   }
-  EditBuffer bytes;
-  if (!(record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK) ||
-      !edit_read_file(s, path, &bytes)) {
+  const FilePath document = edit_file_path(path);
+  if ((record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK) &&
+      !file_exists(&document)) {
+    /* The index outlived the document, as after a save cut short between
+       removing an emptied cell and rewriting the index. */
+    log_warn("World partition: %s is listed but missing; the cell is empty",
+             path);
+    record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_ON_DISK |
+                                 VKR_SCENE_PARTITION_CELL_UNREADABLE);
+  }
+  EditBuffer bytes = {0};
+  if (!(record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK)) {
     /* No document: the cell starts empty. */
     record->flags |= VKR_SCENE_PARTITION_CELL_LOADED;
-    return !(record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK);
+    return true_v;
+  }
+  if (!edit_read_file(s, path, &bytes)) {
+    record->flags |= VKR_SCENE_PARTITION_CELL_UNREADABLE;
+    snprintf(s->status, sizeof(s->status), "Cell %d,%d is unreadable.", cell.x,
+             cell.z);
+    log_error("World partition: %s could not be read", path);
+    return false_v;
   }
   EditRecordComponents *components =
       vkr_allocator_alloc(s->allocator, sizeof(*components), EDIT_TAG);
@@ -4641,9 +4777,13 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
   ok = ok && j.at == j.end;
   if (ok) {
     edit_cell_remap_ids(s, &load);
+    edit_cell_rebase(&load, scene->origin_offset);
     edit_structure_load_commit(s, scene, &load, NULL, 0u);
-    record->flags |= VKR_SCENE_PARTITION_CELL_LOADED;
+    record->flags =
+        (record->flags & ~(uint32_t)VKR_SCENE_PARTITION_CELL_UNREADABLE) |
+        VKR_SCENE_PARTITION_CELL_LOADED;
   } else {
+    record->flags |= VKR_SCENE_PARTITION_CELL_UNREADABLE;
     snprintf(s->status, sizeof(s->status), "Cell %d,%d is unreadable.", cell.x,
              cell.z);
     log_error("World partition: %s is not a cell document", path);
@@ -4667,12 +4807,15 @@ static bool8_t edit_cell_member(const VkrScene *scene,
          edit_cell_same(at, cell);
 }
 
-bool8_t vkr_scene_edit_cell_unloadable(const VkrSceneEditState *s,
-                                       const VkrScene *scene,
+static bool8_t
+edit_cell_matches_document(VkrSceneEditState *s, const VkrScene *scene,
+                           const SceneWorldPartition *settings,
+                           const VkrScenePartitionCellRecord *record);
+
+bool8_t vkr_scene_edit_cell_unloadable(VkrSceneEditState *s, VkrScene *scene,
                                        VkrScenePartitionCell cell) {
   SceneWorldPartition settings;
-  if (s->revision != s->saved_revision ||
-      !vkr_scene_partition_settings(scene, &settings)) {
+  if (!vkr_scene_partition_settings(scene, &settings)) {
     return false_v;
   }
   /* Undo and redo must find every entity they name. */
@@ -4689,7 +4832,22 @@ bool8_t vkr_scene_edit_cell_unloadable(const VkrSceneEditState *s,
       }
     }
   }
-  return true_v;
+  if (s->revision == s->saved_revision) {
+    return true_v;
+  }
+  /* With unsaved edits elsewhere, a cell still goes when it holds what its
+     document does; the answer stands until the next edit. */
+  VkrScenePartitionCellRecord *record =
+      vkr_scene_partition_cell(scene, cell, false_v);
+  if (!record || (record->flags & VKR_SCENE_PARTITION_CELL_STALE)) {
+    return false_v;
+  }
+  if (record->checked_revision != s->revision + 1u) {
+    record->checked_clean =
+        edit_cell_matches_document(s, scene, &settings, record);
+    record->checked_revision = s->revision + 1u;
+  }
+  return record->checked_clean;
 }
 
 typedef struct EditCellDoomed {
@@ -4860,20 +5018,102 @@ static bool8_t edit_cell_document(VkrSceneEditState *s, const VkrScene *scene,
          vkr_json_writer_complete(w);
 }
 
-static bool8_t edit_cells_save(VkrSceneEditState *s, VkrScene *scene) {
-  SceneWorldPartition settings;
-  if (!s->cells_root[0] || !vkr_scene_partition_settings(scene, &settings)) {
-    return true_v;
-  }
-  const String8 root = string8_create_from_cstr((const uint8_t *)s->cells_root,
-                                                strlen(s->cells_root));
+static bool8_t
+edit_cell_matches_document(VkrSceneEditState *s, const VkrScene *scene,
+                           const SceneWorldPartition *settings,
+                           const VkrScenePartitionCellRecord *record) {
   EditCellMember *members =
       s->created_count
           ? vkr_allocator_alloc(s->allocator,
                                 s->created_count * sizeof(*members), EDIT_TAG)
           : NULL;
+  if (s->created_count && !members) {
+    return false_v;
+  }
+  /* Members in overlay order, as a save writes them. */
   uint32_t count = 0u;
-  for (uint32_t i = 0; members && i < s->created_count; ++i) {
+  for (uint32_t i = 0; i < s->created_count; ++i) {
+    if (edit_cell_member(scene, settings, s->created[i].entity, record->cell)) {
+      members[count++] = (EditCellMember){record->cell, i};
+    }
+  }
+  const bool8_t on_disk = record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK;
+  bool8_t same = !count && !on_disk;
+  char path[1100];
+  if (count && on_disk && edit_cell_path(s, record->cell, path, sizeof(path))) {
+    EditBuffer buffer = {.allocator = s->allocator};
+    same =
+        edit_cell_document(s, scene, record->cell, members, count, &buffer) &&
+        edit_file_holds(s, path, &buffer);
+    edit_buffer_free(&buffer);
+  }
+  if (members) {
+    vkr_allocator_free(s->allocator, members,
+                       s->created_count * sizeof(*members), EDIT_TAG);
+  }
+  return same;
+}
+
+static void edit_cells_save_free(VkrSceneEditState *s, EditCellsSave *save) {
+  if (save->changes) {
+    vkr_allocator_free(s->allocator, save->changes,
+                       save->change_capacity * sizeof(*save->changes),
+                       EDIT_TAG);
+  }
+  MemZero(save, sizeof(*save));
+}
+
+/* Removes every staged file and forgets the save. */
+static void edit_cells_discard(VkrSceneEditState *s, VkrScene *scene,
+                               EditCellsSave *save) {
+  uint32_t record_count = 0u;
+  const VkrScenePartitionCellRecord *records =
+      vkr_scene_partition_cells(scene, &record_count);
+  for (uint32_t i = 0; i < save->change_count; ++i) {
+    char path[1100];
+    if (save->changes[i].staged &&
+        edit_cell_path(s, records[save->changes[i].record].cell, path,
+                       sizeof(path))) {
+      edit_discard_file(path);
+    }
+  }
+  if (save->index_staged) {
+    edit_discard_file(save->index_path);
+  }
+  edit_cells_save_free(s, save);
+}
+
+/* Stages the document of every loaded cell whose bytes changed and the
+   index listing the documents the save leaves. */
+static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
+                                EditCellsSave *save) {
+  MemZero(save, sizeof(*save));
+  SceneWorldPartition settings;
+  if (!s->cells_root[0] || !vkr_scene_partition_settings(scene, &settings)) {
+    return true_v;
+  }
+  save->active = true_v;
+  const String8 root = string8_create_from_cstr((const uint8_t *)s->cells_root,
+                                                strlen(s->cells_root));
+  VkrAllocator *allocator = s->allocator;
+  uint32_t record_count = 0u;
+  const VkrScenePartitionCellRecord *records =
+      vkr_scene_partition_cells(scene, &record_count);
+  EditCellMember *members =
+      s->created_count
+          ? vkr_allocator_alloc(allocator, s->created_count * sizeof(*members),
+                                EDIT_TAG)
+          : NULL;
+  save->changes =
+      record_count
+          ? vkr_allocator_alloc(allocator,
+                                record_count * sizeof(*save->changes), EDIT_TAG)
+          : NULL;
+  save->change_capacity = save->changes ? record_count : 0u;
+  bool8_t ok =
+      (!s->created_count || members) && (!record_count || save->changes);
+  uint32_t count = 0u;
+  for (uint32_t i = 0; ok && i < s->created_count; ++i) {
     VkrScenePartitionCell cell;
     if (vkr_scene_entity_alive(scene, s->created[i].entity) &&
         vkr_scene_partition_entity_cell(scene, &settings, s->created[i].entity,
@@ -4881,27 +5121,35 @@ static bool8_t edit_cells_save(VkrSceneEditState *s, VkrScene *scene) {
       members[count++] = (EditCellMember){cell, i};
     }
   }
-  if (s->created_count && !members) {
-    return false_v;
-  }
   qsort(members, count, sizeof(*members), edit_cell_member_compare);
-  VkrAllocator *allocator = s->allocator;
+  /* An object in a cell that did not load would be dropped by the save. */
+  bool8_t blocked = false_v;
+  for (uint32_t i = 0; ok && i < count; ++i) {
+    const VkrScenePartitionCellRecord *record =
+        vkr_scene_partition_cell(scene, members[i].cell, false_v);
+    if (!record || !(record->flags & (VKR_SCENE_PARTITION_CELL_LOADED |
+                                      VKR_SCENE_PARTITION_CELL_STALE))) {
+      snprintf(s->status, sizeof(s->status),
+               "Save blocked: cell %d,%d holds an object but its document "
+               "did not load.",
+               members[i].cell.x, members[i].cell.z);
+      blocked = true_v;
+      ok = false_v;
+    }
+  }
   /* The documents sit in one directory beside the scene's. */
   const FilePath directory = {.path = root, .type = FILE_PATH_TYPE_ABSOLUTE};
-  bool8_t ok = file_create_directory(&directory);
+  ok = ok && file_create_directory(&directory);
   /* Every loaded cell is written: with its members, or removed when it has
      none. Unloaded cells keep their documents. */
-  uint32_t record_count = 0u;
-  vkr_scene_partition_cells(scene, &record_count);
+  uint32_t first = 0u;
   for (uint32_t r = 0; ok && r < record_count; ++r) {
-    VkrScenePartitionCellRecord *record = vkr_scene_partition_cell(
-        scene, vkr_scene_partition_cells(scene, &record_count)[r].cell,
-        false_v);
+    const VkrScenePartitionCellRecord *record = &records[r];
     if (!(record->flags &
           (VKR_SCENE_PARTITION_CELL_LOADED | VKR_SCENE_PARTITION_CELL_STALE))) {
       continue;
     }
-    uint32_t first = 0u;
+    first = 0u;
     while (first < count &&
            edit_cell_member_compare(&members[first],
                                     &(EditCellMember){record->cell, 0u}) < 0) {
@@ -4911,46 +5159,45 @@ static bool8_t edit_cells_save(VkrSceneEditState *s, VkrScene *scene) {
     while (last < count && edit_cell_same(members[last].cell, record->cell)) {
       last++;
     }
-    char path[1100];
-    ok = edit_cell_path(s, record->cell, path, sizeof(path));
-    if (!ok) {
-      break;
-    }
+    EditCellChange *change = &save->changes[save->change_count++];
+    *change = (EditCellChange){
+        .record = r,
+        .flags =
+            record->flags & ~(uint32_t)(VKR_SCENE_PARTITION_CELL_STALE |
+                                        VKR_SCENE_PARTITION_CELL_UNREADABLE)};
     if (last == first) {
-      if (record->flags &
-          (VKR_SCENE_PARTITION_CELL_ON_DISK | VKR_SCENE_PARTITION_CELL_STALE)) {
-        FilePath file = {.path = string8_create_from_cstr((const uint8_t *)path,
-                                                          strlen(path)),
-                         .type = FILE_PATH_TYPE_ABSOLUTE};
-        (void)file_remove(&file);
-      }
-      record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_ON_DISK |
-                                   VKR_SCENE_PARTITION_CELL_STALE);
+      change->remove = (record->flags & (VKR_SCENE_PARTITION_CELL_ON_DISK |
+                                         VKR_SCENE_PARTITION_CELL_STALE)) != 0u;
+      change->flags &= ~(uint32_t)VKR_SCENE_PARTITION_CELL_ON_DISK;
       continue;
     }
+    char path[1100];
     EditBuffer buffer = {.allocator = allocator};
-    ok = edit_cell_document(s, scene, record->cell, members + first,
+    ok = edit_cell_path(s, record->cell, path, sizeof(path)) &&
+         edit_cell_document(s, scene, record->cell, members + first,
                             last - first, &buffer) &&
-         edit_write_file(path, &buffer, s);
+         edit_stage_file(s, path, &buffer, &change->staged);
     edit_buffer_free(&buffer);
-    record->flags =
-        (record->flags & ~(uint32_t)VKR_SCENE_PARTITION_CELL_STALE) |
-        VKR_SCENE_PARTITION_CELL_ON_DISK;
+    change->flags |= VKR_SCENE_PARTITION_CELL_ON_DISK;
   }
   if (members) {
     vkr_allocator_free(allocator, members, s->created_count * sizeof(*members),
                        EDIT_TAG);
   }
-  /* The index lists the documents, in cell order. */
-  const VkrScenePartitionCellRecord *records =
-      vkr_scene_partition_cells(scene, &record_count);
+  /* The index lists the documents the save leaves, in cell order. */
   VkrScenePartitionCellRecord *sorted =
-      record_count ? vkr_allocator_alloc(
-                         allocator, record_count * sizeof(*sorted), EDIT_TAG)
-                   : NULL;
+      ok && record_count
+          ? vkr_allocator_alloc(allocator, record_count * sizeof(*sorted),
+                                EDIT_TAG)
+          : NULL;
+  ok = ok && (!record_count || sorted);
   uint32_t listed = 0u;
-  for (uint32_t r = 0; sorted && r < record_count; ++r) {
-    if (records[r].flags & VKR_SCENE_PARTITION_CELL_ON_DISK) {
+  for (uint32_t r = 0, c = 0; ok && r < record_count; ++r) {
+    uint32_t flags = records[r].flags;
+    if (c < save->change_count && save->changes[c].record == r) {
+      flags = save->changes[c++].flags;
+    }
+    if (flags & VKR_SCENE_PARTITION_CELL_ON_DISK) {
       sorted[listed++] = records[r];
     }
   }
@@ -4959,8 +5206,7 @@ static bool8_t edit_cells_save(VkrSceneEditState *s, VkrScene *scene) {
   VkrJsonWriter writer;
   VkrJsonWriter *w = &writer;
   vkr_json_writer_init(w, edit_buffer_sink, &index);
-  ok = ok && (!record_count || sorted) && vkr_json_writer_begin_object(w) &&
-       WRITE_INT("version", 1) &&
+  ok = ok && vkr_json_writer_begin_object(w) && WRITE_INT("version", 1) &&
        vkr_json_writer_name(w, string8_lit("cell_size")) &&
        vkr_json_writer_f64(w, settings.cell_size) &&
        WRITE_INT("next_id", s->next_created_id) &&
@@ -4972,20 +5218,62 @@ static bool8_t edit_cells_save(VkrSceneEditState *s, VkrScene *scene) {
          vkr_json_writer_i64(w, sorted[i].cell.z) &&
          vkr_json_writer_end_array(w);
   }
-  char path[1100];
   ok = ok && vkr_json_writer_end_array(w) && vkr_json_writer_end_object(w) &&
        vkr_json_writer_complete(w) &&
-       snprintf(path, sizeof(path), "%s/index.json", s->cells_root) <
-           (int)sizeof(path) &&
-       edit_write_file(path, &index, s);
+       snprintf(save->index_path, sizeof(save->index_path), "%s/index.json",
+                s->cells_root) < (int)sizeof(save->index_path) &&
+       edit_stage_file(s, save->index_path, &index, &save->index_staged);
   edit_buffer_free(&index);
   if (sorted) {
     vkr_allocator_free(allocator, sorted, record_count * sizeof(*sorted),
                        EDIT_TAG);
   }
   if (!ok) {
+    if (!blocked) {
+      snprintf(s->status, sizeof(s->status),
+               "Save failed: a cell document could not be written.");
+    }
+    edit_cells_discard(s, scene, save);
+  }
+  return ok;
+}
+
+/* Replaces the documents the save staged, removes those of emptied cells,
+   then replaces the index. */
+static bool8_t edit_cells_commit(VkrSceneEditState *s, VkrScene *scene,
+                                 EditCellsSave *save) {
+  if (!save->active) {
+    return true_v;
+  }
+  uint32_t record_count = 0u;
+  vkr_scene_partition_cells(scene, &record_count);
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; i < save->change_count; ++i) {
+    const EditCellChange *change = &save->changes[i];
+    VkrScenePartitionCellRecord *record = vkr_scene_partition_cell(
+        scene,
+        vkr_scene_partition_cells(scene, &record_count)[change->record].cell,
+        false_v);
+    char path[1100];
+    if (!edit_cell_path(s, record->cell, path, sizeof(path))) {
+      ok = false_v;
+      continue;
+    }
+    if (change->staged && !edit_promote_file(path)) {
+      ok = false_v;
+      continue;
+    }
+    if (change->remove) {
+      const FilePath file = edit_file_path(path);
+      (void)file_remove(&file);
+    }
+    record->flags = change->flags;
+  }
+  ok = (!save->index_staged || edit_promote_file(save->index_path)) && ok;
+  edit_cells_save_free(s, save);
+  if (!ok) {
     snprintf(s->status, sizeof(s->status),
-             "Save failed: a cell document could not be written.");
+             "Save failed: a cell document could not be replaced.");
   }
   return ok;
 }

@@ -14,7 +14,8 @@
  * nearest within the load radius of a streaming source) and to unload (past
  * the radius, then the farthest over the cell budget); the owner of the
  * scene's edit state moves their entities in and out
- * (vkr_scene_edit_cell_load). Pinned and held cells never unload. */
+ * (vkr_scene_edit_cell_load). Pinned and held cells never unload, and
+ * unreadable ones never load. */
 
 /* Loads and unloads one plan proposes. */
 #define VKR_SCENE_PARTITION_PLAN_MAX 64u
@@ -41,6 +42,9 @@ typedef enum VkrScenePartitionCellFlag {
   /* Held by a Play session that began with unsaved edits, so Reset finds
      it as it was; never unloads until Reset. */
   VKR_SCENE_PARTITION_CELL_HELD = 1u << 6,
+  /* Its document could not be read: streaming leaves the cell unloaded and
+     saving keeps the document listed, so its objects are never dropped. */
+  VKR_SCENE_PARTITION_CELL_UNREADABLE = 1u << 7,
 } VkrScenePartitionCellFlag;
 
 typedef struct VkrScenePartitionCellRecord {
@@ -48,6 +52,11 @@ typedef struct VkrScenePartitionCellRecord {
   uint32_t flags;
   /* The runtime-only entity drawing the cell's proxy, or invalid. */
   VkrEntityId proxy;
+  /* The edit revision plus one at which an unsaved scene last compared the
+     loaded cell with its document, and whether they matched; zero when it
+     never did. */
+  uint64_t checked_revision;
+  bool8_t checked_clean;
 } VkrScenePartitionCellRecord;
 
 typedef struct VkrScenePartitionPlan {

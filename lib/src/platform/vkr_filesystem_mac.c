@@ -348,6 +348,10 @@ FileError file_sync(FileHandle *handle) {
                                                 : FILE_ERROR_IO_ERROR;
 }
 
+bool8_t file_flush_durable(FILE *file) {
+  return file && fflush(file) == 0 && fsync(fileno(file)) == 0;
+}
+
 FileError file_remove(const FilePath *path) {
   if (!path || !path->path.str) {
     return FILE_ERROR_INVALID_PATH;
