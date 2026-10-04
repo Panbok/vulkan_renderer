@@ -230,6 +230,20 @@ public:
 
   void FreeJob(Job *job) override { jobs.DestructObject(job); }
 
+  /* Queues `task(arg)` on a worker, counted with the jobs so clearing waits
+     for it; false when the workers cannot take it. The task calls
+     task_done last. */
+  bool submit_task(void (*task)(void *), void *arg) {
+    outstanding.fetch_add(1, std::memory_order_relaxed);
+    if (!host.submit(host.context, task, arg)) {
+      outstanding.fetch_sub(1, std::memory_order_relaxed);
+      return false;
+    }
+    return true;
+  }
+
+  void task_done() { outstanding.fetch_sub(1, std::memory_order_release); }
+
 private:
   using Jobs = JPH::FixedSizeFreeList<Job>;
 
@@ -667,19 +681,26 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
   }
 }
 
-static bool8_t create_shape(VkrPhysicsWorld *world,
-                            const VkrPhysicsColliderDesc &c,
-                            JPH::Ref<JPH::Shape> &shape) {
+static bool8_t shape_fail(const char **error, const char *message) {
+  *error = message;
+  return false_v;
+}
+
+/* Builds `c`'s shape without a world, so any thread can; failures name
+   their reason in `error`. */
+static bool8_t build_shape(const VkrPhysicsColliderDesc &c,
+                           JPH::Ref<JPH::Shape> &shape, const char **error) {
   if (!finite_vector(c.scale, 3) || c.scale[0] <= 0 || c.scale[1] <= 0 ||
       c.scale[2] <= 0) {
-    return fail(world, "Collision shape scale must be finite and positive");
+    return shape_fail(error,
+                      "Collision shape scale must be finite and positive");
   }
   JPH::Shape::ShapeResult result;
   switch (c.shape) {
   case VKR_PHYSICS_BOX:
     if (!finite_vector(c.half_extent, 3) || c.half_extent[0] <= 0 ||
         c.half_extent[1] <= 0 || c.half_extent[2] <= 0) {
-      return fail(world, "Box half extents must be positive");
+      return shape_fail(error, "Box half extents must be positive");
     }
     result = JPH::BoxShapeSettings(vec(c.half_extent), 0.0f).Create();
     break;
@@ -690,8 +711,8 @@ static bool8_t create_shape(VkrPhysicsWorld *world,
         !std::isfinite(c.half_height) || c.half_height < 0 ||
         c.half_height > VKR_PHYSICS_MAX_COORDINATE ||
         c.scale[0] != c.scale[1] || c.scale[0] != c.scale[2]) {
-      return fail(world,
-                  "Round shapes require valid dimensions and uniform scale");
+      return shape_fail(
+          error, "Round shapes require valid dimensions and uniform scale");
     }
     if (c.shape == VKR_PHYSICS_SPHERE || c.half_height == 0) {
       result = JPH::SphereShapeSettings(c.radius).Create();
@@ -705,11 +726,11 @@ static bool8_t create_shape(VkrPhysicsWorld *world,
     if (!g.positions || g.vertex_count < 3 || g.vertex_count > 1048576 ||
         (c.shape == VKR_PHYSICS_CONVEX_HULL &&
          (g.vertex_count < 4 || g.vertex_count > 4096))) {
-      return fail(world, "Invalid collision geometry vertex count");
+      return shape_fail(error, "Invalid collision geometry vertex count");
     }
     for (uint32_t i = 0; i < g.vertex_count; ++i) {
       if (!finite_vector(g.positions + i * 3, 3)) {
-        return fail(world, "Invalid collision geometry vertex");
+        return shape_fail(error, "Invalid collision geometry vertex");
       }
     }
     if (c.shape == VKR_PHYSICS_CONVEX_HULL) {
@@ -722,7 +743,7 @@ static bool8_t create_shape(VkrPhysicsWorld *world,
     } else {
       if (!g.indices || !g.index_count || g.index_count % 3 ||
           g.index_count > 3145728) {
-        return fail(world, "Invalid collision triangle index count");
+        return shape_fail(error, "Invalid collision triangle index count");
       }
       JPH::MeshShapeSettings settings;
       settings.mTriangleVertices.reserve(g.vertex_count);
@@ -742,8 +763,8 @@ static bool8_t create_shape(VkrPhysicsWorld *world,
                     .Cross(vec(g.positions + c_index * 3) -
                            vec(g.positions + a * 3))
                     .LengthSq() <= 1.0e-16f) {
-          return fail(world,
-                      "Collision mesh has invalid or degenerate triangle");
+          return shape_fail(
+              error, "Collision mesh has invalid or degenerate triangle");
         }
         settings.mIndexedTriangles.emplace_back(a, b, c_index, 0);
       }
@@ -757,12 +778,12 @@ static bool8_t create_shape(VkrPhysicsWorld *world,
     if (!g.positions || samples < 4 || samples > 8192 || samples % 4 ||
         g.vertex_count != samples * samples ||
         !std::isfinite(g.height_spacing) || g.height_spacing <= 0) {
-      return fail(world, "Invalid height field size or spacing");
+      return shape_fail(error, "Invalid height field size or spacing");
     }
     for (uint32_t i = 0; i < g.vertex_count; ++i) {
       if (!std::isfinite(g.positions[i]) &&
           g.positions[i] != VKR_PHYSICS_HEIGHT_HOLE) {
-        return fail(world, "Invalid height field sample");
+        return shape_fail(error, "Invalid height field sample");
       }
     }
     JPH::HeightFieldShapeSettings settings(
@@ -773,31 +794,86 @@ static bool8_t create_shape(VkrPhysicsWorld *world,
     break;
   }
   default:
-    return fail(world, "Unknown collision shape");
+    return shape_fail(error, "Unknown collision shape");
   }
   if (result.HasError()) {
-    return fail(world, "Jolt rejected collision shape");
+    return shape_fail(error, "Jolt rejected collision shape");
   }
   shape = result.Get();
   shape->SetUserData(c.entity_id);
   if (!shape->IsValidScale(vec(c.scale))) {
-    return fail(world, "Collision shape does not support requested scale");
+    return shape_fail(error,
+                      "Collision shape does not support requested scale");
   }
   const auto bounds = shape->GetLocalBounds();
   for (uint32_t axis = 0; axis < 3; ++axis) {
     if (std::max(std::abs(bounds.mMin[axis]), std::abs(bounds.mMax[axis])) *
             c.scale[axis] >
         VKR_PHYSICS_MAX_COORDINATE) {
-      return fail(world,
-                  "Scaled collision shape exceeds supported coordinates");
+      return shape_fail(error,
+                        "Scaled collision shape exceeds supported coordinates");
     }
   }
   if (c.scale[0] != 1 || c.scale[1] != 1 || c.scale[2] != 1) {
     auto scaled = JPH::ScaledShapeSettings(shape, vec(c.scale)).Create();
     if (scaled.HasError()) {
-      return fail(world, "Jolt rejected scaled collision shape");
+      return shape_fail(error, "Jolt rejected scaled collision shape");
     }
     shape = scaled.Get();
+  }
+  return true_v;
+}
+
+/* A collider's shape built on a worker (vkr_physics_shape_build_begin). The
+   owner and a queued job each hold a reference; the last to let go frees
+   it. */
+struct s_VkrPhysicsShapeBuild {
+  VkrPhysicsColliderDesc collider;
+  std::vector<float32_t> positions;
+  std::vector<uint32_t> indices;
+  JPH::Ref<JPH::Shape> shape;
+  const char *error = "";
+  std::atomic<uint32_t> references{1};
+  std::atomic<bool> done{false};
+};
+
+static void shape_build_run(VkrPhysicsShapeBuild *build) {
+  try {
+    if (!build_shape(build->collider, build->shape, &build->error)) {
+      build->shape = nullptr;
+    }
+  } catch (...) {
+    build->shape = nullptr;
+    build->error = "Physics shape allocation failed";
+  }
+  build->done.store(true, std::memory_order_release);
+}
+
+static void shape_build_drop(VkrPhysicsShapeBuild *build) {
+  if (build->references.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    delete build;
+  }
+}
+
+static bool8_t create_shape(VkrPhysicsWorld *world,
+                            const VkrPhysicsColliderDesc &c,
+                            JPH::Ref<JPH::Shape> &shape) {
+  const VkrPhysicsShapeBuild *build = c.prebuilt;
+  if (build) {
+    if (!build->done.load(std::memory_order_acquire) ||
+        build->collider.entity_id != c.entity_id ||
+        build->collider.shape != c.shape) {
+      return fail(world, "Prebuilt collision shape is unfinished or foreign");
+    }
+    if (!build->shape) {
+      return fail(world, build->error);
+    }
+    shape = build->shape;
+    return true_v;
+  }
+  const char *error = "";
+  if (!build_shape(c, shape, &error)) {
+    return fail(world, error);
   }
   return true_v;
 }
@@ -1203,6 +1279,66 @@ extern "C" void vkr_physics_set_jobs(const VkrPhysicsJobs *jobs) {
     // Jolt allocates through its registered functions, as worlds do.
     JPH::RegisterDefaultAllocator();
     s_jobs = new s_JobSystem(*jobs);
+  }
+}
+
+static void shape_build_job(void *arg) {
+  auto *build = static_cast<VkrPhysicsShapeBuild *>(arg);
+  /* Clearing the jobs waits for this one, so the job system outlives it. */
+  s_JobSystem *jobs = s_jobs;
+  shape_build_run(build);
+  shape_build_drop(build);
+  jobs->task_done();
+}
+
+extern "C" VkrPhysicsShapeBuild *
+vkr_physics_shape_build_begin(const VkrPhysicsColliderDesc *collider) {
+  if (!collider) {
+    return nullptr;
+  }
+  // A build may be the first Jolt allocation, before any world.
+  if (!JPH::Allocate) {
+    JPH::RegisterDefaultAllocator();
+  }
+  VkrPhysicsShapeBuild *build = nullptr;
+  try {
+    build = new VkrPhysicsShapeBuild();
+    build->collider = *collider;
+    build->collider.prebuilt = nullptr;
+    const VkrPhysicsGeometry &geometry = collider->geometry;
+    if (geometry.positions && geometry.vertex_count) {
+      const size_t floats =
+          collider->shape == VKR_PHYSICS_HEIGHT_FIELD
+              ? geometry.vertex_count
+              : 3u * static_cast<size_t>(geometry.vertex_count);
+      build->positions.assign(geometry.positions, geometry.positions + floats);
+      build->collider.geometry.positions = build->positions.data();
+    }
+    if (geometry.indices && geometry.index_count) {
+      build->indices.assign(geometry.indices,
+                            geometry.indices + geometry.index_count);
+      build->collider.geometry.indices = build->indices.data();
+    }
+  } catch (...) {
+    delete build;
+    return nullptr;
+  }
+  build->references.store(2, std::memory_order_relaxed);
+  if (!s_jobs || !s_jobs->submit_task(shape_build_job, build)) {
+    build->references.store(1, std::memory_order_relaxed);
+    shape_build_run(build);
+  }
+  return build;
+}
+
+extern "C" bool8_t
+vkr_physics_shape_build_done(const VkrPhysicsShapeBuild *build) {
+  return build && build->done.load(std::memory_order_acquire);
+}
+
+extern "C" void vkr_physics_shape_build_release(VkrPhysicsShapeBuild *build) {
+  if (build) {
+    shape_build_drop(build);
   }
 }
 

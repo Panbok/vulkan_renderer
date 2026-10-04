@@ -223,12 +223,106 @@ static void test_failed_submission_returns_slot(void) {
   vkr_job_system_shutdown(&system);
 }
 
+typedef struct ForCounts {
+  atomic_int runs[256];
+} ForCounts;
+
+static void for_count(void *context, uint32_t index) {
+  ForCounts *counts = context;
+  atomic_fetch_add_explicit(&counts->runs[index], 1, memory_order_relaxed);
+}
+
+static bool8_t for_counts_are(ForCounts *counts, uint32_t count, int runs) {
+  for (uint32_t i = 0; i < count; ++i) {
+    if (atomic_load_explicit(&counts->runs[i], memory_order_relaxed) != runs) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+typedef struct HoldPayload {
+  atomic_int *held;
+  atomic_int *release;
+} HoldPayload;
+
+static bool8_t hold_run(VkrJobContext *ctx, void *payload) {
+  (void)ctx;
+  HoldPayload *p = (HoldPayload *)payload;
+  atomic_fetch_add_explicit(p->held, 1, memory_order_acq_rel);
+  while (!atomic_load_explicit(p->release, memory_order_acquire)) {
+    vkr_thread_sleep(1);
+  }
+  return true_v;
+}
+
+/* A parallel loop runs every index once. With every worker held, ending it
+   runs them all on the calling thread; the workers sent to help start
+   later, find none left and let go of the loop's block. */
+static void test_job_for(void) {
+  VkrJobSystem system;
+  VkrJobSystemConfig cfg = make_small_config();
+  assert(vkr_job_system_init(&cfg, &system));
+  static ForCounts counts;
+  MemZero(&counts, sizeof(counts));
+  VkrJobFor *loop = vkr_job_for_begin(&system, 256u, for_count, &counts);
+  while (!vkr_job_for_done(loop)) {
+    vkr_thread_sleep(1);
+  }
+  assert(for_counts_are(&counts, 256u, 1));
+  vkr_job_for_end(loop);
+  assert(!vkr_job_for_begin(NULL, 256u, for_count, &counts));
+  assert(for_counts_are(&counts, 256u, 2));
+
+  atomic_int held = 0;
+  atomic_int release = 0;
+  HoldPayload payload = {.held = &held, .release = &release};
+  VkrJobHandle holds[16];
+  const uint32_t workers = system.worker_count;
+  for (uint32_t i = 0; i < workers; ++i) {
+    const VkrJobDesc desc = {.priority = VKR_JOB_PRIORITY_HIGH,
+                             .type_mask = vkr_job_type_mask_all(),
+                             .run = hold_run,
+                             .payload = &payload,
+                             .payload_size = sizeof(payload)};
+    assert(vkr_job_submit(&system, &desc, &holds[i]));
+  }
+  while (atomic_load_explicit(&held, memory_order_acquire) < (int)workers) {
+    vkr_thread_sleep(1);
+  }
+  /* More loops than blocks: the last ones run on this thread alone. */
+  for (uint32_t loop_count = 0; loop_count < VKR_JOB_FOR_MAX + 1u;
+       ++loop_count) {
+    MemZero(&counts, sizeof(counts));
+    loop = vkr_job_for_begin(&system, 8u, for_count, &counts);
+    assert(loop ? !vkr_job_for_done(loop) : loop_count >= VKR_JOB_FOR_MAX);
+    vkr_job_for_end(loop);
+    assert(for_counts_are(&counts, 8u, 1));
+  }
+  atomic_store_explicit(&release, 1, memory_order_release);
+  for (uint32_t i = 0; i < workers; ++i) {
+    assert(vkr_job_wait(&system, holds[i]));
+  }
+  for (uint32_t i = 0; i < VKR_JOB_FOR_MAX; ++i) {
+    for (uint32_t waited = 0;
+         vkr_atomic_uint32_load(&system.fors[i].references,
+                                VKR_MEMORY_ORDER_ACQUIRE) != 0u;
+         ++waited) {
+      assert(waited < 5000u);
+      vkr_thread_sleep(1);
+    }
+  }
+  assert(for_counts_are(&counts, 8u, 1));
+  vkr_job_system_shutdown(&system);
+}
+
 bool32_t run_job_system_tests(void) {
   printf("--- Running JobSystem tests... ---\n");
   test_single_job();
   test_dependency_ordering();
   test_deferred_ready();
   test_failed_submission_returns_slot();
+  test_job_for();
   printf("--- JobSystem tests completed. ---\n");
   return true_v;
 }

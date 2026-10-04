@@ -400,6 +400,50 @@ vkr_internal VkrGeometryHandle geometry_creation_failure(
   return VKR_GEOMETRY_HANDLE_INVALID;
 }
 
+bool8_t vkr_geometry_pack(const VkrGeometryConfig *source,
+                          VkrPackedStaticVertex *vertices,
+                          VkrGpuGeometryDecodeRecord *decodes,
+                          VkrGeometryConfig *out_config) {
+  if (source->vertex_layout == VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1 ||
+      source->vertex_size != sizeof(VkrVertex3d) ||
+      source->index_size != sizeof(uint32_t) || !source->vertex_count) {
+    return false_v;
+  }
+  const VkrVertex3d *input = source->vertices;
+  Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+  Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+  for (uint32_t i = 0; i < source->vertex_count; ++i) {
+    const Vec3 position = vkr_vertex_unpack_vec3(input[i].position);
+    min.x = Min(min.x, position.x);
+    min.y = Min(min.y, position.y);
+    min.z = Min(min.z, position.z);
+    max.x = Max(max.x, position.x);
+    max.y = Max(max.y, position.y);
+    max.z = Max(max.z, position.z);
+  }
+  const VkrGeometryQuantizationBudgets budgets =
+      vkr_packed_geometry_default_budgets();
+  VkrGeometryQuantizationMetrics quantization = {0};
+  if (!vkr_packed_geometry_pack(input, source->vertex_count, min, max, &budgets,
+                                vertices, decodes, &quantization)) {
+    return false_v;
+  }
+  /* A range with levels carries its LOD row after its decode record. */
+  const uint32_t record_count =
+      source->lod.level_count > 1u ? VKR_GEOMETRY_PACKED_DECODES_MAX : 1u;
+  if (record_count > 1u) {
+    decodes[0].lod_record = 1u;
+    MemCopy(&decodes[1], &source->lod, sizeof(source->lod));
+  }
+  *out_config = *source;
+  out_config->vertex_size = sizeof(VkrPackedStaticVertex);
+  out_config->vertices = vertices;
+  out_config->vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1;
+  out_config->decodes = decodes;
+  out_config->decode_count = record_count;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_geometry_prepare_packed_config(
     VkrGeometrySystem *system, const VkrGeometryConfig *source,
     VkrGeometryConfig *out_config) {
@@ -408,14 +452,15 @@ vkr_internal bool8_t vkr_geometry_prepare_packed_config(
     if (source->vertex_size != sizeof(VkrPackedStaticVertex) ||
         source->index_size != sizeof(uint32_t) || !source->decodes ||
         source->decode_count == 0 ||
-        !vkr_packed_geometry_vertices_are_valid(
-            source->vertices, source->vertex_count, &source->decodes[0]))
+        !vkr_packed_geometry_metadata_is_valid(source->decodes,
+                                               source->decode_count, NULL)) {
       return false_v;
-    for (uint32_t i = 1; i < source->decode_count; ++i) {
-      if (!vkr_packed_geometry_decode_is_valid(&source->decodes[i]))
-        return false_v;
     }
-    return true_v;
+    /* The vertices decode through the first record, its LOD row aside. */
+    VkrGpuGeometryDecodeRecord decode = source->decodes[0];
+    decode.lod_record = 0u;
+    return vkr_packed_geometry_vertices_are_valid(
+        source->vertices, source->vertex_count, &decode);
   }
   if ((source->vertex_size != sizeof(VkrVertex3d) &&
        source->vertex_size != sizeof(VkrVertex2d)) ||
@@ -423,13 +468,12 @@ vkr_internal bool8_t vkr_geometry_prepare_packed_config(
        source->index_size != sizeof(uint32_t))) {
     return false_v;
   }
-  VkrVertex3d *converted = NULL;
-  const VkrVertex3d *vertices = source->vertices;
+  VkrGeometryConfig widened = *source;
   if (source->vertex_size == sizeof(VkrVertex2d)) {
-    converted = vkr_allocator_alloc(&system->allocator,
-                                    (uint64_t)source->vertex_count *
-                                        sizeof(VkrVertex3d),
-                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkrVertex3d *converted = vkr_allocator_alloc(
+        &system->allocator,
+        (uint64_t)source->vertex_count * sizeof(VkrVertex3d),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!converted)
       return false_v;
     const VkrVertex2d *input = source->vertices;
@@ -442,15 +486,11 @@ vkr_internal bool8_t vkr_geometry_prepare_packed_config(
           .tangent = {1.0f, 0.0f, 0.0f, 1.0f},
       };
     }
-    vertices = converted;
+    widened.vertex_size = sizeof(VkrVertex3d);
+    widened.vertices = converted;
   }
-  VkrPackedStaticVertex *packed = vkr_allocator_alloc(
-      &system->allocator,
-      (uint64_t)source->vertex_count * sizeof(VkrPackedStaticVertex),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = NULL;
   if (source->index_size == sizeof(uint16_t)) {
-    indices = vkr_allocator_alloc(
+    uint32_t *indices = vkr_allocator_alloc(
         &system->allocator, (uint64_t)source->index_count * sizeof(uint32_t),
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!indices)
@@ -458,48 +498,18 @@ vkr_internal bool8_t vkr_geometry_prepare_packed_config(
     const uint16_t *input = source->indices;
     for (uint32_t i = 0; i < source->index_count; ++i)
       indices[i] = input[i];
+    widened.index_size = sizeof(uint32_t);
+    widened.indices = indices;
   }
-  if (!packed)
-    return false_v;
-  Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
-  Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
-  for (uint32_t i = 0; i < source->vertex_count; ++i) {
-    const Vec3 position = vkr_vertex_unpack_vec3(vertices[i].position);
-    min.x = Min(min.x, position.x);
-    min.y = Min(min.y, position.y);
-    min.z = Min(min.z, position.z);
-    max.x = Max(max.x, position.x);
-    max.y = Max(max.y, position.y);
-    max.z = Max(max.z, position.z);
-  }
-  const VkrGeometryQuantizationBudgets budgets =
-      vkr_packed_geometry_default_budgets();
-  VkrGeometryQuantizationMetrics quantization = {0};
-  /* A range with levels carries its LOD row after its decode record. */
-  const uint32_t record_count =
-      source->lod.level_count > 1u ? 1u + (uint32_t)VKR_GPU_GEOMETRY_LOD_RECORDS
-                                   : 1u;
-  VkrGpuGeometryDecodeRecord *decode =
-      vkr_allocator_alloc(&system->allocator, sizeof(*decode) * record_count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!decode)
-    return false_v;
-  if (!vkr_packed_geometry_pack(vertices, source->vertex_count, min, max,
-                                &budgets, packed, decode, &quantization)) {
-    return false_v;
-  }
-  if (record_count > 1u) {
-    decode[0].lod_record = 1u;
-    MemCopy(&decode[1], &source->lod, sizeof(source->lod));
-  }
-  out_config->vertex_size = sizeof(VkrPackedStaticVertex);
-  out_config->vertices = packed;
-  out_config->vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1;
-  out_config->decodes = decode;
-  out_config->decode_count = record_count;
-  out_config->index_size = sizeof(uint32_t);
-  out_config->indices = indices ? indices : source->indices;
-  return true_v;
+  VkrPackedStaticVertex *packed = vkr_allocator_alloc(
+      &system->allocator,
+      (uint64_t)source->vertex_count * sizeof(VkrPackedStaticVertex),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrGpuGeometryDecodeRecord *decodes = vkr_allocator_alloc(
+      &system->allocator, sizeof(*decodes) * VKR_GEOMETRY_PACKED_DECODES_MAX,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return packed && decodes &&
+         vkr_geometry_pack(&widened, packed, decodes, out_config);
 }
 
 VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,

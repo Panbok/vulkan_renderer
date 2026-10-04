@@ -102,6 +102,24 @@ typedef struct VkrJobSystemMetrics {
   uint64_t jobs_completed_total;
 } VkrJobSystemMetrics;
 
+typedef void (*VkrJobForFn)(void *context, uint32_t index);
+
+/* Parallel loops (vkr_job_for_begin) running at once, each holding one
+   block until its last worker lets go. */
+#define VKR_JOB_FOR_MAX 8u
+
+/* One parallel loop's shared progress: the next index to take and those
+   finished. The loop's caller and each worker sent to help hold a
+   reference; the block is reused only once all have let go. */
+typedef struct VkrJobFor {
+  VkrAtomicUint32 references;
+  VkrAtomicUint32 next;
+  VkrAtomicUint32 finished;
+  uint32_t count;
+  VkrJobForFn run;
+  void *context;
+} VkrJobFor;
+
 /**
  * @brief Job system state.
  */
@@ -128,6 +146,8 @@ typedef struct VkrJobSystem {
 
   uint32_t *free_stack;
   uint32_t free_top;
+
+  VkrJobFor fors[VKR_JOB_FOR_MAX];
 
   VkrAtomicUint32 metrics_queue_depth;
   VkrAtomicUint32 metrics_busy_workers;
@@ -195,6 +215,22 @@ bool8_t vkr_job_mark_ready(VkrJobSystem *system, VkrJobHandle handle);
  * @return True if the job completed successfully, false otherwise.
  */
 bool8_t vkr_job_wait(VkrJobSystem *system, VkrJobHandle handle);
+
+/* Starts running `run(context, index)` for every index below `count` on
+   idle workers and returns at once. Without workers or a free block it runs
+   them all here first and returns NULL, which counts as done. `run` must
+   allow different indices at once, and `context` must live until
+   vkr_job_for_end. */
+VkrJobFor *vkr_job_for_begin(VkrJobSystem *system, uint32_t count,
+                             VkrJobForFn run, void *context);
+
+/* Whether every index of `loop` has run. */
+bool8_t vkr_job_for_done(const VkrJobFor *loop);
+
+/* Runs here every index of `loop` no worker took, waits for those workers
+   are running, and lets go of the loop. A worker that starts later finds no
+   index left, so a busy queue costs no more than running them here. */
+void vkr_job_for_end(VkrJobFor *loop);
 
 vkr_internal INLINE Bitset8 vkr_job_type_mask_general_and_resource(void) {
   Bitset8 mask = bitset8_create();

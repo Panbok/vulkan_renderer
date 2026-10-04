@@ -756,3 +756,89 @@ bool8_t vkr_job_wait(VkrJobSystem *system, VkrJobHandle handle) {
   vkr_mutex_unlock(system->mutex);
   return true_v;
 }
+
+/* Takes and runs indices of `block` until none is left. */
+vkr_internal void job_for_take(VkrJobFor *block) {
+  for (;;) {
+    const uint32_t index =
+        vkr_atomic_uint32_fetch_add(&block->next, 1u, VKR_MEMORY_ORDER_RELAXED);
+    if (index >= block->count) {
+      return;
+    }
+    block->run(block->context, index);
+    vkr_atomic_uint32_fetch_add(&block->finished, 1u, VKR_MEMORY_ORDER_RELEASE);
+  }
+}
+
+vkr_internal bool8_t job_for_help(VkrJobContext *ctx, void *payload) {
+  (void)ctx;
+  VkrJobFor *block = NULL;
+  MemCopy(&block, payload, sizeof(block));
+  job_for_take(block);
+  vkr_atomic_uint32_fetch_sub(&block->references, 1u, VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+VkrJobFor *vkr_job_for_begin(VkrJobSystem *system, uint32_t count,
+                             VkrJobForFn run, void *context) {
+  VkrJobFor *block = NULL;
+  for (uint32_t i = 0;
+       system && system->worker_count && count && !block && i < VKR_JOB_FOR_MAX;
+       ++i) {
+    uint32_t free = 0u;
+    if (vkr_atomic_uint32_compare_exchange(&system->fors[i].references, &free,
+                                           1u, VKR_MEMORY_ORDER_ACQ_REL,
+                                           VKR_MEMORY_ORDER_RELAXED)) {
+      block = &system->fors[i];
+    }
+  }
+  if (!block) {
+    for (uint32_t index = 0; index < count; ++index) {
+      run(context, index);
+    }
+    return NULL;
+  }
+
+  block->count = count;
+  block->run = run;
+  block->context = context;
+  vkr_atomic_uint32_store(&block->next, 0u, VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint32_store(&block->finished, 0u, VKR_MEMORY_ORDER_RELAXED);
+  /* Submission publishes the block to the worker that runs the job. */
+  Bitset8 type_mask = bitset8_create();
+  bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+  const uint32_t helpers = Min(system->worker_count, count);
+  for (uint32_t i = 0; i < helpers; ++i) {
+    vkr_atomic_uint32_fetch_add(&block->references, 1u,
+                                VKR_MEMORY_ORDER_RELAXED);
+    const VkrJobDesc desc = {.priority = VKR_JOB_PRIORITY_NORMAL,
+                             .type_mask = type_mask,
+                             .run = job_for_help,
+                             .payload = &block,
+                             .payload_size = sizeof(block)};
+    VkrJobHandle handle = {0};
+    if (!vkr_job_try_submit(system, &desc, &handle)) {
+      vkr_atomic_uint32_fetch_sub(&block->references, 1u,
+                                  VKR_MEMORY_ORDER_RELAXED);
+      break;
+    }
+  }
+  return block;
+}
+
+bool8_t vkr_job_for_done(const VkrJobFor *loop) {
+  return !loop || vkr_atomic_uint32_load(
+                      &loop->finished, VKR_MEMORY_ORDER_ACQUIRE) >= loop->count;
+}
+
+void vkr_job_for_end(VkrJobFor *loop) {
+  if (!loop) {
+    return;
+  }
+  job_for_take(loop);
+  /* Only indices a worker is running remain. */
+  while (!vkr_job_for_done(loop)) {
+    vkr_thread_yield();
+  }
+  vkr_atomic_uint32_fetch_sub(&loop->references, 1u, VKR_MEMORY_ORDER_RELEASE);
+}

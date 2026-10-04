@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 typedef struct s_VkrPhysicsWorld VkrPhysicsWorld;
+typedef struct s_VkrPhysicsShapeBuild VkrPhysicsShapeBuild;
 typedef uint64_t VkrPhysicsBody;
 #define VKR_PHYSICS_BODY_INVALID UINT64_C(0)
 #define VKR_PHYSICS_MAX_COLLIDERS 32
@@ -108,6 +109,10 @@ typedef struct VkrPhysicsColliderDesc {
   float32_t radius;
   float32_t half_height; // Capsule cylinder half-height, Y axis.
   bool8_t enabled;
+  /* A finished build of this same collider's shape
+     (vkr_physics_shape_build_begin), used instead of building it again;
+     borrowed during create only. */
+  const VkrPhysicsShapeBuild *prebuilt;
 } VkrPhysicsColliderDesc;
 
 typedef struct VkrPhysicsBodyDesc {
@@ -242,6 +247,18 @@ typedef struct VkrPhysicsJobs {
 // choice. Clearing waits for jobs still queued, so clear before the workers
 // shut down. Call between steps, from the owner thread.
 void vkr_physics_set_jobs(const VkrPhysicsJobs *jobs);
+
+// A collider's shape built away from the owner thread, so a large one such as
+// a terrain's height field does not stall it. Begin copies the collider and
+// its geometry and builds the shape on the workers set by
+// vkr_physics_set_jobs, or at once without them or when they are full; NULL
+// when out of memory. Poll done from the owner thread, then pass the build as
+// a collider's `prebuilt`. Release frees it, or lets a running build free
+// itself when it finishes. Clearing the jobs waits for running builds.
+VkrPhysicsShapeBuild *
+vkr_physics_shape_build_begin(const VkrPhysicsColliderDesc *collider);
+bool8_t vkr_physics_shape_build_done(const VkrPhysicsShapeBuild *build);
+void vkr_physics_shape_build_release(VkrPhysicsShapeBuild *build);
 
 // Synchronous, single owner thread. Calls must not overlap, including separate
 // worlds. World owns bodies, shapes and scratch; destroy releases all of them.

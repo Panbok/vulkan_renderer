@@ -156,6 +156,8 @@ void vkr_thread_sleep(uint64_t milliseconds) {
   vkr_platform_sleep(milliseconds);
 }
 
+void vkr_thread_yield(void) { SwitchToThread(); }
+
 VkrThreadId vkr_thread_get_id(VkrThread thread) {
   if (thread == NULL) {
     return 0;

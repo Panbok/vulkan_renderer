@@ -3411,7 +3411,13 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
       at += size;
     }
   }
-  if (!physics_generated_create(physics->world, &generated, &generated.body)) {
+  const bool8_t created =
+      physics_generated_create(physics->world, &generated, &generated.body);
+  /* A world built again later builds the shapes from the copied geometry. */
+  for (uint32_t i = 0; i < collider_count; ++i) {
+    generated.colliders[i].prebuilt = NULL;
+  }
+  if (!created) {
     physics_generated_free(physics, &generated);
     const char *reason = vkr_physics_last_error(physics->world);
     return physics_fail(error,

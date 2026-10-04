@@ -1,6 +1,7 @@
 #include "renderer/systems/vkr_scene_terrain.h"
 
 #include "core/logger.h"
+#include "core/vkr_job_system.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_geometry_system.h"
@@ -49,6 +50,15 @@
 /* Boxes of what changed between mesh attachments; past it the whole terrain
    counts as changed. */
 #define TERRAIN_CHANGE_MAX 64u
+/* Tiles one batch prepares on the job workers; a terrain has one batch at
+   a time, which bounds the geometry one update uploads. */
+#define TERRAIN_BATCH_MAX 8u
+/* Updates a batch may take on the workers before the main thread finishes
+   it, so busy workers delay tiles by at most this many frames. */
+#define TERRAIN_BATCH_WAIT_MAX 4u
+/* Grid samples a side a tile's copied samples span: its 65 and the
+   neighbour on each side its edge normals read. */
+#define TERRAIN_SNAPSHOT_SIDE (VKR_HEIGHTFIELD_TILE_CELLS + 3u)
 
 _Static_assert(VKR_HEIGHTFIELD_TILE_CELLS + 1u == VKR_GPU_TERRAIN_TILE_SIDE,
                "Shaders morph tiles of VKR_GPU_TERRAIN_TILE_SIDE samples");
@@ -60,6 +70,30 @@ _Static_assert(TERRAIN_OVERVIEW_MAX <= 64u,
                "One bit of overview_dirty per overview tile");
 _Static_assert((1u << (TERRAIN_HOLED_LEVELS - 1u)) == TERRAIN_CELLS_PER_FINE,
                "The coarsest holed level's cell is one fine tile");
+
+/* What a terrain's batch builds. */
+typedef enum TerrainBatchKind {
+  /* Fine tiles streaming in. */
+  TERRAIN_BATCH_LOADS,
+  /* Changed fine tiles. */
+  TERRAIN_BATCH_TILES,
+  TERRAIN_BATCH_OVERVIEW,
+} TerrainBatchKind;
+
+/* Up to TERRAIN_BATCH_MAX tiles whose geometry the job workers prepare from
+   copied samples while the main thread goes on; it publishes them once the
+   workers finish. `works` and their buffers share one allocation, made with
+   the first batch and kept until the record is released. */
+typedef struct TerrainBatch {
+  struct TerrainTileWork *works;
+  uint64_t bytes;
+  VkrJobFor *loop;
+  uint32_t count;
+  TerrainBatchKind kind;
+  /* Updates since it began. */
+  uint32_t age;
+  bool8_t active;
+} TerrainBatch;
 
 typedef struct TerrainRecord {
   VkrEntityId entity;
@@ -109,6 +143,16 @@ typedef struct TerrainRecord {
   bool8_t body_edited;
   /* Physics refused the body; it waits until the samples change. */
   bool8_t collision_rejected;
+  /* The tiles building on the job workers, published once they finish. */
+  TerrainBatch batch;
+  /* The body's next shape building on a physics worker, from `body_heights`
+     (`body_side` samples a side whose first sits at local `body_corner`
+     metres) at `built_position`; the current body stays until it
+     finishes. */
+  VkrPhysicsShapeBuild *body_build;
+  float32_t *body_heights;
+  uint32_t body_side;
+  Vec2 body_corner;
   uint32_t serial;
   /* Times the samples or products were marked changed. */
   uint64_t marks;
@@ -180,6 +224,7 @@ static void terrain_bit_set(uint64_t *bits, uint32_t index, bool8_t on) {
 }
 
 static float32_t terrain_skirt(const TerrainRecord *record);
+static void terrain_batch_release(VkrScene *scene, TerrainRecord *record);
 
 /* Records that the ground over samples [x0, x1] x [z0, z1], clamped to the
    terrain, draws differently; a box sharing a full edge with an earlier one
@@ -243,9 +288,23 @@ static void terrain_geometry_release(VkrScene *scene,
   *handle = (VkrGeometryHandle){0};
 }
 
+/* Drops the body build in flight, if any. */
+static void terrain_body_cancel(VkrScene *scene, TerrainRecord *record) {
+  vkr_physics_shape_build_release(record->body_build);
+  record->body_build = NULL;
+  if (record->body_heights) {
+    const uint64_t side = record->body_side;
+    vkr_allocator_free(scene->alloc, record->body_heights,
+                       sizeof(float32_t) * side * side, TERRAIN_TAG);
+  }
+  record->body_heights = NULL;
+}
+
 /* Releases the mesh, collision, tile geometries and samples. */
 static void terrain_release(VkrScene *scene, TerrainRecord *record) {
   struct VkrRenderAssets *assets = scene->assets;
+  terrain_body_cancel(scene, record);
+  terrain_batch_release(scene, record);
   vkr_scene_detach_generated_mesh(scene, record->entity);
   vkr_scene_physics_generated_remove(scene,
                                      terrain_collision_key(record->entity));
@@ -321,9 +380,9 @@ static void terrain_mark(TerrainRecord *record, VkrHeightfieldRect rect) {
   }
   record->body_edited =
       record->body_edited ||
-      (record->body_built && tx0 <= record->body_tiles.x1 &&
-       tx1 >= record->body_tiles.x0 && tz0 <= record->body_tiles.z1 &&
-       tz1 >= record->body_tiles.z0);
+      ((record->body_built || record->body_build) &&
+       tx0 <= record->body_tiles.x1 && tx1 >= record->body_tiles.x0 &&
+       tz0 <= record->body_tiles.z1 && tz1 >= record->body_tiles.z0);
   record->mesh_dirty = true_v;
   record->collision_dirty = true_v;
   record->collision_rejected = false_v;
@@ -428,7 +487,8 @@ bool8_t vkr_scene_terrain_settled(const VkrScene *scene) {
   for (uint32_t i = 0; state && i < state->record_count; ++i) {
     const TerrainRecord *record = &state->records[i];
     if (record->loaded && (record->mesh_dirty || record->building ||
-                           record->attach_pending || record->collision_dirty)) {
+                           record->attach_pending || record->collision_dirty ||
+                           record->body_build || record->batch.active)) {
       return false_v;
     }
   }
@@ -608,6 +668,14 @@ typedef struct TerrainGrid {
   uint32_t last;
   /* Metres between grid samples. */
   float32_t spacing;
+  float32_t half_size;
+  /* A copy of the heights in metres and the weights of the grid samples
+     from (x0, z0), TERRAIN_SNAPSHOT_SIDE a row, read instead of the field
+     so that a job worker can read them while the field changes. */
+  const float32_t *heights;
+  const uint32_t *weights;
+  uint32_t x0;
+  uint32_t z0;
 } TerrainGrid;
 
 static TerrainGrid terrain_grid(const VkrHeightfield *field, bool8_t overview) {
@@ -618,11 +686,16 @@ static TerrainGrid terrain_grid(const VkrHeightfield *field, bool8_t overview) {
                        : field->cells,
       .spacing =
           overview ? field->spacing * TERRAIN_OVERVIEW_SCALE : field->spacing,
+      .half_size = vkr_heightfield_half_size(field),
   };
 }
 
 static float32_t terrain_grid_height(const TerrainGrid *grid, uint32_t x,
                                      uint32_t z) {
+  if (grid->heights) {
+    return grid
+        ->heights[(z - grid->z0) * TERRAIN_SNAPSHOT_SIDE + (x - grid->x0)];
+  }
   return grid->overview ? vkr_heightfield_overview_at(grid->field, x, z)
                         : vkr_heightfield_at(grid->field, x, z);
 }
@@ -644,14 +717,20 @@ static Vec3 terrain_normal(const TerrainGrid *grid, uint32_t x, uint32_t z) {
 }
 
 /* Layer weights of grid sample (x, z), each 0 to 1. */
-static Vec4 terrain_weights(const TerrainGrid *grid, uint32_t x, uint32_t z) {
+static uint32_t terrain_grid_weights(const TerrainGrid *grid, uint32_t x,
+                                     uint32_t z) {
   const VkrHeightfield *field = grid->field;
-  const uint32_t w =
-      grid->overview
-          ? field
-                ->overview_weights[z * vkr_heightfield_overview_samples(field) +
-                                   x]
-          : vkr_heightfield_weights_at(field, x, z);
+  if (grid->weights) {
+    return grid
+        ->weights[(z - grid->z0) * TERRAIN_SNAPSHOT_SIDE + (x - grid->x0)];
+  }
+  return grid->overview ? field->overview_weights
+                              [z * vkr_heightfield_overview_samples(field) + x]
+                        : vkr_heightfield_weights_at(field, x, z);
+}
+
+static Vec4 terrain_weights(const TerrainGrid *grid, uint32_t x, uint32_t z) {
+  const uint32_t w = terrain_grid_weights(grid, x, z);
   return vec4_new(
       (float32_t)(w & 0xFFu) / 255.0f, (float32_t)((w >> 8u) & 0xFFu) / 255.0f,
       (float32_t)((w >> 16u) & 0xFFu) / 255.0f, (float32_t)(w >> 24u) / 255.0f);
@@ -660,7 +739,7 @@ static Vec4 terrain_weights(const TerrainGrid *grid, uint32_t x, uint32_t z) {
 /* The vertex of grid sample (x, z). */
 static VkrVertex3d terrain_grid_vertex(const TerrainGrid *grid, uint32_t x,
                                        uint32_t z, float32_t uv_scale) {
-  const float32_t half = vkr_heightfield_half_size(grid->field);
+  const float32_t half = grid->half_size;
   const Vec3 p = vec3_new((float32_t)x * grid->spacing - half,
                           terrain_grid_height(grid, x, z),
                           (float32_t)z * grid->spacing - half);
@@ -840,36 +919,52 @@ static void terrain_geometry_name(const TerrainRecord *record, const char *kind,
            (unsigned)record->entity.parts.generation, record->serial, tx, tz);
 }
 
-/* One tile's geometry: 65 x 65 grid samples from grid sample (x0, z0) and a
-   skirt down from each edge, in the terrain's local space. Cells `holes`
-   covers are left out. */
-static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
-                                               TerrainRecord *record,
-                                               const TerrainGrid *grid,
-                                               uint32_t tx, uint32_t tz,
-                                               const uint64_t *holes) {
-  struct VkrRenderAssets *assets = scene->assets;
+/* One fine or overview tile of a batch (TerrainBatch). The main thread
+   copies its samples and inputs, a job worker fills the packed `config`
+   from them alone, and the main thread publishes it. */
+typedef struct TerrainTileWork {
+  TerrainGrid grid;
+  uint32_t tx;
+  uint32_t tz;
+  /* Overview tiles leave out the cells under the fine tiles that draw. */
+  bool8_t holed;
+  uint64_t holes[TERRAIN_HOLE_WORDS];
+  float32_t uv_scale;
+  float32_t skirt;
+  char name[GEOMETRY_NAME_MAX_LENGTH];
+  float32_t *heights;
+  uint32_t *weights;
+  VkrVertex3d *vertices;
+  uint32_t *indices;
+  VkrPackedStaticVertex *packed;
+  VkrGpuGeometryDecodeRecord decodes[VKR_GEOMETRY_PACKED_DECODES_MAX];
+  VkrGeometryConfig config;
+  bool8_t ok;
+} TerrainTileWork;
+
+#define TERRAIN_TILE_VERTICES                                                  \
+  ((VKR_HEIGHTFIELD_TILE_CELLS + 1u) * (VKR_HEIGHTFIELD_TILE_CELLS + 1u) +     \
+   4u * (VKR_HEIGHTFIELD_TILE_CELLS + 1u))
+
+/* One tile's geometry, packed: 65 x 65 grid samples from grid sample
+   (x0, z0) and a skirt down from each edge, in the terrain's local space,
+   leaving out the cells `holes` covers. Reads the work alone, so job
+   workers prepare a batch while the field changes. */
+static void terrain_tile_prepare(void *context, uint32_t item) {
+  TerrainTileWork *work = &((TerrainTileWork *)context)[item];
+  const TerrainGrid *grid = &work->grid;
+  const uint64_t *holes = work->holed ? work->holes : NULL;
+  VkrVertex3d *vertices = work->vertices;
   const uint32_t side = VKR_HEIGHTFIELD_TILE_CELLS + 1u;
   const uint32_t vertex_grid = side * side;
-  const uint32_t vertex_count = vertex_grid + 4u * side;
-  const uint32_t index_count = vkr_scene_terrain_tile_index_count();
-  VkrVertex3d *vertices =
-      vkr_allocator_alloc(&assets->scratch_allocator,
-                          vertex_count * sizeof(*vertices), TERRAIN_TAG);
-  uint32_t *indices = vkr_allocator_alloc(
-      &assets->scratch_allocator, index_count * sizeof(*indices), TERRAIN_TAG);
-  if (!vertices || !indices) {
-    return (VkrGeometryHandle){0};
-  }
-  const uint32_t x0 = tx * VKR_HEIGHTFIELD_TILE_CELLS;
-  const uint32_t z0 = tz * VKR_HEIGHTFIELD_TILE_CELLS;
-  const float32_t uv_scale = 1.0f / Max(0.01f, record->texture_size);
-  const float32_t skirt = terrain_skirt(record);
+  const uint32_t x0 = work->tx * VKR_HEIGHTFIELD_TILE_CELLS;
+  const uint32_t z0 = work->tz * VKR_HEIGHTFIELD_TILE_CELLS;
   Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
   Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
   for (uint32_t z = 0; z < side; ++z) {
     for (uint32_t x = 0; x < side; ++x) {
-      const VkrVertex3d v = terrain_grid_vertex(grid, x0 + x, z0 + z, uv_scale);
+      const VkrVertex3d v =
+          terrain_grid_vertex(grid, x0 + x, z0 + z, work->uv_scale);
       vertices[z * side + x] = v;
       lo = vec3_new(Min(lo.x, v.position.x), Min(lo.y, v.position.y),
                     Min(lo.z, v.position.z));
@@ -885,32 +980,31 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
       uint32_t z = 0u;
       terrain_edge_sample(edge, i, &x, &z);
       VkrVertex3d v = vertices[z * side + x];
-      v.position.y -= skirt;
+      v.position.y -= work->skirt;
       vertices[vertex_grid + edge * side + i] = v;
       lo.y = Min(lo.y, v.position.y);
     }
   }
+  const uint32_t index_capacity = vkr_scene_terrain_tile_index_count();
   VkrGpuGeometryLodRow lod = {0};
-  const uint32_t count = terrain_grid_indices(vertices, grid->spacing, holes,
-                                              indices, index_count, &lod);
+  const uint32_t count = terrain_grid_indices(
+      vertices, grid->spacing, holes, work->indices, index_capacity, &lod);
   VkrGeometryConfig config = {
       .vertex_size = sizeof(VkrVertex3d),
-      .vertex_count = vertex_count,
+      .vertex_count = TERRAIN_TILE_VERTICES,
       .vertices = vertices,
       .index_size = sizeof(uint32_t),
       .index_count = count,
-      .indices = indices,
+      .indices = work->indices,
       .range_index_count = lod.levels[0].index_count,
       .lod = lod,
       .center = vec3_scale(vec3_add(lo, hi), 0.5f),
       .min_extents = lo,
       .max_extents = hi,
   };
-  terrain_geometry_name(record, grid->overview ? "overview" : "tile", tx, tz,
-                        config.name, sizeof(config.name));
-  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  return vkr_geometry_system_create(&assets->geometry_system, &config, true_v,
-                                    &error);
+  MemCopy(config.name, work->name, sizeof(config.name));
+  work->ok = count != 0u && vkr_geometry_pack(&config, work->packed,
+                                              work->decodes, &work->config);
 }
 
 /* Skirts down from the edges of overview tile (tx, tz)'s holes, facing into
@@ -1048,27 +1142,6 @@ static VkrMaterialHandle terrain_material_create(VkrScene *scene,
   return handle;
 }
 
-/* Builds fine tile (tx, tz) from resident samples, replacing its geometry. */
-static bool8_t terrain_tile_build(VkrScene *scene, TerrainRecord *record,
-                                  uint32_t tx, uint32_t tz) {
-  struct VkrRenderAssets *assets = scene->assets;
-  const uint32_t index = tz * terrain_tiles(record) + tx;
-  const TerrainGrid grid = terrain_grid(&record->field, false_v);
-  VkrAllocatorScope scope =
-      vkr_allocator_begin_scope(&assets->scratch_allocator);
-  const VkrGeometryHandle handle =
-      terrain_tile_geometry(scene, record, &grid, tx, tz, NULL);
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!handle.id) {
-    return false_v;
-  }
-  terrain_geometry_release(scene, &record->tiles[index]);
-  record->tiles[index] = handle;
-  terrain_bit_set(record->dirty_tiles, index, false_v);
-  terrain_change_tile(record, tx, tz);
-  return true_v;
-}
-
 /* The fine tiles of overview tile (ox, oz) that draw, one bit each; false
    when none do. */
 static bool8_t terrain_overview_holes(const TerrainRecord *record, uint32_t ox,
@@ -1089,35 +1162,178 @@ static bool8_t terrain_overview_holes(const TerrainRecord *record, uint32_t ox,
   return any;
 }
 
-/* Builds overview tile (ox, oz) with holes under the fine tiles that draw,
-   and the seam skirts around them. A tile fine tiles cover entirely draws
-   nothing. */
-static bool8_t terrain_overview_build(VkrScene *scene, TerrainRecord *record,
-                                      uint32_t ox, uint32_t oz) {
-  struct VkrRenderAssets *assets = scene->assets;
-  const uint32_t index = oz * terrain_overview_tiles(record) + ox;
-  uint64_t holes[TERRAIN_HOLE_WORDS];
-  const bool8_t holed = terrain_overview_holes(record, ox, oz, holes);
-  bool8_t covered = true_v;
-  for (uint32_t i = 0; i < TERRAIN_HOLE_WORDS; ++i) {
-    covered = covered && holes[i] == UINT64_MAX;
-  }
-  terrain_geometry_release(scene, &record->overview[index]);
-  terrain_geometry_release(scene, &record->seams[index]);
-  if (covered) {
+/* Bytes of one batch: its works, then each work's buffers. */
+static uint64_t terrain_batch_bytes(void) {
+  const uint64_t snapshot =
+      (uint64_t)TERRAIN_SNAPSHOT_SIDE * TERRAIN_SNAPSHOT_SIDE;
+  const uint64_t tile =
+      snapshot * (sizeof(float32_t) + sizeof(uint32_t)) +
+      TERRAIN_TILE_VERTICES *
+          (sizeof(VkrVertex3d) + sizeof(VkrPackedStaticVertex)) +
+      (uint64_t)vkr_scene_terrain_tile_index_count() * sizeof(uint32_t);
+  return TERRAIN_BATCH_MAX * (sizeof(TerrainTileWork) + tile);
+}
+
+/* Makes the batch's storage on first use. */
+static bool8_t terrain_batch_reserve(VkrScene *scene, TerrainRecord *record) {
+  TerrainBatch *batch = &record->batch;
+  if (batch->works) {
     return true_v;
   }
-  const TerrainGrid grid = terrain_grid(&record->field, true_v);
-  VkrAllocatorScope scope =
-      vkr_allocator_begin_scope(&assets->scratch_allocator);
-  record->overview[index] =
-      terrain_tile_geometry(scene, record, &grid, ox, oz, holed ? holes : NULL);
-  if (holed) {
-    record->seams[index] =
-        terrain_seam_geometry(scene, record, &grid, ox, oz, holes);
+  const uint64_t bytes = terrain_batch_bytes();
+  uint8_t *storage = vkr_allocator_alloc(scene->alloc, bytes, TERRAIN_TAG);
+  if (!storage) {
+    return false_v;
   }
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  return record->overview[index].id != 0u;
+  MemZero(storage, sizeof(TerrainTileWork) * TERRAIN_BATCH_MAX);
+  batch->works = (TerrainTileWork *)storage;
+  batch->bytes = bytes;
+  uint8_t *at = storage + sizeof(TerrainTileWork) * TERRAIN_BATCH_MAX;
+  const uint64_t snapshot =
+      (uint64_t)TERRAIN_SNAPSHOT_SIDE * TERRAIN_SNAPSHOT_SIDE;
+  for (uint32_t i = 0; i < TERRAIN_BATCH_MAX; ++i) {
+    TerrainTileWork *work = &batch->works[i];
+    work->heights = (float32_t *)at;
+    at += snapshot * sizeof(float32_t);
+    work->weights = (uint32_t *)at;
+    at += snapshot * sizeof(uint32_t);
+    work->vertices = (VkrVertex3d *)at;
+    at += TERRAIN_TILE_VERTICES * sizeof(VkrVertex3d);
+    work->packed = (VkrPackedStaticVertex *)at;
+    at += TERRAIN_TILE_VERTICES * sizeof(VkrPackedStaticVertex);
+    work->indices = (uint32_t *)at;
+    at += (uint64_t)vkr_scene_terrain_tile_index_count() * sizeof(uint32_t);
+  }
+  return true_v;
+}
+
+/* Adds tile (tx, tz) of the fine grid, or the overview grid when
+   `overview`, to the batch being gathered, copying the samples it reads.
+   Overview tiles leave out `holes` when given. NULL when the batch is full
+   or its storage could not be made. */
+static TerrainTileWork *terrain_batch_add(VkrScene *scene,
+                                          TerrainRecord *record, uint32_t tx,
+                                          uint32_t tz, bool8_t overview,
+                                          const uint64_t *holes) {
+  TerrainBatch *batch = &record->batch;
+  if (batch->count == TERRAIN_BATCH_MAX ||
+      !terrain_batch_reserve(scene, record)) {
+    return NULL;
+  }
+  TerrainTileWork *work = &batch->works[batch->count++];
+  const TerrainGrid live = terrain_grid(&record->field, overview);
+  /* The tile's samples and the neighbour each normal reads past its edge. */
+  const uint32_t x0 = tx * VKR_HEIGHTFIELD_TILE_CELLS;
+  const uint32_t z0 = tz * VKR_HEIGHTFIELD_TILE_CELLS;
+  const uint32_t sx0 = x0 ? x0 - 1u : 0u;
+  const uint32_t sz0 = z0 ? z0 - 1u : 0u;
+  const uint32_t sx1 = Min(live.last, x0 + VKR_HEIGHTFIELD_TILE_CELLS + 1u);
+  const uint32_t sz1 = Min(live.last, z0 + VKR_HEIGHTFIELD_TILE_CELLS + 1u);
+  for (uint32_t z = sz0; z <= sz1; ++z) {
+    for (uint32_t x = sx0; x <= sx1; ++x) {
+      const uint32_t at = (z - sz0) * TERRAIN_SNAPSHOT_SIDE + (x - sx0);
+      work->heights[at] = terrain_grid_height(&live, x, z);
+      work->weights[at] = terrain_grid_weights(&live, x, z);
+    }
+  }
+  work->grid = live;
+  work->grid.field = NULL;
+  work->grid.heights = work->heights;
+  work->grid.weights = work->weights;
+  work->grid.x0 = sx0;
+  work->grid.z0 = sz0;
+  work->tx = tx;
+  work->tz = tz;
+  work->holed = holes != NULL;
+  if (holes) {
+    MemCopy(work->holes, holes, sizeof(work->holes));
+  }
+  work->uv_scale = 1.0f / Max(0.01f, record->texture_size);
+  work->skirt = terrain_skirt(record);
+  terrain_geometry_name(record, overview ? "overview" : "tile", tx, tz,
+                        work->name, sizeof(work->name));
+  work->ok = false_v;
+  return work;
+}
+
+/* Starts preparing the gathered tiles on the job workers. */
+static void terrain_batch_begin(VkrScene *scene, TerrainRecord *record,
+                                TerrainBatchKind kind) {
+  TerrainBatch *batch = &record->batch;
+  batch->kind = kind;
+  batch->age = 0u;
+  batch->active = true_v;
+  batch->loop = vkr_job_for_begin(scene->assets->job_system, batch->count,
+                                  terrain_tile_prepare, batch->works);
+}
+
+/* Publishes the batch once its tiles are prepared, or once it has waited
+   TERRAIN_BATCH_WAIT_MAX updates, finishing them here; each replaces the
+   geometry its tile had. Loaded tiles mark the mesh changed. */
+static void terrain_batch_poll(VkrScene *scene, TerrainRecord *record) {
+  TerrainBatch *batch = &record->batch;
+  if (!batch->active || (!vkr_job_for_done(batch->loop) &&
+                         ++batch->age < TERRAIN_BATCH_WAIT_MAX)) {
+    return;
+  }
+  vkr_job_for_end(batch->loop);
+  batch->loop = NULL;
+  batch->active = false_v;
+  struct VkrRenderAssets *assets = scene->assets;
+  const uint32_t tiles = terrain_tiles(record);
+  const uint32_t overview_tiles = terrain_overview_tiles(record);
+  const bool8_t overview = batch->kind == TERRAIN_BATCH_OVERVIEW;
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; i < batch->count; ++i) {
+    const TerrainTileWork *work = &batch->works[i];
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    const VkrGeometryHandle handle =
+        work->ok ? vkr_geometry_system_create(&assets->geometry_system,
+                                              &work->config, true_v, &error)
+                 : (VkrGeometryHandle){0};
+    if (!handle.id) {
+      ok = false_v;
+      continue;
+    }
+    if (!overview) {
+      const uint32_t index = work->tz * tiles + work->tx;
+      terrain_geometry_release(scene, &record->tiles[index]);
+      record->tiles[index] = handle;
+      terrain_change_tile(record, work->tx, work->tz);
+      if (batch->kind == TERRAIN_BATCH_LOADS) {
+        record->overview_dirty |= 1ull << terrain_overview_of(record, index);
+        record->mesh_dirty = true_v;
+      }
+      continue;
+    }
+    const uint32_t index = work->tz * overview_tiles + work->tx;
+    terrain_geometry_release(scene, &record->overview[index]);
+    terrain_geometry_release(scene, &record->seams[index]);
+    record->overview[index] = handle;
+    if (work->holed) {
+      const TerrainGrid grid = terrain_grid(&record->field, true_v);
+      record->seams[index] = terrain_seam_geometry(
+          scene, record, &grid, work->tx, work->tz, work->holes);
+    }
+  }
+  batch->count = 0u;
+  if (!ok) {
+    snprintf(record->status, sizeof(record->status), "%s",
+             batch->kind == TERRAIN_BATCH_LOADS
+                 ? "A terrain tile could not be streamed in"
+                 : "The terrain mesh failed");
+  }
+}
+
+/* Drops the batch unpublished, once no job worker reads it, and its
+   storage. */
+static void terrain_batch_release(VkrScene *scene, TerrainRecord *record) {
+  TerrainBatch *batch = &record->batch;
+  vkr_job_for_end(batch->loop);
+  if (batch->works) {
+    vkr_allocator_free(scene->alloc, batch->works, batch->bytes, TERRAIN_TAG);
+  }
+  *batch = (TerrainBatch){0};
 }
 
 /* Starts rebuilding the changed tiles: the layer material first, when its
@@ -1144,16 +1360,16 @@ static bool8_t terrain_begin_build(VkrScene *scene, TerrainRecord *record) {
   return true_v;
 }
 
-/* Rebuilds changed fine tiles, then overview tiles, one at a time until the
-   frame budget from `start` runs out, at least one each update. True once
-   none is left; false when a build failed. */
+/* Starts a batch rebuilding changed fine tiles, or once none is left,
+   overview tiles; their dirty bits clear now, so edits meanwhile mark them
+   again. Done once none is left. False when a batch could not start. */
 static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
-                                  float64_t start, bool8_t *out_done) {
-  const float64_t budget = VKR_SCENE_TERRAIN_STREAM_BUDGET_MS / 1000.0;
+                                  bool8_t *out_done) {
   const uint32_t tiles = terrain_tiles(record);
-  uint32_t built = 0u;
   *out_done = false_v;
-  for (uint32_t index = 0; index < tiles * tiles; ++index) {
+  for (uint32_t index = 0;
+       record->batch.count < TERRAIN_BATCH_MAX && index < tiles * tiles;
+       ++index) {
     const bool8_t dirty = terrain_bit(record->dirty_tiles, index);
     const bool8_t drawn = record->tiles[index].id != 0u;
     /* A streamed terrain rebuilds only tiles that draw; streaming adds the
@@ -1161,28 +1377,46 @@ static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
     if (!(record->streamed ? dirty && drawn : dirty || !drawn)) {
       continue;
     }
-    if (built && vkr_platform_get_absolute_time() - start > budget) {
-      return true_v;
-    }
-    if (!terrain_tile_build(scene, record, index % tiles, index / tiles)) {
+    if (!terrain_batch_add(scene, record, index % tiles, index / tiles, false_v,
+                           NULL)) {
       return false_v;
     }
-    built++;
+    terrain_bit_set(record->dirty_tiles, index, false_v);
+  }
+  if (record->batch.count) {
+    terrain_batch_begin(scene, record, TERRAIN_BATCH_TILES);
+    return true_v;
   }
   const uint32_t overview_tiles = terrain_overview_tiles(record);
-  for (uint32_t index = 0; index < overview_tiles * overview_tiles; ++index) {
+  for (uint32_t index = 0; record->batch.count < TERRAIN_BATCH_MAX &&
+                           index < overview_tiles * overview_tiles;
+       ++index) {
     if (!(record->overview_dirty & (1ull << index))) {
       continue;
     }
-    if (built && vkr_platform_get_absolute_time() - start > budget) {
-      return true_v;
-    }
-    if (!terrain_overview_build(scene, record, index % overview_tiles,
-                                index / overview_tiles)) {
-      return false_v;
+    const uint32_t ox = index % overview_tiles;
+    const uint32_t oz = index / overview_tiles;
+    uint64_t holes[TERRAIN_HOLE_WORDS];
+    const bool8_t holed = terrain_overview_holes(record, ox, oz, holes);
+    bool8_t covered = true_v;
+    for (uint32_t i = 0; i < TERRAIN_HOLE_WORDS; ++i) {
+      covered = covered && holes[i] == UINT64_MAX;
     }
     record->overview_dirty &= ~(1ull << index);
-    built++;
+    /* A tile fine tiles cover entirely draws nothing. */
+    if (covered) {
+      terrain_geometry_release(scene, &record->overview[index]);
+      terrain_geometry_release(scene, &record->seams[index]);
+      continue;
+    }
+    if (!terrain_batch_add(scene, record, ox, oz, true_v,
+                           holed ? holes : NULL)) {
+      return false_v;
+    }
+  }
+  if (record->batch.count) {
+    terrain_batch_begin(scene, record, TERRAIN_BATCH_OVERVIEW);
+    return true_v;
   }
   /* Tiles a streamed terrain does not draw keep no dirty bit: streaming
      builds them afresh. */
@@ -1331,8 +1565,54 @@ static bool8_t terrain_body(VkrScene *scene, TerrainRecord *record,
   return ok;
 }
 
+/* Gives the terrain the body `heights` describe (`side` samples a side whose
+   first sits at local corner metres), at once when `now` is set, else once
+   its shape has built on a physics worker; the body set meanwhile stays.
+   Takes `heights`. False when physics refused it at once. */
+static bool8_t terrain_body_set(VkrScene *scene, TerrainRecord *record,
+                                float32_t *heights, uint32_t side,
+                                Vec3 position, Vec2 corner, bool8_t now) {
+  terrain_body_cancel(scene, record);
+  const uint64_t bytes = sizeof(float32_t) * (uint64_t)side * side;
+  if (!now) {
+    const VkrPhysicsColliderDesc collider =
+        terrain_collider(record, heights, side, position, corner.x, corner.y);
+    record->body_build = vkr_physics_shape_build_begin(&collider);
+  }
+  if (record->body_build) {
+    record->body_heights = heights;
+    record->body_side = side;
+    record->body_corner = corner;
+    return true_v;
+  }
+  const VkrPhysicsColliderDesc collider =
+      terrain_collider(record, heights, side, position, corner.x, corner.y);
+  const bool8_t ok = terrain_body(scene, record, &collider, 1u);
+  vkr_allocator_free(scene->alloc, heights, bytes, TERRAIN_TAG);
+  return ok;
+}
+
+/* The finished body build, if any, becomes the terrain's body. */
+static void terrain_body_poll(VkrScene *scene, TerrainRecord *record) {
+  if (!vkr_physics_shape_build_done(record->body_build)) {
+    return;
+  }
+  VkrPhysicsColliderDesc collider = terrain_collider(
+      record, record->body_heights, record->body_side, record->built_position,
+      record->body_corner.x, record->body_corner.y);
+  collider.prebuilt = record->body_build;
+  const bool8_t ok = terrain_body(scene, record, &collider, 1u);
+  terrain_body_cancel(scene, record);
+  if (record->streamed) {
+    record->body_built = ok;
+    record->collision_rejected = !ok;
+  } else {
+    record->collision_built = ok;
+  }
+}
+
 /* One height field body over the whole terrain, holes padding the grid to a
-   multiple of four samples. */
+   multiple of four samples; at once when the terrain has none. */
 static void terrain_build_collision(VkrScene *scene, TerrainRecord *record,
                                     Vec3 position) {
   const VkrHeightfield *field = &record->field;
@@ -1350,20 +1630,24 @@ static void terrain_build_collision(VkrScene *scene, TerrainRecord *record,
                                             : VKR_PHYSICS_HEIGHT_HOLE;
     }
   }
-  const VkrPhysicsColliderDesc collider =
-      terrain_collider(record, heights, padded, position, 0.0f, 0.0f);
-  record->collision_built = terrain_body(scene, record, &collider, 1u);
-  vkr_allocator_free(scene->alloc, heights, bytes, TERRAIN_TAG);
+  const bool8_t now = !record->collision_built;
+  const bool8_t ok = terrain_body_set(scene, record, heights, padded, position,
+                                      vec2_new(0.0f, 0.0f), now);
+  if (!record->body_build) {
+    record->collision_built = ok;
+  }
   record->built_position = position;
   record->collision_dirty = false_v;
 }
 
 /* The body of a streamed terrain: one height field over fine tiles
-   `tiles` (inclusive), holes padding it to a multiple of four samples. */
+   `tiles` (inclusive), holes padding it to a multiple of four samples. A
+   body needed `now` is built at once, else on a physics worker while the
+   current one stays. */
 static void terrain_build_window_collision(VkrScene *scene,
                                            TerrainRecord *record,
                                            VkrHeightfieldRect tiles,
-                                           Vec3 position) {
+                                           Vec3 position, bool8_t now) {
   VkrHeightfield *field = &record->field;
   const VkrHeightfieldRect rect = {
       .x0 = tiles.x0 * VKR_HEIGHTFIELD_TILE_CELLS,
@@ -1373,8 +1657,8 @@ static void terrain_build_window_collision(VkrScene *scene,
   const uint32_t side = Max(rect.x1 - rect.x0, rect.z1 - rect.z0) + 1u;
   const uint32_t padded = (side + 3u) & ~3u;
   const uint64_t bytes = sizeof(float32_t) * (uint64_t)padded * padded;
+  terrain_body_cancel(scene, record);
   record->body_tiles = tiles;
-  record->body_built = false_v;
   record->body_edited = false_v;
   record->built_position = position;
   float32_t *heights = vkr_allocator_alloc(scene->alloc, bytes, TERRAIN_TAG);
@@ -1382,6 +1666,7 @@ static void terrain_build_window_collision(VkrScene *scene,
     if (heights) {
       vkr_allocator_free(scene->alloc, heights, bytes, TERRAIN_TAG);
     }
+    record->body_built = false_v;
     return;
   }
   /* Holes pad the grid past the window's last row and column. */
@@ -1389,12 +1674,14 @@ static void terrain_build_window_collision(VkrScene *scene,
     heights[i] = VKR_PHYSICS_HEIGHT_HOLE;
   }
   vkr_heightfield_read_metres(field, rect, heights, padded);
-  const VkrPhysicsColliderDesc collider = terrain_collider(
-      record, heights, padded, position, (float32_t)rect.x0 * field->spacing,
-      (float32_t)rect.z0 * field->spacing);
-  record->body_built = terrain_body(scene, record, &collider, 1u);
-  record->collision_rejected = !record->body_built;
-  vkr_allocator_free(scene->alloc, heights, bytes, TERRAIN_TAG);
+  const Vec2 corner = vec2_new((float32_t)rect.x0 * field->spacing,
+                               (float32_t)rect.z0 * field->spacing);
+  const bool8_t ok =
+      terrain_body_set(scene, record, heights, padded, position, corner, now);
+  if (!record->body_build) {
+    record->body_built = ok;
+    record->collision_rejected = !ok;
+  }
 }
 
 /* The fine tiles within VKR_SCENE_TERRAIN_BODY_TILES of the tile under each
@@ -1587,7 +1874,9 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
       frozen ? 0u
              : terrain_candidates(record, sources, count, radius, candidates,
                                   ArrayCount(candidates));
-  for (uint32_t i = 0; i < found; ++i) {
+  /* The nearest load as one batch, their samples read first, unless a
+     batch is still building. */
+  for (uint32_t i = 0; i < found && !record->batch.active; ++i) {
     const uint32_t index = candidates[i].index;
     if (record->tiles[index].id) {
       continue;
@@ -1604,18 +1893,24 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
         .x1 = Min(x0 + VKR_HEIGHTFIELD_TILE_CELLS + 1u, field->cells),
         .z1 = Min(z0 + VKR_HEIGHTFIELD_TILE_CELLS + 1u, field->cells)};
     if (!vkr_heightfield_load_rect(field, reach) ||
-        !terrain_tile_build(scene, record, index % tiles, index / tiles)) {
+        !terrain_batch_add(scene, record, index % tiles, index / tiles, false_v,
+                           NULL)) {
       snprintf(record->status, sizeof(record->status),
                "A terrain tile could not be streamed in");
       break;
     }
-    record->overview_dirty |= 1ull << terrain_overview_of(record, index);
-    changed = true_v;
+    if (record->batch.count == TERRAIN_BATCH_MAX) {
+      break;
+    }
+  }
+  if (!record->batch.active && record->batch.count) {
+    terrain_batch_begin(scene, record, TERRAIN_BATCH_LOADS);
   }
 
   /* The body covers the ground around the sources. It moves once a
      source nears its edge, and takes edits to it once edits rest. Unless a
-     source has left it, a rebuild waits for a frame with budget left. */
+     source has left it, a rebuild waits for a frame with budget left and
+     builds on a physics worker. A pending build counts as the body. */
   VkrHeightfieldRect window = {0};
   const bool8_t wanted = terrain_body_window(record, sources, count, &window);
   const bool8_t moved =
@@ -1626,18 +1921,19 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
   /* A source off the body's tiles needs it now; one near its edge, or
      edits once they rest, can wait for budget. */
   const bool8_t urgent =
-      !record->body_built || moved ||
+      (!record->body_built && !record->body_build) || moved ||
       (shifted && !terrain_body_covers(record, sources, count, size, false_v));
   const bool8_t due =
       urgent || (record->body_edited && settled) ||
       (shifted && !terrain_body_covers(record, sources, count, size, true_v));
-  if (!wanted && record->body_built) {
+  if (!wanted && (record->body_built || record->body_build)) {
+    terrain_body_cancel(scene, record);
     vkr_scene_physics_generated_remove(scene,
                                        terrain_collision_key(record->entity));
     record->body_built = false_v;
   } else if (wanted && !record->collision_rejected && due &&
              (urgent || vkr_platform_get_absolute_time() - start <= budget)) {
-    terrain_build_window_collision(scene, record, window, position);
+    terrain_build_window_collision(scene, record, window, position, urgent);
   }
   record->collision_dirty = record->body_built && record->body_edited;
   return changed;
@@ -1656,23 +1952,27 @@ void vkr_scene_terrain_update(VkrScene *scene) {
       continue;
     }
     const Vec3 position = mat4_position(transform->world);
-    /* Streaming, rebuilding and the body share one frame budget. */
+    terrain_body_poll(scene, record);
+    /* Tiles the job workers finished replace those they rebuilt. */
+    terrain_batch_poll(scene, record);
+    /* Streaming and the body share one frame budget. */
     const float64_t start = vkr_platform_get_absolute_time();
     if (record->streamed && terrain_stream(scene, record, position, start)) {
       record->mesh_dirty = true_v;
     }
-    /* Changed tiles build over a few updates and show together once
+    /* Changed tiles build a batch at a time and show together once
        uploaded; changes meanwhile wait for the next build. */
-    if (record->mesh_dirty && !record->building && !record->attach_pending) {
+    if (record->mesh_dirty && !record->building && !record->attach_pending &&
+        !record->batch.active) {
       record->mesh_dirty = false_v;
       if (!terrain_begin_build(scene, record)) {
         snprintf(record->status, sizeof(record->status),
                  "The terrain mesh failed");
       }
     }
-    if (record->building) {
+    if (record->building && !record->batch.active) {
       bool8_t done = false_v;
-      if (!terrain_build_step(scene, record, start, &done)) {
+      if (!terrain_build_step(scene, record, &done)) {
         snprintf(record->status, sizeof(record->status),
                  "The terrain mesh failed");
         done = true_v;
@@ -1684,6 +1984,12 @@ void vkr_scene_terrain_update(VkrScene *scene) {
         !terrain_attach_mesh(scene, record)) {
       snprintf(record->status, sizeof(record->status),
                "The terrain mesh failed");
+    }
+    /* A resident terrain builds again only after edits; its batch storage
+       goes until then. */
+    if (!record->streamed && !record->building && !record->batch.active &&
+        record->batch.works) {
+      terrain_batch_release(scene, record);
     }
     if (record->streamed) {
       continue;

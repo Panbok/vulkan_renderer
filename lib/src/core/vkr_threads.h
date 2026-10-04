@@ -107,6 +107,11 @@ bool32_t vkr_thread_is_active(VkrThread thread);
 void vkr_thread_sleep(uint64_t milliseconds);
 
 /**
+ * @brief Offers the rest of the calling thread's time slice to other threads.
+ */
+void vkr_thread_yield(void);
+
+/**
  * @brief Retrieves the id of the provided thread handle.
  * @param thread VkrThread to query.
  * @return Thread id on success, 0 on failure.

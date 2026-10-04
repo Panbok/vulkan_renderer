@@ -270,6 +270,89 @@ static void test_height_field(void) {
   vkr_physics_world_destroy(world);
 }
 
+/* The one job a test submitter holds until the test runs it. */
+static void (*s_held_run)(void *);
+static void *s_held_arg;
+
+static bool8_t physics_test_hold(void *context, void (*run)(void *),
+                                 void *arg) {
+  (void)context;
+  if (s_held_run) {
+    return false_v;
+  }
+  s_held_run = run;
+  s_held_arg = arg;
+  return true_v;
+}
+
+static void physics_test_run_held(void) {
+  void (*run)(void *) = s_held_run;
+  s_held_run = NULL;
+  run(s_held_arg);
+}
+
+/* A height field built on a worker: the build copies its heights, reports
+   done only once its job ran, and gives the body it was built for; a build
+   released before its job runs frees itself after. */
+static void test_shape_build_on_worker(void) {
+  VkrPhysicsWorld *world = vkr_physics_world_create(4);
+  assert(world);
+  float32_t heights[8 * 8];
+  for (uint32_t i = 0; i < 64u; ++i) {
+    heights[i] = 2.0f;
+  }
+  VkrPhysicsColliderDesc field = {
+      .entity_id = 60,
+      .shape = VKR_PHYSICS_HEIGHT_FIELD,
+      .rotation = {0, 0, 0, 1},
+      .scale = {1, 1, 1},
+      .geometry = {.positions = heights,
+                   .vertex_count = 64,
+                   .height_samples = 8,
+                   .height_spacing = 1.0f},
+      .enabled = true_v,
+  };
+  const VkrPhysicsJobs jobs = {.worker_count = 1u, .submit = physics_test_hold};
+  vkr_physics_set_jobs(&jobs);
+  VkrPhysicsShapeBuild *build = vkr_physics_shape_build_begin(&field);
+  assert(build && !vkr_physics_shape_build_done(build));
+  for (uint32_t i = 0; i < 64u; ++i) {
+    heights[i] = 9.0f;
+  }
+  VkrPhysicsColliderDesc built = field;
+  built.prebuilt = build;
+  VkrPhysicsBodyDesc desc = body_desc(6, &built);
+  desc.motion = VKR_PHYSICS_STATIC;
+  VkrPhysicsBody body;
+  assert(!vkr_physics_body_create(world, &desc, &body));
+  physics_test_run_held();
+  assert(vkr_physics_shape_build_done(build));
+  VkrPhysicsColliderDesc foreign = built;
+  foreign.entity_id = 61;
+  desc.colliders = &foreign;
+  assert(!vkr_physics_body_create(world, &desc, &body));
+  desc.colliders = &built;
+  assert(vkr_physics_body_create(world, &desc, &body));
+  vkr_physics_shape_build_release(build);
+  VkrPhysicsRayHit hit;
+  const float32_t down[3] = {0, -20, 0};
+  const float32_t over_ground[3] = {2.5f, 10, 2.5f};
+  assert(vkr_physics_raycast(world, over_ground, down, &hit));
+  assert(hit.entity_id == 6 && fabsf(hit.position[1] - 2.0f) < 1e-3f);
+
+  build = vkr_physics_shape_build_begin(&field);
+  assert(build && !vkr_physics_shape_build_done(build));
+  vkr_physics_shape_build_release(build);
+  physics_test_run_held();
+  vkr_physics_set_jobs(NULL);
+
+  /* Without workers the shape builds at once. */
+  build = vkr_physics_shape_build_begin(&field);
+  assert(build && vkr_physics_shape_build_done(build));
+  vkr_physics_shape_build_release(build);
+  vkr_physics_world_destroy(world);
+}
+
 static void test_shapes_ccd_and_layers(void) {
   VkrPhysicsWorld *world = vkr_physics_world_create(4);
   assert(world);
@@ -681,6 +764,7 @@ bool32_t run_physics_tests(void) {
   test_sensor_sleep_and_disable();
   test_shapes_ccd_and_layers();
   test_height_field();
+  test_shape_build_on_worker();
   test_sensor_queue_fault();
   test_sensor_mutation_reservation();
   test_geometry_scale_and_sweep();

@@ -85,6 +85,23 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system);
 // Geometry Creation/Release
 // =============================================================================
 
+/* Decode records a packed geometry holds at most: its range's record and
+   the LOD row after it. */
+#define VKR_GEOMETRY_PACKED_DECODES_MAX                                        \
+  (1u + (uint32_t)VKR_GPU_GEOMETRY_LOD_RECORDS)
+
+/* `source`, of VkrVertex3d vertices and 32-bit indices, in the packed
+   layout vkr_geometry_system_create publishes: the vertices in `vertices`
+   (one per source vertex) and the decode records in `decodes`
+   (VKR_GEOMETRY_PACKED_DECODES_MAX), both caller storage the result
+   borrows. Touches no system state, so a worker can pack while the owner
+   creates the geometry from the result. False when a vertex exceeds the
+   quantization budgets. */
+bool8_t vkr_geometry_pack(const VkrGeometryConfig *source,
+                          VkrPackedStaticVertex *vertices,
+                          VkrGpuGeometryDecodeRecord *decodes,
+                          VkrGeometryConfig *out_config);
+
 /**
  * @brief Creates geometry from a configuration.
  * @param system Geometry system instance.
