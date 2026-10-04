@@ -1013,8 +1013,16 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
   const VkrStandardSceneRuntimeShadowInput *input = &frame->shadow;
   const VkrFrame *setup = draw->setup;
   if (application->shadow_system.initialized) {
+    /* Moments derive from a cascade's depth, and a newly realized moments
+       array holds none, so retained cascades redraw once when filtering
+       changes which cascades keep moments. */
+    const VkrShadowConfig *previous = &application->shadow_system.config;
+    const bool8_t moments_changed =
+        previous->far_cascade_evsm != input->config.far_cascade_evsm ||
+        (input->config.far_cascade_evsm &&
+         previous->cascade_count != input->config.cascade_count);
     application->shadow_system.config = input->config;
-    if (input->invalidate_fit) {
+    if (input->invalidate_fit || moments_changed) {
       vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
     }
   }
@@ -1081,6 +1089,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         0.008726646259971648f);
     shadow_payload->cascade_count = shadow_cascade_count;
     shadow_payload->sdsm_enabled = shadow_config->sdsm_enabled;
+    shadow_payload->evsm_enabled =
+        shadow_config->far_cascade_evsm &&
+        shadow_cascade_count > VKR_SHADOW_EVSM_FIRST_CASCADE;
     shadow_payload->cascade_render_mask = shadow_frame->cascade_render_mask;
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
       shadow_payload->cascades[i] = (VkrShadowCascadePacketData){

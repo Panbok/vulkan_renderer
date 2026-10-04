@@ -277,6 +277,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.shadow_moments.comp",
+      "entry": "vk_shadow_moments",
+      "stage": "compute"
+    },
+    {
       "name": "packet.sdsm_reduce.comp",
       "entry": "vk_sdsm_reduce",
       "stage": "compute"

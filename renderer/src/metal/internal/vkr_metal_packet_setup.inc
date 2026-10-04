@@ -111,6 +111,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT:
   case VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
+  case VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT:
   case VKR_METAL_PACKET_ABI_SDSM_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT:
@@ -1286,6 +1287,10 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_hzb_build",
       VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
       @"VKR Metal packet HZB build");
+  renderer->shadow_moments_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_shadow_moments",
+      VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT, false_v,
+      @"VKR Metal packet shadow moments");
   renderer->sdsm_reduce_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_sdsm_reduce",
       VKR_METAL_PACKET_ABI_SDSM_ROOT, false_v, @"VKR Metal packet SDSM reduce");
@@ -1429,7 +1434,8 @@ vkr_internal bool8_t vkr_metal_packet_deferred_pipelines_ready(
       !renderer->transmission_compact_pipeline ||
       !renderer->transmission_compact_finalize_pipeline ||
       !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
-      !renderer->sdsm_reduce_pipeline || !renderer->exposure_clear_pipeline ||
+      !renderer->shadow_moments_pipeline || !renderer->sdsm_reduce_pipeline ||
+      !renderer->exposure_clear_pipeline ||
       !renderer->exposure_histogram_pipeline ||
       !renderer->exposure_resolve_pipeline ||
       !renderer->bloom_prefilter_pipeline ||
@@ -1587,6 +1593,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
        "transmission compact finalize pipeline"},
       {renderer->picking_resolve_pipeline, "picking resolve pipeline"},
       {renderer->hzb_build_pipeline, "HZB build pipeline"},
+      {renderer->shadow_moments_pipeline, "shadow moments pipeline"},
       {renderer->sdsm_reduce_pipeline, "SDSM reduce pipeline"},
       {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
       {renderer->exposure_histogram_pipeline, "exposure histogram pipeline"},

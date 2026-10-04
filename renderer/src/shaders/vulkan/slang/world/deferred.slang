@@ -217,13 +217,15 @@ struct VkrVkLightingRoot
     uint layered_tiles;
     // Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot.
     uint local_shadow_mask_texture;
-    uint visible_rows_reserved2;
+    // Far-cascade EVSM moments array, or VKR_VK_SHADOW_MOMENTS_NONE.
+    uint shadow_moments_texture;
     VkrGpuVisibleDrawRow* visible_rows;
     uint subsurface_source_texture;
     uint subsurface_profile_count;
     // Per-light visible contribution counters, or null when not measured.
     uint *light_contribution;
-    uint2 light_contribution_padding;
+    uint shadow_moments_sampler;
+    uint light_contribution_reserved;
 };
 
 // Shadow.LocalMask inputs: the G-buffer surface, its camera reconstruction,
@@ -249,6 +251,17 @@ struct VkrVkLocalShadowMaskRoot
     uint2 reserved;
 };
 
+// One far cascade's EVSM moments layer, built from its depth layer.
+struct VkrVkShadowMomentsRoot
+{
+    uint depth_texture;
+    uint moments_texture;
+    uint depth_layer;
+    uint moments_layer;
+    uint depth_size;
+    uint moments_size;
+    uint2 reserved;
+};
 struct VkrVkHzbRoot
 {
     uint source_texture;
@@ -481,6 +494,11 @@ struct VkrVkHzbPush
     VkrVkHzbRoot *root;
     uint2 reserved;
 };
+struct VkrVkShadowMomentsPush
+{
+    VkrVkShadowMomentsRoot *root;
+    uint2 reserved;
+};
 struct VkrVkSdsmPush
 {
     VkrVkSdsmRoot *root;
@@ -543,6 +561,8 @@ struct VkrVkTransmissionCompactPush
 [[vk::push_constant]] ConstantBuffer<VkrVkTemporalResolvePush>
     g_temporal_resolve_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkHzbPush> g_hzb_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkShadowMomentsPush>
+    g_shadow_moments_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkSsrDepthBasePush> g_ssr_depth_base_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkSsrDepthMipPush> g_ssr_depth_mip_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkSsrTracePush> g_ssr_trace_push;
@@ -2086,13 +2106,18 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                         dot(normal, sun_direction) < 0.0f;
         float cloud_shadow = packet_cloud_shadow(frame, world);
-        float base_shadow = packet_directional_shadow(
-                                frame, world, back_lit ? -normal : normal) *
-                            cloud_shadow;
+        float base_shadow =
+            packet_directional_shadow(frame, world, back_lit ? -normal : normal,
+                                      root.shadow_moments_texture,
+                                      root.shadow_moments_sampler) *
+            cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
             directional_shadow =
-                packet_directional_shadow(frame, world, normal) * cloud_shadow;
+                packet_directional_shadow(frame, world, normal,
+                                          root.shadow_moments_texture,
+                                          root.shadow_moments_sampler) *
+                cloud_shadow;
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
@@ -2644,6 +2669,35 @@ void vk_temporal_resolve(uint3 thread_id : SV_DispatchThreadID)
                             : float4(1.0f, 0.0f, 0.0f, 1.0f);
 
     g_storage_2d[root.output_color_texture][pixel] = resolved;
+}
+
+// Each moments texel takes the 4x4 depth texels around its 2x2 footprint with
+// (1, 3, 3, 1) tent weights per axis, clamped at the map edge, and stores
+// their weighted EVSM moments.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_shadow_moments(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkShadowMomentsRoot *root = g_shadow_moments_push.root;
+    if (any(thread_id.xy >= uint2(root.moments_size, root.moments_size)))
+        return;
+    int2 origin = int2(thread_id.xy) * 2 - 1;
+    int last = int(root.depth_size) - 1;
+    float4 moments = 0.0f;
+    for (uint y = 0u; y < 4u; ++y)
+    {
+        for (uint x = 0u; x < 4u; ++x)
+        {
+            int2 texel = clamp(origin + int2(int(x), int(y)), 0, last);
+            float depth = g_depth_array_textures[root.depth_texture].Load(
+                int4(texel, int(root.depth_layer), 0));
+            moments += vkr_shadow_evsm_moments(depth) *
+                       (vkr_shadow_evsm_tent_weight(x) *
+                        vkr_shadow_evsm_tent_weight(y));
+        }
+    }
+    g_storage_images[root.moments_texture]
+                    [uint3(thread_id.xy, root.moments_layer)] = moments;
 }
 
 [shader("compute")]

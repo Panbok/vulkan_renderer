@@ -91,3 +91,68 @@ float vkr_shadow_pcss_filter_radius_texels(float reference_depth,
                      depth_span * sun_tan_half_angle / world_texel_size;
     return max(pcf_radius_texels, penumbra);
 }
+
+// Optional exponential variance shadow maps for the far cascades. Cascades
+// from VKR_SHADOW_EVSM_FIRST_CASCADE store (e^(c+ d), e^(2 c+ d), -e^(-c- d),
+// e^(-2 c- d)) at half the depth map's resolution, prefiltered by a 4x4 tent,
+// and receivers take one bilinear fetch in place of the PCF kernel. `d` is the
+// normalized orthographic depth remapped to [-1, 1]; the exponents keep every
+// moment finite in 32-bit storage.
+#define VKR_SHADOW_EVSM_FIRST_CASCADE 2u
+#define VKR_SHADOW_EVSM_POSITIVE_EXPONENT 40.0f
+#define VKR_SHADOW_EVSM_NEGATIVE_EXPONENT 5.0f
+// Scales the minimum variance with each warp's slope, in normalized depth.
+#define VKR_SHADOW_EVSM_DEPTH_BIAS 0.0001f
+// Fraction of the Chebyshev bound clipped to darkness, which removes light
+// bleeding where casters overlap at different depths.
+#define VKR_SHADOW_EVSM_LIGHT_BLEED_REDUCTION 0.2f
+
+float2 vkr_shadow_evsm_warp(float depth)
+{
+    float d = 2.0f * depth - 1.0f;
+    return float2(exp(VKR_SHADOW_EVSM_POSITIVE_EXPONENT * d),
+                  -exp(-VKR_SHADOW_EVSM_NEGATIVE_EXPONENT * d));
+}
+
+float4 vkr_shadow_evsm_moments(float depth)
+{
+    float2 warped = vkr_shadow_evsm_warp(depth);
+    return float4(warped.x, warped.x * warped.x, warped.y, warped.y * warped.y);
+}
+
+// One-sided Chebyshev bound of an occluder distribution's (mean, mean of
+// squares) against a warped receiver depth.
+float vkr_shadow_evsm_chebyshev(float2 moments, float receiver,
+                                float minimum_variance)
+{
+    if (receiver <= moments.x)
+        return 1.0f;
+    float variance = max(moments.y - moments.x * moments.x, minimum_variance);
+    float separation = receiver - moments.x;
+    float bound = variance / (variance + separation * separation);
+    return saturate((bound - VKR_SHADOW_EVSM_LIGHT_BLEED_REDUCTION) /
+                    (1.0f - VKR_SHADOW_EVSM_LIGHT_BLEED_REDUCTION));
+}
+
+// Visibility of a receiver at normalized depth `reference` from filtered
+// moments: the tighter of the positive and negative warps' bounds.
+float vkr_shadow_evsm_visibility(float4 moments, float reference)
+{
+    float2 warped = vkr_shadow_evsm_warp(reference);
+    float2 slope = VKR_SHADOW_EVSM_DEPTH_BIAS *
+        float2(VKR_SHADOW_EVSM_POSITIVE_EXPONENT,
+               VKR_SHADOW_EVSM_NEGATIVE_EXPONENT) * warped;
+    float2 minimum_variance = slope * slope;
+    float positive =
+        vkr_shadow_evsm_chebyshev(moments.xy, warped.x, minimum_variance.x);
+    float negative =
+        vkr_shadow_evsm_chebyshev(moments.zw, warped.y, minimum_variance.y);
+    return min(positive, negative);
+}
+
+// Tent weight (1, 3, 3, 1) / 8 of source offset `tap` in [0, 3] around a
+// half-resolution output texel whose 2x2 source footprint starts at tap 1.
+float vkr_shadow_evsm_tent_weight(uint tap)
+{
+    return (tap == 0u || tap == 3u) ? 0.125f : 0.375f;
+}

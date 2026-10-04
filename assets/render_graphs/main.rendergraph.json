@@ -187,6 +187,27 @@
       ]
     },
     {
+      "name": "shadow_moments",
+      "condition": "scene_rendering && shadow_evsm_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "shadow_moments_size"
+      },
+      "layers_source": "shadow_moments_layer_count",
+      "format": "R32G32B32A32_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "scene_color",
       "type": "image",
       "condition": "scene_rendering && editor_enabled",
@@ -2370,6 +2391,37 @@
       "execute": "pass.shadow.cascade"
     },
     {
+      "name": "Shadow.Moments.${i}",
+      "condition": "scene_rendering && shadow_evsm_active",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "repeat": {
+        "count_source": "shadow_moments_layer_count",
+        "condition_mask_source": "shadow_moments_render_mask"
+      },
+      "reads": [
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "shadow_moments",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "execute": "pass.shadow.moments"
+    },
+    {
       "name": "Shadow.Local.Clear.${i}",
       "condition": "scene_rendering && local_shadow_atlas_clear",
       "type": "graphics",
@@ -3990,6 +4042,12 @@
           "when": "shadow_cascades_active"
         },
         {
+          "image": "shadow_moments",
+          "access": "SAMPLED",
+          "binding": 17,
+          "when": "shadow_evsm_active"
+        },
+        {
           "image": "hdr_pre_transmission",
           "access": "STORAGE_READ",
           "binding": 6
@@ -4178,6 +4236,12 @@
           "access": "SAMPLED",
           "binding": 5,
           "when": "shadow_cascades_active"
+        },
+        {
+          "image": "shadow_moments",
+          "access": "SAMPLED",
+          "binding": 17,
+          "when": "shadow_evsm_active"
         },
         {
           "image": "hdr_pre_transmission",
@@ -4370,6 +4434,12 @@
           "when": "shadow_cascades_active"
         },
         {
+          "image": "shadow_moments",
+          "access": "SAMPLED",
+          "binding": 17,
+          "when": "shadow_evsm_active"
+        },
+        {
           "image": "scene_pre_transmission",
           "access": "STORAGE_READ",
           "binding": 6
@@ -4558,6 +4628,12 @@
           "access": "SAMPLED",
           "binding": 5,
           "when": "shadow_cascades_active"
+        },
+        {
+          "image": "shadow_moments",
+          "access": "SAMPLED",
+          "binding": 17,
+          "when": "shadow_evsm_active"
         },
         {
           "image": "scene_pre_transmission",

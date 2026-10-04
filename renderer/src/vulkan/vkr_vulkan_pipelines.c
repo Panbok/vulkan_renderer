@@ -1414,13 +1414,15 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, layered_tiles),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                local_shadow_mask_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, shadow_moments_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, visible_rows),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                subsurface_source_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, subsurface_profile_count),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, light_contribution),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, shadow_moments_sampler),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
-                               light_contribution_padding),
+                               light_contribution_reserved),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_atmosphere_fields[] = {
@@ -1460,6 +1462,16 @@ vkr_global const VkrVulkanReflectedField s_vk_hzb_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, destination_extent),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, source_is_depth),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanHzbRoot, reserved),
+};
+
+vkr_global const VkrVulkanReflectedField s_vk_shadow_moments_fields[] = {
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanShadowMomentsRoot, depth_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanShadowMomentsRoot, moments_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanShadowMomentsRoot, depth_layer),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanShadowMomentsRoot, moments_layer),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanShadowMomentsRoot, depth_size),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanShadowMomentsRoot, moments_size),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanShadowMomentsRoot, reserved),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_ssr_depth_base_fields[] = {
@@ -1815,6 +1827,9 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
     VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
                               "vk_hzb_build", s_vk_hzb_fields,
                               VkrVulkanHzbRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_SHADOW_MOMENTS_COMP_SPV,
+                              "vk_shadow_moments", s_vk_shadow_moments_fields,
+                              VkrVulkanShadowMomentsRoot),
     VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV,
                               "vk_ssr_depth_base", s_vk_ssr_depth_base_fields,
                               VkrVulkanSsrDepthBaseRoot),
@@ -2718,6 +2733,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV,
       VKR_VULKAN_PACKET_FSR31_STABILIZE_COMP_SPV,
       VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
+      VKR_VULKAN_PACKET_SHADOW_MOMENTS_COMP_SPV,
       VKR_VULKAN_PACKET_SSR_DEPTH_BASE_COMP_SPV,
       VKR_VULKAN_PACKET_SSR_DEPTH_MIP_COMP_SPV,
       VKR_VULKAN_PACKET_SSR_TRACE_COMP_SPV,
@@ -2792,6 +2808,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_fsr31_prepare",
       "vk_fsr31_stabilize",
       "vk_hzb_build",
+      "vk_shadow_moments",
       "vk_ssr_depth_base",
       "vk_ssr_depth_mip",
       "vk_ssr_trace",

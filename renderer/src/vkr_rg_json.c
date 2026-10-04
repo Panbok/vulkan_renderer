@@ -60,6 +60,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"local_shadow_atlas_clear",
      VKR_RG_JSON_CONDITION_LOCAL_SHADOW_ATLAS_CLEAR},
     {"shadow_cascades_active", VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE},
+    {"shadow_evsm_active", VKR_RG_JSON_CONDITION_SHADOW_EVSM_ACTIVE},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
@@ -2080,6 +2081,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
            frame->local_shadow_atlas_clear_mask != 0u;
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE:
     return frame->shadow_cascade_count > 0u;
+  case VKR_RG_JSON_CONDITION_SHADOW_EVSM_ACTIVE:
+    return frame->shadow_evsm_active && frame->shadow_moments_layer_count > 0u;
   case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
     return frame->sdsm_enabled;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING:
@@ -2260,6 +2263,11 @@ vkr_internal bool8_t vkr_rg_json_repeat_count(
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->count_source,
+                                "shadow_moments_layer_count")) {
+    *out_count = frame->shadow_moments_layer_count;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->count_source,
                                 "hzb_reduce_pass_count")) {
     *out_count = frame->hzb_reduce_pass_count;
     return true_v;
@@ -2319,6 +2327,12 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
   if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
                                 "shadow_cascade_render_mask")) {
     *out_enabled = repeat_index < 32u && (frame->shadow_cascade_render_mask &
+                                          (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "shadow_moments_render_mask")) {
+    *out_enabled = repeat_index < 32u && (frame->shadow_moments_render_mask &
                                           (UINT32_C(1) << repeat_index)) != 0u;
     return true_v;
   }
@@ -2416,6 +2430,12 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
       *out_height = frame->shadow_map_size;
       return true_v;
     }
+    if (vkr_string8_equals_cstr_i(&extent->size_source,
+                                  "shadow_moments_size")) {
+      *out_width = Max(frame->shadow_map_size / 2u, 1u);
+      *out_height = Max(frame->shadow_map_size / 2u, 1u);
+      return true_v;
+    }
     log_error("RenderGraph JSON: unknown square size source '%.*s'",
               (int)extent->size_source.length, extent->size_source.str);
     return false_v;
@@ -2455,6 +2475,11 @@ vkr_internal bool8_t vkr_rg_json_resolve_layers(
       // Allocation capacity must not shrink while early async packets omit
       // shadow work; active pass repetition uses shadow_cascade_count.
       *out_layers = Max(frame->shadow_map_layer_count, 1u);
+      return true_v;
+    }
+    if (vkr_string8_equals_cstr_i(&desc->layers_source,
+                                  "shadow_moments_layer_count")) {
+      *out_layers = Max(frame->shadow_moments_layer_count, 1u);
       return true_v;
     }
     if (vkr_string8_equals_cstr_i(&desc->layers_source,

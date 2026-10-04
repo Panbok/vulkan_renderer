@@ -22,6 +22,9 @@ typedef struct VkrGraphicsSettings {
   /* Screen-space contact shadows for the nearest local lights, on either
    * backend; the Epic preset enables them. */
   bool8_t contact_shadows;
+  /* Exponential variance moments filter the two farthest cascades instead of
+   * PCF; opt-in in every preset. */
+  bool8_t filtered_far_shadows;
   /* Largest loaded texture extent: 0 is 1024, 1 is 2048, 2 is full
    * resolution. Metal defaults to 2048 for the unified-memory floor
    * (ADR-083). Scene material textures reload when it changes; other

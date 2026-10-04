@@ -810,6 +810,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->transmission_compact_finalize_pipeline release];
   [renderer->picking_resolve_pipeline release];
   [renderer->hzb_build_pipeline release];
+  [renderer->shadow_moments_pipeline release];
   [renderer->sdsm_reduce_pipeline release];
   [renderer->subsurface_pipeline release];
   for (uint32_t i = 0u; i < ArrayCount(renderer->motion_blur_pipelines); ++i)

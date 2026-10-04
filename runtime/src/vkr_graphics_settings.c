@@ -91,6 +91,11 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .tooltip = "Soften shadow edges",
      .offset = GRAPHICS_OFFSET(soft_shadows),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "filtered_far_shadows",
+     .label = "Filtered far shadows",
+     .tooltip = "Smooth distant sun shadows with filtered shadow maps",
+     .offset = GRAPHICS_OFFSET(filtered_far_shadows),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "local_shadows",
      .label = "Local light shadows",
      .tooltip = "Enable shadows from nearby lights",
@@ -229,6 +234,7 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, soft_shadows) ||
+             offset == offsetof(VkrGraphicsSettings, filtered_far_shadows) ||
              offset == offsetof(VkrGraphicsSettings, local_shadows)) {
     if (settings->shadow_quality == 0u) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;

@@ -193,6 +193,10 @@ typedef struct VkrShadowConfig {
   /** Full-filter local lights widen their penumbra by their authored source
    * radius (the Soft shadows setting); false keeps the fixed filter. */
   bool8_t local_shadow_soft;
+  /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE also keep filtered
+   * exponential variance moments that deferred lighting samples instead of
+   * PCF (the Filtered far shadows setting). Opt-in; off in every preset. */
+  bool8_t far_cascade_evsm;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
   float32_t cascade_split_lambda;

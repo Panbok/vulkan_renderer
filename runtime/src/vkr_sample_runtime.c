@@ -410,6 +410,7 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
   application->shadow_config.local_shadow_contact = settings->contact_shadows;
   /* Soft shadows also covers local lights' authored source radii. */
   application->shadow_config.local_shadow_soft = settings->soft_shadows;
+  application->shadow_config.far_cascade_evsm = settings->filtered_far_shadows;
   const bool8_t temporal =
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
       settings->anti_aliasing;
@@ -481,6 +482,7 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       old.anti_aliasing != settings.anti_aliasing ||
       old.shadow_quality != settings.shadow_quality ||
       old.soft_shadows != settings.soft_shadows ||
+      old.filtered_far_shadows != settings.filtered_far_shadows ||
       old.local_shadows != settings.local_shadows ||
       old.contact_shadows != settings.contact_shadows ||
       old.ambient_occlusion != settings.ambient_occlusion ||

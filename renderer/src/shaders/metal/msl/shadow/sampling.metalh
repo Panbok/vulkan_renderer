@@ -17,6 +17,17 @@ constexpr sampler vkr_metal_shadow_raw_sampler(coord::normalized,
                                                address::clamp_to_edge,
                                                filter::nearest);
 
+// Far-cascade EVSM moments are prefiltered, so receivers fetch them bilinearly.
+constexpr sampler vkr_metal_shadow_moments_sampler(coord::normalized,
+                                                   address::clamp_to_edge,
+                                                   filter::linear);
+
+// Far-cascade EVSM moments for the receivers that sample them; a null pointer
+// keeps PCF for every cascade.
+struct VkrMetalShadowMoments {
+  texture2d_array<float, access::sample> map;
+};
+
 constexpr sampler vkr_metal_packet_cloud_shadow_sampler(coord::normalized,
                                                         address::clamp_to_edge,
                                                         filter::linear,
@@ -107,10 +118,10 @@ static VkrMetalPcssBlockers vkr_metal_shadow_pcss_blockers(
 }
 
 /** One cascade's visibility. `valid` is false when the receiver misses it. */
-static VkrMetalPacketShadowSample
-vkr_metal_packet_shadow_cascade_sample(constant VkrMetalPacketFrameRoot *root,
-                                       uint cascade, float3 world_position,
-                                       float3 normal, float n_dot_l) {
+static VkrMetalPacketShadowSample vkr_metal_packet_shadow_cascade_sample(
+    constant VkrMetalPacketFrameRoot *root, uint cascade, float3 world_position,
+    float3 normal, float n_dot_l,
+    const thread VkrMetalShadowMoments *moments = nullptr) {
   device const VkrMetalPacketShadowCascade &data =
       root->shadow_cascades[cascade];
   float texel = data.split_near_far_texel_depth.z;
@@ -137,6 +148,15 @@ vkr_metal_packet_shadow_cascade_sample(constant VkrMetalPacketFrameRoot *root,
   float bias_texels = root->shadow_receiver_bias_texels +
                       root->shadow_slope_bias_texels * slope;
   float reference = projected.z - bias_texels * texel / depth_span;
+
+  // Filtered far cascades take one bilinear moments fetch instead of PCF.
+  if (moments && cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE) {
+    float4 filtered = moments->map.sample(
+        vkr_metal_shadow_moments_sampler, uv,
+        cascade - VKR_SHADOW_EVSM_FIRST_CASCADE);
+    return {vkr_shadow_evsm_visibility(filtered, reference), 1.0, cascade,
+            true};
+  }
 
   float inv_size = data.origin_inv_size_sun.z;
   float map_size = 1.0 / inv_size;
@@ -198,7 +218,7 @@ vkr_metal_packet_shadow_cascade_sample(constant VkrMetalPacketFrameRoot *root,
 
 VkrMetalPacketShadowSample vkr_metal_packet_directional_shadow_sample(
     constant VkrMetalPacketFrameRoot *root, float3 world_position,
-    float3 normal) {
+    float3 normal, const thread VkrMetalShadowMoments *moments = nullptr) {
   if (root->shadow_cascade_count == 0u || root->shadow_cascades == nullptr)
     return {1.0, 1.0, 0u, false};
   float view_depth = abs((root->view * float4(world_position, 1.0)).z);
@@ -221,7 +241,7 @@ VkrMetalPacketShadowSample vkr_metal_packet_directional_shadow_sample(
   float3 light = normalize(-root->directional_direction_enabled.xyz);
   float n_dot_l = dot(normal, light);
   VkrMetalPacketShadowSample sample = vkr_metal_packet_shadow_cascade_sample(
-      root, cascade, world_position, normal, n_dot_l);
+      root, cascade, world_position, normal, n_dot_l, moments);
 
   // Cross-fade over the last `blend_fraction` of this cascade's span. Outside
   // the band exactly one cascade is sampled, so the seam cost is confined to
@@ -232,7 +252,7 @@ VkrMetalPacketShadowSample vkr_metal_packet_directional_shadow_sample(
     if (band > 0.0 && view_depth > slice.y - band) {
       float t = saturate((view_depth - (slice.y - band)) / band);
       VkrMetalPacketShadowSample next = vkr_metal_packet_shadow_cascade_sample(
-          root, cascade + 1u, world_position, normal, n_dot_l);
+          root, cascade + 1u, world_position, normal, n_dot_l, moments);
       sample.factor = mix(sample.factor, next.factor, t);
     }
   }

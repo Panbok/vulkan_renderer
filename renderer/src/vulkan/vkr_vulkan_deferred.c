@@ -1543,6 +1543,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   if (vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u) &&
       !vkr_vk_deferred_storage_index(renderer, pass, 16u, &local_shadow_mask))
     return false_v;
+  uint32_t shadow_moments = UINT32_MAX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 17u, 0u) &&
+      !vkr_vk_deferred_sampled_index(renderer, pass, 17u, &shadow_moments))
+    return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
                                         packet->input.globals.view);
@@ -1620,10 +1624,12 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .layered_tiles =
           renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u,
       .local_shadow_mask_texture = local_shadow_mask,
+      .shadow_moments_texture = shadow_moments,
       .visible_rows = visible->buffer.address,
       .light_contribution = slot->light_contribution_requested
                                 ? slot->light_contribution.address
                                 : 0u,
+      .shadow_moments_sampler = renderer->transmission_sampler_slot,
       .subsurface_source_texture = subsurface_source,
       .subsurface_profile_count =
           renderer->prepared_frame.subsurface_enabled &&
@@ -1773,6 +1779,41 @@ bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
     prepared->groups[prepared->dispatch_count][2] = 1u;
     prepared->dispatch_count++;
   }
+  return true_v;
+}
+
+bool8_t vkr_vk_prepare_shadow_moments(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass) {
+  const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  VkrVulkanGraphImageInstance *moments =
+      write ? vkr_vk_deferred_image(renderer, write->image) : NULL;
+  uint32_t depth_index = 0u, moments_index = 0u;
+  if (!moments || !write->has_slice ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &depth_index) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 1u, &moments_index))
+    return false_v;
+  /* The repeat index names the moments layer; its cascade follows the first
+     filtered cascade. */
+  const uint32_t layer = write->slice.base_layer;
+  const VkrVulkanShadowMomentsRoot root = {
+      .depth_texture = depth_index,
+      .moments_texture = moments_index,
+      .depth_layer = layer + VKR_SHADOW_EVSM_FIRST_CASCADE,
+      .moments_layer = layer,
+      .depth_size = renderer->prepared_frame.shadow_map_size,
+      .moments_size = moments->image.width,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanShadowMomentsRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SHADOW_MOMENTS];
+  prepared->groups[prepared->dispatch_count][0] = (root.moments_size + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] = (root.moments_size + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
   return true_v;
 }
 

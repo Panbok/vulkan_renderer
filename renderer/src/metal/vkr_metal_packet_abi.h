@@ -371,6 +371,19 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
 _Static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
                "Metal HZB build root ABI must remain 48 bytes");
 
+/** Builds one far cascade's EVSM moments layer from its depth layer. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowMomentsRoot {
+  uint64_t depth_texture_id;
+  uint64_t moments_texture_id;
+  uint32_t depth_layer;
+  uint32_t moments_layer;
+  uint32_t depth_size;
+  uint32_t moments_size;
+} VkrMetalPacketShadowMomentsRoot;
+
+_Static_assert(sizeof(VkrMetalPacketShadowMomentsRoot) == 32,
+               "Metal shadow moments root ABI must remain 32 bytes");
+
 /** Explicit-subresource GTAO depth prefilter/reduction root. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketGtaoDepthRoot {
   VkrGtaoGpuParams params;
@@ -1073,8 +1086,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
   /** Per-light visible contribution counters (VkrLocalLightContributionSample)
    * in the slot readback, or zero when not measured. */
   uint64_t light_contribution;
-  /** Keeps the shader's size at the host's 16-byte-aligned 256 bytes. */
-  uint64_t reserved_tail;
+  /** Far-cascade EVSM moments array, or zero without filtered far cascades. */
+  uint64_t shadow_moments_texture_id;
 } VkrMetalPacketDeferredLightingRoot;
 _Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
                         subsurface_source_texture_id) == 232u &&
@@ -1100,6 +1113,9 @@ _Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot, visible_rows) ==
 _Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
                         light_contribution) == 240u,
                "Metal deferred light-contribution ABI offset drift");
+_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
+                        shadow_moments_texture_id) == 248u,
+               "Metal deferred shadow-moments ABI offset drift");
 _Static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 256u,
                "Metal deferred-lighting root ABI must remain 256 bytes");
 
@@ -1425,6 +1441,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT,
   VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
+  VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT,
   VKR_METAL_PACKET_ABI_SDSM_ROOT,
   VKR_METAL_PACKET_ABI_EXPOSURE_ROOT,
   VKR_METAL_PACKET_ABI_SUBSURFACE_PARAMS,

@@ -159,6 +159,16 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           frame->local_shadow_map_size, frame->local_shadow_map_layer_count);
   frame->shadow_cascade_render_mask =
       packet->input.shadow ? packet->input.shadow->cascade_render_mask : 0u;
+  frame->shadow_evsm_active =
+      packet->input.shadow && packet->input.shadow->evsm_enabled;
+  frame->shadow_moments_layer_count =
+      frame->shadow_evsm_active
+          ? frame->shadow_cascade_count - VKR_SHADOW_EVSM_FIRST_CASCADE
+          : 0u;
+  frame->shadow_moments_render_mask =
+      frame->shadow_evsm_active
+          ? frame->shadow_cascade_render_mask >> VKR_SHADOW_EVSM_FIRST_CASCADE
+          : 0u;
 
   /* Exact-grid history reuse is useful for stable unjittered samples. Avoid
      producing depth history while temporal jitter changes that grid. */
@@ -382,6 +392,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
     [VKR_RG_EXECUTOR_SDSM_REDUCE] = {"pass.sdsm.reduce",
                                      VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_HZB_BUILD] = {"pass.hzb.build", VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SHADOW_MOMENTS] = {"pass.shadow.moments",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_FULLSCREEN] =
         {"pass.copy.pre_transmission.fullscreen", VKR_RG_PASS_TYPE_TRANSFER},
     [VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR] =

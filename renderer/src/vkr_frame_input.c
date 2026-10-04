@@ -799,6 +799,12 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.cascade_render_mask",
                         "contains a bit outside cascade_count");
+    if (shadow->evsm_enabled > 1u ||
+        (shadow->evsm_enabled &&
+         shadow->cascade_count <= VKR_SHADOW_EVSM_FIRST_CASCADE))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.evsm_enabled",
+                        "requires a cascade past the first EVSM cascade");
     /* The receiver hot path indexes the Poisson table and divides by the
        per-cascade depth span with no recovery branch, so every value it trusts
        is proven here instead. */

@@ -500,8 +500,13 @@ VkrVkPcssBlockers packet_shadow_pcss_blockers(
 }
 
 /** One cascade's visibility. Returns 1.0 where the receiver misses it. */
+// No far-cascade EVSM moments: every cascade filters its depth with PCF.
+#define VKR_VK_SHADOW_MOMENTS_NONE 0xFFFFFFFFu
+
 float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
-                            float3 world_position, float3 normal, float n_dot_l)
+                            float3 world_position, float3 normal, float n_dot_l,
+                            uint moments_texture = VKR_VK_SHADOW_MOMENTS_NONE,
+                            uint moments_sampler = 0u)
 {
     VkrVulkanShadowCascade data = root.shadow_cascades[cascade];
     float texel = data.split_near_far_texel_depth.z;
@@ -530,6 +535,16 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
     float bias_texels = root.shadow_receiver_bias_texels +
                         root.shadow_slope_bias_texels * slope;
     float reference = projected.z - bias_texels * texel / depth_span;
+
+    // Filtered far cascades take one bilinear moments fetch instead of PCF.
+    if (moments_texture != VKR_VK_SHADOW_MOMENTS_NONE &&
+        cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE)
+    {
+        float4 moments = g_array_textures[moments_texture].SampleLevel(
+            g_samplers[moments_sampler],
+            float3(uv, float(cascade - VKR_SHADOW_EVSM_FIRST_CASCADE)), 0.0f);
+        return vkr_shadow_evsm_visibility(moments, reference);
+    }
 
     float inv_size = data.origin_inv_size_sun.z;
     float2 rotation = packet_shadow_kernel_rotation(
@@ -579,7 +594,9 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
 }
 
 float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
-                                float3 world_position, float3 normal)
+                                float3 world_position, float3 normal,
+                                uint moments_texture = VKR_VK_SHADOW_MOMENTS_NONE,
+                                uint moments_sampler = 0u)
 {
     if (root.shadow_cascade_count == 0u)
         return 1.0f;
@@ -603,8 +620,9 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
 
     float n_dot_l =
         dot(normal, normalize(-root.directional_direction_enabled.xyz));
-    float factor =
-        packet_shadow_cascade(root, cascade, world_position, normal, n_dot_l);
+    float factor = packet_shadow_cascade(root, cascade, world_position, normal,
+                                         n_dot_l, moments_texture,
+                                         moments_sampler);
 
     // Cross-fade over the last `blend_fraction` of this cascade's span. Outside
     // the band exactly one cascade is sampled, so the seam cost is confined to
@@ -617,7 +635,9 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
         {
             float t = saturate((view_depth - (slice.y - band)) / band);
             float next = packet_shadow_cascade(root, cascade + 1u,
-                                               world_position, normal, n_dot_l);
+                                               world_position, normal, n_dot_l,
+                                               moments_texture,
+                                               moments_sampler);
             factor = lerp(factor, next, t);
         }
     }

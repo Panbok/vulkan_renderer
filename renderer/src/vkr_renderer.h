@@ -1009,6 +1009,10 @@ typedef struct VkrPresentTargetImageState {
 typedef struct VkrRetainedShadowToken {
   uint64_t resource_generation;
   uint32_t valid_layer_mask;
+  /** Cascades, a bit each at their cascade index, whose far-cascade EVSM
+   * moments hold content derived from their retained depth; zero while the
+   * moments image does not exist. */
+  uint32_t moments_valid_cascade_mask;
 } VkrRetainedShadowToken;
 
 /** Proven retained state of the local-shadow cache, which every frame in

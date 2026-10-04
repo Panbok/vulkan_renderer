@@ -126,6 +126,13 @@ vkr_internal bool8_t vkr_harness_camera_fields(
   return true_v;
 }
 
+bool8_t vkr_harness_shadow_evsm_enabled(void) {
+  /* A cold process option every child inherits, like VKR_SSR_QUALITY, so the
+     stored case and capture-summary layouts stay unchanged. */
+  const char *evsm = getenv("VKR_SHADOW_EVSM");
+  return evsm && string_equals(evsm, "1");
+}
+
 bool8_t
 vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
   /* Mirrors vkr_renderer_prepare_frame_data: the renderer filters
@@ -173,6 +180,9 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
       renderer->shadow_cascades, renderer->shadow_pcf_samples,
       renderer->shadow_split_lambda, renderer->shadow_map_size,
       renderer->shadow_pcf_early_out, renderer->shadow_sdsm);
+  /* Off keeps the identity cases had before far-cascade EVSM existed. */
+  if (vkr_harness_shadow_evsm_enabled())
+    ADD("renderer.shadow_evsm", "%u", 1u);
   ADD("renderer.render_mode", "%s", renderer->render_mode);
   ADD("renderer.display_transform", "%s", renderer->display_transform);
   ADD("renderer.white_balance", "%.9g,%.9g",

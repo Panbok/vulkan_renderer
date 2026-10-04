@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-05
 authority: adr
 ---
 
@@ -716,6 +716,18 @@ raw blocker samples and at most sixteen comparison-filter samples. Metal
 hard/default/wide-sun captures and API validation pass; native Vulkan receiver
 execution and bilateral output comparison remain unavailable. ADR-041 records
 the authored units, fallback and acceptance evidence.
+
+Far-cascade EVSM shares its warp, tent weights and Chebyshev visibility through
+`shadow_kernel.slangh` (`vkr_shadow_evsm_*`). Both moments passes
+(`pass.shadow.moments`) use a 32-byte root: depth and moments references, depth
+and moments layers, and the two square sizes. Metal binds 64-bit resource IDs
+at bytes 0 and 8, Vulkan bindless indices at 0 and 4. The deferred-lighting roots
+keep their sizes: Vulkan reuses bytes 172 for the moments index and 200 for the
+linear-sampler slot, Metal stores the moments texture at byte 248, and a null
+texture or `UINT32_MAX` keeps PCF. Vulkan's compiled-SPIR-V reflection test
+covers both roots. Metal captures and API validation pass; native Vulkan
+execution and bilateral comparison remain unavailable, so this domain is
+**UNALIGNED**.
 
 Directional GTAO keeps the existing 192-byte parameter record and native roots:
 Metal depth/evaluate/denoise are 224/256/240 bytes; Vulkan uses its existing

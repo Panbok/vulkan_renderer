@@ -1271,8 +1271,8 @@ struct VkrMetalPacketDeferredLightingRoot {
   texture2d<float, access::write> subsurface_source;
   // Per-light visible contribution counters, or null when not measured.
   device atomic_uint *light_contribution;
-  // Keeps the size at the host's 16-byte-aligned 256 bytes.
-  ulong reserved_tail;
+  // Far-cascade EVSM moments, one layer per filtered cascade, or null.
+  texture2d_array<float, access::sample> shadow_moments;
 };
 
 static float3 vkr_metal_packet_octahedral_decode(float2 encoded) {
@@ -1753,14 +1753,18 @@ static void vkr_metal_packet_deferred_shade(
     bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                     dot(normal, sun_direction) < 0.0f;
     float cloud_shadow = vkr_metal_packet_cloud_shadow(frame, world_position);
+    VkrMetalShadowMoments shadow_moments = {root.shadow_moments};
+    const thread VkrMetalShadowMoments *moments =
+        is_null_texture(root.shadow_moments) ? nullptr : &shadow_moments;
     float base_shadow = vkr_metal_packet_directional_shadow_sample(
-                            frame, world_position, back_lit ? -normal : normal)
+                            frame, world_position, back_lit ? -normal : normal,
+                            moments)
                             .factor *
                         cloud_shadow;
     float layer_shadow = base_shadow;
     if (back_lit && clearcoat_active)
       layer_shadow = vkr_metal_packet_directional_shadow_sample(
-                         frame, world_position, normal)
+                         frame, world_position, normal, moments)
                          .factor *
                      cloud_shadow;
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
@@ -3384,6 +3388,39 @@ kernel void vkr_metal_packet_hzb_build(constant VkrMetalPacketHzbBuildRoot &root
   root.destination.write(float4(maximum_depth), pixel);
 }
 
+// One far cascade's EVSM moments layer, built from its depth layer.
+struct VkrMetalPacketShadowMomentsRoot {
+  depth2d_array<float, access::read> depth;
+  texture2d_array<float, access::write> moments;
+  uint depth_layer;
+  uint moments_layer;
+  uint depth_size;
+  uint moments_size;
+};
+
+// Each moments texel takes the 4x4 depth texels around its 2x2 footprint with
+// (1, 3, 3, 1) tent weights per axis, clamped at the map edge, and stores
+// their weighted EVSM moments.
+kernel void vkr_metal_packet_shadow_moments(
+    constant VkrMetalPacketShadowMomentsRoot &root [[buffer(0)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+  if (any(pixel >= uint2(root.moments_size)))
+    return;
+  int2 origin = int2(pixel) * 2 - 1;
+  int last = int(root.depth_size) - 1;
+  float4 moments = 0.0;
+  for (uint y = 0u; y < 4u; ++y) {
+    for (uint x = 0u; x < 4u; ++x) {
+      int2 texel = clamp(origin + int2(int(x), int(y)), 0, last);
+      float depth = root.depth.read(uint2(texel), root.depth_layer);
+      moments += vkr_shadow_evsm_moments(depth) *
+                 (vkr_shadow_evsm_tent_weight(x) *
+                  vkr_shadow_evsm_tent_weight(y));
+    }
+  }
+  root.moments.write(moments, pixel, root.moments_layer);
+}
+
 struct VkrMetalPacketSdsmState {
   atomic_uint min_device_z_bits;
   atomic_uint max_device_z_bits;
@@ -3443,6 +3480,8 @@ static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
               "GPU draw view ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
               "HZB build root ABI must remain 48 bytes");
+static_assert(sizeof(VkrMetalPacketShadowMomentsRoot) == 32,
+              "Shadow moments root ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketSdsmRoot) == 32,
               "SDSM root ABI must remain 32 bytes");
 static_assert(sizeof(VkrMetalPacketSdsmState) == 16,

@@ -671,6 +671,12 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t shadow_cascade_count;
   /** Bits of repeated shadow passes that must be instantiated this frame. */
   uint32_t shadow_cascade_render_mask;
+  /** Far cascades keep EVSM moments, one layer per cascade from
+   * VKR_SHADOW_EVSM_FIRST_CASCADE; the render mask shifted to those layers
+   * selects the moments a redrawn cascade rebuilds. */
+  bool8_t shadow_evsm_active;
+  uint32_t shadow_moments_layer_count;
+  uint32_t shadow_moments_render_mask;
   /** Local shadow views receivers sample. */
   uint32_t local_shadow_view_count;
   /** Transmission array layers receivers sample; zero without refractive

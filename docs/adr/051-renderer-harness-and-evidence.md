@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-05
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -193,7 +193,9 @@ Any other file, or a `.vkt` without a source hash, hashes its bytes. Outside a
 managed workspace the child applies the scene's editor overrides,
 `<scene>.editor.json`, after the scene resolves, as the application runtime
 does, and fails the repetition when they do not load; the closure includes that
-file when it exists, so overrides change the digest. A change of
+file when it exists, so overrides change the digest. `VKR_SHADOW_EVSM=1`
+enables far-cascade EVSM (ADR-041) in every child, like `VKR_SSR_QUALITY`, and
+adds `renderer.shadow_evsm` to the workload fingerprint only when set. A change of
 block encoder on one host therefore shows in the pixel comparison rather than in
 the fingerprint. Introducing this identity on 2026-10-03 changed every workload
 fingerprint once, so each accepted generation needs one re-acceptance on the

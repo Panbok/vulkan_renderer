@@ -790,6 +790,9 @@ bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
 /** Whether the case's frames use the display-linear post target (ADR-043). */
 bool8_t
 vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest);
+/** Whether VKR_SHADOW_EVSM=1 enables far-cascade EVSM for every child; the
+ * workload fingerprint records it only when enabled. */
+bool8_t vkr_harness_shadow_evsm_enabled(void);
 bool8_t vkr_harness_case_fingerprints(
     const char *repo_root, VkrHarnessTool tool,
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,

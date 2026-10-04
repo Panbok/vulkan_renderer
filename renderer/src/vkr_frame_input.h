@@ -524,6 +524,10 @@ vkr_local_shadow_render_layer_mask(const VkrLocalShadowPassPayload *payload) {
 typedef struct VkrShadowPassPayload {
   uint32_t cascade_count;
   bool8_t sdsm_enabled;
+  /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE keep filtered exponential
+   * variance moments that deferred lighting samples instead of PCF; requires
+   * cascade_count above that cascade. */
+  bool8_t evsm_enabled;
   /** Bit i is set only when cascade i must execute its graph pass. */
   uint32_t cascade_render_mask;
   VkrShadowCascadePacketData cascades[VKR_SHADOW_CASCADE_COUNT_MAX];

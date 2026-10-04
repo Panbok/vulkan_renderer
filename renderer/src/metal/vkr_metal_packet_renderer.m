@@ -815,6 +815,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> transmission_compact_finalize_pipeline;
   id<MTLComputePipelineState> picking_resolve_pipeline;
   id<MTLComputePipelineState> hzb_build_pipeline;
+  id<MTLComputePipelineState> shadow_moments_pipeline;
   id<MTLComputePipelineState> sdsm_reduce_pipeline;
   id<MTLComputePipelineState> exposure_clear_pipeline;
   id<MTLComputePipelineState> exposure_histogram_pipeline;

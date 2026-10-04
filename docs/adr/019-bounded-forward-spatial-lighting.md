@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-05
 authority: adr
 ---
 

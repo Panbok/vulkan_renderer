@@ -133,6 +133,8 @@
 #define VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV                            \
   "packet.temporal_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
+#define VKR_VULKAN_PACKET_SHADOW_MOMENTS_COMP_SPV                              \
+  "packet.shadow_moments.comp.spv"
 #define VKR_VULKAN_PACKET_SDSM_REDUCE_COMP_SPV "packet.sdsm_reduce.comp.spv"
 #define VKR_VULKAN_PACKET_EXPOSURE_CLEAR_COMP_SPV                              \
   "packet.exposure_clear.comp.spv"
@@ -386,6 +388,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE,
   VKR_VULKAN_DEFERRED_PIPELINE_FSR31_STABILIZE,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
+  VKR_VULKAN_DEFERRED_PIPELINE_SHADOW_MOMENTS,
   VKR_VULKAN_DEFERRED_PIPELINE_SSR_DEPTH_BASE,
   VKR_VULKAN_DEFERRED_PIPELINE_SSR_DEPTH_MIP,
   VKR_VULKAN_DEFERRED_PIPELINE_SSR_TRACE,
@@ -757,14 +760,17 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t layered_tiles;
   /* Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot. */
   uint32_t local_shadow_mask_texture;
-  uint32_t visible_rows_padding;
+  /* Far-cascade EVSM moments array, or UINT32_MAX without filtered far
+     cascades; sampled through `shadow_moments_sampler`. */
+  uint32_t shadow_moments_texture;
   uint64_t visible_rows;
   uint32_t subsurface_source_texture;
   uint32_t subsurface_profile_count;
   /** Per-light contribution counters (VkrLocalLightContributionSample), or
    * zero when this frame does not measure them. */
   uint64_t light_contribution;
-  uint64_t light_contribution_padding;
+  uint32_t shadow_moments_sampler;
+  uint32_t light_contribution_reserved;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        184u &&
@@ -800,6 +806,20 @@ _Static_assert(
         offsetof(VkrVulkanLocalShadowMaskRoot, contact_noise_index) == 112u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, temporal_filter) == 116u,
     "Local shadow mask root ABI drift");
+
+/** Builds one far cascade's EVSM moments layer from its depth layer: a 4x4
+ * tent over the depth map at twice the moments' resolution. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanShadowMomentsRoot {
+  uint32_t depth_texture;
+  uint32_t moments_texture;
+  uint32_t depth_layer;
+  uint32_t moments_layer;
+  uint32_t depth_size;
+  uint32_t moments_size;
+  uint32_t reserved[2];
+} VkrVulkanShadowMomentsRoot;
+_Static_assert(sizeof(VkrVulkanShadowMomentsRoot) == 32u,
+               "Shadow moments root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanHzbRoot {
   uint32_t source_texture;
@@ -1777,6 +1797,12 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, direct_source_texture) == 144u &&
                "Deferred lighting-root SSGI/clearcoat ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, visible_rows) == 176u,
                "Deferred lighting-root visible-row ABI drift");
+_Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
+                       172u &&
+                   offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
+                       200u &&
+                   sizeof(VkrVulkanLightingRoot) == 208u,
+               "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
 _Static_assert(sizeof(VkrVulkanSsrDepthBaseRoot) == 304u &&
@@ -3242,6 +3268,9 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_shadow_moments(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_deferred_hzb(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass);

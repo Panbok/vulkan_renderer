@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-05
 authority: adr
 ---
 
@@ -99,6 +99,32 @@ runtime converts degrees once per frame. Changing this value changes receiver
 sampling and temporal radiance validity without invalidating retained depth maps.
 
 
+### Optional far-cascade EVSM
+
+The **Filtered far shadows** setting (`VkrShadowConfig.far_cascade_evsm`, off
+in every preset; `VKR_SHADOW_EVSM=1` for harness children) gives cascades from
+`VKR_SHADOW_EVSM_FIRST_CASCADE` (2) exponential variance moments. The shadow
+payload's `evsm_enabled` requires more cascades than that. The graph's
+`shadow_moments` image is `R32G32B32A32_SFLOAT` at half the depth map's side,
+one layer per filtered cascade, with no mip chain, retained per target image
+like `shadow_map`. `Shadow.Moments.${i}` runs only for a filtered cascade that
+redraws (`shadow_moments_render_mask`). Each moments texel takes the 4x4 depth
+texels around its 2x2 footprint with (1, 3, 3, 1) tent weights per axis and
+stores the weighted moments of the warps `exp(40 d)` and `-exp(-5 d)`, with
+`d` the normalized depth remapped to `[-1, 1]`. `Lighting.Deferred` samples a
+filtered cascade with one bilinear fetch and takes the smaller of the two
+one-sided Chebyshev bounds against the PCF reference depth. The minimum
+variance follows each warp's slope, and a 0.2 light-bleeding reduction clips
+the bound. Cascades 0 and 1, forward, transmission and froxel shading keep
+depth PCF/PCSS; the cascade cross-fade blends PCF and EVSM visibility.
+
+Moments derive from retained depth, so `VkrRetainedShadowToken` reports
+`moments_valid_cascade_mask` from the moments image's per-layer content
+validity, and a filtered cascade is reusable only with valid moments as well.
+Changing the setting or, with it on, the cascade count also discards the fit
+history so every target image redraws once. Off declares no image or pass and
+keeps the receivers' PCF path exactly.
+
 ## Consequences
 
 Fit and content retention reduce repeated work only when every reuse condition
@@ -122,7 +148,18 @@ measured. Point/spot shadows use ADR-019's independent bounded pool; arbitrary i
 
 Rendering every cascade is the safe forced-update control. Retaining allocation
 without content validity is insufficient. Two-phase visibility was declined in
-ADR-032; SDSM is not the default quality policy.
+ADR-032; SDSM is not the default quality policy. SDSM moves resolution but not
+raster or sampling work, and each fit change invalidates a retained cascade,
+so it does not lower current shadow cost.
+
+Full-resolution EVSM for every cascade was rejected: with mips, `RGBA32F` at
+2048² costs 85 MiB per cascade per target image, beyond the 16 GB Mac floor
+(ADR-083), and the near cascades already harden at contact through depth
+PCSS. EVSM for the local atlas was rejected too: an `RG32F` layer is four times
+the D16 layer, faces of 128 to 1024 texels need per-face blurs with gutters,
+hardware filtering across cube-face borders breaks the per-tap face remap, and
+one moments fetch cannot keep the per-tap combination of opaque depth and
+receiver-gated transmission (ADR-019).
 
 ## Contact-hardening evidence
 
@@ -150,10 +187,29 @@ retained light by 0.01, 0.03 and 5 degrees and stops it: nothing, cascade 0,
 and every cascade render, and a light repeated four times is adopted exactly. The static
 Bistro snapshot is unchanged.
 
+## Far-cascade EVSM evidence
+
+Metal Release on the M1 Pro, 2026-10-05, dirty tree, non-authoritative. With
+the setting off, the Bistro street capture is byte-identical to the capture
+before EVSM existed. `shadow_bistro_far_cascade_capture` (long street view,
+1280x720, no TAA) with `VKR_SHADOW_EVSM=1` changes 0.36% of pixels by more
+than 2 of 255 (maximum 50), along distant facades in cascades 2 and 3, with no
+visible acne or bleeding. `shadow_bistro_far_cascade_perf` under
+`local-offscreen-perf-audit-gpu` (five children of 300 frames) measured
+`Lighting.Deferred` at 3.65 ms against 3.68 ms p50 (spread 0.035 ms) and an
+unchanged frame. With a temporary diagnostic forcing every cascade to redraw,
+`Shadow.Moments.0` and `.1` each took 0.25 ms per redraw against 1.8–2.1 ms
+per cascade raster, which was unchanged. The moments add 32 MiB per target image
+at the High preset's 2048² maps. A Metal API validation run with the setting on
+passes. The Vulkan shader-ABI reflection test checks both roots against the
+compiled SPIR-V; native Vulkan execution remains unavailable.
+
 ## Revisit when
 
 A focused scene exposes containment, bias, transition or distance artifacts, or
-matched quality/cost evidence justifies changing defaults.
+matched quality/cost evidence justifies changing defaults. Make far-cascade
+EVSM a default only after grazing-angle captures show a quality gain over PCF,
+bleeding is inspected at overlapping casters, and native Vulkan matches.
 
 ## Implementation
 

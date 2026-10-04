@@ -1574,10 +1574,15 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         vkr_shadow_rendered_descriptor_equal(history, desired[cascade]);
     const bool8_t dynamic_forced =
         dynamic_scan_failed || desired_dynamic_overlap[cascade];
-    reusable[cascade] = (retained_token.valid_layer_mask & bit) != 0u &&
-                        descriptor_matches &&
-                        remaining_margin[cascade] >= 0.0f &&
-                        !publication_pending && !dynamic_forced;
+    /* A filtered far cascade also needs moments built from that depth. */
+    const bool8_t moments_required = system->config.far_cascade_evsm &&
+                                     cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE;
+    reusable[cascade] =
+        (retained_token.valid_layer_mask & bit) != 0u &&
+        (!moments_required ||
+         (retained_token.moments_valid_cascade_mask & bit) != 0u) &&
+        descriptor_matches && remaining_margin[cascade] >= 0.0f &&
+        !publication_pending && !dynamic_forced;
   }
 
   const uint32_t proactive_budget =

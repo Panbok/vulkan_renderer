@@ -6,6 +6,9 @@
 #define VKR_SHADOW_MAP_SIZE_DEFAULT 4096
 #define VKR_SHADOW_TARGET_IMAGE_COUNT_MAX 8
 #define VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT 4096
+/** First cascade that optional far-cascade EVSM filters; matches the shader
+ * kernel's VKR_SHADOW_EVSM_FIRST_CASCADE. */
+#define VKR_SHADOW_EVSM_FIRST_CASCADE 2u
 
 /**
  * @brief Tap counts the receiver kernel is built for.
