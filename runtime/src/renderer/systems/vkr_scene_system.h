@@ -968,6 +968,13 @@ typedef struct VkrScene {
       each player, set by the host before each update. */
   Vec3 stream_sources[VKR_SCENE_STREAM_SOURCES_MAX];
   uint32_t stream_source_count;
+  /** Origin rebase (ADR-086): document position = world position +
+      `origin_offset`. Nonzero only during Play past the rebase distance;
+      `origin_saved` holds each root's position from before the first shift,
+      so restoring is exact. */
+  Vec3 origin_offset;
+  struct SceneOriginSaved *origin_saved;
+  uint32_t origin_saved_count;
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
   /** Offset of this container's picking range; local render ids stay small
@@ -1150,6 +1157,14 @@ VkrSceneKeyLight vkr_scene_atmosphere_frame_key_light(VkrScene *scene);
  * @param dt Delta time (currently unused, reserved for future animation)
  */
 void vkr_scene_update(VkrScene *scene, float64_t dt);
+
+/* Moves every root entity by -`shift` metres and adds it to
+   `origin_offset`; the first shift remembers each root's position. The
+   caller moves physics (vkr_scene_physics_shift) and cameras with it. */
+bool8_t vkr_scene_shift_origin(VkrScene *scene, Vec3 shift);
+/* Puts every root remembered at the first shift back where it was, moves
+   roots made since by `origin_offset`, and returns the offset it undid. */
+Vec3 vkr_scene_restore_origin(VkrScene *scene);
 
 /* Replaces the scene's streaming sources with the first
    VKR_SCENE_STREAM_SOURCES_MAX of `sources`, in world space. */

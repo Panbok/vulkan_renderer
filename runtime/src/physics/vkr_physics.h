@@ -312,6 +312,10 @@ bool8_t vkr_physics_body_set_velocity(VkrPhysicsWorld *world,
 bool8_t vkr_physics_body_get_pose(VkrPhysicsWorld *world, VkrPhysicsBody body,
                                   VkrPhysicsPose *out_pose);
 bool8_t vkr_physics_step(VkrPhysicsWorld *world, float32_t dt);
+/* Moves every body and character by -`shift` metres, keeping rotations,
+   velocities and activation, as an origin rebase does between steps. */
+bool8_t vkr_physics_world_shift(VkrPhysicsWorld *world,
+                                const float32_t shift[3]);
 /* World gravity in m/s^2, applied from the next step; each component is
    finite and within 1000. Sleeping bodies wake. */
 bool8_t vkr_physics_world_set_gravity(VkrPhysicsWorld *world,

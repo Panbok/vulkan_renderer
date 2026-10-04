@@ -2269,6 +2269,71 @@ static void physics_reset_commit(VkrScene *scene,
   scene->render_full_sync_needed = true_v;
 }
 
+static void physics_shift_point(float32_t point[3], Vec3 shift) {
+  point[0] -= shift.x;
+  point[1] -= shift.y;
+  point[2] -= shift.z;
+}
+
+bool8_t vkr_scene_physics_shift(VkrScene *const *scenes, uint32_t count,
+                                Vec3 shift, const char **error) {
+  if (error) {
+    *error = NULL;
+  }
+  VkrPhysicsWorld *worlds[VKR_SCENE_PHYSICS_SET_MAX + 8u];
+  uint32_t world_count = 0u;
+  const float32_t offset[3] = {shift.x, shift.y, shift.z};
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrScenePhysics *physics = scenes[i] ? scenes[i]->physics : NULL;
+    if (!physics) {
+      continue;
+    }
+    if (physics->dispatching || scenes[i]->simulation.active) {
+      return physics_fail(error, "Rebase the origin between ticks");
+    }
+    bool8_t seen = false_v;
+    for (uint32_t w = 0; w < world_count && !seen; ++w) {
+      seen = worlds[w] == physics->world;
+    }
+    if (!seen && world_count < ArrayCount(worlds)) {
+      if (!vkr_physics_world_shift(physics->world, offset)) {
+        return physics_fail(error, vkr_physics_last_error(physics->world));
+      }
+      worlds[world_count++] = physics->world;
+    }
+    for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
+      physics_shift_point(body->previous_pose.position, shift);
+      physics_shift_point(body->current_pose.position, shift);
+      body->target_position = vec3_sub(body->target_position, shift);
+      body->authored_world.elements[12] -= shift.x;
+      body->authored_world.elements[13] -= shift.y;
+      body->authored_world.elements[14] -= shift.z;
+      /* A root's local position moved with the shift; a child's did not. */
+      const SceneTransform *transform =
+          vkr_scene_get_transform(scenes[i], body->entity);
+      if (transform && !transform->parent.u64) {
+        body->last_position = vec3_sub(body->last_position, shift);
+      }
+    }
+    for (uint32_t c = 0; c < ArrayCount(physics->characters); ++c) {
+      ScenePhysicsCharacter *character = &physics->characters[c];
+      if (!character->native) {
+        continue;
+      }
+      physics_shift_point(character->previous.foot_position, shift);
+      physics_shift_point(character->current.foot_position, shift);
+      character->spawn_foot = vec3_sub(character->spawn_foot, shift);
+    }
+    /* A reset rebuilds generated bodies from these copies. */
+    for (uint32_t g = 0; g < physics->generated_count; ++g) {
+      for (uint32_t c = 0; c < physics->generated[g].collider_count; ++c) {
+        physics_shift_point(physics->generated[g].colliders[c].position, shift);
+      }
+    }
+  }
+  return true_v;
+}
+
 bool8_t vkr_scene_physics_reset(VkrScene *scene, const char **error) {
   if (error) {
     *error = NULL;

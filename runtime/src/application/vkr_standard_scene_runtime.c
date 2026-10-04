@@ -1269,10 +1269,16 @@ vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
   }
 }
 
-/* Narrowing can round an offset just below the period up to it. */
+/* The wind offset plus the scene's origin rebase (ADR-086), so clouds stay
+   where the document puts them when the world moves under the camera,
+   wrapped into one period. Narrowing can round an offset just below the
+   period up to it. */
 vkr_internal float32_t
-vkr_standard_scene_runtime_cloud_offset(float64_t offset) {
-  const float32_t narrowed = (float32_t)offset;
+vkr_standard_scene_runtime_cloud_offset(float64_t offset, float32_t origin) {
+  const float64_t period = (float64_t)VKR_CLOUD_WIND_PERIOD_M;
+  float64_t wrapped = fmod(offset + (float64_t)origin, period);
+  wrapped = wrapped < 0.0 ? wrapped + period : wrapped;
+  const float32_t narrowed = (float32_t)wrapped;
   return narrowed < VKR_CLOUD_WIND_PERIOD_M ? narrowed : 0.0f;
 }
 
@@ -1316,9 +1322,11 @@ vkr_internal void vkr_standard_scene_runtime_prepare_environment(
       draw->sky_payload.clouds = active_scene->atmosphere.active_clouds;
       draw->sky_payload.cloud_wind_offset_m =
           vec2_new(vkr_standard_scene_runtime_cloud_offset(
-                       application->cloud_wind_offset_m[0]),
+                       application->cloud_wind_offset_m[0],
+                       active_scene->origin_offset.x),
                    vkr_standard_scene_runtime_cloud_offset(
-                       application->cloud_wind_offset_m[1]));
+                       application->cloud_wind_offset_m[1],
+                       active_scene->origin_offset.z));
       draw->sky_payload.transmittance = environment->atmosphere_transmittance;
       draw->sky_payload.multiple_scattering =
           environment->atmosphere_multiple_scattering;
@@ -1541,7 +1549,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           probe->source_cubemap;
       frame_ibl_probes[frame_ibl_probe_count++] = (VkrFrameIblProbe){
           .prefilter = probe->prefilter_cubemap,
-          .center = probe->center,
+          /* Probes are placed in document space (ADR-086). */
+          .center = vec3_sub(probe->center, active_scene->origin_offset),
           .extents = probe->extents,
           .blend_distance = probe->blend_distance,
           .weight = 1.0f,
@@ -1585,6 +1594,12 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
               ? active_scene->diffuse_volume
               : (VkrDiffuseVolumeBinding){0},
   };
+  /* The baked volume is placed in document space (ADR-086). */
+  if (active_scene) {
+    draw->frame_lighting.diffuse_volume.origin =
+        vec3_sub(draw->frame_lighting.diffuse_volume.origin,
+                 active_scene->origin_offset);
+  }
 }
 
 /* Assembles the frame input. Its payload pointers borrow `draw`, which the
@@ -1686,6 +1701,13 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
       .debug = draw->debug_ptr,
   };
 
+  /* Density boxes are placed in document space (ADR-086). */
+  for (uint32_t i = 0; active_scene && i < packet.globals.froxel_fog.box_count;
+       ++i) {
+    VkrFroxelDensityBox *box = &packet.globals.froxel_fog.boxes[i];
+    box->minimum = vec3_sub(box->minimum, active_scene->origin_offset);
+    box->maximum = vec3_sub(box->maximum, active_scene->origin_offset);
+  }
   if (application->disable_fog)
     packet.globals.fog.enabled = false_v;
   if (application->disable_volumetric_fog ||

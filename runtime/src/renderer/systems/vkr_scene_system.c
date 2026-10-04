@@ -1996,6 +1996,8 @@ vkr_internal void scene_arrays_shutdown(VkrScene *scene) {
   }
 }
 
+static void scene_origin_free(VkrScene *scene);
+
 void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   if (!scene || !vkr_scene_physics_mutations_allowed(scene))
     return;
@@ -2005,6 +2007,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
   vkr_scene_population_shutdown(scene);
   vkr_scene_terrain_shutdown(scene);
   vkr_scene_partition_shutdown(scene);
+  scene_origin_free(scene);
   vkr_scene_collision_layers_shutdown(scene);
   vkr_scene_animation_shutdown(scene);
   vkr_scene_models_shutdown(scene);
@@ -2071,6 +2074,97 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
     vkr_scene_physics_animation_delta(scene, 0.0);
     vkr_scene_physics_publish_bones(scene, true_v, NULL);
   }
+}
+
+typedef struct SceneOriginSaved {
+  VkrEntityId entity;
+  Vec3 position;
+} SceneOriginSaved;
+
+static void scene_origin_free(VkrScene *scene) {
+  if (scene->origin_saved) {
+    vkr_allocator_free(scene->alloc, scene->origin_saved,
+                       scene->origin_saved_count * sizeof(SceneOriginSaved),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  scene->origin_saved = NULL;
+  scene->origin_saved_count = 0u;
+}
+
+bool8_t vkr_scene_shift_origin(VkrScene *scene, Vec3 shift) {
+  if (!scene || !scene->world || !scene_compile_queries(scene)) {
+    return false_v;
+  }
+  const uint32_t living = scene->world->dir.living;
+  if (!scene->origin_saved && living) {
+    scene->origin_saved =
+        vkr_allocator_alloc(scene->alloc, living * sizeof(SceneOriginSaved),
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!scene->origin_saved) {
+      return false_v;
+    }
+    scene->origin_saved_count = 0u;
+    for (uint32_t i = 0; i < living; ++i) {
+      const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+      const SceneTransform *transform =
+          vkr_scene_entity_alive(scene, entity)
+              ? vkr_entity_get_component(scene->world, entity,
+                                         scene->comp_transform)
+              : NULL;
+      if (transform && !transform->parent.u64) {
+        scene->origin_saved[scene->origin_saved_count++] =
+            (SceneOriginSaved){entity, transform->position};
+      }
+    }
+  }
+  for (uint32_t i = 0; i < living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    SceneTransform *transform =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_entity_get_component_mut(scene->world, entity,
+                                           scene->comp_transform)
+            : NULL;
+    if (transform && !transform->parent.u64) {
+      transform->position = vec3_sub(transform->position, shift);
+      transform->flags |= SCENE_TRANSFORM_DIRTY_LOCAL;
+    }
+  }
+  scene->origin_offset = vec3_add(scene->origin_offset, shift);
+  vkr_scene_update_transforms(scene);
+  return true_v;
+}
+
+Vec3 vkr_scene_restore_origin(VkrScene *scene) {
+  const Vec3 offset = scene ? scene->origin_offset : vec3_zero();
+  if (!scene || !scene->world ||
+      (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f)) {
+    return vec3_zero();
+  }
+  const uint32_t living = scene->world->dir.living;
+  for (uint32_t i = 0; i < living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    SceneTransform *transform =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_entity_get_component_mut(scene->world, entity,
+                                           scene->comp_transform)
+            : NULL;
+    if (!transform || transform->parent.u64) {
+      continue;
+    }
+    Vec3 position = vec3_add(transform->position, offset);
+    for (uint32_t s = 0; s < scene->origin_saved_count; ++s) {
+      if (scene->origin_saved[s].entity.u64 == entity.u64) {
+        position = scene->origin_saved[s].position;
+        break;
+      }
+    }
+    transform->position = position;
+    transform->flags |= SCENE_TRANSFORM_DIRTY_LOCAL;
+  }
+  scene->origin_offset = vec3_zero();
+  scene_origin_free(scene);
+  vkr_scene_update_transforms(scene);
+  return offset;
 }
 
 void vkr_scene_set_stream_sources(VkrScene *scene, const Vec3 *sources,

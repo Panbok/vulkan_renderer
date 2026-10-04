@@ -97,8 +97,10 @@ void vkr_editor_partition_window_build(VkrEditorUi *editor,
      colour, documents waiting in the raised surface, proxies in the info
      colour. A click
      loads and pins a cell, or unloads a pinned one. */
-  const Vec3 at =
-      scene->stream_source_count ? scene->stream_sources[0] : vec3_zero();
+  /* Cells are in document space, which an origin rebase offsets. */
+  const Vec3 at = vec3_add(scene->stream_source_count ? scene->stream_sources[0]
+                                                      : vec3_zero(),
+                           scene->origin_offset);
   const VkrScenePartitionCell centre =
       vkr_scene_partition_cell_at(&settings, at);
   const float32_t map_w = width - PARTITION_PAD_PT * 2.0f;

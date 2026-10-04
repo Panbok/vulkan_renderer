@@ -207,6 +207,13 @@ void vkr_scene_physics_set_paused(VkrScene *scene, bool8_t paused);
 bool8_t vkr_scene_physics_is_paused(const VkrScene *scene);
 bool8_t vkr_scene_physics_step(VkrScene *scene, const char **error);
 bool8_t vkr_scene_physics_reset(VkrScene *scene, const char **error);
+/* Origin rebase (ADR-086): moves the physics of `scenes` by -`shift` metres
+   after their root entities moved by it: every native body and character
+   once per physics world, and each scene's interpolation poses, authored
+   world matrices, character states and generated colliders. Call between
+   ticks, never during event dispatch. */
+bool8_t vkr_scene_physics_shift(VkrScene *const *scenes, uint32_t count,
+                                Vec3 shift, const char **error);
 bool8_t vkr_scene_physics_set_disabled(VkrScene *scene, bool8_t disabled,
                                        const char **error);
 bool8_t vkr_scene_physics_is_disabled(const VkrScene *scene);

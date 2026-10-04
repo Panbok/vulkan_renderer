@@ -164,7 +164,10 @@ bool8_t vkr_scene_partition_entity_cell(const VkrScene *scene,
   }
   const SceneTransform *transform =
       vkr_entity_get_component(scene->world, root, scene->comp_transform);
-  *out = vkr_scene_partition_cell_at(settings, mat4_position(transform->world));
+  /* Cells are in document space, which an origin rebase offsets. */
+  *out = vkr_scene_partition_cell_at(
+      settings,
+      vec3_add(mat4_position(transform->world), scene->origin_offset));
   return true_v;
 }
 
@@ -228,7 +231,7 @@ static float32_t partition_distance(const VkrScene *scene,
   const float32_t z0 = (float32_t)cell.z * size;
   float32_t best = INFINITY;
   for (uint32_t i = 0; i < scene->stream_source_count; ++i) {
-    const Vec3 at = scene->stream_sources[i];
+    const Vec3 at = vec3_add(scene->stream_sources[i], scene->origin_offset);
     const float32_t dx = Max(0.0f, Max(x0 - at.x, at.x - (x0 + size)));
     const float32_t dz = Max(0.0f, Max(z0 - at.z, at.z - (z0 + size)));
     best = Min(best, sqrtf(dx * dx + dz * dz));

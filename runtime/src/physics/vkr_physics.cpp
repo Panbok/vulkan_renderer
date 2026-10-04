@@ -1047,6 +1047,28 @@ extern "C" bool8_t vkr_physics_body_set_enabled(VkrPhysicsWorld *world,
   return true_v;
 }
 
+extern "C" bool8_t vkr_physics_world_shift(VkrPhysicsWorld *world,
+                                           const float32_t shift[3]) {
+  if (!world || world->dispatching || !finite_vector(shift, 3)) {
+    return fail(world, "Invalid origin shift");
+  }
+  const JPH::Vec3 offset = vec(shift);
+  auto &bodies = world->system.GetBodyInterface();
+  for (const auto &slot : world->slots) {
+    if (slot.occupied) {
+      bodies.SetPosition(slot.id, bodies.GetPosition(slot.id) - offset,
+                         JPH::EActivation::DontActivate);
+    }
+  }
+  for (auto &slot : world->characters) {
+    if (slot.character) {
+      slot.character->SetPosition(slot.character->GetPosition() - offset);
+    }
+  }
+  world->system.OptimizeBroadPhase();
+  return true_v;
+}
+
 extern "C" bool8_t vkr_physics_body_set_pose(VkrPhysicsWorld *world,
                                              VkrPhysicsBody body,
                                              const float32_t position[3],

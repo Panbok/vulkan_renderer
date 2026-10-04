@@ -351,6 +351,68 @@ static void physics_test_generated(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* Origin rebase (ADR-086). Oracles: the floor stops a ray at the shifted
+ * place, a falling body keeps falling onto it after the shift instead of
+ * jumping back, and restoring returns a root to its exact authored bits. */
+static void physics_test_rebase(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 11, 16, NULL));
+  const char *error = NULL;
+  const VkrEntityId floor = physics_test_entity(&scene, vec3_zero());
+  const VkrPhysicsColliderDesc box = {.entity_id = floor.u64,
+                                      .shape = VKR_PHYSICS_BOX,
+                                      .position = {4100.3f, -0.5f, 0.0f},
+                                      .rotation = {0, 0, 0, 1},
+                                      .scale = {1, 1, 1},
+                                      .half_extent = {8, 0.5f, 8},
+                                      .enabled = true_v};
+  assert(vkr_scene_physics_generated_set(&scene, 1u, floor, &box, 1u, false_v,
+                                         &error));
+  const Vec3 marked = vec3_new(4100.123f, 0.0f, 7.77f);
+  const VkrEntityId marker = physics_test_entity(&scene, marked);
+  const VkrEntityId ball =
+      physics_test_entity(&scene, vec3_new(4100.7f, 3.0f, 0.3f));
+  VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  assert(vkr_scene_physics_apply(&scene, ball, &config, &error));
+  vkr_scene_update(&scene, 0.0);
+  for (uint32_t i = 0; i < 10u; ++i) {
+    assert(vkr_scene_physics_step(&scene, &error));
+  }
+  VkrPhysicsPose before;
+  assert(vkr_scene_physics_get_pose(&scene, ball, &before));
+
+  const Vec3 shift = vec3_new(4096.0f, 0.0f, 0.0f);
+  VkrScene *scenes[1] = {&scene};
+  assert(vkr_scene_shift_origin(&scene, shift));
+  assert(vkr_scene_physics_shift(scenes, 1u, shift, &error));
+  VkrPhysicsPose after;
+  assert(vkr_scene_physics_get_pose(&scene, ball, &after));
+  assert(fabsf(after.position[0] - (before.position[0] - 4096.0f)) < 1e-3f);
+  assert(fabsf(after.position[1] - before.position[1]) < 1e-4f);
+  VkrPhysicsRayHit hit;
+  assert(vkr_scene_physics_raycast(&scene, vec3_new(0.3f, 5.0f, -5.0f),
+                                   vec3_new(0.0f, -10.0f, 0.0f), &hit));
+  assert(hit.entity_id == floor.u64);
+  for (uint32_t i = 0; i < 120u; ++i) {
+    assert(vkr_scene_physics_step(&scene, &error));
+  }
+  vkr_scene_update(&scene, 0.0);
+  assert(vkr_scene_physics_get_pose(&scene, ball, &after));
+  assert(after.position[1] > 0.0f && after.position[1] < 1.0f &&
+         fabsf(after.position[0] - 4.7f) < 0.5f);
+
+  const Vec3 undone = vkr_scene_restore_origin(&scene);
+  assert(undone.x == 4096.0f);
+  assert(
+      vkr_scene_physics_shift(scenes, 1u, vec3_scale(undone, -1.0f), &error));
+  const SceneTransform *transform = vkr_scene_get_transform(&scene, marker);
+  assert(MemCompare(&transform->position, &marked, sizeof(marked)) == 0);
+  assert(vkr_scene_physics_raycast(&scene, vec3_new(4096.3f, 5.0f, -5.0f),
+                                   vec3_new(0.0f, -10.0f, 0.0f), &hit));
+  assert(hit.entity_id == floor.u64);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
   physics_test_descriptors();
@@ -361,6 +423,7 @@ bool32_t run_scene_physics_tests(void) {
   physics_test_world_gravity(&allocator);
   physics_test_empty_finalize(&allocator);
   physics_test_generated(&allocator);
+  physics_test_rebase(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));
   VkrEntityId owner = physics_test_entity(&scene, vec3_new(0, 10, 0));

@@ -36,6 +36,7 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "script/vkr_script_host.h"
 #include "vkr_renderer.h"
+#include <math.h>
 #include <stdio.h>
 
 #define VKR_FPS_UPDATE_INTERVAL 0.25
@@ -48,6 +49,10 @@
 #define VKR_SAMPLE_PARTITION_BUDGET_MS 2.0
 /* Cells one partition.load may load at once. */
 #define VKR_SAMPLE_PARTITION_REQUEST_MAX 1024u
+/* Origin rebase (ADR-086): during Play, a camera this many metres from the
+   origin along X or Z moves every container back by whole steps. */
+#define VKR_SAMPLE_REBASE_DISTANCE 4096.0f
+#define VKR_SAMPLE_REBASE_STEP 1024.0f
 
 static VkrSampleRuntimePreferences
 sample_preferences_snapshot(VkrStandardSceneRuntime *application);
@@ -3560,8 +3565,10 @@ static void sample_partition_proxies(VkrScene *scene,
             string8_create_from_cstr((const uint8_t *)name, strlen(name))) &&
         vkr_scene_set_transform(
             scene, proxy,
-            vec3_new((float32_t)record->cell.x * settings->cell_size, 0.0f,
-                     (float32_t)record->cell.z * settings->cell_size),
+            vec3_sub(vec3_new((float32_t)record->cell.x * settings->cell_size,
+                              0.0f,
+                              (float32_t)record->cell.z * settings->cell_size),
+                     scene->origin_offset),
             vkr_quat_identity(), vec3_one()) &&
         vkr_scene_request_model(scene, scene->assets, proxy, &desc, &error);
     if (!ok) {
@@ -3746,6 +3753,109 @@ static void sample_partition_session(VkrStandardSceneRuntime *application,
   sample_partition_routed(structure != scene->structure_revision);
 }
 
+/* The loaded containers: the open scene, the root World and the added
+   scenes. */
+static uint32_t sample_containers(VkrStandardSceneRuntime *application,
+                                  VkrScene **out) {
+  uint32_t count = 0u;
+  VkrScene *candidates[2u + VKR_SCENE_ADDITIVE_MAX] = {
+      application->active_scene,
+      vkr_scene_handle_get_scene(state->world_handle)};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    candidates[2u + i] = vkr_scene_handle_get_scene(state->additive_handles[i]);
+  }
+  for (uint32_t i = 0; i < ArrayCount(candidates); ++i) {
+    bool8_t seen = !candidates[i];
+    for (uint32_t j = 0; j < count && !seen; ++j) {
+      seen = out[j] == candidates[i];
+    }
+    if (!seen) {
+      out[count++] = candidates[i];
+    }
+  }
+  return count;
+}
+
+/* Moves every container, its physics and the cameras by -`shift`. */
+static void sample_rebase_shift(VkrStandardSceneRuntime *application,
+                                Vec3 shift) {
+  VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX];
+  const uint32_t count = sample_containers(application, scenes);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!vkr_scene_shift_origin(scenes[i], shift)) {
+      log_error("Origin rebase: a container could not move");
+    }
+  }
+  const char *error = NULL;
+  if (!vkr_scene_physics_shift(scenes, count, shift, &error)) {
+    log_error("Origin rebase: physics did not move: %s",
+              error ? error : "unknown error");
+  }
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (camera) {
+    vkr_camera_set_pose(camera, vec3_sub(camera->position, shift), camera->yaw,
+                        camera->pitch);
+  }
+  state->editor_camera_position =
+      vec3_sub(state->editor_camera_position, shift);
+}
+
+/* During Play, a camera past the rebase distance moves the world back so
+   positions near it stay small (ADR-086). */
+static void sample_rebase(VkrStandardSceneRuntime *application) {
+  const VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (!camera || !application->active_scene ||
+      !application->editor_viewport.simulation_running ||
+      (fabsf(camera->position.x) <= VKR_SAMPLE_REBASE_DISTANCE &&
+       fabsf(camera->position.z) <= VKR_SAMPLE_REBASE_DISTANCE)) {
+    return;
+  }
+  const Vec3 shift =
+      vec3_new(roundf(camera->position.x / VKR_SAMPLE_REBASE_STEP) *
+                   VKR_SAMPLE_REBASE_STEP,
+               0.0f,
+               roundf(camera->position.z / VKR_SAMPLE_REBASE_STEP) *
+                   VKR_SAMPLE_REBASE_STEP);
+  sample_rebase_shift(application, shift);
+  const Vec3 offset = application->active_scene->origin_offset;
+  log_info("Origin rebased by %.0f, %.0f m; the origin is now at %.0f, %.0f",
+           (float64_t)shift.x, (float64_t)shift.z, (float64_t)offset.x,
+           (float64_t)offset.z);
+}
+
+/* Reset returns every container to its document positions exactly, and
+   physics and the cameras with them, before physics resets. */
+static void sample_rebase_restore(VkrStandardSceneRuntime *application) {
+  VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX];
+  const uint32_t count = sample_containers(application, scenes);
+  Vec3 offset = vec3_zero();
+  for (uint32_t i = 0; i < count; ++i) {
+    const Vec3 undone = vkr_scene_restore_origin(scenes[i]);
+    if (undone.x != 0.0f || undone.y != 0.0f || undone.z != 0.0f) {
+      offset = undone;
+    }
+  }
+  if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) {
+    return;
+  }
+  const char *error = NULL;
+  if (!vkr_scene_physics_shift(scenes, count, vec3_scale(offset, -1.0f),
+                               &error)) {
+    log_error("Origin restore: physics did not move: %s",
+              error ? error : "unknown error");
+  }
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  if (camera) {
+    vkr_camera_set_pose(camera, vec3_add(camera->position, offset), camera->yaw,
+                        camera->pitch);
+  }
+  state->editor_camera_position =
+      vec3_add(state->editor_camera_position, offset);
+}
+
 /* Every loaded container streams around the camera that draws the
    viewport, the editor's or a game's. */
 static void sample_stream_sources(VkrStandardSceneRuntime *application) {
@@ -3776,6 +3886,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
 
   (void)vkr_standard_scene_runtime_try_activate_scene_resource(application);
   sample_sync_texture_limit(application);
+  sample_rebase(application);
   sample_stream_sources(application);
   sample_partition_update(application);
   VkrSceneHandle simulated_handle = NULL;
@@ -5879,6 +5990,7 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     vkr_window_set_mouse_capture(&application->host.window, false_v);
     VkrScene *simulated = sample_simulated_scene(application, NULL);
     vkr_scene_physics_set_paused(simulated, true_v);
+    sample_rebase_restore(application);
     sample_partition_session(application, false_v);
     if (simulated && !vkr_scene_physics_reset(simulated, &error)) {
       snprintf(state->scene_status, sizeof(state->scene_status), "%s",
