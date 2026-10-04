@@ -175,7 +175,7 @@ typedef struct SceneEntityImport {
   String8 components_json;
   /** Document-stable id (ADR-076); a document gives every entity one or
       none. */
-  VkrSceneDocumentId document_id;
+  VkrEntityRef document_id;
   bool8_t has_document_id;
 } SceneEntityImport;
 
@@ -2875,7 +2875,8 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
   if (vkr_json_find_root_field(&id_reader, "id")) {
     String8 text = {0};
     if (!vkr_json_parse_string(&id_reader, &text) ||
-        !vkr_scene_document_id_parse(text, &out_entity->document_id)) {
+        !vkr_entity_ref_parse((const char *)text.str, text.length,
+                              &out_entity->document_id)) {
       log_error("Scene loader: entity %u id must be a UUID", entity_index);
       return false_v;
     }
@@ -2905,7 +2906,7 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
 
 static int scene_loader_document_id_compare(const void *left,
                                             const void *right) {
-  return MemCompare(left, right, sizeof(VkrSceneDocumentId));
+  return MemCompare(left, right, sizeof(VkrEntityRef));
 }
 
 /* Document ids are all-or-none and unique within the document. */
@@ -2925,8 +2926,8 @@ vkr_internal bool8_t scene_loader_document_ids_valid(
               with_id, count);
     return false_v;
   }
-  const uint64_t bytes = (uint64_t)count * sizeof(VkrSceneDocumentId);
-  VkrSceneDocumentId *sorted = vkr_allocator_alloc_ts(
+  const uint64_t bytes = (uint64_t)count * sizeof(VkrEntityRef);
+  VkrEntityRef *sorted = vkr_allocator_alloc_ts(
       allocator, bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY, mutex);
   if (!sorted) {
     return false_v;
@@ -4624,7 +4625,7 @@ vkr_internal bool8_t scene_loader_finalize_step(
     /* Parsing proved the ids are all-or-none and unique. */
     if (async_payload->stage_cursor == 0u &&
         async_payload->imports[0].has_document_id) {
-      VkrSceneDocumentId *ids =
+      VkrEntityRef *ids =
           vkr_scene_document_ids_reserve(scene, async_payload->entity_count);
       if (!ids) {
         *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;

@@ -58,6 +58,9 @@ typedef struct VkrEditorDetails {
   const VkrPropertyDesc *color_property;
   Vec4 color_value;
   Vec2 color_anchor_pt;
+  /* The container whose entities ENTITY rows name, set by the owner before
+     a build; without one the rows show and take ids. */
+  const struct VkrScene *entity_scene;
 } VkrEditorDetails;
 
 typedef struct VkrEditorDetailsResult {

@@ -31,6 +31,52 @@ static bool8_t type_bounded(const VkrPropertyDesc *property) {
 }
 
 // =============================================================================
+// Entity references
+// =============================================================================
+
+bool8_t vkr_entity_ref_parse(const char *text, uint64_t length,
+                             VkrEntityRef *out) {
+  if (!text || !out || length != 36u) {
+    return false_v;
+  }
+  uint32_t byte = 0u;
+  for (uint32_t i = 0; i < 36u; i += 2u) {
+    if (i == 8u || i == 13u || i == 18u || i == 23u) {
+      if (text[i] != '-') {
+        return false_v;
+      }
+      ++i;
+    }
+    int32_t digits[2];
+    for (uint32_t d = 0; d < 2u; ++d) {
+      const char c = text[i + d];
+      digits[d] = c >= '0' && c <= '9'   ? c - '0'
+                  : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                  : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                         : -1;
+      if (digits[d] < 0) {
+        return false_v;
+      }
+    }
+    out->bytes[byte++] = (uint8_t)(digits[0] * 16 + digits[1]);
+  }
+  return byte == 16u;
+}
+
+void vkr_entity_ref_format(const VkrEntityRef *id, char out[37]) {
+  static const char hex[] = "0123456789abcdef";
+  uint32_t at = 0u;
+  for (uint32_t i = 0; i < 16u; ++i) {
+    if (i == 4u || i == 6u || i == 8u || i == 10u) {
+      out[at++] = '-';
+    }
+    out[at++] = hex[id->bytes[i] >> 4u];
+    out[at++] = hex[id->bytes[i] & 15u];
+  }
+  out[at] = '\0';
+}
+
+// =============================================================================
 // Properties
 // =============================================================================
 
@@ -243,6 +289,10 @@ static bool8_t property_validate(const VkrPropertyDesc *property,
       return type_fail(error, capacity, "%s is too long", property->label);
     }
     return true_v;
+  case VKR_PROPERTY_ENTITY:
+    /* Any id is well formed; whether it names an entity is the owner's
+       question at publication. */
+    return true_v;
   case VKR_PROPERTY_I32:
   case VKR_PROPERTY_U32: {
     float64_t number = 0.0;
@@ -350,6 +400,8 @@ static uint32_t property_storage_size(const VkrPropertyDesc *property) {
     return sizeof(bool8_t);
   case VKR_PROPERTY_STRING:
     return property->capacity;
+  case VKR_PROPERTY_ENTITY:
+    return sizeof(VkrEntityRef);
   case VKR_PROPERTY_I32:
   case VKR_PROPERTY_U32:
   case VKR_PROPERTY_ENUM:
@@ -410,6 +462,13 @@ static bool8_t property_migrate(const VkrPropertyDesc *from,
     const uint32_t kept = Min(length, to->capacity - 1u);
     MemCopy(target, source, kept);
     MemZero(target + kept, to->capacity - kept);
+    return true_v;
+  }
+  if (from->kind == VKR_PROPERTY_ENTITY || to->kind == VKR_PROPERTY_ENTITY) {
+    if (from->kind != to->kind) {
+      return false_v;
+    }
+    MemCopy(target, source, sizeof(VkrEntityRef));
     return true_v;
   }
   if (property_scalar(from->kind) && property_scalar(to->kind)) {
@@ -508,6 +567,16 @@ bool8_t vkr_type_write_json(VkrJsonWriter *writer, const VkrTypeDesc *type,
           writer,
           string8_create_from_cstr(address, strlen((const char *)address)));
       break;
+    case VKR_PROPERTY_ENTITY: {
+      char text[37] = {0};
+      if (!vkr_entity_ref_empty((const VkrEntityRef *)address)) {
+        vkr_entity_ref_format((const VkrEntityRef *)address, text);
+      }
+      written = vkr_json_writer_string(
+          writer,
+          string8_create_from_cstr((const uint8_t *)text, strlen(text)));
+      break;
+    }
     default: {
       const uint32_t count = vkr_property_components(property);
       written = vkr_json_writer_begin_array(writer);
@@ -620,6 +689,18 @@ static bool8_t json_read_property(VkrJsonReader *reader,
       return type_fail(error, capacity, "%s expects a finite number",
                        property->name);
     }
+    return true_v;
+  }
+  case VKR_PROPERTY_ENTITY: {
+    String8 text = {0};
+    VkrEntityRef id = {0};
+    if (!vkr_json_parse_string(reader, &text) ||
+        (text.length &&
+         !vkr_entity_ref_parse((const char *)text.str, text.length, &id))) {
+      return type_fail(error, capacity, "%s expects an entity id or \"\"",
+                       property->name);
+    }
+    MemCopy(address, &id, sizeof(id));
     return true_v;
   }
   case VKR_PROPERTY_STRING: {

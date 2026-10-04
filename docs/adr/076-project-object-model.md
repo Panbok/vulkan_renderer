@@ -55,6 +55,18 @@ rows, the snapshot validation applies their rules, and Cmd paths and presets
 reach the body through the edit values. Machine graphics preferences use the
 same descriptor path in the Preferences window.
 
+An `ENTITY` property holds a `VkrEntityRef`
+([vkr_entity_ref.h](../../lib/src/core/vkr_entity_ref.h)): the
+document-stable id of an entity in the owner's own container, written as the
+canonical UUID text, or `""` for none. Details shows the target's name and
+takes a typed name or id; Cmd takes an entity or an id. The owner resolves the
+id to an entity when it publishes (`vkr_scene_find_entity_ref`); nothing
+rewrites it when the target is deleted, so a stale reference stays visible
+as "Missing". Entities of a document take their id from the document;
+entities the editor creates get a random one, which undo, redo and the
+overlay's created records (`"uuid"`) keep. Script spawns and nodes inside an
+imported model have none and cannot be referenced.
+
 Shape, text and animation components hold authored values, so Details, Cmd
 and undo edit them like any component. Setting a shape rebuilds its generated
 mesh, setting text replaces its text slot, and removing either releases them.

@@ -3940,6 +3940,8 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
   bool8_t field_focus = false_v;
   InspectorComponentEdit component_edit = {0};
   vkr_editor_details_begin(&p->details);
+  /* Entity references name objects of the selection's own container. */
+  p->details.entity_scene = vkr_editor_entity_scene(f, f->selected_entity);
   p->physics_dragging = false_v;
   (void)vkr_ui_push_id_label(ui, string8_lit("inspector.fields"));
   field_focus |= inspector_header(p, f, w, &y, heading);

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-03
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -516,9 +516,11 @@ VKR_MODULE(Door, VkrNoData, VKR_EXPORT_BEHAVIOR(door))
 
 - `VKR_FIELD(kind, name, label, default, options...)`: one saved field. The
   kinds are `BOOL`, `I32`, `U32`, `F32`, `ANGLE` (radians), `VEC2`, `VEC3`,
-  `VEC4`, `QUAT`, `COLOR`, `DIRECTION` and `ENUM` (with `.names`). Options
-  are `VkrFieldDesc` designators; the host converts the fields to property
-  descriptors.
+  `VEC4`, `QUAT`, `COLOR`, `DIRECTION`, `ENUM` (with `.names`) and `ENTITY`
+  (a `VkrEntityRef` to an object of the same container, ADR-076, which
+  `vkr_resolve(ctx, owner, ref)` turns into an entity during a session).
+  Options are `VkrFieldDesc` designators; the host converts the fields to
+  property descriptors.
 - `VKR_COMPONENT(Type, name, label, FIELDS)`: the `Type` struct,
   `name_type()`, `name_get(ctx, entity)` and `name_find(ctx, out, capacity)`.
   A module split across files uses `VKR_COMPONENT_DECLARE` in a header and

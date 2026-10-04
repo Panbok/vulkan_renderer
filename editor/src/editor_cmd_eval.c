@@ -542,6 +542,17 @@ static bool8_t eval_property_read(const VkrPropertyDesc *property,
   case VKR_PROPERTY_STRING:
     *out = eval_string("%s", (const char *)component + property->offset);
     return true_v;
+  case VKR_PROPERTY_ENTITY: {
+    /* The id; `entity("<name>")` and a name compare against it by value. */
+    const VkrEntityRef *ref =
+        (const VkrEntityRef *)((const uint8_t *)component + property->offset);
+    char text[37] = {0};
+    if (!vkr_entity_ref_empty(ref)) {
+      vkr_entity_ref_format(ref, text);
+    }
+    *out = eval_string("%s", text);
+    return true_v;
+  }
   case VKR_PROPERTY_QUAT: {
     float32_t degrees[3];
     (void)vkr_property_get_floats(property, component, floats);
@@ -568,8 +579,8 @@ static bool8_t eval_property_read(const VkrPropertyDesc *property,
 }
 
 static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
-                                   void *component, const Value *value,
-                                   String8 member);
+                                   const VkrScene *scene, void *component,
+                                   const Value *value, String8 member);
 
 static Vec3 eval_euler_degrees(VkrQuat rotation) {
   float32_t roll = 0, pitch = 0, yaw = 0;
@@ -1304,8 +1315,8 @@ static bool8_t eval_assign_entity(Eval *eval, VkrEntityId entity,
 }
 
 static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
-                                   void *component, const Value *value,
-                                   String8 member) {
+                                   const VkrScene *scene, void *component,
+                                   const Value *value, String8 member) {
   if (property->flags &
       (VKR_PROPERTY_FLAG_READ_ONLY | VKR_PROPERTY_FLAG_TRANSIENT))
     return eval_fail(eval, "'%.*s' is read-only", (int)member.length,
@@ -1325,6 +1336,26 @@ static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
       return eval_fail(eval, "Unknown %.*s '%s'", (int)member.length,
                        member.str, value->text);
     return vkr_property_set_number(property, component, choice);
+  }
+  case VKR_PROPERTY_ENTITY: {
+    /* An entity of the same container, its id, or "" for none. */
+    VkrEntityRef ref = {0};
+    if (value->kind == VKR_EDITOR_CMD_VALUE_ENTITY) {
+      if (vkr_editor_entity_scene(eval->frame, value->entity) != scene ||
+          !vkr_scene_entity_ref(scene, value->entity, &ref))
+        return eval_fail(eval,
+                         "'%.*s' takes an object with an id in the same scene",
+                         (int)member.length, member.str);
+    } else if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member) ||
+               (value->text[0] &&
+                !vkr_entity_ref_parse(value->text, strlen(value->text),
+                                      &ref))) {
+      return eval->error[0] ? false_v
+                            : eval_fail(eval, "'%.*s' takes an object or an id",
+                                        (int)member.length, member.str);
+    }
+    MemCopy((uint8_t *)component + property->offset, &ref, sizeof(ref));
+    return true_v;
   }
   case VKR_PROPERTY_STRING: {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
@@ -1384,8 +1415,9 @@ static bool8_t eval_assign_component(Eval *eval, const Value *base,
   if (index == UINT32_MAX)
     return eval_fail(eval, "No member '%.*s' on %s", (int)member.length,
                      member.str, base->type->name);
-  if (!eval_property_write(eval, &base->type->properties[index], component,
-                           value, member))
+  if (!eval_property_write(eval, &base->type->properties[index],
+                           vkr_editor_entity_scene(eval->frame, base->entity),
+                           component, value, member))
     return eval->error[0] ? false_v
                           : eval_fail(eval, "'%.*s' cannot hold that value",
                                       (int)member.length, member.str);

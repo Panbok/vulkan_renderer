@@ -7,6 +7,7 @@ set(VKR_SCRIPT_SDK_DIR "${CMAKE_BINARY_DIR}/script_sdk")
 set(VKR_SCRIPT_SDK_HEADERS
     "sdk/sdk.h|sdk.h"
     "lib/src/defines.h|defines.h"
+    "lib/src/core/vkr_entity_ref.h|core/vkr_entity_ref.h"
     "lib/src/vkr_pch.h|vkr_pch.h"
     "lib/src/math/mat.h|math/mat.h"
     "lib/src/math/vec.h|math/vec.h"

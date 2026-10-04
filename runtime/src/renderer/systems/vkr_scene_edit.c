@@ -786,6 +786,8 @@ typedef enum EditObjectPart {
   EDIT_OBJECT_POINT_LIGHT = 1u << 4,
   EDIT_OBJECT_DIRECTIONAL_LIGHT = 1u << 5,
   EDIT_OBJECT_RECTANGLE_LIGHT = 1u << 6,
+  /* The document-stable id the editor gave a created entity. */
+  EDIT_OBJECT_REF = 1u << 7,
 } EditObjectPart;
 
 /* Everything delete removes and undo restores. Only entities made of these
@@ -800,6 +802,7 @@ typedef struct EditObject {
   ScenePointLight point_light;
   SceneDirectionalLight directional_light;
   SceneRectangleLight rectangle_light;
+  VkrEntityRef ref;
   /* Overlay id when the editor created the entity, else zero. */
   uint32_t created_id;
   uint32_t component_count;
@@ -932,7 +935,7 @@ static bool8_t edit_deletable_parts(const VkrScene *scene, VkrEntityId entity,
         id == scene->comp_transform || id == scene->comp_visibility ||
         id == scene->comp_render_id || id == scene->comp_point_light ||
         id == scene->comp_directional_light ||
-        id == scene->comp_rectangle_light;
+        id == scene->comp_rectangle_light || id == scene->comp_entity_ref;
     /* Animation settings need their binding, which undo cannot restore. */
     for (uint32_t t = 0; !known && t < scene->type_count; ++t) {
       known = id == scene->types[t].id &&
@@ -1025,6 +1028,12 @@ static void edit_object_capture(const VkrSceneEditState *s,
     o->rectangle_light = *rectangle;
     o->parts |= EDIT_OBJECT_RECTANGLE_LIGHT;
   }
+  const VkrEntityRef *ref =
+      vkr_entity_get_component(world, entity, scene->comp_entity_ref);
+  if (ref) {
+    o->ref = *ref;
+    o->parts |= EDIT_OBJECT_REF;
+  }
   for (uint32_t i = 0;
        i < scene->type_count && o->component_count < EDIT_COMPONENT_MAX; ++i) {
     const void *value =
@@ -1080,6 +1089,9 @@ static VkrEntityId edit_object_restore(VkrScene *scene, const EditObject *o,
   }
   if (ok && (o->parts & EDIT_OBJECT_RECTANGLE_LIGHT)) {
     ok = vkr_scene_set_rectangle_light(scene, entity, &o->rectangle_light);
+  }
+  if (ok && (o->parts & EDIT_OBJECT_REF)) {
+    ok = vkr_scene_set_entity_ref(scene, entity, &o->ref);
   }
   for (uint32_t i = 0; ok && i < o->component_count; ++i) {
     ok = vkr_scene_set_typed(scene, entity, o->types[i], o->components[i]);
@@ -1409,6 +1421,9 @@ VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
   }
   structure->object.created_id = Max(1u, s->next_created_id);
   structure->object.transform.parent = parent;
+  /* Every created entity gets its own id, even a copy of another. */
+  vkr_scene_entity_ref_generate(&structure->object.ref);
+  structure->object.parts |= EDIT_OBJECT_REF;
   const VkrEntityId entity =
       edit_object_restore(scene, &structure->object, parent);
   if (!entity.u64) {
@@ -2132,7 +2147,7 @@ static bool8_t write_document_ids(VkrJsonWriter *w, const VkrScene *scene) {
   }
   for (uint32_t i = 0; i < scene->document_id_count; ++i) {
     char text[37];
-    vkr_scene_document_id_format(&scene->document_ids[i], text);
+    vkr_entity_ref_format(&scene->document_ids[i], text);
     if (!vkr_json_writer_string(w, string8_create((uint8_t *)text, 36))) {
       return false_v;
     }
@@ -2239,8 +2254,16 @@ static bool8_t write_structure(VkrJsonWriter *w, const VkrSceneEditState *s,
     if (!values.physics.present) {
       values.fields &= ~(uint32_t)VKR_SCENE_EDIT_PHYSICS;
     }
+    VkrEntityRef ref = {0};
+    char ref_text[37] = {0};
+    if (vkr_scene_entity_ref(scene, entity, &ref)) {
+      vkr_entity_ref_format(&ref, ref_text);
+    }
     if (!vkr_json_writer_begin_object(w) ||
         !WRITE_INT("id", s->created[i].id) ||
+        (ref_text[0] && (!vkr_json_writer_name(w, string8_lit("uuid")) ||
+                         !vkr_json_writer_string(
+                             w, string8_create((uint8_t *)ref_text, 36u)))) ||
         !write_parent(w, s, scene, entity) || !write_values(w, &values) ||
         !write_components(w, scene, entity) || !vkr_json_writer_end_object(w)) {
       return false_v;
@@ -2933,8 +2956,11 @@ typedef struct EditRecordExtra {
   /* The record listed its components; version 4 treats the list as whole. */
   bool8_t components;
   EditParentRef parent;
-  /* Created records: the overlay id. */
+  /* Created records: the overlay id and the entity's document-stable id,
+     which overlays before entity references lack. */
   uint32_t id;
+  bool8_t has_ref;
+  VkrEntityRef ref;
 } EditRecordExtra;
 
 /* null, {"created": id} or {"scene_entity": n, "gltf_node": n}. */
@@ -3011,7 +3037,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "deleted",
                                "parent",
                                "id",
-                               "directional_atmosphere_moon"};
+                               "directional_atmosphere_moon",
+                               "uuid"};
   MemZero(v, sizeof(*v));
   MemZero(extra, sizeof(*extra));
   components->count = 0u;
@@ -3169,6 +3196,13 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 32:
       ok = edit_json_bool(j, &v->directional_light.atmosphere_moon);
       break;
+    case 33: {
+      char text[40];
+      ok = created && edit_json_string(j, text, sizeof(text)) &&
+           vkr_entity_ref_parse(text, strlen(text), &extra->ref);
+      extra->has_ref = ok;
+      break;
+    }
     }
     if (!ok)
       return false_v;
@@ -3209,6 +3243,7 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
   }
   required |= seen & (1ull << 28u); /* Components are optional. */
   required |= seen & (1ull << 30u); /* So is the parent. */
+  required |= seen & (1ull << 33u); /* And a created entity's id. */
   return seen == required && vkr_scene_edit_validate(v);
 }
 
@@ -3574,12 +3609,12 @@ static bool8_t edit_structure_link(VkrSceneEditState *s,
 
 /* `[record, ...]` of created entities; ids are unique and positive. */
 typedef struct EditDocumentKey {
-  VkrSceneDocumentId id;
+  VkrEntityRef id;
   uint32_t index;
 } EditDocumentKey;
 
 static int edit_document_key_compare(const void *left, const void *right) {
-  return MemCompare(left, right, sizeof(VkrSceneDocumentId));
+  return MemCompare(left, right, sizeof(VkrEntityRef));
 }
 
 /* A version 5 overlay's document ids: the saved index of each becomes the
@@ -3613,10 +3648,9 @@ static bool8_t edit_json_document_remap(EditJson *j, VkrSceneEditState *s,
   if (!edit_json_take(j, ']')) {
     for (;;) {
       char text[40];
-      VkrSceneDocumentId id;
+      VkrEntityRef id;
       if (!edit_json_string(j, text, sizeof(text)) ||
-          !vkr_scene_document_id_parse(
-              string8_create((uint8_t *)text, strlen(text)), &id)) {
+          !vkr_entity_ref_parse(text, strlen(text), &id)) {
         goto done;
       }
       if (current) {
@@ -3724,6 +3758,12 @@ static bool8_t edit_json_created(EditJson *j, VkrSceneEditState *s,
     }
     object->component_count = components->count;
     object->created_id = extra.id;
+    if (extra.has_ref) {
+      object->ref = extra.ref;
+    } else {
+      vkr_scene_entity_ref_generate(&object->ref);
+    }
+    object->parts |= EDIT_OBJECT_REF;
     load->object_count++;
     if (extra.parent.kind != EDIT_PARENT_NONE &&
         !edit_structure_link(s, load,

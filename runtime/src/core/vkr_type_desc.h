@@ -14,11 +14,19 @@
 #pragma once
 
 #include "containers/str.h"
+#include "core/vkr_entity_ref.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include "defines.h"
 #include "math/vec.h"
 #include "memory/vkr_allocator.h"
+
+/** Parse a canonical 36-character UUID in either case from `length`
+    bytes. */
+bool8_t vkr_entity_ref_parse(const char *text, uint64_t length,
+                             VkrEntityRef *out);
+/** Lowercase canonical text with a terminator. */
+void vkr_entity_ref_format(const VkrEntityRef *id, char out[37]);
 
 /** Largest described value; readers stage candidates in bounded storage. */
 #define VKR_TYPE_VALUE_MAX 1024u
@@ -48,6 +56,10 @@ typedef enum VkrPropertyKind {
   VKR_PROPERTY_ENUM,
   /** char[capacity], always null-terminated in storage. */
   VKR_PROPERTY_STRING,
+  /** VkrEntityRef to an entity of the owner's container. JSON holds the
+   * canonical UUID text, or "" for none; the owner resolves it to an entity
+   * when it publishes. */
+  VKR_PROPERTY_ENTITY,
   VKR_PROPERTY_KIND_COUNT
 } VkrPropertyKind;
 

@@ -13,6 +13,7 @@
 #include "core/logger.h"
 #include "math/vkr_math.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_platform.h"
 #include "renderer/resources/world/vkr_text_3d.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_ids.h"
@@ -1654,6 +1655,9 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       AlignOf(SceneEvaluatedTransform));
   scene->comp_transient = vkr_entity_register_component_once(
       scene->world, "SceneTransient", sizeof(uint8_t), 1u);
+  scene->comp_entity_ref = vkr_entity_register_component_once(
+      scene->world, "SceneEntityRef", sizeof(VkrEntityRef),
+      AlignOf(VkrEntityRef));
   scene->comp_mesh_renderer = vkr_entity_register_component_once(
       scene->world, "SceneMeshRenderer", sizeof(SceneMeshRenderer),
       AlignOf(SceneMeshRenderer));
@@ -1697,6 +1701,7 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
       scene->comp_transform == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_evaluated_transform == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_transient == VKR_COMPONENT_TYPE_INVALID ||
+      scene->comp_entity_ref == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_mesh_renderer == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_visibility == VKR_COMPONENT_TYPE_INVALID ||
       scene->comp_render_id == VKR_COMPONENT_TYPE_INVALID ||
@@ -1957,7 +1962,7 @@ vkr_internal void scene_queries_shutdown(VkrScene *scene) {
 vkr_internal void scene_arrays_shutdown(VkrScene *scene) {
   if (scene->document_ids) {
     vkr_allocator_free(scene->alloc, scene->document_ids,
-                       scene->document_id_count * sizeof(VkrSceneDocumentId),
+                       scene->document_id_count * sizeof(VkrEntityRef),
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     scene->document_ids = NULL;
     scene->document_id_count = 0u;
@@ -4437,61 +4442,95 @@ bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
-bool8_t vkr_scene_document_id_parse(String8 text, VkrSceneDocumentId *out) {
-  if (!out || text.length != 36u) {
+bool8_t vkr_scene_entity_ref(const VkrScene *scene, VkrEntityId entity,
+                             VkrEntityRef *out) {
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
     return false_v;
   }
-  uint32_t byte = 0u;
-  for (uint32_t i = 0; i < 36u; i += 2u) {
-    if (i == 8u || i == 13u || i == 18u || i == 23u) {
-      if (text.str[i] != '-') {
-        return false_v;
-      }
-      ++i;
-    }
-    int32_t digits[2];
-    for (uint32_t d = 0; d < 2u; ++d) {
-      const uint8_t c = text.str[i + d];
-      digits[d] = c >= '0' && c <= '9'   ? c - '0'
-                  : c >= 'a' && c <= 'f' ? c - 'a' + 10
-                  : c >= 'A' && c <= 'F' ? c - 'A' + 10
-                                         : -1;
-      if (digits[d] < 0) {
-        return false_v;
-      }
-    }
-    out->bytes[byte++] = (uint8_t)(digits[0] * 16 + digits[1]);
+  const VkrEntityRef *created =
+      vkr_entity_get_component(scene->world, entity, scene->comp_entity_ref);
+  if (created) {
+    *out = *created;
+    return true_v;
   }
-  return byte == 16u;
+  /* A document entity is its model's wrapper, not a node inside it. */
+  const SceneSourceIdentity *source = vkr_entity_get_component(
+      scene->world, entity, scene->comp_source_identity);
+  if (!source || source->gltf_node_index != UINT32_MAX ||
+      source->scene_entity_index >= scene->document_id_count) {
+    return false_v;
+  }
+  *out = scene->document_ids[source->scene_entity_index];
+  return true_v;
 }
 
-void vkr_scene_document_id_format(const VkrSceneDocumentId *id, char out[37]) {
-  static const char hex[] = "0123456789abcdef";
-  uint32_t at = 0u;
-  for (uint32_t i = 0; i < 16u; ++i) {
-    if (i == 4u || i == 6u || i == 8u || i == 10u) {
-      out[at++] = '-';
-    }
-    out[at++] = hex[id->bytes[i] >> 4u];
-    out[at++] = hex[id->bytes[i] & 15u];
+bool8_t vkr_scene_set_entity_ref(VkrScene *scene, VkrEntityId entity,
+                                 const VkrEntityRef *id) {
+  if (!scene || !id || !vkr_scene_entity_alive(scene, entity)) {
+    return false_v;
   }
-  out[at] = '\0';
+  VkrEntityRef *existing = vkr_entity_get_component_mut(scene->world, entity,
+                                                        scene->comp_entity_ref);
+  if (existing) {
+    *existing = *id;
+    return true_v;
+  }
+  if (!vkr_entity_add_component(scene->world, entity, scene->comp_entity_ref,
+                                id)) {
+    return false_v;
+  }
+  scene_invalidate_queries(scene);
+  return true_v;
 }
 
-VkrSceneDocumentId *vkr_scene_document_ids_reserve(VkrScene *scene,
-                                                   uint32_t count) {
+VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
+                                      const VkrEntityRef *id) {
+  if (!scene || !id || vkr_entity_ref_empty(id)) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    VkrEntityRef candidate;
+    if (vkr_scene_entity_ref(scene, entity, &candidate) &&
+        MemCompare(&candidate, id, sizeof(*id)) == 0) {
+      return entity;
+    }
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+void vkr_scene_entity_ref_generate(VkrEntityRef *out) {
+  /* SplitMix64 over the clock and a counter: ids only need to differ within
+     a project, and two calls never share a counter value. */
+  static uint64_t counter = 0u;
+  uint64_t state = (uint64_t)(vkr_platform_get_absolute_time() * 1.0e9) ^
+                   ((uint64_t)(uintptr_t)out << 17u) ^
+                   (++counter * 0x9E3779B97F4A7C15ull);
+  for (uint32_t half = 0; half < 2u; ++half) {
+    state += 0x9E3779B97F4A7C15ull;
+    uint64_t z = state;
+    z = (z ^ (z >> 30u)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27u)) * 0x94D049BB133111EBull;
+    z ^= z >> 31u;
+    MemCopy(out->bytes + half * 8u, &z, sizeof(z));
+  }
+  out->bytes[6] = (uint8_t)((out->bytes[6] & 0x0Fu) | 0x40u);
+  out->bytes[8] = (uint8_t)((out->bytes[8] & 0x3Fu) | 0x80u);
+}
+
+VkrEntityRef *vkr_scene_document_ids_reserve(VkrScene *scene, uint32_t count) {
   if (!scene || !count) {
     return NULL;
   }
   if (scene->document_ids) {
     vkr_allocator_free(scene->alloc, scene->document_ids,
-                       scene->document_id_count * sizeof(VkrSceneDocumentId),
+                       scene->document_id_count * sizeof(VkrEntityRef),
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     scene->document_ids = NULL;
     scene->document_id_count = 0u;
   }
   scene->document_ids =
-      vkr_allocator_alloc(scene->alloc, count * sizeof(VkrSceneDocumentId),
+      vkr_allocator_alloc(scene->alloc, count * sizeof(VkrEntityRef),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   scene->document_id_count = scene->document_ids ? count : 0u;
   return scene->document_ids;

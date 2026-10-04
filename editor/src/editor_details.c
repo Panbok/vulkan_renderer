@@ -286,11 +286,74 @@ static void details_scrub(DetailsBuild *build, uint32_t index,
   (void)details_set(property, build->value, component, display);
 }
 
+/* An ENTITY value as text: the target's name, "None", or the id when no
+   object of the container carries it. */
+static void details_entity_text(const VkrEditorDetails *details,
+                                const VkrEntityRef *ref, char *out,
+                                uint64_t capacity) {
+  if (vkr_entity_ref_empty(ref)) {
+    snprintf(out, capacity, "None");
+    return;
+  }
+  const VkrEntityId entity =
+      vkr_scene_find_entity_ref(details->entity_scene, ref);
+  const String8 name = entity.u64
+                           ? vkr_scene_get_name(details->entity_scene, entity)
+                           : (String8){0};
+  if (name.length) {
+    snprintf(out, capacity, "%.*s", (int)name.length, name.str);
+    return;
+  }
+  char id[37];
+  vkr_entity_ref_format(ref, id);
+  snprintf(out, capacity, "%s%s", entity.u64 ? "" : "Missing ", id);
+}
+
+/* Typed ENTITY text: empty or "None" clears it, an id sets it, and otherwise
+   the one object of the container with that exact name and an id. */
+static bool8_t details_entity_parse(const VkrEditorDetails *details,
+                                    const char *text, VkrEntityRef *out) {
+  MemZero(out, sizeof(*out));
+  const String8 word =
+      string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  if (!word.length || strcmp(text, "None") == 0 ||
+      vkr_entity_ref_parse(text, word.length, out)) {
+    return true_v;
+  }
+  const VkrScene *scene = details->entity_scene;
+  uint32_t matches = 0u;
+  for (uint32_t i = 0; scene && i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const String8 name = vkr_scene_entity_alive(scene, entity)
+                             ? vkr_scene_get_name(scene, entity)
+                             : (String8){0};
+    VkrEntityRef ref;
+    if (name.length == word.length &&
+        MemCompare(name.str, word.str, word.length) == 0 &&
+        vkr_scene_entity_ref(scene, entity, &ref)) {
+      *out = ref;
+      matches++;
+    }
+  }
+  return matches == 1u;
+}
+
 /* Parse the active text entry into its component. */
 static void details_commit_text(DetailsBuild *build, uint32_t index,
                                 uint32_t component) {
   const VkrPropertyDesc *property = &build->type->properties[index];
   if (strcmp(build->details->edit_text, build->details->edit_original) == 0) {
+    return;
+  }
+  if (property->kind == VKR_PROPERTY_ENTITY) {
+    VkrEntityRef ref;
+    if (details_entity_parse(build->details, build->details->edit_text, &ref)) {
+      MemCopy((uint8_t *)build->value + property->offset, &ref, sizeof(ref));
+    } else {
+      snprintf(build->details->error, sizeof(build->details->error),
+               "%s needs the name of one object here, or an id.",
+               property->label);
+    }
     return;
   }
   if (property->kind == VKR_PROPERTY_STRING) {
@@ -320,6 +383,11 @@ static void details_edit_text_reset(DetailsBuild *build, uint32_t index,
   if (property->kind == VKR_PROPERTY_STRING) {
     snprintf(details->edit_text, sizeof(details->edit_text), "%s",
              (const char *)build->value + property->offset);
+  } else if (property->kind == VKR_PROPERTY_ENTITY) {
+    details_entity_text(details,
+                        (const VkrEntityRef *)((const uint8_t *)build->value +
+                                               property->offset),
+                        details->edit_text, sizeof(details->edit_text));
   } else {
     details_format(property, details_get(property, build->value, component),
                    false_v, 9, details->edit_text, sizeof(details->edit_text));
@@ -366,6 +434,11 @@ static void details_text_field(DetailsBuild *build, uint32_t index,
     if (property->kind == VKR_PROPERTY_STRING) {
       snprintf(display, sizeof(display), "%s",
                (const char *)build->value + property->offset);
+    } else if (property->kind == VKR_PROPERTY_ENTITY) {
+      details_entity_text(details,
+                          (const VkrEntityRef *)((const uint8_t *)build->value +
+                                                 property->offset),
+                          display, sizeof(display));
     } else {
       const float64_t shown = details_get(property, build->value, component);
       if (shown == 0.0 && property->zero_label &&
@@ -911,6 +984,7 @@ vkr_editor_details_type(VkrEditorDetails *details, VkrUiSystem *ui,
                                row_read_only, tooltip);
       break;
     case VKR_PROPERTY_STRING:
+    case VKR_PROPERTY_ENTITY:
       details_string_row(&build, i, label, y, row_read_only, tooltip);
       break;
     default:

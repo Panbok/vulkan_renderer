@@ -722,6 +722,16 @@ static uint32_t sdk_component_find(VkrCtx *ctx, VkrContainer container,
                               (VkrEntityId *)out, out ? capacity : 0u);
 }
 
+static VkrEntity sdk_resolve(VkrCtx *ctx, VkrEntity owner, VkrEntityRef ref) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptContainer *container = script_container_of(script->host, owner.id);
+  if (!container) {
+    return VKR_ENTITY_NONE;
+  }
+  return (VkrEntity){.id =
+                         vkr_scene_find_entity_ref(container->scene, &ref).u64};
+}
+
 static VkrStateType sdk_state_type(VkrCtx *ctx, const char *name, uint32_t size,
                                    uint32_t align) {
   ScriptCtx *script = sdk_ctx(ctx);
@@ -1709,5 +1719,6 @@ void script_sdk_table(VkrSdkTable *table) {
       .anim_time = sdk_anim_time,
       .anim_duration = sdk_anim_duration,
       .anim_blend = sdk_anim_blend,
+      .resolve = sdk_resolve,
   };
 }

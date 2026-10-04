@@ -1314,7 +1314,7 @@ vkr_internal void test_scene_loader_document_ids(void) {
                             "\"name\":\"B\"}]}")) == true_v);
   assert(ctx.scene.document_id_count == 2u);
   char text[37];
-  vkr_scene_document_id_format(&ctx.scene.document_ids[1], text);
+  vkr_entity_ref_format(&ctx.scene.document_ids[1], text);
   assert(strcmp(text, "6fa459ea-ee8a-3ca4-894e-db77e160355e") == 0);
   scene_loader_test_context_shutdown(&ctx);
 

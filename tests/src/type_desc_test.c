@@ -28,6 +28,7 @@ typedef struct TestValue {
   Vec2 size;
   uint32_t mode;
   char name[8];
+  VkrEntityRef target;
   float32_t runtime;
 } TestValue;
 
@@ -84,6 +85,10 @@ static const VkrPropertyDesc s_test_properties[] = {
      .offset = offsetof(TestValue, name),
      .capacity = sizeof(((TestValue *)0)->name),
      .kind = VKR_PROPERTY_STRING},
+    {.name = "target",
+     .label = "Target",
+     .offset = offsetof(TestValue, target),
+     .kind = VKR_PROPERTY_ENTITY},
     {.name = "runtime",
      .label = "Runtime",
      .offset = offsetof(TestValue, runtime),
@@ -139,6 +144,9 @@ static TestValue test_value_sample(void) {
   value.size = vec2_new(3.0f, 4.5f);
   value.mode = 1u;
   MemCopy(value.name, "abc", 4);
+  for (uint32_t i = 0; i < 16u; ++i) {
+    value.target.bytes[i] = (uint8_t)i;
+  }
   value.runtime = 99.0f;
   return value;
 }
@@ -161,6 +169,9 @@ static void test_type_round_trip(VkrAllocator *allocator) {
   /* The version leads, enums are names and transient state is omitted. */
   assert(sink.length > 12u && MemCompare(sink.data, "{\"version\":3", 12) == 0);
   assert(strstr((const char *)sink.data, "\"mode\":\"second\""));
+  /* An entity reference is its id in canonical text order. */
+  assert(strstr((const char *)sink.data,
+                "\"target\":\"00010203-0405-0607-0809-0a0b0c0d0e0f\""));
   assert(!strstr((const char *)sink.data, "runtime"));
 
   TestValue read = {0};
@@ -174,6 +185,8 @@ static void test_type_round_trip(VkrAllocator *allocator) {
   assert(read.color.w == 0.0f);
   assert(read.direction.y == -1.0f && read.size.y == 4.5f);
   assert(read.mode == 1u && strcmp(read.name, "abc") == 0);
+  assert(read.target.bytes[0] == 0u && read.target.bytes[10] == 10u &&
+         read.target.bytes[15] == 15u);
   /* Transient runtime state belongs to the destination, not the document. */
   assert(read.runtime == 5.0f);
   printf("  test_type_round_trip PASSED\n");
@@ -200,6 +213,8 @@ static void test_type_rejections(VkrAllocator *allocator) {
       "{\"version\":3,\"mode\":1}",              /* enum as number */
       "{\"version\":3,\"flag\":1}",              /* bool as number */
       "{\"version\":3,\"runtime\":1}",           /* transient is not data */
+      "{\"version\":3,\"target\":\"door\"}",     /* a name is not an id */
+      "{\"version\":3,\"target\":7}",            /* id as number */
       "{\"version\":3,\"count\":0}",             /* validate hook */
       "{\"version\":3,\"count\":1,}",            /* trailing comma */
       "{\"version\":3} x",                       /* trailing text */
@@ -224,6 +239,9 @@ static void test_type_rejections(VkrAllocator *allocator) {
       string8_lit("{ \"version\" : 3 , \"name\" : \"a\\\"b\" }"), &s_test_type,
       &value, allocator, error, sizeof(error)));
   assert(strcmp(value.name, "a\"b") == 0 && value.count == 7u);
+  /* An empty id is no entity. */
+  assert(test_read("{\"version\":3,\"target\":\"\"}", &value, error));
+  assert(vkr_entity_ref_empty(&value.target));
   assert(test_read("{\"version\":3}", &value, error));
   printf("  test_type_rejections PASSED\n");
 }

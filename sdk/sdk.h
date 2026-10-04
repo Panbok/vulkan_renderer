@@ -59,6 +59,7 @@
  */
 #pragma once
 
+#include "core/vkr_entity_ref.h"
 #include "defines.h"
 #include "math/mat.h"
 #include "math/vec.h"
@@ -190,6 +191,9 @@ typedef enum VkrFieldKind {
   VKR_FIELD_KIND_DIRECTION,
   /** An int32_t index into `names`. */
   VKR_FIELD_KIND_ENUM,
+  /** A VkrEntityRef to an object of the entity's own container, picked in
+   * Details; vkr_resolve() finds the entity during a session. */
+  VKR_FIELD_KIND_ENTITY,
 } VkrFieldKind;
 
 typedef enum VkrFieldFlags {
@@ -632,6 +636,9 @@ typedef struct VkrSdkTable {
                       uint32_t size);
   bool8_t (*task_take)(VkrCtx *ctx, VkrTask task, void *out, uint32_t size,
                        bool8_t wait);
+
+  /* Entity references. */
+  VkrEntity (*resolve)(VkrCtx *ctx, VkrEntity owner, VkrEntityRef ref);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -877,6 +884,13 @@ static inline uint32_t vkr_find_in(VkrCtx *ctx, VkrContainer container,
                                    const VkrComponentDesc *type, VkrEntity *out,
                                    uint32_t capacity) {
   return ctx->sdk->component_find(ctx, container, type, out, capacity);
+}
+
+/** The entity an ENTITY field of `owner` names, in `owner`'s container, or
+ * none. It searches the container, so resolve once, in `start`. */
+static inline VkrEntity vkr_resolve(VkrCtx *ctx, VkrEntity owner,
+                                    VkrEntityRef ref) {
+  return ctx->sdk->resolve(ctx, owner, ref);
 }
 
 /** A runtime-only per-entity data type, registered once by name. */
@@ -1198,7 +1212,8 @@ static inline bool8_t vkr_task_wait(VkrCtx *ctx, VkrTask task, void *out,
  *
  * VKR_FIELD(kind, name, label, default, options...) is one saved field:
  * `kind` is BOOL, I32, U32, F32, ANGLE, VEC2, VEC3, VEC4, QUAT, COLOR,
- * DIRECTION or ENUM (with `.names`); options are VkrFieldDesc designators
+ * DIRECTION, ENUM (with `.names`) or ENTITY (default `(VkrEntityRef){0}`,
+ * no object); options are VkrFieldDesc designators
  * such as `.unit`, `.min`, `.max`, `.step`, `.tooltip` or `.group`.
  *
  * VKR_COMPONENT(Type, name, label, FIELDS) declares `Type`, its descriptor
@@ -1248,6 +1263,7 @@ typedef struct VkrNoData {
 #define VKR_SDK_CTYPE_COLOR Vec3
 #define VKR_SDK_CTYPE_DIRECTION Vec3
 #define VKR_SDK_CTYPE_ENUM int32_t
+#define VKR_SDK_CTYPE_ENTITY VkrEntityRef
 
 /* A field list is a sequence of parenthesized tuples. */
 #define VKR_FIELD(...) (__VA_ARGS__)

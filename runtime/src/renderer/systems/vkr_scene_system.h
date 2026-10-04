@@ -18,6 +18,7 @@
 
 #include "containers/str.h"
 #include "core/vkr_entity.h"
+#include "core/vkr_type_desc.h"
 #include "math/mat.h"
 #include "math/vec.h"
 #include "math/vkr_quat.h"
@@ -110,15 +111,6 @@ typedef struct SceneSourceIdentity {
   uint32_t gltf_light_index;
   uint64_t source_fingerprint;
 } SceneSourceIdentity;
-
-/**
- * Document-stable entity id (ADR-076): the entity's UUID in its scene
- * document, as 16 bytes in text order. Overlays bind document entities
- * through it, so reordering a document keeps its edits attached.
- */
-typedef struct VkrSceneDocumentId {
-  uint8_t bytes[16];
-} VkrSceneDocumentId;
 
 /**
  * @brief Mesh renderer component linking entity to mesh manager slot.
@@ -757,7 +749,7 @@ typedef struct VkrScene {
   // Component type IDs (cached after registration)
   /** Document ids by document entity index, or NULL when the document has
       none. Scene-owned and freed at shutdown; the loader fills them. */
-  VkrSceneDocumentId *document_ids;
+  VkrEntityRef *document_ids;
   uint32_t document_id_count;
   VkrComponentTypeId comp_source_identity;
   VkrComponentTypeId comp_name;
@@ -765,6 +757,9 @@ typedef struct VkrScene {
   VkrComponentTypeId comp_evaluated_transform;
   /** Tag of runtime-only entities that saving skips. */
   VkrComponentTypeId comp_transient;
+  /** VkrEntityRef of an entity the editor created; document entities take
+      theirs from `document_ids` (vkr_scene_entity_ref). */
+  VkrComponentTypeId comp_entity_ref;
   VkrComponentTypeId comp_mesh_renderer;
   VkrComponentTypeId comp_visibility;
   VkrComponentTypeId comp_render_id;
@@ -1496,11 +1491,21 @@ bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,
 bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
                                       const SceneSourceIdentity *identity);
 
-/** Parse a canonical 36-character UUID in either case. */
-bool8_t vkr_scene_document_id_parse(String8 text, VkrSceneDocumentId *out);
-/** Lowercase canonical text with a terminator. */
-void vkr_scene_document_id_format(const VkrSceneDocumentId *id, char out[37]);
+/** The document-stable id of `entity`: the one the editor gave it, or its
+    document's. False for an entity without one, such as a script spawn or a
+    node inside an imported model. */
+bool8_t vkr_scene_entity_ref(const VkrScene *scene, VkrEntityId entity,
+                             VkrEntityRef *out);
+/** Gives an entity the editor created its document-stable id. */
+bool8_t vkr_scene_set_entity_ref(VkrScene *scene, VkrEntityId entity,
+                                 const VkrEntityRef *id);
+/** The alive entity whose document-stable id is `id`, or invalid; scans the
+    scene, so callers resolve once per publication. */
+VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
+                                      const VkrEntityRef *id);
+/** A random version 4 UUID for a new entity. */
+void vkr_scene_entity_ref_generate(VkrEntityRef *out);
+
 /** Scene-owned storage for `count` document ids, replacing any previous
     ids; NULL on allocation failure. */
-VkrSceneDocumentId *vkr_scene_document_ids_reserve(VkrScene *scene,
-                                                   uint32_t count);
+VkrEntityRef *vkr_scene_document_ids_reserve(VkrScene *scene, uint32_t count);

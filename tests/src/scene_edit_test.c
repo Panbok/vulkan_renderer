@@ -80,12 +80,10 @@ static VkrEntityId edit_test_document_entity(VkrScene *scene, uint32_t index,
 
 static void edit_test_document_ids_set(VkrScene *scene, const char *first,
                                        const char *second) {
-  VkrSceneDocumentId *ids = vkr_scene_document_ids_reserve(scene, 2u);
+  VkrEntityRef *ids = vkr_scene_document_ids_reserve(scene, 2u);
   assert(ids);
-  assert(vkr_scene_document_id_parse(
-      string8_create((uint8_t *)first, strlen(first)), &ids[0]));
-  assert(vkr_scene_document_id_parse(
-      string8_create((uint8_t *)second, strlen(second)), &ids[1]));
+  assert(vkr_entity_ref_parse(first, strlen(first), &ids[0]));
+  assert(vkr_entity_ref_parse(second, strlen(second), &ids[1]));
 }
 
 /* Document-stable ids (ADR-076). The oracle is which entity an overlay edit
@@ -116,6 +114,13 @@ static void edit_test_document_ids(VkrAllocator *allocator, String8 path) {
   edit_test_document_ids_set(&swapped, second, first);
   vkr_scene_edit_reset(&state, allocator, 1);
   assert(vkr_scene_edit_load(&state, &swapped, path));
+  /* A document entity's reference id is its document's id. */
+  VkrEntityRef ref;
+  VkrEntityRef expected;
+  assert(vkr_entity_ref_parse(second, strlen(second), &expected));
+  assert(vkr_scene_entity_ref(&swapped, moved, &ref) &&
+         MemCompare(&ref, &expected, sizeof(ref)) == 0);
+  assert(vkr_scene_find_entity_ref(&swapped, &expected).u64 == moved.u64);
   const String8 moved_name = vkr_scene_get_name(&swapped, moved);
   const String8 kept_name = vkr_scene_get_name(&swapped, kept);
   assert(moved_name.length == 6 &&
@@ -436,6 +441,12 @@ static void edit_test_structure(void) {
     printf("create failed: %s\n", state.status);
   assert(created.u64 && state.created_count == 1u);
   assert(vkr_scene_get_transform(&scene, created)->parent.u64 == parent.u64);
+  /* A created entity gets its own id; a document without ids gives none. */
+  VkrEntityRef created_ref;
+  VkrEntityRef ref;
+  assert(vkr_scene_entity_ref(&scene, created, &created_ref) &&
+         !vkr_entity_ref_empty(&created_ref));
+  assert(!vkr_scene_entity_ref(&scene, lamp, &ref));
   VkrSceneEditValues rename;
   assert(vkr_scene_edit_read(&scene, created, &rename));
   rename.fields = VKR_SCENE_EDIT_NAME;
@@ -451,6 +462,8 @@ static void edit_test_structure(void) {
   assert(found.u64 != created.u64 && state.created[0].entity.u64 == found.u64);
   assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
   assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
+  /* Redo recreates it under the same id, so references to it still hold. */
+  assert(vkr_scene_find_entity_ref(&scene, &created_ref).u64 == found.u64);
   created = found;
 
   /* Delete refuses a parent, then deletes and restores a document light. */
@@ -530,6 +543,8 @@ static void edit_test_structure(void) {
   assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
   assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
   assert(state.created_count == 1u && state.created[0].entity.u64 == found.u64);
+  assert(vkr_scene_entity_ref(&scene, found, &ref) &&
+         MemCompare(&ref, &created_ref, sizeof(ref)) == 0);
   VkrScenePhysicsSnapshot body_read;
   assert(vkr_scene_physics_read(&scene, found, &body_read) &&
          body_read.present && body_read.collider_count == 1 &&
