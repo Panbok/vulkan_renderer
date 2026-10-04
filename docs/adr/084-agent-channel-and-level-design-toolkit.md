@@ -385,8 +385,9 @@ The scene owns its terrains
 ([vkr_scene_terrain.c](../../runtime/src/renderer/systems/vkr_scene_terrain.c)),
 at most eight per scene. When the component appears it loads the file and
 keeps every sample in memory; a terrain larger than 1,024 cells streams
-instead, as [World partition](../proposals/world-partition.md) describes. Edits change those samples, mark the 64-cell
-tiles they touched and the terrain's collision dirty, and saving the scene
+instead ([ADR-086](086-world-partition.md#terrain-streaming)). Edits change
+those samples, mark the 64-cell tiles they touched and the terrain's
+collision dirty, and saving the scene
 writes each changed terrain's file. Each update rebuilds the marked tiles:
 
 - **Mesh.** One generated mesh holds a submesh per tile, each with its own
@@ -543,7 +544,7 @@ leaving the scene unsaved leaves the file behind. A resident terrain keeps
 all its samples: the largest, 1,025 samples a side, holds 6 MiB of samples
 and 256 tile geometries. The owner chose all-resident terrain up to 1 km at
 1 m spacing; larger terrains stream by tiles
-([World partition](../proposals/world-partition.md)). Imported, cooked terrain
+([ADR-086](086-world-partition.md)). Imported, cooked terrain
 meshes were declined in favour of heightfields built in the scene.
 
 Brush meshes are not merged: a level pays one draw per brush. A

@@ -24,7 +24,7 @@ are recorded in ADR-084 and ADR-085.
 |---|---|---|
 | Visual scripting | Later work. A future graph asset, in the style of Unreal Blueprints, uses the IO router and its value kinds | Designing the graph editor now |
 | Connection targets | An entity in the source's own container, because entity references never cross containers (ADR-076). Named targets across containers can come later | Cross-container references now |
-| Large worlds | Terrain and scene content stream by cells in a separate proposal, [World partition](world-partition.md) | Streaming inside the toolkit |
+| Large worlds | Terrain and scene content stream by cells, implemented in [ADR-086](../adr/086-world-partition.md); follow-ups in [World partition](world-partition.md) | Streaming inside the toolkit |
 
 ## Current baseline
 

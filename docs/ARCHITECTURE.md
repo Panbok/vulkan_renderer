@@ -167,7 +167,8 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the SDK | `scripts/fps/src/fps_module.c` |
 | Brushes | Convex brush polygons, UVs, carve, extrude and merge; per-scene rebuild of brush meshes, materials and generated cell collision | `runtime/src/level/vkr_brush.c`, `runtime/src/renderer/systems/vkr_scene_brush.c` |
 | Population | Spline curves and samples; spline mesh and scatter copies as runtime mesh instances rebuilt from their rules, the population bound and picking through the rule's entity; spline and scatter overlay lines | `runtime/src/level/vkr_spline.c`, `runtime/src/renderer/systems/vkr_scene_population.c`, `editor/src/editor_physics.c` |
-| Terrain | Heightfield samples, operations and the tile-chunked file; per-scene loading, tile mesh rebuilds, height field collision and saving; the sculpt tool and Terrain window | `runtime/src/level/vkr_heightfield.c`, `runtime/src/renderer/systems/vkr_scene_terrain.c`, `editor/src/editor_terrain.c` |
+| Terrain | Tiled heightfield samples, operations, the tile file with its overview and streamed tile loads; per-scene loading, the tile window around streaming sources, overview tiles, tile mesh rebuilds, height field collision and saving; the sculpt tool and Terrain window | `runtime/src/level/vkr_heightfield.c`, `runtime/src/renderer/systems/vkr_scene_terrain.c`, `editor/src/editor_terrain.c` |
+| World partition | Cell assignment, the cell table and load plans; cell documents and the unload rules; per-frame streaming, Play holds, proxies and the origin rebase; the World Partition window and `partition.*` operations; `bake proxies` | `runtime/src/renderer/systems/vkr_scene_partition.c`, `runtime/src/renderer/systems/vkr_scene_edit.c`, `runtime/src/vkr_sample_runtime.c`, `editor/src/editor_partition.c`, `tools/bakery/vkr_bakery_bake.c` |
 | Entity IO | Publication of connections, the session's sensor drain, trigger, relay, timer and counter state, delivery order, limits and the `[io]` trace; the editor's Outputs, Inputs and Route sections and Scene lines | `runtime/src/script/vkr_io_router.c`, `editor/src/editor_io.c` |
 | Level checks | Walkable-floor sampling against the player capsule, `level.lint`, reachability, face picking and the Level checks window | `editor/src/editor_level.c` |
 | Agent channel | Editor socket, operation table, batches, review, captures; `vkr_mcp` adapter | `editor/src/editor_agent.c`, `editor/src/editor_ops.c`, `tools/agent/vkr_mcp.c` |
@@ -1412,6 +1413,11 @@ These are limits of current code or retained acceptance, not scheduled promises:
   coverage, meshlets, cooked mesh levels and shader hot reload are absent; the
   GPU LOD table serves terrain tiles only
   ([ADR-085](adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)).
+- Moving the camera over terrain with local shadows on raises the frame p95
+  from about 6 ms to about 30 ms on an M1 Pro; imported scene documents, the
+  World and added scenes do not stream by cells
+  ([ADR-086](adr/086-world-partition.md),
+  [audit](proposals/level-toolkit-audit.md)).
   [Meshlet cluster culling](proposals/meshlet-cluster-culling.md) records the
   measured geometry-bound cost and why finer culling has not paid yet.
 - Native source exists for both backends, but same-revision crossed transmission,
