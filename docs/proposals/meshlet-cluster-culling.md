@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-01
+updated: 2026-10-04
 authority: proposal
 ---
 # Meshlet cluster culling
@@ -166,27 +166,81 @@ The investigation found and fixed a separate defect: cooked range extents are
 absolute, but mesh-level bound unions read them as center-relative, which
 shifted mesh bounds and inflated directional cascade depth ranges.
 
+## Local shadow fill bursts
+
+Since `818afd1d` and `9a4ce4c3`, local faces no longer redraw for texture
+streaming or transmission-layer changes, so frames stay below 16 ms of GPU
+while moving through Bistro ([ADR-019](../adr/019-bounded-forward-spatial-lighting.md)).
+The remaining spikes follow a camera jump into an area whose lights are not
+yet cached: the cache draws its face budget (High: 30) every frame until every
+light is valid. In Bistro that is about 13 frames of 9–16 ms of GPU each, 17
+frames above the steady state's 9–10 ms.
+
+Measured on the M1 Pro, Release, High preset, with `VKR_RG_GPU_TIMING=1`
+(which adds pass timestamps) and a 22 s Metal System Trace, in the editor
+after an 8 s warm-up and a jump to eye (-2, 13, 6) looking at (-20, 6, 6):
+
+| Observation | Result |
+|---|---|
+| Opaque face cost at 1×, ½× and ¼× face size (1024² faces became 256², 256² became 128²) | 0.325, 0.319, 0.316 ms per face |
+| A face pass with nothing to draw | about 0.01 ms |
+| Shadow raster time by stage (trace) | about 80% vertex, 20% fragment |
+| Visible draws per local face during the burst | median 96 (42–198) |
+| Cost per draw, local face | about 3.5 µs (0.34 ms ÷ 96) |
+| Cost per draw, directional cascade | about 0.7 µs (about 2 ms ÷ 2,850 draws) |
+
+Faces are therefore not fill- or pass-bound. A local face's draw costs five
+times a cascade draw because it draws large meshes near the light whole, so
+per-draw overhead is at most about a fifth of a face and the rest is vertex
+work, the 77% frustum waste estimated above. Rendering a light's six faces in
+one pass (vertex amplification or multiview) would remove only that fifth,
+and an offline mesh-LOD estimate at a 1-texel threshold keeps 76% of a local
+face's triangles, since lights sit close to what they shadow. Removing out-of-face clusters is the
+lever with the most reach for these bursts, and also for the steady local
+depth cost above.
+
 ## Remaining option
 
 Compute cluster culling only pays if surviving clusters are compacted into a
 few draws per bucket (for example a compacted index buffer), so draw count does
 not grow with cluster count. It must also keep the range-relative
 `primitive_id` mapping and the same-surface identity above on both backends.
-That is a substantially larger change than Step 1, and the reachable saving is
-bounded by about 1 ms of local shadow depth plus 0.1–0.2 ms of camera raster in
-this workload. Mesh shaders remain out of scope for Bistro (cone culling 2–3%).
+
+Scope it to local shadow views first. Their depth passes write only depth, so
+the visible-row identity, `primitive_id` and the same-surface contract of the
+camera passes do not apply, and camera and cascade views keep today's
+per-candidate draws and draw counts, which is where Step 1 lost. Per face,
+cull the clusters of each visible candidate against the face frustum, compact
+the surviving triangles or cluster ranges, and draw them in a bounded number
+of indirect draws. Transmission faces (about a third of a burst's local cost)
+can follow the same path. The reachable saving is up to about 70% of local
+face depth: roughly 0.2 ms per face, or 5–7 ms of each burst frame, besides
+the steady 0.7–1.0 ms above. Camera raster would follow only if the identity
+work is done, for 0.1–0.2 ms. Mesh shaders remain out of scope for Bistro
+(cone culling 2–3%).
+
+Independently, faces whose view does not reach the camera frustum could wait
+until it does, which shortens a burst rather than cheapening it. It requires a
+light to show with some faces still undrawn, which today's rule (a light is
+shadowed once every face is valid) does not allow.
+
 Pixel-bound passes (`Lighting.Deferred`, `Shadow.LocalMask`,
-`Temporal.Resolve`, tonemap and UI) cost more and are the better targets.
+`Temporal.Resolve`, tonemap and UI) remain the larger steady-state costs.
 
 ## Decision boundaries
 
-- Whether a compacted-cluster path is worth its visibility-identity and ABI
-  changes for this saving.
+- Whether a compacted-cluster path for local shadow views alone is worth its
+  cooker data, culling pass and backend work for the burst saving, and whether
+  camera views follow with their visibility-identity and ABI changes.
+- Whether a light may show before all its faces are drawn, so faces outside
+  the view can wait.
 - Draw-count budgets: any finer culling unit must be measured against per-draw
   cost in `VBuffer.Opaque`, cascades and `Cull.*`, not only triangles.
 
 ## Evidence needed
 
+- The camera-jump burst above: frames, GPU time per burst frame and per face,
+  and draws and submitted triangles per face, before and after.
 - Authoritative matched Release before/after runs on
   `bistro_metal_production_040` with `tools/profiles/performance-windowed-gpu.json`
   on the M1 Pro, and a matched Bistro Vulkan case on the RX 6700 XT. Report
