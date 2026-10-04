@@ -217,10 +217,18 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
 #define HASH(value) hash = hash_bytes(hash, &(value), sizeof(value))
   HASH(input->frame.scene_generation);
   HASH(input->globals.projection);
-  /* The packed tail contains no padding; exclude all camera/view matrices. */
-  hash = hash_bytes(hash, &params->color_density,
+  /* The packed tail contains no padding; exclude all camera/view matrices,
+     and the selected lights' places in the frame's light array, which
+     their identities below stand for. */
+  hash =
+      hash_bytes(hash, &params->color_density,
+                 offsetof(VkrFroxelFogGpuParams, selected_local_indices_count) -
+                     offsetof(VkrFroxelFogGpuParams, color_density));
+  HASH(params->selected_local_indices_count[2]);
+  HASH(params->selected_local_indices_count[3]);
+  hash = hash_bytes(hash, &params->boxes,
                     offsetof(VkrFroxelFogGpuParams, current_view_projection) -
-                        offsetof(VkrFroxelFogGpuParams, color_density));
+                        offsetof(VkrFroxelFogGpuParams, boxes));
   if (input->world) {
     const uint64_t publication_generation =
         vkr_world_content_publication_generation(input->world);
@@ -237,26 +245,47 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
     HASH(input->lighting->directional_direction);
     HASH(input->lighting->directional_color);
     HASH(input->lighting->directional_intensity);
-    for (uint32_t i = 0; i < params->selected_local_indices_count[2]; ++i) {
-      const uint32_t index = params->selected_local_indices_count[i];
-      const VkrPointLight *light = &input->lighting->point_lights[index];
+    /* The selected lights in identity order, each with the world-space
+       shadow its faces cast; where the shadow cache places or how finely it
+       draws a face resamples the same shadow. */
+    const uint32_t selected = params->selected_local_indices_count[2];
+    uint32_t order[2] = {params->selected_local_indices_count[0],
+                         params->selected_local_indices_count[1]};
+    if (selected == 2u &&
+        input->lighting->point_lights[order[1]].render_id <
+            input->lighting->point_lights[order[0]].render_id) {
+      order[0] = params->selected_local_indices_count[1];
+      order[1] = params->selected_local_indices_count[0];
+    }
+    for (uint32_t i = 0; i < selected; ++i) {
+      const VkrPointLight *light = &input->lighting->point_lights[order[i]];
       VkrGpuPointLightRow row;
       vkr_point_light_pack(light, 1.0f, &row);
       HASH(row);
       HASH(light->render_id);
-      const uint32_t first = input->local_shadow->light_first_view[index];
-      HASH(first);
+      const uint32_t first = input->local_shadow->light_first_view[order[i]];
       const uint32_t faces =
           light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT ? 1u : 6u;
-      hash = hash_bytes(hash, &input->local_shadow->views[first - 1u],
-                        faces * sizeof(VkrLocalShadowView));
+      for (uint32_t face = 0; face < faces; ++face) {
+        const VkrLocalShadowView *view =
+            &input->local_shadow->views[first - 1u + face];
+        HASH(view->light_view_projection);
+        HASH(view->light_position_near);
+        HASH(view->light_direction_far);
+        HASH(view->projection_params.x);
+        HASH(view->shadow_params.x);
+      }
     }
   }
   if (input->shadow) {
+    /* A cascade refit as the camera moves resamples the same sun shadow,
+       which the history's temporal clamp absorbs, as SSR history does
+       (vkr_ssr_content_signature); the map size and sun size change it. */
     HASH(input->shadow->cascade_count);
-    hash = hash_bytes(hash, input->shadow->cascades,
-                      input->shadow->cascade_count *
-                          sizeof(VkrShadowCascadePacketData));
+    for (uint32_t i = 0; i < input->shadow->cascade_count; ++i) {
+      HASH(input->shadow->cascades[i].origin_inv_size_sun.z);
+      HASH(input->shadow->cascades[i].origin_inv_size_sun.w);
+    }
     HASH(input->shadow->receiver.receiver_bias_texels);
   }
 #undef HASH

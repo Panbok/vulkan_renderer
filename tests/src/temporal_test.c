@@ -705,12 +705,105 @@ vkr_internal void test_froxel_fog_history_scope(void) {
   printf("  test_froxel_fog_history_scope PASSED\n");
 }
 
+/* Volumetric fog history survives what only resamples the same shadows: a
+   cascade refit, a local shadow face moving in the atlas or drawing at
+   another size, and the selected lights trading places in the frame's
+   light array. The sun's size or a light moving resets it. */
+vkr_internal void test_froxel_fog_history_survives_refits(void) {
+  printf("  Running test_froxel_fog_history_survives_refits...\n");
+  static VkrLocalShadowPassPayload local;
+  MemZero(&local, sizeof(local));
+  VkrPointLight lights[2] = {
+      {.position = {0.0f, 1.0f, -10.0f},
+       .color = {1.0f, 1.0f, 1.0f},
+       .intensity = 10.0f,
+       .range = 30.0f,
+       .direction = {0.0f, -1.0f, 0.0f},
+       .inner_cone_angle = 0.3f,
+       .outer_cone_angle = 0.5f,
+       .kind = VKR_POINT_LIGHT_KIND_GLTF_SPOT,
+       .render_id = 7u},
+      {.position = {3.0f, 1.0f, -20.0f},
+       .color = {1.0f, 0.5f, 0.2f},
+       .intensity = 20.0f,
+       .range = 30.0f,
+       .direction = {0.0f, -1.0f, 0.0f},
+       .inner_cone_angle = 0.3f,
+       .outer_cone_angle = 0.5f,
+       .kind = VKR_POINT_LIGHT_KIND_GLTF_SPOT,
+       .render_id = 3u},
+  };
+  local.view_count = 2u;
+  for (uint32_t i = 0; i < 2u; ++i) {
+    local.light_first_view[i] = i + 1u;
+    local.views[i] = (VkrLocalShadowView){
+        .light_view_projection = mat4_translate(lights[i].position),
+        .light_position_near = {lights[i].position.x, lights[i].position.y,
+                                lights[i].position.z, 0.05f},
+        .light_direction_far = {0.0f, -1.0f, 0.0f, 30.0f},
+        .projection_params = {0.5f, 1.0f / 512.0f, 1.0f, 1.0f},
+        .shadow_params = {1.0f, 0.0f, 0.0f, 0.0f},
+        .atlas_rect = {0.25f * (float32_t)i, 0.0f, 0.25f, 0.0f},
+    };
+  }
+  VkrFrameLighting lighting = {.point_lights = lights, .point_light_count = 2u};
+  VkrShadowPassPayload shadow = {.cascade_count = 2u};
+  for (uint32_t i = 0; i < 2u; ++i) {
+    shadow.cascades[i] = (VkrShadowCascadePacketData){
+        .light_view_projection = mat4_identity(),
+        .split_near_far_texel_depth = {0.1f, 20.0f, 0.05f, 100.0f},
+        .origin_inv_size_sun = {1.0f, 2.0f, 1.0f / 2048.0f, 0.0046f},
+    };
+  }
+  VkrFrameInput input = {
+      .lighting = &lighting, .shadow = &shadow, .local_shadow = &local};
+  input.globals.view = mat4_identity();
+  input.globals.projection =
+      mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 1000.0f);
+  input.globals.froxel_fog = vkr_froxel_fog_settings_defaults();
+  input.globals.froxel_fog.enabled = true_v;
+  input.globals.froxel_fog.max_distance = 100.0f;
+  VkrFroxelFogGpuParams params = vkr_froxel_fog_prepare(&input, 1280u, 720u);
+  assert(params.selected_local_indices_count[2] == 2u);
+  const uint64_t signature =
+      vkr_froxel_fog_content_signature(&input, &params, 0u);
+
+  for (uint32_t i = 0; i < 2u; ++i) {
+    shadow.cascades[i].light_view_projection =
+        mat4_translate(vec3_new(0.5f, 0.0f, 0.25f));
+    shadow.cascades[i].split_near_far_texel_depth.y = 25.0f;
+    shadow.cascades[i].origin_inv_size_sun.x = 7.0f;
+    local.views[i].atlas_rect.x += 0.5f;
+    local.views[i].projection_params.y = 1.0f / 256.0f;
+    local.views[i].shadow_params.z = 1.0f;
+  }
+  assert(vkr_froxel_fog_content_signature(&input, &params, 0u) == signature);
+
+  const VkrPointLight first = lights[0];
+  lights[0] = lights[1];
+  lights[1] = first;
+  const VkrLocalShadowView first_view = local.views[0];
+  local.views[0] = local.views[1];
+  local.views[1] = first_view;
+  params = vkr_froxel_fog_prepare(&input, 1280u, 720u);
+  assert(vkr_froxel_fog_content_signature(&input, &params, 0u) == signature);
+
+  shadow.cascades[1].origin_inv_size_sun.w = 0.01f;
+  assert(vkr_froxel_fog_content_signature(&input, &params, 0u) != signature);
+  shadow.cascades[1].origin_inv_size_sun.w = 0.0046f;
+  assert(vkr_froxel_fog_content_signature(&input, &params, 0u) == signature);
+  lights[0].position.x += 1.0f;
+  assert(vkr_froxel_fog_content_signature(&input, &params, 0u) != signature);
+  printf("  test_froxel_fog_history_survives_refits PASSED\n");
+}
+
 bool32_t run_temporal_tests(void) {
   printf("Running temporal tests...\n");
   test_temporal_jitter_and_commit();
   test_temporal_projection_pixel_shift();
   test_temporal_scene_signature();
   test_froxel_fog_history_scope();
+  test_froxel_fog_history_survives_refits();
   test_temporal_ssr_settling();
   test_temporal_reset_reasons();
   test_temporal_sequence_repeats();
