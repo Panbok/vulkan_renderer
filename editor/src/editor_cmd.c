@@ -425,6 +425,68 @@ static bool8_t cmd_run_select(CmdContext *ctx, const CmdDef *def, String8 arg) {
   return true_v;
 }
 
+/* io.trace [on|off|toggle]: the `[io]` line of each delivery (ADR-084). */
+static bool8_t cmd_run_io_trace(CmdContext *ctx, const CmdDef *def,
+                                String8 arg) {
+  (void)def;
+  bool8_t next = false_v;
+  const bool8_t current = ctx->frame->scripts && ctx->frame->scripts->io.trace;
+  if (!ctx->frame->io_request ||
+      !cmd_switch(ctx, cmd_split(arg, NULL), current, &next)) {
+    return false_v;
+  }
+  ctx->frame->io_request->set_trace = true_v;
+  ctx->frame->io_request->trace = next;
+  snprintf(ctx->message, sizeof(ctx->message), "IO trace %s",
+           next ? "on" : "off");
+  return true_v;
+}
+
+/* io.fire <entity> <input> [value]: sends an input during Play; a name with
+   spaces is quoted. */
+static bool8_t cmd_run_io_fire(CmdContext *ctx, const CmdDef *def,
+                               String8 arg) {
+  (void)def;
+  if (!cmd_require_scene(ctx))
+    return false_v;
+  arg = cmd_trim(arg);
+  String8 name = {0};
+  String8 rest = {0};
+  if (arg.length && arg.str[0] == '"') {
+    uint64_t end = 1u;
+    while (end < arg.length && arg.str[end] != '"')
+      ++end;
+    name = (String8){.str = arg.str + 1, .length = end - 1u};
+    rest =
+        cmd_trim((String8){.str = arg.str + Min(end + 1u, arg.length),
+                           .length = arg.length - Min(end + 1u, arg.length)});
+  } else {
+    name = cmd_split(arg, &rest);
+  }
+  String8 value = {0};
+  const String8 input = cmd_split(rest, &value);
+  const VkrEntityId entity = cmd_find_any(ctx->frame, name);
+  VkrSampleIoRequest *request = ctx->frame->io_request;
+  if (!entity.u64 || !input.length || input.length >= sizeof(request->input) ||
+      value.length >= sizeof(request->value) || !request) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "io.fire needs an object, one of its inputs and an optional "
+             "value");
+    return false_v;
+  }
+  if (!ctx->frame->scripts_running) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "Inputs reach objects only while the game plays");
+    return false_v;
+  }
+  *request = (VkrSampleIoRequest){.target = entity, .send = true_v};
+  MemCopy(request->input, input.str, input.length);
+  MemCopy(request->value, value.str, value.length);
+  snprintf(ctx->message, sizeof(ctx->message), "Sent %.*s to %.*s",
+           (int)input.length, input.str, (int)name.length, name.str);
+  return true_v;
+}
+
 static bool8_t cmd_run_visibility(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
   (void)def;
@@ -1779,6 +1841,12 @@ static const CmdDef cmd_defs[] = {
      "Cut the selected brush with the vertical plane through two grid "
      "clicks",
      cmd_run_brush_draw, CMD_COUNT, 1u},
+    {"io.trace", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Log each entity IO delivery during Play as an [io] line",
+     cmd_run_io_trace, CMD_COUNT, 0u},
+    {"io.fire", CMD_ARG_TEXT, "<object> <input> [value]",
+     "Send an input to an object during Play, as a connection would",
+     cmd_run_io_fire, CMD_COUNT, 0u},
     {"grid.labels", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Show or hide the grid's cell numbers and letters", cmd_run_view,
      CMD_COUNT, 2u},

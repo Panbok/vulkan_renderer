@@ -34,6 +34,9 @@ typedef enum VkrEditorLevelIssueKind {
   VKR_EDITOR_LEVEL_UNREACHABLE,
   VKR_EDITOR_LEVEL_OVERLAP,
   VKR_EDITOR_LEVEL_INVALID_BRUSH,
+  /* An IO connection whose source lies in the region and that will not
+     route (ADR-084). */
+  VKR_EDITOR_LEVEL_BROKEN_CONNECTION,
   VKR_EDITOR_LEVEL_ISSUE_COUNT,
 } VkrEditorLevelIssueKind;
 

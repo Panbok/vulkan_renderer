@@ -385,6 +385,12 @@ typedef struct VkrEditorUi {
   float32_t face_handle_length;
   float32_t face_drag_start;
   float32_t face_drag_distance;
+  /* Entity IO in Details (editor_io.h): a connection waiting for its target
+     to be picked, and the sections' collapsed states. */
+  VkrEntityId io_pick;
+  bool8_t io_outputs_collapsed;
+  bool8_t io_inputs_collapsed;
+  bool8_t io_route_collapsed;
   /* Brush drawing: a left drag on the grid plane draws a box brush between
      the press and the release, one grid cell high. */
   bool8_t brush_draw;

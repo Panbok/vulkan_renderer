@@ -1,5 +1,6 @@
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_io.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
 #include "editor_scene_panels.h"
@@ -321,6 +322,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_agent_update(editor->agent, editor, frame);
   vkr_editor_windows_register_input_layers(editor, frame->ui);
   vkr_editor_viewport_update(editor, frame);
+  vkr_editor_io_update(editor, frame);
   if (frame->mapping_valid) {
     if (!frame->scene_only) {
       dock_capture = vkr_ui_dock_update_input(

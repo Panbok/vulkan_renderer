@@ -6,37 +6,36 @@ authority: proposal
 # Level design toolkit
 
 The remaining phases of the level design toolkit. The agent channel,
-brushes, brush editing and level checks are implemented and recorded in
-[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md); this
-proposal keeps Source-style triggers and IO that C scripts declare,
-heightfield terrain, splines and scatter, and the brush tools no phase
-covers yet. Every
-phase adds its operations to the ADR-084 operation table, so the viewport, the
-Cmd bar and agents share them.
+brushes, brush editing, level checks and entity IO are implemented and
+recorded in [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md);
+this proposal keeps heightfield terrain, splines and scatter, the brush tools
+no phase covers yet, and the IO work that follows it. Every phase adds its
+operations to the ADR-084 operation table, so the viewport, the Cmd bar and
+agents share them.
 
 ## Settled decisions
 
 The owner settled these on 2026-10-04. Decisions of the implemented phases
 (brushes, the agent channel, MCP 2026-07-28 only, the C adapter, review,
-brush storage, brush editing and level checks) are recorded in ADR-084.
+brush storage, brush editing, level checks and entity IO) are recorded in
+ADR-084.
 
 | Decision | Choice | Rejected alternatives |
 |---|---|---|
 | First target | Indoor blockout with brushes; terrain follows | Terrain first; both tracks in parallel |
-| Triggers and IO | Source-style outputs, inputs and connections, declared by engine components and by C script components through `sdk.h` | IO as a separate system that scripts cannot extend |
-| Visual scripting | Later work. IO and its value kinds must let a future graph asset, in the style of Unreal Blueprints, use the same router | Designing the graph editor now |
-| Invalid connections | Report and skip, so a level plays with one broken connection | Refusing Play until every connection resolves |
+| Visual scripting | Later work. A future graph asset, in the style of Unreal Blueprints, uses the IO router and its value kinds | Designing the graph editor now |
 | Connection targets | An entity in the source's own container, because entity references never cross containers (ADR-076). Named targets across containers can come later | Cross-container references now |
-| IO timing | Routing in fixed ticks, so delays and order do not depend on the frame rate | Routing once per rendered frame |
 
 ## Current baseline
 
-- **Agent channel, brushes and level checks.** ADR-084: typed operations
-  over a local socket and `vkr_mcp`, batches as journal groups with review,
-  captures, brush components with generated meshes and generated collision
-  bodies, blockout operations, face moves, extrude, clip, hollow, carve and
-  merge, face handles and the clip tool, and `level.lint` and
-  `query.reachable` against the player capsule.
+- **Agent channel, brushes, level checks and IO.** ADR-084: typed
+  operations over a local socket and `vkr_mcp`, batches as journal groups
+  with review, captures, brush components with generated meshes and
+  generated collision bodies, blockout operations, face moves, extrude,
+  clip, hollow, carve and merge, face handles and the clip tool,
+  `level.lint` and `query.reachable` against the player capsule, and entity
+  IO: outputs, inputs and connections from engine components and script
+  behaviors, routed after each tick with trigger hooks for scripts.
 - **Collision.** Colliders are boxes, spheres, capsules, convex hulls and
   triangle meshes; sensors exist; a body holds at most
   `VKR_PHYSICS_MAX_COLLIDERS` (32) colliders
@@ -47,23 +46,15 @@ brush storage, brush editing and level checks) are recorded in ADR-084.
   ([vkr_physics.h](../../runtime/src/physics/vkr_physics.h)).
 - **Prefabs.** `scene.instantiate` copies a project scene under a new root
   without a link to its source.
-- **Sensor events.** Physics reports sensor begin and end pairs
-  (`VkrPhysicsSensorEvent`), and the sample runtime drains them each frame
-  ([vkr_sample_runtime.c](../../runtime/src/vkr_sample_runtime.c), in its
-  scene update). No code reads the drained events, so scripts cannot react to
-  a trigger.
-- **Scripts.** C script modules declare components, fields, behaviors and
-  module hooks through `sdk.h` macros
+- **Scripts.** C script modules declare components, fields, behaviors,
+  module hooks and IO ports through `sdk.h` macros
   ([ADR-079](../adr/079-c-script-modules.md), [sdk.h](../../sdk/sdk.h)).
-  Structural edits in fixed ticks are queued and replay after the tick. The SDK
-  has no event, message or trigger hook.
 - **Descriptor limits.** Properties never describe dynamic arrays
-  ([vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)), and no property
-  kind references an entity. A component cannot hold a list of connections or
-  a field that points to another entity.
+  ([vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)). An `ENTITY`
+  property references one entity of its own container.
 - **Not present.** Brush vertex and edge edits, glTF export of a blockout,
   terrain ([Terrain rendering](terrain-rendering.md) is a proposal), splines,
-  scatter and entity IO. The
+  scatter, movers, and IO across containers. The
   [behavior proposal](entity-behavior-system.md#second-deliverable-connections-and-constrained-state-charts)
   plans connection assets that bind a typed event to an action on an entity.
 
@@ -104,140 +95,22 @@ splitting it or refusing the move; export to glTF, which hands a blockout to
 an artist; or Replace with mesh, which swaps a brush group for the finished
 model and keeps its brushes as collision only.
 
-### Gameplay volumes
+### After IO
 
-Brush roles (ADR-084) already give solid, visual, clip and trigger volumes;
-a trigger brush owns a sensor body. Movers and other gameplay roles come with
-IO. Point entities include the existing Player Start, spawns and markers. A
-`trigger` component may use a trigger brush or the entity's own box, sphere
-or capsule sensor collider.
+Entity IO is implemented (ADR-084). What follows it:
 
-### Triggers, IO and scripts
-
-IO uses three terms from Source:
-
-| Term | Meaning | Example |
-|---|---|---|
-| Output | A named fact that a component fires | `trigger.on_enter`, `door.opened` |
-| Input | A named action that a component accepts and validates | `door.open`, `trigger.disable` |
-| Connection | Output to target input, with a value, a delay and a fire limit | `on_enter → door_a.open, delay 0.5 s, once` |
-
-An input is a request: the target's handler validates its own state, so a
-connection cannot open a locked door. An output is a fact in the behavior
-proposal's sense; a receiver cannot veto it.
-
-**Declarations.** Engine components declare their outputs and inputs in their
-descriptors:
-
-| Component | Outputs | Inputs |
-|---|---|---|
-| `trigger` | `on_enter`, `on_exit`, `on_empty` | `enable`, `disable`, `toggle` |
-| `relay` | `on_trigger` | `trigger`, `enable`, `disable` |
-| `timer` | `on_timer` | `start`, `stop`, `set_interval` |
-| `counter` | `on_changed`, `on_max`, `on_min` | `add`, `subtract`, `set` |
-| Every placed entity | none | `show`, `hide`, `destroy` |
-
-A trigger filters by collision mask and, optionally, by a component type that
-the other entity must carry, such as the player's. `on_empty` fires when the
-last filtered entity leaves.
-
-Script components declare outputs and inputs next to `VKR_COMPONENT`, so a
-script joins the same wiring as engine components (pseudocode; the macro
-names are proposed):
-
-```c
-VKR_OUTPUTS(door,
-            VKR_OUTPUT(opened, "On opened")
-            VKR_OUTPUT(closed, "On closed"))
-
-static void door_open(VkrCtx *ctx, VkrEntity self, Door *door,
-                      const VkrIoValue *value) {
-  if (door->locked) {
-    return;
-  }
-
-  door->target_angle = door->open_angle;
-  vkr_io_fire(ctx, self, door_output_opened, NULL);
-}
-
-VKR_INPUTS(door,
-           VKR_INPUT(open, "Open", NONE, door_open)
-           VKR_INPUT(close, "Close", NONE, door_close))
-
-VKR_BEHAVIOR(door, .update = door_update, .inputs = door_inputs,
-             .outputs = door_outputs)
-```
-
-Scripts also reach IO from code:
-
-- `vkr_io_fire(ctx, self, output, value)` fires one of the script's outputs.
-- `vkr_io_send(ctx, target, input, value)` calls an input on another entity
-  through the router, as Source's `ent_fire` does. The input identifier comes
-  from `vkr_io_input(ctx, type, "open")`, resolved once in `start`.
-- Behaviors on a trigger entity get `trigger_enter` and `trigger_exit` hooks
-  with the other entity, as Unity's `OnTriggerEnter` does. A script then
-  reacts to its own volume without a connection.
-
-Value kinds are `NONE` and the `VKR_FIELD` kinds, plus a new `ENTITY` kind.
-
-**Storage.** Each connection is a child entity of its source with one
-`io_connection` component, as each collider is a child entity of its body
-owner (ADR-072). Its fields are the output name, the target, the input name,
-the value, the delay in seconds and the fire limit (0 for unlimited). Child
-entities give each connection Details rows, undo, JSON, Cmd paths and agent
-operations without array support in descriptors. The Outliner hides them; the
-owner's Details shows them.
-
-The target needs a new `ENTITY` property kind that stores a document-stable
-entity ID ([ADR-076](../adr/076-project-object-model.md)) and resolves to a
-generational `VkrEntity` at load. The same kind gives script fields entity
-references, such as a button that names its door.
-
-**Routing.** An IO router in the script host owns delivery for the simulated
-scene. It becomes the single physics-event drain from the behavior proposal:
-the unused sensor drain in the sample runtime moves into it.
-
-1. **Publication.** At Play start and at container load during a session, the
-   router resolves output and input names to per-type indices, targets to
-   `VkrEntity` handles, and value kinds against the input. It builds a sparse
-   table keyed by source entity and output. An invalid connection is reported
-   in the Console and in Details and never routes; Play continues. A
-   zero-delay cycle is reported as a warning.
-2. **Collection.** In `after_tick`, the router reads sensor events, applies
-   trigger filters and adds the fired outputs in producer order. Outputs that
-   scripts fired during the tick follow in their sequence order.
-3. **Delivery.** Zero-delay deliveries run first-in, first-out in the same
-   `after_tick`, where input handlers may spawn and destroy directly. A
-   delayed delivery waits in a deadline queue in simulation time and joins the
-   queue of the first tick at or after its deadline.
-4. **Bounds.** The router reserves its queues at session start. A per-tick
-   delivery limit and a zero-delay chain depth limit apply. Exceeding either
-   faults the session with the chain that caused it, as the behavior proposal
-   requires; it never drops or defers a delivery silently.
-5. **Lifetime.** A delivery carries the target's generation. A destroyed
-   target drops the delivery and increments a counter. Stop and Reset clear
-   pending deliveries and fire counts.
-
-Ordering by tick, phase, producer order and sequence makes a session
-replayable from the same inputs.
-
-**Editor and agents.** Details shows an Outputs section with the entity's
-connections: an output list from its components, a target picked in the Scene
-or Outliner, an input list from the target's components, the value, delay and
-fire limit. An Inputs section lists incoming connections and selects their
-sources. The Scene draws lines from the selection to its targets and from its
-sources. During Play an IO trace prints lines such as
-`[io] 12.350 trigger_lobby.on_enter(player) -> door_a.open`. The operations
-`io.connect`, `io.disconnect`, `io.list`, `io.fire <entity> <input> [value]`
-and `io.trace` serve the Cmd bar and agents, and `level.lint` reports
-connections with a missing target or input.
-
-**Visual scripting later.** IO wires entities together, as Source IO and the
-event links of Unreal's Level Blueprint do. A future graph asset, in the style
-of Unreal Blueprints, is a script component whose entry nodes are its inputs
-and whose fire nodes are its outputs. It uses the same router and connection
-data without migration, and its pin kinds are the IO value kinds. The behavior
-proposal's state charts consume the same facts.
+- **Movers.** A brush role or component that moves between positions on
+  inputs, as Source's func_door and func_movelinear do; the sample `door`
+  script shows the shape.
+- **Targets across containers.** A connection names an entity of its own
+  container. Named targets resolved in other loaded containers would let a
+  zone scene open a door in the World.
+- **Visual scripting.** IO wires entities together, as Source IO and the
+  event links of Unreal's Level Blueprint do. A future graph asset, in the
+  style of Unreal Blueprints, is a script component whose entry nodes are its
+  inputs and whose fire nodes are its outputs. It uses the same router and
+  connection data without migration, and its pin kinds are the IO value
+  kinds. The behavior proposal's state charts consume the same facts.
 
 ### Terrain and population
 
@@ -276,9 +149,9 @@ owns the editing operations, face selection, face handles, the clip tool,
 
 ### Phase 3: IO
 
-As described in [Triggers, IO and scripts](#triggers-io-and-scripts). The
-`trigger` component may use a brush with role `trigger` or a box, sphere or
-capsule sensor collider.
+Implemented; [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)
+owns components, connections, the router, script ports and hooks, the
+editor sections and the operations.
 
 ### Phase 4: terrain
 
@@ -304,7 +177,7 @@ the rules. Linked prefabs stay with ADR-076 and the behavior proposal.
 | 0. Agent channel | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 1. Brush core | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 2. Brush editing | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
-| 3. IO | `ENTITY` property kind, `io_connection`, the router with the sensor drain, `trigger`, `relay`, `timer`, `counter`, script `VKR_OUTPUTS` and `VKR_INPUTS`, trigger hooks, the IO trace and operations | CPU tests for delivery order, delay deadlines, fire limits, stale targets and the chain limit fault; a Bistro Play run in which a trigger opens a script door |
+| 3. IO | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 4. Terrain | Terrain-rendering decisions, sculpt and paint, height field collision, region operations | Defined by the terrain-rendering proposal |
 | 5. Population | Splines and seeded scatter; linked prefabs stay with ADR-076 | A residency bound for M1 under the 16 GB floor ([ADR-083](../adr/083-supported-hardware-matrix.md)) |
 

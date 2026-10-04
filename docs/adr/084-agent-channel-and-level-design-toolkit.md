@@ -10,8 +10,8 @@ authority: adr
 Accepted (partial). The agent channel, brushes, brush editing, level
 checks and entity IO (phases 0 to 3 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
-implemented, except IO's Details sections and Scene lines. Terrain and
-population remain in that proposal until they ship.
+implemented. Terrain and population remain in that proposal until they
+ship.
 
 ## Context
 
@@ -341,6 +341,21 @@ bodies, so a scene whose only collision is brushes still steps. Each
 generated body keeps its own copy of its colliders, and a reset rebuilds it
 in the replacement world.
 
+In the editor ([editor_io.c](../../editor/src/editor_io.c)), Details shows
+an object's connections under Outputs, with `+` adding one from its first
+output, and the connections that reach it under Inputs; each row selects the
+connection or its source and warns with the reason a connection will not
+route. A selected connection shows its component's fields, a Route section
+with that reason, its source and target, Pick target (the next object
+selected in the Scene or Outliner becomes the target) and the ports both
+ends offer. The Scene draws amber lines from the selection to its targets
+and blue lines from the sources that reach it. Connections and faces show no
+transform, script, component or physics rows. The Create menu's Level group
+adds Trigger Volume (a trigger brush with `trigger`), Relay, Timer and
+Counter. Cmd `io.trace` and `io.fire <object> <input> [value]` work in the
+bar, and `level.lint` reports connections that will not route as
+`broken_connection`.
+
 Operations `io.connect` (`source`, `output`, `target`, `input`, `value`,
 `delay`, `limit`; a target the same batch creates is allowed, because a
 created entity's id is chosen when the batch builds), `io.disconnect`,
@@ -428,7 +443,12 @@ material then).
   brush with `trigger`, a brush with the sample `door`, a Player Start
   inside the trigger and an `io.connect` to the door's `open`. On
   `sim.play` the spawned player's capsule entered the trigger and the door
-  rose 2.5 m; `io.fire` sent `close` and it returned.
+  rose 2.5 m and the trace printed
+  `[io] 0.017 Lobby trigger.on_enter(Player) -> Door A.open`; `io.fire` sent
+  `close` and it returned. In Details, a trigger listed a routing and a
+  broken connection, Pick target and the Scene set the broken one's target,
+  `+` made and selected a new connection, the door listed both incoming
+  connections, and `level.lint` reported the broken one.
 - Indicative cost, not a harness claim: the headless Release editor on an
   M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
   8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000

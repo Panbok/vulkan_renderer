@@ -6,6 +6,7 @@
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
+#include "script/vkr_io_router.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -63,8 +64,9 @@ VkrEditorLevelCapsule vkr_editor_level_capsule_default(void) {
 
 const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
   static const char *const names[VKR_EDITOR_LEVEL_ISSUE_COUNT] = {
-      "step_too_high", "too_steep",   "low_ceiling", "too_narrow",
-      "void_edge",     "unreachable", "overlap",     "invalid_brush"};
+      "step_too_high", "too_steep",     "low_ceiling",
+      "too_narrow",    "void_edge",     "unreachable",
+      "overlap",       "invalid_brush", "broken_connection"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? names[kind] : "unknown";
 }
 
@@ -469,6 +471,44 @@ static bool8_t level_brush_planes(const VkrScene *scene, VkrEntityId brush,
   return true_v;
 }
 
+/* Connections whose source lies in the region and that will not route. */
+static void level_lint_connections(LevelGrid *grid, LevelIssues *issues) {
+  const VkrScene *scene = grid->scene;
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const SceneTransform *transform =
+        vkr_scene_entity_alive(scene, entity) &&
+                vkr_scene_get_typed(scene, entity,
+                                    &vkr_scene_io_connection_type)
+            ? vkr_entity_get_component(scene->world, entity,
+                                       scene->comp_transform)
+            : NULL;
+    const SceneTransform *source =
+        transform ? vkr_entity_get_component(scene->world, transform->parent,
+                                             scene->comp_transform)
+                  : NULL;
+    char problem[160];
+    if (!source) {
+      continue;
+    }
+    const Vec3 at = mat4_position(source->world);
+    if (at.x < grid->min.x || at.y < grid->min.y || at.z < grid->min.z ||
+        at.x > grid->max.x || at.y > grid->max.y || at.z > grid->max.z ||
+        !vkr_io_connection_problem(scene, entity, problem, sizeof(problem))) {
+      continue;
+    }
+    /* Each connection is its own issue, never merged with a neighbour. */
+    issues->found++;
+    if (issues->count < issues->capacity) {
+      issues->items[issues->count++] =
+          (VkrEditorLevelIssue){.kind = VKR_EDITOR_LEVEL_BROKEN_CONNECTION,
+                                .position = at,
+                                .entity = transform->parent,
+                                .other = entity};
+    }
+  }
+}
+
 /* Solid brushes that share volume, and brushes that did not build. */
 static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
   const VkrScene *scene = grid->scene;
@@ -587,6 +627,7 @@ uint32_t vkr_editor_level_lint(const VkrScene *scene, Vec3 min, Vec3 max,
   }
   level_lint_floor(&grid, &issues);
   level_lint_brushes(&grid, &issues);
+  level_lint_connections(&grid, &issues);
   uint32_t reachable = 0u;
   int32_t *queue = malloc(total * sizeof(*queue));
   const int32_t origin = start && queue ? level_nearest(&grid, *start) : -1;
@@ -784,9 +825,9 @@ uint32_t vkr_editor_brush_face_outline(const VkrScene *scene, VkrEntityId face,
 
 static const char *level_issue_label(VkrEditorLevelIssueKind kind) {
   static const char *const labels[VKR_EDITOR_LEVEL_ISSUE_COUNT] = {
-      "Step too high",   "Too steep",          "Low ceiling",
-      "Gap too narrow",  "Edge into void",     "Unreachable area",
-      "Brushes overlap", "Brush did not build"};
+      "Step too high",   "Too steep",           "Low ceiling",
+      "Gap too narrow",  "Edge into void",      "Unreachable area",
+      "Brushes overlap", "Brush did not build", "Connection does not route"};
   return kind < VKR_EDITOR_LEVEL_ISSUE_COUNT ? labels[kind] : "Issue";
 }
 

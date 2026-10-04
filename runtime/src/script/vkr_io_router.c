@@ -370,6 +370,10 @@ static bool8_t io_connection_resolve(const VkrScene *scene, VkrEntityId entity,
   }
   const String8 input = string8_create_from_cstr(
       (const uint8_t *)connection->input, strlen(connection->input));
+  if (!input.length) {
+    snprintf(error, capacity, "The connection has no input");
+    return false_v;
+  }
   if (!vkr_io_find_input(scene, out->target, input, &out->input)) {
     snprintf(error, capacity, "The target has no input '%s'",
              connection->input);

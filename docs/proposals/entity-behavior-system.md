@@ -786,7 +786,7 @@ work visible before there is a graph editor.
 
 ### Second deliverable: connections and constrained state charts
 
-The [level design toolkit](level-design-toolkit.md#triggers-io-and-scripts)
+[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md#entity-io)
 owns the connection model for placed entities: outputs, inputs, connections
 stored as child entities, and the router that drains sensor events.
 

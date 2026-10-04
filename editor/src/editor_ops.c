@@ -3394,6 +3394,12 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
     if (issues[i].other.u64) {
       ops_set(ctx, issue, "other", ops_entity(ctx, scene, issues[i].other));
     }
+    char problem[160];
+    if (issues[i].kind == VKR_EDITOR_LEVEL_BROKEN_CONNECTION &&
+        vkr_io_connection_problem(scene, issues[i].other, problem,
+                                  sizeof(problem))) {
+      ops_set(ctx, issue, "problem", vkr_bakery_json_cstr(arena, problem));
+    }
     vkr_bakery_json_append(list, issue);
   }
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
@@ -4295,7 +4301,8 @@ static const OpsDef s_ops[] = {
      "Check a region's walkable floor against the player capsule: steps too "
      "high, slopes too steep, low ceilings, gaps too narrow, edges into the "
      "void, areas the start (or the Player Start) cannot reach, overlapping "
-     "solid brushes and brushes that did not build.",
+     "solid brushes, brushes that did not build and IO connections that "
+     "will not route.",
      "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
      "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
      ",\"max\":" OPS_VEC3_SCHEMA

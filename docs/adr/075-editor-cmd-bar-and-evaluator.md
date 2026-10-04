@@ -86,6 +86,7 @@ dependable channel for scripts.
 | `grid` | `[on\|off\|toggle]` | World grid |
 | `brush.draw` | `[on\|off\|toggle]` | Brush drawing in the Scene (B; ADR-084) |
 | `brush.clip_tool` | `[on\|off\|toggle]` | The clip tool in the Scene (ADR-084); it and brush drawing exclude each other |
+| `io.trace`, `io.fire` | `[on\|off\|toggle]`, `<object> <input> [value]` | Entity IO during Play (ADR-084): the `[io]` line of each delivery, and an input sent as a connection would; a name with spaces is quoted |
 | `op` | `<operation> [json object]` | Run an operation of the agent table (ADR-084); its result prints as an `[agent]` log line |
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |
 | `grid.height` | `<y>` | Grid world height (shows the grid) |

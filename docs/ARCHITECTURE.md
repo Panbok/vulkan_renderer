@@ -166,7 +166,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Script editor | Floating code window: tabs, C highlighting, completion, diagnostics, drawn by `vkr_ui_code_view` | `editor/src/editor_code.c` |
 | FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the SDK | `scripts/fps/src/fps_module.c` |
 | Brushes | Convex brush polygons, UVs, carve, extrude and merge; per-scene rebuild of brush meshes, materials and generated cell collision | `runtime/src/level/vkr_brush.c`, `runtime/src/renderer/systems/vkr_scene_brush.c` |
-| Entity IO | Publication of connections, the session's sensor drain, trigger, relay, timer and counter state, delivery order, limits and the `[io]` trace | `runtime/src/script/vkr_io_router.c` |
+| Entity IO | Publication of connections, the session's sensor drain, trigger, relay, timer and counter state, delivery order, limits and the `[io]` trace; the editor's Outputs, Inputs and Route sections and Scene lines | `runtime/src/script/vkr_io_router.c`, `editor/src/editor_io.c` |
 | Level checks | Walkable-floor sampling against the player capsule, `level.lint`, reachability, face picking and the Level checks window | `editor/src/editor_level.c` |
 | Agent channel | Editor socket, operation table, batches, review, captures; `vkr_mcp` adapter | `editor/src/editor_agent.c`, `editor/src/editor_ops.c`, `tools/agent/vkr_mcp.c` |
 | Physics adapter | Jolt world/body lifetime, native contact response/joints, sweeps and bounded contact/sensor events behind C types | `runtime/src/physics/vkr_physics.cpp` |

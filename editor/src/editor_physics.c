@@ -306,6 +306,77 @@ static void physics_brush_draft(VkrEditorUi *editor,
   }
 }
 
+/* World position of an entity's origin. */
+static bool8_t physics_entity_at(const VkrScene *scene, VkrEntityId entity,
+                                 Vec3 *out) {
+  const SceneTransform *transform =
+      vkr_scene_entity_alive(scene, entity)
+          ? vkr_entity_get_component(scene->world, entity,
+                                     scene->comp_transform)
+          : NULL;
+  if (!transform) {
+    return false_v;
+  }
+  *out = mat4_position(transform->world);
+  return true_v;
+}
+
+/* Entity IO lines (ADR-084): from the selection to its connections'
+   targets, and from the sources of connections that reach it; a selected
+   connection draws its one line. Returns how many it would draw. */
+static uint32_t physics_io_lines(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 uint32_t capacity, bool8_t draw) {
+  const VkrEntityId selected = frame->selected_entity;
+  const VkrScene *scene = vkr_editor_entity_scene(frame, selected);
+  if (!scene || !vkr_scene_entity_alive(scene, selected)) {
+    return 0u;
+  }
+  VkrEntityRef self = {0};
+  const bool8_t referable = vkr_scene_entity_ref(scene, selected, &self);
+  const bool8_t connection_selected =
+      vkr_scene_get_typed(scene, selected, &vkr_scene_io_connection_type) !=
+      NULL;
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const SceneIoConnection *value =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_scene_get_typed(scene, entity, &vkr_scene_io_connection_type)
+            : NULL;
+    const SceneTransform *transform =
+        value ? vkr_entity_get_component(scene->world, entity,
+                                         scene->comp_transform)
+              : NULL;
+    if (!transform) {
+      continue;
+    }
+    const bool8_t out = transform->parent.u64 == selected.u64;
+    const bool8_t in =
+        referable && MemCompare(&value->target, &self, sizeof(self)) == 0;
+    if (!(connection_selected ? entity.u64 == selected.u64 : out || in)) {
+      continue;
+    }
+    Vec3 from = {0};
+    Vec3 to = {0};
+    if (!physics_entity_at(scene, transform->parent, &from) ||
+        !physics_entity_at(
+            scene, vkr_scene_find_entity_ref(scene, &value->target), &to)) {
+      continue;
+    }
+    count++;
+    if (draw) {
+      /* Outgoing amber, incoming blue. */
+      const Vec4 color = (out || connection_selected)
+                             ? (Vec4){0.98f, 0.82f, 0.35f, 1.0f}
+                             : (Vec4){0.45f, 0.78f, 0.98f, 1.0f};
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
+                   capacity);
+    }
+  }
+  return count;
+}
+
 /* Whether the selection is a brush face. */
 static bool8_t physics_face_selected(const VkrSampleUiFrame *frame) {
   const VkrScene *scene =
@@ -425,7 +496,9 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       (report && report->checked &&
                editor->windows[VKR_EDITOR_WINDOW_LEVEL].visible
            ? 1u
-           : 0u);
+           : 0u) +
+      (frame->scripts_running ? 0u
+                              : physics_io_lines(editor, frame, 0u, false_v));
   if (!bodies && !starts && !changes) {
     return;
   }
@@ -472,6 +545,9 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       physics_brush_draft(editor, frame, capacity);
     }
     physics_level_tools(editor, frame, capacity);
+    if (!frame->scripts_running) {
+      (void)physics_io_lines(editor, frame, capacity, true_v);
+    }
   }
   if (frame->view_state.collision_display && capacity && bodies) {
     if (editor->physics_lines) {

@@ -4,6 +4,7 @@
 #include "core/vkr_json.h"
 #include "editor_details.h"
 #include "editor_internal.h"
+#include "editor_io.h"
 #include "editor_project_store.h"
 #include "editor_projects.h"
 #include "editor_scripts.h"
@@ -630,6 +631,18 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_ANIMATION;
   if (type == &vkr_scene_player_start_type)
     return VKR_UI_ICON_PERSON_WALK;
+  if (type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type)
+    return VKR_UI_ICON_SHAPES;
+  if (type == &vkr_scene_trigger_type)
+    return VKR_UI_ICON_LIGHTNING;
+  if (type == &vkr_scene_relay_type)
+    return VKR_UI_ICON_GIT_BRANCH;
+  if (type == &vkr_scene_timer_type)
+    return VKR_UI_ICON_TIMER;
+  if (type == &vkr_scene_counter_type)
+    return VKR_UI_ICON_LIST;
+  if (type == &vkr_scene_io_connection_type)
+    return VKR_UI_ICON_ARROW_RIGHT;
   if (vkr_scene_world_type_registered(type))
     return VKR_UI_ICON_CODE;
   return VKR_UI_ICON_LIGHT;
@@ -646,9 +659,8 @@ typedef struct EditorObjectKind {
   bool8_t spot;
   /* Menu heading the kind is listed under. */
   const char *group;
-  /* Brush and blockout kinds run an agent operation instead
-     (docs/proposals/level-design-toolkit.md): 1 box, 2 wedge, 3 cylinder,
-     4 room. */
+  /* Brush and blockout kinds run an agent operation instead (ADR-084):
+     1 box, 2 wedge, 3 cylinder, 4 room, 5 trigger volume. */
   uint32_t brush;
 } EditorObjectKind;
 
@@ -677,6 +689,14 @@ static const EditorObjectKind s_object_kinds[] = {
      &vkr_scene_brush_type, false_v, "Level", 3u},
     {"blockout_room", "Blockout Room", VKR_UI_ICON_BOUNDING_BOX,
      &vkr_scene_brush_type, false_v, "Level", 4u},
+    {"trigger_volume", "Trigger Volume", VKR_UI_ICON_LIGHTNING,
+     &vkr_scene_trigger_type, false_v, "Level", 5u},
+    {"relay", "Relay", VKR_UI_ICON_GIT_BRANCH, &vkr_scene_relay_type, false_v,
+     "Level"},
+    {"timer", "Timer", VKR_UI_ICON_TIMER, &vkr_scene_timer_type, false_v,
+     "Level"},
+    {"counter", "Counter", VKR_UI_ICON_LIST, &vkr_scene_counter_type, false_v,
+     "Level"},
     {"atmosphere", "Sky Atmosphere", VKR_UI_ICON_PLANET,
      &vkr_scene_atmosphere_type, false_v, "Environment"},
     {"clouds", "Volumetric Clouds", VKR_UI_ICON_CLOUD, &vkr_scene_clouds_type,
@@ -1045,8 +1065,19 @@ static bool8_t editor_request_brush(const VkrEditorUi *editor,
   } else {
     snprintf(target, sizeof(target), "%u", (unsigned)container);
   }
-  char line[512];
-  if (brush == 4u) {
+  char line[640];
+  if (brush == 5u) {
+    /* A trigger brush that reports what enters it. */
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"create\",\"op\":\"batch\",\"args\":{"
+             "\"review\":false,\"select\":true,\"ops\":[{\"op\":"
+             "\"brush.box\",\"args\":{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],"
+             "\"role\":\"trigger\",\"name\":\"Trigger\",\"container\":%s}},"
+             "{\"op\":\"component.add\",\"args\":{\"entity\":\"$0\","
+             "\"type\":\"trigger\"}}]}}",
+             p.x - 1.0f, p.y, p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f,
+             target);
+  } else if (brush == 4u) {
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"create\",\"op\":\"blockout.room\",\"args\":"
              "{\"min\":[%g,%g,%g],\"size\":[6,3,6],\"container\":%s,"
@@ -3962,8 +3993,10 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
     y += 42;
   }
   vkr_editor_details_error(&p->details, ui, w, &y);
-  /* World entities such as fog or the sky have no placement. */
-  if (tr)
+  /* World entities such as fog or the sky have no placement, and parts
+     (brush faces, connections) follow their owner. */
+  const bool8_t part = vkr_scene_entity_is_part(f->scene, f->selected_entity);
+  if (tr && !part)
     field_focus |=
         inspector_transform_section(p, f, w, &y, heading, tr, &component_edit);
   if (lights.light)
@@ -3973,21 +4006,25 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
   inspector_mesh_section(p, f, w, &y, heading);
   /* Placed objects carry a script slot above the script's own section;
      world settings do not. */
-  if (tr)
+  if (tr && !part)
     inspector_script_row(editor, p, f, w, &y);
   field_focus |=
       inspector_world_sections(p, f, frame->scene ? frame->scene : frame->world,
                                w, &y, heading, &component_edit);
-  inspector_add_component(editor, f, w, &y);
-  const float32_t physics_y = y;
-  const bool8_t physics_open = inspector_section(
-      p, ui, w, &y, INSPECTOR_SECTION_PHYSICS, VKR_UI_ICON_PHYSICS,
-      (Vec4){0.45f, 0.84f, 0.56f, 1.0f}, "Physics", heading);
-  if (p->values.physics.present)
-    inspector_preset_button(p, ui, w - 8.0f, physics_y,
-                            &vkr_scene_physics_body_type);
-  if (physics_open)
-    field_focus |= physics_inspector_build(p, f, w, &y, heading);
+  vkr_editor_io_sections(editor, f, w, &y, heading);
+  /* A part carries only its own component. */
+  if (!part) {
+    inspector_add_component(editor, f, w, &y);
+    const float32_t physics_y = y;
+    const bool8_t physics_open = inspector_section(
+        p, ui, w, &y, INSPECTOR_SECTION_PHYSICS, VKR_UI_ICON_PHYSICS,
+        (Vec4){0.45f, 0.84f, 0.56f, 1.0f}, "Physics", heading);
+    if (p->values.physics.present)
+      inspector_preset_button(p, ui, w - 8.0f, physics_y,
+                              &vkr_scene_physics_body_type);
+    if (physics_open)
+      field_focus |= physics_inspector_build(p, f, w, &y, heading);
+  }
   /* A section's Presets button opens its menu once the sections are built. */
   if (p->open_collision_layers) {
     p->open_collision_layers = false_v;
