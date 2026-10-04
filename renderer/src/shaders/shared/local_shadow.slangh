@@ -11,9 +11,11 @@ struct VkrLocalShadowView {
     float4 light_direction_far;
     float4 projection_params;
     // x: shadow strength in [0, 1], shared by every face of the light.
-    // y: zero.
+    // y: the face's transmission layer plus one, or zero.
     // z: one when the light takes a single filtered tap and no contact
     // shadows.
+    // w: the light's source radius over 2 tan(half FOV), in face UV per unit
+    // of forward distance; zero keeps the fixed filter radius.
     float4 shadow_params;
     // The face's atlas square: xy corner and z side in atlas UV, w the layer.
     float4 atlas_rect;
@@ -139,6 +141,73 @@ float2 vkr_local_shadow_rotate_tap(float2 tap, float2 rotation)
 {
     return float2(tap.x * rotation.x - tap.y * rotation.y,
                   tap.x * rotation.y + tap.y * rotation.x);
+}
+
+// Radius of the full filter's Poisson disk in face texels without
+// contact-hardening.
+#define VKR_LOCAL_SHADOW_FILTER_RADIUS_TEXELS 1.5f
+
+// Contact-hardening for the full-filter lights in Shadow.LocalMask, when the
+// light authors a source radius (shadow_params.w, the radius over twice the
+// face's tan(half FOV)). The blocker search reads raw depths at the first
+// progressive Poisson taps: all of them unrotated without temporal
+// reconstruction, the first four rotated with it.
+#define VKR_LOCAL_SHADOW_PCSS_BLOCKER_COUNT 8u
+#define VKR_LOCAL_SHADOW_PCSS_TEMPORAL_BLOCKER_COUNT 4u
+// Caps the search and filter radii in face texels. A blocker's projected
+// offset from the receiver equals the filter radius it produces, so a search
+// capped at the filter cap still finds every blocker that can widen it.
+#define VKR_LOCAL_SHADOW_PCSS_MAX_RADIUS_TEXELS 8.0f
+
+// Forward distance along the face axis of a stored face depth; inverts the
+// clip terms vkr_local_shadow_in_face_depth projects with.
+float vkr_local_shadow_forward_distance(float4 clip_terms, float depth)
+{
+    return (clip_terms.x - depth * clip_terms.z) /
+           (depth * clip_terms.w - clip_terms.y);
+}
+
+// By similar triangles from a light disk of radius r, a receiver at forward
+// distance d_r sees blockers no farther from its projection than
+// r (d_r - n) / (2 t n d_r) face UV, where n is the near distance and t the
+// face's tan(half FOV). `source_radius_uv` is r / (2 t).
+float vkr_local_shadow_pcss_search_radius_texels(float source_radius_uv,
+                                                 float near_distance,
+                                                 float receiver_forward,
+                                                 float face_texel)
+{
+    float radius_uv = source_radius_uv *
+        max(receiver_forward - near_distance, 0.0f) /
+        (near_distance * receiver_forward);
+    return clamp(radius_uv / face_texel, VKR_LOCAL_SHADOW_FILTER_RADIUS_TEXELS,
+                 VKR_LOCAL_SHADOW_PCSS_MAX_RADIUS_TEXELS);
+}
+
+// Penumbra radius at the receiver, r (d_r - d_b) / (2 t d_b d_r) face UV for
+// an average blocker at forward distance d_b, never narrower than the fixed
+// filter.
+float vkr_local_shadow_pcss_filter_radius_texels(float source_radius_uv,
+                                                 float blocker_forward,
+                                                 float receiver_forward,
+                                                 float face_texel)
+{
+    float radius_uv = source_radius_uv *
+        max(receiver_forward - blocker_forward, 0.0f) /
+        (blocker_forward * receiver_forward);
+    return clamp(radius_uv / face_texel, VKR_LOCAL_SHADOW_FILTER_RADIUS_TEXELS,
+                 VKR_LOCAL_SHADOW_PCSS_MAX_RADIUS_TEXELS);
+}
+
+// Atlas texel of a face UV for raw depth reads, clamped inside the face's
+// square. The square's corner texel is atlas_rect.xy over one atlas texel,
+// which is atlas_rect.z times the face texel.
+float2 vkr_local_shadow_atlas_texel(float4 atlas_rect, float face_texel,
+                                    float2 uv)
+{
+    float face_size = 1.0f / face_texel;
+    float2 face_pixel = clamp(floor(uv * face_size), 0.0f, face_size - 1.0f);
+    float2 corner = floor(atlas_rect.xy / (atlas_rect.z * face_texel) + 0.5f);
+    return corner + face_pixel;
 }
 
 // Fixed-point units per fully lit pixel in the per-light contribution

@@ -408,6 +408,8 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
   /* Contact shadows follow their own setting on both backends, so Metal can
      enable them under High's local-shadow budget. */
   application->shadow_config.local_shadow_contact = settings->contact_shadows;
+  /* Soft shadows also covers local lights' authored source radii. */
+  application->shadow_config.local_shadow_soft = settings->soft_shadows;
   const bool8_t temporal =
       application->renderer.upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
       settings->anti_aliasing;

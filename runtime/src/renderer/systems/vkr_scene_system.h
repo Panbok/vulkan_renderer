@@ -500,6 +500,9 @@ typedef struct ScenePointLight {
   Vec3 direction_local;
   float32_t inner_cone_angle;
   float32_t outer_cone_angle;
+  /* Emitter radius in metres, finite in [0, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX];
+   * zero keeps the fixed shadow filter. */
+  float32_t source_radius;
   VkrPointLightKind kind;
   bool8_t enabled;      // Whether this light is active
   bool8_t casts_shadow; // Requires a finite positive range.

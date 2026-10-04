@@ -885,7 +885,9 @@ fragment-space AABB weights. Directional lighting samples CSM. Point/spot shadow
 lights remain unshadowed. Vulkan ranks lights by the visible contribution
 deferred lighting measured a few frames earlier, so enclosed and off-screen
 lights take no faces; without a measurement, distance ranks. Static maps retain valid contents across frames, with
-nine-tap PCF and point taps remapped across faces. Refractive casters use two
+nine-tap PCF and point taps remapped across faces. A light's authored source
+radius widens the mask pass's filter with blocker distance (contact-hardening,
+ADR-019). Refractive casters use two
 512² depth/RGB prefix layers and a blocking third-crossing depth. Per-tap
 visibility combines opaque depth with receiver-gated RGB transmission, layered
 reflection loss and material absorption. All five transmission images follow the

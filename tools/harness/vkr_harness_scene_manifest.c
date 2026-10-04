@@ -910,6 +910,18 @@ bool8_t vkr_harness_scene_manifest_build_context(
           resolved_root, scene, out_manifest, scene, true_v, out_error)) {
     return false_v;
   }
+  /* Outside a managed workspace the child applies the scene's editor
+     overrides, which change rendered pixels when present. */
+  if (context != VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE) {
+    char overrides[VKR_HARNESS_PATH_MAX];
+    if (string_format(overrides, sizeof(overrides), "%s.editor.json", scene) <=
+            0 ||
+        !vkr_harness_scene_manifest_add_reference(resolved_root, scene,
+                                                  out_manifest, overrides,
+                                                  false_v, out_error)) {
+      return false_v;
+    }
+  }
 
   Arena *file_arena = arena_create(MB(64), MB(4));
   if (!file_arena) {

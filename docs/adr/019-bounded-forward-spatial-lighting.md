@@ -359,6 +359,43 @@ comparison never reads a neighbouring face.
 Both deferred and transparent lighting consume the same local visibility
 semantics.
 
+Point and spot lights author `source_radius`, the emitter radius in metres,
+finite in `[0, 1]` (`VKR_POINT_LIGHT_SOURCE_RADIUS_MAX`); zero, the default and
+every glTF import, keeps the fixed 1.5-texel disk exactly. In `Shadow.LocalMask`
+only, a full-filter light with a nonzero radius hardens at contact: blocker
+search taps read raw atlas depths at the first progressive Poisson taps, eight
+unrotated without temporal reconstruction and the first four with the filter's
+per-pixel rotation under it, clamped inside the receiver's face. Point-light
+search taps compare against the receiver's radial depth like the filter taps.
+By similar triangles the search radius is `r (d_r - n) / (2 t n d_r)` face UV
+and the filter radius `r (d_r - d_b) / (2 t d_b d_r)`, with `d_r`, `d_b` and
+`n` the receiver, average blocker and near forward distances along the face
+axis and `t` its tan(half FOV); stored depths invert through the face clip
+terms. Both radii are clamped to `[1.5, 8]` face texels. A blocker's projected
+offset equals the filter radius it produces, so a search capped at the filter
+cap finds every blocker that can widen the filter. An empty sparse search
+keeps 1.5 texels, since it does not prove the receiver lit. Tap counts,
+transmission lookups, reprojection across faces and contact shadows are
+unchanged; single-tap lights, inline forward and transmission filtering and
+froxel injection keep the fixed radius. The CPU writes `r / (2t)` per face into
+`VkrLocalShadowView.shadow_params.w`, zero for single-tap lights or when the
+**Soft shadows** setting (`VkrShadowConfig.local_shadow_soft`) is off. The value
+is receiver-side: changing it moves the temporal scene signature but never
+redraws a face. Bistro's 72 imported lamps carry 0.05 m through
+`assets/scenes/bistro.scene.json.editor.json`.
+
+Contact-hardening evidence, Metal Release on the M1 Pro, 2026-10-05, dirty tree,
+non-authoritative: with every radius zero, the street local-shadow capture is
+byte-identical to the `24636515` binary. With the Bistro radii, 1.5% of its
+pixels change by more than 2 of 255, along lantern shadow edges, and a TAA
+capture of the same view shows no added noise. `bistro_native_perf_audit_steady`
+under `local-offscreen-perf-audit-gpu` (five children of 300 frames, TAA off,
+same binary, radii on against the override file removed) measured
+`Shadow.LocalMask` at 4.29 ms against 3.77 ms p50 (spread 0.01 ms), frame
+17.18 ms against 16.69 ms, and unchanged `Lighting.Deferred`. A Metal API
+validation run of the street case passes. Native Vulkan execution remains
+unavailable.
+
 Deferred lighting does not filter local shadow maps itself. The
 `Shadow.LocalMask` compute pass runs before it when local shadows are active
 and, for every opaque pixel, stores the filtered RGB visibility, with strength

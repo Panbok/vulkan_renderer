@@ -392,7 +392,9 @@ typedef struct VkrLocalShadowView {
    * blend visibility toward one as it falls. y: the face's transmission array
    * layer plus one, or zero when refractive casters do not attenuate it. z:
    * one when the light takes one filtered tap and no contact shadows, else
-   * zero. w is zero. */
+   * zero. w: the light's source radius over 2 tan(half FOV), which
+   * Shadow.LocalMask scales by blocker and receiver distances for
+   * contact-hardening; zero keeps the fixed filter radius. */
   Vec4 shadow_params;
   /** The face's square in the atlas: xy is its top-left corner and z its side
    * in atlas UV, w the atlas layer. projection_params.y is one face texel. */

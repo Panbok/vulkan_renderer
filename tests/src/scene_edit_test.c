@@ -399,10 +399,20 @@ static void edit_test_structure(void) {
                                                       .range = 6.0f,
                                                       .inner_cone_angle = 0.35f,
                                                       .outer_cone_angle = 0.6f,
+                                                      .source_radius = 0.05f,
                                                       .enabled = true_v}));
   vkr_scene_update(&scene, 0.0);
   VkrSceneEditState state = {0};
   vkr_scene_edit_reset(&state, &allocator, 1);
+
+  /* An emitter radius above the limit cannot be published. */
+  VkrSceneEditValues oversized;
+  assert(vkr_scene_edit_read(&scene, lamp, &oversized));
+  oversized.fields = VKR_SCENE_EDIT_POINT_LIGHT;
+  oversized.point_light.source_radius =
+      2.0f * VKR_POINT_LIGHT_SOURCE_RADIUS_MAX;
+  assert(!vkr_scene_edit_apply(&state, &scene, lamp, &oversized));
+  assert(vkr_scene_get_point_light(&scene, lamp)->source_radius == 0.05f);
 
   /* Add and remove a component; undo restores the removed bytes exactly. */
   VkrFogSettings fog;
@@ -543,6 +553,7 @@ static void edit_test_structure(void) {
   assert(edit_test_alive_named(&scene, "renamed lamp", &found) == 1u);
   assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
   assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
+  assert(vkr_scene_get_point_light(&scene, found)->source_radius == 0.05f);
   assert(state.created_count == 1u && state.created[0].entity.u64 == found.u64);
   assert(vkr_scene_entity_ref(&scene, found, &ref) &&
          MemCompare(&ref, &created_ref, sizeof(ref)) == 0);

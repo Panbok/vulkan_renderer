@@ -98,6 +98,16 @@ static const VkrPropertyDesc s_point_light_properties[] = {
      .tooltip = "Requires a finite positive range",
      .offset = TYPE_OFFSET(ScenePointLight, casts_shadow),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "source_radius",
+     .label = "Source radius",
+     .tooltip = "Soften shadow edges with distance from the caster",
+     .unit = "m",
+     .offset = TYPE_OFFSET(ScenePointLight, source_radius),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = VKR_POINT_LIGHT_SOURCE_RADIUS_MAX,
+     .step = 0.005f},
     {.name = "kind",
      .label = "Kind",
      .tooltip = "Attenuation model and cone, fixed by the source light",
@@ -219,6 +229,11 @@ static VkrPropertyState point_light_state(const void *value, uint32_t property,
        offset == offsetof(ScenePointLight, inner_cone_angle) ||
        offset == offsetof(ScenePointLight, outer_cone_angle))) {
     state.flags |= VKR_PROPERTY_STATE_HIDDEN;
+  }
+  /* The radius only shapes shadow penumbrae. */
+  if (!light->casts_shadow &&
+      offset == offsetof(ScenePointLight, source_radius)) {
+    state.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
   return state;
 }

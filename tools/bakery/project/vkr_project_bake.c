@@ -80,6 +80,10 @@ vkr_internal void vkr_project_apply_wrapper(VkrProjectJob *job,
     vkr_bakery_json_set(arena, light, "casts_shadow",
                         shadow ? vkr_bakery_json_clone(arena, shadow)
                                : vkr_bakery_json_bool(arena, false_v));
+    vkr_bakery_json_set(
+        arena, light, "source_radius",
+        vkr_project_edit_first(job, edit, "point_source_radius",
+                               vkr_bakery_json_float(arena, 0.0)));
     vkr_bakery_json_set(arena, entity, "point_light", light);
   }
   if (fields & 16) {

@@ -190,6 +190,9 @@ typedef struct VkrShadowConfig {
    * only: the march costs about 1.1 ms of Shadow.LocalMask in the Bistro
    * street view on the M1 Pro, mostly through the occupancy it takes. */
   bool8_t local_shadow_contact;
+  /** Full-filter local lights widen their penumbra by their authored source
+   * radius (the Soft shadows setting); false keeps the fixed filter. */
+  bool8_t local_shadow_soft;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
   float32_t cascade_split_lambda;
@@ -289,6 +292,7 @@ typedef struct VkrShadowConfig {
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_HIGH,           \
       .local_shadow_map_size = VKR_LOCAL_SHADOW_MAP_SIZE_DEFAULT,              \
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
+      .local_shadow_soft = true_v,                                             \
       .cascade_count = 4,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.80f,                                           \
@@ -338,6 +342,7 @@ typedef struct VkrShadowConfig {
       .local_shadow_face_budget = VKR_LOCAL_SHADOW_FACE_BUDGET_BALANCED,       \
       .local_shadow_map_size = 512u,                                           \
       .local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,    \
+      .local_shadow_soft = true_v,                                             \
       .cascade_count = 3,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.75f,                                           \

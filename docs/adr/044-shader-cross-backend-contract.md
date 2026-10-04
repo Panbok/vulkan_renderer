@@ -356,7 +356,12 @@ Local shadow views use a shared 144-byte record: matrix at byte 0, light
 position/near plane at 64, direction/far plane at 80, perspective footprint
 and texel bias parameters at 96, the light's shadow strength and the face's
 transmission layer plus one (zero without one) at 112, and the face's atlas
-square and layer at 128. Both receivers read transmission from that layer,
+square and layer at 128. `shadow_params.w` holds the light's source radius
+over twice the face's tan(half FOV); both mask passes apply contact-hardening
+through the shared `vkr_local_shadow_pcss_search_radius_texels`,
+`vkr_local_shadow_pcss_filter_radius_texels`, `vkr_local_shadow_forward_distance`
+and `vkr_local_shadow_atlas_texel`, with raw depth reads (`Load` on Vulkan,
+`read` on Metal) and the same search tap counts. Both receivers read transmission from that layer,
 not from the view index. `shadow_params.z` of
 one selects a single hardware-filtered tap and no contact shadows on both
 backends. Both receivers map face

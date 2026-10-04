@@ -329,14 +329,51 @@ static float3 vkr_metal_local_shadow_transmission_tap(
   return float3(0.0f);
 }
 
+// Average forward distance of the blockers a contact-hardening search finds
+// around `uv`, or zero when the sparse search finds none. Point-light taps
+// compare against the receiver's radial distance like the filter taps.
+static float vkr_metal_local_shadow_blocker_forward(
+    constant VkrMetalPacketFrameRoot *root, const device VkrLocalShadowView &view,
+    bool point, float2 uv, float center_reference, float4 face_clip_terms,
+    float radial_distance, float2 tap_rotation, float search_texels,
+    uint blocker_count) {
+  float depth_sum = 0.0;
+  uint found = 0u;
+  for (uint i = 0u; i < blocker_count; ++i) {
+    float2 tap_uv = saturate(
+        uv + vkr_local_shadow_rotate_tap(vkr_shadow_poisson[i], tap_rotation) *
+                 (search_texels * view.projection_params.y));
+    float reference = point ? vkr_local_shadow_in_face_depth(
+                                  face_clip_terms, radial_distance, tap_uv)
+                            : center_reference;
+    float2 texel = vkr_local_shadow_atlas_texel(
+        view.atlas_rect, view.projection_params.y, tap_uv);
+    float depth =
+        root->local_shadow_map.read(uint2(texel), uint(view.atlas_rect.w));
+    if (depth < reference) {
+      depth_sum += depth;
+      ++found;
+    }
+  }
+  if (found == 0u)
+    return 0.0;
+  return max(vkr_local_shadow_forward_distance(face_clip_terms,
+                                               depth_sum / float(found)),
+             view.light_position_near.w);
+}
+
 // The point kernel reprojects each displaced ray into its owning cube face.
 // Its comparison depth follows the biased receiver's radial distance. Fully
-// filtered lights take `tap_count` Poisson taps rotated by `tap_rotation`.
+// filtered lights take `tap_count` Poisson taps rotated by `tap_rotation`. A
+// nonzero `blocker_count` widens their disk by the light's source radius from
+// that many blocker-search taps (contact-hardening); an empty search keeps the
+// fixed radius, since sparse taps do not prove the receiver is lit.
 float3 vkr_metal_packet_local_shadow_sample(
     constant VkrMetalPacketFrameRoot *root, uint first_view_encoded, uint kind,
     float3 world_position, float3 normal,
     float2 tap_rotation = float2(1.0, 0.0),
-    uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT) {
+    uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT,
+    uint blocker_count = 0u) {
   if (first_view_encoded == 0u)
     return float3(1.0);
   uint first_view = first_view_encoded - 1u;
@@ -391,11 +428,26 @@ float3 vkr_metal_packet_local_shadow_sample(
       view.light_view_projection * float4(view.light_direction_far.xyz, 0.0);
   float4 face_clip_terms =
       float4(origin_clip.z, axis_clip.z, origin_clip.w, axis_clip.w);
+  float filter_radius_texels = VKR_LOCAL_SHADOW_FILTER_RADIUS_TEXELS;
+  float source_radius_uv = view.shadow_params.w;
+  if (blocker_count != 0u && source_radius_uv > 0.0) {
+    float receiver_forward = dot(from_light, view.light_direction_far.xyz);
+    float search_texels = vkr_local_shadow_pcss_search_radius_texels(
+        source_radius_uv, view.light_position_near.w, receiver_forward,
+        view.projection_params.y);
+    float blocker_forward = vkr_metal_local_shadow_blocker_forward(
+        root, view, point, uv, projected.z, face_clip_terms, radial_distance,
+        tap_rotation, search_texels, blocker_count);
+    if (blocker_forward > 0.0)
+      filter_radius_texels = vkr_local_shadow_pcss_filter_radius_texels(
+          source_radius_uv, blocker_forward, receiver_forward,
+          view.projection_params.y);
+  }
   float3 sum = 0.0;
   for (uint i = 0u; i < tap_count; ++i) {
     float2 tap_uv =
         uv + vkr_local_shadow_rotate_tap(vkr_shadow_poisson[i], tap_rotation) *
-                 (1.5 * view.projection_params.y);
+                 (filter_radius_texels * view.projection_params.y);
     uint tap_face = face;
     float reference = projected.z;
     if (point && all(tap_uv >= 0.0) && all(tap_uv <= 1.0)) {

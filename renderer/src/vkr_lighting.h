@@ -14,6 +14,10 @@ typedef enum VkrPointLightKind {
 /** The light's diameter drives both the sky's disc and the shadow penumbra,
  * so it shares the sky's disc limit (ADR-058). */
 #define VKR_DIRECTIONAL_LIGHT_MAX_SUN_ANGULAR_DIAMETER_DEGREES 5.0f
+/** Largest authored point/spot emitter radius in metres. Loading clamps larger
+ * values; the local shadow filter caps the resulting penumbra in face texels.
+ */
+#define VKR_POINT_LIGHT_SOURCE_RADIUS_MAX 1.0f
 
 #define VKR_MAX_SCENE_POINT_LIGHTS 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
@@ -65,6 +69,10 @@ typedef struct VkrPointLight {
   float32_t outer_cone_angle;
   VkrPointLightKind kind;
   uint32_t render_id;
+  /* Emitter sphere radius in metres, finite in
+   * [0, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX]. It widens the light's shadow
+   * penumbra with blocker distance; zero keeps the fixed shadow filter. */
+  float32_t source_radius;
   bool8_t casts_shadow;
 } VkrPointLight;
 

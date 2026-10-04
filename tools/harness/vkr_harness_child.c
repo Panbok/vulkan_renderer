@@ -19,6 +19,7 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
@@ -128,7 +129,13 @@ vkr_internal bool8_t vkr_harness_capture_budget_item(uint64_t width,
 typedef struct VkrHarnessChildContext {
   const VkrHarnessCase *case_manifest;
   const VkrHarnessArenas *arenas;
+  /** Scene path the child loads; its `.editor.json` overrides apply on load. */
+  const char *scene_path;
   VkrResourceHandleInfo scene_resource;
+  /** Journal holding the scene's applied editor overrides, backed by the
+   * persistent arena for the child's lifetime. */
+  VkrAllocator edit_allocator;
+  VkrSceneEditState edits;
   float64_t load_started;
   /** The scene resource is resident and installed on the renderer frontend. */
   bool8_t scene_active;
@@ -734,6 +741,34 @@ vkr_harness_child_check_physics_fixture(VkrStandardSceneRuntime *application) {
   return true_v;
 }
 
+/* Applies `<scene>.editor.json` as the application runtime does when it loads
+ * a scene outside a managed project, so a case renders what the app shows. A
+ * missing file applies nothing; managed projects bake their edits instead. */
+vkr_internal bool8_t vkr_harness_child_apply_scene_overrides(
+    VkrHarnessChildContext *child, VkrScene *scene) {
+  if (child->case_manifest->asset_context ==
+      VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE) {
+    return true_v;
+  }
+  const char *scene_path = child->scene_path;
+  const bool8_t absolute =
+      scene_path[0] == '/' || scene_path[0] == '\\' ||
+      (string_length(scene_path) > 1u && scene_path[1] == ':');
+  char sidecar[VKR_HARNESS_PATH_MAX];
+  if (string_format(sidecar, sizeof(sidecar), "%s%s.editor.json",
+                    absolute ? "" : vkr_content_root(), scene_path) <= 0) {
+    return false_v;
+  }
+  child->edit_allocator = (VkrAllocator){.ctx = child->arenas->persistent};
+  if (!vkr_allocator_arena(&child->edit_allocator)) {
+    return false_v;
+  }
+  child->edits = (VkrSceneEditState){.allocator = &child->edit_allocator};
+  return vkr_scene_edit_load(&child->edits, scene,
+                             string8_create_from_cstr((const uint8_t *)sidecar,
+                                                      string_length(sidecar)));
+}
+
 vkr_internal bool8_t
 vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
   VkrHarnessChildContext *child = g_harness_child;
@@ -772,6 +807,11 @@ vkr_harness_child_activate_scene(VkrStandardSceneRuntime *application) {
       vkr_scene_handle_get_scene(child->scene_resource.as.scene);
   if (!application->active_scene) {
     vkr_harness_child_fail(application, "scene.null");
+    return false_v;
+  }
+  if (!vkr_harness_child_apply_scene_overrides(child,
+                                               application->active_scene)) {
+    vkr_harness_child_fail(application, "scene.overrides_failed");
     return false_v;
   }
   if (child->case_manifest->renderer.motion_blur_entity[0] != '\0') {
@@ -2444,6 +2484,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     }
     scene_path = managed_scene;
   }
+  child.scene_path = scene_path;
   String8 scene = string8_create_from_cstr((const uint8_t *)scene_path,
                                            string_length(scene_path));
   vkr_harness_child_run_scene(application, &child, scene);

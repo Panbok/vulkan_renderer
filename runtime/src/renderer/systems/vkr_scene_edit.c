@@ -2222,7 +2222,8 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !json_floats(w, "point_params", params, 7) ||
         !WRITE_INT("point_kind", p->kind) ||
         !WRITE_BOOL("point_enabled", p->enabled) ||
-        !WRITE_BOOL("point_casts_shadow", p->casts_shadow))
+        !WRITE_BOOL("point_casts_shadow", p->casts_shadow) ||
+        !json_floats(w, "point_source_radius", &p->source_radius, 1))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) {
@@ -3275,7 +3276,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "parent",
                                "id",
                                "directional_atmosphere_moon",
-                               "uuid"};
+                               "uuid",
+                               "point_source_radius"};
   MemZero(v, sizeof(*v));
   MemZero(extra, sizeof(*extra));
   components->count = 0u;
@@ -3440,6 +3442,9 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
       extra->has_ref = ok;
       break;
     }
+    case 34:
+      ok = edit_json_floats(j, &v->point_light.source_radius, 1);
+      break;
     }
     if (!ok)
       return false_v;
@@ -3473,6 +3478,8 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     required |= seen & (1ull << 32u); /* Old journals have no moon. */
   if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
     required |= seen & (1u << 19u); /* Old journals default shadows off. */
+  if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
+    required |= seen & (1ull << 34u); /* Old journals have no source radius. */
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
     required |= 15u << 21u;
   if (v->fields & VKR_SCENE_EDIT_PHYSICS) {

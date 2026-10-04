@@ -830,14 +830,56 @@ float3 packet_local_shadow_transmission(VkrVulkanPacketFrameRoot *frame,
     return 1.0f;
 }
 
+// Average forward distance of the blockers a contact-hardening search finds
+// around `uv`, or zero when the sparse search finds none. Point-light taps
+// compare against the receiver's radial distance like the filter taps.
+float packet_local_shadow_blocker_forward(
+    VkrVulkanPacketFrameRoot *frame, VkrLocalShadowView data, uint kind,
+    float2 uv, float center_reference, float4 face_clip_terms,
+    float radial_distance, float2 tap_rotation, float search_texels,
+    uint blocker_count)
+{
+    float depth_sum = 0.0f;
+    uint found = 0u;
+    for (uint tap = 0u; tap < blocker_count; ++tap)
+    {
+        float2 tap_uv = saturate(uv +
+            vkr_local_shadow_rotate_tap(vkr_shadow_poisson[tap],
+                                        tap_rotation) *
+                (search_texels * data.projection_params.y));
+        float reference = kind == 2u
+            ? center_reference
+            : vkr_local_shadow_in_face_depth(face_clip_terms, radial_distance,
+                                             tap_uv);
+        float2 texel = vkr_local_shadow_atlas_texel(
+            data.atlas_rect, data.projection_params.y, tap_uv);
+        float depth = g_depth_array_textures[frame.local_shadow_texture].Load(
+            int4(int2(texel), int(data.atlas_rect.w), 0));
+        if (depth < reference)
+        {
+            depth_sum += depth;
+            ++found;
+        }
+    }
+    if (found == 0u)
+        return 0.0f;
+    return max(vkr_local_shadow_forward_distance(face_clip_terms,
+                                                 depth_sum / float(found)),
+               data.light_position_near.w);
+}
+
 // Local perspective depth arrays share the directional comparison sampler.
 // Fully filtered lights take `tap_count` Poisson taps rotated by
-// `tap_rotation`.
+// `tap_rotation`. A nonzero `blocker_count` widens their disk by the light's
+// source radius from that many blocker-search taps (contact-hardening); an
+// empty search keeps the fixed radius, since sparse taps do not prove the
+// receiver is lit.
 float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                           VkrGpuPointLightRow light, uint kind,
                           float3 world_position, float3 normal,
                           float2 tap_rotation = float2(1.0f, 0.0f),
-                          uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT)
+                          uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT,
+                          uint blocker_count = 0u)
 {
     uint encoded_view = uint(light.p3.w);
     if (encoded_view == 0u)
@@ -893,13 +935,30 @@ float3 packet_local_shadow(VkrVulkanPacketFrameRoot *frame,
                            float4(data.light_direction_far.xyz, 0.0f));
     float4 face_clip_terms =
         float4(origin_clip.z, axis_clip.z, origin_clip.w, axis_clip.w);
+    float filter_radius_texels = VKR_LOCAL_SHADOW_FILTER_RADIUS_TEXELS;
+    float source_radius_uv = data.shadow_params.w;
+    if (blocker_count != 0u && source_radius_uv > 0.0f)
+    {
+        float receiver_forward =
+            dot(receiver - light.p0.xyz, data.light_direction_far.xyz);
+        float search_texels = vkr_local_shadow_pcss_search_radius_texels(
+            source_radius_uv, data.light_position_near.w, receiver_forward,
+            data.projection_params.y);
+        float blocker_forward = packet_local_shadow_blocker_forward(
+            frame, data, kind, uv, clip.z / clip.w, face_clip_terms,
+            radial_distance, tap_rotation, search_texels, blocker_count);
+        if (blocker_forward > 0.0f)
+            filter_radius_texels = vkr_local_shadow_pcss_filter_radius_texels(
+                source_radius_uv, blocker_forward, receiver_forward,
+                data.projection_params.y);
+    }
     float3 visibility = 0.0f;
     [unroll] for (uint tap = 0u; tap < tap_count; ++tap)
     {
         float2 tap_uv = uv +
             vkr_local_shadow_rotate_tap(vkr_shadow_poisson[tap],
                                         tap_rotation) *
-                (1.5f * data.projection_params.y);
+                (filter_radius_texels * data.projection_params.y);
         float reference = clip.z / clip.w;
         uint tap_view = first_view;
         if (kind == 2u)

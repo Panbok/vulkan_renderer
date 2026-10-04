@@ -1524,10 +1524,12 @@ static void vkr_metal_packet_local_shadow_mask_impl(
   // Without temporal reconstruction the full filter keeps its fixed taps.
   float2 tap_rotation = float2(1.0f, 0.0f);
   uint tap_count = VKR_LOCAL_SHADOW_FILTER_TAP_COUNT;
+  uint blocker_count = VKR_LOCAL_SHADOW_PCSS_BLOCKER_COUNT;
   if (root.temporal_filter != 0u) {
     tap_rotation =
         vkr_local_shadow_tap_rotation(pixel, root.contact_noise_index);
     tap_count = VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT;
+    blocker_count = VKR_LOCAL_SHADOW_PCSS_TEMPORAL_BLOCKER_COUNT;
   }
   float diffuse_transmission =
       vkr_editor_neutral_lighting(frame->render_mode)
@@ -1574,7 +1576,7 @@ static void vkr_metal_packet_local_shadow_mask_impl(
         continue;
       float3 visibility = vkr_metal_packet_local_shadow_sample(
           frame, uint(p3.w), term.kind, world_position, shadow_normal,
-          tap_rotation, tap_count);
+          tap_rotation, tap_count, blocker_count);
       const device VkrLocalShadowView &view =
           frame->local_shadow_views[uint(p3.w) - 1u];
       if (ContactShadows && view.shadow_params.z < 0.5f &&

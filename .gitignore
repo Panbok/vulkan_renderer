@@ -35,6 +35,7 @@ assets/fonts/*.vkfa
 assets/materials
 assets/scenes/*
 !assets/scenes/bistro.scene.json
+!assets/scenes/bistro.scene.json.editor.json
 !assets/scenes/fixtures/
 !assets/scenes/fixtures/*.scene.json
 

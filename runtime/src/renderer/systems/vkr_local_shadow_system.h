@@ -33,6 +33,9 @@ typedef struct VkrLocalShadowCacheInput {
   bool8_t refractive_casters;
   /** Receivers apply contact shadows to the full-filter lights. */
   bool8_t contact_shadows;
+  /** Full-filter lights widen their penumbra by their authored source radius;
+   * false keeps the fixed filter for every light. */
+  bool8_t soft_shadows;
   uint32_t face_budget;
   uint32_t map_size;
   /** Camera distance at which shadows have faded out; positive. */

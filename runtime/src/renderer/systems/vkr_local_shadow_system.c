@@ -279,10 +279,17 @@ vkr_local_shadow_pack_atlas(const VkrLocalShadowCache *cache,
   }
 }
 
+/* `source_radius` is the emitter radius receivers use for contact-hardening,
+ * zero for the fixed filter. Receivers scale this per-face UV footprint by
+ * blocker and receiver distances along the face axis. */
 vkr_internal void vkr_local_shadow_write_views(
     const VkrPointLight *light, const VkrLocalShadowCandidate *candidate,
-    float32_t strength, bool8_t reduced, VkrLocalShadowView *out_views) {
+    float32_t strength, bool8_t reduced, float32_t source_radius,
+    VkrLocalShadowView *out_views) {
   const float32_t near_clip = Min(0.05f, light->range * 0.01f);
+  const float32_t tan_half_fov = tanf(candidate->half_fov);
+  const float32_t source_radius_uv =
+      reduced ? 0.0f : source_radius / (2.0f * tan_half_fov);
   const Mat4 projection = mat4_perspective(2.0f * candidate->half_fov, 1.0f,
                                            near_clip, light->range);
   const float32_t cell_uv = (float32_t)VKR_LOCAL_SHADOW_FACE_SIZE_MIN /
@@ -302,12 +309,12 @@ vkr_internal void vkr_local_shadow_write_views(
                                 light->position.z, near_clip},
         .light_direction_far = {direction.x, direction.y, direction.z,
                                 light->range},
-        .projection_params = {tanf(candidate->half_fov),
+        .projection_params = {tan_half_fov,
                               1.0f / (float32_t)candidate->face_size, 1.0f,
                               2.0f},
         .shadow_params = {strength,
                           (float32_t)candidate->transmission_layers[face],
-                          reduced ? 1.0f : 0.0f, 0.0f},
+                          reduced ? 1.0f : 0.0f, source_radius_uv},
         .atlas_rect = {(float32_t)(cell & 0xFFu) * cell_uv,
                        (float32_t)((cell >> 8u) & 0xFFu) * cell_uv,
                        (float32_t)candidate->face_size /
@@ -502,7 +509,7 @@ vkr_internal void vkr_local_shadow_classify_content(
   for (uint32_t i = 0u; i < candidate_count; ++i) {
     VkrLocalShadowCandidate *candidate = &candidates[i];
     const VkrPointLight *light = &input->lights[candidate->light_index];
-    vkr_local_shadow_write_views(light, candidate, 0.0f, false_v,
+    vkr_local_shadow_write_views(light, candidate, 0.0f, false_v, 0.0f,
                                  candidate->views);
     const VkrLocalShadowCacheLight *previous =
         candidate->previous ? &cache->lights[candidate->previous - 1u] : NULL;
@@ -604,8 +611,13 @@ vkr_internal void vkr_local_shadow_publish(
       MemZero(candidate->transmission_layers,
               sizeof(candidate->transmission_layers));
     const uint32_t first_view = out->view_count;
+    const float32_t source_radius =
+        input->soft_shadows && isfinite(light->source_radius) &&
+                light->source_radius > 0.0f
+            ? Min(light->source_radius, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX)
+            : 0.0f;
     vkr_local_shadow_write_views(light, candidate, strength, reduced[i],
-                                 &out->views[first_view]);
+                                 source_radius, &out->views[first_view]);
     out->light_first_view[candidate->light_index] = first_view + 1u;
     out->view_count += candidate->face_count;
   }

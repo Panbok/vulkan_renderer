@@ -1383,11 +1383,44 @@ vkr_internal void test_scene_loader_entity_components(void) {
   printf("  test_scene_loader_entity_components PASSED\n");
 }
 
+/* A point light's emitter radius loads as authored, clamps above its limit,
+   defaults to zero and rejects a negative value. */
+vkr_internal void test_scene_loader_point_light_source_radius(void) {
+  printf("  Running test_scene_loader_point_light_source_radius...\n");
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"entities\":["
+                               "{\"name\":\"A\",\"point_light\":{"
+                               "\"range\":4,\"source_radius\":0.05}},"
+                               "{\"name\":\"B\",\"point_light\":{"
+                               "\"range\":4,\"source_radius\":5}},"
+                               "{\"name\":\"C\",\"point_light\":{"
+                               "\"range\":4}}]}")) == true_v);
+  const float32_t expected[] = {0.05f, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX, 0.0f};
+  for (uint32_t i = 0; i < ArrayCount(expected); ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(ctx.scene.world, i);
+    const ScenePointLight *light = vkr_entity_get_component(
+        ctx.scene.world, entity, ctx.scene.comp_point_light);
+    assert(light && fabsf(light->source_radius - expected[i]) < 1e-6f);
+  }
+  scene_loader_test_context_shutdown(&ctx);
+
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"entities\":["
+                               "{\"name\":\"A\",\"point_light\":{"
+                               "\"source_radius\":-0.1}}]}")) == false_v);
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_point_light_source_radius PASSED\n");
+}
+
 bool32_t run_scene_loader_tests(void) {
   printf("--- Starting Scene Loader Tests ---\n");
 
   test_scene_derived_matrix_is_lossless_and_exclusive();
   test_scene_loader_entity_components();
+  test_scene_loader_point_light_source_radius();
   test_scene_loader_registered_type();
   test_scene_loader_document_ids();
   test_scene_loader_legacy_atmosphere_sun();

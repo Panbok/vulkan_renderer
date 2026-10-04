@@ -52,6 +52,7 @@ typedef struct ScenePointLightImport {
   Vec3 direction_local;
   float32_t inner_cone_angle;
   float32_t outer_cone_angle;
+  float32_t source_radius;
   VkrPointLightKind kind;
   bool8_t enabled;
 } ScenePointLightImport;
@@ -2504,24 +2505,23 @@ vkr_internal void scene_json_parse_shape(const VkrJsonReader *entity_reader,
   }
 }
 
-vkr_internal void
-scene_json_parse_point_light(const VkrJsonReader *entity_reader,
-                             uint32_t entity_index,
-                             SceneEntityImport *out_entity) {
+vkr_internal bool8_t scene_json_parse_point_light(
+    const VkrJsonReader *entity_reader, uint32_t entity_index,
+    SceneEntityImport *out_entity) {
   VkrJsonReader point_light_reader = *entity_reader;
   if (!vkr_json_find_root_field(&point_light_reader, "point_light")) {
-    return;
+    return true_v;
   }
 
   if (scene_json_parse_null(&point_light_reader)) {
-    return;
+    return true_v;
   }
 
   VkrJsonReader point_light_obj = {0};
   if (!vkr_json_enter_object(&point_light_reader, &point_light_obj)) {
     log_warn("Scene loader: entity %u point_light is not an object",
              entity_index);
-    return;
+    return true_v;
   }
 
   out_entity->has_point_light = true_v;
@@ -2552,6 +2552,21 @@ scene_json_parse_point_light(const VkrJsonReader *entity_reader,
                               &out_entity->point_light.inner_cone_angle);
   scene_json_read_float_field(&point_light_obj, "outer_cone_angle",
                               &out_entity->point_light.outer_cone_angle);
+
+  VkrJsonReader source_radius_reader = point_light_obj;
+  if (vkr_json_find_field(&source_radius_reader, "source_radius")) {
+    float32_t source_radius = 0.0f;
+    if (!vkr_json_parse_float(&source_radius_reader, &source_radius) ||
+        !isfinite(source_radius) || source_radius < 0.0f) {
+      log_error("Scene loader: entity %u point_light source_radius must be "
+                "finite and non-negative",
+                entity_index);
+      return false_v;
+    }
+    out_entity->point_light.source_radius =
+        Min(source_radius, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX);
+  }
+
   float32_t kind = (float32_t)out_entity->point_light.kind;
   if (scene_json_read_float_field(&point_light_obj, "kind", &kind) &&
       (kind == 0.0f || kind == 1.0f || kind == 2.0f))
@@ -2580,6 +2595,7 @@ scene_json_parse_point_light(const VkrJsonReader *entity_reader,
       }
     }
   }
+  return true_v;
 }
 
 vkr_internal bool8_t scene_json_parse_rectangle_light(
@@ -2894,7 +2910,8 @@ vkr_internal bool8_t scene_json_parse_entity(const VkrJsonReader *entity_reader,
   }
   scene_json_parse_text3d(entity_reader, entity_index, out_entity);
   scene_json_parse_shape(entity_reader, entity_index, out_entity);
-  scene_json_parse_point_light(entity_reader, entity_index, out_entity);
+  if (!scene_json_parse_point_light(entity_reader, entity_index, out_entity))
+    return false_v;
   if (!scene_json_parse_rectangle_light(entity_reader, entity_index,
                                         out_entity))
     return false_v;
@@ -3611,6 +3628,7 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .direction_local = light_import->direction_local,
         .inner_cone_angle = light_import->inner_cone_angle,
         .outer_cone_angle = light_import->outer_cone_angle,
+        .source_radius = light_import->source_radius,
         .casts_shadow = light_import->casts_shadow,
         .kind = light_import->kind,
         .enabled = light_import->enabled,

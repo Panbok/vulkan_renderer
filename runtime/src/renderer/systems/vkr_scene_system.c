@@ -3126,6 +3126,10 @@ bool8_t vkr_scene_set_point_light(VkrScene *scene, VkrEntityId entity,
   if (!scene || !scene->world || !light)
     return false_v;
 
+  if (!isfinite(light->source_radius) || light->source_radius < 0.0f ||
+      light->source_radius > VKR_POINT_LIGHT_SOURCE_RADIUS_MAX)
+    return false_v;
+
   if (light->casts_shadow && (!isfinite(light->range) || light->range <= 0.0f ||
                               (light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
                                (!isfinite(light->outer_cone_angle) ||
