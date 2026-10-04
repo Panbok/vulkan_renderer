@@ -6,6 +6,7 @@
 #include "vkr_scene_system.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_model.h"
+#include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
 #include <math.h>
@@ -1999,6 +2000,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
 
   vkr_scene_physics_shutdown(scene);
   vkr_scene_brush_shutdown(scene);
+  vkr_scene_terrain_shutdown(scene);
   vkr_scene_collision_layers_shutdown(scene);
   vkr_scene_animation_shutdown(scene);
   vkr_scene_models_shutdown(scene);
@@ -2056,6 +2058,7 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
 
   vkr_scene_update_transforms(scene);
   vkr_scene_brush_update(scene);
+  vkr_scene_terrain_update(scene);
   if (!vkr_scene_physics_simulated_body_count(scene) &&
       !scene->simulation.enabled) {
     vkr_scene_animation_update(scene, dt);
@@ -2521,6 +2524,7 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   vkr_scene_animation_entity_destroying(scene, entity);
   vkr_scene_model_entity_destroying(scene, entity);
   vkr_scene_brush_entity_destroying(scene, entity);
+  vkr_scene_terrain_entity_destroying(scene, entity);
   /* Generated shape meshes and text slots belong to the entity. */
   scene_shape_release(scene, entity);
   scene_text_release(scene, entity);
@@ -4122,6 +4126,8 @@ vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
                                       const VkrTypeDesc *type) {
   if (type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type) {
     vkr_scene_brush_changed(scene, entity, type);
+  } else if (type == &vkr_scene_terrain_type) {
+    vkr_scene_terrain_changed(scene, entity);
   } else if (type == &vkr_scene_shape_type) {
     scene_shape_rebuild(scene, entity);
   } else if (type == &vkr_scene_text_type) {
@@ -4497,6 +4503,34 @@ VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
     }
   }
   return VKR_ENTITY_ID_INVALID;
+}
+
+VkrMaterialHandle vkr_scene_material_load(VkrScene *scene, const char *path,
+                                          bool8_t *out_owned) {
+  struct VkrRenderAssets *assets = scene->assets;
+  VkrMaterialHandle handle = assets->material_system.default_material;
+  *out_owned = false_v;
+  VkrResourceHandleInfo info = {0};
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const String8 name =
+      string8_create_from_cstr((const uint8_t *)path, strlen(path));
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&assets->scratch_allocator);
+  if (vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_MATERIAL, name,
+                                    &assets->scratch_allocator, &info,
+                                    &error) &&
+      info.as.material.id) {
+    vkr_material_system_add_ref(&assets->material_system, info.as.material);
+    handle = info.as.material;
+    *out_owned = true_v;
+    vkr_resource_system_unload(&info, name);
+  } else {
+    log_warn("Scene: material '%s' did not load (%d); using the default "
+             "material",
+             path, (int)error);
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return handle;
 }
 
 bool8_t vkr_scene_entity_is_part(const VkrScene *scene, VkrEntityId entity) {

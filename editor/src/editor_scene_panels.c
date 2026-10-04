@@ -643,6 +643,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_LIST;
   if (type == &vkr_scene_io_connection_type)
     return VKR_UI_ICON_ARROW_RIGHT;
+  if (type == &vkr_scene_terrain_type)
+    return VKR_UI_ICON_WAVES;
   if (vkr_scene_world_type_registered(type))
     return VKR_UI_ICON_CODE;
   return VKR_UI_ICON_LIGHT;
@@ -659,8 +661,9 @@ typedef struct EditorObjectKind {
   bool8_t spot;
   /* Menu heading the kind is listed under. */
   const char *group;
-  /* Brush and blockout kinds run an agent operation instead (ADR-084):
-     1 box, 2 wedge, 3 cylinder, 4 room, 5 trigger volume. */
+  /* Brush, blockout and terrain kinds run an agent operation instead
+     (ADR-084): 1 box, 2 wedge, 3 cylinder, 4 room, 5 trigger volume,
+     6 terrain. */
   uint32_t brush;
 } EditorObjectKind;
 
@@ -691,6 +694,8 @@ static const EditorObjectKind s_object_kinds[] = {
      &vkr_scene_brush_type, false_v, "Level", 4u},
     {"trigger_volume", "Trigger Volume", VKR_UI_ICON_LIGHTNING,
      &vkr_scene_trigger_type, false_v, "Level", 5u},
+    {"terrain", "Terrain", VKR_UI_ICON_WAVES, &vkr_scene_terrain_type, false_v,
+     "Level", 6u},
     {"relay", "Relay", VKR_UI_ICON_GIT_BRANCH, &vkr_scene_relay_type, false_v,
      "Level"},
     {"timer", "Timer", VKR_UI_ICON_TIMER, &vkr_scene_timer_type, false_v,
@@ -1066,7 +1071,14 @@ static bool8_t editor_request_brush(const VkrEditorUi *editor,
     snprintf(target, sizeof(target), "%u", (unsigned)container);
   }
   char line[640];
-  if (brush == 5u) {
+  if (brush == 6u) {
+    /* A 256 m terrain centred where the view looks. */
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"create\",\"op\":\"terrain.create\","
+             "\"args\":{\"position\":[%g,%g,%g],\"size\":256,"
+             "\"container\":%s,\"review\":false,\"select\":true}}",
+             p.x, p.y, p.z, target);
+  } else if (brush == 5u) {
     /* A trigger brush that reports what enters it. */
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"create\",\"op\":\"batch\",\"args\":{"

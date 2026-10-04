@@ -13,10 +13,12 @@
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
 #include "vkr_bakery_buffer.h"
 
+#include "stb_image.h"
 #include "stb_image_write.h"
 
 #include <math.h>
@@ -2773,6 +2775,22 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
     if (vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type)) {
       ops_set(ctx, row, "brush", ops_brush_summary(ctx, scene, entity));
     }
+    const VkrHeightfield *field = vkr_scene_terrain_field(scene, entity);
+    if (vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type)) {
+      VkrBakeryJson *summary = vkr_bakery_json_object(arena);
+      const char *status = vkr_scene_terrain_status(scene, entity);
+      ops_set(ctx, summary, "status",
+              vkr_bakery_json_cstr(arena, status ? status : "loaded"));
+      if (field) {
+        ops_set(ctx, summary, "size",
+                ops_number(ctx, field->spacing * (float32_t)field->cells));
+        ops_set(ctx, summary, "spacing", ops_number(ctx, field->spacing));
+        ops_set(ctx, summary, "height_range",
+                ops_vec3(ctx,
+                         vec3_new(field->height_min, field->height_max, 0.0f)));
+      }
+      ops_set(ctx, row, "terrain", summary);
+    }
     vkr_bakery_json_append(entities, row);
   }
   char slot[16];
@@ -3673,6 +3691,428 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
   "{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":3,"        \
   "\"maxItems\":3}"
 // =============================================================================
+// Terrain (vkr_scene_terrain.h)
+// =============================================================================
+
+/* An existing entity with a loaded terrain. */
+static bool8_t ops_terrain_arg(OpsContext *ctx, const OpsBatch *batch,
+                               const VkrBakeryJson *args, OpsRef *ref,
+                               const VkrHeightfield **out_field) {
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "terrain"), "terrain",
+               ref)) {
+    return false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref->container);
+  const VkrHeightfield *field =
+      ref->item < 0 ? vkr_scene_terrain_field(scene, ref->entity) : NULL;
+  if (!field) {
+    const char *status =
+        ref->item < 0 ? vkr_scene_terrain_status(scene, ref->entity) : NULL;
+    return ops_fail(ctx, OPS_INVALID,
+                    "'terrain' must name a loaded terrain%s%s",
+                    status ? ": " : "", status ? status : "");
+  }
+  *out_field = field;
+  return true_v;
+}
+
+static VkrSampleEditBatchItem *ops_terrain_item(OpsContext *ctx,
+                                                OpsBatch *batch,
+                                                const OpsRef *ref,
+                                                const VkrHeightfieldOp *op) {
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, ref->container, VKR_SCENE_EDIT_TERRAIN);
+  if (item) {
+    ops_item_target(item, ref);
+    item->request.terrain = *op;
+    batch->op_target[batch->op_count] = ref->entity;
+  }
+  return item;
+}
+
+/* terrain.create: a new heightfield file and an entity that shows it. */
+static bool8_t ops_build_terrain_create(OpsContext *ctx,
+                                        const VkrBakeryJson *args,
+                                        OpsBatch *batch) {
+  uint16_t container = 0u;
+  if (!ops_arg_container(ctx, args, &container)) {
+    return false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, container);
+  float64_t size = 256.0;
+  float64_t spacing = 1.0;
+  float64_t height = 0.0;
+  float64_t height_min = -100.0;
+  float64_t height_max = 400.0;
+  float64_t texture_size = 4.0;
+  (void)ops_arg_number(args, "size", &size);
+  (void)ops_arg_number(args, "spacing", &spacing);
+  (void)ops_arg_number(args, "height", &height);
+  (void)ops_arg_number(args, "height_min", &height_min);
+  (void)ops_arg_number(args, "height_max", &height_max);
+  (void)ops_arg_number(args, "texture_size", &texture_size);
+  const float64_t cells = spacing > 0.0 ? round(size / spacing) : 0.0;
+  if (!(cells >= VKR_HEIGHTFIELD_TILE_CELLS) ||
+      cells > VKR_HEIGHTFIELD_CELLS_MAX ||
+      fmod(cells, (float64_t)VKR_HEIGHTFIELD_TILE_CELLS) != 0.0 ||
+      !(height_max > height_min) || height < height_min ||
+      height > height_max || !(texture_size > 0.0)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'size' / 'spacing' must be a multiple of %u cells, at "
+                    "most %u, with height_min <= height <= height_max",
+                    VKR_HEIGHTFIELD_TILE_CELLS, VKR_HEIGHTFIELD_CELLS_MAX);
+  }
+  /* The file comes first, so the component finds it when it appears. */
+  VkrEntityRef id;
+  char uuid[37];
+  vkr_scene_entity_ref_generate(&id);
+  vkr_entity_ref_format(&id, uuid);
+  char relative[SCENE_TERRAIN_PATH_CAPACITY];
+  char absolute[1100];
+  char directory[1100];
+  snprintf(relative, sizeof(relative), "assets/terrain/%s.vkrhf", uuid);
+  if (!vkr_scene_terrain_resolve(scene, relative, absolute, sizeof(absolute)) ||
+      !vkr_scene_terrain_resolve(scene, "assets/terrain", directory,
+                                 sizeof(directory))) {
+    return ops_fail(ctx, OPS_INVALID, "The terrain path is too long");
+  }
+  VkrAllocator scratch = {.ctx = ops_arena(ctx)};
+  vkr_allocator_arena(&scratch);
+  const String8 directory_text =
+      string8_create_from_cstr((const uint8_t *)directory, strlen(directory));
+  VkrHeightfield field;
+  char error[160] = {0};
+  if (!file_ensure_directory(&scratch, &directory_text) ||
+      !vkr_heightfield_create(&field, (uint32_t)cells, (float32_t)spacing,
+                              (float32_t)height_min, (float32_t)height_max,
+                              (float32_t)height, &scratch) ||
+      !vkr_heightfield_save(&field, absolute, error, sizeof(error))) {
+    return ops_fail(ctx, OPS_REJECTED, "The terrain file could not be made%s%s",
+                    error[0] ? ": " : "", error);
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields =
+      VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "Terrain");
+  values->rotation = vkr_quat_identity();
+  values->scale = vec3_one();
+  bool8_t has_position = false_v;
+  String8 name = {0};
+  if (!ops_arg_vec3(ctx, args, "position", &values->position, &has_position)) {
+    return false_v;
+  }
+  if (vkr_bakery_json_get_string(args, "name", &name) && name.length &&
+      name.length < sizeof(values->name)) {
+    snprintf(values->name, sizeof(values->name), "%.*s", (int)name.length,
+             name.str);
+  }
+  SceneTerrain terrain;
+  vkr_type_defaults(&vkr_scene_terrain_type, &terrain);
+  snprintf(terrain.heightfield, sizeof(terrain.heightfield), "%s", relative);
+  terrain.texture_size = (float32_t)texture_size;
+  char *const layers[VKR_HEIGHTFIELD_LAYERS] = {terrain.layer0, terrain.layer1,
+                                                terrain.layer2, terrain.layer3};
+  for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
+    char key[16];
+    snprintf(key, sizeof(key), "layer%u", i);
+    String8 layer = {0};
+    if (vkr_bakery_json_get_string(args, key, &layer) &&
+        layer.length < SCENE_TERRAIN_MATERIAL_CAPACITY) {
+      MemCopy(layers[i], layer.str, layer.length);
+      layers[i][layer.length] = '\0';
+    }
+  }
+  values->component_type = &vkr_scene_terrain_type;
+  MemCopy(values->component, &terrain, sizeof(terrain));
+  batch->op_item[batch->op_count] = batch->count - 1u;
+  return ops_validate_values(ctx, values);
+}
+
+/* terrain.brush: one brush step per point, as a sculpt stroke. */
+static bool8_t ops_build_terrain_brush(OpsContext *ctx,
+                                       const VkrBakeryJson *args,
+                                       OpsBatch *batch) {
+  static const char *const modes[VKR_HEIGHTFIELD_BRUSH_COUNT] = {
+      "raise", "lower", "smooth", "flatten", "paint"};
+  OpsRef ref;
+  const VkrHeightfield *field = NULL;
+  if (!ops_terrain_arg(ctx, batch, args, &ref, &field)) {
+    return false_v;
+  }
+  String8 mode = string8_lit("raise");
+  (void)vkr_bakery_json_get_string(args, "mode", &mode);
+  VkrHeightfieldOp op = {.kind = VKR_HEIGHTFIELD_OP_BRUSH,
+                         .brush = VKR_HEIGHTFIELD_BRUSH_COUNT,
+                         .radius = 4.0f,
+                         .strength = 0.5f};
+  for (uint32_t i = 0; i < VKR_HEIGHTFIELD_BRUSH_COUNT; ++i) {
+    if (ops_equals(mode, modes[i])) {
+      op.brush = (VkrHeightfieldBrush)i;
+    }
+  }
+  float64_t number = 0.0;
+  if (ops_arg_number(args, "radius", &number)) {
+    op.radius = (float32_t)number;
+  }
+  if (ops_arg_number(args, "strength", &number)) {
+    op.strength = (float32_t)number;
+  }
+  const bool8_t has_height = ops_arg_number(args, "height", &number);
+  op.height = (float32_t)number;
+  if (ops_arg_number(args, "layer", &number)) {
+    op.layer = (uint32_t)Max(0.0, number - 1.0);
+  }
+  if (op.brush == VKR_HEIGHTFIELD_BRUSH_COUNT || !(op.radius > 0.0f) ||
+      op.layer >= VKR_HEIGHTFIELD_LAYERS || !isfinite(op.strength)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'mode' is raise, lower, smooth, flatten or paint, with a "
+                    "positive 'radius' and a 'layer' of 1 to 4");
+  }
+  const VkrBakeryJson *points = vkr_bakery_json_get(args, "points");
+  const VkrBakeryJson *point = vkr_bakery_json_get(args, "point");
+  if ((!points || points->type != VKR_BAKERY_JSON_ARRAY || !points->count ||
+       points->count > 256u) &&
+      !point) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "terrain.brush needs a 'point' or 1 to 256 'points'");
+  }
+  VkrBakeryJson single = {0};
+  const VkrBakeryJson *first = points ? points->first : NULL;
+  if (!points) {
+    single = *point;
+    single.next = NULL;
+    first = &single;
+  }
+  for (const VkrBakeryJson *entry = first; entry; entry = entry->next) {
+    Vec3 at = {0};
+    if (entry->type != VKR_BAKERY_JSON_ARRAY || entry->count != 3u) {
+      return ops_fail(ctx, OPS_INVALID, "Each point is [x, y, z]");
+    }
+    const VkrBakeryJson *c = entry->first;
+    at.x = (float32_t)(c->type == VKR_BAKERY_JSON_INT ? (float64_t)c->integer
+                                                      : c->number);
+    c = c->next;
+    at.y = (float32_t)(c->type == VKR_BAKERY_JSON_INT ? (float64_t)c->integer
+                                                      : c->number);
+    c = c->next;
+    at.z = (float32_t)(c->type == VKR_BAKERY_JSON_INT ? (float64_t)c->integer
+                                                      : c->number);
+    VkrHeightfieldOp step = op;
+    step.a = at;
+    if (!has_height) {
+      step.height = at.y;
+    }
+    if (!ops_terrain_item(ctx, batch, &ref, &step)) {
+      return false_v;
+    }
+  }
+  (void)field;
+  return true_v;
+}
+
+/* terrain.flatten: a level footprint blending into the ground around it. */
+static bool8_t ops_build_terrain_flatten(OpsContext *ctx,
+                                         const VkrBakeryJson *args,
+                                         OpsBatch *batch) {
+  OpsRef ref;
+  const VkrHeightfield *field = NULL;
+  Vec3 min = {0};
+  Vec3 max = {0};
+  bool8_t has_min = false_v;
+  bool8_t has_max = false_v;
+  if (!ops_terrain_arg(ctx, batch, args, &ref, &field) ||
+      !ops_arg_vec3(ctx, args, "min", &min, &has_min) ||
+      !ops_arg_vec3(ctx, args, "max", &max, &has_max)) {
+    return false_v;
+  }
+  if (!has_min || !has_max) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "terrain.flatten needs the footprint's 'min' and 'max'");
+  }
+  float64_t height = Min(min.y, max.y);
+  float64_t falloff = 2.0;
+  (void)ops_arg_number(args, "height", &height);
+  (void)ops_arg_number(args, "falloff", &falloff);
+  const VkrHeightfieldOp op = {
+      .kind = VKR_HEIGHTFIELD_OP_FLATTEN,
+      .min = vec2_new(Min(min.x, max.x), Min(min.z, max.z)),
+      .max = vec2_new(Max(min.x, max.x), Max(min.z, max.z)),
+      .height = (float32_t)height,
+      .falloff = (float32_t)falloff};
+  (void)field;
+  if (!ops_terrain_item(ctx, batch, &ref, &op)) {
+    return false_v;
+  }
+  return true_v;
+}
+
+/* terrain.ramp: a straight slope from one point to another. */
+static bool8_t ops_build_terrain_ramp(OpsContext *ctx,
+                                      const VkrBakeryJson *args,
+                                      OpsBatch *batch) {
+  OpsRef ref;
+  const VkrHeightfield *field = NULL;
+  Vec3 from = {0};
+  Vec3 to = {0};
+  bool8_t has_from = false_v;
+  bool8_t has_to = false_v;
+  if (!ops_terrain_arg(ctx, batch, args, &ref, &field) ||
+      !ops_arg_vec3(ctx, args, "from", &from, &has_from) ||
+      !ops_arg_vec3(ctx, args, "to", &to, &has_to)) {
+    return false_v;
+  }
+  float64_t width = 4.0;
+  float64_t falloff = 2.0;
+  (void)ops_arg_number(args, "width", &width);
+  (void)ops_arg_number(args, "falloff", &falloff);
+  if (!has_from || !has_to || !(width > 0.0)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "terrain.ramp needs 'from', 'to' and a positive 'width'");
+  }
+  const VkrHeightfieldOp op = {.kind = VKR_HEIGHTFIELD_OP_RAMP,
+                               .a = from,
+                               .b = to,
+                               .width = (float32_t)width,
+                               .falloff = (float32_t)falloff};
+  (void)field;
+  return ops_terrain_item(ctx, batch, &ref, &op) != NULL;
+}
+
+/* terrain.stamp: a grayscale image of heights over a rectangle. */
+static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
+                                       const VkrBakeryJson *args,
+                                       OpsBatch *batch) {
+  OpsRef ref;
+  const VkrHeightfield *field = NULL;
+  Vec3 center = {0};
+  bool8_t has_center = false_v;
+  String8 image = {0};
+  if (!ops_terrain_arg(ctx, batch, args, &ref, &field) ||
+      !ops_arg_vec3(ctx, args, "center", &center, &has_center)) {
+    return false_v;
+  }
+  float64_t size = 64.0;
+  float64_t scale = 10.0;
+  (void)ops_arg_number(args, "size", &size);
+  (void)ops_arg_number(args, "height_scale", &scale);
+  String8 mode = string8_lit("add");
+  (void)vkr_bakery_json_get_string(args, "mode", &mode);
+  if (!has_center || !vkr_bakery_json_get_string(args, "image", &image) ||
+      !image.length || image.length >= 1024u || !(size > 0.0) ||
+      (!ops_equals(mode, "add") && !ops_equals(mode, "set"))) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "terrain.stamp needs an 'image' file, a 'center', a "
+                    "positive 'size' and 'mode' add or set");
+  }
+  char path[1100];
+  char relative[1024];
+  snprintf(relative, sizeof(relative), "%.*s", (int)image.length, image.str);
+  if (!vkr_scene_terrain_resolve(ops_scene(ctx->frame, ref.container), relative,
+                                 path, sizeof(path))) {
+    return ops_fail(ctx, OPS_INVALID, "The image path is too long");
+  }
+  /* The engine's stb_image reads memory only. */
+  FILE *file = file_fopen(path, "rb");
+  long bytes = 0;
+  uint8_t *encoded = NULL;
+  if (file && fseek(file, 0, SEEK_END) == 0 && (bytes = ftell(file)) > 0 &&
+      bytes <= 256L * 1024L * 1024L && fseek(file, 0, SEEK_SET) == 0) {
+    encoded =
+        arena_alloc(ops_arena(ctx), (uint64_t)bytes, ARENA_MEMORY_TAG_ARRAY);
+    if (encoded && fread(encoded, 1u, (size_t)bytes, file) != (size_t)bytes) {
+      encoded = NULL;
+    }
+  }
+  if (file) {
+    fclose(file);
+  }
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  stbi_us *pixels = encoded
+                        ? stbi_load_16_from_memory(encoded, (int)bytes, &width,
+                                                   &height, &channels, 1)
+                        : NULL;
+  if (!pixels || width < 2 || height < 2 || width > 4096 || height > 4096) {
+    if (pixels) {
+      stbi_image_free(pixels);
+    }
+    return ops_fail(ctx, OPS_NOT_FOUND,
+                    "The image did not load as 2 to 4096 pixels a side");
+  }
+  float32_t *values =
+      arena_alloc(ops_arena(ctx), sizeof(float32_t) * (size_t)width * height,
+                  ARENA_MEMORY_TAG_ARRAY);
+  for (int i = 0; values && i < width * height; ++i) {
+    values[i] = (float32_t)pixels[i] / 65535.0f;
+  }
+  stbi_image_free(pixels);
+  if (!values) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  const float32_t half = (float32_t)size * 0.5f;
+  const VkrHeightfieldOp op = {
+      .kind = VKR_HEIGHTFIELD_OP_STAMP,
+      .min = vec2_new(center.x - half, center.z - half),
+      .max = vec2_new(center.x + half, center.z + half),
+      .height = center.y,
+      .strength = (float32_t)scale,
+      .image = values,
+      .image_width = (uint32_t)width,
+      .image_height = (uint32_t)height,
+      .add = ops_equals(mode, "add")};
+  (void)field;
+  return ops_terrain_item(ctx, batch, &ref, &op) != NULL;
+}
+
+/* terrain.sample: ground heights at points, for placing things. */
+static VkrEditorOpStatus ops_run_terrain_sample(OpsContext *ctx) {
+  OpsRef ref;
+  const VkrHeightfield *field = NULL;
+  const VkrBakeryJson *points = vkr_bakery_json_get(ctx->call->args, "points");
+  if (!ops_terrain_arg(ctx, NULL, ctx->call->args, &ref, &field)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!points || points->type != VKR_BAKERY_JSON_ARRAY ||
+      points->count > 1024u) {
+    ops_fail(ctx, OPS_INVALID, "'points' is up to 1024 [x, z] pairs");
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+  Vec3 origin = {0};
+  (void)vkr_scene_terrain_to_local(scene, ref.entity, vec3_zero(), &origin);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *heights = vkr_bakery_json_array(arena);
+  for (const VkrBakeryJson *entry = points->first; entry; entry = entry->next) {
+    float32_t h = 0.0f;
+    if (entry->type != VKR_BAKERY_JSON_ARRAY || entry->count != 2u) {
+      ops_fail(ctx, OPS_INVALID, "Each point is [x, z]");
+      return VKR_EDITOR_OP_DONE;
+    }
+    const VkrBakeryJson *x = entry->first;
+    const VkrBakeryJson *z = x->next;
+    const float32_t px =
+        (float32_t)(x->type == VKR_BAKERY_JSON_INT ? (float64_t)x->integer
+                                                   : x->number);
+    const float32_t pz =
+        (float32_t)(z->type == VKR_BAKERY_JSON_INT ? (float64_t)z->integer
+                                                   : z->number);
+    vkr_bakery_json_append(
+        heights, vkr_heightfield_sample(field, px + origin.x, pz + origin.z, &h)
+                     ? ops_number(ctx, h - origin.y)
+                     : vkr_bakery_json_null(arena));
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "heights", heights);
+  return VKR_EDITOR_OP_DONE;
+}
+
+// =============================================================================
 // Entity IO (vkr_io_router.h)
 // =============================================================================
 
@@ -4226,6 +4666,71 @@ static const OpsDef s_ops[] = {
      "\"height\":{\"type\":\"number\"}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"wall\"]}",
      NULL, ops_build_doorway},
+    {"terrain.create",
+     "Create a heightfield terrain of 'size' metres a side (a multiple of 64 "
+     "'spacing' cells, at most 1024 cells) centred on 'position', flat at "
+     "local 'height', heights stored between 'height_min' and 'height_max'. "
+     "'layer0' to 'layer3' name materials.",
+     "{\"type\":\"object\",\"properties\":{\"position\":" OPS_VEC3_SCHEMA
+     ",\"size\":{\"type\":\"number\"},\"spacing\":{\"type\":\"number\"},"
+     "\"height\":{\"type\":\"number\"},\"height_min\":{\"type\":\"number\"},"
+     "\"height_max\":{\"type\":\"number\"},\"texture_size\":{\"type\":"
+     "\"number\"},\"name\":{\"type\":\"string\"},\"layer0\":{\"type\":"
+     "\"string\"},\"layer1\":{\"type\":\"string\"},\"layer2\":{\"type\":"
+     "\"string\"},\"layer3\":{\"type\":\"string\"},"
+     "\"container\":" OPS_CONTAINER_SCHEMA "," OPS_REVIEW_SCHEMA "}}",
+     NULL, ops_build_terrain_create},
+    {"terrain.brush",
+     "Sculpt or paint with a round brush at each of 'points' (or one "
+     "'point'): 'mode' raise or lower by 'strength' metres, smooth or "
+     "flatten (toward 'height', default the point's y) by a 0-1 'strength', "
+     "or paint 'layer' 1-4. Falls off to zero at 'radius'.",
+     "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
+     ",\"mode\":{\"type\":\"string\",\"enum\":[\"raise\",\"lower\","
+     "\"smooth\",\"flatten\",\"paint\"]},\"point\":" OPS_VEC3_SCHEMA
+     ",\"points\":{\"type\":\"array\",\"items\":" OPS_VEC3_SCHEMA
+     ",\"maxItems\":256},\"radius\":{\"type\":\"number\"},\"strength\":"
+     "{\"type\":\"number\"},\"height\":{\"type\":\"number\"},\"layer\":"
+     "{\"type\":\"integer\",\"minimum\":1,\"maximum\":4}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"terrain\"]}",
+     NULL, ops_build_terrain_brush},
+    {"terrain.flatten",
+     "Level the footprint from 'min' to 'max' (world x and z) at 'height' "
+     "(default the lower y), blending into the ground over 'falloff' "
+     "metres.",
+     "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
+     ",\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA
+     ",\"height\":{\"type\":\"number\"},\"falloff\":{\"type\":"
+     "\"number\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"terrain\",\"min\",\"max\"]}",
+     NULL, ops_build_terrain_flatten},
+    {"terrain.ramp",
+     "Shape a straight slope 'width' metres wide from 'from' to 'to' (world "
+     "points on the ramp's surface), blending over 'falloff' metres.",
+     "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
+     ",\"from\":" OPS_VEC3_SCHEMA ",\"to\":" OPS_VEC3_SCHEMA
+     ",\"width\":{\"type\":\"number\"},\"falloff\":{\"type\":"
+     "\"number\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"terrain\",\"from\",\"to\"]}",
+     NULL, ops_build_terrain_ramp},
+    {"terrain.stamp",
+     "Stamp a grayscale 'image' file over a square of 'size' metres at "
+     "'center': 'mode' add raises by the image times 'height_scale'; set "
+     "makes heights center.y plus that.",
+     "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
+     ",\"image\":{\"type\":\"string\"},\"center\":" OPS_VEC3_SCHEMA
+     ",\"size\":{\"type\":\"number\"},\"height_scale\":{\"type\":"
+     "\"number\"},\"mode\":{\"type\":\"string\",\"enum\":[\"add\","
+     "\"set\"]}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"terrain\",\"image\",\"center\"]}",
+     NULL, ops_build_terrain_stamp},
+    {"terrain.sample",
+     "Ground heights (world y) of a terrain at [x, z] points; null outside.",
+     "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
+     ",\"points\":{\"type\":\"array\",\"maxItems\":1024,\"items\":{"
+     "\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":2,"
+     "\"maxItems\":2}}},\"required\":[\"terrain\",\"points\"]}",
+     ops_run_terrain_sample, NULL},
     {"io.connect",
      "Connect the source's 'output' to the 'input' of 'target' in the same "
      "scene: when the source fires it, the target receives the input after "

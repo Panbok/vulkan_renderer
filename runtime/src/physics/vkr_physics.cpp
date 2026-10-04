@@ -24,6 +24,7 @@ extern "C" {
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/ScaledShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
@@ -750,6 +751,27 @@ static bool8_t create_shape(VkrPhysicsWorld *world,
     }
     break;
   }
+  case VKR_PHYSICS_HEIGHT_FIELD: {
+    const auto &g = c.geometry;
+    const uint32_t samples = g.height_samples;
+    if (!g.positions || samples < 4 || samples > 8192 || samples % 4 ||
+        g.vertex_count != samples * samples ||
+        !std::isfinite(g.height_spacing) || g.height_spacing <= 0) {
+      return fail(world, "Invalid height field size or spacing");
+    }
+    for (uint32_t i = 0; i < g.vertex_count; ++i) {
+      if (!std::isfinite(g.positions[i]) &&
+          g.positions[i] != VKR_PHYSICS_HEIGHT_HOLE) {
+        return fail(world, "Invalid height field sample");
+      }
+    }
+    JPH::HeightFieldShapeSettings settings(
+        g.positions, JPH::Vec3::sZero(),
+        JPH::Vec3(g.height_spacing, 1.0f, g.height_spacing), samples);
+    settings.mBlockSize = 4;
+    result = settings.Create();
+    break;
+  }
   default:
     return fail(world, "Unknown collision shape");
   }
@@ -843,7 +865,8 @@ extern "C" bool8_t vkr_physics_body_create(VkrPhysicsWorld *world,
         return fail(world, "Invalid collider transform");
       }
       JPH::Ref<JPH::Shape> shape;
-      if (c.shape == VKR_PHYSICS_TRIANGLE_MESH &&
+      if ((c.shape == VKR_PHYSICS_TRIANGLE_MESH ||
+           c.shape == VKR_PHYSICS_HEIGHT_FIELD) &&
           desc->motion == VKR_PHYSICS_DYNAMIC) {
         return fail(
             world,

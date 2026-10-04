@@ -1789,6 +1789,67 @@ const VkrTypeDesc vkr_scene_brush_face_type = {
 };
 
 // =============================================================================
+// Terrain (ADR-084)
+// =============================================================================
+
+static const VkrPropertyDesc s_terrain_properties[] = {
+    {.name = "heightfield",
+     .label = "Heightfield file",
+     .tooltip = "Heights and layer weights, relative to the scene's asset "
+                "root; saving the scene writes it",
+     .offset = TYPE_OFFSET(SceneTerrain, heightfield),
+     .capacity = SCENE_TERRAIN_PATH_CAPACITY,
+     .kind = VKR_PROPERTY_STRING,
+     .flags = VKR_PROPERTY_FLAG_READ_ONLY},
+    {.name = "layer0",
+     .label = "Layer 1",
+     .group = "Layers",
+     .tooltip = "Material of the first layer; empty uses the dev grid",
+     .offset = TYPE_OFFSET(SceneTerrain, layer0),
+     .capacity = SCENE_TERRAIN_MATERIAL_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "layer1",
+     .label = "Layer 2",
+     .offset = TYPE_OFFSET(SceneTerrain, layer1),
+     .capacity = SCENE_TERRAIN_MATERIAL_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "layer2",
+     .label = "Layer 3",
+     .offset = TYPE_OFFSET(SceneTerrain, layer2),
+     .capacity = SCENE_TERRAIN_MATERIAL_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "layer3",
+     .label = "Layer 4",
+     .offset = TYPE_OFFSET(SceneTerrain, layer3),
+     .capacity = SCENE_TERRAIN_MATERIAL_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "texture_size",
+     .label = "Texture size",
+     .unit = "m",
+     .tooltip = "Metres one texture repeat covers",
+     .offset = TYPE_OFFSET(SceneTerrain, texture_size),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.01f,
+     .max = 1000.0f,
+     .step = 0.1f},
+};
+
+static void terrain_defaults(void *value) {
+  *(SceneTerrain *)value = (SceneTerrain){.texture_size = 4.0f};
+}
+
+const VkrTypeDesc vkr_scene_terrain_type = {
+    .name = "terrain",
+    .label = "Terrain",
+    .category = "Level",
+    .properties = s_terrain_properties,
+    .property_count = ArrayCount(s_terrain_properties),
+    .size = sizeof(SceneTerrain),
+    .align = _Alignof(SceneTerrain),
+    .defaults = terrain_defaults,
+};
+
+// =============================================================================
 // Entity IO (ADR-084)
 // =============================================================================
 
@@ -2049,6 +2110,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_timer_type,
     &vkr_scene_counter_type,
     &vkr_scene_io_connection_type,
+    &vkr_scene_terrain_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -2116,5 +2178,6 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_timer_type || type == &vkr_scene_counter_type ||
-         type == &vkr_scene_io_connection_type;
+         type == &vkr_scene_io_connection_type ||
+         type == &vkr_scene_terrain_type;
 }

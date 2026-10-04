@@ -232,6 +232,44 @@ static void test_sensor_sleep_and_disable(void) {
   vkr_physics_world_destroy(world);
 }
 
+/* A height field stops a ray at its sample height and lets one through a
+   hole; a dynamic body cannot carry one. */
+static void test_height_field(void) {
+  VkrPhysicsWorld *world = vkr_physics_world_create(4);
+  assert(world);
+  float32_t heights[8 * 8];
+  for (uint32_t i = 0; i < 64u; ++i) {
+    heights[i] = 2.0f;
+  }
+  /* The cells around sample (6, 6) have no collision. */
+  heights[6 * 8 + 6] = VKR_PHYSICS_HEIGHT_HOLE;
+  VkrPhysicsColliderDesc field = {
+      .entity_id = 50,
+      .shape = VKR_PHYSICS_HEIGHT_FIELD,
+      .rotation = {0, 0, 0, 1},
+      .scale = {1, 1, 1},
+      .geometry = {.positions = heights,
+                   .vertex_count = 64,
+                   .height_samples = 8,
+                   .height_spacing = 1.0f},
+      .enabled = true_v,
+  };
+  VkrPhysicsBodyDesc desc = body_desc(5, &field);
+  desc.motion = VKR_PHYSICS_DYNAMIC;
+  VkrPhysicsBody body;
+  assert(!vkr_physics_body_create(world, &desc, &body));
+  desc.motion = VKR_PHYSICS_STATIC;
+  assert(vkr_physics_body_create(world, &desc, &body));
+  VkrPhysicsRayHit hit;
+  const float32_t down[3] = {0, -20, 0};
+  const float32_t over_ground[3] = {2.5f, 10, 2.5f};
+  assert(vkr_physics_raycast(world, over_ground, down, &hit));
+  assert(hit.entity_id == 5 && fabsf(hit.position[1] - 2.0f) < 1e-3f);
+  const float32_t over_hole[3] = {5.9f, 10, 5.9f};
+  assert(!vkr_physics_raycast(world, over_hole, down, &hit));
+  vkr_physics_world_destroy(world);
+}
+
 static void test_shapes_ccd_and_layers(void) {
   VkrPhysicsWorld *world = vkr_physics_world_create(4);
   assert(world);
@@ -642,6 +680,7 @@ bool32_t run_physics_tests(void) {
   test_stack_sleep_and_support_removal();
   test_sensor_sleep_and_disable();
   test_shapes_ccd_and_layers();
+  test_height_field();
   test_sensor_queue_fault();
   test_sensor_mutation_reservation();
   test_geometry_scale_and_sweep();

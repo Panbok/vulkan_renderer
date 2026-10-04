@@ -58,15 +58,15 @@ static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD};
 
 static const char *const cmd_windows[] = {
-    "animation", "physics", "preferences", "draws",   "memory", "help",
-    "create",    "build",   "script",      "changes", "level",  NULL};
+    "animation", "physics", "preferences", "draws", "memory",  "help", "create",
+    "build",     "script",  "changes",     "level", "terrain", NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION, VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,  VKR_EDITOR_WINDOW_DRAWS,
     VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP,
     VKR_EDITOR_WINDOW_CREATE,    VKR_EDITOR_WINDOW_BUILD,
     VKR_EDITOR_WINDOW_SCRIPT,    VKR_EDITOR_WINDOW_CHANGES,
-    VKR_EDITOR_WINDOW_LEVEL};
+    VKR_EDITOR_WINDOW_LEVEL,     VKR_EDITOR_WINDOW_TERRAIN};
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -311,21 +311,26 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg);
 
 static bool8_t cmd_run_brush_draw(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
-  /* value 0 switches drawing, 1 the clip tool. */
-  bool8_t *tool =
-      def->value ? &ctx->editor->clip_tool : &ctx->editor->brush_draw;
+  /* value 0 switches drawing, 1 the clip tool, 2 terrain sculpting. */
+  bool8_t *tool = def->value == 2u   ? &ctx->editor->terrain_tool
+                  : def->value == 1u ? &ctx->editor->clip_tool
+                                     : &ctx->editor->brush_draw;
   bool8_t next = false_v;
   if (!cmd_switch(ctx, cmd_split(arg, NULL), *tool, &next)) {
     return false_v;
   }
-  /* One brush tool holds the Scene mouse at a time. */
+  /* One tool holds the Scene mouse at a time. */
   ctx->editor->brush_draw = false_v;
   ctx->editor->clip_tool = false_v;
+  ctx->editor->terrain_tool = false_v;
   *tool = next;
   ctx->editor->brush_dragging = false_v;
   ctx->editor->clip_has_first = false_v;
-  snprintf(ctx->message, sizeof(ctx->message), "Brush %s %s",
-           def->value ? "clipping" : "drawing", next ? "on" : "off");
+  snprintf(ctx->message, sizeof(ctx->message), "%s %s",
+           def->value == 2u   ? "Terrain sculpting"
+           : def->value == 1u ? "Brush clipping"
+                              : "Brush drawing",
+           next ? "on" : "off");
   return true_v;
 }
 
@@ -1837,6 +1842,9 @@ static const CmdDef cmd_defs[] = {
     {"brush.draw", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Draw box brushes by dragging on the grid plane (B)", cmd_run_brush_draw,
      CMD_COUNT, 0u},
+    {"terrain.tool", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Sculpt and paint terrain in the Scene with the Terrain window's brush",
+     cmd_run_brush_draw, CMD_COUNT, 2u},
     {"brush.clip_tool", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Cut the selected brush with the vertical plane through two grid "
      "clicks",

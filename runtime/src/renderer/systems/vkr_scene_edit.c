@@ -1,6 +1,7 @@
 #include "vkr_scene_edit.h"
 #include "filesystem/filesystem.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 
 #include "core/logger.h"
@@ -692,6 +693,124 @@ bool8_t vkr_scene_edit_apply_scene_settings(VkrSceneEditState *s,
       s, (VkrSceneEditEntry){.kind = VKR_SCENE_EDIT_ENTRY_SCENE_SETTINGS,
                              .payload = payload,
                              .payload_size = 2u * sizeof(*payload)});
+  return true_v;
+}
+
+/* A terrain entry's payload: the rectangle, its weights before and after,
+   then its heights before and after, so every array stays aligned. */
+typedef struct EditTerrainPayload {
+  VkrHeightfieldRect rect;
+} EditTerrainPayload;
+
+static uint64_t edit_terrain_size(VkrHeightfieldRect rect) {
+  return sizeof(EditTerrainPayload) +
+         2u * (uint64_t)vkr_heightfield_rect_count(rect) *
+             (sizeof(uint16_t) + sizeof(uint32_t));
+}
+
+/* The sample arrays of a payload: heights and weights, before (0) or after
+   (1). */
+static void edit_terrain_arrays(EditTerrainPayload *payload, uint32_t which,
+                                uint16_t **heights, uint32_t **weights) {
+  const uint64_t count = vkr_heightfield_rect_count(payload->rect);
+  uint8_t *at = (uint8_t *)(payload + 1);
+  *weights = (uint32_t *)(at + which * count * sizeof(uint32_t));
+  *heights = (uint16_t *)(at + 2u * count * sizeof(uint32_t) +
+                          which * count * sizeof(uint16_t));
+}
+
+bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
+                               VkrEntityId entity, const VkrHeightfieldOp *op,
+                               uint64_t gesture) {
+  const VkrHeightfield *field = vkr_scene_terrain_field(scene, entity);
+  Vec3 origin = {0};
+  if (!field ||
+      !vkr_scene_terrain_to_local(scene, entity, vec3_zero(), &origin)) {
+    snprintf(s->status, sizeof(s->status),
+             "That object has no loaded terrain.");
+    return false_v;
+  }
+  /* World to the terrain's local space. */
+  VkrHeightfieldOp local = *op;
+  local.a = vec3_add(op->a, origin);
+  local.b = vec3_add(op->b, origin);
+  local.min = vec2_new(op->min.x + origin.x, op->min.y + origin.z);
+  local.max = vec2_new(op->max.x + origin.x, op->max.y + origin.z);
+  local.height = op->height + origin.y;
+  VkrHeightfieldRect rect;
+  if (!vkr_heightfield_op_rect(field, &local, &rect)) {
+    snprintf(s->status, sizeof(s->status), "The edit misses the terrain.");
+    return false_v;
+  }
+  /* A stroke's next step folds into its entry: the entry grows to cover both
+     rectangles and keeps the samples from before the stroke. */
+  VkrSceneEditEntry *last = s->undo_count && s->undo_cursor == s->undo_count
+                                ? &s->undo[s->undo_count - 1u]
+                                : NULL;
+  const bool8_t fold = gesture && s->gesture == gesture && last &&
+                       last->kind == VKR_SCENE_EDIT_ENTRY_TERRAIN &&
+                       last->entity.u64 == entity.u64 &&
+                       last->group == s->group_open;
+  EditTerrainPayload *previous = fold ? last->payload : NULL;
+  VkrHeightfieldRect whole = rect;
+  if (previous) {
+    (void)vkr_heightfield_rect_union(field, previous->rect, rect, &whole);
+  }
+  const uint64_t size = edit_terrain_size(whole);
+  EditTerrainPayload *payload =
+      previous ? vkr_allocator_alloc(s->allocator, size, EDIT_TAG)
+               : edit_journal_prepare(s, entity, size);
+  if (!payload) {
+    snprintf(s->status, sizeof(s->status), "Out of edit memory.");
+    return false_v;
+  }
+  payload->rect = whole;
+  uint16_t *before_heights = NULL;
+  uint32_t *before_weights = NULL;
+  uint16_t *after_heights = NULL;
+  uint32_t *after_weights = NULL;
+  edit_terrain_arrays(payload, 0u, &before_heights, &before_weights);
+  edit_terrain_arrays(payload, 1u, &after_heights, &after_weights);
+  vkr_heightfield_read_rect(field, whole, before_heights, before_weights);
+  if (previous) {
+    /* What the stroke changed already goes back to its first state. */
+    uint16_t *old_heights = NULL;
+    uint32_t *old_weights = NULL;
+    edit_terrain_arrays(previous, 0u, &old_heights, &old_weights);
+    const uint32_t old_width = previous->rect.x1 - previous->rect.x0 + 1u;
+    const uint32_t width = whole.x1 - whole.x0 + 1u;
+    for (uint32_t z = previous->rect.z0; z <= previous->rect.z1; ++z) {
+      const size_t from = (size_t)(z - previous->rect.z0) * old_width;
+      const size_t to =
+          (size_t)(z - whole.z0) * width + (previous->rect.x0 - whole.x0);
+      MemCopy(before_heights + to, old_heights + from,
+              old_width * sizeof(uint16_t));
+      MemCopy(before_weights + to, old_weights + from,
+              old_width * sizeof(uint32_t));
+    }
+  }
+  VkrHeightfieldRect touched;
+  if (!vkr_scene_terrain_apply(scene, entity, &local, s->allocator, &touched)) {
+    vkr_allocator_free(s->allocator, payload, size, EDIT_TAG);
+    snprintf(s->status, sizeof(s->status), "The terrain edit failed.");
+    return false_v;
+  }
+  vkr_heightfield_read_rect(vkr_scene_terrain_field(scene, entity), whole,
+                            after_heights, after_weights);
+  if (previous) {
+    vkr_allocator_free(s->allocator, last->payload, last->payload_size,
+                       EDIT_TAG);
+    last->payload = payload;
+    last->payload_size = size;
+    s->revision++;
+    return true_v;
+  }
+  edit_journal_append(s,
+                      (VkrSceneEditEntry){.kind = VKR_SCENE_EDIT_ENTRY_TERRAIN,
+                                          .entity = entity,
+                                          .payload = payload,
+                                          .payload_size = size});
+  s->gesture = gesture;
   return true_v;
 }
 
@@ -1655,6 +1774,16 @@ static bool8_t edit_entry_write(VkrSceneEditState *s, VkrScene *scene,
     if (!edit_structure_write(s, scene, entry, redo)) {
       return false_v;
     }
+  } else if (entry->kind == VKR_SCENE_EDIT_ENTRY_TERRAIN) {
+    EditTerrainPayload *payload = entry->payload;
+    uint16_t *heights = NULL;
+    uint32_t *weights = NULL;
+    edit_terrain_arrays(payload, redo ? 1u : 0u, &heights, &weights);
+    if (!vkr_scene_terrain_write(scene, entry->entity, payload->rect, heights,
+                                 weights)) {
+      snprintf(s->status, sizeof(s->status), "The terrain is gone.");
+      return false_v;
+    }
   } else if (entry->kind == VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS) {
     const VkrSceneCollisionLayers *payload = entry->payload;
     const char *error = NULL;
@@ -2293,6 +2422,10 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, const VkrScene *scene,
     snprintf(
         s->status, sizeof(s->status),
         "Save blocked: resolve or move the conflicting sidecar, then reload.");
+    return false_v;
+  }
+  /* Terrain samples live in their own files, written with the edits. */
+  if (!vkr_scene_terrain_save(scene, s->status, sizeof(s->status))) {
     return false_v;
   }
   VkrJsonFileWriter file = {0};

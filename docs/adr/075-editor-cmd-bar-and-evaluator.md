@@ -72,7 +72,7 @@ dependable channel for scripts.
 | `frame` | | Frame the selection |
 | `visibility.toggle` | | Hide or show the selection |
 | `panel` | `<outliner\|details\|console\|bakery\|content\|build> [on\|off\|toggle]` | Docked panels |
-| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window and `level` the Level checks window (ADR-084) |
+| `window` | `<animation\|physics\|preferences\|draws\|memory\|help\|create\|build\|script\|changes\|level\|terrain> [on\|off\|toggle]` | Floating windows; `changes` is the Agent changes window, `level` the Level checks window and `terrain` the Terrain window (ADR-084) |
 | `build.game`, `build.run` | `[profile]` | Package the project with a build profile (quoted when it has spaces; the selected profile by default), then for `build.run` run the game ([ADR-078](078-project-build-and-packaging.md)) |
 | `build.settings`, `build.open` | | Build Settings window; the last package's folder |
 | `layout.reset` | | Default dock layout |
@@ -86,6 +86,7 @@ dependable channel for scripts.
 | `grid` | `[on\|off\|toggle]` | World grid |
 | `brush.draw` | `[on\|off\|toggle]` | Brush drawing in the Scene (B; ADR-084) |
 | `brush.clip_tool` | `[on\|off\|toggle]` | The clip tool in the Scene (ADR-084); it and brush drawing exclude each other |
+| `terrain.tool` | `[on\|off\|toggle]` | The terrain sculpt tool in the Scene (ADR-084); it, the clip tool and brush drawing exclude each other |
 | `io.trace`, `io.fire` | `[on\|off\|toggle]`, `<object> <input> [value]` | Entity IO during Play (ADR-084): the `[io]` line of each delivery, and an input sent as a connection would; a name with spaces is quoted |
 | `op` | `<operation> [json object]` | Run an operation of the agent table (ADR-084); its result prints as an `[agent]` log line |
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |

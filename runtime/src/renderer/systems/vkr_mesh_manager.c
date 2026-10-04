@@ -1423,6 +1423,11 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
     if (range_id == 0 && uses_full_geometry) {
       range_id = geometry.id;
     }
+    uint32_t geometry_submesh_index = 0u;
+    for (uint32_t earlier = 0; earlier < submesh_index; ++earlier) {
+      geometry_submesh_index +=
+          submesh_array.data[earlier].geometry.id == geometry.id;
+    }
 
     VkrSubMesh submesh = {
         .geometry = geometry,
@@ -1432,6 +1437,7 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
         .shader_override =
             string8_duplicate(&manager->allocator, &sub_desc->shader_override),
         .range_id = range_id,
+        .geometry_submesh_index = geometry_submesh_index,
         .first_index = first_index,
         .index_count = index_count,
         .vertex_offset = vertex_offset,

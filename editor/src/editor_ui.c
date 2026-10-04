@@ -4,6 +4,7 @@
 #include "editor_physics.h"
 #include "editor_projects.h"
 #include "editor_scene_panels.h"
+#include "editor_terrain.h"
 
 #include "renderer/systems/vkr_editor_viewport.h"
 
@@ -161,6 +162,11 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .placement = {.target = VKR_EDITOR_SNAP_SURFACE},
       .windows =
           {
+              [VKR_EDITOR_WINDOW_TERRAIN] = {.position_pt = {360.0f, 140.0f},
+                                             .size_pt = {380.0f, 230.0f},
+                                             .z_order = 8u,
+                                             .visible = false_v,
+                                             .resizable = true_v},
               [VKR_EDITOR_WINDOW_LEVEL] = {.position_pt = {340.0f, 120.0f},
                                            .size_pt = {560.0f, 360.0f},
                                            .z_order = 8u,
@@ -323,6 +329,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_windows_register_input_layers(editor, frame->ui);
   vkr_editor_viewport_update(editor, frame);
   vkr_editor_io_update(editor, frame);
+  vkr_editor_terrain_update(editor, frame);
   if (frame->mapping_valid) {
     if (!frame->scene_only) {
       dock_capture = vkr_ui_dock_update_input(

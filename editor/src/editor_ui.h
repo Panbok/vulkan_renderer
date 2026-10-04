@@ -45,6 +45,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_CHANGES,
   /* Level checks against the player capsule. */
   VKR_EDITOR_WINDOW_LEVEL,
+  /* Terrain sculpting and painting. */
+  VKR_EDITOR_WINDOW_TERRAIN,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -385,6 +387,20 @@ typedef struct VkrEditorUi {
   float32_t face_handle_length;
   float32_t face_drag_start;
   float32_t face_drag_distance;
+  /* Terrain sculpting (editor_terrain.h): the tool, its settings, the
+     stroke in progress and the ground under the pointer. */
+  bool8_t terrain_tool;
+  uint32_t terrain_mode;
+  float32_t terrain_radius;
+  float32_t terrain_strength;
+  uint32_t terrain_layer;
+  uint64_t terrain_stroke;
+  uint64_t terrain_stroke_counter;
+  float32_t terrain_flatten_height;
+  bool8_t terrain_hit_valid;
+  Vec3 terrain_hit;
+  VkrEntityId terrain_hit_entity;
+  float64_t terrain_last_time;
   /* Entity IO in Details (editor_io.h): a connection waiting for its target
      to be picked, and the sections' collapsed states. */
   VkrEntityId io_pick;

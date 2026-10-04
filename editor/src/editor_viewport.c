@@ -1854,6 +1854,11 @@ static bool8_t viewport_unproject(const VkrSampleUiFrame *frame, Vec2 pixel,
 
 /* The ray under a viewport pixel: perspective rays leave the eye;
    orthographic rays run through two depths of the pixel. */
+bool8_t vkr_editor_viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
+                                Vec3 *origin, Vec3 *direction) {
+  return viewport_ray(frame, pixel, origin, direction);
+}
+
 static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
                             Vec3 *origin, Vec3 *direction) {
   Vec3 target = {0};

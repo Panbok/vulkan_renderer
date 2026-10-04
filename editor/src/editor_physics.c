@@ -3,6 +3,7 @@
 #include "editor_internal.h"
 #include "editor_level.h"
 #include "editor_ops.h"
+#include "editor_terrain.h"
 #include "editor_ui.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
@@ -428,6 +429,14 @@ static void physics_level_tools(VkrEditorUi *editor,
       }
     }
   }
+  Vec3 circle[48];
+  const uint32_t circle_count = vkr_editor_terrain_brush_outline(
+      editor, frame, circle, ArrayCount(circle));
+  for (uint32_t i = 0; i < circle_count; ++i) {
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, circle[i],
+                 circle[(i + 1u) % circle_count],
+                 (Vec4){0.45f, 0.95f, 0.55f, 1.0f}, capacity);
+  }
   if (editor->clip_tool && editor->clip_has_first) {
     const Vec4 color = {1.0f, 0.35f, 0.35f, 1.0f};
     const Vec3 a = editor->clip_first;
@@ -492,6 +501,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
       vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
       (editor->brush_dragging ? 1u : 0u) +
       (editor->clip_tool && editor->clip_has_first ? 1u : 0u) +
+      (editor->terrain_tool && editor->terrain_hit_valid ? 1u : 0u) +
       (physics_face_selected(frame) ? 1u : 0u) +
       (report && report->checked &&
                editor->windows[VKR_EDITOR_WINDOW_LEVEL].visible

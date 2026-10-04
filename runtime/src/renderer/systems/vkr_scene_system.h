@@ -225,6 +225,24 @@ typedef struct SceneBrushFace {
   bool8_t uv_world;
 } SceneBrushFace;
 
+/* A heightfield terrain (ADR-084), centred on its entity, which must not be
+ * rotated or scaled. Its samples live in `heightfield`, a file relative to the
+ * scene's asset root (vkr_heightfield.h) that saving the scene writes; the
+ * scene builds its tile meshes and one height field collider. Each layer
+ * names a material its weights blend in; `texture_size` is the metres one
+ * texture repeat covers. */
+#define SCENE_TERRAIN_PATH_CAPACITY 256u
+#define SCENE_TERRAIN_MATERIAL_CAPACITY 128u
+
+typedef struct SceneTerrain {
+  char heightfield[SCENE_TERRAIN_PATH_CAPACITY];
+  char layer0[SCENE_TERRAIN_MATERIAL_CAPACITY];
+  char layer1[SCENE_TERRAIN_MATERIAL_CAPACITY];
+  char layer2[SCENE_TERRAIN_MATERIAL_CAPACITY];
+  char layer3[SCENE_TERRAIN_MATERIAL_CAPACITY];
+  float32_t texture_size;
+} SceneTerrain;
+
 /* Entity IO (ADR-084): engine components whose outputs connections wire to
  * other entities' inputs. The script host's router runs them during a
  * session; their runtime state lives there, not in the component. */
@@ -868,6 +886,8 @@ typedef struct VkrScene {
   bool8_t editor_volumes;
   /** Brush rebuild state, created with the first brush. */
   VkrSceneBrushes *brushes;
+  /** Terrain state, created with the first terrain (vkr_scene_terrain.h). */
+  struct s_VkrSceneTerrains *terrains;
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
   /** Offset of this container's picking range; local render ids stay small
@@ -1553,6 +1573,12 @@ bool8_t vkr_scene_set_entity_ref(VkrScene *scene, VkrEntityId entity,
     scene, so callers resolve once per publication. */
 VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
                                       const VkrEntityRef *id);
+/** Loads the material file `path` for generated geometry, adding one
+    reference the caller releases when `*out_owned`; the default material,
+    not owned, when it does not load. */
+VkrMaterialHandle vkr_scene_material_load(VkrScene *scene, const char *path,
+                                          bool8_t *out_owned);
+
 /** Whether `entity` is a part of its parent rather than an object of its
     own: a brush face or an IO connection. Lists hide parts, and deleting
     the parent deletes its parts with it. */

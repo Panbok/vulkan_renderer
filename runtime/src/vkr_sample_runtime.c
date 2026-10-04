@@ -5226,6 +5226,9 @@ static bool8_t sample_batch_item(VkrStandardSceneRuntime *application,
   case VKR_SCENE_EDIT_REPARENT:
     return vkr_scene_edit_reparent(edits, scene, request->entity,
                                    request->parent);
+  case VKR_SCENE_EDIT_TERRAIN:
+    return vkr_scene_edit_terrain(edits, scene, request->entity,
+                                  &request->terrain, 0u);
   default:
     snprintf(edits->status, sizeof(edits->status),
              "This edit cannot join a batch.");
@@ -5468,6 +5471,12 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
       (void)vkr_scene_edit_apply_gesture(
           &state->edits, scene, scene_edit->entity, &scene_edit->values,
           scene_edit->gesture);
+      break;
+    case VKR_SCENE_EDIT_TERRAIN:
+      if (!application->editor_viewport.simulation_running) {
+        (void)vkr_scene_edit_terrain(&state->edits, scene, scene_edit->entity,
+                                     &scene_edit->terrain, scene_edit->gesture);
+      }
       break;
     case VKR_SCENE_EDIT_UNDO:
     case VKR_SCENE_EDIT_REDO:

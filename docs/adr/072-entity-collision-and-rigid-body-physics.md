@@ -102,7 +102,11 @@ morphed and compressed source geometry is rejected; use an explicit static proxy
 Convex cooking builds one enclosing hull with at most 256 vertices and rejects
 input requiring more vertices instead of silently simplifying it. Concave dynamic
 objects need multiple convex colliders. Triangle meshes are Static/Kinematic,
-with counterclockwise front faces and one-sided simulation contact.
+with counterclockwise front faces and one-sided simulation contact. Height
+fields (`VKR_PHYSICS_HEIGHT_FIELD`) are Static only: a square of heights at a
+spacing, its side a multiple of four samples, with `VKR_PHYSICS_HEIGHT_HOLE`
+marking samples without ground. Scene terrains build them
+([ADR-084](084-agent-channel-and-level-design-toolkit.md#terrain)).
 
 [The VKC1 asset format](../../runtime/src/assets/vkr_collision_cooked.h) stores
 explicit little-endian positions, outward triangles, source fingerprint and

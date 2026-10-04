@@ -1441,7 +1441,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_selection_outline(
            ++s) {
         draws[count++] = (VkrEditorOverlayDraw){
             .geometry = slot->submeshes.data[s].geometry,
-            .submesh_index = (uint32_t)s,
+            .submesh_index = slot->submeshes.data[s].geometry_submesh_index,
             .model = slot->model,
         };
       }

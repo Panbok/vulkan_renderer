@@ -1,5 +1,6 @@
 #pragma once
 
+#include "level/vkr_heightfield.h"
 #include "renderer/systems/vkr_scene_collision_layers.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
@@ -35,6 +36,8 @@ typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_REPARENT,
   /* Scene-level settings of `container` from `scene_settings`. */
   VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS,
+  /* `terrain`, in world space, on `entity`'s terrain (ADR-084). */
+  VKR_SCENE_EDIT_TERRAIN,
 } VkrSceneEditAction;
 
 typedef enum VkrSceneEditField {
@@ -88,6 +91,8 @@ typedef struct VkrSceneEditRequest {
   VkrSceneSettings scene_settings;
   /* REPLACE_COMPONENT: the component type that leaves. */
   const VkrTypeDesc *replaced_type;
+  /* TERRAIN: the edit, folded with others of the same `gesture`. */
+  VkrHeightfieldOp terrain;
 } VkrSceneEditRequest;
 
 typedef enum VkrSceneEditEntryKind {
@@ -97,6 +102,8 @@ typedef enum VkrSceneEditEntryKind {
   /* Component added or removed, entity created or deleted, parent changed. */
   VKR_SCENE_EDIT_ENTRY_STRUCTURE,
   VKR_SCENE_EDIT_ENTRY_SCENE_SETTINGS,
+  /* A rectangle of terrain samples before and after an edit. */
+  VKR_SCENE_EDIT_ENTRY_TERRAIN,
 } VkrSceneEditEntryKind;
 
 typedef struct VkrSceneEditEntry {
@@ -215,6 +222,12 @@ bool8_t vkr_scene_edit_group_present(const VkrSceneEditState *state,
    the group or a current descendant of one. */
 bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *state, VkrScene *scene,
                                     uint64_t group, VkrEntityId *out_conflict);
+/** Runs `op` on `entity`'s terrain, its coordinates in world space, as one
+ * undo entry; consecutive edits of one nonzero gesture, such as a brush
+ * stroke, fold into one entry. */
+bool8_t vkr_scene_edit_terrain(VkrSceneEditState *state, VkrScene *scene,
+                               VkrEntityId entity, const VkrHeightfieldOp *op,
+                               uint64_t gesture);
 bool8_t vkr_scene_edit_undo(VkrSceneEditState *state, VkrScene *scene,
                             bool8_t redo);
 /** Sequence of the entry undo (or redo) would apply next, or zero. */

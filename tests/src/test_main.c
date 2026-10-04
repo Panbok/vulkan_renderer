@@ -13,6 +13,7 @@
 #include "gameplay_input_test.h"
 #include "gameplay_player_test.h"
 #include "hash_test.h"
+#include "heightfield_test.h"
 #include "io_test.h"
 #include "mesh_skin_tests.h"
 #include "physics_test.h"
@@ -105,6 +106,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_scene_loader_tests),
     VKR_TEST_SUITE(run_scene_edit_tests),
     VKR_TEST_SUITE(run_brush_tests),
+    VKR_TEST_SUITE(run_heightfield_tests),
     VKR_TEST_SUITE(run_io_tests),
     VKR_TEST_SUITE(run_editor_project_store_tests),
     VKR_TEST_SUITE(run_gltf_importer_tests),

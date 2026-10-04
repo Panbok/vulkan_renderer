@@ -280,28 +280,10 @@ static VkrMaterialHandle brush_material(VkrScene *scene, VkrSceneBrushes *state,
       return state->materials[i].handle;
     }
   }
-  BrushMaterial entry = {.handle = assets->material_system.default_material};
+  (void)assets;
+  BrushMaterial entry = {0};
   snprintf(entry.path, sizeof(entry.path), "%s", path);
-  VkrResourceHandleInfo info = {0};
-  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  const String8 name =
-      string8_create_from_cstr((const uint8_t *)path, strlen(path));
-  VkrAllocatorScope scope =
-      vkr_allocator_begin_scope(&assets->scratch_allocator);
-  if (vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_MATERIAL, name,
-                                    &assets->scratch_allocator, &info,
-                                    &error) &&
-      info.as.material.id) {
-    vkr_material_system_add_ref(&assets->material_system, info.as.material);
-    entry.handle = info.as.material;
-    entry.owned = true_v;
-    vkr_resource_system_unload(&info, name);
-  } else {
-    log_warn("Scene: brush material '%s' did not load (%d); using the "
-             "default material",
-             path, (int)error);
-  }
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  entry.handle = vkr_scene_material_load(scene, path, &entry.owned);
   if (brush_grow(scene->alloc, (void **)&state->materials,
                  &state->material_capacity, state->material_count + 1u,
                  sizeof(*state->materials))) {

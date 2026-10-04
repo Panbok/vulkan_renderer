@@ -6,10 +6,12 @@ authority: proposal
 # Level design toolkit
 
 The remaining phases of the level design toolkit. The agent channel,
-brushes, brush editing, level checks and entity IO are implemented and
-recorded in [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md);
-this proposal keeps heightfield terrain, splines and scatter, the brush tools
-no phase covers yet, and the IO work that follows it. Every phase adds its
+brushes, brush editing, level checks, entity IO and terrain editing are
+implemented and recorded in
+[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md); the terrain
+material and tile LOD remain in [Terrain rendering](terrain-rendering.md).
+This proposal keeps splines and scatter, `terrain.road`, the brush tools no
+phase covers yet, and the IO work that follows it. Every phase adds its
 operations to the ADR-084 operation table, so the viewport, the Cmd bar and
 agents share them.
 
@@ -36,11 +38,14 @@ ADR-084.
   `level.lint` and `query.reachable` against the player capsule, and entity
   IO: outputs, inputs and connections from engine components and script
   behaviors, routed after each tick with trigger hooks for scripts.
+- **Terrain.** ADR-084: heightfield terrains with sculpt, paint and region
+  operations, tile meshes and height field collision. `terrain.road` waits
+  for splines.
 - **Collision.** Colliders are boxes, spheres, capsules, convex hulls and
   triangle meshes; sensors exist; a body holds at most
   `VKR_PHYSICS_MAX_COLLIDERS` (32) colliders
-  ([ADR-072](../adr/072-entity-collision-and-rigid-body-physics.md)). VKR does
-  not wrap Jolt's height field shape.
+  ([ADR-072](../adr/072-entity-collision-and-rigid-body-physics.md)); static
+  bodies also take height fields.
 - **Player metrics.** `VkrPhysicsCharacterDesc` holds the capsule radius and
   half-height, `max_slope_radians`, `step_up` and `step_down`
   ([vkr_physics.h](../../runtime/src/physics/vkr_physics.h)).
@@ -53,8 +58,7 @@ ADR-084.
   ([vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)). An `ENTITY`
   property references one entity of its own container.
 - **Not present.** Brush vertex and edge edits, glTF export of a blockout,
-  terrain ([Terrain rendering](terrain-rendering.md) is a proposal), splines,
-  scatter, movers, and IO across containers. The
+  terrain holes, splines, scatter, movers, and IO across containers. The
   [behavior proposal](entity-behavior-system.md#second-deliverable-connections-and-constrained-state-charts)
   plans connection assets that bind a typed event to an action on an entity.
 
@@ -114,11 +118,10 @@ Entity IO is implemented (ADR-084). What follows it:
 
 ### Terrain and population
 
-Terrain follows the open decisions in [Terrain rendering](terrain-rendering.md)
-and adds sculpt and paint tools, holes for brush-built entrances, and height
-field collision. Agent operations work on regions, not strokes:
-`terrain.flatten(footprint)`, `terrain.ramp(a, b, width)`,
-`terrain.stamp(heightmap)` and `terrain.road(spline)`. Population adds splines
+Terrain rendering finishes in [Terrain rendering](terrain-rendering.md).
+Holes for brush-built entrances need the height field's hole samples and a
+cut in the tile meshes. `terrain.road(spline)` flattens a band along a
+spline once splines exist. Population adds splines
 that repeat or bend meshes, seeded scatter that a designer can re-roll, and
 linked prefabs once the behavior proposal defines their lifecycle.
 
@@ -155,12 +158,11 @@ editor sections and the operations.
 
 ### Phase 4: terrain
 
-A `terrain` component references a heightfield asset in the project: 16-bit
-heights and four 8-bit layer weights per sample, with a sample spacing and a
-height range. The scene builds tile meshes from it and one height field
-collider. Sculpt and paint edits change sample regions; a journal entry holds
-the region's samples before and after. Detailed design starts from the
-[Terrain rendering](terrain-rendering.md) decisions.
+Editing is implemented;
+[ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md#terrain) owns
+the heightfield, the scene's terrains, the journal entry, the operations and
+the sculpt tool. The terrain material and tile LOD follow
+[Terrain rendering](terrain-rendering.md); `terrain.road` ships with phase 5.
 
 ### Phase 5: population
 
@@ -178,8 +180,8 @@ the rules. Linked prefabs stay with ADR-076 and the behavior proposal.
 | 1. Brush core | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 2. Brush editing | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
 | 3. IO | Implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md)) | Recorded in ADR-084 |
-| 4. Terrain | Terrain-rendering decisions, sculpt and paint, height field collision, region operations | Defined by the terrain-rendering proposal |
-| 5. Population | Splines and seeded scatter; linked prefabs stay with ADR-076 | A residency bound for M1 under the 16 GB floor ([ADR-083](../adr/083-supported-hardware-matrix.md)) |
+| 4. Terrain | Editing implemented ([ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md#terrain)); material and LOD in [Terrain rendering](terrain-rendering.md) | Defined by the terrain-rendering proposal |
+| 5. Population | Splines, seeded scatter and `terrain.road`; linked prefabs stay with ADR-076 | A residency bound for M1 under the 16 GB floor ([ADR-083](../adr/083-supported-hardware-matrix.md)) |
 
 ## Risks
 

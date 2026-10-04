@@ -416,7 +416,7 @@ vkr_internal void vkr_scene_emit_world_sources(
           .min_extents = submesh->min_extents,
           .max_extents = submesh->max_extents,
           .alpha = alpha,
-          .submesh_index = s,
+          .submesh_index = submesh->geometry_submesh_index,
           .object_id = object_id,
           .temporal_index = mesh_slot,
           .temporal_generation = mesh->temporal_generation,

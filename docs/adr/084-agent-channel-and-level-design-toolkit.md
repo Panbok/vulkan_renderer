@@ -10,8 +10,11 @@ authority: adr
 Accepted (partial). The agent channel, brushes, brush editing, level
 checks and entity IO (phases 0 to 3 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
-implemented. Terrain and population remain in that proposal until they
-ship.
+implemented. Of terrain (phase 4), heightfields, editing, the agent
+operations, tile meshes and height field collision are implemented; the
+four-layer terrain material and tile LOD remain in
+[Terrain rendering](../proposals/terrain-rendering.md). Population remains in
+the toolkit proposal.
 
 ## Context
 
@@ -364,6 +367,65 @@ with its problem), `io.fire` (an input during Play) and `io.trace` serve
 agents and the Cmd bar's `op`. Any write operation takes `select` to select
 what it made.
 
+### Terrain
+
+A `terrain` component names a heightfield file, four layer materials
+(`layer0` to `layer3`) and a texture size in metres
+([vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)).
+A heightfield ([vkr_heightfield.c](../../runtime/src/level/vkr_heightfield.c))
+is a square of `cells` cells per side, a multiple of 64 up to 1,024, at a
+sample spacing. Each sample holds a 16-bit height quantized between the
+field's minimum and maximum and four 8-bit layer weights that sum to 255. The
+file (`VKRHFLD1`) stores samples in tiles of 64 by 64 so that streaming can
+read tiles later. Writes go to a temporary file that replaces the old one.
+
+The scene owns its terrains
+([vkr_scene_terrain.c](../../runtime/src/renderer/systems/vkr_scene_terrain.c)),
+at most eight per scene. When the component appears it loads the file and
+keeps every sample in memory. Edits change those samples, mark the 64-cell
+tiles they touched and the terrain's collision dirty, and saving the scene
+writes each changed terrain's file. Each update rebuilds the marked tiles:
+
+- **Mesh.** One generated mesh holds a submesh per tile, each with its own
+  geometry: a 65 by 65 vertex grid with a skirt two spacings deep around it,
+  so that tiles cull one by one and no gap opens between them. UVs are
+  local x and z over the texture size. Every tile uses the `layer0`
+  material, the dev grid when none is named, until the terrain material
+  ships.
+- **Collision.** One static body with a Jolt height field shape
+  (`VKR_PHYSICS_HEIGHT_FIELD`,
+  [ADR-072](072-entity-collision-and-rigid-body-physics.md)) is rebuilt
+  eight updates after the last edit, so a stroke does not rebuild it every
+  frame.
+
+A terrain sits at its entity's position and ignores rotation and scale.
+Its local space is metres from its centre, with heights above the entity.
+
+A terrain edit is one journal entry (`VKR_SCENE_EDIT_ENTRY_TERRAIN`) that
+holds the touched rectangle's samples before and after. Edits of one
+gesture fold into one entry over the union of their rectangles, so a stroke
+undoes as one step. Terrain edits are refused while simulating.
+
+Agents edit regions with operations that take world coordinates:
+
+| Operation | Purpose |
+|---|---|
+| `terrain.create` | A terrain of `size` metres at `spacing` (default 256 m at 1 m), written to `assets/terrain/<uuid>.vkrhf` |
+| `terrain.brush` | Raise, lower, smooth, flatten or paint a layer with a round brush at up to 256 points |
+| `terrain.flatten` | Level a footprint at a height, blending over a falloff |
+| `terrain.ramp` | A straight slope of a width between two surface points |
+| `terrain.stamp` | Add or set heights from a grayscale PNG over a square |
+| `terrain.sample` | Ground heights at x and z points |
+
+In the editor ([editor_terrain.c](../../editor/src/editor_terrain.c)), the
+Terrain window holds the sculpt tool and its mode, radius, strength and
+paint layer. While the tool is on, the Scene draws the brush circle where
+the pointer's ray meets a terrain, and holding the left button applies the
+mode every frame as one stroke. Raise and lower move a sample by up to four
+times the strength in metres per second. The Create menu's Level group adds
+a 256 m Terrain. Cmd `terrain.tool` and `window terrain` reach the same
+tool.
+
 ## Consequences
 
 Agents and scripts reach every editor feature through typed operations, with
@@ -387,6 +449,12 @@ Scene as rendered, not what the editor shows while rendering is stopped.
 An MCP client that sends only 2025-11-25 or older requests cannot connect;
 it gets an explicit `UnsupportedProtocolVersion`. The socket admits only the
 user's own processes, which can already edit the project's files.
+
+`terrain.create` writes the heightfield file at once, so undoing it or
+leaving the scene unsaved leaves the file behind. A terrain keeps all its
+samples resident: the largest, 1,025 samples a side, holds 6 MiB of samples
+and 256 tile geometries. Streaming terrain and scene content by cells is
+future World Partition work.
 
 Brush meshes are not merged: a level pays one draw per brush. A
 measurement put that at about 0.4 µs per brush (see Evidence). Brush
@@ -449,6 +517,17 @@ material then).
   broken connection, Pick target and the Scene set the broken one's target,
   `+` made and selected a new connection, the door listed both incoming
   connections, and `level.lint` reported the broken one.
+- `./build_test.sh` suite `heightfield` covers a file round trip with a
+  partial last tile, the brush, flatten, ramp and paint results at named
+  samples, the touched rectangle an operation predicts, and a stroke folded
+  into one undo entry that undo and redo restore; suite `physics` covers a
+  height field body (2026-10-04, macOS Debug).
+- Headless macOS Release on Bistro (2026-10-04): `terrain.create`,
+  `terrain.brush`, `terrain.flatten`, `terrain.ramp`, `terrain.sample` and
+  `scene.describe` on a 256 m terrain north of the town; `query.raycast`
+  hit the sculpted ground through the height field; a capture showed the
+  tiles. With the Terrain window's tool on, a `ui.drag` stroke raised a band
+  along its path, and one `undo` restored every sample to -0.5 m.
 - Indicative cost, not a harness claim: the headless Release editor on an
   M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
   8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000

@@ -66,6 +66,8 @@ typedef enum EditorCommand {
   CMD_BRUSH_CLIP,
   /* The Level checks window. */
   CMD_LEVEL_CHECKS,
+  /* The Terrain window. */
+  CMD_TERRAIN,
   CMD_COUNT
 } EditorCommand;
 
@@ -159,6 +161,10 @@ VkrSampleUiFrame vkr_editor_entity_frame(const VkrSampleUiFrame *frame,
                                          VkrEntityId entity);
 
 /* Show a short notification; replaces any visible one. */
+/* The world ray through a window pixel of the Scene: the camera's eye and a
+   unit direction. */
+bool8_t vkr_editor_viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
+                                Vec3 *origin, Vec3 *direction);
 void vkr_editor_toast(VkrEditorUi *editor, VkrUiIcon icon, Vec4 color,
                       const char *text);
 void vkr_editor_toasts_build(VkrEditorUi *editor,

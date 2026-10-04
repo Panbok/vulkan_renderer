@@ -15,6 +15,7 @@ add_executable(vkr_editor
     src/editor_agent.c
     src/editor_level.c
     src/editor_io.c
+    src/editor_terrain.c
     src/editor_ops.c
     src/editor_viewport.c
     src/editor_animation.c

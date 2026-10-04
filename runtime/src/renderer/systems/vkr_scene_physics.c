@@ -3224,6 +3224,15 @@ bool8_t vkr_scene_physics_sweep(VkrScene *scene, VkrEntityId owner,
 // Generated bodies (docs/proposals/level-design-toolkit.md)
 // =============================================================================
 
+/* Floats a collider's geometry positions hold: three per vertex, or one
+   height per sample of a height field. */
+static uint64_t
+physics_geometry_floats(const VkrPhysicsColliderDesc *collider) {
+  return collider->shape == VKR_PHYSICS_HEIGHT_FIELD
+             ? (uint64_t)collider->geometry.vertex_count
+             : 3u * (uint64_t)collider->geometry.vertex_count;
+}
+
 static void physics_generated_free(VkrScenePhysics *physics,
                                    ScenePhysicsGenerated *generated) {
   if (generated->colliders) {
@@ -3307,7 +3316,7 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
   /* Copy the colliders with their borrowed points and indices. */
   uint64_t bytes = sizeof(*colliders) * collider_count;
   for (uint32_t i = 0; i < collider_count; ++i) {
-    bytes += sizeof(float32_t) * 3u * colliders[i].geometry.vertex_count +
+    bytes += sizeof(float32_t) * physics_geometry_floats(&colliders[i]) +
              sizeof(uint32_t) * colliders[i].geometry.index_count;
   }
   ScenePhysicsGenerated generated = {.key = key,
@@ -3324,7 +3333,8 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
   for (uint32_t i = 0; i < collider_count; ++i) {
     VkrPhysicsGeometry *geometry = &generated.colliders[i].geometry;
     if (geometry->positions && geometry->vertex_count) {
-      const uint64_t size = sizeof(float32_t) * 3u * geometry->vertex_count;
+      const uint64_t size =
+          sizeof(float32_t) * physics_geometry_floats(&generated.colliders[i]);
       MemCopy(at, geometry->positions, size);
       geometry->positions = (const float32_t *)at;
       at += size;

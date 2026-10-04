@@ -88,6 +88,10 @@ typedef struct VkrSubMesh {
   String8 shader_override;
   /** Stable identifier for a sub-range inside shared geometry buffers. */
   uint32_t range_id;
+  /** Index of this range among the geometry's ranges the renderer holds:
+   * its order among the mesh's submeshes on the same geometry, so a mesh
+   * whose submeshes each own a geometry draws range zero of each. */
+  uint32_t geometry_submesh_index;
   /** Index buffer range; index_count==0 implies full-geometry draw. */
   uint32_t first_index;
   uint32_t index_count;

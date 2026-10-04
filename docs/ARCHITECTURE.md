@@ -166,6 +166,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Script editor | Floating code window: tabs, C highlighting, completion, diagnostics, drawn by `vkr_ui_code_view` | `editor/src/editor_code.c` |
 | FPS script module | Sample player, weapon, camera rig, action animation and training platform, called through the SDK | `scripts/fps/src/fps_module.c` |
 | Brushes | Convex brush polygons, UVs, carve, extrude and merge; per-scene rebuild of brush meshes, materials and generated cell collision | `runtime/src/level/vkr_brush.c`, `runtime/src/renderer/systems/vkr_scene_brush.c` |
+| Terrain | Heightfield samples, operations and the tile-chunked file; per-scene loading, tile mesh rebuilds, height field collision and saving; the sculpt tool and Terrain window | `runtime/src/level/vkr_heightfield.c`, `runtime/src/renderer/systems/vkr_scene_terrain.c`, `editor/src/editor_terrain.c` |
 | Entity IO | Publication of connections, the session's sensor drain, trigger, relay, timer and counter state, delivery order, limits and the `[io]` trace; the editor's Outputs, Inputs and Route sections and Scene lines | `runtime/src/script/vkr_io_router.c`, `editor/src/editor_io.c` |
 | Level checks | Walkable-floor sampling against the player capsule, `level.lint`, reachability, face picking and the Level checks window | `editor/src/editor_level.c` |
 | Agent channel | Editor socket, operation table, batches, review, captures; `vkr_mcp` adapter | `editor/src/editor_agent.c`, `editor/src/editor_ops.c`, `tools/agent/vkr_mcp.c` |
@@ -1391,8 +1392,11 @@ These are limits of current code or retained acceptance, not scheduled promises:
   for the distinct failure and memory evidence.
 - Deformation/procedural/particle motion and broad animation/disocclusion coverage
   remain outside the completed rigid-motion temporal contract.
-- Visibility-buffer MSAA, terrain, a general effects system, asynchronous graph
-  queues and fully graph-declared IBL baking are not production features.
+- Visibility-buffer MSAA, a general effects system, asynchronous graph queues
+  and fully graph-declared IBL baking are not production features. Terrain
+  tiles render at full resolution with one layer material; the layered
+  terrain material and tile LOD are proposed
+  ([Terrain rendering](proposals/terrain-rendering.md)).
 - Baked diffuse volumes have CPU room classification, multi-bounce and glass
   transport, portable assets, scene loading and Metal execution. Native Vulkan
   execution remains unavailable; see [ADR-054](adr/054-baked-diffuse-volumes.md).

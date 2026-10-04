@@ -73,14 +73,27 @@ typedef enum VkrPhysicsShape {
   VKR_PHYSICS_SPHERE,
   VKR_PHYSICS_CAPSULE,
   VKR_PHYSICS_CONVEX_HULL,
-  VKR_PHYSICS_TRIANGLE_MESH
+  VKR_PHYSICS_TRIANGLE_MESH,
+  /* A regular grid of heights for static terrain: `geometry.positions` holds
+     `height_samples` x `height_samples` heights row by row (X fastest, then
+     Z), `height_spacing` metres apart, from the collider's position.
+     VKR_PHYSICS_HEIGHT_HOLE marks a sample without collision. */
+  VKR_PHYSICS_HEIGHT_FIELD
 } VkrPhysicsShape;
+
+/* A height field sample without collision. */
+#define VKR_PHYSICS_HEIGHT_HOLE 3.402823466e+38f
 
 typedef struct VkrPhysicsGeometry {
   const float32_t *positions; // Packed XYZ, borrowed during create/query only.
   uint32_t vertex_count;
   const uint32_t *indices; // Triangle list, required for mesh; hull ignores it.
   uint32_t index_count;
+  /* Height fields: samples per side, a multiple of 4, and their spacing.
+     Their `positions` hold one height per sample, so `vertex_count` is the
+     square of `height_samples`. */
+  uint32_t height_samples;
+  float32_t height_spacing;
 } VkrPhysicsGeometry;
 
 typedef struct VkrPhysicsColliderDesc {
