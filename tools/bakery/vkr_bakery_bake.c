@@ -1,7 +1,12 @@
 #include "vkr_bakery_bake.h"
 
 #include "core/vkr_hash.h"
+#include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
+#include "level/vkr_brush.h"
+#include "math/mat.h"
+#include "math/vkr_quat.h"
+#include "meshoptimizer.h"
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_buffer.h"
 
@@ -2381,9 +2386,12 @@ vkr_internal int vkr_bake_probe_main(VkrBake *bake, int argc, char **argv) {
   return 0;
 }
 
+vkr_internal int vkr_bake_proxies_main(VkrBake *bake, int argc, char **argv);
+
 int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
-  if (argc < 1 || (strcmp(argv[0], "diffuse") && strcmp(argv[0], "probe"))) {
-    fprintf(stderr, "usage: vkr_bakery bake diffuse|probe [options]\n");
+  if (argc < 1 || (strcmp(argv[0], "diffuse") && strcmp(argv[0], "probe") &&
+                   strcmp(argv[0], "proxies"))) {
+    fprintf(stderr, "usage: vkr_bakery bake diffuse|probe|proxies [options]\n");
     return 2;
   }
   VkrBake bake = {.config = config};
@@ -2396,10 +2404,576 @@ int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
   vkr_bakery_install_cancel_signals();
   const int code = strcmp(argv[0], "diffuse") == 0
                        ? vkr_bake_diffuse_main(&bake, argc, argv)
-                       : vkr_bake_probe_main(&bake, argc, argv);
+                   : strcmp(argv[0], "probe") == 0
+                       ? vkr_bake_probe_main(&bake, argc, argv)
+                       : vkr_bake_proxies_main(&bake, argc, argv);
   fflush(stdout);
   arena_destroy(bake.arena);
   return code;
+}
+
+// =============================================================================
+// World partition proxies (ADR-086)
+// =============================================================================
+
+/* Metres of shape a proxy may lose to simplification: well under a pixel
+   past a cell's load radius. */
+#define VKR_PROXY_ERROR_M 0.25f
+/* Records one cell document may hold, as the editor bounds them. */
+#define VKR_PROXY_RECORDS_MAX 1024u
+#define VKR_PROXY_MATERIALS_MAX 64u
+/* The material a brush face without one draws, as the editor's. */
+#define VKR_PROXY_DEFAULT_MATERIAL "assets/materials/dev/dev_grid.mt"
+
+typedef struct VkrProxyRecord {
+  int64_t id;
+  int64_t parent;
+  Mat4 local;
+  const VkrBakeryJson *components;
+} VkrProxyRecord;
+
+typedef struct VkrProxyMaterial {
+  const char *path;
+  Vec2 uv_scale;
+} VkrProxyMaterial;
+
+/* The cell's visible brush triangles, three corners each, in cell space. */
+typedef struct VkrProxyMesh {
+  float32_t *positions;
+  uint32_t *materials;
+  uint32_t triangle_count;
+  uint32_t triangle_capacity;
+  VkrProxyMaterial material[VKR_PROXY_MATERIALS_MAX];
+  uint32_t material_count;
+} VkrProxyMesh;
+
+vkr_internal bool8_t vkr_proxy_floats(const VkrBakeryJson *array,
+                                      float32_t *out, uint32_t count) {
+  if (!array || array->type != VKR_BAKERY_JSON_ARRAY || array->count != count) {
+    return false_v;
+  }
+  uint32_t i = 0u;
+  for (const VkrBakeryJson *item = array->first; item; item = item->next) {
+    float64_t value = 0.0;
+    if (!vkr_bake_number(item, &value)) {
+      return false_v;
+    }
+    out[i++] = (float32_t)value;
+  }
+  return true_v;
+}
+
+vkr_internal const VkrProxyRecord *vkr_proxy_find(const VkrProxyRecord *records,
+                                                  uint32_t count, int64_t id) {
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (records[i].id == id) {
+      return &records[i];
+    }
+  }
+  return NULL;
+}
+
+/* A record's world matrix through its parents in the same document. */
+vkr_internal Mat4 vkr_proxy_world(const VkrProxyRecord *records, uint32_t count,
+                                  const VkrProxyRecord *record) {
+  Mat4 world = record->local;
+  for (uint32_t depth = 0u; depth < 64u && record->parent; ++depth) {
+    record = vkr_proxy_find(records, count, record->parent);
+    if (!record) {
+      break;
+    }
+    world = mat4_mul(record->local, world);
+  }
+  return world;
+}
+
+vkr_internal uint32_t vkr_proxy_material(VkrBake *bake, VkrProxyMesh *mesh,
+                                         const char *path, Vec2 uv_scale) {
+  for (uint32_t i = 0u; i < mesh->material_count; ++i) {
+    if (!strcmp(mesh->material[i].path, path)) {
+      return i;
+    }
+  }
+  if (mesh->material_count == VKR_PROXY_MATERIALS_MAX) {
+    return mesh->material_count - 1u;
+  }
+  mesh->material[mesh->material_count] = (VkrProxyMaterial){
+      .path = vkr_bake_printf(bake, "%s", path), .uv_scale = uv_scale};
+  return mesh->material_count++;
+}
+
+vkr_internal bool8_t vkr_proxy_triangle(VkrBake *bake, VkrProxyMesh *mesh,
+                                        Vec3 a, Vec3 b, Vec3 c,
+                                        uint32_t material) {
+  if (mesh->triangle_count == mesh->triangle_capacity) {
+    const uint32_t capacity = Max(256u, mesh->triangle_capacity * 2u);
+    float32_t *positions = arena_alloc(
+        bake->arena, capacity * 9u * sizeof(float32_t), ARENA_MEMORY_TAG_ARRAY);
+    uint32_t *materials = arena_alloc(bake->arena, capacity * sizeof(uint32_t),
+                                      ARENA_MEMORY_TAG_ARRAY);
+    if (!positions || !materials) {
+      return vkr_bake_fail(bake, "Out of memory");
+    }
+    if (mesh->triangle_count) {
+      MemCopy(positions, mesh->positions,
+              mesh->triangle_count * 9u * sizeof(float32_t));
+      MemCopy(materials, mesh->materials,
+              mesh->triangle_count * sizeof(uint32_t));
+    }
+    mesh->positions = positions;
+    mesh->materials = materials;
+    mesh->triangle_capacity = capacity;
+  }
+  float32_t *at = mesh->positions + mesh->triangle_count * 9u;
+  const Vec3 corners[3] = {a, b, c};
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    at[i * 3u + 0u] = corners[i].x;
+    at[i * 3u + 1u] = corners[i].y;
+    at[i * 3u + 2u] = corners[i].z;
+  }
+  mesh->materials[mesh->triangle_count++] = material;
+  return true_v;
+}
+
+/* Adds brush `brush`'s faces, built from its `brush_face` children, in
+   cell space. Clip and trigger brushes draw nothing in a game. */
+vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
+                                     const VkrProxyRecord *records,
+                                     uint32_t count,
+                                     const VkrProxyRecord *brush, Vec3 origin) {
+  String8 role = {0};
+  const VkrBakeryJson *settings =
+      vkr_bakery_json_get(brush->components, "brush");
+  if (vkr_bakery_json_get_string(settings, "role", &role) &&
+      (vkr_string8_equals_cstr(&role, "clip") ||
+       vkr_string8_equals_cstr(&role, "trigger"))) {
+    return true_v;
+  }
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  const VkrBakeryJson *faces[VKR_BRUSH_FACE_MAX];
+  uint32_t face_count = 0u;
+  for (uint32_t i = 0u; i < count && face_count < VKR_BRUSH_FACE_MAX; ++i) {
+    const VkrBakeryJson *face =
+        records[i].parent == brush->id
+            ? vkr_bakery_json_get(records[i].components, "brush_face")
+            : NULL;
+    float32_t normal[3];
+    float64_t distance = 0.0;
+    if (face &&
+        vkr_proxy_floats(vkr_bakery_json_get(face, "normal"), normal, 3u) &&
+        vkr_bakery_json_get_number(face, "distance", &distance)) {
+      planes[face_count] =
+          (VkrBrushPlane){.normal = vec3_new(normal[0], normal[1], normal[2]),
+                          .distance = (float32_t)distance};
+      faces[face_count++] = face;
+    }
+  }
+  VkrBrushGeometry *geometry =
+      arena_alloc(bake->arena, sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  if (!geometry) {
+    return vkr_bake_fail(bake, "Out of memory");
+  }
+  if (vkr_brush_build(planes, face_count, geometry, NULL) != VKR_BRUSH_OK) {
+    /* The editor reports a broken brush; its proxy leaves it out. */
+    return true_v;
+  }
+  const Mat4 world = vkr_proxy_world(records, count, brush);
+  for (uint32_t f = 0u; f < geometry->face_count; ++f) {
+    const VkrBrushPolygon polygon = geometry->polygons[f];
+    if (polygon.count < 3u) {
+      continue;
+    }
+    String8 path = {0};
+    float32_t uv_scale[2] = {1.0f, 1.0f};
+    (void)vkr_proxy_floats(vkr_bakery_json_get(faces[f], "uv_scale"), uv_scale,
+                           2u);
+    const char *material = VKR_PROXY_DEFAULT_MATERIAL;
+    if (vkr_bakery_json_get_string(faces[f], "material", &path) &&
+        path.length) {
+      material = vkr_bake_printf(bake, "%.*s", (int)path.length, path.str);
+    }
+    const uint32_t index = vkr_proxy_material(
+        bake, mesh, material, vec2_new(uv_scale[0], uv_scale[1]));
+    Vec3 corners[VKR_BRUSH_POLYGON_MAX];
+    for (uint32_t i = 0u; i < polygon.count; ++i) {
+      corners[i] = vec3_sub(
+          mat4_mul_vec3(world, geometry->vertices[polygon.first + i]), origin);
+    }
+    for (uint32_t i = 1u; i + 1u < polygon.count; ++i) {
+      VKR_BAKE_TRY(vkr_proxy_triangle(bake, mesh, corners[0], corners[i],
+                                      corners[i + 1u], index));
+    }
+  }
+  return true_v;
+}
+
+/* The proxy's source: the triangles welded by position and material,
+   simplified within VKR_PROXY_ERROR_M, then written flat-shaded with
+   world-projected UVs as glTF, one primitive and material per brush
+   material, its buffer in `bin`. */
+vkr_internal bool8_t vkr_proxy_gltf(VkrBake *bake, const VkrProxyMesh *mesh,
+                                    VkrBakeryBuffer *gltf,
+                                    VkrBakeryBuffer *bin) {
+  const uint32_t corner_count = mesh->triangle_count * 3u;
+  /* Welding keys: position, then the material as a float. */
+  float32_t *keyed =
+      arena_alloc(bake->arena, corner_count * 4u * sizeof(float32_t),
+                  ARENA_MEMORY_TAG_ARRAY);
+  uint32_t *remap = arena_alloc(bake->arena, corner_count * sizeof(uint32_t),
+                                ARENA_MEMORY_TAG_ARRAY);
+  uint32_t *indices = arena_alloc(bake->arena, corner_count * sizeof(uint32_t),
+                                  ARENA_MEMORY_TAG_ARRAY);
+  uint32_t *simplified = arena_alloc(
+      bake->arena, corner_count * sizeof(uint32_t), ARENA_MEMORY_TAG_ARRAY);
+  /* Per kept corner: position, normal, UV. */
+  float32_t *attributes =
+      arena_alloc(bake->arena, corner_count * 8u * sizeof(float32_t),
+                  ARENA_MEMORY_TAG_ARRAY);
+  if (!keyed || !remap || !indices || !simplified || !attributes) {
+    return vkr_bake_fail(bake, "Out of memory");
+  }
+  for (uint32_t i = 0u; i < corner_count; ++i) {
+    MemCopy(keyed + i * 4u, mesh->positions + i * 3u, 3u * sizeof(float32_t));
+    keyed[i * 4u + 3u] = (float32_t)mesh->materials[i / 3u];
+  }
+  const size_t unique = meshopt_generateVertexRemap(
+      remap, NULL, corner_count, keyed, corner_count, 4u * sizeof(float32_t));
+  float32_t *vertices = arena_alloc(
+      bake->arena, unique * 4u * sizeof(float32_t), ARENA_MEMORY_TAG_ARRAY);
+  if (!vertices) {
+    return vkr_bake_fail(bake, "Out of memory");
+  }
+  meshopt_remapVertexBuffer(vertices, keyed, corner_count,
+                            4u * sizeof(float32_t), remap);
+  meshopt_remapIndexBuffer(indices, NULL, corner_count, remap);
+  /* Material borders stay where they are; flat surfaces lose their extra
+     corners and small details collapse. */
+  const size_t kept =
+      meshopt_simplify(simplified, indices, corner_count, vertices, unique,
+                       4u * sizeof(float32_t), 0u, VKR_PROXY_ERROR_M,
+                       meshopt_SimplifyErrorAbsolute, NULL);
+  vkr_bakery_buffer_appendf(gltf,
+                            "{\"asset\":{\"version\":\"2.0\",\"generator\":"
+                            "\"vkr_bakery proxies\"},\"scene\":0,\"scenes\":"
+                            "[{\"nodes\":[0]}],\"nodes\":[{\"name\":\"proxy\","
+                            "\"mesh\":0}],\"materials\":[");
+  for (uint32_t m = 0u; m < mesh->material_count; ++m) {
+    vkr_bakery_buffer_appendf(
+        gltf,
+        "%s{\"name\":\"m%u\",\"pbrMetallicRoughness\":{\"metallicFactor\":0,"
+        "\"roughnessFactor\":0.9}}",
+        m ? "," : "", m);
+  }
+  VkrBakeryBuffer primitives = {0};
+  VkrBakeryBuffer accessors = {0};
+  VkrBakeryBuffer views = {0};
+  uint32_t primitive_count = 0u;
+  for (uint32_t m = 0u; m < mesh->material_count; ++m) {
+    uint32_t count = 0u;
+    Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+    Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    for (size_t t = 0u; t + 3u <= kept; t += 3u) {
+      const uint32_t *corner = simplified + t;
+      if ((uint32_t)vertices[corner[0] * 4u + 3u] != m) {
+        continue;
+      }
+      Vec3 p[3];
+      for (uint32_t k = 0u; k < 3u; ++k) {
+        p[k] = vec3_new(vertices[corner[k] * 4u], vertices[corner[k] * 4u + 1u],
+                        vertices[corner[k] * 4u + 2u]);
+      }
+      const Vec3 normal =
+          vec3_cross(vec3_sub(p[1], p[0]), vec3_sub(p[2], p[0]));
+      if (vec3_length(normal) < 1.0e-8f) {
+        continue;
+      }
+      const Vec3 unit = vec3_normalize(normal);
+      for (uint32_t k = 0u; k < 3u; ++k) {
+        const Vec2 uv = vkr_brush_uv(p[k], unit, vec2_zero(),
+                                     mesh->material[m].uv_scale, 0.0f);
+        float32_t *at = attributes + (count + k) * 8u;
+        at[0] = p[k].x;
+        at[1] = p[k].y;
+        at[2] = p[k].z;
+        at[3] = unit.x;
+        at[4] = unit.y;
+        at[5] = unit.z;
+        at[6] = uv.x;
+        at[7] = uv.y;
+        lo = vec3_new(Min(lo.x, p[k].x), Min(lo.y, p[k].y), Min(lo.z, p[k].z));
+        hi = vec3_new(Max(hi.x, p[k].x), Max(hi.y, p[k].y), Max(hi.z, p[k].z));
+      }
+      count += 3u;
+    }
+    if (!count) {
+      continue;
+    }
+    /* One interleaved view per material: position, normal, UV. */
+    const uint64_t offset = bin->length;
+    vkr_bakery_buffer_append(bin, attributes,
+                             (uint64_t)count * 8u * sizeof(float32_t));
+    const uint32_t view = primitive_count;
+    const uint32_t accessor = primitive_count * 3u;
+    vkr_bakery_buffer_appendf(
+        &views,
+        "%s{\"buffer\":0,\"byteOffset\":%llu,\"byteLength\":%llu,"
+        "\"byteStride\":32,\"target\":34962}",
+        view ? "," : "", (unsigned long long)offset,
+        (unsigned long long)count * 32ull);
+    vkr_bakery_buffer_appendf(
+        &accessors,
+        "%s{\"bufferView\":%u,\"byteOffset\":0,\"componentType\":5126,"
+        "\"count\":%u,\"type\":\"VEC3\",\"min\":[%.4f,%.4f,%.4f],\"max\":"
+        "[%.4f,%.4f,%.4f]},{\"bufferView\":%u,\"byteOffset\":12,"
+        "\"componentType\":5126,\"count\":%u,\"type\":\"VEC3\"},"
+        "{\"bufferView\":%u,\"byteOffset\":24,\"componentType\":5126,"
+        "\"count\":%u,\"type\":\"VEC2\"}",
+        view ? "," : "", view, count, (float64_t)lo.x, (float64_t)lo.y,
+        (float64_t)lo.z, (float64_t)hi.x, (float64_t)hi.y, (float64_t)hi.z,
+        view, count, view, count);
+    vkr_bakery_buffer_appendf(
+        &primitives,
+        "%s{\"attributes\":{\"POSITION\":%u,\"NORMAL\":%u,\"TEXCOORD_0\":%u},"
+        "\"material\":%u}",
+        primitive_count ? "," : "", accessor, accessor + 1u, accessor + 2u, m);
+    primitive_count++;
+  }
+  vkr_bakery_buffer_appendf(gltf, "],\"meshes\":[{\"name\":\"proxy\","
+                                  "\"primitives\":[");
+  vkr_bakery_buffer_append(gltf, primitives.data, primitives.length);
+  vkr_bakery_buffer_appendf(gltf, "]}],\"accessors\":[");
+  vkr_bakery_buffer_append(gltf, accessors.data, accessors.length);
+  vkr_bakery_buffer_appendf(gltf, "],\"bufferViews\":[");
+  vkr_bakery_buffer_append(gltf, views.data, views.length);
+  vkr_bakery_buffer_appendf(gltf,
+                            "],\"buffers\":[{\"uri\":\"proxy.bin\","
+                            "\"byteLength\":%llu}]}\n",
+                            (unsigned long long)bin->length);
+  const bool8_t ok = primitive_count && !gltf->failed && !bin->failed &&
+                     !primitives.failed && !accessors.failed && !views.failed;
+  vkr_bakery_buffer_free(&primitives);
+  vkr_bakery_buffer_free(&accessors);
+  vkr_bakery_buffer_free(&views);
+  return ok || vkr_bake_fail(bake, "The proxy has no visible triangles");
+}
+
+/* Whether `path` already holds `bytes`. */
+vkr_internal bool8_t vkr_proxy_same(const char *path,
+                                    const VkrBakeryBuffer *bytes) {
+  uint8_t *previous = NULL;
+  uint64_t length = 0u;
+  const bool8_t same =
+      vkr_bakery_read_file(path, MB(256), &previous, &length) &&
+      length == bytes->length &&
+      MemCompare(previous, bytes->data, bytes->length) == 0;
+  free(previous);
+  return same;
+}
+
+/* Points each proxy material range at its brushes' material file. */
+vkr_internal bool8_t vkr_proxy_bind(VkrBake *bake, const VkrProxyMesh *mesh,
+                                    const char *output, const char *bundle) {
+  Arena *arena = bake->arena;
+  const char *remap_path = vkr_bake_printf(bake, "%s.remap.json", output);
+  VkrBakeryJson *remap = vkr_bake_load(bake, remap_path, "Proxy material map");
+  VKR_BAKE_TRY(remap);
+  VkrBakeryJson *mappings = vkr_bakery_json_get(remap, "materials");
+  if (!mappings || mappings->type != VKR_BAKERY_JSON_OBJECT) {
+    return vkr_bake_fail(bake, "%s has no material ranges", remap_path);
+  }
+  VkrBakeryJson *bound = vkr_bakery_json_object(arena);
+  for (const VkrBakeryJson *range = mappings->first; range;
+       range = range->next) {
+    /* The cooker names each OBJ material `<hash>_<order>.mt`. */
+    const String8 key = range->key;
+    uint64_t end = key.length;
+    if (end > 3u && MemCompare(key.str + end - 3u, ".mt", 3u) == 0) {
+      end -= 3u;
+    }
+    uint64_t start = end;
+    while (start > 0u && key.str[start - 1u] >= '0' &&
+           key.str[start - 1u] <= '9') {
+      start--;
+    }
+    uint32_t m = 0u;
+    for (uint64_t c = start; c < end && m < VKR_PROXY_MATERIALS_MAX; ++c) {
+      m = m * 10u + (uint32_t)(key.str[c] - '0');
+    }
+    if (start == end || start == 0u || key.str[start - 1u] != '_' ||
+        m >= mesh->material_count) {
+      return vkr_bake_fail(bake, "%s names an unknown range", remap_path);
+    }
+    char absolute[VKR_BAKE_PATH];
+    char relative[VKR_BAKE_PATH];
+    if (!vkr_bakery_path_join(absolute, sizeof(absolute), bake->repo,
+                              mesh->material[m].path) ||
+        !vkr_bake_relpath(absolute, bundle, relative, sizeof(relative))) {
+      return vkr_bake_fail(bake, "Path too long");
+    }
+    vkr_bakery_json_set(
+        arena, bound, (const char *)range->key.str,
+        vkr_bakery_json_cstr(arena, vkr_bake_printf(bake, "./%s", relative)));
+  }
+  vkr_bakery_json_set(arena, remap, "materials", bound);
+  return vkr_bake_write_json(bake, remap_path, remap, false_v);
+}
+
+vkr_internal bool8_t vkr_proxy_exists(const char *path) {
+  FILE *file = file_fopen(path, "rb");
+  if (file) {
+    fclose(file);
+  }
+  return file != NULL;
+}
+
+/* Builds or removes cell (x, z)'s proxy bundle; skips the cook when its
+   source did not change. */
+vkr_internal bool8_t vkr_proxy_cell(VkrBake *bake, const char *cells,
+                                    float32_t cell_size, int64_t x, int64_t z,
+                                    uint32_t *out_built) {
+  const char *document = vkr_bake_printf(bake, "%s/%lld_%lld.json", cells,
+                                         (long long)x, (long long)z);
+  const char *bundle = vkr_bake_printf(bake, "%s/proxies/%lld_%lld", cells,
+                                       (long long)x, (long long)z);
+  VkrBakeryJson *root = vkr_bake_load(bake, document, "Cell document");
+  VKR_BAKE_TRY(root);
+  const VkrBakeryJson *created = vkr_bakery_json_get(root, "created");
+  if (!created || created->type != VKR_BAKERY_JSON_ARRAY ||
+      created->count > VKR_PROXY_RECORDS_MAX) {
+    return vkr_bake_fail(bake, "%s: no created records", document);
+  }
+  VkrProxyRecord *records =
+      arena_alloc(bake->arena, (created->count + 1u) * sizeof(*records),
+                  ARENA_MEMORY_TAG_ARRAY);
+  if (!records) {
+    return vkr_bake_fail(bake, "Out of memory");
+  }
+  uint32_t count = 0u;
+  for (const VkrBakeryJson *item = created->first; item; item = item->next) {
+    VkrProxyRecord *record = &records[count++];
+    float32_t position[3] = {0.0f, 0.0f, 0.0f};
+    float32_t rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float32_t scale[3] = {1.0f, 1.0f, 1.0f};
+    (void)vkr_proxy_floats(vkr_bakery_json_get(item, "position"), position, 3u);
+    (void)vkr_proxy_floats(vkr_bakery_json_get(item, "rotation"), rotation, 4u);
+    (void)vkr_proxy_floats(vkr_bakery_json_get(item, "scale"), scale, 3u);
+    record->local = mat4_mul(
+        mat4_mul(
+            mat4_translate(vec3_new(position[0], position[1], position[2])),
+            vkr_quat_to_mat4(
+                (VkrQuat){rotation[0], rotation[1], rotation[2], rotation[3]})),
+        mat4_scale(vec3_new(scale[0], scale[1], scale[2])));
+    record->components = vkr_bakery_json_get(item, "components");
+    (void)vkr_bakery_json_get_int(item, "id", &record->id);
+    const VkrBakeryJson *parent = vkr_bakery_json_get(item, "parent");
+    record->parent = 0;
+    if (parent && parent->type == VKR_BAKERY_JSON_OBJECT) {
+      (void)vkr_bakery_json_get_int(parent, "created", &record->parent);
+    }
+  }
+  VkrProxyMesh mesh = {0};
+  const Vec3 origin =
+      vec3_new((float32_t)x * cell_size, 0.0f, (float32_t)z * cell_size);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (vkr_bakery_json_get(records[i].components, "brush")) {
+      VKR_BAKE_TRY(
+          vkr_proxy_brush(bake, &mesh, records, count, &records[i], origin));
+    }
+  }
+  if (!mesh.triangle_count) {
+    (void)vkr_bakery_remove_tree(bundle);
+    return true_v;
+  }
+  VkrBakeryBuffer gltf = {0};
+  VkrBakeryBuffer bin = {0};
+  bool8_t ok = vkr_proxy_gltf(bake, &mesh, &gltf, &bin);
+  const char *source = vkr_bake_printf(bake, "%s/proxy.gltf", bundle);
+  const char *buffer = vkr_bake_printf(bake, "%s/proxy.bin", bundle);
+  const char *output = vkr_bake_printf(bake, "%s/proxy.vkb", bundle);
+  const bool8_t same = ok && vkr_proxy_same(source, &gltf) &&
+                       vkr_proxy_same(buffer, &bin) && vkr_proxy_exists(output);
+  if (ok && !same) {
+    char import_id[33];
+    vkr_bake_hex_id(import_id);
+    const char *cook[] = {"tool",        "mesh",   "--input",       source,
+                          "--output",    output,   "--bundle-root", bundle,
+                          "--import-id", import_id};
+    int32_t code = -1;
+    ok = vkr_bakery_make_directories(bundle) &&
+         vkr_bakery_write_file_atomic(buffer, bin.data, bin.length) &&
+         vkr_bakery_write_file_atomic(source, gltf.data, gltf.length) &&
+         vkr_bake_run(bake, bake->config->self_path, cook, ArrayCount(cook),
+                      bundle, vkr_bake_printf(bake, "%s/cook.log", bundle),
+                      600000u, NULL, 0u, &code);
+    if (ok && code != 0) {
+      ok = vkr_bake_fail(bake,
+                         "The proxy of cell %lld,%lld did not cook; see "
+                         "%s/cook.log",
+                         (long long)x, (long long)z, bundle);
+    }
+    ok = ok && vkr_proxy_bind(bake, &mesh, output, bundle);
+    *out_built += ok;
+  }
+  vkr_bakery_buffer_free(&gltf);
+  vkr_bakery_buffer_free(&bin);
+  return ok;
+}
+
+/* `bake proxies --scene <scene.json>`: a proxy per cell document of the
+   scene's world partition, in `<cells>/proxies/<x>_<z>/proxy.vkb`. */
+vkr_internal int vkr_bake_proxies_main(VkrBake *bake, int argc, char **argv) {
+  const char *scene = NULL;
+  for (int i = 1; i < argc; ++i) {
+    if (!strcmp(argv[i], "--scene")) {
+      scene = vkr_bake_value(argv, argc, &i);
+    } else {
+      fprintf(stderr, "error: unknown option %s\n", argv[i]);
+      return 2;
+    }
+  }
+  if (!scene) {
+    fprintf(stderr, "usage: vkr_bakery bake proxies --scene <scene.json>\n");
+    return 2;
+  }
+  char resolved[VKR_BAKE_PATH];
+  if (!vkr_bake_resolve(scene, resolved)) {
+    fprintf(stderr, "error: cannot resolve %s\n", scene);
+    return 1;
+  }
+  uint64_t length = strlen(resolved);
+  if (length > 5u && !strcmp(resolved + length - 5u, ".json")) {
+    length -= 5u;
+  }
+  const char *cells =
+      vkr_bake_printf(bake, "%.*s.cells", (int)length, resolved);
+  VkrBakeryJson *index = vkr_bake_load(
+      bake, vkr_bake_printf(bake, "%s/index.json", cells), "Cell index");
+  float64_t cell_size = 0.0;
+  const VkrBakeryJson *list =
+      index ? vkr_bakery_json_get(index, "cells") : NULL;
+  if (!index || !vkr_bakery_json_get_number(index, "cell_size", &cell_size) ||
+      !(cell_size >= 1.0) || !list || list->type != VKR_BAKERY_JSON_ARRAY) {
+    fprintf(stderr, "error: %s\n",
+            bake->failed ? bake->error : "the cell index is unreadable");
+    return 1;
+  }
+  uint32_t built = 0u;
+  uint32_t cells_seen = 0u;
+  bool8_t ok = true_v;
+  for (const VkrBakeryJson *cell = list->first; ok && cell; cell = cell->next) {
+    int64_t x = 0;
+    int64_t z = 0;
+    ok = cell->type == VKR_BAKERY_JSON_ARRAY && cell->count == 2u &&
+         vkr_bake_int(cell->first, &x) && vkr_bake_int(cell->last, &z) &&
+         vkr_proxy_cell(bake, cells, (float32_t)cell_size, x, z, &built);
+    cells_seen++;
+  }
+  if (!ok) {
+    fprintf(stderr, "error: %s\n", bake->error);
+    return 1;
+  }
+  printf("proxies: %u cells, %u cooked\n", cells_seen, built);
+  return 0;
 }
 
 // =============================================================================

@@ -29,6 +29,7 @@
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
@@ -45,6 +46,8 @@
 #define VKR_SAMPLE_HEADLESS_AUTOCLOSE_SECONDS 600.0
 /* Milliseconds of cell loads one frame may spend (ADR-086). */
 #define VKR_SAMPLE_PARTITION_BUDGET_MS 2.0
+/* Cells one partition.load may load at once. */
+#define VKR_SAMPLE_PARTITION_REQUEST_MAX 1024u
 
 static VkrSampleRuntimePreferences
 sample_preferences_snapshot(VkrStandardSceneRuntime *application);
@@ -3516,6 +3519,64 @@ static void sample_partition_routed(bool8_t changed) {
   }
 }
 
+/* Unloaded cells within the proxy radius draw the proxy the bakery built
+   (`vkr_bakery bake proxies`) on a runtime-only entity at the cell's
+   corner; a loaded or distant cell drops it. */
+static void sample_partition_proxies(VkrScene *scene,
+                                     const SceneWorldPartition *settings) {
+  uint32_t count = 0u;
+  vkr_scene_partition_cells(scene, &count);
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrScenePartitionCellRecord *record = vkr_scene_partition_cell(
+        scene, vkr_scene_partition_cells(scene, &count)[i].cell, false_v);
+    const bool8_t wanted =
+        vkr_scene_partition_proxy_wanted(scene, settings, record);
+    if (!wanted && record->proxy.u64) {
+      vkr_scene_destroy_entity(scene, record->proxy);
+      record->proxy = VKR_ENTITY_ID_INVALID;
+    }
+    if (!wanted || record->proxy.u64) {
+      continue;
+    }
+    char path[1100];
+    snprintf(path, sizeof(path), "%s/proxies/%d_%d/proxy.vkb",
+             state->edits.cells_root, record->cell.x, record->cell.z);
+    FILE *file = file_fopen(path, "rb");
+    if (!file) {
+      record->flags |= VKR_SCENE_PARTITION_CELL_NO_PROXY;
+      continue;
+    }
+    fclose(file);
+    const VkrEntityId proxy = vkr_scene_create_entity(scene, NULL);
+    const char *error = NULL;
+    const VkrSceneModelDesc desc = {.mesh_path = string8_create_from_cstr(
+                                        (const uint8_t *)path, strlen(path))};
+    char name[64];
+    snprintf(name, sizeof(name), "Proxy %d,%d", record->cell.x, record->cell.z);
+    const bool8_t ok =
+        proxy.u64 && vkr_scene_set_transient(scene, proxy) &&
+        vkr_scene_set_name(
+            scene, proxy,
+            string8_create_from_cstr((const uint8_t *)name, strlen(name))) &&
+        vkr_scene_set_transform(
+            scene, proxy,
+            vec3_new((float32_t)record->cell.x * settings->cell_size, 0.0f,
+                     (float32_t)record->cell.z * settings->cell_size),
+            vkr_quat_identity(), vec3_one()) &&
+        vkr_scene_request_model(scene, scene->assets, proxy, &desc, &error);
+    if (!ok) {
+      log_warn("World partition: the proxy of cell %d,%d failed: %s",
+               record->cell.x, record->cell.z, error ? error : "no entity");
+      if (proxy.u64) {
+        vkr_scene_destroy_entity(scene, proxy);
+      }
+      record->flags |= VKR_SCENE_PARTITION_CELL_NO_PROXY;
+      continue;
+    }
+    record->proxy = proxy;
+  }
+}
+
 /* Streams the primary scene's cells around its sources: cells that left
    unload when no edit needs them, then the nearest missing ones load within
    the frame budget. */
@@ -3540,6 +3601,8 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
   VkrScenePartitionPlan plan;
   vkr_scene_partition_plan(scene, &settings, &plan);
   if (!plan.load_count && !plan.unload_count) {
+    sample_partition_proxies(scene, &settings);
+    state->partition_structure = scene->structure_revision;
     return;
   }
   const float64_t start = vkr_platform_get_absolute_time();
@@ -3568,7 +3631,79 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
     }
   }
   sample_partition_routed(structure != scene->structure_revision);
+  sample_partition_proxies(scene, &settings);
   state->partition_structure = scene->structure_revision;
+}
+
+/* Cells a designer or agent asked for (partition.load, the World
+   Partition window): loading pins them, so they stay for editing whatever
+   the camera does; unloading unpins them and unloads those no edit needs.
+   The outcome lands in the edit status. */
+static void sample_partition_request(VkrScene *scene,
+                                     const VkrSceneEditRequest *request) {
+  VkrSceneEditState *edits = &state->edits;
+  SceneWorldPartition settings;
+  if (!vkr_scene_partition_settings(scene, &settings)) {
+    snprintf(edits->status, sizeof(edits->status),
+             "The scene has no world partition.");
+    return;
+  }
+  const int32_t *range = request->partition_cells;
+  const uint64_t structure = scene->structure_revision;
+  uint32_t changed = 0u;
+  uint32_t kept = 0u;
+  if (!request->partition_unload) {
+    const int64_t area =
+        ((int64_t)range[2] - range[0] + 1) * ((int64_t)range[3] - range[1] + 1);
+    if (range[2] < range[0] || range[3] < range[1] ||
+        area > VKR_SAMPLE_PARTITION_REQUEST_MAX) {
+      snprintf(edits->status, sizeof(edits->status),
+               "Load at most %u cells at once.",
+               VKR_SAMPLE_PARTITION_REQUEST_MAX);
+      return;
+    }
+    for (int32_t z = range[1]; z <= range[3]; ++z) {
+      for (int32_t x = range[0]; x <= range[2]; ++x) {
+        const VkrScenePartitionCell cell = {x, z};
+        if (vkr_scene_edit_cell_load(edits, scene, cell)) {
+          VkrScenePartitionCellRecord *record =
+              vkr_scene_partition_cell(scene, cell, false_v);
+          record->flags |= VKR_SCENE_PARTITION_CELL_PINNED;
+          changed++;
+        } else {
+          kept++;
+        }
+      }
+    }
+    snprintf(edits->status, sizeof(edits->status),
+             "Loaded %u cells for editing%s.", changed,
+             kept ? "; some documents are unreadable" : "");
+  } else {
+    uint32_t count = 0u;
+    vkr_scene_partition_cells(scene, &count);
+    for (uint32_t i = 0; i < count; ++i) {
+      VkrScenePartitionCellRecord *record = vkr_scene_partition_cell(
+          scene, vkr_scene_partition_cells(scene, &count)[i].cell, false_v);
+      const VkrScenePartitionCell cell = record->cell;
+      if (!(record->flags & VKR_SCENE_PARTITION_CELL_LOADED) ||
+          (!request->partition_all &&
+           (cell.x < range[0] || cell.x > range[2] || cell.z < range[1] ||
+            cell.z > range[3]))) {
+        continue;
+      }
+      record->flags &= ~(uint32_t)VKR_SCENE_PARTITION_CELL_PINNED;
+      if (vkr_scene_edit_cell_unloadable(edits, scene, cell)) {
+        vkr_scene_edit_cell_unload(edits, scene, cell);
+        changed++;
+      } else {
+        kept++;
+      }
+    }
+    snprintf(edits->status, sizeof(edits->status),
+             "Unloaded %u cells; %u keep unsaved or undoable edits.", changed,
+             kept);
+  }
+  sample_partition_routed(structure != scene->structure_revision);
 }
 
 /* Play keeps the cells it starts with while the scene has unsaved edits, so
@@ -5639,6 +5774,9 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
         (void)vkr_scene_edit_terrain(&state->edits, scene, scene_edit->entity,
                                      &scene_edit->terrain, scene_edit->gesture);
       }
+      break;
+    case VKR_SCENE_EDIT_PARTITION:
+      sample_partition_request(scene, scene_edit);
       break;
     case VKR_SCENE_EDIT_UNDO:
     case VKR_SCENE_EDIT_REDO:

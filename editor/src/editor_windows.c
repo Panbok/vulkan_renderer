@@ -1,6 +1,7 @@
 #include "editor_internal.h"
 #include "editor_level.h"
 #include "editor_ops.h"
+#include "editor_partition.h"
 #include "editor_projects.h"
 #include "editor_terrain.h"
 
@@ -136,6 +137,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_LEVEL_CHECKS] = {"Level checks", VKR_UI_ICON_PERSON_WALK, NULL,
                           false_v},
     [CMD_TERRAIN] = {"Terrain", VKR_UI_ICON_WAVES, NULL, false_v},
+    [CMD_PARTITION] = {"World partition", VKR_UI_ICON_GRID, NULL, false_v},
     [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, NULL,
                           false_v},
     [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, NULL, false_v},
@@ -307,6 +309,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor->windows[VKR_EDITOR_WINDOW_LEVEL].visible;
   case CMD_TERRAIN:
     return editor->windows[VKR_EDITOR_WINDOW_TERRAIN].visible;
+  case CMD_PARTITION:
+    return editor->windows[VKR_EDITOR_WINDOW_PARTITION].visible;
   case CMD_PHYSICS:
     return editor->windows[VKR_EDITOR_WINDOW_PHYSICS].visible;
   case CMD_GRAPHICS:
@@ -394,6 +398,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_TERRAIN:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_TERRAIN);
+    break;
+  case CMD_PARTITION:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_PARTITION);
     break;
   case CMD_GRAPHICS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_GRAPHICS);
@@ -537,6 +544,7 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_BRUSH_CLIP},
     {CMD_LEVEL_CHECKS},
     {CMD_TERRAIN},
+    {CMD_PARTITION},
     {CMD_GRAPHICS},
     {CMD_LABELS, true_v},
     {CMD_LABELS_DIRECTIONAL, false_v, true_v},
@@ -1445,6 +1453,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     title_text = string8_lit("Terrain");
     title_icon = VKR_UI_ICON_WAVES;
     break;
+  case VKR_EDITOR_WINDOW_PARTITION:
+    title_text = string8_lit("World partition");
+    title_icon = VKR_UI_ICON_GRID;
+    break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");
     title_icon = VKR_UI_ICON_ADD;
@@ -1687,6 +1699,13 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     if (editor_window_body_begin(ui, window, string8_lit("terrain.body"),
                                  &bounds)) {
       vkr_editor_terrain_window_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
+  } else if (kind == VKR_EDITOR_WINDOW_PARTITION) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("partition.body"),
+                                 &bounds)) {
+      vkr_editor_partition_window_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
   } else if (kind == VKR_EDITOR_WINDOW_LEVEL) {

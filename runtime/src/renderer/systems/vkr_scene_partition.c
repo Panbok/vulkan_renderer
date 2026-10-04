@@ -323,6 +323,17 @@ void vkr_scene_partition_plan(const VkrScene *scene,
   }
 }
 
+bool8_t
+vkr_scene_partition_proxy_wanted(const VkrScene *scene,
+                                 const SceneWorldPartition *settings,
+                                 const VkrScenePartitionCellRecord *record) {
+  return (record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK) &&
+         !(record->flags & (VKR_SCENE_PARTITION_CELL_LOADED |
+                            VKR_SCENE_PARTITION_CELL_NO_PROXY)) &&
+         partition_distance(scene, settings, record->cell) <=
+             settings->proxy_radius;
+}
+
 void vkr_scene_partition_shutdown(VkrScene *scene) {
   struct s_VkrScenePartition *state = scene ? scene->partition : NULL;
   if (!state) {

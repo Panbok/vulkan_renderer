@@ -74,16 +74,19 @@ if(VKR_BUILD_TOOLS)
         project/vkr_project_lower.c
         project/vkr_project_main.c
         project/vkr_project_scene.c
-        project/vkr_project_util.c)
+        project/vkr_project_util.c
+        # World partition proxies rebuild brushes from cell documents.
+        ${CMAKE_SOURCE_DIR}/runtime/src/level/vkr_brush.c)
     # The archive writer compresses chunks with the zstd libktx carries.
     target_include_directories(vkr_bakery PRIVATE "${CMAKE_SOURCE_DIR}/tools"
+        "${CMAKE_SOURCE_DIR}/runtime/src"
         "${CMAKE_SOURCE_DIR}/vendor/ktx-software/external/basisu/zstd")
     target_compile_definitions(vkr_bakery PRIVATE VKR_BAKERY_WITH_COOKERS=1)
     target_link_libraries(vkr_bakery PRIVATE ktx
         vkr_mesh_cooker vkr_animation_cooker vkr_collision_cooker
         vkr_font_cooker vkr_vkt_packer vkr_hdr_cube_packer
         vkr_dfg_cooker vkr_sheen_cooker vkr_anisotropy_cooker
-        vkr_diffuse_baker)
+        vkr_diffuse_baker meshoptimizer)
     # The cookers are C++ libraries; link with the C++ runtime.
     set_target_properties(vkr_bakery PROPERTIES LINKER_LANGUAGE CXX)
 

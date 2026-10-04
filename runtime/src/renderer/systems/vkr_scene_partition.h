@@ -35,11 +35,15 @@ typedef enum VkrScenePartitionCellFlag {
   VKR_SCENE_PARTITION_CELL_STALE = 1u << 3,
   /* Loaded when Play began; Reset loads it again if it left. */
   VKR_SCENE_PARTITION_CELL_BEFORE_PLAY = 1u << 4,
+  /* The bakery built no proxy for the cell. */
+  VKR_SCENE_PARTITION_CELL_NO_PROXY = 1u << 5,
 } VkrScenePartitionCellFlag;
 
 typedef struct VkrScenePartitionCellRecord {
   VkrScenePartitionCell cell;
   uint32_t flags;
+  /* The runtime-only entity drawing the cell's proxy, or invalid. */
+  VkrEntityId proxy;
 } VkrScenePartitionCellRecord;
 
 typedef struct VkrScenePartitionPlan {
@@ -78,5 +82,12 @@ void vkr_scene_partition_reset(VkrScene *scene);
 void vkr_scene_partition_plan(const VkrScene *scene,
                               const SceneWorldPartition *settings,
                               VkrScenePartitionPlan *out);
+
+/* Whether `record`'s cell should draw its proxy: it has a document, is not
+   loaded, and lies within the proxy radius of a streaming source. */
+bool8_t
+vkr_scene_partition_proxy_wanted(const VkrScene *scene,
+                                 const SceneWorldPartition *settings,
+                                 const VkrScenePartitionCellRecord *record);
 
 void vkr_scene_partition_shutdown(VkrScene *scene);

@@ -1,5 +1,6 @@
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_partition.h"
 
 #include "core/logger.h"
 #include "editor_project_store.h"
@@ -58,15 +59,17 @@ static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD};
 
 static const char *const cmd_windows[] = {
-    "animation", "physics", "preferences", "draws", "memory",  "help", "create",
-    "build",     "script",  "changes",     "level", "terrain", NULL};
+    "animation", "physics", "preferences", "draws",  "memory",
+    "help",      "create",  "build",       "script", "changes",
+    "level",     "terrain", "partition",   NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION, VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,  VKR_EDITOR_WINDOW_DRAWS,
     VKR_EDITOR_WINDOW_MEMORY,    VKR_EDITOR_WINDOW_HELP,
     VKR_EDITOR_WINDOW_CREATE,    VKR_EDITOR_WINDOW_BUILD,
     VKR_EDITOR_WINDOW_SCRIPT,    VKR_EDITOR_WINDOW_CHANGES,
-    VKR_EDITOR_WINDOW_LEVEL,     VKR_EDITOR_WINDOW_TERRAIN};
+    VKR_EDITOR_WINDOW_LEVEL,     VKR_EDITOR_WINDOW_TERRAIN,
+    VKR_EDITOR_WINDOW_PARTITION};
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -1536,6 +1539,41 @@ static bool8_t cmd_run_delete(CmdContext *ctx, const CmdDef *def, String8 arg) {
   return true_v;
 }
 
+/* partition.load x0 z0 [x1 z1] and partition.unload [all | x0 z0 [x1 z1]]:
+   cells of the open scene's world partition (ADR-086). */
+static bool8_t cmd_run_partition(CmdContext *ctx, const CmdDef *def,
+                                 String8 arg) {
+  const bool8_t unload = strcmp(def->name, "partition.unload") == 0;
+  String8 rest = arg;
+  String8 word = cmd_split(rest, &rest);
+  const int32_t none[4] = {0, 0, 0, 0};
+  if (unload && word.length == 3u && MemCompare(word.str, "all", 3u) == 0) {
+    return vkr_editor_partition_request(ctx->frame, true_v, true_v, none,
+                                        ctx->message, sizeof(ctx->message));
+  }
+  float64_t values[4];
+  uint32_t count = 0u;
+  while (word.length && count < 4u && cmd_number(word, &values[count])) {
+    count++;
+    word = cmd_split(rest, &rest);
+  }
+  if ((count != 2u && count != 4u) || word.length) {
+    snprintf(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
+             def->usage);
+    return false_v;
+  }
+  if (count == 2u) {
+    values[2] = values[0];
+    values[3] = values[1];
+  }
+  int32_t cells[4];
+  for (uint32_t i = 0; i < 4u; ++i) {
+    cells[i] = (int32_t)floor(values[i]);
+  }
+  return vkr_editor_partition_request(ctx->frame, unload, false_v, cells,
+                                      ctx->message, sizeof(ctx->message));
+}
+
 /* component.add and component.remove on the selection. */
 static bool8_t cmd_run_component(CmdContext *ctx, const CmdDef *def,
                                  String8 arg) {
@@ -1849,6 +1887,13 @@ static const CmdDef cmd_defs[] = {
      "Cut the selected brush with the vertical plane through two grid "
      "clicks",
      cmd_run_brush_draw, CMD_COUNT, 1u},
+    {"partition.load", CMD_ARG_TEXT, "<x0> <z0> [<x1> <z1>]",
+     "Load and pin world partition cells for editing", cmd_run_partition,
+     CMD_COUNT, 0u},
+    {"partition.unload", CMD_ARG_TEXT, "all | <x0> <z0> [<x1> <z1>]",
+     "Unpin world partition cells; those without unsaved or undoable edits "
+     "unload",
+     cmd_run_partition, CMD_COUNT, 0u},
     {"io.trace", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Log each entity IO delivery during Play as an [io] line",
      cmd_run_io_trace, CMD_COUNT, 0u},

@@ -12,6 +12,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
+#include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_terrain.h"
@@ -45,6 +46,8 @@
 /* Entities scene.describe lists per request, and its default page. */
 #define OPS_DESCRIBE_MAX 500u
 #define OPS_DESCRIBE_DEFAULT 200u
+/* Cells partition.describe lists. */
+#define OPS_PARTITION_CELLS_MAX 500u
 /* Builds a batch or capture may wait before it reports a timeout. */
 #define OPS_WAIT_FRAMES 600u
 /* Capture PNGs kept in the private directory. */
@@ -3183,6 +3186,129 @@ static VkrEditorOpStatus ops_run_undo(OpsContext *ctx) {
 }
 
 // -----------------------------------------------------------------------------
+// partition.describe, partition.load, partition.unload (ADR-086)
+// -----------------------------------------------------------------------------
+
+/* The cells a `region` in metres covers, x0, z0, x1, z1; false without a
+   valid region. */
+static bool8_t ops_partition_region(OpsContext *ctx,
+                                    const SceneWorldPartition *settings,
+                                    int32_t out[4]) {
+  const VkrBakeryJson *region = vkr_bakery_json_get(ctx->call->args, "region");
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  bool8_t has_lo = false_v;
+  bool8_t has_hi = false_v;
+  if (!region || !ops_arg_vec3(ctx, region, "min", &lo, &has_lo) ||
+      !ops_arg_vec3(ctx, region, "max", &hi, &has_hi) || !has_lo || !has_hi) {
+    return false_v;
+  }
+  const VkrScenePartitionCell a = vkr_scene_partition_cell_at(settings, lo);
+  const VkrScenePartitionCell b = vkr_scene_partition_cell_at(settings, hi);
+  out[0] = Min(a.x, b.x);
+  out[1] = Min(a.z, b.z);
+  out[2] = Max(a.x, b.x);
+  out[3] = Max(a.z, b.z);
+  return true_v;
+}
+
+static VkrEditorOpStatus ops_run_partition_describe(OpsContext *ctx) {
+  const VkrScene *scene = ctx->frame->scene;
+  SceneWorldPartition settings;
+  if (!scene || !vkr_scene_partition_settings(scene, &settings)) {
+    ops_fail(ctx, OPS_INVALID, "The open scene has no world partition");
+    return VKR_EDITOR_OP_DONE;
+  }
+  int32_t range[4] = {INT32_MIN, INT32_MIN, INT32_MAX, INT32_MAX};
+  if (vkr_bakery_json_get(ctx->call->args, "region") &&
+      !ops_partition_region(ctx, &settings, range)) {
+    ops_fail(ctx, OPS_INVALID, "'region' needs 'min' and 'max' points");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "cell_size", ops_number(ctx, settings.cell_size));
+  ops_set(ctx, result, "load_radius", ops_number(ctx, settings.load_radius));
+  ops_set(ctx, result, "proxy_radius", ops_number(ctx, settings.proxy_radius));
+  ops_set(ctx, result, "cell_budget",
+          ops_number(ctx, (float64_t)settings.cell_budget));
+  VkrBakeryJson *cells = vkr_bakery_json_array(arena);
+  uint32_t count = 0u;
+  const VkrScenePartitionCellRecord *records =
+      vkr_scene_partition_cells(scene, &count);
+  uint32_t matched = 0u;
+  uint32_t loaded = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrScenePartitionCellRecord *record = &records[i];
+    const uint32_t flags = record->flags;
+    loaded += (flags & VKR_SCENE_PARTITION_CELL_LOADED) != 0u;
+    if (record->cell.x < range[0] || record->cell.x > range[2] ||
+        record->cell.z < range[1] || record->cell.z > range[3]) {
+      continue;
+    }
+    if (++matched > OPS_PARTITION_CELLS_MAX) {
+      continue;
+    }
+    VkrBakeryJson *row = vkr_bakery_json_object(arena);
+    VkrBakeryJson *at = vkr_bakery_json_array(arena);
+    vkr_bakery_json_append(at, vkr_bakery_json_int(arena, record->cell.x));
+    vkr_bakery_json_append(at, vkr_bakery_json_int(arena, record->cell.z));
+    ops_set(ctx, row, "cell", at);
+    ops_set(
+        ctx, row, "loaded",
+        vkr_bakery_json_bool(arena, flags & VKR_SCENE_PARTITION_CELL_LOADED));
+    ops_set(
+        ctx, row, "pinned",
+        vkr_bakery_json_bool(arena, flags & VKR_SCENE_PARTITION_CELL_PINNED));
+    ops_set(
+        ctx, row, "document",
+        vkr_bakery_json_bool(arena, flags & VKR_SCENE_PARTITION_CELL_ON_DISK));
+    ops_set(ctx, row, "proxy",
+            vkr_bakery_json_bool(arena, record->proxy.u64 != 0u));
+    vkr_bakery_json_append(cells, row);
+  }
+  ops_set(ctx, result, "known", ops_number(ctx, (float64_t)count));
+  ops_set(ctx, result, "loaded", ops_number(ctx, (float64_t)loaded));
+  ops_set(ctx, result, "matched", ops_number(ctx, (float64_t)matched));
+  ops_set(ctx, result, "cells", cells);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* partition.load and partition.unload run as Cmd lines, which own the
+   scene edit slot. */
+static VkrEditorOpStatus ops_run_partition_change(OpsContext *ctx) {
+  if (!ctx->call->stage) {
+    const bool8_t unload = ops_equals(ctx->call->op, "partition.unload");
+    const VkrScene *scene = ctx->frame->scene;
+    SceneWorldPartition settings;
+    if (!scene || !vkr_scene_partition_settings(scene, &settings)) {
+      ops_fail(ctx, OPS_INVALID, "The open scene has no world partition");
+      return VKR_EDITOR_OP_DONE;
+    }
+    bool8_t all = false_v;
+    int32_t range[4];
+    char line[160];
+    if (unload && vkr_bakery_json_get_bool(ctx->call->args, "all", &all) &&
+        all) {
+      snprintf(line, sizeof(line), "partition.unload all");
+    } else if (ops_partition_region(ctx, &settings, range)) {
+      snprintf(line, sizeof(line), "%s %d %d %d %d",
+               unload ? "partition.unload" : "partition.load", range[0],
+               range[1], range[2], range[3]);
+    } else {
+      ops_fail(ctx, OPS_INVALID, "'region' needs 'min' and 'max' points%s",
+               unload ? ", or pass 'all'" : "");
+      return VKR_EDITOR_OP_DONE;
+    }
+    VkrBakeryJson *args = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, args, "line", vkr_bakery_json_cstr(ops_arena(ctx), line));
+    ctx->call->args = args;
+  }
+  return ops_run_cmd(ctx);
+}
+
+// -----------------------------------------------------------------------------
 // view.capture
 // -----------------------------------------------------------------------------
 
@@ -5167,6 +5293,28 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{}}", ops_run_undo, NULL},
     {"redo", "Redo the next edit step.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_undo, NULL},
+    {"partition.describe",
+     "The open scene's world partition: settings and its known cells, each "
+     "loaded, pinned, saved as a document or drawn as a proxy; 'region' (in "
+     "metres) narrows the list.",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
+     "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA "}}}}",
+     ops_run_partition_describe, NULL},
+    {"partition.load",
+     "Load and pin the world partition cells 'region' (in metres) covers, so "
+     "they stay loaded for editing wherever the camera goes.",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
+     "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA "}}},\"required\":[\"region\"]}",
+     ops_run_partition_change, NULL},
+    {"partition.unload",
+     "Unpin the cells 'region' covers, or every cell with 'all'; those "
+     "without unsaved or undoable edits unload.",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
+     "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA "}},\"all\":{\"type\":\"boolean\"}}}",
+     ops_run_partition_change, NULL},
     {"query.raycast",
      "First collision surface along a ray: entity, position, normal and "
      "distance.",

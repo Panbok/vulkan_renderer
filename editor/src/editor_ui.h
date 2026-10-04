@@ -47,6 +47,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_LEVEL,
   /* Terrain sculpting and painting. */
   VKR_EDITOR_WINDOW_TERRAIN,
+  /* World partition cells (ADR-086). */
+  VKR_EDITOR_WINDOW_PARTITION,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 

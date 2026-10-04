@@ -39,6 +39,9 @@ typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS,
   /* `terrain`, in world space, on `entity`'s terrain (ADR-084). */
   VKR_SCENE_EDIT_TERRAIN,
+  /* World partition (ADR-086): load and pin the open scene's cells in
+     `partition_cells`, or with `partition_unload` unpin and unload them. */
+  VKR_SCENE_EDIT_PARTITION,
 } VkrSceneEditAction;
 
 typedef enum VkrSceneEditField {
@@ -94,6 +97,11 @@ typedef struct VkrSceneEditRequest {
   const VkrTypeDesc *replaced_type;
   /* TERRAIN: the edit, folded with others of the same `gesture`. */
   VkrHeightfieldOp terrain;
+  /* PARTITION: the inclusive cell range x0, z0, x1, z1, or every loaded
+     cell with `partition_all`. */
+  int32_t partition_cells[4];
+  bool8_t partition_unload;
+  bool8_t partition_all;
 } VkrSceneEditRequest;
 
 typedef enum VkrSceneEditEntryKind {

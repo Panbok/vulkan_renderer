@@ -162,6 +162,11 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .placement = {.target = VKR_EDITOR_SNAP_SURFACE},
       .windows =
           {
+              [VKR_EDITOR_WINDOW_PARTITION] = {.position_pt = {380.0f, 120.0f},
+                                               .size_pt = {380.0f, 500.0f},
+                                               .z_order = 8u,
+                                               .visible = false_v,
+                                               .resizable = true_v},
               [VKR_EDITOR_WINDOW_TERRAIN] = {.position_pt = {360.0f, 140.0f},
                                              .size_pt = {380.0f, 230.0f},
                                              .z_order = 8u,

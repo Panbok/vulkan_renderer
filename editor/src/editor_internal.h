@@ -68,6 +68,8 @@ typedef enum EditorCommand {
   CMD_LEVEL_CHECKS,
   /* The Terrain window. */
   CMD_TERRAIN,
+  /* The World Partition window. */
+  CMD_PARTITION,
   CMD_COUNT
 } EditorCommand;
 
