@@ -16,7 +16,7 @@ toolkit, terrain, geometry LOD and world partition natively
 
 ## Before you start
 
-- Check out `main` at or after `afaac501` and recook as the checklist's
+- Check out `main` at or after `f01956ee` and recook as the checklist's
   2026-10-03 record did.
 - Run one GPU process at a time. Use Bistro only.
 - The agent socket is off on Windows (ADR-084), so these steps drive the
@@ -53,9 +53,12 @@ Build the Release editor with `build_editor.bat` and the Debug editor with
 ### H1. CPU suites (audit A2)
 
 Run `build_test.bat`. Every suite must pass; these cover the new code
-directly: `heightfield` (tiled and streamed fields, in-place saves),
-`scene_edit` (cell documents, unload rules), `io` (router refresh) and
-`scene_physics` (rebase with exact restore).
+directly: `heightfield` (tiled and streamed fields, journaled saves and their
+recovery, ground queries, long strokes), `scene_edit` (cell documents, unload
+rules, unreadable and missing documents, loads while rebased), `io` (router
+refresh) and `scene_physics` (rebase with exact restore). The build also
+compiles the first Windows `file_flush_durable` (`_commit`). The heightfield
+suite's read-only check is POSIX-only.
 
 ### H2. Terrain layer blend (audit A2)
 
@@ -132,9 +135,10 @@ moves. Run it three times: without terrain, with the H4 terrain, and with the
 H4 terrain and `"local_shadows": false` in `graphics.json`.
 
 Expected on Metal for comparison (ADR-086): p95 6.4 ms without terrain, about
-30 ms with it, about 10 ms with it and local shadows off. Record whether
-Vulkan shows the same pattern; it decides whether A1 is shared code or
-Metal-specific.
+30 ms with it, about 10 ms with it and local shadows off. The cause is shared
+code (publication staleness in `vkr_local_shadow_system.c`); record whether
+Vulkan shows the same pattern and, with `VKR_RG_GPU_TIMING=1`, whether the
+slow frames are `Shadow.Local.*` passes.
 
 ### H8. Large files (audit A3, A9)
 

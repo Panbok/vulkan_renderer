@@ -12,8 +12,9 @@ Accepted (partial). Terrain streaming, cells with cell documents, the
 streaming runtime, origin rebasing during Play, baked cell proxies, the World
 Partition window and the `partition.*` operations are implemented and
 verified on Metal. Streaming hitches stay above one frame while the camera
-moves over terrain with local shadows on, imported scene documents do not
-split into cells, and native Vulkan execution is unverified. The
+moves over a streamed terrain with local shadows on, imported scene
+documents do not split into cells, and native Vulkan execution is
+unverified. The
 [level toolkit audit](../proposals/level-toolkit-audit.md) tracks these.
 
 ## Context
@@ -48,12 +49,17 @@ every tile, as before. Larger ones, up to 8,192 cells and a multiple of
 - **File.** Version 2 of `VKRHFLD1` appends an overview of every 16th sample
   after the tiles; version 1 files still load. `vkr_heightfield_create_file`
   writes a new terrain tile by tile without holding it. A streamed terrain
-  writes changed tiles and the overview in place, which is not atomic.
+  saves its changed tiles and overview to `<file>.journal` first, stored on
+  the disk with a checksum, then writes them in place and removes the
+  journal; opening the file finishes a whole journal and drops a torn one.
+  A file that cannot be written streams read-only and refuses saves.
 - **Tiles.** Fine tiles within the terrain's `stream_radius` (512 m by
-  default) of a source build, nearest first, within 2 ms per update; they stay
-  until a tile past the radius. A fine tile loads its sample tiles and their
-  neighbours first. Samples an edit or undo reaches load synchronously and
-  stay resident until a save writes them.
+  default) of a source build, the 64 nearest considered per update, within
+  2 ms; they stay until a tile past the radius. A fine tile loads its sample
+  tiles and their neighbours first. Samples an edit or undo reaches load
+  synchronously and stay resident until a save writes them. Rebuilt tiles
+  show when their geometry has uploaded: the mesh re-attaches then, and the
+  tiles that draw hold still meanwhile.
 - **Overview.** 64-cell overview tiles at 16 times the spacing draw the rest.
   An overview tile leaves out the cells under fine tiles that draw, keeps only
   the three levels whose cells lie inside one fine tile, and adds seam skirts
@@ -92,6 +98,15 @@ A partitioned scene `<scene>.json` keeps its cells in `<scene>.cells/`
   writes each loaded cell whose bytes changed, removes the documents of loaded
   cells left empty and keeps the documents of unloaded cells. A cell size
   change loads every cell and replaces the old documents at the next save.
+  Cell documents, the index and the overlay are all written beside their
+  files and stored on the disk before any replaces its file, so a save that
+  fails while writing changes none of them.
+- A document that cannot be read marks its cell unreadable: the cell does
+  not stream, the index keeps listing it, and a save that would put an
+  object in it is refused. A listed document that is missing loads as an
+  empty cell.
+- A cell loading while the origin is rebased places its roots offset by the
+  rebase.
 
 ### Streaming runtime
 
@@ -101,9 +116,12 @@ Each frame the runtime plans loads and unloads for the primary scene
 - Cells with a document within `load_radius` (384 m) load nearest first, one
   always and more within 2 ms. Cells past the radius plus one cell unload, and
   past `cell_budget` (256 loaded cells) the farthest unload first.
-- A cell unloads only when the container has no unsaved edit and no journal
-  entry names one of its objects (`vkr_scene_edit_cell_unloadable`), so undo
-  always finds its objects. Editing without saving keeps every cell loaded.
+- A cell unloads only when no journal entry names one of its objects and
+  either the container has no unsaved edit or the cell, written as a save
+  would write it, matches its document byte for byte
+  (`vkr_scene_edit_cell_unloadable`). Undo always finds its objects, and
+  unsaved edits elsewhere no longer keep every visited cell loaded. The
+  comparison is remembered until the next edit.
 - `partition.load` and the World Partition window pin cells for editing;
   pinned cells never unload until released.
 - Play holds the cells it starts with only while the scene has unsaved edits.
@@ -161,15 +179,18 @@ frame.
   the editor's resident set stayed between 745 and 780 MB on an M1 Pro.
 - Streaming one change costs about 2.4 ms for tile builds, 1.7 ms to rebuild
   the mesh and re-attach every tile, and 3.5 ms when the collision window
-  moves. Measured hitches come from elsewhere: see Evidence.
+  moves. The measured hitches come from local shadows: see Evidence.
 - Saving rewrites only edited cells, so version control diffs stay local.
 - Scripts that keep world positions see them jump when the origin rebases.
 - Only the primary scene partitions; the World and added scenes keep every
   entity.
-- Behaviours of script components in cells loaded during Play do not start
-  until the next session.
-- Proxies cover brushes only. A cell whose bake left no proxy stays without
-  one until the scene opens again.
+- Behaviours of script components in a cell loaded during Play start at the
+  next frame, as for any entity that gains the component; an unloading cell
+  runs their `destroy` and `stop`. Their state does not survive the unload.
+- Proxies cover brushes only. A cell whose bake left no proxy looks again
+  when the proxies directory changes.
+- A scatter over a streamed terrain lands on its samples where no physics
+  body reaches, so its copies do not depend on where the camera was.
 - The editor camera's far plane is 500 m by default and depth is not reversed,
   so the overview and proxies show only with a far plane raised by hand.
 
@@ -185,11 +206,17 @@ harness reports:
 | Same, low preset | 7.7–8.9 / 8.0–11.7 / 15.7–32.0 |
 | Same, high preset with local shadows off | 8.7–9.4 / 9.8–21.2 / 17.8–43.7 |
 
-A resident 1 km terrain hitches the same way under motion, so the cost comes
-from local shadows with terrain casters, not from streaming. Freezing the
-static, publication and caster-bounds generations, keeping released
-geometry, skipping mesh re-attachment and batching geometry uploads each left
-the hitches in place.
+The hitches are local shadow redraws. Every completed resource publication,
+a streamed tile's geometry upload included, advances the renderer's global
+publication generation, which marks every local shadow face stale; the
+cache then redraws its face budget (30 faces on High) at 0.4–0.9 ms GPU each
+(`VKR_RG_GPU_TIMING=1` pass rows, `Shadow.Local.*`). A diagnostic build that
+ignored the publication generation in that test kept the same flight at
+p95 10.5 ms. Re-attaching the mesh before its tiles uploaded also left it
+unpublished for a frame, which removed the terrain from that frame and made
+two more frames redraw; the mesh now re-attaches after the upload. At
+`f01956ee` a resident 1 km terrain on the same flight measured p95 8.7 ms,
+so the earlier report that it hitched too did not reproduce.
 
 CPU tests: the heightfield suite (a 2,048-cell streamed field that loads only
 its overview, edits, saves in place and reloads a tile), the scene edit
@@ -213,8 +240,8 @@ rebase to −4,096 m that Reset returned to 0.
 
 ## Revisit when
 
-- The local-shadow hitch over terrain is fixed, or a matched Release report
-  shows streaming hitches below one frame.
+- Local shadow staleness follows only publications that reach drawn casters,
+  or a matched Release report shows streaming hitches below one frame.
 - A Windows/Vulkan run of the
   [handoff](../proposals/level-toolkit-windows-vulkan-handoff.md) passes.
 - Imported scenes, the World or added scenes need to stream.

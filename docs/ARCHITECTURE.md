@@ -1413,8 +1413,10 @@ These are limits of current code or retained acceptance, not scheduled promises:
   coverage, meshlets, cooked mesh levels and shader hot reload are absent; the
   GPU LOD table serves terrain tiles only
   ([ADR-085](adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)).
-- Moving the camera over terrain with local shadows on raises the frame p95
-  from about 6 ms to about 30 ms on an M1 Pro; imported scene documents, the
+- Moving the camera over a streamed terrain with local shadows on raises the
+  frame p95 from about 6 ms to about 30 ms on an M1 Pro, because every tile
+  upload advances the global publication generation that marks all local
+  shadow faces stale; imported scene documents, the
   World and added scenes do not stream by cells
   ([ADR-086](adr/086-world-partition.md),
   [audit](proposals/level-toolkit-audit.md)).
