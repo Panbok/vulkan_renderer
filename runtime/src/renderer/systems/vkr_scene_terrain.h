@@ -8,9 +8,10 @@
  * heightfield file and keeps the samples in memory: edits change them there,
  * through the edit journal, and saving the scene writes the file. The scene
  * builds one generated mesh with a submesh per 64-cell tile, so culling works
- * tile by tile, and one static height field body once edits rest. A terrain
- * ignores its entity's rotation and scale. The scene owns all of it and
- * releases it at shutdown.
+ * tile by tile, and re-attaches it only once every rebuilt tile has uploaded,
+ * so the terrain never leaves a frame; one static height field body follows
+ * once edits rest. A terrain ignores its entity's rotation and scale. The
+ * scene owns all of it and releases it at shutdown.
  *
  * A terrain larger than VKR_HEIGHTFIELD_RESIDENT_CELLS streams (ADR-086): it
  * keeps the samples, tiles and a body near the scene's streaming

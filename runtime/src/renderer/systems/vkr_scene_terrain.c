@@ -70,6 +70,9 @@ typedef struct TerrainRecord {
   /* Samples changed since they loaded or saved. */
   bool8_t unsaved;
   bool8_t mesh_dirty;
+  /* Tiles were rebuilt; the mesh is re-attached once their geometry has
+     uploaded. */
+  bool8_t attach_pending;
   bool8_t collision_dirty;
   uint8_t settle;
   /* World position the collision was built at. */
@@ -193,6 +196,7 @@ static void terrain_release(VkrScene *scene, TerrainRecord *record) {
   record->body_edited = false_v;
   record->collision_rejected = false_v;
   record->overview_dirty = 0u;
+  record->attach_pending = false_v;
   if (assets && record->material.id) {
     vkr_material_system_release(&assets->material_system, record->material);
   }
@@ -351,7 +355,8 @@ bool8_t vkr_scene_terrain_settled(const VkrScene *scene) {
   const VkrSceneTerrains *state = scene ? scene->terrains : NULL;
   for (uint32_t i = 0; state && i < state->record_count; ++i) {
     const TerrainRecord *record = &state->records[i];
-    if (record->loaded && (record->mesh_dirty || record->collision_dirty)) {
+    if (record->loaded && (record->mesh_dirty || record->attach_pending ||
+                           record->collision_dirty)) {
       return false_v;
     }
   }
@@ -1042,9 +1047,8 @@ static bool8_t terrain_overview_build(VkrScene *scene, TerrainRecord *record,
   return record->overview[index].id != 0u;
 }
 
-/* Rebuilds dirty tiles and re-attaches the mesh with every tile that
-   draws. */
-static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
+/* Rebuilds dirty tiles; terrain_attach_mesh shows them once uploaded. */
+static bool8_t terrain_build_tiles(VkrScene *scene, TerrainRecord *record) {
   struct VkrRenderAssets *assets = scene->assets;
   const SceneTerrain *terrain =
       vkr_scene_get_typed(scene, record->entity, &vkr_scene_terrain_type);
@@ -1081,6 +1085,55 @@ static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
                                   index / overview_tiles);
     }
   }
+  MemZero(record->dirty_tiles, sizeof(record->dirty_tiles));
+  record->overview_dirty = 0u;
+  record->attach_pending = true_v;
+  return ok;
+}
+
+static bool8_t terrain_geometry_settled(VkrGeometrySystem *system,
+                                        VkrGeometryHandle handle) {
+  const VkrGeometry *geometry =
+      handle.id ? vkr_geometry_system_get_by_handle(system, handle) : NULL;
+  return !geometry || vkr_publication_state_settled(&geometry->publication);
+}
+
+/* Whether every geometry and the material the mesh would show finished
+   uploading. A mesh attached sooner waits unpublished: the whole terrain
+   leaves the frame, and every local shadow redraws as the publication
+   lands (level toolkit audit A1). */
+static bool8_t terrain_mesh_settled(VkrScene *scene,
+                                    const TerrainRecord *record) {
+  struct VkrRenderAssets *assets = scene->assets;
+  VkrGeometrySystem *system = &assets->geometry_system;
+  const VkrPublicationState *material =
+      record->material.id ? vkr_material_system_publication(
+                                &assets->material_system, record->material)
+                          : NULL;
+  if (material && !vkr_publication_state_settled(material)) {
+    return false_v;
+  }
+  const uint32_t tiles = terrain_tiles(record);
+  for (uint32_t i = 0; i < tiles * tiles; ++i) {
+    if (!terrain_geometry_settled(system, record->tiles[i])) {
+      return false_v;
+    }
+  }
+  for (uint32_t i = 0; i < TERRAIN_OVERVIEW_MAX; ++i) {
+    if (!terrain_geometry_settled(system, record->overview[i]) ||
+        !terrain_geometry_settled(system, record->seams[i])) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Re-attaches the mesh with every tile that draws. */
+static bool8_t terrain_attach_mesh(VkrScene *scene, TerrainRecord *record) {
+  struct VkrRenderAssets *assets = scene->assets;
+  const uint32_t tiles = terrain_tiles(record);
+  const uint32_t overview_tiles = terrain_overview_tiles(record);
+  bool8_t ok = true_v;
   uint32_t count = 0u;
   for (uint32_t i = 0; i < tiles * tiles; ++i) {
     count += record->tiles[i].id != 0u;
@@ -1122,9 +1175,7 @@ static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
                                          filled, &scene_error);
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  MemZero(record->dirty_tiles, sizeof(record->dirty_tiles));
-  record->overview_dirty = 0u;
-  record->mesh_dirty = false_v;
+  record->attach_pending = false_v;
   return ok;
 }
 
@@ -1361,9 +1412,12 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
     record->settle++;
   }
   bool8_t changed = false_v;
+  /* The tiles that draw hold still while a rebuilt mesh waits to show
+     them. */
+  const bool8_t frozen = record->attach_pending;
 
   /* Detail that left the window returns to the overview. */
-  for (uint32_t index = 0; index < tiles * tiles; ++index) {
+  for (uint32_t index = 0; !frozen && index < tiles * tiles; ++index) {
     if (record->tiles[index].id &&
         terrain_source_distance(
             sources, count, (float32_t)(index % tiles) * size,
@@ -1390,8 +1444,10 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
   TerrainCandidate candidates[TERRAIN_STREAM_CANDIDATES];
   const float64_t start = vkr_platform_get_absolute_time();
   const float64_t budget = VKR_SCENE_TERRAIN_STREAM_BUDGET_MS / 1000.0;
-  const uint32_t found = terrain_candidates(record, sources, count, radius,
-                                            candidates, ArrayCount(candidates));
+  const uint32_t found =
+      frozen ? 0u
+             : terrain_candidates(record, sources, count, radius, candidates,
+                                  ArrayCount(candidates));
   for (uint32_t i = 0; i < found; ++i) {
     const uint32_t index = candidates[i].index;
     if (record->tiles[index].id) {
@@ -1455,7 +1511,17 @@ void vkr_scene_terrain_update(VkrScene *scene) {
     if (record->streamed && terrain_stream(scene, record, position)) {
       record->mesh_dirty = true_v;
     }
-    if (record->mesh_dirty && !terrain_build_mesh(scene, record)) {
+    /* Changed tiles build now and show together once uploaded; changes
+       meanwhile wait for the next build. */
+    if (record->mesh_dirty && !record->attach_pending) {
+      record->mesh_dirty = false_v;
+      if (!terrain_build_tiles(scene, record)) {
+        snprintf(record->status, sizeof(record->status),
+                 "The terrain mesh failed");
+      }
+    }
+    if (record->attach_pending && terrain_mesh_settled(scene, record) &&
+        !terrain_attach_mesh(scene, record)) {
       snprintf(record->status, sizeof(record->status),
                "The terrain mesh failed");
     }
