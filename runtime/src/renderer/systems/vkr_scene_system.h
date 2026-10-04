@@ -225,6 +225,56 @@ typedef struct SceneBrushFace {
   bool8_t uv_world;
 } SceneBrushFace;
 
+/* Entity IO (ADR-084): engine components whose outputs connections wire to
+ * other entities' inputs. The script host's router runs them during a
+ * session; their runtime state lives there, not in the component. */
+#define SCENE_IO_NAME_CAPACITY 64u
+
+/* Reports what enters and leaves the entity's sensor: a trigger brush or a
+ * sensor collider. `filter` names a component the other entity must carry,
+ * such as the player's; empty takes any. */
+typedef struct SceneTrigger {
+  bool8_t enabled;
+  /* Disable after the first entry, as Source's trigger_once. */
+  bool8_t once;
+  char filter[SCENE_IO_NAME_CAPACITY];
+} SceneTrigger;
+
+/* Passes `trigger` on as `on_trigger` while enabled. */
+typedef struct SceneRelay {
+  bool8_t enabled;
+} SceneRelay;
+
+/* Fires `on_timer` every `interval` seconds of simulation while running. */
+typedef struct SceneTimer {
+  float32_t interval;
+  bool8_t start_running;
+  /* Stop after one firing. */
+  bool8_t once;
+} SceneTimer;
+
+/* An integer that `add`, `subtract` and `set` change within [min, max],
+ * firing `on_changed`, then `on_max` or `on_min` when it reaches a bound. */
+typedef struct SceneCounter {
+  int32_t start;
+  int32_t min;
+  int32_t max;
+} SceneCounter;
+
+/* One connection, a child entity of its source: when the source fires
+ * `output`, `target` receives `input` after `delay` seconds. `value`, when
+ * set, replaces the output's value as text the input's kind parses. A
+ * nonzero `limit` stops it after that many firings per session. Output and
+ * input names may be prefixed with their component, as `trigger.on_enter`. */
+typedef struct SceneIoConnection {
+  char output[SCENE_IO_NAME_CAPACITY];
+  VkrEntityRef target;
+  char input[SCENE_IO_NAME_CAPACITY];
+  char value[SCENE_IO_NAME_CAPACITY];
+  float32_t delay;
+  uint32_t limit;
+} SceneIoConnection;
+
 /**
  * Authored shape values (ADR-076), a typed component. Setting it rebuilds
  * the entity's generated geometry and mesh; removing it releases them.
@@ -1503,6 +1553,11 @@ bool8_t vkr_scene_set_entity_ref(VkrScene *scene, VkrEntityId entity,
     scene, so callers resolve once per publication. */
 VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
                                       const VkrEntityRef *id);
+/** Whether `entity` is a part of its parent rather than an object of its
+    own: a brush face or an IO connection. Lists hide parts, and deleting
+    the parent deletes its parts with it. */
+bool8_t vkr_scene_entity_is_part(const VkrScene *scene, VkrEntityId entity);
+
 /** A random version 4 UUID for a new entity. */
 void vkr_scene_entity_ref_generate(VkrEntityRef *out);
 

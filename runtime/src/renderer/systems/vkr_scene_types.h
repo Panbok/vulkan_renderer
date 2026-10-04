@@ -40,6 +40,12 @@ extern const VkrTypeDesc vkr_scene_player_start_type;
 /* Brushes and their faces (docs/proposals/level-design-toolkit.md). */
 extern const VkrTypeDesc vkr_scene_brush_type;
 extern const VkrTypeDesc vkr_scene_brush_face_type;
+/* Entity IO (ADR-084). */
+extern const VkrTypeDesc vkr_scene_trigger_type;
+extern const VkrTypeDesc vkr_scene_relay_type;
+extern const VkrTypeDesc vkr_scene_timer_type;
+extern const VkrTypeDesc vkr_scene_counter_type;
+extern const VkrTypeDesc vkr_scene_io_connection_type;
 /** Read-only SceneMeshInfo rows; not a component type. */
 extern const VkrTypeDesc vkr_scene_mesh_info_type;
 

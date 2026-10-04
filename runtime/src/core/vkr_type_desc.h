@@ -131,6 +131,17 @@ typedef struct VkrPropertyDesc {
   float32_t display_scale;
 } VkrPropertyDesc;
 
+/** One output or input a type adds to the entities that carry it (entity IO,
+ * ADR-084). `kind` is the value it carries: a VkrPropertyKind, or
+ * VKR_IO_PORT_NONE for none. Port lists end with a NULL name. */
+#define VKR_IO_PORT_NONE VKR_PROPERTY_KIND_COUNT
+
+typedef struct VkrIoPort {
+  const char *name;
+  const char *label;
+  uint32_t kind;
+} VkrIoPort;
+
 typedef enum VkrTypeFlags {
   VKR_TYPE_FLAG_NONE = 0u,
   /** At most one instance takes effect per frame; resolution picks it. */
@@ -170,7 +181,15 @@ typedef struct VkrTypeDesc {
    * Optional. */
   VkrPropertyState (*state)(const void *value, uint32_t property,
                             const void *context);
+  /** Outputs it fires and inputs it handles (entity IO). Optional. */
+  const VkrIoPort *outputs;
+  const VkrIoPort *inputs;
 } VkrTypeDesc;
+
+/** Ports in a NULL-name-terminated list; zero for NULL. */
+uint32_t vkr_io_port_count(const VkrIoPort *ports);
+/** Port index by name, or UINT32_MAX. */
+uint32_t vkr_io_port_find(const VkrIoPort *ports, String8 name);
 
 // =============================================================================
 // Properties

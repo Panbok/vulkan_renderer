@@ -76,6 +76,23 @@ void vkr_entity_ref_format(const VkrEntityRef *id, char out[37]) {
   out[at] = '\0';
 }
 
+uint32_t vkr_io_port_count(const VkrIoPort *ports) {
+  uint32_t count = 0u;
+  while (ports && ports[count].name) {
+    ++count;
+  }
+  return count;
+}
+
+uint32_t vkr_io_port_find(const VkrIoPort *ports, String8 name) {
+  for (uint32_t i = 0; ports && ports[i].name; ++i) {
+    if (type_name_equals(ports[i].name, name)) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
 // =============================================================================
 // Properties
 // =============================================================================

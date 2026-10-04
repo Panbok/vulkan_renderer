@@ -732,6 +732,64 @@ static VkrEntity sdk_resolve(VkrCtx *ctx, VkrEntity owner, VkrEntityRef ref) {
                          vkr_scene_find_entity_ref(container->scene, &ref).u64};
 }
 
+/* Entity IO. A VkrIoInput holds the world type index plus one above 8 bits
+   and the port plus one below; type zero is the built-in inputs. */
+static bool8_t sdk_io_fire(VkrCtx *ctx, VkrEntity self,
+                           const VkrComponentDesc *type, uint32_t output,
+                           const VkrIoValue *value) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  const VkrTypeDesc *resolved = script_resolve_type(host, type);
+  if (!resolved || output >= vkr_io_port_count(resolved->outputs)) {
+    return script_ctx_error(script, "The component has no such output");
+  }
+  return vkr_io_router_fire(&host->io, (VkrEntityId){.u64 = self.id},
+                            (VkrIoEndpoint){.type = resolved, .port = output},
+                            value, host->phase == VKR_SCRIPT_PHASE_TICK) ||
+         script_ctx_error(script, "The output could not fire");
+}
+
+static VkrIoInput sdk_io_input(VkrCtx *ctx, const VkrComponentDesc *type,
+                               const char *name) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  const String8 word =
+      string8_create_from_cstr((const uint8_t *)name, name ? strlen(name) : 0);
+  if (!type) {
+    const uint32_t port = vkr_io_port_find(vkr_io_builtin_inputs, word);
+    return (VkrIoInput){.id = port == UINT32_MAX ? 0u : port + 1u};
+  }
+  const VkrTypeDesc *resolved = script_resolve_type(script->host, type);
+  const uint32_t port =
+      resolved ? vkr_io_port_find(resolved->inputs, word) : UINT32_MAX;
+  const VkrTypeDesc *candidate = NULL;
+  for (uint32_t i = 0; port != UINT32_MAX && port < 255u &&
+                       (candidate = vkr_scene_world_type(i));
+       ++i) {
+    if (candidate == resolved) {
+      return (VkrIoInput){.id = ((i + 1u) << 8u) | (port + 1u)};
+    }
+  }
+  (void)script_ctx_error(script, "The component has no such input");
+  return (VkrIoInput){0};
+}
+
+static bool8_t sdk_io_send(VkrCtx *ctx, VkrEntity target, VkrIoInput input,
+                           const VkrIoValue *value) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  const uint32_t type_index = input.id >> 8u;
+  const VkrIoEndpoint endpoint = {
+      .type = type_index ? vkr_scene_world_type(type_index - 1u) : NULL,
+      .port = (input.id & 0xFFu) - 1u};
+  if (!input.id || !vkr_io_endpoint_port(endpoint)) {
+    return script_ctx_error(script, "Unknown input");
+  }
+  return vkr_io_router_send(&host->io, (VkrEntityId){.u64 = target.id},
+                            endpoint, value,
+                            host->phase == VKR_SCRIPT_PHASE_TICK) ||
+         script_ctx_error(script, "The input could not be sent");
+}
+
 static VkrStateType sdk_state_type(VkrCtx *ctx, const char *name, uint32_t size,
                                    uint32_t align) {
   ScriptCtx *script = sdk_ctx(ctx);
@@ -1720,5 +1778,8 @@ void script_sdk_table(VkrSdkTable *table) {
       .anim_duration = sdk_anim_duration,
       .anim_blend = sdk_anim_blend,
       .resolve = sdk_resolve,
+      .io_fire = sdk_io_fire,
+      .io_input = sdk_io_input,
+      .io_send = sdk_io_send,
   };
 }

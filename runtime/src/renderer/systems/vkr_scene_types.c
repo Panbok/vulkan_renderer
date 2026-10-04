@@ -1788,6 +1788,243 @@ const VkrTypeDesc vkr_scene_brush_face_type = {
     .validate = brush_face_validate,
 };
 
+// =============================================================================
+// Entity IO (ADR-084)
+// =============================================================================
+
+static const VkrIoPort s_trigger_outputs[] = {
+    {"on_enter", "On enter", VKR_PROPERTY_ENTITY},
+    {"on_exit", "On exit", VKR_PROPERTY_ENTITY},
+    {"on_empty", "On empty", VKR_IO_PORT_NONE},
+    {NULL, NULL, 0u}};
+static const VkrIoPort s_switch_inputs[] = {
+    {"enable", "Enable", VKR_IO_PORT_NONE},
+    {"disable", "Disable", VKR_IO_PORT_NONE},
+    {"toggle", "Toggle", VKR_IO_PORT_NONE},
+    {NULL, NULL, 0u}};
+
+static const VkrPropertyDesc s_trigger_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .offset = TYPE_OFFSET(SceneTrigger, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "once",
+     .label = "Once",
+     .tooltip = "Disable after the first entry",
+     .offset = TYPE_OFFSET(SceneTrigger, once),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "filter",
+     .label = "Only with",
+     .tooltip = "A component the entering entity must carry, such as "
+                "fps_player; empty takes any",
+     .offset = TYPE_OFFSET(SceneTrigger, filter),
+     .capacity = SCENE_IO_NAME_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+};
+
+static void trigger_defaults(void *value) {
+  *(SceneTrigger *)value = (SceneTrigger){.enabled = true_v};
+}
+
+const VkrTypeDesc vkr_scene_trigger_type = {
+    .name = "trigger",
+    .label = "Trigger",
+    .category = "Level",
+    .properties = s_trigger_properties,
+    .property_count = ArrayCount(s_trigger_properties),
+    .size = sizeof(SceneTrigger),
+    .align = _Alignof(SceneTrigger),
+    .defaults = trigger_defaults,
+    .outputs = s_trigger_outputs,
+    .inputs = s_switch_inputs,
+};
+
+static const VkrIoPort s_relay_outputs[] = {
+    {"on_trigger", "On trigger", VKR_IO_PORT_NONE}, {NULL, NULL, 0u}};
+static const VkrIoPort s_relay_inputs[] = {
+    {"trigger", "Trigger", VKR_IO_PORT_NONE},
+    {"enable", "Enable", VKR_IO_PORT_NONE},
+    {"disable", "Disable", VKR_IO_PORT_NONE},
+    {NULL, NULL, 0u}};
+
+static const VkrPropertyDesc s_relay_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .offset = TYPE_OFFSET(SceneRelay, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void relay_defaults(void *value) {
+  *(SceneRelay *)value = (SceneRelay){.enabled = true_v};
+}
+
+const VkrTypeDesc vkr_scene_relay_type = {
+    .name = "relay",
+    .label = "Relay",
+    .category = "Level",
+    .properties = s_relay_properties,
+    .property_count = ArrayCount(s_relay_properties),
+    .size = sizeof(SceneRelay),
+    .align = _Alignof(SceneRelay),
+    .defaults = relay_defaults,
+    .outputs = s_relay_outputs,
+    .inputs = s_relay_inputs,
+};
+
+static const VkrIoPort s_timer_outputs[] = {
+    {"on_timer", "On timer", VKR_IO_PORT_NONE}, {NULL, NULL, 0u}};
+static const VkrIoPort s_timer_inputs[] = {
+    {"start", "Start", VKR_IO_PORT_NONE},
+    {"stop", "Stop", VKR_IO_PORT_NONE},
+    {"set_interval", "Set interval", VKR_PROPERTY_F32},
+    {NULL, NULL, 0u}};
+
+static const VkrPropertyDesc s_timer_properties[] = {
+    {.name = "interval",
+     .label = "Interval",
+     .unit = "s",
+     .offset = TYPE_OFFSET(SceneTimer, interval),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.01f,
+     .max = 86400.0f,
+     .step = 0.05f},
+    {.name = "start_running",
+     .label = "Start running",
+     .offset = TYPE_OFFSET(SceneTimer, start_running),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "once",
+     .label = "Once",
+     .tooltip = "Stop after one firing",
+     .offset = TYPE_OFFSET(SceneTimer, once),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void timer_defaults(void *value) {
+  *(SceneTimer *)value =
+      (SceneTimer){.interval = 1.0f, .start_running = true_v};
+}
+
+const VkrTypeDesc vkr_scene_timer_type = {
+    .name = "timer",
+    .label = "Timer",
+    .category = "Level",
+    .properties = s_timer_properties,
+    .property_count = ArrayCount(s_timer_properties),
+    .size = sizeof(SceneTimer),
+    .align = _Alignof(SceneTimer),
+    .defaults = timer_defaults,
+    .outputs = s_timer_outputs,
+    .inputs = s_timer_inputs,
+};
+
+static const VkrIoPort s_counter_outputs[] = {
+    {"on_changed", "On changed", VKR_PROPERTY_I32},
+    {"on_max", "On max", VKR_IO_PORT_NONE},
+    {"on_min", "On min", VKR_IO_PORT_NONE},
+    {NULL, NULL, 0u}};
+static const VkrIoPort s_counter_inputs[] = {
+    {"add", "Add", VKR_PROPERTY_I32},
+    {"subtract", "Subtract", VKR_PROPERTY_I32},
+    {"set", "Set", VKR_PROPERTY_I32},
+    {NULL, NULL, 0u}};
+
+static const VkrPropertyDesc s_counter_properties[] = {
+    {.name = "start",
+     .label = "Start",
+     .offset = TYPE_OFFSET(SceneCounter, start),
+     .kind = VKR_PROPERTY_I32},
+    {.name = "min",
+     .label = "Minimum",
+     .offset = TYPE_OFFSET(SceneCounter, min),
+     .kind = VKR_PROPERTY_I32},
+    {.name = "max",
+     .label = "Maximum",
+     .offset = TYPE_OFFSET(SceneCounter, max),
+     .kind = VKR_PROPERTY_I32},
+};
+
+static void counter_defaults(void *value) {
+  *(SceneCounter *)value = (SceneCounter){.start = 0, .min = 0, .max = 1};
+}
+
+static bool8_t counter_validate(const void *value, char *error,
+                                uint32_t capacity) {
+  const SceneCounter *counter = value;
+  if (counter->min > counter->max || counter->start < counter->min ||
+      counter->start > counter->max) {
+    if (error) {
+      snprintf(error, capacity, "A counter needs min <= start <= max");
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+const VkrTypeDesc vkr_scene_counter_type = {
+    .name = "counter",
+    .label = "Counter",
+    .category = "Level",
+    .properties = s_counter_properties,
+    .property_count = ArrayCount(s_counter_properties),
+    .size = sizeof(SceneCounter),
+    .align = _Alignof(SceneCounter),
+    .defaults = counter_defaults,
+    .validate = counter_validate,
+    .outputs = s_counter_outputs,
+    .inputs = s_counter_inputs,
+};
+
+static const VkrPropertyDesc s_io_connection_properties[] = {
+    {.name = "output",
+     .label = "Output",
+     .tooltip = "The source's output, as on_enter or trigger.on_enter",
+     .offset = TYPE_OFFSET(SceneIoConnection, output),
+     .capacity = SCENE_IO_NAME_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "target",
+     .label = "Target",
+     .offset = TYPE_OFFSET(SceneIoConnection, target),
+     .kind = VKR_PROPERTY_ENTITY},
+    {.name = "input",
+     .label = "Input",
+     .tooltip = "The target's input, as open or door.open",
+     .offset = TYPE_OFFSET(SceneIoConnection, input),
+     .capacity = SCENE_IO_NAME_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "value",
+     .label = "Value",
+     .tooltip = "Replaces the output's value; empty passes it on",
+     .offset = TYPE_OFFSET(SceneIoConnection, value),
+     .capacity = SCENE_IO_NAME_CAPACITY,
+     .kind = VKR_PROPERTY_STRING},
+    {.name = "delay",
+     .label = "Delay",
+     .unit = "s",
+     .offset = TYPE_OFFSET(SceneIoConnection, delay),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 3600.0f,
+     .step = 0.05f},
+    {.name = "limit",
+     .label = "Times",
+     .tooltip = "Firings per session; 0 is unlimited",
+     .zero_label = "Unlimited",
+     .offset = TYPE_OFFSET(SceneIoConnection, limit),
+     .kind = VKR_PROPERTY_U32,
+     .min = 1.0f,
+     .max = 1000000.0f},
+};
+
+const VkrTypeDesc vkr_scene_io_connection_type = {
+    .name = "io_connection",
+    .label = "Connection",
+    .category = "Level",
+    .properties = s_io_connection_properties,
+    .property_count = ArrayCount(s_io_connection_properties),
+    .size = sizeof(SceneIoConnection),
+    .align = _Alignof(SceneIoConnection),
+};
+
 static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_environment_type,
     &vkr_scene_atmosphere_type,
@@ -1807,6 +2044,11 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_player_start_type,
     &vkr_scene_brush_type,
     &vkr_scene_brush_face_type,
+    &vkr_scene_trigger_type,
+    &vkr_scene_relay_type,
+    &vkr_scene_timer_type,
+    &vkr_scene_counter_type,
+    &vkr_scene_io_connection_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -1871,5 +2113,8 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_animation_settings_type ||
          type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
          type == &vkr_scene_player_start_type ||
-         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type;
+         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
+         type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
+         type == &vkr_scene_timer_type || type == &vkr_scene_counter_type ||
+         type == &vkr_scene_io_connection_type;
 }

@@ -127,7 +127,9 @@ supported solid bodies; it does not make discrete sensors continuous.
 
 Scenes may also hold generated static and sensor bodies, such as brush
 collision, that the scene builds from authored data and never stores
-([ADR-084](084-agent-channel-and-level-design-toolkit.md)).
+([ADR-084](084-agent-channel-and-level-design-toolkit.md)). They count as
+bodies for stepping, and each keeps a copy of its colliders so a reset
+rebuilds it in the replacement world.
 
 CharacterVirtual capsules share the native world and scene lifetime.
 [ADR-073](073-native-gameplay-foundation.md) owns their C interface, reset,

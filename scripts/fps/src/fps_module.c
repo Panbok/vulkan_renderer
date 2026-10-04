@@ -371,7 +371,8 @@ static void fps_late_update(VkrCtx *ctx, FpsModule *module, float32_t dt) {
 }
 
 VKR_MODULE(fps, FpsModule,
-           VKR_EXPORT_COMPONENT(fps_player) VKR_EXPORT_COMPONENT(fps_weapon),
+           VKR_EXPORT_COMPONENT(fps_player) VKR_EXPORT_COMPONENT(fps_weapon)
+               VKR_EXPORT_BEHAVIOR(fps_door),
            .scope = VKR_SCOPE_WORLD, .data_version = 3, .start = fps_start,
            .stop = fps_stop, .update = fps_update,
            .late_update = fps_late_update, .fixed_update = fps_fixed_update,

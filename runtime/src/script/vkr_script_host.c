@@ -119,6 +119,63 @@ static bool8_t script_type_fill(VkrScriptHost *host, VkrTypeDesc *copy,
   return copy->name != NULL;
 }
 
+/* The port kind of an SDK value kind. */
+static uint32_t script_port_kind(VkrIoKind kind) {
+  return kind == VKR_IO_NONE ? VKR_IO_PORT_NONE : s_field_kinds[kind - 1u];
+}
+
+static const VkrIoPort *script_copy_ports(VkrScriptHost *host,
+                                          const VkrIoPortDesc *ports) {
+  uint32_t count = 0u;
+  while (ports && ports[count].name) {
+    ++count;
+  }
+  if (!count) {
+    return NULL;
+  }
+  VkrIoPort *copy =
+      vkr_allocator_alloc(host->allocator, sizeof(*copy) * (count + 1u),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!copy) {
+    return NULL;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    copy[i] = (VkrIoPort){.name = script_copy_text(host, ports[i].name),
+                          .label = script_copy_text(host, ports[i].label),
+                          .kind = script_port_kind(ports[i].kind)};
+  }
+  copy[count] = (VkrIoPort){0};
+  return copy;
+}
+
+/* A type copy declares the outputs and inputs of the behavior that runs on
+ * its component, so Details and connections see them without a session. */
+static void script_type_ports(VkrScriptHost *host, VkrTypeDesc *copy,
+                              const VkrModuleDesc *desc,
+                              const VkrComponentDesc *source) {
+  copy->outputs = NULL;
+  copy->inputs = NULL;
+  for (uint32_t b = 0; b < desc->behavior_count; ++b) {
+    const VkrBehaviorDesc *behavior = desc->behaviors[b];
+    if (behavior->component == source) {
+      copy->outputs = script_copy_ports(host, behavior->outputs);
+      copy->inputs = script_copy_ports(host, behavior->inputs);
+    }
+  }
+}
+
+/* An output or input list: named, of known kinds, inputs with handlers, at
+   most VKR_SDK_EXPORT_MAX long. */
+static bool8_t script_ports_valid(const VkrIoPortDesc *ports, bool8_t inputs) {
+  for (uint32_t i = 0; ports && ports[i].name; ++i) {
+    if (i == VKR_SDK_EXPORT_MAX || (uint32_t)ports[i].kind > VKR_IO_ENTITY ||
+        (inputs && !ports[i].handler)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* Documents and live components keep their bytes across a reload, so a
  * reloaded type must store the same fields at the same places. */
 static bool8_t script_type_same_layout(const VkrTypeDesc *left,
@@ -1052,6 +1109,139 @@ static void script_lifetimes_owner_destroyed(VkrScriptHost *host,
   }
 }
 
+// =============================================================================
+// Entity IO hooks (vkr_io_router.h)
+// =============================================================================
+
+/* Calls `call` for each started binding on `entity` whose behavior's
+   component is `type`, or any component when `type` is NULL. */
+typedef bool8_t (*ScriptBindingVisit)(VkrScriptHost *host,
+                                      VkrScriptInstance *instance,
+                                      ScriptBinding *binding,
+                                      const VkrBehaviorDesc *behavior,
+                                      void *context);
+
+static bool8_t script_visit_bindings(VkrScriptHost *host, VkrScene *scene,
+                                     VkrEntityId entity,
+                                     const VkrTypeDesc *type,
+                                     ScriptBindingVisit visit, void *context) {
+  bool8_t visited = false_v;
+  for (uint32_t i = 0; i < host->instance_count && !host->faulted; ++i) {
+    VkrScriptInstance *instance = host->instances[i];
+    const VkrModuleDesc *desc = script_instance_desc(host, instance);
+    if (!script_instance_callable(host, instance)) {
+      continue;
+    }
+    for (uint32_t b = 0; b < desc->behavior_count; ++b) {
+      const VkrTypeDesc *behavior_type =
+          script_resolve_type(host, desc->behaviors[b]->component);
+      const VkrComponentTypeId id = vkr_scene_type_id(scene, behavior_type);
+      if ((type && behavior_type != type) || id == VKR_COMPONENT_TYPE_INVALID ||
+          !vkr_entity_has_component(scene->world, entity, id)) {
+        continue;
+      }
+      ScriptBinding *binding = script_binding_find(instance, b, entity.u64);
+      if (binding && binding->started) {
+        visited |= visit(host, instance, binding, desc->behaviors[b], context);
+      }
+    }
+    if (instance->failed) {
+      host->faulted = true_v;
+      vkr_scene_physics_set_paused(host->session.active, true_v);
+    }
+  }
+  return visited;
+}
+
+typedef struct ScriptIoCall {
+  uint32_t port;
+  const VkrIoValue *value;
+  VkrEntity other;
+  bool8_t enter;
+} ScriptIoCall;
+
+static bool8_t script_io_input_visit(VkrScriptHost *host,
+                                     VkrScriptInstance *instance,
+                                     ScriptBinding *binding,
+                                     const VkrBehaviorDesc *behavior,
+                                     void *context) {
+  const ScriptIoCall *io = context;
+  uint32_t count = 0u;
+  while (behavior->inputs && behavior->inputs[count].name) {
+    ++count;
+  }
+  if (io->port >= count) {
+    return false_v;
+  }
+  ScriptCall call;
+  script_call_begin(host, instance, &binding->ledger, VKR_SCRIPT_PHASE_FRAME,
+                    &call);
+  behavior->inputs[io->port].handler(
+      &instance->ctx.base, (VkrEntity){.id = binding->entity},
+      script_binding_component(host, instance, binding), io->value);
+  (void)script_call_end(host, instance, &call);
+  return true_v;
+}
+
+static bool8_t script_io_input(void *context, VkrScene *scene,
+                               VkrEntityId target, const VkrTypeDesc *type,
+                               uint32_t input, const VkrIoValue *value) {
+  ScriptIoCall io = {.port = input, .value = value};
+  return script_visit_bindings(context, scene, target, type,
+                               script_io_input_visit, &io);
+}
+
+static bool8_t script_io_trigger_visit(VkrScriptHost *host,
+                                       VkrScriptInstance *instance,
+                                       ScriptBinding *binding,
+                                       const VkrBehaviorDesc *behavior,
+                                       void *context) {
+  const ScriptIoCall *io = context;
+  void (*hook)(VkrCtx *, VkrEntity, void *, VkrEntity) =
+      io->enter ? behavior->trigger_enter : behavior->trigger_exit;
+  if (!hook) {
+    return false_v;
+  }
+  ScriptCall call;
+  script_call_begin(host, instance, &binding->ledger, VKR_SCRIPT_PHASE_FRAME,
+                    &call);
+  hook(&instance->ctx.base, (VkrEntity){.id = binding->entity},
+       script_binding_component(host, instance, binding), io->other);
+  (void)script_call_end(host, instance, &call);
+  return true_v;
+}
+
+static void script_io_trigger(void *context, VkrScene *scene,
+                              VkrEntityId entity, VkrEntityId other,
+                              bool8_t enter) {
+  ScriptIoCall io = {.other = (VkrEntity){.id = other.u64}, .enter = enter};
+  (void)script_visit_bindings(context, scene, entity, NULL,
+                              script_io_trigger_visit, &io);
+}
+
+static void script_io_destroy(void *context, VkrScene *scene,
+                              VkrEntityId entity) {
+  (void)scene;
+  script_entity_destroy(context, entity.u64);
+}
+
+void vkr_script_host_set_io_trace(VkrScriptHost *host, bool8_t trace) {
+  host->io.trace = trace;
+}
+
+bool8_t vkr_script_host_io_send(VkrScriptHost *host, VkrEntityId target,
+                                VkrIoEndpoint input, const VkrIoValue *value) {
+  if (!host->started || host->faulted) {
+    return false_v;
+  }
+  const VkrScriptPhase phase = host->phase;
+  host->phase = VKR_SCRIPT_PHASE_FRAME;
+  const bool8_t sent =
+      vkr_io_router_send(&host->io, target, input, value, false_v);
+  host->phase = phase;
+  return sent;
+}
+
 /* After each completed tick, outside its read scope: queued edits apply in
  * order, then expired spawns go. */
 static void script_host_after_tick(VkrScene *scene, uint64_t tick,
@@ -1061,6 +1251,17 @@ static void script_host_after_tick(VkrScene *scene, uint64_t tick,
   VkrScriptHost *host = context;
   script_commands_flush(host);
   script_lifetimes_update(host);
+  /* Entity IO after the tick's own edits, where inputs may spawn and
+     destroy. A fault stops the session as a failed hook does. */
+  const VkrScriptPhase phase = host->phase;
+  host->phase = VKR_SCRIPT_PHASE_FRAME;
+  if (!host->faulted &&
+      !vkr_io_router_tick(&host->io, scene, script_sim_time(host))) {
+    snprintf(host->error, sizeof(host->error), "Entity IO: %s", host->io.error);
+    host->faulted = true_v;
+    vkr_scene_physics_set_paused(host->session.active, true_v);
+  }
+  host->phase = phase;
 }
 
 /* Keeps entity IDs free so spawns in a tick never grow a directory. */
@@ -1243,6 +1444,12 @@ static const char *script_validate(const VkrModuleDesc *desc) {
       }
     }
   }
+  for (uint32_t b = 0; b < desc->behavior_count; ++b) {
+    if (!script_ports_valid(desc->behaviors[b]->outputs, false_v) ||
+        !script_ports_valid(desc->behaviors[b]->inputs, true_v)) {
+      return "Script behavior outputs or inputs are invalid";
+    }
+  }
   VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
   if (script_module_components(desc, types) > VKR_SDK_EXPORT_MAX) {
     return "Script module declares more than 64 component types";
@@ -1330,8 +1537,11 @@ static const char *script_register(VkrScriptHost *host, const char *name,
   for (uint32_t i = 0; i < type_count; ++i) {
     VkrTypeDesc *copy = vkr_allocator_alloc(host->allocator, sizeof(*copy),
                                             VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-    if (!copy || !script_type_fill(host, copy, types[i]) ||
-        !vkr_scene_register_world_type(copy)) {
+    const bool8_t filled = copy && script_type_fill(host, copy, types[i]);
+    if (filled) {
+      script_type_ports(host, copy, desc, types[i]);
+    }
+    if (!filled || !vkr_scene_register_world_type(copy)) {
       /* Earlier copies stay registered: the scene type table has no
          removal. Their module never becomes callable. */
       return "Script component type registration failed";
@@ -1353,6 +1563,8 @@ bool8_t vkr_script_host_init(VkrScriptHost *host, VkrAllocator *allocator) {
     return false_v;
   }
   host->instance_allocator = (VkrAllocator){.ctx = &host->memory};
+  /* Play prints each IO delivery until io.trace turns it off. */
+  host->io.trace = true_v;
   vkr_dmemory_allocator_create(&host->instance_allocator);
   host->temp = arena_create(SCRIPT_TEMP_RESERVE, SCRIPT_TEMP_COMMIT);
   host->command_arena =
@@ -1409,6 +1621,7 @@ static void script_swap(VkrScriptHost *host, VkrScriptModule *module,
     if (script_type_fill(host, copy, types[i])) {
       /* The registered name stays the pointer scenes compare. */
       copy->name = kept.name;
+      script_type_ports(host, copy, desc, types[i]);
     } else {
       *copy = kept;
     }
@@ -1903,8 +2116,11 @@ static bool8_t script_instance_needs_ticks(const VkrScriptHost *host,
     return true_v;
   }
   for (uint32_t b = 0; b < desc->behavior_count; ++b) {
+    /* Trigger hooks and inputs run after ticks, through the router. */
     if (desc->behaviors[b]->fixed_update ||
-        desc->behaviors[b]->late_fixed_update) {
+        desc->behaviors[b]->late_fixed_update ||
+        desc->behaviors[b]->trigger_enter || desc->behaviors[b]->trigger_exit ||
+        desc->behaviors[b]->inputs) {
       return true_v;
     }
   }
@@ -1940,6 +2156,19 @@ static bool8_t script_instances_push(VkrScriptHost *host,
  * enabled instances need. */
 static const char *script_session_begin(VkrScriptHost *host) {
   script_reserve_spawns(host);
+  /* Connections resolve before any hook can fire an output. */
+  VkrScene *scenes[VKR_SCRIPT_CONTAINER_MAX];
+  for (uint32_t c = 0; c < host->container_count; ++c) {
+    scenes[c] = host->containers[c].scene;
+  }
+  const VkrIoRouterHooks io_hooks = {.context = host,
+                                     .script_input = script_io_input,
+                                     .trigger_hook = script_io_trigger,
+                                     .destroy = script_io_destroy};
+  if (!vkr_io_router_publish(&host->io, scenes, host->container_count,
+                             &io_hooks, &host->instance_allocator)) {
+    return "Entity IO storage could not be reserved";
+  }
   for (uint32_t m = 0; m < host->module_count; ++m) {
     const VkrScriptModule *module = &host->modules[m];
     if (!module->desc || module->retired) {
@@ -2003,7 +2232,7 @@ static const char *script_session_begin(VkrScriptHost *host) {
     }
     host->observing_input = true_v;
   }
-  if (ticks) {
+  if (ticks || vkr_io_router_active(&host->io)) {
     const VkrSceneSimulationCallbacks callbacks = {
         .before_physics = script_host_before_physics,
         .after_physics = script_host_after_physics,
@@ -2040,6 +2269,7 @@ static void script_session_teardown(VkrScriptHost *host) {
     host->observing_input = false_v;
   }
   script_session_end(host);
+  vkr_io_router_clear(&host->io);
 }
 
 bool8_t vkr_script_host_start(VkrScriptHost *host,

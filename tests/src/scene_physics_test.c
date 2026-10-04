@@ -3,6 +3,7 @@
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_scene_physics.h"
+#include "renderer/systems/vkr_scene_simulation.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include <assert.h>
 #include <math.h>
@@ -289,6 +290,67 @@ static void physics_test_empty_finalize(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+static void physics_test_after_tick(VkrScene *scene, uint64_t tick,
+                                    void *context) {
+  (void)scene;
+  (void)tick;
+  (void)context;
+}
+
+/* Generated bodies alone (brush collision, trigger sensors) step the scene,
+ * report sensor pairs, and come back after a reset rebuilds the world. */
+static void physics_test_generated(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 9, 16, NULL));
+  const char *error = NULL;
+  const VkrEntityId sensor = physics_test_entity(&scene, vec3_zero());
+  const VkrEntityId floor = physics_test_entity(&scene, vec3_zero());
+  const VkrEntityId walker = physics_test_entity(&scene, vec3_zero());
+  VkrPhysicsColliderDesc box = {.entity_id = sensor.u64,
+                                .shape = VKR_PHYSICS_BOX,
+                                .position = {0, 1, 0},
+                                .rotation = {0, 0, 0, 1},
+                                .scale = {1, 1, 1},
+                                .half_extent = {1, 1, 1},
+                                .enabled = true_v};
+  assert(vkr_scene_physics_generated_set(&scene, 1u, sensor, &box, 1u, true_v,
+                                         &error));
+  box.entity_id = floor.u64;
+  box.position[1] = -10.0f;
+  box.half_extent[1] = 0.5f;
+  assert(vkr_scene_physics_generated_set(&scene, 2u, floor, &box, 1u, false_v,
+                                         &error));
+  const VkrPhysicsCharacterDesc settings = vkr_physics_character_default();
+  const Vec3 foot = vec3_new(0, 0.5f, 0);
+  assert(vkr_scene_character_create(&scene, walker, &settings, &foot, &error));
+  assert(vkr_scene_physics_body_count(&scene) == 0u);
+  /* A session's callbacks run the clock, as the script host's do. */
+  const VkrSceneSimulationCallbacks callbacks = {.after_tick =
+                                                     physics_test_after_tick};
+  assert(vkr_scene_simulation_configure(&scene, &callbacks, &error));
+  vkr_scene_physics_set_paused(&scene, false_v);
+  for (uint32_t i = 0; i < 3u; ++i) {
+    vkr_scene_update(&scene, VKR_SCENE_PHYSICS_FIXED_DT);
+  }
+  VkrPhysicsSensorEvent events[8];
+  uint32_t count = 0u;
+  assert(vkr_scene_physics_sensor_events(&scene, events, 8u, &count));
+  assert(count == 1u && events[0].began);
+  assert(
+      (events[0].entity_a == sensor.u64 && events[0].entity_b == walker.u64) ||
+      (events[0].entity_b == sensor.u64 && events[0].entity_a == walker.u64));
+
+  /* After a reset the generated floor still stops a ray. */
+  vkr_scene_physics_set_paused(&scene, true_v);
+  assert(vkr_scene_physics_reset(&scene, &error));
+  assert(vkr_scene_simulation_detach(&scene, NULL));
+  VkrPhysicsRayHit hit;
+  assert(vkr_scene_physics_raycast(&scene, vec3_new(0, -5, 0),
+                                   vec3_new(0, -10, 0), &hit));
+  assert(hit.entity_id == floor.u64);
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
   physics_test_descriptors();
@@ -298,6 +360,7 @@ bool32_t run_scene_physics_tests(void) {
   vkr_dmemory_allocator_create(&allocator);
   physics_test_world_gravity(&allocator);
   physics_test_empty_finalize(&allocator);
+  physics_test_generated(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));
   VkrEntityId owner = physics_test_entity(&scene, vec3_new(0, 10, 0));

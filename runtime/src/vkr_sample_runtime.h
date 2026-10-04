@@ -43,6 +43,25 @@ typedef struct VkrSamplePhysicsRequest {
   bool8_t body_disabled;
 } VkrSamplePhysicsRequest;
 
+/* Entity IO during a session (ADR-084): one input sent to an entity as a
+   connection would, or the `[io]` trace switched. The runtime answers in
+   VkrSampleIoResult with the same token. */
+typedef struct VkrSampleIoRequest {
+  uint64_t token;
+  VkrEntityId target;
+  char input[64];
+  char value[64];
+  bool8_t send;
+  bool8_t set_trace;
+  bool8_t trace;
+} VkrSampleIoRequest;
+
+typedef struct VkrSampleIoResult {
+  uint64_t token;
+  bool8_t ok;
+  char message[160];
+} VkrSampleIoResult;
+
 typedef enum VkrSampleCameraView {
   VKR_SAMPLE_CAMERA_PERSPECTIVE = 0,
   VKR_SAMPLE_CAMERA_TOP,
@@ -406,6 +425,8 @@ typedef struct VkrSampleUiFrame {
   VkrSampleViewState view_state;
   VkrSampleViewRequest *view_request;
   VkrSamplePhysicsRequest *physics_request;
+  VkrSampleIoRequest *io_request;
+  const VkrSampleIoResult *io_result;
   bool8_t mapping_valid;
   bool8_t scene_only;
   bool8_t mouse_captured;

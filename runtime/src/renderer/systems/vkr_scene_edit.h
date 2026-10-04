@@ -63,6 +63,9 @@ typedef struct VkrSceneEditValues {
   /* VKR_SCENE_EDIT_COMPONENT: a registered world type and its bytes. */
   const VkrTypeDesc *component_type;
   _Alignas(16) uint8_t component[VKR_TYPE_VALUE_MAX];
+  /* Creation only: the new entity's document-stable id, chosen ahead so a
+     batch can reference it; zero makes a fresh one. Reads leave it zero. */
+  VkrEntityRef ref;
 } VkrSceneEditValues;
 
 typedef struct VkrSceneEditRequest {

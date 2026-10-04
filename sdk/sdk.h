@@ -70,7 +70,7 @@
 #include <stdio.h>
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 5u
+#define VKR_SDK_VERSION 6u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -449,6 +449,61 @@ typedef struct VkrAnimSample {
   float32_t weight;
 } VkrAnimSample;
 
+// =============================================================================
+// Entity IO
+// =============================================================================
+
+/** What an output carries or an input takes: nothing, or one value of a
+ * field kind. VKR_IO_ENTITY carries a live entity. */
+typedef enum VkrIoKind {
+  VKR_IO_NONE = 0,
+  VKR_IO_BOOL,
+  VKR_IO_I32,
+  VKR_IO_U32,
+  VKR_IO_F32,
+  VKR_IO_ANGLE,
+  VKR_IO_VEC2,
+  VKR_IO_VEC3,
+  VKR_IO_VEC4,
+  VKR_IO_QUAT,
+  VKR_IO_COLOR,
+  VKR_IO_DIRECTION,
+  VKR_IO_ENUM,
+  VKR_IO_ENTITY,
+} VkrIoKind;
+
+/** One value an output fired or an input received. */
+typedef struct VkrIoValue {
+  VkrIoKind kind;
+  union {
+    bool8_t boolean;
+    int32_t i32;
+    uint32_t u32;
+    float32_t f32;
+    /* VEC2 to QUAT, COLOR and DIRECTION. */
+    Vec4 vector;
+    VkrEntity entity;
+  };
+} VkrIoValue;
+
+/** An input's handler: `component` is the receiving behavior's component. */
+typedef void (*VkrIoInputFn)(VkrCtx *ctx, VkrEntity self, void *component,
+                             const VkrIoValue *value);
+
+/** One output (without handler) or input of a behavior. Lists end with a
+ * NULL name; VKR_OUTPUTS and VKR_INPUTS build them. */
+typedef struct VkrIoPortDesc {
+  const char *name;
+  const char *label;
+  VkrIoKind kind;
+  VkrIoInputFn handler;
+} VkrIoPortDesc;
+
+/** An input resolved by vkr_io_input(); zero is none. */
+typedef struct VkrIoInput {
+  uint32_t id;
+} VkrIoInput;
+
 /** Runtime-only per-entity data, never saved or edited. */
 typedef struct VkrStateType {
   uint32_t id;
@@ -473,6 +528,15 @@ typedef struct VkrBehaviorDesc {
                       float32_t dt);
   void (*fixed_update)(VkrCtx *ctx, VkrEntity self, void *component);
   void (*late_fixed_update)(VkrCtx *ctx, VkrEntity self, void *component);
+  /** Something entered or left a sensor on this entity, or this entity
+   * entered or left a sensor: `other` is the other side. */
+  void (*trigger_enter)(VkrCtx *ctx, VkrEntity self, void *component,
+                        VkrEntity other);
+  void (*trigger_exit)(VkrCtx *ctx, VkrEntity self, void *component,
+                       VkrEntity other);
+  /** Outputs its code fires and inputs connections may call. */
+  const VkrIoPortDesc *outputs;
+  const VkrIoPortDesc *inputs;
 } VkrBehaviorDesc;
 
 typedef struct VkrModuleDesc {
@@ -639,6 +703,14 @@ typedef struct VkrSdkTable {
 
   /* Entity references. */
   VkrEntity (*resolve)(VkrCtx *ctx, VkrEntity owner, VkrEntityRef ref);
+
+  /* Entity IO. */
+  bool8_t (*io_fire)(VkrCtx *ctx, VkrEntity self, const VkrComponentDesc *type,
+                     uint32_t output, const VkrIoValue *value);
+  VkrIoInput (*io_input)(VkrCtx *ctx, const VkrComponentDesc *type,
+                         const char *name);
+  bool8_t (*io_send)(VkrCtx *ctx, VkrEntity target, VkrIoInput input,
+                     const VkrIoValue *value);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -891,6 +963,29 @@ static inline uint32_t vkr_find_in(VkrCtx *ctx, VkrContainer container,
 static inline VkrEntity vkr_resolve(VkrCtx *ctx, VkrEntity owner,
                                     VkrEntityRef ref) {
   return ctx->sdk->resolve(ctx, owner, ref);
+}
+
+/** Fires output `output` (VKR_OUTPUT_ID) of `self`'s component `type`:
+ * every connection from it delivers to its target through the router after
+ * the current tick, or at once outside one. `value` may be NULL. */
+static inline bool8_t vkr_io_fire(VkrCtx *ctx, VkrEntity self,
+                                  const VkrComponentDesc *type, uint32_t output,
+                                  const VkrIoValue *value) {
+  return ctx->sdk->io_fire(ctx, self, type, output, value);
+}
+
+/** Input `name` of component `type`, or of every entity (`show`, `hide`,
+ * `destroy`) when `type` is NULL. Resolve once, in `start`. */
+static inline VkrIoInput vkr_io_input(VkrCtx *ctx, const VkrComponentDesc *type,
+                                      const char *name) {
+  return ctx->sdk->io_input(ctx, type, name);
+}
+
+/** Calls `input` on `target` through the router, as a connection would, as
+ * Source's ent_fire does. */
+static inline bool8_t vkr_io_send(VkrCtx *ctx, VkrEntity target,
+                                  VkrIoInput input, const VkrIoValue *value) {
+  return ctx->sdk->io_send(ctx, target, input, value);
 }
 
 /** A runtime-only per-entity data type, registered once by name. */
@@ -1225,7 +1320,18 @@ static inline bool8_t vkr_task_wait(VkrCtx *ctx, VkrTask task, void *out,
  * VKR_BEHAVIOR(name, hooks...) gives component `name` the hooks
  * `.start`, `.stop`, `.destroy`, `.update`, `.late_update`, `.fixed_update`
  * and `.late_fixed_update`, each taking `(VkrCtx *, VkrEntity self, Type *)`
- * and update hooks also the frame's `float32_t dt`.
+ * and update hooks also the frame's `float32_t dt`; `.trigger_enter` and
+ * `.trigger_exit` also take the other `VkrEntity`. `.outputs` and `.inputs`
+ * name the lists VKR_OUTPUTS(name, ...) and VKR_INPUTS(name, ...) declare:
+ *
+ *   VKR_OUTPUTS(door, VKR_OUTPUT(opened, "On opened", NONE))
+ *   static void door_open(VkrCtx *ctx, VkrEntity self, Door *door,
+ *                         const VkrIoValue *value) {
+ *     VKR_FIRE(ctx, self, door, opened, NULL);
+ *   }
+ *   VKR_INPUTS(door, VKR_INPUT(open, "Open", NONE, door_open))
+ *   VKR_BEHAVIOR(door, .update = door_update, .outputs = door_outputs,
+ *                .inputs = door_inputs)
  *
  * VKR_MODULE(Name, Data, EXPORTS, options...) defines the entry point.
  * EXPORTS is a sequence of VKR_EXPORT_COMPONENT(name) and
@@ -1340,6 +1446,12 @@ typedef struct VkrNoData {
                         float32_t dt);                                         \
     void (*fixed_update)(VkrCtx *ctx, VkrEntity self, Type_ *component);       \
     void (*late_fixed_update)(VkrCtx *ctx, VkrEntity self, Type_ *component);  \
+    void (*trigger_enter)(VkrCtx *ctx, VkrEntity self, Type_ *component,       \
+                          VkrEntity other);                                    \
+    void (*trigger_exit)(VkrCtx *ctx, VkrEntity self, Type_ *component,        \
+                         VkrEntity other);                                     \
+    const VkrIoPortDesc *(*outputs)(void);                                     \
+    const VkrIoPortDesc *(*inputs)(void);                                      \
   } id_##_behavior_hooks;                                                      \
   typedef Type_ id_##_component_type;
 // clang-format on
@@ -1406,6 +1518,14 @@ typedef struct VkrNoData {
                                            void *c) {                          \
     id_##_hooks.late_fixed_update(ctx, self, (id_##_component_type *)c);       \
   }                                                                            \
+  static void id_##_hook_trigger_enter(VkrCtx *ctx, VkrEntity self, void *c,   \
+                                       VkrEntity other) {                      \
+    id_##_hooks.trigger_enter(ctx, self, (id_##_component_type *)c, other);    \
+  }                                                                            \
+  static void id_##_hook_trigger_exit(VkrCtx *ctx, VkrEntity self, void *c,    \
+                                      VkrEntity other) {                       \
+    id_##_hooks.trigger_exit(ctx, self, (id_##_component_type *)c, other);     \
+  }                                                                            \
   static const VkrBehaviorDesc *id_##_behavior(void) {                         \
     static VkrBehaviorDesc behavior;                                           \
     behavior = (VkrBehaviorDesc){                                              \
@@ -1421,9 +1541,110 @@ typedef struct VkrNoData {
         .late_fixed_update = id_##_hooks.late_fixed_update                     \
                                  ? id_##_hook_late_fixed_update                \
                                  : NULL,                                       \
+        .trigger_enter =                                                       \
+            id_##_hooks.trigger_enter ? id_##_hook_trigger_enter : NULL,       \
+        .trigger_exit =                                                        \
+            id_##_hooks.trigger_exit ? id_##_hook_trigger_exit : NULL,         \
+        .outputs = id_##_hooks.outputs ? id_##_hooks.outputs() : NULL,         \
+        .inputs = id_##_hooks.inputs ? id_##_hooks.inputs() : NULL,            \
     };                                                                         \
     return &behavior;                                                          \
   }
+
+/* An output or input list is a sequence of tuples: VKR_OUTPUT(name, label,
+   KIND) and VKR_INPUT(name, label, KIND, handler), KIND being NONE or a
+   VkrIoKind suffix such as F32 or ENTITY. */
+#define VKR_OUTPUT(...) (__VA_ARGS__)
+#define VKR_INPUT(...) (__VA_ARGS__)
+
+#define VKR_SDK_OUTPUT_ID_(name_, label_, kind_) uint8_t name_;
+#define VKR_SDK_OUTPUT_IDS_A_(...)                                             \
+  VKR_SDK_OUTPUT_ID_(__VA_ARGS__) VKR_SDK_OUTPUT_IDS_B_
+#define VKR_SDK_OUTPUT_IDS_B_(...)                                             \
+  VKR_SDK_OUTPUT_ID_(__VA_ARGS__) VKR_SDK_OUTPUT_IDS_A_
+#define VKR_SDK_OUTPUT_IDS_A__END
+#define VKR_SDK_OUTPUT_IDS_B__END
+#define VKR_SDK_OUTPUT_IDS_(ports)                                             \
+  VKR_SDK_CAT_(VKR_SDK_OUTPUT_IDS_A_ ports, _END)
+
+#define VKR_SDK_OUTPUT_DESC_(name_, label_, kind_)                             \
+  if (count < VKR_SDK_EXPORT_MAX) {                                            \
+    ports[count++] = ((VkrIoPortDesc){#name_, label_, VKR_IO_##kind_, NULL});  \
+  }
+#define VKR_SDK_OUTPUT_DESCS_A_(...)                                           \
+  VKR_SDK_OUTPUT_DESC_(__VA_ARGS__) VKR_SDK_OUTPUT_DESCS_B_
+#define VKR_SDK_OUTPUT_DESCS_B_(...)                                           \
+  VKR_SDK_OUTPUT_DESC_(__VA_ARGS__) VKR_SDK_OUTPUT_DESCS_A_
+#define VKR_SDK_OUTPUT_DESCS_A__END
+#define VKR_SDK_OUTPUT_DESCS_B__END
+#define VKR_SDK_OUTPUT_DESCS_(ports)                                           \
+  VKR_SDK_CAT_(VKR_SDK_OUTPUT_DESCS_A_ ports, _END)
+
+/* An input's handler takes `(VkrCtx *, VkrEntity self, Type *, const
+   VkrIoValue *)`; its trampoline passes the erased component, which converts
+   to `Type *` as an argument. One handler serves one input. */
+#define VKR_SDK_INPUT_TRAMPOLINE_(name_, label_, kind_, handler_)              \
+  static void vkr_sdk_input_##handler_(VkrCtx *ctx, VkrEntity self, void *c,   \
+                                       const VkrIoValue *value) {              \
+    handler_(ctx, self, c, value);                                             \
+  }
+#define VKR_SDK_INPUT_TRAMPOLINES_A_(...)                                      \
+  VKR_SDK_INPUT_TRAMPOLINE_(__VA_ARGS__) VKR_SDK_INPUT_TRAMPOLINES_B_
+#define VKR_SDK_INPUT_TRAMPOLINES_B_(...)                                      \
+  VKR_SDK_INPUT_TRAMPOLINE_(__VA_ARGS__) VKR_SDK_INPUT_TRAMPOLINES_A_
+#define VKR_SDK_INPUT_TRAMPOLINES_A__END
+#define VKR_SDK_INPUT_TRAMPOLINES_B__END
+#define VKR_SDK_INPUT_TRAMPOLINES_(ports)                                      \
+  VKR_SDK_CAT_(VKR_SDK_INPUT_TRAMPOLINES_A_ ports, _END)
+
+#define VKR_SDK_INPUT_DESC_(name_, label_, kind_, handler_)                    \
+  if (count < VKR_SDK_EXPORT_MAX) {                                            \
+    ports[count++] = ((VkrIoPortDesc){#name_, label_, VKR_IO_##kind_,          \
+                                      vkr_sdk_input_##handler_});              \
+  }
+#define VKR_SDK_INPUT_DESCS_A_(...)                                            \
+  VKR_SDK_INPUT_DESC_(__VA_ARGS__) VKR_SDK_INPUT_DESCS_B_
+#define VKR_SDK_INPUT_DESCS_B_(...)                                            \
+  VKR_SDK_INPUT_DESC_(__VA_ARGS__) VKR_SDK_INPUT_DESCS_A_
+#define VKR_SDK_INPUT_DESCS_A__END
+#define VKR_SDK_INPUT_DESCS_B__END
+#define VKR_SDK_INPUT_DESCS_(ports)                                            \
+  VKR_SDK_CAT_(VKR_SDK_INPUT_DESCS_A_ ports, _END)
+
+/* Declares component `id_`'s outputs, listed by `id_##_outputs()`, and
+   their indices; VKR_OUTPUT_ID(id_, name) is one index, checked when it
+   compiles. Lists are built on first use, as field lists are. */
+#define VKR_OUTPUTS(id_, ports_)                                               \
+  typedef struct id_##_output_ids {                                            \
+    VKR_SDK_OUTPUT_IDS_(ports_)                                                \
+  } id_##_output_ids;                                                          \
+  static const VkrIoPortDesc *id_##_outputs(void) {                            \
+    static VkrIoPortDesc ports[VKR_SDK_EXPORT_MAX + 1u];                       \
+    if (!ports[0].name) {                                                      \
+      uint32_t count = 0u;                                                     \
+      VKR_SDK_OUTPUT_DESCS_(ports_)                                            \
+    }                                                                          \
+    return ports;                                                              \
+  }
+#define VKR_OUTPUT_ID(id_, name_) ((uint32_t)offsetof(id_##_output_ids, name_))
+
+/* Declares component `id_`'s inputs, listed by `id_##_inputs()`, after
+   their handlers. */
+#define VKR_INPUTS(id_, ports_)                                                \
+  VKR_SDK_INPUT_TRAMPOLINES_(ports_)                                           \
+  static const VkrIoPortDesc *id_##_inputs(void) {                             \
+    static VkrIoPortDesc ports[VKR_SDK_EXPORT_MAX + 1u];                       \
+    if (!ports[0].name) {                                                      \
+      uint32_t count = 0u;                                                     \
+      VKR_SDK_INPUT_DESCS_(ports_)                                             \
+    }                                                                          \
+    return ports;                                                              \
+  }
+
+/* vkr_io_fire for output `name_` of component `id_`. */
+#define VKR_FIRE(ctx_, self_, id_, name_, value_)                              \
+  vkr_io_fire((ctx_), (self_), id_##_type(), VKR_OUTPUT_ID(id_, name_),        \
+              (value_))
 
 /* An export list is a sequence of (kind, name) tuples. */
 #define VKR_EXPORT_COMPONENT(id_) (COMPONENT, id_)

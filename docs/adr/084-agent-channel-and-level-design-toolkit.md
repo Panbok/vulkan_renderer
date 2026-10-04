@@ -7,11 +7,11 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The agent channel, brushes, brush editing and level
-checks (phases 0 to 2 of the
+Accepted (partial). The agent channel, brushes, brush editing, level
+checks and entity IO (phases 0 to 3 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
-implemented. IO, terrain and population remain in that proposal until they
-ship.
+implemented, except IO's Details sections and Scene lines. Terrain and
+population remain in that proposal until they ship.
 
 ## Context
 
@@ -279,6 +279,76 @@ lint over 40 m around the point the Scene's center looks at, lists issues
 nearest first with Focus, and marks them with crosses in the Scene while it
 is open.
 
+### Entity IO
+
+Entities talk through outputs and inputs, as Source's IO does. A type
+declares the outputs it fires and the inputs it handles on its descriptor
+(`VkrTypeDesc.outputs` and `.inputs`); the engine components in
+[vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)
+are:
+
+| Component | Outputs | Inputs |
+|---|---|---|
+| `trigger` (`enabled`, `once`, `filter` component) | `on_enter` and `on_exit` (the other entity), `on_empty` | `enable`, `disable`, `toggle` |
+| `relay` | `on_trigger` | `trigger`, `enable`, `disable` |
+| `timer` (`interval`, `start_running`, `once`) | `on_timer` | `start`, `stop`, `set_interval` |
+| `counter` (`start`, `min`, `max`) | `on_changed` (the value), `on_max`, `on_min` | `add`, `subtract`, `set` |
+| Every entity | none | `show`, `hide`, `destroy` |
+
+Script behaviors declare theirs with `VKR_OUTPUTS` and `VKR_INPUTS`
+([ADR-079](079-c-script-modules.md)); the host copies them onto its type
+copies, so connections and agents see them without a session. A
+connection is a child entity of its source with one `io_connection`: the
+output name, an `ENTITY` reference to a target in the same container
+([ADR-076](076-project-object-model.md)), the input name, an optional
+value as text that replaces the output's value, a delay in seconds and a
+fire limit. Names may carry their component, as `trigger.on_enter`.
+Connections and brush faces are parts (`vkr_scene_entity_is_part`): lists
+hide them and deleting the owner deletes them in the same journal group.
+
+The script host owns one router per session
+([vkr_io_router.c](../../runtime/src/script/vkr_io_router.c)):
+
+1. **Publication.** At session start it resolves every connection to its
+   source, target, ports and value, and reads the engine components' state.
+   An invalid connection is logged with its reason and never routes; a
+   zero-delay loop is a warning. The same check serves agents and the
+   editor (`vkr_io_connection_problem`).
+2. **After each tick**, after the tick's queued edits, it drains the
+   simulated scene's sensor events. It is then the only drain; outside a
+   session the sample runtime discards them. Each side of a pair gets its
+   behaviors' `trigger_enter` or `trigger_exit` hook, and a `trigger`
+   component turns filtered entries and exits into outputs. Due timers fire
+   next, then outputs scripts fired during the tick, in order.
+3. **Delivery.** Zero-delay deliveries run first in, first out; inputs may
+   spawn and destroy at once. A delayed delivery waits for the first tick at
+   or after its deadline in simulation time. Outside a tick, as from an
+   input handler, an editor request or a script's `update`, firing delivers
+   at once.
+4. **Bounds.** Queues hold 4,096 deliveries each and are reserved at
+   publication. More than 4,096 deliveries in one tick or a chain of more
+   than 64 zero-delay hops faults the session with the place it happened;
+   nothing is dropped or deferred silently. A delivery to a destroyed
+   target is dropped and counted.
+5. **Trace.** Each delivery logs
+   `[io] 12.350 Lobby trigger.on_enter(Player) -> Door A.open`; `io.trace`
+   turns it off.
+
+Physics serves triggers in two ways the toolkit needed. Sensors test
+character capsules directly, so the player enters triggers
+([ADR-073](073-native-gameplay-foundation.md)). Generated bodies count as
+bodies, so a scene whose only collision is brushes still steps. Each
+generated body keeps its own copy of its colliders, and a reset rebuilds it
+in the replacement world.
+
+Operations `io.connect` (`source`, `output`, `target`, `input`, `value`,
+`delay`, `limit`; a target the same batch creates is allowed, because a
+created entity's id is chosen when the batch builds), `io.disconnect`,
+`io.list` (an entity's ports, its connections and the incoming ones, each
+with its problem), `io.fire` (an input during Play) and `io.trace` serve
+agents and the Cmd bar's `op`. Any write operation takes `select` to select
+what it made.
+
 ## Consequences
 
 Agents and scripts reach every editor feature through typed operations, with
@@ -348,6 +418,17 @@ material then).
   Scene, `ui.click ... alt` selected a face, `ui.key alt+up` and a handle drag
   moved it by 0.25 m and 2.75 m, the clip tool split a brush, and the Level
   checks window listed and marked the course's issues.
+- `./build_test.sh` suite `io` covers delivery order, delay deadlines, fire
+  limits, a stale target after its slot was reused, the zero-delay chain
+  fault, counters with a built-in input, timers and publication problems;
+  suite `scene_physics` covers generated bodies stepping alone and
+  surviving a reset; suite `character` covers a sensor reporting a
+  character (2026-10-04, macOS Debug).
+- Headless macOS Release on Bistro (2026-10-04): one batch made a trigger
+  brush with `trigger`, a brush with the sample `door`, a Player Start
+  inside the trigger and an `io.connect` to the door's `open`. On
+  `sim.play` the spawned player's capsule entered the trigger and the door
+  rose 2.5 m; `io.fire` sent `close` and it returned.
 - Indicative cost, not a harness claim: the headless Release editor on an
   M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
   8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000

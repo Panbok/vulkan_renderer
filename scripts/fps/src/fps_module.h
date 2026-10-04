@@ -11,6 +11,20 @@
 
 VKR_COMPONENT_DECLARE(FpsWeaponBinding, fps_weapon, FPS_WEAPON_FIELDS)
 
+/* `door`: a sliding door that entity IO opens and closes (fps_door.c). */
+#define FPS_DOOR_FIELDS                                                        \
+  VKR_FIELD(VEC3, offset, "Open offset", vec3_new(0.0f, 2.5f, 0.0f),           \
+            .unit = "m",                                                       \
+            .tooltip = "How far the open door stands from the "                \
+                       "closed one, in its parent's space")                    \
+  VKR_FIELD(F32, speed, "Speed", 1.5f, .unit = "m/s", .min = 0.01f,            \
+            .max = 100.0f)                                                     \
+  VKR_FIELD(BOOL, locked, "Locked", false_v,                                   \
+            .tooltip = "A locked door ignores Open")
+
+VKR_COMPONENT_DECLARE(FpsDoor, door, FPS_DOOR_FIELDS)
+const VkrBehaviorDesc *fps_door_behavior(void);
+
 /* The FPS sample module: one World-scoped instance plays the active
  * container's `fps_player`, or a player spawned at its Player Start. */
 VKR_SDK_EXPORT const VkrModuleDesc *vkr_module_fps(uint32_t sdk_version);

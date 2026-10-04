@@ -14,6 +14,7 @@
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
+#include "script/vkr_io_router.h"
 #include "vkr_bakery_buffer.h"
 
 #include "stb_image_write.h"
@@ -77,6 +78,9 @@ typedef struct OpsBatch {
   VkrEntityId op_target[VKR_SAMPLE_EDIT_BATCH_MAX];
   String8 label;
   bool8_t review;
+  /* Select the first operation's entity once applied, as the editor's own
+     tools do. */
+  bool8_t select;
 } OpsBatch;
 
 /* An entity argument: an existing entity, or `item` of the batch. */
@@ -553,6 +557,11 @@ static VkrSampleEditBatchItem *ops_batch_add(OpsContext *ctx, OpsBatch *batch,
   item->request.container = container;
   item->entity_ref = -1;
   item->parent_ref = -1;
+  /* A created entity's id is known while the batch builds, so a later
+     operation of the batch can reference it, as io.connect does. */
+  if (action == VKR_SCENE_EDIT_CREATE) {
+    vkr_scene_entity_ref_generate(&item->request.values.ref);
+  }
   return item;
 }
 
@@ -755,7 +764,7 @@ static bool8_t ops_delete_tree(OpsContext *ctx, OpsBatch *batch,
     const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
     if (vkr_scene_entity_alive(scene, child) &&
         ops_parent(scene, child).u64 == entity.u64 &&
-        !vkr_scene_get_typed(scene, child, &vkr_scene_brush_face_type) &&
+        !vkr_scene_entity_is_part(scene, child) &&
         !ops_delete_tree(ctx, batch, scene, child, true_v, depth + 1u)) {
       return false_v;
     }
@@ -2432,15 +2441,23 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
     vkr_bakery_json_append(results, entry);
     ops_change_touch(&change, entity);
   }
-  /* A change lists objects; brush faces count as part of their brush. */
+  /* A change lists objects; faces and connections are parts of their
+     owner. */
   for (uint32_t i = 0; i < batch->count; ++i) {
     if (scene && result->created[i].u64 &&
-        !vkr_scene_get_typed(scene, result->created[i],
-                             &vkr_scene_brush_face_type)) {
+        !vkr_scene_entity_is_part(scene, result->created[i])) {
       ops_change_touch(&change, result->created[i]);
     }
   }
   ops_set(ctx, call->result, "results", results);
+  if (batch->select && batch->op_count && ctx->frame->scene_edit) {
+    VkrEntityId selected = batch->op_target[0];
+    if (batch->op_item[0] != UINT32_MAX) {
+      selected = result->created[batch->op_item[0]];
+    }
+    *ctx->frame->scene_edit = (VkrSceneEditRequest){
+        .action = VKR_SCENE_EDIT_SELECT, .entity = selected};
+  }
   VkrEditorOps *ops = ctx->ops;
   if (batch->review && ops->change_count < VKR_EDITOR_CHANGE_MAX) {
     change.id = ++ops->next_change_id;
@@ -2491,6 +2508,7 @@ static VkrEditorOpStatus ops_run_batch(OpsContext *ctx) {
   MemZero(batch, sizeof(*batch));
   batch->container = -1;
   batch->review = ops_arg_bool(call->args, "review", true_v);
+  batch->select = ops_arg_bool(call->args, "select", false_v);
   (void)vkr_bakery_json_get_string(call->args, "label", &batch->label);
   uint32_t index = 0u;
   for (const VkrBakeryJson *entry = list->first; entry;
@@ -2709,8 +2727,7 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
     const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
     if (!vkr_scene_entity_alive(scene, entity) ||
         (root.entity.u64 && !ops_under(scene, entity, root.entity)) ||
-        (!faces &&
-         vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type))) {
+        (!faces && vkr_scene_entity_is_part(scene, entity))) {
       continue;
     }
     Vec3 lo = {0};
@@ -2928,6 +2945,7 @@ static VkrEditorOpStatus ops_run_write(OpsContext *ctx, const OpsDef *def) {
   MemZero(batch, sizeof(*batch));
   batch->container = -1;
   batch->review = ops_arg_bool(call->args, "review", true_v);
+  batch->select = ops_arg_bool(call->args, "select", false_v);
   batch->label = call->op;
   if (!ops_build_one(ctx, def, call->args, batch)) {
     return VKR_EDITOR_OP_DONE;
@@ -3648,6 +3666,344 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
 #define OPS_VEC3_SCHEMA                                                        \
   "{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":3,"        \
   "\"maxItems\":3}"
+// =============================================================================
+// Entity IO (vkr_io_router.h)
+// =============================================================================
+
+static const char *ops_io_kind_name(uint32_t kind) {
+  static const char *const names[] = {
+      "bool", "i32",  "u32",   "f32",       "angle", "vec2",   "vec3",
+      "vec4", "quat", "color", "direction", "enum",  "string", "entity"};
+  return kind < ArrayCount(names) ? names[kind] : "none";
+}
+
+static VkrBakeryJson *ops_io_ports(OpsContext *ctx, const VkrScene *scene,
+                                   VkrEntityId entity, bool8_t inputs) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint32_t t = 0; t < scene->type_count; ++t) {
+    const VkrTypeDesc *type = scene->types[t].type;
+    const VkrIoPort *ports = inputs ? type->inputs : type->outputs;
+    if (!ports || !vkr_scene_get_typed(scene, entity, type)) {
+      continue;
+    }
+    for (uint32_t p = 0; ports[p].name; ++p) {
+      VkrBakeryJson *port = vkr_bakery_json_object(arena);
+      char name[160];
+      snprintf(name, sizeof(name), "%s.%s", type->name, ports[p].name);
+      ops_set(ctx, port, "name", vkr_bakery_json_cstr(arena, name));
+      ops_set(ctx, port, "label", vkr_bakery_json_cstr(arena, ports[p].label));
+      ops_set(ctx, port, "kind",
+              vkr_bakery_json_cstr(arena, ops_io_kind_name(ports[p].kind)));
+      vkr_bakery_json_append(list, port);
+    }
+  }
+  for (uint32_t p = 0; inputs && vkr_io_builtin_inputs[p].name; ++p) {
+    VkrBakeryJson *port = vkr_bakery_json_object(arena);
+    ops_set(ctx, port, "name",
+            vkr_bakery_json_cstr(arena, vkr_io_builtin_inputs[p].name));
+    ops_set(ctx, port, "label",
+            vkr_bakery_json_cstr(arena, vkr_io_builtin_inputs[p].label));
+    ops_set(ctx, port, "kind", vkr_bakery_json_cstr(arena, "none"));
+    vkr_bakery_json_append(list, port);
+  }
+  return list;
+}
+
+/* One connection as JSON: its ends, settings and why it does not route. */
+static VkrBakeryJson *ops_io_connection(OpsContext *ctx, const VkrScene *scene,
+                                        VkrEntityId connection) {
+  Arena *arena = ops_arena(ctx);
+  const SceneIoConnection *value =
+      vkr_scene_get_typed(scene, connection, &vkr_scene_io_connection_type);
+  VkrBakeryJson *object = vkr_bakery_json_object(arena);
+  ops_set(ctx, object, "connection", ops_id(ctx, connection));
+  ops_set(ctx, object, "source",
+          ops_entity(ctx, scene, ops_parent(scene, connection)));
+  ops_set(ctx, object, "output", vkr_bakery_json_cstr(arena, value->output));
+  const VkrEntityId target = vkr_scene_find_entity_ref(scene, &value->target);
+  ops_set(ctx, object, "target",
+          target.u64 ? ops_entity(ctx, scene, target)
+                     : vkr_bakery_json_null(arena));
+  ops_set(ctx, object, "input", vkr_bakery_json_cstr(arena, value->input));
+  ops_set(ctx, object, "value", vkr_bakery_json_cstr(arena, value->value));
+  ops_set(ctx, object, "delay", vkr_bakery_json_float(arena, value->delay));
+  ops_set(ctx, object, "limit", vkr_bakery_json_int(arena, value->limit));
+  char problem[160];
+  if (vkr_io_connection_problem(scene, connection, problem, sizeof(problem))) {
+    ops_set(ctx, object, "problem", vkr_bakery_json_cstr(arena, problem));
+  }
+  return object;
+}
+
+/* io.connect: a connection under `source` from its `output` to `target`'s
+   `input`. Names are checked against what the entities carry now; ends the
+   batch creates are checked when the game publishes. */
+static bool8_t ops_build_connect(OpsContext *ctx, const VkrBakeryJson *args,
+                                 OpsBatch *batch) {
+  OpsRef source;
+  OpsRef target = {.item = -1};
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "source"), "source",
+               &source)) {
+    return false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, source.container);
+  const VkrBakeryJson *target_value = vkr_bakery_json_get(args, "target");
+  if (target_value && target_value->type != VKR_BAKERY_JSON_NULL &&
+      !ops_ref(ctx, batch, target_value, "target", &target)) {
+    return false_v;
+  }
+  if ((target.entity.u64 || target.item >= 0) &&
+      target.container != source.container) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "A connection's target must be in its source's scene");
+  }
+  SceneIoConnection connection = {0};
+  String8 output = {0};
+  String8 input = {0};
+  String8 value = {0};
+  (void)vkr_bakery_json_get_string(args, "output", &output);
+  (void)vkr_bakery_json_get_string(args, "input", &input);
+  (void)vkr_bakery_json_get_string(args, "value", &value);
+  if (!output.length || output.length >= sizeof(connection.output) ||
+      input.length >= sizeof(connection.input) ||
+      value.length >= sizeof(connection.value)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "io.connect needs the source's 'output'; names and "
+                    "values hold at most %u bytes",
+                    (unsigned)sizeof(connection.output) - 1u);
+  }
+  VkrIoEndpoint endpoint;
+  if (source.item < 0 &&
+      !vkr_io_find_output(scene, source.entity, output, &endpoint)) {
+    return ops_fail(ctx, OPS_NOT_FOUND,
+                    "The source has no output '%.*s'; io.list names them",
+                    (int)output.length, output.str);
+  }
+  if (target.item < 0 && target.entity.u64 && input.length &&
+      !vkr_io_find_input(scene, target.entity, input, &endpoint)) {
+    return ops_fail(ctx, OPS_NOT_FOUND,
+                    "The target has no input '%.*s'; io.list names them",
+                    (int)input.length, input.str);
+  }
+  if (target.item >= 0) {
+    connection.target = ctx->ops->items[target.item].request.values.ref;
+  } else if (target.entity.u64 &&
+             !vkr_scene_entity_ref(scene, target.entity, &connection.target)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "The target has no id to reference: a node inside a "
+                    "model, or an object of a document without ids");
+  }
+  MemCopy(connection.output, output.str, output.length);
+  MemCopy(connection.input, input.str, input.length);
+  MemCopy(connection.value, value.str, value.length);
+  float64_t number = 0.0;
+  if (ops_arg_number(args, "delay", &number)) {
+    if (!(number >= 0.0 && number <= 3600.0)) {
+      return ops_fail(ctx, OPS_INVALID, "'delay' is 0 to 3600 seconds");
+    }
+    connection.delay = (float32_t)number;
+  }
+  if (ops_arg_number(args, "limit", &number)) {
+    if (!(number >= 0.0 && number <= 1000000.0)) {
+      return ops_fail(ctx, OPS_INVALID, "'limit' is 0 (unlimited) or more");
+    }
+    connection.limit = (uint32_t)number;
+  }
+  VkrSampleEditBatchItem *item =
+      ops_batch_add(ctx, batch, source.container, VKR_SCENE_EDIT_CREATE);
+  if (!item) {
+    return false_v;
+  }
+  item->request.parent = source.entity;
+  item->parent_ref = source.item;
+  VkrSceneEditValues *values = &item->request.values;
+  values->fields =
+      VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
+  snprintf(values->name, sizeof(values->name), "%.*s",
+           (int)Min(output.length, (uint64_t)sizeof(values->name) - 1u),
+           output.str);
+  values->rotation = vkr_quat_identity();
+  values->scale = vec3_one();
+  values->component_type = &vkr_scene_io_connection_type;
+  MemCopy(values->component, &connection, sizeof(connection));
+  batch->op_item[batch->op_count] = batch->count - 1u;
+  return ops_validate_values(ctx, values);
+}
+
+/* io.disconnect: one `connection`, or every connection of `source` (from
+   `output` when given). */
+static bool8_t ops_build_disconnect(OpsContext *ctx, const VkrBakeryJson *args,
+                                    OpsBatch *batch) {
+  OpsRef ref;
+  if (vkr_bakery_json_get(args, "connection")) {
+    if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "connection"),
+                 "connection", &ref)) {
+      return false_v;
+    }
+    const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+    if (ref.item >= 0 || !vkr_scene_get_typed(scene, ref.entity,
+                                              &vkr_scene_io_connection_type)) {
+      return ops_fail(ctx, OPS_INVALID, "'connection' is not a connection");
+    }
+    VkrSampleEditBatchItem *item =
+        ops_batch_add(ctx, batch, ref.container, VKR_SCENE_EDIT_DELETE);
+    if (!item) {
+      return false_v;
+    }
+    ops_item_target(item, &ref);
+    batch->op_target[batch->op_count] = ref.entity;
+    return true_v;
+  }
+  if (!ops_ref(ctx, batch, vkr_bakery_json_get(args, "source"), "source",
+               &ref) ||
+      ref.item >= 0) {
+    return ref.item >= 0 ? ops_fail(ctx, OPS_INVALID,
+                                    "io.disconnect needs existing entities")
+                         : false_v;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+  String8 output = {0};
+  const bool8_t by_output =
+      vkr_bakery_json_get_string(args, "output", &output) && output.length;
+  uint32_t removed = 0u;
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
+    const SceneIoConnection *connection =
+        vkr_scene_entity_alive(scene, child) &&
+                ops_parent(scene, child).u64 == ref.entity.u64
+            ? vkr_scene_get_typed(scene, child, &vkr_scene_io_connection_type)
+            : NULL;
+    if (!connection ||
+        (by_output && strlen(connection->output) != output.length) ||
+        (by_output &&
+         MemCompare(connection->output, output.str, output.length) != 0)) {
+      continue;
+    }
+    VkrSampleEditBatchItem *item =
+        ops_batch_add(ctx, batch, ref.container, VKR_SCENE_EDIT_DELETE);
+    if (!item) {
+      return false_v;
+    }
+    item->request.entity = child;
+    removed++;
+  }
+  if (!removed) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "No connection matches");
+  }
+  batch->op_target[batch->op_count] = ref.entity;
+  return true_v;
+}
+
+/* io.list: an entity's outputs and inputs, its connections and the ones
+   that reach it. */
+static VkrEditorOpStatus ops_run_io_list(OpsContext *ctx) {
+  OpsRef ref;
+  if (!ops_ref(ctx, NULL, vkr_bakery_json_get(ctx->call->args, "entity"),
+               "entity", &ref)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrScene *scene = ops_scene(ctx->frame, ref.container);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "entity", ops_entity(ctx, scene, ref.entity));
+  ops_set(ctx, result, "outputs",
+          ops_io_ports(ctx, scene, ref.entity, false_v));
+  ops_set(ctx, result, "inputs", ops_io_ports(ctx, scene, ref.entity, true_v));
+  VkrBakeryJson *outgoing = vkr_bakery_json_array(arena);
+  VkrBakeryJson *incoming = vkr_bakery_json_array(arena);
+  VkrEntityRef self = {0};
+  const bool8_t referable = vkr_scene_entity_ref(scene, ref.entity, &self);
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    const SceneIoConnection *connection =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_scene_get_typed(scene, entity, &vkr_scene_io_connection_type)
+            : NULL;
+    if (!connection) {
+      continue;
+    }
+    if (ops_parent(scene, entity).u64 == ref.entity.u64) {
+      vkr_bakery_json_append(outgoing, ops_io_connection(ctx, scene, entity));
+    }
+    if (referable &&
+        MemCompare(&connection->target, &self, sizeof(self)) == 0) {
+      vkr_bakery_json_append(incoming, ops_io_connection(ctx, scene, entity));
+    }
+  }
+  ops_set(ctx, result, "connections", outgoing);
+  ops_set(ctx, result, "incoming", incoming);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* io.fire: sends `input` to `entity` during Play, as a connection would. */
+static VkrEditorOpStatus ops_run_io_fire(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  const VkrSampleUiFrame *frame = ctx->frame;
+  if (call->stage == 0u) {
+    OpsRef ref;
+    String8 input = {0};
+    String8 value = {0};
+    if (!ops_ref(ctx, NULL, vkr_bakery_json_get(call->args, "entity"), "entity",
+                 &ref)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    (void)vkr_bakery_json_get_string(call->args, "value", &value);
+    if (!vkr_bakery_json_get_string(call->args, "input", &input) ||
+        !input.length || input.length >= 64u || value.length >= 64u) {
+      ops_fail(ctx, OPS_INVALID, "io.fire needs the entity's 'input'");
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!frame->io_request || !frame->scripts_running) {
+      ops_fail(ctx, OPS_BUSY,
+               "Inputs reach entities only while the game "
+               "plays");
+      return VKR_EDITOR_OP_DONE;
+    }
+    VkrSampleIoRequest *request = frame->io_request;
+    *request = (VkrSampleIoRequest){
+        .token = ++ctx->ops->next_token, .target = ref.entity, .send = true_v};
+    MemCopy(request->input, input.str, input.length);
+    MemCopy(request->value, value.str, value.length);
+    call->token = request->token;
+    call->stage = 1u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  const VkrSampleIoResult *result = frame->io_result;
+  if (!result || result->token != call->token) {
+    if (++call->frames > OPS_WAIT_FRAMES) {
+      ops_fail(ctx, OPS_BUSY, "The input was not delivered");
+      return VKR_EDITOR_OP_DONE;
+    }
+    return VKR_EDITOR_OP_WAIT;
+  }
+  if (!result->ok) {
+    ops_fail(ctx, OPS_REJECTED, "%s", result->message);
+    return VKR_EDITOR_OP_DONE;
+  }
+  call->result = vkr_bakery_json_object(call->arena);
+  ops_set(ctx, call->result, "delivered",
+          vkr_bakery_json_bool(call->arena, true_v));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* io.trace: switches the `[io]` lines the router logs for each delivery. */
+static VkrEditorOpStatus ops_run_io_trace(OpsContext *ctx) {
+  bool8_t on = true_v;
+  if (!vkr_bakery_json_get_bool(ctx->call->args, "on", &on) ||
+      !ctx->frame->io_request) {
+    ops_fail(ctx, OPS_INVALID, "io.trace needs 'on'");
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->frame->io_request->set_trace = true_v;
+  ctx->frame->io_request->trace = on;
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "trace",
+          vkr_bakery_json_bool(ops_arena(ctx), on));
+  return VKR_EDITOR_OP_DONE;
+}
+
 #define OPS_ENTITY_SCHEMA                                                      \
   "{\"type\":\"string\",\"description\":\"An entity: world:index:generation, " \
   "an exact unique name, or $k for the entity operation k of the same batch "  \
@@ -3659,7 +4015,8 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
 #define OPS_REVIEW_SCHEMA                                                      \
   "\"review\":{\"type\":\"boolean\",\"description\":\"Keep the edit as a "     \
   "pending change the designer accepts or rejects (default true)\"},"          \
-  "\"dry_run\":{\"type\":\"boolean\"}"
+  "\"dry_run\":{\"type\":\"boolean\"},\"select\":{\"type\":\"boolean\","       \
+  "\"description\":\"Select the first entity once applied\"}"
 #define OPS_BRUSH_SCHEMA                                                       \
   "\"name\":{\"type\":\"string\"},\"parent\":" OPS_ENTITY_SCHEMA               \
   ",\"container\":" OPS_CONTAINER_SCHEMA ",\"role\":{\"type\":\"string\","     \
@@ -3694,7 +4051,7 @@ static const OpsDef s_ops[] = {
      "\"offset\":{\"type\":\"integer\",\"minimum\":0},"
      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500},"
      "\"faces\":{\"type\":\"boolean\",\"description\":\"Also list brush "
-     "faces, which brushes otherwise summarise\"}}}",
+     "faces and IO connections, which their owners otherwise summarise\"}}}",
      ops_run_describe, NULL},
     {"entity.get",
      "One entity: pose, children, bounds and every component's values.",
@@ -3863,6 +4220,43 @@ static const OpsDef s_ops[] = {
      "\"height\":{\"type\":\"number\"}," OPS_REVIEW_SCHEMA
      "},\"required\":[\"wall\"]}",
      NULL, ops_build_doorway},
+    {"io.connect",
+     "Connect the source's 'output' to the 'input' of 'target' in the same "
+     "scene: when the source fires it, the target receives the input after "
+     "'delay' seconds, at most 'limit' times per session (0 unlimited). "
+     "'value' replaces the output's value as text. io.list names outputs "
+     "and inputs.",
+     "{\"type\":\"object\",\"properties\":{\"source\":" OPS_ENTITY_SCHEMA
+     ",\"output\":{\"type\":\"string\"},\"target\":" OPS_ENTITY_SCHEMA
+     ",\"input\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"},"
+     "\"delay\":{\"type\":\"number\",\"minimum\":0},\"limit\":{\"type\":"
+     "\"integer\",\"minimum\":0}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"source\",\"output\"]}",
+     NULL, ops_build_connect},
+    {"io.disconnect",
+     "Remove one 'connection', or the source's connections (from one "
+     "'output' when given).",
+     "{\"type\":\"object\",\"properties\":{\"connection\":" OPS_ENTITY_SCHEMA
+     ",\"source\":" OPS_ENTITY_SCHEMA
+     ",\"output\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA "}}",
+     NULL, ops_build_disconnect},
+    {"io.list",
+     "An entity's outputs and inputs, its connections and the connections "
+     "that reach it, each with the reason it does not route if it does not.",
+     "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
+     "},\"required\":[\"entity\"]}",
+     ops_run_io_list, NULL},
+    {"io.fire",
+     "While the game plays, send 'input' (with optional 'value' text) to an "
+     "entity as a connection would.",
+     "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
+     ",\"input\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},"
+     "\"required\":[\"entity\",\"input\"]}",
+     ops_run_io_fire, NULL},
+    {"io.trace", "Turn the [io] log line of each delivery on or off.",
+     "{\"type\":\"object\",\"properties\":{\"on\":{\"type\":\"boolean\"}},"
+     "\"required\":[\"on\"]}",
+     ops_run_io_trace, NULL},
     {"batch",
      "Apply write operations in order as one undo step; $k names the entity "
      "operation k created. A failure rolls the whole batch back.",

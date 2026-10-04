@@ -101,6 +101,7 @@ static bool8_t editor_label_kind(const VkrEditorUi *editor,
        icon. */
     if (type == &vkr_scene_shape_type || type == &vkr_scene_animation_type ||
         type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
+        type == &vkr_scene_io_connection_type ||
         vkr_scene_world_type_registered(type) ||
         !vkr_scene_get_typed(scene, entity, type)) {
       continue;

@@ -150,14 +150,16 @@ typedef struct State {
   VkrSampleViewState view_state;
   VkrCamera perspective_camera;
   bool8_t perspective_camera_saved;
-  /* Reused application-owned event buffer; draining the editor's demo events
-     prevents an otherwise unconsumed sensor queue from exhausting capacity. */
+  /* Reused application-owned event buffer; outside a session, draining
+     keeps the unconsumed sensor queue from exhausting capacity. */
   VkrPhysicsSensorEvent
       physics_sensor_events[VKR_SCENE_PHYSICS_MAX_BODIES *
                             VKR_PHYSICS_SENSOR_EVENTS_PER_BODY];
   uint32_t physics_sensor_event_count;
   /* The latest edit batch or group revert outcome the UI reads. */
   VkrSampleEditBatchResult edit_batch_result;
+  /* The latest entity IO request's outcome. */
+  VkrSampleIoResult io_result;
   /* One window capture the UI asked for: the renderer request while it
      renders, then the poll result lent to one build until release. */
   VkrCaptureItemRequest capture_item;
@@ -3088,6 +3090,48 @@ vkr_internal void vkr_standard_scene_runtime_init_world_content(
   vkr_clock_start(&state->world_text_update_clock);
 }
 
+/* Sends one entity IO input or switches the trace (VkrSampleIoRequest). */
+static void sample_io_request(VkrStandardSceneRuntime *application,
+                              const VkrSampleIoRequest *request) {
+  if (request->set_trace) {
+    vkr_script_host_set_io_trace(&state->scripts, request->trace);
+  }
+  if (!request->send) {
+    return;
+  }
+  VkrSampleIoResult *result = &state->io_result;
+  *result = (VkrSampleIoResult){.token = request->token};
+  VkrScene *scene = sample_entity_container(application, request->target, NULL);
+  VkrIoEndpoint input = {0};
+  VkrIoValue value = {0};
+  const VkrIoPort *port = NULL;
+  if (!state->scripts.started) {
+    snprintf(result->message, sizeof(result->message),
+             "Inputs reach entities only while the game plays");
+  } else if (!scene ||
+             !vkr_io_find_input(
+                 scene, request->target,
+                 string8_create_from_cstr((const uint8_t *)request->input,
+                                          strlen(request->input)),
+                 &input) ||
+             !(port = vkr_io_endpoint_port(input))) {
+    snprintf(result->message, sizeof(result->message),
+             "The entity has no input '%s'", request->input);
+  } else if (request->value[0] &&
+             !vkr_io_parse_value(scene, port->kind, request->value, &value)) {
+    snprintf(result->message, sizeof(result->message),
+             "'%s' is not a value for '%s'", request->value, port->name);
+  } else if (!vkr_script_host_io_send(&state->scripts, request->target, input,
+                                      request->value[0] ? &value : NULL)) {
+    snprintf(result->message, sizeof(result->message), "%s",
+             state->scripts.io.faulted ? state->scripts.io.error
+                                       : "The input could not be delivered");
+  } else {
+    result->ok = true_v;
+    snprintf(result->message, sizeof(result->message), "Sent %s", port->name);
+  }
+}
+
 /* Starts the script session once simulation first runs from a reset
  * boundary. A failure keeps the scene paused and reports why. */
 static void sample_scripts_start(VkrStandardSceneRuntime *application) {
@@ -3452,7 +3496,11 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
                                        &application->assets, 0.0);
     }
   }
-  if (!vkr_scene_physics_sensor_events(application->active_scene,
+  /* During a session the IO router drains sensor events after each tick
+     (vkr_io_router.h); otherwise they are discarded here so the queue never
+     fills. */
+  if (!state->scripts.io.published &&
+      !vkr_scene_physics_sensor_events(application->active_scene,
                                        state->physics_sensor_events,
                                        ArrayCount(state->physics_sensor_events),
                                        &state->physics_sensor_event_count)) {
@@ -4334,6 +4382,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleTransportAction transport_action;
   VkrSampleViewRequest view_request;
   VkrSamplePhysicsRequest physics_request;
+  VkrSampleIoRequest io_request;
   VkrSceneEditRequest scene_edit;
   VkrSampleEditBatchRequest edit_batch;
   VkrSampleCaptureRequest capture_request;
@@ -4409,6 +4458,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .view_state = state->view_state,
       .view_request = &requests->view_request,
       .physics_request = &requests->physics_request,
+      .io_request = &requests->io_request,
+      .io_result = &state->io_result,
       .scene_keyboard_focus = &state->scene_keyboard_focus,
       .scene_backdrop_blur = &application->editor_viewport.scene_backdrop_blur,
       .animation_preview = &application->animation_preview,
@@ -5778,6 +5829,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                error ? error : "Body session mute rejected.");
     }
   }
+  sample_io_request(application, &requests.io_request);
   if (requests.physics_request.apply_impulse && application->active_scene) {
     const char *error = NULL;
     if (!vkr_scene_physics_impulse(application->active_scene,

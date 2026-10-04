@@ -4499,6 +4499,11 @@ VkrEntityId vkr_scene_find_entity_ref(const VkrScene *scene,
   return VKR_ENTITY_ID_INVALID;
 }
 
+bool8_t vkr_scene_entity_is_part(const VkrScene *scene, VkrEntityId entity) {
+  return vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type) ||
+         vkr_scene_get_typed(scene, entity, &vkr_scene_io_connection_type);
+}
+
 void vkr_scene_entity_ref_generate(VkrEntityRef *out) {
   /* SplitMix64 over the clock and a counter: ids only need to differ within
      a project, and two calls never share a counter value. */

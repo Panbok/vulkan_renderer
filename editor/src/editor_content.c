@@ -1803,10 +1803,11 @@ static bool8_t content_object_listed(const VkrScene *scene,
                                      VkrEntityId entity) {
   const SceneSourceIdentity *source = vkr_entity_get_component(
       scene->world, entity, scene->comp_source_identity);
-  /* Brush faces are parts of their brush, not objects of their own. */
+  /* Brush faces and connections are parts of their parent, not objects of
+     their own. */
   return (!source || source->gltf_node_index == UINT32_MAX) &&
          vkr_scene_get_name(scene, entity).length &&
-         !vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type);
+         !vkr_scene_entity_is_part(scene, entity);
 }
 
 /* Visit the listed objects of every loaded container: the World, the

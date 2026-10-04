@@ -31,6 +31,7 @@
 #include "memory/vkr_dmemory.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "script/vkr_io_router.h"
 #include "sdk.h"
 
 #define VKR_SCRIPT_MODULE_NAME_CAPACITY 64u
@@ -286,6 +287,8 @@ typedef struct VkrScriptHost {
   uint32_t task_count;
   uint32_t task_capacity;
   uint64_t task_serial;
+  /* Routes entity IO for the session (vkr_io_router.h). */
+  VkrIoRouter io;
   /* Moves component values to a reloaded layout; NULL refuses the reload. */
   VkrScriptMigrateFn migrate;
   void *migrate_context;
@@ -405,6 +408,14 @@ void vkr_script_host_frame(VkrScriptHost *host, VkrScriptFrame *frame);
  * and overlay they published. */
 void vkr_script_host_present(VkrScriptHost *host, const VkrScriptFrame *frame,
                              VkrScriptView *view);
+
+/** Prints each IO delivery as an `[io]` log line while on. */
+void vkr_script_host_set_io_trace(VkrScriptHost *host, bool8_t trace);
+
+/** Delivers input `input` (a port of `type`, or a built-in input without
+ * one) to `target` during a session, as Cmd and agents do. */
+bool8_t vkr_script_host_io_send(VkrScriptHost *host, VkrEntityId target,
+                                VkrIoEndpoint input, const VkrIoValue *value);
 
 /** The failure that faulted or refused the session, or NULL. */
 const char *vkr_script_host_error(const VkrScriptHost *host);

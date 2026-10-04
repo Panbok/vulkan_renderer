@@ -891,18 +891,17 @@ static bool8_t edit_world_type(const VkrTypeDesc *type) {
 
 /* Whether `entity` has a child; a brush's faces do not count when
    `brush_faces` is false, because deleting the brush deletes them. */
+/* Whether `entity` has children; without `parts`, only children that are
+   objects of their own (vkr_scene_entity_is_part) count. */
 static bool8_t edit_has_children_except(const VkrScene *scene,
-                                        VkrEntityId entity,
-                                        bool8_t brush_faces) {
-  const bool8_t brush =
-      vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) != NULL;
+                                        VkrEntityId entity, bool8_t parts) {
   for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
     const VkrEntityId other = vkr_entity_id_from_index(scene->world, i);
     const SceneTransform *transform =
         vkr_entity_get_component(scene->world, other, scene->comp_transform);
     if (transform && transform->parent.u64 == entity.u64 &&
-        (brush_faces || !brush ||
-         !vkr_scene_get_typed(scene, other, &vkr_scene_brush_face_type))) {
+        vkr_scene_entity_alive(scene, other) &&
+        (parts || !vkr_scene_entity_is_part(scene, other))) {
       return true_v;
     }
   }
@@ -1421,8 +1420,14 @@ VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
   }
   structure->object.created_id = Max(1u, s->next_created_id);
   structure->object.transform.parent = parent;
-  /* Every created entity gets its own id, even a copy of another. */
-  vkr_scene_entity_ref_generate(&structure->object.ref);
+  /* Every created entity gets its own id, even a copy of another, unless
+     its creator chose one ahead. */
+  if (vkr_entity_ref_empty(&values->ref) ||
+      vkr_scene_find_entity_ref(scene, &values->ref).u64) {
+    vkr_scene_entity_ref_generate(&structure->object.ref);
+  } else {
+    structure->object.ref = values->ref;
+  }
   structure->object.parts |= EDIT_OBJECT_REF;
   const VkrEntityId entity =
       edit_object_restore(scene, &structure->object, parent);
@@ -1457,8 +1462,8 @@ bool8_t vkr_scene_edit_delete(VkrSceneEditState *s, VkrScene *scene,
   if (!edit_has_children(scene, entity)) {
     return edit_delete_one(s, scene, entity);
   }
-  /* A brush leaves with its faces, as one step: faces first, so undo
-     restores the brush before them. */
+  /* An object leaves with its parts (brush faces, connections) as one
+     step: parts first, so undo restores the object before them. */
   const bool8_t own_group = !s->group_open;
   if (own_group) {
     (void)vkr_scene_edit_group_begin(s);

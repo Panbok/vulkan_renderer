@@ -390,10 +390,9 @@ static bool8_t rebuild_tree(VkrEditorScenePanels *p,
     for (uint32_t i = slots; i-- > 0;) {
       const uint32_t index = base + 1u + i;
       EditorTreeNode *n = &p->nodes[index];
-      /* Brush faces belong to their brush; Details and agents edit them
-         (docs/proposals/level-design-toolkit.md). */
-      if (!n->entity.u64 ||
-          vkr_scene_get_typed(s, n->entity, &vkr_scene_brush_face_type))
+      /* Brush faces and connections belong to their parent; Details and
+         agents edit them (ADR-084). */
+      if (!n->entity.u64 || vkr_scene_entity_is_part(s, n->entity))
         continue;
       n->next = p->nodes[n->parent].child;
       p->nodes[n->parent].child = index;

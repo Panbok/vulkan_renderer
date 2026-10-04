@@ -90,7 +90,9 @@ NULL when the version differs; there is no compatibility with older modules.
 - **Hooks.** Hooks return void and take the context and the script's own
   data: module hooks `start`, `stop`, `update`, `late_update`, `fixed_update`,
   `late_fixed_update` and `input`; behavior hooks `(ctx, self, component)`,
-  which add `destroy`.
+  which add `destroy`, and `trigger_enter` and `trigger_exit`, which also
+  take the other entity of a sensor pair (entity IO,
+  [ADR-084](084-agent-channel-and-level-design-toolkit.md)).
   - A behavior's `destroy` runs when its entity is destroyed during a
     session (by a script, the editor or a destroyed parent), before anything
     is torn down; `stop` follows and the scope is released. The scene tells
@@ -525,7 +527,17 @@ VKR_MODULE(Door, VkrNoData, VKR_EXPORT_BEHAVIOR(door))
   `name_type()`, `name_get(ctx, entity)` and `name_find(ctx, out, capacity)`.
   A module split across files uses `VKR_COMPONENT_DECLARE` in a header and
   `VKR_COMPONENT_DEFINE` in one file.
-- `VKR_BEHAVIOR(name, hooks...)`: typed per-entity hooks for the component.
+- `VKR_BEHAVIOR(name, hooks...)`: typed per-entity hooks for the component,
+  and `.outputs` and `.inputs` naming its IO lists.
+- `VKR_OUTPUTS(name, VKR_OUTPUT(output, label, KIND) ...)` and
+  `VKR_INPUTS(name, VKR_INPUT(input, label, KIND, handler) ...)`: a
+  behavior's entity IO ports (ADR-084). `KIND` is `NONE` or a `VkrIoKind`
+  suffix. `VKR_OUTPUT_ID(name, output)` is an output's index, checked when
+  it compiles, and `VKR_FIRE(ctx, self, name, output, value)` fires it.
+  `vkr_io_input(ctx, type, name)` resolves an input once and
+  `vkr_io_send(ctx, target, input, value)` calls it through the router. An
+  input handler takes `(ctx, self, Type *, const VkrIoValue *)` and serves
+  one input. SDK version 6 added these and ENTITY fields.
 - `VKR_MODULE(Name, Data, EXPORTS, options...)`: the exported
   `vkr_module_Name`, with `VKR_EXPORT_COMPONENT` and `VKR_EXPORT_BEHAVIOR`
   exports, `.scope`, `.data_version` and typed module hooks.
@@ -549,12 +561,16 @@ nodes appear at a later frame start, when `vkr_model_state` turns
 [`scripts/fps`](../../scripts/fps/src/fps_module.c) is the former
 `runtime/src/gameplay` client, written against `sdk.h` as a World-scoped
 module. It receives input through its `input` hook, owns the input clock
-through `vkr_set_time_step`, and registers two component types:
+through `vkr_set_time_step`, and registers three component types:
 
 - `fps_player`: move, walk, crouch and jump speed, magazine and reserve,
   camera mode, and the third-person orient-to-movement, acceleration and turn
   rate.
 - `fps_weapon`: the animation bone that holds the weapon.
+- `door` ([fps_door.c](../../scripts/fps/src/fps_door.c)): the entity IO
+  sample. A root object slides by `offset` at `speed` when its `open`,
+  `close` or `toggle` input arrives, refuses `open` while `locked` (`lock`
+  and `unlock` set it), and fires `opened` and `closed` when it rests.
 
 At start:
 
