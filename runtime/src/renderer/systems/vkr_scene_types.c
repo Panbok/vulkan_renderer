@@ -1832,10 +1832,23 @@ static const VkrPropertyDesc s_terrain_properties[] = {
      .min = 0.01f,
      .max = 1000.0f,
      .step = 0.1f},
+    {.name = "stream_radius",
+     .label = "Detail radius",
+     .group = "Streaming",
+     .unit = "m",
+     .tooltip = "Distance from the camera or a player within which a terrain "
+                "larger than 1024 cells loads full detail; beyond it the "
+                "overview draws",
+     .offset = TYPE_OFFSET(SceneTerrain, stream_radius),
+     .kind = VKR_PROPERTY_F32,
+     .min = 128.0f,
+     .max = 4096.0f,
+     .step = 64.0f},
 };
 
 static void terrain_defaults(void *value) {
-  *(SceneTerrain *)value = (SceneTerrain){.texture_size = 4.0f};
+  *(SceneTerrain *)value =
+      (SceneTerrain){.texture_size = 4.0f, .stream_radius = 512.0f};
 }
 
 const VkrTypeDesc vkr_scene_terrain_type = {

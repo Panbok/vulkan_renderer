@@ -10,7 +10,13 @@
  * builds one generated mesh with a submesh per 64-cell tile, so culling works
  * tile by tile, and one static height field body once edits rest. A terrain
  * ignores its entity's rotation and scale. The scene owns all of it and
- * releases it at shutdown. */
+ * releases it at shutdown.
+ *
+ * A terrain larger than VKR_HEIGHTFIELD_RESIDENT_CELLS streams (ADR-086): it
+ * keeps the samples, tiles and a body near the scene's streaming
+ * sources, loading the nearest missing tiles within a frame budget, and
+ * draws the overview elsewhere with holes under the tiles that draw. Edits
+ * load the samples they reach, which stay resident until saved. */
 
 /* Terrains one scene holds. */
 #define VKR_SCENE_TERRAIN_MAX 8u
@@ -20,6 +26,11 @@
 /* Updates a terrain waits after its last edit before it rebuilds its
    collision. */
 #define VKR_SCENE_TERRAIN_COLLISION_SETTLE 8u
+/* A streamed terrain's one body covers the tiles within this many tiles
+   of the tile under each streaming source. */
+#define VKR_SCENE_TERRAIN_BODY_TILES 2u
+/* Milliseconds one update may spend streaming in tiles and bodies. */
+#define VKR_SCENE_TERRAIN_STREAM_BUDGET_MS 2.0
 /* Detail levels of a tile: 64 cells a side down to one. */
 #define VKR_SCENE_TERRAIN_LOD_LEVELS 7u
 
@@ -36,6 +47,19 @@ void vkr_scene_terrain_shutdown(VkrScene *scene);
 /* The loaded samples of `entity`'s terrain, or NULL. */
 const VkrHeightfield *vkr_scene_terrain_field(const VkrScene *scene,
                                               VkrEntityId entity);
+/* What a terrain holds now: tiles drawing full detail and overview tiles
+   drawing, tiles its body covers, and sample tiles in memory and unsaved.
+   A resident terrain holds every tile and no overview. */
+typedef struct VkrSceneTerrainStreaming {
+  bool8_t streamed;
+  uint32_t fine_tiles;
+  uint32_t overview_tiles;
+  uint32_t body_tiles;
+  uint32_t resident_tiles;
+  uint32_t unsaved_tiles;
+} VkrSceneTerrainStreaming;
+bool8_t vkr_scene_terrain_streaming(const VkrScene *scene, VkrEntityId entity,
+                                    VkrSceneTerrainStreaming *out);
 /* NULL when the terrain loaded, else why it did not. */
 const char *vkr_scene_terrain_status(const VkrScene *scene, VkrEntityId entity);
 /* `world` in the terrain's local space: metres from its centre, heights
@@ -48,6 +72,10 @@ bool8_t vkr_scene_terrain_apply(VkrScene *scene, VkrEntityId entity,
                                 const VkrHeightfieldOp *op,
                                 VkrAllocator *scratch,
                                 VkrHeightfieldRect *out_touched);
+/* Loads the samples of `rect` so they can be read, as a journal entry
+   does before an edit. */
+bool8_t vkr_scene_terrain_require(VkrScene *scene, VkrEntityId entity,
+                                  VkrHeightfieldRect rect);
 /* Writes samples back, as undo and redo do. */
 bool8_t vkr_scene_terrain_write(VkrScene *scene, VkrEntityId entity,
                                 VkrHeightfieldRect rect,

@@ -2071,6 +2071,18 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
   }
 }
 
+void vkr_scene_set_stream_sources(VkrScene *scene, const Vec3 *sources,
+                                  uint32_t count) {
+  if (!scene) {
+    return;
+  }
+  scene->stream_source_count = Min(count, VKR_SCENE_STREAM_SOURCES_MAX);
+  if (scene->stream_source_count) {
+    MemCopy(scene->stream_sources, sources,
+            scene->stream_source_count * sizeof(Vec3));
+  }
+}
+
 typedef struct SceneSunLightSearch {
   const VkrScene *scene;
   SceneDirectionalLight light;

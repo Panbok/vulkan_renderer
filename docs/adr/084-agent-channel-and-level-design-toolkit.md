@@ -372,16 +372,20 @@ A `terrain` component names a heightfield file, four layer materials
 (`layer0` to `layer3`) and a texture size in metres
 ([vkr_scene_types.c](../../runtime/src/renderer/systems/vkr_scene_types.c)).
 A heightfield ([vkr_heightfield.c](../../runtime/src/level/vkr_heightfield.c))
-is a square of `cells` cells per side, a multiple of 64 up to 1,024, at a
-sample spacing. Each sample holds a 16-bit height quantized between the
-field's minimum and maximum and four 8-bit layer weights that sum to 255. The
-file (`VKRHFLD1`) stores samples in tiles of 64 by 64 so that streaming can
-read tiles later. Writes go to a temporary file that replaces the old one.
+is a square of `cells` cells per side, a multiple of 64 up to 8,192 (above
+1,024, a multiple of 1,024), at a sample spacing. Each sample holds a 16-bit
+height quantized between the field's minimum and maximum and four 8-bit
+layer weights that sum to 255. The file (`VKRHFLD1`) stores samples in tiles
+of 64 by 64 that can be read one by one; version 2 adds an overview of every
+16th sample after them. A resident terrain's writes go to a temporary file
+that replaces the old one; a streamed terrain writes its changed tiles and
+overview in place.
 
 The scene owns its terrains
 ([vkr_scene_terrain.c](../../runtime/src/renderer/systems/vkr_scene_terrain.c)),
 at most eight per scene. When the component appears it loads the file and
-keeps every sample in memory. Edits change those samples, mark the 64-cell
+keeps every sample in memory; a terrain larger than 1,024 cells streams
+instead, as [World partition](../proposals/world-partition.md) describes. Edits change those samples, mark the 64-cell
 tiles they touched and the terrain's collision dirty, and saving the scene
 writes each changed terrain's file. Each update rebuilds the marked tiles:
 
@@ -535,11 +539,11 @@ seed places it anew. Linked prefabs and meshes bent along a spline remain in
 the toolkit proposal.
 
 `terrain.create` writes the heightfield file at once, so undoing it or
-leaving the scene unsaved leaves the file behind. A terrain keeps all its
-samples resident: the largest, 1,025 samples a side, holds 6 MiB of samples
+leaving the scene unsaved leaves the file behind. A resident terrain keeps
+all its samples: the largest, 1,025 samples a side, holds 6 MiB of samples
 and 256 tile geometries. The owner chose all-resident terrain up to 1 km at
-1 m spacing; streaming terrain and scene content by cells over the
-tile-chunked file is future World Partition work. Imported, cooked terrain
+1 m spacing; larger terrains stream by tiles
+([World partition](../proposals/world-partition.md)). Imported, cooked terrain
 meshes were declined in favour of heightfields built in the scene.
 
 Brush meshes are not merged: a level pays one draw per brush. A

@@ -3469,6 +3469,24 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
   vkr_scene_handle_sync(handle, &application->assets);
 }
 
+/* Every loaded container streams around the camera that draws the
+   viewport, the editor's or a game's. */
+static void sample_stream_sources(VkrStandardSceneRuntime *application) {
+  const VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->camera_system, application->active_camera);
+  const uint32_t count = camera ? 1u : 0u;
+  const Vec3 source = camera ? camera->position : vec3_zero();
+  VkrSceneHandle handles[2u + VKR_SCENE_ADDITIVE_MAX] = {
+      state->scene_resource.as.scene, state->world_handle};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    handles[2u + i] = state->additive_handles[i];
+  }
+  for (uint32_t i = 0; i < ArrayCount(handles); ++i) {
+    vkr_scene_set_stream_sources(vkr_scene_handle_get_scene(handles[i]),
+                                 &source, count);
+  }
+}
+
 /**
  * @brief Update scene system each frame.
  */
@@ -3481,6 +3499,7 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
 
   (void)vkr_standard_scene_runtime_try_activate_scene_resource(application);
   sample_sync_texture_limit(application);
+  sample_stream_sources(application);
   VkrSceneHandle simulated_handle = NULL;
   VkrScene *simulated = sample_simulated_scene(application, &simulated_handle);
   if (simulated) {

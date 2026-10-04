@@ -756,6 +756,12 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
   if (previous) {
     (void)vkr_heightfield_rect_union(field, previous->rect, rect, &whole);
   }
+  /* A streamed terrain loads the samples the entry keeps. */
+  if (!vkr_scene_terrain_require(scene, entity, whole)) {
+    snprintf(s->status, sizeof(s->status),
+             "The terrain samples could not be read.");
+    return false_v;
+  }
   const uint64_t size = edit_terrain_size(whole);
   EditTerrainPayload *payload =
       previous ? vkr_allocator_alloc(s->allocator, size, EDIT_TAG)

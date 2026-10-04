@@ -7,9 +7,11 @@
 #include <string.h>
 
 #define HEIGHTFIELD_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
-#define HEIGHTFIELD_VERSION 1u
+/* Version 1 holds tiles; version 2 adds the overview after them. */
+#define HEIGHTFIELD_VERSION 2u
 
-/* The file header; samples follow in tiles. */
+/* The file header; tiles follow, then (version 2) the overview's heights
+   and weights. */
 typedef struct HeightfieldHeader {
   char magic[8];
   uint32_t version;
@@ -19,7 +21,8 @@ typedef struct HeightfieldHeader {
   float32_t height_max;
   uint32_t tile_samples;
   uint32_t tiles_per_side;
-  uint32_t reserved[3];
+  uint32_t overview_stride;
+  uint32_t reserved[2];
 } HeightfieldHeader;
 
 static const char s_heightfield_magic[8] = {'V', 'K', 'R', 'H',
@@ -33,48 +36,193 @@ static bool8_t heightfield_fail(char *error, uint32_t capacity,
   return false_v;
 }
 
+static uint32_t heightfield_tiles(uint32_t samples) {
+  return (samples + VKR_HEIGHTFIELD_TILE_SAMPLES - 1u) /
+         VKR_HEIGHTFIELD_TILE_SAMPLES;
+}
+
+static uint64_t heightfield_overview_count(uint32_t cells) {
+  const uint64_t side = cells / VKR_HEIGHTFIELD_OVERVIEW_STRIDE + 1u;
+  return side * side;
+}
+
+/* File offset of tile `index`; the overview follows the last tile. */
+static uint64_t heightfield_tile_offset(uint32_t index) {
+  return sizeof(HeightfieldHeader) +
+         (uint64_t)index * sizeof(VkrHeightfieldTile);
+}
+
+static bool8_t heightfield_valid(uint32_t cells, float32_t spacing,
+                                 float32_t height_min, float32_t height_max) {
+  return cells && cells % VKR_HEIGHTFIELD_TILE_CELLS == 0u &&
+         cells <= VKR_HEIGHTFIELD_CELLS_MAX &&
+         (cells <= VKR_HEIGHTFIELD_RESIDENT_CELLS ||
+          cells % VKR_HEIGHTFIELD_STREAMED_CELLS == 0u) &&
+         spacing > 0.0f && isfinite(spacing) && isfinite(height_min) &&
+         isfinite(height_max) && height_max > height_min;
+}
+
+static uint16_t *heightfield_height_ref(VkrHeightfield *field, uint32_t x,
+                                        uint32_t z) {
+  return &vkr_heightfield_tile_of(field, x, z)
+              ->heights[vkr_heightfield_tile_index(x, z)];
+}
+
+static uint32_t *heightfield_weights_ref(VkrHeightfield *field, uint32_t x,
+                                         uint32_t z) {
+  return &vkr_heightfield_tile_of(field, x, z)
+              ->weights[vkr_heightfield_tile_index(x, z)];
+}
+
+/* The tile pointer, dirty and overview arrays of a field of `cells`. */
+static bool8_t heightfield_arrays(VkrHeightfield *field, uint32_t cells,
+                                  float32_t spacing, float32_t height_min,
+                                  float32_t height_max,
+                                  VkrAllocator *allocator) {
+  MemZero(field, sizeof(*field));
+  field->cells = cells;
+  field->spacing = spacing;
+  field->height_min = height_min;
+  field->height_max = height_max;
+  field->allocator = allocator;
+  field->tiles_per_side = heightfield_tiles(cells + 1u);
+  const uint64_t tiles =
+      (uint64_t)field->tiles_per_side * field->tiles_per_side;
+  const uint64_t overview = heightfield_overview_count(cells);
+  field->tiles = vkr_allocator_alloc(
+      allocator, tiles * sizeof(VkrHeightfieldTile *), HEIGHTFIELD_TAG);
+  field->tile_dirty =
+      vkr_allocator_alloc(allocator, tiles * sizeof(uint8_t), HEIGHTFIELD_TAG);
+  field->overview_heights = vkr_allocator_alloc(
+      allocator, overview * sizeof(uint16_t), HEIGHTFIELD_TAG);
+  field->overview_weights = vkr_allocator_alloc(
+      allocator, overview * sizeof(uint32_t), HEIGHTFIELD_TAG);
+  if (!field->tiles || !field->tile_dirty || !field->overview_heights ||
+      !field->overview_weights) {
+    vkr_heightfield_destroy(field, allocator);
+    return false_v;
+  }
+  MemZero(field->tiles, tiles * sizeof(VkrHeightfieldTile *));
+  MemZero(field->tile_dirty, tiles * sizeof(uint8_t));
+  return true_v;
+}
+
+static VkrHeightfieldTile *heightfield_tile_new(VkrHeightfield *field,
+                                                uint32_t index) {
+  VkrHeightfieldTile *tile = vkr_allocator_alloc(
+      field->allocator, sizeof(VkrHeightfieldTile), HEIGHTFIELD_TAG);
+  if (tile) {
+    field->tiles[index] = tile;
+    field->resident_tiles++;
+  }
+  return tile;
+}
+
+static void heightfield_tile_free(VkrHeightfield *field, uint32_t index) {
+  vkr_allocator_free(field->allocator, field->tiles[index],
+                     sizeof(VkrHeightfieldTile), HEIGHTFIELD_TAG);
+  field->tiles[index] = NULL;
+  field->tile_dirty[index] = 0u;
+  field->resident_tiles--;
+}
+
+static void heightfield_tile_fill(VkrHeightfieldTile *tile, uint16_t height) {
+  for (uint32_t i = 0; i < ArrayCount(tile->heights); ++i) {
+    tile->heights[i] = height;
+    tile->weights[i] = 0xFFu;
+  }
+}
+
+/* Copies resident samples at overview positions inside `rect` into the
+   overview. */
+static void heightfield_overview_refresh(VkrHeightfield *field,
+                                         VkrHeightfieldRect rect) {
+  const uint32_t stride = VKR_HEIGHTFIELD_OVERVIEW_STRIDE;
+  const uint32_t side = vkr_heightfield_overview_samples(field);
+  for (uint32_t oz = (rect.z0 + stride - 1u) / stride; oz * stride <= rect.z1;
+       ++oz) {
+    for (uint32_t ox = (rect.x0 + stride - 1u) / stride; ox * stride <= rect.x1;
+         ++ox) {
+      const uint32_t x = ox * stride;
+      const uint32_t z = oz * stride;
+      if (vkr_heightfield_tile_of(field, x, z)) {
+        field->overview_heights[oz * side + ox] =
+            vkr_heightfield_raw(field, x, z);
+        field->overview_weights[oz * side + ox] =
+            vkr_heightfield_weights_at(field, x, z);
+      }
+    }
+  }
+}
+
+/* Marks the tiles of `rect` dirty and refreshes its overview samples. */
+static void heightfield_mark(VkrHeightfield *field, VkrHeightfieldRect rect) {
+  const uint32_t size = VKR_HEIGHTFIELD_TILE_SAMPLES;
+  for (uint32_t tz = rect.z0 / size; tz <= rect.z1 / size; ++tz) {
+    for (uint32_t tx = rect.x0 / size; tx <= rect.x1 / size; ++tx) {
+      field->tile_dirty[tz * field->tiles_per_side + tx] = 1u;
+    }
+  }
+  heightfield_overview_refresh(field, rect);
+}
+
 bool8_t vkr_heightfield_create(VkrHeightfield *out, uint32_t cells,
                                float32_t spacing, float32_t height_min,
                                float32_t height_max, float32_t height,
                                VkrAllocator *allocator) {
   MemZero(out, sizeof(*out));
-  if (!cells || cells % VKR_HEIGHTFIELD_TILE_CELLS ||
-      cells > VKR_HEIGHTFIELD_CELLS_MAX || !(spacing > 0.0f) ||
-      !isfinite(spacing) || !isfinite(height_min) || !isfinite(height_max) ||
-      !(height_max > height_min)) {
+  if (!heightfield_valid(cells, spacing, height_min, height_max) ||
+      cells > VKR_HEIGHTFIELD_RESIDENT_CELLS ||
+      !heightfield_arrays(out, cells, spacing, height_min, height_max,
+                          allocator)) {
     return false_v;
   }
-  const uint64_t count = (uint64_t)(cells + 1u) * (cells + 1u);
-  out->heights =
-      vkr_allocator_alloc(allocator, count * sizeof(uint16_t), HEIGHTFIELD_TAG);
-  out->weights =
-      vkr_allocator_alloc(allocator, count * sizeof(uint32_t), HEIGHTFIELD_TAG);
-  if (!out->heights || !out->weights) {
-    vkr_heightfield_destroy(out, allocator);
-    return false_v;
-  }
-  out->cells = cells;
-  out->spacing = spacing;
-  out->height_min = height_min;
-  out->height_max = height_max;
   const uint16_t value = vkr_heightfield_quantize(out, height);
-  for (uint64_t i = 0; i < count; ++i) {
-    out->heights[i] = value;
-    out->weights[i] = 0xFFu;
+  const uint32_t tiles = out->tiles_per_side * out->tiles_per_side;
+  for (uint32_t i = 0; i < tiles; ++i) {
+    VkrHeightfieldTile *tile = heightfield_tile_new(out, i);
+    if (!tile) {
+      vkr_heightfield_destroy(out, allocator);
+      return false_v;
+    }
+    heightfield_tile_fill(tile, value);
+  }
+  const uint64_t overview = heightfield_overview_count(cells);
+  for (uint64_t i = 0; i < overview; ++i) {
+    out->overview_heights[i] = value;
+    out->overview_weights[i] = 0xFFu;
   }
   return true_v;
 }
 
 void vkr_heightfield_destroy(VkrHeightfield *field, VkrAllocator *allocator) {
-  const uint64_t count =
-      (uint64_t)(field->cells + 1u) * (uint64_t)(field->cells + 1u);
-  if (field->heights) {
-    vkr_allocator_free(allocator, field->heights, count * sizeof(uint16_t),
+  const uint64_t tiles =
+      (uint64_t)field->tiles_per_side * field->tiles_per_side;
+  const uint64_t overview = heightfield_overview_count(field->cells);
+  if (field->tiles) {
+    for (uint64_t i = 0; i < tiles; ++i) {
+      if (field->tiles[i]) {
+        vkr_allocator_free(allocator, field->tiles[i],
+                           sizeof(VkrHeightfieldTile), HEIGHTFIELD_TAG);
+      }
+    }
+    vkr_allocator_free(allocator, field->tiles,
+                       tiles * sizeof(VkrHeightfieldTile *), HEIGHTFIELD_TAG);
+  }
+  if (field->tile_dirty) {
+    vkr_allocator_free(allocator, field->tile_dirty, tiles * sizeof(uint8_t),
                        HEIGHTFIELD_TAG);
   }
-  if (field->weights) {
-    vkr_allocator_free(allocator, field->weights, count * sizeof(uint32_t),
-                       HEIGHTFIELD_TAG);
+  if (field->overview_heights) {
+    vkr_allocator_free(allocator, field->overview_heights,
+                       overview * sizeof(uint16_t), HEIGHTFIELD_TAG);
+  }
+  if (field->overview_weights) {
+    vkr_allocator_free(allocator, field->overview_weights,
+                       overview * sizeof(uint32_t), HEIGHTFIELD_TAG);
+  }
+  if (field->file) {
+    fclose((FILE *)field->file);
   }
   MemZero(field, sizeof(*field));
 }
@@ -94,29 +242,66 @@ uint16_t vkr_heightfield_quantize(const VkrHeightfield *field,
 
 float32_t vkr_heightfield_at(const VkrHeightfield *field, uint32_t x,
                              uint32_t z) {
+  return vkr_heightfield_metres(field, vkr_heightfield_raw(field, x, z));
+}
+
+float32_t vkr_heightfield_overview_at(const VkrHeightfield *field, uint32_t x,
+                                      uint32_t z) {
   return vkr_heightfield_metres(
-      field, field->heights[(size_t)z * vkr_heightfield_samples(field) + x]);
+      field,
+      field->overview_heights[z * vkr_heightfield_overview_samples(field) + x]);
 }
 
 bool8_t vkr_heightfield_sample(const VkrHeightfield *field, float32_t x,
                                float32_t z, float32_t *out_height) {
   const float32_t half = vkr_heightfield_half_size(field);
-  const float32_t gx = (x + half) / field->spacing;
-  const float32_t gz = (z + half) / field->spacing;
+  float32_t gx = (x + half) / field->spacing;
+  float32_t gz = (z + half) / field->spacing;
   if (!(gx >= 0.0f) || !(gz >= 0.0f) || gx > (float32_t)field->cells ||
       gz > (float32_t)field->cells) {
     return false_v;
   }
-  const uint32_t x0 = Min((uint32_t)gx, field->cells - 1u);
-  const uint32_t z0 = Min((uint32_t)gz, field->cells - 1u);
+  uint32_t x0 = Min((uint32_t)gx, field->cells - 1u);
+  uint32_t z0 = Min((uint32_t)gz, field->cells - 1u);
+  const bool8_t resident = vkr_heightfield_tile_of(field, x0, z0) &&
+                           vkr_heightfield_tile_of(field, x0 + 1u, z0) &&
+                           vkr_heightfield_tile_of(field, x0, z0 + 1u) &&
+                           vkr_heightfield_tile_of(field, x0 + 1u, z0 + 1u);
+  float32_t h00, h10, h01, h11;
+  if (resident) {
+    h00 = vkr_heightfield_at(field, x0, z0);
+    h10 = vkr_heightfield_at(field, x0 + 1u, z0);
+    h01 = vkr_heightfield_at(field, x0, z0 + 1u);
+    h11 = vkr_heightfield_at(field, x0 + 1u, z0 + 1u);
+  } else {
+    /* Unloaded ground answers from the overview. */
+    const uint32_t last = vkr_heightfield_overview_samples(field) - 1u;
+    gx /= (float32_t)VKR_HEIGHTFIELD_OVERVIEW_STRIDE;
+    gz /= (float32_t)VKR_HEIGHTFIELD_OVERVIEW_STRIDE;
+    x0 = Min((uint32_t)gx, last - 1u);
+    z0 = Min((uint32_t)gz, last - 1u);
+    h00 = vkr_heightfield_overview_at(field, x0, z0);
+    h10 = vkr_heightfield_overview_at(field, x0 + 1u, z0);
+    h01 = vkr_heightfield_overview_at(field, x0, z0 + 1u);
+    h11 = vkr_heightfield_overview_at(field, x0 + 1u, z0 + 1u);
+  }
   const float32_t fx = gx - (float32_t)x0;
   const float32_t fz = gz - (float32_t)z0;
-  const float32_t h00 = vkr_heightfield_at(field, x0, z0);
-  const float32_t h10 = vkr_heightfield_at(field, x0 + 1u, z0);
-  const float32_t h01 = vkr_heightfield_at(field, x0, z0 + 1u);
-  const float32_t h11 = vkr_heightfield_at(field, x0 + 1u, z0 + 1u);
   *out_height = (h00 * (1.0f - fx) + h10 * fx) * (1.0f - fz) +
                 (h01 * (1.0f - fx) + h11 * fx) * fz;
+  return true_v;
+}
+
+bool8_t vkr_heightfield_resident(const VkrHeightfield *field,
+                                 VkrHeightfieldRect rect) {
+  const uint32_t size = VKR_HEIGHTFIELD_TILE_SAMPLES;
+  for (uint32_t tz = rect.z0 / size; tz <= rect.z1 / size; ++tz) {
+    for (uint32_t tx = rect.x0 / size; tx <= rect.x1 / size; ++tx) {
+      if (!vkr_heightfield_tile(field, tx, tz)) {
+        return false_v;
+      }
+    }
+  }
   return true_v;
 }
 
@@ -163,27 +348,28 @@ bool8_t vkr_heightfield_rect_union(const VkrHeightfield *field,
 void vkr_heightfield_read_rect(const VkrHeightfield *field,
                                VkrHeightfieldRect rect, uint16_t *heights,
                                uint32_t *weights) {
-  const uint32_t samples = vkr_heightfield_samples(field);
   const uint32_t width = rect.x1 - rect.x0 + 1u;
   for (uint32_t z = rect.z0; z <= rect.z1; ++z) {
-    const size_t from = (size_t)z * samples + rect.x0;
-    const size_t to = (size_t)(z - rect.z0) * width;
-    MemCopy(heights + to, field->heights + from, width * sizeof(uint16_t));
-    MemCopy(weights + to, field->weights + from, width * sizeof(uint32_t));
+    for (uint32_t x = rect.x0; x <= rect.x1; ++x) {
+      const size_t to = (size_t)(z - rect.z0) * width + (x - rect.x0);
+      heights[to] = vkr_heightfield_raw(field, x, z);
+      weights[to] = vkr_heightfield_weights_at(field, x, z);
+    }
   }
 }
 
 void vkr_heightfield_write_rect(VkrHeightfield *field, VkrHeightfieldRect rect,
                                 const uint16_t *heights,
                                 const uint32_t *weights) {
-  const uint32_t samples = vkr_heightfield_samples(field);
   const uint32_t width = rect.x1 - rect.x0 + 1u;
   for (uint32_t z = rect.z0; z <= rect.z1; ++z) {
-    const size_t to = (size_t)z * samples + rect.x0;
-    const size_t from = (size_t)(z - rect.z0) * width;
-    MemCopy(field->heights + to, heights + from, width * sizeof(uint16_t));
-    MemCopy(field->weights + to, weights + from, width * sizeof(uint32_t));
+    for (uint32_t x = rect.x0; x <= rect.x1; ++x) {
+      const size_t from = (size_t)(z - rect.z0) * width + (x - rect.x0);
+      *heightfield_height_ref(field, x, z) = heights[from];
+      *heightfield_weights_ref(field, x, z) = weights[from];
+    }
   }
+  heightfield_mark(field, rect);
 }
 
 // =============================================================================
@@ -205,20 +391,20 @@ static Vec2 heightfield_local(const VkrHeightfield *field, uint32_t x,
 /* Moves sample (x, z) toward `target` metres by `t`. */
 static void heightfield_blend(VkrHeightfield *field, uint32_t x, uint32_t z,
                               float32_t target, float32_t t) {
-  const size_t index = (size_t)z * vkr_heightfield_samples(field) + x;
-  const float32_t now = vkr_heightfield_metres(field, field->heights[index]);
-  field->heights[index] =
-      vkr_heightfield_quantize(field, now + (target - now) * t);
+  uint16_t *height = heightfield_height_ref(field, x, z);
+  const float32_t now = vkr_heightfield_metres(field, *height);
+  *height = vkr_heightfield_quantize(field, now + (target - now) * t);
 }
 
-/* Adds `t` of layer `layer` to sample `index`, keeping weights summing to
+/* Adds `t` of layer `layer` to sample (x, z), keeping weights summing to
    255. */
-static void heightfield_paint(VkrHeightfield *field, size_t index,
+static void heightfield_paint(VkrHeightfield *field, uint32_t x, uint32_t z,
                               uint32_t layer, float32_t t) {
+  uint32_t *weights = heightfield_weights_ref(field, x, z);
   float32_t w[VKR_HEIGHTFIELD_LAYERS];
   float32_t sum = 0.0f;
   for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
-    w[i] = (float32_t)((field->weights[index] >> (8u * i)) & 0xFFu);
+    w[i] = (float32_t)((*weights >> (8u * i)) & 0xFFu);
     sum += w[i];
   }
   for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
@@ -233,7 +419,7 @@ static void heightfield_paint(VkrHeightfield *field, size_t index,
   }
   /* Rounding drift goes to the painted layer. */
   bytes[layer] = (uint32_t)((int32_t)bytes[layer] + 255 - (int32_t)total);
-  field->weights[index] =
+  *weights =
       bytes[0] | (bytes[1] << 8u) | (bytes[2] << 16u) | (bytes[3] << 24u);
 }
 
@@ -267,9 +453,8 @@ bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
       if (w <= 0.0f) {
         continue;
       }
-      const size_t index = (size_t)sz * samples + sx;
       const float32_t now =
-          vkr_heightfield_metres(field, field->heights[index]);
+          vkr_heightfield_metres(field, vkr_heightfield_raw(field, sx, sz));
       switch (brush) {
       case VKR_HEIGHTFIELD_RAISE:
         heightfield_blend(field, sx, sz, now + strength, w);
@@ -301,7 +486,7 @@ bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
         heightfield_blend(field, sx, sz, height, strength * w);
         break;
       case VKR_HEIGHTFIELD_PAINT:
-        heightfield_paint(field, index, layer,
+        heightfield_paint(field, sx, sz, layer,
                           Min(1.0f, Max(0.0f, strength)) * w);
         break;
       default:
@@ -315,7 +500,7 @@ bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
       for (uint32_t sx = touched->x0; sx <= touched->x1; ++sx) {
         const Vec2 at = heightfield_local(field, sx, sz);
         if (vec2_length(vec2_new(at.x - x, at.y - z)) < radius) {
-          field->heights[(size_t)sz * samples + sx] =
+          *heightfield_height_ref(field, sx, sz) =
               staged[(size_t)(sz - touched->z0) * width + (sx - touched->x0)];
         }
       }
@@ -436,10 +621,10 @@ bool8_t vkr_heightfield_op_rect(const VkrHeightfield *field,
   }
 }
 
-bool8_t vkr_heightfield_op_apply(VkrHeightfield *field,
-                                 const VkrHeightfieldOp *op,
-                                 VkrAllocator *scratch,
-                                 VkrHeightfieldRect *touched) {
+static bool8_t heightfield_op_run(VkrHeightfield *field,
+                                  const VkrHeightfieldOp *op,
+                                  VkrAllocator *scratch,
+                                  VkrHeightfieldRect *touched) {
   switch (op->kind) {
   case VKR_HEIGHTFIELD_OP_BRUSH:
     return vkr_heightfield_brush(field, op->brush, op->a.x, op->a.z, op->radius,
@@ -500,67 +685,50 @@ bool8_t vkr_heightfield_op_apply(VkrHeightfield *field,
   }
 }
 
+bool8_t vkr_heightfield_op_apply(VkrHeightfield *field,
+                                 const VkrHeightfieldOp *op,
+                                 VkrAllocator *scratch,
+                                 VkrHeightfieldRect *touched) {
+  /* The samples the op writes, and the neighbours smoothing reads. */
+  VkrHeightfieldRect reach;
+  if (!vkr_heightfield_op_rect(field, op, &reach)) {
+    return false_v;
+  }
+  reach.x0 = reach.x0 ? reach.x0 - 1u : 0u;
+  reach.z0 = reach.z0 ? reach.z0 - 1u : 0u;
+  reach.x1 = Min(reach.x1 + 1u, field->cells);
+  reach.z1 = Min(reach.z1 + 1u, field->cells);
+  if (!vkr_heightfield_load_rect(field, reach) ||
+      !heightfield_op_run(field, op, scratch, touched)) {
+    return false_v;
+  }
+  heightfield_mark(field, *touched);
+  return true_v;
+}
+
 // =============================================================================
 // Files
 // =============================================================================
 
-static uint32_t heightfield_tiles(uint32_t samples) {
-  return (samples + VKR_HEIGHTFIELD_TILE_SAMPLES - 1u) /
-         VKR_HEIGHTFIELD_TILE_SAMPLES;
+static bool8_t heightfield_write_header(FILE *file, uint32_t cells,
+                                        float32_t spacing, float32_t height_min,
+                                        float32_t height_max) {
+  HeightfieldHeader header = {.version = HEIGHTFIELD_VERSION,
+                              .cells = cells,
+                              .spacing = spacing,
+                              .height_min = height_min,
+                              .height_max = height_max,
+                              .tile_samples = VKR_HEIGHTFIELD_TILE_SAMPLES,
+                              .tiles_per_side = heightfield_tiles(cells + 1u),
+                              .overview_stride =
+                                  VKR_HEIGHTFIELD_OVERVIEW_STRIDE};
+  MemCopy(header.magic, s_heightfield_magic, sizeof(header.magic));
+  return fwrite(&header, sizeof(header), 1u, file) == 1u;
 }
 
-bool8_t vkr_heightfield_save(const VkrHeightfield *field, const char *path,
-                             char *error, uint32_t capacity) {
-  const uint32_t samples = vkr_heightfield_samples(field);
-  const uint32_t tiles = heightfield_tiles(samples);
-  const uint32_t tile_samples =
-      VKR_HEIGHTFIELD_TILE_SAMPLES * VKR_HEIGHTFIELD_TILE_SAMPLES;
-  char temp[1100];
-  if (snprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
-    return heightfield_fail(error, capacity, "The terrain path is too long");
-  }
-  FILE *file = file_fopen(temp, "wb");
-  if (!file) {
-    return heightfield_fail(error, capacity,
-                            "The terrain file could not be created");
-  }
-  HeightfieldHeader header = {.version = HEIGHTFIELD_VERSION,
-                              .cells = field->cells,
-                              .spacing = field->spacing,
-                              .height_min = field->height_min,
-                              .height_max = field->height_max,
-                              .tile_samples = VKR_HEIGHTFIELD_TILE_SAMPLES,
-                              .tiles_per_side = tiles};
-  MemCopy(header.magic, s_heightfield_magic, sizeof(header.magic));
-  bool8_t ok = fwrite(&header, sizeof(header), 1u, file) == 1u;
-  uint16_t heights[VKR_HEIGHTFIELD_TILE_SAMPLES * VKR_HEIGHTFIELD_TILE_SAMPLES];
-  uint32_t weights[VKR_HEIGHTFIELD_TILE_SAMPLES * VKR_HEIGHTFIELD_TILE_SAMPLES];
-  for (uint32_t tz = 0; ok && tz < tiles; ++tz) {
-    for (uint32_t tx = 0; ok && tx < tiles; ++tx) {
-      /* Samples past the field's edge in the last tiles are zero. */
-      MemZero(heights, sizeof(heights));
-      MemZero(weights, sizeof(weights));
-      for (uint32_t z = 0; z < VKR_HEIGHTFIELD_TILE_SAMPLES; ++z) {
-        const uint32_t sz = tz * VKR_HEIGHTFIELD_TILE_SAMPLES + z;
-        for (uint32_t x = 0; sz < samples && x < VKR_HEIGHTFIELD_TILE_SAMPLES;
-             ++x) {
-          const uint32_t sx = tx * VKR_HEIGHTFIELD_TILE_SAMPLES + x;
-          if (sx < samples) {
-            heights[z * VKR_HEIGHTFIELD_TILE_SAMPLES + x] =
-                field->heights[(size_t)sz * samples + sx];
-            weights[z * VKR_HEIGHTFIELD_TILE_SAMPLES + x] =
-                field->weights[(size_t)sz * samples + sx];
-          }
-        }
-      }
-      ok =
-          fwrite(heights, sizeof(uint16_t), tile_samples, file) ==
-              tile_samples &&
-          fwrite(weights, sizeof(uint32_t), tile_samples, file) == tile_samples;
-    }
-  }
-  ok = fflush(file) == 0 && ok;
-  ok = fclose(file) == 0 && ok;
+/* Replaces `path` with the written temporary file `temp`. */
+static bool8_t heightfield_commit(const char *temp, const char *path,
+                                  bool8_t ok, char *error, uint32_t capacity) {
   FilePath from = {
       .path = string8_create_from_cstr((const uint8_t *)temp, strlen(temp)),
       .type = FILE_PATH_TYPE_ABSOLUTE};
@@ -575,6 +743,112 @@ bool8_t vkr_heightfield_save(const VkrHeightfield *field, const char *path,
   return true_v;
 }
 
+bool8_t vkr_heightfield_create_file(const char *path, uint32_t cells,
+                                    float32_t spacing, float32_t height_min,
+                                    float32_t height_max, float32_t height,
+                                    char *error, uint32_t capacity) {
+  if (!heightfield_valid(cells, spacing, height_min, height_max)) {
+    return heightfield_fail(error, capacity, "The terrain size is invalid");
+  }
+  char temp[1100];
+  if (snprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
+    return heightfield_fail(error, capacity, "The terrain path is too long");
+  }
+  FILE *file = file_fopen(temp, "wb");
+  if (!file) {
+    return heightfield_fail(error, capacity,
+                            "The terrain file could not be created");
+  }
+  VkrHeightfield shape = {.height_min = height_min, .height_max = height_max};
+  const uint16_t value = vkr_heightfield_quantize(&shape, height);
+  VkrHeightfieldTile tile;
+  heightfield_tile_fill(&tile, value);
+  const uint32_t tiles = heightfield_tiles(cells + 1u);
+  bool8_t ok =
+      heightfield_write_header(file, cells, spacing, height_min, height_max);
+  for (uint32_t i = 0; ok && i < tiles * tiles; ++i) {
+    ok = fwrite(&tile, sizeof(tile), 1u, file) == 1u;
+  }
+  /* The overview, heights then weights, a tile's worth at a time. */
+  const uint64_t overview = heightfield_overview_count(cells);
+  const uint32_t chunk = ArrayCount(tile.heights);
+  for (uint64_t i = 0; ok && i < overview; i += chunk) {
+    const size_t count = (size_t)Min((uint64_t)chunk, overview - i);
+    ok = fwrite(tile.heights, sizeof(uint16_t), count, file) == count;
+  }
+  for (uint64_t i = 0; ok && i < overview; i += chunk) {
+    const size_t count = (size_t)Min((uint64_t)chunk, overview - i);
+    ok = fwrite(tile.weights, sizeof(uint32_t), count, file) == count;
+  }
+  ok = fflush(file) == 0 && ok;
+  ok = fclose(file) == 0 && ok;
+  return heightfield_commit(temp, path, ok, error, capacity);
+}
+
+static bool8_t heightfield_write_overview(const VkrHeightfield *field,
+                                          FILE *file) {
+  const uint64_t overview = heightfield_overview_count(field->cells);
+  return fwrite(field->overview_heights, sizeof(uint16_t), overview, file) ==
+             overview &&
+         fwrite(field->overview_weights, sizeof(uint32_t), overview, file) ==
+             overview;
+}
+
+/* Writes resident tile `index` of a streamed field at its offset. */
+static bool8_t heightfield_store_tile(VkrHeightfield *field, uint32_t index) {
+  FILE *file = field->file;
+  if (FSEEK64(file, (int64_t)heightfield_tile_offset(index), SEEK_SET) != 0 ||
+      fwrite(field->tiles[index], sizeof(VkrHeightfieldTile), 1u, file) != 1u) {
+    return false_v;
+  }
+  field->tile_dirty[index] = 0u;
+  return true_v;
+}
+
+bool8_t vkr_heightfield_save(VkrHeightfield *field, const char *path,
+                             char *error, uint32_t capacity) {
+  const uint32_t tiles = field->tiles_per_side * field->tiles_per_side;
+  if (field->file) {
+    /* A streamed field writes its changed tiles and the overview in place. */
+    bool8_t ok = true_v;
+    for (uint32_t i = 0; ok && i < tiles; ++i) {
+      if (field->tiles[i] && field->tile_dirty[i]) {
+        ok = heightfield_store_tile(field, i);
+      }
+    }
+    ok = ok &&
+         FSEEK64(field->file, (int64_t)heightfield_tile_offset(tiles),
+                 SEEK_SET) == 0 &&
+         heightfield_write_overview(field, field->file) &&
+         fflush(field->file) == 0;
+    return ok ? true_v
+              : heightfield_fail(error, capacity,
+                                 "The terrain file could not be written");
+  }
+  char temp[1100];
+  if (snprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
+    return heightfield_fail(error, capacity, "The terrain path is too long");
+  }
+  FILE *file = file_fopen(temp, "wb");
+  if (!file) {
+    return heightfield_fail(error, capacity,
+                            "The terrain file could not be created");
+  }
+  bool8_t ok = heightfield_write_header(file, field->cells, field->spacing,
+                                        field->height_min, field->height_max);
+  for (uint32_t i = 0; ok && i < tiles; ++i) {
+    ok = field->tiles[i] &&
+         fwrite(field->tiles[i], sizeof(VkrHeightfieldTile), 1u, file) == 1u;
+  }
+  ok = ok && heightfield_write_overview(field, file);
+  ok = fflush(file) == 0 && ok;
+  ok = fclose(file) == 0 && ok;
+  if (ok) {
+    MemZero(field->tile_dirty, tiles * sizeof(uint8_t));
+  }
+  return heightfield_commit(temp, path, ok, error, capacity);
+}
+
 bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
                              VkrAllocator *allocator, char *error,
                              uint32_t capacity) {
@@ -585,50 +859,99 @@ bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
                             "The terrain file could not be opened");
   }
   HeightfieldHeader header;
-  bool8_t ok = fread(&header, sizeof(header), 1u, file) == 1u &&
-               MemCompare(header.magic, s_heightfield_magic,
-                          sizeof(header.magic)) == 0 &&
-               header.version == HEIGHTFIELD_VERSION &&
-               header.tile_samples == VKR_HEIGHTFIELD_TILE_SAMPLES &&
-               header.tiles_per_side == heightfield_tiles(header.cells + 1u) &&
-               vkr_heightfield_create(out, header.cells, header.spacing,
-                                      header.height_min, header.height_max,
-                                      header.height_min, allocator);
+  bool8_t ok =
+      fread(&header, sizeof(header), 1u, file) == 1u &&
+      MemCompare(header.magic, s_heightfield_magic, sizeof(header.magic)) ==
+          0 &&
+      (header.version == 1u ||
+       (header.version == 2u &&
+        header.overview_stride == VKR_HEIGHTFIELD_OVERVIEW_STRIDE)) &&
+      header.tile_samples == VKR_HEIGHTFIELD_TILE_SAMPLES &&
+      heightfield_valid(header.cells, header.spacing, header.height_min,
+                        header.height_max) &&
+      header.tiles_per_side == heightfield_tiles(header.cells + 1u) &&
+      (header.version == 2u ||
+       header.cells <= VKR_HEIGHTFIELD_RESIDENT_CELLS) &&
+      heightfield_arrays(out, header.cells, header.spacing, header.height_min,
+                         header.height_max, allocator);
   if (!ok) {
     fclose(file);
     vkr_heightfield_destroy(out, allocator);
     return heightfield_fail(error, capacity,
                             "The terrain file is not a supported heightfield");
   }
-  const uint32_t samples = vkr_heightfield_samples(out);
-  const uint32_t tile_samples =
-      VKR_HEIGHTFIELD_TILE_SAMPLES * VKR_HEIGHTFIELD_TILE_SAMPLES;
-  uint16_t heights[VKR_HEIGHTFIELD_TILE_SAMPLES * VKR_HEIGHTFIELD_TILE_SAMPLES];
-  uint32_t weights[VKR_HEIGHTFIELD_TILE_SAMPLES * VKR_HEIGHTFIELD_TILE_SAMPLES];
-  for (uint32_t tz = 0; ok && tz < header.tiles_per_side; ++tz) {
-    for (uint32_t tx = 0; ok && tx < header.tiles_per_side; ++tx) {
-      ok = fread(heights, sizeof(uint16_t), tile_samples, file) ==
-               tile_samples &&
-           fread(weights, sizeof(uint32_t), tile_samples, file) == tile_samples;
-      for (uint32_t z = 0; ok && z < VKR_HEIGHTFIELD_TILE_SAMPLES; ++z) {
-        const uint32_t sz = tz * VKR_HEIGHTFIELD_TILE_SAMPLES + z;
-        for (uint32_t x = 0; sz < samples && x < VKR_HEIGHTFIELD_TILE_SAMPLES;
-             ++x) {
-          const uint32_t sx = tx * VKR_HEIGHTFIELD_TILE_SAMPLES + x;
-          if (sx < samples) {
-            out->heights[(size_t)sz * samples + sx] =
-                heights[z * VKR_HEIGHTFIELD_TILE_SAMPLES + x];
-            out->weights[(size_t)sz * samples + sx] =
-                weights[z * VKR_HEIGHTFIELD_TILE_SAMPLES + x];
-          }
-        }
-      }
+  const uint32_t tiles = out->tiles_per_side * out->tiles_per_side;
+  const uint64_t overview = heightfield_overview_count(out->cells);
+  if (out->cells <= VKR_HEIGHTFIELD_RESIDENT_CELLS) {
+    for (uint32_t i = 0; ok && i < tiles; ++i) {
+      VkrHeightfieldTile *tile = heightfield_tile_new(out, i);
+      ok = tile && fread(tile, sizeof(*tile), 1u, file) == 1u;
     }
+    /* Version 1 has no overview; the samples give it. */
+    heightfield_overview_refresh(
+        out, (VkrHeightfieldRect){0u, 0u, out->cells, out->cells});
+    fclose(file);
+  } else {
+    /* A streamed field reads its overview now and its tiles on demand. */
+    ok =
+        FSEEK64(file, (int64_t)heightfield_tile_offset(tiles), SEEK_SET) == 0 &&
+        fread(out->overview_heights, sizeof(uint16_t), overview, file) ==
+            overview &&
+        fread(out->overview_weights, sizeof(uint32_t), overview, file) ==
+            overview;
+    fclose(file);
+    out->file = ok ? file_fopen(path, "r+b") : NULL;
+    ok = ok && out->file;
   }
-  fclose(file);
   if (!ok) {
     vkr_heightfield_destroy(out, allocator);
     return heightfield_fail(error, capacity, "The terrain file is truncated");
+  }
+  return true_v;
+}
+
+bool8_t vkr_heightfield_tile_load(VkrHeightfield *field, uint32_t tx,
+                                  uint32_t tz) {
+  const uint32_t index = tz * field->tiles_per_side + tx;
+  if (field->tiles[index]) {
+    return true_v;
+  }
+  if (!field->file) {
+    return false_v;
+  }
+  VkrHeightfieldTile *tile = heightfield_tile_new(field, index);
+  if (!tile ||
+      FSEEK64(field->file, (int64_t)heightfield_tile_offset(index), SEEK_SET) !=
+          0 ||
+      fread(tile, sizeof(*tile), 1u, field->file) != 1u) {
+    if (tile) {
+      heightfield_tile_free(field, index);
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_heightfield_tile_release(VkrHeightfield *field, uint32_t tx,
+                                     uint32_t tz) {
+  const uint32_t index = tz * field->tiles_per_side + tx;
+  /* Unsaved samples stay until a save writes them. */
+  if (!field->tiles[index] || !field->file || field->tile_dirty[index]) {
+    return false_v;
+  }
+  heightfield_tile_free(field, index);
+  return true_v;
+}
+
+bool8_t vkr_heightfield_load_rect(VkrHeightfield *field,
+                                  VkrHeightfieldRect rect) {
+  const uint32_t size = VKR_HEIGHTFIELD_TILE_SAMPLES;
+  for (uint32_t tz = rect.z0 / size; tz <= rect.z1 / size; ++tz) {
+    for (uint32_t tx = rect.x0 / size; tx <= rect.x1 / size; ++tx) {
+      if (!vkr_heightfield_tile_load(field, tx, tz)) {
+        return false_v;
+      }
+    }
   }
   return true_v;
 }

@@ -3348,7 +3348,11 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
   }
   if (!physics_generated_create(physics->world, &generated, &generated.body)) {
     physics_generated_free(physics, &generated);
-    return physics_fail(error, "The generated collision body was rejected");
+    const char *reason = vkr_physics_last_error(physics->world);
+    return physics_fail(error,
+                        reason && reason[0]
+                            ? reason
+                            : "The generated collision body was rejected");
   }
   physics->generated[physics->generated_count++] = generated;
   return true_v;

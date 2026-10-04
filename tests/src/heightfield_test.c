@@ -47,10 +47,24 @@ static void heightfield_test_file(void) {
   assert(vkr_heightfield_create(&field, 128u, 0.5f, -10.0f, 90.0f, 1.0f,
                                 &test.allocator));
   const uint32_t samples = vkr_heightfield_samples(&field);
+  const VkrHeightfieldRect all = {0u, 0u, samples - 1u, samples - 1u};
+  uint16_t *heights =
+      vkr_allocator_alloc(&test.allocator, sizeof(uint16_t) * samples * samples,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *weights =
+      vkr_allocator_alloc(&test.allocator, sizeof(uint32_t) * samples * samples,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint16_t *read_heights =
+      vkr_allocator_alloc(&test.allocator, sizeof(uint16_t) * samples * samples,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *read_weights =
+      vkr_allocator_alloc(&test.allocator, sizeof(uint32_t) * samples * samples,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   for (uint32_t i = 0; i < samples * samples; ++i) {
-    field.heights[i] = (uint16_t)(i * 7u);
-    field.weights[i] = i * 2654435761u;
+    heights[i] = (uint16_t)(i * 7u);
+    weights[i] = i * 2654435761u;
   }
+  vkr_heightfield_write_rect(&field, all, heights, weights);
   char path[1024];
   snprintf(path, sizeof(path),
            PROJECT_SOURCE_DIR "tests/tmp/heightfield_%u.vkrhf",
@@ -65,9 +79,10 @@ static void heightfield_test_file(void) {
       vkr_heightfield_load(&read, path, &test.allocator, error, sizeof(error)));
   assert(read.cells == 128u && read.spacing == 0.5f &&
          read.height_min == -10.0f && read.height_max == 90.0f);
-  assert(MemCompare(read.heights, field.heights,
+  vkr_heightfield_read_rect(&read, all, read_heights, read_weights);
+  assert(MemCompare(read_heights, heights,
                     sizeof(uint16_t) * samples * samples) == 0);
-  assert(MemCompare(read.weights, field.weights,
+  assert(MemCompare(read_weights, weights,
                     sizeof(uint32_t) * samples * samples) == 0);
   FilePath file = {
       .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
@@ -160,13 +175,14 @@ static void heightfield_test_operations(void) {
   assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
   for (uint32_t z = touched.z0; z <= touched.z1; ++z) {
     for (uint32_t x = touched.x0; x <= touched.x1; ++x) {
-      const uint32_t w = field.weights[z * 65u + x];
+      const uint32_t w = vkr_heightfield_weights_at(&field, x, z);
       assert((w & 0xFFu) + ((w >> 8u) & 0xFFu) + ((w >> 16u) & 0xFFu) +
                  (w >> 24u) ==
              255u);
     }
   }
-  assert(((field.weights[32u * 65u + 32u] >> 16u) & 0xFFu) == 153u);
+  assert(((vkr_heightfield_weights_at(&field, 32u, 32u) >> 16u) & 0xFFu) ==
+         153u);
   vkr_heightfield_destroy(&field, &test.allocator);
   heightfield_test_end(&test);
   printf("  heightfield_test_operations PASSED\n");
@@ -300,9 +316,76 @@ static void heightfield_test_tile_levels(void) {
   printf("  heightfield_test_tile_levels PASSED\n");
 }
 
+/* A field larger than the resident limit loads only its overview; a tile
+   edited, saved in place and released reads back, the overview follows the
+   edit, and an unsaved tile cannot be released. */
+static void heightfield_test_streamed(void) {
+  printf("  Running heightfield_test_streamed...\n");
+  HeightfieldTest test;
+  heightfield_test_begin(&test);
+  char path[1024];
+  snprintf(path, sizeof(path),
+           PROJECT_SOURCE_DIR "tests/tmp/heightfield_streamed_%u.vkrhf",
+           vkr_platform_get_process_id());
+  FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&directory));
+  char error[160];
+  const uint32_t cells = 2u * VKR_HEIGHTFIELD_STREAMED_CELLS;
+  assert(vkr_heightfield_create_file(path, cells, 1.0f, -100.0f, 100.0f, 5.0f,
+                                     error, sizeof(error)));
+  VkrHeightfield field;
+  assert(vkr_heightfield_load(&field, path, &test.allocator, error,
+                              sizeof(error)));
+  assert(vkr_heightfield_streamed(&field) && field.resident_tiles == 0u);
+  float32_t height = 0.0f;
+  assert(vkr_heightfield_sample(&field, 0.0f, 0.0f, &height));
+  assert(near(height, 5.0f, 0.01f));
+
+  /* Samples (192..207, 256..271) lie in tile (3, 4); (192, 256) is an
+     overview sample. */
+  const VkrHeightfieldRect rect = {192u, 256u, 207u, 271u};
+  assert(!vkr_heightfield_resident(&field, rect));
+  assert(vkr_heightfield_load_rect(&field, rect));
+  assert(field.resident_tiles == 1u && vkr_heightfield_resident(&field, rect));
+  uint16_t heights[16u * 16u];
+  uint32_t weights[16u * 16u];
+  const uint16_t raised = vkr_heightfield_quantize(&field, 40.0f);
+  for (uint32_t i = 0; i < ArrayCount(heights); ++i) {
+    heights[i] = raised;
+    weights[i] = 0xFF00u;
+  }
+  vkr_heightfield_write_rect(&field, rect, heights, weights);
+  assert(near(vkr_heightfield_overview_at(&field, 12u, 16u), 40.0f, 0.01f));
+  /* Unsaved samples stay resident. */
+  assert(!vkr_heightfield_tile_release(&field, 3u, 4u));
+  assert(vkr_heightfield_save(&field, path, error, sizeof(error)));
+  assert(vkr_heightfield_tile_release(&field, 3u, 4u));
+  assert(field.resident_tiles == 0u);
+  vkr_heightfield_destroy(&field, &test.allocator);
+
+  assert(vkr_heightfield_load(&field, path, &test.allocator, error,
+                              sizeof(error)));
+  assert(near(vkr_heightfield_overview_at(&field, 12u, 16u), 40.0f, 0.01f));
+  assert(near(vkr_heightfield_overview_at(&field, 13u, 16u), 5.0f, 0.01f));
+  assert(vkr_heightfield_tile_load(&field, 3u, 4u));
+  assert(near(vkr_heightfield_at(&field, 200u, 260u), 40.0f, 0.01f));
+  assert(vkr_heightfield_weights_at(&field, 200u, 260u) == 0xFF00u);
+  assert(near(vkr_heightfield_at(&field, 210u, 260u), 5.0f, 0.01f));
+  vkr_heightfield_destroy(&field, &test.allocator);
+
+  FilePath file = {
+      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&file) == FILE_ERROR_NONE);
+  heightfield_test_end(&test);
+  printf("  heightfield_test_streamed PASSED\n");
+}
+
 bool32_t run_heightfield_tests(void) {
   printf("--- Starting Heightfield Tests ---\n");
   heightfield_test_file();
+  heightfield_test_streamed();
   heightfield_test_operations();
   heightfield_test_journal();
   heightfield_test_tile_levels();

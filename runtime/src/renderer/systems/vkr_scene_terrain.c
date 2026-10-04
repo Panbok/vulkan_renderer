@@ -1,6 +1,7 @@
 #include "renderer/systems/vkr_scene_terrain.h"
 
 #include "core/logger.h"
+#include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -12,6 +13,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define TERRAIN_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
@@ -22,6 +24,27 @@
 #define TERRAIN_SKIRT_SPACINGS 2.0f
 /* A coarser level's error is at least this share of its cell size. */
 #define TERRAIN_LOD_CELL_ERROR 0.1f
+/* A streamed terrain's distant ground draws overview tiles: 65 x 65
+   overview samples, each TERRAIN_FINE_PER_OVERVIEW fine tiles a side. */
+#define TERRAIN_OVERVIEW_SCALE ((float32_t)VKR_HEIGHTFIELD_OVERVIEW_STRIDE)
+#define TERRAIN_FINE_PER_OVERVIEW VKR_HEIGHTFIELD_OVERVIEW_STRIDE
+#define TERRAIN_CELLS_PER_FINE                                                 \
+  (VKR_HEIGHTFIELD_TILE_CELLS / VKR_HEIGHTFIELD_OVERVIEW_STRIDE)
+#define TERRAIN_OVERVIEW_SIDE_MAX                                              \
+  (VKR_HEIGHTFIELD_CELLS_MAX / VKR_HEIGHTFIELD_STREAMED_CELLS)
+#define TERRAIN_OVERVIEW_MAX                                                   \
+  (TERRAIN_OVERVIEW_SIDE_MAX * TERRAIN_OVERVIEW_SIDE_MAX)
+/* Words of one overview tile's hole bits, a bit per fine tile. */
+#define TERRAIN_HOLE_WORDS                                                     \
+  (TERRAIN_FINE_PER_OVERVIEW * TERRAIN_FINE_PER_OVERVIEW / 64u)
+/* Levels an overview tile with holes keeps: those whose cells each lie in
+   one fine tile, so a hole's edge is exact at every level kept. */
+#define TERRAIN_HOLED_LEVELS 3u
+/* Fine tiles a side the body of several far-apart sources may span; past
+   it the body covers the first source alone. */
+#define TERRAIN_BODY_TILES_MAX 16u
+/* Tiles one streaming step orders by distance. */
+#define TERRAIN_STREAM_CANDIDATES 2048u
 
 _Static_assert(VKR_HEIGHTFIELD_TILE_CELLS + 1u == VKR_GPU_TERRAIN_TILE_SIDE,
                "Shaders morph tiles of VKR_GPU_TERRAIN_TILE_SIDE samples");
@@ -29,6 +52,10 @@ _Static_assert(VKR_SCENE_TERRAIN_LOD_LEVELS <= VKR_GPU_GEOMETRY_LOD_LEVEL_MAX &&
                    (VKR_HEIGHTFIELD_TILE_CELLS >>
                     (VKR_SCENE_TERRAIN_LOD_LEVELS - 1u)) == 1u,
                "Tile levels halve 64 cells down to one");
+_Static_assert(TERRAIN_OVERVIEW_MAX <= 64u,
+               "One bit of overview_dirty per overview tile");
+_Static_assert((1u << (TERRAIN_HOLED_LEVELS - 1u)) == TERRAIN_CELLS_PER_FINE,
+               "The coarsest holed level's cell is one fine tile");
 
 typedef struct TerrainRecord {
   VkrEntityId entity;
@@ -49,9 +76,23 @@ typedef struct TerrainRecord {
   bool8_t collision_built;
   /* The terrain's own layered material, released with the record. */
   VkrMaterialHandle material;
-  /* One geometry per tile, its dirty bit, and the mesh serial. */
+  /* One geometry per tile, its dirty bit, and the mesh serial. A streamed
+     terrain builds only the tiles near streaming sources. */
   VkrGeometryHandle tiles[TERRAIN_TILES_MAX];
   uint64_t dirty_tiles[TERRAIN_TILES_MAX / 64u];
+  /* A streamed terrain (ADR-086): its window radius, overview tiles with
+     their hole seams and dirty bits, and the fine tiles near the sources
+     its one body covers, inclusive, whose samples may have changed. */
+  bool8_t streamed;
+  float32_t stream_radius;
+  VkrGeometryHandle overview[TERRAIN_OVERVIEW_MAX];
+  VkrGeometryHandle seams[TERRAIN_OVERVIEW_MAX];
+  uint64_t overview_dirty;
+  VkrHeightfieldRect body_tiles;
+  bool8_t body_built;
+  bool8_t body_edited;
+  /* Physics refused the body; it waits until the samples change. */
+  bool8_t collision_rejected;
   uint32_t serial;
   /* Times the samples or products were marked changed. */
   uint64_t marks;
@@ -95,8 +136,43 @@ static uint32_t terrain_tiles(const TerrainRecord *record) {
   return record->field.cells / VKR_HEIGHTFIELD_TILE_CELLS;
 }
 
+/* Overview tiles a side; zero for a resident terrain. */
+static uint32_t terrain_overview_tiles(const TerrainRecord *record) {
+  return record->streamed ? record->field.cells / VKR_HEIGHTFIELD_STREAMED_CELLS
+                          : 0u;
+}
+
+/* The overview tile holding fine tile `index`. */
+static uint32_t terrain_overview_of(const TerrainRecord *record,
+                                    uint32_t index) {
+  const uint32_t tiles = terrain_tiles(record);
+  return index / tiles / TERRAIN_FINE_PER_OVERVIEW *
+             terrain_overview_tiles(record) +
+         index % tiles / TERRAIN_FINE_PER_OVERVIEW;
+}
+
+static bool8_t terrain_bit(const uint64_t *bits, uint32_t index) {
+  return (bits[index / 64u] >> (index % 64u)) & 1u;
+}
+
+static void terrain_bit_set(uint64_t *bits, uint32_t index, bool8_t on) {
+  if (on) {
+    bits[index / 64u] |= 1ull << (index % 64u);
+  } else {
+    bits[index / 64u] &= ~(1ull << (index % 64u));
+  }
+}
+
 static uint64_t terrain_collision_key(VkrEntityId entity) {
   return entity.u64 ^ 0x7465727261696e00ull;
+}
+
+static void terrain_geometry_release(VkrScene *scene,
+                                     VkrGeometryHandle *handle) {
+  if (handle->id && scene->assets) {
+    vkr_geometry_system_release(&scene->assets->geometry_system, *handle);
+  }
+  *handle = (VkrGeometryHandle){0};
 }
 
 /* Releases the mesh, collision, tile geometries and samples. */
@@ -105,12 +181,17 @@ static void terrain_release(VkrScene *scene, TerrainRecord *record) {
   vkr_scene_detach_generated_mesh(scene, record->entity);
   vkr_scene_physics_generated_remove(scene,
                                      terrain_collision_key(record->entity));
-  for (uint32_t i = 0; assets && i < TERRAIN_TILES_MAX; ++i) {
-    if (record->tiles[i].id) {
-      vkr_geometry_system_release(&assets->geometry_system, record->tiles[i]);
-      record->tiles[i] = (VkrGeometryHandle){0};
-    }
+  for (uint32_t i = 0; i < TERRAIN_TILES_MAX; ++i) {
+    terrain_geometry_release(scene, &record->tiles[i]);
   }
+  for (uint32_t i = 0; i < TERRAIN_OVERVIEW_MAX; ++i) {
+    terrain_geometry_release(scene, &record->overview[i]);
+    terrain_geometry_release(scene, &record->seams[i]);
+  }
+  record->body_built = false_v;
+  record->body_edited = false_v;
+  record->collision_rejected = false_v;
+  record->overview_dirty = 0u;
   if (assets && record->material.id) {
     vkr_material_system_release(&assets->material_system, record->material);
   }
@@ -131,6 +212,9 @@ static void terrain_material_key(const SceneTerrain *terrain, char *out,
 static void terrain_mark_all(TerrainRecord *record) {
   record->marks++;
   MemSet(record->dirty_tiles, 0xFF, sizeof(record->dirty_tiles));
+  record->body_edited = true_v;
+  record->collision_rejected = false_v;
+  record->overview_dirty = UINT64_MAX;
   record->mesh_dirty = true_v;
   record->collision_dirty = true_v;
   record->settle = 0u;
@@ -152,11 +236,20 @@ static void terrain_mark(TerrainRecord *record, VkrHeightfieldRect rect) {
   for (uint32_t tz = tz0; tz <= tz1; ++tz) {
     for (uint32_t tx = tx0; tx <= tx1; ++tx) {
       const uint32_t index = tz * tiles + tx;
-      record->dirty_tiles[index / 64u] |= 1ull << (index % 64u);
+      terrain_bit_set(record->dirty_tiles, index, true_v);
+      if (record->streamed) {
+        record->overview_dirty |= 1ull << terrain_overview_of(record, index);
+      }
     }
   }
+  record->body_edited =
+      record->body_edited ||
+      (record->body_built && tx0 <= record->body_tiles.x1 &&
+       tx1 >= record->body_tiles.x0 && tz0 <= record->body_tiles.z1 &&
+       tz1 >= record->body_tiles.z0);
   record->mesh_dirty = true_v;
   record->collision_dirty = true_v;
+  record->collision_rejected = false_v;
   record->unsaved = true_v;
   record->settle = 0u;
 }
@@ -192,6 +285,8 @@ static void terrain_load(VkrScene *scene, TerrainRecord *record,
     return;
   }
   record->loaded = true_v;
+  record->streamed = vkr_heightfield_streamed(&record->field);
+  record->stream_radius = terrain->stream_radius;
   record->status[0] = '\0';
   terrain_mark_all(record);
 }
@@ -221,6 +316,7 @@ void vkr_scene_terrain_changed(VkrScene *scene, VkrEntityId entity) {
     terrain_load(scene, record, terrain);
     return;
   }
+  record->stream_radius = terrain->stream_radius;
   /* A new layer material or texture size rebuilds every tile. */
   char key[sizeof(record->material_key)];
   terrain_material_key(terrain, key, sizeof(key));
@@ -267,6 +363,37 @@ const VkrHeightfield *vkr_scene_terrain_field(const VkrScene *scene,
   return record && record->loaded ? &record->field : NULL;
 }
 
+bool8_t vkr_scene_terrain_streaming(const VkrScene *scene, VkrEntityId entity,
+                                    VkrSceneTerrainStreaming *out) {
+  const TerrainRecord *record = terrain_find(scene, entity);
+  if (!record || !record->loaded) {
+    return false_v;
+  }
+  const VkrHeightfield *field = &record->field;
+  const uint32_t tiles = terrain_tiles(record);
+  const uint32_t storage = field->tiles_per_side * field->tiles_per_side;
+  *out = (VkrSceneTerrainStreaming){.streamed = record->streamed,
+                                    .resident_tiles = field->resident_tiles};
+  out->body_tiles =
+      record->body_built
+          ? (record->body_tiles.x1 - record->body_tiles.x0 + 1u) *
+                (record->body_tiles.z1 - record->body_tiles.z0 + 1u)
+          : 0u;
+  for (uint32_t i = 0; i < tiles * tiles; ++i) {
+    out->fine_tiles += record->tiles[i].id != 0u;
+  }
+  for (uint32_t i = 0; i < TERRAIN_OVERVIEW_MAX; ++i) {
+    out->overview_tiles += record->overview[i].id != 0u;
+  }
+  for (uint32_t i = 0; i < storage; ++i) {
+    out->unsaved_tiles += field->tiles[i] && field->tile_dirty[i];
+  }
+  if (!record->streamed && record->collision_built) {
+    out->body_tiles = tiles * tiles;
+  }
+  return true_v;
+}
+
 const char *vkr_scene_terrain_status(const VkrScene *scene,
                                      VkrEntityId entity) {
   const TerrainRecord *record = terrain_find(scene, entity);
@@ -300,6 +427,16 @@ bool8_t vkr_scene_terrain_apply(VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
+bool8_t vkr_scene_terrain_require(VkrScene *scene, VkrEntityId entity,
+                                  VkrHeightfieldRect rect) {
+  TerrainRecord *record = terrain_find(scene, entity);
+  const uint32_t samples =
+      record && record->loaded ? vkr_heightfield_samples(&record->field) : 0u;
+  return samples && rect.x1 < samples && rect.z1 < samples &&
+         rect.x0 <= rect.x1 && rect.z0 <= rect.z1 &&
+         vkr_heightfield_load_rect(&record->field, rect);
+}
+
 bool8_t vkr_scene_terrain_write(VkrScene *scene, VkrEntityId entity,
                                 VkrHeightfieldRect rect,
                                 const uint16_t *heights,
@@ -308,7 +445,8 @@ bool8_t vkr_scene_terrain_write(VkrScene *scene, VkrEntityId entity,
   const uint32_t samples =
       record && record->loaded ? vkr_heightfield_samples(&record->field) : 0u;
   if (!samples || rect.x1 >= samples || rect.z1 >= samples ||
-      rect.x0 > rect.x1 || rect.z0 > rect.z1) {
+      rect.x0 > rect.x1 || rect.z0 > rect.z1 ||
+      !vkr_heightfield_load_rect(&record->field, rect)) {
     return false_v;
   }
   vkr_heightfield_write_rect(&record->field, rect, heights, weights);
@@ -338,31 +476,93 @@ bool8_t vkr_scene_terrain_save(const VkrScene *scene, char *error,
 // Products
 // =============================================================================
 
-/* Normal of sample (x, z) from its neighbours' heights. */
-static Vec3 terrain_normal(const VkrHeightfield *field, uint32_t x,
-                           uint32_t z) {
-  const uint32_t last = field->cells;
-  const float32_t left = vkr_heightfield_at(field, x ? x - 1u : x, z);
-  const float32_t right = vkr_heightfield_at(field, Min(last, x + 1u), z);
-  const float32_t down = vkr_heightfield_at(field, x, z ? z - 1u : z);
-  const float32_t up = vkr_heightfield_at(field, x, Min(last, z + 1u));
+/* A tile's 65 x 65 grid: field samples, or overview samples on a streamed
+   terrain's distant tiles. Grid coordinates count the grid's own samples. */
+typedef struct TerrainGrid {
+  const VkrHeightfield *field;
+  bool8_t overview;
+  /* The last grid sample a side. */
+  uint32_t last;
+  /* Metres between grid samples. */
+  float32_t spacing;
+} TerrainGrid;
+
+static TerrainGrid terrain_grid(const VkrHeightfield *field, bool8_t overview) {
+  return (TerrainGrid){
+      .field = field,
+      .overview = overview,
+      .last = overview ? vkr_heightfield_overview_samples(field) - 1u
+                       : field->cells,
+      .spacing =
+          overview ? field->spacing * TERRAIN_OVERVIEW_SCALE : field->spacing,
+  };
+}
+
+static float32_t terrain_grid_height(const TerrainGrid *grid, uint32_t x,
+                                     uint32_t z) {
+  return grid->overview ? vkr_heightfield_overview_at(grid->field, x, z)
+                        : vkr_heightfield_at(grid->field, x, z);
+}
+
+/* Normal of grid sample (x, z) from its neighbours' heights. */
+static Vec3 terrain_normal(const TerrainGrid *grid, uint32_t x, uint32_t z) {
+  const uint32_t last = grid->last;
+  const float32_t left = terrain_grid_height(grid, x ? x - 1u : x, z);
+  const float32_t right = terrain_grid_height(grid, Min(last, x + 1u), z);
+  const float32_t down = terrain_grid_height(grid, x, z ? z - 1u : z);
+  const float32_t up = terrain_grid_height(grid, x, Min(last, z + 1u));
   const float32_t dx =
       (right - left) /
-      ((float32_t)(Min(last, x + 1u) - (x ? x - 1u : x)) * field->spacing);
+      ((float32_t)(Min(last, x + 1u) - (x ? x - 1u : x)) * grid->spacing);
   const float32_t dz =
       (up - down) /
-      ((float32_t)(Min(last, z + 1u) - (z ? z - 1u : z)) * field->spacing);
+      ((float32_t)(Min(last, z + 1u) - (z ? z - 1u : z)) * grid->spacing);
   return vec3_normalize(vec3_new(-dx, 1.0f, -dz));
 }
 
-/* Layer weights of sample (x, z), each 0 to 1. */
-static Vec4 terrain_weights(const VkrHeightfield *field, uint32_t x,
-                            uint32_t z) {
+/* Layer weights of grid sample (x, z), each 0 to 1. */
+static Vec4 terrain_weights(const TerrainGrid *grid, uint32_t x, uint32_t z) {
+  const VkrHeightfield *field = grid->field;
   const uint32_t w =
-      field->weights[(size_t)z * vkr_heightfield_samples(field) + x];
+      grid->overview
+          ? field
+                ->overview_weights[z * vkr_heightfield_overview_samples(field) +
+                                   x]
+          : vkr_heightfield_weights_at(field, x, z);
   return vec4_new(
       (float32_t)(w & 0xFFu) / 255.0f, (float32_t)((w >> 8u) & 0xFFu) / 255.0f,
       (float32_t)((w >> 16u) & 0xFFu) / 255.0f, (float32_t)(w >> 24u) / 255.0f);
+}
+
+/* The vertex of grid sample (x, z). */
+static VkrVertex3d terrain_grid_vertex(const TerrainGrid *grid, uint32_t x,
+                                       uint32_t z, float32_t uv_scale) {
+  const float32_t half = vkr_heightfield_half_size(grid->field);
+  const Vec3 p = vec3_new((float32_t)x * grid->spacing - half,
+                          terrain_grid_height(grid, x, z),
+                          (float32_t)z * grid->spacing - half);
+  const Vec3 n = terrain_normal(grid, x, z);
+  return (VkrVertex3d){
+      .position = {p.x, p.y, p.z},
+      .normal = {n.x, n.y, n.z},
+      .texcoord = vec2_new(p.x * uv_scale, p.z * uv_scale),
+      /* The terrain material reads the four layer weights here. */
+      .colour = terrain_weights(grid, x, z),
+      .tangent = vec4_new(1.0f, 0.0f, 0.0f, 1.0f),
+  };
+}
+
+/* Whether grid cell (x, z) of an overview tile lies under a fine tile that
+   draws; `holes` holds one bit per fine tile, rows of
+   TERRAIN_FINE_PER_OVERVIEW. */
+static bool8_t terrain_hole(const uint64_t *holes, uint32_t x, uint32_t z) {
+  if (!holes) {
+    return false_v;
+  }
+  const uint32_t bit =
+      (z / TERRAIN_CELLS_PER_FINE) * TERRAIN_FINE_PER_OVERVIEW +
+      x / TERRAIN_CELLS_PER_FINE;
+  return (holes[bit / 64u] >> (bit % 64u)) & 1u;
 }
 
 /* Grid position of sample `i` along tile edge `edge` (-Z, +X, +Z, -X). */
@@ -410,12 +610,17 @@ uint32_t vkr_scene_terrain_tile_index_count(void) {
   return index_count;
 }
 
-uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
-                                        float32_t spacing, uint32_t *indices,
-                                        uint32_t capacity,
-                                        VkrGpuGeometryLodRow *out_lod) {
+/* vkr_scene_terrain_tile_indices, leaving out the cells and edge skirts
+   `holes` covers; a tile with holes keeps only the levels whose cells each
+   lie in one fine tile. */
+static uint32_t terrain_grid_indices(const VkrVertex3d *vertices,
+                                     float32_t spacing, const uint64_t *holes,
+                                     uint32_t *indices, uint32_t capacity,
+                                     VkrGpuGeometryLodRow *out_lod) {
   const uint32_t side = VKR_HEIGHTFIELD_TILE_CELLS + 1u;
   const uint32_t grid = side * side;
+  const uint32_t levels =
+      holes ? TERRAIN_HOLED_LEVELS : VKR_SCENE_TERRAIN_LOD_LEVELS;
   if (capacity < vkr_scene_terrain_tile_index_count()) {
     return 0u;
   }
@@ -423,14 +628,17 @@ uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
      its error is its surface's largest height difference from the samples,
      at least a share of its cell size so that painted weights thin out
      with distance too. */
-  VkrGpuGeometryLodRow lod = {.level_count = VKR_SCENE_TERRAIN_LOD_LEVELS,
+  VkrGpuGeometryLodRow lod = {.level_count = levels,
                               .flags = VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID};
   uint32_t count = 0u;
-  for (uint32_t level = 0; level < VKR_SCENE_TERRAIN_LOD_LEVELS; ++level) {
+  for (uint32_t level = 0; level < levels; ++level) {
     const uint32_t stride = 1u << level;
     const uint32_t first = count;
     for (uint32_t z = 0; z < VKR_HEIGHTFIELD_TILE_CELLS; z += stride) {
       for (uint32_t x = 0; x < VKR_HEIGHTFIELD_TILE_CELLS; x += stride) {
+        if (terrain_hole(holes, x, z)) {
+          continue;
+        }
         const uint32_t a = z * side + x;
         const uint32_t b = a + stride;
         const uint32_t c = a + stride * side;
@@ -452,6 +660,11 @@ uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
         uint32_t zb = 0u;
         terrain_edge_sample(edge, i, &xa, &za);
         terrain_edge_sample(edge, i + stride, &xb, &zb);
+        if (terrain_hole(holes,
+                         Min(Min(xa, xb), VKR_HEIGHTFIELD_TILE_CELLS - 1u),
+                         Min(Min(za, zb), VKR_HEIGHTFIELD_TILE_CELLS - 1u))) {
+          continue;
+        }
         const uint32_t top_a = za * side + xa;
         const uint32_t top_b = zb * side + xb;
         const uint32_t low_a = grid + edge * side + i;
@@ -480,16 +693,42 @@ uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
   return count;
 }
 
-/* One tile's geometry: its 65 x 65 samples and a skirt down from each edge,
-   in the terrain's local space. */
+uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
+                                        float32_t spacing, uint32_t *indices,
+                                        uint32_t capacity,
+                                        VkrGpuGeometryLodRow *out_lod) {
+  return terrain_grid_indices(vertices, spacing, NULL, indices, capacity,
+                              out_lod);
+}
+
+/* Metres a skirt reaches below its edge. A streamed terrain's skirts reach
+   far enough to hide where full detail meets the overview. */
+static float32_t terrain_skirt(const TerrainRecord *record) {
+  return TERRAIN_SKIRT_SPACINGS * record->field.spacing *
+         (record->streamed ? TERRAIN_OVERVIEW_SCALE : 1.0f);
+}
+
+static void terrain_geometry_name(const TerrainRecord *record, const char *kind,
+                                  uint32_t tx, uint32_t tz, char *out,
+                                  uint32_t capacity) {
+  snprintf(out, capacity, "terrain_%s_%u_%u_%u_%u_%u_%u", kind,
+           (unsigned)record->entity.parts.world,
+           (unsigned)record->entity.parts.index,
+           (unsigned)record->entity.parts.generation, record->serial, tx, tz);
+}
+
+/* One tile's geometry: 65 x 65 grid samples from grid sample (x0, z0) and a
+   skirt down from each edge, in the terrain's local space. Cells `holes`
+   covers are left out. */
 static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
                                                TerrainRecord *record,
-                                               uint32_t tx, uint32_t tz) {
+                                               const TerrainGrid *grid,
+                                               uint32_t tx, uint32_t tz,
+                                               const uint64_t *holes) {
   struct VkrRenderAssets *assets = scene->assets;
-  const VkrHeightfield *field = &record->field;
   const uint32_t side = VKR_HEIGHTFIELD_TILE_CELLS + 1u;
-  const uint32_t grid = side * side;
-  const uint32_t vertex_count = grid + 4u * side;
+  const uint32_t vertex_grid = side * side;
+  const uint32_t vertex_count = vertex_grid + 4u * side;
   const uint32_t index_count = vkr_scene_terrain_tile_index_count();
   VkrVertex3d *vertices =
       vkr_allocator_alloc(&assets->scratch_allocator,
@@ -499,29 +738,20 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
   if (!vertices || !indices) {
     return (VkrGeometryHandle){0};
   }
-  const float32_t half = vkr_heightfield_half_size(field);
+  const uint32_t x0 = tx * VKR_HEIGHTFIELD_TILE_CELLS;
+  const uint32_t z0 = tz * VKR_HEIGHTFIELD_TILE_CELLS;
   const float32_t uv_scale = 1.0f / Max(0.01f, record->texture_size);
-  const float32_t skirt = TERRAIN_SKIRT_SPACINGS * field->spacing;
+  const float32_t skirt = terrain_skirt(record);
   Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
   Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
   for (uint32_t z = 0; z < side; ++z) {
     for (uint32_t x = 0; x < side; ++x) {
-      const uint32_t sx = tx * VKR_HEIGHTFIELD_TILE_CELLS + x;
-      const uint32_t sz = tz * VKR_HEIGHTFIELD_TILE_CELLS + z;
-      const Vec3 p = vec3_new((float32_t)sx * field->spacing - half,
-                              vkr_heightfield_at(field, sx, sz),
-                              (float32_t)sz * field->spacing - half);
-      const Vec3 n = terrain_normal(field, sx, sz);
-      vertices[z * side + x] = (VkrVertex3d){
-          .position = {p.x, p.y, p.z},
-          .normal = {n.x, n.y, n.z},
-          .texcoord = vec2_new(p.x * uv_scale, p.z * uv_scale),
-          /* The terrain material reads the four layer weights here. */
-          .colour = terrain_weights(field, sx, sz),
-          .tangent = vec4_new(1.0f, 0.0f, 0.0f, 1.0f),
-      };
-      lo = vec3_new(Min(lo.x, p.x), Min(lo.y, p.y), Min(lo.z, p.z));
-      hi = vec3_new(Max(hi.x, p.x), Max(hi.y, p.y), Max(hi.z, p.z));
+      const VkrVertex3d v = terrain_grid_vertex(grid, x0 + x, z0 + z, uv_scale);
+      vertices[z * side + x] = v;
+      lo = vec3_new(Min(lo.x, v.position.x), Min(lo.y, v.position.y),
+                    Min(lo.z, v.position.z));
+      hi = vec3_new(Max(hi.x, v.position.x), Max(hi.y, v.position.y),
+                    Max(hi.z, v.position.z));
     }
   }
   /* Skirts: each edge's samples again, lowered, facing out. Edges run
@@ -533,13 +763,13 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
       terrain_edge_sample(edge, i, &x, &z);
       VkrVertex3d v = vertices[z * side + x];
       v.position.y -= skirt;
-      vertices[grid + edge * side + i] = v;
+      vertices[vertex_grid + edge * side + i] = v;
       lo.y = Min(lo.y, v.position.y);
     }
   }
   VkrGpuGeometryLodRow lod = {0};
-  const uint32_t count = vkr_scene_terrain_tile_indices(
-      vertices, field->spacing, indices, index_count, &lod);
+  const uint32_t count = terrain_grid_indices(vertices, grid->spacing, holes,
+                                              indices, index_count, &lod);
   VkrGeometryConfig config = {
       .vertex_size = sizeof(VkrVertex3d),
       .vertex_count = vertex_count,
@@ -553,10 +783,104 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
       .min_extents = lo,
       .max_extents = hi,
   };
-  snprintf(config.name, sizeof(config.name), "terrain_%u_%u_%u_%u_%u_%u",
-           (unsigned)record->entity.parts.world,
-           (unsigned)record->entity.parts.index,
-           (unsigned)record->entity.parts.generation, record->serial, tx, tz);
+  terrain_geometry_name(record, grid->overview ? "overview" : "tile", tx, tz,
+                        config.name, sizeof(config.name));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  return vkr_geometry_system_create(&assets->geometry_system, &config, true_v,
+                                    &error);
+}
+
+/* Skirts down from the edges of overview tile (tx, tz)'s holes, facing into
+   them, so full detail meets the overview without a gap; none without
+   holes. Edges between tiles take the neighbour's own skirt. */
+static VkrGeometryHandle terrain_seam_geometry(VkrScene *scene,
+                                               TerrainRecord *record,
+                                               const TerrainGrid *grid,
+                                               uint32_t tx, uint32_t tz,
+                                               const uint64_t *holes) {
+  /* Neighbour offsets and the edge corners of a cell, ordered so that each
+     skirt faces its neighbour: -Z, +X, +Z, -X. */
+  static const int32_t s_step[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
+  static const uint32_t s_corner[4][4] = {
+      {0u, 0u, 1u, 0u}, {1u, 0u, 1u, 1u}, {1u, 1u, 0u, 1u}, {0u, 1u, 0u, 0u}};
+  struct VkrRenderAssets *assets = scene->assets;
+  const uint32_t cells = VKR_HEIGHTFIELD_TILE_CELLS;
+  uint32_t edges = 0u;
+  for (uint32_t z = 0; z < cells; ++z) {
+    for (uint32_t x = 0; x < cells; ++x) {
+      for (uint32_t e = 0; !terrain_hole(holes, x, z) && e < 4u; ++e) {
+        const int32_t nx = (int32_t)x + s_step[e][0];
+        const int32_t nz = (int32_t)z + s_step[e][1];
+        edges += nx >= 0 && nz >= 0 && nx < (int32_t)cells &&
+                 nz < (int32_t)cells &&
+                 terrain_hole(holes, (uint32_t)nx, (uint32_t)nz);
+      }
+    }
+  }
+  if (!edges) {
+    return (VkrGeometryHandle){0};
+  }
+  VkrVertex3d *vertices = vkr_allocator_alloc(
+      &assets->scratch_allocator, edges * 4u * sizeof(*vertices), TERRAIN_TAG);
+  uint32_t *indices = vkr_allocator_alloc(
+      &assets->scratch_allocator, edges * 6u * sizeof(*indices), TERRAIN_TAG);
+  if (!vertices || !indices) {
+    return (VkrGeometryHandle){0};
+  }
+  const uint32_t x0 = tx * cells;
+  const uint32_t z0 = tz * cells;
+  const float32_t uv_scale = 1.0f / Max(0.01f, record->texture_size);
+  const float32_t skirt = terrain_skirt(record);
+  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  uint32_t vertex_count = 0u;
+  uint32_t index_count = 0u;
+  for (uint32_t z = 0; z < cells; ++z) {
+    for (uint32_t x = 0; x < cells; ++x) {
+      for (uint32_t e = 0; !terrain_hole(holes, x, z) && e < 4u; ++e) {
+        const int32_t nx = (int32_t)x + s_step[e][0];
+        const int32_t nz = (int32_t)z + s_step[e][1];
+        if (nx < 0 || nz < 0 || nx >= (int32_t)cells || nz >= (int32_t)cells ||
+            !terrain_hole(holes, (uint32_t)nx, (uint32_t)nz)) {
+          continue;
+        }
+        const uint32_t first = vertex_count;
+        for (uint32_t k = 0; k < 2u; ++k) {
+          VkrVertex3d top =
+              terrain_grid_vertex(grid, x0 + x + s_corner[e][2u * k],
+                                  z0 + z + s_corner[e][2u * k + 1u], uv_scale);
+          VkrVertex3d low = top;
+          low.position.y -= skirt;
+          vertices[first + k] = top;
+          vertices[first + 2u + k] = low;
+          lo = vec3_new(Min(lo.x, top.position.x), Min(lo.y, low.position.y),
+                        Min(lo.z, top.position.z));
+          hi = vec3_new(Max(hi.x, top.position.x), Max(hi.y, top.position.y),
+                        Max(hi.z, top.position.z));
+        }
+        vertex_count += 4u;
+        indices[index_count++] = first;
+        indices[index_count++] = first + 1u;
+        indices[index_count++] = first + 2u;
+        indices[index_count++] = first + 2u;
+        indices[index_count++] = first + 1u;
+        indices[index_count++] = first + 3u;
+      }
+    }
+  }
+  VkrGeometryConfig config = {
+      .vertex_size = sizeof(VkrVertex3d),
+      .vertex_count = vertex_count,
+      .vertices = vertices,
+      .index_size = sizeof(uint32_t),
+      .index_count = index_count,
+      .indices = indices,
+      .center = vec3_scale(vec3_add(lo, hi), 0.5f),
+      .min_extents = lo,
+      .max_extents = hi,
+  };
+  terrain_geometry_name(record, "seam", tx, tz, config.name,
+                        sizeof(config.name));
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   return vkr_geometry_system_create(&assets->geometry_system, &config, true_v,
                                     &error);
@@ -601,7 +925,79 @@ static VkrMaterialHandle terrain_material_create(VkrScene *scene,
   return handle;
 }
 
-/* Rebuilds dirty tiles and re-attaches the mesh with every tile. */
+/* Builds fine tile (tx, tz) from resident samples, replacing its geometry. */
+static bool8_t terrain_tile_build(VkrScene *scene, TerrainRecord *record,
+                                  uint32_t tx, uint32_t tz) {
+  struct VkrRenderAssets *assets = scene->assets;
+  const uint32_t index = tz * terrain_tiles(record) + tx;
+  const TerrainGrid grid = terrain_grid(&record->field, false_v);
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&assets->scratch_allocator);
+  const VkrGeometryHandle handle =
+      terrain_tile_geometry(scene, record, &grid, tx, tz, NULL);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!handle.id) {
+    return false_v;
+  }
+  terrain_geometry_release(scene, &record->tiles[index]);
+  record->tiles[index] = handle;
+  terrain_bit_set(record->dirty_tiles, index, false_v);
+  return true_v;
+}
+
+/* The fine tiles of overview tile (ox, oz) that draw, one bit each; false
+   when none do. */
+static bool8_t terrain_overview_holes(const TerrainRecord *record, uint32_t ox,
+                                      uint32_t oz, uint64_t *holes) {
+  const uint32_t tiles = terrain_tiles(record);
+  bool8_t any = false_v;
+  MemZero(holes, TERRAIN_HOLE_WORDS * sizeof(uint64_t));
+  for (uint32_t z = 0; z < TERRAIN_FINE_PER_OVERVIEW; ++z) {
+    for (uint32_t x = 0; x < TERRAIN_FINE_PER_OVERVIEW; ++x) {
+      const uint32_t index = (oz * TERRAIN_FINE_PER_OVERVIEW + z) * tiles +
+                             ox * TERRAIN_FINE_PER_OVERVIEW + x;
+      if (record->tiles[index].id) {
+        terrain_bit_set(holes, z * TERRAIN_FINE_PER_OVERVIEW + x, true_v);
+        any = true_v;
+      }
+    }
+  }
+  return any;
+}
+
+/* Builds overview tile (ox, oz) with holes under the fine tiles that draw,
+   and the seam skirts around them. A tile fine tiles cover entirely draws
+   nothing. */
+static bool8_t terrain_overview_build(VkrScene *scene, TerrainRecord *record,
+                                      uint32_t ox, uint32_t oz) {
+  struct VkrRenderAssets *assets = scene->assets;
+  const uint32_t index = oz * terrain_overview_tiles(record) + ox;
+  uint64_t holes[TERRAIN_HOLE_WORDS];
+  const bool8_t holed = terrain_overview_holes(record, ox, oz, holes);
+  bool8_t covered = true_v;
+  for (uint32_t i = 0; i < TERRAIN_HOLE_WORDS; ++i) {
+    covered = covered && holes[i] == UINT64_MAX;
+  }
+  terrain_geometry_release(scene, &record->overview[index]);
+  terrain_geometry_release(scene, &record->seams[index]);
+  if (covered) {
+    return true_v;
+  }
+  const TerrainGrid grid = terrain_grid(&record->field, true_v);
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&assets->scratch_allocator);
+  record->overview[index] =
+      terrain_tile_geometry(scene, record, &grid, ox, oz, holed ? holes : NULL);
+  if (holed) {
+    record->seams[index] =
+        terrain_seam_geometry(scene, record, &grid, ox, oz, holes);
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return record->overview[index].id != 0u;
+}
+
+/* Rebuilds dirty tiles and re-attaches the mesh with every tile that
+   draws. */
 static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
   struct VkrRenderAssets *assets = scene->assets;
   const SceneTerrain *terrain =
@@ -622,40 +1018,51 @@ static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
   record->serial++;
   const uint32_t tiles = terrain_tiles(record);
   bool8_t ok = true_v;
-  VkrAllocatorScope scope =
-      vkr_allocator_begin_scope(&assets->scratch_allocator);
-  for (uint32_t tz = 0; ok && tz < tiles; ++tz) {
-    for (uint32_t tx = 0; ok && tx < tiles; ++tx) {
-      const uint32_t index = tz * tiles + tx;
-      if (!(record->dirty_tiles[index / 64u] & (1ull << (index % 64u))) &&
-          record->tiles[index].id) {
-        continue;
-      }
-      VkrAllocatorScope tile_scope =
-          vkr_allocator_begin_scope(&assets->scratch_allocator);
-      const VkrGeometryHandle handle =
-          terrain_tile_geometry(scene, record, tx, tz);
-      vkr_allocator_end_scope(&tile_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      if (!handle.id) {
-        ok = false_v;
-        break;
-      }
-      if (record->tiles[index].id) {
-        vkr_geometry_system_release(&assets->geometry_system,
-                                    record->tiles[index]);
-      }
-      record->tiles[index] = handle;
+  for (uint32_t index = 0; ok && index < tiles * tiles; ++index) {
+    const bool8_t dirty = terrain_bit(record->dirty_tiles, index);
+    const bool8_t drawn = record->tiles[index].id != 0u;
+    /* A streamed terrain rebuilds only tiles that draw; streaming adds the
+       rest. */
+    if (record->streamed ? dirty && drawn : dirty || !drawn) {
+      ok = terrain_tile_build(scene, record, index % tiles, index / tiles);
     }
   }
+  const uint32_t overview_tiles = terrain_overview_tiles(record);
+  for (uint32_t index = 0; ok && index < overview_tiles * overview_tiles;
+       ++index) {
+    if (record->overview_dirty & (1ull << index)) {
+      ok = terrain_overview_build(scene, record, index % overview_tiles,
+                                  index / overview_tiles);
+    }
+  }
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < tiles * tiles; ++i) {
+    count += record->tiles[i].id != 0u;
+  }
+  for (uint32_t i = 0; i < overview_tiles * overview_tiles; ++i) {
+    count += (record->overview[i].id != 0u) + (record->seams[i].id != 0u);
+  }
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&assets->scratch_allocator);
   VkrSubMeshDesc *submeshes =
-      ok ? vkr_allocator_alloc(&assets->scratch_allocator,
-                               tiles * tiles * sizeof(*submeshes), TERRAIN_TAG)
-         : NULL;
+      ok && count ? vkr_allocator_alloc(&assets->scratch_allocator,
+                                        count * sizeof(*submeshes), TERRAIN_TAG)
+                  : NULL;
   ok = ok && submeshes;
-  for (uint32_t i = 0; ok && i < tiles * tiles; ++i) {
+  uint32_t filled = 0u;
+  for (uint32_t i = 0; ok && i < TERRAIN_TILES_MAX + 2u * TERRAIN_OVERVIEW_MAX;
+       ++i) {
+    const VkrGeometryHandle geometry =
+        i < TERRAIN_TILES_MAX ? record->tiles[i]
+        : i < TERRAIN_TILES_MAX + TERRAIN_OVERVIEW_MAX
+            ? record->overview[i - TERRAIN_TILES_MAX]
+            : record->seams[i - TERRAIN_TILES_MAX - TERRAIN_OVERVIEW_MAX];
+    if (!geometry.id) {
+      continue;
+    }
     /* The mesh acquires its own references; the record keeps its. */
-    submeshes[i] = (VkrSubMeshDesc){
-        .geometry = record->tiles[i],
+    submeshes[filled++] = (VkrSubMeshDesc){
+        .geometry = geometry,
         .material = record->material,
         .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
         .owns_geometry = true_v,
@@ -666,11 +1073,47 @@ static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   if (ok) {
     ok = vkr_scene_attach_generated_mesh(scene, record->entity, submeshes,
-                                         tiles * tiles, &scene_error);
+                                         filled, &scene_error);
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   MemZero(record->dirty_tiles, sizeof(record->dirty_tiles));
+  record->overview_dirty = 0u;
   record->mesh_dirty = false_v;
+  return ok;
+}
+
+/* A height field collider of `side` padded samples a side whose first
+   sample sits at local corner (x, z) metres. */
+static VkrPhysicsColliderDesc terrain_collider(const TerrainRecord *record,
+                                               const float32_t *heights,
+                                               uint32_t side, Vec3 position,
+                                               float32_t x, float32_t z) {
+  const float32_t half = vkr_heightfield_half_size(&record->field);
+  return (VkrPhysicsColliderDesc){
+      .entity_id = record->entity.u64,
+      .shape = VKR_PHYSICS_HEIGHT_FIELD,
+      .position = {position.x - half + x, position.y, position.z - half + z},
+      .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+      .scale = {1.0f, 1.0f, 1.0f},
+      .geometry = {.positions = heights,
+                   .vertex_count = side * side,
+                   .height_samples = side,
+                   .height_spacing = record->field.spacing},
+      .enabled = true_v,
+  };
+}
+
+/* The terrain's one static body, from `count` colliders. */
+static bool8_t terrain_body(VkrScene *scene, TerrainRecord *record,
+                            const VkrPhysicsColliderDesc *colliders,
+                            uint32_t count) {
+  const char *error = NULL;
+  const bool8_t ok = vkr_scene_physics_generated_set(
+      scene, terrain_collision_key(record->entity), record->entity, colliders,
+      count, false_v, &error);
+  if (!ok && error) {
+    log_warn("Scene: terrain collision failed: %s", error);
+  }
   return ok;
 }
 
@@ -693,29 +1136,253 @@ static void terrain_build_collision(VkrScene *scene, TerrainRecord *record,
                                             : VKR_PHYSICS_HEIGHT_HOLE;
     }
   }
-  const float32_t half = vkr_heightfield_half_size(field);
-  const VkrPhysicsColliderDesc collider = {
-      .entity_id = record->entity.u64,
-      .shape = VKR_PHYSICS_HEIGHT_FIELD,
-      .position = {position.x - half, position.y, position.z - half},
-      .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
-      .scale = {1.0f, 1.0f, 1.0f},
-      .geometry = {.positions = heights,
-                   .vertex_count = padded * padded,
-                   .height_samples = padded,
-                   .height_spacing = field->spacing},
-      .enabled = true_v,
-  };
-  const char *error = NULL;
-  record->collision_built = vkr_scene_physics_generated_set(
-      scene, terrain_collision_key(record->entity), record->entity, &collider,
-      1u, false_v, &error);
-  if (!record->collision_built && error) {
-    log_warn("Scene: terrain collision failed: %s", error);
-  }
+  const VkrPhysicsColliderDesc collider =
+      terrain_collider(record, heights, padded, position, 0.0f, 0.0f);
+  record->collision_built = terrain_body(scene, record, &collider, 1u);
   vkr_allocator_free(scene->alloc, heights, bytes, TERRAIN_TAG);
   record->built_position = position;
   record->collision_dirty = false_v;
+}
+
+/* The body of a streamed terrain: one height field over fine tiles
+   `tiles` (inclusive), holes padding it to a multiple of four samples. */
+static void terrain_build_window_collision(VkrScene *scene,
+                                           TerrainRecord *record,
+                                           VkrHeightfieldRect tiles,
+                                           Vec3 position) {
+  VkrHeightfield *field = &record->field;
+  const VkrHeightfieldRect rect = {
+      .x0 = tiles.x0 * VKR_HEIGHTFIELD_TILE_CELLS,
+      .z0 = tiles.z0 * VKR_HEIGHTFIELD_TILE_CELLS,
+      .x1 = (tiles.x1 + 1u) * VKR_HEIGHTFIELD_TILE_CELLS,
+      .z1 = (tiles.z1 + 1u) * VKR_HEIGHTFIELD_TILE_CELLS};
+  const uint32_t side = Max(rect.x1 - rect.x0, rect.z1 - rect.z0) + 1u;
+  const uint32_t padded = (side + 3u) & ~3u;
+  const uint64_t bytes = sizeof(float32_t) * (uint64_t)padded * padded;
+  record->body_tiles = tiles;
+  record->body_built = false_v;
+  record->body_edited = false_v;
+  record->built_position = position;
+  float32_t *heights = vkr_allocator_alloc(scene->alloc, bytes, TERRAIN_TAG);
+  if (!heights || !vkr_heightfield_load_rect(field, rect)) {
+    if (heights) {
+      vkr_allocator_free(scene->alloc, heights, bytes, TERRAIN_TAG);
+    }
+    return;
+  }
+  for (uint32_t z = 0; z < padded; ++z) {
+    for (uint32_t x = 0; x < padded; ++x) {
+      heights[(size_t)z * padded + x] =
+          rect.x0 + x <= rect.x1 && rect.z0 + z <= rect.z1
+              ? vkr_heightfield_at(field, rect.x0 + x, rect.z0 + z)
+              : VKR_PHYSICS_HEIGHT_HOLE;
+    }
+  }
+  const VkrPhysicsColliderDesc collider = terrain_collider(
+      record, heights, padded, position, (float32_t)rect.x0 * field->spacing,
+      (float32_t)rect.z0 * field->spacing);
+  record->body_built = terrain_body(scene, record, &collider, 1u);
+  record->collision_rejected = !record->body_built;
+  vkr_allocator_free(scene->alloc, heights, bytes, TERRAIN_TAG);
+}
+
+/* The fine tiles within VKR_SCENE_TERRAIN_BODY_TILES of the tile under each
+   source, as one rectangle; false when no source is over the terrain. */
+static bool8_t terrain_body_window(const TerrainRecord *record,
+                                   const Vec2 *sources, uint32_t count,
+                                   VkrHeightfieldRect *out) {
+  const int32_t tiles = (int32_t)terrain_tiles(record);
+  const float32_t size =
+      (float32_t)VKR_HEIGHTFIELD_TILE_CELLS * record->field.spacing;
+  const int32_t reach = (int32_t)VKR_SCENE_TERRAIN_BODY_TILES;
+  bool8_t any = false_v;
+  VkrHeightfieldRect first = {0};
+  for (uint32_t i = 0; i < count; ++i) {
+    const int32_t tx = (int32_t)floorf(sources[i].x / size);
+    const int32_t tz = (int32_t)floorf(sources[i].y / size);
+    if (tx < -reach || tz < -reach || tx >= tiles + reach ||
+        tz >= tiles + reach) {
+      continue;
+    }
+    const VkrHeightfieldRect rect = {.x0 = (uint32_t)Max(tx - reach, 0),
+                                     .z0 = (uint32_t)Max(tz - reach, 0),
+                                     .x1 = (uint32_t)Min(tx + reach, tiles - 1),
+                                     .z1 =
+                                         (uint32_t)Min(tz + reach, tiles - 1)};
+    if (!any) {
+      first = rect;
+      *out = rect;
+      any = true_v;
+      continue;
+    }
+    out->x0 = Min(out->x0, rect.x0);
+    out->z0 = Min(out->z0, rect.z0);
+    out->x1 = Max(out->x1, rect.x1);
+    out->z1 = Max(out->z1, rect.z1);
+  }
+  if (any && (out->x1 - out->x0 >= TERRAIN_BODY_TILES_MAX ||
+              out->z1 - out->z0 >= TERRAIN_BODY_TILES_MAX)) {
+    *out = first;
+  }
+  return any;
+}
+
+/* Metres from the nearest source to the square of `size` metres at corner
+   (x, z); infinite without sources. */
+static float32_t terrain_source_distance(const Vec2 *sources, uint32_t count,
+                                         float32_t x, float32_t z,
+                                         float32_t size) {
+  float32_t best = INFINITY;
+  for (uint32_t i = 0; i < count; ++i) {
+    const float32_t dx =
+        Max(0.0f, Max(x - sources[i].x, sources[i].x - (x + size)));
+    const float32_t dz =
+        Max(0.0f, Max(z - sources[i].y, sources[i].y - (z + size)));
+    best = Min(best, sqrtf(dx * dx + dz * dz));
+  }
+  return best;
+}
+
+typedef struct TerrainCandidate {
+  float32_t distance;
+  uint32_t index;
+} TerrainCandidate;
+
+static int terrain_candidate_compare(const void *a, const void *b) {
+  const float32_t da = ((const TerrainCandidate *)a)->distance;
+  const float32_t db = ((const TerrainCandidate *)b)->distance;
+  return da < db ? -1 : da > db ? 1 : 0;
+}
+
+/* Missing fine tiles within `radius` of a source, nearest first. */
+static uint32_t terrain_candidates(const TerrainRecord *record,
+                                   const Vec2 *sources, uint32_t count,
+                                   float32_t radius, TerrainCandidate *out,
+                                   uint32_t capacity) {
+  const uint32_t tiles = terrain_tiles(record);
+  const float32_t size =
+      (float32_t)VKR_HEIGHTFIELD_TILE_CELLS * record->field.spacing;
+  uint32_t found = 0u;
+  for (uint32_t s = 0; s < count; ++s) {
+    const int32_t x0 = (int32_t)floorf((sources[s].x - radius) / size);
+    const int32_t z0 = (int32_t)floorf((sources[s].y - radius) / size);
+    const int32_t x1 = (int32_t)floorf((sources[s].x + radius) / size);
+    const int32_t z1 = (int32_t)floorf((sources[s].y + radius) / size);
+    for (int32_t tz = Max(z0, 0); tz <= Min(z1, (int32_t)tiles - 1); ++tz) {
+      for (int32_t tx = Max(x0, 0); tx <= Min(x1, (int32_t)tiles - 1); ++tx) {
+        const uint32_t index = (uint32_t)tz * tiles + (uint32_t)tx;
+        const bool8_t wanted = !record->tiles[index].id;
+        const float32_t distance = terrain_source_distance(
+            sources, count, (float32_t)tx * size, (float32_t)tz * size, size);
+        if (wanted && distance <= radius && found < capacity) {
+          out[found++] = (TerrainCandidate){distance, index};
+        }
+      }
+    }
+  }
+  qsort(out, found, sizeof(*out), terrain_candidate_compare);
+  return found;
+}
+
+/* Keeps a streamed terrain's fine tiles, samples and bodies to the window
+   around the scene's streaming sources, loading the nearest missing tiles
+   within the frame budget. True when the tiles that draw changed. */
+static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
+                              Vec3 position) {
+  VkrHeightfield *field = &record->field;
+  const uint32_t tiles = terrain_tiles(record);
+  const float32_t size = (float32_t)VKR_HEIGHTFIELD_TILE_CELLS * field->spacing;
+  const float32_t half = vkr_heightfield_half_size(field);
+  const float32_t radius = record->stream_radius;
+  /* Tiles stay a tile past the radius they load in, so a source moving
+     along a tile edge does not churn them. */
+  const float32_t keep = radius + size;
+  Vec2 sources[VKR_SCENE_STREAM_SOURCES_MAX];
+  const uint32_t count = scene->stream_source_count;
+  for (uint32_t i = 0; i < count; ++i) {
+    sources[i] = vec2_new(scene->stream_sources[i].x - position.x + half,
+                          scene->stream_sources[i].z - position.z + half);
+  }
+  if (record->settle < UINT8_MAX) {
+    record->settle++;
+  }
+  bool8_t changed = false_v;
+
+  /* Detail that left the window returns to the overview. */
+  for (uint32_t index = 0; index < tiles * tiles; ++index) {
+    if (record->tiles[index].id &&
+        terrain_source_distance(
+            sources, count, (float32_t)(index % tiles) * size,
+            (float32_t)(index / tiles) * size, size) > keep) {
+      terrain_geometry_release(scene, &record->tiles[index]);
+      record->overview_dirty |= 1ull << terrain_overview_of(record, index);
+      changed = true_v;
+    }
+  }
+  /* Samples no kept tile reads leave memory, unless they wait for a
+     save. */
+  const uint32_t storage = field->tiles_per_side;
+  for (uint32_t index = 0; index < storage * storage; ++index) {
+    if (field->tiles[index] && !field->tile_dirty[index] &&
+        terrain_source_distance(
+            sources, count, (float32_t)(index % storage) * size,
+            (float32_t)(index / storage) * size, size) > keep + size) {
+      (void)vkr_heightfield_tile_release(field, index % storage,
+                                         index / storage);
+    }
+  }
+
+  /* The nearest missing tiles load first, within the frame budget. */
+  TerrainCandidate candidates[TERRAIN_STREAM_CANDIDATES];
+  const float64_t start = vkr_platform_get_absolute_time();
+  const float64_t budget = VKR_SCENE_TERRAIN_STREAM_BUDGET_MS / 1000.0;
+  const uint32_t found = terrain_candidates(record, sources, count, radius,
+                                            candidates, ArrayCount(candidates));
+  for (uint32_t i = 0; i < found; ++i) {
+    const uint32_t index = candidates[i].index;
+    if (record->tiles[index].id) {
+      continue;
+    }
+    if (vkr_platform_get_absolute_time() - start > budget) {
+      break;
+    }
+    /* The tile's samples and the neighbours its normals read. */
+    const uint32_t x0 = index % tiles * VKR_HEIGHTFIELD_TILE_CELLS;
+    const uint32_t z0 = index / tiles * VKR_HEIGHTFIELD_TILE_CELLS;
+    const VkrHeightfieldRect reach = {
+        .x0 = x0 ? x0 - 1u : 0u,
+        .z0 = z0 ? z0 - 1u : 0u,
+        .x1 = Min(x0 + VKR_HEIGHTFIELD_TILE_CELLS + 1u, field->cells),
+        .z1 = Min(z0 + VKR_HEIGHTFIELD_TILE_CELLS + 1u, field->cells)};
+    if (!vkr_heightfield_load_rect(field, reach) ||
+        !terrain_tile_build(scene, record, index % tiles, index / tiles)) {
+      snprintf(record->status, sizeof(record->status),
+               "A terrain tile could not be streamed in");
+      break;
+    }
+    record->overview_dirty |= 1ull << terrain_overview_of(record, index);
+    changed = true_v;
+  }
+
+  /* The body covers the ground around the sources. It follows them tile
+     by tile, and edits to it once edits rest. */
+  VkrHeightfieldRect window = {0};
+  const bool8_t wanted = terrain_body_window(record, sources, count, &window);
+  const bool8_t moved =
+      MemCompare(&position, &record->built_position, sizeof(Vec3)) != 0;
+  const bool8_t settled = record->settle >= VKR_SCENE_TERRAIN_COLLISION_SETTLE;
+  if (!wanted && record->body_built) {
+    vkr_scene_physics_generated_remove(scene,
+                                       terrain_collision_key(record->entity));
+    record->body_built = false_v;
+  } else if (wanted && !record->collision_rejected &&
+             (!record->body_built || moved ||
+              MemCompare(&window, &record->body_tiles, sizeof(window)) != 0 ||
+              (record->body_edited && settled))) {
+    terrain_build_window_collision(scene, record, window, position);
+  }
+  record->collision_dirty = record->body_built && record->body_edited;
+  return changed;
 }
 
 void vkr_scene_terrain_update(VkrScene *scene) {
@@ -730,11 +1397,17 @@ void vkr_scene_terrain_update(VkrScene *scene) {
     if (!record->loaded || !transform) {
       continue;
     }
+    const Vec3 position = mat4_position(transform->world);
+    if (record->streamed && terrain_stream(scene, record, position)) {
+      record->mesh_dirty = true_v;
+    }
     if (record->mesh_dirty && !terrain_build_mesh(scene, record)) {
       snprintf(record->status, sizeof(record->status),
                "The terrain mesh failed");
     }
-    const Vec3 position = mat4_position(transform->world);
+    if (record->streamed) {
+      continue;
+    }
     if (record->collision_built &&
         MemCompare(&position, &record->built_position, sizeof(Vec3)) != 0) {
       record->collision_dirty = true_v;

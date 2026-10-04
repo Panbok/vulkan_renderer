@@ -2792,6 +2792,23 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
                 ops_vec3(ctx,
                          vec3_new(field->height_min, field->height_max, 0.0f)));
       }
+      VkrSceneTerrainStreaming streaming;
+      if (vkr_scene_terrain_streaming(scene, entity, &streaming)) {
+        VkrBakeryJson *held = vkr_bakery_json_object(arena);
+        ops_set(ctx, held, "streamed",
+                vkr_bakery_json_bool(arena, streaming.streamed));
+        ops_set(ctx, held, "detail_tiles",
+                ops_number(ctx, (float32_t)streaming.fine_tiles));
+        ops_set(ctx, held, "overview_tiles",
+                ops_number(ctx, (float32_t)streaming.overview_tiles));
+        ops_set(ctx, held, "body_tiles",
+                ops_number(ctx, (float32_t)streaming.body_tiles));
+        ops_set(ctx, held, "sample_tiles",
+                ops_number(ctx, (float32_t)streaming.resident_tiles));
+        ops_set(ctx, held, "unsaved_tiles",
+                ops_number(ctx, (float32_t)streaming.unsaved_tiles));
+        ops_set(ctx, summary, "held", held);
+      }
       ops_set(ctx, row, "terrain", summary);
     }
     if (vkr_scene_get_typed(scene, entity, &vkr_scene_spline_mesh_type) ||
@@ -3526,6 +3543,17 @@ static VkrEditorOpStatus ops_run_camera(OpsContext *ctx) {
     request->recall.near_plane = 0.1f;
     request->recall.far_plane = 1000.0f;
   }
+  /* A large world's horizon needs a farther plane. */
+  float64_t far_plane = 0.0;
+  if (ops_arg_number(ctx->call->args, "far", &far_plane)) {
+    if (!(far_plane > (float64_t)request->recall.near_plane) ||
+        far_plane > 100000.0) {
+      ops_fail(ctx, OPS_INVALID,
+               "'far' must lie past the near plane, at most 100000 m");
+      return VKR_EDITOR_OP_DONE;
+    }
+    request->recall.far_plane = (float32_t)far_plane;
+  }
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "eye", ops_vec3(ctx, eye));
   ops_set(ctx, ctx->call->result, "target", ops_vec3(ctx, target));
@@ -3770,12 +3798,17 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   if (!(cells >= VKR_HEIGHTFIELD_TILE_CELLS) ||
       cells > VKR_HEIGHTFIELD_CELLS_MAX ||
       fmod(cells, (float64_t)VKR_HEIGHTFIELD_TILE_CELLS) != 0.0 ||
+      (cells > VKR_HEIGHTFIELD_RESIDENT_CELLS &&
+       fmod(cells, (float64_t)VKR_HEIGHTFIELD_STREAMED_CELLS) != 0.0) ||
       !(height_max > height_min) || height < height_min ||
       height > height_max || !(texture_size > 0.0)) {
     return ops_fail(ctx, OPS_INVALID,
                     "'size' / 'spacing' must be a multiple of %u cells, at "
-                    "most %u, with height_min <= height <= height_max",
-                    VKR_HEIGHTFIELD_TILE_CELLS, VKR_HEIGHTFIELD_CELLS_MAX);
+                    "most %u (above %u, a multiple of %u), with height_min "
+                    "<= height <= height_max",
+                    VKR_HEIGHTFIELD_TILE_CELLS, VKR_HEIGHTFIELD_CELLS_MAX,
+                    VKR_HEIGHTFIELD_RESIDENT_CELLS,
+                    VKR_HEIGHTFIELD_STREAMED_CELLS);
   }
   /* The file comes first, so the component finds it when it appears. */
   VkrEntityRef id;
@@ -3795,13 +3828,11 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   vkr_allocator_arena(&scratch);
   const String8 directory_text =
       string8_create_from_cstr((const uint8_t *)directory, strlen(directory));
-  VkrHeightfield field;
   char error[160] = {0};
   if (!file_ensure_directory(&scratch, &directory_text) ||
-      !vkr_heightfield_create(&field, (uint32_t)cells, (float32_t)spacing,
-                              (float32_t)height_min, (float32_t)height_max,
-                              (float32_t)height, &scratch) ||
-      !vkr_heightfield_save(&field, absolute, error, sizeof(error))) {
+      !vkr_heightfield_create_file(
+          absolute, (uint32_t)cells, (float32_t)spacing, (float32_t)height_min,
+          (float32_t)height_max, (float32_t)height, error, sizeof(error))) {
     return ops_fail(ctx, OPS_REJECTED, "The terrain file could not be made%s%s",
                     error[0] ? ": " : "", error);
   }
@@ -4973,7 +5004,9 @@ static const OpsDef s_ops[] = {
      NULL, ops_build_doorway},
     {"terrain.create",
      "Create a heightfield terrain of 'size' metres a side (a multiple of 64 "
-     "'spacing' cells, at most 1024 cells) centred on 'position', flat at "
+     "'spacing' cells, at most 8192 cells; above 1024 cells a multiple of "
+     "1024, and the terrain streams around the camera) centred on "
+     "'position', flat at "
      "local 'height', heights stored between 'height_min' and 'height_max'. "
      "'layer0' to 'layer3' name the materials paint blends (default dev grid, "
      "floor, orange and blue).",
@@ -5183,9 +5216,11 @@ static const OpsDef s_ops[] = {
      "Scene image (default) or the whole editor window\"}}}",
      ops_run_capture, NULL},
     {"view.camera",
-     "Place the perspective Scene camera at 'eye' looking at 'target'.",
+     "Place the perspective Scene camera at 'eye' looking at 'target'; "
+     "'far' sets the far plane in metres.",
      "{\"type\":\"object\",\"properties\":{\"eye\":" OPS_VEC3_SCHEMA
-     ",\"target\":" OPS_VEC3_SCHEMA "},\"required\":[\"eye\",\"target\"]}",
+     ",\"target\":" OPS_VEC3_SCHEMA ",\"far\":{\"type\":\"number\"}},"
+     "\"required\":[\"eye\",\"target\"]}",
      ops_run_camera, NULL},
     {"cmd",
      "Run one editor Cmd statement (see 'cmd' with line 'help') and return "

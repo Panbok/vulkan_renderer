@@ -240,6 +240,9 @@ typedef struct SceneTerrain {
   char layer2[SCENE_TERRAIN_MATERIAL_CAPACITY];
   char layer3[SCENE_TERRAIN_MATERIAL_CAPACITY];
   float32_t texture_size;
+  /* Metres around a streaming source a streamed terrain draws full
+     detail; farther ground draws its overview. */
+  float32_t stream_radius;
 } SceneTerrain;
 
 /* Population (ADR-084). A `spline`
@@ -831,6 +834,9 @@ bool8_t vkr_scene_texture_extent_valid(uint32_t extent);
   (VKR_SCENE_SHOW_HIDE_STATIC_MESHES | VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES |   \
    VKR_SCENE_SHOW_HIDE_SHAPES)
 
+/* Streaming sources one scene follows. */
+#define VKR_SCENE_STREAM_SOURCES_MAX 4u
+
 struct VkrScene;
 
 /** Called before an entity is destroyed, while its components exist. */
@@ -937,6 +943,10 @@ typedef struct VkrScene {
   /** Population state, created with the first spline mesh or scatter
       (vkr_scene_population.h). */
   struct s_VkrScenePopulation *population;
+  /** Points content streams around (world partition): the editor camera or
+      each player, set by the host before each update. */
+  Vec3 stream_sources[VKR_SCENE_STREAM_SOURCES_MAX];
+  uint32_t stream_source_count;
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
   /** Offset of this container's picking range; local render ids stay small
@@ -1119,6 +1129,11 @@ VkrSceneKeyLight vkr_scene_atmosphere_frame_key_light(VkrScene *scene);
  * @param dt Delta time (currently unused, reserved for future animation)
  */
 void vkr_scene_update(VkrScene *scene, float64_t dt);
+
+/* Replaces the scene's streaming sources with the first
+   VKR_SCENE_STREAM_SOURCES_MAX of `sources`, in world space. */
+void vkr_scene_set_stream_sources(VkrScene *scene, const Vec3 *sources,
+                                  uint32_t count);
 
 /* Propagate authored/evaluated transforms without advancing simulation time. */
 void vkr_scene_update_transforms(VkrScene *scene);
