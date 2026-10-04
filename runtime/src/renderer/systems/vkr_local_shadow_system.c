@@ -14,6 +14,11 @@
  * contribution trade places often; incumbents keep their place until a
  * competitor contributes this much more. */
 #define VKR_LOCAL_SHADOW_FEEDBACK_INCUMBENT_BONUS 1.5f
+/* A light keeps its transmission layers until a competitor outscores it by
+ * this factor: taking them redraws the light, and while the camera moves,
+ * lights of similar importance would otherwise trade them several times a
+ * second. */
+#define VKR_LOCAL_SHADOW_TRANSMISSION_INCUMBENT_BONUS 4.0f
 /* Seconds for a shadow to fade in once every face of its light is valid. */
 #define VKR_LOCAL_SHADOW_FADE_SECONDS 0.25f
 /* Camera distances below this fraction of a light's range score alike. */
@@ -66,6 +71,9 @@ typedef struct VkrLocalShadowCandidate {
   VkrLocalShadowView views[6];
   VkrLocalShadowRenderClass render_class;
   bool8_t opaque_valid;
+  /* Opaque content valid and not stale, so drawing transmission alone
+     completes the light. */
+  bool8_t opaque_current;
   bool8_t transmission_valid;
   bool8_t wants_transmission;
   bool8_t render;
@@ -529,6 +537,7 @@ vkr_internal void vkr_local_shadow_classify_content(
               history->publication_generation != input->publication_generation;
     }
     candidate->opaque_valid = opaque_valid;
+    candidate->opaque_current = opaque_valid && !stale;
     candidate->transmission_valid = transmission_valid && opaque_valid;
     candidate->render_class =
         !opaque_valid ? VKR_LOCAL_SHADOW_RENDER_INVALID
@@ -609,7 +618,24 @@ vkr_internal void vkr_local_shadow_publish(
         continue;
       const uint32_t first_view =
           out->light_first_view[candidate->light_index] - 1u;
+      /* A light drawn only for its transmission layers keeps its opaque
+         faces and their history. */
+      const bool8_t retained =
+          transmission_pass && candidate->previous && candidate->opaque_current;
       for (uint32_t face = 0u; face < candidate->face_count; ++face) {
+        if (retained) {
+          out->retained_opaque_mask |= UINT64_C(1) << out->render_count;
+          VkrLocalShadowFaceHistory history =
+              cache->lights[candidate->previous - 1u].faces[face];
+          history.transmission_layer = candidate->transmission_layers[face];
+          MemCopy(history.transmission_resource_generations,
+                  input->token.transmission_resource_generations,
+                  sizeof(history.transmission_resource_generations));
+          out->render_views[out->render_count++] = first_view + face;
+          pending->faces[pending->face_count++] = (VkrLocalShadowPendingFace){
+              .light = i, .face = face, .history = history};
+          continue;
+        }
         out->render_views[out->render_count++] = first_view + face;
         pending->faces[pending->face_count++] = (VkrLocalShadowPendingFace){
             .light = i,
@@ -750,8 +776,11 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
       const bool8_t incumbent =
           candidate->previous != 0u &&
           cache->lights[candidate->previous - 1u].transmission_layers[0] != 0u;
-      keys[i] =
-          incumbent ? candidate->score * incumbent_bonus : candidate->score;
+      keys[i] = incumbent
+                    ? candidate->score *
+                          Max(incumbent_bonus,
+                              VKR_LOCAL_SHADOW_TRANSMISSION_INCUMBENT_BONUS)
+                    : candidate->score;
     }
     vkr_local_shadow_order_by_key(keys, candidate_count, order);
     uint32_t layers = 0u;

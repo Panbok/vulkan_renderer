@@ -771,7 +771,8 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
 
 /* With refractive casters the most important lights hold one transmission
  * layer per face, drawn with the face. A layer becomes readable only once
- * drawn; losing a prefix image or a layer's content redraws the light. */
+ * drawn; losing a prefix image or a layer's content redraws the light's
+ * transmission, its opaque faces keeping their content unless it is stale. */
 vkr_internal void test_local_shadow_transmission_layers(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -795,6 +796,7 @@ vkr_internal void test_local_shadow_transmission_layers(void) {
   assert(local.refractive_casters && local.render_count == 6u);
   assert(local.transmission_render_count == 6u);
   assert(local.transmission_layer_count == 6u);
+  assert(local.retained_opaque_mask == 0u);
   assert(local.light_first_view[0] != 0u && local.light_first_view[1] == 0u);
   for (uint32_t face = 0u; face < 6u; ++face)
     assert(local.views[local.light_first_view[0] - 1u + face].shadow_params.y ==
@@ -823,6 +825,19 @@ vkr_internal void test_local_shadow_transmission_layers(void) {
     vkr_shadow_system_resolve_local_shadows(&system, changed, &payload, lights,
                                             2u, &camera, &local);
     assert(local.render_count == 6u && local.transmission_render_count == 6u);
+    assert(local.retained_opaque_mask == UINT64_C(0x3f));
+    vkr_shadow_system_discard_frame(&system);
+  }
+  /* Stale opaque content redraws with its transmission. */
+  {
+    VkrRetainedLocalShadowToken changed = valid;
+    changed.transmission_resource_generations[0]++;
+    VkrWorldPassPayload published = payload;
+    published.caster_publication_generation++;
+    vkr_shadow_system_resolve_local_shadows(&system, changed, &published,
+                                            lights, 2u, &camera, &local);
+    assert(local.render_count == 6u && local.transmission_render_count == 6u);
+    assert(local.retained_opaque_mask == 0u);
     vkr_shadow_system_discard_frame(&system);
   }
   /* An unreadable layer leaves the layers below it readable; the light takes
@@ -833,6 +848,7 @@ vkr_internal void test_local_shadow_transmission_layers(void) {
                                           2u, &camera, &local);
   assert(local.transmission_render_count == 6u);
   assert(local.transmission_layer_count == 6u);
+  assert(local.retained_opaque_mask == UINT64_C(0x3f));
   vkr_shadow_system_discard_frame(&system);
   vkr_shadow_system_shutdown(&system);
 }

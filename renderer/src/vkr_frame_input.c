@@ -645,7 +645,22 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow.render_views",
                         "transmission slots require a transmission layer");
+    /* A face keeping its opaque content draws transmission, on a layer
+       whose content survives the submission. */
+    if ((local->retained_opaque_mask & (UINT64_C(1) << slot)) != 0u &&
+        (slot >= local->transmission_render_count ||
+         (local->atlas_clear_mask &
+          (UINT32_C(1) << vkr_local_shadow_render_atlas_layer(local, slot))) !=
+             0u))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.local_shadow.retained_opaque_mask",
+                        "names a slot without transmission or a cleared layer");
   }
+  if (local->render_count < 64u &&
+      (local->retained_opaque_mask >> local->render_count) != 0u)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.local_shadow.retained_opaque_mask",
+                      "names a slot past render_count");
 
   /* Views are the faces of shadowed lights, each face owned exactly once. */
   uint64_t owned_views[VKR_LOCAL_SHADOW_FACE_COUNT_MAX / 64u] = {0};

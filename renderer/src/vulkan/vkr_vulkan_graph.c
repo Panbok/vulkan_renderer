@@ -1231,10 +1231,14 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
       };
       prepared->scissor = (VkRect2D){.offset = {(int32_t)x, (int32_t)y},
                                      .extent = {size, size}};
+      prepared->depth_bias = (VkrShadowConfigOverride){0};
+      /* A face keeping its opaque content draws only its transmission. */
+      if ((packet->input.local_shadow->retained_opaque_mask &
+           (UINT64_C(1) << render_slot)) != 0u)
+        return true_v;
       prepared->depth_clear_rect =
           (VkClearRect){.rect = prepared->scissor, .layerCount = 1u};
       prepared->clear_depth_rect = true_v;
-      prepared->depth_bias = (VkrShadowConfigOverride){0};
       return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
                                             true_v, false_v, true_v);
     }

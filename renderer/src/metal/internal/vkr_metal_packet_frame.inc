@@ -4095,6 +4095,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     if (!packet->input.local_shadow ||
         slot >= packet->input.local_shadow->render_count)
       return false_v;
+    /* A face keeping its opaque content draws only its transmission. */
+    if ((packet->input.local_shadow->retained_opaque_mask &
+         (UINT64_C(1) << slot)) != 0u)
+      return true_v;
     const uint32_t face = packet->input.local_shadow->render_views[slot];
     if (packet->input.world && renderer->gpu_draw_count > 0u &&
         !vkr_metal_packet_prepare_gpu_shadow(
