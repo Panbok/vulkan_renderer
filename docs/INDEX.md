@@ -275,6 +275,8 @@ decisions before dependent implementation.
 | [Static-scene batching](proposals/static-scene-batching.md) | Evaluate static geometry merging against current GPU draw preparation. |
 | [Level design toolkit](proposals/level-design-toolkit.md) | Work after the toolkit's six implemented phases (ADR-084): vertex and edge brush edits, glTF export, Replace with mesh, movers, IO across containers, visual scripting, terrain holes, bent spline meshes, linked prefabs and stacked scatter rules. |
 | [World partition](proposals/world-partition.md) | Work after ADR-086: the streaming hitch budget, imported content and more containers in cells, script lifecycle in streamed cells, richer proxies, long views and project storage of cells. |
+| [Level toolkit audit](proposals/level-toolkit-audit.md) | Review of the level toolkit, terrain, geometry LOD and world partition (ADR-084 to ADR-086): findings by severity with evidence, fixes made during the audit, and the verification each finding still needs. |
+| [Level toolkit Windows/Vulkan handoff](proposals/level-toolkit-windows-vulkan-handoff.md) | Steps for a Windows Vulkan host to verify the level toolkit, terrain, geometry LOD and world partition natively, with the commands, expected results and the audit findings each step closes. |
 | [Visibility-buffer MSAA](proposals/visibility-buffer-msaa.md) | Multisample visibility and resolve after a demonstrated quality need. |
 
 ## Maintaining this tree

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-03
+updated: 2026-10-04
 authority: proposal
 ---
 
@@ -10,6 +10,14 @@ This checklist records evidence still required on a Windows Vulkan host. The
 ADRs define the feature contracts. A successful build or compiled SPIR-V
 reflection does not prove native Vulkan execution, synchronization, display
 behavior, or Metal/Vulkan pixel parity.
+
+## Pending: level toolkit and world partition
+
+The level toolkit, terrain, geometry LOD and world partition (ADR-084 to
+ADR-086) have no native Vulkan or Windows run. The
+[level toolkit handoff](level-toolkit-windows-vulkan-handoff.md) lists the
+steps (H1 to H9) and the [audit](level-toolkit-audit.md) the findings they
+close. Record their results here.
 
 ## 2026-10-03 Windows execution record
 
