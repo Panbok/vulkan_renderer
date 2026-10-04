@@ -265,7 +265,7 @@ culling views removed.
 Local transmitting shadows retain two ordered surface crossings at 512², capped
 by the configured opaque-map extent, in transmission arrays of one layer per
 face of the face budget. The most important lights, a light that holds layers
-weighted by the incumbent preference, hold a layer for every face; refractive
+weighted by four times its importance, hold a layer for every face; refractive
 casters do not shadow the other lights' faces, whose opaque maps exclude them.
 `VkrLocalShadowView.shadow_params.y` is the face's layer plus one, or zero. A
 light takes layers only in a frame that draws it, the lowest free first, so the
@@ -289,10 +289,25 @@ shadow caster. This local-light model does not change directional shadows.
 
 The five transmission arrays share the atlas's single graph owner, retirement
 and submission lifecycle. A light with layers draws its opaque faces and all
-its crossings together. Its transmission is valid only with matching
-generations for all five arrays and valid contents in each of its layers; an
-incomplete or replaced prefix pool redraws the complete light, which keeps its
-opaque shadow meanwhile. Cancelled work never promotes history. Scenes with no
+its crossings together, except that a light whose opaque faces are valid and
+not stale draws its crossings alone: its slots are set in
+`VkrLocalShadowPassPayload.retained_opaque_mask`, and their opaque passes
+neither clear nor draw their squares. Its transmission is valid only with
+matching generations for all five arrays and valid contents in each of its
+layers; an incomplete or replaced prefix pool redraws its crossings, and the
+light keeps its opaque shadow meanwhile.
+
+While the camera moves, the lights holding layers change. Orbiting Bistro at
+18 m on an M1 Pro with GPU pass timing, about 24 faces a second took layers,
+each light costing 4.6 ms of GPU, 2.9 ms of it for opaque faces that were
+still valid. The fourfold preference took a quarter of those changes (a
+twentyfold one still left 35 in the orbit: the lights that matter change),
+and drawing crossings alone removed the opaque cost. After the first two
+seconds, frames above 16 ms of GPU fell from 17–19 to none and the slowest
+from 23.7 to 16.0 ms; untimed interleaved runs of both builds kept their
+11.3 ms mean while their slowest frame fell from 24–25 to 16 ms. A camera
+jump still fills the cache 30 faces a frame. Vulkan compiles the change but
+did not run it. Cancelled work never promotes history. Scenes with no
 refractive candidates allocate no transmission pool or views.
 
 A scene reflection probe may name one saved source cubemap with
