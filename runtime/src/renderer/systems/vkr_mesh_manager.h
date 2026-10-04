@@ -136,6 +136,9 @@ typedef struct VkrMeshManagerGenerations {
   uint64_t caster_bounds;
 } VkrMeshManagerGenerations;
 
+/** Static changes a mesh manager remembers for retained shadows. */
+#define VKR_MESH_STATIC_CHANGE_MAX 256u
+
 /** @brief Owns mesh instances, shared assets, and their shadow generations. */
 typedef struct VkrMeshManager {
   Arena *arena;
@@ -147,6 +150,13 @@ typedef struct VkrMeshManager {
   VkrMeshLoaderContext *loader_context; // For batch loading
   VkrMeshManagerConfig config;
   VkrMeshManagerGenerations generations;
+  /* The latest static changes, a ring from `static_change_first`; it lists
+     every change of the generations after `static_change_floor`
+     (VkrWorldPassPayload.static_changes). */
+  VkrStaticChange static_changes[VKR_MESH_STATIC_CHANGE_MAX];
+  uint32_t static_change_first;
+  uint32_t static_change_count;
+  uint64_t static_change_floor;
 
   Array_VkrMesh meshes;
   Array_uint32_t mesh_live_indices;
@@ -218,6 +228,27 @@ void vkr_mesh_manager_get_metrics(const VkrMeshManager *manager,
  */
 bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
                              uint32_t *out_index, VkrRendererError *out_error);
+
+/**
+ * @brief Replaces mesh `index`'s submeshes with `desc`'s, keeping its slot,
+ * transform, visibility and render id. A drawn mesh's change reaches only
+ * the world-space boxes `change_min`/`change_max` (`change_count` of them),
+ * or the whole mesh when `change_count` is zero, so retained shadows elsewhere
+ * stay valid.
+ */
+bool8_t vkr_mesh_manager_replace(VkrMeshManager *manager, uint32_t index,
+                                 const VkrMeshDesc *desc,
+                                 const Vec3 *change_min, const Vec3 *change_max,
+                                 uint32_t change_count,
+                                 VkrRendererError *out_error);
+
+/**
+ * @brief Copies the static changes after the manager's floor, oldest first,
+ * into `out` (VKR_MESH_STATIC_CHANGE_MAX entries) and returns their count.
+ */
+uint32_t vkr_mesh_manager_static_changes(const VkrMeshManager *manager,
+                                         VkrStaticChange *out,
+                                         uint64_t *out_floor);
 
 bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
                               const VkrMeshLoadDesc *desc,

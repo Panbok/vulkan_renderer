@@ -636,6 +636,16 @@ VkrRendererError vkr_scene_build_world_draws(
   vkr_transparent_draw_emit(transparent_candidates, transparent_draw_count,
                             transparent_draws, transparent_instances);
 
+  /* Retained shadows redraw only where a static change since their content
+     reaches; without the list every static change reaches everything. */
+  VkrStaticChange *static_changes = vkr_allocator_alloc(
+      scratch, sizeof(VkrStaticChange) * VKR_MESH_STATIC_CHANGE_MAX,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint64_t static_change_floor = 0u;
+  const uint32_t static_change_count =
+      static_changes ? vkr_mesh_manager_static_changes(meshes, static_changes,
+                                                       &static_change_floor)
+                     : 0u;
   *out_payload = (VkrWorldPassPayload){
       .skinning = skinning,
       .skinning_count = skinning_count,
@@ -648,6 +658,9 @@ VkrRendererError vkr_scene_build_world_draws(
       .gpu_shadow_candidate_count = gpu_candidate_count,
       .static_candidate_count = static_candidate_count,
       .static_generation = meshes->generations.static_content,
+      .static_changes = static_changes,
+      .static_change_count = static_change_count,
+      .static_change_floor = static_change_floor,
       .dynamic_generation = meshes->generations.dynamic_content,
       .publication_generation = publication_generation,
       .caster_bounds_generation = meshes->generations.caster_bounds,

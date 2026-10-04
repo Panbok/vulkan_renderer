@@ -1615,6 +1615,16 @@ bool8_t vkr_scene_attach_generated_mesh(VkrScene *scene, VkrEntityId entity,
                                         const struct VkrSubMeshDesc *submeshes,
                                         uint32_t submesh_count,
                                         VkrSceneError *out_error);
+/* Replaces `entity`'s generated mesh with these submeshes in place, or
+ * attaches one when it has none. A drawn mesh's change reaches only the
+ * world-space boxes `change_min`/`change_max` (`change_count` of them; zero
+ * means the whole mesh), so retained shadows elsewhere stay valid
+ * (vkr_mesh_manager_replace). Fails, keeping the old mesh, while a submesh
+ * still waits for its publications. */
+bool8_t vkr_scene_replace_generated_mesh(
+    VkrScene *scene, VkrEntityId entity, const struct VkrSubMeshDesc *submeshes,
+    uint32_t submesh_count, const Vec3 *change_min, const Vec3 *change_max,
+    uint32_t change_count, VkrSceneError *out_error);
 /* Releases `entity`'s generated mesh, if any. */
 void vkr_scene_detach_generated_mesh(VkrScene *scene, VkrEntityId entity);
 /* Whether clip and trigger brushes draw (VkrScene.editor_volumes). */

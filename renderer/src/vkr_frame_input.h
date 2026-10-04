@@ -283,6 +283,18 @@ typedef struct VkrSkinningInput {
 } VkrSkinningInput;
 
 /**
+ * One static-world change: the static generation it produced and the
+ * world-space box it may have altered, or anywhere when not `bounded`. One
+ * generation may list several boxes.
+ */
+typedef struct VkrStaticChange {
+  uint64_t generation;
+  Vec3 min;
+  Vec3 max;
+  bool8_t bounded;
+} VkrStaticChange;
+
+/**
  * @brief Payload for GPU-driven world stages and retained ordinary blend.
  */
 typedef struct VkrWorldPassPayload {
@@ -329,6 +341,15 @@ typedef struct VkrWorldPassPayload {
    */
   uint32_t static_candidate_count;
   uint64_t static_generation;
+  /**
+   * The static changes of every generation after `static_change_floor`,
+   * oldest first. Retained shadows drawn at a static generation not below the
+   * floor stay valid where no later change reaches; NULL means unknown, and
+   * every static change then reaches everything.
+   */
+  const VkrStaticChange *static_changes;
+  uint32_t static_change_count;
+  uint64_t static_change_floor;
   uint64_t dynamic_generation;
   /** Selected-backend geometry/material resolvability generation. */
   uint64_t publication_generation;

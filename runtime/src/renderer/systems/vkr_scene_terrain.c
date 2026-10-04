@@ -46,6 +46,9 @@
 /* The nearest missing tiles one streaming step considers; the frame budget
    builds far fewer. */
 #define TERRAIN_STREAM_CANDIDATES 64u
+/* Boxes of what changed between mesh attachments; past it the whole terrain
+   counts as changed. */
+#define TERRAIN_CHANGE_MAX 64u
 
 _Static_assert(VKR_HEIGHTFIELD_TILE_CELLS + 1u == VKR_GPU_TERRAIN_TILE_SIDE,
                "Shaders morph tiles of VKR_GPU_TERRAIN_TILE_SIDE samples");
@@ -73,6 +76,13 @@ typedef struct TerrainRecord {
   /* Tiles were rebuilt; the mesh is re-attached once their geometry has
      uploaded. */
   bool8_t attach_pending;
+  /* Local-space boxes of the ground whose drawing changed since the mesh
+     last attached, so retained shadows elsewhere stay valid; `change_all`
+     once they do not fit. */
+  Vec3 change_min[TERRAIN_CHANGE_MAX];
+  Vec3 change_max[TERRAIN_CHANGE_MAX];
+  uint32_t change_count;
+  bool8_t change_all;
   bool8_t collision_dirty;
   uint8_t settle;
   /* World position the collision was built at. */
@@ -167,6 +177,58 @@ static void terrain_bit_set(uint64_t *bits, uint32_t index, bool8_t on) {
   }
 }
 
+static float32_t terrain_skirt(const TerrainRecord *record);
+
+/* Records that the ground over samples [x0, x1] x [z0, z1], clamped to the
+   terrain, draws differently; a box sharing a full edge with an earlier one
+   joins it. */
+static void terrain_change(TerrainRecord *record, int64_t x0, int64_t z0,
+                           int64_t x1, int64_t z1) {
+  if (record->change_all) {
+    return;
+  }
+  const VkrHeightfield *field = &record->field;
+  const float32_t half = vkr_heightfield_half_size(field);
+  const int64_t last = field->cells;
+  const Vec3 min =
+      vec3_new((float32_t)Max(x0, (int64_t)0) * field->spacing - half,
+               field->height_min - terrain_skirt(record),
+               (float32_t)Max(z0, (int64_t)0) * field->spacing - half);
+  const Vec3 max = vec3_new((float32_t)Min(x1, last) * field->spacing - half,
+                            field->height_max,
+                            (float32_t)Min(z1, last) * field->spacing - half);
+  for (uint32_t i = 0; i < record->change_count; ++i) {
+    Vec3 *a = &record->change_min[i];
+    Vec3 *b = &record->change_max[i];
+    const bool8_t rows =
+        a->z == min.z && b->z == max.z &&
+        (b->x == min.x || a->x == max.x || (a->x <= min.x && b->x >= max.x));
+    const bool8_t columns =
+        a->x == min.x && b->x == max.x &&
+        (b->z == min.z || a->z == max.z || (a->z <= min.z && b->z >= max.z));
+    if (rows || columns) {
+      *a = vec3_new(Min(a->x, min.x), a->y, Min(a->z, min.z));
+      *b = vec3_new(Max(b->x, max.x), b->y, Max(b->z, max.z));
+      return;
+    }
+  }
+  if (record->change_count == TERRAIN_CHANGE_MAX) {
+    record->change_all = true_v;
+    return;
+  }
+  record->change_min[record->change_count] = min;
+  record->change_max[record->change_count] = max;
+  record->change_count++;
+}
+
+/* Fine tile (tx, tz)'s ground, whose overview hole and seams follow it. */
+static void terrain_change_tile(TerrainRecord *record, uint32_t tx,
+                                uint32_t tz) {
+  const int64_t size = VKR_HEIGHTFIELD_TILE_CELLS;
+  terrain_change(record, (int64_t)tx * size, (int64_t)tz * size,
+                 ((int64_t)tx + 1) * size, ((int64_t)tz + 1) * size);
+}
+
 static uint64_t terrain_collision_key(VkrEntityId entity) {
   return entity.u64 ^ 0x7465727261696e00ull;
 }
@@ -197,6 +259,8 @@ static void terrain_release(VkrScene *scene, TerrainRecord *record) {
   record->collision_rejected = false_v;
   record->overview_dirty = 0u;
   record->attach_pending = false_v;
+  record->change_count = 0u;
+  record->change_all = false_v;
   if (assets && record->material.id) {
     vkr_material_system_release(&assets->material_system, record->material);
   }
@@ -216,6 +280,7 @@ static void terrain_material_key(const SceneTerrain *terrain, char *out,
 
 static void terrain_mark_all(TerrainRecord *record) {
   record->marks++;
+  record->change_all = true_v;
   MemSet(record->dirty_tiles, 0xFF, sizeof(record->dirty_tiles));
   record->body_edited = true_v;
   record->collision_rejected = false_v;
@@ -228,6 +293,10 @@ static void terrain_mark_all(TerrainRecord *record) {
 /* Marks the tiles whose vertices or normals `rect` reaches. */
 static void terrain_mark(TerrainRecord *record, VkrHeightfieldRect rect) {
   record->marks++;
+  /* Overview triangles reach one overview stride past a changed sample. */
+  const int64_t reach = record->streamed ? VKR_HEIGHTFIELD_OVERVIEW_STRIDE : 2;
+  terrain_change(record, (int64_t)rect.x0 - reach, (int64_t)rect.z0 - reach,
+                 (int64_t)rect.x1 + reach, (int64_t)rect.z1 + reach);
   const uint32_t tiles = terrain_tiles(record);
   /* Normals read one neighbour, and edge samples belong to two tiles. */
   const uint32_t x0 = rect.x0 > 1u ? rect.x0 - 2u : 0u;
@@ -993,6 +1062,7 @@ static bool8_t terrain_tile_build(VkrScene *scene, TerrainRecord *record,
   terrain_geometry_release(scene, &record->tiles[index]);
   record->tiles[index] = handle;
   terrain_bit_set(record->dirty_tiles, index, false_v);
+  terrain_change_tile(record, tx, tz);
   return true_v;
 }
 
@@ -1168,14 +1238,31 @@ static bool8_t terrain_attach_mesh(VkrScene *scene, TerrainRecord *record) {
         .owns_material = record->material.id != 0u,
     };
   }
-  vkr_scene_detach_generated_mesh(scene, record->entity);
+  /* The mesh changes in place, naming the ground that changed in world
+     space, so retained shadows elsewhere stay valid. */
+  const SceneTransform *transform = vkr_entity_get_component(
+      scene->world, record->entity, scene->comp_transform);
+  const Vec3 position =
+      transform ? mat4_position(transform->world) : vec3_zero();
+  Vec3 change_min[TERRAIN_CHANGE_MAX];
+  Vec3 change_max[TERRAIN_CHANGE_MAX];
+  const uint32_t change_count = record->change_all ? 0u : record->change_count;
+  for (uint32_t i = 0; i < change_count; ++i) {
+    change_min[i] = vec3_add(record->change_min[i], position);
+    change_max[i] = vec3_add(record->change_max[i], position);
+  }
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
-  if (ok) {
+  if (ok && !vkr_scene_replace_generated_mesh(scene, record->entity, submeshes,
+                                              filled, change_min, change_max,
+                                              change_count, &scene_error)) {
+    vkr_scene_detach_generated_mesh(scene, record->entity);
     ok = vkr_scene_attach_generated_mesh(scene, record->entity, submeshes,
                                          filled, &scene_error);
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   record->attach_pending = false_v;
+  record->change_count = 0u;
+  record->change_all = false_v;
   return ok;
 }
 
@@ -1424,6 +1511,7 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
             (float32_t)(index / tiles) * size, size) > keep) {
       terrain_geometry_release(scene, &record->tiles[index]);
       record->overview_dirty |= 1ull << terrain_overview_of(record, index);
+      terrain_change_tile(record, index % tiles, index / tiles);
       changed = true_v;
     }
   }

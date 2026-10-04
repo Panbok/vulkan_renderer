@@ -4490,6 +4490,41 @@ bool8_t vkr_scene_attach_generated_mesh(VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
+bool8_t vkr_scene_replace_generated_mesh(
+    VkrScene *scene, VkrEntityId entity, const struct VkrSubMeshDesc *submeshes,
+    uint32_t submesh_count, const Vec3 *change_min, const Vec3 *change_max,
+    uint32_t change_count, VkrSceneError *out_error) {
+  struct VkrRenderAssets *assets = scene ? scene->assets : NULL;
+  const SceneShape *shape =
+      assets ? vkr_entity_get_component_if_alive_const(scene->world, entity,
+                                                       scene->comp_shape)
+             : NULL;
+  VkrMesh *mesh =
+      shape && shape->mesh_index != VKR_INVALID_ID
+          ? vkr_mesh_manager_get(&assets->mesh_manager, shape->mesh_index)
+          : NULL;
+  if (!mesh) {
+    return vkr_scene_attach_generated_mesh(scene, entity, submeshes,
+                                           submesh_count, out_error);
+  }
+  const VkrMeshDesc desc = {
+      .transform = mesh->transform,
+      .submeshes = submeshes,
+      .submesh_count = submesh_count,
+      .shadow_mobility = mesh->shadow_mobility,
+  };
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_mesh_manager_replace(&assets->mesh_manager, shape->mesh_index, &desc,
+                                change_min, change_max, change_count, &error)) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
+    return false_v;
+  }
+  if (out_error)
+    *out_error = VKR_SCENE_ERROR_NONE;
+  return true_v;
+}
+
 void vkr_scene_detach_generated_mesh(VkrScene *scene, VkrEntityId entity) {
   scene_shape_release(scene, entity);
 }

@@ -664,6 +664,55 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
   payload.publication_generation--;
   payload.caster_publication_generation = 0u;
 
+  /* A static change whose box misses the light's range keeps the content,
+   * which takes the new generation, so a later change past the list's floor
+   * keeps it too; one inside the range, an unbounded one or one the frame
+   * cannot list makes it stale. */
+  const uint64_t drawn_generation = payload.static_generation;
+  VkrStaticChange change = {
+      .generation = drawn_generation + 1u,
+      .min = {100.0f, 0.0f, 100.0f},
+      .max = {110.0f, 5.0f, 110.0f},
+      .bounded = true_v,
+  };
+  payload.static_generation = drawn_generation + 1u;
+  payload.static_changes = &change;
+  payload.static_change_count = 1u;
+  payload.static_change_floor = drawn_generation;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local.render_count == 0u);
+  change.generation = drawn_generation + 2u;
+  payload.static_generation = drawn_generation + 2u;
+  payload.static_change_floor = drawn_generation + 1u;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local.render_count == 0u);
+  change.generation = drawn_generation + 3u;
+  change.min = vec3_add(light.position, vec3_new(5.0f, -1.0f, -1.0f));
+  change.max = vec3_add(light.position, vec3_new(6.0f, 1.0f, 1.0f));
+  payload.static_generation = drawn_generation + 3u;
+  payload.static_change_floor = drawn_generation + 2u;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local.render_count == 1u);
+  vkr_shadow_system_discard_frame(&system);
+  change.min = vec3_new(100.0f, 0.0f, 100.0f);
+  change.max = vec3_new(110.0f, 5.0f, 110.0f);
+  change.bounded = false_v;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local.render_count == 1u);
+  vkr_shadow_system_discard_frame(&system);
+  payload.static_changes = NULL;
+  payload.static_change_count = 0u;
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &light, 1u,
+                                          &camera, &local);
+  assert(local.render_count == 1u);
+  vkr_shadow_system_discard_frame(&system);
+  payload.static_generation = drawn_generation + 2u;
+  payload.static_change_floor = 0u;
+
   /* A moved light's content is invalid: it hides until it draws, and the
    * brighter light takes the only face of the budget first. */
   VkrPointLight lights[2] = {
@@ -1242,6 +1291,30 @@ test_retained_history_signatures_and_invalidation_fail_closed(void) {
   assert(frame.cascade_render_mask == cascade_mask(&system));
   vkr_shadow_system_discard_frame(&system);
   payload.static_generation--;
+
+  /* A static change whose box misses every cascade's volume keeps them,
+     and they take its generation. */
+  const VkrStaticChange far_change = {
+      .generation = payload.static_generation + 1u,
+      .min = {1.0e5f, 0.0f, 1.0e5f},
+      .max = {1.0e5f + 10.0f, 10.0f, 1.0e5f + 10.0f},
+      .bounded = true_v,
+  };
+  payload.static_changes = &far_change;
+  payload.static_change_count = 1u;
+  payload.static_change_floor = payload.static_generation;
+  payload.static_generation++;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+  vkr_shadow_system_discard_frame(&system);
+  payload.static_changes = NULL;
+  payload.static_change_count = 0u;
+  payload.static_change_floor = 0u;
+  vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
+                                  VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);
+  assert(frame.cascade_render_mask == 0u);
+  vkr_shadow_system_discard_frame(&system);
   payload.publication_generation++;
   vkr_shadow_system_resolve_frame(&system, 0u, token, &payload,
                                   VKR_TEXTURE_FORMAT_D32_SFLOAT, &frame);

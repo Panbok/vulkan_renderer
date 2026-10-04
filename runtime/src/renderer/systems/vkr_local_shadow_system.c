@@ -69,6 +69,9 @@ typedef struct VkrLocalShadowCandidate {
   bool8_t transmission_valid;
   bool8_t wants_transmission;
   bool8_t render;
+  /** Faces, a bit each, whose content predates static changes that do not
+   * reach the light; their history moves to the current generation. */
+  uint32_t static_advance;
 } VkrLocalShadowCandidate;
 
 static const Vec3 s_face_direction[6] = {
@@ -465,6 +468,42 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
   return candidate_count;
 }
 
+/* Whether static changes after generation `since` may reach `light`'s
+ * range: the list does not cover them, one is unbounded, or one's box meets
+ * the light's sphere. */
+vkr_internal bool8_t
+vkr_local_shadow_static_reached(const VkrLocalShadowCacheInput *input,
+                                uint64_t since, const VkrPointLight *light) {
+  if (since == input->static_generation) {
+    return false_v;
+  }
+  if (!input->static_changes || since < input->static_change_floor ||
+      since > input->static_generation) {
+    return true_v;
+  }
+  const float32_t range_squared = light->range * light->range;
+  for (uint32_t i = 0u; i < input->static_change_count; ++i) {
+    const VkrStaticChange *change = &input->static_changes[i];
+    if (change->generation <= since) {
+      continue;
+    }
+    if (!change->bounded) {
+      return true_v;
+    }
+    const Vec3 p = light->position;
+    const float32_t dx =
+        Max(0.0f, Max(change->min.x - p.x, p.x - change->max.x));
+    const float32_t dy =
+        Max(0.0f, Max(change->min.y - p.y, p.y - change->max.y));
+    const float32_t dz =
+        Max(0.0f, Max(change->min.z - p.z, p.z - change->max.z));
+    if (!(dx * dx + dy * dy + dz * dz > range_squared)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 /* Content is invalid once its projection, square or pool changed, and
  * stale while a dynamic caster, a publication or a static-world change may
  * have altered it. Stale content still shows while it waits to redraw. */
@@ -500,8 +539,13 @@ vkr_internal void vkr_local_shadow_classify_content(
           MemCompare(history->transmission_resource_generations,
                      input->token.transmission_resource_generations,
                      sizeof(history->transmission_resource_generations)) == 0;
-      stale = stale || !history->static_only_contents ||
-              history->static_generation != input->static_generation ||
+      const bool8_t static_reached = vkr_local_shadow_static_reached(
+          input, history->static_generation, light);
+      if (!static_reached &&
+          history->static_generation != input->static_generation) {
+        candidate->static_advance |= UINT32_C(1) << face;
+      }
+      stale = stale || !history->static_only_contents || static_reached ||
               history->publication_generation != input->publication_generation;
     }
     candidate->opaque_valid = opaque_valid;
@@ -552,8 +596,14 @@ vkr_internal void vkr_local_shadow_publish(
             sizeof(entry->face_cells));
     MemCopy(entry->transmission_layers, candidate->transmission_layers,
             sizeof(entry->transmission_layers));
-    if (previous)
+    if (previous) {
       MemCopy(entry->faces, previous->faces, sizeof(entry->faces));
+      for (uint32_t face = 0u; face < candidate->face_count; ++face) {
+        if (candidate->static_advance & (UINT32_C(1) << face)) {
+          entry->faces[face].static_generation = input->static_generation;
+        }
+      }
+    }
     /* A drawn light is a view whatever its strength, since render slots name
      * views; receivers skip a light at zero strength. */
     const float32_t strength = strengths[i] * candidate->distance_fade;

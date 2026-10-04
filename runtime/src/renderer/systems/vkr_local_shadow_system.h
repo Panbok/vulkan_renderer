@@ -19,6 +19,11 @@ typedef struct VkrLocalShadowCacheInput {
   const bool8_t *dynamic_overlap;
   VkrRetainedLocalShadowToken token;
   uint64_t static_generation;
+  /** VkrWorldPassPayload.static_changes: content of an older static
+   * generation stays valid for a light no later change reaches. */
+  const VkrStaticChange *static_changes;
+  uint32_t static_change_count;
+  uint64_t static_change_floor;
   /** VkrWorldPassPayload.caster_publication_generation: publications that
    * can change an admitted caster. */
   uint64_t publication_generation;

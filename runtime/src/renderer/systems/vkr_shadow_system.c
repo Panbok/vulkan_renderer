@@ -1385,6 +1385,63 @@ vkr_shadow_caster_publication_generation(const VkrWorldPassPayload *world) {
              : world->publication_generation;
 }
 
+/* Whether static changes after generation `since` may reach a cascade's
+   volume: the frame's list does not cover them, one is unbounded, or one's
+   box meets the volume as a dynamic caster would. */
+vkr_internal bool8_t vkr_shadow_static_change_reaches_fit(
+    const VkrWorldPassPayload *world, uint64_t since, const Mat4 *light_view,
+    const VkrShadowFit *fit) {
+  if (since == world->static_generation) {
+    return false_v;
+  }
+  if (!world->static_changes || since < world->static_change_floor ||
+      since > world->static_generation) {
+    return true_v;
+  }
+  for (uint32_t i = 0u; i < world->static_change_count; ++i) {
+    const VkrStaticChange *change = &world->static_changes[i];
+    if (change->generation <= since) {
+      continue;
+    }
+    if (!change->bounded) {
+      return true_v;
+    }
+    const Vec3 center = vec3_scale(vec3_add(change->min, change->max), 0.5f);
+    const float32_t radius =
+        0.5f * vec3_length(vec3_sub(change->max, change->min));
+    if (vkr_shadow_sphere_intersects_fit(center, radius, light_view, fit)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Retained cascades drawn before static changes that miss their volume hold
+   what the current static world would draw there, so they take its
+   generation. */
+vkr_internal void
+vkr_shadow_advance_static_histories(VkrShadowSystem *system,
+                                    const VkrWorldPassPayload *world) {
+  if (!world) {
+    return;
+  }
+  for (uint32_t image = 0u; image < VKR_SHADOW_TARGET_IMAGE_COUNT_MAX;
+       ++image) {
+    for (uint32_t cascade = 0u; cascade < system->config.cascade_count;
+         ++cascade) {
+      VkrShadowCascadeHistory *history =
+          &system->cascade_history[image][cascade];
+      if (history->last_submit_value != 0u &&
+          history->static_generation != world->static_generation &&
+          !vkr_shadow_static_change_reaches_fit(
+              world, history->static_generation, &history->rendered_light_view,
+              &history->rendered_fit)) {
+        history->static_generation = world->static_generation;
+      }
+    }
+  }
+}
+
 vkr_internal bool8_t vkr_shadow_submitted_signature_matches(
     const VkrShadowCascadeHistory *history,
     const VkrWorldPassPayload *candidates, uint64_t resource_generation,
@@ -1450,6 +1507,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
   float32_t remaining_margin[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
   const bool8_t publication_pending =
       candidates && candidates->publication_pending;
+  vkr_shadow_advance_static_histories(system, candidates);
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
     guarded_fits[cascade] = vkr_shadow_guarded_fit(system, cascade);
     out_data->split_near[cascade] = system->cascade_splits[cascade];
@@ -1672,6 +1730,9 @@ void vkr_shadow_system_resolve_local_shadows(
       .dynamic_overlap = dynamic_overlap,
       .token = retained_token,
       .static_generation = candidates->static_generation,
+      .static_changes = candidates->static_changes,
+      .static_change_count = candidates->static_change_count,
+      .static_change_floor = candidates->static_change_floor,
       .publication_generation =
           vkr_shadow_caster_publication_generation(candidates),
       .contents_unstable =

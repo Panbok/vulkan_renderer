@@ -24,6 +24,11 @@ vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
                                      bool8_t bounds_changed);
 vkr_internal void
 vkr_mesh_manager_note_topology_change(VkrMeshManager *manager);
+vkr_internal void vkr_mesh_manager_note_topology_change_within(
+    VkrMeshManager *manager, bool8_t bounded, Vec3 min, Vec3 max);
+vkr_internal void vkr_mesh_manager_record_static_change(VkrMeshManager *manager,
+                                                        bool8_t bounded,
+                                                        Vec3 min, Vec3 max);
 
 /* vkr_mesh_manager_load delegates to the batch loader defined below it. */
 vkr_internal uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
@@ -331,6 +336,22 @@ vkr_internal void vkr_mesh_update_world_bounds(VkrMesh *mesh) {
 
   mesh->bounds_world_radius =
       mesh->bounds_local_radius * mat4_affine_sphere_scale(mesh->model);
+}
+
+/* The world-space box around a mesh's bounding sphere; false when it has no
+   finite bounds. */
+vkr_internal bool8_t vkr_mesh_world_box(const VkrMesh *mesh, Vec3 *out_min,
+                                        Vec3 *out_max) {
+  const Vec3 center = mesh->bounds_world_center;
+  const float32_t radius = mesh->bounds_world_radius;
+  if (!mesh->bounds_valid || !isfinite(center.x) || !isfinite(center.y) ||
+      !isfinite(center.z) || !isfinite(radius) || radius < 0.0f) {
+    return false_v;
+  }
+  const Vec3 extent = vec3_new(radius, radius, radius);
+  *out_min = vec3_sub(center, extent);
+  *out_max = vec3_add(center, extent);
+  return true_v;
 }
 
 /**
@@ -1133,6 +1154,7 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
       .dynamic_content = 1u,
       .caster_bounds = 1u,
   };
+  manager->static_change_floor = manager->generations.static_content;
 
   ArenaFlags mesh_arena_flags = bitset8_create();
   bitset8_set(&mesh_arena_flags, ARENA_FLAG_LARGE_PAGES);
@@ -1348,17 +1370,11 @@ void vkr_mesh_manager_get_metrics(const VkrMeshManager *manager,
   }
 }
 
-bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
-                             uint32_t *out_index, VkrRendererError *out_error) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(desc != NULL, "Mesh desc is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  if (!desc->submeshes || desc->submesh_count == 0) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return false_v;
-  }
-
+/* `desc`'s submeshes with their geometry and material references taken;
+   false with `out_error` and nothing held when one cannot be resolved. */
+vkr_internal bool8_t vkr_mesh_manager_build_submeshes(
+    VkrMeshManager *manager, const VkrMeshDesc *desc,
+    Array_VkrSubMesh *out_submeshes, VkrRendererError *out_error) {
   Array_VkrSubMesh submesh_array =
       array_create_VkrSubMesh(&manager->allocator, desc->submesh_count);
   if (!submesh_array.data) {
@@ -1456,6 +1472,28 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
     built_count++;
   }
 
+  *out_submeshes = submesh_array;
+  return true_v;
+}
+
+bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
+                             uint32_t *out_index, VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(desc != NULL, "Mesh desc is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!desc->submeshes || desc->submesh_count == 0) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  Array_VkrSubMesh submesh_array = {0};
+  if (!vkr_mesh_manager_build_submeshes(manager, desc, &submesh_array,
+                                        out_error)) {
+    return false_v;
+  }
+  const uint32_t built_count = (uint32_t)submesh_array.length;
+
   VkrMesh new_mesh = {0};
   new_mesh.transform = desc->transform;
   new_mesh.model = vkr_transform_get_world(&new_mesh.transform);
@@ -1501,7 +1539,10 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   /* A mesh that draws at once joins the caster set now; one awaiting
      publication joins it when vkr_mesh_manager_pump_async admits it. */
   if (new_mesh.loading_state == VKR_MESH_LOADING_STATE_LOADED) {
-    vkr_mesh_manager_note_topology_change(manager);
+    Vec3 min = vec3_zero();
+    Vec3 max = vec3_zero();
+    const bool8_t bounded = vkr_mesh_world_box(&new_mesh, &min, &max);
+    vkr_mesh_manager_note_topology_change_within(manager, bounded, min, max);
   }
 
   if (out_index) {
@@ -1967,6 +2008,10 @@ bool8_t vkr_mesh_manager_remove(VkrMeshManager *manager, uint32_t index) {
      shadows may still hold its depth. */
   const bool8_t drawn =
       mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED;
+  Vec3 drawn_min = vec3_zero();
+  Vec3 drawn_max = vec3_zero();
+  const bool8_t drawn_bounded =
+      vkr_mesh_world_box(mesh, &drawn_min, &drawn_max);
 
   vkr_mesh_manager_release_handles(manager, mesh);
   array_destroy_VkrSubMesh(&mesh->submeshes);
@@ -1989,9 +2034,109 @@ bool8_t vkr_mesh_manager_remove(VkrMeshManager *manager, uint32_t index) {
     manager->free_indices.data[manager->free_count++] = index;
   }
   if (drawn) {
-    vkr_mesh_manager_note_topology_change(manager);
+    vkr_mesh_manager_note_topology_change_within(manager, drawn_bounded,
+                                                 drawn_min, drawn_max);
   }
 
+  return true_v;
+}
+
+bool8_t vkr_mesh_manager_replace(VkrMeshManager *manager, uint32_t index,
+                                 const VkrMeshDesc *desc,
+                                 const Vec3 *change_min, const Vec3 *change_max,
+                                 uint32_t change_count,
+                                 VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(desc != NULL, "Mesh desc is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+  VkrMesh *mesh = index < manager->meshes.length
+                      ? array_get_VkrMesh(&manager->meshes, index)
+                      : NULL;
+  if (!mesh || !mesh->submeshes.data || !mesh->submeshes.length ||
+      !desc->submeshes || !desc->submesh_count ||
+      (change_count && (!change_min || !change_max))) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  Array_VkrSubMesh submeshes = {0};
+  if (!vkr_mesh_manager_build_submeshes(manager, desc, &submeshes, out_error)) {
+    return false_v;
+  }
+  /* The replacement settles before it shows: a pending one would drop the
+     whole mesh from frames until its publications land. */
+  VkrMesh candidate = *mesh;
+  candidate.submeshes = submeshes;
+  VkrRendererError publication_error = VKR_RENDERER_ERROR_NONE;
+  const VkrMeshLoadingState state = vkr_mesh_manager_mesh_publication(
+      manager, &candidate, &publication_error);
+  if (state != VKR_MESH_LOADING_STATE_LOADED) {
+    vkr_mesh_manager_cleanup_submesh_array(manager, &submeshes,
+                                           (uint32_t)submeshes.length);
+    *out_error = state == VKR_MESH_LOADING_STATE_FAILED
+                     ? publication_error
+                     : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return false_v;
+  }
+
+  const bool8_t drawn =
+      mesh->visible && mesh->loading_state == VKR_MESH_LOADING_STATE_LOADED;
+  const Vec3 old_center = mesh->bounds_world_center;
+  const float32_t old_radius = mesh->bounds_world_radius;
+  Vec3 old_min = vec3_zero();
+  Vec3 old_max = vec3_zero();
+  const bool8_t old_bounded = vkr_mesh_world_box(mesh, &old_min, &old_max);
+  vkr_mesh_manager_release_handles(manager, mesh);
+  array_destroy_VkrSubMesh(&mesh->submeshes);
+  mesh->submeshes = submeshes;
+  mesh->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  mesh->awaiting_publication = false_v;
+  /* New submeshes carry no motion history, as a new mesh would not. */
+  mesh->temporal_generation = manager->mesh_temporal_generation_counter++;
+  vkr_mesh_compute_local_bounds(mesh);
+  vkr_mesh_update_world_bounds(mesh);
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  if (!mesh->visible) {
+    return true_v;
+  }
+  if (!drawn) {
+    /* A mesh that waited for its publications joins the caster set now. */
+    Vec3 min = vec3_zero();
+    Vec3 max = vec3_zero();
+    const bool8_t bounded = vkr_mesh_world_box(mesh, &min, &max);
+    vkr_mesh_manager_note_topology_change_within(manager, bounded, min, max);
+    return true_v;
+  }
+
+  /* The caster set keeps its members; only the named boxes, or the mesh's
+     old and new extent, changed. */
+  const bool8_t is_static =
+      mesh->shadow_mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC;
+  if (is_static) {
+    manager->generations.static_content++;
+  } else {
+    manager->generations.dynamic_content++;
+  }
+  if (MemCompare(&old_center, &mesh->bounds_world_center, sizeof(Vec3)) != 0 ||
+      old_radius != mesh->bounds_world_radius) {
+    manager->generations.caster_bounds++;
+  }
+  if (is_static) {
+    Vec3 new_min = vec3_zero();
+    Vec3 new_max = vec3_zero();
+    const bool8_t new_bounded = vkr_mesh_world_box(mesh, &new_min, &new_max);
+    for (uint32_t i = 0; i < change_count; ++i) {
+      vkr_mesh_manager_record_static_change(manager, true_v, change_min[i],
+                                            change_max[i]);
+    }
+    if (!change_count) {
+      vkr_mesh_manager_record_static_change(
+          manager, old_bounded && new_bounded,
+          vec3_new(Min(old_min.x, new_min.x), Min(old_min.y, new_min.y),
+                   Min(old_min.z, new_min.z)),
+          vec3_new(Max(old_max.x, new_max.x), Max(old_max.y, new_max.y),
+                   Max(old_max.z, new_max.z)));
+    }
+  }
   return true_v;
 }
 
@@ -2053,6 +2198,8 @@ vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
                                      bool8_t bounds_changed) {
   if (mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC) {
     manager->generations.static_content++;
+    vkr_mesh_manager_record_static_change(manager, false_v, vec3_zero(),
+                                          vec3_zero());
   } else {
     manager->generations.dynamic_content++;
   }
@@ -2067,12 +2214,60 @@ vkr_mesh_manager_note_content_change(VkrMeshManager *manager,
  * generations, because a consumer cannot know which class the added or removed
  * caster belonged to.
  */
+/* Lists a change of the current static generation reaching `min`..`max`,
+   or anywhere when not `bounded`. A full ring forgets its oldest change and
+   raises the floor to that change's generation, whose list is no longer
+   whole. */
+vkr_internal void vkr_mesh_manager_record_static_change(VkrMeshManager *manager,
+                                                        bool8_t bounded,
+                                                        Vec3 min, Vec3 max) {
+  if (manager->static_change_count == VKR_MESH_STATIC_CHANGE_MAX) {
+    const VkrStaticChange *oldest =
+        &manager->static_changes[manager->static_change_first];
+    manager->static_change_floor =
+        Max(manager->static_change_floor, oldest->generation);
+    manager->static_change_first =
+        (manager->static_change_first + 1u) % VKR_MESH_STATIC_CHANGE_MAX;
+    manager->static_change_count--;
+  }
+  const uint32_t slot =
+      (manager->static_change_first + manager->static_change_count) %
+      VKR_MESH_STATIC_CHANGE_MAX;
+  manager->static_changes[slot] = (VkrStaticChange){
+      .generation = manager->generations.static_content,
+      .min = min,
+      .max = max,
+      .bounded = bounded,
+  };
+  manager->static_change_count++;
+}
+
 vkr_internal void
 vkr_mesh_manager_note_topology_change(VkrMeshManager *manager) {
+  vkr_mesh_manager_note_topology_change_within(manager, false_v, vec3_zero(),
+                                               vec3_zero());
+}
+
+/* A topology change whose static effect stays inside `min`..`max` when
+   `bounded`, as a mesh's arrival or departure does. */
+vkr_internal void vkr_mesh_manager_note_topology_change_within(
+    VkrMeshManager *manager, bool8_t bounded, Vec3 min, Vec3 max) {
   manager->generations.topology++;
   manager->generations.static_content++;
   manager->generations.dynamic_content++;
   manager->generations.caster_bounds++;
+  vkr_mesh_manager_record_static_change(manager, bounded, min, max);
+}
+
+uint32_t vkr_mesh_manager_static_changes(const VkrMeshManager *manager,
+                                         VkrStaticChange *out,
+                                         uint64_t *out_floor) {
+  for (uint32_t i = 0; i < manager->static_change_count; ++i) {
+    out[i] = manager->static_changes[(manager->static_change_first + i) %
+                                     VKR_MESH_STATIC_CHANGE_MAX];
+  }
+  *out_floor = manager->static_change_floor;
+  return manager->static_change_count;
 }
 
 bool8_t vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
