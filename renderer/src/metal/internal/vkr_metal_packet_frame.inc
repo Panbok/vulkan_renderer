@@ -1293,6 +1293,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     return false_v;
   prepared->gpu_encode.group_count = encode_group_count;
   prepared->gpu_encode.candidate_count = candidate_count;
+  prepared->gpu_encode.idle_view_mask = 0u;
+  if (!transmission) {
+    for (uint32_t cascade = 0u;
+         cascade < renderer->prepared_frame.shadow_cascade_count; ++cascade) {
+      if ((renderer->prepared_frame.shadow_cascade_render_mask &
+           (UINT32_C(1) << cascade)) == 0u)
+        prepared->gpu_encode.idle_view_mask |= UINT64_C(1) << (cascade + 1u);
+    }
+  }
   for (uint32_t group = 0u; group < encode_group_count; ++group) {
     const uint32_t first_view = group * encode_group_size;
     const uint32_t group_view_count =

@@ -3270,6 +3270,11 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
       vkr_metal_packet_pack_gpu_draw_view(
           &views[cascade + 1u], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v, renderer->frustum_enabled);
+      /* A retained cascade draws nothing this frame, so its view rejects
+         every candidate at the flag test. */
+      if ((renderer->prepared_frame.shadow_cascade_render_mask &
+           (UINT32_C(1) << cascade)) == 0u)
+        views[cascade + 1u].excluded_candidate_flags = UINT32_MAX;
     }
     /* Only drawn faces have culling views; reused faces have none. */
     const uint32_t first_local_view =

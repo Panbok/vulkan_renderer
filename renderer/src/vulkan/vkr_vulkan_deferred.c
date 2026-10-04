@@ -1,6 +1,8 @@
 #include "math/vkr_frustum.h"
 #include "vulkan/vkr_vulkan_internal.h"
 
+#include <float.h>
+
 enum {
   VKR_VULKAN_DEFERRED_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_VULKAN_INDIRECT_COMMAND_SIZE = sizeof(VkDrawIndexedIndirectCommand),
@@ -565,6 +567,17 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
     if (!renderer->config.frustum_enabled)
       MemZero(planes,
               (uint64_t)view_count * VKR_FRUSTUM_PLANE_COUNT * sizeof(*planes));
+    /* A retained cascade draws nothing this frame, so its view rejects every
+       candidate at its first plane. */
+    for (uint32_t cascade = 0u;
+         !transmission &&
+         cascade < renderer->prepared_frame.shadow_cascade_count;
+         ++cascade) {
+      if ((renderer->prepared_frame.shadow_cascade_render_mask &
+           (UINT32_C(1) << cascade)) == 0u)
+        planes[(1u + cascade) * VKR_FRUSTUM_PLANE_COUNT] =
+            (Vec4){0.0f, 0.0f, 0.0f, -FLT_MAX};
+    }
   }
   const uint32_t visible_capacity =
       transmission

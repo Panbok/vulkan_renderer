@@ -49,6 +49,14 @@ local light redraws it every frame. Pending fits and
 content validity commit only after successful submit. Reused cascades publish
 the fit that actually produced their depth.
 
+A retained cascade keeps its culling view index, but the view does no work:
+on Metal it excludes every candidate flag and the encode pass skips its
+indirect-command reset; on Vulkan its first frustum plane rejects every
+sphere. The view is idle exactly when `shadow_cascade_render_mask` leaves its
+graph pass uninstantiated, so a stale command range is never executed and the
+next redraw resets it first. Local faces achieve the same by omitting reused
+faces' views (ADR-019).
+
 Each cascade keeps the light direction its fit was framed with while a moving
 light stays within that cascade's tolerance: 0.025 degrees for cascade 0,
 doubling for each farther cascade, whose texels are larger. The fit, light view
@@ -203,6 +211,18 @@ per cascade raster, which was unchanged. The moments add 32 MiB per target image
 at the High preset's 2048² maps. A Metal API validation run with the setting on
 passes. The Vulkan shader-ABI reflection test checks both roots against the
 compiled SPIR-V; native Vulkan execution remains unavailable.
+
+## Retained-cascade culling evidence
+
+Metal Release on the M1 Pro, 2026-10-05, dirty tree, non-authoritative.
+`bistro_native_perf_audit_steady` under `local-offscreen-perf-audit-gpu` (five
+children of 300 frames, every cascade retained) measured `Cull.Classify` at
+0.014 ms against 0.022 ms p50 and `Cull.Encode` at 0.035 ms against 0.159 ms;
+with one cascade redrawing, `Cull.Encode` took 0.067 ms. A temporary diagnostic
+that redraws one cascade per three frames in rotation, leaving the other views
+idle, produced cascade depth captures byte-identical to a normal run's for all
+four cascades. A Metal API validation run passes; native Vulkan execution
+remains unavailable.
 
 ## Revisit when
 
