@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -52,7 +52,12 @@ until resize or teardown. History stores local coefficients because an integrate
 path from an old camera cannot be reprojected to the current camera.
 
 Injection selects compatible completed history, reprojects its local values and
-rejects changed medium, projection, grid, lighting or shadow content. Integration
+rejects changed medium, projection, grid, lighting or shadow content. Content
+changes count when they can reach the fog: texture, sampler and material
+publications, not geometry uploads, and static changes whose boxes meet the
+sphere of `max_distance` around the camera
+(`vkr_froxel_fog_static_generation`). Cascade refits and local-light selection
+still reject history while the camera moves. Integration
 then traverses each current-camera column front to back. Opaque fog resolves
 after SSR and before the opaque transmission pyramid, replacing analytic fog
 while enabled. Transparent local radiance uses `T * local + S * (1 - W)` over

@@ -36,7 +36,7 @@ where imported content streams as well as authored content.
 
 | Item | Scope | Acceptance evidence |
 |---|---|---|
-| Hitch budget | Budget the remaining per-change costs (rebuilding the submesh list of every tile, the collision window rebuild) and the occasional 20–25 ms frame left while gliding | A matched Release report on M1 Pro: frame p95 within 10% of Bistro alone while gliding at 30 m/s over an 8 km terrain |
+| Hitch budget | Budget the remaining per-change costs (the main thread's 1.2–6.4 ms streaming step, rebuilding the submesh list of every tile, the collision window rebuild) behind the occasional frame up to 18 ms left while gliding | A matched Release report on M1 Pro: frame p95 within 10% of Bistro alone while gliding at 30 m/s over an 8 km terrain |
 | Imported content | Split imported scene documents into cells at import, so Bistro-sized content streams | A converted Bistro renders as before and unloads by cell |
 | More containers | Partition the root World and added scenes | Headless runs stream all three container kinds |
 | Script state | Keep a behaviour's state across its cell unloading and loading again during a session | A gameplay script in a streamed cell resumes its state after its cell returns |

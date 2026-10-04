@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-25
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -286,9 +286,15 @@ The resource owner still stamps active-frame publication with the next submit
 and waits for completion before READY. This removes renderer callback queries
 from resource-state progression without changing retirement semantics. The
 application calls `vkr_render_assets_pump()` after successful frame acquisition.
-Metal keeps that frame slot reserved while uploads acquire another slot only after
-its previous submission completes. At least two native command slots are required;
-uploads cannot reset the reserved frame slot.
+Metal uploads rotate through their own command slots and a separate publication
+transfer ring, allocated at the first upload, one slot per ring slot: an upload
+waits only for the upload one ring's length earlier, never for a frame. Before
+2026-10-04 uploads shared the two frame slots, so each streamed tile or texture
+batch waited for the previous frame's GPU work; gliding over a streamed Bistro
+terrain spent about a quarter of the render thread there. A publication run's
+geometry buffers share one upload batch, and a batch holding textures makes
+later queue work wait for it on the GPU (`waitForEvent`), where the batch end
+used to wait on the CPU. At least two frame command slots are required.
 
 Metrics distinguish logical requested/reserved bytes from native allocation,
 retired storage, capacity failures and owner classes. Vulkan driver host memory

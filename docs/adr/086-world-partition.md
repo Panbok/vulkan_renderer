@@ -227,7 +227,11 @@ the footprints of its changed tiles
 scoped but every static change reaching everything, the same flight measured
 p95 14.5–29.9 ms. At `1b4bacea` it measured p95 9.0–10.9 ms (max 20.3–25.0 ms)
 over twelve readings in two runs, against an 8.3 ms vsync interval; the
-terrain itself costs about 2 ms over Bistro alone.
+terrain itself costs about 2 ms over Bistro alone. The remaining 20–25 ms
+frames were the render thread waiting for the previous frame in every tile
+and texture upload, which took the frame command slots; with uploads on their
+own slots and ring ([ADR-024](024-shared-bindless-gpu-cores.md)) two runs at
+`405177a2` measured p95 8.9–10.7 ms and max 9.3–18.2 ms.
 
 CPU tests: the heightfield suite (a 2,048-cell streamed field that loads only
 its overview, edits, saves in place and reloads a tile), the scene edit
