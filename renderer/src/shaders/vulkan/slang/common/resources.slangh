@@ -79,6 +79,31 @@ struct VkrVulkanMaterial
     float4 material_subsurface;
 };
 
+// Terrain layers 1 to 3 of a terrain material, segmented from the common row
+// like transmission. Each layer samples its maps with its base color sampler.
+// Surface is x metallic, y roughness, z normal scale, w occlusion strength.
+struct VkrVulkanTerrainMaterial
+{
+    uint layer1_base_color_texture;
+    uint layer1_normal_texture;
+    uint layer1_orm_texture;
+    uint layer1_sampler;
+    float4 layer1_tint;
+    float4 layer1_surface;
+    uint layer2_base_color_texture;
+    uint layer2_normal_texture;
+    uint layer2_orm_texture;
+    uint layer2_sampler;
+    float4 layer2_tint;
+    float4 layer2_surface;
+    uint layer3_base_color_texture;
+    uint layer3_normal_texture;
+    uint layer3_orm_texture;
+    uint layer3_sampler;
+    float4 layer3_tint;
+    float4 layer3_surface;
+};
+
 struct VkrVulkanTransmissionMaterial
 {
     uint transmission_texture;

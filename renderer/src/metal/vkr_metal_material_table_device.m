@@ -17,6 +17,7 @@ struct VkrMetalMaterialTableDevice {
   uint64_t buffer_budget_charge;
   uint64_t core_storage_size;
   uint64_t transmission_offset;
+  uint64_t terrain_offset;
   VkrMetalMaterialTableCore *core;
 };
 
@@ -49,9 +50,12 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
     table->device = [(id<MTLDevice>)metal_device retain];
     table->transmission_offset =
         (uint64_t)config->max_rows * sizeof(VkrMetalMaterialGpuRow);
-    const uint64_t buffer_size =
+    table->terrain_offset =
         table->transmission_offset +
         (uint64_t)config->max_rows * sizeof(VkrMetalTransmissionMaterialGpuRow);
+    const uint64_t buffer_size =
+        table->terrain_offset +
+        (uint64_t)config->max_rows * sizeof(VkrMetalTerrainMaterialGpuRow);
     const uint64_t storage_size =
         vkr_metal_material_table_storage_requirement(config);
     table->core_storage_size = storage_size;
@@ -61,7 +65,7 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
         MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
     const MTLSizeAndAlign buffer_size_align =
         [table->device heapBufferSizeAndAlignWithLength:buffer_size
-                                              options:buffer_options];
+                                                options:buffer_options];
     if (!table->device || ![table->device supportsFamily:MTLGPUFamilyMetal4] ||
         !table->core_storage || buffer_size_align.size == 0 ||
         !vkr_metal_memory_device_reserve_external(memory,
@@ -70,9 +74,8 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_create(
       return VKR_METAL_MATERIAL_STATUS_NATIVE_ALLOCATION_FAILED;
     }
     table->buffer_budget_charge = buffer_size_align.size;
-    table->buffer = [table->device
-        newBufferWithLength:buffer_size
-                    options:buffer_options];
+    table->buffer = [table->device newBufferWithLength:buffer_size
+                                               options:buffer_options];
     if (!table->buffer ||
         !vkr_metal_memory_device_reconcile_external(
             memory, table->buffer_budget_charge, table->buffer.allocatedSize)) {
@@ -123,6 +126,10 @@ vkr_metal_material_table_device_publish(VkrMetalMaterialTableDevice *table,
                                                    table->buffer.contents +
                                                table->transmission_offset);
     transmission[out_handle->index] = row->transmission;
+    VkrMetalTerrainMaterialGpuRow *terrain =
+        (VkrMetalTerrainMaterialGpuRow *)((uint8_t *)table->buffer.contents +
+                                          table->terrain_offset);
+    terrain[out_handle->index] = row->terrain;
   }
   return status;
 }
@@ -143,6 +150,10 @@ VkrMetalMaterialStatus vkr_metal_material_table_device_replace(
                                                    table->buffer.contents +
                                                table->transmission_offset);
     transmission[out_new_handle->index] = new_row->transmission;
+    VkrMetalTerrainMaterialGpuRow *terrain =
+        (VkrMetalTerrainMaterialGpuRow *)((uint8_t *)table->buffer.contents +
+                                          table->terrain_offset);
+    terrain[out_new_handle->index] = new_row->terrain;
   }
   return status;
 }
@@ -184,6 +195,11 @@ uint64_t vkr_metal_material_table_device_transmission_gpu_address(
   return table ? table->buffer.gpuAddress + table->transmission_offset : 0;
 }
 
+uint64_t vkr_metal_material_table_device_terrain_gpu_address(
+    VkrMetalMaterialTableDevice *table) {
+  return table ? table->buffer.gpuAddress + table->terrain_offset : 0;
+}
+
 void *
 vkr_metal_material_table_device_buffer(VkrMetalMaterialTableDevice *table) {
   return table ? table->buffer : nil;
@@ -210,7 +226,7 @@ void vkr_metal_material_table_device_destroy(
     [table->buffer release];
     if (table->buffer_budget_charge)
       vkr_metal_memory_device_release_external(table->memory,
-                                                 table->buffer_budget_charge);
+                                               table->buffer_budget_charge);
     [table->device release];
   }
   VkrAllocator *allocator = table->allocator;

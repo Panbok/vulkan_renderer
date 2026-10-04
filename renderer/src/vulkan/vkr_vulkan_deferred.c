@@ -1362,6 +1362,8 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
       .vertices = renderer->geometry_megabuffer.vertices.address,
       .instances = slot->gpu_candidate_instances,
       .materials = renderer->materials.address,
+      .terrain_materials =
+          renderer->materials.address + renderer->terrain_material_offset,
       .indices = renderer->geometry_megabuffer.indices.address,
       .compaction_state = state->buffer.address,
       .previous_transforms =

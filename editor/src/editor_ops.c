@@ -968,6 +968,8 @@ static bool8_t ops_build_component_remove(OpsContext *ctx,
 #define OPS_DEV_WALL "assets/materials/dev/dev_wall.mt"
 #define OPS_DEV_GRID "assets/materials/dev/dev_grid.mt"
 #define OPS_DEV_TRIGGER "assets/materials/dev/dev_trigger.mt"
+#define OPS_DEV_ORANGE "assets/materials/dev/dev_orange.mt"
+#define OPS_DEV_BLUE "assets/materials/dev/dev_blue.mt"
 #define OPS_DEV_CLIP "assets/materials/dev/dev_clip.mt"
 
 /* Arguments every brush and blockout operation shares. */
@@ -3817,6 +3819,9 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   terrain.texture_size = (float32_t)texture_size;
   char *const layers[VKR_HEIGHTFIELD_LAYERS] = {terrain.layer0, terrain.layer1,
                                                 terrain.layer2, terrain.layer3};
+  /* Unnamed layers start as dev colors, so paint shows at once. */
+  const char *const dev_layers[VKR_HEIGHTFIELD_LAYERS] = {
+      OPS_DEV_GRID, OPS_DEV_FLOOR, OPS_DEV_ORANGE, OPS_DEV_BLUE};
   for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
     char key[16];
     snprintf(key, sizeof(key), "layer%u", i);
@@ -3825,6 +3830,8 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
         layer.length < SCENE_TERRAIN_MATERIAL_CAPACITY) {
       MemCopy(layers[i], layer.str, layer.length);
       layers[i][layer.length] = '\0';
+    } else {
+      snprintf(layers[i], SCENE_TERRAIN_MATERIAL_CAPACITY, "%s", dev_layers[i]);
     }
   }
   values->component_type = &vkr_scene_terrain_type;
@@ -4670,7 +4677,8 @@ static const OpsDef s_ops[] = {
      "Create a heightfield terrain of 'size' metres a side (a multiple of 64 "
      "'spacing' cells, at most 1024 cells) centred on 'position', flat at "
      "local 'height', heights stored between 'height_min' and 'height_max'. "
-     "'layer0' to 'layer3' name materials.",
+     "'layer0' to 'layer3' name the materials paint blends (default dev grid, "
+     "floor, orange and blue).",
      "{\"type\":\"object\",\"properties\":{\"position\":" OPS_VEC3_SCHEMA
      ",\"size\":{\"type\":\"number\"},\"spacing\":{\"type\":\"number\"},"
      "\"height\":{\"type\":\"number\"},\"height_min\":{\"type\":\"number\"},"

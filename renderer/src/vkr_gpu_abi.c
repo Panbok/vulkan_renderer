@@ -302,5 +302,26 @@ bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {
        pbr->diffuse_transmission_strength > 0.0f)) {
     return false_v;
   }
+  /* A terrain material blends opaque PBR layers in the visibility resolve,
+     which forward and transmission shading never reach. */
+  if (material->terrain) {
+    if (material->material_type != VKR_MATERIAL_TYPE_PBR ||
+        material->alpha_mode != VKR_MATERIAL_ALPHA_OPAQUE ||
+        pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
+        pbr->diffuse_transmission_strength > 0.0f ||
+        pbr->subsurface_strength > 0.0f) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < ArrayCount(material->layers); ++i) {
+      const VkrMaterialLayer *layer = &material->layers[i];
+      if (!isfinite(layer->base_color.x) || !isfinite(layer->base_color.y) ||
+          !isfinite(layer->base_color.z) || !isfinite(layer->base_color.w) ||
+          !isfinite(layer->metallic) || !isfinite(layer->roughness) ||
+          !isfinite(layer->normal_scale) ||
+          !isfinite(layer->occlusion_strength)) {
+        return false_v;
+      }
+    }
+  }
   return true_v;
 }

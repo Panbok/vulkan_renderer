@@ -882,7 +882,10 @@ vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
                                                slot->last_use_submit_value) !=
         VKR_METAL_MATERIAL_STATUS_OK)
       return false_v;
-    for (uint32_t texture_index = 0; texture_index < ArrayCount(slot->textures);
+    const uint32_t texture_count = slot->owns_textures
+                                       ? ArrayCount(slot->textures)
+                                       : ArrayCount(slot->texture_handles);
+    for (uint32_t texture_index = 0; texture_index < texture_count;
          ++texture_index) {
       if (slot->owns_textures) {
         if (vkr_metal_memory_device_retire(
@@ -928,7 +931,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     VkrMetalPacketMaterial *slot = &renderer->packet_materials[handle.id - 1];
     if (slot->live)
       return false_v;
-    VkrTextureSlot source_slots[12] = {
+    const VkrTextureSlot common_slots[12] = {
         VKR_TEXTURE_SLOT_DIFFUSE,
         material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled
             ? VKR_TEXTURE_SLOT_NORMAL
@@ -966,7 +969,22 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
             ? VKR_TEXTURE_SLOT_ANISOTROPY
             : VKR_TEXTURE_SLOT_DIFFUSE,
     };
-    VkrMetalPacketTexture *textures[12] = {0};
+    /* Terrain layer slots follow; a material that is no terrain points them
+       at its base color, which nothing samples. */
+    VkrTextureSlot source_slots[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT];
+    MemCopy(source_slots, common_slots, sizeof(common_slots));
+    for (uint32_t i = ArrayCount(common_slots); i < ArrayCount(source_slots);
+         ++i) {
+      const VkrTextureSlot layer_slot =
+          (VkrTextureSlot)(VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR +
+                           (i - ArrayCount(common_slots)));
+      source_slots[i] =
+          material->terrain && material->textures[layer_slot].enabled
+              ? layer_slot
+              : VKR_TEXTURE_SLOT_DIFFUSE;
+    }
+    VkrMetalPacketTexture *textures[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT] = {
+        0};
     for (uint32_t i = 0; i < ArrayCount(source_slots); ++i) {
       const VkrMaterialTexture *source = &material->textures[source_slots[i]];
       if (source->handle.id == 0 ||
@@ -999,6 +1017,8 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_ROUGHNESS;
     if (material->textures[VKR_TEXTURE_SLOT_ANISOTROPY].enabled)
       flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ANISOTROPY;
+    if (material->terrain)
+      flags |= VKR_METAL_PACKET_MATERIAL_TERRAIN;
     const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                           ? material->pbr.base_color
                           : material->phong.diffuse_color;
@@ -1080,6 +1100,33 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
                 .thickness_texture_id = textures[5]->resource.resource_id,
                 .transmission_sampler_id = textures[4]->sampler_resource_id,
                 .thickness_sampler_id = textures[5]->sampler_resource_id,
+            },
+        .terrain =
+            {
+                .layer1_base_color_texture_id =
+                    textures[12]->resource.resource_id,
+                .layer1_normal_texture_id = textures[13]->resource.resource_id,
+                .layer1_orm_texture_id = textures[14]->resource.resource_id,
+                .layer1_sampler_id = textures[12]->sampler_resource_id,
+                .layer1_tint = material->layers[0].base_color,
+                .layer1_surface =
+                    vkr_packet_terrain_layer_surface(&material->layers[0]),
+                .layer2_base_color_texture_id =
+                    textures[15]->resource.resource_id,
+                .layer2_normal_texture_id = textures[16]->resource.resource_id,
+                .layer2_orm_texture_id = textures[17]->resource.resource_id,
+                .layer2_sampler_id = textures[15]->sampler_resource_id,
+                .layer2_tint = material->layers[1].base_color,
+                .layer2_surface =
+                    vkr_packet_terrain_layer_surface(&material->layers[1]),
+                .layer3_base_color_texture_id =
+                    textures[18]->resource.resource_id,
+                .layer3_normal_texture_id = textures[19]->resource.resource_id,
+                .layer3_orm_texture_id = textures[20]->resource.resource_id,
+                .layer3_sampler_id = textures[18]->sampler_resource_id,
+                .layer3_tint = material->layers[2].base_color,
+                .layer3_surface =
+                    vkr_packet_terrain_layer_surface(&material->layers[2]),
             },
     };
     const float32_t tint_values[4] = {tint.x, tint.y, tint.z, tint.w};
@@ -1574,8 +1621,7 @@ vkr_internal bool8_t vkr_metal_packet_atmosphere_lut_valid(
   id<MTLTexture> lut = (id<MTLTexture>)texture->resource.metal_texture;
   return lut && lut.textureType == MTLTextureType2D &&
          lut.pixelFormat == MTLPixelFormatRGBA16Float && lut.width == width &&
-         lut.height == height &&
-         (lut.usage & MTLTextureUsageShaderWrite) != 0;
+         lut.height == height && (lut.usage & MTLTextureUsageShaderWrite) != 0;
 }
 
 bool8_t vkr_metal_packet_renderer_bake_atmosphere(
@@ -1727,9 +1773,8 @@ vkr_internal bool8_t vkr_metal_packet_ibl_source(const VkrPreparedFrame *packet,
 
 /* Exponent of the radiance scale the frame's global prefilter was baked at,
    zero without one. */
-vkr_internal int32_t
-vkr_metal_packet_global_radiance_stops(VkrMetalPacketRenderer *renderer,
-                                       const VkrPreparedFrame *packet) {
+vkr_internal int32_t vkr_metal_packet_global_radiance_stops(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet) {
   VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
   if (!vkr_metal_packet_ibl_source(packet, &handle))
     return 0;
@@ -2541,9 +2586,9 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
              renderer->gpu_draw_icb_view_group_size - 1u) /
                 renderer->gpu_draw_icb_view_group_size
           : 0u;
-  plan->gpu_draw_views_offset = vkr_metal_packet_align_up(
-      plan->sky_offset + sizeof(VkrMetalPacketSky),
-      AlignOf(VkrMetalPacketGpuDrawView));
+  plan->gpu_draw_views_offset =
+      vkr_metal_packet_align_up(plan->sky_offset + sizeof(VkrMetalPacketSky),
+                                AlignOf(VkrMetalPacketGpuDrawView));
   const uint64_t gpu_draw_views_bytes =
       (uint64_t)plan->gpu_draw_view_count * sizeof(VkrMetalPacketGpuDrawView);
   plan->transmission_gpu_draw_view_offset = vkr_metal_packet_align_up(
@@ -2969,8 +3014,7 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
       (VkrGpuRectangleLightRow *)(cpu + plan->rectangle_lights_offset);
   for (uint32_t i = 0u; i < plan->rectangle_light_count; ++i)
     vkr_rectangle_light_pack(&packet->input.lighting->rectangle_lights[i],
-                             packet->exposure.pre_exposure,
-                             &rectangle_rows[i]);
+                             packet->exposure.pre_exposure, &rectangle_rows[i]);
   upload->ltc_gpu = gpu + plan->ltc_offset;
   VkrMetalPacketSheen *sheen =
       (VkrMetalPacketSheen *)(cpu + plan->sheen_offset);
@@ -3171,8 +3215,7 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
           .intensity_box = {probe->intensity *
                                 ldexpf(1.0f, global_radiance_stops -
                                                  prefilter->radiance_stops),
-                            probe->diffuse_intensity,
-                            probe->specular_intensity,
+                            probe->diffuse_intensity, probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
       };
       const uint64_t pending_submit = renderer->submit_value + 1u;

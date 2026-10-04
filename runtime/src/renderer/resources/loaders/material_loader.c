@@ -497,6 +497,9 @@ vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
                : VKR_MATERIAL_TEXTURE_CLASS_COLOR_LINEAR;
   case VKR_TEXTURE_SLOT_NORMAL:
   case VKR_TEXTURE_SLOT_CLEARCOAT_NORMAL:
+  case VKR_TEXTURE_SLOT_LAYER1_NORMAL:
+  case VKR_TEXTURE_SLOT_LAYER2_NORMAL:
+  case VKR_TEXTURE_SLOT_LAYER3_NORMAL:
     return VKR_MATERIAL_TEXTURE_CLASS_NORMAL_RG;
   case VKR_TEXTURE_SLOT_SPECULAR:
   case VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS:
@@ -507,6 +510,9 @@ vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
   case VKR_TEXTURE_SLOT_CLEARCOAT_ROUGHNESS:
   case VKR_TEXTURE_SLOT_ANISOTROPY:
   case VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS:
+  case VKR_TEXTURE_SLOT_LAYER1_ORM:
+  case VKR_TEXTURE_SLOT_LAYER2_ORM:
+  case VKR_TEXTURE_SLOT_LAYER3_ORM:
     return VKR_MATERIAL_TEXTURE_CLASS_DATA_MASK;
   default:
     return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
@@ -545,6 +551,24 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
     return "sheen_roughness";
   case VKR_TEXTURE_SLOT_ANISOTROPY:
     return "anisotropy";
+  case VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR:
+    return "layer1_base_color";
+  case VKR_TEXTURE_SLOT_LAYER1_NORMAL:
+    return "layer1_normal";
+  case VKR_TEXTURE_SLOT_LAYER1_ORM:
+    return "layer1_orm";
+  case VKR_TEXTURE_SLOT_LAYER2_BASE_COLOR:
+    return "layer2_base_color";
+  case VKR_TEXTURE_SLOT_LAYER2_NORMAL:
+    return "layer2_normal";
+  case VKR_TEXTURE_SLOT_LAYER2_ORM:
+    return "layer2_orm";
+  case VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR:
+    return "layer3_base_color";
+  case VKR_TEXTURE_SLOT_LAYER3_NORMAL:
+    return "layer3_normal";
+  case VKR_TEXTURE_SLOT_LAYER3_ORM:
+    return "layer3_orm";
   default:
     return "unknown";
   }
@@ -2306,6 +2330,119 @@ bool8_t vkr_material_loader_replace_live(VkrMaterialSystem *system,
     texture_paths[slot] = resolved[slot];
   }
   if (!vkr_material_system_replace(system, handle, &replacement,
+                                   texture_paths)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_material_loader_replace_terrain(
+    VkrMaterialSystem *system, VkrMaterialHandle material,
+    const String8 layer_paths[VKR_MATERIAL_TERRAIN_LAYERS],
+    VkrAllocator *temp_alloc, VkrRendererError *out_error) {
+  assert_log(system != NULL, "Material system is NULL");
+  assert_log(temp_alloc != NULL, "Temp allocator is NULL");
+  VkrRendererError ignored = VKR_RENDERER_ERROR_NONE;
+  out_error = out_error ? out_error : &ignored;
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterial *live = vkr_material_system_get_by_handle(system, material);
+  if (!live || !layer_paths) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return false_v;
+  }
+
+  VkrParsedMaterialData *parsed = vkr_allocator_alloc(
+      temp_alloc, sizeof(*parsed) * VKR_MATERIAL_TERRAIN_LAYERS,
+      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  char(*resolved)[VKR_MATERIAL_PATH_MAX] = vkr_allocator_alloc(
+      temp_alloc, sizeof(char[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX]),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!parsed || !resolved) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  /* A layer without a file is plain white at the parse defaults. */
+  for (uint32_t layer = 0u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
+    vkr_material_loader_set_parse_defaults(&parsed[layer]);
+    if (!layer_paths[layer].str || layer_paths[layer].length == 0u) {
+      continue;
+    }
+    if (!vkr_material_loader_parse_file(temp_alloc, layer_paths[layer],
+                                        &parsed[layer])) {
+      *out_error = parsed[layer].parse_error != VKR_RENDERER_ERROR_NONE
+                       ? parsed[layer].parse_error
+                       : VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+  }
+
+  /* Layer 0 supplies the material's factors and textures; a terrain is
+     opaque PBR, so the extensions an opaque terrain cannot carry are off. */
+  VkrMaterial replacement = {0};
+  vkr_material_loader_init_from_parsed(&replacement, &parsed[0], system);
+  replacement.material_type = VKR_MATERIAL_TYPE_PBR;
+  replacement.alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
+  replacement.alpha_mode_explicit = true_v;
+  replacement.alpha_cutoff = 0.0f;
+  replacement.double_sided = false_v;
+  replacement.pbr.transmission_factor = 0.0f;
+  replacement.pbr.thickness_factor = 0.0f;
+  replacement.pbr.diffuse_transmission_strength = 0.0f;
+  replacement.pbr.subsurface_strength = 0.0f;
+  replacement.terrain = true_v;
+  for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
+    const VkrPbrProperties *pbr = &parsed[layer].pbr;
+    replacement.layers[layer - 1u] = (VkrMaterialLayer){
+        .base_color = pbr->base_color,
+        .metallic = pbr->metallic,
+        .roughness = pbr->roughness,
+        .normal_scale = pbr->normal_scale,
+        .occlusion_strength = pbr->occlusion_strength,
+    };
+  }
+
+  /* Layer 0 keeps its own slots; layers 1 to 3 bring their base color,
+     normal and ORM maps into theirs. */
+  VkrTextureSlot source_layer[VKR_TEXTURE_SLOT_COUNT];
+  VkrTextureSlot source_slot[VKR_TEXTURE_SLOT_COUNT];
+  for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR; ++slot) {
+    source_layer[slot] = 0u;
+    source_slot[slot] = (VkrTextureSlot)slot;
+  }
+  for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
+    const VkrTextureSlot first = vkr_texture_slot_terrain_layer(layer);
+    const VkrTextureSlot roles[VKR_MATERIAL_TERRAIN_LAYER_SLOTS] = {
+        VKR_TEXTURE_SLOT_DIFFUSE, VKR_TEXTURE_SLOT_NORMAL,
+        VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS};
+    for (uint32_t role = 0u; role < VKR_MATERIAL_TERRAIN_LAYER_SLOTS; ++role) {
+      source_layer[first + role] = layer;
+      source_slot[first + role] = roles[role];
+    }
+  }
+  String8 material_name = string8_create_from_cstr(
+      (const uint8_t *)parsed[0].name, string_length(parsed[0].name));
+  const char *texture_paths[VKR_TEXTURE_SLOT_COUNT] = {0};
+  for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+    const VkrParsedMaterialData *source = &parsed[source_layer[slot]];
+    String8 raw = vkr_material_make_string8_from_path_buffer(
+        source->texture_paths[source_slot[slot]]);
+    if (!raw.str || raw.length == 0) {
+      continue;
+    }
+    String8 request = vkr_material_apply_texture_request_intent(
+        temp_alloc, raw, (VkrTextureSlot)slot,
+        source->texture_colorspace[source_slot[slot]], material_name,
+        vkr_material_slot_name((VkrTextureSlot)slot));
+    if (!vkr_material_copy_string8_to_path_buffer(request, resolved[slot])) {
+      log_warn("Terrain material: %s path is too long and will use the "
+               "default texture",
+               vkr_material_slot_name((VkrTextureSlot)slot));
+      continue;
+    }
+    texture_paths[slot] = resolved[slot];
+  }
+  if (!vkr_material_system_replace(system, material, &replacement,
                                    texture_paths)) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;

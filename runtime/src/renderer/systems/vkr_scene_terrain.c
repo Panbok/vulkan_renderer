@@ -1,6 +1,7 @@
 #include "renderer/systems/vkr_scene_terrain.h"
 
 #include "core/logger.h"
+#include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
@@ -22,9 +23,10 @@
 
 typedef struct TerrainRecord {
   VkrEntityId entity;
-  /* The component's file and first layer the products were built for. */
+  /* The component's file and layers the products were built for. */
   char source[SCENE_TERRAIN_PATH_CAPACITY];
-  char material_path[SCENE_TERRAIN_MATERIAL_CAPACITY];
+  char material_key[VKR_MATERIAL_TERRAIN_LAYERS *
+                    SCENE_TERRAIN_MATERIAL_CAPACITY];
   float32_t texture_size;
   VkrHeightfield field;
   bool8_t loaded;
@@ -36,8 +38,8 @@ typedef struct TerrainRecord {
   /* World position the collision was built at. */
   Vec3 built_position;
   bool8_t collision_built;
+  /* The terrain's own layered material, released with the record. */
   VkrMaterialHandle material;
-  bool8_t material_owned;
   /* One geometry per tile, its dirty bit, and the mesh serial. */
   VkrGeometryHandle tiles[TERRAIN_TILES_MAX];
   uint64_t dirty_tiles[TERRAIN_TILES_MAX / 64u];
@@ -96,14 +98,21 @@ static void terrain_release(VkrScene *scene, TerrainRecord *record) {
       record->tiles[i] = (VkrGeometryHandle){0};
     }
   }
-  if (assets && record->material_owned) {
+  if (assets && record->material.id) {
     vkr_material_system_release(&assets->material_system, record->material);
   }
-  record->material_owned = false_v;
   record->material = (VkrMaterialHandle){0};
+  record->material_key[0] = '\0';
   vkr_heightfield_destroy(&record->field, scene->alloc);
   record->loaded = false_v;
   record->collision_built = false_v;
+}
+
+/* The layers a terrain material is built from, as one comparable string. */
+static void terrain_material_key(const SceneTerrain *terrain, char *out,
+                                 uint32_t capacity) {
+  snprintf(out, capacity, "%s|%s|%s|%s", terrain->layer0, terrain->layer1,
+           terrain->layer2, terrain->layer3);
 }
 
 static void terrain_mark_all(TerrainRecord *record) {
@@ -198,7 +207,9 @@ void vkr_scene_terrain_changed(VkrScene *scene, VkrEntityId entity) {
     return;
   }
   /* A new layer material or texture size rebuilds every tile. */
-  if (strcmp(record->material_path, terrain->layer0) != 0 ||
+  char key[sizeof(record->material_key)];
+  terrain_material_key(terrain, key, sizeof(key));
+  if (strcmp(record->material_key, key) != 0 ||
       record->texture_size != terrain->texture_size) {
     terrain_mark_all(record);
   }
@@ -308,6 +319,16 @@ static Vec3 terrain_normal(const VkrHeightfield *field, uint32_t x,
   return vec3_normalize(vec3_new(-dx, 1.0f, -dz));
 }
 
+/* Layer weights of sample (x, z), each 0 to 1. */
+static Vec4 terrain_weights(const VkrHeightfield *field, uint32_t x,
+                            uint32_t z) {
+  const uint32_t w =
+      field->weights[(size_t)z * vkr_heightfield_samples(field) + x];
+  return vec4_new(
+      (float32_t)(w & 0xFFu) / 255.0f, (float32_t)((w >> 8u) & 0xFFu) / 255.0f,
+      (float32_t)((w >> 16u) & 0xFFu) / 255.0f, (float32_t)(w >> 24u) / 255.0f);
+}
+
 /* One tile's geometry: its 65 x 65 samples and a skirt down from each edge,
    in the terrain's local space. */
 static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
@@ -346,7 +367,8 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
           .position = {p.x, p.y, p.z},
           .normal = {n.x, n.y, n.z},
           .texcoord = vec2_new(p.x * uv_scale, p.z * uv_scale),
-          .colour = vec4_new(1.0f, 1.0f, 1.0f, 1.0f),
+          /* The terrain material reads the four layer weights here. */
+          .colour = terrain_weights(field, sx, sz),
           .tangent = vec4_new(1.0f, 0.0f, 0.0f, 1.0f),
       };
       lo = vec3_new(Min(lo.x, p.x), Min(lo.y, p.y), Min(lo.z, p.z));
@@ -436,6 +458,45 @@ static VkrGeometryHandle terrain_tile_geometry(VkrScene *scene,
                                     &error);
 }
 
+/* A new material of the terrain's own blending its four layers; layer 0
+   defaults to the dev grid and an unnamed later layer is plain white. Its
+   textures stream in; until then it draws white. */
+static VkrMaterialHandle terrain_material_create(VkrScene *scene,
+                                                 const TerrainRecord *record,
+                                                 const SceneTerrain *terrain) {
+  struct VkrRenderAssets *assets = scene->assets;
+  static uint32_t serial = 0u;
+  char name[64];
+  snprintf(name, sizeof(name), "terrain/%016llx/%u",
+           (unsigned long long)record->entity.u64, ++serial);
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle handle = vkr_material_system_create_colored(
+      &assets->material_system, name, vec4_new(1.0f, 1.0f, 1.0f, 1.0f), &error);
+  if (!handle.id) {
+    log_warn("Scene: the terrain material could not be created (%d)",
+             (int)error);
+    return handle;
+  }
+  const char *layers[VKR_MATERIAL_TERRAIN_LAYERS] = {
+      terrain->layer0[0] ? terrain->layer0 : VKR_SCENE_BRUSH_DEFAULT_MATERIAL,
+      terrain->layer1, terrain->layer2, terrain->layer3};
+  String8 paths[VKR_MATERIAL_TERRAIN_LAYERS];
+  for (uint32_t i = 0; i < VKR_MATERIAL_TERRAIN_LAYERS; ++i) {
+    paths[i] =
+        string8_create_from_cstr((const uint8_t *)layers[i], strlen(layers[i]));
+  }
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&assets->scratch_allocator);
+  if (!vkr_material_loader_replace_terrain(&assets->material_system, handle,
+                                           paths, &assets->scratch_allocator,
+                                           &error)) {
+    log_warn("Scene: the terrain layers did not load (%d); drawing it white",
+             (int)error);
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return handle;
+}
+
 /* Rebuilds dirty tiles and re-attaches the mesh with every tile. */
 static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
   struct VkrRenderAssets *assets = scene->assets;
@@ -444,17 +505,14 @@ static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
   if (!terrain) {
     return false_v;
   }
-  if (strcmp(record->material_path, terrain->layer0) != 0 ||
-      !record->material.id) {
-    if (record->material_owned) {
+  char key[sizeof(record->material_key)];
+  terrain_material_key(terrain, key, sizeof(key));
+  if (strcmp(record->material_key, key) != 0 || !record->material.id) {
+    if (record->material.id) {
       vkr_material_system_release(&assets->material_system, record->material);
     }
-    snprintf(record->material_path, sizeof(record->material_path), "%s",
-             terrain->layer0);
-    record->material = vkr_scene_material_load(
-        scene,
-        terrain->layer0[0] ? terrain->layer0 : VKR_SCENE_BRUSH_DEFAULT_MATERIAL,
-        &record->material_owned);
+    snprintf(record->material_key, sizeof(record->material_key), "%s", key);
+    record->material = terrain_material_create(scene, record, terrain);
   }
   record->texture_size = terrain->texture_size;
   record->serial++;
@@ -497,7 +555,7 @@ static bool8_t terrain_build_mesh(VkrScene *scene, TerrainRecord *record) {
         .material = record->material,
         .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
         .owns_geometry = true_v,
-        .owns_material = record->material_owned,
+        .owns_material = record->material.id != 0u,
     };
   }
   vkr_scene_detach_generated_mesh(scene, record->entity);

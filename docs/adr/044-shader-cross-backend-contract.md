@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-04
 authority: adr
 ---
 
@@ -52,6 +52,18 @@ owns the split, input restrictions and offline transport. Native Metal checks
 pass for front/back energy, tint, black absorption, sun/point/rectangle lighting,
 shadow occlusion, cutout coverage, layered SSR/SSGI and API-validated resize.
 The zero-strength witness preserves all eight captured channels byte-for-byte.
+
+## Terrain layer evidence state
+
+The terrain material blend ([ADR-084](084-agent-channel-and-level-design-toolkit.md#terrain))
+is **UNALIGNED** pending native Vulkan execution and a bilateral comparison.
+Both G-buffer resolves call the shared `terrain_kernel.slangh` for weights,
+per-layer surfaces and the blend; each samples its own terrain segment.
+Common material rows are unchanged. The terrain segment rows are 192 bytes on
+Metal and 144 on Vulkan. The Metal resolve root gains `terrain_materials` at
+byte 440 within its 448 bytes, and the Vulkan resolve root reuses its
+reserved address at byte 16. Metal API validation of a painted Bistro
+terrain passes, and the four Vulkan resolve modules pass `spirv-val`.
 
 ## Pre-exposure evidence state
 
@@ -555,6 +567,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Editor selection outline (UNALIGNED) | CPU `VkrEditorOverlayDraw` mask draws | `metal/msl/editor/overlay.metal`, `selection.metal` | `vulkan/slang/editor/overlay.slang`, `selection.slang` |
 | Editor ground grid (UNALIGNED) | `shared/editor_grid_kernel.slangh` | `metal/msl/editor/grid.metal` | `vulkan/slang/editor/grid.slang` |
 | Compute skinning | `shared/skinning_kernel.slangh` | `metal/msl/world/skinning.metal` | `vulkan/slang/world/skinning.slang` |
+| Terrain layer blend (UNALIGNED) | `shared/terrain_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |
 | Geometry/visibility/deferred/picking | `shared/gpu_draw.slangh` | `metal/msl/common/draw.metalh`, `metal/msl/world/gpu_draws.metal` | `vulkan/slang/common/`, `world/deferred.slang`, `picking/default.slang` |
 | Material/light math (UNALIGNED) | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/default.metal`, `lighting.metalh`, `gpu_draws.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission | `shared/transmission_kernel.slangh` | `metal/msl/world/gpu_draws.metal` | `vulkan/slang/world/deferred.slang` |

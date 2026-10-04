@@ -461,6 +461,9 @@ typedef enum VkrVulkanMaterialFlag {
   VKR_VULKAN_MATERIAL_TEXTURE_SHEEN_COLOR = 1u << 8u,
   VKR_VULKAN_MATERIAL_TEXTURE_SHEEN_ROUGHNESS = 1u << 9u,
   VKR_VULKAN_MATERIAL_TEXTURE_ANISOTROPY = 1u << 10u,
+  /* A terrain material: the vertex color weighs layer 0 against the terrain
+     segment's layers 1 to 3. */
+  VKR_VULKAN_MATERIAL_TERRAIN = 1u << 11u,
 } VkrVulkanMaterialFlag;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanMaterialGpuRow {
@@ -513,9 +516,35 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTransmissionMaterialGpuRow {
   uint32_t thickness_sampler;
 } VkrVulkanTransmissionMaterialGpuRow;
 
+/* Cold terrain-layer resources and factors (layers 1 to 3 of a terrain
+   material; layer 0 is the common row), segmented like transmission. Each
+   layer samples its maps with its base color sampler. Surface is x metallic,
+   y roughness, z normal scale, w occlusion strength. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanTerrainMaterialGpuRow {
+  uint32_t layer1_base_color_texture;
+  uint32_t layer1_normal_texture;
+  uint32_t layer1_orm_texture;
+  uint32_t layer1_sampler;
+  Vec4 layer1_tint;
+  Vec4 layer1_surface;
+  uint32_t layer2_base_color_texture;
+  uint32_t layer2_normal_texture;
+  uint32_t layer2_orm_texture;
+  uint32_t layer2_sampler;
+  Vec4 layer2_tint;
+  Vec4 layer2_surface;
+  uint32_t layer3_base_color_texture;
+  uint32_t layer3_normal_texture;
+  uint32_t layer3_orm_texture;
+  uint32_t layer3_sampler;
+  Vec4 layer3_tint;
+  Vec4 layer3_surface;
+} VkrVulkanTerrainMaterialGpuRow;
+
 typedef struct VkrVulkanMaterialPublishedRow {
   VkrVulkanMaterialGpuRow material;
   VkrVulkanTransmissionMaterialGpuRow transmission;
+  VkrVulkanTerrainMaterialGpuRow terrain;
 } VkrVulkanMaterialPublishedRow;
 
 typedef struct VkrVulkanPushConstants {
@@ -596,7 +625,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalTransformRoot {
 typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   uint64_t geometry_rows;
   uint64_t visible_rows;
-  uint64_t reserved_address;
+  /** The material buffer's terrain segment, indexed like `materials`. */
+  uint64_t terrain_materials;
   uint64_t instances;
   uint64_t materials;
   uint64_t vertices;
@@ -1656,6 +1686,14 @@ _Static_assert(sizeof(VkrVulkanTransmissionMaterialGpuRow) == 16u,
 _Static_assert(offsetof(VkrVulkanTransmissionMaterialGpuRow,
                         transmission_sampler) == 8u,
                "Vulkan transmission material sampler ABI drift");
+_Static_assert(sizeof(VkrVulkanTerrainMaterialGpuRow) == 144u &&
+                   offsetof(VkrVulkanTerrainMaterialGpuRow, layer1_tint) ==
+                       16u &&
+                   offsetof(VkrVulkanTerrainMaterialGpuRow,
+                            layer2_base_color_texture) == 48u &&
+                   offsetof(VkrVulkanTerrainMaterialGpuRow, layer3_surface) ==
+                       128u,
+               "Vulkan terrain material row ABI drift");
 _Static_assert(sizeof(VkrVulkanPushConstants) == 16u,
                "Push-constant ABI drift");
 _Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
@@ -2872,9 +2910,11 @@ struct VkrVulkanRenderer {
   VkrVulkanDirtyRange sampler_descriptor_dirty;
   VkrVulkanDirtyRange material_dirty;
   VkrVulkanDirtyRange transmission_material_dirty;
+  VkrVulkanDirtyRange terrain_material_dirty;
   VkrVulkanBuffer upload;
   VkrVulkanBuffer materials;
   VkDeviceSize transmission_material_offset;
+  VkDeviceSize terrain_material_offset;
   /** L2 diffuse coefficient slots (ADR-038). Renderer lifetime: the pool
       survives scene reload, and scene reset only retires publications. */
   VkrVulkanBuffer sh_coefficients;

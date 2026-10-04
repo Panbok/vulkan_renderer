@@ -84,6 +84,30 @@ struct VkrMetalPacketTransmissionMaterial {
   sampler thickness_sampler;
 };
 
+// Terrain layers 1 to 3 of a terrain material, segmented from the common row
+// like transmission. Surface is x metallic, y roughness, z normal scale,
+// w occlusion strength.
+struct VkrMetalPacketTerrainMaterial {
+  texture2d<float, access::sample> layer1_base_color_texture;
+  texture2d<float, access::sample> layer1_normal_texture;
+  texture2d<float, access::sample> layer1_orm_texture;
+  sampler layer1_sampler;
+  float4 layer1_tint;
+  float4 layer1_surface;
+  texture2d<float, access::sample> layer2_base_color_texture;
+  texture2d<float, access::sample> layer2_normal_texture;
+  texture2d<float, access::sample> layer2_orm_texture;
+  sampler layer2_sampler;
+  float4 layer2_tint;
+  float4 layer2_surface;
+  texture2d<float, access::sample> layer3_base_color_texture;
+  texture2d<float, access::sample> layer3_normal_texture;
+  texture2d<float, access::sample> layer3_orm_texture;
+  sampler layer3_sampler;
+  float4 layer3_tint;
+  float4 layer3_surface;
+};
+
 struct VkrMetalPacketIblProbe {
   // ADR-038 final layout: offset 0 carries the coefficient slot, offset 4 is
   // reserved, and every field from offset 8 onward keeps its previous offset.

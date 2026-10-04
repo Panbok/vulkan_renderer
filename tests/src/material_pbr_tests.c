@@ -2126,6 +2126,101 @@ test_material_replacement_publishes_as_one(MaterialPbrTestContext *ctx) {
   printf("  test_material_replacement_publishes_as_one PASSED\n");
 }
 
+/* A terrain material takes layer 0's factors and textures and each later
+ * layer's factors and base color, normal and ORM maps into that layer's
+ * slots; it is opaque whatever layer 0 says, and a missing layer file fails
+ * the whole composition. */
+vkr_internal void
+test_material_terrain_composes_layers(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_terrain_composes_layers...\n");
+  VkrMaterialSystem *system = &ctx->material_system;
+  const char *const files[][2] = {
+      {"tests/tmp/material_pbr/terrain_layer0.mt",
+       "name=terrain_layer0\ntype=pbr\nbase_color=0.5,0.5,0.5,1\n"
+       "alpha_mode=blend\ntransmission_factor=0.5\n"
+       "base_color_texture=/terrain/ground.vkt\n"},
+      {"tests/tmp/material_pbr/terrain_layer1.mt",
+       "name=terrain_layer1\ntype=pbr\nbase_color=0.2,0.4,0.6,1\n"
+       "metallic=0.25\nroughness=0.75\nnormal_scale=0.5\n"
+       "occlusion_strength=0.8\nbase_color_texture=/terrain/grass.vkt\n"
+       "normal_texture=/terrain/grass_n.vkt\n"
+       "metallic_roughness_texture=/terrain/grass_orm.vkt\n"},
+      {"tests/tmp/material_pbr/terrain_layer3.mt",
+       "name=terrain_layer3\ntype=pbr\nbase_color=1,0,0,1\n"},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(files); ++i) {
+    char absolute[1024];
+    snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR,
+             files[i][0]);
+    assert(material_pbr_test_write_text_file(absolute, files[i][1]));
+  }
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle material = vkr_material_system_create_colored(
+      system, "terrain_material", vec4_one(), &error);
+  assert(material.id != 0u);
+  String8 paths[VKR_MATERIAL_TERRAIN_LAYERS] = {
+      string8_lit("tests/tmp/material_pbr/terrain_layer0.mt"),
+      string8_lit("tests/tmp/material_pbr/terrain_layer1.mt"),
+      {0},
+      string8_lit("tests/tmp/material_pbr/terrain_layer3.mt"),
+  };
+  assert(vkr_material_loader_replace_terrain(system, material, paths,
+                                             &ctx->temp_allocator, &error));
+
+  const VkrMaterial *definition = NULL;
+  for (uint32_t r = 0u; r < VKR_MATERIAL_REPLACEMENT_CAPACITY; ++r) {
+    if (system->replacements[r].material.id == material.id) {
+      definition = &system->replacements[r].definition;
+    }
+  }
+  assert(definition && definition->terrain);
+  assert(definition->material_type == VKR_MATERIAL_TYPE_PBR &&
+         definition->alpha_mode == VKR_MATERIAL_ALPHA_OPAQUE &&
+         definition->pbr.transmission_factor == 0.0f);
+  assert(fabsf(definition->pbr.base_color.x - 0.5f) < 1e-6f);
+  const VkrMaterialLayer *grass = &definition->layers[0];
+  assert(fabsf(grass->base_color.y - 0.4f) < 1e-6f &&
+         fabsf(grass->metallic - 0.25f) < 1e-6f &&
+         fabsf(grass->roughness - 0.75f) < 1e-6f &&
+         fabsf(grass->normal_scale - 0.5f) < 1e-6f &&
+         fabsf(grass->occlusion_strength - 0.8f) < 1e-6f);
+  /* The unnamed layer is plain white; the last is its file's red. */
+  assert(definition->layers[1].base_color.x == 1.0f &&
+         definition->layers[1].base_color.y == 1.0f);
+  assert(definition->layers[2].base_color.x == 1.0f &&
+         definition->layers[2].base_color.y == 0.0f);
+
+  /* Each map streams into its layer's slot and no other. */
+  const char *expected[VKR_TEXTURE_SLOT_COUNT] = {0};
+  expected[VKR_TEXTURE_SLOT_DIFFUSE] = "/terrain/ground.vkt";
+  expected[VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR] = "/terrain/grass.vkt";
+  expected[VKR_TEXTURE_SLOT_LAYER1_NORMAL] = "/terrain/grass_n.vkt";
+  expected[VKR_TEXTURE_SLOT_LAYER1_ORM] = "/terrain/grass_orm.vkt";
+  uint32_t streamed = 0u;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    const VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    if (stream->material.id != material.id) {
+      continue;
+    }
+    assert(expected[stream->slot] &&
+           strstr(stream->path, expected[stream->slot]) == stream->path);
+    streamed++;
+  }
+  assert(streamed == 4u);
+  vkr_material_system_cancel_texture_streams(system, material);
+
+  VkrRendererError missing = VKR_RENDERER_ERROR_NONE;
+  paths[2] = string8_lit("tests/tmp/material_pbr/terrain_missing.mt");
+  assert(!vkr_material_loader_replace_terrain(system, material, paths,
+                                              &ctx->temp_allocator, &missing));
+  assert(missing == VKR_RENDERER_ERROR_FILE_NOT_FOUND);
+  assert(vkr_material_system_pending_replacements(system) == 0u);
+  for (uint32_t i = 0u; i < ArrayCount(files); ++i) {
+    material_pbr_test_remove_file(files[i][0]);
+  }
+  printf("  test_material_terrain_composes_layers PASSED\n");
+}
+
 bool32_t run_material_pbr_tests(void) {
   printf("--- Starting Material PBR Tests ---\n");
 
@@ -2152,6 +2247,7 @@ bool32_t run_material_pbr_tests(void) {
   test_shared_texture_eviction_tracks_unique_bytes(&context);
   test_shared_texture_eviction_republishes_all_materials(&context);
   test_material_replacement_publishes_as_one(&context);
+  test_material_terrain_composes_layers(&context);
   test_compressed_texture_subresource_shapes(&context);
   test_texture_request_owns_pending_publication(&context);
   test_material_texture_limit_reloads_changed_textures(&context);

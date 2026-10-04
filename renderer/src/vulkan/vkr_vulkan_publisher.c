@@ -1222,13 +1222,21 @@ vkr_internal bool8_t vkr_vk_publish_material_gpu_row(
   MemCopy((uint8_t *)renderer->materials.allocation.mapped +
               transmission_offset,
           &row->transmission, sizeof(row->transmission));
+  const VkDeviceSize terrain_offset =
+      renderer->terrain_material_offset +
+      (VkDeviceSize)out_handle->index * sizeof(row->terrain);
+  MemCopy((uint8_t *)renderer->materials.allocation.mapped + terrain_offset,
+          &row->terrain, sizeof(row->terrain));
   return vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials,
                            (VkDeviceSize)out_handle->index *
                                sizeof(row->material),
                            sizeof(row->material)) &&
          vkr_vk_mark_dirty(&renderer->transmission_material_dirty,
                            &renderer->materials, transmission_offset,
-                           sizeof(row->transmission));
+                           sizeof(row->transmission)) &&
+         vkr_vk_mark_dirty(&renderer->terrain_material_dirty,
+                           &renderer->materials, terrain_offset,
+                           sizeof(row->terrain));
 }
 
 vkr_internal bool8_t vkr_vk_replace_material_gpu_row(
@@ -1245,13 +1253,21 @@ vkr_internal bool8_t vkr_vk_replace_material_gpu_row(
   MemCopy((uint8_t *)renderer->materials.allocation.mapped +
               transmission_offset,
           &row->transmission, sizeof(row->transmission));
+  const VkDeviceSize terrain_offset =
+      renderer->terrain_material_offset +
+      (VkDeviceSize)out_handle->index * sizeof(row->terrain);
+  MemCopy((uint8_t *)renderer->materials.allocation.mapped + terrain_offset,
+          &row->terrain, sizeof(row->terrain));
   return vkr_vk_mark_dirty(&renderer->material_dirty, &renderer->materials,
                            (VkDeviceSize)out_handle->index *
                                sizeof(row->material),
                            sizeof(row->material)) &&
          vkr_vk_mark_dirty(&renderer->transmission_material_dirty,
                            &renderer->materials, transmission_offset,
-                           sizeof(row->transmission));
+                           sizeof(row->transmission)) &&
+         vkr_vk_mark_dirty(&renderer->terrain_material_dirty,
+                           &renderer->materials, terrain_offset,
+                           sizeof(row->terrain));
 }
 
 vkr_internal VkSamplerAddressMode
@@ -2232,6 +2248,16 @@ vkr_vk_material_row_set_sampler(VkrVulkanMaterialPublishedRow *row,
   case VKR_TEXTURE_SLOT_ANISOTROPY:
     row->material.anisotropy_sampler = sampler_index;
     break;
+  /* A terrain layer samples every map with its base color sampler. */
+  case VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR:
+    row->terrain.layer1_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_LAYER2_BASE_COLOR:
+    row->terrain.layer2_sampler = sampler_index;
+    break;
+  case VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR:
+    row->terrain.layer3_sampler = sampler_index;
+    break;
   default:
     break;
   }
@@ -2608,6 +2634,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_SHEEN_ROUGHNESS;
   if (material->textures[VKR_TEXTURE_SLOT_ANISOTROPY].enabled)
     material_flags |= VKR_VULKAN_MATERIAL_TEXTURE_ANISOTROPY;
+  if (material->terrain)
+    material_flags |= VKR_VULKAN_MATERIAL_TERRAIN;
   const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                         ? material->pbr.base_color
                         : material->phong.diffuse_color;
@@ -2696,6 +2724,42 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
               .transmission_sampler =
                   sampler_indices[VKR_TEXTURE_SLOT_TRANSMISSION],
               .thickness_sampler = sampler_indices[VKR_TEXTURE_SLOT_THICKNESS],
+          },
+      .terrain =
+          {
+              .layer1_base_color_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR],
+              .layer1_normal_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER1_NORMAL],
+              .layer1_orm_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER1_ORM],
+              .layer1_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR],
+              .layer1_tint = material->layers[0].base_color,
+              .layer1_surface =
+                  vkr_packet_terrain_layer_surface(&material->layers[0]),
+              .layer2_base_color_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER2_BASE_COLOR],
+              .layer2_normal_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER2_NORMAL],
+              .layer2_orm_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER2_ORM],
+              .layer2_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_LAYER2_BASE_COLOR],
+              .layer2_tint = material->layers[1].base_color,
+              .layer2_surface =
+                  vkr_packet_terrain_layer_surface(&material->layers[1]),
+              .layer3_base_color_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR],
+              .layer3_normal_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER3_NORMAL],
+              .layer3_orm_texture =
+                  texture_indices[VKR_TEXTURE_SLOT_LAYER3_ORM],
+              .layer3_sampler =
+                  sampler_indices[VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR],
+              .layer3_tint = material->layers[2].base_color,
+              .layer3_surface =
+                  vkr_packet_terrain_layer_surface(&material->layers[2]),
           },
   };
   VkrGpuSlotHandle new_slot = {0};

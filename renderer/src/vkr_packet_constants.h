@@ -80,3 +80,7 @@ VkrPacketMaterialConstants
 vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
                                      float32_t alpha_cutoff,
                                      VkrMaterialAlphaMode alpha_mode);
+
+/* A terrain layer's surface row: x metallic, y roughness, z normal scale,
+   w occlusion strength, unclamped like the common row's surface. */
+Vec4 vkr_packet_terrain_layer_surface(const VkrMaterialLayer *layer);

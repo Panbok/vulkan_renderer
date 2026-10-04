@@ -277,7 +277,7 @@ typedef struct VkrMetalPacketGeometryMegabuffer {
 
 typedef struct VkrMetalPacketMaterial {
   VkrMetalTextureResource textures[12];
-  VkrTextureHandle texture_handles[12];
+  VkrTextureHandle texture_handles[VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT];
   VkrMetalMaterialHandle row;
   VkrPbrProperties pbr;
   VkrMaterialAlphaMode alpha_mode;

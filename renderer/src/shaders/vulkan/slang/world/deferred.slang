@@ -110,7 +110,7 @@ struct VkrVkResolveRoot
 {
     VkrVkGeometryRow *geometry_rows;
     VkrGpuVisibleDrawRow *visible_rows;
-    uint2 reserved_address;
+    VkrVulkanTerrainMaterial *terrain_materials;
     VkrVulkanInstance *instances;
     VkrVulkanMaterial *materials;
     VkrPackedStaticVertex *vertices;
@@ -1021,6 +1021,8 @@ struct VkrVkSurfaceSource
     uint render_mode;
     // Scale for material emissive, which is lowered physical.
     float pre_exposure;
+    // Null where no terrain material reaches, as in transmission.
+    VkrVulkanTerrainMaterial *terrain_materials;
 };
 
 bool vkr_vk_reject_surface(VkrVkSurfaceSource source)
@@ -1056,6 +1058,87 @@ struct VkrVkSurface
     uint instance_index;
     uint normal_mapped;
 };
+
+// One extra terrain layer's surface from its row; its slots always hold a map
+// or the white and flat defaults.
+VkrTerrainSurface vkr_vk_terrain_layer(uint base_color_texture,
+                                       uint normal_texture, uint orm_texture,
+                                       uint sampler_index, float4 tint,
+                                       float4 surface, float2 uv,
+                                       float2 uv_dx, float2 uv_dy,
+                                       bool normal_mapped)
+{
+    float3 tangent_normal = float3(0.0f, 0.0f, 1.0f);
+    if (normal_mapped)
+    {
+        tangent_normal = vkr_normal_map_decode(
+            g_textures[NonUniformResourceIndex(normal_texture)]
+                .SampleGrad(g_samplers[NonUniformResourceIndex(sampler_index)],
+                            uv, uv_dx, uv_dy)
+                .xyz,
+            surface.z);
+    }
+    float4 base_sample =
+        g_textures[NonUniformResourceIndex(base_color_texture)].SampleGrad(
+            g_samplers[NonUniformResourceIndex(sampler_index)], uv, uv_dx,
+            uv_dy);
+    float3 orm =
+        g_textures[NonUniformResourceIndex(orm_texture)]
+            .SampleGrad(g_samplers[NonUniformResourceIndex(sampler_index)], uv,
+                        uv_dx, uv_dy)
+            .rgb;
+    return vkr_terrain_layer(base_sample, orm, tangent_normal, tint, surface);
+}
+
+// The blended surface of a terrain material: `layer0` from the common row,
+// then each extra layer the weights reach.
+VkrTerrainSurface vkr_vk_terrain_surface(VkrTerrainSurface layer0,
+                                         VkrVulkanTerrainMaterial *terrain,
+                                         float4 weights, float2 uv,
+                                         float2 uv_dx, float2 uv_dy,
+                                         bool normal_mapped)
+{
+    VkrTerrainSurface sum = layer0;
+    sum.base *= weights.x;
+    sum.tangent_normal *= weights.x;
+    sum.metallic *= weights.x;
+    sum.roughness *= weights.x;
+    sum.occlusion *= weights.x;
+    if (weights.y > 0.0f)
+    {
+        sum = vkr_terrain_accumulate(
+            sum,
+            vkr_vk_terrain_layer(
+                terrain.layer1_base_color_texture, terrain.layer1_normal_texture,
+                terrain.layer1_orm_texture, terrain.layer1_sampler,
+                terrain.layer1_tint, terrain.layer1_surface, uv, uv_dx, uv_dy,
+                normal_mapped),
+            weights.y);
+    }
+    if (weights.z > 0.0f)
+    {
+        sum = vkr_terrain_accumulate(
+            sum,
+            vkr_vk_terrain_layer(
+                terrain.layer2_base_color_texture, terrain.layer2_normal_texture,
+                terrain.layer2_orm_texture, terrain.layer2_sampler,
+                terrain.layer2_tint, terrain.layer2_surface, uv, uv_dx, uv_dy,
+                normal_mapped),
+            weights.z);
+    }
+    if (weights.w > 0.0f)
+    {
+        sum = vkr_terrain_accumulate(
+            sum,
+            vkr_vk_terrain_layer(
+                terrain.layer3_base_color_texture, terrain.layer3_normal_texture,
+                terrain.layer3_orm_texture, terrain.layer3_sampler,
+                terrain.layer3_tint, terrain.layer3_surface, uv, uv_dx, uv_dy,
+                normal_mapped),
+            weights.w);
+    }
+    return vkr_terrain_finish(sum);
+}
 
 // Returns false for a row this pass must not shade, counting it as an invalid
 // resolve first. The caller owns the fallback, because the G-buffer writes
@@ -1125,12 +1208,45 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
                    c.texcoord * perspective_dy.z;
     float4 color = a.color * perspective.x + b.color * perspective.y +
                    c.color * perspective.z;
+    // A terrain material reads the vertex color as layer weights, not as a
+    // tint (ADR-084).
+    bool terrain = (material.flags & 2048u) != 0u;
     float4 base =
         g_textures[NonUniformResourceIndex(material.base_color_texture)]
             .SampleGrad(g_samplers[NonUniformResourceIndex(
                             material.base_color_sampler)],
                         uv, uv_dx, uv_dy) *
-        material.tint * color;
+        material.tint * (terrain ? float4(1.0f) : color);
+    VkrTerrainSurface layered = (VkrTerrainSurface)0;
+    if (terrain)
+    {
+        float3 orm0 = float3(1.0f);
+        if ((material.flags & 2u) != 0u)
+        {
+            orm0 = g_textures[NonUniformResourceIndex(material.orm_texture)]
+                       .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                       material.orm_sampler)],
+                                   uv, uv_dx, uv_dy)
+                       .rgb;
+        }
+        float3 normal0 = float3(0.0f, 0.0f, 1.0f);
+        if (!skip_normal_map && (material.flags & 1u) != 0u)
+        {
+            normal0 = vkr_normal_map_decode(
+                g_textures[NonUniformResourceIndex(material.normal_texture)]
+                    .SampleGrad(g_samplers[NonUniformResourceIndex(
+                                    material.normal_sampler)],
+                                uv, uv_dx, uv_dy)
+                    .xyz,
+                material.material_surface.z);
+        }
+        layered = vkr_vk_terrain_surface(
+            vkr_terrain_layer(base, orm0, normal0, float4(1.0f),
+                              material.material_surface),
+            source.terrain_materials + visible.material_index,
+            vkr_terrain_weights(color), uv, uv_dx, uv_dy, !skip_normal_map);
+        base = layered.base;
+    }
     if (neutral_lighting)
     {
         base.rgb = float3(0.5f);
@@ -1141,7 +1257,14 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
         neutral_lighting ? 0.5f : saturate(material.material_surface.y);
     float roughness = clamp(feedback_roughness, 0.04f, 1.0f);
     float ao = neutral_lighting ? 1.0f : saturate(material.material_surface.w);
-    if (!neutral_lighting && (material.flags & 2u) != 0u)
+    if (!neutral_lighting && terrain)
+    {
+        metallic = layered.metallic;
+        feedback_roughness = layered.roughness;
+        roughness = layered.roughness;
+        ao = layered.occlusion;
+    }
+    else if (!neutral_lighting && (material.flags & 2u) != 0u)
     {
         float3 orm =
             g_textures[NonUniformResourceIndex(material.orm_texture)]
@@ -1162,7 +1285,12 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     float4 object_tangent = a.tangent * perspective.x +
                             b.tangent * perspective.y +
                             c.tangent * perspective.z;
-    if (!skip_normal_map && (material.flags & 1u) != 0u)
+    if (!skip_normal_map && terrain)
+    {
+        surface.tangent_normal = layered.tangent_normal;
+        surface.normal_mapped = 1u;
+    }
+    else if (!skip_normal_map && (material.flags & 1u) != 0u)
     {
         surface.tangent_normal = vkr_normal_map_decode(
             g_textures[NonUniformResourceIndex(material.normal_texture)]
@@ -1281,6 +1409,7 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
         root.instance_count, root.render_mode, root.pre_exposure,
+        root.terrain_materials,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
@@ -3355,6 +3484,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         root.compaction_state, root.view_projection, root.extent,
         root.visible_capacity, root.geometry_count,  root.material_count,
         root.instance_count, root.frame.render_mode, root.frame.pre_exposure,
+        nullptr,
     };
     VkrVkSurface surface;
     if (!vkr_vk_resolve_surface(source, encoded, pixel, surface))

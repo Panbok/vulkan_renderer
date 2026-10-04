@@ -351,6 +351,25 @@ vkr_material_system_get_default_texture(VkrMaterialSystem *system,
         vkr_texture_system_get_default_emissive_handle(system->texture_system);
     texture.enabled = true_v;
     break;
+  /* A terrain layer without a map samples white color and ORM (its factors
+     alone) and a flat normal. */
+  case VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR:
+  case VKR_TEXTURE_SLOT_LAYER1_ORM:
+  case VKR_TEXTURE_SLOT_LAYER2_BASE_COLOR:
+  case VKR_TEXTURE_SLOT_LAYER2_ORM:
+  case VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR:
+  case VKR_TEXTURE_SLOT_LAYER3_ORM:
+    texture.handle =
+        vkr_texture_system_get_default_diffuse_handle(system->texture_system);
+    texture.enabled = true_v;
+    break;
+  case VKR_TEXTURE_SLOT_LAYER1_NORMAL:
+  case VKR_TEXTURE_SLOT_LAYER2_NORMAL:
+  case VKR_TEXTURE_SLOT_LAYER3_NORMAL:
+    texture.handle =
+        vkr_texture_system_get_default_normal_handle(system->texture_system);
+    texture.enabled = true_v;
+    break;
   default:
     texture.handle = VKR_TEXTURE_HANDLE_INVALID;
     texture.enabled = false_v;
@@ -734,6 +753,8 @@ static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
   material->phong = definition->phong;
   material->pbr = definition->pbr;
   material->alpha_cutoff = definition->alpha_cutoff;
+  material->terrain = definition->terrain;
+  MemCopy(material->layers, definition->layers, sizeof(material->layers));
   MemCopy(material->textures, definition->textures, sizeof(material->textures));
   for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
     VkrMaterialTextureStream *stream = &system->texture_streams[i];

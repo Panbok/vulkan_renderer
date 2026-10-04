@@ -154,7 +154,14 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
   VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_COLOR = 1u << 8u,
   VKR_METAL_PACKET_MATERIAL_TEXTURE_SHEEN_ROUGHNESS = 1u << 9u,
   VKR_METAL_PACKET_MATERIAL_TEXTURE_ANISOTROPY = 1u << 10u,
+  /* A terrain material: the vertex color weighs layer 0 against the terrain
+     segment's layers 1 to 3. */
+  VKR_METAL_PACKET_MATERIAL_TERRAIN = 1u << 11u,
 } VkrMetalPacketMaterialTextureFlag;
+
+/* Texture references a published material tracks: the twelve common-row and
+   transmission textures, then three per extra terrain layer. */
+#define VKR_METAL_PACKET_MATERIAL_TEXTURE_COUNT 21u
 
 typedef struct VkrMetalPacketRgba8TextureCreateInfo {
   const uint8_t *pixels;

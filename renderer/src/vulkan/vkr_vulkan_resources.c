@@ -256,10 +256,12 @@ bool8_t vkr_vk_flush_publication_ranges(VkrVulkanRenderer *renderer) {
       &renderer->sampler_descriptor_dirty,
       &renderer->material_dirty,
       &renderer->transmission_material_dirty,
+      &renderer->terrain_material_dirty,
   };
   VkrVulkanBuffer *buffers[] = {
       &renderer->resource_descriptors,
       &renderer->sampler_descriptors,
+      &renderer->materials,
       &renderer->materials,
       &renderer->materials,
   };
@@ -577,6 +579,10 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
   renderer->transmission_material_offset =
       (VkDeviceSize)renderer->config.material_slot_capacity *
       sizeof(VkrVulkanMaterialGpuRow);
+  renderer->terrain_material_offset =
+      renderer->transmission_material_offset +
+      (VkDeviceSize)renderer->config.material_slot_capacity *
+          sizeof(VkrVulkanTransmissionMaterialGpuRow);
   return vkr_vk_create_buffer(
              renderer, VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
              VKR_GPU_ALLOCATION_OWNER_SHADER, resource_layout->size,
@@ -596,9 +602,9 @@ vkr_internal bool8_t vkr_vk_create_upload_buffers(VkrVulkanRenderer *renderer) {
          vkr_vk_create_buffer(
              renderer, VKR_VULKAN_MEMORY_CLASS_PUBLICATION,
              VKR_GPU_ALLOCATION_OWNER_SHADER,
-             renderer->transmission_material_offset +
+             renderer->terrain_material_offset +
                  (VkDeviceSize)renderer->config.material_slot_capacity *
-                     sizeof(VkrVulkanTransmissionMaterialGpuRow),
+                     sizeof(VkrVulkanTerrainMaterialGpuRow),
              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &renderer->materials) &&
          vkr_vk_create_sh_coefficients(renderer);
 }

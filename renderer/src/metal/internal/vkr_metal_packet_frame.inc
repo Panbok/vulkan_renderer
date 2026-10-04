@@ -1207,11 +1207,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     const bool8_t transmission_view = view >= first_transmission_view;
     /* Local culling views follow render slots; each draws one view. */
     const uint32_t local_face =
-        local_view
-            ? packet->input.local_shadow->render_views
-                  [view - (transmission_view ? first_transmission_view
-                                             : first_local_view)]
-            : 0u;
+        local_view ? packet->input.local_shadow
+                         ->render_views[view - (transmission_view
+                                                    ? first_transmission_view
+                                                    : first_local_view)]
+                   : 0u;
     const uint32_t shadow_map_size =
         transmission_view
             ? renderer->prepared_frame.local_shadow_transmission_map_size
@@ -1486,6 +1486,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gbuffer_resolve(
       .instances = upload->gpu_draw_instances_gpu,
       .materials =
           vkr_metal_material_table_device_gpu_address(renderer->materials),
+      .terrain_materials = vkr_metal_material_table_device_terrain_gpu_address(
+          renderer->materials),
       .compaction_state = state->resource.gpu_address,
       .vbuffer_texture_id = vbuffer.gpuResourceID._impl,
       .albedo_texture_id = albedo.gpuResourceID._impl,
@@ -3514,8 +3516,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_picking_resolve(
           renderer->prepared_frame.transmission_gpu_draw_visible_capacity,
       .transmission_instance_count = renderer->transmission_gpu_draw_count,
       .transmission_enabled = transmission ? 1u : 0u,
-      .depth_output =
-          readback.gpuAddress + readback_offset + sizeof(uint32_t),
+      .depth_output = readback.gpuAddress + readback_offset + sizeof(uint32_t),
   };
   prepared->dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->picking_resolve_pipeline,

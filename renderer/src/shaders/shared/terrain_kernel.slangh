@@ -1,0 +1,63 @@
+// Shared terrain layer blend (ADR-084). A terrain material's vertex color
+// carries four layer weights. Each layer's surface comes from its base color,
+// ORM and tangent-space normal samples and its row factors; the blend is the
+// weighted sum, then the normal is renormalized and roughness clamped as the
+// common material path clamps it. Sampling stays with each backend.
+struct VkrTerrainSurface
+{
+    float4 base;
+    float3 tangent_normal;
+    float metallic;
+    float roughness;
+    float occlusion;
+};
+
+// Weights summing to one; a vertex with no weight is all layer 0.
+float4 vkr_terrain_weights(float4 color)
+{
+    float4 weights = max(color, float4(0.0f, 0.0f, 0.0f, 0.0f));
+    float total = weights.x + weights.y + weights.z + weights.w;
+    return total > 1e-4f ? weights / total : float4(1.0f, 0.0f, 0.0f, 0.0f);
+}
+
+// One layer's surface. `surface` is x metallic, y roughness, z normal scale
+// (already applied to `tangent_normal`), w occlusion strength; `orm` is the
+// occlusion, roughness and metallic sample, white for a layer without one.
+VkrTerrainSurface vkr_terrain_layer(float4 base_sample, float3 orm,
+                                    float3 tangent_normal, float4 tint,
+                                    float4 surface)
+{
+    VkrTerrainSurface layer;
+    layer.base = base_sample * tint;
+    layer.tangent_normal = tangent_normal;
+    layer.metallic = saturate(surface.x) * orm.b;
+    layer.roughness = saturate(surface.y) * orm.g;
+    layer.occlusion = saturate(surface.w) * orm.r;
+    return layer;
+}
+
+// `sum` plus `weight` of `layer`.
+VkrTerrainSurface vkr_terrain_accumulate(VkrTerrainSurface sum,
+                                         VkrTerrainSurface layer,
+                                         float weight)
+{
+    sum.base += layer.base * weight;
+    sum.tangent_normal += layer.tangent_normal * weight;
+    sum.metallic += layer.metallic * weight;
+    sum.roughness += layer.roughness * weight;
+    sum.occlusion += layer.occlusion * weight;
+    return sum;
+}
+
+VkrTerrainSurface vkr_terrain_finish(VkrTerrainSurface sum)
+{
+    float length_squared = dot(sum.tangent_normal, sum.tangent_normal);
+    sum.tangent_normal = length_squared > 1e-12f
+        ? sum.tangent_normal * rsqrt(length_squared)
+        : float3(0.0f, 0.0f, 1.0f);
+    sum.base.a = 1.0f;
+    sum.metallic = saturate(sum.metallic);
+    sum.roughness = clamp(sum.roughness, 0.04f, 1.0f);
+    sum.occlusion = saturate(sum.occlusion);
+    return sum;
+}

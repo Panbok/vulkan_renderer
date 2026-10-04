@@ -97,6 +97,11 @@ uint32_t vkr_packet_derive_frame_flags(const VkrPreparedFrame *packet,
   return flags;
 }
 
+Vec4 vkr_packet_terrain_layer_surface(const VkrMaterialLayer *layer) {
+  return vec4_new(layer->metallic, layer->roughness, layer->normal_scale,
+                  layer->occlusion_strength);
+}
+
 VkrPacketMaterialConstants
 vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
                                      float32_t alpha_cutoff,

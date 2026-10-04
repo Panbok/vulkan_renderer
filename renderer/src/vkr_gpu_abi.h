@@ -422,6 +422,7 @@ Vec4 vkr_gpu_material_anisotropy(float32_t strength, float32_t rotation);
  * Validates the diffuse-transmission and subsurface extensions a material row
  * carries. Each is finite and within [0, 1]; a nonzero strength requires a
  * PBR material without blending, specular transmission or volume thickness,
- * and subsurface also excludes diffuse transmission.
+ * and subsurface also excludes diffuse transmission. A terrain material is
+ * opaque PBR without those extensions, with finite layer factors.
  */
 bool8_t vkr_gpu_material_extensions_valid(const struct VkrMaterial *material);

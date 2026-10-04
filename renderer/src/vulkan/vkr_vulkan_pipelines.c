@@ -669,6 +669,87 @@ vkr_vk_validate_transmission_material_abi(VkrVulkanRenderer *renderer) {
   return valid;
 }
 
+/* The G-buffer resolve's terrain segment row matches the host row. */
+vkr_internal bool8_t
+vkr_vk_validate_terrain_material_abi(VkrVulkanRenderer *renderer) {
+  static const VkrVulkanReflectedField terrain_fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer1_base_color_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer1_normal_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer1_orm_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer1_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, layer1_tint),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer1_surface),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer2_base_color_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer2_normal_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer2_orm_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer2_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, layer2_tint),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer2_surface),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer3_base_color_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer3_normal_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer3_orm_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer3_sampler),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow, layer3_tint),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanTerrainMaterialGpuRow,
+                                 layer3_surface),
+  };
+  FilePath shader_path = vkr_vk_shader_file(
+      renderer, VKR_VULKAN_PACKET_GBUFFER_RESOLVE_NONE_COMP_SPV);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  vkr_vk_reflect_shader =
+      shader_path.path.str ? (const char *)shader_path.path.str : "?";
+  if (file_load_spirv_shader(&shader_path, renderer->allocator, &bytes,
+                             &size) != FILE_ERROR_NONE ||
+      size == 0u)
+    return false_v;
+  SpvReflectShaderModule module;
+  MemZero(&module, sizeof(module));
+  const SpvReflectResult created =
+      spvReflectCreateShaderModule((size_t)size, bytes, &module);
+  vkr_allocator_free(renderer->allocator, bytes, size,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (created != SPV_REFLECT_RESULT_SUCCESS)
+    return false_v;
+
+  uint32_t count = 0u;
+  SpvReflectBlockVariable *blocks[1] = {0};
+  bool8_t valid = spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_gbuffer_resolve", &count, NULL) ==
+                      SPV_REFLECT_RESULT_SUCCESS &&
+                  count == 1u &&
+                  spvReflectEnumerateEntryPointPushConstantBlocks(
+                      &module, "vk_gbuffer_resolve", &count, blocks) ==
+                      SPV_REFLECT_RESULT_SUCCESS;
+  SpvReflectBlockVariable *root =
+      valid ? vkr_vk_reflect_member(blocks[0], "root") : NULL;
+  SpvReflectBlockVariable *terrain = NULL;
+  valid &= vkr_vk_reflect_member_offset(
+      root, "terrain_materials",
+      offsetof(VkrVulkanResolveRoot, terrain_materials), &terrain);
+  valid &= terrain && vkr_vk_reflected_struct_size(terrain) ==
+                          sizeof(VkrVulkanTerrainMaterialGpuRow);
+  for (uint32_t i = 0u; valid && i < ArrayCount(terrain_fields); ++i)
+    valid &= vkr_vk_reflect_member_offset(terrain, terrain_fields[i].name,
+                                          terrain_fields[i].offset, NULL);
+  spvReflectDestroyShaderModule(&module);
+  return valid;
+}
+
 vkr_internal bool8_t
 vkr_vk_validate_transmission_root_abi(VkrVulkanRenderer *renderer) {
   static const VkrVulkanReflectedField shade_fields[] = {
@@ -1202,7 +1283,7 @@ vkr_global const VkrVulkanReflectedField s_vk_local_transmission_fields[] = {
 vkr_global const VkrVulkanReflectedField s_vk_resolve_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, geometry_rows),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, visible_rows),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, reserved_address),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, terrain_materials),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, instances),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, materials),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, vertices),
@@ -2065,6 +2146,7 @@ bool8_t vkr_vk_validate_shader_abi(VkrVulkanRenderer *renderer) {
          vkr_vk_validate_gtao_root_abi(renderer) &&
          vkr_vk_validate_ibl_sh_root_abi(renderer) &&
          vkr_vk_validate_transmission_root_abi(renderer) &&
+         vkr_vk_validate_terrain_material_abi(renderer) &&
          vkr_vk_validate_deferred_root_abi(renderer);
 }
 

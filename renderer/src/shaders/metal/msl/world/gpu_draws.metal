@@ -660,6 +660,7 @@ struct VkrMetalPacketGBufferResolveRoot {
   texture2d<float, access::write> clearcoat;
   texture2d<float, access::write> sheen;
   texture2d<float, access::write> anisotropy;
+  device VkrMetalPacketTerrainMaterial *terrain_materials;
 };
 
 template <bool WriteEmissive, bool WriteDebug>
@@ -757,6 +758,64 @@ static float2 vkr_metal_packet_octahedral_encode(float3 normal) {
 
 static bool vkr_metal_packet_finite_nonzero(float3 value) {
   return all(isfinite(value)) && dot(value, value) > 1e-12;
+}
+
+/* One extra terrain layer's surface from its row; its slots always hold a
+   map or the white and flat defaults. */
+static VkrTerrainSurface vkr_metal_packet_terrain_layer(
+    texture2d<float, access::sample> base_color,
+    texture2d<float, access::sample> normal,
+    texture2d<float, access::sample> orm, sampler layer_sampler, float4 tint,
+    float4 surface, float2 texcoord, gradient2d gradients, bool normal_mapped) {
+  float3 tangent_normal = float3(0.0f, 0.0f, 1.0f);
+  if (normal_mapped)
+    tangent_normal = vkr_normal_map_decode(
+        normal.sample(layer_sampler, texcoord, gradients).xyz, surface.z);
+  return vkr_terrain_layer(base_color.sample(layer_sampler, texcoord, gradients),
+                           orm.sample(layer_sampler, texcoord, gradients).rgb,
+                           tangent_normal, tint, surface);
+}
+
+/* The blended surface of a terrain material: `layer0` from the common row,
+   then each extra layer the weights reach. */
+static VkrTerrainSurface vkr_metal_packet_terrain_surface(
+    VkrTerrainSurface layer0,
+    const device VkrMetalPacketTerrainMaterial &terrain, float4 weights,
+    float2 texcoord, gradient2d gradients, bool normal_mapped) {
+  VkrTerrainSurface sum = layer0;
+  sum.base *= weights.x;
+  sum.tangent_normal *= weights.x;
+  sum.metallic *= weights.x;
+  sum.roughness *= weights.x;
+  sum.occlusion *= weights.x;
+  if (weights.y > 0.0f)
+    sum = vkr_terrain_accumulate(
+        sum,
+        vkr_metal_packet_terrain_layer(
+            terrain.layer1_base_color_texture, terrain.layer1_normal_texture,
+            terrain.layer1_orm_texture, terrain.layer1_sampler,
+            terrain.layer1_tint, terrain.layer1_surface, texcoord, gradients,
+            normal_mapped),
+        weights.y);
+  if (weights.z > 0.0f)
+    sum = vkr_terrain_accumulate(
+        sum,
+        vkr_metal_packet_terrain_layer(
+            terrain.layer2_base_color_texture, terrain.layer2_normal_texture,
+            terrain.layer2_orm_texture, terrain.layer2_sampler,
+            terrain.layer2_tint, terrain.layer2_surface, texcoord, gradients,
+            normal_mapped),
+        weights.z);
+  if (weights.w > 0.0f)
+    sum = vkr_terrain_accumulate(
+        sum,
+        vkr_metal_packet_terrain_layer(
+            terrain.layer3_base_color_texture, terrain.layer3_normal_texture,
+            terrain.layer3_orm_texture, terrain.layer3_sampler,
+            terrain.layer3_tint, terrain.layer3_surface, texcoord, gradients,
+            normal_mapped),
+        weights.w);
+  return vkr_terrain_finish(sum);
 }
 
 template <bool WriteEmissive, bool WriteDebug>
@@ -863,9 +922,34 @@ static void vkr_metal_packet_gbuffer_resolve(
   float4 vertex_color = vertices[0].color * barycentric.x +
                         vertices[1].color * barycentric.y +
                         vertices[2].color * barycentric.z;
+  /* A terrain material reads the vertex color as layer weights, not as a
+     tint (ADR-084). */
+  const bool terrain = (material.flags & 2048u) != 0u;
   float4 base = material.base_color_texture.sample(material.base_color_sampler,
                                                    texcoord, gradients) *
-                material.tint * vertex_color;
+                material.tint * (terrain ? float4(1.0f) : vertex_color);
+  VkrTerrainSurface layered = {};
+  if (terrain) {
+    float3 orm0 = float3(1.0f);
+    if ((material.flags & 2u) != 0u)
+      orm0 = material.orm_texture
+                 .sample(material.orm_sampler, texcoord, gradients)
+                 .rgb;
+    float3 normal0 = float3(0.0f, 0.0f, 1.0f);
+    if (!skip_normal_map && (material.flags & 1u) != 0u)
+      normal0 = vkr_normal_map_decode(
+          material.normal_texture
+              .sample(material.normal_sampler, texcoord, gradients)
+              .xyz,
+          material.material_surface.z);
+    layered = vkr_metal_packet_terrain_surface(
+        vkr_terrain_layer(base, orm0, normal0, float4(1.0f),
+                          material.material_surface),
+        root.terrain_materials[visible.material_index],
+        vkr_terrain_weights(vertex_color), texcoord, gradients,
+        !skip_normal_map);
+    base = layered.base;
+  }
   if (neutral_lighting) {
     base.rgb = float3(0.5f);
   }
@@ -875,7 +959,11 @@ static void vkr_metal_packet_gbuffer_resolve(
       neutral_lighting ? 0.5f : clamp(material.material_surface.y, 0.04, 1.0);
   float occlusion =
       neutral_lighting ? 1.0f : saturate(material.material_surface.w);
-  if (!neutral_lighting && (material.flags & 2u) != 0u) {
+  if (!neutral_lighting && terrain) {
+    metallic = layered.metallic;
+    roughness = layered.roughness;
+    occlusion = layered.occlusion;
+  } else if (!neutral_lighting && (material.flags & 2u) != 0u) {
     float3 orm =
         material.orm_texture.sample(material.orm_sampler, texcoord, gradients)
             .rgb;
@@ -913,12 +1001,14 @@ static void vkr_metal_packet_gbuffer_resolve(
   face_sign *= instance.normal_column0.w;
   float3 normal = normalize(transformed_normal) * face_sign;
   float3 geometric_normal = normal;
-  if (!skip_normal_map && (material.flags & 1u) != 0u) {
-    float3 sampled = vkr_normal_map_decode(
-        material.normal_texture
-            .sample(material.normal_sampler, texcoord, gradients)
-            .xyz,
-        material.material_surface.z);
+  if (!skip_normal_map && (terrain || (material.flags & 1u) != 0u)) {
+    float3 sampled =
+        terrain ? layered.tangent_normal
+                : vkr_normal_map_decode(
+                      material.normal_texture
+                          .sample(material.normal_sampler, texcoord, gradients)
+                          .xyz,
+                      material.material_surface.z);
     float3 tangent = (instance.model * float4(object_tangent.xyz, 0.0)).xyz;
     if (!vkr_metal_packet_finite_nonzero(sampled) ||
         !vkr_metal_packet_finite_nonzero(tangent)) {

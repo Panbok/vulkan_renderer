@@ -481,7 +481,10 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
                                              VKR_METAL_PACKET_ABI_INSTANCE) ||
        !vkr_metal_packet_validate_nested_abi(pipeline_label,
                                              root.bufferStructType, "materials",
-                                             VKR_METAL_PACKET_ABI_MATERIAL)))
+                                             VKR_METAL_PACKET_ABI_MATERIAL) ||
+       !vkr_metal_packet_validate_nested_abi(
+           pipeline_label, root.bufferStructType, "terrain_materials",
+           VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL)))
     return false_v;
   if ((record_id == VKR_METAL_PACKET_ABI_SKY_VIEW_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_AERIAL_PERSPECTIVE_ROOT ||

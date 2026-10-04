@@ -11,6 +11,11 @@ the shared source and is tracked in
 used by every Metal and Vulkan material path, including two-channel BC5 and EAC
 RG11 sources.
 
+`terrain_kernel.slangh` owns the terrain material's layer blend: weights from
+the vertex color, each layer's surface from its samples and factors, and the
+weighted sum. Both G-buffer resolves sample their own terrain segment and call
+it.
+
 `sharpen_kernel.slangh` owns neighborhood-limited detail recovery in post-tonemap
 linear RGB. Both final presentation shaders consume it after optional FXAA;
 native code owns sampling, frame strength and UI/composite bypasses.

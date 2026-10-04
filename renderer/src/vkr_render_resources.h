@@ -77,8 +77,31 @@ typedef enum VkrTextureSlot {
   VKR_TEXTURE_SLOT_SHEEN_COLOR = 11,
   VKR_TEXTURE_SLOT_SHEEN_ROUGHNESS = 12,
   VKR_TEXTURE_SLOT_ANISOTROPY = 13,
+  /* Terrain layers 1 to 3 (layer 0 uses the slots above): base color,
+     normal and occlusion-roughness-metallic maps, three slots per layer. */
+  VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR = 14,
+  VKR_TEXTURE_SLOT_LAYER1_NORMAL = 15,
+  VKR_TEXTURE_SLOT_LAYER1_ORM = 16,
+  VKR_TEXTURE_SLOT_LAYER2_BASE_COLOR = 17,
+  VKR_TEXTURE_SLOT_LAYER2_NORMAL = 18,
+  VKR_TEXTURE_SLOT_LAYER2_ORM = 19,
+  VKR_TEXTURE_SLOT_LAYER3_BASE_COLOR = 20,
+  VKR_TEXTURE_SLOT_LAYER3_NORMAL = 21,
+  VKR_TEXTURE_SLOT_LAYER3_ORM = 22,
   VKR_TEXTURE_SLOT_COUNT
 } VkrTextureSlot;
+
+/* Layers a terrain material blends; layer 0 is the material itself. */
+#define VKR_MATERIAL_TERRAIN_LAYERS 4u
+/* Texture slots each extra terrain layer holds. */
+#define VKR_MATERIAL_TERRAIN_LAYER_SLOTS 3u
+
+/* The base color slot of terrain layer `layer` (1 to 3); its normal and ORM
+   slots follow it. */
+static inline VkrTextureSlot vkr_texture_slot_terrain_layer(uint32_t layer) {
+  return (VkrTextureSlot)(VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR +
+                          (layer - 1u) * VKR_MATERIAL_TERRAIN_LAYER_SLOTS);
+}
 
 // =============================================================================
 // Material resource types (decoupled from systems)
@@ -155,6 +178,15 @@ typedef struct VkrPbrProperties {
   uint32_t subsurface_profile;
 } VkrPbrProperties;
 
+/* Factors of one extra terrain layer; its textures are the layer's slots. */
+typedef struct VkrMaterialLayer {
+  Vec4 base_color;
+  float32_t metallic;
+  float32_t roughness;
+  float32_t normal_scale;
+  float32_t occlusion_strength;
+} VkrMaterialLayer;
+
 typedef struct VkrMaterialTexture {
   VkrTextureHandle handle;
   VkrTextureSlot slot;
@@ -184,6 +216,12 @@ typedef struct VkrMaterial {
 
   // Texture maps
   VkrMaterialTexture textures[VKR_TEXTURE_SLOT_COUNT];
+
+  /* A terrain material blends layer 0 (this material's own factors and
+     textures) with `layers` 1 to 3 by the vertex color, read as four layer
+     weights. It is opaque PBR. */
+  bool8_t terrain;
+  VkrMaterialLayer layers[VKR_MATERIAL_TERRAIN_LAYERS - 1u];
 } VkrMaterial;
 
 Array(VkrMaterial);

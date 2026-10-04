@@ -11,8 +11,8 @@ Accepted (partial). The agent channel, brushes, brush editing, level
 checks and entity IO (phases 0 to 3 of the
 [level design toolkit](../proposals/level-design-toolkit.md)) are
 implemented. Of terrain (phase 4), heightfields, editing, the agent
-operations, tile meshes and height field collision are implemented; the
-four-layer terrain material and tile LOD remain in
+operations, tile meshes, the four-layer terrain material and height field
+collision are implemented; tile LOD remains in
 [Terrain rendering](../proposals/terrain-rendering.md). Population remains in
 the toolkit proposal.
 
@@ -389,14 +389,42 @@ writes each changed terrain's file. Each update rebuilds the marked tiles:
 - **Mesh.** One generated mesh holds a submesh per tile, each with its own
   geometry: a 65 by 65 vertex grid with a skirt two spacings deep around it,
   so that tiles cull one by one and no gap opens between them. UVs are
-  local x and z over the texture size. Every tile uses the `layer0`
-  material, the dev grid when none is named, until the terrain material
-  ships.
+  local x and z over the texture size, and each vertex color holds its
+  sample's four layer weights.
+- **Material.** The terrain owns one terrain material that blends its four
+  layers (see below).
 - **Collision.** One static body with a Jolt height field shape
   (`VKR_PHYSICS_HEIGHT_FIELD`,
   [ADR-072](072-entity-collision-and-rigid-body-physics.md)) is rebuilt
   eight updates after the last edit, so a stroke does not rebuild it every
   frame.
+
+A terrain material
+([vkr_material_loader_replace_terrain](../../runtime/src/renderer/resources/loaders/material_loader.h))
+is opaque PBR built from four `.mt` files. Layer 0 supplies the material's
+factors and every map. Layers 1 to 3 supply their base color, metallic,
+roughness, normal scale and occlusion strength, and their base color, normal
+and ORM maps into nine texture slots of their own
+(`VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR` onward), which stream like any
+material's. An unnamed layer 0 is the dev grid and an unnamed later layer
+plain white; `terrain.create` names the dev grid, floor, orange and blue
+materials by default. Each backend publishes the extra layers in a cold
+terrain segment of its material table, beside the transmission segment, and
+flags the common row. The visibility-buffer G-buffer resolve
+([gpu_draws.metal](../../renderer/src/shaders/metal/msl/world/gpu_draws.metal),
+[deferred.slang](../../renderer/src/shaders/vulkan/slang/world/deferred.slang))
+reads the interpolated vertex color as weights normalized to sum to one, samples
+each layer the weights reach with that layer's base color sampler, and blends
+base color, metallic, roughness, occlusion and tangent-space normals in
+[terrain_kernel.slangh](../../renderer/src/shaders/shared/terrain_kernel.slangh).
+Emission and the other extensions come from layer 0. Forward and
+transmission shading never see a terrain material, because publication
+rejects one that is not opaque.
+
+The accepted design carried weights in a weight texture. Vertex colors carry
+them instead: a vertex is a sample, so the resolution is the same, painting
+already rebuilds the touched tiles, and no texture upload path is needed.
+Coarser tile LOD levels will thin the weights with their vertices.
 
 A terrain sits at its entity's position and ignores rotation and scale.
 Its local space is metres from its centre, with heights above the entity.
@@ -528,6 +556,19 @@ material then).
   hit the sculpted ground through the height field; a capture showed the
   tiles. With the Terrain window's tool on, a `ui.drag` stroke raised a band
   along its path, and one `undo` restored every sample to -0.5 m.
+- `./build_test.sh` suite `material_pbr` covers a terrain material's
+  composition: layer 0's factors with blending and transmission removed,
+  each later layer's factors, a white unnamed layer, each map streaming
+  into its own layer slot, and a missing layer file failing (2026-10-04,
+  macOS Debug).
+- Headless macOS Release on Bistro (2026-10-04): a 256 m terrain painted
+  with layers 2, 3 and 4 shows the floor, orange and blue dev colors where
+  painted in lit and unlit captures. The same run under Metal API validation
+  reports no diagnostics. The four Vulkan G-buffer resolve modules and six
+  transmission modules pass `spirv-val --target-env vulkan1.4
+  --scalar-block-layout`. Metal's startup reflection accepted its terrain
+  row; the Vulkan reflection check and native Vulkan execution are
+  unverified.
 - Indicative cost, not a harness claim: the headless Release editor on an
   M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
   8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000

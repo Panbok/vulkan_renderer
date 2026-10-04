@@ -83,6 +83,45 @@ vkr_global const VkrMetalPacketAbiField vkr_transmission_material_fields[] = {
                   "thickness_sampler", 24),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_terrain_material_fields[] = {
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer1_base_color_texture_id,
+                  "layer1_base_color_texture", 0),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer1_normal_texture_id,
+                  "layer1_normal_texture", 8),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer1_orm_texture_id,
+                  "layer1_orm_texture", 16),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer1_sampler_id,
+                  "layer1_sampler", 24),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer1_tint, "layer1_tint",
+                  32),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer1_surface,
+                  "layer1_surface", 48),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer2_base_color_texture_id,
+                  "layer2_base_color_texture", 64),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer2_normal_texture_id,
+                  "layer2_normal_texture", 72),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer2_orm_texture_id,
+                  "layer2_orm_texture", 80),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer2_sampler_id,
+                  "layer2_sampler", 88),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer2_tint, "layer2_tint",
+                  96),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer2_surface,
+                  "layer2_surface", 112),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer3_base_color_texture_id,
+                  "layer3_base_color_texture", 128),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer3_normal_texture_id,
+                  "layer3_normal_texture", 136),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer3_orm_texture_id,
+                  "layer3_orm_texture", 144),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer3_sampler_id,
+                  "layer3_sampler", 152),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer3_tint, "layer3_tint",
+                  160),
+    VKR_ABI_FIELD(VkrMetalTerrainMaterialGpuRow, layer3_surface,
+                  "layer3_surface", 176),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_vertex_draw_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketVertexDrawRoot, geometry_rows, "geometry_rows",
                   0),
@@ -1214,6 +1253,8 @@ vkr_global const VkrMetalPacketAbiField vkr_gbuffer_resolve_root_fields[] = {
                   424),
     VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, anisotropy_texture_id,
                   "anisotropy", 432),
+    VKR_ABI_FIELD(VkrMetalPacketGBufferResolveRoot, terrain_materials,
+                  "terrain_materials", 440),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_deferred_lighting_root_fields[] = {
@@ -1584,6 +1625,9 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalTransmissionMaterialGpuRow,
                            "VkrMetalPacketTransmissionMaterial", 32, 16,
                            vkr_transmission_material_fields),
+        [VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL] = VKR_ABI_RECORD(
+            VkrMetalTerrainMaterialGpuRow, "VkrMetalPacketTerrainMaterial", 192,
+            16, vkr_terrain_material_fields),
         [VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 48, 16,
             vkr_vertex_draw_root_fields),

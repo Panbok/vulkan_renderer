@@ -76,9 +76,34 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTransmissionMaterialGpuRow {
   uint64_t thickness_sampler_id;
 } VkrMetalTransmissionMaterialGpuRow;
 
+// Cold terrain-layer resources and factors (layers 1 to 3 of a terrain
+// material; layer 0 is the common row), segmented like transmission.
+// Surface is x metallic, y roughness, z normal scale, w occlusion strength.
+typedef struct VKR_SIMD_ALIGN VkrMetalTerrainMaterialGpuRow {
+  uint64_t layer1_base_color_texture_id;
+  uint64_t layer1_normal_texture_id;
+  uint64_t layer1_orm_texture_id;
+  uint64_t layer1_sampler_id;
+  Vec4 layer1_tint;
+  Vec4 layer1_surface;
+  uint64_t layer2_base_color_texture_id;
+  uint64_t layer2_normal_texture_id;
+  uint64_t layer2_orm_texture_id;
+  uint64_t layer2_sampler_id;
+  Vec4 layer2_tint;
+  Vec4 layer2_surface;
+  uint64_t layer3_base_color_texture_id;
+  uint64_t layer3_normal_texture_id;
+  uint64_t layer3_orm_texture_id;
+  uint64_t layer3_sampler_id;
+  Vec4 layer3_tint;
+  Vec4 layer3_surface;
+} VkrMetalTerrainMaterialGpuRow;
+
 typedef struct VkrMetalMaterialPublishedRow {
   VkrMetalMaterialGpuRow material;
   VkrMetalTransmissionMaterialGpuRow transmission;
+  VkrMetalTerrainMaterialGpuRow terrain;
 } VkrMetalMaterialPublishedRow;
 
 typedef struct VkrMetalMaterialTableConfig {
@@ -174,6 +199,9 @@ uint64_t
 vkr_metal_material_table_device_gpu_address(VkrMetalMaterialTableDevice *table);
 
 uint64_t vkr_metal_material_table_device_transmission_gpu_address(
+    VkrMetalMaterialTableDevice *table);
+
+uint64_t vkr_metal_material_table_device_terrain_gpu_address(
     VkrMetalMaterialTableDevice *table);
 
 void *

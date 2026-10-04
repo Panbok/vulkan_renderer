@@ -1394,8 +1394,7 @@ These are limits of current code or retained acceptance, not scheduled promises:
   remain outside the completed rigid-motion temporal contract.
 - Visibility-buffer MSAA, a general effects system, asynchronous graph queues
   and fully graph-declared IBL baking are not production features. Terrain
-  tiles render at full resolution with one layer material; the layered
-  terrain material and tile LOD are proposed
+  tiles render at full resolution; tile LOD is proposed
   ([Terrain rendering](proposals/terrain-rendering.md)).
 - Baked diffuse volumes have CPU room classification, multi-bounce and glass
   transport, portable assets, scene loading and Metal execution. Native Vulkan

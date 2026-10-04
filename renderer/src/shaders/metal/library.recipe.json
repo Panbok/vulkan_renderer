@@ -32,6 +32,7 @@
     "../shared/editor_view.slangh",
     "../shared/editor_grid_kernel.slangh",
     "../shared/normal_map_kernel.slangh",
+    "../shared/terrain_kernel.slangh",
     "../shared/transmission_kernel.slangh",
     "../shared/punctual_light_kernel.slangh",
     "../shared/sh_l2_kernel.slangh",

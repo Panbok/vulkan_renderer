@@ -907,6 +907,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
   uint64_t clearcoat_texture_id;
   uint64_t sheen_texture_id;
   uint64_t anisotropy_texture_id;
+  /** The material table's terrain segment, indexed like `materials`. */
+  uint64_t terrain_materials;
 } VkrMetalPacketGBufferResolveRoot;
 
 _Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 448,
@@ -923,6 +925,9 @@ _Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot, sheen_texture_id) ==
 _Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot,
                         anisotropy_texture_id) == 432u,
                "Metal G-buffer anisotropy ABI offset drift");
+_Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot, terrain_materials) ==
+                   440u,
+               "Metal G-buffer terrain material ABI offset drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
   uint64_t visible_rows;
@@ -1357,6 +1362,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_INSTANCE,
   VKR_METAL_PACKET_ABI_MATERIAL,
   VKR_METAL_PACKET_ABI_TRANSMISSION_MATERIAL,
+  VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL,
   VKR_METAL_PACKET_ABI_TEXT_VERTEX,
   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
