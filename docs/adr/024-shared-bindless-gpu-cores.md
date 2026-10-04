@@ -292,9 +292,11 @@ waits only for the upload one ring's length earlier, never for a frame. Before
 2026-10-04 uploads shared the two frame slots, so each streamed tile or texture
 batch waited for the previous frame's GPU work; gliding over a streamed Bistro
 terrain spent about a quarter of the render thread there. A publication run's
-geometry buffers share one upload batch, and a batch holding textures makes
-later queue work wait for it on the GPU (`waitForEvent`), where the batch end
-used to wait on the CPU. At least two frame command slots are required.
+geometry buffers share one upload batch. A finished batch holding textures
+still waits on the CPU until they are on the GPU: replacing that wait with a
+queue event wait let a new terrain draw its layer weights as colour for
+seconds before its textures showed. At least two frame command slots are
+required.
 
 Metrics distinguish logical requested/reserved bytes from native allocation,
 retired storage, capacity failures and owner classes. Vulkan driver host memory

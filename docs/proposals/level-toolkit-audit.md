@@ -60,7 +60,7 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 | # | Finding | Note |
 |---|---|---|
 | A9 | An 8 km terrain at 1 m is a 409 MiB file: 2-byte heights and 4-byte weights per sample, tiles padded to 65 samples | Compression or coarser weights would cut it; the samples in memory stay windowed |
-| A10 | Each streaming change rebuilds the terrain mesh's whole submesh list (about 300 submeshes, 1.7 ms before the in-place swap) and, when the window moves, one 324-by-324 height field (3.5 ms); the main thread's streaming step takes 1.2–6.4 ms, and gliding still shows single frames up to 18 ms | Measured in the streamed drive; the world partition proposal's hitch budget item |
+| A10 | Moving the terrain body rebuilds one 324-by-324 Jolt height field in a single update (3–4 ms), now at every second tile crossing; tile and overview rebuilds stay within the 2 ms streaming budget | Measured in the streamed drive; building the shape off the main thread would remove it |
 | A11 | One collision body covers the sources' window; with sources more than 16 tiles apart, only the first source has collision | Physics requires unique body and collider entity ids |
 | A12 | A cell document holds at most 1,024 objects, and saving looks up overlay ids linearly | `EDIT_CREATED_MAX`, `edit_created_id` |
 | A13 | Proxies cover solid and visual brushes only, with world-projected UVs on the brushes' materials | `vkr_proxy_cell` |

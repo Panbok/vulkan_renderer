@@ -55,11 +55,13 @@ every tile, as before. Larger ones, up to 8,192 cells and a multiple of
   default) of a source build, the 64 nearest considered per update, within
   2 ms; they stay until a tile past the radius. A fine tile loads its sample
   tiles and their neighbours first. Samples an edit or undo reaches load
-  synchronously and stay resident until a save writes them. Rebuilt tiles
-  show when their geometry has uploaded: the mesh is swapped in place then
-  (`vkr_scene_replace_generated_mesh`), naming the footprints of the tiles
-  that started, stopped or changed drawing, and the tiles that draw hold
-  still meanwhile. Retained shadows those footprints miss stay valid.
+  synchronously and stay resident until a save writes them. Changed fine
+  and overview tiles rebuild a few per update within the same 2 ms, and
+  show together once their geometry has uploaded: the mesh is swapped in
+  place then (`vkr_scene_replace_generated_mesh`), naming the footprints of
+  the tiles that started, stopped or changed drawing, and the tiles that
+  draw hold still meanwhile. Retained shadows those footprints miss stay
+  valid.
 - **Overview.** 64-cell overview tiles at 16 times the spacing draw the rest.
   An overview tile leaves out the cells under fine tiles that draw, keeps only
   the three levels whose cells lie inside one fine tile, and adds seam skirts
@@ -67,8 +69,10 @@ every tile, as before. Larger ones, up to 8,192 cells and a multiple of
 - **Collision.** Physics refuses two bodies or two colliders with one entity
   id, so a streamed terrain has one height field body over the 5 by 5 tiles
   around the sources' tiles (`VKR_SCENE_TERRAIN_BODY_TILES`), or around the
-  first source when the sources span more than 16 tiles. It rebuilds when the
-  window moves and after edits rest.
+  first source when the sources span more than 16 tiles. It moves once a
+  source comes within a tile of its edge, and rebuilds after edits rest;
+  unless a source has left it, a rebuild waits for an update with budget
+  left.
 
 `scene.describe` reports a terrain's tiles in memory, drawing and unsaved.
 
@@ -231,7 +235,14 @@ terrain itself costs about 2 ms over Bistro alone. The remaining 20–25 ms
 frames were the render thread waiting for the previous frame in every tile
 and texture upload, which took the frame command slots; with uploads on their
 own slots and ring ([ADR-024](024-shared-bindless-gpu-cores.md)) two runs at
-`405177a2` measured p95 8.9–10.7 ms and max 9.3–18.2 ms.
+`405177a2` measured p95 8.9–10.7 ms and max 9.3–18.2 ms. Each streaming
+change then still cost the main thread 1.2–6.4 ms in one update: fine tiles
+(about 0.6 ms each, mostly geometry packing, within the budget), every
+overview tile the change reached (about 0.5 ms each, outside it) and the
+body (3–4 ms, mostly Jolt, at every tile crossing). With rebuilds inside the
+budget and the body moving every second tile, the terrain's update stays
+within about 2.5 ms except when the body moves; two runs at `8f048447`
+measured p95 8.8–10.8 ms and max 9.0–13.7 ms.
 
 CPU tests: the heightfield suite (a 2,048-cell streamed field that loads only
 its overview, edits, saves in place and reloads a tile), the scene edit

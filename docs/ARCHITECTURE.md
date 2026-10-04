@@ -1280,9 +1280,9 @@ semaphores and either maintenance present fences or completed reacquire-wait
 submissions. Metal maps completion to native command submission and event ordering.
 Metal asset publication uses its own command slots and transfer ring, one slot
 per ring slot, so an upload waits only for the upload one ring's length earlier,
-never for a frame. Each publication run's geometry shares one upload batch, and a
-batch holding textures orders later queue work behind it with a GPU event wait
-instead of a CPU wait. Frames keep at least two command slots of their own.
+never for a frame. Each publication run's geometry shares one upload batch; a
+finished batch holding textures still returns only once they are on the GPU.
+Frames keep at least two command slots of their own.
 Lifecycle changes
 may wait idle; ordinary successful frames do not wait the whole device.
 Capture/picking results publish asynchronously and require release.
