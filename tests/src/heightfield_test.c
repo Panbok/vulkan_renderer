@@ -411,6 +411,19 @@ static void heightfield_test_streamed(void) {
   assert(near(vkr_heightfield_at(&field, 200u, 260u), 40.0f, 0.01f));
   assert(vkr_heightfield_weights_at(&field, 200u, 260u) == 0xFF00u);
   assert(near(vkr_heightfield_at(&field, 210u, 260u), 5.0f, 0.01f));
+  /* Span-wise heights, across tile edges, match vkr_heightfield_at bit for
+     bit. */
+  const VkrHeightfieldRect span = {150u, 250u, 270u, 262u};
+  assert(vkr_heightfield_load_rect(&field, span));
+  static float32_t metres[121u * 13u];
+  vkr_heightfield_read_metres(&field, span, metres, 121u);
+  for (uint32_t z = span.z0; z <= span.z1; ++z) {
+    for (uint32_t x = span.x0; x <= span.x1; ++x) {
+      const float32_t expected = vkr_heightfield_at(&field, x, z);
+      assert(MemCompare(&metres[(z - span.z0) * 121u + (x - span.x0)],
+                        &expected, sizeof(expected)) == 0);
+    }
+  }
   vkr_heightfield_destroy(&field, &test.allocator);
 
   /* A save cut short after its journal finishes when the file opens again:

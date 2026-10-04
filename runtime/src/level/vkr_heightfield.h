@@ -178,6 +178,11 @@ void vkr_heightfield_read_rect(const VkrHeightfield *field,
 void vkr_heightfield_write_rect(VkrHeightfield *field, VkrHeightfieldRect rect,
                                 const uint16_t *heights,
                                 const uint32_t *weights);
+/* Heights in metres of resident `rect`, as vkr_heightfield_at gives them,
+   into rows `stride` floats apart, a tile's row span at a time. */
+void vkr_heightfield_read_metres(const VkrHeightfield *field,
+                                 VkrHeightfieldRect rect, float32_t *out,
+                                 uint32_t stride);
 
 typedef enum VkrHeightfieldBrush {
   VKR_HEIGHTFIELD_RAISE = 0,

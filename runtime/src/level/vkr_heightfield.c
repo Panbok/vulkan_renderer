@@ -359,6 +359,26 @@ void vkr_heightfield_read_rect(const VkrHeightfield *field,
   }
 }
 
+void vkr_heightfield_read_metres(const VkrHeightfield *field,
+                                 VkrHeightfieldRect rect, float32_t *out,
+                                 uint32_t stride) {
+  const uint32_t size = VKR_HEIGHTFIELD_TILE_SAMPLES;
+  const float32_t range = field->height_max - field->height_min;
+  for (uint32_t z = rect.z0; z <= rect.z1; ++z) {
+    float32_t *row = out + (size_t)(z - rect.z0) * stride;
+    for (uint32_t x = rect.x0; x <= rect.x1;) {
+      const uint16_t *heights =
+          vkr_heightfield_tile_of(field, x, z)->heights + (z % size) * size;
+      const uint32_t span_end = Min(rect.x1, x / size * size + size - 1u);
+      for (; x <= span_end; ++x) {
+        /* vkr_heightfield_metres, bit for bit. */
+        row[x - rect.x0] = field->height_min +
+                           range * ((float32_t)heights[x % size] / 65535.0f);
+      }
+    }
+  }
+}
+
 void vkr_heightfield_write_rect(VkrHeightfield *field, VkrHeightfieldRect rect,
                                 const uint16_t *heights,
                                 const uint32_t *weights) {

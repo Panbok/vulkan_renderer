@@ -73,8 +73,10 @@ typedef struct TerrainRecord {
   /* Samples changed since they loaded or saved. */
   bool8_t unsaved;
   bool8_t mesh_dirty;
-  /* Tiles were rebuilt; the mesh is re-attached once their geometry has
+  /* Changed tiles are being rebuilt, a few each update within the frame
+     budget; the mesh is re-attached once all are and their geometry has
      uploaded. */
+  bool8_t building;
   bool8_t attach_pending;
   /* Local-space boxes of the ground whose drawing changed since the mesh
      last attached, so retained shadows elsewhere stay valid; `change_all`
@@ -258,6 +260,7 @@ static void terrain_release(VkrScene *scene, TerrainRecord *record) {
   record->body_edited = false_v;
   record->collision_rejected = false_v;
   record->overview_dirty = 0u;
+  record->building = false_v;
   record->attach_pending = false_v;
   record->change_count = 0u;
   record->change_all = false_v;
@@ -424,8 +427,8 @@ bool8_t vkr_scene_terrain_settled(const VkrScene *scene) {
   const VkrSceneTerrains *state = scene ? scene->terrains : NULL;
   for (uint32_t i = 0; state && i < state->record_count; ++i) {
     const TerrainRecord *record = &state->records[i];
-    if (record->loaded && (record->mesh_dirty || record->attach_pending ||
-                           record->collision_dirty)) {
+    if (record->loaded && (record->mesh_dirty || record->building ||
+                           record->attach_pending || record->collision_dirty)) {
       return false_v;
     }
   }
@@ -1117,8 +1120,9 @@ static bool8_t terrain_overview_build(VkrScene *scene, TerrainRecord *record,
   return record->overview[index].id != 0u;
 }
 
-/* Rebuilds dirty tiles; terrain_attach_mesh shows them once uploaded. */
-static bool8_t terrain_build_tiles(VkrScene *scene, TerrainRecord *record) {
+/* Starts rebuilding the changed tiles: the layer material first, when its
+   layers changed. */
+static bool8_t terrain_begin_build(VkrScene *scene, TerrainRecord *record) {
   struct VkrRenderAssets *assets = scene->assets;
   const SceneTerrain *terrain =
       vkr_scene_get_typed(scene, record->entity, &vkr_scene_terrain_type);
@@ -1136,29 +1140,55 @@ static bool8_t terrain_build_tiles(VkrScene *scene, TerrainRecord *record) {
   }
   record->texture_size = terrain->texture_size;
   record->serial++;
+  record->building = true_v;
+  return true_v;
+}
+
+/* Rebuilds changed fine tiles, then overview tiles, one at a time until the
+   frame budget from `start` runs out, at least one each update. True once
+   none is left; false when a build failed. */
+static bool8_t terrain_build_step(VkrScene *scene, TerrainRecord *record,
+                                  float64_t start, bool8_t *out_done) {
+  const float64_t budget = VKR_SCENE_TERRAIN_STREAM_BUDGET_MS / 1000.0;
   const uint32_t tiles = terrain_tiles(record);
-  bool8_t ok = true_v;
-  for (uint32_t index = 0; ok && index < tiles * tiles; ++index) {
+  uint32_t built = 0u;
+  *out_done = false_v;
+  for (uint32_t index = 0; index < tiles * tiles; ++index) {
     const bool8_t dirty = terrain_bit(record->dirty_tiles, index);
     const bool8_t drawn = record->tiles[index].id != 0u;
     /* A streamed terrain rebuilds only tiles that draw; streaming adds the
        rest. */
-    if (record->streamed ? dirty && drawn : dirty || !drawn) {
-      ok = terrain_tile_build(scene, record, index % tiles, index / tiles);
+    if (!(record->streamed ? dirty && drawn : dirty || !drawn)) {
+      continue;
     }
+    if (built && vkr_platform_get_absolute_time() - start > budget) {
+      return true_v;
+    }
+    if (!terrain_tile_build(scene, record, index % tiles, index / tiles)) {
+      return false_v;
+    }
+    built++;
   }
   const uint32_t overview_tiles = terrain_overview_tiles(record);
-  for (uint32_t index = 0; ok && index < overview_tiles * overview_tiles;
-       ++index) {
-    if (record->overview_dirty & (1ull << index)) {
-      ok = terrain_overview_build(scene, record, index % overview_tiles,
-                                  index / overview_tiles);
+  for (uint32_t index = 0; index < overview_tiles * overview_tiles; ++index) {
+    if (!(record->overview_dirty & (1ull << index))) {
+      continue;
     }
+    if (built && vkr_platform_get_absolute_time() - start > budget) {
+      return true_v;
+    }
+    if (!terrain_overview_build(scene, record, index % overview_tiles,
+                                index / overview_tiles)) {
+      return false_v;
+    }
+    record->overview_dirty &= ~(1ull << index);
+    built++;
   }
+  /* Tiles a streamed terrain does not draw keep no dirty bit: streaming
+     builds them afresh. */
   MemZero(record->dirty_tiles, sizeof(record->dirty_tiles));
-  record->overview_dirty = 0u;
-  record->attach_pending = true_v;
-  return ok;
+  *out_done = true_v;
+  return true_v;
 }
 
 static bool8_t terrain_geometry_settled(VkrGeometrySystem *system,
@@ -1354,14 +1384,11 @@ static void terrain_build_window_collision(VkrScene *scene,
     }
     return;
   }
-  for (uint32_t z = 0; z < padded; ++z) {
-    for (uint32_t x = 0; x < padded; ++x) {
-      heights[(size_t)z * padded + x] =
-          rect.x0 + x <= rect.x1 && rect.z0 + z <= rect.z1
-              ? vkr_heightfield_at(field, rect.x0 + x, rect.z0 + z)
-              : VKR_PHYSICS_HEIGHT_HOLE;
-    }
+  /* Holes pad the grid past the window's last row and column. */
+  for (uint64_t i = 0; i < (uint64_t)padded * padded; ++i) {
+    heights[i] = VKR_PHYSICS_HEIGHT_HOLE;
   }
+  vkr_heightfield_read_metres(field, rect, heights, padded);
   const VkrPhysicsColliderDesc collider = terrain_collider(
       record, heights, padded, position, (float32_t)rect.x0 * field->spacing,
       (float32_t)rect.z0 * field->spacing);
@@ -1409,6 +1436,31 @@ static bool8_t terrain_body_window(const TerrainRecord *record,
     *out = first;
   }
   return any;
+}
+
+/* Whether every source over the terrain stands on the body's tiles, or with
+   `inner` at least a tile inside its edge where the terrain continues. */
+static bool8_t terrain_body_covers(const TerrainRecord *record,
+                                   const Vec2 *sources, uint32_t count,
+                                   float32_t size, bool8_t inner) {
+  const int32_t tiles = (int32_t)terrain_tiles(record);
+  const VkrHeightfieldRect body = record->body_tiles;
+  const int32_t margin = inner ? 1 : 0;
+  const int32_t x0 = (int32_t)body.x0 + (body.x0 > 0u ? margin : 0);
+  const int32_t z0 = (int32_t)body.z0 + (body.z0 > 0u ? margin : 0);
+  const int32_t x1 =
+      (int32_t)body.x1 - ((int32_t)body.x1 < tiles - 1 ? margin : 0);
+  const int32_t z1 =
+      (int32_t)body.z1 - ((int32_t)body.z1 < tiles - 1 ? margin : 0);
+  for (uint32_t i = 0; i < count; ++i) {
+    const int32_t tx = (int32_t)floorf(sources[i].x / size);
+    const int32_t tz = (int32_t)floorf(sources[i].y / size);
+    const bool8_t over = tx >= 0 && tz >= 0 && tx < tiles && tz < tiles;
+    if (over && (tx < x0 || tx > x1 || tz < z0 || tz > z1)) {
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 /* Metres from the nearest source to the square of `size` metres at corner
@@ -1480,7 +1532,7 @@ static uint32_t terrain_candidates(const TerrainRecord *record,
    around the scene's streaming sources, loading the nearest missing tiles
    within the frame budget. True when the tiles that draw changed. */
 static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
-                              Vec3 position) {
+                              Vec3 position, float64_t start) {
   VkrHeightfield *field = &record->field;
   const uint32_t tiles = terrain_tiles(record);
   const float32_t size = (float32_t)VKR_HEIGHTFIELD_TILE_CELLS * field->spacing;
@@ -1499,9 +1551,9 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
     record->settle++;
   }
   bool8_t changed = false_v;
-  /* The tiles that draw hold still while a rebuilt mesh waits to show
-     them. */
-  const bool8_t frozen = record->attach_pending;
+  /* The tiles that draw hold still while a rebuilt mesh is built and waits
+     to show them. */
+  const bool8_t frozen = record->building || record->attach_pending;
 
   /* Detail that left the window returns to the overview. */
   for (uint32_t index = 0; !frozen && index < tiles * tiles; ++index) {
@@ -1530,7 +1582,6 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
 
   /* The nearest missing tiles load first, within the frame budget. */
   TerrainCandidate candidates[TERRAIN_STREAM_CANDIDATES];
-  const float64_t start = vkr_platform_get_absolute_time();
   const float64_t budget = VKR_SCENE_TERRAIN_STREAM_BUDGET_MS / 1000.0;
   const uint32_t found =
       frozen ? 0u
@@ -1562,21 +1613,30 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
     changed = true_v;
   }
 
-  /* The body covers the ground around the sources. It follows them tile
-     by tile, and edits to it once edits rest. */
+  /* The body covers the ground around the sources. It moves once a
+     source nears its edge, and takes edits to it once edits rest. Unless a
+     source has left it, a rebuild waits for a frame with budget left. */
   VkrHeightfieldRect window = {0};
   const bool8_t wanted = terrain_body_window(record, sources, count, &window);
   const bool8_t moved =
       MemCompare(&position, &record->built_position, sizeof(Vec3)) != 0;
   const bool8_t settled = record->settle >= VKR_SCENE_TERRAIN_COLLISION_SETTLE;
+  const bool8_t shifted =
+      MemCompare(&window, &record->body_tiles, sizeof(window)) != 0;
+  /* A source off the body's tiles needs it now; one near its edge, or
+     edits once they rest, can wait for budget. */
+  const bool8_t urgent =
+      !record->body_built || moved ||
+      (shifted && !terrain_body_covers(record, sources, count, size, false_v));
+  const bool8_t due =
+      urgent || (record->body_edited && settled) ||
+      (shifted && !terrain_body_covers(record, sources, count, size, true_v));
   if (!wanted && record->body_built) {
     vkr_scene_physics_generated_remove(scene,
                                        terrain_collision_key(record->entity));
     record->body_built = false_v;
-  } else if (wanted && !record->collision_rejected &&
-             (!record->body_built || moved ||
-              MemCompare(&window, &record->body_tiles, sizeof(window)) != 0 ||
-              (record->body_edited && settled))) {
+  } else if (wanted && !record->collision_rejected && due &&
+             (urgent || vkr_platform_get_absolute_time() - start <= budget)) {
     terrain_build_window_collision(scene, record, window, position);
   }
   record->collision_dirty = record->body_built && record->body_edited;
@@ -1596,17 +1656,29 @@ void vkr_scene_terrain_update(VkrScene *scene) {
       continue;
     }
     const Vec3 position = mat4_position(transform->world);
-    if (record->streamed && terrain_stream(scene, record, position)) {
+    /* Streaming, rebuilding and the body share one frame budget. */
+    const float64_t start = vkr_platform_get_absolute_time();
+    if (record->streamed && terrain_stream(scene, record, position, start)) {
       record->mesh_dirty = true_v;
     }
-    /* Changed tiles build now and show together once uploaded; changes
-       meanwhile wait for the next build. */
-    if (record->mesh_dirty && !record->attach_pending) {
+    /* Changed tiles build over a few updates and show together once
+       uploaded; changes meanwhile wait for the next build. */
+    if (record->mesh_dirty && !record->building && !record->attach_pending) {
       record->mesh_dirty = false_v;
-      if (!terrain_build_tiles(scene, record)) {
+      if (!terrain_begin_build(scene, record)) {
         snprintf(record->status, sizeof(record->status),
                  "The terrain mesh failed");
       }
+    }
+    if (record->building) {
+      bool8_t done = false_v;
+      if (!terrain_build_step(scene, record, start, &done)) {
+        snprintf(record->status, sizeof(record->status),
+                 "The terrain mesh failed");
+        done = true_v;
+      }
+      record->building = !done;
+      record->attach_pending = done;
     }
     if (record->attach_pending && terrain_mesh_settled(scene, record) &&
         !terrain_attach_mesh(scene, record)) {
