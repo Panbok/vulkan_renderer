@@ -2221,6 +2221,72 @@ test_material_terrain_composes_layers(MaterialPbrTestContext *ctx) {
   printf("  test_material_terrain_composes_layers PASSED\n");
 }
 
+/* Shadows read an opaque material's geometry alone: publishing it again
+   with another texture changes no caster's shadow. Its first publication, a
+   change in culling or alpha testing, any publication of a cutout material
+   and an unpublication do; a texture counts only once a cutout material
+   samples it. */
+vkr_internal void
+test_material_shadow_change_scope(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_shadow_change_scope...\n");
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle material = vkr_material_system_create_colored(
+      system, "shadow_scope_material", vec4_one(), &error);
+  assert(material.id != 0u);
+  const VkrMaterialPublication *publication =
+      &system->publications[material.id - 1u];
+  assert(publication->shadow_command_count == 1u);
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+  assert(publication->shadow_command_count == 0u);
+  /* Nothing outstanding counts as a change. */
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+
+  const VkrTextureDescription description = {
+      .width = 8u,
+      .height = 8u,
+      .channels = 4u,
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+  };
+  VkrTextureHandle texture = {0};
+  assert(vkr_texture_system_create_writable(
+             &ctx->texture_system, string8_lit("shadow_scope_texture"),
+             &description, &texture, &error) == true_v);
+  VkrMaterial *live = vkr_material_system_get_by_handle(system, material);
+  live->alpha_mode_explicit = true_v;
+  live->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
+  live->textures[VKR_TEXTURE_SLOT_DIFFUSE] = (VkrMaterialTexture){
+      .handle = texture, .slot = VKR_TEXTURE_SLOT_DIFFUSE, .enabled = true_v};
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(!vkr_material_system_take_shadow_change(system, material.id));
+  assert(!vkr_material_system_shadow_reads_texture(system, texture.id));
+
+  live->double_sided = true_v;
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+
+  live->alpha_mode = VKR_MATERIAL_ALPHA_CUTOUT;
+  live->alpha_cutoff = 0.5f;
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(vkr_material_system_publish(system, material, &error));
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+  assert(vkr_material_system_shadow_reads_texture(system, texture.id));
+
+  assert(vkr_material_system_unpublish(system, material));
+  assert(publication->shadow_command_count == 1u);
+  assert(vkr_material_system_take_shadow_change(system, material.id));
+  printf("  test_material_shadow_change_scope PASSED\n");
+}
+
 bool32_t run_material_pbr_tests(void) {
   printf("--- Starting Material PBR Tests ---\n");
 
@@ -2247,6 +2313,7 @@ bool32_t run_material_pbr_tests(void) {
   test_shared_texture_eviction_tracks_unique_bytes(&context);
   test_shared_texture_eviction_republishes_all_materials(&context);
   test_material_replacement_publishes_as_one(&context);
+  test_material_shadow_change_scope(&context);
   test_material_terrain_composes_layers(&context);
   test_compressed_texture_subresource_shapes(&context);
   test_texture_request_owns_pending_publication(&context);

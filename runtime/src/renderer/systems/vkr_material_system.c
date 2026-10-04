@@ -142,6 +142,77 @@ vkr_internal void vkr_material_system_init_surface_material(
   vkr_material_system_apply_default_surface_textures(system, material);
 }
 
+/* Whether shadows read `published`'s textures and factors: its alpha
+   cutout, or its transmission. A blended material counts too. */
+vkr_internal bool8_t
+vkr_material_shadow_reads_material(const VkrMaterial *published) {
+  return published->alpha_mode != VKR_MATERIAL_ALPHA_OPAQUE ||
+         vkr_material_system_material_is_transmissive(published);
+}
+
+/* What every shadow reads of `published`: how it is alpha tested, culled
+   and transmitted. */
+vkr_internal uint64_t vkr_material_shadow_key(const VkrMaterial *published) {
+  return (uint64_t)published->alpha_mode |
+         ((uint64_t)(published->double_sided != 0) << 8u) |
+         ((uint64_t)vkr_material_system_material_is_transmissive(published)
+          << 9u) |
+         ((uint64_t)published->pipeline_id << 16u);
+}
+
+/* Queues whether the command just recorded for material `id` can change a
+   caster's shadow. Past 64 outstanding commands the rest count as
+   changing. */
+vkr_internal void vkr_material_shadow_record(VkrMaterialSystem *system,
+                                             uint32_t id, bool8_t changes) {
+  VkrMaterialPublication *publication = &system->publications[id - 1u];
+  if (publication->shadow_command_count < 64u) {
+    publication->shadow_commands |= (uint64_t)(changes ? 1u : 0u)
+                                    << publication->shadow_command_count;
+    publication->shadow_command_count++;
+  }
+}
+
+bool8_t vkr_material_system_take_shadow_change(VkrMaterialSystem *system,
+                                               uint32_t id) {
+  if (!system || id == 0u || id > system->config.max_material_count) {
+    return true_v;
+  }
+  VkrMaterialPublication *publication = &system->publications[id - 1u];
+  if (publication->shadow_command_count == 0u) {
+    return true_v;
+  }
+  const bool8_t changes = (publication->shadow_commands & 1u) != 0u;
+  publication->shadow_commands >>= 1u;
+  publication->shadow_command_count--;
+  return changes;
+}
+
+bool8_t
+vkr_material_system_shadow_reads_texture(const VkrMaterialSystem *system,
+                                         uint32_t id) {
+  if (!system || id == 0u) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < system->materials.length; ++i) {
+    const VkrMaterial *material = &system->materials.data[i];
+    if (material->id == 0u ||
+        system->publications[i].shadow_key_generation != material->generation ||
+        !vkr_material_shadow_reads_material(material)) {
+      continue;
+    }
+    for (uint32_t slot = 0u; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+      if (material->textures[slot].handle.id == id) {
+        return true_v;
+      }
+    }
+  }
+  return false_v;
+}
+
+vkr_internal bool8_t vkr_material_system_unpublish_command(
+    VkrMaterialSystem *system, VkrMaterialHandle handle, bool8_t republish);
+
 bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
                                     VkrMaterialHandle handle,
                                     VkrRendererError *out_error) {
@@ -235,10 +306,21 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
   }
   VkrMaterialPublication *publication = &system->publications[handle.id - 1u];
   if (publication->generation != handle.generation) {
-    *publication = (VkrMaterialPublication){.generation = handle.generation};
+    publication->generation = handle.generation;
+    publication->state = (VkrPublicationState){0};
   }
   vkr_publication_state_recorded_by(system->asset_publisher,
                                     &publication->state);
+  /* A first publication, a change in what shadows read, or a material whose
+     shadow reads its textures can change a caster's shadow. */
+  const uint64_t key = vkr_material_shadow_key(&published);
+  vkr_material_shadow_record(
+      system, handle.id,
+      publication->shadow_key_generation != handle.generation ||
+          publication->shadow_key != key ||
+          vkr_material_shadow_reads_material(&published));
+  publication->shadow_key = key;
+  publication->shadow_key_generation = handle.generation;
   return true_v;
 }
 
@@ -252,8 +334,11 @@ VkrPublicationState *vkr_material_system_publication(VkrMaterialSystem *system,
                                                       : NULL;
 }
 
-bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
-                                      VkrMaterialHandle handle) {
+/* Records an unpublication. One that a publication of the same material
+   follows in the same frame (`republish`) leaves casters as they were;
+   otherwise its draws stop resolving. */
+vkr_internal bool8_t vkr_material_system_unpublish_command(
+    VkrMaterialSystem *system, VkrMaterialHandle handle, bool8_t republish) {
   assert_log(system != NULL, "Material system is NULL");
   if (!system->asset_publisher ||
       !system->asset_publisher->unpublish_material) {
@@ -265,7 +350,15 @@ bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
              handle.generation);
     return false_v;
   }
+  if (handle.id != 0u && handle.id <= system->config.max_material_count) {
+    vkr_material_shadow_record(system, handle.id, !republish);
+  }
   return true_v;
+}
+
+bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
+                                      VkrMaterialHandle handle) {
+  return vkr_material_system_unpublish_command(system, handle, false_v);
 }
 
 static void vkr_material_system_remove_texture_stream(VkrMaterialSystem *system,
@@ -391,7 +484,7 @@ vkr_material_system_replace_stream_texture(VkrMaterialSystem *system,
   material->textures[stream->slot] = replacement;
   VkrRendererError publish_error = VKR_RENDERER_ERROR_NONE;
   const bool8_t unpublished =
-      vkr_material_system_unpublish(system, stream->material);
+      vkr_material_system_unpublish_command(system, stream->material, true_v);
   const bool8_t published =
       unpublished &&
       vkr_material_system_publish(system, stream->material, &publish_error);
@@ -789,7 +882,8 @@ static void vkr_material_system_apply_replacement(VkrMaterialSystem *system,
   }
 
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
-  const bool8_t unpublished = vkr_material_system_unpublish(system, handle);
+  const bool8_t unpublished =
+      vkr_material_system_unpublish_command(system, handle, true_v);
   if (unpublished && vkr_material_system_publish(system, handle, &error)) {
     for (uint32_t i = 0u; i < released_count; ++i) {
       (void)vkr_texture_system_release_by_handle(system->texture_system,

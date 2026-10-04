@@ -103,6 +103,15 @@ typedef struct VkrMaterialTextureStreamStats {
 typedef struct VkrMaterialPublication {
   uint32_t generation;
   VkrPublicationState state;
+  /* Across generations of the id, one bit per recorded command awaiting its
+     completion, oldest lowest: whether it can change a caster's shadow
+     (vkr_material_system_take_shadow_change). */
+  uint64_t shadow_commands;
+  uint32_t shadow_command_count;
+  /* What shadows read of the last published state, and the generation it
+     belongs to. */
+  uint64_t shadow_key;
+  uint32_t shadow_key_generation;
 } VkrMaterialPublication;
 
 typedef struct VkrMaterialSystem {
@@ -394,3 +403,16 @@ vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
 /** True when the scalar transmission factor selects the transmission path. */
 bool8_t
 vkr_material_system_material_is_transmissive(const VkrMaterial *material);
+
+/* Whether the oldest outstanding publication command of material `id` could
+   change a caster's shadow; call once per completion naming the material.
+   Shadows read an opaque material's geometry alone, so republishing one
+   with other textures or shading changes none. True when unknown. */
+bool8_t vkr_material_system_take_shadow_change(VkrMaterialSystem *system,
+                                               uint32_t id);
+
+/* Whether a material whose shadow reads its textures (alpha cutout or
+   transmission) samples texture `id`. */
+bool8_t
+vkr_material_system_shadow_reads_texture(const VkrMaterialSystem *system,
+                                         uint32_t id);
