@@ -45,7 +45,6 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 
 | # | Finding | Evidence | Closes it |
 |---|---|---|---|
-| A1 | Moving the camera over a streamed terrain with local shadows on hitches. Gliding at 30 m/s beside Bistro raised the frame p95 from 6.4 ms to about 30 ms on an M1 Pro; with local shadows off it is about 10 ms. A resident 1 km terrain measured p95 8.7 ms, so it is not affected. Each streaming change marked every local shadow face stale, and the cache redrew its 30-face High budget at 0.4–0.9 ms GPU per face. Retained shadows no longer follow geometry uploads, but each re-attached terrain mesh still moves the static-world generation: p95 is now 14.5–29.9 ms | [ADR-086 evidence](../adr/086-world-partition.md#evidence): `VKR_RG_GPU_TIMING=1` pass rows show `Shadow.Local.*` only on slow frames | Static shadow staleness bounded by the footprints of the tiles that changed, then a matched Release report; H7 repeats the measurement on Vulkan |
 | A2 | Native Vulkan has never run the terrain material, LOD selection, geomorph, streamed terrain, proxies or rebase. Both ADR-085 entries in [ADR-044](../adr/044-shader-cross-backend-contract.md) stay UNALIGNED | 105 Vulkan modules pass `spirv-val`; no Vulkan frame was produced | H2 to H6 |
 
 ### P2
@@ -61,7 +60,7 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 | # | Finding | Note |
 |---|---|---|
 | A9 | An 8 km terrain at 1 m is a 409 MiB file: 2-byte heights and 4-byte weights per sample, tiles padded to 65 samples | Compression or coarser weights would cut it; the samples in memory stay windowed |
-| A10 | Each streaming change rebuilds the whole terrain mesh attachment (about 300 submeshes, 1.7 ms) and, when the window moves, one 324-by-324 height field (3.5 ms) | Measured in the streamed drive; budget them after A1 |
+| A10 | Each streaming change rebuilds the terrain mesh's whole submesh list (about 300 submeshes, 1.7 ms before the in-place swap) and, when the window moves, one 324-by-324 height field (3.5 ms); gliding still shows single 20–25 ms frames | Measured in the streamed drive; the world partition proposal's hitch budget item |
 | A11 | One collision body covers the sources' window; with sources more than 16 tiles apart, only the first source has collision | Physics requires unique body and collider entity ids |
 | A12 | A cell document holds at most 1,024 objects, and saving looks up overlay ids linearly | `EDIT_CREATED_MAX`, `edit_created_id` |
 | A13 | Proxies cover solid and visual brushes only, with world-projected UVs on the brushes' materials | `vkr_proxy_cell` |
@@ -96,6 +95,7 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 | A long brush stroke reallocated and copied its ever larger undo rectangle at every step | The stroke continues in a grouped entry past 512 by 512 samples | `e9a17eb3` |
 | A re-attached terrain mesh waited unpublished for its new tiles' uploads, so the terrain left that frame and every local shadow redrew twice more | The mesh re-attaches once its tiles have uploaded; streaming holds the drawn tiles until then | `f01956ee` |
 | Every completed publication, geometry uploads included, marked every retained shadow (local faces and cascades) stale; adding or removing a generated mesh did not move the static-world generation, so retained shadows and Metal's static candidate rows relied on that publication churn | Retained shadows follow only texture, sampler and material publications, and adding or removing a drawn mesh is a topology change | `b2de2834` |
+| A1: moving over a streamed terrain with local shadows on raised the frame p95 from 6.4 ms to about 30 ms; every terrain mesh swap marked every local shadow face and cascade stale, and the cache redrew its 30-face High budget at 0.4–0.9 ms GPU each | Static changes carry the world boxes they may alter and a terrain swap names its changed tiles' footprints, so far streaming redraws no local face; the flight now measures p95 9.0–10.9 ms (indicative). A resident terrain was never affected | `1b4bacea` |
 
 ## Verification still needed
 

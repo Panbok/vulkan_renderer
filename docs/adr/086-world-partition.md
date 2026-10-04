@@ -11,10 +11,8 @@ authority: adr
 Accepted (partial). Terrain streaming, cells with cell documents, the
 streaming runtime, origin rebasing during Play, baked cell proxies, the World
 Partition window and the `partition.*` operations are implemented and
-verified on Metal. Streaming hitches stay above one frame while the camera
-moves over a streamed terrain with local shadows on, imported scene
-documents do not split into cells, and native Vulkan execution is
-unverified. The
+verified on Metal. Imported scene documents do not split into cells, and
+native Vulkan execution is unverified. The
 [level toolkit audit](../proposals/level-toolkit-audit.md) tracks these.
 
 ## Context
@@ -58,8 +56,10 @@ every tile, as before. Larger ones, up to 8,192 cells and a multiple of
   2 ms; they stay until a tile past the radius. A fine tile loads its sample
   tiles and their neighbours first. Samples an edit or undo reaches load
   synchronously and stay resident until a save writes them. Rebuilt tiles
-  show when their geometry has uploaded: the mesh re-attaches then, and the
-  tiles that draw hold still meanwhile.
+  show when their geometry has uploaded: the mesh is swapped in place then
+  (`vkr_scene_replace_generated_mesh`), naming the footprints of the tiles
+  that started, stopped or changed drawing, and the tiles that draw hold
+  still meanwhile. Retained shadows those footprints miss stay valid.
 - **Overview.** 64-cell overview tiles at 16 times the spacing draw the rest.
   An overview tile leaves out the cells under fine tiles that draw, keeps only
   the three levels whose cells lie inside one fine tile, and adds seam skirts
@@ -179,7 +179,8 @@ frame.
   the editor's resident set stayed between 745 and 780 MB on an M1 Pro.
 - Streaming one change costs about 2.4 ms for tile builds, 1.7 ms to rebuild
   the mesh and re-attach every tile, and 3.5 ms when the collision window
-  moves. The measured hitches come from local shadows: see Evidence.
+  moves. Shadow redraws now follow the footprints of what changed: see
+  Evidence.
 - Saving rewrites only edited cells, so version control diffs stay local.
 - Scripts that keep world positions see them jump when the origin rebases.
 - Only the primary scene partitions; the World and added scenes keep every
@@ -218,13 +219,15 @@ two more frames redraw; the mesh now re-attaches after the upload. At
 `f01956ee` a resident 1 km terrain on the same flight measured p95 8.7 ms,
 so the earlier report that it hitched too did not reproduce.
 
-Retained shadows now follow only publications that can reach a drawn caster
-([ADR-019](019-bounded-forward-spatial-lighting.md)), and adding or removing a
-drawn mesh is a topology change. Each re-attached terrain mesh therefore
-moves the static-world generation, which still marks every local face and
-cascade stale: the same flight measured p95 14.5–29.9 ms (max 30.2–48.1 ms)
-over five readings. Shadow staleness bounded by where the static change
-happened remains.
+Retained shadows now follow only publications that can reach a drawn caster,
+static changes carry the world boxes they may alter, and a terrain swap names
+the footprints of its changed tiles
+([ADR-019](019-bounded-forward-spatial-lighting.md),
+[ADR-041](041-retained-cascaded-shadows.md)). At `b2de2834`, with publications
+scoped but every static change reaching everything, the same flight measured
+p95 14.5–29.9 ms. At `1b4bacea` it measured p95 9.0–10.9 ms (max 20.3–25.0 ms)
+over twelve readings in two runs, against an 8.3 ms vsync interval; the
+terrain itself costs about 2 ms over Bistro alone.
 
 CPU tests: the heightfield suite (a 2,048-cell streamed field that loads only
 its overview, edits, saves in place and reloads a tile), the scene edit
@@ -248,8 +251,8 @@ rebase to −4,096 m that Reset returned to 0.
 
 ## Revisit when
 
-- Static shadow changes carry the bounds of what changed, or a matched
-  Release report shows streaming hitches below one frame.
+- A matched Release report shows streaming hitches above one frame, or the
+  Vulkan measurement (handoff H7) differs from Metal.
 - A Windows/Vulkan run of the
   [handoff](../proposals/level-toolkit-windows-vulkan-handoff.md) passes.
 - Imported scenes, the World or added scenes need to stream.

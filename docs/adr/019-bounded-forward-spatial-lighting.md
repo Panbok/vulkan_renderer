@@ -76,11 +76,16 @@ so longer-range lights would need a larger near plane or more bias.
 
 A face's content is invalid when no successful submission drew it into its
 current square with its current projection in the current atlas image, or its
-layer was cleared, and stale when the static-world generation or the caster
-publication generation changed since it was drawn (completed texture,
-sampler and material publications; a geometry publication cannot change a
-drawn caster, since a mesh draws only after its geometry has published and
-adding or removing a drawn mesh moves the static-world generation), a dynamic caster's bounds reach the light, the
+layer was cleared, and stale when a static-world change since it was drawn
+reaches the light's range sphere, or the caster publication generation
+changed (completed texture, sampler and material publications; a geometry
+publication cannot change a drawn caster, since a mesh draws only after its
+geometry has published and adding or removing a drawn mesh is a static
+change). The world payload lists each static change with the world box it
+may alter (`VkrWorldPassPayload.static_changes`): a mesh's arrival or
+departure its bounding box, a terrain swap the footprints of the tiles that
+changed. A change the list does not bound, or content older than the list,
+reaches every light. Content no change reaches takes the new generation, a dynamic caster's bounds reach the light, the
 dynamic-bounds scan is unavailable, or an asset publication is in flight.
 Stale content keeps showing while it waits to redraw. The preset's face budget
 bounds the faces drawn per frame: High 30, Balanced 12 and Ultra 60. Complete

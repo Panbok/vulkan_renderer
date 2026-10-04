@@ -28,7 +28,9 @@ and copy dynamic ranges independently. Retained depth follows the caster
 publication generation instead
 (`VkrWorldPassPayload.caster_publication_generation`): texture, sampler and
 material completions, not geometry uploads, whose meshes join the caster set
-through the static generation. Each physical target-image cascade keeps
+through the static generation. A static change whose listed box misses a
+retained cascade's fit volume, tested as a dynamic caster's sphere is, leaves
+that cascade valid and moves it to the new generation. Each physical target-image cascade keeps
 its submitted fit and signature. A guard-contained static cascade with valid
 retained content can omit its authored pass only when its actual submitted fit
 matches the common desired projection. The newest compatible submitted static

@@ -16,7 +16,7 @@ toolkit, terrain, geometry LOD and world partition natively
 
 ## Before you start
 
-- Check out `main` at or after `f01956ee` and recook as the checklist's
+- Check out `main` at or after `1b4bacea` and recook as the checklist's
   2026-10-03 record did.
 - Run one GPU process at a time. Use Bistro only.
 - The agent socket is off on Windows (ADR-084), so these steps drive the
@@ -134,11 +134,11 @@ Release editor, Bistro, `gfx.preset = "high"` as the first statement after
 moves. Run it three times: without terrain, with the H4 terrain, and with the
 H4 terrain and `"local_shadows": false` in `graphics.json`.
 
-Expected on Metal for comparison (ADR-086): p95 6.4 ms without terrain, about
-30 ms with it, about 10 ms with it and local shadows off. The cause is shared
-code (publication staleness in `vkr_local_shadow_system.c`); record whether
-Vulkan shows the same pattern and, with `VKR_RG_GPU_TIMING=1`, whether the
-slow frames are `Shadow.Local.*` passes.
+Expected on Metal for comparison (ADR-086): p95 6.4 ms without terrain and
+9–11 ms with it at `1b4bacea`. Retained shadow staleness is shared code
+(`vkr_shadow_system.c`, `vkr_local_shadow_system.c`); with
+`VKR_RG_GPU_TIMING=1`, record whether slow frames on Vulkan show
+`Shadow.Local.*` or `Shadow.Cascade.*` passes.
 
 ### H8. Large files (audit A3, A9)
 
