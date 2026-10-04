@@ -140,6 +140,7 @@ static const char *const eval_stats_members[] = {"frame_ms",
                                                  "render_width",
                                                  "render_height",
                                                  "texture_mb",
+                                                 "frame_ms_max",
                                                  NULL};
 static const char *const eval_roots[] = {
     "sel",   "view",   "ui",   "sim",  "scene", "world",     "stats",
@@ -800,6 +801,16 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       }
     } else if (base->object == EVAL_OBJECT_STATS) {
       const int32_t index = eval_word_index(eval_stats_members, name);
+      if (index == 9) {
+        /* The longest recent frame interval: a streaming hitch. */
+        const VkrEditorUi *editor = eval->editor;
+        float32_t longest = 0.0f;
+        for (uint32_t i = 0u; i < editor->frame_ms_count; ++i) {
+          longest = Max(longest, editor->frame_ms[i]);
+        }
+        *out = eval_number(longest);
+        return true_v;
+      }
       if (index == 0 || index == 1) {
         /* Median or 95th percentile of the recent frame intervals. */
         const VkrEditorUi *editor = eval->editor;

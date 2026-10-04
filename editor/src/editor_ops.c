@@ -3657,6 +3657,19 @@ static VkrEditorOpStatus ops_run_camera(OpsContext *ctx) {
   }
   const Vec3 d = vec3_normalize(vec3_sub(target, eye));
   VkrSampleEditorStateRequest *request = frame->editor_state_request;
+  bool8_t glide = false_v;
+  if (vkr_bakery_json_get_bool(ctx->call->args, "glide", &glide) && glide) {
+    /* Flight, as the free camera moves: no lens change and no cut. */
+    request->move_camera = true_v;
+    request->camera_position = eye;
+    request->camera_pitch =
+        asinf(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
+    request->camera_yaw = atan2f(d.z, d.x) * 57.29577951f;
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, ctx->call->result, "eye", ops_vec3(ctx, eye));
+    ops_set(ctx, ctx->call->result, "target", ops_vec3(ctx, target));
+    return VKR_EDITOR_OP_DONE;
+  }
   request->apply_recall = true_v;
   request->recall = frame->scene_recall;
   request->recall.camera_valid = true_v;
@@ -5365,9 +5378,11 @@ static const OpsDef s_ops[] = {
      ops_run_capture, NULL},
     {"view.camera",
      "Place the perspective Scene camera at 'eye' looking at 'target'; "
-     "'far' sets the far plane in metres.",
+     "'far' sets the far plane in metres. 'glide' moves it as free flight "
+     "does, keeping the lens and temporal history, for motion tests.",
      "{\"type\":\"object\",\"properties\":{\"eye\":" OPS_VEC3_SCHEMA
-     ",\"target\":" OPS_VEC3_SCHEMA ",\"far\":{\"type\":\"number\"}},"
+     ",\"target\":" OPS_VEC3_SCHEMA ",\"far\":{\"type\":\"number\"},"
+     "\"glide\":{\"type\":\"boolean\"}},"
      "\"required\":[\"eye\",\"target\"]}",
      ops_run_camera, NULL},
     {"cmd",

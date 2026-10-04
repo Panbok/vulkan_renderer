@@ -7125,6 +7125,10 @@ sample_editor_state_apply(VkrStandardSceneRuntime *application,
       camera->sensitivity = value->camera_sensitivity;
     }
   }
+  if (request->move_camera && camera) {
+    vkr_camera_set_pose(camera, request->camera_position, request->camera_yaw,
+                        request->camera_pitch);
+  }
   if (request->apply_recall && sample_recall_valid(&request->recall)) {
     const VkrSampleSceneRecall *value = &request->recall;
     state->view_state.grid_height = value->grid_height;

@@ -191,6 +191,12 @@ typedef struct VkrSampleEditorStateRequest {
   bool8_t apply_recall;
   VkrSampleRuntimePreferences preferences;
   VkrSampleSceneRecall recall;
+  /* Moves the Scene camera as free flight does: the pose only, no lens
+     change and no temporal cut. */
+  bool8_t move_camera;
+  Vec3 camera_position;
+  float32_t camera_yaw;
+  float32_t camera_pitch;
 } VkrSampleEditorStateRequest;
 
 bool8_t vkr_sample_runtime_preferences_write_json(
