@@ -1,6 +1,7 @@
 #include "temporal_test.h"
 
 #include "vkr_dynamic_resolution.h"
+#include "vkr_froxel_fog.h"
 #include "vkr_prepared_frame.h"
 #include "vkr_temporal.h"
 
@@ -641,11 +642,75 @@ vkr_internal void test_dynamic_resolution_failed_upshift_headroom(void) {
   printf("  test_dynamic_resolution_failed_upshift_headroom PASSED\n");
 }
 
+/* Volumetric fog history follows only static changes inside its range and
+   publications that can change drawn content: a streamed terrain tile's
+   upload or a change 500 m away keeps it, one inside the range resets it. */
+vkr_internal void test_froxel_fog_history_scope(void) {
+  printf("  Running test_froxel_fog_history_scope...\n");
+  VkrStaticChange change = {
+      .generation = 5u,
+      .min = {500.0f, 0.0f, 500.0f},
+      .max = {564.0f, 50.0f, 564.0f},
+      .bounded = true_v,
+  };
+  VkrWorldPassPayload world = {
+      .static_generation = 5u,
+      .static_changes = &change,
+      .static_change_count = 1u,
+      .static_change_floor = 4u,
+      .publication_generation = 30u,
+      .caster_publication_generation = 9u,
+  };
+  VkrFrameInput input = {.world = &world};
+  input.globals.view_position = vec3_zero();
+  input.globals.froxel_fog.max_distance = 200.0f;
+  uint64_t seen = 4u;
+  uint64_t followed = 4u;
+  vkr_froxel_fog_static_generation(&input, &seen, &followed);
+  assert(seen == 5u && followed == 4u);
+
+  const VkrFroxelFogGpuParams params = {
+      .grid_dimensions_cell_pixels = {160u, 90u, 64u, 8u}};
+  const uint64_t signature =
+      vkr_froxel_fog_content_signature(&input, &params, followed);
+  world.publication_generation++;
+  assert(vkr_froxel_fog_content_signature(&input, &params, followed) ==
+         signature);
+  world.caster_publication_generation++;
+  assert(vkr_froxel_fog_content_signature(&input, &params, followed) !=
+         signature);
+
+  change = (VkrStaticChange){
+      .generation = 6u,
+      .min = {-10.0f, 0.0f, -10.0f},
+      .max = {10.0f, 5.0f, 10.0f},
+      .bounded = true_v,
+  };
+  world.static_generation = 6u;
+  world.static_change_floor = 5u;
+  vkr_froxel_fog_static_generation(&input, &seen, &followed);
+  assert(seen == 6u && followed == 6u);
+  change.generation = 7u;
+  change.min = vec3_new(500.0f, 0.0f, 500.0f);
+  change.max = vec3_new(564.0f, 50.0f, 564.0f);
+  change.bounded = false_v;
+  world.static_generation = 7u;
+  world.static_change_floor = 6u;
+  vkr_froxel_fog_static_generation(&input, &seen, &followed);
+  assert(followed == 7u);
+  world.static_generation = 8u;
+  world.static_changes = NULL;
+  vkr_froxel_fog_static_generation(&input, &seen, &followed);
+  assert(followed == 8u);
+  printf("  test_froxel_fog_history_scope PASSED\n");
+}
+
 bool32_t run_temporal_tests(void) {
   printf("Running temporal tests...\n");
   test_temporal_jitter_and_commit();
   test_temporal_projection_pixel_shift();
   test_temporal_scene_signature();
+  test_froxel_fog_history_scope();
   test_temporal_ssr_settling();
   test_temporal_reset_reasons();
   test_temporal_sequence_repeats();

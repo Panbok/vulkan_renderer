@@ -187,6 +187,10 @@ struct VkrRenderer {
   bool8_t gtao_forced_disabled;
   bool8_t ssr_forced_disabled;
   bool8_t ssgi_forced_disabled;
+  /* The frame static generation volumetric fog history last saw, and the one
+     it follows (vkr_froxel_fog_static_generation). */
+  uint64_t froxel_static_seen;
+  uint64_t froxel_static_followed;
   bool8_t fxaa_enabled;
   /* False only for the analytic reference path; a frame uses the display-linear
      target when its final pass filters (vkr_renderer_prepare_frame_data). */

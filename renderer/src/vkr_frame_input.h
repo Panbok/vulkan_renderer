@@ -366,6 +366,24 @@ typedef struct VkrWorldPassPayload {
 } VkrWorldPassPayload;
 
 /**
+ * Whether static changes after generation `since` may reach the world-space
+ * sphere at `center` of `radius`: the list does not cover them, one is
+ * unbounded, or one's box meets the sphere.
+ */
+bool8_t vkr_world_static_changes_reach(const VkrWorldPassPayload *world,
+                                       uint64_t since, Vec3 center,
+                                       float32_t radius);
+
+/**
+ * The publication generation that drawn content follows: completed texture,
+ * sampler and material publications, or every publication when the frame
+ * does not say. A geometry upload cannot change what draws until its mesh
+ * joins the frame, which moves the static generation.
+ */
+uint64_t
+vkr_world_content_publication_generation(const VkrWorldPassPayload *world);
+
+/**
  * @brief Optional overrides for shadow depth bias settings.
  */
 typedef struct VkrShadowConfigOverride {

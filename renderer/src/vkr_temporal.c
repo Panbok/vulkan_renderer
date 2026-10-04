@@ -364,7 +364,8 @@ vkr_ssgi_content_signature(const VkrPreparedFrame *packet) {
   if (world) {
     temporal_scene_lane(&signature, world->static_generation);
     temporal_scene_lane(&signature, world->dynamic_generation);
-    temporal_scene_lane(&signature, world->publication_generation);
+    temporal_scene_lane(&signature,
+                        vkr_world_content_publication_generation(world));
     temporal_scene_lane(&signature, world->caster_bounds_generation);
   }
   const VkrShadowPassPayload *shadow = packet->input.shadow;

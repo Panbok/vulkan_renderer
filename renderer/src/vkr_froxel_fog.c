@@ -194,8 +194,23 @@ static uint64_t hash_bytes(uint64_t hash, const void *data, uint32_t count) {
   return hash;
 }
 
+void vkr_froxel_fog_static_generation(const VkrFrameInput *input,
+                                      uint64_t *seen, uint64_t *followed) {
+  const VkrWorldPassPayload *world = input->world;
+  if (!world || *seen == world->static_generation) {
+    return;
+  }
+  /* Fog scatters light inside its range; a change past it alters no froxel. */
+  if (vkr_world_static_changes_reach(world, *seen, input->globals.view_position,
+                                     input->globals.froxel_fog.max_distance)) {
+    *followed = world->static_generation;
+  }
+  *seen = world->static_generation;
+}
+
 uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
-                                          const VkrFroxelFogGpuParams *params) {
+                                          const VkrFroxelFogGpuParams *params,
+                                          uint64_t static_generation) {
   if (!params->grid_dimensions_cell_pixels[0])
     return 0u;
   uint64_t hash = UINT64_C(1469598103934665603);
@@ -207,9 +222,11 @@ uint64_t vkr_froxel_fog_content_signature(const VkrFrameInput *input,
                     offsetof(VkrFroxelFogGpuParams, current_view_projection) -
                         offsetof(VkrFroxelFogGpuParams, color_density));
   if (input->world) {
-    HASH(input->world->static_generation);
+    const uint64_t publication_generation =
+        vkr_world_content_publication_generation(input->world);
+    HASH(static_generation);
     HASH(input->world->dynamic_generation);
-    HASH(input->world->publication_generation);
+    HASH(publication_generation);
     HASH(input->world->caster_bounds_generation);
   }
   HASH(params->lighting);

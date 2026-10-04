@@ -1236,3 +1236,45 @@ uint64_t vkr_skinning_history_find(const VkrSkinningHistory *history,
   }
   return UINT64_MAX;
 }
+
+bool8_t vkr_world_static_changes_reach(const VkrWorldPassPayload *world,
+                                       uint64_t since, Vec3 center,
+                                       float32_t radius) {
+  if (!world || since == world->static_generation) {
+    return false_v;
+  }
+  if (!world->static_changes || since < world->static_change_floor ||
+      since > world->static_generation) {
+    return true_v;
+  }
+  const float32_t radius_squared = radius * radius;
+  for (uint32_t i = 0u; i < world->static_change_count; ++i) {
+    const VkrStaticChange *change = &world->static_changes[i];
+    if (change->generation <= since) {
+      continue;
+    }
+    if (!change->bounded) {
+      return true_v;
+    }
+    const float32_t dx =
+        Max(0.0f, Max(change->min.x - center.x, center.x - change->max.x));
+    const float32_t dy =
+        Max(0.0f, Max(change->min.y - center.y, center.y - change->max.y));
+    const float32_t dz =
+        Max(0.0f, Max(change->min.z - center.z, center.z - change->max.z));
+    if (!(dx * dx + dy * dy + dz * dz > radius_squared)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+uint64_t
+vkr_world_content_publication_generation(const VkrWorldPassPayload *world) {
+  if (!world) {
+    return 0u;
+  }
+  return world->caster_publication_generation
+             ? world->caster_publication_generation
+             : world->publication_generation;
+}

@@ -1140,8 +1140,12 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
           ? vkr_froxel_fog_prepare(&prepared->frame.input, temporal_width,
                                    temporal_height)
           : (VkrFroxelFogGpuParams){0};
+  vkr_froxel_fog_static_generation(&prepared->frame.input,
+                                   &rf->froxel_static_seen,
+                                   &rf->froxel_static_followed);
   prepared->frame.froxel_fog_signature = vkr_froxel_fog_content_signature(
-      &prepared->frame.input, &prepared->frame.froxel_fog);
+      &prepared->frame.input, &prepared->frame.froxel_fog,
+      rf->froxel_static_followed);
   if (prepared->frame.froxel_fog.grid_dimensions_cell_pixels[0])
     prepared->frame.fog = (VkrFogGpuParams){0};
   if (packet->globals.render_mode != VKR_RENDER_MODE_DEFAULT || orthographic)

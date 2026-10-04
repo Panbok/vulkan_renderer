@@ -474,34 +474,14 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
 vkr_internal bool8_t
 vkr_local_shadow_static_reached(const VkrLocalShadowCacheInput *input,
                                 uint64_t since, const VkrPointLight *light) {
-  if (since == input->static_generation) {
-    return false_v;
-  }
-  if (!input->static_changes || since < input->static_change_floor ||
-      since > input->static_generation) {
-    return true_v;
-  }
-  const float32_t range_squared = light->range * light->range;
-  for (uint32_t i = 0u; i < input->static_change_count; ++i) {
-    const VkrStaticChange *change = &input->static_changes[i];
-    if (change->generation <= since) {
-      continue;
-    }
-    if (!change->bounded) {
-      return true_v;
-    }
-    const Vec3 p = light->position;
-    const float32_t dx =
-        Max(0.0f, Max(change->min.x - p.x, p.x - change->max.x));
-    const float32_t dy =
-        Max(0.0f, Max(change->min.y - p.y, p.y - change->max.y));
-    const float32_t dz =
-        Max(0.0f, Max(change->min.z - p.z, p.z - change->max.z));
-    if (!(dx * dx + dy * dy + dz * dz > range_squared)) {
-      return true_v;
-    }
-  }
-  return false_v;
+  const VkrWorldPassPayload changes = {
+      .static_generation = input->static_generation,
+      .static_changes = input->static_changes,
+      .static_change_count = input->static_change_count,
+      .static_change_floor = input->static_change_floor,
+  };
+  return vkr_world_static_changes_reach(&changes, since, light->position,
+                                        light->range);
 }
 
 /* Content is invalid once its projection, square or pool changed, and

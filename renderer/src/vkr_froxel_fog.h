@@ -73,5 +73,14 @@ struct VkrFrameInput;
 /** Cold preparation consumes validated settings and shadow payloads. */
 VkrFroxelFogGpuParams vkr_froxel_fog_prepare(const struct VkrFrameInput *input,
                                              uint32_t width, uint32_t height);
+/** `static_generation` is the static generation the fog follows: the frame's,
+ * or an earlier one when no static change since reached the fog's range
+ * (vkr_froxel_fog_static_generation). */
 uint64_t vkr_froxel_fog_content_signature(const struct VkrFrameInput *input,
-                                          const VkrFroxelFogGpuParams *params);
+                                          const VkrFroxelFogGpuParams *params,
+                                          uint64_t static_generation);
+/** Advances `*followed`, the static generation fog history follows, only
+ * when a static change since `*seen` reaches the camera's fog range, and
+ * records the frame's generation in `*seen`. */
+void vkr_froxel_fog_static_generation(const struct VkrFrameInput *input,
+                                      uint64_t *seen, uint64_t *followed);
