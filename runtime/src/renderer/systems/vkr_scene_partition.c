@@ -261,7 +261,8 @@ void vkr_scene_partition_plan(const VkrScene *scene,
     const PartitionCandidate candidate = {distance, record->cell};
     if (record->flags & VKR_SCENE_PARTITION_CELL_LOADED) {
       loaded++;
-      if (!(record->flags & VKR_SCENE_PARTITION_CELL_PINNED) &&
+      if (!(record->flags & (VKR_SCENE_PARTITION_CELL_PINNED |
+                             VKR_SCENE_PARTITION_CELL_HELD)) &&
           distance > keep) {
         /* The farthest go first when the list is full. */
         if (unload_count < VKR_SCENE_PARTITION_PLAN_MAX) {
@@ -312,7 +313,8 @@ void vkr_scene_partition_plan(const VkrScene *scene,
       const float32_t distance =
           partition_distance(scene, settings, record->cell);
       if ((record->flags & VKR_SCENE_PARTITION_CELL_LOADED) &&
-          !(record->flags & VKR_SCENE_PARTITION_CELL_PINNED) &&
+          !(record->flags & (VKR_SCENE_PARTITION_CELL_PINNED |
+                             VKR_SCENE_PARTITION_CELL_HELD)) &&
           distance <= keep && far_count < VKR_SCENE_PARTITION_PLAN_MAX) {
         far[far_count++] = (PartitionCandidate){distance, record->cell};
       }

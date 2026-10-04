@@ -359,6 +359,7 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application);
 static void sample_partition_open(VkrScene *scene);
 static void sample_partition_session(VkrStandardSceneRuntime *application,
                                      bool8_t begin);
+static bool8_t sample_origin_rebased(VkrStandardSceneRuntime *application);
 static void sample_script_request(VkrStandardSceneRuntime *application,
                                   const VkrSampleScriptRequest *request,
                                   VkrSceneEditValues *frame_edit);
@@ -3732,16 +3733,16 @@ static void sample_partition_session(VkrStandardSceneRuntime *application,
         scene, vkr_scene_partition_cells(scene, &count)[i].cell, false_v);
     const bool8_t loaded = record->flags & VKR_SCENE_PARTITION_CELL_LOADED;
     if (begin) {
-      record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_PINNED |
+      record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_HELD |
                                    VKR_SCENE_PARTITION_CELL_BEFORE_PLAY);
       if (loaded) {
         record->flags |= VKR_SCENE_PARTITION_CELL_BEFORE_PLAY |
-                         (dirty ? VKR_SCENE_PARTITION_CELL_PINNED : 0u);
+                         (dirty ? VKR_SCENE_PARTITION_CELL_HELD : 0u);
       }
       continue;
     }
     const bool8_t before = record->flags & VKR_SCENE_PARTITION_CELL_BEFORE_PLAY;
-    record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_PINNED |
+    record->flags &= ~(uint32_t)(VKR_SCENE_PARTITION_CELL_HELD |
                                  VKR_SCENE_PARTITION_CELL_BEFORE_PLAY);
     if (loaded && !before &&
         vkr_scene_edit_cell_unloadable(&state->edits, scene, record->cell)) {
@@ -3774,6 +3775,19 @@ static uint32_t sample_containers(VkrStandardSceneRuntime *application,
     }
   }
   return count;
+}
+
+/* Whether a container's origin is rebased, as during a long Play. */
+static bool8_t sample_origin_rebased(VkrStandardSceneRuntime *application) {
+  VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX];
+  const uint32_t count = sample_containers(application, scenes);
+  for (uint32_t i = 0; i < count; ++i) {
+    const Vec3 offset = scenes[i]->origin_offset;
+    if (offset.x != 0.0f || offset.y != 0.0f || offset.z != 0.0f) {
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 /* Moves every container, its physics and the cameras by -`shift`. */
@@ -5663,7 +5677,8 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
              "That scene is not loaded.");
     return;
   }
-  if (application->editor_viewport.simulation_running) {
+  if (application->editor_viewport.simulation_running ||
+      sample_origin_rebased(application)) {
     snprintf(result->message, sizeof(result->message),
              "Stop the simulation before editing the scene.");
     return;
@@ -5767,6 +5782,15 @@ static void sample_frame_box(VkrCamera *camera, Vec3 lower, Vec3 upper) {
 vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
     VkrStandardSceneRuntime *application,
     const VkrSceneEditRequest *scene_edit) {
+  /* A rebased world holds positions the documents do not (ADR-086). */
+  if (scene_edit->action != VKR_SCENE_EDIT_NONE &&
+      scene_edit->action != VKR_SCENE_EDIT_SELECT &&
+      scene_edit->action != VKR_SCENE_EDIT_FRAME &&
+      sample_origin_rebased(application)) {
+    snprintf(state->edits.status, sizeof(state->edits.status),
+             "Reset the simulation to edit or save; the origin is rebased.");
+    return;
+  }
   if (sample_structure_edit(application, scene_edit)) {
     return;
   }

@@ -2447,6 +2447,13 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
         "Save blocked: resolve or move the conflicting sidecar, then reload.");
     return false_v;
   }
+  /* A rebased world (ADR-086) holds positions the documents do not. */
+  if (scene->origin_offset.x != 0.0f || scene->origin_offset.y != 0.0f ||
+      scene->origin_offset.z != 0.0f) {
+    snprintf(s->status, sizeof(s->status),
+             "Save blocked: reset the simulation; the origin is rebased.");
+    return false_v;
+  }
   /* Objects in a cell whose document has not loaded join it first, so the
      cell's document keeps what it held. */
   if (!vkr_scene_edit_cells_track(s, scene)) {

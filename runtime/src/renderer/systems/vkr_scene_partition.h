@@ -14,7 +14,7 @@
  * nearest within the load radius of a streaming source) and to unload (past
  * the radius, then the farthest over the cell budget); the owner of the
  * scene's edit state moves their entities in and out
- * (vkr_scene_edit_cell_load). Pinned cells never unload. */
+ * (vkr_scene_edit_cell_load). Pinned and held cells never unload. */
 
 /* Loads and unloads one plan proposes. */
 #define VKR_SCENE_PARTITION_PLAN_MAX 64u
@@ -28,7 +28,8 @@ typedef enum VkrScenePartitionCellFlag {
   /* A cell document exists. */
   VKR_SCENE_PARTITION_CELL_ON_DISK = 1u << 0,
   VKR_SCENE_PARTITION_CELL_LOADED = 1u << 1,
-  /* Stays loaded until unpinned, as Play keeps the cells it started with. */
+  /* Pinned for editing (partition.load, the World Partition window); stays
+     loaded until released. */
   VKR_SCENE_PARTITION_CELL_PINNED = 1u << 2,
   /* A document of the cell size used before; the next save replaces or
      removes it. */
@@ -37,6 +38,9 @@ typedef enum VkrScenePartitionCellFlag {
   VKR_SCENE_PARTITION_CELL_BEFORE_PLAY = 1u << 4,
   /* The bakery built no proxy for the cell. */
   VKR_SCENE_PARTITION_CELL_NO_PROXY = 1u << 5,
+  /* Held by a Play session that began with unsaved edits, so Reset finds
+     it as it was; never unloads until Reset. */
+  VKR_SCENE_PARTITION_CELL_HELD = 1u << 6,
 } VkrScenePartitionCellFlag;
 
 typedef struct VkrScenePartitionCellRecord {
