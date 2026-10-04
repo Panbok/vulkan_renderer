@@ -53,6 +53,14 @@ the workers shut down. Then:
   it on the stepping thread.
 - **Contacts.** Contact callbacks arrive from several workers and take a lock;
   contact tracking below is independent of report order.
+- **Shape builds.** `vkr_physics_shape_build_begin` copies a collider and
+  builds its shape on the same workers, or at once without them; a collider
+  whose `prebuilt` names the finished build takes that shape. The owner and
+  the queued job each hold a reference, so releasing a running build never
+  waits, and clearing the jobs waits for running builds. A terrain builds its
+  height field this way ([ADR-086](086-world-partition.md));
+  `test_shape_build_on_worker` covers the copy, the reference and the
+  inline fallback.
 - **Results.** Poses and contact events do not depend on the choice:
   `test_parallel_steps_match` compares 128 falling boxes stepped on one
   thread and on four workers bit for bit. The renderer does not

@@ -56,8 +56,14 @@ rejects changed medium, projection, grid, lighting or shadow content. Content
 changes count when they can reach the fog: texture, sampler and material
 publications, not geometry uploads, and static changes whose boxes meet the
 sphere of `max_distance` around the camera
-(`vkr_froxel_fog_static_generation`). Cascade refits and local-light selection
-still reject history while the camera moves. Integration
+(`vkr_froxel_fog_static_generation`). What only resamples the same shadows
+keeps history: cascade refits, local shadow faces moving in the atlas or
+drawn at another size, and the selected lights' places in the frame's light
+array. The cascade count, map and sun size, receiver bias, and each selected
+light with its faces' world-space projections still reject it, as does a
+different light selection while the camera moves. Gliding over an 8 km
+terrain with fog on Metal, history missed 0–2 of every 240 frames, against
+33–44 before (`56d2d39c`). Integration
 then traverses each current-camera column front to back. Opaque fog resolves
 after SSR and before the opaque transmission pyramid, replacing analytic fog
 while enabled. Transparent local radiance uses `T * local + S * (1 - W)` over

@@ -55,13 +55,17 @@ every tile, as before. Larger ones, up to 8,192 cells and a multiple of
   default) of a source build, the 64 nearest considered per update, within
   2 ms; they stay until a tile past the radius. A fine tile loads its sample
   tiles and their neighbours first. Samples an edit or undo reaches load
-  synchronously and stay resident until a save writes them. Changed fine
-  and overview tiles rebuild a few per update within the same 2 ms, and
-  show together once their geometry has uploaded: the mesh is swapped in
-  place then (`vkr_scene_replace_generated_mesh`), naming the footprints of
-  the tiles that started, stopped or changed drawing, and the tiles that
-  draw hold still meanwhile. Retained shadows those footprints miss stay
-  valid.
+  synchronously and stay resident until a save writes them. Loads and
+  rebuilds of changed fine and overview tiles go in batches of up to eight,
+  one at a time per terrain: the main thread copies each tile's samples,
+  job workers build and pack its geometry (`vkr_job_for_begin`,
+  `vkr_geometry_pack`), and a later update publishes the batch, finishing
+  any tile no worker took after four updates. Rebuilt tiles show together
+  once their geometry has uploaded: the mesh is swapped in place then
+  (`vkr_scene_replace_generated_mesh`), naming the footprints of the tiles
+  that started, stopped or changed drawing, and the tiles that draw hold
+  still meanwhile. Retained shadows those footprints miss stay valid. A
+  resident terrain frees its batch storage (about 5 MB) once built.
 - **Overview.** 64-cell overview tiles at 16 times the spacing draw the rest.
   An overview tile leaves out the cells under fine tiles that draw, keeps only
   the three levels whose cells lie inside one fine tile, and adds seam skirts
@@ -70,9 +74,12 @@ every tile, as before. Larger ones, up to 8,192 cells and a multiple of
   id, so a streamed terrain has one height field body over the 5 by 5 tiles
   around the sources' tiles (`VKR_SCENE_TERRAIN_BODY_TILES`), or around the
   first source when the sources span more than 16 tiles. It moves once a
-  source comes within a tile of its edge, and rebuilds after edits rest;
-  unless a source has left it, a rebuild waits for an update with budget
-  left.
+  source comes within a tile of its edge, and rebuilds after edits rest.
+  Such a rebuild waits for an update with budget left and builds its height
+  field shape on a physics worker (`vkr_physics_shape_build_begin`) while
+  the current body stays. The first body, one after the terrain moved and
+  one a source has left build at once. A resident terrain's whole-terrain
+  body rebuilds the same way.
 
 `scene.describe` reports a terrain's tiles in memory, drawing and unsaved.
 
@@ -242,7 +249,13 @@ overview tile the change reached (about 0.5 ms each, outside it) and the
 body (3–4 ms, mostly Jolt, at every tile crossing). With rebuilds inside the
 budget and the body moving every second tile, the terrain's update stays
 within about 2.5 ms except when the body moves; two runs at `8f048447`
-measured p95 8.8–10.8 ms and max 9.0–13.7 ms.
+measured p95 8.8–10.8 ms and max 9.0–13.7 ms. At `99720bcc`, instrumented in
+Release, a body rebuild costs the main thread 0.17–0.31 ms and its swap
+0.07–0.50 ms (from 2.7–4.1 ms), and two updates of a glide passed 2.5 ms
+(about 70 before). Interleaved runs of `7cd60c0f` and `56d2d39c` under heavy
+unrelated load (a browser at 93% CPU) measured the same frames: mean 8.8 ms,
+p95 9.8–11.4 ms, max 11–18.5 ms. The remaining frame tail is not the
+terrain's main-thread work.
 
 CPU tests: the heightfield suite (a 2,048-cell streamed field that loads only
 its overview, edits, saves in place and reloads a tile), the scene edit

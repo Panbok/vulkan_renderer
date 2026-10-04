@@ -36,7 +36,7 @@ where imported content streams as well as authored content.
 
 | Item | Scope | Acceptance evidence |
 |---|---|---|
-| Hitch budget | Build the terrain body's Jolt height field off the main thread, the one per-change cost (3–4 ms) left outside the streaming budget | A matched Release report on M1 Pro: frame p95 within 10% of Bistro alone while gliding at 30 m/s over an 8 km terrain |
+| Hitch budget | Find the frame tail left while gliding (max 11–18 ms), which interleaved runs show is not the terrain's main-thread work | A matched Release report on M1 Pro: frame p95 within 10% of Bistro alone while gliding at 30 m/s over an 8 km terrain |
 | Imported content | Split imported scene documents into cells at import, so Bistro-sized content streams | A converted Bistro renders as before and unloads by cell |
 | More containers | Partition the root World and added scenes | Headless runs stream all three container kinds |
 | Script state | Keep a behaviour's state across its cell unloading and loading again during a session | A gameplay script in a streamed cell resumes its state after its cell returns |

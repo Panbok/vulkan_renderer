@@ -60,7 +60,6 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 | # | Finding | Note |
 |---|---|---|
 | A9 | An 8 km terrain at 1 m is a 409 MiB file: 2-byte heights and 4-byte weights per sample, tiles padded to 65 samples | Compression or coarser weights would cut it; the samples in memory stay windowed |
-| A10 | Moving the terrain body rebuilds one 324-by-324 Jolt height field in a single update (3–4 ms), now at every second tile crossing; tile and overview rebuilds stay within the 2 ms streaming budget | Measured in the streamed drive; building the shape off the main thread would remove it |
 | A11 | One collision body covers the sources' window; with sources more than 16 tiles apart, only the first source has collision | Physics requires unique body and collider entity ids |
 | A12 | A cell document holds at most 1,024 objects, and saving looks up overlay ids linearly | `EDIT_CREATED_MAX`, `edit_created_id` |
 | A13 | Proxies cover solid and visual brushes only, with world-projected UVs on the brushes' materials | `vkr_proxy_cell` |
@@ -95,6 +94,7 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 | A long brush stroke reallocated and copied its ever larger undo rectangle at every step | The stroke continues in a grouped entry past 512 by 512 samples | `e9a17eb3` |
 | A re-attached terrain mesh waited unpublished for its new tiles' uploads, so the terrain left that frame and every local shadow redrew twice more | The mesh re-attaches once its tiles have uploaded; streaming holds the drawn tiles until then | `f01956ee` |
 | Every completed publication, geometry uploads included, marked every retained shadow (local faces and cascades) stale; adding or removing a generated mesh did not move the static-world generation, so retained shadows and Metal's static candidate rows relied on that publication churn | Retained shadows follow only texture, sampler and material publications, and adding or removing a drawn mesh is a topology change | `b2de2834` |
+| A10: each streaming change cost the main thread 1.2–6.4 ms: a 3–4 ms Jolt height field for the body and about 0.6 ms of geometry packing per tile | Bodies build on physics workers and tiles in batches on job workers from copied samples; a body rebuild now costs the main thread under 0.5 ms | `99720bcc` |
 | A1: moving over a streamed terrain with local shadows on raised the frame p95 from 6.4 ms to about 30 ms; every terrain mesh swap marked every local shadow face and cascade stale, and the cache redrew its 30-face High budget at 0.4–0.9 ms GPU each | Static changes carry the world boxes they may alter and a terrain swap names its changed tiles' footprints, so far streaming redraws no local face; the flight now measures p95 9.0–10.9 ms (indicative). A resident terrain was never affected | `1b4bacea` |
 
 ## Verification still needed
