@@ -60,6 +60,9 @@ struct Options {
   uint32_t check_texels = 4096u;
   uint32_t check_samples = 256u;
   CheckTransport check_transport = CheckTransport::All;
+  /* astcenc effort for the layer pages, 0 (fastest) to 100. */
+  float32_t astc_effort = 10.0f;
+  uint32_t dilation_passes = 4u;
 };
 
 void usage() {
@@ -69,7 +72,8 @@ void usage() {
       "[--texels-per-unit <world density>] [--samples <n>] [--max-depth <n>] "
       "[--pages <n>] [--threads <n>] [--seed <n>] [--gpu <trace|gather>] "
       "[--check-texels <n>] [--check-samples <n>] "
-      "[--check-transport <all|sky|sun|lamps>]\n");
+      "[--check-transport <all|sky|sun|lamps>] [--astc-effort <0-100>] "
+      "[--dilation <passes>]\n");
 }
 
 bool parse_u32(const char *text, uint32_t *out) {
@@ -125,6 +129,12 @@ bool parse(int argc, char **argv, Options *options) {
       if (!parse_u32(value, &options->check_texels)) {
         return false;
       }
+    } else if (std::strcmp(flag, "--astc-effort") == 0) {
+      options->astc_effort = std::strtof(value, nullptr);
+    } else if (std::strcmp(flag, "--dilation") == 0) {
+      if (!parse_u32(value, &options->dilation_passes)) {
+        return false;
+      }
     } else if (std::strcmp(flag, "--check-transport") == 0) {
       if (std::strcmp(value, "all") == 0) {
         options->check_transport = CheckTransport::All;
@@ -150,6 +160,7 @@ bool parse(int argc, char **argv, Options *options) {
     }
   }
   return options->scene && options->samples > 0u &&
+         options->astc_effort >= 0.0f && options->astc_effort <= 100.0f &&
          options->check_samples > 0u && options->max_depth > 0u &&
          options->max_depth <= VKR_BAKE_INTEGRATOR_MAX_DEPTH &&
          std::isfinite(options->texels_per_unit) &&
@@ -353,6 +364,70 @@ bool cpu_reference(const Options &options, const VkrBakeIntegrator &integrator,
 }
 
 /*
+ * Composes a layer's page, encodes it to ASTC 4x4 HDR and decodes it again,
+ * reporting the time of each step and the encoding error at covered texels:
+ * the RMS of the log2 luminance ratio and the mean relative luminance error,
+ * over texels brighter than 1e-4.
+ */
+bool report_encoding(const Options &options,
+                     const VkrBakeLightmapLayout &layout, uint32_t page,
+                     const std::vector<VkrBakeLightmapTexel> &texels,
+                     const std::vector<Vec3> &values, const char *name) {
+  const uint32_t threads =
+      options.threads ? options.threads
+                      : std::max(1u, std::thread::hardware_concurrency());
+  const auto compose_start = std::chrono::steady_clock::now();
+  std::vector<float32_t> rgba;
+  if (!vkr_bake_lightmap_compose_page(layout, page, texels, values,
+                                      options.dilation_passes, &rgba)) {
+    std::fprintf(stderr, "Composing page %u failed\n", page);
+    return false;
+  }
+  const double compose_seconds = seconds_since(compose_start);
+  const auto encode_start = std::chrono::steady_clock::now();
+  std::vector<uint8_t> blocks;
+  if (!vkr_bake_lightmap_encode_astc_hdr(
+          rgba, layout.page_size, options.astc_effort, threads, &blocks)) {
+    std::fprintf(stderr, "Encoding page %u failed\n", page);
+    return false;
+  }
+  const double encode_seconds = seconds_since(encode_start);
+  std::vector<float32_t> decoded;
+  if (!vkr_bake_lightmap_decode_astc_hdr(blocks, layout.page_size, &decoded)) {
+    std::fprintf(stderr, "Decoding page %u failed\n", page);
+    return false;
+  }
+  float64_t log_squared = 0.0;
+  float64_t relative = 0.0;
+  uint64_t measured = 0u;
+  for (const VkrBakeLightmapTexel &texel : texels) {
+    const size_t index = (size_t)texel.y * layout.page_size + texel.x;
+    const Vec3 source = vec3_new(rgba[4u * index], rgba[4u * index + 1u],
+                                 rgba[4u * index + 2u]);
+    const Vec3 result = vec3_new(decoded[4u * index], decoded[4u * index + 1u],
+                                 decoded[4u * index + 2u]);
+    const float64_t y_source = luminance(source);
+    const float64_t y_result = luminance(result);
+    if (!(y_source > 1.0e-4)) {
+      continue;
+    }
+    const float64_t ratio = std::log2(std::max(y_result, 1.0e-6) / y_source);
+    log_squared += ratio * ratio;
+    relative += std::fabs(y_result - y_source) / y_source;
+    ++measured;
+  }
+  std::printf("astc page=%u layer=%s effort=%g compose_s=%.2f encode_s=%.2f "
+              "bytes=%zu measured_texels=%llu rms_log2_luminance=%.4f "
+              "mean_relative_luminance=%.4f\n",
+              page, name, options.astc_effort, compose_seconds, encode_seconds,
+              blocks.size(), (unsigned long long)measured,
+              measured ? std::sqrt(log_squared / measured) : 0.0,
+              measured ? relative / measured : 0.0);
+  std::fflush(stdout);
+  return true;
+}
+
+/*
  * Bakes three layers on Metal per page: the parity layer (every light, the
  * sky and emission, no texel direct term: what one integrator path carries),
  * sun key 0 (directional lights and sky, bounce only) and lamp group 0 (the
@@ -445,6 +520,11 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
                   (double)texels.size() * options.samples / seconds, mean,
                   (unsigned long long)nonfinite);
       std::fflush(stdout);
+      if (!report_encoding(options, layout, page, texels, irradiance,
+                           named.name)) {
+        vkr_bake_metal_destroy(gpu);
+        return 1;
+      }
     }
 
     if (page != 0u || texels.empty() || options.check_texels == 0u) {

@@ -14,7 +14,8 @@
 /* Packing, texel rasterization and the cooked-mesh path into them (ADR-087).
  * The oracles are geometric: rectangles never overlap and stay on their page,
  * a texel's world position lies on the surface its UVs came from, and every
- * texel is claimed once. */
+ * texel is claimed once. Page composition keeps each rectangle's fill inside
+ * it, and the page encoding keeps HDR values above one. */
 
 namespace {
 
@@ -206,6 +207,78 @@ void test_cooked_cube_texels_lie_on_its_faces() {
          texel_count);
 }
 
+/* Two adjacent rectangles with one covered texel each: dilation and the
+   rectangle mean fill each rectangle with its own value, nothing crosses the
+   shared edge, and texels outside both stay zero. */
+void test_compose_fills_each_rect_alone() {
+  VkrBakeLightmapLayout layout;
+  layout.page_size = 8u;
+  layout.page_count = 1u;
+  layout.rects = {{0u, 0u, 0u, 0u, 4u, 4u}, {1u, 0u, 4u, 0u, 4u, 4u}};
+  layout.rect_by_instance = {0u, 1u};
+  VkrBakeLightmapTexel left;
+  left.x = 1u;
+  left.y = 1u;
+  VkrBakeLightmapTexel right;
+  right.x = 6u;
+  right.y = 2u;
+  const std::vector<VkrBakeLightmapTexel> texels = {left, right};
+  const std::vector<Vec3> values = {vec3_new(2.0f, 0.0f, 0.0f),
+                                    vec3_new(0.0f, 0.0f, 3.0f)};
+  std::vector<float32_t> rgba;
+  assert(vkr_bake_lightmap_compose_page(layout, 0u, texels, values, 1u, &rgba));
+  assert(rgba.size() == 8u * 8u * 4u);
+  for (uint32_t y = 0u; y < 8u; ++y) {
+    for (uint32_t x = 0u; x < 8u; ++x) {
+      const float32_t *texel = &rgba[4u * (y * 8u + x)];
+      Vec3 expected = vec3_zero();
+      if (y < 4u) {
+        expected = x < 4u ? values[0] : values[1];
+      }
+      assert(fabsf(texel[0] - expected.x) < 1.0e-6f);
+      assert(fabsf(texel[1] - expected.y) < 1.0e-6f);
+      assert(fabsf(texel[2] - expected.z) < 1.0e-6f);
+      assert(texel[3] == 1.0f);
+    }
+  }
+  printf("  test_compose_fills_each_rect_alone PASSED\n");
+}
+
+/* A smooth ramp from 0.25 to 40 survives the ASTC 4x4 HDR round trip within
+   a few percent; an LDR profile would clamp everything above one. */
+void test_astc_hdr_round_trip_keeps_range() {
+  const uint32_t size = 16u;
+  std::vector<float32_t> rgba(size * size * 4u);
+  for (uint32_t y = 0u; y < size; ++y) {
+    for (uint32_t x = 0u; x < size; ++x) {
+      const float32_t t = (float32_t)(y * size + x) / (size * size - 1u);
+      const float32_t value = 0.25f * powf(160.0f, t);
+      float32_t *texel = &rgba[4u * (y * size + x)];
+      texel[0] = value;
+      texel[1] = 0.5f * value;
+      texel[2] = 0.25f * value;
+      texel[3] = 1.0f;
+    }
+  }
+  std::vector<uint8_t> blocks;
+  assert(vkr_bake_lightmap_encode_astc_hdr(rgba, size, 10.0f, 2u, &blocks));
+  assert(blocks.size() == (size / 4u) * (size / 4u) * 16u);
+  std::vector<float32_t> decoded;
+  assert(vkr_bake_lightmap_decode_astc_hdr(blocks, size, &decoded));
+  float32_t largest = 0.0f;
+  for (size_t i = 0u; i < rgba.size(); ++i) {
+    if (i % 4u == 3u) {
+      continue;
+    }
+    const float32_t error = fabsf(decoded[i] - rgba[i]) / rgba[i];
+    largest = fmaxf(largest, error);
+  }
+  assert(decoded[4u * (size * size - 1u)] > 30.0f);
+  assert(largest < 0.05f);
+  printf("  test_astc_hdr_round_trip_keeps_range PASSED (max error %.4f)\n",
+         largest);
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -213,6 +286,8 @@ bool32_t run_lightmap_bake_tests(void) {
   test_pack_sizes_and_places_rects();
   test_rasterize_covers_a_quad_once();
   test_cooked_cube_texels_lie_on_its_faces();
+  test_compose_fills_each_rect_alone();
+  test_astc_hdr_round_trip_keeps_range();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }

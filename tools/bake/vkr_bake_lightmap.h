@@ -74,3 +74,35 @@ bool vkr_bake_lightmap_rasterize_page(
     const VkrBakeTriangle *triangles, uint32_t triangle_count,
     const VkrBakeLightmapLayout &layout, uint32_t page,
     std::vector<VkrBakeLightmapTexel> *out_texels);
+
+/*
+ * Writes a page's texel values into `out_rgba`, page_size x page_size RGBA
+ * floats in row-major order with alpha one, and fills the texels of each
+ * rectangle that no triangle covers. Up to `dilation_passes` rings around the
+ * covered texels take the mean of their filled 8-neighbors in the same
+ * rectangle, so bilinear filtering and 4x4 blocks at chart edges see chart
+ * values instead of black; the rest of the rectangle takes the mean of its
+ * covered texels. Texels outside every rectangle are zero. `values` holds one
+ * finite, non-negative value per texel of `texels`.
+ */
+bool vkr_bake_lightmap_compose_page(
+    const VkrBakeLightmapLayout &layout, uint32_t page,
+    const std::vector<VkrBakeLightmapTexel> &texels,
+    const std::vector<Vec3> &values, uint32_t dilation_passes,
+    std::vector<float32_t> *out_rgba);
+
+/*
+ * Encodes a composed page to ASTC 4x4 blocks in the HDR RGB, LDR alpha
+ * profile at astcenc `effort` (0 to 100) on `threads` workers. Writes 16
+ * bytes per 4x4 block in row-major block order. `size` is a multiple of four.
+ */
+bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
+                                       uint32_t size, float32_t effort,
+                                       uint32_t threads,
+                                       std::vector<uint8_t> *out_blocks);
+
+/* Decodes blocks written by vkr_bake_lightmap_encode_astc_hdr to RGBA floats,
+   to measure the encoding error. */
+bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
+                                       uint32_t size,
+                                       std::vector<float32_t> *out_rgba);

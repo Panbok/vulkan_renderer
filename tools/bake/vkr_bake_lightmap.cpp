@@ -1,8 +1,12 @@
 #include "bake/vkr_bake_lightmap.h"
 
+#include <ktx-software/external/astc-encoder/Source/astcenc.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <new>
+#include <thread>
 
 namespace {
 
@@ -211,4 +215,216 @@ bool vkr_bake_lightmap_rasterize_page(
   } catch (const std::bad_alloc &) {
     return false;
   }
+}
+
+bool vkr_bake_lightmap_compose_page(
+    const VkrBakeLightmapLayout &layout, uint32_t page,
+    const std::vector<VkrBakeLightmapTexel> &texels,
+    const std::vector<Vec3> &values, uint32_t dilation_passes,
+    std::vector<float32_t> *out_rgba) {
+  if (!out_rgba || page >= layout.page_count ||
+      texels.size() != values.size()) {
+    return false;
+  }
+  try {
+    const size_t size = layout.page_size;
+    out_rgba->assign(size * size * 4u, 0.0f);
+    float32_t *rgba = out_rgba->data();
+    /* Zero is empty, one covered, and 2 + pass a texel filled in that pass,
+       so a pass reads only texels filled before it. */
+    std::vector<uint8_t> state(size * size, 0u);
+    for (size_t i = 0u; i < texels.size(); ++i) {
+      const size_t index = (size_t)texels[i].y * size + texels[i].x;
+      rgba[4u * index + 0u] = values[i].x;
+      rgba[4u * index + 1u] = values[i].y;
+      rgba[4u * index + 2u] = values[i].z;
+      state[index] = 1u;
+    }
+
+    const uint32_t passes = std::min(dilation_passes, 250u);
+    for (const VkrBakeLightmapRect &rect : layout.rects) {
+      if (rect.page != page) {
+        continue;
+      }
+      const uint32_t x_end = rect.x + rect.width;
+      const uint32_t y_end = rect.y + rect.height;
+
+      for (uint32_t pass = 0u; pass < passes; ++pass) {
+        const uint8_t filled_before = (uint8_t)(2u + pass);
+        bool filled_any = false;
+        for (uint32_t y = rect.y; y < y_end; ++y) {
+          for (uint32_t x = rect.x; x < x_end; ++x) {
+            const size_t index = (size_t)y * size + x;
+            if (state[index] != 0u) {
+              continue;
+            }
+            float32_t sum[3] = {0.0f, 0.0f, 0.0f};
+            uint32_t count = 0u;
+            for (int32_t dy = -1; dy <= 1; ++dy) {
+              for (int32_t dx = -1; dx <= 1; ++dx) {
+                const int64_t nx = (int64_t)x + dx;
+                const int64_t ny = (int64_t)y + dy;
+                if (nx < rect.x || ny < rect.y || nx >= x_end || ny >= y_end) {
+                  continue;
+                }
+                const size_t neighbor = (size_t)ny * size + (size_t)nx;
+                const uint8_t neighbor_state = state[neighbor];
+                if (neighbor_state == 0u || neighbor_state >= filled_before) {
+                  continue;
+                }
+                sum[0] += rgba[4u * neighbor + 0u];
+                sum[1] += rgba[4u * neighbor + 1u];
+                sum[2] += rgba[4u * neighbor + 2u];
+                ++count;
+              }
+            }
+            if (count == 0u) {
+              continue;
+            }
+            const float32_t scale = 1.0f / (float32_t)count;
+            rgba[4u * index + 0u] = sum[0] * scale;
+            rgba[4u * index + 1u] = sum[1] * scale;
+            rgba[4u * index + 2u] = sum[2] * scale;
+            state[index] = filled_before;
+            filled_any = true;
+          }
+        }
+        if (!filled_any) {
+          break;
+        }
+      }
+
+      float64_t mean[3] = {0.0, 0.0, 0.0};
+      uint64_t covered = 0u;
+      for (uint32_t y = rect.y; y < y_end; ++y) {
+        for (uint32_t x = rect.x; x < x_end; ++x) {
+          const size_t index = (size_t)y * size + x;
+          if (state[index] == 1u) {
+            mean[0] += rgba[4u * index + 0u];
+            mean[1] += rgba[4u * index + 1u];
+            mean[2] += rgba[4u * index + 2u];
+            ++covered;
+          }
+        }
+      }
+      if (covered != 0u) {
+        mean[0] /= (float64_t)covered;
+        mean[1] /= (float64_t)covered;
+        mean[2] /= (float64_t)covered;
+      }
+      for (uint32_t y = rect.y; y < y_end; ++y) {
+        for (uint32_t x = rect.x; x < x_end; ++x) {
+          const size_t index = (size_t)y * size + x;
+          if (state[index] == 0u) {
+            rgba[4u * index + 0u] = (float32_t)mean[0];
+            rgba[4u * index + 1u] = (float32_t)mean[1];
+            rgba[4u * index + 2u] = (float32_t)mean[2];
+          }
+        }
+      }
+    }
+
+    for (size_t i = 0u; i < size * size; ++i) {
+      rgba[4u * i + 3u] = 1.0f;
+    }
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+namespace {
+
+/* Runs one astcenc compression or decompression over `threads` workers;
+   astcenc splits the image's blocks between them. */
+template <typename Work>
+bool run_astc_workers(astcenc_context *context, uint32_t threads, Work work) {
+  std::atomic<bool> failed{false};
+  std::vector<std::thread> workers;
+  workers.reserve(threads);
+  for (uint32_t thread = 0u; thread < threads; ++thread) {
+    workers.emplace_back([&, thread] {
+      if (work(thread) != ASTCENC_SUCCESS) {
+        failed.store(true);
+      }
+    });
+  }
+  for (std::thread &worker : workers) {
+    worker.join();
+  }
+  return !failed.load();
+}
+
+} // namespace
+
+bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
+                                       uint32_t size, float32_t effort,
+                                       uint32_t threads,
+                                       std::vector<uint8_t> *out_blocks) {
+  if (!out_blocks || size == 0u || size % 4u != 0u ||
+      rgba.size() != (size_t)size * size * 4u || !(effort >= 0.0f) ||
+      effort > 100.0f) {
+    return false;
+  }
+  astcenc_config config;
+  if (astcenc_config_init(ASTCENC_PRF_HDR_RGB_LDR_A, 4u, 4u, 1u, effort, 0u,
+                          &config) != ASTCENC_SUCCESS) {
+    return false;
+  }
+  const uint32_t workers = std::max(1u, threads);
+  astcenc_context *context = nullptr;
+  if (astcenc_context_alloc(&config, workers, &context) != ASTCENC_SUCCESS) {
+    return false;
+  }
+  bool encoded = false;
+  try {
+    const size_t blocks = (size_t)(size / 4u) * (size / 4u);
+    out_blocks->assign(blocks * 16u, 0u);
+    void *slice = const_cast<float32_t *>(rgba.data());
+    astcenc_image image = {size, size, 1u, ASTCENC_TYPE_F32, &slice};
+    const astcenc_swizzle swizzle = {ASTCENC_SWZ_R, ASTCENC_SWZ_G,
+                                     ASTCENC_SWZ_B, ASTCENC_SWZ_A};
+    encoded = run_astc_workers(context, workers, [&](uint32_t thread) {
+      return astcenc_compress_image(context, &image, &swizzle,
+                                    out_blocks->data(), out_blocks->size(),
+                                    thread);
+    });
+  } catch (const std::bad_alloc &) {
+    encoded = false;
+  }
+  astcenc_context_free(context);
+  return encoded;
+}
+
+bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
+                                       uint32_t size,
+                                       std::vector<float32_t> *out_rgba) {
+  if (!out_rgba || size == 0u || size % 4u != 0u ||
+      blocks.size() != (size_t)(size / 4u) * (size / 4u) * 16u) {
+    return false;
+  }
+  astcenc_config config;
+  if (astcenc_config_init(ASTCENC_PRF_HDR_RGB_LDR_A, 4u, 4u, 1u,
+                          ASTCENC_PRE_FASTEST, ASTCENC_FLG_DECOMPRESS_ONLY,
+                          &config) != ASTCENC_SUCCESS) {
+    return false;
+  }
+  astcenc_context *context = nullptr;
+  if (astcenc_context_alloc(&config, 1u, &context) != ASTCENC_SUCCESS) {
+    return false;
+  }
+  bool decoded = false;
+  try {
+    out_rgba->assign((size_t)size * size * 4u, 0.0f);
+    void *slice = out_rgba->data();
+    astcenc_image image = {size, size, 1u, ASTCENC_TYPE_F32, &slice};
+    const astcenc_swizzle swizzle = {ASTCENC_SWZ_R, ASTCENC_SWZ_G,
+                                     ASTCENC_SWZ_B, ASTCENC_SWZ_A};
+    decoded = astcenc_decompress_image(context, blocks.data(), blocks.size(),
+                                       &image, &swizzle, 0u) == ASTCENC_SUCCESS;
+  } catch (const std::bad_alloc &) {
+    decoded = false;
+  }
+  astcenc_context_free(context);
+  return decoded;
 }
