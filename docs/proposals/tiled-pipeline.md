@@ -263,6 +263,18 @@ Phases:
    instances onto pages and rasterizes a page's texels to world positions and
    normals, covered by `run_lightmap_bake_tests`. Integration, layer output
    and ASTC encoding are pending.
+
+   Cost measurement (2026-10-05, `vkr_bakery tool lightmap-baker`, Release,
+   M1 Pro, 8 worker threads, Bistro cooked at 8 texels per meter with
+   deferred textures, 4,096-texel pages, path depth 4 with Russian roulette
+   from depth 4): the scene packs 2,909 instances onto 3 pages, 32.1 million
+   rectangle texels of which 4.28 million lie inside triangles. Bistro's world
+   unit is the meter; its meshes are authored at 1/100 scale under node
+   scales of 34 to 200. Gathering 8 cosine-weighted samples per covered texel
+   took 74.9 s, 457,000 paths or 1.77 million segments per second, with
+   3.5 GB peak memory and 8.4 s of scene load and BVH build. One layer costs
+   about 9.4 s per sample per texel: 10 minutes at 64 samples and 40 minutes
+   at 256, so twelve layers take 2 to 8 hours on the CPU without denoising.
 3. Time of day: light groups and mobility in scene data; a system driving
    sun, moon, sky and group intensities.
 4. Tiled runtime: lightmap sampling in the tiled pipeline's forward shader,

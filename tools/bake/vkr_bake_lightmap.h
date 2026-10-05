@@ -54,15 +54,16 @@ struct VkrBakeLightmapTexel {
 };
 
 /*
- * Sizes each instance's rectangle as its atlas times the instance's uniform
- * world scale times density_scale, in whole 4x4 blocks, and shelf-packs the
+ * Sizes each instance's rectangle for texels_per_world_unit: its atlas times
+ * the instance's uniform world scale times the ratio of that density to the
+ * atlas's local density, in whole 4x4 blocks, and shelf-packs the
  * rectangles tallest first onto page_size pages. A rectangle larger than a
  * page is scaled down to fit. Instances without an atlas get no rectangle.
  * page_size is a positive multiple of four.
  */
 bool vkr_bake_lightmap_pack(
     const std::vector<VkrBakeLightmapInstance> &instances, uint32_t page_size,
-    float32_t density_scale, VkrBakeLightmapLayout *out_layout);
+    float32_t texels_per_world_unit, VkrBakeLightmapLayout *out_layout);
 
 /*
  * Collects every texel center of `page` that lies inside a triangle of a

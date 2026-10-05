@@ -1053,8 +1053,7 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   uint32_t triangles = 0u;
   for (uint32_t r = 0u; r < 2u; ++r) {
     const VkrMeshCookedLightmapAtlas *atlas = &lightmap->atlases[r];
-    assert(atlas->width > 0u && atlas->width % 4u == 0u);
-    assert(atlas->height > 0u && atlas->height % 4u == 0u);
+    assert(atlas->width > 0u && atlas->height > 0u);
     assert(atlas->texels_per_unit == 32.0f);
     uint8_t *coverage =
         calloc((size_t)atlas->width * atlas->height, sizeof(uint8_t));
@@ -1103,6 +1102,24 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
     free(coverage);
   }
   assert(triangles == 12u);
+
+  /* The requested density is per unit of the source's world space: a mesh
+     whose node doubles it unwraps at twice the local density. */
+  VkrMeshCookedEncodeInfo scaled_info = info;
+  VkrMeshSourceNode scaled_nodes[2] = {cube.nodes[0], cube.nodes[1]};
+  scaled_nodes[0].local.elements[0] = 2.0f;
+  scaled_nodes[0].local.elements[5] = 2.0f;
+  scaled_nodes[0].local.elements[10] = 2.0f;
+  scaled_info.source.nodes.data = scaled_nodes;
+  uint8_t *scaled = NULL;
+  uint64_t scaled_size = 0;
+  assert(vkr_mesh_cooked_encode(&scratch, &scaled_info, &scaled, &scaled_size));
+  VkrMeshCookedDecoded scaled_decoded = {0};
+  assert(vkr_mesh_cooked_decode(&result, &scratch, scaled, scaled_size,
+                                &scaled_decoded));
+  assert(scaled_decoded.lightmap.atlases[0].texels_per_unit == 64.0f);
+  assert(scaled_decoded.lightmap.atlases[1].texels_per_unit == 32.0f);
+  assert(scaled_decoded.lightmap.atlases[0].width > lightmap->atlases[0].width);
 
   /* A size limit below the requested density's atlas halves the density. */
   VkrMeshCookedEncodeInfo small_info = info;

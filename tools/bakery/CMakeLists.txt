@@ -86,7 +86,7 @@ if(VKR_BUILD_TOOLS)
         vkr_mesh_cooker vkr_animation_cooker vkr_collision_cooker
         vkr_font_cooker vkr_vkt_packer vkr_hdr_cube_packer
         vkr_dfg_cooker vkr_sheen_cooker vkr_anisotropy_cooker
-        vkr_diffuse_baker meshoptimizer)
+        vkr_diffuse_baker vkr_lightmap_baker meshoptimizer)
     # The cookers are C++ libraries; link with the C++ runtime.
     set_target_properties(vkr_bakery PROPERTIES LINKER_LANGUAGE CXX)
 

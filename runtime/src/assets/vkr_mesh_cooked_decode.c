@@ -460,8 +460,7 @@ vkr_internal bool8_t vkr_mesh_cooked_read_skin(
 /**
  * Reads and validates the lightmap block of a static artifact: one atlas per
  * source mesh, or one when it has none. An all-zero atlas marks a source mesh
- * without ranges or whose geometry forms no chart; every other atlas is a
- * whole number of 4x4 blocks.
+ * without ranges or whose geometry forms no chart.
  */
 vkr_internal bool8_t vkr_mesh_cooked_read_lightmap(
     VkrByteReader *source_reader, VkrAllocator *result_allocator,
@@ -492,11 +491,9 @@ vkr_internal bool8_t vkr_mesh_cooked_read_lightmap(
         atlas->texels_per_unit == 0.0f) {
       continue;
     }
-    if (atlas->width == 0u || atlas->height == 0u || atlas->width % 4u != 0u ||
-        atlas->height % 4u != 0u ||
+    if (atlas->width == 0u || atlas->height == 0u ||
         atlas->width > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE ||
         atlas->height > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE ||
-        lightmap->padding >= Min(atlas->width, atlas->height) ||
         !isfinite(atlas->texels_per_unit) || atlas->texels_per_unit <= 0.0f) {
       return false_v;
     }

@@ -21,6 +21,7 @@ int vkr_dfg_cooker_tool_main(int argc, char **argv);
 int vkr_sheen_cooker_tool_main(int argc, char **argv);
 int vkr_anisotropy_cooker_tool_main(int argc, char **argv);
 int vkr_diffuse_baker_tool_main(int argc, char **argv);
+int vkr_lightmap_baker_tool_main(int argc, char **argv);
 #endif
 
 vkr_internal int vkr_bakery_tool_exec(int argc, char **argv);
@@ -48,6 +49,8 @@ vkr_internal const VkrBakeryTool vkr_bakery_tools[] = {
      "Anisotropic LTC table generator: <output.inc>"},
     {"diffuse-baker", vkr_diffuse_baker_tool_main,
      "CPU diffuse-volume baker (used by the diffuse_volume producer)."},
+    {"lightmap-baker", vkr_lightmap_baker_tool_main,
+     "CPU static-light lightmap baker (ADR-087); measures transport cost."},
 #endif
     {"exec", vkr_bakery_tool_exec,
      "Runs an external command and records its CPU time and peak memory."},

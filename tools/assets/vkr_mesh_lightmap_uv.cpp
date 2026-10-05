@@ -83,9 +83,12 @@ vkr_mesh_lightmap_uv_generate(const VkrMeshLightmapUvInput *input,
   pack_options.padding = input->padding;
   pack_options.texelsPerUnit = input->texels_per_unit * extent;
   pack_options.bilinear = true;
-  /* Block-compressed lightmap layers keep each chart inside whole 4x4
-     blocks. */
-  pack_options.blockAlign = true;
+  /* No 4x4 block alignment: Bistro's many sub-texel detail charts each
+     grew to a whole block plus padding, so aligned atlases needed 40.3
+     million scene texels against 32.1 million unaligned for the same 4.3
+     million covered texels. Chart padding still separates block-compressed
+     neighbors' filtering. */
+  pack_options.blockAlign = false;
   xatlas::Generate(atlas, chart_options, pack_options);
 
   if (atlas->meshCount != 1u || atlas->width == 0u || atlas->height == 0u ||

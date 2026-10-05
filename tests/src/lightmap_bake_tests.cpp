@@ -52,7 +52,7 @@ void test_pack_sizes_and_places_rects() {
       make_instance(4u, 600u, 300u, 1.0f) // larger than a page
   };
   VkrBakeLightmapLayout layout;
-  assert(vkr_bake_lightmap_pack(instances, 256u, 1.0f, &layout));
+  assert(vkr_bake_lightmap_pack(instances, 256u, 8.0f, &layout));
   assert(layout.rect_by_instance.size() == 5u);
   assert(layout.rect_by_instance[2] == UINT32_MAX);
   const VkrBakeLightmapRect &unit = layout.rects[layout.rect_by_instance[0]];
@@ -72,7 +72,7 @@ void test_pack_sizes_and_places_rects() {
       assert(!rects_overlap(rect, layout.rects[j]));
   }
   VkrBakeLightmapLayout rejected;
-  assert(!vkr_bake_lightmap_pack(instances, 250u, 1.0f, &rejected));
+  assert(!vkr_bake_lightmap_pack(instances, 250u, 8.0f, &rejected));
   assert(!vkr_bake_lightmap_pack(instances, 256u, 0.0f, &rejected));
   printf("  test_pack_sizes_and_places_rects PASSED\n");
 }
@@ -101,7 +101,7 @@ void test_rasterize_covers_a_quad_once() {
   std::vector<VkrBakeLightmapInstance> instances = {
       make_instance(0u, 8u, 8u, 1.0f)};
   VkrBakeLightmapLayout layout;
-  assert(vkr_bake_lightmap_pack(instances, 64u, 1.0f, &layout));
+  assert(vkr_bake_lightmap_pack(instances, 64u, 8.0f, &layout));
   std::vector<VkrBakeLightmapTexel> texels;
   assert(vkr_bake_lightmap_rasterize_page(triangles, 3u, layout, 0u, &texels));
   assert(texels.size() == 64u);
@@ -168,7 +168,7 @@ void test_cooked_cube_texels_lie_on_its_faces() {
   }
 
   VkrBakeLightmapLayout layout;
-  assert(vkr_bake_lightmap_pack(cube.instances, 256u, 1.0f, &layout));
+  assert(vkr_bake_lightmap_pack(cube.instances, 256u, 16.0f, &layout));
   size_t texel_count = 0u;
   size_t rect_area = 0u;
   uint32_t faces_seen = 0u;

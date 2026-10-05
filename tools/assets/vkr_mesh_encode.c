@@ -965,8 +965,8 @@ typedef struct VkrMeshCookedUnwrapOutput {
  */
 vkr_internal bool8_t vkr_mesh_cooked_unwrap_source_mesh(
     const VkrMeshCookedEncodeInfo *info, uint32_t first_index,
-    uint32_t end_index, VkrMeshCookedUnwrapOutput *output,
-    VkrMeshCookedLightmapAtlas *out_atlas) {
+    uint32_t end_index, float32_t requested_texels_per_unit,
+    VkrMeshCookedUnwrapOutput *output, VkrMeshCookedLightmapAtlas *out_atlas) {
   const VkrVertex3d *vertices = (const VkrVertex3d *)info->mesh_buffer.vertices;
   const uint32_t *indices = (const uint32_t *)info->mesh_buffer.indices;
   uint32_t min_vertex = UINT32_MAX;
@@ -980,7 +980,7 @@ vkr_internal bool8_t vkr_mesh_cooked_unwrap_source_mesh(
     output->local_indices[i] = indices[first_index + i] - min_vertex;
   }
 
-  float32_t texels_per_unit = info->lightmap.texels_per_unit;
+  float32_t texels_per_unit = requested_texels_per_unit;
   VkrMeshLightmapUvAtlas *atlas = NULL;
   VkrMeshLightmapUvInfo atlas_info = {0};
   VkrMeshLightmapUvStatus status = VKR_MESH_LIGHTMAP_UV_TOO_LARGE;
@@ -1034,7 +1034,7 @@ vkr_internal bool8_t vkr_mesh_cooked_unwrap_source_mesh(
               atlas_info.height);
     return false_v;
   }
-  if (texels_per_unit != info->lightmap.texels_per_unit) {
+  if (texels_per_unit != requested_texels_per_unit) {
     log_warn("MeshCooked: lightmap density for indices [%u, %u) lowered to "
              "%g texels per unit to fit %u texels",
              first_index, end_index, texels_per_unit, info->lightmap.max_size);
@@ -1064,6 +1064,51 @@ vkr_internal bool8_t vkr_mesh_cooked_unwrap_source_mesh(
       .texels_per_unit = texels_per_unit,
   };
   return true_v;
+}
+
+/**
+ * Writes, per source mesh, the largest uniform scale among the source nodes
+ * that instance it: the cube root of the absolute determinant of the node's
+ * world transform within the source hierarchy. A mesh no node instances, or
+ * a degenerate scale, takes one.
+ */
+vkr_internal void
+vkr_mesh_cooked_source_mesh_scales(const VkrMeshSource *source,
+                                   float32_t *out_scales) {
+  for (uint64_t m = 0; m < source->meshes.length; ++m) {
+    out_scales[m] = 0.0f;
+  }
+  for (uint64_t i = 0; i < source->nodes.length; ++i) {
+    const VkrMeshSourceNode *node = &source->nodes.data[i];
+    if (node->mesh_variant == UINT32_MAX ||
+        node->mesh_variant >= source->meshes.length) {
+      continue;
+    }
+    Mat4 world = node->local;
+    uint32_t parent = node->parent;
+    for (uint64_t depth = 0;
+         parent != UINT32_MAX && parent < source->nodes.length &&
+         depth < source->nodes.length;
+         ++depth) {
+      world = mat4_mul(source->nodes.data[parent].local, world);
+      parent = source->nodes.data[parent].parent;
+    }
+    const float32_t *e = world.elements;
+    const float64_t determinant =
+        (float64_t)e[0] * ((float64_t)e[5] * e[10] - (float64_t)e[6] * e[9]) -
+        (float64_t)e[4] * ((float64_t)e[1] * e[10] - (float64_t)e[2] * e[9]) +
+        (float64_t)e[8] * ((float64_t)e[1] * e[6] - (float64_t)e[2] * e[5]);
+    const float32_t scale = (float32_t)cbrt(fabs(determinant));
+    if (isfinite(scale)) {
+      out_scales[node->mesh_variant] =
+          Max(out_scales[node->mesh_variant], scale);
+    }
+  }
+  for (uint64_t m = 0; m < source->meshes.length; ++m) {
+    if (!(out_scales[m] > 0.0f) || !isfinite(out_scales[m])) {
+      out_scales[m] = 1.0f;
+    }
+  }
 }
 
 /**
@@ -1118,6 +1163,19 @@ vkr_internal bool8_t vkr_mesh_cooked_unwrap_lightmap(
     return false_v;
   }
   MemZero(atlases, (uint64_t)atlas_count * sizeof(*atlases));
+  /* The requested density is per unit of the source's world space; each
+     mesh unwraps at the density its largest instance needs in its own
+     units, and atlases record that local density. */
+  float32_t *mesh_scales = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)atlas_count * sizeof(*mesh_scales),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!mesh_scales) {
+    return false_v;
+  }
+  mesh_scales[0] = 1.0f;
+  if (source->meshes.length) {
+    vkr_mesh_cooked_source_mesh_scales(source, mesh_scales);
+  }
 
   /* Each source mesh's ranges must tile one contiguous index span, and the
      spans together every index, so the unwrap rewrites every index once. */
@@ -1145,8 +1203,9 @@ vkr_internal bool8_t vkr_mesh_cooked_unwrap_lightmap(
       }
       next_index += info->ranges[r].index_count;
     }
-    if (!vkr_mesh_cooked_unwrap_source_mesh(info, first_index, next_index,
-                                            &output, &atlases[m])) {
+    if (!vkr_mesh_cooked_unwrap_source_mesh(
+            info, first_index, next_index,
+            options->texels_per_unit * mesh_scales[m], &output, &atlases[m])) {
       return false_v;
     }
   }

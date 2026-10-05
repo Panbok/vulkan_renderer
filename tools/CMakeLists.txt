@@ -213,6 +213,10 @@ add_library(vkr_diffuse_baker STATIC vkr_diffuse_baker.cpp)
 vkr_configure_cooker_target(vkr_diffuse_baker)
 target_compile_features(vkr_diffuse_baker PRIVATE cxx_std_17)
 target_link_libraries(vkr_diffuse_baker PRIVATE vkr_bake_core)
+add_library(vkr_lightmap_baker STATIC vkr_lightmap_baker.cpp)
+vkr_configure_cooker_target(vkr_lightmap_baker)
+target_compile_features(vkr_lightmap_baker PRIVATE cxx_std_17)
+target_link_libraries(vkr_lightmap_baker PRIVATE vkr_bake_core)
 
 add_library(vkr_mesh_cooker STATIC
     vkr_mesh_cooker.c

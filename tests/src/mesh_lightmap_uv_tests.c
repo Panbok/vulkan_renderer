@@ -137,7 +137,6 @@ static uint32_t test_lightmap_check(const TestLightmapMesh *mesh,
   assert(info->index_count == mesh->index_count);
   assert(info->vertex_count >= mesh->vertex_count);
   assert(info->chart_count >= 1u);
-  assert(info->width % 4u == 0u && info->height % 4u == 0u);
 
   /* Face order and corner order survive: every output corner copies the
      input corner at the same position in the index list. */

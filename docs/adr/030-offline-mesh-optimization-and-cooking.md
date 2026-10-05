@@ -84,8 +84,14 @@ header flag `VKR_MESH_COOKED_FLAG_LIGHTMAP_UV` (bit 0 of the formerly zero
 flags word). Before range encoding, the cooker unwraps each source mesh, or
 the whole artifact when it has none, into its own chart atlas with xatlas
 ([`vkr_mesh_lightmap_uv.h`](../../tools/assets/vkr_mesh_lightmap_uv.h)):
-block-aligned charts, two-texel padding and at most 4,096 texels per edge,
-halving the density up to three times for a larger mesh. Each mesh is scaled
+two-texel padding and at most 4,096 texels per edge, halving the density up
+to three times for a larger mesh. The recipe density is per unit of the
+source's world space: each mesh unwraps at that density times the largest
+uniform scale among the source nodes that instance it, and its atlas records
+the resulting local density. Charts are not aligned to 4×4 blocks: Bistro's
+sub-texel detail charts each grew to a whole block, so aligned atlases needed
+40.3 million scene texels against 32.1 million for the same 4.3 million
+covered texels. Each mesh is scaled
 to a unit extent first, because xatlas drops faces below a fixed area as
 degenerate; a mesh that still forms no chart keeps its vertices with zero UV2
 and an all-zero atlas. Instances of one source mesh share its UV2 and take

@@ -31,9 +31,9 @@ float32_t edge(float32_t ax, float32_t ay, float32_t bx, float32_t by,
 
 bool vkr_bake_lightmap_pack(
     const std::vector<VkrBakeLightmapInstance> &instances, uint32_t page_size,
-    float32_t density_scale, VkrBakeLightmapLayout *out_layout) {
+    float32_t texels_per_world_unit, VkrBakeLightmapLayout *out_layout) {
   if (!out_layout || page_size == 0u || page_size % 4u != 0u ||
-      !std::isfinite(density_scale) || density_scale <= 0.0f) {
+      !std::isfinite(texels_per_world_unit) || texels_per_world_unit <= 0.0f) {
     return false;
   }
   try {
@@ -50,7 +50,11 @@ bool vkr_bake_lightmap_pack(
       if (instance.atlas_width == 0u || instance.atlas_height == 0u) {
         continue;
       }
-      const float32_t scale = instance_scale(instance.world) * density_scale;
+      if (!(instance.texels_per_unit > 0.0f)) {
+        return false;
+      }
+      const float32_t scale = instance_scale(instance.world) *
+                              texels_per_world_unit / instance.texels_per_unit;
       if (!std::isfinite(scale) || scale <= 0.0f) {
         return false;
       }
