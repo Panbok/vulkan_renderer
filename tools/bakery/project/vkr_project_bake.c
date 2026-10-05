@@ -766,6 +766,78 @@ vkr_internal bool8_t vkr_project_bake_probes(VkrProjectJob *job,
   return true_v;
 }
 
+/* A published scene-bake artifact and the scene block that references it. */
+typedef struct VkrProjectBakeArtifact {
+  const char *scene_key;
+  const char *kind;
+  const char *name;
+  const char *role;
+  const char *tool;
+  const char *destination;
+  const char *revision;
+  VkrBakeryJson *settings;
+  /* The record the scene block referenced before this bake, if any; the
+     new record keeps its id and replaces it. */
+  VkrBakeryJson *previous;
+} VkrProjectBakeArtifact;
+
+/* Records a published bake artifact in the scene's assets and points the
+   scene block at it. */
+vkr_internal bool8_t vkr_project_record_bake_artifact(
+    VkrProjectJob *job, VkrBakeryJson *scene, const char *asset_root,
+    const VkrProjectBakeArtifact *artifact) {
+  Arena *arena = job->arena;
+  const char *path_reference = NULL;
+  char hash[VKR_BAKERY_SHA256_HEX];
+  VKR_PROJECT_TRY(vkr_project_managed_reference(job, artifact->destination,
+                                                asset_root, &path_reference));
+  VKR_PROJECT_TRY(vkr_project_digest(job, artifact->destination, hash));
+  char id[37];
+  vkr_project_uuid4(id);
+  VkrBakeryJson *record = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, record, "id", vkr_bakery_json_cstr(arena, id));
+  vkr_bakery_json_set(arena, record, "kind",
+                      vkr_bakery_json_cstr(arena, artifact->kind));
+  vkr_bakery_json_set(arena, record, "name",
+                      vkr_bakery_json_cstr(arena, artifact->name));
+  vkr_bakery_json_set(arena, record, "import_id",
+                      vkr_bakery_json_cstr(arena, artifact->revision));
+  vkr_bakery_json_set(arena, record, "source", vkr_bakery_json_null(arena));
+  VkrBakeryJson *artifacts = vkr_bakery_json_array(arena);
+  VkrBakeryJson *product = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, product, "role",
+                      vkr_bakery_json_cstr(arena, artifact->role));
+  vkr_bakery_json_set(arena, product, "path",
+                      vkr_bakery_json_cstr(arena, path_reference));
+  vkr_bakery_json_set(arena, product, "version", vkr_bakery_json_int(arena, 1));
+  vkr_bakery_json_append(artifacts, product);
+  vkr_bakery_json_set(arena, record, "artifacts", artifacts);
+  vkr_bakery_json_set(
+      arena, record, "fingerprint",
+      vkr_bakery_json_cstr(arena, vkr_project_printf(job, "sha256:%s", hash)));
+  VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, recipe, "tool",
+                      vkr_bakery_json_cstr(arena, artifact->tool));
+  vkr_bakery_json_set(arena, recipe, "version", vkr_bakery_json_int(arena, 1));
+  vkr_bakery_json_set(arena, recipe, "settings", artifact->settings);
+  vkr_bakery_json_set(arena, record, "recipe", recipe);
+  if (artifact->previous) {
+    vkr_bakery_json_set(
+        arena, record, "id",
+        vkr_bakery_json_clone(arena,
+                              vkr_bakery_json_get(artifact->previous, "id")));
+    vkr_project_remove_record(job->assets, artifact->previous);
+  }
+  vkr_bakery_json_append(job->assets, record);
+  VkrBakeryJson *block = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, block, "asset",
+                      vkr_project_reference(job, "scene",
+                                            vkr_project_json_text(record, "id"),
+                                            artifact->role));
+  vkr_bakery_json_set(arena, scene, artifact->scene_key, block);
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
                                              VkrBakeryJson *scene,
                                              const char *asset_root) {
@@ -864,55 +936,120 @@ vkr_internal bool8_t vkr_project_bake_volume(VkrProjectJob *job,
       return vkr_project_fail(job,
                               "Diffuse baker did not publish its artifact");
     }
-    const char *path_reference = NULL;
-    char hash[VKR_BAKERY_SHA256_HEX];
-    VKR_PROJECT_TRY(vkr_project_managed_reference(job, destination, asset_root,
-                                                  &path_reference));
-    VKR_PROJECT_TRY(vkr_project_digest(job, destination, hash));
-    char id[37];
-    vkr_project_uuid4(id);
-    VkrBakeryJson *record = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, record, "id", vkr_bakery_json_cstr(arena, id));
-    vkr_bakery_json_set(arena, record, "kind",
-                        vkr_bakery_json_cstr(arena, "volume"));
-    vkr_bakery_json_set(arena, record, "name",
-                        vkr_bakery_json_cstr(arena, "Diffuse volume"));
-    vkr_bakery_json_set(arena, record, "import_id",
-                        vkr_bakery_json_cstr(arena, revision));
-    vkr_bakery_json_set(arena, record, "source", vkr_bakery_json_null(arena));
-    VkrBakeryJson *artifacts = vkr_bakery_json_array(arena);
-    VkrBakeryJson *product = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, product, "role",
-                        vkr_bakery_json_cstr(arena, "volume"));
-    vkr_bakery_json_set(arena, product, "path",
-                        vkr_bakery_json_cstr(arena, path_reference));
-    vkr_bakery_json_set(arena, product, "version",
-                        vkr_bakery_json_int(arena, 1));
-    vkr_bakery_json_append(artifacts, product);
-    vkr_bakery_json_set(arena, record, "artifacts", artifacts);
-    vkr_bakery_json_set(arena, record, "fingerprint",
-                        vkr_bakery_json_cstr(
-                            arena, vkr_project_printf(job, "sha256:%s", hash)));
-    VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, recipe, "tool",
-                        vkr_bakery_json_cstr(arena, "diffuse"));
-    vkr_bakery_json_set(arena, recipe, "version",
-                        vkr_bakery_json_int(arena, 1));
-    vkr_bakery_json_set(arena, recipe, "settings", settings);
-    vkr_bakery_json_set(arena, record, "recipe", recipe);
+    const VkrProjectBakeArtifact artifact = {
+        .scene_key = "diffuse_volume",
+        .kind = "volume",
+        .name = "Diffuse volume",
+        .role = "volume",
+        .tool = "diffuse",
+        .destination = destination,
+        .revision = revision,
+        .settings = settings,
+        .previous = previous,
+    };
+    VKR_PROJECT_TRY(
+        vkr_project_record_bake_artifact(job, scene, asset_root, &artifact));
+  }
+  vkr_bakery_json_set(arena, scene, "assets", job->assets);
+  return true_v;
+}
+
+/* Bakes the scene's lightmap set (ADR-087) from the effective runtime scene
+   into a new build revision and points the scene's `lightmaps` block at it.
+   A scene whose models carry no lightmap UVs drops any previous set. */
+vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
+                                                VkrBakeryJson *scene,
+                                                const char *asset_root) {
+  Arena *arena = job->arena;
+  VkrBakeryJson *bake_scene = vkr_bakery_json_clone(arena, scene);
+  vkr_bakery_json_remove(bake_scene, "lightmaps");
+  VkrBakeryJson *runtime =
+      vkr_project_effective_bake_runtime(job, bake_scene, asset_root);
+  VKR_PROJECT_TRY(runtime);
+  char revision[37];
+  vkr_project_uuid4(revision);
+  char directory[VKR_PROJECT_PATH];
+  (void)snprintf(directory, sizeof(directory), "%s/builds/%s", asset_root,
+                 revision);
+  if (vkr_project_exists(directory)) {
+    return vkr_project_fail(job, "[Errno 17] File exists: '%s'", directory);
+  }
+  VKR_PROJECT_TRY(vkr_project_make_dirs(job, directory));
+  const char *destination =
+      vkr_project_printf(job, "%s/lightmaps.vklm", directory);
+  VkrProjectArguments arguments = {0};
+  const char *fixed[] = {"bake",
+                         "lightmap",
+                         "--workspace-root",
+                         job->workspace,
+                         "--scene",
+                         vkr_project_json_text(runtime, "runtime_path"),
+                         "--output",
+                         destination};
+  for (uint32_t i = 0u; i < ArrayCount(fixed); ++i) {
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, fixed[i]));
+  }
+  const VkrBakeryJson *requested =
+      vkr_bakery_json_get(job->request, "lightmap_settings");
+  VkrBakeryJson *settings = requested ? vkr_bakery_json_clone(arena, requested)
+                                      : vkr_bakery_json_object(arena);
+  static const char *const scalars[] = {"samples", "max_depth", "seed",
+                                        "page_size", "texels_per_unit"};
+  for (uint32_t i = 0u; i < ArrayCount(scalars); ++i) {
+    const VkrBakeryJson *value = vkr_bakery_json_get(settings, scalars[i]);
+    if (!value) {
+      continue;
+    }
+    char flag[64];
+    (void)snprintf(flag, sizeof(flag), "--%s", scalars[i]);
+    for (char *c = flag + 2; *c; ++c) {
+      if (*c == '_') {
+        *c = '-';
+      }
+    }
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments,
+                                              vkr_project_strdup(job, flag)));
+    VKR_PROJECT_TRY(vkr_project_argument_push(
+        job, &arguments, vkr_project_argument(job, value)));
+  }
+  int32_t code = 0;
+  VKR_PROJECT_TRY(vkr_project_run_bakery(
+      job, arguments.items, arguments.count, "Baking lightmaps", "lightmap",
+      VKR_PROJECT_LIGHTMAP_NO_INSTANCES, &code));
+  const VkrBakeryJson *previous_reference =
+      vkr_bakery_json_get(vkr_bakery_json_get(scene, "lightmaps"), "asset");
+  VkrBakeryJson *previous = vkr_project_record_by_id(
+      job->assets, vkr_project_json_text(previous_reference, "id"));
+  if (code == VKR_PROJECT_LIGHTMAP_NO_INSTANCES) {
+    (void)vkr_project_remove_tree(directory);
     if (previous) {
-      vkr_bakery_json_set(
-          arena, record, "id",
-          vkr_bakery_json_clone(arena, vkr_bakery_json_get(previous, "id")));
       vkr_project_remove_record(job->assets, previous);
     }
-    vkr_bakery_json_append(job->assets, record);
-    VkrBakeryJson *volume = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(
-        arena, volume, "asset",
-        vkr_project_reference(job, "scene", vkr_project_json_text(record, "id"),
-                              "volume"));
-    vkr_bakery_json_set(arena, scene, "diffuse_volume", volume);
+    vkr_bakery_json_remove(scene, "lightmaps");
+    const char *warning =
+        "Lightmaps skipped: no scene model carries lightmap UVs; cook models "
+        "with lightmap_texels_per_unit to bake them";
+    vkr_bakery_json_append(job->warnings, vkr_bakery_json_cstr(arena, warning));
+    printf("Warning: %s\n", warning);
+    fflush(stdout);
+  } else {
+    if (!vkr_bakery_is_file(destination)) {
+      return vkr_project_fail(job,
+                              "Lightmap baker did not publish its artifact");
+    }
+    const VkrProjectBakeArtifact artifact = {
+        .scene_key = "lightmaps",
+        .kind = "lightmap",
+        .name = "Lightmaps",
+        .role = "lightmap",
+        .tool = "lightmap",
+        .destination = destination,
+        .revision = revision,
+        .settings = settings,
+        .previous = previous,
+    };
+    VKR_PROJECT_TRY(
+        vkr_project_record_bake_artifact(job, scene, asset_root, &artifact));
   }
   vkr_bakery_json_set(arena, scene, "assets", job->assets);
   return true_v;
@@ -948,6 +1085,9 @@ bool8_t vkr_project_perform_bakes(VkrProjectJob *job, VkrBakeryJson *scene,
   }
   if (vkr_project_truthy(vkr_bakery_json_get(bakes, "diffuse"))) {
     VKR_PROJECT_TRY(vkr_project_bake_volume(job, scene, asset_root));
+  }
+  if (vkr_project_truthy(vkr_bakery_json_get(bakes, "lightmap"))) {
+    VKR_PROJECT_TRY(vkr_project_bake_lightmaps(job, scene, asset_root));
   }
   return true_v;
 }

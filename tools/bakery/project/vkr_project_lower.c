@@ -629,21 +629,31 @@ VkrBakeryJson *vkr_project_lower(VkrProjectJob *job, VkrBakeryJson *scene,
       return NULL;
     }
   }
-  VkrBakeryJson *volume = vkr_bakery_json_get(runtime, "diffuse_volume");
-  if (vkr_project_truthy(volume)) {
-    if (vkr_bakery_json_get(volume, "path")) {
-      vkr_project_fail(job, "Managed volume contains a legacy path");
+  /* Baked scene blocks reference their managed artifact; the runtime reads
+     a path (ADR-054, ADR-087). */
+  static const struct {
+    const char *key;
+    const char *role;
+  } baked_blocks[] = {{"diffuse_volume", "volume"}, {"lightmaps", "lightmap"}};
+  for (uint32_t b = 0u; b < ArrayCount(baked_blocks); ++b) {
+    VkrBakeryJson *block = vkr_bakery_json_get(runtime, baked_blocks[b].key);
+    if (!vkr_project_truthy(block)) {
+      continue;
+    }
+    if (vkr_bakery_json_get(block, "path")) {
+      vkr_project_fail(job, "Managed %s contains a legacy path",
+                       baked_blocks[b].key);
       return NULL;
     }
-    VkrBakeryJson *reference = vkr_bakery_json_get(volume, "asset");
+    VkrBakeryJson *reference = vkr_bakery_json_get(block, "asset");
     if (reference) {
-      vkr_bakery_json_remove(volume, "asset");
+      vkr_bakery_json_remove(block, "asset");
       char path[VKR_PROJECT_PATH];
-      if (!vkr_project_lower_asset(&lowering, reference, "volume", path, NULL,
-                                   NULL)) {
+      if (!vkr_project_lower_asset(&lowering, reference, baked_blocks[b].role,
+                                   path, NULL, NULL)) {
         return NULL;
       }
-      vkr_bakery_json_set(arena, volume, "path",
+      vkr_bakery_json_set(arena, block, "path",
                           vkr_bakery_json_cstr(arena, path));
     }
   }

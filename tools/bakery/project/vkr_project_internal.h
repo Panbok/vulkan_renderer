@@ -26,6 +26,8 @@
 #define VKR_PROJECT_MAX_ENTITIES 65536u
 /* bake_diffuse_volume status: no closed-room cell, so no volume published. */
 #define VKR_PROJECT_DIFFUSE_NO_ROOM_CELLS 3
+/* bake lightmap status: no model carries lightmap UVs (ADR-087). */
+#define VKR_PROJECT_LIGHTMAP_NO_INSTANCES 4
 #define VKR_PROJECT_UNREFERENCED_GRACE_SECONDS (24 * 60 * 60)
 #define VKR_PROJECT_ORPHAN_GRACE_SECONDS (60 * 60)
 #define VKR_PROJECT_JOB_RETENTION_SECONDS (7 * 24 * 60 * 60)

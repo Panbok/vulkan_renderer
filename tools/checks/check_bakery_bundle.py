@@ -23,8 +23,8 @@ HEADER = struct.Struct('<4sIIIQQQQQ32s40s')
 CHUNK = struct.Struct('<32sQQIIQ')
 ENTRY = struct.Struct('<IIIIII')
 CHUNK_ZSTD = 1
-# Mesh, texture and volume entries stay mappable, never compressed.
-MAPPED_LOADERS = {2, 3, 8}
+# Mesh, texture, volume and lightmap entries stay mappable, never compressed.
+MAPPED_LOADERS = {2, 3, 8, 10}
 
 
 def decode_zstd(stored, decoded_size):

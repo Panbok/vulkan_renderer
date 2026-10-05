@@ -76,6 +76,9 @@ typedef enum VkrPackLoader {
   VKR_PACK_LOADER_COLLISION,
   VKR_PACK_LOADER_VOLUME,
   VKR_PACK_LOADER_JSON,
+  /* Baked lightmap sets (.vklm, ADR-087); appended so earlier values keep
+     their meaning in existing archives. */
+  VKR_PACK_LOADER_LIGHTMAP,
   VKR_PACK_LOADER_COUNT
 } VkrPackLoader;
 

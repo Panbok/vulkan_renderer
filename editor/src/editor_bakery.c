@@ -103,6 +103,7 @@ struct VkrEditorBakery {
   bool8_t scene_bake_requested;
   bool8_t reflection;
   bool8_t diffuse;
+  bool8_t lightmap;
   uint8_t source_paths[EDITOR_BAKE_KIND_COUNT][EDITOR_BAKERY_PATH_CAPACITY];
   uint32_t source_lengths[EDITOR_BAKE_KIND_COUNT];
   uint8_t output_paths[EDITOR_BAKE_KIND_COUNT][EDITOR_BAKERY_PATH_CAPACITY];
@@ -1713,17 +1714,21 @@ static void editor_bakery_managed_setup(VkrEditorBakery *bakery,
                         string8_lit("Scene diffuse volume"), &bakery->diffuse,
                         &widget);
   widget.placement.row = 4;
+  (void)vkr_ui_checkbox(ui, string8_lit("lightmap"),
+                        string8_lit("Scene lightmaps (Metal ray tracing)"),
+                        &bakery->lightmap, &widget);
+  widget.placement.row = 5;
   widget.disabled = !bakery->writable_scene || vkr_editor_bakery_busy(bakery);
   editor_bakery_tab_style(&widget, heading, true_v);
   if (vkr_ui_button(ui, string8_lit("prepare"),
                     string8_lit("Prepare selected scene outputs"), &widget)) {
     bakery->scene_bake_requested = true_v;
   }
-  widget = editor_bakery_widget(5, 0);
+  widget = editor_bakery_widget(6, 0);
   vkr_ui_label(ui, string8_lit("compiled"),
                string8_lit("Renderer source tables stay with the renderer."),
                &widget);
-  widget.placement.row = 6;
+  widget.placement.row = 7;
   vkr_ui_label(
       ui, string8_lit("content.hint"),
       string8_lit("Use Content to import, reimport or rebuild assets."),
@@ -1765,14 +1770,15 @@ bool8_t vkr_editor_bakery_scene_bake_available(const VkrEditorBakery *bakery) {
 }
 
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
-                                          bool8_t *reflection,
-                                          bool8_t *diffuse) {
+                                          bool8_t *reflection, bool8_t *diffuse,
+                                          bool8_t *lightmap) {
   if (!bakery || !bakery->scene_bake_requested) {
     return false_v;
   }
   bakery->scene_bake_requested = false_v;
   *reflection = bakery->reflection;
   *diffuse = bakery->diffuse;
+  *lightmap = bakery->lightmap;
   return true_v;
 }
 
@@ -1800,6 +1806,8 @@ bool8_t vkr_editor_bakery_write_settings(const VkrEditorBakery *bakery,
          vkr_json_writer_bool(writer, bakery->reflection) &&
          vkr_json_writer_name(writer, string8_lit("diffuse")) &&
          vkr_json_writer_bool(writer, bakery->diffuse) &&
+         vkr_json_writer_name(writer, string8_lit("lightmap")) &&
+         vkr_json_writer_bool(writer, bakery->lightmap) &&
          vkr_json_writer_end_object(writer);
 }
 
@@ -1810,10 +1818,13 @@ void vkr_editor_bakery_read_settings(VkrEditorBakery *bakery,
   }
   bakery->reflection = false_v;
   bakery->diffuse = false_v;
+  bakery->lightmap = false_v;
   VkrJsonReader reader = vkr_json_reader_from_string(settings);
   (void)vkr_json_get_bool(&reader, "reflection", &bakery->reflection);
   reader.pos = 0;
   (void)vkr_json_get_bool(&reader, "diffuse", &bakery->diffuse);
+  reader.pos = 0;
+  (void)vkr_json_get_bool(&reader, "lightmap", &bakery->lightmap);
 }
 
 void vkr_editor_bakery_build(VkrEditorBakery *bakery, VkrUiSystem *ui,

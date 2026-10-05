@@ -525,6 +525,7 @@ uint32_t vkr_bundle_loader(const char *identity) {
       {".vka", VKR_PACK_LOADER_ANIMATION},
       {".vkc", VKR_PACK_LOADER_COLLISION},
       {".vkdv", VKR_PACK_LOADER_VOLUME},
+      {".vklm", VKR_PACK_LOADER_LIGHTMAP},
       {".json", VKR_PACK_LOADER_JSON},
   };
   for (uint32_t i = 0u; i < ArrayCount(loaders); ++i) {
@@ -538,7 +539,8 @@ uint32_t vkr_bundle_loader(const char *identity) {
 vkr_internal uint32_t vkr_bundle_alignment(const char *identity) {
   const uint32_t loader = vkr_bundle_loader(identity);
   return loader == VKR_PACK_LOADER_MESH || loader == VKR_PACK_LOADER_TEXTURE ||
-                 loader == VKR_PACK_LOADER_VOLUME
+                 loader == VKR_PACK_LOADER_VOLUME ||
+                 loader == VKR_PACK_LOADER_LIGHTMAP
              ? VKR_PACK_MAPPABLE_ALIGNMENT
              : VKR_PACK_ALIGNMENT;
 }
@@ -584,9 +586,10 @@ vkr_internal bool8_t vkr_bundle_compress(const char *path, uint64_t size,
                                          uint64_t *out_size) {
   *out_data = NULL;
   *out_size = 0u;
+  /* Lightmap pages are ASTC blocks, which zstd barely shrinks. */
   if (loader == VKR_PACK_LOADER_MESH || loader == VKR_PACK_LOADER_TEXTURE ||
-      loader == VKR_PACK_LOADER_VOLUME || size < VKR_BUNDLE_COMPRESS_MIN ||
-      size > VKR_BUNDLE_COMPRESS_MAX) {
+      loader == VKR_PACK_LOADER_VOLUME || loader == VKR_PACK_LOADER_LIGHTMAP ||
+      size < VKR_BUNDLE_COMPRESS_MIN || size > VKR_BUNDLE_COMPRESS_MAX) {
     return true_v;
   }
   FILE *source = file_fopen(path, "rb");

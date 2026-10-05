@@ -275,6 +275,7 @@ struct VkrEditorProjects {
   bool8_t reflection_enabled;
   bool8_t bake_reflection;
   bool8_t bake_diffuse;
+  bool8_t bake_lightmap;
   bool8_t prepare_assets;
   ProjectProbeDraft probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t probe_count;
@@ -1544,6 +1545,7 @@ static void project_reset_scene_draft(VkrEditorProjects *projects) {
                                             .specular = 1};
   projects->bake_reflection = false_v;
   projects->bake_diffuse = false_v;
+  projects->bake_lightmap = false_v;
   projects->prepare_assets = true_v;
   projects->include_scene = true_v;
   projects->operation[0] = '\0';
@@ -1817,6 +1819,7 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
          project_json_bool(writer, "prepare_assets", true_v) &&
          project_json_bool(writer, "reflection", projects->bake_reflection) &&
          project_json_bool(writer, "diffuse", projects->bake_diffuse) &&
+         project_json_bool(writer, "lightmap", projects->bake_lightmap) &&
          vkr_json_writer_end_object(writer);
   }
   if (projects->operation[0]) {
@@ -4397,9 +4400,9 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
   project_set_primary_update(projects, editor, frame);
   if (!projects->job_id && !projects->waiting_activation &&
       strcmp(projects->operation, "delete_scene") &&
-      vkr_editor_bakery_take_scene_bake(editor->bakery,
-                                        &projects->bake_reflection,
-                                        &projects->bake_diffuse) &&
+      vkr_editor_bakery_take_scene_bake(
+          editor->bakery, &projects->bake_reflection, &projects->bake_diffuse,
+          &projects->bake_lightmap) &&
       projects->project &&
       projects->active_scene < projects->project->scene_count) {
     projects->pending_scene = projects->active_scene;

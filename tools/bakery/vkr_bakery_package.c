@@ -1355,8 +1355,8 @@ vkr_internal int vkr_package_compare_size(const void *lhs, const void *rhs) {
 
 vkr_internal const char *vkr_package_loader_name(uint32_t loader) {
   static const char *const names[] = {
-      "raw",  "scene",     "mesh",      "texture", "material",
-      "font", "animation", "collision", "volume",  "json"};
+      "raw",       "scene",     "mesh",   "texture", "material", "font",
+      "animation", "collision", "volume", "json",    "lightmap"};
   return loader < ArrayCount(names) ? names[loader] : "raw";
 }
 
