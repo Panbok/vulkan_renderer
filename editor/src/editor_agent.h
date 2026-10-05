@@ -35,5 +35,6 @@ struct VkrEditorOps *vkr_editor_agent_ops(VkrEditorAgent *agent);
 
 /* The per-user directory for the socket and captures: `$TMPDIR/vkr` (or
    `/tmp/vkr`), created with mode 0700; false unless it exists, belongs to
-   this user and admits no one else. */
+   this user and admits no one else. Windows creates `vkr` in the user's
+   temporary directory (GetTempPathW), which admits only that user. */
 bool8_t vkr_editor_agent_directory(char *out, uint64_t capacity);

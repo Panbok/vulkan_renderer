@@ -102,6 +102,8 @@ typedef enum VkrPlatformUserDirectory {
   VKR_PLATFORM_USER_SETTINGS = 0,
   /** %LOCALAPPDATA% on Windows; ~/Library/Caches on macOS. */
   VKR_PLATFORM_USER_CACHE,
+  /** GetTempPathW (%TMP% or %TEMP%) on Windows; $TMPDIR or /tmp on macOS. */
+  VKR_PLATFORM_USER_TEMP,
 } VkrPlatformUserDirectory;
 
 /** UTF-8 path of a per-user base directory with '/' separators and no

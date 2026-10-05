@@ -56,9 +56,12 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
   }
   path[0] = '\0';
   wchar_t directory[32768];
-  const DWORD length = GetEnvironmentVariableW(
-      kind == VKR_PLATFORM_USER_CACHE ? L"LOCALAPPDATA" : L"APPDATA", directory,
-      ArrayCount(directory));
+  const DWORD length =
+      kind == VKR_PLATFORM_USER_TEMP
+          ? GetTempPathW(ArrayCount(directory), directory)
+          : GetEnvironmentVariableW(
+                kind == VKR_PLATFORM_USER_CACHE ? L"LOCALAPPDATA" : L"APPDATA",
+                directory, ArrayCount(directory));
   if (!length || length >= ArrayCount(directory) ||
       !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, directory, -1, path,
                            (int)capacity, NULL, NULL)) {

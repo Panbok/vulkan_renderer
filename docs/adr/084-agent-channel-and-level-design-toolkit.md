@@ -138,7 +138,8 @@ bit of the request id, lends the poll result to the next build and releases it
 after that build; the harness owns the capture slot when it runs, and the
 request then fails. The editor converts RGBA8, BGRA8 or half-float color to an
 RGBA8 PNG of the Scene image rectangle, or of the whole window with `area`
-`window`, writes it to `$TMPDIR/vkr/captures/`, keeps the newest 32, and
+`window`, writes it to `$TMPDIR/vkr/captures/` (on Windows `vkr\captures`
+in the user's temporary directory), keeps the newest 32, and
 restores the previous view, grid labels and camera.
 
 ### MCP adapter

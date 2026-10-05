@@ -40,6 +40,22 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
     return false_v;
   }
   path[0] = '\0';
+  if (kind == VKR_PLATFORM_USER_TEMP) {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0]) {
+      tmp = "/tmp";
+    }
+    uint64_t length = strlen(tmp);
+    while (length > 1u && tmp[length - 1u] == '/') {
+      length--;
+    }
+    if (length >= capacity) {
+      return false_v;
+    }
+    MemCopy(path, tmp, length);
+    path[length] = '\0';
+    return true_v;
+  }
   const char *home = getenv("HOME");
   if (!home || !home[0]) {
     return false_v;

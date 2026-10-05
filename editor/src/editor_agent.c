@@ -4,6 +4,8 @@
 #include "editor_ops.h"
 
 #include "core/logger.h"
+#include "filesystem/filesystem.h"
+#include "platform/vkr_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -277,6 +279,32 @@ bool8_t vkr_editor_agent_submit(VkrEditorAgent *agent, const char *line) {
 // Socket
 // =============================================================================
 
+bool8_t vkr_editor_agent_directory(char *out, uint64_t capacity) {
+  char temp[512];
+  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_TEMP, temp,
+                                   sizeof(temp))) {
+    return false_v;
+  }
+  const int written = snprintf(out, capacity, "%s/vkr", temp);
+  if (written <= 0 || (uint64_t)written >= capacity) {
+    return false_v;
+  }
+#if defined(_WIN32)
+  /* The per-user temporary directory already admits only its user. */
+  const FilePath path = {
+      .path = string8_create_from_cstr((const uint8_t *)out, strlen(out)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  return file_create_directory(&path);
+#else
+  if (mkdir(out, 0700) != 0 && errno != EEXIST) {
+    return false_v;
+  }
+  struct stat info;
+  return lstat(out, &info) == 0 && S_ISDIR(info.st_mode) &&
+         info.st_uid == getuid() && (info.st_mode & 0077) == 0;
+#endif
+}
+
 #if !defined(_WIN32)
 
 static bool8_t agent_socket_live(const char *path) {
@@ -290,27 +318,6 @@ static bool8_t agent_socket_live(const char *path) {
       connect(fd, (struct sockaddr *)&address, sizeof(address)) == 0;
   close(fd);
   return live;
-}
-
-bool8_t vkr_editor_agent_directory(char *out, uint64_t capacity) {
-  const char *tmp = getenv("TMPDIR");
-  if (!tmp || !tmp[0]) {
-    tmp = "/tmp";
-  }
-  uint64_t length = strlen(tmp);
-  while (length > 1u && tmp[length - 1u] == '/') {
-    length--;
-  }
-  const int written = snprintf(out, capacity, "%.*s/vkr", (int)length, tmp);
-  if (written <= 0 || (uint64_t)written >= capacity) {
-    return false_v;
-  }
-  if (mkdir(out, 0700) != 0 && errno != EEXIST) {
-    return false_v;
-  }
-  struct stat info;
-  return lstat(out, &info) == 0 && S_ISDIR(info.st_mode) &&
-         info.st_uid == getuid() && (info.st_mode & 0077) == 0;
 }
 
 static bool8_t agent_listen(VkrEditorAgent *agent, const char *requested) {
@@ -474,14 +481,6 @@ static void agent_write(AgentClient *client) {
             client->out_length - sent_total);
     client->out_length -= sent_total;
   }
-}
-
-#else
-
-bool8_t vkr_editor_agent_directory(char *out, uint64_t capacity) {
-  (void)out;
-  (void)capacity;
-  return false_v;
 }
 
 #endif

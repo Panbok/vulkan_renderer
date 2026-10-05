@@ -10,6 +10,7 @@
 #include "filesystem/filesystem.h"
 #include "level/vkr_brush.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_partition.h"
@@ -31,7 +32,6 @@
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
-#include <unistd.h>
 #endif
 
 #define OPS_MALFORMED "VKR-AGENT-0001"
@@ -3430,10 +3430,14 @@ static bool8_t ops_capture_write(OpsContext *ctx, OpsPendingCapture *pending,
     snprintf(captures, sizeof(captures), "%s/captures", directory);
 #if !defined(_WIN32)
     (void)mkdir(captures, 0700);
-    const int pid = (int)getpid();
 #else
-    const int pid = 0;
+    const FilePath captures_path = {
+        .path = string8_create_from_cstr((const uint8_t *)captures,
+                                         strlen(captures)),
+        .type = FILE_PATH_TYPE_ABSOLUTE};
+    (void)file_create_directory(&captures_path);
 #endif
+    const int pid = (int)vkr_platform_get_process_id();
     const uint32_t serial = ++ctx->ops->capture_serial;
     snprintf(pending->path, sizeof(pending->path), "%s/capture-%d-%u.png",
              captures, pid, serial);
