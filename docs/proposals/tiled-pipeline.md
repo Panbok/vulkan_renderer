@@ -212,11 +212,28 @@ Proposed design:
 4. **Runtime.** Static surfaces in the tiled pipeline sample the lightmap
    layers; dynamic objects use the baked volumes and probes.
 
-Open: the unwrapper (a vendored library or an in-tree one), the encoding of
-lamp-group layers for normal-mapped surfaces (irradiance only or directional
-SH), how sun bounce light follows the sun (the sky transfer layer alone, or a
-few baked sun positions blended at runtime), texture compression for HDR
-layers on M-series, and the texel density budget for Bistro.
+Owner decisions (2026-10-05): `vkr_bakery` unwraps with vendored
+[xatlas](https://github.com/jpcy/xatlas) (MIT). Sun bounce light follows the
+day/night cycle through baked sun keys: four to eight sun positions baked as
+separate layers and blended at runtime by the current sun position.
+
+Open: the encoding of lamp-group and sun-key layers for normal-mapped surfaces
+(irradiance only or directional SH), the number of sun keys and their memory
+cost, texture compression for HDR layers on M-series, and the texel density
+budget for Bistro.
+
+Phases:
+
+1. UV2: vendor xatlas; an opt-in mesh recipe field unwraps and packs each mesh
+   into one normalized chart atlas with a recorded lightmap size; UV2 packs
+   into word 7 under a new packed-geometry version; both native decoders read
+   it.
+2. Separable bake: texel tracing in the ADR-054 baker with lamp-group,
+   sky and sun-key layers; project storage and the editor Bake panel.
+3. Time of day: light groups and mobility in scene data; a system driving
+   sun, moon, sky and group intensities.
+4. Tiled runtime: lightmap sampling in the tiled pipeline's forward shader,
+   measured against the 16.7 ms budget.
 
 ## Acceptance evidence
 
