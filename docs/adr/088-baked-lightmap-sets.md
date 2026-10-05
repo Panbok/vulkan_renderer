@@ -139,7 +139,9 @@ tints. It is a lightmap subset of the ADR-054 transport:
   color, instead of refracting it;
 - cutout and blended surfaces, the shadow walk, light falloff, cones,
   rectangle lights, the shading-normal side rules and Russian roulette follow
-  the CPU integrator;
+  the CPU integrator; directional lights, the atmosphere's key light among
+  them, always cast shadows, as the runtime's sun does
+  ([ADR-054](054-baked-diffuse-volumes.md));
 - normal maps, clearcoat, sheen, subsurface and anisotropy are not modeled.
 
 ### Encoding
@@ -245,6 +247,8 @@ texels per meter with deferred textures:
   integrator, per-texel RMS 0.79 and 0.72 of the sampling noise. With
   `--check-transport`: sky and emission +0.1% (z = 0.09); sun -0.85%
   (z = -1.8), of which -0.17% remains with Lambert materials and no glass.
+  These sun figures, and the Bistro sun-key luminances below, predate sun
+  shadows in bakes.
   Each layer on page 0 (1,060,457 texels, 16 samples) takes 6.2 to 7.1 s of
   GPU time, 2.4 to 2.7 million paths per second against 457,000 on the CPU.
 - Encoding, `--astc-effort 10`: 1.0 to 1.3 s per 4096 page, RMS log2
@@ -281,11 +285,11 @@ texels per meter with deferred textures:
   triangles, 23 lightmapped brushes on one 1,024 page, keyed by their
   document ids; the lightmaps published in 3.4 s and the volume (39 valid
   probes, 7 valid cells, two regions) in 5.2 s. Parity on that level at 2,048
-  samples: -0.12% overall, sky -0.02%, lamps +0.31% (z = 0.95), sun -0.80%.
-  Rebaking produced the same file digest.
+  samples before sun shadows: -0.12% overall, sky -0.02%, lamps +0.31%
+  (z = 0.95), sun -0.80%. Rebaking produced the same file digest.
 
 - Sun keys: the eight key atmospheres build in 6.8 s. On the blockout each
-  key layer bakes in 0.14 s, with mean luminance from 0.20 to 0.41 around
+  key layer bakes in 0.14 s, with mean luminance from 0.16 to 0.35 around
   the circle (that sun never sets: it stays 10 degrees above the horizon at
   its lowest). Bistro with eight keys and lamp group 0 at 16 samples: 180 s,
   131 s of it GPU time and 31 s encoding, 453 MB, 6.4 GB peak memory; key
@@ -301,10 +305,23 @@ texels per meter with deferred textures:
   layer table. CPU tests cover the loader fields and name rejection, the
   overlay round trip of a dynamic light's group, and VKLM name rules.
 
+- Sun shadows: the key light was baked unshadowed until model version 3, so
+  the blockout's sealed room, which no opening reaches, held sun-key light of
+  mean luminance 0.115 to 0.160 per key, and the eight keys' level means were
+  0.20 to 0.41. With the sun shadowed the sealed room holds 0 in every layer
+  and the key means fall 18 to 20% (0.16 to 0.35). Unshadowed, the sun-key
+  layers also differed between runs (three digests in six); shadowed, three
+  runs matched. Parity at 2,048 samples, seeds 1 and 7: overall -0.07% and
+  -0.11% (z = -1.3 and -2.1), sky -0.02%, sun -1.94% and -1.65% (z = -7.6
+  and -6.4, per-texel RMS 1.6 and 1.5 of the noise). Starting the GPU shadow
+  ray as the CPU does did not change the sun difference; its cause is not
+  identified.
+
 Unavailable: any runtime use, and a Windows or Vulkan host.
 
 ## Revisit when
 
 The tiled runtime samples lightmaps, the time-of-day system defines sun keys
-and drives group intensities, a level needs more than four baked groups, or
-the CPU path gains the layer split.
+and drives group intensities, a level needs more than four baked groups, the
+GPU sun-bounce bias against the CPU integrator is explained, or the CPU path
+gains the layer split.

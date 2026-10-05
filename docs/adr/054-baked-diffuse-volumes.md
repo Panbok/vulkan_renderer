@@ -37,7 +37,12 @@ lowered document with its authored overrides, then the project World's
 entities, then the overlay's editor-created entities, whose light edit values
 become the scene's light blocks and whose components carry over; a hidden
 created entity and its subtree stay out, as do dynamic lights, which no bake
-holds ([ADR-088](088-baked-lightmap-sets.md)). The bake scene loader builds every
+holds ([ADR-088](088-baked-lightmap-sets.md)). Directional lights, the
+atmosphere's key light among them, always cast shadows, as the runtime sun
+does through its cascades ([ADR-041](041-retained-cascaded-shadows.md)).
+Until atmosphere model version 3 (2026-10-05) bakes left them unshadowed, so
+sun light reached closed rooms; volumes and lightmaps baked before then need
+a rebake, which `--check` does not report. The bake scene loader builds every
 solid or visual brush from its `brush_face` children as the runtime does
 ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with the face
 material or the dev grid, and keeps each entity's document id. Verified 2026-10-05 on a blockout made

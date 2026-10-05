@@ -19,8 +19,10 @@ struct VkrBakeAtmosphere {
   std::vector<Vec3> source_rgb;
 };
 
-/* Version 2 adds the sunlit ground to below-horizon source radiance. */
-constexpr uint32_t VKR_BAKE_ATMOSPHERE_MODEL_VERSION = 2u;
+/* Version 2 adds the sunlit ground to below-horizon source radiance;
+   version 3 shadows directional lights, as the runtime shadows its sun,
+   where earlier bakes let their light through walls. */
+constexpr uint32_t VKR_BAKE_ATMOSPHERE_MODEL_VERSION = 3u;
 
 bool vkr_bake_atmosphere_build(VkrBakeAtmosphere *out,
                                const VkrAtmosphereSettings *settings);

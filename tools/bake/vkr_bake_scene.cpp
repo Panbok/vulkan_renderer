@@ -478,6 +478,8 @@ bool parse_directional_light(const VkrJsonReader *entity, EntityImport *out) {
   light.color = vec3_new(1.0f, 1.0f, 1.0f);
   light.intensity = 1.0f;
   light.direction = vec3_new(0.0f, -1.0f, 0.0f);
+  // The runtime sun always casts its cascaded shadows (ADR-041).
+  light.casts_shadow = true_v;
   light.enabled = true_v;
   (void)read_bool(&object, "enabled", &light.enabled);
   (void)read_vec3(&object, "color", &light.color);
@@ -1048,8 +1050,11 @@ bool8_t append_mesh_light(void *user, const VkrBakeMeshLight *source) {
     light.inner_cone_angle = source->inner_cone_angle;
     light.outer_cone_angle = source->outer_cone_angle;
     light.enabled = true_v;
-    // A model's own lights are static members of the default group.
-    if (light.kind != VkrBakeSceneLightKind::Directional)
+    // A model's own lights are static members of the default group; a
+    // directional one is shadowed like the runtime sun.
+    if (light.kind == VkrBakeSceneLightKind::Directional)
+      light.casts_shadow = true_v;
+    else
       std::snprintf(light.group, sizeof(light.group), "%s",
                     VKR_LIGHTMAP_DEFAULT_GROUP);
     context->scene->lights.push_back(light);
@@ -1446,6 +1451,7 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
           .direction = vec3_new(-key.x, -key.y, -key.z),
           .color = scene->atmosphere.observer_irradiance,
           .intensity = 1.0f,
+          .casts_shadow = true_v,
           .enabled = true_v,
       });
     }
