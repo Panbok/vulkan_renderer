@@ -120,6 +120,10 @@ typedef struct VkrMetalPacketPreparedPass {
       MTLSize groups;
     } histogram;
     struct {
+      uint64_t root;
+      uint32_t extent;
+    } cloud_sky_light;
+    struct {
       id<MTLComputePipelineState> pipeline;
       VkrMetalPacketGpuEncodeGroup
           groups[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];

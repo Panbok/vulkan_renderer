@@ -3888,6 +3888,15 @@
       "execute": "pass.clouds.trace"
     },
     {
+      "name": "Clouds.SkyLight",
+      "type": "compute",
+      "condition": "scene_rendering && clouds_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "execute": "pass.clouds.sky_light"
+    },
+    {
       "name": "Shadow.LocalMask",
       "type": "compute",
       "condition": "scene_rendering && local_shadows_active",

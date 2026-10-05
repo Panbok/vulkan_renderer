@@ -304,12 +304,9 @@ static float4 vkr_metal_packet_shade(
         frame->sh_coefficients[frame->sh_global_slot], sh_evaluation);
     diffuse += energy.diffuse_weight * (1.0 - metallic) * global_irradiance *
                base.rgb * ao * global_weight;
-    float3 global_prefiltered =
-        frame->prefilter
-            .sample(environment_sampler, reflection,
-                    level(roughness *
-                          float(max(frame->prefilter_mip_count, 1u) - 1u)))
-            .rgb;
+    float3 global_prefiltered = vkr_metal_packet_global_prefiltered(
+        frame, environment_sampler, reflection,
+        roughness * float(max(frame->prefilter_mip_count, 1u) - 1u));
     specular += global_prefiltered * energy.reflectance * specular_visibility *
                 global_weight;
     indirect_diffuse = diffuse * frame->ibl_controls.y * frame->ibl_controls.x;

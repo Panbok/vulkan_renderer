@@ -559,6 +559,55 @@ static float3 vkr_metal_environment_receiver_weight(
   return energy.reflectance * visibility;
 }
 
+// One level of this frame's cloud chain at a face coordinate, bilinear
+// within the face.
+static float4
+vkr_metal_packet_cloud_sky_light_level(constant VkrMetalPacketSky *sky,
+                                       VkrCloudSkyLightDirection at,
+                                       uint level) {
+  uint face_size = sky->cloud_sky_light_face_size;
+  int extent = int(max(face_size >> level, 1u));
+  float2 position = at.uv * float(extent) - 0.5f;
+  int2 base = int2(floor(position));
+  float2 blend = position - float2(base);
+  int2 limit = int2(extent - 1);
+  uint2 low = uint2(clamp(base, int2(0), limit));
+  uint2 high = uint2(clamp(base + 1, int2(0), limit));
+  // The face's rows, located once for all four taps.
+  device const float4 *face =
+      sky->cloud_sky_light +
+      vkr_cloud_sky_light_level_offset(face_size, level) +
+      at.face * uint(extent * extent);
+  device const float4 *row_low = face + low.y * uint(extent);
+  device const float4 *row_high = face + high.y * uint(extent);
+  float4 row0 = mix(row_low[low.x], row_low[high.x], blend.x);
+  float4 row1 = mix(row_high[low.x], row_high[high.x], blend.x);
+  return mix(row0, row1, blend.y);
+}
+
+// The global prefiltered sky along `reflection` at `lod`, seen through this
+// frame's cloud layer when its sky light ran (ADR-074). The cloud chain is
+// read at the level whose texels match the prefilter's.
+static float3 vkr_metal_packet_global_prefiltered(
+    constant VkrMetalPacketFrameRoot *frame, sampler environment_sampler,
+    float3 reflection, float lod) {
+  float3 clear =
+      frame->prefilter.sample(environment_sampler, reflection, level(lod)).rgb;
+  constant VkrMetalPacketSky *sky = frame->sky;
+  if (sky->cloud_sky_light_face_size == 0u)
+    return clear;
+  uint levels = vkr_cloud_sky_light_levels(sky->cloud_sky_light_face_size);
+  float chain_level = vkr_cloud_sky_light_level(
+      lod, max(frame->prefilter_mip_count, 1u), levels);
+  VkrCloudSkyLightDirection at = vkr_cloud_sky_light_direction(reflection);
+  uint fine = uint(chain_level);
+  uint coarse = min(fine + 1u, levels - 1u);
+  float4 cloud = mix(vkr_metal_packet_cloud_sky_light_level(sky, at, fine),
+                     vkr_metal_packet_cloud_sky_light_level(sky, at, coarse),
+                     chain_level - float(fine));
+  return vkr_cloud_sky_light_radiance(clear, cloud);
+}
+
 static VkrMetalPacketEnvironmentLighting
 vkr_metal_packet_environment_lighting(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
@@ -618,11 +667,9 @@ vkr_metal_packet_environment_lighting(
                             sh_evaluation) *
         global_weight;
   result.incoming_specular +=
-      frame->prefilter
-          .sample(environment_sampler, reflection,
-                  level(roughness *
-                        float(max(frame->prefilter_mip_count, 1u) - 1u)))
-          .rgb *
+      vkr_metal_packet_global_prefiltered(
+          frame, environment_sampler, reflection,
+          roughness * float(max(frame->prefilter_mip_count, 1u) - 1u)) *
       global_weight;
   result.specular_receiver_weight = result.ssr_receiver_weight *
                                     frame->ibl_controls.z *

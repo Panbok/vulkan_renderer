@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-01
+updated: 2026-10-05
 authority: adr
 ---
 
@@ -12,6 +12,11 @@ Accepted and implemented on both backends. Metal execution, API validation and
 the frame budget are verified; native Vulkan execution and bilateral image
 comparison remain unavailable on the development host, so the shader contract
 is **UNALIGNED** under [ADR-044](044-shader-cross-backend-contract.md).
+
+The cloud-lit sky light (2026-10-05) runs and passes Vulkan synchronization
+validation on the Windows host. Its Metal implementation has not been
+compiled, validated or timed: the Metal shader library, ABI reflection and the
+M1 budget for `Clouds.SkyLight` remain open gates.
 
 ## Context
 
@@ -104,8 +109,9 @@ way, with its phase-scaled irradiance and its own light march. The sun still
 lights high cloud after it sets at the observer, which gives twilight colour. A forward (g = 0.8) and backward (g = -0.3, weight
 0.3) Henyey-Greenstein mix scatters it over four multiple-scattering octaves
 that scale light extinction by 0.25, scattering by 0.5 and eccentricity by 0.5
-each. The sky light's L2 SH average, dimmed toward the layer base, supplies
-ambient light. Steps integrate energy-conservingly with unit albedo. Aerial
+each. The published sky source's own L2 SH average, dimmed toward the layer
+base, supplies ambient light; the sky record names that clear slot, so the
+layer never lights itself with the cloud-lit sky light below. Steps integrate energy-conservingly with unit albedo. Aerial
 perspective applies at the transmittance-weighted depth of the removed light
 in the over-feedback form `S * T_ap + S_ap * (1 - T_cloud)`, so the composite
 restores the atmosphere in front of the cloud.
@@ -134,13 +140,39 @@ sky-lit analytic fog multiplies its sun irradiance by the map at the camera.
 Every pass that evaluates the sun declares a read of `cloud_shadow` at binding
 33, and deferred lighting reads `cloud_history` at binding 34.
 
+`Clouds.SkyLight` puts the layer into the global sky light. For every texel
+of the published sky source's 16-texel mip it marches the layer from the
+camera along the texel's direction with 24 primary steps, a fixed mid-step
+offset and no aerial perspective (the volume covers only the view), and
+stores the in-scatter `S` and transmittance `T` in a frame-upload chain. `S`
+is pre-exposed, so it is brought into the source's `2^radiance_stops` scale.
+A second dispatch projects `L_clear * T + S` with the source's own deringing,
+through the same projection loop as the revision bake, into a per-frame-slot
+SH slot after the pool's slots (`VKR_SH_CLOUD_SLOT_FIRST`). A third averages
+the chain down to one texel per face, one workgroup per face. Frame roots
+prepared after the pass name the SH slot as the global sky light, and the sky
+record names the chain, so diffuse IBL, the sky ambient of sky-lit and froxel
+fog, reflection-probe blending and global prefiltered specular follow cloud
+cover. Global specular samples the clear prefilter, reads the chain
+bilinearly at the two levels whose texel size matches the prefilter's
+roughness level and composites the same way. The pass reads and writes no
+graph resource, enters the graph's first ready wave and ends with the barrier
+the revision bake uses for its SH writes. Without a published source it
+dispatches nothing, the clear slot stays global and the sky record names no
+chain.
+
 ## Consequences
 
-The sky, direct sunlight, fog and aerial perspective agree about cloud cover,
-and the layer drifts with its wind. The global sky light stays the clear-sky
-atmosphere: the revision bake does not include clouds, so image-based ambient
-and specular reflections show a clear sky, and a cloud that covers the sun
-does not dim the SH. Baked diffuse volumes likewise see a clear sky.
+The sky, direct sunlight, fog, aerial perspective and diffuse sky light agree
+about cloud cover, and the layer drifts with its wind. A surface in cloud
+shadow takes ambient light from the cloud layer as the camera sees it, not
+only from the clear sky, and sky reflections show the layer. The SH and the
+chain are global: they follow the camera's sky, not cloud shadow at each
+surface. The chain's 16-texel faces blur clouds in mirror-like reflections,
+where the clear prefilter stays sharp. Reflection probes and baked diffuse
+volumes, which bake offline, see a clear sky. A cloudless sky projects the
+16-texel mip instead of the bake's 32-texel mip, which changes the SH
+slightly. Deferred lighting pays for the chain lookup in global specular.
 
 The four-octave approximation underestimates multiple scattering in optically
 thick clouds, so front-lit faces render darker than a Lambertian reflector of
@@ -157,13 +189,19 @@ asset. Full-resolution tracing would march four times the rays of the
 measured 0.87 ms half-resolution pass, and dropping history would need more
 steps per frame for the same noise. A separate full-resolution composition pass
 would add work that the deferred sky branch, which already writes every sky
-pixel, absorbs. Coupling clouds into the revision bake needs a cloud ambient
-model that does not depend on the SH it produces, and matching Vulkan and CPU
-baker transport; it is deferred rather than approximated.
+pixel, absorbs. Coupling clouds into the revision bake would freeze a
+snapshot that the wind and camera make stale, and each rebake creates four
+textures; the per-frame 16-texel composite follows both for about 0.09 ms.
+Scaling the clear SH by coverage was declined: it has neither the clouds'
+direction nor their colour. Reflections read the chain from a buffer rather
+than a prefiltered cloud cube: a cube texture would need per-slot images and
+a prefilter pass, while the chain shares the frame-upload lifetime and its
+box-filtered levels stand in for the GGX lobe at the cloud's resolution.
 
 ## Revisit when
 
-Scenes need clouds in image-based lighting or reflections, multiple layers or
+Mirror-like reflections need sharp clouds, reflection probes need clouds,
+surfaces need local cloud-shadowed ambient, or scenes need multiple layers or
 cloud types, fly-through or above-cloud cameras, or a lower budget. Revisit the
 multiple-scattering model if front-lit clouds need calibrated brightness.
 
@@ -174,8 +212,30 @@ multiple-scattering model if front-lit clouds need calibrated brightness.
 - [Shared kernel](../../renderer/src/shaders/shared/cloud_kernel.slangh)
 - [Metal kernels](../../renderer/src/shaders/metal/msl/ibl/clouds.metal) and [Vulkan kernels](../../renderer/src/shaders/vulkan/slang/ibl/clouds.slang)
 - [Authored graph](../../assets/render_graphs/main.rendergraph.json)
+- Cloud-lit sky light: [Vulkan preparation](../../renderer/src/vulkan/vkr_vulkan_deferred.c), [Metal preparation](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc), the shared projection loops in [Vulkan](../../renderer/src/shaders/vulkan/slang/ibl/default.slang) and [Metal](../../renderer/src/shaders/metal/msl/ibl/sh_projection.metal), and the [SH slot layout](../../renderer/src/vkr_ibl_math.h)
 
 ## Verification
+
+Cloud-lit sky light, Vulkan Release on the Windows host (RX 6700 XT,
+1280x720), a scratch Bistro case looking down on the rooftops under the
+default layer (`clouds_bistro_local.scene.json`, coverage 0.5) with manual
+exposure: a roof in cloud shadow moved from sRGB (17, 31, 43) without the pass
+to (30, 39, 44) with it, and the visible sky stayed identical. One
+non-authoritative 16-frame process measured `Clouds.SkyLight` at 0.084 ms
+p50 (0.103 ms p95) beside a 0.199 ms `Clouds.Trace`; marching the 32-texel mip
+with 48 steps cost 0.22 ms for the same roof value. Debug Vulkan with
+`VK_LAYER_KHRONOS_validation` and synchronization validation reported no
+error for that case.
+
+Cloud-lit reflections, the same host and scene from the street-level camera
+of `bistro_bright_spot_snapshot` with SSR on: window glass that reflected
+blue sky reflects the grey layer overhead (a window region from sRGB
+(21, 25, 25) to (23, 26, 26), maximum pixel change 36 of 255, 2% of pixels
+above 4), and sky pixels are unchanged. Two non-authoritative 16-frame
+processes with and without the chain lookup measured
+`Lighting.Deferred.Fullscreen` at 1.473 and 1.428 ms p50 and
+`Clouds.SkyLight` at 0.089 and 0.091 ms. Debug synchronization validation of
+that case reported no error.
 
 The CPU suite checks the shadow-map centre against the sun ray's entry point
 into the base, the wind wrap, the render-mode rule and the authoring domain,

@@ -759,6 +759,9 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
     [renderer->cloud_noise_pipelines[i] release];
   [renderer->cloud_shadow_pipeline release];
   [renderer->cloud_trace_pipeline release];
+  [renderer->cloud_sky_light_pipeline release];
+  [renderer->cloud_sky_light_sh_pipeline release];
+  [renderer->cloud_sky_light_mips_pipeline release];
   [renderer->atmosphere_source_pipeline release];
   [renderer->atmosphere_multiple_scattering_pipeline release];
   [renderer->atmosphere_transmittance_pipeline release];

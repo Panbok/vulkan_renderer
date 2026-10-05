@@ -213,6 +213,35 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     [encoder dispatchThreadgroups:pass->histogram.groups
             threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
     break;
+  case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT: {
+    /* The march, then the projection and the chain that read its first
+       level; later passes in this encoder read the SH slot and the chain,
+       which no graph resource orders. */
+    const uint32_t extent = pass->cloud_sky_light.extent;
+    [renderer->argument_table setAddress:pass->cloud_sky_light.root atIndex:0u];
+    [encoder setComputePipelineState:renderer->cloud_sky_light_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(extent, extent, 6u)
+        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    [encoder setComputePipelineState:renderer->cloud_sky_light_sh_pipeline];
+    [encoder dispatchThreadgroups:MTLSizeMake(1u, 1u, 1u)
+            threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    [encoder setComputePipelineState:renderer->cloud_sky_light_mips_pipeline];
+    [encoder dispatchThreadgroups:MTLSizeMake(1u, 1u, 6u)
+            threadsPerThreadgroup:MTLSizeMake(VKR_CLOUD_SKY_LIGHT_FACE_SIZE,
+                                              VKR_CLOUD_SKY_LIGHT_FACE_SIZE,
+                                              1u)];
+    [encoder barrierAfterEncoderStages:MTLStageDispatch
+                   beforeEncoderStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    break;
+  }
   case VKR_RG_EXECUTOR_PICKING_READBACK:
     [encoder copyFromTexture:pass->picking_readback.source
                      sourceSlice:0u

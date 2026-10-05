@@ -497,6 +497,21 @@
       "stage": "compute"
     },
     {
+      "name": "packet.cloud_sky_light.comp",
+      "entry": "cloud_sky_light_compute",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.cloud_sky_light_sh.comp",
+      "entry": "cloud_sky_light_sh",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.cloud_sky_light_mips.comp",
+      "entry": "cloud_sky_light_mips",
+      "stage": "compute"
+    },
+    {
       "name": "packet.bloom_combine.comp",
       "entry": "vk_bloom_combine",
       "stage": "compute"

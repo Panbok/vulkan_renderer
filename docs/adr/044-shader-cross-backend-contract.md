@@ -607,7 +607,7 @@ Native lowering lives in [`metal/`](../../renderer/src/metal) and
 | Froxel volumetric fog (UNALIGNED) | `shared/froxel_fog_kernel.slangh`, `fog_kernel.slangh`, `punctual_light_kernel.slangh` | `metal/msl/post/froxel_fog.metal` | `vulkan/slang/post/froxel_fog.slang` |
 | IBL and SH (UNALIGNED) | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Sky atmosphere and aerial perspective (UNALIGNED) | `shared/atmosphere_kernel.slangh` | `metal/msl/ibl/atmosphere.metal`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/fog.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/atmosphere.slang`, `world/default.slang`, `deferred.slang`, `post/fog.slang`, `post/froxel_fog.slang` |
-| Volumetric clouds (UNALIGNED) | `shared/cloud_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/clouds.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
+| Volumetric clouds (UNALIGNED) | `shared/cloud_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `ibl/sh_projection.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `gpu_draws.metal`, `default.metal`, `post/froxel_fog.metal` | `vulkan/slang/ibl/clouds.slang`, `ibl/default.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |
 | Opaque SSR (UNALIGNED) | `shared/ssr_kernel.slangh` | `metal/msl/post/ssr.metal` | `vulkan/slang/world/deferred.slang` |
 | Opaque SSGI (UNALIGNED) | `shared/ssgi_kernel.slangh` | `metal/msl/post/ssgi.metal` | `vulkan/slang/post/ssgi.slang` |
 | Exposure/bloom/GTAO (UNALIGNED: pre-exposure) | matching `shared/*_kernel.slangh` | `metal/msl/post/` | `vulkan/slang/post/` |
@@ -992,6 +992,21 @@ cloud modules and every sky-record consumer in
 Metal API validation and Bistro captures pass. Native Vulkan execution and
 bilateral comparison remain unavailable: clouds are **UNALIGNED**.
 [ADR-074](074-volumetric-cloud-layer.md) owns the model.
+
+The cloud-lit sky light adds march, projection and chain kernels on each
+backend that share one root (64 bytes on Vulkan, 80 on Metal, whose source is
+a cube texture reference). The shared kernel owns the composite formula
+`vkr_cloud_sky_light_radiance`, the chain layout, the direction-to-face
+inverse of the cube convention and the prefilter-to-chain level mapping.
+Both backends project through one loop that also serves the revision bake
+(`vk_sh_project`, `vkr_metal_sh_project`). The sky record gains the clear SH
+slot, the chain's face size and its address: Vulkan grows to 496 bytes with
+the address at 480, and Metal to 512 with the address at 504. Global
+prefiltered specular composites the chain in `world/default.slang` and in
+`world/lighting.metalh`, `default.metal` and `gpu_draws.metal`. Vulkan Release
+execution and Debug synchronization validation pass on the Windows host; the
+Metal library, ABI reflection, API validation and execution of these kernels
+are unavailable there and remain open.
 
 AgX and grading share production kernels. Metal's post root is 48 bytes, with a
 grading-block pointer at byte 32; Vulkan's utility root is 560 bytes, with the

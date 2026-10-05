@@ -313,6 +313,9 @@ typedef struct VkrMetalPacketTexture {
   /** Published L2 coefficient slot projected from this source cubemap, or
       VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
+  /** The deringing that projection used; the cloud-lit sky light projects
+      with the same window (ADR-074). */
+  float32_t ibl_sh_deringing;
   /** GGX prefilter the latest queued bake writes from this source cubemap.
       Global lighting samples it; invalid until a bake is queued. */
   VkrTextureHandle ibl_prefilter;
@@ -409,6 +412,14 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t froxel_fog_gpu;
   uint64_t froxel_integrated_texture_id;
   uint64_t sky_gpu;
+  /** CPU view of the frame's sky record; preparation patches it before the
+      submission reads it. */
+  VkrMetalPacketSky *sky_cpu;
+  /** This frame's cloud-lit sky light (ADR-074): its cloud chain, and
+      the SH slot later frame roots read as the global sky light once its
+      pass is prepared; VKR_SH_SLOT_BLACK keeps the published source's. */
+  uint64_t cloud_sky_light_radiance_gpu;
+  uint32_t cloud_sh_slot;
   uint64_t display_output_gpu;
   /** True once IBL.Bake recorded a queued bake; submission publishes it and
       cancellation returns its SH candidate to the pool. */
@@ -763,6 +774,9 @@ struct VkrMetalPacketRenderer {
       cloud_noise_pipelines[VKR_METAL_PACKET_CLOUD_NOISE_COUNT];
   id<MTLComputePipelineState> cloud_shadow_pipeline;
   id<MTLComputePipelineState> cloud_trace_pipeline;
+  id<MTLComputePipelineState> cloud_sky_light_pipeline;
+  id<MTLComputePipelineState> cloud_sky_light_sh_pipeline;
+  id<MTLComputePipelineState> cloud_sky_light_mips_pipeline;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;

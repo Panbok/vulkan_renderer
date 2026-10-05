@@ -29,7 +29,10 @@ plus 36 reusable slots for two generations of the fallback, active environment
 and 16 probes. Reserve, record, submit-publish, last-reader tracking, retire and
 collect are distinct states. A failed unsubmitted projection abandons its slot.
 Exhaustion reports a cold-path error and preserves the prior publication or black;
-it cannot become a successful-frame wait or overwrite.
+it cannot become a successful-frame wait or overwrite. Four further slots
+after the pool belong to frame slots, one each, for the cloud-lit sky light
+([ADR-074](074-volumetric-cloud-layer.md)); the pool never reserves them, and a
+frame slot rewrites its own only after its previous submission completed.
 
 The render packet carries the global source texture handle and local-probe slot
 identities. Native GPU roots add the backend-owned coefficient buffer address

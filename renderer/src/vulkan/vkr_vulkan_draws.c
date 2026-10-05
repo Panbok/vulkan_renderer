@@ -384,6 +384,7 @@ vkr_internal bool8_t vkr_vk_upload_sky(VkrVulkanRenderer *renderer,
           renderer->cloud_noise_texture_slots[1].index,
       .cloud_weather_texture = renderer->cloud_noise_texture_slots[2].index,
       .cloud_noise_sampler = renderer->cloud_noise_sampler_slot.index,
+      .clear_sh_slot = VKR_SH_SLOT_BLACK,
   };
   if (packet->scene_rendering && packet->input.sky &&
       packet->input.sky->atmosphere.enabled) {
@@ -417,6 +418,7 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
   slot->prefilter_texture = 0u;
   slot->prefilter_sampler = 0u;
   slot->sh_global_slot = VKR_SH_SLOT_BLACK;
+  slot->ibl_source = NULL;
   slot->ibl_ready = false_v;
   slot->ibl_radiance_stops = 0;
   slot->subsurface_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
@@ -639,6 +641,9 @@ vkr_internal bool8_t vkr_vk_upload_packet_tables(
                                               &slot->prefilter_sampler)) {
       slot->ibl_ready = true_v;
       slot->sh_global_slot = source->ibl_sh_slot;
+      slot->ibl_source = source;
+      if (slot->sky_record)
+        slot->sky_record->clear_sh_slot = source->ibl_sh_slot;
       slot->ibl_radiance_stops = source->radiance_stops;
       slot->sh_referenced_slots[slot->sh_referenced_slot_count++] =
           source->ibl_sh_slot;

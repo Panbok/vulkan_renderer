@@ -2231,6 +2231,8 @@ typedef struct VkrMetalPacketUploadPlan {
   uint64_t fog_offset;
   uint64_t froxel_fog_offset;
   uint64_t sky_offset;
+  uint64_t cloud_sky_light_offset;
+  uint64_t cloud_sky_light_bytes;
   /* GPU-driven draw setup. */
   uint32_t gpu_draw_view_count;
   uint32_t gpu_draw_icb_group_count;
@@ -2599,9 +2601,16 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
              renderer->gpu_draw_icb_view_group_size - 1u) /
                 renderer->gpu_draw_icb_view_group_size
           : 0u;
-  plan->gpu_draw_views_offset =
-      vkr_metal_packet_align_up(plan->sky_offset + sizeof(VkrMetalPacketSky),
-                                AlignOf(VkrMetalPacketGpuDrawView));
+  /* The cloud-lit sky light's cloud chain, written and read on the GPU. */
+  plan->cloud_sky_light_offset = vkr_metal_packet_align_up(
+      plan->sky_offset + sizeof(VkrMetalPacketSky), 16u);
+  plan->cloud_sky_light_bytes =
+      renderer->prepared_frame.clouds_enabled
+          ? VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t)
+          : 0u;
+  plan->gpu_draw_views_offset = vkr_metal_packet_align_up(
+      plan->cloud_sky_light_offset + plan->cloud_sky_light_bytes,
+      AlignOf(VkrMetalPacketGpuDrawView));
   const uint64_t gpu_draw_views_bytes =
       (uint64_t)plan->gpu_draw_view_count * sizeof(VkrMetalPacketGpuDrawView);
   plan->transmission_gpu_draw_view_offset = vkr_metal_packet_align_up(
@@ -3151,6 +3160,9 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
     renderer->cloud_noise_last_use_submit_value = renderer->submit_value + 1u;
   }
   upload->sky_gpu = gpu + plan->sky_offset;
+  upload->sky_cpu = sky;
+  upload->cloud_sky_light_radiance_gpu =
+      plan->cloud_sky_light_bytes ? gpu + plan->cloud_sky_light_offset : 0u;
   if (packet->subsurface_enabled) {
     const VkrSubsurfaceBinding *binding = &packet->input.lighting->subsurface;
     VkrMetalPacketTexture *texture =
@@ -3210,6 +3222,8 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
     renderer->ibl_sh_slot =
         sh_global ? sh_global->ibl_sh_slot : VKR_SH_SLOT_BLACK;
   }
+  ((VkrMetalPacketSky *)(cpu + plan->sky_offset))->clear_sh_slot =
+      renderer->ibl_sh_slot;
   const int32_t global_radiance_stops =
       vkr_metal_packet_global_radiance_stops(renderer, packet);
   if (plan->ibl_probe_count > 0) {

@@ -2895,12 +2895,10 @@ static float3 vkr_metal_packet_transmission_lighting(
                  global_irradiance * surface.base.rgb * surface.occlusion *
                  global_weight;
     }
-    float3 global_prefiltered =
-        frame->prefilter
-            .sample(environment_sampler, reflection,
-                    level(environment_roughness *
-                          float(max(frame->prefilter_mip_count, 1u) - 1u)))
-            .rgb;
+    float3 global_prefiltered = vkr_metal_packet_global_prefiltered(
+        frame, environment_sampler, reflection,
+        environment_roughness *
+            float(max(frame->prefilter_mip_count, 1u) - 1u));
     specular += global_prefiltered * energy.reflectance * specular_visibility *
                 global_weight;
     indirect_diffuse = diffuse * frame->ibl_controls.y * frame->ibl_controls.x;

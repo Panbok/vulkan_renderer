@@ -555,3 +555,103 @@ float vkr_cloud_disc_visibility(float transmittance)
 #undef VKR_CLOUD_MUL
 
 #endif
+
+// Cloud-lit sky light (ADR-074): along each texel direction of the clear sky
+// source's 16-texel mip (VKR_CLOUD_SKY_LIGHT_FACE_SIZE on the host) the layer
+// is marched from the camera and stored as its in-scatter, in the source's
+// radiance scale, and its transmittance. The march takes half the view
+// trace's steps and starts mid-step, which keeps the light steady between
+// frames.
+#define VKR_CLOUD_SKY_LIGHT_PRIMARY_STEPS 24u
+#define VKR_CLOUD_SKY_LIGHT_MARCH_OFFSET 0.5f
+// Widest face the mip-chain kernel's one workgroup per face covers.
+#define VKR_CLOUD_SKY_LIGHT_TILE 16u
+
+// The clear sky seen through the layer: `cloud` is in-scatter (rgb, already
+// in the clear radiance's scale) and transmittance (a). No cloud along a
+// direction leaves the clear radiance.
+float3 vkr_cloud_sky_light_radiance(float3 clear, float4 cloud)
+{
+    return clear * cloud.a + cloud.rgb;
+}
+
+// Levels of a chain that halves `face_size` down to one texel.
+uint vkr_cloud_sky_light_levels(uint face_size)
+{
+    uint levels = 1u;
+    while ((face_size >> levels) != 0u)
+        levels += 1u;
+    return levels;
+}
+
+// First texel of `level`: the levels follow one another, each six faces of
+// rows of columns.
+uint vkr_cloud_sky_light_level_offset(uint face_size, uint level)
+{
+    uint offset = 0u;
+    for (uint previous = 0u; previous < level; ++previous)
+    {
+        uint extent = max(face_size >> previous, 1u);
+        offset += 6u * extent * extent;
+    }
+    return offset;
+}
+
+// Texel `texel` of `face` at `level`.
+uint vkr_cloud_sky_light_index(uint face_size, uint level, uint face,
+                               uint2 texel)
+{
+    uint extent = max(face_size >> level, 1u);
+    return vkr_cloud_sky_light_level_offset(face_size, level) +
+           (face * extent + texel.y) * extent + texel.x;
+}
+
+struct VkrCloudSkyLightDirection
+{
+    uint face;
+    float2 uv;
+};
+
+// The cube face and face coordinate of a unit direction: the inverse of the
+// cube-face direction every cube in the renderer uses.
+VkrCloudSkyLightDirection vkr_cloud_sky_light_direction(float3 direction)
+{
+    float3 magnitude = abs(direction);
+    VkrCloudSkyLightDirection result;
+    float2 st;
+    if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z)
+    {
+        float major = max(magnitude.x, 1e-6f);
+        result.face = direction.x > 0.0f ? 0u : 1u;
+        st = float2(direction.x > 0.0f ? -direction.z : direction.z,
+                    -direction.y) /
+             major;
+    }
+    else if (magnitude.y >= magnitude.z)
+    {
+        float major = max(magnitude.y, 1e-6f);
+        result.face = direction.y > 0.0f ? 2u : 3u;
+        st = float2(direction.x,
+                    direction.y > 0.0f ? direction.z : -direction.z) /
+             major;
+    }
+    else
+    {
+        float major = max(magnitude.z, 1e-6f);
+        result.face = direction.z > 0.0f ? 4u : 5u;
+        st = float2(direction.z > 0.0f ? direction.x : -direction.x,
+                    -direction.y) /
+             major;
+    }
+    result.uv = clamp(st * 0.5f + 0.5f, 0.0f, 1.0f);
+    return result;
+}
+
+// The chain level whose texels match the prefilter's at `prefilter_lod`; both
+// chains end at one texel.
+float vkr_cloud_sky_light_level(float prefilter_lod, uint prefilter_mips,
+                                uint levels)
+{
+    return clamp(prefilter_lod - float(prefilter_mips) + float(levels), 0.0f,
+                 float(levels - 1u));
+}

@@ -201,6 +201,12 @@
 #define VKR_VULKAN_PACKET_CLOUD_WEATHER_COMP_SPV "packet.cloud_weather.comp.spv"
 #define VKR_VULKAN_PACKET_CLOUD_SHADOW_COMP_SPV "packet.cloud_shadow.comp.spv"
 #define VKR_VULKAN_PACKET_CLOUD_TRACE_COMP_SPV "packet.cloud_trace.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_SKY_LIGHT_COMP_SPV                             \
+  "packet.cloud_sky_light.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_SKY_LIGHT_SH_COMP_SPV                          \
+  "packet.cloud_sky_light_sh.comp.spv"
+#define VKR_VULKAN_PACKET_CLOUD_SKY_LIGHT_MIPS_COMP_SPV                        \
+  "packet.cloud_sky_light_mips.comp.spv"
 #define VKR_VULKAN_PACKET_BLOOM_COMBINE_COMP_SPV "packet.bloom_combine.comp.spv"
 #define VKR_VULKAN_PACKET_PICKING_RESOLVE_COMP_SPV                             \
   "packet.picking_resolve.comp.spv"
@@ -410,6 +416,9 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_WEATHER,
   VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SHADOW,
   VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_TRACE,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT_SH,
+  VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT_MIPS,
   VKR_VULKAN_DEFERRED_PIPELINE_SDSM,
   VKR_VULKAN_DEFERRED_PIPELINE_PICKING,
   VKR_VULKAN_DEFERRED_PIPELINE_TRANSMISSION,
@@ -1015,9 +1024,17 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSky {
   uint32_t cloud_detail_noise_texture;
   uint32_t cloud_weather_texture;
   uint32_t cloud_noise_sampler;
-  uint32_t reserved[2];
+  /** The published sky source's SH slot; the cloud layer lights itself with
+      it rather than the cloud-lit slot it feeds (ADR-074). */
+  uint32_t clear_sh_slot;
+  /** This frame's cloud chain for global reflections and its first face
+      extent; zero when the cloud-lit sky light did not run. */
+  uint32_t cloud_sky_light_face_size;
+  uint64_t cloud_sky_light;
 } VkrVulkanSky;
-_Static_assert(sizeof(VkrVulkanSky) == 480u, "Vulkan sky record ABI drift");
+_Static_assert(sizeof(VkrVulkanSky) == 496u, "Vulkan sky record ABI drift");
+_Static_assert(offsetof(VkrVulkanSky, cloud_sky_light) == 480u,
+               "Vulkan sky cloud chain offset drift");
 _Static_assert(offsetof(VkrVulkanSky, cloud_radiance_texture) == 448u,
                "Vulkan sky cloud slot offset drift");
 
@@ -1058,6 +1075,27 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCloudTraceRoot {
   float32_t history_pre_exposure_scale;
   uint32_t reserved;
 } VkrVulkanCloudTraceRoot;
+
+/** ADR-074 cloud-lit sky light; mirrors VkrVulkanCloudSkyLightRoot in
+    ibl/clouds.slang. Its march and projection dispatches share it. */
+typedef struct VkrVulkanCloudSkyLightRoot {
+  uint64_t sky;
+  uint64_t frame;
+  uint64_t radiance;
+  uint64_t destination;
+  uint32_t source_texture;
+  uint32_t source_mip;
+  uint32_t face_size;
+  float32_t cloud_to_source_scale;
+  float32_t window_band_0;
+  float32_t window_band_1;
+  float32_t window_band_2;
+  uint32_t reserved;
+} VkrVulkanCloudSkyLightRoot;
+_Static_assert(sizeof(VkrVulkanCloudSkyLightRoot) == 64u,
+               "Vulkan cloud sky-light root ABI drift");
+_Static_assert(offsetof(VkrVulkanCloudSkyLightRoot, source_texture) == 32u,
+               "Vulkan cloud sky-light root texture offset drift");
 _Static_assert(sizeof(VkrVulkanCloudTraceRoot) == 128u,
                "Vulkan cloud trace root ABI drift");
 
@@ -2431,6 +2469,8 @@ typedef struct VkrVulkanFrameSlot {
   uint32_t prefilter_texture;
   uint32_t prefilter_sampler;
   uint32_t sh_global_slot;
+  /** The published global sky source this frame lights with, or NULL. */
+  struct VkrVulkanPublishedTexture *ibl_source;
   /** Bake exponent of the global prefilter; the frame gain removes it. */
   int32_t ibl_radiance_stops;
   bool8_t ibl_ready;
@@ -2560,6 +2600,9 @@ typedef struct VkrVulkanPublishedTexture {
   /** Published L2 coefficient slot projected from this source cubemap, or
       VKR_SH_SLOT_BLACK before the first successful projection (ADR-038). */
   uint32_t ibl_sh_slot;
+  /** The deringing that projection used; the cloud-lit sky light projects
+      with the same window (ADR-074). */
+  float32_t ibl_sh_deringing;
   VkrVulkanImage image;
   VkrGpuSlotHandle sampled_slot;
   /**
@@ -3228,6 +3271,14 @@ bool8_t vkr_vk_prepare_sky(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_cloud_shadow(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass);
+/* The cloud-lit sky light (ADR-074); moves the frame's global SH slot to
+   this frame slot's cloud slot for every frame root prepared after it. */
+bool8_t vkr_vk_prepare_cloud_sky_light(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass);
+/* Orders SH coefficient writes before later lighting reads. */
+void vkr_vk_record_sh_visibility(VkrVulkanRenderer *renderer,
+                                 VkCommandBuffer command);
 bool8_t vkr_vk_prepare_cloud_trace(VkrVulkanRenderer *renderer,
                                    VkrVulkanPreparedCompute *prepared,
                                    const VkrRgPass *pass);

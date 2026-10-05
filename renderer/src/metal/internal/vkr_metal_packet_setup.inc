@@ -101,6 +101,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_CLOUD_NOISE_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT:
+  case VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT:
   case VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT:
   case VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT:
   case VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT:
@@ -491,11 +492,13 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
        record_id == VKR_METAL_PACKET_ABI_AERIAL_PERSPECTIVE_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_FOG_ROOT) &&
       !vkr_metal_packet_validate_sky_abi(pipeline_label, root.bufferStructType))
     return false_v;
   if ((record_id == VKR_METAL_PACKET_ABI_FOG_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT) &&
+       record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT ||
+       record_id == VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT) &&
       !vkr_metal_packet_validate_nested_abi(pipeline_label,
                                             root.bufferStructType, "frame",
                                             VKR_METAL_PACKET_ABI_FRAME_ROOT))
@@ -1027,6 +1030,20 @@ vkr_metal_packet_create_environment_pipelines(VkrMetalPacketRenderer *renderer,
       renderer, fragment, "vkr_metal_packet_cloud_trace",
       VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT, false_v,
       @"VKR Metal packet cloud trace");
+  renderer->cloud_sky_light_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_cloud_sky_light",
+      VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT, false_v,
+      @"VKR Metal packet cloud sky light");
+  renderer->cloud_sky_light_sh_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_cloud_sky_light_sh",
+          VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT, false_v,
+          @"VKR Metal packet cloud sky-light SH");
+  renderer->cloud_sky_light_mips_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_cloud_sky_light_mips",
+          VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT, false_v,
+          @"VKR Metal packet cloud sky-light chain");
 }
 
 /* Creates the zeroed SH coefficient pool buffer. */

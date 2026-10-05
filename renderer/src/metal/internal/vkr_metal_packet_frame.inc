@@ -142,8 +142,12 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .prefilter_texture_id = has_global_ibl
                                   ? global_prefilter->resource.resource_id
                                   : renderer->ibl_black_prefilter.resource_id,
-      .sh_global_slot =
-          has_global_ibl ? renderer->ibl_sh_slot : VKR_SH_SLOT_BLACK,
+      /* The cloud-lit sky light replaces the source's slot for frame roots
+         prepared after its pass (ADR-074). */
+      .sh_global_slot = !has_global_ibl ? VKR_SH_SLOT_BLACK
+                        : upload->cloud_sh_slot != VKR_SH_SLOT_BLACK
+                            ? upload->cloud_sh_slot
+                            : renderer->ibl_sh_slot,
       .pre_exposure = frame_constants.pre_exposure,
       .view_position = frame_constants.view_position,
       .prefilter_mip_count = frame_constants.prefilter_mip_count,
@@ -979,6 +983,7 @@ vkr_metal_packet_publish_ibl_bakes(VkrMetalPacketRenderer *renderer,
         if (source->ibl_sh_slot != VKR_SH_SLOT_BLACK)
           (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, source->ibl_sh_slot);
         source->ibl_sh_slot = job->sh_slot;
+        source->ibl_sh_deringing = job->sh_deringing;
       } else {
         (void)vkr_ibl_sh_pool_retire(&renderer->sh_pool, job->sh_slot);
       }
@@ -2543,6 +2548,101 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_trace(
       .group_size = MTLSizeMake(8u, 8u, 1u),
   };
   prepared->active = true_v;
+  return true_v;
+}
+
+/* The cloud-lit sky light (ADR-074): every texel of the clear sky source's
+   16-texel mip is seen through this frame's cloud layer from the camera,
+   projected into this command slot's SH slot with the source's own deringing,
+   and the cloud's in-scatter and transmittance halve down to one texel for
+   global reflections.
+   Frame roots prepared afterwards read that slot as the global sky light; the
+   layer itself keeps the clear slot through the sky record. A frame without a
+   published source, or a slot beyond the cloud slots, dispatches nothing and
+   keeps the clear slot. */
+vkr_internal bool8_t vkr_metal_packet_prepare_cloud_sky_light(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  prepared->active = false_v;
+  VkrTextureHandle source_handle = VKR_TEXTURE_HANDLE_INVALID;
+  VkrMetalPacketTexture *source =
+      vkr_metal_packet_ibl_source(packet, &source_handle)
+          ? vkr_metal_packet_resolve_texture(renderer, source_handle)
+          : NULL;
+  id<MTLTexture> native =
+      source ? (id<MTLTexture>)source->resource.metal_texture : nil;
+  const uint32_t command_slot =
+      (uint32_t)(renderer->active_command_slot - renderer->command_slots);
+  if (!native || native.textureType != MTLTextureTypeCube ||
+      source->ibl_sh_slot == VKR_SH_SLOT_BLACK || upload->sky_gpu == 0u ||
+      !upload->sky_cpu || upload->cloud_sky_light_radiance_gpu == 0u ||
+      command_slot >= VKR_SH_CLOUD_SLOT_COUNT ||
+      !renderer->cloud_sky_light_pipeline ||
+      !renderer->cloud_sky_light_sh_pipeline ||
+      !renderer->cloud_sky_light_mips_pipeline)
+    return true_v;
+  /* The first mip no wider than the composite's face. */
+  uint32_t mip = 0u;
+  uint32_t extent = (uint32_t)native.width;
+  while (extent > VKR_CLOUD_SKY_LIGHT_FACE_SIZE &&
+         mip + 1u < (uint32_t)native.mipmapLevelCount) {
+    extent = Max(1u, extent >> 1u);
+    ++mip;
+  }
+  if (extent > VKR_CLOUD_SKY_LIGHT_FACE_SIZE || extent == 0u)
+    return true_v;
+
+  /* The march reads the clear slot through the sky record; this root is
+     created before the frame's global slot moves. */
+  const Mat4 view_projection = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y,
+      mat4_mul(packet->temporal.jittered_projection,
+               packet->input.globals.view));
+  uint64_t frame_gpu = 0u;
+  uint32_t frame_flags = 0u;
+  if (!vkr_metal_packet_create_frame_root(
+          renderer, packet, upload, upload->gpu_draw_instances_gpu,
+          renderer->prepared_frame.viewport_width,
+          renderer->prepared_frame.viewport_height, view_projection, true_v,
+          false_v, &frame_gpu, &frame_flags))
+    return false_v;
+  const VkrPacketFrameConstants constants = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketCloudSkyLightRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  const uint32_t cloud_slot = VKR_SH_CLOUD_SLOT_FIRST + command_slot;
+  /* Cloud radiance is pre-exposed; the source holds radiance scaled by
+     2^radiance_stops. */
+  *root = (VkrMetalPacketCloudSkyLightRoot){
+      .sky = upload->sky_gpu,
+      .frame = frame_gpu,
+      .radiance = upload->cloud_sky_light_radiance_gpu,
+      .destination = renderer->sh_coefficients.gpuAddress +
+                     (uint64_t)cloud_slot * VKR_SH_SLOT_BYTES,
+      .source_texture_id = source->resource.resource_id,
+      .source_mip = mip,
+      .face_size = extent,
+      .cloud_to_source_scale =
+          ldexpf(1.0f,
+                 vkr_metal_packet_global_radiance_stops(renderer, packet)) /
+          Max(constants.pre_exposure, 1e-20f),
+      .window_band_0 = vkr_ibl_sh_window_factor(0u, source->ibl_sh_deringing),
+      .window_band_1 = vkr_ibl_sh_window_factor(1u, source->ibl_sh_deringing),
+      .window_band_2 = vkr_ibl_sh_window_factor(2u, source->ibl_sh_deringing),
+  };
+  source->last_use_submit_value = renderer->submit_value + 1u;
+  prepared->cloud_sky_light.root = root_gpu;
+  prepared->cloud_sky_light.extent = extent;
+  prepared->active = true_v;
+  upload->cloud_sh_slot = cloud_slot;
+  /* Global reflections read the chain through the sky record. */
+  upload->sky_cpu->cloud_sky_light_face_size = extent;
+  upload->sky_cpu->cloud_sky_light = upload->cloud_sky_light_radiance_gpu;
   return true_v;
 }
 
@@ -4379,6 +4479,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_CLOUD_TRACE:
     return vkr_metal_packet_prepare_cloud_trace(renderer, pass, packet,
                                                 prepared, upload);
+  case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
+    return vkr_metal_packet_prepare_cloud_sky_light(renderer, packet, prepared,
+                                                    upload);
   case VKR_RG_EXECUTOR_SSGI_DEPTH_BASE:
   case VKR_RG_EXECUTOR_SSGI_DEPTH_MIP:
   case VKR_RG_EXECUTOR_SSGI_TRACE:
@@ -5373,8 +5476,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
       vkr_metal_packet_merge_dependency(&wait, &prepared->consumers[i]);
     for (uint32_t i = 0u; i < prepared->producer_count; ++i)
       vkr_metal_packet_merge_dependency(&signal, &prepared->producers[i]);
-    ibl_baked = ibl_baked || (prepared->active &&
-                              prepared->kind == VKR_RG_EXECUTOR_IBL_BAKE);
+    /* The cloud-lit sky light also writes SH coefficients that later
+       encoders read outside the graph's resources. */
+    ibl_baked =
+        ibl_baked || (prepared->active &&
+                      (prepared->kind == VKR_RG_EXECUTOR_IBL_BAKE ||
+                       prepared->kind == VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT));
   }
 
   id<MTL4ComputeCommandEncoder> encoder =

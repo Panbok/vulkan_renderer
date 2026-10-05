@@ -209,7 +209,14 @@ struct VkrVulkanSky
     uint cloud_detail_noise_texture;
     uint cloud_weather_texture;
     uint cloud_noise_sampler;
-    uint2 reserved;
+    // The published sky source's own SH slot. Clouds light themselves with
+    // it, never with the cloud-lit slot they feed (ADR-074).
+    uint clear_sh_slot;
+    // This frame's cloud chain of in-scatter and transmittance for global
+    // reflections, from a `cloud_sky_light_face_size` face; zero when the
+    // cloud-lit sky light did not run.
+    uint cloud_sky_light_face_size;
+    float4 *cloud_sky_light;
 };
 
 struct VkrVulkanPacketFrameRoot

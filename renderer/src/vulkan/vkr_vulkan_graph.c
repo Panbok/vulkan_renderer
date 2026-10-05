@@ -1636,6 +1636,11 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
             renderer->graph->packet->input.editor->selection_draw_count);
       }
       break;
+    case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
+      /* The cloud chain, plus a frame root. */
+      bytes += VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t) +
+               sizeof(VkrVulkanPacketFrameRoot);
+      break;
     case VKR_RG_EXECUTOR_IBL_BAKE:
       bytes +=
           (uint64_t)renderer->pending_ibl_bake_count *
@@ -1850,6 +1855,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_cloud_shadow(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_CLOUD_TRACE:
     return vkr_vk_prepare_cloud_trace(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
+    return vkr_vk_prepare_cloud_sky_light(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SDSM_REDUCE:
     return vkr_vk_prepare_deferred_sdsm(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
@@ -2200,6 +2207,11 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
         vkr_vk_record_prepared_compute(renderer, command,
                                        &slot->skinning_dispatches[skin]);
       }
+      break;
+    case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
+      vkr_vk_record_prepared_compute(renderer, command, &prepared->compute);
+      if (prepared->compute.dispatch_count)
+        vkr_vk_record_sh_visibility(renderer, command);
       break;
     default:
       vkr_vk_record_prepared_compute(renderer, command, &prepared->compute);

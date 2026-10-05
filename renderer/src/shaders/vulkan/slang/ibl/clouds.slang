@@ -153,12 +153,25 @@ float vk_cloud_light_depth(VkrVulkanSky *sky, VkrSkyParams params,
     return optical_depth;
 }
 
-// Cloud in-scatter with aerial perspective at the layer's apparent depth, and
-// the layer's gray transmittance.
-float4 vk_cloud_march(VkrVulkanCloudTraceRoot *root, float3 direction,
-                      uint2 texel)
+// Clear-sky ambient for the layer's own lighting, scaled like diffuse IBL:
+// the published source's SH, never the cloud-lit sky light that the layer
+// feeds, so a frame's clouds do not light the next frame's clouds.
+float3 vk_cloud_clear_ambient(VkrVulkanSky *sky, VkrVulkanPacketFrameRoot *frame)
 {
-    VkrVulkanSky *sky = root.sky;
+    if ((frame.flags & 2u) == 0u)
+        return float3(0.0f);
+    return max(vkr_sh_l2_average(frame.sh_coefficients[sky.clear_sh_slot]),
+               float3(0.0f)) *
+           frame.ibl_controls.x * frame.ibl_controls.y;
+}
+
+// Cloud in-scatter, with aerial perspective at the layer's apparent depth when
+// `aerial` (the volume covers only the view), and the layer's gray
+// transmittance. The segment through the layer takes `steps` primary steps;
+// `offset` places samples within each.
+float4 vk_cloud_march(VkrVulkanSky *sky, VkrVulkanPacketFrameRoot *frame,
+                      float3 direction, uint steps, float offset, bool aerial)
+{
     VkrSkyParams params = sky.params;
     VkrCloudParams clouds = params.clouds;
     VkrCloudSegment segment = vkr_cloud_segment(params, direction);
@@ -177,12 +190,10 @@ float4 vk_cloud_march(VkrVulkanCloudTraceRoot *root, float3 direction,
     bool sun_lights = !vkr_atmosphere_light_dark(params.atmosphere.solar);
     bool moon_lights = params.key_light.w > 0.0f &&
                        !vkr_atmosphere_light_dark(params.atmosphere.lunar);
-    float3 ambient = packet_sky_ambient(root.frame);
-    float step_km = (segment.end_km - segment.start_km) /
-                    float(VKR_CLOUD_PRIMARY_STEPS);
-    float offset = vkr_cloud_march_offset(texel, root.frame_index);
+    float3 ambient = vk_cloud_clear_ambient(sky, frame);
+    float step_km = (segment.end_km - segment.start_km) / float(steps);
     VkrCloudIntegration state = vkr_cloud_integration_begin();
-    for (uint index = 0u; index < VKR_CLOUD_PRIMARY_STEPS; ++index)
+    for (uint index = 0u; index < steps; ++index)
     {
         float distance = segment.start_km + (float(index) + offset) * step_km;
         float3 position = origin + direction * distance;
@@ -237,7 +248,7 @@ float4 vk_cloud_march(VkrVulkanCloudTraceRoot *root, float3 direction,
     }
 
     float3 radiance = state.radiance;
-    if (params.aerial.w > 0.0f && state.transmittance < 1.0f)
+    if (aerial && params.aerial.w > 0.0f && state.transmittance < 1.0f)
     {
         float depth_km = vkr_cloud_integration_depth(state, segment.start_km);
         float3 world = params.camera_position.xyz +
@@ -291,7 +302,10 @@ void cloud_trace_compute(uint3 id : SV_DispatchThreadID)
     float2 centre_uv = (float2(texel) + 0.5f) * texel_size;
     float3 direction = vkr_cloud_view_direction(
         params, centre_uv + vkr_cloud_ray_jitter(root.frame_index) * texel_size);
-    float4 current = vk_cloud_march(root, direction, texel);
+    float4 current =
+        vk_cloud_march(root.sky, root.frame, direction,
+                       VKR_CLOUD_PRIMARY_STEPS,
+                       vkr_cloud_march_offset(texel, root.frame_index), true);
 
     // Clouds lie kilometres away, so the previous camera saw this texel's
     // centre along the same direction.
@@ -312,4 +326,113 @@ void cloud_trace_compute(uint3 id : SV_DispatchThreadID)
         history.rgb *= root.history_pre_exposure_scale;
     g_storage_2d[root.output_texture][texel] =
         vkr_cloud_history_blend(current, history, history_valid);
+}
+
+// ADR-074 cloud-lit sky light, shared by its march, projection and chain
+// dispatches: the clear source's mip and its scale, this frame's cloud chain
+// and this frame slot's SH destination.
+struct VkrVulkanCloudSkyLightRoot
+{
+    VkrVulkanSky *sky;
+    VkrVulkanPacketFrameRoot *frame;
+    float4 *radiance;
+    VkrShL2Packed *destination;
+    uint source_texture;
+    uint source_mip;
+    uint face_size;
+    // Pre-exposed cloud radiance into the source's radiance_stops scale.
+    float cloud_to_source_scale;
+    float window_band_0;
+    float window_band_1;
+    float window_band_2;
+    uint reserved;
+};
+
+struct VkrVulkanCloudSkyLightPush
+{
+    VkrVulkanCloudSkyLightRoot *root;
+    uint2 reserved;
+};
+[[vk::push_constant]] ConstantBuffer<VkrVulkanCloudSkyLightPush>
+    g_cloud_sky_light_push;
+
+// One thread per texel of the clear sky source's 16-texel mip: the layer
+// along the texel's direction from the camera, in the source's scale, as the
+// chain's first level (ADR-074).
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void cloud_sky_light_compute(uint3 id : SV_DispatchThreadID)
+{
+    VkrVulkanCloudSkyLightRoot *root = g_cloud_sky_light_push.root;
+    uint extent = root.face_size;
+    if (any(id.xy >= uint2(extent)) || id.z >= 6u)
+        return;
+    float2 uv = (float2(id.xy) + 0.5f) / float(extent);
+    float3 direction = normalize(cube_direction(id.z, uv));
+    float4 cloud = vk_cloud_march(root.sky, root.frame, direction,
+                                  VKR_CLOUD_SKY_LIGHT_PRIMARY_STEPS,
+                                  VKR_CLOUD_SKY_LIGHT_MARCH_OFFSET, false);
+    root.radiance[vkr_cloud_sky_light_index(extent, 0u, id.z, id.xy)] =
+        float4(cloud.rgb * root.cloud_to_source_scale, cloud.a);
+}
+
+// Projects the clear texels seen through the layer into this frame slot's
+// SH, as the clear source's own projection does.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cloud_sky_light_sh(uint3 group_thread : SV_GroupThreadID)
+{
+    VkrVulkanCloudSkyLightRoot *root = g_cloud_sky_light_push.root;
+    vk_sh_project(group_thread.x, root.face_size, root.source_texture,
+                  root.source_mip, root.radiance, true,
+                  float3(root.window_band_0, root.window_band_1,
+                         root.window_band_2),
+                  root.destination);
+}
+
+groupshared float4 g_cloud_sky_light_tile[VKR_CLOUD_SKY_LIGHT_TILE *
+                                          VKR_CLOUD_SKY_LIGHT_TILE];
+
+// One workgroup per face averages the chain's first level down to one texel,
+// so global reflections read the layer at their roughness.
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void cloud_sky_light_mips(uint3 group_thread : SV_GroupThreadID,
+                          uint3 group : SV_GroupID)
+{
+    VkrVulkanCloudSkyLightRoot *root = g_cloud_sky_light_push.root;
+    uint face_size = root.face_size;
+    uint face = group.z;
+    uint2 texel = group_thread.xy;
+    uint tile = texel.y * VKR_CLOUD_SKY_LIGHT_TILE + texel.x;
+    if (all(texel < uint2(face_size)))
+        g_cloud_sky_light_tile[tile] =
+            root.radiance[vkr_cloud_sky_light_index(face_size, 0u, face,
+                                                    texel)];
+    GroupMemoryBarrierWithGroupSync();
+    uint levels = vkr_cloud_sky_light_levels(face_size);
+    for (uint level = 1u; level < levels; ++level)
+    {
+        bool writes = all(texel < uint2(face_size >> level));
+        float4 value = float4(0.0f);
+        if (writes)
+        {
+            uint corner = 2u * texel.y * VKR_CLOUD_SKY_LIGHT_TILE + 2u * texel.x;
+            value = 0.25f * (g_cloud_sky_light_tile[corner] +
+                             g_cloud_sky_light_tile[corner + 1u] +
+                             g_cloud_sky_light_tile[corner +
+                                                    VKR_CLOUD_SKY_LIGHT_TILE] +
+                             g_cloud_sky_light_tile[corner +
+                                                    VKR_CLOUD_SKY_LIGHT_TILE +
+                                                    1u]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (writes)
+        {
+            g_cloud_sky_light_tile[tile] = value;
+            root.radiance[vkr_cloud_sky_light_index(face_size, level, face,
+                                                    texel)] = value;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
 }

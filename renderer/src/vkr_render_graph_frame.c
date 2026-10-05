@@ -342,6 +342,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_CLOUD_TRACE] = {"pass.clouds.trace",
                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT] = {"pass.clouds.sky_light",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TEMPORAL_RESOLVE] = {"pass.temporal.resolve",
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_METALFX_STAGE] = {"pass.metalfx.stage",

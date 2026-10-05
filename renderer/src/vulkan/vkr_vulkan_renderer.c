@@ -1243,6 +1243,7 @@ vkr_internal bool8_t vkr_vk_commit_ibl_bake_recordings(
                                        sh_source->ibl_sh_slot);
         }
         sh_source->ibl_sh_slot = job->sh_slot;
+        sh_source->ibl_sh_deringing = job->sh_deringing;
       } else {
         /* The bake was submitted, so the slot follows normal retirement even
            though publication failed; the GPU already accepted the write. */

@@ -316,8 +316,8 @@ vkr_internal bool8_t vkr_vk_prepare_ibl_sh_projection(
  * the slot it just baked, so this barrier must precede lighting in the same
  * command stream; the pool separately proves GPU completion before reuse.
  */
-vkr_internal void vkr_vk_record_sh_visibility(VkrVulkanRenderer *renderer,
-                                              VkCommandBuffer command) {
+void vkr_vk_record_sh_visibility(VkrVulkanRenderer *renderer,
+                                 VkCommandBuffer command) {
   const VkBufferMemoryBarrier2 barrier = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
       .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

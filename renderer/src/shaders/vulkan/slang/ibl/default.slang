@@ -7,13 +7,16 @@
 groupshared float3 g_sh_partial[VKR_SH_PROJECT_LANES][9];
 groupshared float g_sh_partial_weight[VKR_SH_PROJECT_LANES];
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void ibl_sh(uint3 group_thread : SV_GroupThreadID)
+// Projects six `extent`-square cube faces of radiance into `destination`.
+// The texels come from mip `source_mip` of the 2D-array texture
+// `source_texture`; with `cloud`, each is seen through the layer's in-scatter
+// and transmittance in `cloud` (the chain's first level, in the same face,
+// row, column order). `window` is the per-band deringing factor.
+void vk_sh_project(uint lane, uint face_size, uint source_texture,
+                   uint source_mip, float4 *cloud, bool clouded,
+                   float3 window, VkrShL2Packed *destination)
 {
-    VkrVulkanIblShRoot* root = (VkrVulkanIblShRoot*)g_push.root;
-    uint lane = group_thread.x;
-    uint extent = max(root.source_face_size, 1u);
+    uint extent = max(face_size, 1u);
     uint face_texels = extent * extent;
     uint texel_count = face_texels * 6u;
     float texel_step = 2.0f / float(extent);
@@ -42,8 +45,11 @@ void ibl_sh(uint3 group_thread : SV_GroupThreadID)
         // Exact integer texel fetch at the selected face and mip, matching the
         // CPU reference and Metal read(). Sampling through a cube direction
         // can invoke filtering and seam handling even at a nominal center.
-        float3 radiance = g_array_textures[root.source_texture].Load(
-            int4(int(x), int(y), int(face), int(root.source_mip))).rgb;
+        float3 radiance = g_array_textures[source_texture].Load(
+            int4(int(x), int(y), int(face), int(source_mip))).rgb;
+        // A branch, not a select: the chain exists only on its own path.
+        if (clouded)
+            radiance = vkr_cloud_sky_light_radiance(radiance, cloud[index]);
 
         VkrShL2Basis basis = vkr_sh_l2_basis(direction);
         accumulated_weight += solid_angle;
@@ -84,16 +90,15 @@ void ibl_sh(uint3 group_thread : SV_GroupThreadID)
     // the authored deringing window, folded in at projection time so the
     // per-pixel path stays fixed.
     float band[3];
-    band[0] = 1.0f * root.window_band_0;
-    band[1] = (2.0f / 3.0f) * root.window_band_1;
-    band[2] = 0.25f * root.window_band_2;
+    band[0] = 1.0f * window.x;
+    band[1] = (2.0f / 3.0f) * window.y;
+    band[2] = 0.25f * window.z;
     coefficients[0] *= band[0];
     for (uint i = 1u; i < 4u; ++i)
         coefficients[i] *= band[1];
     for (uint i = 4u; i < 9u; ++i)
         coefficients[i] *= band[2];
 
-    VkrShL2Packed* destination = (VkrShL2Packed*)root.destination;
     for (uint channel = 0u; channel < 3u; ++channel)
     {
         destination.v[channel] = float4(
@@ -111,6 +116,18 @@ void ibl_sh(uint3 group_thread : SV_GroupThreadID)
     destination.v[6] = float4(VKR_SH_K4 * coefficients[8][0],
                               VKR_SH_K4 * coefficients[8][1],
                               VKR_SH_K4 * coefficients[8][2], 0.0f);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void ibl_sh(uint3 group_thread : SV_GroupThreadID)
+{
+    VkrVulkanIblShRoot* root = (VkrVulkanIblShRoot*)g_push.root;
+    vk_sh_project(group_thread.x, root.source_face_size, root.source_texture,
+                  root.source_mip, (float4 *)uint64_t(0), false,
+                  float3(root.window_band_0, root.window_band_1,
+                         root.window_band_2),
+                  (VkrShL2Packed *)root.destination);
 }
 
 [shader("compute")]

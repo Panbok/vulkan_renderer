@@ -43,7 +43,16 @@ float32_t vkr_float16_to_float32(uint16_t value);
 #define VKR_SH_GENERATION_COUNT 2u
 #define VKR_SH_REUSABLE_SLOTS (VKR_SH_LOGICAL_MAX * VKR_SH_GENERATION_COUNT)
 #define VKR_SH_SLOT_CAPACITY (VKR_SH_REUSABLE_SLOTS + 1u)
-#define VKR_SH_BUFFER_BYTES (VKR_SH_SLOT_CAPACITY * VKR_SH_SLOT_BYTES)
+/**
+ * The cloud-lit sky light (ADR-074): one slot per frame slot after the pool's
+ * slots. The pool never reserves them; a frame slot rewrites its own slot only
+ * after its previous submission completed, which every backend proves before
+ * reusing the frame slot.
+ */
+#define VKR_SH_CLOUD_SLOT_FIRST VKR_SH_SLOT_CAPACITY
+#define VKR_SH_CLOUD_SLOT_COUNT 4u
+#define VKR_SH_BUFFER_SLOTS (VKR_SH_SLOT_CAPACITY + VKR_SH_CLOUD_SLOT_COUNT)
+#define VKR_SH_BUFFER_BYTES (VKR_SH_BUFFER_SLOTS * VKR_SH_SLOT_BYTES)
 
 /** Slot-resident packed form: 112 bytes consumed as seven dot products. */
 typedef struct VkrShL2Packed {

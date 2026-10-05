@@ -1325,6 +1325,55 @@ struct VkrVulkanEnvironmentResult
     float3 irradiance;
 };
 
+// One level of this frame's cloud chain at a face coordinate, bilinear
+// within the face.
+float4 packet_cloud_sky_light_level(VkrVulkanSky *sky,
+                                    VkrCloudSkyLightDirection at, uint level)
+{
+    uint face_size = sky.cloud_sky_light_face_size;
+    int extent = int(max(face_size >> level, 1u));
+    float2 position = at.uv * float(extent) - 0.5f;
+    int2 base = int2(floor(position));
+    float2 blend = position - float2(base);
+    int2 limit = int2(extent - 1);
+    uint2 low = uint2(clamp(base, int2(0), limit));
+    uint2 high = uint2(clamp(base + 1, int2(0), limit));
+    // The face's rows, located once for all four taps.
+    float4 *face = sky.cloud_sky_light +
+                   vkr_cloud_sky_light_level_offset(face_size, level) +
+                   at.face * uint(extent * extent);
+    float4 *row_low = face + low.y * uint(extent);
+    float4 *row_high = face + high.y * uint(extent);
+    float4 row0 = lerp(row_low[low.x], row_low[high.x], blend.x);
+    float4 row1 = lerp(row_high[low.x], row_high[high.x], blend.x);
+    return lerp(row0, row1, blend.y);
+}
+
+// The global prefiltered sky along `reflection` at `lod`, seen through this
+// frame's cloud layer when its sky light ran (ADR-074). The cloud chain is
+// read at the level whose texels match the prefilter's.
+float3 packet_global_prefiltered(VkrVulkanPacketFrameRoot *frame,
+                                 float3 reflection, float lod)
+{
+    float3 clear = g_cube_textures[frame.prefilter_texture]
+                       .SampleLevel(g_samplers[frame.prefilter_sampler],
+                                    reflection, lod)
+                       .rgb;
+    VkrVulkanSky *sky = frame.sky;
+    if (sky.cloud_sky_light_face_size == 0u)
+        return clear;
+    uint levels = vkr_cloud_sky_light_levels(sky.cloud_sky_light_face_size);
+    float level = vkr_cloud_sky_light_level(
+        lod, max(frame.prefilter_mip_count, 1u), levels);
+    VkrCloudSkyLightDirection at = vkr_cloud_sky_light_direction(reflection);
+    uint fine = uint(level);
+    uint coarse = min(fine + 1u, levels - 1u);
+    float4 cloud = lerp(packet_cloud_sky_light_level(sky, at, fine),
+                        packet_cloud_sky_light_level(sky, at, coarse),
+                        level - float(fine));
+    return vkr_cloud_sky_light_radiance(clear, cloud);
+}
+
 VkrVulkanEnvironmentResult
 packet_environment_terms_with_diffuse_normal(
     VkrVulkanPacketFrameRoot *frame, float3 world_position,
@@ -1389,12 +1438,9 @@ packet_environment_terms_with_diffuse_normal(
         frame.sh_coefficients[frame.sh_global_slot], sh_evaluation);
     irradiance += global_irradiance * ao * global_weight;
     diffuse += kd * global_irradiance * albedo * ao * global_weight;
-    float3 global_prefiltered =
-        g_cube_textures[frame.prefilter_texture]
-            .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
-                         roughness *
-                             float(max(frame.prefilter_mip_count, 1u) - 1u))
-            .rgb;
+    float3 global_prefiltered = packet_global_prefiltered(
+        frame, reflection,
+        roughness * float(max(frame.prefilter_mip_count, 1u) - 1u));
     specular += global_prefiltered * energy.reflectance *
                 specular_visibility * global_weight;
     VkrVulkanEnvironmentResult result;
@@ -1450,11 +1496,10 @@ float3 packet_environment_specular_radiance(
                     weight;
     }
     float global_weight = max(1.0f - min(local_weight_sum, 1.0f), 0.0f);
-    radiance += g_cube_textures[frame.prefilter_texture]
-                    .SampleLevel(g_samplers[frame.prefilter_sampler], reflection,
-                                 roughness *
-                                     float(max(frame.prefilter_mip_count, 1u) - 1u))
-                    .rgb * global_weight;
+    radiance += packet_global_prefiltered(
+                    frame, reflection,
+                    roughness * float(max(frame.prefilter_mip_count, 1u) - 1u)) *
+                global_weight;
     return radiance;
 }
 

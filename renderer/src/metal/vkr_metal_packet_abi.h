@@ -119,8 +119,15 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSky {
   uint64_t cloud_base_noise_texture_id;
   uint64_t cloud_detail_noise_texture_id;
   uint64_t cloud_weather_texture_id;
+  /** The published sky source's SH slot; the cloud layer lights itself with
+      it rather than the cloud-lit slot it feeds (ADR-074). */
+  uint32_t clear_sh_slot;
+  /** This frame's cloud chain for global reflections and its first face
+      extent; zero when the cloud-lit sky light did not run. */
+  uint32_t cloud_sky_light_face_size;
+  uint64_t cloud_sky_light;
 } VkrMetalPacketSky;
-_Static_assert(sizeof(VkrMetalPacketSky) == 496u, "Metal sky record ABI drift");
+_Static_assert(sizeof(VkrMetalPacketSky) == 512u, "Metal sky record ABI drift");
 _Static_assert(offsetof(VkrMetalPacketSky, aerial_perspective_texture_id) ==
                    432u,
                "Metal sky aerial-perspective offset drift");
@@ -526,6 +533,27 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudTraceRoot {
 
 _Static_assert(sizeof(VkrMetalPacketCloudTraceRoot) == 144u,
                "Metal cloud trace root ABI drift");
+
+/** ADR-074 cloud-lit sky light; mirrors VkrMetalPacketCloudSkyLightRoot in
+    msl/ibl/clouds.metal. Its march and projection kernels share it. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudSkyLightRoot {
+  uint64_t sky;
+  uint64_t frame;
+  uint64_t radiance;
+  uint64_t destination;
+  uint64_t source_texture_id;
+  uint32_t source_mip;
+  uint32_t face_size;
+  /** Pre-exposed cloud radiance into the source's radiance_stops scale. */
+  float32_t cloud_to_source_scale;
+  float32_t window_band_0;
+  float32_t window_band_1;
+  float32_t window_band_2;
+  uint32_t reserved[2];
+} VkrMetalPacketCloudSkyLightRoot;
+
+_Static_assert(sizeof(VkrMetalPacketCloudSkyLightRoot) == 80u,
+               "Metal cloud sky-light root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiDepthBaseRoot {
   VkrSsgiGpuParams params;
@@ -1462,6 +1490,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_CLOUD_NOISE_ROOT,
   VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT,
+  VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT,
   VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT,
   VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,

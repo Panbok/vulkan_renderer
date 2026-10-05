@@ -127,6 +127,9 @@ struct VkrMetalPacketSky {
     uint64_t cloud_base_noise;
     uint64_t cloud_detail_noise;
     uint64_t cloud_weather;
+    uint clear_sh_slot;
+    uint cloud_sky_light_face_size;
+    uint64_t cloud_sky_light;
 };
 
 struct VkrMetalPacketLocalShadowTransmissionDraw {

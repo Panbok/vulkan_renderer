@@ -2651,6 +2651,112 @@ bool8_t vkr_vk_prepare_cloud_trace(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* The cloud-lit sky light (ADR-074): every texel of the clear sky source's
+   16-texel mip is seen through this frame's cloud layer from the camera and
+   projected into this frame slot's SH slot with the source's own deringing,
+   and the cloud's in-scatter and transmittance halve down to one texel for
+   global reflections. Frame roots prepared afterwards read that slot as the
+   global sky light and the chain through the sky record; the layer itself
+   keeps the clear slot through the sky record. A
+   frame without a published source or its exact-texel view dispatches
+   nothing and keeps the clear slot. */
+bool8_t vkr_vk_prepare_cloud_sky_light(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass) {
+  (void)pass;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  VkrVulkanPublishedTexture *source = slot->ibl_source;
+  uint32_t mip = 0u;
+  uint32_t extent = 0u;
+  prepared->dispatch_count = 0u;
+  if (!slot->ibl_ready || !source || !slot->sky || !slot->sky_record ||
+      source->ibl_sh_slot == VKR_SH_SLOT_BLACK ||
+      source->ibl_sh_texel_view == VK_NULL_HANDLE)
+    return true_v;
+  /* The first mip no wider than the composite's face. */
+  extent = source->image.width;
+  while (extent > VKR_CLOUD_SKY_LIGHT_FACE_SIZE &&
+         mip + 1u < source->image.mip_levels) {
+    extent = Max(1u, extent >> 1u);
+    ++mip;
+  }
+  if (extent > VKR_CLOUD_SKY_LIGHT_FACE_SIZE || extent == 0u)
+    return true_v;
+  _Static_assert(VKR_VULKAN_FRAME_SLOT_COUNT <= VKR_SH_CLOUD_SLOT_COUNT,
+                 "Each Vulkan frame slot needs its own cloud SH slot");
+
+  /* The march reads the clear slot through the sky record; this root is
+     filled before the frame's global slot moves. */
+  uint64_t frame = 0u;
+  VkrVulkanPacketFrameRoot *frame_root = vkr_vk_packet_frame_root(slot, &frame);
+  if (!frame_root)
+    return false_v;
+  const VkrPacketFrameConstants constants = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &constants, slot->gpu_candidate_instances,
+      packet->temporal.current_view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
+  /* The chain of a 16-texel face holds every smaller one too. */
+  uint64_t radiance = 0u;
+  if (!vkr_vk_frame_upload_allocate(
+          slot, (uint64_t)VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t),
+          4u * sizeof(float32_t), &radiance, NULL))
+    return false_v;
+
+  const uint32_t cloud_slot =
+      VKR_SH_CLOUD_SLOT_FIRST + renderer->active_frame_slot;
+  /* Cloud radiance is pre-exposed; the source holds radiance scaled by
+     2^radiance_stops. */
+  const VkrVulkanCloudSkyLightRoot root = {
+      .sky = slot->sky,
+      .frame = frame,
+      .radiance = radiance,
+      .destination = renderer->sh_coefficients.address +
+                     (uint64_t)cloud_slot * VKR_SH_SLOT_BYTES,
+      .source_texture = source->ibl_sh_texel_slot.index,
+      .source_mip = mip,
+      .face_size = extent,
+      .cloud_to_source_scale = ldexpf(1.0f, source->radiance_stops) /
+                               Max(constants.pre_exposure, 1e-20f),
+      .window_band_0 = vkr_ibl_sh_window_factor(0u, source->ibl_sh_deringing),
+      .window_band_1 = vkr_ibl_sh_window_factor(1u, source->ibl_sh_deringing),
+      .window_band_2 = vkr_ibl_sh_window_factor(2u, source->ibl_sh_deringing),
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanCloudSkyLightRoot),
+                                 &prepared->root_address))
+    return false_v;
+  source->last_use_submit_value = renderer->submit_value + 1u;
+  prepared->pipelines[0] =
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT];
+  prepared->groups[0][0] = (extent + 7u) / 8u;
+  prepared->groups[0][1] = (extent + 7u) / 8u;
+  prepared->groups[0][2] = 6u;
+  prepared->pipelines[1] =
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT_SH];
+  prepared->groups[1][0] = 1u;
+  prepared->groups[1][1] = 1u;
+  prepared->groups[1][2] = 1u;
+  prepared->pipelines[2] =
+      renderer->deferred_pipelines
+          [VKR_VULKAN_DEFERRED_PIPELINE_CLOUD_SKY_LIGHT_MIPS];
+  prepared->groups[2][0] = 1u;
+  prepared->groups[2][1] = 1u;
+  prepared->groups[2][2] = 6u;
+  prepared->dispatch_count = 3u;
+  slot->sh_global_slot = cloud_slot;
+  /* Global reflections read the chain through the sky record. */
+  slot->sky_record->cloud_sky_light_face_size = extent;
+  slot->sky_record->cloud_sky_light = radiance;
+  return true_v;
+}
+
 void vkr_vk_mark_cloud_submitted(VkrVulkanRenderer *renderer,
                                  uint64_t submit_value) {
   VkrVulkanFrameSlot *slot =

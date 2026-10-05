@@ -21,6 +21,12 @@
  * where the camera's sun ray enters the layer. */
 #define VKR_CLOUD_SHADOW_SIZE 512u
 #define VKR_CLOUD_SHADOW_EXTENT_KM 8.0f
+/** Face extent of the cloud-lit sky light: the clear source mip of this size
+    is marched and projected each frame, and its cloud chain halves down to
+    one texel for global reflections (ADR-074). */
+#define VKR_CLOUD_SKY_LIGHT_FACE_SIZE 16u
+/** Texels of that chain: six faces of 16, 8, 4, 2 and 1 texels a side. */
+#define VKR_CLOUD_SKY_LIGHT_TEXELS (6u * (256u + 64u + 16u + 4u + 1u))
 
 /** Primary rays stop this far from the camera; aerial perspective hides the
  * layer beyond it. */
