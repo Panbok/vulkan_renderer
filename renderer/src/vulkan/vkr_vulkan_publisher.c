@@ -409,41 +409,75 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
   return valid;
 }
 
+/* Clears the slices a failed staging attempt assigned. */
+vkr_internal void
+vkr_vk_unstage_buffer_initializations(VkrVulkanRenderer *renderer) {
+  for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
+       ++i) {
+    renderer->pending_buffer_initializations[i].staged_offset = 0u;
+    renderer->pending_buffer_initializations[i].staged_size = 0u;
+  }
+}
+
+/* Packs pending buffer uploads, in queue order, into one bounded chunk, so a
+   burst of small geometries (a terrain's tiles) uploads in a few submissions
+   rather than one geometry part per chunk. An upload larger than the space
+   left continues in the next chunk. */
 vkr_internal bool8_t
 vkr_vk_stage_next_buffer_batch(VkrVulkanRenderer *renderer) {
   if (renderer->staging_buffer_count)
     return true_v;
+  const VkDeviceSize capacity =
+      (VkDeviceSize)renderer->config.upload_buffer_block_size;
+  VkDeviceSize chunk_size = 0u;
   for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
        ++i) {
     VkrVulkanPendingBufferInitialization *initialization =
         &renderer->pending_buffer_initializations[i];
-    if (initialization->next_offset >= initialization->size)
+    if (initialization->next_offset >= initialization->size) {
       continue;
-    const VkDeviceSize chunk_size =
-        Min((VkDeviceSize)renderer->config.upload_buffer_block_size,
-            initialization->size - initialization->next_offset);
-    if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_STAGING,
-                              VKR_GPU_ALLOCATION_OWNER_STAGING, chunk_size,
-                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                              &initialization->staging)) {
-      log_error("Vulkan failed to create bounded %llu-byte buffer "
-                "staging chunk at offset %llu/%llu",
-                (unsigned long long)chunk_size,
-                (unsigned long long)initialization->next_offset,
-                (unsigned long long)initialization->size);
-      return false_v;
     }
-    MemCopy(initialization->staging.allocation.mapped,
-            initialization->upload_data + initialization->next_offset,
-            chunk_size);
-    if (!vkr_vk_flush(renderer, &initialization->staging.allocation, 0u,
-                      chunk_size)) {
-      vkr_vk_destroy_buffer(renderer, &initialization->staging);
-      return false_v;
+    const VkDeviceSize offset = vkr_vk_align_up(chunk_size, 16u);
+    if (offset >= capacity) {
+      break;
     }
-    renderer->staging_buffer_count++;
+    initialization->staged_offset = offset;
+    initialization->staged_size = Min(
+        capacity - offset, initialization->size - initialization->next_offset);
+    chunk_size = offset + initialization->staged_size;
+  }
+  if (!chunk_size) {
     return true_v;
   }
+
+  if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_STAGING,
+                            VKR_GPU_ALLOCATION_OWNER_STAGING, chunk_size,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            &renderer->buffer_staging)) {
+    log_error("Vulkan failed to create a bounded %llu-byte buffer "
+              "staging chunk",
+              (unsigned long long)chunk_size);
+    vkr_vk_unstage_buffer_initializations(renderer);
+    return false_v;
+  }
+  uint8_t *mapped = renderer->buffer_staging.allocation.mapped;
+  for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
+       ++i) {
+    const VkrVulkanPendingBufferInitialization *initialization =
+        &renderer->pending_buffer_initializations[i];
+    if (initialization->staged_size) {
+      MemCopy(mapped + initialization->staged_offset,
+              initialization->upload_data + initialization->next_offset,
+              initialization->staged_size);
+    }
+  }
+  if (!vkr_vk_flush(renderer, &renderer->buffer_staging.allocation, 0u,
+                    chunk_size)) {
+    vkr_vk_destroy_buffer(renderer, &renderer->buffer_staging);
+    vkr_vk_unstage_buffer_initializations(renderer);
+    return false_v;
+  }
+  renderer->staging_buffer_count++;
   return true_v;
 }
 
@@ -566,14 +600,22 @@ bool8_t vkr_vk_prepare_initializations(VkrVulkanRenderer *renderer) {
     if (!renderer->prepared_texture_initializations)
       return false_v;
   }
-  if (renderer->pending_buffer_initialization_count) {
+  /* Only the staged slices record copies; the queue itself may be long. */
+  uint32_t staged_buffer_count = 0u;
+  for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
+       ++i) {
+    staged_buffer_count +=
+        renderer->pending_buffer_initializations[i].staged_size != 0u;
+  }
+  if (staged_buffer_count) {
     renderer->prepared_buffer_initializations = vkr_allocator_alloc(
         &renderer->graph_frame_allocator,
-        (uint64_t)renderer->pending_buffer_initialization_count *
+        (uint64_t)staged_buffer_count *
             sizeof(*renderer->prepared_buffer_initializations),
         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    if (!renderer->prepared_buffer_initializations)
+    if (!renderer->prepared_buffer_initializations) {
       return false_v;
+    }
   }
   for (uint32_t i = 0u; i < renderer->pending_texture_initialization_count;
        ++i) {
@@ -599,9 +641,10 @@ bool8_t vkr_vk_prepare_initializations(VkrVulkanRenderer *renderer) {
        ++i) {
     const VkrVulkanPendingBufferInitialization *initialization =
         &renderer->pending_buffer_initializations[i];
-    if (initialization->staging.handle)
+    if (initialization->staged_size) {
       renderer->prepared_buffer_initializations
           [renderer->prepared_buffer_initialization_count++] = initialization;
+    }
   }
   return true_v;
 }
@@ -754,45 +797,52 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
     };
     vkCmdPipelineBarrier2(command, &dependency);
   }
+  VkPipelineStageFlags2 ready_stages = VK_PIPELINE_STAGE_2_NONE;
+  VkAccessFlags2 ready_access = VK_ACCESS_2_NONE;
   for (uint32_t i = 0; i < renderer->prepared_buffer_initialization_count;
        ++i) {
     const VkrVulkanPendingBufferInitialization *initialization =
         renderer->prepared_buffer_initializations[i];
     const VkBufferCopy2 region = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+        .srcOffset = initialization->staged_offset,
         .dstOffset =
             initialization->destination_offset + initialization->next_offset,
-        .size = initialization->staging.size,
+        .size = initialization->staged_size,
     };
     const VkCopyBufferInfo2 copy = {
         .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
-        .srcBuffer = initialization->staging.handle,
+        .srcBuffer = renderer->buffer_staging.handle,
         .dstBuffer = initialization->destination,
         .regionCount = 1u,
         .pRegions = &region,
     };
     vkCmdCopyBuffer2(command, &copy);
-    if (initialization->next_offset + initialization->staging.size <
-        initialization->size)
+    if (initialization->next_offset + initialization->staged_size <
+        initialization->size) {
       continue;
-    const VkBufferMemoryBarrier2 barrier = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = initialization->destination_stage,
-        .dstAccessMask = initialization->destination_access,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = initialization->destination,
-        .size = VK_WHOLE_SIZE,
-    };
-    const VkDependencyInfo dependency = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .bufferMemoryBarrierCount = 1u,
-        .pBufferMemoryBarriers = &barrier,
-    };
-    vkCmdPipelineBarrier2(command, &dependency);
+    }
+    ready_stages |= initialization->destination_stage;
+    ready_access |= initialization->destination_access;
   }
+  /* One dependency makes every upload this submission completes visible to
+     its readers. */
+  if (ready_stages == VK_PIPELINE_STAGE_2_NONE) {
+    return;
+  }
+  const VkMemoryBarrier2 barrier = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      .dstStageMask = ready_stages,
+      .dstAccessMask = ready_access,
+  };
+  const VkDependencyInfo dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .memoryBarrierCount = 1u,
+      .pMemoryBarriers = &barrier,
+  };
+  vkCmdPipelineBarrier2(command, &dependency);
 }
 
 vkr_internal VkrVulkanRetiredStagingBuffer *
@@ -841,7 +891,6 @@ vkr_vk_reserve_retired_geometry_megabuffer(VkrVulkanRenderer *renderer) {
 vkr_internal void vkr_vk_release_buffer_initialization(
     VkrVulkanRenderer *renderer,
     VkrVulkanPendingBufferInitialization *initialization) {
-  vkr_vk_destroy_buffer(renderer, &initialization->staging);
   if (initialization->upload_data)
     (void)vkr_dmemory_free(&renderer->publication_staging_memory,
                            initialization->upload_data, initialization->size);
@@ -875,23 +924,13 @@ bool8_t vkr_vk_commit_buffer_initializations(VkrVulkanRenderer *renderer,
     mega->copy_index_size = 0u;
     mega->copy_pending = false_v;
   }
-  VkrVulkanPendingBufferInitialization *submitted = NULL;
-  for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
-       ++i) {
-    VkrVulkanPendingBufferInitialization *initialization =
-        &renderer->pending_buffer_initializations[i];
-    if (!initialization->staging.handle)
-      continue;
-    if (submitted) {
-      log_error("Vulkan submitted more than one bounded staging "
-                "buffer in a frame");
+  if (renderer->buffer_staging.handle) {
+    if (!vkr_vk_retire_submitted_staging(renderer, &renderer->buffer_staging,
+                                         retire_value)) {
       return false_v;
     }
-    submitted = initialization;
+    renderer->buffer_staging = (VkrVulkanBuffer){0};
   }
-  if (submitted && !vkr_vk_retire_submitted_staging(
-                       renderer, &submitted->staging, retire_value))
-    return false_v;
 
   uint32_t write_index = 0u;
   const uint32_t pending_count = renderer->pending_buffer_initialization_count;
@@ -900,7 +939,7 @@ bool8_t vkr_vk_commit_buffer_initializations(VkrVulkanRenderer *renderer,
         &renderer->pending_buffer_initializations[read_index];
     VkrVulkanPublishedGeometry *geometry =
         &renderer->published_geometries[initialization->geometry_record_index];
-    if (!initialization->staging.handle) {
+    if (!initialization->staged_size) {
       if (write_index != read_index) {
         renderer->pending_buffer_initializations[write_index] = *initialization;
         MemZero(initialization, sizeof(*initialization));
@@ -908,8 +947,9 @@ bool8_t vkr_vk_commit_buffer_initializations(VkrVulkanRenderer *renderer,
       write_index++;
       continue;
     }
-    initialization->next_offset += initialization->staging.size;
-    MemZero(&initialization->staging, sizeof(initialization->staging));
+    initialization->next_offset += initialization->staged_size;
+    initialization->staged_offset = 0u;
+    initialization->staged_size = 0u;
     geometry->last_use_submit_value =
         Max(geometry->last_use_submit_value, retire_value);
     if (initialization->next_offset == initialization->size) {
@@ -943,13 +983,17 @@ void vkr_vk_discard_buffer_initializations(VkrVulkanRenderer *renderer) {
         &renderer->pending_buffer_initializations[i];
     VkrVulkanPublishedGeometry *geometry =
         &renderer->published_geometries[initialization->geometry_record_index];
-    if (initialization->staging.handle && renderer->staging_buffer_count)
-      renderer->staging_buffer_count--;
     if (geometry->pending_initialization_count)
       geometry->pending_initialization_count--;
     vkr_vk_release_buffer_initialization(renderer, initialization);
   }
   renderer->pending_buffer_initialization_count = 0u;
+  if (renderer->buffer_staging.handle) {
+    vkr_vk_destroy_buffer(renderer, &renderer->buffer_staging);
+    if (renderer->staging_buffer_count) {
+      renderer->staging_buffer_count--;
+    }
+  }
 }
 
 vkr_internal void
@@ -962,8 +1006,6 @@ vkr_vk_discard_geometry_initializations(VkrVulkanRenderer *renderer,
     VkrVulkanPendingBufferInitialization *initialization =
         &renderer->pending_buffer_initializations[read_index];
     if (initialization->geometry_record_index == geometry_record_index) {
-      if (initialization->staging.handle && renderer->staging_buffer_count)
-        renderer->staging_buffer_count--;
       vkr_vk_release_buffer_initialization(renderer, initialization);
       continue;
     }

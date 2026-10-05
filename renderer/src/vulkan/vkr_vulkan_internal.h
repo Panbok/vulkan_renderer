@@ -2664,7 +2664,10 @@ typedef struct VkrVulkanPendingTextureInitialization {
 } VkrVulkanPendingTextureInitialization;
 
 typedef struct VkrVulkanPendingBufferInitialization {
-  VkrVulkanBuffer staging;
+  /* The slice of the renderer's buffer staging chunk this submission copies;
+     zero bytes while nothing is staged. */
+  VkDeviceSize staged_offset;
+  VkDeviceSize staged_size;
   VkBuffer destination;
   uint8_t *upload_data;
   VkDeviceSize size;
@@ -2926,6 +2929,9 @@ struct VkrVulkanRenderer {
   uint32_t pending_buffer_initialization_capacity;
   uint32_t retired_staging_buffer_capacity;
   uint32_t staging_buffer_count;
+  /* The bounded chunk that packs this submission's buffer initializations;
+     it counts once in staging_buffer_count. */
+  VkrVulkanBuffer buffer_staging;
   /* Which publication class claims the single bounded staging chunk next.
      Buffers and textures alternate so neither starves the other. */
   bool8_t stage_textures_first;
