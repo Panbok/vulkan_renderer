@@ -1732,8 +1732,13 @@ vkr_internal void vkr_vk_size_publication_records(
   renderer->pending_texture_initializations_size =
       (uint64_t)renderer->config.texture_capacity *
       sizeof(*renderer->pending_texture_initializations);
+  /* A live geometry queues at most three uploads (vertices, decodes and
+     indices), so a burst of publications, such as a new terrain's tiles,
+     always fits; the single bounded staging chunk drains the queue over
+     frames. The records cost about 4 MiB at 16384 geometries; the queued
+     bytes are bounded by publication_staging_memory. */
   renderer->pending_buffer_initialization_capacity =
-      renderer->config.publication_staging_capacity;
+      renderer->config.geometry_capacity * 3u;
   renderer->pending_buffer_initializations_size =
       (uint64_t)renderer->pending_buffer_initialization_capacity *
       sizeof(*renderer->pending_buffer_initializations);

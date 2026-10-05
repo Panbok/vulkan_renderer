@@ -120,6 +120,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
          noise samplers occupy the first five permanent rows before asset
          publication begins. */
       config->sampler_capacity < 5u || !config->geometry_capacity ||
+      config->geometry_capacity > UINT32_MAX / 3u ||
       !config->texture_capacity ||
       config->sampled_image_capacity <
           VKR_VULKAN_PERMANENT_SAMPLED_IMAGE_ROWS ||
