@@ -364,6 +364,8 @@ typedef struct VkrEditorUi {
   bool8_t cmd_holding;
   /* The hold is a build, whose result the queue reports when it settles. */
   bool8_t cmd_holding_build;
+  /* An `op` statement holds the queue until its operation answers. */
+  bool8_t cmd_holding_op;
   float64_t cmd_hold_seconds;
   /* Headless: quit once the queue has drained. */
   bool8_t cmd_quit_when_done;

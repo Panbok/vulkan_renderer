@@ -688,6 +688,12 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg) {
   }
   snprintf(ctx->message, sizeof(ctx->message), "Queued %.*s", (int)name.length,
            name.str);
+  /* The next statement sees the operation's effect. The `cmd` operation
+     itself waits for this queue to go idle, so it cannot hold it. */
+  if (!vkr_string8_equals_cstr(&name, "cmd")) {
+    ctx->editor->cmd_holding_op = true_v;
+    ctx->editor->cmd_hold_seconds = 0.0;
+  }
   return true_v;
 }
 
@@ -2161,7 +2167,8 @@ uint32_t vkr_editor_cmd_capture_end(VkrEditorUi *editor) {
 
 bool8_t vkr_editor_cmd_idle(const VkrEditorUi *editor) {
   return editor->cmd_queue_offset >= editor->cmd_queue_length &&
-         !editor->cmd_holding && editor->cmd_wait_seconds <= 0.0 &&
+         !editor->cmd_holding && !editor->cmd_holding_op &&
+         editor->cmd_wait_seconds <= 0.0 &&
          editor->cmd_wait_scene_seconds <= 0.0 &&
          editor->cmd_pointer_next >= editor->cmd_pointer_count;
 }
@@ -2253,6 +2260,14 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       const char *result = vkr_editor_build_result(editor->build, &succeeded);
       cmd_report(editor, succeeded, result[0] ? result : "Build did not run");
     }
+  }
+  if (editor->cmd_holding_op) {
+    editor->cmd_hold_seconds += dt;
+    if (vkr_editor_agent_self_pending(editor->agent) &&
+        editor->cmd_hold_seconds < CMD_HOLD_LIMIT_SECONDS) {
+      return;
+    }
+    editor->cmd_holding_op = false_v;
   }
   /* Nobody can close a headless editor, so the end of its script does. The
    * quit request skips the unsaved-edits check that `quit` makes. */

@@ -595,6 +595,22 @@ bool8_t vkr_editor_agent_busy(const VkrEditorAgent *agent) {
   return agent->active || agent->queue_count > 0u;
 }
 
+bool8_t vkr_editor_agent_self_pending(const VkrEditorAgent *agent) {
+  if (!agent) {
+    return false_v;
+  }
+  if (agent->active && agent->current.client == AGENT_CLIENT_SELF) {
+    return true_v;
+  }
+  for (uint32_t i = 0; i < agent->queue_count; ++i) {
+    const uint32_t slot = (agent->queue_head + i) % AGENT_QUEUE_MAX;
+    if (agent->queue[slot].client == AGENT_CLIENT_SELF) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 const char *vkr_editor_agent_status(const VkrEditorAgent *agent) {
   return agent ? agent->status : "Agent channel off.";
 }

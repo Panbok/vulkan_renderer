@@ -24,6 +24,9 @@ void vkr_editor_agent_update(VkrEditorAgent *agent, VkrEditorUi *editor,
    open while this holds. */
 bool8_t vkr_editor_agent_busy(const VkrEditorAgent *agent);
 
+/* A request the editor submitted itself waits or runs. */
+bool8_t vkr_editor_agent_self_pending(const VkrEditorAgent *agent);
+
 /* "Listening on <path>", or why the channel is off. */
 const char *vkr_editor_agent_status(const VkrEditorAgent *agent);
 
