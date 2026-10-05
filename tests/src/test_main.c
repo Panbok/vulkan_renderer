@@ -146,6 +146,9 @@ int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "--process-path-test-child") == 0) {
     return process_path_test_child();
   }
+  if (argc == 4 && strcmp(argv[1], "--lock-owner-test-child") == 0) {
+    return harness_lock_owner_test_child(argv[2], argv[3]);
+  }
   printf("Running tests...\n\n");
 
   vkr_platform_init();

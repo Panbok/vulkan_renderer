@@ -560,7 +560,9 @@ bool8_t vkr_platform_process_lock_acquire(const char *name,
   if (written < 0 || (uint64_t)written >= sizeof(path)) {
     return false_v;
   }
-  const int descriptor = open(path, O_CREAT | O_RDWR, 0644);
+  /* Close-on-exec: a launched process must not hold the lock after its
+     owner exits. */
+  const int descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
   if (descriptor < 0 || flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
     if (descriptor >= 0) {
       close(descriptor);

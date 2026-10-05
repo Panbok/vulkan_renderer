@@ -1727,6 +1727,28 @@ vkr_internal void test_harness_platform_process_primitives(void) {
                                            &second));
   vkr_platform_process_lock_release(&second);
 #if !defined(_WIN32)
+  /* A lock ends with its owner: a child process takes it, starts a
+     background process and exits holding it. A lock descriptor inherited by
+     that background process would keep the lock alive, as the editor's Bakery
+     daemon kept a workspace lease and the next editor opened read-only. */
+  char executable[VKR_HARNESS_PATH_MAX];
+  assert(vkr_platform_executable_path(executable, sizeof(executable)));
+  const char *const owner_arguments[] = {"--lock-owner-test-child", lock_name,
+                                         PROJECT_SOURCE_DIR};
+  const VkrPlatformProcessConfig owner = {
+      .executable = executable,
+      .arguments = owner_arguments,
+      .argument_count = ArrayCount(owner_arguments),
+      .timeout_ms = 10000u,
+      .hidden = true_v,
+  };
+  int32_t owner_exit = -1;
+  bool8_t owner_timed_out = false_v;
+  assert(vkr_platform_process_run(&owner, &owner_exit, &owner_timed_out));
+  assert(owner_exit == 0 && !owner_timed_out);
+  assert(vkr_platform_process_lock_acquire(lock_name, PROJECT_SOURCE_DIR,
+                                           &second));
+  vkr_platform_process_lock_release(&second);
   char lock_path[VKR_HARNESS_PATH_MAX];
   string_format(lock_path, sizeof(lock_path), "%s/%s.lock", PROJECT_SOURCE_DIR,
                 lock_name);
@@ -3203,6 +3225,35 @@ vkr_internal void test_harness_scene_manifest_identity_is_host_neutral(void) {
 #endif
   }
   printf("  test_harness_scene_manifest_identity_is_host_neutral PASSED\n");
+}
+
+int harness_lock_owner_test_child(const char *lock_name,
+                                  const char *lock_directory) {
+#if defined(_WIN32)
+  (void)lock_name;
+  (void)lock_directory;
+  return 1;
+#else
+  VkrPlatformProcessLock lock = {0};
+  if (!vkr_platform_process_lock_acquire(lock_name, lock_directory, &lock)) {
+    return 2;
+  }
+  const char *const background[] = {"-c", "sleep 2 &"};
+  const VkrPlatformProcessConfig launch = {
+      .executable = "/bin/sh",
+      .arguments = background,
+      .argument_count = ArrayCount(background),
+      .timeout_ms = 5000u,
+  };
+  int32_t exit_code = -1;
+  bool8_t timed_out = false_v;
+  if (!vkr_platform_process_run(&launch, &exit_code, &timed_out) ||
+      exit_code != 0) {
+    return 3;
+  }
+  /* Exits holding the lock, as a process that ends without releasing it. */
+  return 0;
+#endif
 }
 
 bool32_t run_harness_tests(void) {
