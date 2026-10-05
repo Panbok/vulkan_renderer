@@ -3703,20 +3703,37 @@ static bool8_t edit_load_prepare_record(
   return true_v;
 }
 
-/* Claim the entity an override record names: it must exist, be unique,
-   not already be claimed and match the saved fingerprint. */
-static bool8_t edit_load_bind_source(EditSourceIndex *source,
-                                     uint64_t fingerprint,
-                                     EditSidecarFailure *failure) {
+/* Whether the entity still carries the name `values` saved. */
+static bool8_t edit_load_same_name(const VkrScene *scene, VkrEntityId entity,
+                                   const VkrSceneEditValues *values) {
+  if (!(values->fields & VKR_SCENE_EDIT_NAME)) {
+    return false_v;
+  }
+  const String8 name = vkr_scene_get_name(scene, entity);
+  const uint64_t length = strlen(values->name);
+  return name.length == length &&
+         MemCompare(name.str, values->name, length) == 0;
+}
+
+/* Claim the entity an override record names: it must exist, be unique and
+   not already be claimed. A different source fingerprint, as a local
+   download that differs between machines gives, still binds when the node
+   keeps the name the record saved; `rebound` counts those. */
+static bool8_t
+edit_load_bind_source(const VkrScene *scene, EditSourceIndex *source,
+                      uint64_t fingerprint, const VkrSceneEditValues *values,
+                      uint32_t *rebound, EditSidecarFailure *failure) {
   if (!source) {
     *failure = EDIT_SIDECAR_FAILURE_SOURCE_MISSING;
   } else if (source->ambiguous) {
     *failure = EDIT_SIDECAR_FAILURE_SOURCE_AMBIGUOUS;
   } else if (source->seen) {
     *failure = EDIT_SIDECAR_FAILURE_SOURCE_DUPLICATE;
-  } else if (source->fingerprint != fingerprint) {
+  } else if (source->fingerprint != fingerprint &&
+             !edit_load_same_name(scene, source->entity, values)) {
     *failure = EDIT_SIDECAR_FAILURE_FINGERPRINT;
   } else {
+    *rebound += source->fingerprint != fingerprint;
     source->seen = true_v;
     return true_v;
   }
@@ -4141,6 +4158,7 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   uint32_t *remap = NULL;
   uint32_t remap_capacity = 0u;
   uint32_t index_count = 0, additional_touched = 0;
+  uint32_t rebound = 0u;
   uint32_t index_capacity = scene->world->dir.capacity;
   uint32_t touched_before = s->touched_count;
   const uint32_t deleted_before = s->deleted_count;
@@ -4227,7 +4245,8 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
               .saved_fingerprint = fingerprint,
               .current_fingerprint = source ? source->fingerprint : 0u,
           };
-          if (!edit_load_bind_source(source, fingerprint, &diagnostic.failure))
+          if (!edit_load_bind_source(scene, source, fingerprint, &values,
+                                     &rebound, &diagnostic.failure))
             goto cleanup;
           structure.version4 |= extra.deleted;
           if (!edit_load_prepare_record(s, scene, source, &values, components,
@@ -4383,6 +4402,11 @@ bool8_t vkr_scene_edit_load(VkrSceneEditState *s, VkrScene *scene,
   }
   pending_settings = NULL;
   snprintf(s->status, sizeof(s->status), "Loaded %u node overrides.", count);
+  if (rebound) {
+    log_warn("%u overrides of '%s' bound by node name: their source changed "
+             "since they were saved",
+             rebound, cpath);
+  }
   success = true_v;
   s->sidecar_conflict = false_v;
 cleanup:

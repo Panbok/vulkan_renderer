@@ -3030,6 +3030,13 @@ vkr_internal bool8_t scene_loader_source_fingerprint(String8 json,
   }
   uint64_t hash = UINT64_C(14695981039346656037);
   for (uint64_t i = 0; i < source.length; ++i) {
+    /* JSON forbids a raw CR inside a string, so a CR before LF is line-ending
+       whitespace. Skipping it gives a CRLF checkout of a scene the fingerprint
+       of its LF copy, so overrides saved on one platform load on another. */
+    if (source.str[i] == '\r' && i + 1u < source.length &&
+        source.str[i + 1u] == '\n') {
+      continue;
+    }
     hash = (hash ^ source.str[i]) * UINT64_C(1099511628211);
   }
   *out_hash = hash;

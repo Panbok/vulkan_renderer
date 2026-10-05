@@ -934,6 +934,19 @@ bool32_t run_scene_edit_tests(void) {
   assert(vkr_scene_edit_load(&state, &scene, file_path) &&
          !state.sidecar_conflict);
 
+  /* A changed source still binds an override whose node keeps the name it
+     saved, as another machine's download of the same source gives. */
+  const char rebound[] =
+      "{\"version\":1,\"overrides\":[{\"scene_entity\":7,\"gltf_node\":0,"
+      "\"source_fingerprint\":\"0000000000000000\",\"fields\":2,\"name\":"
+      "\"parent\"}]}";
+  edit_test_write(path, rebound, sizeof(rebound) - 1);
+  assert(vkr_scene_edit_load(&state, &scene, file_path) &&
+         !state.sidecar_conflict);
+  edit_test_write(path, saved, saved_size);
+  assert(vkr_scene_edit_load(&state, &scene, file_path) &&
+         !state.sidecar_conflict);
+
   const char escaped[] =
       "{\"overrides\":[{\"scene_entity\":7,\"gltf_node\":1,"
       "\"source_fingerprint\":\"1122334455667788\",\"fields\":2,\"name\":"
