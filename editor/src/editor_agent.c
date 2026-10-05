@@ -103,7 +103,10 @@ static void agent_client_close(AgentClient *client) {
 static void agent_send(VkrEditorAgent *agent, uint32_t slot,
                        uint32_t generation, String8 text) {
   if (slot == AGENT_CLIENT_SELF) {
-    log_info("[agent] %.*s", (int)Min(text.length, (uint64_t)400u), text.str);
+    /* Scripts read the whole result from this line; the Console keeps its
+       own record length. */
+    log_info("[agent] %.*s", (int)Min(text.length, (uint64_t)INT32_MAX),
+             text.str);
     return;
   }
   AgentClient *client = &agent->clients[slot];
