@@ -30,6 +30,9 @@ static bool32_t test_compressed_format_region_sizes(void) {
                                         7u) == 96u);
   assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM, 6u,
                                         6u) == 16u);
+  /* ASTC 4x4 HDR stores 16-byte blocks like LDR: 9x4 texels span 3 blocks. */
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_ASTC_4x4_HDR, 9u,
+                                        4u) == 48u);
   assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_COUNT, 1u, 1u) ==
          0u);
   printf("  test_compressed_format_region_sizes PASSED\\n");

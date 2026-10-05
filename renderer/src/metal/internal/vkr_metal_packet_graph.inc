@@ -37,6 +37,8 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
     return MTLPixelFormatASTC_6x6_LDR;
   case VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB:
     return MTLPixelFormatASTC_6x6_sRGB;
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_HDR:
+    return MTLPixelFormatASTC_4x4_HDR;
   case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return MTLPixelFormatEAC_RG11Unorm;
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:

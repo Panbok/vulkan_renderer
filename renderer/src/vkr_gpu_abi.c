@@ -54,7 +54,8 @@ vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source) {
                          (float32_t)cofactor[5],
                          mat4_affine_sphere_scale(model)},
       .normal_column2 = {(float32_t)cofactor[6], (float32_t)cofactor[7],
-                         (float32_t)cofactor[8], 0.0f},
+                         (float32_t)cofactor[8],
+                         (float32_t)source->lightmap_slot},
   };
 }
 

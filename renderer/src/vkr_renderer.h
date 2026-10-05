@@ -445,6 +445,8 @@ typedef struct VkrDeviceInformation {
   float64_t max_sampler_anisotropy;
   /** ASTC LDR, which covers every block size. */
   bool8_t supports_texture_astc_4x4;
+  /** ASTC 4x4 HDR (VKR_TEXTURE_FORMAT_ASTC_4x4_HDR). */
+  bool8_t supports_texture_astc_hdr;
   bool8_t supports_texture_bc7;
   bool8_t supports_texture_bc5;
   bool8_t supports_multi_draw_indirect;
@@ -577,6 +579,9 @@ typedef enum VkrTextureFormat {
    * LDR device samples it. Appended so stored format values stay stable. */
   VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM,
   VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB,
+  /** Half-float ASTC 4x4 HDR for baked lightmap pages (ADR-088); needs
+   * supports_texture_astc_hdr. */
+  VKR_TEXTURE_FORMAT_ASTC_4x4_HDR,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;

@@ -1884,6 +1884,10 @@ vkr_vulkan_renderer_texture_format_supported(const VkrVulkanRenderer *renderer,
   const VkFormat native_format = vkr_vk_texture_format(format);
   if (native_format == VK_FORMAT_UNDEFINED)
     return false_v;
+  /* ASTC HDR formats are usable only with their device feature enabled. */
+  if (format == VKR_TEXTURE_FORMAT_ASTC_4x4_HDR &&
+      !vkr_vulkan_device_astc_hdr_enabled(renderer->device))
+    return false_v;
   VkFormatProperties properties = {0};
   vkGetPhysicalDeviceFormatProperties(
       vkr_vulkan_device_physical(renderer->device), native_format, &properties);

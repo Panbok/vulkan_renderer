@@ -56,6 +56,7 @@ typedef struct VkrSceneWorldSource {
   uint32_t temporal_index;
   uint32_t temporal_generation;
   uint32_t skinning_index;
+  uint32_t lightmap_slot;
   bool8_t bounds_valid;
   bool8_t transmissive;
   bool8_t double_sided;
@@ -97,6 +98,7 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
               .temporal_index = source->temporal_index,
               .temporal_generation = source->temporal_generation,
               .skinning_index = source->skinning_index,
+              .lightmap_slot = source->lightmap_slot,
           },
       .local_bounding_sphere = {source->center.x, source->center.y,
                                 source->center.z, vec3_length(half_extents)},
@@ -420,6 +422,7 @@ vkr_internal void vkr_scene_emit_world_sources(
           .object_id = object_id,
           .temporal_index = mesh_slot,
           .temporal_generation = mesh->temporal_generation,
+          .lightmap_slot = mesh->lightmap_slot,
           .bounds_valid = mesh->bounds_valid,
           .transmissive = transmissive,
           .double_sided = material ? material->double_sided : false_v,
@@ -484,6 +487,7 @@ vkr_internal void vkr_scene_emit_world_sources(
           .temporal_index = temporal_instance_offset + instance_slot,
           .temporal_generation = instance->generation,
           .skinning_index = skinning_index,
+          .lightmap_slot = instance->lightmap_slot,
           .bounds_valid = instance->bounds_valid,
           .transmissive = transmissive,
           .double_sided =

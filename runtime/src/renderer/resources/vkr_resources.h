@@ -144,6 +144,8 @@ typedef struct VkrMesh {
   VkrShadowCasterMobility shadow_mobility;
   /* PENDING until every submesh geometry and material is confirmed. */
   bool8_t awaiting_publication;
+  /** Zero, or the scene lightmap rectangle + 1 its draws sample (ADR-088). */
+  uint32_t lightmap_slot;
 } VkrMesh;
 Array(VkrMesh);
 
@@ -300,8 +302,18 @@ typedef struct VkrMeshInstance {
 
   /** Shadow-caster mobility contract; see VkrShadowCasterMobility. */
   VkrShadowCasterMobility shadow_mobility;
+  /** Zero, or the scene lightmap rectangle + 1 its draws sample (ADR-088). */
+  uint32_t lightmap_slot;
 } VkrMeshInstance;
 Array(VkrMeshInstance);
+
+/** The lightmap slot of one mesh instance, or of one generated mesh when
+    `instance` is invalid (vkr_mesh_manager_set_lightmap_slots). */
+typedef struct VkrMeshLightmapSlot {
+  VkrMeshInstanceHandle instance;
+  uint32_t mesh_index;
+  uint32_t slot;
+} VkrMeshLightmapSlot;
 
 // =============================================================================
 // Font resource types (decoupled from systems)

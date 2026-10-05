@@ -435,6 +435,14 @@ vkr_mesh_manager_instance_set_shadow_mobility(VkrMeshManager *manager,
                                               VkrMeshInstanceHandle handle,
                                               VkrShadowCasterMobility mobility);
 
+/** Sets `count` lightmap slots (VkrMeshInstance, VkrMesh) in order, skipping
+    stale handles and removed meshes. When a static draw's slot changes it
+    notes one static content change, so retained static draws repack.
+    Returns how many slots it set. */
+uint32_t vkr_mesh_manager_set_lightmap_slots(VkrMeshManager *manager,
+                                             const VkrMeshLightmapSlot *slots,
+                                             uint32_t count);
+
 /**
  * @brief Destroy a mesh instance.
  *

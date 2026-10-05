@@ -1607,6 +1607,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
               ? active_scene->diffuse_volume
               : (VkrDiffuseVolumeBinding){0},
   };
+  vkr_scene_lightmap_binding(active_scene, &draw->frame_lighting.lightmap);
   /* The baked volume is placed in document space (ADR-086). */
   if (active_scene) {
     draw->frame_lighting.diffuse_volume.origin =
@@ -2463,6 +2464,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     /* The volume's sun keys and lamp groups follow the turned sun and the
        light group factors (ADR-090). */
     vkr_scene_update_diffuse_volume(render_scene, &application->assets, delta);
+    (void)vkr_scene_bind_lightmaps(render_scene);
     (void)vkr_world_resources_prepare_scene_atmosphere(
         &application->assets, &application->assets.world_resources,
         render_scene);

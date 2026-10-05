@@ -103,7 +103,10 @@ typedef struct VkrInstanceDataGPU {
   uint32_t temporal_flags;
   /** Zero is static; otherwise indexes world.skinning[index - 1]. */
   uint32_t skinning_index;
-  uint32_t reserved[3];
+  /** Zero is not lightmapped; otherwise selects the frame's lightmap
+      rects[slot - 1] (ADR-088). */
+  uint32_t lightmap_slot;
+  uint32_t reserved[2];
 } VkrInstanceDataGPU;
 
 _Static_assert(sizeof(VkrInstanceDataGPU) == 96,
@@ -121,7 +124,8 @@ typedef struct VkrPreparedInstanceGPU {
   uint32_t temporal_flags;
   /** Positive-scaled inverse transpose; column 0 w carries model handedness.
 
-   * Column 1 w carries the conservative affine sphere stretch. */
+   * Column 1 w carries the conservative affine sphere stretch and column 2 w
+   * the lightmap slot as an exact float. */
   Vec4 normal_column0;
   Vec4 normal_column1;
   Vec4 normal_column2;

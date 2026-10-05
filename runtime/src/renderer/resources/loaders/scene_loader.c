@@ -8,6 +8,7 @@
 #include "renderer/resources/loaders/scene_loader.h"
 
 #include "assets/vkr_diffuse_volume.h"
+#include "assets/vkr_lightmap_set.h"
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
@@ -121,6 +122,13 @@ typedef struct SceneDiffuseVolumeImport {
   bool8_t valid;
   String8 path;
 } SceneDiffuseVolumeImport;
+
+/* The scene's `lightmaps` block (ADR-088): the VKLM set the bake published. */
+typedef struct SceneLightmapImport {
+  bool8_t has_block;
+  bool8_t valid;
+  String8 path;
+} SceneLightmapImport;
 
 typedef struct SceneSubsurfaceImport {
   bool8_t has_block;
@@ -259,6 +267,12 @@ typedef struct VkrSceneLoaderAsyncPayload {
   VkrSceneDiffuseVolumeLayers *diffuse_volume_layers;
   bool8_t diffuse_volume_prepared_ready;
   bool8_t diffuse_volume_applied;
+  SceneLightmapImport lightmap_import;
+  VkrTexturePreparedLoad lightmap_prepared;
+  /* Handed to the scene when applied; freed with the payload otherwise. */
+  VkrSceneLightmaps *lightmaps;
+  bool8_t lightmap_prepared_ready;
+  bool8_t lightmap_applied;
   SceneSubsurfaceImport subsurface_import;
   bool8_t subsurface_applied;
   SceneReflectionProbeImport
@@ -1479,6 +1493,231 @@ scene_loader_apply_diffuse_volume_import(VkrScene *scene,
   if (layers) {
     *layers = NULL;
   }
+}
+
+/* Parses the `lightmaps` block; null or absent is no set. */
+vkr_internal SceneLightmapImport
+scene_loader_parse_lightmap_import(String8 json) {
+  SceneLightmapImport result = {.valid = true_v};
+  VkrJsonReader reader = vkr_json_reader_from_string(json);
+  if (!vkr_json_find_root_field(&reader, "lightmaps") ||
+      scene_json_parse_null(&reader))
+    return result;
+
+  result.has_block = true_v;
+  VkrJsonReader object = {0};
+  if (!vkr_json_enter_object(&reader, &object) ||
+      !scene_json_read_string_field(&object, "path", &result.path) ||
+      result.path.length == 0u ||
+      !scene_string8_ends_with_cstr_i(result.path, ".vklm")) {
+    result.valid = false_v;
+    log_error("Scene loader: $.lightmaps.path must name a .vklm asset");
+  }
+  return result;
+}
+
+/* Reads and validates a VKLM set into the scene's lightmap record and the
+   upload of every layer page: one ASTC 4x4 HDR 2D array whose slice
+   page * layer_count + layer is the file's page image in file order, so the
+   upload reads the file bytes in place. */
+vkr_internal bool8_t scene_loader_prepare_lightmaps(
+    String8 path, VkrAllocator *temp_alloc,
+    VkrTexturePreparedLoad *out_prepared, VkrSceneLightmaps **out_lightmaps) {
+  *out_lightmaps = NULL;
+  MemZero(out_prepared, sizeof(*out_prepared));
+  String8 terminated_path = string8_duplicate(temp_alloc, &path);
+  if (!terminated_path.str) {
+    log_error("Scene loader: lightmap path allocation failed for '%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+
+  FilePath file_path = vkr_asset_path_file(temp_alloc, terminated_path);
+  FileStats stats = {0};
+  FileError file_error = file_stats(&file_path, &stats);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle handle = {0};
+  if (file_error == FILE_ERROR_NONE) {
+    file_error = file_open(&file_path, mode, &handle);
+  }
+  if (file_error != FILE_ERROR_NONE || stats.size == 0u) {
+    log_error("Scene loader: lightmap set open failed for '%.*s': %.*s",
+              (int)path.length, path.str,
+              (int)file_get_error_string(file_error).length,
+              file_get_error_string(file_error).str);
+    return false_v;
+  }
+  /* The upload owns the file bytes (malloc, see VkrTexturePreparedLoad). */
+  uint8_t *bytes = (uint8_t *)malloc((size_t)stats.size);
+  uint64_t byte_count = 0u;
+  while (bytes && file_error == FILE_ERROR_NONE && byte_count < stats.size) {
+    uint64_t read = 0u;
+    file_error = file_read_into(&handle, bytes + byte_count,
+                                stats.size - byte_count, &read);
+    if (read == 0u) {
+      break;
+    }
+    byte_count += read;
+  }
+  file_close(&handle);
+  if (!bytes || byte_count != stats.size) {
+    free(bytes);
+    log_error("Scene loader: lightmap set read failed for '%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+
+  Arena *decode_arena = arena_create(MB(1), KB(64));
+  VkrLightmapSet set = {0};
+  if (!decode_arena ||
+      !vkr_lightmap_set_decode(bytes, byte_count, decode_arena, &set) ||
+      set.instance_count >= VKR_SCENE_LIGHTMAP_MAX_INSTANCES ||
+      (uint64_t)set.page_count * set.layer_count >
+          VKR_TEXTURE_MAX_ARRAY_LAYERS) {
+    if (decode_arena) {
+      arena_destroy(decode_arena);
+    }
+    free(bytes);
+    log_error("Scene loader: lightmap set validation failed for '%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+
+  const uint32_t slice_count = set.page_count * set.layer_count;
+  const uint64_t page_bytes = vkr_lightmap_set_page_bytes(set.page_size);
+  const uint64_t payload_offset = (uint64_t)(set.payload - bytes);
+  VkrSceneLightmaps *lightmaps =
+      (VkrSceneLightmaps *)calloc(1u, sizeof(*lightmaps));
+  VkrTextureUploadRegion *regions =
+      (VkrTextureUploadRegion *)malloc(slice_count * sizeof(*regions));
+  if (lightmaps) {
+    lightmaps->instances = (VkrLightmapInstance *)malloc(
+        (size_t)Max(set.instance_count, 1u) * sizeof(VkrLightmapInstance));
+    lightmaps->rects = (VkrLightmapRect *)malloc(
+        (size_t)Max(set.instance_count, 1u) * sizeof(VkrLightmapRect));
+  }
+  if (!lightmaps || !lightmaps->instances || !lightmaps->rects || !regions) {
+    if (lightmaps) {
+      free(lightmaps->instances);
+      free(lightmaps->rects);
+      free(lightmaps);
+    }
+    free(regions);
+    arena_destroy(decode_arena);
+    free(bytes);
+    log_error("Scene loader: lightmap set allocation failed for '%.*s'",
+              (int)path.length, path.str);
+    return false_v;
+  }
+  lightmaps->texture = VKR_TEXTURE_HANDLE_INVALID;
+  lightmaps->page_size = set.page_size;
+  lightmaps->page_count = set.page_count;
+  lightmaps->layer_count = set.layer_count;
+  lightmaps->instance_count = set.instance_count;
+  MemCopy(lightmaps->layers, set.layers,
+          set.layer_count * sizeof(VkrLightLayer));
+  MemCopy(lightmaps->instances, set.instances,
+          set.instance_count * sizeof(VkrLightmapInstance));
+  /* Rectangles lie within their page, which is at most
+     VKR_LIGHTMAP_SET_MAX_PAGE_SIZE texels, so they fit 16 bits. */
+  for (uint32_t i = 0u; i < set.instance_count; ++i) {
+    const VkrLightmapInstance *instance = &set.instances[i];
+    lightmaps->rects[i] = (VkrLightmapRect){
+        .page = instance->page,
+        .x = (uint16_t)instance->x,
+        .y = (uint16_t)instance->y,
+        .width = (uint16_t)instance->width,
+        .height = (uint16_t)instance->height,
+    };
+  }
+  for (uint32_t slice = 0u; slice < slice_count; ++slice) {
+    regions[slice] = (VkrTextureUploadRegion){
+        .mip_level = 0u,
+        .array_layer = slice,
+        .width = set.page_size,
+        .height = set.page_size,
+        .depth = 1u,
+        .byte_offset = payload_offset + (uint64_t)slice * page_bytes,
+        .byte_size = page_bytes,
+    };
+  }
+  arena_destroy(decode_arena);
+
+  *out_prepared = (VkrTexturePreparedLoad){
+      .description =
+          {
+              .width = lightmaps->page_size,
+              .height = lightmaps->page_size,
+              .channels = 4u,
+              .mip_levels = 1u,
+              .array_layers = slice_count,
+              .type = VKR_TEXTURE_TYPE_2D_ARRAY,
+              .format = VKR_TEXTURE_FORMAT_ASTC_4x4_HDR,
+              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              .sample_count = VKR_SAMPLE_COUNT_1,
+              .properties = vkr_texture_property_flags_create(),
+              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .min_filter = VKR_FILTER_LINEAR,
+              .mag_filter = VKR_FILTER_LINEAR,
+              .mip_filter = VKR_MIP_FILTER_NONE,
+              .anisotropy_enable = false_v,
+          },
+      .upload_data = bytes,
+      .upload_data_size = byte_count,
+      .upload_regions = regions,
+      .upload_region_count = slice_count,
+      .upload_mip_levels = 1u,
+      .upload_array_layers = slice_count,
+      .upload_is_compressed = true_v,
+  };
+  *out_lightmaps = lightmaps;
+  return true_v;
+}
+
+/* Publishes the lightmap texture and hands the set to the scene, replacing
+   any previous set; the scene binds its instances as their meshes attach. */
+vkr_internal void
+scene_loader_apply_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets,
+                             const SceneLightmapImport *import,
+                             const VkrTexturePreparedLoad *prepared,
+                             VkrSceneLightmaps **lightmaps) {
+  vkr_scene_reset_lightmaps(scene, assets);
+  if (!import->has_block || !import->valid) {
+    return;
+  }
+  if (!assets || !prepared || !*lightmaps) {
+    log_error("Scene loader: lightmap set '%.*s' is unavailable",
+              (int)import->path.length, import->path.str);
+    return;
+  }
+  if (!assets->texture_system.supports_texture_astc_hdr) {
+    log_warn("Scene loader: this device cannot sample ASTC HDR textures; "
+             "lightmap set '%.*s' stays off",
+             (int)import->path.length, import->path.str);
+    return;
+  }
+
+  VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_texture_system_finalize_prepared_load(
+          &assets->texture_system, import->path, prepared, &texture, &error)) {
+    String8 error_text = vkr_renderer_get_error_string(error);
+    log_error("Scene loader: lightmap upload failed for '%.*s': %.*s",
+              (int)import->path.length, import->path.str,
+              (int)error_text.length, error_text.str);
+    return;
+  }
+  vkr_texture_system_add_ref_by_handle(&assets->texture_system, texture);
+  (*lightmaps)->texture = texture;
+  log_info("Scene lightmaps: %u instances, %u layers on %u pages of %u "
+           "texels",
+           (*lightmaps)->instance_count, (*lightmaps)->layer_count,
+           (*lightmaps)->page_count, (*lightmaps)->page_size);
+  scene->lightmaps = *lightmaps;
+  *lightmaps = NULL;
 }
 
 vkr_internal bool8_t scene_loader_subsurface_texture_key(
@@ -4033,7 +4272,7 @@ vkr_internal bool8_t scene_loader_wait_mesh_dependencies(
 
 static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
                                          String8 owner, VkrAllocator *scratch) {
-  uint64_t count = (uint64_t)payload->entity_count * 4 + 1 +
+  uint64_t count = (uint64_t)payload->entity_count * 4 + 2 +
                    (uint64_t)payload->reflection_probe_import_count * 2;
   String8 **paths = vkr_allocator_alloc(scratch, count * sizeof(*paths),
                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -4042,6 +4281,7 @@ static bool8_t scene_resolve_async_paths(VkrSceneLoaderAsyncPayload *payload,
   }
   uint64_t cursor = 0;
   paths[cursor++] = &payload->diffuse_volume_import.path;
+  paths[cursor++] = &payload->lightmap_import.path;
   for (uint32_t i = 0; i < payload->entity_count; ++i) {
     paths[cursor++] = &payload->imports[i].mesh_path;
     paths[cursor++] = &payload->imports[i].animation_path;
@@ -4108,6 +4348,7 @@ vkr_internal bool8_t scene_loader_prepare_payload(
   payload->atmosphere_import = scene_atmosphere_import_defaults();
   payload->fog_import = scene_fog_import_defaults();
   payload->diffuse_volume_import = scene_diffuse_volume_import_defaults();
+  payload->lightmap_import = (SceneLightmapImport){.valid = true_v};
   payload->subsurface_import = scene_subsurface_import_defaults();
   payload->reflection_probe_import_count = 0;
   payload->reflection_probes_applied = false_v;
@@ -4218,6 +4459,7 @@ vkr_internal bool8_t scene_loader_prepare_payload(
           scene_loader_component_atmosphere(payload));
   payload->diffuse_volume_import =
       scene_loader_parse_diffuse_volume_import(json_copy);
+  payload->lightmap_import = scene_loader_parse_lightmap_import(json_copy);
   payload->reflection_probe_import_count =
       scene_loader_parse_reflection_probe_imports(
           json_copy, payload->reflection_probe_imports);
@@ -4235,6 +4477,13 @@ vkr_internal bool8_t scene_loader_prepare_payload(
             &payload->diffuse_volume_layers);
     if (!payload->diffuse_volume_prepared_ready)
       payload->diffuse_volume_import.valid = false_v;
+  }
+  if (payload->lightmap_import.has_block && payload->lightmap_import.valid) {
+    payload->lightmap_prepared_ready = scene_loader_prepare_lightmaps(
+        payload->lightmap_import.path, temp_alloc, &payload->lightmap_prepared,
+        &payload->lightmaps);
+    if (!payload->lightmap_prepared_ready)
+      payload->lightmap_import.valid = false_v;
   }
   for (uint32_t i = 0u; i < payload->reflection_probe_import_count; ++i) {
     SceneReflectionProbeImport *probe = &payload->reflection_probe_imports[i];
@@ -4681,6 +4930,20 @@ vkr_internal bool8_t scene_loader_finalize_step(
     }
     async_payload->diffuse_volume_applied = true_v;
   }
+  if (!async_payload->lightmap_applied) {
+    scene_loader_apply_lightmaps(scene, async_payload->assets,
+                                 &async_payload->lightmap_import,
+                                 async_payload->lightmap_prepared_ready
+                                     ? &async_payload->lightmap_prepared
+                                     : NULL,
+                                 &async_payload->lightmaps);
+    if (async_payload->lightmap_prepared_ready) {
+      vkr_texture_system_release_prepared_load(
+          &async_payload->lightmap_prepared);
+      async_payload->lightmap_prepared_ready = false_v;
+    }
+    async_payload->lightmap_applied = true_v;
+  }
   if (!async_payload->subsurface_applied) {
     if (!scene_loader_apply_subsurface_import(scene, async_payload->assets,
                                               &async_payload->subsurface_import,
@@ -4958,6 +5221,11 @@ vkr_internal bool8_t vkr_scene_loader_estimate_async_finalize_cost(
         async_payload->diffuse_volume_prepared.upload_data_size;
     out_cost->gpu_upload_ops += 1u;
   }
+  if (async_payload->lightmap_prepared_ready) {
+    out_cost->gpu_upload_bytes +=
+        async_payload->lightmap_prepared.upload_data_size;
+    out_cost->gpu_upload_ops += 1u;
+  }
   if (!async_payload->subsurface_applied &&
       async_payload->subsurface_import.valid &&
       async_payload->subsurface_import.enabled &&
@@ -4983,6 +5251,16 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
     free(payload->diffuse_volume_layers->probe_regions);
     free(payload->diffuse_volume_layers);
     payload->diffuse_volume_layers = NULL;
+  }
+  if (payload->lightmap_prepared_ready) {
+    vkr_texture_system_release_prepared_load(&payload->lightmap_prepared);
+    payload->lightmap_prepared_ready = false_v;
+  }
+  if (payload->lightmaps) {
+    free(payload->lightmaps->instances);
+    free(payload->lightmaps->rects);
+    free(payload->lightmaps);
+    payload->lightmaps = NULL;
   }
   for (uint32_t i = 0u; i < payload->reflection_probe_import_count; ++i) {
     if (payload->reflection_probe_prepared_ready[i]) {

@@ -18,6 +18,7 @@
 
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_light_layers.h"
+#include "assets/vkr_lightmap_set.h"
 #include "containers/str.h"
 #include "core/vkr_entity.h"
 #include "core/vkr_type_desc.h"
@@ -839,6 +840,34 @@ typedef struct VkrSceneDiffuseVolumeLayers {
   char name[256];
 } VkrSceneDiffuseVolumeLayers;
 
+/** Lightmap instances one scene binds: slots travel as exact floats in the
+    prepared instance row (VkrPreparedInstanceGPU). */
+#define VKR_SCENE_LIGHTMAP_MAX_INSTANCES (1u << 24)
+
+/** A scene's lightmap set (ADR-088): the layers, each instance's matching
+ * key and page rectangle, and the texture of every layer page. The scene
+ * gives each matched mesh instance its lightmap slot (instance index + 1)
+ * and weighs the layers each frame. Heap-owned by the scene; `instances`,
+ * `rects` and `bound` are malloc'd. */
+typedef struct VkrSceneLightmaps {
+  VkrTextureHandle texture;
+  uint32_t page_size;
+  uint32_t page_count;
+  uint32_t layer_count;
+  VkrLightLayer layers[VKR_LIGHTMAP_SET_MAX_LAYERS];
+  uint32_t instance_count;
+  VkrLightmapInstance *instances;
+  /** One per instance: the frame's rectangle table. */
+  VkrLightmapRect *rects;
+  /** Mesh instances and generated meshes the last binding gave a slot. */
+  VkrMeshLightmapSlot *bound;
+  uint32_t bound_count;
+  /** Scene revisions the binding matched; a change rebinds. */
+  uint64_t bound_structure_revision;
+  uint64_t bound_mesh_revision;
+  bool8_t binding_current;
+} VkrSceneLightmaps;
+
 /** The live time of day: the hour this frame, and a script-set hour that
  * advances from the tick it was set at until a simulation reset. */
 typedef struct VkrSceneClock {
@@ -1112,6 +1141,11 @@ typedef struct VkrScene {
   VkrDiffuseVolumeBinding diffuse_volume;
   /** The volume's layers, or NULL; see VkrSceneDiffuseVolumeLayers. */
   VkrSceneDiffuseVolumeLayers *diffuse_volume_layers;
+  /** The scene's lightmap set, or NULL; see VkrSceneLightmaps. */
+  VkrSceneLightmaps *lightmaps;
+  /** Advances whenever an entity gains a mesh renderer or a generated mesh,
+      so lightmap binding sees meshes that attach after the set. */
+  uint64_t mesh_revision;
   VkrSubsurfaceBinding subsurface;
   VkrSceneReflectionProbe reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t reflection_probe_count;
@@ -1226,12 +1260,13 @@ bool8_t vkr_scene_diffuse_volume_prepare_texture(
     const VkrSceneDiffuseVolumeLayers *layers, const float32_t *weights,
     struct VkrTexturePreparedLoad *out_prepared);
 
-/** The layer weights for the scene's current sun and light group factors:
-    sun keys by vkr_light_layers_sun_weights, lamp groups by their group's
-    factor (one for a group no light has named). */
-void vkr_scene_diffuse_volume_weights(const VkrScene *scene,
-                                      const VkrSceneDiffuseVolumeLayers *layers,
-                                      float32_t *out_weights);
+/** The weights of `layers` for the scene's current sun and light group
+    factors: sun keys by vkr_light_layers_sun_weights, lamp groups by their
+    group's factor (one for a group no light has named). */
+void vkr_scene_light_layer_weights(const VkrScene *scene,
+                                   const VkrLightLayer *layers,
+                                   uint32_t layer_count,
+                                   float32_t *out_weights);
 
 /** Recomposes the volume texture when a layer weight has moved by more than
     one percent since the last composition, at most every
@@ -1241,6 +1276,25 @@ void vkr_scene_diffuse_volume_weights(const VkrScene *scene,
 void vkr_scene_update_diffuse_volume(VkrScene *scene,
                                      struct VkrRenderAssets *assets,
                                      float64_t delta_seconds);
+
+/** Clears the lightmap slots the scene gave, releases its lightmap texture
+    and set, and disables lightmap sampling. */
+void vkr_scene_reset_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets);
+
+/** Gives every mesh instance or generated mesh that a lightmap instance
+    names its slot, after the set loads and whenever entities or meshes
+    change since the last binding. A lightmap instance with a document id
+    names the entity with that id, else the entity at its index in the scene
+    document; its instance index names that entity's source node, or the
+    entity itself for a model without nodes and a brush. Returns how many
+    instances are bound. */
+uint32_t vkr_scene_bind_lightmaps(VkrScene *scene);
+
+/** The frame's lightmap binding: the texture, the rectangle table and the
+    layers with nonzero weight for the current sun and light group factors.
+    A zero binding without a set. */
+void vkr_scene_lightmap_binding(const VkrScene *scene,
+                                VkrLightmapBinding *out_binding);
 
 /** Queues an atmosphere revision. GPU work begins at the cold world seam.
     `clouds` publishes with the revision and requires an enabled atmosphere.

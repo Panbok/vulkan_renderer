@@ -1339,6 +1339,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .sampler_filters = sampler_filters,
       .max_sampler_anisotropy = 16.0,
       .supports_texture_astc_4x4 = true_v,
+      /* Metal 4 devices are Apple7 or later; Apple6 adds ASTC HDR. */
+      .supports_texture_astc_hdr = true_v,
       .supports_texture_bc7 = true_v,
       .supports_texture_bc5 = true_v,
       .actual_target_kind = renderer->present_target.kind,
@@ -1431,6 +1433,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .max_sampler_anisotropy = max_anisotropy,
       .supports_texture_astc_4x4 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM),
+      .supports_texture_astc_hdr = vkr_vulkan_renderer_texture_format_supported(
+          renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_ASTC_4x4_HDR),
       .supports_texture_bc7 = vkr_vulkan_renderer_texture_format_supported(
           renderer->vulkan_renderer, VKR_TEXTURE_FORMAT_BC7_UNORM),
       .supports_texture_bc5 = vkr_vulkan_renderer_texture_format_supported(

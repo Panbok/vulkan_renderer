@@ -8,10 +8,12 @@ authority: adr
 
 ## Status
 
-Accepted (partial). Baking, storage, packaging, light mobility and groups and
-the editor controls are implemented. The runtime does not sample lightmaps yet
-(the scene loader ignores the `lightmaps` block, and the desktop pipeline
-lights static and dynamic lights alike), and the bake needs Metal ray tracing.
+Accepted (partial). Baking, storage, packaging, light mobility and groups,
+the editor controls, and runtime loading and binding of a set are
+implemented. No pipeline samples lightmaps yet: the tiled pipeline that will
+does not exist ([ADR-087](087-gpu-class-graphics-pipelines.md)), and the
+desktop pipeline lights static and dynamic lights alike. The bake needs Metal
+ray tracing.
 
 ## Context
 
@@ -201,6 +203,31 @@ models drops the previous set and warns. Bundles store `.vklm` uncompressed
 and mappable under pack loader `VKR_PACK_LOADER_LIGHTMAP`. The Bakery panel's
 "Scene lightmaps" option adds the bake to Prepare and to Bake lighting.
 
+### Runtime set
+
+The scene loader reads a `lightmaps` block's `path`
+([`scene_loader.c`](../../runtime/src/renderer/resources/loaders/scene_loader.c)),
+decodes the set and publishes every layer page as one
+`VKR_TEXTURE_FORMAT_ASTC_4x4_HDR` 2D array whose slice
+`page * layer_count + layer` is the file's page image, uploaded from the file
+bytes in place. Metal 4 devices always sample ASTC HDR; Vulkan enables
+`textureCompressionASTC_HDR` when the device has it and reports
+`supports_texture_astc_hdr`, and a device without it keeps the set off.
+
+The scene keeps the layers and instances
+([`vkr_scene_lightmaps.c`](../../runtime/src/renderer/systems/vkr_scene_lightmaps.c))
+and gives each matched draw its lightmap slot, the instance's index plus one:
+a mesh instance or a generated mesh such as a brush. An instance with a
+document id matches the entity with that id, the entity itself for instance
+zero, else the entity's source node; an instance without one matches the
+source node of the document entity at its index. Binding runs after the set
+loads and again whenever entities or meshes change. The slot travels in
+`VkrInstanceDataGPU.lightmap_slot` and, as an exact float, in the prepared
+instance row's `normal_column2.w`. Each frame `VkrFrameLighting.lightmap`
+carries the texture, the rectangle table and the layers with nonzero weight:
+the two sun keys nearest the current sun and every lamp group at its group's
+factor ([ADR-090](090-time-of-day.md)), at most six.
+
 ## Consequences
 
 - Bistro (2,909 lightmapped instances at 8 texels per meter, three 4096 pages)
@@ -220,6 +247,10 @@ and mappable under pack loader `VKR_PACK_LOADER_LIGHTMAP`. The Bakery panel's
 - Entity indices key the instance table, so any edit that reorders or inserts
   entities, or changes a model's source nodes, stales the set until the scene
   is baked again with lightmaps selected.
+- The runtime binds instances only within the scene that owns the set; the
+  project World's entities, which the bake includes, stay unbound.
+- The texels store irradiance, so a surface's diffuse response is its
+  diffuse albedo over π times the blended texel.
 
 ## Alternatives considered
 

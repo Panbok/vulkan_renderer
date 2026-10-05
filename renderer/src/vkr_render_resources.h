@@ -48,6 +48,37 @@ typedef struct VkrDiffuseVolumeBinding {
   uint32_t dimensions[3];
 } VkrDiffuseVolumeBinding;
 
+/** Most lightmap layers one frame samples: the two sun keys nearest the sun
+ * and every lamp group (ADR-088). */
+#define VKR_LIGHTMAP_MAX_ACTIVE_LAYERS 6u
+
+/** A lightmapped instance's rectangle in texels on one page; the instance's
+ * lightmap UVs span it (ADR-088). */
+typedef struct VkrLightmapRect {
+  uint32_t page;
+  uint16_t x;
+  uint16_t y;
+  uint16_t width;
+  uint16_t height;
+  uint32_t reserved;
+} VkrLightmapRect;
+
+/** Borrowed scene-owned lightmap set. An invalid texture disables sampling.
+ * The texture is a 2D array of square ASTC 4x4 HDR irradiance pages whose
+ * slice page * layer_count + layer holds one layer of one page. An instance's
+ * nonzero lightmap slot selects rects[slot - 1]; a frame sums the active
+ * layers, each scaled by its weight. */
+typedef struct VkrLightmapBinding {
+  VkrTextureHandle texture;
+  uint32_t page_size;
+  uint32_t layer_count;
+  const VkrLightmapRect *rects;
+  uint32_t rect_count;
+  uint32_t active_layer_count;
+  uint32_t active_layers[VKR_LIGHTMAP_MAX_ACTIVE_LAYERS];
+  float32_t active_weights[VKR_LIGHTMAP_MAX_ACTIVE_LAYERS];
+} VkrLightmapBinding;
+
 /** Borrowed scene-owned 65-by-8 RGBA32F diffusion bank; zero count disables. */
 typedef struct VkrSubsurfaceBinding {
   VkrTextureHandle texture;

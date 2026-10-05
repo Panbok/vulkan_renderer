@@ -31,6 +31,8 @@ typedef struct VkrVulkanFeatureSet {
   bool8_t synchronization2;
   bool8_t maintenance4;
   bool8_t shader_demote_to_helper_invocation;
+  /* Optional: ASTC HDR textures (baked lightmap pages). */
+  bool8_t texture_compression_astc_hdr;
   bool8_t maintenance5;
   bool8_t host_image_copy;
   bool8_t descriptor_buffer;
@@ -582,6 +584,7 @@ vkr_vk_query_candidate_features(VkrVulkanCandidate *candidate) {
       .maintenance4 = features13.maintenance4,
       .shader_demote_to_helper_invocation =
           features13.shaderDemoteToHelperInvocation,
+      .texture_compression_astc_hdr = features13.textureCompressionASTC_HDR,
       .maintenance5 = features14.maintenance5,
       .host_image_copy = features14.hostImageCopy,
       .descriptor_buffer = descriptor.descriptorBuffer,
@@ -1228,6 +1231,8 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       .dynamicRendering = VK_TRUE,
       .maintenance4 = VK_TRUE,
       .shaderDemoteToHelperInvocation = VK_TRUE,
+      .textureCompressionASTC_HDR =
+          candidate->features.texture_compression_astc_hdr ? VK_TRUE : VK_FALSE,
   };
   VkPhysicalDeviceVulkan12Features features12 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -1425,6 +1430,11 @@ VkSurfaceKHR vkr_vulkan_device_surface(const VkrVulkanDevice *device) {
 bool8_t vkr_vulkan_device_extended_linear_present_enabled(
     const VkrVulkanDevice *device) {
   return device && device->swapchain_colorspace_enabled;
+}
+
+bool8_t vkr_vulkan_device_astc_hdr_enabled(const VkrVulkanDevice *device) {
+  return device && device->selected &&
+         device->selected->features.texture_compression_astc_hdr;
 }
 
 bool8_t

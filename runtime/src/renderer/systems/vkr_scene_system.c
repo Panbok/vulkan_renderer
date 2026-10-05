@@ -2035,6 +2035,8 @@ void vkr_scene_shutdown(VkrScene *scene, struct VkrRenderAssets *assets) {
     }
   }
 
+  /* Lightmap slots clear while their mesh instances are still alive. */
+  vkr_scene_reset_lightmaps(scene, assets);
   scene_owned_meshes_shutdown(scene, assets);
 
   // Release environment generations; native retirement retains submitted uses.
@@ -2518,21 +2520,21 @@ bool8_t vkr_scene_diffuse_volume_prepare_texture(
   return true_v;
 }
 
-void vkr_scene_diffuse_volume_weights(const VkrScene *scene,
-                                      const VkrSceneDiffuseVolumeLayers *layers,
-                                      float32_t *out_weights) {
+void vkr_scene_light_layer_weights(const VkrScene *scene,
+                                   const VkrLightLayer *layers,
+                                   uint32_t layer_count,
+                                   float32_t *out_weights) {
   const Vec3 toward =
       scene->sun.found ? vec3_negate(scene->sun.light.direction) : vec3_zero();
-  vkr_light_layers_sun_weights(layers->layers, layers->layer_count, toward,
-                               out_weights);
+  vkr_light_layers_sun_weights(layers, layer_count, toward, out_weights);
   const VkrSceneLightGroups *groups = &scene->light_groups;
-  for (uint32_t layer = 0u; layer < layers->layer_count; ++layer) {
-    if (layers->layers[layer].kind != VKR_LIGHT_LAYER_LAMP_GROUP) {
+  for (uint32_t layer = 0u; layer < layer_count; ++layer) {
+    if (layers[layer].kind != VKR_LIGHT_LAYER_LAMP_GROUP) {
       continue;
     }
     out_weights[layer] = 1.0f;
     for (uint32_t slot = 0u; slot < groups->count; ++slot) {
-      if (strcmp(groups->names[slot], layers->layers[layer].name) == 0) {
+      if (strcmp(groups->names[slot], layers[layer].name) == 0) {
         out_weights[layer] = groups->factors[slot];
         break;
       }
@@ -2552,7 +2554,8 @@ void vkr_scene_update_diffuse_volume(VkrScene *scene,
     layers->since_compose += delta_seconds;
   }
   float32_t weights[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
-  vkr_scene_diffuse_volume_weights(scene, layers, weights);
+  vkr_scene_light_layer_weights(scene, layers->layers, layers->layer_count,
+                                weights);
   float32_t moved = 0.0f;
   for (uint32_t layer = 0u; layer < layers->layer_count; ++layer) {
     moved = Max(moved, fabsf(weights[layer] - layers->weights[layer]));
@@ -3366,6 +3369,7 @@ bool8_t vkr_scene_set_mesh_renderer(VkrScene *scene, VkrEntityId entity,
     scene_invalidate_queries(
         scene); // Query may need recompile for new archetype
     scene->render_full_sync_needed = true;
+    scene->mesh_revision++;
   }
   return result;
 }
@@ -4826,6 +4830,7 @@ bool8_t vkr_scene_attach_generated_mesh(VkrScene *scene, VkrEntityId entity,
   vkr_mesh_manager_set_model(&assets->mesh_manager, mesh_index, mesh_model);
 
   scene_invalidate_queries(scene);
+  scene->mesh_revision++;
 
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;

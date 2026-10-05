@@ -222,10 +222,9 @@ Remaining phases:
    integrator for hosts without Metal ray tracing, and a faster path through
    stacked cutout foliage (textured Bistro bakes at a third of the untextured
    rate).
-2. Tiled runtime: load VKLM sets (an ASTC 4×4 HDR texture format in both
-   backends), map instances to their rectangles, and sample the blended sun
-   keys and scaled lamp groups in the tiled pipeline's forward shader,
-   measured against the 16.7 ms budget.
+2. Tiled runtime: sample the blended sun keys and scaled lamp groups that
+   scenes already load and bind (ADR-088, runtime set) in the tiled
+   pipeline's forward shader, measured against the 16.7 ms budget.
 
 ## Acceptance evidence
 

@@ -764,6 +764,8 @@ bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
 
   out_system->supports_texture_astc_4x4 =
       device_info->supports_texture_astc_4x4;
+  out_system->supports_texture_astc_hdr =
+      device_info->supports_texture_astc_hdr;
   out_system->supports_texture_bc7 = device_info->supports_texture_bc7;
   out_system->supports_texture_bc5 = device_info->supports_texture_bc5;
 
@@ -1831,6 +1833,8 @@ vkr_internal bool8_t vkr_texture_system_samples_format(
   case VKR_TEXTURE_FORMAT_ASTC_6x6_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_6x6_SRGB:
     return system->supports_texture_astc_4x4;
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_HDR:
+    return system->supports_texture_astc_hdr;
   case VKR_TEXTURE_FORMAT_BC7_UNORM:
   case VKR_TEXTURE_FORMAT_BC7_SRGB:
     return system->supports_texture_bc7;

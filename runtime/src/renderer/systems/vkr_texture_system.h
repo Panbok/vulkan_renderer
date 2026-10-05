@@ -81,6 +81,7 @@ typedef struct VkrTextureSystem {
   // Native block families the device samples; a `.vkt` of another family is
   // refused with an instruction to rebuild it on this host.
   bool8_t supports_texture_astc_4x4; // ASTC LDR, every block size
+  bool8_t supports_texture_astc_hdr; // ASTC 4x4 HDR
   bool8_t supports_texture_bc7;
   bool8_t supports_texture_bc5;
 } VkrTextureSystem;

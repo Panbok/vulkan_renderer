@@ -171,6 +171,8 @@ typedef struct VkrFrameLighting {
   const VkrFrameIblProbe *ibl_probes;
   uint32_t ibl_probe_count;
   VkrDiffuseVolumeBinding diffuse_volume;
+  /** Sampled only by the tiled pipeline (ADR-087, ADR-088). */
+  VkrLightmapBinding lightmap;
   VkrSubsurfaceBinding subsurface;
   const VkrRectangleLight *rectangle_lights;
   uint32_t rectangle_light_count;

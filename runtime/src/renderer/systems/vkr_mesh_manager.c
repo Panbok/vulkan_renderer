@@ -3571,6 +3571,44 @@ bool8_t vkr_mesh_manager_instance_set_shadow_mobility(
   return true_v;
 }
 
+uint32_t vkr_mesh_manager_set_lightmap_slots(VkrMeshManager *manager,
+                                             const VkrMeshLightmapSlot *slots,
+                                             uint32_t count) {
+  assert_log(manager != NULL, "Manager is NULL");
+  uint32_t set = 0u;
+  bool8_t static_changed = false_v;
+  for (uint32_t i = 0u; i < count; ++i) {
+    uint32_t *slot = NULL;
+    VkrShadowCasterMobility mobility = VKR_SHADOW_CASTER_MOBILITY_DYNAMIC;
+    if (slots[i].instance.id != 0u) {
+      VkrMeshInstance *inst =
+          vkr_mesh_manager_get_instance(manager, slots[i].instance);
+      slot = inst ? &inst->lightmap_slot : NULL;
+      mobility = inst ? inst->shadow_mobility : mobility;
+    } else {
+      VkrMesh *mesh = vkr_mesh_manager_get(manager, slots[i].mesh_index);
+      slot = mesh ? &mesh->lightmap_slot : NULL;
+      mobility = mesh ? mesh->shadow_mobility : mobility;
+    }
+    if (!slot) {
+      continue;
+    }
+    ++set;
+    if (*slot == slots[i].slot) {
+      continue;
+    }
+    *slot = slots[i].slot;
+    static_changed |= mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC;
+  }
+  /* Dynamic draws repack every frame; retained static ones need a new
+     static generation to carry the slot. */
+  if (static_changed) {
+    vkr_mesh_manager_note_content_change(
+        manager, VKR_SHADOW_CASTER_MOBILITY_STATIC, false_v);
+  }
+  return set;
+}
+
 VkrMeshInstance *vkr_mesh_manager_get_instance(VkrMeshManager *manager,
                                                VkrMeshInstanceHandle handle) {
   assert_log(manager != NULL, "Manager is NULL");

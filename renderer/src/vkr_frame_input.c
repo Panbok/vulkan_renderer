@@ -1057,6 +1057,24 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
                           "packet.lighting.diffuse_volume",
                           "invalid lattice dimensions or coordinates");
     }
+    const VkrLightmapBinding *lightmap = &lighting->lightmap;
+    if (lightmap->texture.id != 0u &&
+        lightmap->texture.generation != VKR_INVALID_ID) {
+      bool8_t layers_valid =
+          lightmap->active_layer_count <= VKR_LIGHTMAP_MAX_ACTIVE_LAYERS;
+      for (uint32_t i = 0u; layers_valid && i < lightmap->active_layer_count;
+           ++i)
+        layers_valid = lightmap->active_layers[i] < lightmap->layer_count &&
+                       isfinite(lightmap->active_weights[i]) &&
+                       lightmap->active_weights[i] >= 0.0f;
+      if (!layers_valid || lightmap->page_size == 0u ||
+          lightmap->layer_count == 0u ||
+          (lightmap->rect_count && !lightmap->rects))
+        VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                          "packet.lighting.lightmap",
+                          "requires a page size, layers, a rectangle table "
+                          "and at most six active layers of finite weight");
+    }
     if (lighting->rectangle_light_count > VKR_MAX_SCENE_RECTANGLE_LIGHTS ||
         (lighting->rectangle_light_count && !lighting->rectangle_lights))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
