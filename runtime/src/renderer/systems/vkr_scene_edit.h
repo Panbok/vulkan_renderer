@@ -33,6 +33,8 @@ typedef enum VkrSceneEditAction {
   /* Create under `parent`, or at the root of `container`, from `values`. */
   VKR_SCENE_EDIT_CREATE,
   VKR_SCENE_EDIT_DELETE,
+  /* Copy `entity` and its descendants beside it. */
+  VKR_SCENE_EDIT_DUPLICATE,
   /* Move `entity` under `parent`; an invalid parent makes it a root. */
   VKR_SCENE_EDIT_REPARENT,
   /* Scene-level settings of `container` from `scene_settings`. */
@@ -288,6 +290,17 @@ bool8_t vkr_scene_edit_can_delete(const VkrScene *scene, VkrEntityId entity,
                                   const char **reason);
 bool8_t vkr_scene_edit_delete(VkrSceneEditState *state, VkrScene *scene,
                               VkrEntityId entity);
+/** Whether `entity` is placed and it and its descendants are made only of
+ * the parts delete can restore. `reason` receives a static message when it
+ * cannot. */
+bool8_t vkr_scene_edit_can_duplicate(const VkrScene *scene, VkrEntityId entity,
+                                     const char **reason);
+/** Copy `entity` and its descendants under the same parent, at the same
+ * place, as one undo step. The copy is named like the original with the
+ * first free " (n)" number and gets new ids. Returns the copy, or invalid
+ * with a status message. */
+VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *state, VkrScene *scene,
+                                     VkrEntityId entity);
 /** Move `entity` under `parent` (invalid: root) keeping its world transform.
  * Rejects cycles and parents in another container. */
 bool8_t vkr_scene_edit_reparent(VkrSceneEditState *state, VkrScene *scene,

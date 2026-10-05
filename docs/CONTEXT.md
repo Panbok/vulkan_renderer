@@ -141,6 +141,7 @@ Editor workflow terms:
 | Term | Meaning in VKR | Owner |
 |---|---|---|
 | Workspace | User-selected directory whose `.vkreditor` child contains managed projects, editor bundles and caches. | [Project store](../editor/src/editor_project_store.h) |
+| Workbench | Editor tab under the top bar: a dock layout, the floating windows open in it and the Scene's editing mode for one task, such as Level Design. Not a workspace. | [ADR-089](adr/089-editor-workbenches.md) |
 | Host path | Filesystem location represented as UTF-8 at C interfaces and converted to native syntax at I/O. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Managed reference | Owner-relative serialized path with `/` separators and validated raw segments, resolved with physical containment checks. | [ADR-070](adr/070-portable-path-boundaries.md) |
 | Resource reference | Runtime asset reference with explicit owner-relative or legacy repository-root semantics, separate from a source format URI. | [Asset resolver](../lib/src/filesystem/vkr_asset_path.h) |
@@ -194,13 +195,12 @@ Object model terms ([ADR-076](adr/076-project-object-model.md)):
 | Container | One loaded `VkrScene`: the World, the primary scene or an additive scene, each with its own ECS world, document, overlay and journal; the entity ID world field names it. | [vkr_scene_system.h](../runtime/src/renderer/systems/vkr_scene_system.h) |
 | World | The project's root container (`VKR_SCENE_WORLD_ROOT_ID`), loaded from `world.scene.json` while a project is open; holds the sun, sky, fog and post process every scene can inherit. | [ADR-076](adr/076-project-object-model.md) |
 | Content / System | Content browser roots: the World with its objects, a folder per scene, project assets and folders / what the editor ships: Assets, Objects (object kinds) and Editor. | [editor content](../editor/src/editor_content.c) |
-| Primary / additive scene | The scene of the active viewport document (world 0) / scenes loaded beside it with `scene.add` (worlds 1 to 6), whose singletons have no effect. | [ADR-076](adr/076-project-object-model.md) |
+| Primary / additive scene | The scene the Scene panel shows (world 0) / scenes loaded beside it with `scene.add` (worlds 1 to 6), whose singletons have no effect. | [ADR-076](adr/076-project-object-model.md) |
 | Inherit World | Per-scene undoable setting; off makes the scene use only its own objects, except World-only types. |
 | World-only type | A type only the World holds, which every scene resolves from it: physics settings (gravity, collision layers) and animation settings (clock scale). | [vkr_type_desc.h](../runtime/src/core/vkr_type_desc.h) |
 | Set primary | Makes an added project scene the primary scene and adds the previous primary back beside it. | [editor projects](../editor/src/editor_projects.h) | [vkr_scene_edit.h](../runtime/src/renderer/systems/vkr_scene_edit.h) |
 | Physics set | One Jolt world shared by every loaded container; the primary scene drives its clock and the World's physics settings set gravity. | [vkr_scene_physics.h](../runtime/src/renderer/systems/vkr_scene_physics.h) |
 | Registered type | A component descriptor a module outside the renderer registers before scenes initialize; it is stored and edited like a world type. | [scene types](../runtime/src/renderer/systems/vkr_scene_types.h) |
-| Viewport document | A viewport tab showing the World or one project scene; only the active tab renders. | [editor viewport](../editor/src/editor_viewport.c) |
 | Preset | Named typed value of one world component or light type in the project's `presets.json`, applied as an undoable edit. | [project store](../editor/src/editor_project_store.h) |
 | Prefab instance | A copy of another project scene placed under one new root entity, with new ids and no link to its source; linked prefabs belong to the behavior proposal. | [ADR-076](adr/076-project-object-model.md) |
 | Document id / entity reference | An entity's UUID (`VkrEntityRef`): its document's id, or the random one the editor gave an entity it created. Overlays bind document entities through it; an `ENTITY` property or script field stores one to name an entity of its own container. | [vkr_entity_ref.h](../lib/src/core/vkr_entity_ref.h) |

@@ -1559,27 +1559,14 @@ static bool8_t edit_object_from_values(const VkrSceneEditValues *v,
   return true_v;
 }
 
-VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
-                                  VkrEntityId parent,
-                                  const VkrSceneEditValues *values) {
-  EditStructure *structure = &s_edit_structure;
-  MemZero(structure, sizeof(*structure));
+/* Restores `structure`'s object under `parent` as a new editor-created
+   entity and journals the creation. The object carries its id. */
+static VkrEntityId edit_create_object(VkrSceneEditState *s, VkrScene *scene,
+                                      VkrEntityId parent,
+                                      EditStructure *structure) {
   structure->op = EDIT_STRUCTURE_CREATE;
-  if ((parent.u64 && !vkr_scene_get_transform(scene, parent)) ||
-      !edit_object_from_values(values, &structure->object)) {
-    snprintf(s->status, sizeof(s->status), "Invalid object values.");
-    return VKR_ENTITY_ID_INVALID;
-  }
   structure->object.created_id = Max(1u, s->next_created_id);
   structure->object.transform.parent = parent;
-  /* Every created entity gets its own id, even a copy of another, unless
-     its creator chose one ahead. */
-  if (vkr_entity_ref_empty(&values->ref) ||
-      vkr_scene_find_entity_ref(scene, &values->ref).u64) {
-    vkr_scene_entity_ref_generate(&structure->object.ref);
-  } else {
-    structure->object.ref = values->ref;
-  }
   structure->object.parts |= EDIT_OBJECT_REF;
   const VkrEntityId entity =
       edit_object_restore(scene, &structure->object, parent);
@@ -1596,9 +1583,187 @@ VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
     vkr_scene_destroy_entity(scene, entity);
     return VKR_ENTITY_ID_INVALID;
   }
-  snprintf(s->status, sizeof(s->status), "Created %s.",
-           structure->object.name[0] ? structure->object.name : "an object");
   return entity;
+}
+
+VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
+                                  VkrEntityId parent,
+                                  const VkrSceneEditValues *values) {
+  EditStructure *structure = &s_edit_structure;
+  MemZero(structure, sizeof(*structure));
+  if ((parent.u64 && !vkr_scene_get_transform(scene, parent)) ||
+      !edit_object_from_values(values, &structure->object)) {
+    snprintf(s->status, sizeof(s->status), "Invalid object values.");
+    return VKR_ENTITY_ID_INVALID;
+  }
+  /* Every created entity gets its own id, even a copy of another, unless
+     its creator chose one ahead. */
+  if (vkr_entity_ref_empty(&values->ref) ||
+      vkr_scene_find_entity_ref(scene, &values->ref).u64) {
+    vkr_scene_entity_ref_generate(&structure->object.ref);
+  } else {
+    structure->object.ref = values->ref;
+  }
+  const VkrEntityId entity = edit_create_object(s, scene, parent, structure);
+  if (entity.u64) {
+    snprintf(s->status, sizeof(s->status), "Created %s.",
+             structure->object.name[0] ? structure->object.name : "an object");
+  }
+  return entity;
+}
+
+/* Hierarchies deeper than this are refused rather than recursed into. */
+#define EDIT_DUPLICATE_DEPTH_MAX 32u
+
+/* Whether every entity of `entity`'s subtree is made of parts a snapshot
+   restores. */
+static bool8_t edit_duplicable(const VkrScene *scene, VkrEntityId entity,
+                               uint32_t depth, const char **reason) {
+  if (depth >= EDIT_DUPLICATE_DEPTH_MAX) {
+    *reason = "The hierarchy is too deep to duplicate.";
+    return false_v;
+  }
+  if (!edit_deletable_parts(scene, entity, NULL)) {
+    *reason = "Only lights, shapes, brushes, text and world objects can be "
+              "duplicated; meshes and physics bodies cannot yet.";
+    return false_v;
+  }
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, child, scene->comp_transform);
+    if (transform && transform->parent.u64 == entity.u64 &&
+        vkr_scene_entity_alive(scene, child) &&
+        !edit_duplicable(scene, child, depth + 1u, reason)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+bool8_t vkr_scene_edit_can_duplicate(const VkrScene *scene, VkrEntityId entity,
+                                     const char **reason) {
+  const char *unused = NULL;
+  reason = reason ? reason : &unused;
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+    *reason = "The object no longer exists.";
+    return false_v;
+  }
+  if (!vkr_entity_get_component(scene->world, entity, scene->comp_transform)) {
+    *reason = "Only placed objects can be duplicated.";
+    return false_v;
+  }
+  return edit_duplicable(scene, entity, 0u, reason);
+}
+
+/* Whether an entity of `scene` is named `name`. */
+static bool8_t edit_name_taken(const VkrScene *scene, const char *name) {
+  const uint64_t length = strlen(name);
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId other = vkr_entity_id_from_index(scene->world, i);
+    const String8 taken = vkr_scene_get_name(scene, other);
+    if (taken.length == length && MemCompare(taken.str, name, length) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* `name` with the first free " (n)" number, replacing one it ends with, as
+   Unity numbers duplicates. */
+static void edit_duplicate_name(const VkrScene *scene, const char *name,
+                                char *out, uint32_t capacity) {
+  uint64_t stem = strlen(name);
+  if (stem >= 4u && name[stem - 1u] == ')') {
+    uint64_t open = stem - 1u;
+    while (open > 0u && name[open - 1u] >= '0' && name[open - 1u] <= '9') {
+      --open;
+    }
+    if (open >= 3u && open < stem - 1u && name[open - 1u] == '(' &&
+        name[open - 2u] == ' ') {
+      stem = open - 2u;
+    }
+  }
+  for (uint32_t n = 1u; n < 10000u; ++n) {
+    snprintf(out, capacity, "%.*s (%u)", (int)stem, name, n);
+    if (!edit_name_taken(scene, out)) {
+      return;
+    }
+  }
+}
+
+/* Copies `entity` under `parent`, then its children under the copy. */
+static VkrEntityId edit_duplicate_subtree(VkrSceneEditState *s, VkrScene *scene,
+                                          VkrEntityId entity,
+                                          VkrEntityId parent,
+                                          const char *name) {
+  EditStructure *structure = &s_edit_structure;
+  MemZero(structure, sizeof(*structure));
+  edit_object_capture(s, scene, entity, &structure->object);
+  /* The copy belongs to no document entity and has its own id. */
+  structure->object.parts &= ~(uint32_t)EDIT_OBJECT_SOURCE;
+  MemZero(&structure->object.source, sizeof(structure->object.source));
+  vkr_scene_entity_ref_generate(&structure->object.ref);
+  if (name) {
+    snprintf(structure->object.name, sizeof(structure->object.name), "%s",
+             name);
+    structure->object.parts |= EDIT_OBJECT_NAME;
+  }
+  const VkrEntityId copy = edit_create_object(s, scene, parent, structure);
+  if (!copy.u64) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  /* Copies append to the entity directory; they never match `entity` as a
+     parent, so the scan stays bounded by the copies it makes. */
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, child, scene->comp_transform);
+    if (transform && transform->parent.u64 == entity.u64 &&
+        vkr_scene_entity_alive(scene, child) &&
+        !edit_duplicate_subtree(s, scene, child, copy, NULL).u64) {
+      return VKR_ENTITY_ID_INVALID;
+    }
+  }
+  return copy;
+}
+
+VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *s, VkrScene *scene,
+                                     VkrEntityId entity) {
+  const char *reason = NULL;
+  if (!vkr_scene_edit_can_duplicate(scene, entity, &reason)) {
+    snprintf(s->status, sizeof(s->status), "%s", reason);
+    return VKR_ENTITY_ID_INVALID;
+  }
+  char source_name[VKR_SCENE_EDIT_NAME_CAPACITY] = {0};
+  const String8 current = vkr_scene_get_name(scene, entity);
+  snprintf(source_name, sizeof(source_name), "%.*s", (int)current.length,
+           current.str);
+  char name[VKR_SCENE_EDIT_NAME_CAPACITY] = {0};
+  edit_duplicate_name(scene, source_name[0] ? source_name : "Object", name,
+                      sizeof(name));
+  const VkrEntityId parent = vkr_scene_get_transform(scene, entity)->parent;
+  const bool8_t own_group = !s->group_open;
+  if (own_group) {
+    (void)vkr_scene_edit_group_begin(s);
+  }
+  const VkrEntityId copy =
+      edit_duplicate_subtree(s, scene, entity, parent, name);
+  if (own_group) {
+    if (copy.u64) {
+      vkr_scene_edit_group_end(s);
+    } else {
+      char status[sizeof(s->status)];
+      snprintf(status, sizeof(status), "%s", s->status);
+      (void)vkr_scene_edit_group_rollback(s, scene);
+      snprintf(s->status, sizeof(s->status), "%s", status);
+    }
+  }
+  if (copy.u64) {
+    snprintf(s->status, sizeof(s->status), "Duplicated %s as %s.",
+             source_name[0] ? source_name : "the object", name);
+  }
+  return copy;
 }
 
 static bool8_t edit_delete_one(VkrSceneEditState *s, VkrScene *scene,

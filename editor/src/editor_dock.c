@@ -1,4 +1,6 @@
 #include "editor_internal.h"
+#include "editor_level.h"
+#include "editor_terrain.h"
 
 /* Dock layout owns these rectangles, including the Scene mapping. Present them
    as overlapping root-grid items so drawing never solves a second split tree.
@@ -33,15 +35,21 @@ static Vec4 editor_dock_icon_color(VkrUiDockPanelKind kind) {
       {0.98f, 0.60f, 0.42f, 1.0f}, /* Bakery */
       {0.42f, 0.84f, 0.86f, 1.0f}, /* Content */
       {0.86f, 0.78f, 0.40f, 1.0f}, /* Build */
+      {0.94f, 0.58f, 0.72f, 1.0f}, /* Tools */
+      {0.58f, 0.86f, 0.52f, 1.0f}, /* Level checks */
+      {0.52f, 0.76f, 0.98f, 1.0f}, /* Script editor */
+      {0.62f, 0.84f, 0.62f, 1.0f}, /* Terrain */
   };
   return colors[kind];
 }
 
 static VkrUiIcon editor_dock_panel_icon(VkrUiDockPanelKind kind) {
   static const VkrUiIcon icons[VKR_UI_DOCK_PANEL_COUNT] = {
-      VKR_UI_ICON_SCENE,   VKR_UI_ICON_HIERARCHY, VKR_UI_ICON_INSPECTOR,
-      VKR_UI_ICON_CONSOLE, VKR_UI_ICON_NONE,      VKR_UI_ICON_NONE,
-      VKR_UI_ICON_BAKERY,  VKR_UI_ICON_CONTENT,   VKR_UI_ICON_EXPORT,
+      VKR_UI_ICON_SCENE,   VKR_UI_ICON_HIERARCHY,   VKR_UI_ICON_INSPECTOR,
+      VKR_UI_ICON_CONSOLE, VKR_UI_ICON_NONE,        VKR_UI_ICON_NONE,
+      VKR_UI_ICON_BAKERY,  VKR_UI_ICON_CONTENT,     VKR_UI_ICON_EXPORT,
+      VKR_UI_ICON_SHAPES,  VKR_UI_ICON_PERSON_WALK, VKR_UI_ICON_CODE,
+      VKR_UI_ICON_WAVES,
   };
   return icons[kind];
 }
@@ -81,6 +89,19 @@ found:
       (VkrUiDockTab){.id = (uint64_t)kind + 1, .panel_kind = kind};
   dock->focused_tab_id = (uint64_t)kind + 1;
   dock->revision++;
+}
+
+bool8_t vkr_editor_dock_has(const VkrUiDockTree *dock,
+                            VkrUiDockPanelKind kind) {
+  for (uint32_t i = 0; i < dock->node_high_water; i++) {
+    const VkrUiDockNode *n = &dock->nodes[i];
+    if (!n->used || n->kind != VKR_UI_DOCK_NODE_TABS)
+      continue;
+    for (uint32_t j = 0; j < n->as.leaf.tab_count; j++)
+      if (n->as.leaf.tabs[j].panel_kind == kind)
+        return true_v;
+  }
+  return false_v;
 }
 
 void vkr_editor_dock_toggle(VkrUiDockTree *dock, VkrUiDockPanelKind kind) {
@@ -163,13 +184,8 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     }
 
     uint32_t close_tab = UINT32_MAX;
-    /* A Scene panel alone in its stack shows its viewport documents instead
-       of a panel tab. */
-    const bool8_t documents =
-        node->as.leaf.tab_count == 1u &&
-        node->as.leaf.tabs[0].panel_kind == VKR_UI_DOCK_PANEL_SCENE_VIEWPORT;
-    for (uint32_t tab = 0u; !documents && tab < node->as.leaf.tab_count;
-         ++tab) {
+    /* The Scene shows the scene the workbench row names (ADR-089). */
+    for (uint32_t tab = 0u; tab < node->as.leaf.tab_count; ++tab) {
       const VkrUiDockTab dock_tab = node->as.leaf.tabs[tab];
       const bool8_t selected = tab == node->as.leaf.active_tab;
       const bool8_t focused = selected && dock->focused_tab_id == dock_tab.id;
@@ -246,14 +262,6 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       (void)vkr_ui_pop_id(ui);
     }
 
-    if (documents) {
-      const float32_t start = bar_rect.x + 4.0f * ui->content_scale;
-      vkr_editor_viewport_tabs_build(
-          editor, frame,
-          (VkrUiRect){start, bar_rect.y,
-                      Max(0.0f, bar_rect.x + bar_rect.width - start),
-                      bar_rect.height});
-    }
     const VkrUiDockTab content_tab =
         node->as.leaf.tabs[node->as.leaf.active_tab];
     VkrUiRect rect = node->rect_px;
@@ -289,6 +297,18 @@ void vkr_editor_dock_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
         break;
       case VKR_UI_DOCK_PANEL_BUILD:
         vkr_editor_build_panel(editor->build, editor, frame, rect);
+        break;
+      case VKR_UI_DOCK_PANEL_TOOLS:
+        vkr_editor_workbench_tools_build(editor, frame, rect);
+        break;
+      case VKR_UI_DOCK_PANEL_LEVEL_CHECKS:
+        vkr_editor_level_window_build(editor, frame, rect);
+        break;
+      case VKR_UI_DOCK_PANEL_SCRIPT:
+        vkr_editor_code_build(editor->code, editor, frame, rect);
+        break;
+      case VKR_UI_DOCK_PANEL_TERRAIN:
+        vkr_editor_terrain_window_build(editor, frame, rect);
         break;
       default:
         break;

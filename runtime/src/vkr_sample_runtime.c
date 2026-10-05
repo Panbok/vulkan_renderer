@@ -242,7 +242,7 @@ typedef struct State {
   char scene_path_storage[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   char sidecar_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   /* Mesh assets of the primary scene the last switch closed, which stay
-     loaded so switching back skips loading them (ADR-088), and the set
+     loaded so switching back skips loading them (ADR-089), and the set
      before it, kept until the next scene to open is known and, when it is
      that set's scene, until it opens. */
   VkrMeshAssetHold warm_hold;
@@ -1091,11 +1091,12 @@ vkr_standard_scene_runtime_get_viewport_hit_info(
   if (application->editor_viewport.enabled &&
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR)) {
+    /* The UI's target, as the UI frame's mapping uses: a headless editor has
+       no window, so its window size is zero. */
     VkrViewportMapping mapping = {0};
-    VkrWindowPixelSize window_size =
-        vkr_window_get_pixel_size(&application->host.window);
     if (vkr_standard_scene_runtime_editor_viewport_mapping(
-            application, window_size.width, window_size.height, &mapping)) {
+            application, application->ui_system.target_width,
+            application->ui_system.target_height, &mapping)) {
       info.target_width = mapping.target_width;
       info.target_height = mapping.target_height;
       if (vkr_viewport_mapping_window_to_target_pixel(
@@ -4375,7 +4376,20 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
   bool8_t left_pressed =
       input_button_just_pressed(state->input_state, BUTTON_LEFT);
   bool8_t click_pressed = left_pressed;
-  bool8_t click_select = left_pressed;
+  /* In the editor, Ctrl+click (Cmd on macOS) picks without selecting and
+     answers the UI's selection toggle (VKR_SAMPLE_PICK_SELECT_TOGGLE). */
+#if defined(PLATFORM_APPLE)
+  const bool8_t toggle_modifier =
+      input_is_key_down(state->input_state, KEY_LWIN) ||
+      input_is_key_down(state->input_state, KEY_RWIN);
+#else
+  const bool8_t toggle_modifier =
+      input_is_key_down(state->input_state, KEY_LCONTROL) ||
+      input_is_key_down(state->input_state, KEY_RCONTROL);
+#endif
+  const bool8_t click_toggle =
+      left_pressed && application->editor_viewport.enabled && toggle_modifier;
+  bool8_t click_select = left_pressed && !click_toggle;
 
   int32_t mouse_x = 0;
   int32_t mouse_y = 0;
@@ -4414,6 +4428,10 @@ vkr_internal void vkr_standard_scene_runtime_update_picking(
       state->gizmo_drag.pick_position = press_info.position;
       state->gizmo_drag.released = false_v;
       state->gizmo_drag.release_has_target_coords = false_v;
+      if (click_toggle) {
+        state->context_pick = true_v;
+        state->context_pick_purpose = VKR_SAMPLE_PICK_SELECT_TOGGLE;
+      }
       if (!left_down)
         vkr_standard_scene_runtime_capture_gizmo_release(&viewport_info);
     }
@@ -5594,7 +5612,7 @@ static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
       action != VKR_SCENE_EDIT_REMOVE_COMPONENT &&
       action != VKR_SCENE_EDIT_REPLACE_COMPONENT &&
       action != VKR_SCENE_EDIT_CREATE && action != VKR_SCENE_EDIT_DELETE &&
-      action != VKR_SCENE_EDIT_REPARENT &&
+      action != VKR_SCENE_EDIT_DUPLICATE && action != VKR_SCENE_EDIT_REPARENT &&
       action != VKR_SCENE_EDIT_APPLY_SCENE_SETTINGS) {
     return false_v;
   }
@@ -5654,6 +5672,19 @@ static bool8_t sample_structure_edit(VkrStandardSceneRuntime *application,
       state->has_selection = false_v;
     }
     break;
+  case VKR_SCENE_EDIT_DUPLICATE: {
+    /* The copy takes the selection, so the next drag moves it. */
+    const VkrEntityId copy =
+        vkr_scene_edit_duplicate(edits, scene, request->entity);
+    if (copy.u64) {
+      vkr_standard_scene_runtime_cancel_gizmo_pick(application);
+      vkr_standard_scene_runtime_clear_gizmo_handles(application);
+      state->gizmo_drag.active = false_v;
+      state->selected_entity = copy;
+      state->has_selection = true_v;
+    }
+    break;
+  }
   case VKR_SCENE_EDIT_REPARENT:
     (void)vkr_scene_edit_reparent(edits, scene, request->entity,
                                   request->parent);
@@ -5769,6 +5800,9 @@ static bool8_t sample_batch_item(VkrStandardSceneRuntime *application,
       state->has_selection = false_v;
     }
     return true_v;
+  case VKR_SCENE_EDIT_DUPLICATE:
+    *out_created = vkr_scene_edit_duplicate(edits, scene, request->entity);
+    return out_created->u64 != 0u;
   case VKR_SCENE_EDIT_REPARENT:
     return vkr_scene_edit_reparent(edits, scene, request->entity,
                                    request->parent);

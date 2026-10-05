@@ -100,8 +100,26 @@ The top bar hosts the brand, File/Edit/View/Scene/Build/Develop/Help menus
 Projects/Scenes, a play-state pill with unsaved-edit state, the Cmd field, and
 a transport group (play/pause, step, stop, Scene rendering, camera capture)
 in its own column between two flexible gaps, centered between the left and
-right controls and never over them when the window narrows. Menus are anchored popups that switch on hover while one is open, and
-their items share the command table's names, icons and shortcuts. The paneled
+right controls and never over them when the window narrows. Menus are anchored popups that switch on hover while one is open,
+close on a press anywhere outside the popup and its title, and their items
+share the command table's names, icons and shortcuts.
+
+One keymap (`s_keymap` in `editor_windows.c`) binds keys to those commands
+after Unity's conventions, with Cmd in place of Ctrl on macOS: Ctrl+S save,
+Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Ctrl+K the Cmd field, Ctrl+Space the
+Content browser, Ctrl+= / Ctrl+- / Ctrl+0 interface zoom, Ctrl+1 to Ctrl+5 and
+Ctrl+PageUp / Ctrl+PageDown workbenches (ADR-089), F1 controls, Q/W/E/R
+tools, F frame, End snap, Ctrl+D duplicate, Delete delete, F2 rename, B brush
+drawing, Shift+X the clip tool, Ctrl+P play (again stops and resets),
+Ctrl+Shift+P pause and resume, Ctrl+Alt+P step, Ctrl+B build and run,
+Ctrl+Shift+B build settings. A plain
+key acts while the Scene or no widget holds the keyboard and a modified one
+unless a text field does; none act while the camera flies or a menu or the Cmd
+field is open. Menus, toolbar tooltips and the controls window print each
+command's first binding from the same table, so a hint cannot disagree with
+its key. The editor owns save and undo, so the runtime's own Ctrl+S and
+Ctrl+Z stay off under it; the runtime keeps F3 and Tab for the free camera and
+its F-key diagnostics. The paneled
 editor merges this bar with the title bar, and the UI publishes the bar's empty
 space as the drag region each frame so controls keep their clicks. On macOS the
 window draws under a transparent native title and keeps the system window
@@ -246,8 +264,8 @@ Hierarchy caches scene structure and expanded/search-matching rows when their
 inputs change, then emits only its visible window. Display slots are bounded;
 selection uses generation-bearing entity IDs rather than row positions. Rows
 show a caret, a type icon and a visibility toggle; right-click opens Frame,
-Hide/Show, Rename, Copy name, Script and Add component submenus, Detach and
-Delete; a double-click frames the object and opens its script. A right click
+Hide/Show, Rename, Copy name, Script and Add component submenus, Detach,
+Duplicate and Delete; a double-click frames the object and opens its script. A right click
 in the Scene that neither moves the pointer nor flies the camera within
 0.45 s picks under the pointer, selects the object and opens the same menu,
 or the creation menu over empty space; a longer or moving right press flies
@@ -333,7 +351,7 @@ run passes against the current source; its evidence log is
 `.scratch/renderer-delivery-release-final-build.log`. The four shared-table
 hashes remain unchanged after these checks.
 
-The top bar's Cmd field (Cmd/Ctrl+P) replaces the Commands palette; its
+The top bar's Cmd field (Cmd/Ctrl+K) replaces the Commands palette; its
 commands, expression evaluator and scripting belong to
 [ADR-075](075-editor-cmd-bar-and-evaluator.md). Navbar buttons toggle their
 open dropdown, window or active Bakery tab closed; an inactive Bakery tab is

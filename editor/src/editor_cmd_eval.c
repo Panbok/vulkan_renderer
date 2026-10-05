@@ -115,7 +115,8 @@ static const char *const eval_view_members[] = {"camera",
                                                 NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
-static const char *const eval_ui_members[] = {"zoom", "reduce_motion", NULL};
+static const char *const eval_ui_members[] = {"zoom", "reduce_motion",
+                                              "workbench", "selected", NULL};
 static const char *const eval_gfx_members[] = {"render_scale",
                                                "dynamic",
                                                "vsync",
@@ -787,6 +788,18 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
       }
       if (index == 1) {
         *out = eval_bool(frame->ui->reduce_motion);
+        return true_v;
+      }
+      if (index == 3) {
+        VkrEntityId selection[VKR_EDITOR_SELECTION_MAX];
+        *out = eval_number((float64_t)vkr_editor_selection_list(
+            eval->editor, frame, selection, ArrayCount(selection)));
+        return true_v;
+      }
+      if (index == 2) {
+        *out = eval_string(
+            "%s", vkr_editor_workbench_id(&eval->editor->workbenches,
+                                          eval->editor->workbenches.active));
         return true_v;
       }
     } else if (base->object == EVAL_OBJECT_SIM) {

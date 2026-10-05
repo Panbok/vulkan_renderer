@@ -26,9 +26,9 @@
 #define CMD_HOLD_LIMIT_SECONDS 600.0
 
 #if defined(PLATFORM_APPLE)
-#define CMD_SHORTCUT "\xe2\x8c\x98P"
+#define CMD_SHORTCUT "\xe2\x8c\x98K"
 #else
-#define CMD_SHORTCUT "Ctrl+P"
+#define CMD_SHORTCUT "Ctrl+K"
 #endif
 
 typedef enum CmdArg {
@@ -52,11 +52,14 @@ typedef enum CmdArg {
 /* Enumerated argument words, in completion order and matching the value
  * tables below index for index. */
 static const char *const cmd_panels[] = {
-    "outliner", "details", "console", "bakery", "content", "build", NULL};
+    "outliner", "details",      "console", "bakery",  "content", "build",
+    "tools",    "level_checks", "script",  "terrain", NULL};
 static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_HIERARCHY, VKR_UI_DOCK_PANEL_INSPECTOR,
     VKR_UI_DOCK_PANEL_CONSOLE,   VKR_UI_DOCK_PANEL_BAKERY,
-    VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD};
+    VKR_UI_DOCK_PANEL_CONTENT,   VKR_UI_DOCK_PANEL_BUILD,
+    VKR_UI_DOCK_PANEL_TOOLS,     VKR_UI_DOCK_PANEL_LEVEL_CHECKS,
+    VKR_UI_DOCK_PANEL_SCRIPT,    VKR_UI_DOCK_PANEL_TERRAIN};
 
 static const char *const cmd_windows[] = {
     "animation", "physics", "preferences", "draws",  "memory",
@@ -70,6 +73,14 @@ static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_SCRIPT,    VKR_EDITOR_WINDOW_CHANGES,
     VKR_EDITOR_WINDOW_LEVEL,     VKR_EDITOR_WINDOW_TERRAIN,
     VKR_EDITOR_WINDOW_PARTITION};
+
+const char *vkr_editor_cmd_window_name(VkrEditorWindowKind kind) {
+  for (uint32_t i = 0; i < ArrayCount(cmd_window_kinds); ++i) {
+    if (cmd_window_kinds[i] == kind)
+      return cmd_windows[i];
+  }
+  return "";
+}
 
 /* Indexed by VkrSampleCameraView. */
 const char *const vkr_editor_cmd_camera_views[] = {
@@ -314,25 +325,25 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg);
 
 static bool8_t cmd_run_brush_draw(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
-  /* value 0 switches drawing, 1 the clip tool, 2 terrain sculpting. */
-  bool8_t *tool = def->value == 2u   ? &ctx->editor->terrain_tool
-                  : def->value == 1u ? &ctx->editor->clip_tool
-                                     : &ctx->editor->brush_draw;
+  /* value 0 switches drawing, 1 the clip tool, 2 terrain sculpting, 3 the
+     stairs tool and 4 the corridor tool. One tool holds the Scene mouse at
+     a time. */
+  static const VkrEditorSceneTool tools[] = {
+      VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW, VKR_EDITOR_SCENE_TOOL_CLIP,
+      VKR_EDITOR_SCENE_TOOL_TERRAIN, VKR_EDITOR_SCENE_TOOL_STAIRS,
+      VKR_EDITOR_SCENE_TOOL_CORRIDOR};
+  static const char *const names[] = {"Brush drawing", "Brush clipping",
+                                      "Terrain sculpting", "Stairs tool",
+                                      "Corridor tool"};
+  const VkrEditorSceneTool tool = tools[def->value];
   bool8_t next = false_v;
-  if (!cmd_switch(ctx, cmd_split(arg, NULL), *tool, &next)) {
+  if (!cmd_switch(ctx, cmd_split(arg, NULL),
+                  vkr_editor_scene_tool(ctx->editor) == tool, &next)) {
     return false_v;
   }
-  /* One tool holds the Scene mouse at a time. */
-  ctx->editor->brush_draw = false_v;
-  ctx->editor->clip_tool = false_v;
-  ctx->editor->terrain_tool = false_v;
-  *tool = next;
-  ctx->editor->brush_dragging = false_v;
-  ctx->editor->clip_has_first = false_v;
-  snprintf(ctx->message, sizeof(ctx->message), "%s %s",
-           def->value == 2u   ? "Terrain sculpting"
-           : def->value == 1u ? "Brush clipping"
-                              : "Brush drawing",
+  vkr_editor_scene_tool_set(ctx->editor,
+                            next ? tool : VKR_EDITOR_SCENE_TOOL_NONE);
+  snprintf(ctx->message, sizeof(ctx->message), "%s %s", names[def->value],
            next ? "on" : "off");
   return true_v;
 }
@@ -534,11 +545,89 @@ static bool8_t cmd_run_panel(CmdContext *ctx, const CmdDef *def, String8 arg) {
     return true_v;
   }
   const VkrEditorWindowKind kind = cmd_window_kinds[index];
+  /* A docked panel hosts the window's body: show its tab. */
+  const VkrUiDockPanelKind docked = vkr_editor_window_dock_panel(kind);
+  if (docked != VKR_UI_DOCK_PANEL_COUNT &&
+      vkr_editor_dock_has(ctx->frame->dock, docked)) {
+    vkr_editor_dock_show(ctx->frame->dock, docked);
+    const String8 tab = vkr_ui_dock_panel_label(docked);
+    snprintf(ctx->message, sizeof(ctx->message),
+             "%.*s is docked; showing its tab", (int)tab.length, tab.str);
+    return true_v;
+  }
   bool8_t want = false_v;
   if (!cmd_switch(ctx, state, ctx->editor->windows[kind].visible, &want))
     return false_v;
   vkr_editor_window_set_visible(ctx->editor, kind, want);
   return true_v;
+}
+
+/* workbench.duplicate, .delete [workbench], .move <left|right> and
+   .rename <name>: custom workbenches (ADR-089). */
+static bool8_t cmd_run_workbench_edit(CmdContext *ctx, const CmdDef *def,
+                                      String8 arg) {
+  VkrEditorWorkbenches *workbenches = &ctx->editor->workbenches;
+  const String8 word = cmd_unquote(arg);
+  if (def->value == 3u) {
+    return vkr_editor_workbench_rename(ctx->editor, workbenches->active, word,
+                                       ctx->message, sizeof(ctx->message));
+  }
+  if (def->value == 2u) {
+    const bool8_t left = cmd_equals(word, cmd_cstr("left"));
+    if (!left && !cmd_equals(word, cmd_cstr("right"))) {
+      snprintf(ctx->message, sizeof(ctx->message),
+               "Usage: workbench.move "
+               "<left|right>");
+      return false_v;
+    }
+    return vkr_editor_workbench_move(ctx->editor, workbenches->active,
+                                     left ? -1 : 1, ctx->message,
+                                     sizeof(ctx->message));
+  }
+  const uint32_t index = word.length
+                             ? vkr_editor_workbench_find(workbenches, word)
+                             : workbenches->active;
+  if (index == UINT32_MAX) {
+    snprintf(ctx->message, sizeof(ctx->message), "Unknown workbench '%.*s'",
+             (int)word.length, word.str);
+    return false_v;
+  }
+  return def->value == 0u
+             ? vkr_editor_workbench_duplicate(ctx->editor, ctx->frame, index,
+                                              ctx->message,
+                                              sizeof(ctx->message))
+             : vkr_editor_workbench_delete(ctx->editor, ctx->frame, index,
+                                           ctx->message, sizeof(ctx->message));
+}
+
+/* workbench [id | name | 1-9 | next | prev]: lists the workbenches, or
+   switches at the start of the next frame. */
+static bool8_t cmd_run_workbench(CmdContext *ctx, const CmdDef *def,
+                                 String8 arg) {
+  (void)def;
+  VkrEditorWorkbenches *workbenches = &ctx->editor->workbenches;
+  const String8 word = cmd_unquote(arg);
+  if (!word.length) {
+    uint64_t used = 0u;
+    for (uint32_t i = 0; i < workbenches->count; ++i) {
+      used += (uint64_t)snprintf(
+          ctx->message + used, sizeof(ctx->message) - used, "%s%u %s [%s]%s",
+          i ? ", " : "", i + 1u, vkr_editor_workbench_name(workbenches, i),
+          vkr_editor_workbench_id(workbenches, i),
+          i == workbenches->active ? " (active)" : "");
+      if (used >= sizeof(ctx->message))
+        break;
+    }
+    return true_v;
+  }
+  const uint32_t index = vkr_editor_workbench_find(workbenches, word);
+  if (index == UINT32_MAX) {
+    snprintf(ctx->message, sizeof(ctx->message), "Unknown workbench '%.*s'",
+             (int)word.length, word.str);
+    return false_v;
+  }
+  return vkr_editor_workbench_request(ctx->editor, ctx->frame, index,
+                                      ctx->message, sizeof(ctx->message));
 }
 
 /* Viewport commands copy the runtime's current view and submit one change. */
@@ -867,8 +956,8 @@ static bool8_t cmd_run_script_open(CmdContext *ctx, const CmdDef *def,
 
 /* Synthetic pointer input at a window position in points: moves there, then
  * clicks `count` times (two makes a double click) with the left button, or
- * once with the right. `alt` holds Alt through the left clicks. For scripted
- * checks of mouse-only interactions. */
+ * once with the right. `alt` holds Alt and `ctrl` holds Ctrl (Cmd on macOS)
+ * through the left clicks. For scripted checks of mouse-only interactions. */
 static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
                                 String8 arg) {
   (void)def;
@@ -881,24 +970,31 @@ static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
   const int32_t read = sscanf(text, "%f %f %d %15s", &x, &y, &count, button);
   const bool8_t right = !strcmp(button, "right");
   const bool8_t alt = !strcmp(button, "alt");
+  const bool8_t ctrl = !strcmp(button, "ctrl");
   if (read < 2 || count < 1 || count > 3 || !isfinite(x) || !isfinite(y) ||
-      (read == 4 && !right && !alt)) {
+      (read == 4 && !right && !alt && !ctrl)) {
     snprintf(ctx->message, sizeof(ctx->message),
-             "ui.click needs <x> <y> [count] [right|alt] in points");
+             "ui.click needs <x> <y> [count] [right|alt|ctrl] in points");
     return false_v;
   }
+#if defined(PLATFORM_APPLE)
+  const Keys primary = KEY_LWIN;
+#else
+  const Keys primary = KEY_LCONTROL;
+#endif
+  const Keys held = alt ? KEY_LMENU : ctrl ? primary : KEY_MAX_KEYS;
   VkrEditorUi *editor = ctx->editor;
   const float32_t scale = ctx->frame->ui->content_scale;
   const int32_t px = (int32_t)(x * scale);
   const int32_t py = (int32_t)(y * scale);
   editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
   int32_t(*steps)[4] = editor->cmd_pointer_steps;
-  if (alt) {
+  if (held != KEY_MAX_KEYS) {
     int32_t *step = steps[editor->cmd_pointer_count++];
     step[0] = 3;
     step[1] = px;
     step[2] = py;
-    step[3] = KEY_LMENU;
+    step[3] = held;
   }
   steps[editor->cmd_pointer_count][0] = 0;
   steps[editor->cmd_pointer_count][1] = px;
@@ -915,12 +1011,12 @@ static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
       step[3] = right ? BUTTON_RIGHT : BUTTON_LEFT;
     }
   }
-  if (alt) {
+  if (held != KEY_MAX_KEYS) {
     int32_t *step = steps[editor->cmd_pointer_count++];
     step[0] = 4;
     step[1] = px;
     step[2] = py;
-    step[3] = KEY_LMENU;
+    step[3] = held;
   }
   snprintf(ctx->message, sizeof(ctx->message), "%s at (%.0f, %.0f)",
            right        ? "Right click"
@@ -987,6 +1083,8 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
               {"backspace", KEY_BACKSPACE},
               {"delete", KEY_DELETE},
               {"home", KEY_HOME},
+              {"pageup", KEY_PRIOR},
+              {"pagedown", KEY_NEXT},
               {"end", KEY_END},
               {"a", KEY_A},
               {"c", KEY_C},
@@ -1018,12 +1116,40 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
       }
     }
   }
-  VkrEditorUi *editor = ctx->editor;
-  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
-    if (strlen(keys[i].name) != word.length ||
-        MemCompare(keys[i].name, word.str, word.length)) {
-      continue;
+  /* A named key, then any letter or digit, space, or f1 to f12. */
+  Keys key = KEY_MAX_KEYS;
+  for (uint32_t i = 0; i < ArrayCount(keys) && key == KEY_MAX_KEYS; ++i) {
+    if (strlen(keys[i].name) == word.length &&
+        !MemCompare(keys[i].name, word.str, word.length)) {
+      key = keys[i].key;
     }
+  }
+  if (key == KEY_MAX_KEYS && word.length == 1u) {
+    const char c = (char)word.str[0];
+    if (c >= 'a' && c <= 'z') {
+      key = (Keys)(KEY_A + (c - 'a'));
+    } else if (c >= '0' && c <= '9') {
+      key = (Keys)(KEY_0 + (c - '0'));
+    }
+  }
+  if (key == KEY_MAX_KEYS && word.length == 5u &&
+      !MemCompare("space", word.str, 5u)) {
+    key = KEY_SPACE;
+  }
+  if (key == KEY_MAX_KEYS && word.length >= 2u && word.length <= 3u &&
+      word.str[0] == 'f') {
+    uint32_t number = 0u;
+    for (uint64_t i = 1u; i < word.length; ++i) {
+      number = word.str[i] >= '0' && word.str[i] <= '9'
+                   ? number * 10u + (uint32_t)(word.str[i] - '0')
+                   : 0u;
+    }
+    if (number >= 1u && number <= 12u) {
+      key = (Keys)(KEY_F1 + (number - 1u));
+    }
+  }
+  VkrEditorUi *editor = ctx->editor;
+  if (key != KEY_MAX_KEYS) {
     editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
     for (uint32_t m = 0; m < held_count; ++m) {
       int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
@@ -1033,7 +1159,7 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
     for (int32_t phase = 3; phase <= 4; ++phase) {
       int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
       step[0] = phase;
-      step[3] = (int32_t)keys[i].key;
+      step[3] = (int32_t)key;
     }
     for (uint32_t m = 0; m < held_count; ++m) {
       int32_t *step = editor->cmd_pointer_steps[editor->cmd_pointer_count++];
@@ -1046,8 +1172,8 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
   }
   snprintf(ctx->message, sizeof(ctx->message),
            "ui.key needs [cmd+|alt+|ctrl+|shift+] and up, down, left, right, "
-           "enter, escape, tab, backspace, delete, home, end, a, c, v, x, y "
-           "or z");
+           "enter, escape, tab, backspace, delete, home, end, space, a letter, "
+           "a digit or f1 to f12");
   return false_v;
 }
 
@@ -1204,21 +1330,6 @@ static bool8_t cmd_run_scene_open(CmdContext *ctx, const CmdDef *def,
            current ? "%.*s is already open or loading" : "Opening %.*s",
            (int)name.length, name.str);
   return true_v;
-}
-
-/* Viewport documents: tab.new adds one showing the World; tab.show N opens
- * document N (from 1). */
-static bool8_t cmd_run_tab(CmdContext *ctx, const CmdDef *def, String8 arg) {
-  const bool8_t add = strcmp(def->name, "tab.new") == 0;
-  float64_t number = 0.0;
-  const bool8_t ok =
-      add ? vkr_editor_viewport_tab_new(ctx->editor, ctx->frame)
-          : cmd_number(cmd_split(arg, NULL), &number) && number >= 1.0 &&
-                vkr_editor_viewport_tab_show(ctx->editor, ctx->frame,
-                                             (uint32_t)number - 1u);
-  snprintf(ctx->message, sizeof(ctx->message), "%s",
-           ok ? "Switching document" : "No document switch is possible now");
-  return ok;
 }
 
 /* Opens the Create window importing a scene JSON; its preflight runs. */
@@ -1526,6 +1637,11 @@ static bool8_t cmd_run_delete(CmdContext *ctx, const CmdDef *def, String8 arg) {
   (void)def;
   const String8 name = cmd_unquote(arg);
   VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!name.length && ctx->editor->selection_extra_count) {
+    return vkr_editor_selection_apply(ctx->editor, ctx->frame,
+                                      VKR_SCENE_EDIT_DELETE, ctx->message,
+                                      sizeof(ctx->message));
+  }
   if (name.length) {
     entity = cmd_find_any(ctx->frame, name);
   } else if (!cmd_selection(ctx, &entity)) {
@@ -1541,6 +1657,51 @@ static bool8_t cmd_run_delete(CmdContext *ctx, const CmdDef *def, String8 arg) {
       (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_DELETE, .entity = entity};
   const String8 label = vkr_scene_get_name(scene, entity);
   snprintf(ctx->message, sizeof(ctx->message), "Deleting %.*s",
+           (int)label.length, label.str);
+  return true_v;
+}
+
+/* Adds the named object to the selection, or takes it out (ADR-089). */
+static bool8_t cmd_run_select_toggle(CmdContext *ctx, const CmdDef *def,
+                                     String8 arg) {
+  (void)def;
+  const VkrEntityId entity = cmd_find_any(ctx->frame, cmd_unquote(arg));
+  if (!entity.u64) {
+    snprintf(ctx->message, sizeof(ctx->message), "No such object");
+    return false_v;
+  }
+  vkr_editor_selection_toggle(ctx->editor, ctx->frame, entity);
+  snprintf(ctx->message, sizeof(ctx->message), "Toggled %.*s", (int)arg.length,
+           arg.str);
+  return true_v;
+}
+
+/* Duplicates the named object, or the selection, beside itself. */
+static bool8_t cmd_run_duplicate(CmdContext *ctx, const CmdDef *def,
+                                 String8 arg) {
+  (void)def;
+  const String8 name = cmd_unquote(arg);
+  VkrEntityId entity = VKR_ENTITY_ID_INVALID;
+  if (!name.length && ctx->editor->selection_extra_count) {
+    return vkr_editor_selection_apply(ctx->editor, ctx->frame,
+                                      VKR_SCENE_EDIT_DUPLICATE, ctx->message,
+                                      sizeof(ctx->message));
+  }
+  if (name.length) {
+    entity = cmd_find_any(ctx->frame, name);
+  } else if (!cmd_selection(ctx, &entity)) {
+    return false_v;
+  }
+  const VkrScene *scene = vkr_editor_entity_scene(ctx->frame, entity);
+  const char *reason = "No such object";
+  if (!entity.u64 || !vkr_scene_edit_can_duplicate(scene, entity, &reason)) {
+    snprintf(ctx->message, sizeof(ctx->message), "%s", reason);
+    return false_v;
+  }
+  *ctx->frame->scene_edit = (VkrSceneEditRequest){
+      .action = VKR_SCENE_EDIT_DUPLICATE, .entity = entity};
+  const String8 label = vkr_scene_get_name(scene, entity);
+  snprintf(ctx->message, sizeof(ctx->message), "Duplicating %.*s",
            (int)label.length, label.str);
   return true_v;
 }
@@ -1863,8 +2024,23 @@ static const CmdDef cmd_defs[] = {
     CMD_SIMPLE("build.settings", "Show or hide Build Settings",
                CMD_BUILD_SETTINGS),
     CMD_SIMPLE("build.open", "Open the last package's folder", CMD_BUILD_OPEN),
-    CMD_SIMPLE("layout.reset", "Restore the default panel layout",
+    CMD_SIMPLE("layout.reset",
+               "Restore the active workbench's default panel layout",
                CMD_RESET_LAYOUT),
+    {"workbench.duplicate", CMD_ARG_TEXT, "[workbench]",
+     "Copy a workbench, or the active one, after it and switch to the copy",
+     cmd_run_workbench_edit, CMD_COUNT, 0u},
+    {"workbench.delete", CMD_ARG_TEXT, "[workbench]",
+     "Delete a custom workbench, or the active one", cmd_run_workbench_edit,
+     CMD_COUNT, 1u},
+    {"workbench.move", CMD_ARG_TEXT, "<left|right>",
+     "Move the active workbench's tab", cmd_run_workbench_edit, CMD_COUNT, 2u},
+    {"workbench.rename", CMD_ARG_TEXT, "<name>", "Rename the active workbench",
+     cmd_run_workbench_edit, CMD_COUNT, 3u},
+    {"workbench", CMD_ARG_TEXT,
+     "[general|level_design|terrain|lighting|scripting|1-9|next|prev]",
+     "List the workbenches, or switch to one and to the scene it shows",
+     cmd_run_workbench, CMD_COUNT, 0u, .holds = true_v},
     CMD_SIMPLE("sim.play", "Start the simulation", CMD_SIM_START),
     CMD_SIMPLE("sim.pause", "Pause the simulation", CMD_SIM_PAUSE),
     CMD_SIMPLE("sim.step", "Advance a paused simulation one frame",
@@ -1884,7 +2060,7 @@ static const CmdDef cmd_defs[] = {
     {"grid", CMD_ARG_SWITCH, "[on|off|toggle]", "Show or hide the world grid",
      cmd_run_view, CMD_COUNT, 0u},
     {"brush.draw", CMD_ARG_SWITCH, "[on|off|toggle]",
-     "Draw box brushes by dragging on the grid plane (B)", cmd_run_brush_draw,
+     "Draw box brushes by dragging in the Scene (B)", cmd_run_brush_draw,
      CMD_COUNT, 0u},
     {"terrain.tool", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Sculpt and paint terrain in the Scene with the Terrain window's brush",
@@ -1893,6 +2069,12 @@ static const CmdDef cmd_defs[] = {
      "Cut the selected brush with the vertical plane through two grid "
      "clicks",
      cmd_run_brush_draw, CMD_COUNT, 1u},
+    {"brush.stairs_tool", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Build stairs rising 3 m between two grid clicks", cmd_run_brush_draw,
+     CMD_COUNT, 3u},
+    {"brush.corridor_tool", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Build a corridor between two grid clicks", cmd_run_brush_draw, CMD_COUNT,
+     4u},
     {"partition.load", CMD_ARG_TEXT, "<x0> <z0> [<x1> <z1>]",
      "Load and pin world partition cells for editing", cmd_run_partition,
      CMD_COUNT, 0u},
@@ -1957,7 +2139,7 @@ static const CmdDef cmd_defs[] = {
      cmd_run_script_attach, CMD_COUNT, 0u},
     {"script.edit", CMD_ARG_NONE, "", "Open the selection's script source",
      cmd_run_script_edit, CMD_COUNT, 0u},
-    {"ui.click", CMD_ARG_TEXT, "<x> <y> [count] [right|alt]",
+    {"ui.click", CMD_ARG_TEXT, "<x> <y> [count] [right|alt|ctrl]",
      "Click the window at a point, as the mouse would", cmd_run_ui_click,
      CMD_COUNT, 0u},
     {"ui.key", CMD_ARG_TEXT, "[cmd+|alt+|ctrl+|shift+]<key>",
@@ -1983,6 +2165,13 @@ static const CmdDef cmd_defs[] = {
      CMD_COUNT, 0u},
     {"delete", CMD_ARG_TEXT, "[name]", "Delete the selection or a named object",
      cmd_run_delete, CMD_COUNT, 0u},
+    {"select.toggle", CMD_ARG_ENTITY, "<name>",
+     "Add a named object to the selection, or take it out, as Ctrl+click does",
+     cmd_run_select_toggle, CMD_COUNT, 0u},
+    {"duplicate", CMD_ARG_TEXT, "[name]",
+     "Duplicate the selection or a named object beside itself and select the "
+     "copy",
+     cmd_run_duplicate, CMD_COUNT, 0u},
     {"physics.motion", CMD_ARG_TEXT, "<static|kinematic|dynamic>",
      "Set the selection's physics body motion (undoable)",
      cmd_run_physics_motion, CMD_COUNT, 0u},
@@ -1993,10 +2182,6 @@ static const CmdDef cmd_defs[] = {
     {"parent", CMD_ARG_TEXT, "<name|none>",
      "Move the selection under an object, keeping its place", cmd_run_parent,
      CMD_COUNT, 0u},
-    {"tab.new", CMD_ARG_NONE, "", "Open a new document showing the World",
-     cmd_run_tab, CMD_COUNT, 0u, .holds = true_v},
-    {"tab.show", CMD_ARG_NUMBER, "<n>", "Switch to viewport document n",
-     cmd_run_tab, CMD_COUNT, 0u, .holds = true_v},
     {"scene.open", CMD_ARG_TEXT, "<name>", "Open a project scene by name",
      cmd_run_scene_open, CMD_COUNT, 0u, .holds = true_v},
     {"scene.import", CMD_ARG_TEXT, "<path>",

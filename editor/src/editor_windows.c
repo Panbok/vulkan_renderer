@@ -6,6 +6,7 @@
 #include "editor_terrain.h"
 
 #include "editor_graphics.h"
+#include "renderer/systems/vkr_gizmo_system.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -24,23 +25,15 @@
 #define EDITOR_SHORTCUT(apple, other) other
 #endif
 
-/* One shortcut per line; tabs split the key column from its action. */
-// clang-format off
-static const char s_help_text[] =
-    EDITOR_SHORTCUT("\xe2\x8c\x98P", "Ctrl+P") "\tCmd bar: commands and expressions\n"
-    "Q  W  E  R\tSelect, move, rotate, scale tools\n"
-    "F\tFrame the selection\n"
-    EDITOR_SHORTCUT("Fn+Right", "End") "\tSnap the selection by the Snapping settings\n"
-    "Hold RMB\tFly the Scene camera (WASD)\n"
-    "F3 / Tab\tToggle free camera; Esc releases\n"
-    EDITOR_SHORTCUT("\xe2\x8c\x98S", "Ctrl+S") "\tSave scene edits\n"
-    EDITOR_SHORTCUT("\xe2\x8c\x98Z / \xe2\x87\xa7\xe2\x8c\x98Z", "Ctrl+Z / Ctrl+Shift+Z") "\tUndo / redo\n"
-    EDITOR_SHORTCUT("\xe2\x8c\x83Space", "Ctrl+Space") "\tContent browser\n"
+/* Controls the keymap does not list: one per line, tabs split the key column
+   from its action. The keymap's own lines come first in the Help window. */
+static const char s_help_mouse_text[] =
+    "Hold RMB\tFly the Scene camera (WASD, Q/E down and up)\n"
     "Drag X / Y / Z\tScrub a value (Shift fast, Alt fine)\n"
+    "Tab\tToggle free camera; Esc releases\n"
     "F6\tCycle shadow diagnostics\n"
     "F8 / F9 / F10\tIBL mode and intensity\n"
     "G\tCamera snapshot";
-// clang-format on
 
 VkrUiWidgetConfig vkr_editor_menu_button_config(uint32_t column, bool8_t active,
                                                 VkrFontHandle heading_font) {
@@ -89,6 +82,19 @@ static void editor_window_toggle(VkrEditorUi *editor,
     editor_window_raise(editor, kind);
 }
 
+/* The View menu's toggle of a window whose body a dock panel can host: the
+   tab while the live tree holds the panel, else the window. */
+static void editor_window_command(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  VkrEditorWindowKind kind) {
+  const VkrUiDockPanelKind panel = vkr_editor_window_dock_panel(kind);
+  if (panel != VKR_UI_DOCK_PANEL_COUNT &&
+      vkr_editor_dock_has(frame->dock, panel))
+    vkr_editor_dock_toggle(frame->dock, panel);
+  else
+    editor_window_toggle(editor, kind);
+}
+
 void vkr_editor_window_set_visible(VkrEditorUi *editor,
                                    VkrEditorWindowKind kind, bool8_t visible) {
   if (visible)
@@ -102,89 +108,288 @@ void vkr_editor_window_set_visible(VkrEditorUi *editor,
 typedef struct EditorCommandInfo {
   const char *name;
   VkrUiIcon icon;
-  /* Displayed shortcut; NULL when the command has none. */
-  const char *shortcut;
   /* Toggles that duplicate a Start/Stop pair; the Cmd bar uses the pair. */
   bool8_t menu_only;
 } EditorCommandInfo;
 
 static const EditorCommandInfo s_commands[CMD_COUNT] = {
-    [CMD_LOAD] = {"Load scene", VKR_UI_ICON_SCENE_LOAD, NULL, false_v},
-    [CMD_RELOAD] = {"Reload scene", VKR_UI_ICON_REFRESH, NULL, false_v},
-    [CMD_UNLOAD] = {"Unload scene", VKR_UI_ICON_SCENE_UNLOAD, NULL, false_v},
-    [CMD_SAVE] = {"Save scene edits", VKR_UI_ICON_SAVE,
-                  EDITOR_SHORTCUT("\xe2\x8c\x98S", "Ctrl+S"), false_v},
-    [CMD_UNDO] = {"Undo", VKR_UI_ICON_UNDO,
-                  EDITOR_SHORTCUT("\xe2\x8c\x98Z", "Ctrl+Z"), false_v},
-    [CMD_REDO] = {"Redo", VKR_UI_ICON_REDO,
-                  EDITOR_SHORTCUT("\xe2\x87\xa7\xe2\x8c\x98Z", "Ctrl+Shift+Z"),
-                  false_v},
-    [CMD_FRAME] = {"Frame selected", VKR_UI_ICON_FRAME, NULL, false_v},
-    [CMD_HIERARCHY] = {"Outliner", VKR_UI_ICON_HIERARCHY, NULL, false_v},
-    [CMD_INSPECTOR] = {"Details", VKR_UI_ICON_INSPECTOR, NULL, false_v},
-    [CMD_CONSOLE] = {"Console", VKR_UI_ICON_CONSOLE, NULL, false_v},
-    [CMD_BAKERY] = {"Bakery", VKR_UI_ICON_BAKERY, NULL, false_v},
-    [CMD_CONTENT] = {"Content browser", VKR_UI_ICON_CONTENT,
-                     EDITOR_SHORTCUT("\xe2\x8c\x83Space", "Ctrl+Space"),
-                     false_v},
-    [CMD_ANIMATION] = {"Animation editor", VKR_UI_ICON_ANIMATION, NULL,
-                       false_v},
-    [CMD_PHYSICS] = {"Physics settings", VKR_UI_ICON_PHYSICS, NULL, false_v},
-    [CMD_SCRIPT_EDITOR] = {"Script editor", VKR_UI_ICON_CODE, NULL, false_v},
-    [CMD_CHANGES] = {"Agent changes", VKR_UI_ICON_TERMINAL, NULL, false_v},
-    [CMD_BRUSH_DRAW] = {"Draw brushes", VKR_UI_ICON_SHAPES, "B", false_v},
-    [CMD_BRUSH_CLIP] = {"Clip brushes", VKR_UI_ICON_SHAPES, NULL, false_v},
-    [CMD_LEVEL_CHECKS] = {"Level checks", VKR_UI_ICON_PERSON_WALK, NULL,
-                          false_v},
-    [CMD_TERRAIN] = {"Terrain", VKR_UI_ICON_WAVES, NULL, false_v},
-    [CMD_PARTITION] = {"World partition", VKR_UI_ICON_GRID, NULL, false_v},
-    [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, NULL,
-                          false_v},
-    [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, NULL, false_v},
-    [CMD_SIM_PAUSE] = {"Pause simulation", VKR_UI_ICON_PAUSE, NULL, false_v},
+    [CMD_LOAD] = {"Load scene", VKR_UI_ICON_SCENE_LOAD, false_v},
+    [CMD_RELOAD] = {"Reload scene", VKR_UI_ICON_REFRESH, false_v},
+    [CMD_UNLOAD] = {"Unload scene", VKR_UI_ICON_SCENE_UNLOAD, false_v},
+    [CMD_SAVE] = {"Save scene edits", VKR_UI_ICON_SAVE, false_v},
+    [CMD_UNDO] = {"Undo", VKR_UI_ICON_UNDO, false_v},
+    [CMD_REDO] = {"Redo", VKR_UI_ICON_REDO, false_v},
+    [CMD_FRAME] = {"Frame selected", VKR_UI_ICON_FRAME, false_v},
+    [CMD_HIERARCHY] = {"Outliner", VKR_UI_ICON_HIERARCHY, false_v},
+    [CMD_INSPECTOR] = {"Details", VKR_UI_ICON_INSPECTOR, false_v},
+    [CMD_CONSOLE] = {"Console", VKR_UI_ICON_CONSOLE, false_v},
+    [CMD_BAKERY] = {"Bakery", VKR_UI_ICON_BAKERY, false_v},
+    [CMD_CONTENT] = {"Content browser", VKR_UI_ICON_CONTENT, false_v},
+    [CMD_ANIMATION] = {"Animation editor", VKR_UI_ICON_ANIMATION, false_v},
+    [CMD_PHYSICS] = {"Physics settings", VKR_UI_ICON_PHYSICS, false_v},
+    [CMD_SCRIPT_EDITOR] = {"Script editor", VKR_UI_ICON_CODE, false_v},
+    [CMD_CHANGES] = {"Agent changes", VKR_UI_ICON_TERMINAL, false_v},
+    [CMD_BRUSH_DRAW] = {"Draw brushes", VKR_UI_ICON_SHAPES, false_v},
+    [CMD_BRUSH_CLIP] = {"Clip brushes", VKR_UI_ICON_SHAPES, false_v},
+    [CMD_LEVEL_CHECKS] = {"Level checks", VKR_UI_ICON_PERSON_WALK, false_v},
+    [CMD_TERRAIN] = {"Terrain", VKR_UI_ICON_WAVES, false_v},
+    [CMD_PARTITION] = {"World partition", VKR_UI_ICON_GRID, false_v},
+    [CMD_RESET_LAYOUT] = {"Reset panel layout", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_SIM_START] = {"Start simulation", VKR_UI_ICON_PLAY, false_v},
+    [CMD_SIM_PAUSE] = {"Pause simulation", VKR_UI_ICON_PAUSE, false_v},
     [CMD_RENDER_START] = {"Start scene rendering", VKR_UI_ICON_MONITOR_PLAY,
-                          NULL, false_v},
-    [CMD_RENDER_STOP] = {"Stop scene rendering", VKR_UI_ICON_MONITOR_STOP, NULL,
-                         false_v},
-    [CMD_SIM_TOGGLE] = {"Play / Pause", VKR_UI_ICON_PLAY, NULL, true_v},
-    [CMD_SIM_STEP] = {"Step one frame", VKR_UI_ICON_STEP, NULL, false_v},
-    [CMD_SIM_RESET] = {"Stop and reset simulation", VKR_UI_ICON_STOP, NULL,
-                       false_v},
-    [CMD_RENDER_TOGGLE] = {"Live scene rendering", VKR_UI_ICON_MONITOR_PLAY,
-                           NULL, true_v},
-    [CMD_CAMERA] = {"Free camera", VKR_UI_ICON_CAMERA, "F3", false_v},
-    [CMD_GRAPHICS] = {"Preferences", VKR_UI_ICON_SETTINGS, NULL, false_v},
-    [CMD_DRAWS] = {"Draws and render graph", VKR_UI_ICON_DRAWS, NULL, false_v},
-    [CMD_MEMORY] = {"Memory", VKR_UI_ICON_MEMORY, NULL, false_v},
-    [CMD_LABELS] = {"Light icons", VKR_UI_ICON_LIGHT, NULL, false_v},
-    [CMD_LABELS_DIRECTIONAL] = {"Directional light icons",
-                                VKR_UI_ICON_DIRECTIONAL_LIGHT, NULL, false_v},
-    [CMD_LABELS_SPOT] = {"Spot light icons", VKR_UI_ICON_SPOT_LIGHT, NULL,
-                         false_v},
-    [CMD_LABELS_POINT] = {"Point light icons", VKR_UI_ICON_POINT_LIGHT, NULL,
                           false_v},
-    [CMD_HELP] = {"Keyboard and mouse controls", VKR_UI_ICON_KEYBOARD, NULL,
-                  false_v},
-    [CMD_COMMANDS] = {"Cmd bar", VKR_UI_ICON_COMMAND,
-                      EDITOR_SHORTCUT("\xe2\x8c\x98P", "Ctrl+P"), true_v},
-    [CMD_ZOOM_IN] = {"Zoom interface in", VKR_UI_ICON_ZOOM_IN,
-                     EDITOR_SHORTCUT("\xe2\x8c\x98=", "Ctrl+="), false_v},
-    [CMD_ZOOM_OUT] = {"Zoom interface out", VKR_UI_ICON_ZOOM_OUT,
-                      EDITOR_SHORTCUT("\xe2\x8c\x98-", "Ctrl+-"), false_v},
-    [CMD_ZOOM_RESET] = {"Actual interface size", VKR_UI_ICON_MAXIMIZE,
-                        EDITOR_SHORTCUT("\xe2\x8c\x98"
-                                        "0",
-                                        "Ctrl+0"),
-                        false_v},
-    [CMD_REDUCE_MOTION] = {"Reduce motion", VKR_UI_ICON_SPARKLE, NULL, false_v},
-    [CMD_BUILD] = {"Build", VKR_UI_ICON_EXPORT, NULL, false_v},
-    [CMD_BUILD_RUN] = {"Build and Run", VKR_UI_ICON_PLAY, NULL, false_v},
+    [CMD_RENDER_STOP] = {"Stop scene rendering", VKR_UI_ICON_MONITOR_STOP,
+                         false_v},
+    [CMD_SIM_TOGGLE] = {"Play / Pause", VKR_UI_ICON_PLAY, true_v},
+    [CMD_SIM_STEP] = {"Step one frame", VKR_UI_ICON_STEP, false_v},
+    [CMD_SIM_RESET] = {"Stop and reset simulation", VKR_UI_ICON_STOP, false_v},
+    [CMD_RENDER_TOGGLE] = {"Live scene rendering", VKR_UI_ICON_MONITOR_PLAY,
+                           true_v},
+    [CMD_CAMERA] = {"Free camera", VKR_UI_ICON_CAMERA, false_v},
+    [CMD_GRAPHICS] = {"Preferences", VKR_UI_ICON_SETTINGS, false_v},
+    [CMD_DRAWS] = {"Draws and render graph", VKR_UI_ICON_DRAWS, false_v},
+    [CMD_MEMORY] = {"Memory", VKR_UI_ICON_MEMORY, false_v},
+    [CMD_LABELS] = {"Light icons", VKR_UI_ICON_LIGHT, false_v},
+    [CMD_LABELS_DIRECTIONAL] = {"Directional light icons",
+                                VKR_UI_ICON_DIRECTIONAL_LIGHT, false_v},
+    [CMD_LABELS_SPOT] = {"Spot light icons", VKR_UI_ICON_SPOT_LIGHT, false_v},
+    [CMD_LABELS_POINT] = {"Point light icons", VKR_UI_ICON_POINT_LIGHT,
+                          false_v},
+    [CMD_HELP] = {"Keyboard and mouse controls", VKR_UI_ICON_KEYBOARD, false_v},
+    [CMD_COMMANDS] = {"Cmd bar", VKR_UI_ICON_COMMAND, true_v},
+    [CMD_ZOOM_IN] = {"Zoom interface in", VKR_UI_ICON_ZOOM_IN, false_v},
+    [CMD_ZOOM_OUT] = {"Zoom interface out", VKR_UI_ICON_ZOOM_OUT, false_v},
+    [CMD_ZOOM_RESET] = {"Actual interface size", VKR_UI_ICON_MAXIMIZE, false_v},
+    [CMD_REDUCE_MOTION] = {"Reduce motion", VKR_UI_ICON_SPARKLE, false_v},
+    [CMD_BUILD] = {"Build", VKR_UI_ICON_EXPORT, false_v},
+    [CMD_BUILD_RUN] = {"Build and Run", VKR_UI_ICON_PLAY, false_v},
     [CMD_BUILD_SETTINGS] = {"Build Settings\xe2\x80\xa6", VKR_UI_ICON_SETTINGS,
-                            NULL, false_v},
-    [CMD_BUILD_OPEN] = {"Open Last Build", VKR_UI_ICON_FOLDER, NULL, false_v},
-    [CMD_BUILD_LOG] = {"Build log", VKR_UI_ICON_LIST, NULL, false_v},
-    [CMD_SCENE_BAKE] = {"Bake lighting", VKR_UI_ICON_PROBE, NULL, false_v},
+                            false_v},
+    [CMD_BUILD_OPEN] = {"Open Last Build", VKR_UI_ICON_FOLDER, false_v},
+    [CMD_BUILD_LOG] = {"Build log", VKR_UI_ICON_LIST, false_v},
+    [CMD_SCENE_BAKE] = {"Bake lighting", VKR_UI_ICON_PROBE, false_v},
+    [CMD_TOOL_SELECT] = {"Select tool", VKR_UI_ICON_SELECT, false_v},
+    [CMD_TOOL_MOVE] = {"Move tool", VKR_UI_ICON_MOVE, false_v},
+    [CMD_TOOL_ROTATE] = {"Rotate tool", VKR_UI_ICON_ROTATE, false_v},
+    [CMD_TOOL_SCALE] = {"Scale tool", VKR_UI_ICON_SCALE, false_v},
+    [CMD_DUPLICATE] = {"Duplicate", VKR_UI_ICON_DUPLICATE, false_v},
+    /* Tabs move, so the commands name positions. */
+    [CMD_WORKBENCH_1] = {"Workbench 1", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_2] = {"Workbench 2", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_3] = {"Workbench 3", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_4] = {"Workbench 4", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_5] = {"Workbench 5", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_6] = {"Workbench 6", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_7] = {"Workbench 7", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_8] = {"Workbench 8", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_9] = {"Workbench 9", VKR_UI_ICON_LAYOUT, false_v},
+    [CMD_WORKBENCH_PREV] = {"Previous workbench", VKR_UI_ICON_CHEVRON_LEFT,
+                            false_v},
+    [CMD_WORKBENCH_NEXT] = {"Next workbench", VKR_UI_ICON_CHEVRON_RIGHT,
+                            false_v},
+    [CMD_DELETE] = {"Delete", VKR_UI_ICON_TRASH, false_v},
+    [CMD_RENAME] = {"Rename", VKR_UI_ICON_PENCIL_LINE, false_v},
+    [CMD_SNAP] = {"Snap to surface or grid", VKR_UI_ICON_SNAP, false_v},
+    [CMD_PLAY] = {"Play", VKR_UI_ICON_PLAY, false_v},
 };
+
+/* The keymap, after Unity's: a key and the exact modifiers held with it.
+   The primary modifier is Cmd on macOS and Ctrl elsewhere. A command may
+   have more than one row; the first labels it in menus and tooltips. */
+#if defined(PLATFORM_APPLE)
+#define EDITOR_MOD_PRIMARY VKR_INPUT_MOD_SUPER
+#else
+#define EDITOR_MOD_PRIMARY VKR_INPUT_MOD_CONTROL
+#endif
+#define EDITOR_MODS                                                            \
+  (VKR_INPUT_MOD_SHIFT | VKR_INPUT_MOD_CONTROL | VKR_INPUT_MOD_ALT |           \
+   VKR_INPUT_MOD_SUPER)
+
+typedef struct EditorKeyBinding {
+  EditorCommand command;
+  Keys key;
+  uint8_t modifiers;
+  /* The runtime reads this key itself; the row only labels the command. */
+  bool8_t runtime;
+} EditorKeyBinding;
+
+static const EditorKeyBinding s_keymap[] = {
+    /* File and edit. */
+    {CMD_SAVE, KEY_S, EDITOR_MOD_PRIMARY},
+    {CMD_UNDO, KEY_Z, EDITOR_MOD_PRIMARY},
+    {CMD_REDO, KEY_Y, EDITOR_MOD_PRIMARY},
+    {CMD_REDO, KEY_Z, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_SHIFT},
+    {CMD_COMMANDS, KEY_K, EDITOR_MOD_PRIMARY},
+    /* Cmd+Space is Spotlight on macOS, so Control everywhere. */
+    {CMD_CONTENT, KEY_SPACE, VKR_INPUT_MOD_CONTROL},
+    {CMD_ZOOM_IN, KEY_PLUS, EDITOR_MOD_PRIMARY},
+    {CMD_ZOOM_IN, KEY_PLUS, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_SHIFT},
+    {CMD_ZOOM_OUT, KEY_MINUS, EDITOR_MOD_PRIMARY},
+    {CMD_ZOOM_RESET, KEY_0, EDITOR_MOD_PRIMARY},
+    /* Workbenches, as browsers switch tabs. */
+    {CMD_WORKBENCH_1, KEY_1, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_2, KEY_2, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_3, KEY_3, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_4, KEY_4, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_5, KEY_5, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_6, KEY_6, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_7, KEY_7, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_8, KEY_8, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_9, KEY_9, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_PREV, KEY_PRIOR, EDITOR_MOD_PRIMARY},
+    {CMD_WORKBENCH_NEXT, KEY_NEXT, EDITOR_MOD_PRIMARY},
+    {CMD_HELP, KEY_F1, 0u},
+    /* The Scene and its selection. */
+    {CMD_TOOL_SELECT, KEY_Q, 0u},
+    {CMD_TOOL_MOVE, KEY_W, 0u},
+    {CMD_TOOL_ROTATE, KEY_E, 0u},
+    {CMD_TOOL_SCALE, KEY_R, 0u},
+    {CMD_FRAME, KEY_F, 0u},
+    {CMD_SNAP, KEY_END, 0u},
+    {CMD_DUPLICATE, KEY_D, EDITOR_MOD_PRIMARY},
+    {CMD_DELETE, KEY_DELETE, 0u},
+#if defined(PLATFORM_APPLE)
+    {CMD_DELETE, KEY_BACKSPACE, 0u},
+#endif
+    {CMD_RENAME, KEY_F2, 0u},
+    {CMD_CAMERA, KEY_F3, 0u, true_v},
+    /* Level design. */
+    {CMD_BRUSH_DRAW, KEY_B, 0u},
+    {CMD_BRUSH_CLIP, KEY_X, VKR_INPUT_MOD_SHIFT},
+    /* Play. */
+    {CMD_PLAY, KEY_P, EDITOR_MOD_PRIMARY},
+    {CMD_SIM_TOGGLE, KEY_P, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_SHIFT},
+    {CMD_SIM_STEP, KEY_P, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
+    /* Build. */
+    {CMD_BUILD_RUN, KEY_B, EDITOR_MOD_PRIMARY},
+    {CMD_BUILD_SETTINGS, KEY_B, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_SHIFT},
+};
+
+/* The printed name of `key` in `out`; false for a key the keymap does not
+   use. */
+static bool8_t editor_key_name(Keys key, char *out, uint64_t size) {
+  if ((key >= KEY_A && key <= KEY_Z) || (key >= KEY_0 && key <= KEY_9)) {
+    snprintf(out, size, "%c", (char)key);
+    return true_v;
+  }
+  const char *name = NULL;
+  switch (key) {
+  case KEY_SPACE:
+    name = "Space";
+    break;
+  case KEY_PLUS:
+    name = "=";
+    break;
+  case KEY_MINUS:
+    name = "-";
+    break;
+#if defined(PLATFORM_APPLE)
+  case KEY_DELETE:
+    name = "\xe2\x8c\xa6";
+    break;
+  case KEY_BACKSPACE:
+    name = "\xe2\x8c\xab";
+    break;
+  case KEY_END:
+    name = "Fn+\xe2\x86\x92";
+    break;
+#else
+  case KEY_DELETE:
+    name = "Delete";
+    break;
+  case KEY_BACKSPACE:
+    name = "Backspace";
+    break;
+  case KEY_END:
+    name = "End";
+    break;
+#endif
+  case KEY_PRIOR:
+    name = "PgUp";
+    break;
+  case KEY_NEXT:
+    name = "PgDn";
+    break;
+  case KEY_F1:
+    name = "F1";
+    break;
+  case KEY_F2:
+    name = "F2";
+    break;
+  case KEY_F3:
+    name = "F3";
+    break;
+  default:
+    return false_v;
+  }
+  snprintf(out, size, "%s", name);
+  return true_v;
+}
+
+/* Writes the first binding of `command` as its platform's shortcut text;
+   false when the command has none. */
+static bool8_t editor_shortcut_text(EditorCommand command, char *out,
+                                    uint64_t size) {
+  for (uint32_t i = 0; i < ArrayCount(s_keymap); ++i) {
+    const EditorKeyBinding *binding = &s_keymap[i];
+    char key[16];
+    if (binding->command != command ||
+        !editor_key_name(binding->key, key, sizeof(key))) {
+      continue;
+    }
+    const uint8_t mods = binding->modifiers;
+#if defined(PLATFORM_APPLE)
+    snprintf(out, size, "%s%s%s%s%s",
+             mods & VKR_INPUT_MOD_CONTROL ? "\xe2\x8c\x83" : "",
+             mods & VKR_INPUT_MOD_ALT ? "\xe2\x8c\xa5" : "",
+             mods & VKR_INPUT_MOD_SHIFT ? "\xe2\x87\xa7" : "",
+             mods & VKR_INPUT_MOD_SUPER ? "\xe2\x8c\x98" : "", key);
+#else
+    snprintf(out, size, "%s%s%s%s", mods & VKR_INPUT_MOD_CONTROL ? "Ctrl+" : "",
+             mods & VKR_INPUT_MOD_SHIFT ? "Shift+" : "",
+             mods & VKR_INPUT_MOD_ALT ? "Alt+" : "", key);
+#endif
+    return true_v;
+  }
+  return false_v;
+}
+
+bool8_t vkr_editor_command_shortcut(EditorCommand command, char *out,
+                                    uint64_t size) {
+  return editor_shortcut_text(command, out, size);
+}
+
+String8 vkr_editor_command_tooltip(VkrUiSystem *ui, EditorCommand command,
+                                   const char *text) {
+  char shortcut[48];
+  if (!text) {
+    text = s_commands[command].name;
+  }
+  return editor_shortcut_text(command, shortcut, sizeof(shortcut))
+             ? string8_create_formatted(ui->frame_allocator, "%s  (%s)", text,
+                                        shortcut)
+             : string8_create_formatted(ui->frame_allocator, "%s", text);
+}
+
+/* The Help window: every bound command, then the mouse and debug controls. */
+static String8 editor_help_text(VkrUiSystem *ui) {
+  char text[4096];
+  uint64_t used = 0u;
+  for (uint32_t command = 0; command < CMD_COUNT; ++command) {
+    char shortcut[48];
+    if (used < sizeof(text) &&
+        editor_shortcut_text((EditorCommand)command, shortcut,
+                             sizeof(shortcut))) {
+      used += (uint64_t)snprintf(text + used, sizeof(text) - used, "%s\t%s\n",
+                                 shortcut, s_commands[command].name);
+    }
+  }
+  if (used < sizeof(text)) {
+    snprintf(text + used, sizeof(text) - used, "%s", s_help_mouse_text);
+  }
+  return string8_create_formatted(ui->frame_allocator, "%s", text);
+}
 
 static bool8_t editor_panel_visible(const VkrSampleUiFrame *frame,
                                     VkrUiDockPanelKind kind) {
@@ -238,11 +443,28 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
   case CMD_UNDO:
   case CMD_REDO:
     return editor_can_undo(frame, command == CMD_REDO);
-  case CMD_FRAME: {
+  case CMD_FRAME:
+  case CMD_DUPLICATE:
+  case CMD_DELETE:
+  case CMD_RENAME:
+  case CMD_SNAP: {
     const VkrScene *scene =
         vkr_editor_entity_scene(frame, frame->selected_entity);
-    return scene && vkr_scene_entity_alive(scene, frame->selected_entity);
+    return scene && vkr_scene_entity_alive(scene, frame->selected_entity) &&
+           ((command != CMD_DELETE && command != CMD_DUPLICATE) ||
+            !vkr_editor_scene_panels_cooking(editor->scene_panels,
+                                             frame->selected_entity)) &&
+           (command != CMD_DUPLICATE ||
+            vkr_scene_edit_can_duplicate(scene, frame->selected_entity, NULL));
   }
+  case CMD_TOOL_SELECT:
+  case CMD_TOOL_MOVE:
+  case CMD_TOOL_ROTATE:
+  case CMD_TOOL_SCALE:
+    return frame->view_request != NULL && frame->mapping_valid &&
+           !frame->scene_rendering_stopped;
+  case CMD_PLAY:
+    return frame->scene != NULL || frame->world != NULL;
   case CMD_SIM_START:
     return !frame->simulation_running;
   case CMD_SIM_PAUSE:
@@ -275,6 +497,20 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
   case CMD_SCENE_BAKE:
     return frame->scene != NULL &&
            vkr_editor_bakery_scene_bake_available(editor->bakery);
+  case CMD_WORKBENCH_1:
+  case CMD_WORKBENCH_2:
+  case CMD_WORKBENCH_3:
+  case CMD_WORKBENCH_4:
+  case CMD_WORKBENCH_5:
+  case CMD_WORKBENCH_6:
+  case CMD_WORKBENCH_7:
+  case CMD_WORKBENCH_8:
+  case CMD_WORKBENCH_9:
+    return !frame->scene_only &&
+           (uint32_t)(command - CMD_WORKBENCH_1) < editor->workbenches.count;
+  case CMD_WORKBENCH_PREV:
+  case CMD_WORKBENCH_NEXT:
+    return !frame->scene_only;
   default:
     return true_v;
   }
@@ -298,7 +534,7 @@ static int32_t editor_command_checked(EditorCommand command,
   case CMD_ANIMATION:
     return editor->windows[VKR_EDITOR_WINDOW_ANIMATION].visible;
   case CMD_SCRIPT_EDITOR:
-    return editor->windows[VKR_EDITOR_WINDOW_SCRIPT].visible;
+    return vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_SCRIPT);
   case CMD_CHANGES:
     return editor->windows[VKR_EDITOR_WINDOW_CHANGES].visible;
   case CMD_BRUSH_DRAW:
@@ -306,9 +542,9 @@ static int32_t editor_command_checked(EditorCommand command,
   case CMD_BRUSH_CLIP:
     return editor->clip_tool;
   case CMD_LEVEL_CHECKS:
-    return editor->windows[VKR_EDITOR_WINDOW_LEVEL].visible;
+    return vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_LEVEL);
   case CMD_TERRAIN:
-    return editor->windows[VKR_EDITOR_WINDOW_TERRAIN].visible;
+    return vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_TERRAIN);
   case CMD_PARTITION:
     return editor->windows[VKR_EDITOR_WINDOW_PARTITION].visible;
   case CMD_PHYSICS:
@@ -378,26 +614,50 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_ANIMATION);
     break;
   case CMD_SCRIPT_EDITOR:
-    editor_window_toggle(editor, VKR_EDITOR_WINDOW_SCRIPT);
+    editor_window_command(editor, frame, VKR_EDITOR_WINDOW_SCRIPT);
     break;
   case CMD_CHANGES:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_CHANGES);
     break;
   case CMD_BRUSH_DRAW:
-    editor->brush_draw = !editor->brush_draw;
-    editor->brush_dragging = false_v;
-    editor->clip_tool = false_v;
+  case CMD_BRUSH_CLIP: {
+    const VkrEditorSceneTool tool = command == CMD_BRUSH_DRAW
+                                        ? VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW
+                                        : VKR_EDITOR_SCENE_TOOL_CLIP;
+    vkr_editor_scene_tool_set(editor, vkr_editor_scene_tool(editor) == tool
+                                          ? VKR_EDITOR_SCENE_TOOL_NONE
+                                          : tool);
     break;
-  case CMD_BRUSH_CLIP:
-    editor->clip_tool = !editor->clip_tool;
-    editor->clip_has_first = false_v;
-    editor->brush_draw = false_v;
-    break;
+  }
   case CMD_LEVEL_CHECKS:
-    editor_window_toggle(editor, VKR_EDITOR_WINDOW_LEVEL);
+    editor_window_command(editor, frame, VKR_EDITOR_WINDOW_LEVEL);
     break;
+  case CMD_WORKBENCH_1:
+  case CMD_WORKBENCH_2:
+  case CMD_WORKBENCH_3:
+  case CMD_WORKBENCH_4:
+  case CMD_WORKBENCH_5:
+  case CMD_WORKBENCH_6:
+  case CMD_WORKBENCH_7:
+  case CMD_WORKBENCH_8:
+  case CMD_WORKBENCH_9:
+  case CMD_WORKBENCH_PREV:
+  case CMD_WORKBENCH_NEXT: {
+    const uint32_t count = editor->workbenches.count;
+    const uint32_t active = editor->workbenches.active;
+    const uint32_t target =
+        command == CMD_WORKBENCH_PREV   ? (active + count - 1u) % count
+        : command == CMD_WORKBENCH_NEXT ? (active + 1u) % count
+                                        : (uint32_t)(command - CMD_WORKBENCH_1);
+    char message[96];
+    if (!vkr_editor_workbench_request(editor, frame, target, message,
+                                      sizeof(message)))
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, message);
+    break;
+  }
   case CMD_TERRAIN:
-    editor_window_toggle(editor, VKR_EDITOR_WINDOW_TERRAIN);
+    editor_window_command(editor, frame, VKR_EDITOR_WINDOW_TERRAIN);
     break;
   case CMD_PARTITION:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_PARTITION);
@@ -415,7 +675,7 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_HELP);
     break;
   case CMD_RESET_LAYOUT:
-    vkr_ui_dock_default_editor_layout(frame->dock);
+    vkr_editor_workbench_reset(editor, frame);
     break;
   case CMD_SIM_START:
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_START_SIMULATION;
@@ -434,6 +694,55 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
   case CMD_SIM_RESET:
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_RESET_SIMULATION;
     break;
+  case CMD_PLAY:
+    *frame->transport_action =
+        frame->simulation_running || frame->simulation_time > 0.0
+            ? VKR_SAMPLE_TRANSPORT_RESET_SIMULATION
+            : VKR_SAMPLE_TRANSPORT_START_SIMULATION;
+    break;
+  case CMD_TOOL_SELECT:
+  case CMD_TOOL_MOVE:
+  case CMD_TOOL_ROTATE:
+  case CMD_TOOL_SCALE: {
+    static const VkrGizmoMode modes[] = {
+        VKR_GIZMO_MODE_NONE, VKR_GIZMO_MODE_TRANSLATE, VKR_GIZMO_MODE_ROTATE,
+        VKR_GIZMO_MODE_SCALE};
+    VkrSampleViewState next = frame->view_state;
+    next.gizmo_tool = modes[command - CMD_TOOL_SELECT];
+    *frame->view_request =
+        (VkrSampleViewRequest){.value = next, .apply = true_v};
+    break;
+  }
+  case CMD_DUPLICATE:
+  case CMD_DELETE: {
+    const VkrSceneEditAction action = command == CMD_DUPLICATE
+                                          ? VKR_SCENE_EDIT_DUPLICATE
+                                          : VKR_SCENE_EDIT_DELETE;
+    /* Several selected objects change together, as one undo step. */
+    if (editor->selection_extra_count) {
+      char message[160];
+      if (!vkr_editor_selection_apply(editor, frame, action, message,
+                                      sizeof(message)))
+        vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                         vkr_ui_theme()->warning, message);
+      break;
+    }
+    *frame->scene_edit = (VkrSceneEditRequest){
+        .action = action, .entity = frame->selected_entity};
+    break;
+  }
+  case CMD_RENAME:
+    vkr_editor_scene_panels_request_rename(editor->scene_panels);
+    break;
+  case CMD_SNAP: {
+    char message[160];
+    if (!vkr_editor_viewport_snap(editor, frame, frame->selected_entity,
+                                  message, sizeof(message))) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, message);
+    }
+    break;
+  }
   case CMD_RENDER_START:
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_START_RENDERING;
     break;
@@ -526,10 +835,8 @@ static const EditorMenuEntry s_file_menu[] = {
     {CMD_SAVE, true_v},
 };
 static const EditorMenuEntry s_edit_menu[] = {
-    {CMD_UNDO},
-    {CMD_REDO},
-    {CMD_FRAME, true_v},
-    {CMD_COMMANDS, true_v},
+    {CMD_UNDO},   {CMD_REDO},          {CMD_DUPLICATE, true_v}, {CMD_RENAME},
+    {CMD_DELETE}, {CMD_FRAME, true_v}, {CMD_COMMANDS, true_v},
 };
 static const EditorMenuEntry s_view_menu[] = {
     {CMD_HIERARCHY},
@@ -554,12 +861,18 @@ static const EditorMenuEntry s_view_menu[] = {
     {CMD_ZOOM_OUT},
     {CMD_ZOOM_RESET},
     {CMD_REDUCE_MOTION},
-    {CMD_RESET_LAYOUT, true_v},
+    {CMD_WORKBENCH_PREV, true_v},
+    {CMD_WORKBENCH_NEXT},
+    {CMD_RESET_LAYOUT},
 };
 static const EditorMenuEntry s_scene_menu[] = {
-    {CMD_SIM_TOGGLE}, {CMD_SIM_STEP},
-    {CMD_SIM_RESET},  {CMD_RENDER_TOGGLE, true_v},
-    {CMD_CAMERA},     {CMD_SCENE_BAKE, true_v},
+    {CMD_PLAY},
+    {CMD_SIM_TOGGLE},
+    {CMD_SIM_STEP},
+    {CMD_SIM_RESET},
+    {CMD_RENDER_TOGGLE, true_v},
+    {CMD_CAMERA},
+    {CMD_SCENE_BAKE, true_v},
 };
 /* Build replaces Bakery for users; its recipes stay under Develop. */
 static const EditorMenuEntry s_build_menu[] = {
@@ -719,9 +1032,15 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
     item.icon_color = checked > 0 ? theme->accent_hover : theme->text_secondary;
     item.disabled = !vkr_editor_command_enabled(entry->command, editor, frame);
     String8 name = string8_create((uint8_t *)info->name, strlen(info->name));
+    /* Play enters and leaves play; the toggle pauses and resumes it. */
+    const bool8_t playing =
+        frame->simulation_running || frame->simulation_time > 0.0;
+    if (entry->command == CMD_PLAY)
+      name = playing ? string8_lit("Stop playing") : string8_lit("Play");
     if (entry->command == CMD_SIM_TOGGLE)
       name = frame->simulation_running ? string8_lit("Pause simulation")
-                                       : string8_lit("Play simulation");
+             : playing                 ? string8_lit("Resume simulation")
+                                       : string8_lit("Pause / Resume");
     /* Unchecked toggles keep their label aligned with checked siblings. */
     if (item.icon == VKR_UI_ICON_NONE)
       item.style.padding_pt.left += 20.0f;
@@ -743,7 +1062,9 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
     if (hot)
       text.icon_color = theme->text_on_accent;
     vkr_ui_label(ui, string8_lit("label"), name, &text);
-    if (info->shortcut) {
+    char shortcut_text[48];
+    if (editor_shortcut_text(entry->command, shortcut_text,
+                             sizeof(shortcut_text))) {
       VkrUiWidgetConfig shortcut = vkr_editor_text_config(
           theme->font_caption,
           hot ? theme->text_on_accent : theme->text_secondary);
@@ -755,7 +1076,7 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
       shortcut.disabled = item.disabled;
       vkr_ui_label(
           ui, string8_lit("shortcut"),
-          string8_create((uint8_t *)info->shortcut, strlen(info->shortcut)),
+          string8_create((uint8_t *)shortcut_text, strlen(shortcut_text)),
           &shortcut);
     }
     (void)vkr_ui_pop_id(ui);
@@ -775,13 +1096,8 @@ static void editor_top_icon_button(VkrEditorUi *editor, VkrUiSystem *ui,
                                    const VkrSampleUiFrame *frame,
                                    uint32_t column, EditorCommand command) {
   const EditorCommandInfo *info = &s_commands[command];
-  const String8 tooltip =
-      info->shortcut
-          ? string8_create_formatted(ui->frame_allocator, "%s  (%s)",
-                                     info->name, info->shortcut)
-          : string8_create((uint8_t *)info->name, strlen(info->name));
-  VkrUiWidgetConfig button =
-      vkr_editor_icon_button_config(column, 0u, info->icon, tooltip);
+  VkrUiWidgetConfig button = vkr_editor_icon_button_config(
+      column, 0u, info->icon, vkr_editor_command_tooltip(ui, command, NULL));
   button.disabled = !vkr_editor_command_enabled(command, editor, frame);
   if (command == CMD_SAVE && frame->scene && frame->edits &&
       frame->edits->revision != frame->edits->saved_revision)
@@ -880,8 +1196,11 @@ static void editor_transport_build(VkrEditorUi *editor,
   const bool8_t running = frame->simulation_running;
   VkrUiWidgetConfig play = vkr_editor_icon_button_config(
       0u, 0u, running ? VKR_UI_ICON_PAUSE : VKR_UI_ICON_PLAY,
-      running ? string8_lit("Pause simulation")
-              : string8_lit("Play simulation"));
+      running
+          ? vkr_editor_command_tooltip(ui, CMD_SIM_TOGGLE, "Pause simulation")
+      : frame->simulation_time > 0.0
+          ? vkr_editor_command_tooltip(ui, CMD_SIM_TOGGLE, "Resume simulation")
+          : vkr_editor_command_tooltip(ui, CMD_PLAY, "Play simulation"));
   play.style.min_size_pt = play.style.max_size_pt = (Vec2){button, button};
   play.icon_size_pt = 16.0f;
   play.icon_color = running ? theme->warning : theme->success;
@@ -893,13 +1212,15 @@ static void editor_transport_build(VkrEditorUi *editor,
   if (vkr_ui_button(ui, string8_lit("play"), (String8){0}, &play))
     vkr_editor_command_execute(CMD_SIM_TOGGLE, editor, frame);
   VkrUiWidgetConfig step = vkr_editor_icon_button_config(
-      1u, 0u, VKR_UI_ICON_STEP, string8_lit("Step one frame"));
+      1u, 0u, VKR_UI_ICON_STEP,
+      vkr_editor_command_tooltip(ui, CMD_SIM_STEP, NULL));
   step.style.min_size_pt = step.style.max_size_pt = (Vec2){button, button};
   step.disabled = !vkr_editor_command_enabled(CMD_SIM_STEP, editor, frame);
   if (vkr_ui_button(ui, string8_lit("step"), (String8){0}, &step))
     vkr_editor_command_execute(CMD_SIM_STEP, editor, frame);
   VkrUiWidgetConfig stop = vkr_editor_icon_button_config(
-      2u, 0u, VKR_UI_ICON_STOP, string8_lit("Stop and reset simulation"));
+      2u, 0u, VKR_UI_ICON_STOP,
+      vkr_editor_command_tooltip(ui, CMD_PLAY, "Stop and reset simulation"));
   stop.style.min_size_pt = stop.style.max_size_pt = (Vec2){button, button};
   stop.icon_color = theme->error;
   stop.disabled = !vkr_editor_command_enabled(CMD_SIM_RESET, editor, frame);
@@ -927,7 +1248,8 @@ static void editor_transport_build(VkrEditorUi *editor,
       5u, 0u, VKR_UI_ICON_CAMERA,
       frame->mouse_captured
           ? string8_lit("Free camera active; Escape releases")
-          : string8_lit("Free camera (F3 or Tab; hold RMB in the Scene)"));
+          : vkr_editor_command_tooltip(
+                ui, CMD_CAMERA, "Free camera (or Tab; hold RMB in the Scene)"));
   camera.style.min_size_pt = camera.style.max_size_pt = (Vec2){button, button};
   camera.disabled = !vkr_editor_command_enabled(CMD_CAMERA, editor, frame);
   vkr_editor_toggle_style(&camera, frame->mouse_captured);
@@ -1482,7 +1804,7 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   case VKR_EDITOR_WINDOW_HELP:
     title_text = string8_lit("Keyboard and mouse controls");
     title_icon = VKR_UI_ICON_KEYBOARD;
-    body_text = string8_lit(s_help_text);
+    body_text = editor_help_text(ui);
     monospace = false_v;
     break;
   default:
@@ -1764,54 +2086,63 @@ void vkr_editor_windows_build_floating(VkrEditorUi *editor, VkrUiSystem *ui,
   }
 }
 
+/* Runs the command bound to a key pressed this frame. A plain key acts while
+   the Scene or no widget holds the keyboard, a modified one unless a text
+   field does; nothing acts while the camera flies, a menu or the Cmd bar is
+   open, or another window claimed the keys. The editor owns save and undo,
+   so the runtime's fallback for them stays off. */
+static void editor_keymap_update(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  if (frame->scene_shortcuts_blocked) {
+    if (*frame->scene_shortcuts_blocked) {
+      return;
+    }
+    *frame->scene_shortcuts_blocked = true_v;
+  }
+  if (frame->mouse_captured || editor->cmd_active ||
+      editor->menu != VKR_EDITOR_MENU_NONE || editor->context_open ||
+      ui->focused_is_text) {
+    return;
+  }
+  const bool8_t scene_focus =
+      frame->scene_keyboard_focus && *frame->scene_keyboard_focus;
+  const bool8_t widget_focus = !scene_focus && ui->focused_id != VKR_UI_ID_NONE;
+  for (uint32_t i = 0; i < ArrayCount(s_keymap); ++i) {
+    const EditorKeyBinding *binding = &s_keymap[i];
+    if (binding->runtime ||
+        !input_key_just_pressed(frame->input, binding->key)) {
+      continue;
+    }
+    const uint8_t mods =
+        input_key_press_modifiers(frame->input, binding->key) & EDITOR_MODS;
+    if (mods != binding->modifiers || (!mods && widget_focus) ||
+        !vkr_editor_command_enabled(binding->command, editor, frame)) {
+      continue;
+    }
+    vkr_editor_command_execute(binding->command, editor, frame);
+    ui->capture.keyboard = true_v;
+    return;
+  }
+}
+
 void vkr_editor_commands_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   if (editor->menu != VKR_EDITOR_MENU_NONE) {
+    /* A press anywhere but the popup and its own title closes the menu,
+       including the rest of the top bar; the title's click toggles it. */
     VkrUiSystem *ui = frame->ui;
     const bool8_t outside =
         ui->mouse_pressed &&
-        (float32_t)ui->mouse_y >=
-            VKR_EDITOR_NAVIGATION_HEIGHT_PT * ui->content_scale &&
+        !editor_point_in_rect(ui->mouse_x, ui->mouse_y,
+                              editor->menu_anchor_px) &&
         !editor_point_in_rect(ui->mouse_x, ui->mouse_y,
                               editor_menu_popup_rect(editor, ui));
     if (outside || input_key_just_pressed(frame->input, KEY_ESCAPE)) {
-      editor->menu = VKR_EDITOR_MENU_NONE;
-      ui->focused_id = ui->active_id = VKR_UI_ID_NONE;
-      (void)vkr_ui_keyboard_layer_set(ui, 0u);
+      editor_menu_close(editor, ui);
     }
   }
-  const uint8_t space_modifiers =
-      input_key_press_modifiers(frame->input, KEY_SPACE);
-  if (!frame->mouse_captured &&
-      input_key_just_pressed(frame->input, KEY_SPACE) &&
-      (space_modifiers & (VKR_INPUT_MOD_CONTROL | VKR_INPUT_MOD_ALT)) ==
-          VKR_INPUT_MOD_CONTROL) {
-    vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
-    frame->ui->capture.keyboard = true_v;
-  }
-  /* Interface zoom: Cmd/Ctrl with =, - or 0. */
-  if (!frame->mouse_captured) {
-    static const struct {
-      Keys key;
-      EditorCommand command;
-    } zoom_keys[] = {{KEY_PLUS, CMD_ZOOM_IN},
-                     {KEY_MINUS, CMD_ZOOM_OUT},
-                     {KEY_0, CMD_ZOOM_RESET}};
-    for (uint32_t i = 0; i < ArrayCount(zoom_keys); ++i) {
-      if (input_key_just_pressed(frame->input, zoom_keys[i].key) &&
-          input_key_shortcut_modifier(frame->input, zoom_keys[i].key) &&
-          vkr_editor_command_enabled(zoom_keys[i].command, editor, frame)) {
-        vkr_editor_command_execute(zoom_keys[i].command, editor, frame);
-        frame->ui->capture.keyboard = true_v;
-      }
-    }
-  }
-  const bool8_t modifier = input_key_shortcut_modifier(frame->input, KEY_P);
-  if (!frame->mouse_captured && modifier &&
-      input_key_just_pressed(frame->input, KEY_P)) {
-    editor->cmd_focus_request = true_v;
-    editor->menu = VKR_EDITOR_MENU_NONE;
-  }
+  editor_keymap_update(editor, frame);
 }
 
 /* ---- Context menus ---- */
@@ -1826,9 +2157,18 @@ typedef enum EditorContextAction {
   CONTEXT_COPY_NAME,
   CONTEXT_TAB_CLOSE,
   CONTEXT_TAB_LAYOUT,
+  /* The workbench tab `context_panel` names. */
+  CONTEXT_WORKBENCH_SWITCH,
+  CONTEXT_WORKBENCH_RESET,
+  CONTEXT_WORKBENCH_DUPLICATE,
+  CONTEXT_WORKBENCH_RENAME,
+  CONTEXT_WORKBENCH_LEFT,
+  CONTEXT_WORKBENCH_RIGHT,
+  CONTEXT_WORKBENCH_DELETE,
   CONTEXT_CONSOLE_COPY,
   CONTEXT_CONSOLE_CLEAR,
   CONTEXT_DETACH,
+  CONTEXT_DUPLICATE,
   CONTEXT_DELETE,
   CONTEXT_CREATE,
   CONTEXT_IMPORT_MODEL,
@@ -2234,6 +2574,14 @@ static uint32_t editor_context_entity_items(VkrEditorUi *editor,
                           cooking || !transform || !transform->parent.u64,
                           CONTEXT_DETACH});
   context_push(items, &count,
+               (EditorContextItem){"Duplicate", VKR_UI_ICON_DUPLICATE,
+                                   EDITOR_SHORTCUT("\xe2\x8c\x98"
+                                                   "D",
+                                                   "Ctrl+D"),
+                                   cooking || !vkr_scene_edit_can_duplicate(
+                                                  scene, entity, NULL),
+                                   CONTEXT_DUPLICATE});
+  context_push(items, &count,
                (EditorContextItem){
                    "Delete", VKR_UI_ICON_TRASH,
                    EDITOR_SHORTCUT("\xe2\x8c\xab", "Del"),
@@ -2289,6 +2637,45 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
                                    editor->context_type, value))
       return 0u;
     return editor_context_preset_items(editor, items);
+  }
+  case VKR_EDITOR_CONTEXT_WORKBENCH: {
+    const VkrEditorWorkbenches *workbenches = &editor->workbenches;
+    const uint32_t workbench = editor->context_panel;
+    if (workbench >= workbenches->count)
+      return 0u;
+    snprintf(label, label_capacity, "%s",
+             vkr_editor_workbench_name(workbenches, workbench));
+    uint32_t count = 0u;
+    context_push(items, &count,
+                 (EditorContextItem){"Switch to this workbench",
+                                     VKR_UI_ICON_LAYOUT, NULL,
+                                     workbench == workbenches->active,
+                                     CONTEXT_WORKBENCH_SWITCH});
+    context_push(items, &count,
+                 (EditorContextItem){"Reset panel layout", VKR_UI_ICON_RESET,
+                                     NULL, false_v, CONTEXT_WORKBENCH_RESET});
+    context_separator(items, &count);
+    context_push(
+        items, &count,
+        (EditorContextItem){"Duplicate", VKR_UI_ICON_DUPLICATE, NULL,
+                            workbenches->count == VKR_EDITOR_WORKBENCH_MAX,
+                            CONTEXT_WORKBENCH_DUPLICATE});
+    context_push(items, &count,
+                 (EditorContextItem){"Rename", VKR_UI_ICON_RENAME, NULL,
+                                     false_v, CONTEXT_WORKBENCH_RENAME});
+    context_push(items, &count,
+                 (EditorContextItem){"Move left", VKR_UI_ICON_ARROW_LEFT, NULL,
+                                     workbench == 0u, CONTEXT_WORKBENCH_LEFT});
+    context_push(items, &count,
+                 (EditorContextItem){"Move right", VKR_UI_ICON_ARROW_RIGHT,
+                                     NULL, workbench + 1u >= workbenches->count,
+                                     CONTEXT_WORKBENCH_RIGHT});
+    context_separator(items, &count);
+    context_push(items, &count,
+                 (EditorContextItem){"Delete", VKR_UI_ICON_TRASH, NULL,
+                                     !workbenches->items[workbench].custom,
+                                     CONTEXT_WORKBENCH_DELETE});
+    return count;
   }
   case VKR_EDITOR_CONTEXT_DOCK_TAB: {
     const VkrUiDockPanelKind panel = (VkrUiDockPanelKind)editor->context_panel;
@@ -2527,10 +2914,25 @@ static void editor_context_run(VkrEditorUi *editor,
     *frame->scene_edit = (VkrSceneEditRequest){
         .action = VKR_SCENE_EDIT_REPARENT, .entity = editor->context_entity};
     break;
-  case CONTEXT_DELETE:
+  case CONTEXT_DUPLICATE:
+  case CONTEXT_DELETE: {
+    const VkrSceneEditAction action = item->action == CONTEXT_DUPLICATE
+                                          ? VKR_SCENE_EDIT_DUPLICATE
+                                          : VKR_SCENE_EDIT_DELETE;
+    /* On a selected object, the menu acts on the whole selection. */
+    if (editor->selection_extra_count &&
+        vkr_editor_selection_contains(editor, frame, editor->context_entity)) {
+      char message[160];
+      if (!vkr_editor_selection_apply(editor, frame, action, message,
+                                      sizeof(message)))
+        vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                         vkr_ui_theme()->warning, message);
+      break;
+    }
     *frame->scene_edit = (VkrSceneEditRequest){
-        .action = VKR_SCENE_EDIT_DELETE, .entity = editor->context_entity};
+        .action = action, .entity = editor->context_entity};
     break;
+  }
   case CONTEXT_CREATE:
     /* Content shows what its own menu created. */
     if (vkr_editor_request_create(
@@ -2576,8 +2978,44 @@ static void editor_context_run(VkrEditorUi *editor,
                            (VkrUiDockPanelKind)editor->context_panel);
     break;
   case CONTEXT_TAB_LAYOUT:
-    vkr_ui_dock_default_editor_layout(frame->dock);
+    vkr_editor_workbench_reset(editor, frame);
     break;
+  case CONTEXT_WORKBENCH_SWITCH: {
+    char message[96];
+    if (!vkr_editor_workbench_request(editor, frame, editor->context_panel,
+                                      message, sizeof(message)))
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, message);
+    break;
+  }
+  case CONTEXT_WORKBENCH_RESET:
+    vkr_editor_workbench_reset_index(editor, frame, editor->context_panel);
+    break;
+  case CONTEXT_WORKBENCH_RENAME:
+    vkr_editor_workbench_rename_begin(editor, editor->context_panel);
+    break;
+  case CONTEXT_WORKBENCH_DUPLICATE:
+  case CONTEXT_WORKBENCH_LEFT:
+  case CONTEXT_WORKBENCH_RIGHT:
+  case CONTEXT_WORKBENCH_DELETE: {
+    char message[96];
+    const uint32_t index = editor->context_panel;
+    const bool8_t done =
+        item->action == CONTEXT_WORKBENCH_DUPLICATE
+            ? vkr_editor_workbench_duplicate(editor, frame, index, message,
+                                             sizeof(message))
+        : item->action == CONTEXT_WORKBENCH_DELETE
+            ? vkr_editor_workbench_delete(editor, frame, index, message,
+                                          sizeof(message))
+            : vkr_editor_workbench_move(
+                  editor, index,
+                  item->action == CONTEXT_WORKBENCH_LEFT ? -1 : 1, message,
+                  sizeof(message));
+    if (!done)
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, message);
+    break;
+  }
   case CONTEXT_CONSOLE_COPY:
     vkr_editor_console_copy_selection(&editor->console, frame->ui);
     break;

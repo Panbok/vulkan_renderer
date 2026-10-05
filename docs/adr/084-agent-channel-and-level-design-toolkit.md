@@ -225,10 +225,16 @@ accepts `eye` and `target`.
 
 In the editor, the Create menu's Level group adds Brush Box, Brush Wedge,
 Brush Cylinder and Blockout Room at the placement point. Brush drawing (B,
-View > Draw brushes, Cmd `brush.draw`) takes the Scene's mouse: a left drag
-on the grid plane outlines a box one grid cell high and the release creates
-it; Escape cancels the drag, then ends drawing. Cmd `op <operation> [json]`
-runs any operation of the table.
+View > Draw brushes, Cmd `brush.draw`) takes the Scene's mouse and draws in
+two steps, as Chisel and Source 2 Hammer do: a left drag outlines the base,
+then the pointer raises the box from one step and a click creates it; Escape
+cancels the box, then ends drawing. The Scene's Snapping menu picks where the
+box starts and its steps. Surface starts it on the upward-facing collision
+surface under the pointer, so a brush drawn on another brush sits on top of
+it, and falls back to the grid plane. Grid draws on the grid plane. Both keep
+the corners on grid crossings and the height in whole cells; Free draws on the
+grid plane in 1/16 m steps. Cmd `op <operation> [json]` runs any operation of
+the table.
 
 ### Brush editing
 
@@ -249,10 +255,13 @@ Carving keeps no boolean tree: pieces are ordinary brushes. Operations work
 on unscaled brushes, since a scaled brush's planes are not the planes the
 designer sees.
 
-In the Scene, Alt+click selects the brush face under the pointer instead of
-its object. A selected face shows its outline and a move handle along its
-normal: a drag moves the face in 0.25 m steps, and Alt+Up or Alt+Down moves
-it 0.25 m out or in (1 m with Shift). The clip tool (View > Clip brushes,
+A brush selected with the Select tool (Q) shows its edges and a handle on
+every face: an arrow out of the face center along its normal with a knob at
+the tip. A drag on a handle pushes or pulls that face in grid cells (1/16 m
+with Free snapping) and previews where it lands; the move tools keep their
+gizmo instead. Alt+click selects the brush face under the pointer instead of
+its object, which then shows its outline and handle alone, and Alt+Up or
+Alt+Down moves it 0.25 m out or in (1 m with Shift). The clip tool (View > Clip brushes,
 Cmd `brush.clip_tool`) cuts the selected brush with the vertical plane
 through two clicks on the grid plane and keeps both pieces. All three submit
 the operations above through the agent queue, so they undo like agent work.
@@ -448,7 +457,7 @@ Agents edit regions with operations that take world coordinates:
 
 | Operation | Purpose |
 |---|---|
-| `terrain.create` | A terrain of `size` metres at `spacing` (default 256 m at 1 m), written to `assets/terrain/<uuid>.vkrhf` |
+| `terrain.create` | A terrain of `size` metres at `spacing` (default 256 m at 1 m) whose file is `assets/terrain/<uuid>.vkrhf`: a resident one starts in memory and its scene's first save writes the file, a streamed one is written at once |
 | `terrain.brush` | Raise, lower, smooth, flatten or paint a layer with a round brush at up to 256 points |
 | `terrain.flatten` | Level a footprint at a height, blending over a falloff |
 | `terrain.ramp` | A straight slope of a width between two surface points |
@@ -543,8 +552,11 @@ it placed its copies until its own inputs or a terrain change; changing its
 seed places it anew. Linked prefabs and meshes bent along a spline remain in
 the toolkit proposal.
 
-`terrain.create` writes the heightfield file at once, so undoing it or
-leaving the scene unsaved leaves the file behind. A resident terrain keeps
+A resident terrain that `terrain.create` makes is staged
+(`vkr_scene_terrain_stage`): its field starts flat in memory and the first
+save of its scene writes the file, so discarding the scene or undoing the
+creation leaves no file. A streamed terrain, larger than 1,024 cells a side,
+writes its file at once and leaves it behind when the scene is discarded. A resident terrain keeps
 all its samples: the largest, 1,025 samples a side, holds 6 MiB of samples
 and 256 tile geometries. The owner chose all-resident terrain up to 1 km at
 1 m spacing; larger terrains stream by tiles
@@ -554,7 +566,9 @@ meshes were declined in favour of heightfields built in the scene.
 Brush meshes are not merged: a level pays one draw per brush. A
 measurement put that at about 0.4 µs per brush (see Evidence). Brush
 collision follows the brush only after its transform rests, so a dragged
-brush collides at its old place until the drag ends.
+brush collides at its old place until the drag ends. A rebuilt brush keeps
+drawing its previous mesh until the new geometry and materials settle, as a
+terrain does (level toolkit audit A1).
 
 ## Revisit when
 

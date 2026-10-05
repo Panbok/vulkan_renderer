@@ -1118,21 +1118,23 @@ static bool8_t editor_request_brush(const VkrEditorUi *editor,
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"create\",\"op\":\"blockout.room\",\"args\":"
              "{\"min\":[%g,%g,%g],\"size\":[6,3,6],\"container\":%s,"
-             "\"review\":false}}",
+             "\"review\":false,\"select\":true}}",
              p.x - 3.0f, p.y, p.z - 3.0f, target);
   } else if (brush == 3u) {
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"create\",\"op\":\"brush.cylinder\",\"args\":"
              "{\"center\":[%g,%g,%g],\"radius\":1,\"height\":2,"
-             "\"sides\":12,\"container\":%s,\"review\":false}}",
-             p.x, p.y, p.z, target);
+             "\"sides\":12,\"container\":%s,\"role\":\"%s\","
+             "\"review\":false,\"select\":true}}",
+             p.x, p.y, p.z, target, vkr_editor_brush_roles[editor->brush_role]);
   } else {
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"create\",\"op\":\"%s\",\"args\":"
              "{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
-             "\"review\":false}}",
+             "\"role\":\"%s\",\"review\":false,\"select\":true}}",
              brush == 2u ? "brush.wedge" : "brush.box", p.x - 1.0f, p.y,
-             p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f, target);
+             p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f, target,
+             vkr_editor_brush_roles[editor->brush_role]);
   }
   return vkr_editor_agent_submit(editor->agent, line);
 }
@@ -1640,11 +1642,266 @@ static void hierarchy_toolbar(VkrEditorUi *editor,
   }
 }
 
+static bool8_t selection_alive(const VkrSampleUiFrame *frame,
+                               VkrEntityId entity) {
+  const VkrScene *scene = vkr_editor_entity_scene(frame, entity);
+  return entity.u64 && scene && vkr_scene_entity_alive(scene, entity);
+}
+
+bool8_t vkr_editor_selection_modifier(const VkrSampleUiFrame *frame) {
+#if defined(PLATFORM_APPLE)
+  return input_is_key_down(frame->input, KEY_LWIN) ||
+         input_is_key_down(frame->input, KEY_RWIN);
+#else
+  return input_is_key_down(frame->input, KEY_LCONTROL) ||
+         input_is_key_down(frame->input, KEY_RCONTROL);
+#endif
+}
+
+void vkr_editor_selection_clear_extra(VkrEditorUi *editor) {
+  editor->selection_extra_count = 0u;
+}
+
+/* Depth of `entity` in its scene's hierarchy; roots are 0. */
+static uint32_t selection_depth(const VkrScene *scene, VkrEntityId entity) {
+  uint32_t depth = 0u;
+  for (const SceneTransform *t = vkr_entity_get_component(
+           scene->world, entity, scene->comp_transform);
+       t && t->parent.u64 && depth < 64u;
+       t = vkr_entity_get_component(scene->world, t->parent,
+                                    scene->comp_transform)) {
+    ++depth;
+  }
+  return depth;
+}
+
+/* Whether an ancestor of `entity` is among `list`. */
+static bool8_t selection_has_ancestor(const VkrScene *scene,
+                                      VkrEntityId entity,
+                                      const VkrEntityId *list,
+                                      uint32_t count) {
+  const SceneTransform *t =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  for (uint32_t guard = 0u; t && t->parent.u64 && guard < 64u; ++guard) {
+    for (uint32_t i = 0u; i < count; ++i) {
+      if (list[i].u64 == t->parent.u64) {
+        return true_v;
+      }
+    }
+    t = vkr_entity_get_component(scene->world, t->parent,
+                                 scene->comp_transform);
+  }
+  return false_v;
+}
+
+bool8_t vkr_editor_selection_apply(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   VkrSceneEditAction action, char *message,
+                                   uint64_t capacity) {
+  /* Borrowed by the runtime until it dispatches the batch after this build. */
+  static VkrSampleEditBatchItem items[VKR_EDITOR_SELECTION_MAX];
+  VkrEntityId list[VKR_EDITOR_SELECTION_MAX];
+  const uint32_t selected =
+      vkr_editor_selection_list(editor, frame, list, ArrayCount(list));
+  if (!selected || !frame->edit_batch) {
+    snprintf(message, capacity, "Nothing is selected");
+    return false_v;
+  }
+  if (frame->edit_batch->count || frame->edit_batch->revert_group ||
+      editor->selection_batch_token) {
+    snprintf(message, capacity, "Another edit is applying; try again");
+    return false_v;
+  }
+  const VkrScene *scene = vkr_editor_entity_scene(frame, list[0]);
+  const uint16_t container = (uint16_t)list[0].parts.world;
+  const bool8_t duplicate = action == VKR_SCENE_EDIT_DUPLICATE;
+  /* One batch edits one container: the primary selection's. */
+  VkrEntityId targets[VKR_EDITOR_SELECTION_MAX];
+  uint32_t count = 0u;
+  uint32_t skipped = 0u;
+  for (uint32_t i = 0u; i < selected; ++i) {
+    if (list[i].parts.world != container) {
+      ++skipped;
+      continue;
+    }
+    /* A copy of a parent already copies its children. */
+    if (duplicate && selection_has_ancestor(scene, list[i], list, selected)) {
+      continue;
+    }
+    const char *reason = NULL;
+    if (duplicate && !vkr_scene_edit_can_duplicate(scene, list[i], &reason)) {
+      const String8 name = vkr_scene_get_name(scene, list[i]);
+      snprintf(message, capacity, "%.*s: %s", (int)name.length, name.str,
+               reason);
+      return false_v;
+    }
+    targets[count++] = list[i];
+  }
+  /* Children leave before their parents. */
+  if (!duplicate) {
+    for (uint32_t i = 1u; i < count; ++i) {
+      const VkrEntityId held = targets[i];
+      const uint32_t depth = selection_depth(scene, held);
+      uint32_t j = i;
+      while (j > 0u && selection_depth(scene, targets[j - 1u]) < depth) {
+        targets[j] = targets[j - 1u];
+        --j;
+      }
+      targets[j] = held;
+    }
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    items[i] = (VkrSampleEditBatchItem){
+        .request = {.action = action, .entity = targets[i]},
+        .entity_ref = -1,
+        .parent_ref = -1,
+    };
+  }
+  static uint64_t serial = 0u;
+  /* The high bits keep the editor's tokens apart from the agent's. */
+  editor->selection_batch_token = (UINT64_C(3) << 62) | ++serial;
+  editor->selection_batch_duplicates = duplicate;
+  *frame->edit_batch = (VkrSampleEditBatchRequest){
+      .token = editor->selection_batch_token,
+      .items = items,
+      .count = count,
+      .container = container,
+  };
+  snprintf(message, capacity, "%s %u objects%s", duplicate ? "Duplicating"
+                                                          : "Deleting",
+           count, skipped ? "; others in another scene stay" : "");
+  return true_v;
+}
+
+void vkr_editor_selection_update(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame) {
+  /* A selection-wide edit applied: its copies become the selection. */
+  const VkrSampleEditBatchResult *result = frame->edit_batch_result;
+  if (editor->selection_batch_token && result &&
+      result->token == editor->selection_batch_token) {
+    editor->selection_batch_token = 0u;
+    if (!result->ok) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, result->message);
+    } else if (editor->selection_batch_duplicates) {
+      uint32_t copies = 0u;
+      VkrEntityId first = VKR_ENTITY_ID_INVALID;
+      editor->selection_extra_count = 0u;
+      for (uint32_t i = 0u; i < VKR_EDITOR_SELECTION_MAX; ++i) {
+        if (!result->created[i].u64) {
+          continue;
+        }
+        if (!copies++) {
+          first = result->created[i];
+        } else if (editor->selection_extra_count + 1u <
+                   VKR_EDITOR_SELECTION_MAX) {
+          editor->selection_extra[editor->selection_extra_count++] =
+              result->created[i];
+        }
+      }
+      if (first.u64) {
+        editor->selection_keep = true_v;
+        *frame->scene_edit = (VkrSceneEditRequest){
+            .action = VKR_SCENE_EDIT_SELECT, .entity = first};
+      }
+    }
+  }
+  const VkrEntityId primary = frame->selected_entity;
+  if (primary.u64 != editor->selection_primary.u64) {
+    if (!editor->selection_keep) {
+      editor->selection_extra_count = 0u;
+    }
+    editor->selection_keep = false_v;
+    editor->selection_primary = primary;
+  }
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < editor->selection_extra_count; ++i) {
+    const VkrEntityId entity = editor->selection_extra[i];
+    if (entity.u64 != primary.u64 && selection_alive(frame, entity)) {
+      editor->selection_extra[kept++] = entity;
+    }
+  }
+  editor->selection_extra_count = kept;
+}
+
+void vkr_editor_selection_toggle(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity) {
+  if (!selection_alive(frame, entity)) {
+    return;
+  }
+  const VkrEntityId primary = frame->selected_entity;
+  if (!selection_alive(frame, primary)) {
+    *frame->scene_edit = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT,
+                                               .entity = entity};
+    return;
+  }
+  /* Toggling the primary off hands it to the first extra object. */
+  if (entity.u64 == primary.u64) {
+    VkrEntityId next = VKR_ENTITY_ID_INVALID;
+    if (editor->selection_extra_count) {
+      next = editor->selection_extra[0];
+      MemCopy(&editor->selection_extra[0], &editor->selection_extra[1],
+              (editor->selection_extra_count - 1u) * sizeof(VkrEntityId));
+      editor->selection_extra_count--;
+      editor->selection_keep = true_v;
+    }
+    *frame->scene_edit =
+        (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT, .entity = next};
+    return;
+  }
+  for (uint32_t i = 0u; i < editor->selection_extra_count; ++i) {
+    if (editor->selection_extra[i].u64 == entity.u64) {
+      MemCopy(&editor->selection_extra[i], &editor->selection_extra[i + 1u],
+              (editor->selection_extra_count - i - 1u) * sizeof(VkrEntityId));
+      editor->selection_extra_count--;
+      return;
+    }
+  }
+  if (editor->selection_extra_count + 1u < VKR_EDITOR_SELECTION_MAX) {
+    editor->selection_extra[editor->selection_extra_count++] = entity;
+  }
+}
+
+bool8_t vkr_editor_selection_contains(const VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      VkrEntityId entity) {
+  if (entity.u64 == frame->selected_entity.u64) {
+    return entity.u64 != 0u;
+  }
+  for (uint32_t i = 0u; i < editor->selection_extra_count; ++i) {
+    if (editor->selection_extra[i].u64 == entity.u64) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+uint32_t vkr_editor_selection_list(const VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   VkrEntityId *out, uint32_t capacity) {
+  uint32_t count = 0u;
+  if (selection_alive(frame, frame->selected_entity) && count < capacity) {
+    out[count++] = frame->selected_entity;
+  }
+  for (uint32_t i = 0u; i < editor->selection_extra_count && count < capacity;
+       ++i) {
+    out[count++] = editor->selection_extra[i];
+  }
+  return count;
+}
+
 /* A click selects a row; a second one within 0.4 s frames the object in the
-   Scene and opens its script when it has one. */
+   Scene and opens its script when it has one. Ctrl+click (Cmd on macOS) adds
+   the row to the selection or takes it out. */
 static void hierarchy_row_click(VkrEditorUi *editor, VkrEditorScenePanels *p,
                                 const VkrSampleUiFrame *frame,
                                 VkrEntityId entity) {
+  if (vkr_editor_selection_modifier(frame)) {
+    vkr_editor_selection_toggle(editor, frame, entity);
+    return;
+  }
+  vkr_editor_selection_clear_extra(editor);
   const float64_t now = vkr_platform_get_absolute_time();
   const bool8_t twice =
       p->click_entity.u64 == entity.u64 && now - p->click_time < 0.4;
@@ -1962,10 +2219,11 @@ static float32_t hierarchy_pinned_build(VkrEditorUi *editor,
     (void)vkr_ui_push_id_u64(ui, 0x9100u + i);
     const VkrUiId node_id =
         vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("node"));
-    (void)hierarchy_entity_row(editor, p, frame, n, p->pinned_depths[i], cols,
-                               3.0f + (float32_t)i * HIERARCHY_ROW_PT,
-                               n->entity.u64 == frame->selected_entity.u64,
-                               node_id, list, now);
+    (void)hierarchy_entity_row(
+        editor, p, frame, n, p->pinned_depths[i], cols,
+        3.0f + (float32_t)i * HIERARCHY_ROW_PT,
+        vkr_editor_selection_contains(editor, frame, n->entity), node_id, list,
+        now);
     (void)vkr_ui_pop_id(ui);
   }
   (void)vkr_ui_panel_end(ui);
@@ -2108,8 +2366,11 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
         (void)vkr_ui_pop_id(ui);
         continue;
       }
-      (void)hierarchy_entity_row(editor, p, frame, n, n->depth, cols, y,
-                                 selected_row == row, node_id, rect, marked_at);
+      (void)hierarchy_entity_row(
+          editor, p, frame, n, n->depth, cols, y,
+          selected_row == row ||
+              vkr_editor_selection_contains(editor, frame, n->entity),
+          node_id, rect, marked_at);
       if (!navigated && !ui->mouse_captured && visible_y + row_h > 0 &&
           visible_y < page && ui->focused_id == node_id &&
           ui->keyboard_input_layer == ui->input_layer) {

@@ -40,6 +40,14 @@ typedef enum VkrUiDockPanelKind {
   VKR_UI_DOCK_PANEL_CONTENT,
   /* Project build progress and report (docs/proposals/project-packaging.md). */
   VKR_UI_DOCK_PANEL_BUILD,
+  /* The active editor workbench's tool palette. */
+  VKR_UI_DOCK_PANEL_TOOLS,
+  /* Level checks against the player capsule (ADR-084). */
+  VKR_UI_DOCK_PANEL_LEVEL_CHECKS,
+  /* The Script editor (ADR-079). */
+  VKR_UI_DOCK_PANEL_SCRIPT,
+  /* Terrain sculpting and painting (ADR-084). */
+  VKR_UI_DOCK_PANEL_TERRAIN,
   VKR_UI_DOCK_PANEL_COUNT,
 } VkrUiDockPanelKind;
 
@@ -98,6 +106,10 @@ typedef struct VkrUiDockTree {
   uint64_t focused_tab_id;
   float32_t splitter_px;
   float32_t tab_bar_px;
+  /* Height of the toolbar leaf in points at zoom 1; zero keeps
+     VKR_UI_DOCK_TOOLBAR_PT. The application owns it; files do not store
+     it. */
+  float32_t toolbar_pt;
   VkrUiDockInteraction interaction;
 } VkrUiDockTree;
 

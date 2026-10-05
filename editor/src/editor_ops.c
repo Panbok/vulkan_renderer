@@ -2618,7 +2618,148 @@ static VkrEditorOpStatus ops_run_status(OpsContext *ctx) {
   ops_set(ctx, view, "grid_height",
           ops_number(ctx, frame->view_state.grid_height));
   ops_set(ctx, result, "view", view);
+  const uint32_t active = ctx->editor->workbenches.active;
+  ops_set(ctx, result, "workbench",
+          vkr_bakery_json_cstr(arena, vkr_editor_workbench_id(
+                                          &ctx->editor->workbenches, active)));
+  ops_set(ctx, result, "scene_tool",
+          vkr_bakery_json_cstr(
+              arena, vkr_editor_scene_tool_name(
+                         vkr_editor_workbench_mode(ctx->editor, frame, active)
+                             .scene_tool)));
   ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+// -----------------------------------------------------------------------------
+// Workbenches (ADR-089)
+// -----------------------------------------------------------------------------
+
+static VkrEditorOpStatus ops_run_workbench_list(OpsContext *ctx) {
+  const VkrSampleUiFrame *frame = ctx->frame;
+  const VkrEditorUi *editor = ctx->editor;
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  VkrBakeryJson *items = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < editor->workbenches.count; ++i) {
+    VkrBakeryJson *item = vkr_bakery_json_object(arena);
+    ops_set(ctx, item, "id",
+            vkr_bakery_json_cstr(
+                arena, vkr_editor_workbench_id(&editor->workbenches, i)));
+    ops_set(ctx, item, "name",
+            vkr_bakery_json_cstr(
+                arena, vkr_editor_workbench_name(&editor->workbenches, i)));
+    ops_set(ctx, item, "custom",
+            vkr_bakery_json_bool(arena, editor->workbenches.items[i].custom));
+    ops_set(ctx, item, "position", vkr_bakery_json_int(arena, i + 1u));
+    char shortcut[48] = "";
+    (void)vkr_editor_command_shortcut((EditorCommand)(CMD_WORKBENCH_1 + i),
+                                      shortcut, sizeof(shortcut));
+    ops_set(ctx, item, "shortcut", vkr_bakery_json_cstr(arena, shortcut));
+    /* Panel tabs, in tree order. */
+    VkrBakeryJson *panels = vkr_bakery_json_array(arena);
+    const VkrUiDockTree *tree = vkr_editor_workbench_layout(editor, frame, i);
+    for (uint32_t n = 0; n < tree->node_high_water; ++n) {
+      const VkrUiDockNode *node = &tree->nodes[n];
+      if (!node->used || node->kind != VKR_UI_DOCK_NODE_TABS) {
+        continue;
+      }
+      for (uint32_t t = 0; t < node->as.leaf.tab_count; ++t) {
+        const VkrUiDockPanelKind kind = node->as.leaf.tabs[t].panel_kind;
+        if (kind != VKR_UI_DOCK_PANEL_TOOLBAR) {
+          vkr_bakery_json_append(
+              panels, ops_string(ctx, vkr_ui_dock_panel_label(kind)));
+        }
+      }
+    }
+    ops_set(ctx, item, "panels", panels);
+    VkrBakeryJson *windows = vkr_bakery_json_array(arena);
+    const uint32_t open = vkr_editor_workbench_windows(editor, i);
+    for (uint32_t w = 0; w < VKR_EDITOR_WINDOW_COUNT; ++w) {
+      if ((open >> w) & 1u) {
+        vkr_bakery_json_append(
+            windows, vkr_bakery_json_cstr(arena, vkr_editor_cmd_window_name(
+                                                     (VkrEditorWindowKind)w)));
+      }
+    }
+    ops_set(ctx, item, "windows", windows);
+    const VkrEditorWorkbenchMode mode =
+        vkr_editor_workbench_mode(editor, frame, i);
+    VkrBakeryJson *mode_json = vkr_bakery_json_object(arena);
+    uint32_t tool = 0u;
+    while (tool < 3u && vkr_editor_cmd_tool_modes[tool] != mode.gizmo_tool) {
+      ++tool;
+    }
+    ops_set(ctx, mode_json, "tool",
+            vkr_bakery_json_cstr(arena, vkr_editor_cmd_tools[tool]));
+    ops_set(ctx, mode_json, "scene_tool",
+            vkr_bakery_json_cstr(arena,
+                                 vkr_editor_scene_tool_name(mode.scene_tool)));
+    ops_set(ctx, mode_json, "snap",
+            vkr_bakery_json_cstr(arena, vkr_editor_snap_name(mode.snap)));
+    ops_set(ctx, mode_json, "grid", vkr_bakery_json_bool(arena, mode.grid));
+    ops_set(ctx, item, "mode", mode_json);
+    vkr_bakery_json_append(items, item);
+  }
+  ops_set(ctx, result, "active",
+          vkr_bakery_json_cstr(
+              arena, vkr_editor_workbench_id(&editor->workbenches,
+                                             editor->workbenches.active)));
+  ops_set(ctx, result, "workbenches", items);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Answers two builds after the request: the switch applies at the start of
+   the next build, and the Scene rectangle follows the build after. */
+static VkrEditorOpStatus ops_run_workbench_switch(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  if (call->stage == 0u) {
+    String8 word = {0};
+    const uint32_t index =
+        vkr_bakery_json_get_string(call->args, "workbench", &word)
+            ? vkr_editor_workbench_find(&ctx->editor->workbenches, word)
+            : UINT32_MAX;
+    if (index == UINT32_MAX) {
+      ops_fail(ctx, OPS_INVALID,
+               "'workbench' is general, level_design, terrain, lighting or "
+               "scripting");
+      return VKR_EDITOR_OP_DONE;
+    }
+    char message[96];
+    if (!vkr_editor_workbench_request(ctx->editor, ctx->frame, index, message,
+                                      sizeof(message))) {
+      ops_fail(ctx, OPS_BUSY, "%s", message);
+      return VKR_EDITOR_OP_DONE;
+    }
+    call->token = index;
+    call->stage = 1u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  if (call->stage == 1u) {
+    call->stage = 2u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  const VkrSampleUiFrame *frame = ctx->frame;
+  if (ctx->editor->workbenches.active != (uint32_t)call->token) {
+    ops_fail(ctx, OPS_BUSY, "A drag held the mouse; the switch did not apply");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "workbench",
+          vkr_bakery_json_cstr(
+              arena, vkr_editor_workbench_id(&ctx->editor->workbenches,
+                                             (uint32_t)call->token)));
+  const float32_t scale = frame->ui->content_scale;
+  const Vec4 rect = frame->mapping.panel_rect_px;
+  VkrBakeryJson *scene = vkr_bakery_json_array(arena);
+  vkr_bakery_json_append(scene, ops_number(ctx, rect.x / scale));
+  vkr_bakery_json_append(scene, ops_number(ctx, rect.y / scale));
+  vkr_bakery_json_append(scene, ops_number(ctx, rect.z / scale));
+  vkr_bakery_json_append(scene, ops_number(ctx, rect.w / scale));
+  ops_set(ctx, result, "scene_rect", scene);
+  call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -3956,7 +4097,8 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
                     VKR_HEIGHTFIELD_RESIDENT_CELLS,
                     VKR_HEIGHTFIELD_STREAMED_CELLS);
   }
-  /* The file comes first, so the component finds it when it appears. */
+  /* The file, or its staged field, comes first, so the component finds it
+     when it appears. */
   VkrEntityRef id;
   char uuid[37];
   vkr_scene_entity_ref_generate(&id);
@@ -3970,17 +4112,30 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
                                  sizeof(directory))) {
     return ops_fail(ctx, OPS_INVALID, "The terrain path is too long");
   }
-  VkrAllocator scratch = {.ctx = ops_arena(ctx)};
-  vkr_allocator_arena(&scratch);
-  const String8 directory_text =
-      string8_create_from_cstr((const uint8_t *)directory, strlen(directory));
-  char error[160] = {0};
-  if (!file_ensure_directory(&scratch, &directory_text) ||
-      !vkr_heightfield_create_file(
-          absolute, (uint32_t)cells, (float32_t)spacing, (float32_t)height_min,
-          (float32_t)height_max, (float32_t)height, error, sizeof(error))) {
-    return ops_fail(ctx, OPS_REJECTED, "The terrain file could not be made%s%s",
-                    error[0] ? ": " : "", error);
+  /* A resident terrain waits in memory for its scene's save, so a
+     discarded scene leaves no file; a streamed one is written now. */
+  if (cells <= VKR_HEIGHTFIELD_RESIDENT_CELLS) {
+    if (!vkr_scene_terrain_stage(absolute, (uint32_t)cells, (float32_t)spacing,
+                                 (float32_t)height_min, (float32_t)height_max,
+                                 (float32_t)height)) {
+      return ops_fail(ctx, OPS_LIMIT,
+                      "Save the scene before creating more terrains");
+    }
+  } else {
+    VkrAllocator scratch = {.ctx = ops_arena(ctx)};
+    vkr_allocator_arena(&scratch);
+    const String8 directory_text =
+        string8_create_from_cstr((const uint8_t *)directory, strlen(directory));
+    char error[160] = {0};
+    if (!file_ensure_directory(&scratch, &directory_text) ||
+        !vkr_heightfield_create_file(absolute, (uint32_t)cells,
+                                     (float32_t)spacing, (float32_t)height_min,
+                                     (float32_t)height_max, (float32_t)height,
+                                     error, sizeof(error))) {
+      return ops_fail(ctx, OPS_REJECTED,
+                      "The terrain file could not be made%s%s",
+                      error[0] ? ": " : "", error);
+    }
   }
   VkrSampleEditBatchItem *item =
       ops_batch_add(ctx, batch, container, VKR_SCENE_EDIT_CREATE);
@@ -4967,8 +5122,19 @@ static const OpsDef s_ops[] = {
     {"ops.list", "Every operation with its description and argument schema.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL},
     {"editor.status",
-     "Loaded scenes, selection, simulation, view and pending changes.",
+     "Loaded scenes, selection, simulation, view, pending changes, the "
+     "active workbench and the running Scene tool.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_status, NULL},
+    {"workbench.list",
+     "Each workbench's id, name, position, shortcut, dock panels, open "
+     "windows and Scene mode, and the active one.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_workbench_list, NULL},
+    {"workbench.switch",
+     "Switch to a workbench by id, name or position; answers once it shows "
+     "with the Scene rectangle in window points [x, y, width, height].",
+     "{\"type\":\"object\",\"properties\":{\"workbench\":{\"type\":"
+     "\"string\"}},\"required\":[\"workbench\"]}",
+     ops_run_workbench_switch, NULL},
     {"scene.describe",
      "Entities of one scene with id, name, parent, components, local pose and "
      "world bounds. Page with offset and limit (at most 500).",

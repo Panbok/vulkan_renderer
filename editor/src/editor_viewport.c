@@ -632,107 +632,79 @@ static void view_request(const VkrSampleUiFrame *frame,
         (VkrSampleViewRequest){.value = next, .apply = true_v};
 }
 
-/* Q/W/E/R pick transform tools and F frames the selection while the Scene or
- * no widget holds the keyboard. Modified presses stay with other shortcuts. */
-static void view_shortcuts(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
-  VkrUiSystem *ui = frame->ui;
-  const bool8_t scene_focus =
-      frame->scene_keyboard_focus && *frame->scene_keyboard_focus;
-  if (frame->mouse_captured || editor->cmd_active ||
-      editor->menu != VKR_EDITOR_MENU_NONE || frame->scene_rendering_stopped ||
-      (!scene_focus && ui->focused_id != VKR_UI_ID_NONE))
-    return;
-  static const Keys keys[] = {KEY_Q, KEY_W, KEY_E, KEY_R};
-  for (uint32_t i = 0; i < ArrayCount(keys); ++i) {
-    if (input_key_just_pressed(frame->input, keys[i]) &&
-        input_key_press_modifiers(frame->input, keys[i]) == 0u) {
-      VkrSampleViewState next = frame->view_state;
-      next.gizmo_tool = view_tools[i].mode;
-      view_request(frame, next);
-      ui->capture.keyboard = true_v;
-    }
-  }
-  /* B turns brush drawing on and off. */
-  if (input_key_just_pressed(frame->input, KEY_B) &&
-      input_key_press_modifiers(frame->input, KEY_B) == 0u) {
-    editor->brush_draw = !editor->brush_draw;
-    editor->brush_dragging = false_v;
-    editor->clip_tool = false_v;
-    ui->capture.keyboard = true_v;
-  }
-  /* The selection may live in the World or an added scene. */
-  const VkrScene *scene =
-      vkr_editor_entity_scene(frame, frame->selected_entity);
-  const bool8_t selected =
-      scene && vkr_scene_entity_alive(scene, frame->selected_entity);
-  if (input_key_just_pressed(frame->input, KEY_F) &&
-      input_key_press_modifiers(frame->input, KEY_F) == 0u && selected) {
-    *frame->scene_edit = (VkrSceneEditRequest){
-        .action = VKR_SCENE_EDIT_FRAME, .entity = frame->selected_entity};
-    ui->capture.keyboard = true_v;
-  }
-  /* End rests the selection on what lies below it (Fn+Right on a Mac). */
-  if (input_key_just_pressed(frame->input, KEY_END) &&
-      input_key_press_modifiers(frame->input, KEY_END) == 0u && selected) {
-    char message[160];
-    if (!vkr_editor_viewport_snap(editor, frame, frame->selected_entity,
-                                  message, sizeof(message))) {
-      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
-                       vkr_ui_theme()->warning, message);
-    }
-    ui->capture.keyboard = true_v;
-  }
-  /* Delete, or Backspace on a Mac keyboard, deletes the selected object. */
-  const Keys delete_key = input_key_just_pressed(frame->input, KEY_DELETE)
-                              ? KEY_DELETE
-                              : KEY_BACKSPACE;
-  if (input_key_just_pressed(frame->input, delete_key) &&
-      input_key_press_modifiers(frame->input, delete_key) == 0u && selected &&
-      !vkr_editor_scene_panels_cooking(editor->scene_panels,
-                                       frame->selected_entity)) {
-    *frame->scene_edit = (VkrSceneEditRequest){
-        .action = VKR_SCENE_EDIT_DELETE, .entity = frame->selected_entity};
-    ui->capture.keyboard = true_v;
-  }
-}
-
 static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
                             Vec3 *origin, Vec3 *direction);
 static bool8_t grid_eye(const VkrSampleUiFrame *frame, Vec3 *eye);
+static bool8_t face_axis_closest(Vec3 point, Vec3 axis, Vec3 origin,
+                                 Vec3 direction, float32_t *out_s,
+                                 float32_t *out_gap);
+static void viewport_brush_create(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame);
+static bool8_t place_raycast_frame(const VkrSampleUiFrame *frame, Vec3 origin,
+                                   Vec3 displacement, VkrPhysicsRayHit *hit);
 
-/* The grid plane point under a window pixel, snapped to the grid cell. */
-static bool8_t brush_draw_point(const VkrSampleUiFrame *frame, Vec2 pixel,
-                                Vec3 *out) {
+/* The point under a window pixel on the horizontal plane at `height`, moved
+   to the nearest grid crossing when `grid` is set. */
+static bool8_t brush_plane_point(const VkrSampleUiFrame *frame, Vec2 pixel,
+                                 float32_t height, bool8_t grid, Vec3 *out) {
   Vec3 origin = {0};
   Vec3 direction = {0};
   if (!viewport_ray(frame, pixel, &origin, &direction) ||
       fabsf(direction.y) < 1.0e-5f) {
     return false_v;
   }
-  const float32_t height = frame->view_state.grid_height;
   const float32_t t = (height - origin.y) / direction.y;
   if (!(t > 0.0f)) {
     return false_v;
   }
-  const float32_t cell = frame->view_state.grid_spacing > 0.0f
-                             ? frame->view_state.grid_spacing
-                             : 1.0f;
-  const Vec3 point = vec3_add(origin, vec3_scale(direction, t));
-  *out = vec3_new(roundf(point.x / cell) * cell, height,
-                  roundf(point.z / cell) * cell);
+  Vec3 point = vec3_add(origin, vec3_scale(direction, t));
+  if (grid) {
+    const float32_t cell = frame->view_state.grid_spacing > 0.0f
+                               ? frame->view_state.grid_spacing
+                               : 1.0f;
+    point.x = roundf(point.x / cell) * cell;
+    point.z = roundf(point.z / cell) * cell;
+  }
+  point.y = height;
+  *out = point;
   return true_v;
+}
+
+/* The height a brush drag starts at. With Surface snapping it is the
+   upward-facing solid under the pointer, so a brush drawn on another brush
+   sits on top of it; otherwise, and over a wall or nothing, the grid plane. */
+static float32_t brush_draw_base(const VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame, Vec2 pixel) {
+  const float32_t ground = frame->view_state.grid_height;
+  if (editor->placement.target != VKR_EDITOR_SNAP_SURFACE) {
+    return ground;
+  }
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  VkrPhysicsRayHit hit = {0};
+  if (!viewport_ray(frame, pixel, &origin, &direction) ||
+      !place_raycast_frame(frame, origin, vec3_scale(direction, 1000.0f),
+                           &hit) ||
+      hit.normal[1] < 0.5f) {
+    return ground;
+  }
+  return hit.position[1];
 }
 
 /* Brush drawing (ADR-084): while it is on,
    the Scene image takes the mouse from picking, a left drag outlines the
-   box on the grid plane and the release creates it through brush.box.
-   Escape cancels a drag, or turns drawing off. */
+   base, then the pointer raises the box, as Chisel and Hammer draw, and a
+   click creates it through brush.box. The Snapping menu picks the plane and
+   the steps: Surface starts on the solid under the pointer, Grid on the grid
+   plane, both on grid crossings and in whole cells; Free draws on the grid
+   plane in 1/16 m steps. Escape cancels a box, or turns drawing off. */
 static void viewport_brush_draw(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   if (!editor->brush_draw || editor->clip_tool ||
       frame->scene_rendering_stopped || frame->mouse_captured) {
     editor->brush_dragging = false_v;
+    editor->brush_raising = false_v;
     return;
   }
   const Vec4 image = frame->mapping.image_rect_px;
@@ -740,8 +712,9 @@ static void viewport_brush_draw(VkrEditorUi *editor,
       ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
       (VkrUiRect){image.x, image.y, image.z, image.w});
   if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
-    if (editor->brush_dragging) {
+    if (editor->brush_dragging || editor->brush_raising) {
       editor->brush_dragging = false_v;
+      editor->brush_raising = false_v;
     } else {
       editor->brush_draw = false_v;
     }
@@ -751,10 +724,41 @@ static void viewport_brush_draw(VkrEditorUi *editor,
   const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
                          mouse.x < image.x + image.z &&
                          mouse.y < image.y + image.w;
+  const bool8_t grid = editor->placement.target != VKR_EDITOR_SNAP_FREE;
+  const float32_t cell = frame->view_state.grid_spacing > 0.0f
+                             ? frame->view_state.grid_spacing
+                             : 1.0f;
+  const float32_t step = grid ? cell : 0.0625f;
+  const Vec3 a = editor->brush_draw_start;
+  const Vec3 b = editor->brush_draw_end;
+  const Vec3 base_center =
+      vec3_new((a.x + b.x) * 0.5f, a.y, (a.z + b.z) * 0.5f);
+  const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  float32_t along = 0.0f;
+  float32_t gap = 0.0f;
+  const bool8_t on_axis =
+      viewport_ray(frame, mouse, &origin, &direction) &&
+      face_axis_closest(base_center, up, origin, direction, &along, &gap);
+  if (editor->brush_raising) {
+    if (on_axis) {
+      editor->brush_draw_height = Max(
+          step, roundf((along - editor->brush_draw_raise_start + step) / step) *
+                    step);
+    }
+    if (!ui->mouse_pressed || !inside || editor->menu != VKR_EDITOR_MENU_NONE) {
+      return;
+    }
+    editor->brush_raising = false_v;
+    viewport_brush_create(editor, frame);
+    return;
+  }
   Vec3 point = {0};
   if (!editor->brush_dragging) {
     if (ui->mouse_pressed && inside && editor->menu == VKR_EDITOR_MENU_NONE &&
-        brush_draw_point(frame, mouse, &point)) {
+        brush_plane_point(frame, mouse, brush_draw_base(editor, frame, mouse),
+                          grid, &point)) {
       editor->brush_dragging = true_v;
       editor->brush_draw_start = point;
       editor->brush_draw_end = point;
@@ -764,38 +768,98 @@ static void viewport_brush_draw(VkrEditorUi *editor,
     }
     return;
   }
-  if (brush_draw_point(frame, mouse, &point)) {
+  if (brush_plane_point(frame, mouse, editor->brush_draw_start.y, grid,
+                        &point)) {
     editor->brush_draw_end = point;
   }
   if (input_is_button_down(frame->input, BUTTON_LEFT) && !ui->mouse_released) {
     return;
   }
   editor->brush_dragging = false_v;
-  const Vec3 a = editor->brush_draw_start;
-  const Vec3 b = editor->brush_draw_end;
-  if (fabsf(b.x - a.x) < 1.0e-3f || fabsf(b.z - a.z) < 1.0e-3f) {
+  if (fabsf(editor->brush_draw_end.x - a.x) < 1.0e-3f ||
+      fabsf(editor->brush_draw_end.z - a.z) < 1.0e-3f) {
     return;
   }
+  /* The base is set; the box rises from one step with the pointer. */
+  editor->brush_raising = true_v;
+  editor->brush_draw_height = step;
+  const Vec3 end = editor->brush_draw_end;
+  float32_t start_along = 0.0f;
+  editor->brush_draw_raise_start =
+      viewport_ray(frame, mouse, &origin, &direction) &&
+              face_axis_closest(
+                  vec3_new((a.x + end.x) * 0.5f, a.y, (a.z + end.z) * 0.5f), up,
+                  origin, direction, &start_along, &gap)
+          ? start_along
+          : 0.0f;
+}
+
+const char *const vkr_editor_brush_roles[] = {"solid", "visual", "clip",
+                                              "trigger", NULL};
+
+VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor) {
+  if (editor->brush_draw) {
+    return VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW;
+  }
+  if (editor->clip_tool) {
+    return VKR_EDITOR_SCENE_TOOL_CLIP;
+  }
+  if (editor->terrain_tool) {
+    return VKR_EDITOR_SCENE_TOOL_TERRAIN;
+  }
+  return editor->path_tool;
+}
+
+void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool) {
+  editor->brush_draw = tool == VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW;
+  editor->brush_dragging = false_v;
+  editor->brush_raising = false_v;
+  editor->clip_tool = tool == VKR_EDITOR_SCENE_TOOL_CLIP;
+  editor->clip_has_first = false_v;
+  editor->terrain_tool = tool == VKR_EDITOR_SCENE_TOOL_TERRAIN;
+  editor->path_tool = tool == VKR_EDITOR_SCENE_TOOL_STAIRS ||
+                              tool == VKR_EDITOR_SCENE_TOOL_CORRIDOR
+                          ? tool
+                          : VKR_EDITOR_SCENE_TOOL_NONE;
+  editor->path_has_first = false_v;
+}
+
+/* The `container` argument of an operation that creates in the container
+   new objects go to; false when none is open. */
+static bool8_t viewport_target(const VkrSampleUiFrame *frame, char *out,
+                               uint64_t size) {
   const uint16_t container = vkr_editor_create_container(frame);
   if (container == UINT16_MAX) {
+    return false_v;
+  }
+  if (container == VKR_SCENE_WORLD_ROOT_ID) {
+    snprintf(out, size, "\"world\"");
+  } else if (container == 0u) {
+    snprintf(out, size, "\"primary\"");
+  } else {
+    snprintf(out, size, "%u", (unsigned)container);
+  }
+  return true_v;
+}
+
+/* Creates the box the brush tool outlined through brush.box, in the
+   container new objects go to, with the palette's brush role. */
+static void viewport_brush_create(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame) {
+  const Vec3 a = editor->brush_draw_start;
+  const Vec3 b = editor->brush_draw_end;
+  char target[16];
+  if (!viewport_target(frame, target, sizeof(target))) {
     return;
   }
-  char target[16];
-  if (container == VKR_SCENE_WORLD_ROOT_ID) {
-    snprintf(target, sizeof(target), "\"world\"");
-  } else {
-    snprintf(target, sizeof(target), "%u", (unsigned)container);
-  }
-  if (container == 0u) {
-    snprintf(target, sizeof(target), "\"primary\"");
-  }
-  char line[320];
+  char line[360];
   snprintf(line, sizeof(line),
            "{\"v\":1,\"id\":\"draw\",\"op\":\"brush.box\",\"args\":{"
            "\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
-           "\"grid\":0,\"review\":false}}",
+           "\"role\":\"%s\",\"grid\":0,\"review\":false}}",
            Min(a.x, b.x), a.y, Min(a.z, b.z), Max(a.x, b.x),
-           a.y + editor->brush_draw_height, Max(a.z, b.z), target);
+           a.y + editor->brush_draw_height, Max(a.z, b.z), target,
+           vkr_editor_brush_roles[editor->brush_role]);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -842,80 +906,121 @@ static bool8_t face_axis_closest(Vec3 point, Vec3 axis, Vec3 origin,
   return true_v;
 }
 
-/* The selected face's move handle: a drag on the arrow out of the face
-   center moves the face along its normal in 0.25 m steps, and the release
-   applies it through brush.move_face. */
-static void viewport_face_handle(VkrEditorUi *editor,
-                                 const VkrSampleUiFrame *frame,
-                                 const VkrScene *scene, Vec3 mouse_origin,
-                                 Vec3 mouse_direction, bool8_t has_ray,
-                                 bool8_t inside) {
+/* Fills the face handles: every face of `brush`, or only `only_face`
+   when it is valid. Each sits at its face's corner average along the face's
+   outward normal. */
+static void viewport_face_handle_targets(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrScene *scene,
+                                         VkrEntityId brush,
+                                         VkrEntityId only_face) {
   VkrUiSystem *ui = frame->ui;
+  editor->face_handle_count = 0u;
   VkrBrushGeometry *geometry = vkr_allocator_alloc(
       ui->frame_allocator, sizeof(*geometry), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-  Vec3 corners[VKR_BRUSH_POLYGON_MAX];
-  const uint32_t count = geometry ? vkr_editor_brush_face_outline(
-                                        scene, frame->selected_entity, geometry,
-                                        corners, VKR_BRUSH_POLYGON_MAX)
-                                  : 0u;
-  if (count < 3u) {
-    editor->face_dragging = false_v;
-    return;
-  }
-  /* Newell's normal and the corner average. */
-  Vec3 center = {0};
-  Vec3 normal = {0};
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  const uint32_t count =
+      geometry ? vkr_editor_brush_build(scene, brush, geometry, faces) : 0u;
   for (uint32_t i = 0; i < count; ++i) {
-    const Vec3 a = corners[i];
-    const Vec3 b = corners[(i + 1u) % count];
-    normal.x += (a.y - b.y) * (a.z + b.z);
-    normal.y += (a.z - b.z) * (a.x + b.x);
-    normal.z += (a.x - b.x) * (a.y + b.y);
-    center = vec3_add(center, a);
+    const VkrBrushPolygon polygon = geometry->polygons[i];
+    if ((only_face.u64 && faces[i].u64 != only_face.u64) ||
+        polygon.count < 3u) {
+      continue;
+    }
+    Vec3 center = {0};
+    for (uint32_t c = 0; c < polygon.count; ++c) {
+      center = vec3_add(center, geometry->vertices[polygon.first + c]);
+    }
+    const uint32_t slot = editor->face_handle_count++;
+    editor->face_handle_faces[slot] = faces[i];
+    editor->face_handle_centers[slot] =
+        vec3_scale(center, 1.0f / (float32_t)polygon.count);
+    editor->face_handle_normals[slot] = geometry->normals[i];
   }
-  center = vec3_scale(center, 1.0f / (float32_t)count);
-  if (vec3_length(normal) < 1.0e-6f) {
+}
+
+/* Face handles: a drag on the arrow out of a face center moves that face
+   along its normal by whole grid cells, or 1/16 m with Free snapping, and
+   the release applies it through brush.move_face. */
+static void viewport_face_handles(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  Vec3 mouse_origin, Vec3 mouse_direction,
+                                  bool8_t has_ray, bool8_t inside) {
+  VkrUiSystem *ui = frame->ui;
+  if (!editor->face_handle_count) {
+    editor->face_dragging = false_v;
+    editor->face_handle_hot = -1;
     return;
   }
-  normal = vec3_normalize(normal);
   Vec3 eye = {0};
-  const float32_t view_distance =
-      grid_eye(frame, &eye) ? vec3_length(vec3_sub(eye, center)) : 10.0f;
-  /* The arrow keeps about the same size on screen. */
-  const float32_t length = Max(0.25f, 0.12f * view_distance);
-  if (!editor->face_dragging) {
-    editor->face_handle_center = center;
-    editor->face_handle_normal = normal;
-    editor->face_handle_length = length;
+  Vec3 middle = {0};
+  for (uint32_t i = 0; i < editor->face_handle_count; ++i) {
+    middle = vec3_add(middle, editor->face_handle_centers[i]);
   }
-  editor->face_handle_valid = true_v;
-  float32_t s = 0.0f;
-  float32_t gap = INFINITY;
-  const bool8_t on_axis =
-      has_ray &&
-      face_axis_closest(editor->face_handle_center, editor->face_handle_normal,
-                        mouse_origin, mouse_direction, &s, &gap);
-  const bool8_t hovered = on_axis && s >= 0.0f &&
-                          s <= editor->face_handle_length &&
-                          gap < 0.04f * view_distance;
+  middle = vec3_scale(middle, 1.0f / (float32_t)editor->face_handle_count);
+  const float32_t view_distance =
+      grid_eye(frame, &eye) ? vec3_length(vec3_sub(eye, middle)) : 10.0f;
+  /* The arrows keep about the same size on screen. */
+  editor->face_handle_length = Max(0.25f, 0.08f * view_distance);
+  if (editor->face_dragging) {
+    /* The dragged face keeps its slot; a rebuild mid-drag could reorder. */
+    const int32_t hot = editor->face_handle_hot;
+    if (hot < 0 || (uint32_t)hot >= editor->face_handle_count ||
+        editor->face_handle_faces[hot].u64 != editor->face_drag_face.u64) {
+      editor->face_dragging = false_v;
+      editor->face_handle_hot = -1;
+      return;
+    }
+  } else {
+    editor->face_handle_hot = -1;
+    float32_t best = INFINITY;
+    for (uint32_t i = 0; has_ray && i < editor->face_handle_count; ++i) {
+      float32_t s = 0.0f;
+      float32_t gap = INFINITY;
+      if (face_axis_closest(editor->face_handle_centers[i],
+                            editor->face_handle_normals[i], mouse_origin,
+                            mouse_direction, &s, &gap) &&
+          s >= 0.0f && s <= editor->face_handle_length &&
+          gap < 0.03f * view_distance && gap < best) {
+        best = gap;
+        editor->face_handle_hot = (int32_t)i;
+      }
+    }
+  }
+  const int32_t hot = editor->face_handle_hot;
   const Vec4 image = frame->mapping.image_rect_px;
-  if (editor->face_dragging || (hovered && inside)) {
-    /* The Scene stops picking objects under the handle. */
+  if (hot >= 0 && (editor->face_dragging || inside)) {
+    /* The Scene stops picking objects under a handle. */
     (void)vkr_ui_input_layer_register(
         ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
         (VkrUiRect){image.x, image.y, image.z, image.w});
   }
+  if (hot < 0) {
+    return;
+  }
+  float32_t s = 0.0f;
+  float32_t gap = INFINITY;
+  const bool8_t on_axis =
+      has_ray && face_axis_closest(editor->face_handle_centers[hot],
+                                   editor->face_handle_normals[hot],
+                                   mouse_origin, mouse_direction, &s, &gap);
   if (!editor->face_dragging) {
-    if (hovered && inside && ui->mouse_pressed) {
+    if (on_axis && inside && ui->mouse_pressed) {
       editor->face_dragging = true_v;
+      editor->face_drag_face = editor->face_handle_faces[hot];
       editor->face_drag_start = s;
       editor->face_drag_distance = 0.0f;
     }
     return;
   }
+  const float32_t step = editor->placement.target == VKR_EDITOR_SNAP_FREE
+                             ? 0.0625f
+                             : (frame->view_state.grid_spacing > 0.0f
+                                    ? frame->view_state.grid_spacing
+                                    : 1.0f);
   if (on_axis) {
     editor->face_drag_distance =
-        roundf((s - editor->face_drag_start) / 0.25f) * 0.25f;
+        roundf((s - editor->face_drag_start) / step) * step;
   }
   if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
     editor->face_dragging = false_v;
@@ -928,7 +1033,7 @@ static void viewport_face_handle(VkrEditorUi *editor,
   if (fabsf(editor->face_drag_distance) < 1.0e-3f) {
     return;
   }
-  const VkrEntityId face = frame->selected_entity;
+  const VkrEntityId face = editor->face_drag_face;
   char line[256];
   snprintf(line, sizeof(line),
            "{\"v\":1,\"id\":\"face\",\"op\":\"brush.move_face\","
@@ -939,19 +1044,21 @@ static void viewport_face_handle(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
-/* Face editing (ADR-084): Alt+click
-   selects the brush face under the pointer instead of its object, a drag on
-   the selected face's handle moves it, and Alt+Up or Alt+Down moves it
-   0.25 m out or in along its normal, 1 m with Shift, through
-   brush.move_face. */
+/* Face editing (ADR-084): a brush selected with the Select tool shows a
+   handle on every face and a drag pushes or pulls that face; Alt+click
+   selects the brush face under the pointer instead of its object, which
+   then shows its handle alone, and Alt+Up or Alt+Down moves it 0.25 m out
+   or in along its normal, 1 m with Shift, through brush.move_face. */
 static void viewport_face_tools(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
-  editor->face_handle_valid = false_v;
+  editor->face_handle_count = 0u;
   if (frame->scene_rendering_stopped || frame->mouse_captured ||
       editor->cmd_active || editor->menu != VKR_EDITOR_MENU_NONE ||
-      editor->brush_draw || editor->clip_tool) {
+      editor->brush_draw || editor->clip_tool ||
+      editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE) {
     editor->face_dragging = false_v;
+    editor->face_handle_hot = -1;
     return;
   }
   const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
@@ -980,14 +1087,29 @@ static void viewport_face_tools(VkrEditorUi *editor,
       frame->scene_keyboard_focus && *frame->scene_keyboard_focus;
   const VkrEntityId selected = frame->selected_entity;
   const VkrScene *scene = vkr_editor_entity_scene(frame, selected);
-  if (!scene || !vkr_scene_entity_alive(scene, selected) ||
-      !vkr_scene_get_typed(scene, selected, &vkr_scene_brush_face_type)) {
-    editor->face_dragging = false_v;
-    return;
+  const bool8_t alive = scene && vkr_scene_entity_alive(scene, selected);
+  const bool8_t face_selected =
+      alive && vkr_scene_get_typed(scene, selected, &vkr_scene_brush_face_type);
+  /* A brush selected with the Select tool shows a handle on every face; the
+     transform tools keep their gizmo instead. */
+  const bool8_t brush_selected =
+      alive && frame->view_state.gizmo_tool == VKR_GIZMO_MODE_NONE &&
+      vkr_scene_get_typed(scene, selected, &vkr_scene_brush_type);
+  if (face_selected) {
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, selected, scene->comp_transform);
+    viewport_face_handle_targets(
+        editor, frame, scene,
+        transform ? transform->parent : VKR_ENTITY_ID_INVALID, selected);
+  } else if (brush_selected) {
+    viewport_face_handle_targets(editor, frame, scene, selected,
+                                 VKR_ENTITY_ID_INVALID);
   }
   if (!alt || editor->face_dragging) {
-    viewport_face_handle(editor, frame, scene, origin, direction, has_ray,
-                         inside);
+    viewport_face_handles(editor, frame, origin, direction, has_ray, inside);
+  }
+  if (!face_selected) {
+    return;
   }
   if (!scene_focus && ui->focused_id != VKR_UI_ID_NONE) {
     return;
@@ -1012,6 +1134,27 @@ static void viewport_face_tools(VkrEditorUi *editor,
     (void)vkr_editor_agent_submit(editor->agent, line);
     ui->capture.keyboard = true_v;
   }
+}
+
+/* A click of a two-click tool that the grid plane cannot take says why
+   instead of doing nothing: the eye is level with the plane, as the default
+   camera at ground height is, or the view looks above it. */
+static void viewport_plane_missed(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame, Vec2 mouse,
+                                  bool8_t inside) {
+  if (!frame->ui->mouse_pressed || !inside ||
+      editor->menu != VKR_EDITOR_MENU_NONE) {
+    return;
+  }
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  const bool8_t level = viewport_ray(frame, mouse, &origin, &direction) &&
+                        fabsf(origin.y - frame->view_state.grid_height) < 0.05f;
+  vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
+                   level ? "The camera is level with the ground grid; raise "
+                           "it (hold the right button and press E) to click "
+                           "on the grid"
+                         : "Click on the ground grid; look down at it first");
 }
 
 /* Brush clipping: the first click on the grid plane sets one end of the
@@ -1043,7 +1186,9 @@ static void viewport_clip_tool(VkrEditorUi *editor,
                          mouse.x < image.x + image.z &&
                          mouse.y < image.y + image.w;
   Vec3 point = {0};
-  if (!brush_draw_point(frame, mouse, &point)) {
+  if (!brush_plane_point(frame, mouse, frame->view_state.grid_height, true_v,
+                         &point)) {
+    viewport_plane_missed(editor, frame, mouse, inside);
     return;
   }
   editor->clip_current = point;
@@ -1080,6 +1225,148 @@ static void viewport_clip_tool(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
+/* How high the stairs tool's stairs rise, in metres. */
+#define VIEWPORT_STAIRS_RISE_M 3.0f
+
+/* Stairs and corridors: the first click on the grid plane sets where they
+   start and the second where they end, and brush.stairs (rising
+   VIEWPORT_STAIRS_RISE_M) or blockout.corridor builds between them as one
+   undo step. Escape drops the start, or turns the tool off. */
+static void viewport_path_tool(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  if (editor->path_tool == VKR_EDITOR_SCENE_TOOL_NONE ||
+      frame->scene_rendering_stopped || frame->mouse_captured) {
+    editor->path_has_first = false_v;
+    return;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  (void)vkr_ui_input_layer_register(
+      ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
+      (VkrUiRect){image.x, image.y, image.z, image.w});
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+    if (editor->path_has_first) {
+      editor->path_has_first = false_v;
+    } else {
+      vkr_editor_scene_tool_set(editor, VKR_EDITOR_SCENE_TOOL_NONE);
+    }
+    return;
+  }
+  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
+                         mouse.x < image.x + image.z &&
+                         mouse.y < image.y + image.w;
+  Vec3 point = {0};
+  if (!brush_plane_point(frame, mouse, frame->view_state.grid_height, true_v,
+                         &point)) {
+    viewport_plane_missed(editor, frame, mouse, inside);
+    return;
+  }
+  editor->path_current = point;
+  if (!ui->mouse_pressed || !inside || editor->menu != VKR_EDITOR_MENU_NONE) {
+    return;
+  }
+  if (!editor->path_has_first) {
+    editor->path_first = point;
+    editor->path_has_first = true_v;
+    return;
+  }
+  editor->path_has_first = false_v;
+  const Vec3 a = editor->path_first;
+  if (vec3_length(vec3_new(point.x - a.x, 0.0f, point.z - a.z)) < 0.5f) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
+                     "The end must lie at least 0.5 m from the start");
+    return;
+  }
+  char target[16];
+  if (!viewport_target(frame, target, sizeof(target))) {
+    return;
+  }
+  char line[400];
+  if (editor->path_tool == VKR_EDITOR_SCENE_TOOL_STAIRS) {
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"path\",\"op\":\"brush.stairs\",\"args\":{"
+             "\"from\":[%g,%g,%g],\"to\":[%g,%g,%g],\"container\":%s,"
+             "\"role\":\"%s\",\"review\":false,\"select\":true}}",
+             a.x, a.y, a.z, point.x, a.y + VIEWPORT_STAIRS_RISE_M, point.z,
+             target, vkr_editor_brush_roles[editor->brush_role]);
+  } else {
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"path\",\"op\":\"blockout.corridor\","
+             "\"args\":{\"from\":[%g,%g,%g],\"to\":[%g,%g,%g],"
+             "\"container\":%s,\"review\":false,\"select\":true}}",
+             a.x, a.y, a.z, point.x, a.y, point.z, target);
+  }
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
+/* One line under the Scene's centre that says what the running tool does
+   with the next click. */
+static void viewport_tool_hint(const VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame) {
+  const char *hint = NULL;
+  switch (vkr_editor_scene_tool(editor)) {
+  case VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW:
+    hint = editor->brush_raising
+               ? "Move up to set the box's height, then click. Esc cancels."
+               : "Drag to draw a box brush's base. Esc stops.";
+    break;
+  case VKR_EDITOR_SCENE_TOOL_CLIP:
+    hint = editor->clip_has_first
+               ? "Click the cut's second point. Esc drops the first."
+               : "Click the first point of a cut through the selected brush. "
+                 "Esc stops.";
+    break;
+  case VKR_EDITOR_SCENE_TOOL_TERRAIN:
+    hint = "Hold the left button over a terrain to sculpt or paint. Esc "
+           "stops.";
+    break;
+  case VKR_EDITOR_SCENE_TOOL_STAIRS:
+    hint = editor->path_has_first
+               ? "Click where the stairs end; they rise 3 m. Esc drops the "
+                 "start."
+               : "Click where the stairs start. Esc stops.";
+    break;
+  case VKR_EDITOR_SCENE_TOOL_CORRIDOR:
+    hint = editor->path_has_first
+               ? "Click where the corridor ends. Esc drops the start."
+               : "Click where the corridor starts. Esc stops.";
+    break;
+  default:
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float32_t scale = ui->content_scale;
+  const Vec4 viewport = frame->mapping.panel_rect_px;
+  if (viewport.z / scale < 320.0f || viewport.w / scale < 160.0f) {
+    return;
+  }
+  VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
+  chip.placement = VKR_UI_PLACEMENT_DEFAULT;
+  chip.placement.column = chip.placement.row = 0u;
+  chip.placement.justify = VKR_UI_ALIGN_CENTER;
+  chip.placement.align = VKR_UI_ALIGN_END;
+  chip.placement.margin_pt =
+      (VkrUiEdges){0.0f,
+                   Max(0.0f, (float32_t)ui->target_width / scale -
+                                 (viewport.x + viewport.z) / scale),
+                   Max(0.0f, (float32_t)ui->target_height / scale -
+                                 (viewport.y + viewport.w) / scale + 44.0f),
+                   viewport.x / scale};
+  chip.style = vkr_editor_overlay_style();
+  chip.style.padding_pt = (VkrUiEdges){5.0f, 12.0f, 5.0f, 10.0f};
+  chip.style.font_size_pt = theme->font_body;
+  chip.style.text_color = theme->text;
+  chip.style.hover_background_color = chip.style.background_color;
+  chip.icon = VKR_UI_ICON_INFO_FILL;
+  chip.icon_size_pt = 13.0f;
+  chip.icon_color = theme->accent_hover;
+  vkr_ui_label(ui, string8_lit("viewport.tool_hint"),
+               string8_create_from_cstr((const uint8_t *)hint, strlen(hint)),
+               &chip);
+}
+
 void vkr_editor_viewport_update(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
@@ -1088,9 +1375,9 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
     editor->view_popup = VIEW_POPUP_NONE;
     return;
   }
-  view_shortcuts(editor, frame);
   viewport_brush_draw(editor, frame);
   viewport_clip_tool(editor, frame);
+  viewport_path_tool(editor, frame);
   viewport_face_tools(editor, frame);
   const ViewHeaderLayout layout = view_header_layout(editor, frame);
   const float32_t scale = ui->content_scale;
@@ -1473,6 +1760,7 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
   if (!frame->mapping_valid)
     return;
+  viewport_tool_hint(editor, frame);
   const VkrUiTheme *theme = vkr_ui_theme();
   VkrUiSystem *ui = frame->ui;
   const ViewHeaderLayout layout = view_header_layout(editor, frame);
@@ -1938,6 +2226,36 @@ static bool8_t place_raycast(const VkrScene *scene, Vec3 origin,
   return false_v;
 }
 
+/* The nearest solid surface along a segment in the open scene, the World or
+   an added scene; each container has its own physics. */
+static bool8_t place_raycast_frame(const VkrSampleUiFrame *frame, Vec3 origin,
+                                   Vec3 displacement, VkrPhysicsRayHit *hit) {
+  const VkrScene *scenes[VKR_SCENE_ADDITIVE_MAX + 2u];
+  uint32_t count = 0u;
+  if (frame->scene) {
+    scenes[count++] = frame->scene;
+  }
+  if (frame->world) {
+    scenes[count++] = frame->world;
+  }
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (frame->additive[i]) {
+      scenes[count++] = frame->additive[i];
+    }
+  }
+  bool8_t found = false_v;
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrPhysicsRayHit candidate = {0};
+    if (place_raycast(scenes[i], origin, displacement, VKR_ENTITY_ID_INVALID,
+                      &candidate) &&
+        (!found || candidate.fraction < hit->fraction)) {
+      *hit = candidate;
+      found = true_v;
+    }
+  }
+  return found;
+}
+
 /* `position` moved to the nearest grid crossing, or cell centre, in XZ. */
 static Vec3 place_grid_point(const VkrEditorPlacement *placement,
                              const VkrSampleUiFrame *frame, Vec3 position) {
@@ -1964,9 +2282,9 @@ bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
   const Vec3 up = vec3_new(0.0f, 1.0f, 0.0f);
   Vec3 normal = up;
   VkrPhysicsRayHit hit = {0};
-  if (placement->target == VKR_EDITOR_SNAP_SURFACE && frame->scene &&
-      place_raycast(frame->scene, origin, vec3_scale(direction, 1000.0f),
-                    VKR_ENTITY_ID_INVALID, &hit)) {
+  if (placement->target == VKR_EDITOR_SNAP_SURFACE &&
+      place_raycast_frame(frame, origin, vec3_scale(direction, 1000.0f),
+                          &hit)) {
     Vec3 surface_normal = vec3_new(hit.normal[0], hit.normal[1], hit.normal[2]);
     surface_normal = vec3_length(surface_normal) > 0.5f
                          ? vec3_normalize(surface_normal)
@@ -2566,201 +2884,26 @@ void vkr_editor_orientation_gizmo_build(VkrEditorUi *editor,
   (void)vkr_ui_input_layer_set(ui, 0);
 }
 
-/* ---- Viewport documents (ADR-076) ---- */
-
-/* The active document follows whatever the project has open, so opening a
-   scene from Content retargets the current tab, as in a level editor. */
-static void viewport_tabs_sync(VkrEditorUi *editor) {
-  if (!editor->viewport_tab_count) {
-    editor->viewport_tab_count = 1u;
-    editor->viewport_tab_active = 0u;
-  }
-  if (!vkr_editor_projects_switch_ready(editor->projects)) {
+void vkr_editor_scene_label(const VkrEditorUi *editor,
+                            const VkrSampleUiFrame *frame, char *out,
+                            uint64_t size) {
+  if (frame->world && editor->projects) {
+    const String8 name = vkr_editor_projects_scene_name(editor->projects);
+    snprintf(out, size, "%.*s", (int)(name.length ? name.length : 5u),
+             name.length ? (const char *)name.str : "World");
     return;
   }
-  VkrEditorViewportTab *tab =
-      &editor->viewport_tabs[editor->viewport_tab_active];
-  const String8 id = vkr_editor_projects_scene_id(editor->projects);
-  const String8 name = vkr_editor_projects_scene_name(editor->projects);
-  snprintf(tab->scene_id, sizeof(tab->scene_id), "%.*s", (int)id.length,
-           id.str);
-  snprintf(tab->label, sizeof(tab->label), "%.*s",
-           (int)(name.length ? name.length : 5u),
-           name.length ? (const char *)name.str : "World");
-}
-
-static void viewport_tabs_show(VkrEditorUi *editor,
-                               const VkrSampleUiFrame *frame, uint32_t tab) {
-  if (vkr_editor_projects_show_scene(editor->projects, editor, frame,
-                                     editor->viewport_tabs[tab].scene_id)) {
-    editor->viewport_tab_active = tab;
-  }
-}
-
-static void viewport_tabs_remove(VkrEditorUi *editor,
-                                 const VkrSampleUiFrame *frame, uint32_t tab) {
-  if (editor->viewport_tab_count <= 1u) {
-    return;
-  }
-  if (tab == editor->viewport_tab_active) {
-    const uint32_t next =
-        tab + 1u < editor->viewport_tab_count ? tab + 1u : tab - 1u;
-    if (!vkr_editor_projects_show_scene(editor->projects, editor, frame,
-                                        editor->viewport_tabs[next].scene_id)) {
-      return;
-    }
-    editor->viewport_tab_active = next;
-  }
-  MemCopy(&editor->viewport_tabs[tab], &editor->viewport_tabs[tab + 1u],
-          (editor->viewport_tab_count - tab - 1u) *
-              sizeof(editor->viewport_tabs[0]));
-  editor->viewport_tab_count--;
-  if (editor->viewport_tab_active > tab) {
-    editor->viewport_tab_active--;
-  }
-}
-
-bool8_t vkr_editor_viewport_tab_new(VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame) {
-  viewport_tabs_sync(editor);
-  if (editor->viewport_tab_count >= VKR_EDITOR_VIEWPORT_TAB_MAX ||
-      !vkr_editor_projects_switch_ready(editor->projects)) {
-    return false_v;
-  }
-  editor->viewport_tabs[editor->viewport_tab_count] =
-      (VkrEditorViewportTab){.label = "World"};
-  editor->viewport_tab_count++;
-  const uint32_t previous = editor->viewport_tab_active;
-  viewport_tabs_show(editor, frame, editor->viewport_tab_count - 1u);
-  if (editor->viewport_tab_active == previous) {
-    editor->viewport_tab_count--;
-    return false_v;
-  }
-  return true_v;
-}
-
-bool8_t vkr_editor_viewport_tab_show(VkrEditorUi *editor,
-                                     const VkrSampleUiFrame *frame,
-                                     uint32_t tab) {
-  viewport_tabs_sync(editor);
-  if (tab >= editor->viewport_tab_count ||
-      !vkr_editor_projects_switch_ready(editor->projects)) {
-    return false_v;
-  }
-  viewport_tabs_show(editor, frame, tab);
-  return editor->viewport_tab_active == tab;
-}
-
-void vkr_editor_viewport_tabs_build(VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame,
-                                    VkrUiRect strip) {
-  VkrUiSystem *ui = frame->ui;
-  /* Documents exist in project mode, where the World is always open;
-     otherwise one tab names the loaded scene. */
-  const bool8_t project = frame->world && editor->projects;
-  if (!project) {
-    editor->viewport_tab_count = 1u;
-    editor->viewport_tab_active = 0u;
-    const String8 path = frame->scene_path;
-    uint64_t start = path.length;
-    while (start && path.str[start - 1u] != '/' && path.str[start - 1u] != '\\')
-      --start;
-    uint64_t length = path.length - start;
-    const String8 suffix = string8_lit(".scene.json");
-    if (length > suffix.length &&
-        MemCompare(path.str + path.length - suffix.length, suffix.str,
-                   suffix.length) == 0)
-      length -= suffix.length;
-    snprintf(editor->viewport_tabs[0].label,
-             sizeof(editor->viewport_tabs[0].label), "%.*s",
-             (int)(length ? length : 5u),
-             length ? (const char *)path.str + start : "Scene");
-    editor->viewport_tabs[0].scene_id[0] = '\0';
-  } else {
-    viewport_tabs_sync(editor);
-  }
-  const VkrUiTheme *theme = vkr_ui_theme();
-  const float32_t scale = ui->content_scale;
-  const float32_t tab_width = 150.0f * scale;
-  const bool8_t ready =
-      project && vkr_editor_projects_switch_ready(editor->projects);
-  float32_t x = strip.x;
-  uint32_t close = UINT32_MAX;
-  uint32_t show = UINT32_MAX;
-  for (uint32_t i = 0; i < editor->viewport_tab_count; ++i) {
-    if (x + tab_width > strip.x + strip.width) {
-      break;
-    }
-    const bool8_t active = i == editor->viewport_tab_active;
-    const VkrEditorViewportTab *tab = &editor->viewport_tabs[i];
-    const VkrUiTrack columns[] = {{1, VKR_UI_TRACK_FR}, {20, VKR_UI_TRACK_PX}};
-    VkrUiPanelConfig panel = vkr_ui_panel_config_default();
-    panel.placement.column = panel.placement.row = 0u;
-    panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
-    panel.placement.margin_pt =
-        (VkrUiEdges){strip.y / scale + 3.0f, 0, 0, x / scale};
-    panel.columns = columns;
-    panel.column_count = ArrayCount(columns);
-    panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){
-        tab_width / scale - 4.0f, Max(1.0f, strip.height / scale - 3.0f)};
-    panel.style.background_color = active ? theme->panel : (Vec4){0};
-    panel.style.corner_radius_pt = (Vec4){5, 5, 0, 0};
-    panel.style.border_pt = (VkrUiEdges){0, 1, 0, 1};
-    panel.style.border_color = theme->separator;
-    (void)vkr_ui_push_id_u64(ui, 0x7ab5000u + i);
-    if (vkr_ui_panel_begin(ui, string8_lit("viewport.tab"), &panel)) {
-      VkrUiWidgetConfig button = vkr_ui_widget_config_default();
-      button.placement.column = button.placement.row = 0u;
-      button.fill = true_v;
-      vkr_editor_ghost_style(&button);
-      button.style.padding_pt = (VkrUiEdges){3, 6, 3, 8};
-      button.style.text_color = active ? theme->text : theme->text_secondary;
-      button.icon =
-          tab->scene_id[0] || !project ? VKR_UI_ICON_SCENE : VKR_UI_ICON_WORLD;
-      button.icon_size_pt = 13.0f;
-      button.icon_color = active ? theme->accent_hover : theme->text_secondary;
-      button.disabled = !ready && !active;
-      button.tooltip = string8_lit("Open this document in the Scene");
-      if (vkr_ui_button(ui, string8_lit("select"),
-                        string8_create_from_cstr((const uint8_t *)tab->label,
-                                                 strlen(tab->label)),
-                        &button) &&
-          !active) {
-        show = i;
-      }
-      if (editor->viewport_tab_count > 1u) {
-        VkrUiWidgetConfig shut = vkr_editor_icon_button_config(
-            1u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close document"));
-        shut.style.min_size_pt = shut.style.max_size_pt = (Vec2){18, 18};
-        shut.style.padding_pt = (VkrUiEdges){3, 3, 3, 3};
-        shut.icon_size_pt = 11.0f;
-        shut.disabled = !ready;
-        if (vkr_ui_button(ui, string8_lit("close"), (String8){0}, &shut)) {
-          close = i;
-        }
-      }
-      (void)vkr_ui_panel_end(ui);
-    }
-    (void)vkr_ui_pop_id(ui);
-    x += tab_width;
-  }
-  if (project && editor->viewport_tab_count < VKR_EDITOR_VIEWPORT_TAB_MAX &&
-      x + 26.0f * scale <= strip.x + strip.width) {
-    VkrUiWidgetConfig add = vkr_editor_icon_button_config(
-        0u, 0u, VKR_UI_ICON_ADD, string8_lit("New document showing the World"));
-    add.placement.justify = add.placement.align = VKR_UI_ALIGN_START;
-    add.placement.margin_pt =
-        (VkrUiEdges){strip.y / scale + 4.0f, 0, 0, x / scale + 2.0f};
-    add.style.min_size_pt = add.style.max_size_pt = (Vec2){22, 22};
-    add.disabled = !ready;
-    if (vkr_ui_button(ui, string8_lit("viewport.tab.add"), (String8){0},
-                      &add)) {
-      (void)vkr_editor_viewport_tab_new(editor, frame);
-    }
-  }
-  if (show != UINT32_MAX) {
-    viewport_tabs_show(editor, frame, show);
-  } else if (close != UINT32_MAX) {
-    viewport_tabs_remove(editor, frame, close);
-  }
+  /* The file name without its directory and .scene.json. */
+  const String8 path = frame->scene_path;
+  uint64_t start = path.length;
+  while (start && path.str[start - 1u] != '/' && path.str[start - 1u] != '\\')
+    --start;
+  uint64_t length = path.length - start;
+  const String8 suffix = string8_lit(".scene.json");
+  if (length > suffix.length &&
+      MemCompare(path.str + path.length - suffix.length, suffix.str,
+                 suffix.length) == 0)
+    length -= suffix.length;
+  snprintf(out, size, "%.*s", (int)(length ? length : 5u),
+           length ? (const char *)path.str + start : "Scene");
 }

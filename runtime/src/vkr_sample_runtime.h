@@ -117,6 +117,9 @@ typedef enum VkrSamplePickPurpose {
   VKR_SAMPLE_PICK_MENU = 0,
   /* A Script asset dropped: attach it to the picked object. */
   VKR_SAMPLE_PICK_SCRIPT_DROP,
+  /* A Ctrl+click (Cmd on macOS): add the picked object to the editor's
+     selection, or take it out. */
+  VKR_SAMPLE_PICK_SELECT_TOGGLE,
 } VkrSamplePickPurpose;
 
 /* Lift the ground grid onto the surface at a window pixel of the Scene:
@@ -318,7 +321,7 @@ typedef struct VkrSampleEditBatchResult {
   /* A revert's conflicting entity, or invalid. */
   VkrEntityId conflict;
   char message[192];
-  /* Per item: the entity a CREATE made, else invalid. */
+  /* Per item: the entity a CREATE or DUPLICATE made, else invalid. */
   VkrEntityId created[VKR_SAMPLE_EDIT_BATCH_MAX];
 } VkrSampleEditBatchResult;
 

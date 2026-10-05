@@ -164,7 +164,9 @@ static Vec2 vkr_ui_dock_measure_minimum(const VkrUiDockTree *tree,
     size = (Vec2){
         ceilf(VKR_UI_DOCK_PANEL_MIN_WIDTH_PT * scale),
         vkr_ui_dock_node_is_toolbar(node)
-            ? roundf(VKR_UI_DOCK_TOOLBAR_PT * scale)
+            ? roundf((tree->toolbar_pt > 0.0f ? tree->toolbar_pt
+                                              : VKR_UI_DOCK_TOOLBAR_PT) *
+                     scale)
             : tree->tab_bar_px +
                   ceilf(VKR_UI_DOCK_PANEL_MIN_CONTENT_HEIGHT_PT * scale)};
   } else {
@@ -290,6 +292,14 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
     return string8_lit("Bakery");
   case VKR_UI_DOCK_PANEL_BUILD:
     return string8_lit("Build");
+  case VKR_UI_DOCK_PANEL_TOOLS:
+    return string8_lit("Tools");
+  case VKR_UI_DOCK_PANEL_LEVEL_CHECKS:
+    return string8_lit("Level checks");
+  case VKR_UI_DOCK_PANEL_SCRIPT:
+    return string8_lit("Script editor");
+  case VKR_UI_DOCK_PANEL_TERRAIN:
+    return string8_lit("Terrain");
   default:
     return string8_lit("Panel");
   }
@@ -530,6 +540,10 @@ VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
       [VKR_UI_DOCK_PANEL_BAKERY] = 112.0f,
       [VKR_UI_DOCK_PANEL_CONTENT] = 116.0f,
       [VKR_UI_DOCK_PANEL_BUILD] = 98.0f,
+      [VKR_UI_DOCK_PANEL_TOOLS] = 92.0f,
+      [VKR_UI_DOCK_PANEL_LEVEL_CHECKS] = 140.0f,
+      [VKR_UI_DOCK_PANEL_SCRIPT] = 140.0f,
+      [VKR_UI_DOCK_PANEL_TERRAIN] = 104.0f,
   };
   float32_t total = 0.0f;
   float32_t preceding = 0.0f;
@@ -803,7 +817,8 @@ static String8 vkr_ui_dock_kind_name(VkrUiDockNodeKind kind) {
 static String8 vkr_ui_dock_panel_name(VkrUiDockPanelKind kind) {
   static const char *const names[VKR_UI_DOCK_PANEL_COUNT] = {
       "scene_viewport", "hierarchy", "inspector", "console", "toolbar",
-      "custom",         "bakery",    "content",   "build",
+      "custom",         "bakery",    "content",   "build",   "tools",
+      "level_checks",   "script",    "terrain",
   };
   return string8_create_from_cstr((const uint8_t *)names[kind],
                                   string_length(names[kind]));

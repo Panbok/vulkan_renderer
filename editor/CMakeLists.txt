@@ -10,6 +10,7 @@ add_executable(vkr_editor
     src/editor_ui.c
     src/editor_dock.c
     src/editor_windows.c
+    src/editor_workbench.c
     src/editor_cmd.c
     src/editor_cmd_eval.c
     src/editor_agent.c

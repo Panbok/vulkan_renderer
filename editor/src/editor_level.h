@@ -91,6 +91,12 @@ bool8_t vkr_editor_brush_pick(const VkrSampleUiFrame *frame, Vec3 origin,
                               Vec3 direction, float32_t max_distance,
                               VkrEntityId *out_face);
 
+/* Builds `brush` in world space into `scratch` from its faces, whose
+   entities `faces` (VKR_BRUSH_FACE_MAX) receives parallel to the polygons;
+   returns the face count, or zero when the brush does not build. */
+uint32_t vkr_editor_brush_build(const VkrScene *scene, VkrEntityId brush,
+                                VkrBrushGeometry *scratch, VkrEntityId *faces);
+
 /* The world-space corners of brush face `face`, counterclockwise from
    outside, when its brush builds; returns how many it wrote. `scratch`
    holds the brush's geometry. */
@@ -121,3 +127,10 @@ VkrEditorLevelReport *vkr_editor_level_report(VkrEditorUi *editor);
 void vkr_editor_level_window_build(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame,
                                    VkrUiRect bounds);
+
+/* The Level Design workbench's Tools palette: drawing and creating brushes,
+   brush operations on the selection, dev materials, snapping and Level
+   checks. Every button runs an existing command or agent operation. */
+void vkr_editor_level_palette_build(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    VkrUiRect bounds);

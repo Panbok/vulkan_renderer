@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_ui.h"
+#include "editor_workbench.h"
 
 #define VKR_EDITOR_SCENE_TOOLBAR_LAYER 1u
 #define VKR_EDITOR_VIEW_TOOLBAR_LAYER 2u
@@ -70,6 +71,30 @@ typedef enum EditorCommand {
   CMD_TERRAIN,
   /* The World Partition window. */
   CMD_PARTITION,
+  /* Scene transform tools. */
+  CMD_TOOL_SELECT,
+  CMD_TOOL_MOVE,
+  CMD_TOOL_ROTATE,
+  CMD_TOOL_SCALE,
+  /* Duplicate, delete, rename or snap the selection. */
+  CMD_DUPLICATE,
+  CMD_DELETE,
+  CMD_RENAME,
+  CMD_SNAP,
+  /* Enter play, or leave it with a reset, as Unity's Play does. */
+  CMD_PLAY,
+  /* Workbench tabs by position, then the previous and next one. */
+  CMD_WORKBENCH_1,
+  CMD_WORKBENCH_2,
+  CMD_WORKBENCH_3,
+  CMD_WORKBENCH_4,
+  CMD_WORKBENCH_5,
+  CMD_WORKBENCH_6,
+  CMD_WORKBENCH_7,
+  CMD_WORKBENCH_8,
+  CMD_WORKBENCH_9,
+  CMD_WORKBENCH_PREV,
+  CMD_WORKBENCH_NEXT,
   CMD_COUNT
 } EditorCommand;
 
@@ -101,6 +126,89 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
 void vkr_editor_labels_project(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame);
 void vkr_editor_dock_show(VkrUiDockTree *dock, VkrUiDockPanelKind kind);
+/* Whether any tab of the tree, shown or not, holds `kind`. */
+bool8_t vkr_editor_dock_has(const VkrUiDockTree *dock, VkrUiDockPanelKind kind);
+/* The running Scene tool, and a switch to another that ends the one
+   running and its pending clicks; the tools exclude each other. */
+VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor);
+void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool);
+/* Multiple selection (ADR-089): the runtime's selected entity is the
+   primary one; Ctrl+click (Cmd on macOS) adds or removes others. Update
+   prunes dead entries once a build and clears them when the primary changes
+   without a toggle. List writes the primary first. */
+bool8_t vkr_editor_selection_modifier(const VkrSampleUiFrame *frame);
+void vkr_editor_selection_update(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame);
+void vkr_editor_selection_toggle(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 VkrEntityId entity);
+void vkr_editor_selection_clear_extra(VkrEditorUi *editor);
+/* Deletes (VKR_SCENE_EDIT_DELETE) or duplicates (VKR_SCENE_EDIT_DUPLICATE)
+   every selected object of the primary's container as one undo step. A
+   duplicate selects the copies once it applies. False with `message` when
+   the selection cannot, or when another batch holds this build. */
+bool8_t vkr_editor_selection_apply(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   VkrSceneEditAction action, char *message,
+                                   uint64_t capacity);
+bool8_t vkr_editor_selection_contains(const VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      VkrEntityId entity);
+uint32_t vkr_editor_selection_list(const VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   VkrEntityId *out, uint32_t capacity);
+/* Brush roles as operations name them: solid, visual, clip, trigger. */
+extern const char *const vkr_editor_brush_roles[];
+#define VKR_EDITOR_BRUSH_ROLE_COUNT 4u
+/* The open scene's name as the workbench row shows it. */
+void vkr_editor_scene_label(const VkrEditorUi *editor,
+                            const VkrSampleUiFrame *frame, char *out,
+                            uint64_t size);
+
+/* Workbench palettes (editor_workbench.c): rows of equal buttons under
+   headings, two labelled columns when the panel is wide enough. */
+typedef struct VkrEditorPalette {
+  VkrEditorUi *editor;
+  const VkrSampleUiFrame *frame;
+  VkrUiSystem *ui;
+  float32_t width;
+  float32_t y;
+  uint32_t columns;
+  bool8_t labels;
+  uint32_t slot;
+} VkrEditorPalette;
+
+/* A palette over `bounds` that starts `y` points down. */
+VkrEditorPalette vkr_editor_palette_begin(VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame,
+                                          VkrUiRect bounds, float32_t y);
+void vkr_editor_palette_heading(VkrEditorPalette *palette, String8 id,
+                                String8 text);
+/* One button in the next slot; true when clicked while enabled. */
+bool8_t vkr_editor_palette_button(VkrEditorPalette *palette, String8 id,
+                                  const char *label, VkrUiIcon icon,
+                                  String8 tooltip, bool8_t active,
+                                  bool8_t disabled);
+/* A button that runs `command`, with its shortcut in the tooltip. */
+void vkr_editor_palette_command(VkrEditorPalette *palette, String8 id,
+                                const char *label, VkrUiIcon icon,
+                                EditorCommand command, bool8_t active);
+/* A button that creates object kind `word` at the Scene's placement point,
+   as the Create menu does. */
+void vkr_editor_palette_create(VkrEditorPalette *palette, String8 id,
+                               const char *label, VkrUiIcon icon,
+                               const char *word);
+/* Moves below the last row of buttons. */
+void vkr_editor_palette_end(VkrEditorPalette *palette);
+
+/* The dock panel that hosts floating window `kind`'s body, or
+   VKR_UI_DOCK_PANEL_COUNT. While the live tree holds that panel, the window
+   stays closed and opening it shows the tab. */
+VkrUiDockPanelKind vkr_editor_window_dock_panel(VkrEditorWindowKind kind);
+/* Whether window `kind`'s body shows, in its window or as a shown tab. */
+bool8_t vkr_editor_window_shown(const VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame,
+                                VkrEditorWindowKind kind);
 void vkr_editor_dock_toggle(VkrUiDockTree *dock, VkrUiDockPanelKind kind);
 /* Stats readout and render-failure card drawn over the Scene. */
 void vkr_editor_scene_overlays_build(VkrEditorUi *editor,
@@ -113,12 +221,6 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame);
 /* Asks the runtime to lift the ground grid onto the surface at the Scene's
    centre (VkrSampleGridFitRequest). */
 void vkr_editor_view_fit_grid(const VkrSampleUiFrame *frame);
-/* Add a document showing the World and switch to it; switch documents. */
-bool8_t vkr_editor_viewport_tab_new(VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame);
-bool8_t vkr_editor_viewport_tab_show(VkrEditorUi *editor,
-                                     const VkrSampleUiFrame *frame,
-                                     uint32_t tab);
 /* Where an object spawned at a viewport pixel lands under the Snapping
    settings; false without a valid view. `base` is the distance from the
    object's origin down to its lowest point, so it rests on the snap point
@@ -135,10 +237,6 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame,
                                  VkrEntityId entity, char *message,
                                  uint64_t message_size);
-/* Viewport document tabs drawn in `strip`, the Scene tab bar's free space. */
-void vkr_editor_viewport_tabs_build(VkrEditorUi *editor,
-                                    const VkrSampleUiFrame *frame,
-                                    VkrUiRect strip);
 /* Clickable world-axis indicator in the Scene's lower-left corner. */
 void vkr_editor_orientation_gizmo_build(VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame);
@@ -202,6 +300,14 @@ void vkr_editor_commands_update(VkrEditorUi *editor,
 bool8_t vkr_editor_command_enabled(EditorCommand command,
                                    const VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame);
+/* A tooltip naming `command`'s shortcut after `text`, or after the command's
+   name when `text` is NULL; frame-allocated. */
+/* The first binding of `command` as its platform's shortcut text; false
+   when it has none. */
+bool8_t vkr_editor_command_shortcut(EditorCommand command, char *out,
+                                    uint64_t size);
+String8 vkr_editor_command_tooltip(VkrUiSystem *ui, EditorCommand command,
+                                   const char *text);
 void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame);
 void vkr_editor_window_set_visible(VkrEditorUi *editor,
@@ -233,6 +339,8 @@ extern const char *const vkr_editor_cmd_render_modes[];
 extern const VkrRenderMode vkr_editor_cmd_render_mode_values[];
 extern const char *const vkr_editor_cmd_tools[];
 extern const uint32_t vkr_editor_cmd_tool_modes[];
+/* The Cmd `window` name of a floating window. */
+const char *vkr_editor_cmd_window_name(VkrEditorWindowKind kind);
 /** Evaluate one expression statement: `expr`, `name = expr` or
  * `path = expr`. Writes the result or error to `message`; false on error. */
 bool8_t vkr_editor_cmd_eval(VkrEditorUi *editor, const VkrSampleUiFrame *frame,

@@ -1,5 +1,6 @@
 #include "editor_terrain.h"
 
+#include "editor_agent.h"
 #include "editor_details.h"
 #include "editor_internal.h"
 
@@ -293,9 +294,9 @@ void vkr_editor_terrain_window_build(VkrEditorUi *editor,
                     editor->terrain_tool ? string8_lit("Sculpting in the Scene")
                                          : string8_lit("Sculpt in the Scene"),
                     &tool)) {
-    editor->terrain_tool = !editor->terrain_tool;
-    editor->brush_draw = false_v;
-    editor->clip_tool = false_v;
+    vkr_editor_scene_tool_set(editor, editor->terrain_tool
+                                          ? VKR_EDITOR_SCENE_TOOL_NONE
+                                          : VKR_EDITOR_SCENE_TOOL_TERRAIN);
   }
   y += TERRAIN_ROW_PT + 8.0f;
   /* Modes, one button each. */
@@ -337,6 +338,58 @@ void vkr_editor_terrain_window_build(VkrEditorUi *editor,
   terrain_label(ui, string8_lit("terrain.hint"), y + 4.0f, width,
                 editor->terrain_hit_valid
                     ? string8_lit("Hold the left button over the terrain")
-                    : string8_lit("Point at a terrain; Terrain in the Create "
-                                  "menu adds one"));
+                    : string8_lit("Point at a terrain; Terrain below adds "
+                                  "one"));
+  y += TERRAIN_ROW_PT + 4.0f;
+
+  /* Outdoor objects at the Scene's placement point, as the Create menu's
+     Level group makes them. */
+  VkrEditorPalette palette = vkr_editor_palette_begin(editor, frame, bounds, y);
+  vkr_editor_palette_heading(&palette, string8_lit("terrain.create"),
+                             string8_lit("CREATE"));
+  vkr_editor_palette_create(&palette, string8_lit("terrain.new"), "Terrain",
+                            VKR_UI_ICON_WAVES, "terrain");
+  vkr_editor_palette_create(&palette, string8_lit("terrain.spline"), "Spline",
+                            VKR_UI_ICON_PENCIL_LINE, "spline");
+  vkr_editor_palette_create(&palette, string8_lit("terrain.scatter"), "Scatter",
+                            VKR_UI_ICON_TREE, "scatter");
+  /* A road follows the selected spline over the first terrain of its
+     scene. */
+  const VkrScene *scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
+  const bool8_t spline =
+      scene && vkr_scene_entity_alive(scene, frame->selected_entity) &&
+      vkr_scene_get_typed(scene, frame->selected_entity,
+                          &vkr_scene_spline_type);
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("terrain.road"), "Road", VKR_UI_ICON_RULER,
+          string8_lit("Shape a road along the selected spline"), false_v,
+          !spline || !editor->agent)) {
+    VkrEntityId terrain = VKR_ENTITY_ID_INVALID;
+    for (uint32_t i = 0; !terrain.u64 && i < scene->world->dir.living; ++i) {
+      const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+      if (vkr_scene_entity_alive(scene, entity) &&
+          vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type)) {
+        terrain = entity;
+      }
+    }
+    if (!terrain.u64) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning,
+                       "The spline's scene has no terrain");
+    } else {
+      const VkrEntityId selected = frame->selected_entity;
+      char line[256];
+      snprintf(line, sizeof(line),
+               "{\"v\":1,\"id\":\"road\",\"op\":\"terrain.road\",\"args\":"
+               "{\"terrain\":\"%u:%u:%u\",\"spline\":\"%u:%u:%u\","
+               "\"review\":false}}",
+               (unsigned)terrain.parts.world, (unsigned)terrain.parts.index,
+               (unsigned)terrain.parts.generation,
+               (unsigned)selected.parts.world, (unsigned)selected.parts.index,
+               (unsigned)selected.parts.generation);
+      (void)vkr_editor_agent_submit(editor->agent, line);
+    }
+  }
+  vkr_editor_palette_end(&palette);
 }

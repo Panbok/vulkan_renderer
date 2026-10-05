@@ -160,6 +160,7 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
       .labels_text = true_v,
       .labels_empty = true_v,
       .placement = {.target = VKR_EDITOR_SNAP_SURFACE},
+      .face_handle_hot = -1,
       .windows =
           {
               [VKR_EDITOR_WINDOW_PARTITION] = {.position_pt = {380.0f, 120.0f},
@@ -168,7 +169,7 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                                                .visible = false_v,
                                                .resizable = true_v},
               [VKR_EDITOR_WINDOW_TERRAIN] = {.position_pt = {360.0f, 140.0f},
-                                             .size_pt = {380.0f, 230.0f},
+                                             .size_pt = {380.0f, 440.0f},
                                              .z_order = 8u,
                                              .visible = false_v,
                                              .resizable = true_v},
@@ -245,6 +246,7 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                   },
           },
   };
+  vkr_editor_workbench_init(&editor->workbenches);
 }
 
 static void vkr_editor_ui_build_camera(VkrUiSystem *ui, bool8_t scene_only,
@@ -328,6 +330,10 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_scripts_update(editor->scripts,
                             vkr_editor_bakery_service(editor->bakery), frame);
   vkr_editor_build_update(editor->build, editor, frame);
+  /* A switch asked for during the last build applies before anything
+     reads this build's dock or input. */
+  vkr_editor_workbench_update(editor, frame);
+  vkr_editor_selection_update(editor, frame);
   vkr_editor_commands_update(editor, frame);
   vkr_editor_cmd_update(editor, frame);
   vkr_editor_agent_update(editor->agent, editor, frame);
@@ -398,6 +404,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     vkr_editor_labels_build(editor, frame);
   }
   vkr_editor_windows_build_navigation(editor, frame);
+  vkr_editor_workbench_build_row(editor, frame);
   if (!preparing_scene) {
     vkr_editor_scene_overlays_build(editor, frame);
     vkr_editor_orientation_gizmo_build(editor, frame);
@@ -444,6 +451,9 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   if (frame->context_requested &&
       frame->context_purpose == VKR_SAMPLE_PICK_SCRIPT_DROP) {
     vkr_editor_finish_script_drop(editor, frame);
+  } else if (frame->context_requested &&
+             frame->context_purpose == VKR_SAMPLE_PICK_SELECT_TOGGLE) {
+    vkr_editor_selection_toggle(editor, frame, frame->context_entity);
   } else if (frame->context_requested && !text_menu) {
     const float32_t scale = frame->ui->content_scale;
     const Vec2 point = {frame->context_position_px.x / scale,

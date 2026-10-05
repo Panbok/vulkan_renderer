@@ -642,8 +642,8 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
       vkr_editor_bakery_write_settings(editor->bakery, &writer) &&
       vkr_json_writer_name(&writer, string8_lit("scene_panels")) &&
       vkr_editor_scene_panels_write_json(editor->scene_panels, &writer) &&
-      vkr_json_writer_name(&writer, string8_lit("layout")) &&
-      vkr_ui_dock_write_json(&writer, dock) &&
+      vkr_json_writer_name(&writer, string8_lit("workbenches")) &&
+      vkr_editor_workbench_write_json(editor, dock, &writer) &&
       vkr_json_writer_name(&writer, string8_lit("panels")) &&
       vkr_json_writer_begin_object(&writer) &&
       project_json_bool(&writer, "labels_enabled", editor->labels_enabled) &&
@@ -916,9 +916,16 @@ static void project_restore_settings(VkrEditorProjects *projects,
   }
   *frame->graphics_request = (VkrGraphicsSettingsRequest){
       .apply = true_v, .settings = projects->graphics};
-  const String8 layout = project_member(settings, "layout");
-  if (!layout.length || !vkr_ui_dock_read_json(layout, frame->dock)) {
-    vkr_ui_dock_default_editor_layout(frame->dock);
+  /* Settings written before workbenches hold one `layout`, which becomes
+     General's. */
+  const String8 workbenches = project_member(settings, "workbenches");
+  if (!workbenches.length ||
+      !vkr_editor_workbench_read_json(editor, workbenches, frame->dock)) {
+    vkr_editor_workbench_init(&editor->workbenches);
+    const String8 layout = project_member(settings, "layout");
+    if (!layout.length || !vkr_ui_dock_read_json(layout, frame->dock)) {
+      vkr_ui_dock_default_editor_layout(frame->dock);
+    }
   }
   VkrJsonReader panels =
       vkr_json_reader_from_string(project_member(settings, "panels"));
@@ -3793,16 +3800,10 @@ static void project_place_asset(VkrEditorProjects *projects,
   }
 }
 
-/* Show the World document (ADR-076): an open World tab, else a new one. */
+/* Show the World alone in the Scene (ADR-076). */
 static void project_open_world(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
-  for (uint32_t i = 0; i < editor->viewport_tab_count; ++i) {
-    if (!editor->viewport_tabs[i].scene_id[0]) {
-      (void)vkr_editor_viewport_tab_show(editor, frame, i);
-      return;
-    }
-  }
-  (void)vkr_editor_viewport_tab_new(editor, frame);
+  (void)vkr_editor_projects_show_scene(editor->projects, editor, frame, "");
 }
 
 /* A model file the import step can place: glTF, GLB, OBJ or cooked VKB. */
@@ -7227,6 +7228,18 @@ String8 vkr_editor_projects_scene_name(const VkrEditorProjects *projects) {
     return (String8){0};
   }
   return project_string(projects->project->scenes[projects->active_scene].name);
+}
+
+String8 vkr_editor_projects_scene_name_of(const VkrEditorProjects *projects,
+                                          const char *scene_id) {
+  for (uint32_t i = 0;
+       projects && projects->project && i < projects->project->scene_count;
+       ++i) {
+    if (strcmp(projects->project->scenes[i].id, scene_id) == 0) {
+      return project_string(projects->project->scenes[i].name);
+    }
+  }
+  return (String8){0};
 }
 
 bool8_t vkr_editor_projects_open_scene(VkrEditorProjects *projects,

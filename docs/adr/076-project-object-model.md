@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-05
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -125,8 +125,17 @@ losing instance as inactive and still edits it.
 
 Structural edits go through the journal
 ([`vkr_scene_edit.h`](../../runtime/src/renderer/systems/vkr_scene_edit.h)):
-create, delete, reparent, add component and remove component. Undo and redo
-recreate deleted entities and remap their IDs. The edit overlay (version 4)
+create, delete, duplicate, reparent, add component and remove component.
+Undo and redo recreate deleted entities and remap their IDs. Duplicate
+(Ctrl+D, Edit menu, Outliner and Scene context menus, Cmd `duplicate`)
+copies an object and its descendants, brush faces included, under the same
+parent at the same place as one undo step and selects the copy, as Unity
+does. The copy is a created entity with new IDs and no document source; its
+name takes the first free ` (n)` number, replacing one the original ends
+with. It accepts the objects delete can restore, so meshes and physics
+bodies cannot be duplicated yet. With several objects selected
+([ADR-089](089-editor-workbenches.md)), Duplicate and Delete run as one edit
+batch and one undo step. The edit overlay (version 4)
 records authoritative `components`, created entities, deleted records and
 parents, and per-scene settings. New objects come from built-in **object
 kinds** (empty, four light kinds, one per live world type and the Player Start),
@@ -161,7 +170,7 @@ and post process. Project creation optionally imports Blank, FPS Arena or RPG
 Grounds as its first scene; No starter scene creates only the World.
 [ADR-069](069-editor-projects-and-workspaces.md) owns these template imports.
 
-The **primary scene** is world 0: the scene of the active viewport document.
+The **primary scene** is world 0: the scene the Scene panel shows.
 `scene.add` loads up to `VKR_SCENE_ADDITIVE_MAX` additive scenes as worlds 1
 to 6. Entity references never cross containers. Render ids are partitioned per
 container (`world id × VKR_SCENE_RENDER_ID_RANGE`), so picking resolves a
@@ -346,9 +355,11 @@ the panel is wide enough, Type. Turning an object's viewport icons off hides
 its own and its descendants' icons; pinned objects and their expanded subtrees
 stay in a block above the tree. Pins and hidden icons are editor state saved
 with the primary scene's expansion. Each scene row has an inherit toggle, and
-double-clicking a row frames its object. Details below it is generated from descriptors. The viewport panel
-carries document tabs, each showing the World or one project scene. Only the
-active tab renders, and switching tabs loads its scene.
+double-clicking a row frames its object. Details below it is generated from descriptors. The Scene panel
+shows the project's open scene, which the active workbench tab names and
+keeps ([ADR-089](089-editor-workbenches.md)); the top bar's Scenes list,
+Content and workbench tabs switch it. The panel has no document tabs of its
+own.
 
 While a project is open, its dialogs (the unsaved-edits prompt, rename,
 delete, the scene list and the create forms) are compact floating windows over
@@ -388,6 +399,15 @@ document fails the load. Older overlays and documents without ids bind by
 index. Saving authored edits accepts version 3 to 5 manifests with a scene id
 and replaces only their `edit_overlay` member
 ([`vkr_editor_project_save_scene_overlay`](../../editor/src/editor_project_store.c)).
+
+An override record names its source node by scene entity and glTF node and
+saves the source's fingerprint: the scene document's bytes, or its
+`source_identity`, mixed with the glTF source's. Both hashes skip the CR of a
+CRLF line ending, so a Git checkout with `core.autocrlf` gives the fingerprint
+of the LF copy. A record whose fingerprint differs still binds when its node
+keeps the name the record saved, and the load warns how many bound that way:
+a source downloaded per machine, such as Bistro's lights glTF, differs in
+bytes but keeps its nodes. A renamed or moved node still fails the load.
 
 A created entity's physics body is saved with its record. Loading builds the
 body after every created entity exists and is parented, outside the load's

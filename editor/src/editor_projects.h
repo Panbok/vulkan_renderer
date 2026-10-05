@@ -76,6 +76,9 @@ bool8_t vkr_editor_projects_create_scene(VkrEditorProjects *projects,
 
 /* The open project scene's display name, or empty outside a project. */
 String8 vkr_editor_projects_scene_name(const VkrEditorProjects *projects);
+/* The display name of the project scene with `scene_id`, or empty. */
+String8 vkr_editor_projects_scene_name_of(const VkrEditorProjects *projects,
+                                          const char *scene_id);
 
 /* Open the project scene named `name` (exact, else first containing it);
    false when none matches or a job is running. The scene already loading or
@@ -85,8 +88,9 @@ bool8_t vkr_editor_projects_open_scene(VkrEditorProjects *projects,
                                        const VkrSampleUiFrame *frame,
                                        String8 name, bool8_t *out_current);
 
-/* Viewport documents (ADR-076): the open project scene's id (empty when only
-   the World is open), whether a switch can start now, and switching. */
+/* The open project scene's id (empty when only the World is open), whether
+   a switch can start now, and switching; workbench tabs keep a scene each
+   (ADR-089). */
 String8 vkr_editor_projects_scene_id(const VkrEditorProjects *projects);
 bool8_t vkr_editor_projects_switch_ready(const VkrEditorProjects *projects);
 /* Open the scene with `scene_id`, or with an empty id close the open scene

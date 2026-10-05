@@ -104,6 +104,9 @@ typedef struct VkrEditorGridLine {
   bool8_t top_label;
 } VkrEditorGridLine;
 
+/* Face handles one selected brush can show; VKR_BRUSH_FACE_MAX. */
+#define VKR_EDITOR_FACE_HANDLE_MAX 64u
+
 /* Where objects spawned in the Scene land (the Snapping menu). */
 typedef enum VkrEditorSnapTarget {
   /* The ground plane under the pointer, else 8 m along its ray. */
@@ -126,6 +129,86 @@ typedef struct VkrEditorPlacement {
   /* Turn about the snap normal, degrees. */
   float32_t yaw_degrees;
 } VkrEditorPlacement;
+
+/* Objects one selection holds: the primary and the extra ones. */
+#define VKR_EDITOR_SELECTION_MAX 16u
+
+/* Workbenches (ADR-089): the tabs under the top bar. Each holds a dock
+   layout, the floating windows open in it and the Scene's editing mode for
+   one task. A kind is a built-in workbench: its palette, icon and default
+   layout; custom workbenches copy one. */
+typedef enum VkrEditorWorkbenchKind {
+  VKR_EDITOR_WORKBENCH_GENERAL = 0,
+  VKR_EDITOR_WORKBENCH_LEVEL_DESIGN,
+  VKR_EDITOR_WORKBENCH_TERRAIN,
+  VKR_EDITOR_WORKBENCH_LIGHTING,
+  VKR_EDITOR_WORKBENCH_SCRIPTING,
+  VKR_EDITOR_WORKBENCH_COUNT,
+} VkrEditorWorkbenchKind;
+
+/* The Scene tool running in a workbench; the tools exclude each other. */
+typedef enum VkrEditorSceneTool {
+  VKR_EDITOR_SCENE_TOOL_NONE = 0,
+  VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW,
+  VKR_EDITOR_SCENE_TOOL_CLIP,
+  VKR_EDITOR_SCENE_TOOL_TERRAIN,
+  /* Two clicks on the grid plane: where stairs or a corridor start and
+     end. */
+  VKR_EDITOR_SCENE_TOOL_STAIRS,
+  VKR_EDITOR_SCENE_TOOL_CORRIDOR,
+  VKR_EDITOR_SCENE_TOOL_COUNT,
+} VkrEditorSceneTool;
+
+typedef struct VkrEditorWorkbenchMode {
+  /* VkrGizmoMode of the transform tool. */
+  uint32_t gizmo_tool;
+  VkrEditorSceneTool scene_tool;
+  VkrEditorSnapTarget snap;
+  bool8_t grid;
+} VkrEditorWorkbenchMode;
+
+/* Tabs a row holds: the built-ins and custom copies, one per Ctrl+digit. */
+#define VKR_EDITOR_WORKBENCH_MAX 9u
+#define VKR_EDITOR_WORKBENCH_ID_CAPACITY 24u
+#define VKR_EDITOR_WORKBENCH_NAME_CAPACITY 32u
+
+typedef struct VkrEditorWorkbench {
+  /* Stable id: a built-in's word, or custom_<n> for a copy. */
+  char id[VKR_EDITOR_WORKBENCH_ID_CAPACITY];
+  char name[VKR_EDITOR_WORKBENCH_NAME_CAPACITY];
+  VkrEditorWorkbenchKind kind;
+  bool8_t custom;
+  /* The project scene the tab shows, once it has shown one: an id, or empty
+     for the World alone. Switching to the tab opens it. */
+  char scene_id[37];
+  bool8_t scene_known;
+  /* The dock tree while another workbench is active; the active one's live
+     tree is the frame's dock. */
+  VkrUiDockTree layout;
+  /* One bit per VkrEditorWindowKind open in the workbench. */
+  uint32_t windows;
+  VkrEditorWorkbenchMode mode;
+} VkrEditorWorkbench;
+
+typedef struct VkrEditorWorkbenches {
+  /* In tab order. */
+  VkrEditorWorkbench items[VKR_EDITOR_WORKBENCH_MAX];
+  uint32_t count;
+  uint32_t active;
+  /* A switch that applies at the start of the next UI build, or
+     UINT32_MAX. */
+  uint32_t requested;
+  /* The tab whose name its inline field edits, or UINT32_MAX, the text and
+     whether the field still has to take focus. */
+  uint32_t renaming;
+  char rename_text[VKR_EDITOR_WORKBENCH_NAME_CAPACITY];
+  bool8_t rename_focus;
+  /* The number of the next custom id. */
+  uint32_t next_custom;
+  /* The last tab clicked and when, so a second click renames it. */
+  uint32_t click_tab;
+  float64_t click_time;
+} VkrEditorWorkbenches;
 
 /* A spawned object's world pose. */
 #define VKR_EDITOR_COLOR_RECENT_MAX 8u
@@ -194,16 +277,6 @@ typedef struct VkrEditorCmdVariable {
   VkrEditorCmdValue value;
 } VkrEditorCmdVariable;
 
-/* Viewport documents (ADR-076): tabs beside the Scene panel's tab, each
-   showing the World alone or one project scene. Switching loads the tab's
-   scene; only the active document is loaded and rendered. */
-#define VKR_EDITOR_VIEWPORT_TAB_MAX 6u
-
-typedef struct VkrEditorViewportTab {
-  char scene_id[37];
-  char label[64];
-} VkrEditorViewportTab;
-
 /* What a right-click menu acts on; each kind has its own item table. */
 typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_ENTITY = 0,
@@ -229,6 +302,8 @@ typedef enum VkrEditorContextKind {
   VKR_EDITOR_CONTEXT_TEXT,
   /* The choices of the Details enum dropdown `context_details` asked for. */
   VKR_EDITOR_CONTEXT_CHOICE,
+  /* The workbench tab `context_panel` names: switch to it or reset it. */
+  VKR_EDITOR_CONTEXT_WORKBENCH,
 } VkrEditorContextKind;
 
 typedef struct VkrEditorUi {
@@ -277,9 +352,6 @@ typedef struct VkrEditorUi {
   /* Text field a text menu acts on, and what it could offer when opened. */
   VkrUiId context_text_field;
   VkrUiTextFieldState context_text_state;
-  VkrEditorViewportTab viewport_tabs[VKR_EDITOR_VIEWPORT_TAB_MAX];
-  uint32_t viewport_tab_count;
-  uint32_t viewport_tab_active;
   /* Rows the open menu showed last build and its laid-out height, which
      size its input region. */
   uint32_t context_count;
@@ -324,6 +396,7 @@ typedef struct VkrEditorUi {
   bool8_t labels_text;
   bool8_t labels_empty;
   VkrEditorPlacement placement;
+  VkrEditorWorkbenches workbenches;
   /* Empty objects of the primary scene, the World and each added scene, in
      the labels' container order. */
   VkrEditorLabelEmpties label_empties[2u + VKR_SCENE_ADDITIVE_MAX];
@@ -384,18 +457,43 @@ typedef struct VkrEditorUi {
   bool8_t clip_has_first;
   Vec3 clip_first;
   Vec3 clip_current;
-  /* The selected brush face's move handle, along its world normal from the
-     face center; a drag moves the face by `face_drag_distance`. */
-  bool8_t face_handle_valid;
-  bool8_t face_dragging;
-  Vec3 face_handle_center;
-  Vec3 face_handle_normal;
+  /* Brush face handles (ADR-084): one per face of a brush selected with
+     the Select tool, or of the selected face alone, along the face's world
+     normal from its center. `face_handle_hot` is the handle under the
+     pointer or being dragged, -1 for none; a drag moves its face by
+     `face_drag_distance`. */
+  uint32_t face_handle_count;
+  VkrEntityId face_handle_faces[VKR_EDITOR_FACE_HANDLE_MAX];
+  Vec3 face_handle_centers[VKR_EDITOR_FACE_HANDLE_MAX];
+  Vec3 face_handle_normals[VKR_EDITOR_FACE_HANDLE_MAX];
   float32_t face_handle_length;
+  int32_t face_handle_hot;
+  bool8_t face_dragging;
+  VkrEntityId face_drag_face;
   float32_t face_drag_start;
   float32_t face_drag_distance;
   /* Terrain sculpting (editor_terrain.h): the tool, its settings, the
      stroke in progress and the ground under the pointer. */
   bool8_t terrain_tool;
+  /* The stairs or corridor tool, else NONE, and its start once clicked. */
+  VkrEditorSceneTool path_tool;
+  bool8_t path_has_first;
+  Vec3 path_first;
+  Vec3 path_current;
+  /* Objects selected beside the runtime's selection, the primary one, by
+     Ctrl+click (Cmd on macOS) in the Outliner or the Scene. A change of the
+     primary selection that no toggle made clears them. */
+  VkrEntityId selection_extra[VKR_EDITOR_SELECTION_MAX];
+  uint32_t selection_extra_count;
+  VkrEntityId selection_primary;
+  bool8_t selection_keep;
+  /* The selection-wide delete or duplicate in flight, or zero; its copies
+     become the selection when it applies. */
+  uint64_t selection_batch_token;
+  bool8_t selection_batch_duplicates;
+  /* The role (index into vkr_editor_brush_roles) of the next brush the
+     Create path, box drawing or the stairs tool makes. */
+  uint32_t brush_role;
   uint32_t terrain_mode;
   float32_t terrain_radius;
   float32_t terrain_strength;
@@ -413,10 +511,16 @@ typedef struct VkrEditorUi {
   bool8_t io_outputs_collapsed;
   bool8_t io_inputs_collapsed;
   bool8_t io_route_collapsed;
-  /* Brush drawing: a left drag on the grid plane draws a box brush between
-     the press and the release, one grid cell high. */
+  /* Brush drawing: a left drag outlines the base of a box brush on the
+     plane the Snapping menu picks, the pointer then sets its height and a
+     click creates it. */
   bool8_t brush_draw;
   bool8_t brush_dragging;
+  /* After the base drag, the pointer raises the box until a click creates
+     it; `brush_draw_raise_start` is where along the vertical the raise
+     began. */
+  bool8_t brush_raising;
+  float32_t brush_draw_raise_start;
   Vec3 brush_draw_start;
   Vec3 brush_draw_end;
   float32_t brush_draw_height;

@@ -178,8 +178,8 @@ A successful configure or build does not establish sanitizer runtime coverage.
 
 The application and editor are independent targets over `vkr_runtime` and the
 optional `vkr_sample_runtime`. The app owns its F6 debug overlay; the editor owns its
-dock composition, startup `--scene-only` mode and windowless `--headless`
-scripted runs (ADR-075), and an agent channel: a per-user socket of typed
+dock composition with task workbenches (ADR-089), startup `--scene-only` mode
+and windowless `--headless` scripted runs (ADR-075), and an agent channel: a per-user socket of typed
 operations that apply as journal groups with designer review, and the
 `vkr_mcp` adapter that serves them to MCP clients (ADR-084). Neither
 executable imports the
@@ -311,13 +311,17 @@ before changing manifest references. Scene saves use immutable overlay revisions
 and manifest fingerprint checks. Workspace writer leases cover asynchronous
 writers through shutdown. In a project the runtime keeps the World resident
 beside the primary scene and up to six additive scenes, all sharing one physics
-world, and retains its GPU-completion-based resource retirement.
+world, and retains its GPU-completion-based resource retirement. A scene
+switch keeps the closed primary scene's mesh assets, with their materials
+and textures, loaded until the switch after it, so returning to that scene
+rebuilds objects without loading assets (warm assets,
+[ADR-089](adr/089-editor-workbenches.md)).
 [ADR-076](adr/076-project-object-model.md) records this object model:
 descriptor-generated Details, structural undo, singleton resolution with a
 per-scene inherit-World setting, a per-scene texture limit
 ([ADR-012](adr/012-texture-compression-pipeline.md)), World-only physics and
-animation settings, presets, viewport documents, Set primary and the Outliner
-with scenes nested under the World.
+animation settings, presets, Set primary and the Outliner with scenes nested
+under the World.
 
 The Outliner's Add entity form appends a model or directional, point, spot or
 rectangle light to the loaded writable managed scene. Model sources use the
