@@ -149,8 +149,13 @@ vkr_internal String8 vkr_material_loader_resolve_material_name(
   return resolved;
 }
 
-vkr_internal bool8_t vkr_material_loader_try_acquire_existing(
-    VkrMaterialSystem *system, String8 material_name, bool8_t auto_release,
+/* Finds a loaded material named `material_name`. A load request borrows the
+   handle, as it does a material it creates: holders take references with
+   vkr_material_system_add_ref or acquire, and the request's unload destroys
+   the material only once none remain. Acquiring here left a reference no
+   unload returned, so a material a later scene requested again never left. */
+vkr_internal bool8_t vkr_material_loader_find_existing(
+    VkrMaterialSystem *system, String8 material_name,
     VkrMaterialHandle *out_handle, VkrRendererError *out_error) {
   assert_log(system != NULL, "Material system is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
@@ -173,17 +178,9 @@ vkr_internal bool8_t vkr_material_loader_try_acquire_existing(
     return false_v;
   }
 
-  VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
-  VkrMaterialHandle existing = vkr_material_system_acquire(
-      system, material_name, auto_release, &acquire_err);
-  if (existing.id == 0) {
-    if (out_error) {
-      *out_error = acquire_err;
-    }
-    return false_v;
-  }
-
-  *out_handle = existing;
+  const VkrMaterial *existing = &system->materials.data[existing_entry->id];
+  *out_handle = (VkrMaterialHandle){.id = existing->id,
+                                    .generation = existing->generation};
   if (out_error) {
     *out_error = VKR_RENDERER_ERROR_NONE;
   }
@@ -1028,8 +1025,8 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
 
   VkrMaterialHandle existing_handle = VKR_MATERIAL_HANDLE_INVALID;
   VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
-  if (vkr_material_loader_try_acquire_existing(
-          system, material_name, true_v, &existing_handle, &acquire_err)) {
+  if (vkr_material_loader_find_existing(system, material_name, &existing_handle,
+                                        &acquire_err)) {
     vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
     out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
     out_handle->as.material = existing_handle;
@@ -1208,8 +1205,8 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
 
   VkrMaterialHandle existing_handle = VKR_MATERIAL_HANDLE_INVALID;
   VkrRendererError acquire_error = VKR_RENDERER_ERROR_NONE;
-  if (vkr_material_loader_try_acquire_existing(
-          system, material_name, true_v, &existing_handle, &acquire_error)) {
+  if (vkr_material_loader_find_existing(system, material_name, &existing_handle,
+                                        &acquire_error)) {
     out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
     out_handle->loader_id = self->id;
     out_handle->as.material = existing_handle;
@@ -2510,9 +2507,8 @@ vkr_internal void vkr_material_batch_parse_or_acquire(
   if (mat_name.str && mat_name.length > 0) {
     VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
     VkrMaterialHandle existing = VKR_MATERIAL_HANDLE_INVALID;
-    if (vkr_material_loader_try_acquire_existing(context->material_system,
-                                                 mat_name, true_v, &existing,
-                                                 &acquire_err)) {
+    if (vkr_material_loader_find_existing(context->material_system, mat_name,
+                                          &existing, &acquire_err)) {
       *out_handle = existing;
       return;
     }
