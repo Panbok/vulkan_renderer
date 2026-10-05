@@ -351,6 +351,10 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
               .target_frame_ms = 1000.0f / 75.0f,
               .enabled = graphics->dynamic_resolution,
           },
+      /* The UI may capture the window (VkrSampleCaptureRequest), one capture
+         at a time; Vulkan reserves its capture ring only when enabled. */
+      .capture_enabled = true_v,
+      .capture_ring_capacity = 1u,
       .bootstrap_font_directory = options->bootstrap_font_directory[0]
                                       ? options->bootstrap_font_directory
                                       : NULL,
