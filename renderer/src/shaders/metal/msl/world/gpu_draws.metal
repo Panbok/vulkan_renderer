@@ -434,6 +434,15 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   /* The LOD state rides above the bucket (ADR-084). */
   const device VkrMetalPacketInstance &instance =
       root.instances[candidate.instance_index];
+  /* Sub-texel casters skip the directional cascades. */
+  if (view_index != 0u && (candidate_flags & 1u) != 0u &&
+      vkr_gpu_cascade_caster_too_small(
+          root.lod_views[view_index].position_scale.w,
+          root.lod_views[view_index].flags,
+          candidate.local_bounding_sphere.w * instance.normal_column1.w)) {
+    root.classifications[classification_index] = 0u;
+    return;
+  }
   const device VkrGpuGeometryRow &geometry =
       root.geometry_rows[candidate.geometry_index];
   /* A candidate without valid bounds has no distance and keeps level 0. */

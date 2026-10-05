@@ -729,6 +729,11 @@ covers both roots. Metal captures and API validation pass; native Vulkan
 execution and bilateral comparison remain unavailable, so this domain is
 **UNALIGNED**.
 
+Both classify kernels skip a caster for any non-camera orthographic view when
+the shared `vkr_gpu_cascade_caster_too_small` (`lod_kernel.slangh`) finds its
+bounding-sphere diameter below one texel of the view's LOD scale. Native
+Vulkan execution is unavailable, so the culling result stays **UNALIGNED**.
+
 Directional GTAO keeps the existing 192-byte parameter record and native roots:
 Metal depth/evaluate/denoise are 224/256/240 bytes; Vulkan uses its existing
 240-byte utility root. Raw and denoised graph images change from R8 to RGBA8,

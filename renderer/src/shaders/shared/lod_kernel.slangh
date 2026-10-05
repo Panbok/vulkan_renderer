@@ -40,6 +40,22 @@ float vkr_lod_projected(float error, float scale, uint flags, float distance)
                : error * scale / distance;
 }
 
+// Smallest bounding-sphere diameter, in texels, that a caster spans in an
+// orthographic shadow view and still draws. A smaller caster covers at most
+// the one texel the receiver's PCF footprint already spreads over several.
+#define VKR_GPU_CASCADE_CASTER_MIN_TEXELS 1.0f
+
+// Whether a shadow view with LOD `scale` and `flags` skips a caster whose
+// world bounding sphere has `radius`. Only orthographic views (directional
+// cascades) have a constant texel size; their scale is texels per metre over
+// the LOD threshold of one. The camera view must not call this, since an
+// orthographic camera is also constant.
+bool vkr_gpu_cascade_caster_too_small(float scale, uint flags, float radius)
+{
+    return (flags & VKR_GPU_LOD_VIEW_CONSTANT) != 0u && scale > 0.0f &&
+           2.0f * radius * scale < VKR_GPU_CASCADE_CASTER_MIN_TEXELS;
+}
+
 // How far a level has morphed toward the next one, from the next level's
 // projected error: zero until the view reaches VKR_GPU_LOD_MORPH_START of
 // the distance at which the next level is acceptable, one there.

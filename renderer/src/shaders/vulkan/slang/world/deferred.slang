@@ -697,6 +697,15 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         root.classifications[classification_index] = 0xffffffffu;
         return;
     }
+    // Sub-texel casters skip the directional cascades.
+    if (view_index != 0u && (candidate_flags & 1u) != 0u &&
+        vkr_gpu_cascade_caster_too_small(
+            root.lod_views[view_index].position_scale.w,
+            root.lod_views[view_index].flags, world_radius))
+    {
+        root.classifications[classification_index] = 0xffffffffu;
+        return;
+    }
     if (view_index == 0u && vkr_vk_candidate_occluded(root, candidate))
     {
         root.classifications[classification_index] = 0xffffffffu;

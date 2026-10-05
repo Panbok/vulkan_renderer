@@ -57,6 +57,14 @@ graph pass uninstantiated, so a stale command range is never executed and the
 next redraw resets it first. Local faces achieve the same by omitting reused
 faces' views (ADR-019).
 
+Classification skips a caster in a directional cascade when its world
+bounding sphere spans less than one cascade texel
+(`vkr_gpu_cascade_caster_too_small`, `VKR_GPU_CASCADE_CASTER_MIN_TEXELS`). The
+test reads the cascade's LOD view, whose constant scale is texels per metre;
+it applies to every non-camera orthographic view, so local faces and an
+orthographic editor camera keep every caster. The texel size follows the
+submitted fit, so the skipped set is fixed for a retained cascade.
+
 Each cascade keeps the light direction its fit was framed with while a moving
 light stays within that cascade's tolerance: 0.025 degrees for cascade 0,
 doubling for each farther cascade, whose texels are larger. The fit, light view
@@ -223,6 +231,20 @@ that redraws one cascade per three frames in rotation, leaving the other views
 idle, produced cascade depth captures byte-identical to a normal run's for all
 four cascades. A Metal API validation run passes; native Vulkan execution
 remains unavailable.
+
+## Sub-texel caster evidence
+
+Metal Release on the M1 Pro, 2026-10-05, dirty tree, non-authoritative, Bistro
+long street view. With a temporary diagnostic redrawing every cascade each
+frame, `shadow_bistro_far_cascade_perf` under `local-offscreen-perf-audit-gpu`
+measured `draw.shadow.cascade{1,2,3}.indirect_commands` at 2,740, 2,548 and
+1,140 against 2,862, 2,909 and 2,909, and `Shadow.Cascade.3` at 1.506 ms
+against 1.758 ms p50 per redraw; cascades 0 to 2 changed by at most 0.024 ms.
+The before run's report is incomplete only for local-shadow work-volume
+variation between repetitions. Captured cascade 2 depth is byte-identical and
+cascade 3 differs in one of 4.2 million texels, by 2.5e-4, so the skipped
+casters drew no visible depth; final color differs only by run-to-run noise.
+A Metal API validation run passes; native Vulkan execution remains unavailable.
 
 ## Revisit when
 
