@@ -171,6 +171,9 @@ uint vkr_gpu_draw_candidate_flags(uint state_flags)
 }
 
 // The LOD row of decode record `decode_index` of `records`, or null.
+// The row's address is byte arithmetic: AMD's Vulkan driver (26.6.3) offsets a
+// pointer cast of `records + lod_record` by the row's 128-byte stride instead
+// of the record's 32, so holed terrain tiles read a zero row (audit A20).
 VkrGpuGeometryLodRow* vkr_gpu_geometry_lod_row(
     VkrGpuGeometryDecodeRecord* records, uint decode_index)
 {
@@ -179,7 +182,9 @@ VkrGpuGeometryLodRow* vkr_gpu_geometry_lod_row(
     {
         return nullptr;
     }
-    return (VkrGpuGeometryLodRow*)(records + lod_record);
+
+    return (VkrGpuGeometryLodRow*)((uint64_t)records +
+                                   uint64_t(lod_record) * 32ull);
 }
 
 // A candidate's LOD state in `view` (vkr_gpu_draw_lod_state): the coarsest
