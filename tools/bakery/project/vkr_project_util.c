@@ -2111,7 +2111,15 @@ void vkr_project_document_references(const VkrBakeryJson *value,
       (void)vkr_project_set_add(digests, digest, NULL);
     }
   }
+  /* A scene-relative `builds/<name>/...` and a workspace-relative
+     `projects/<id>/scenes/<id>/builds/<name>/...`, as overlay colliders
+     record theirs, both keep `<name>`. Any `/builds/` segment counts, so a
+     path naming another scene's build can only keep more, never less. */
   const char *path = strncmp(text, "./", 2u) == 0 ? text + 2 : text;
+  if (strncmp(path, "builds/", 7u) != 0) {
+    const char *nested = strstr(path, "/builds/");
+    path = nested ? nested + 1 : path;
+  }
   if (strncmp(path, "builds/", 7u) == 0 && revisions) {
     const char *revision = path + 7;
     const char *end = strchr(revision, '/');

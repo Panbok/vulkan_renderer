@@ -111,7 +111,11 @@ such as a paired bake's intermediate, is removed once it is older
 than 24 hours, so importing the model again within a day reuses it. If any scene or project manifest is
 unreadable, no cache entry is removed. Build and inventory revisions a live
 scene no longer names are removed after 24 hours, so an editor still streaming a
-replaced revision keeps its files; staging leftovers also wait 24 hours.
+replaced revision keeps its files; staging leftovers also wait 24 hours. A
+scene or its edit overlay names a build revision by a scene-relative
+`builds/<revision>/...` path or by a workspace-relative path with a
+`/builds/<revision>/` segment, as overlay colliders record their cooked
+collision.
 Unlisted scene directories and project directories without `project.json` are
 removed after one hour, and job directories after seven days.
 The editor holds an OS-backed workspace write lease. A second editor can inspect

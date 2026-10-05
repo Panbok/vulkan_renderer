@@ -13,9 +13,13 @@ def main():
     import project_jobs as jobs
     old = time.time() - 30 * 24 * 60 * 60
 
+    # Windows cannot set a link's own times; the fixtures age no links.
+    no_follow = ({'follow_symlinks': False}
+                 if os.utime in os.supports_follow_symlinks else {})
+
     def age(path):
         for item in [*sorted(Path(path).rglob('*'), reverse=True), Path(path)]:
-            os.utime(item, (old, old), follow_symlinks=False)
+            os.utime(item, (old, old), **no_follow)
 
     def write(path, data):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +42,14 @@ def main():
         write(scene_root / 'builds' / 'recent' / 'texture.vkt', b'recent')
         age(scene_root / 'builds' / 'replaced')
         age(scene_root / 'builds' / 'kept')
-        scene = {'version': 4, 'id': scene_id, 'entities': [], 'edit_overlay': None, 'assets': [
+        # The edit overlay's collider names its cooked collision by a
+        # workspace-relative path, as the editor records it.
+        write(scene_root / 'builds' / 'collisions' / 'hull.vkc', b'collision')
+        age(scene_root / 'builds' / 'collisions')
+        jobs.atomic_json(scene_root / 'edits' / 'overlay.json', {'version': 1, 'colliders': [
+            {'asset': f'projects/{project_id}/scenes/{scene_id}/builds/collisions/hull.vkc'}]})
+        scene = {'version': 4, 'id': scene_id, 'entities': [], 'edit_overlay': 'edits/overlay.json',
+                 'assets': [
             {'id': str(uuid.uuid4()), 'kind': 'texture', 'name': 'used',
              'artifacts': [{'role': 'texture', 'path': 'builds/kept/texture.vkt', 'version': 1}],
              'fingerprint': 'sha256:' + used},
@@ -108,6 +119,8 @@ def main():
         absent = lambda *paths: not any(Path(path).exists() for path in paths)
         assert present(scene_root / 'builds' / 'kept', scene_root / 'builds' / 'probe',
                        scene_root / 'builds' / 'recent', current), 'Reachable or recent revision removed'
+        assert present(scene_root / 'builds' / 'collisions' / 'hull.vkc'), \
+            'Collision named by a workspace-relative overlay path removed'
         assert absent(scene_root / 'builds' / 'replaced', superseded), 'Old unreferenced revision kept'
         assert present(pending_root) and absent(abandoned_root), 'Unlisted scene grace failed'
         assert absent(project / '.staging' / 'crashed')
@@ -175,13 +188,20 @@ def main():
         outside = Path(temporary) / 'outside'
         write(outside / 'keep.bin', b'outside')
         (linked / 'scenes').mkdir(parents=True)
-        (linked / 'scenes' / 'link').symlink_to(outside, target_is_directory=True)
-        linked_delete = dict(delete, project_path=str(linked / 'project.json'))
-        assert jobs.Job(linked_delete, recent_job / 'linked.json').execute() == 1
-        assert present(outside / 'keep.bin', linked), 'Link refusal erased data'
-    print('Workspace cleanup: reachable revisions, caches and pending scenes kept; '
-          'abandoned scenes, projects, staging, stale revisions, unused caches and old jobs removed; '
-          'project deletion refuses published projects and links')
+        # Windows creates links only with Developer Mode or elevation.
+        try:
+            (linked / 'scenes' / 'link').symlink_to(outside, target_is_directory=True)
+            links = True
+        except OSError:
+            links = False
+        if links:
+            linked_delete = dict(delete, project_path=str(linked / 'project.json'))
+            assert jobs.Job(linked_delete, recent_job / 'linked.json').execute() == 1
+            assert present(outside / 'keep.bin', linked), 'Link refusal erased data'
+    print('Workspace cleanup: reachable revisions, overlay collisions, caches and pending scenes '
+          'kept; abandoned scenes, projects, staging, stale revisions, unused caches and old jobs '
+          'removed; project deletion refuses published projects'
+          + (' and links' if links else '; link refusal unavailable (no symlink privilege)'))
 
 
 if __name__ == '__main__':
