@@ -2,6 +2,7 @@
 
 #include "core/logger.h"
 #include "core/vkr_job_system.h"
+#include "filesystem/filesystem.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_geometry_system.h"
@@ -404,6 +405,57 @@ bool8_t vkr_scene_terrain_resolve(const VkrScene *scene, const char *relative,
   return written > 0 && (uint32_t)written < capacity;
 }
 
+/* New terrains whose files the first save writes, by absolute path. Undo
+   and redo of a creation find the entry again until a save writes the
+   file; entries of discarded scenes stay until the process ends. */
+#define TERRAIN_STAGED_MAX 32u
+
+typedef struct TerrainStaged {
+  char path[1100];
+  uint32_t cells;
+  float32_t spacing;
+  float32_t height_min;
+  float32_t height_max;
+  float32_t height;
+} TerrainStaged;
+
+static TerrainStaged s_terrain_staged[TERRAIN_STAGED_MAX];
+static uint32_t s_terrain_staged_count;
+
+static TerrainStaged *terrain_staged_find(const char *path) {
+  for (uint32_t i = 0; i < s_terrain_staged_count; ++i) {
+    if (strcmp(s_terrain_staged[i].path, path) == 0) {
+      return &s_terrain_staged[i];
+    }
+  }
+  return NULL;
+}
+
+bool8_t vkr_scene_terrain_stage(const char *path, uint32_t cells,
+                                float32_t spacing, float32_t height_min,
+                                float32_t height_max, float32_t height) {
+  if (!path || strlen(path) >= sizeof(s_terrain_staged[0].path) ||
+      cells > VKR_HEIGHTFIELD_RESIDENT_CELLS ||
+      s_terrain_staged_count == TERRAIN_STAGED_MAX) {
+    return false_v;
+  }
+  TerrainStaged *staged = &s_terrain_staged[s_terrain_staged_count++];
+  *staged = (TerrainStaged){.cells = cells,
+                            .spacing = spacing,
+                            .height_min = height_min,
+                            .height_max = height_max,
+                            .height = height};
+  snprintf(staged->path, sizeof(staged->path), "%s", path);
+  return true_v;
+}
+
+static void terrain_unstage(const char *path) {
+  TerrainStaged *staged = terrain_staged_find(path);
+  if (staged) {
+    *staged = s_terrain_staged[--s_terrain_staged_count];
+  }
+}
+
 static void terrain_load(VkrScene *scene, TerrainRecord *record,
                          const SceneTerrain *terrain) {
   terrain_release(scene, record);
@@ -416,8 +468,20 @@ static void terrain_load(VkrScene *scene, TerrainRecord *record,
              "The terrain names no heightfield file");
     return;
   }
-  if (!vkr_heightfield_load(&record->field, path, scene->alloc, record->status,
-                            sizeof(record->status))) {
+  /* A staged terrain starts in memory and is unsaved until its scene
+     saves. */
+  const TerrainStaged *staged = terrain_staged_find(path);
+  if (staged) {
+    if (!vkr_heightfield_create(&record->field, staged->cells, staged->spacing,
+                                staged->height_min, staged->height_max,
+                                staged->height, scene->alloc)) {
+      snprintf(record->status, sizeof(record->status),
+               "The new terrain could not be created");
+      return;
+    }
+    record->unsaved = true_v;
+  } else if (!vkr_heightfield_load(&record->field, path, scene->alloc,
+                                   record->status, sizeof(record->status))) {
     return;
   }
   record->loaded = true_v;
@@ -646,9 +710,34 @@ bool8_t vkr_scene_terrain_save(const VkrScene *scene, char *error,
     if (!record->loaded || !record->unsaved) {
       continue;
     }
-    if (!vkr_scene_terrain_resolve(scene, record->source, path, sizeof(path)) ||
-        !vkr_heightfield_save(&record->field, path, error, capacity)) {
+    if (!vkr_scene_terrain_resolve(scene, record->source, path, sizeof(path))) {
       return false_v;
+    }
+    const bool8_t staged = terrain_staged_find(path) != NULL;
+    if (staged) {
+      /* The directory of a staged file may not exist yet. */
+      char directory[1100];
+      snprintf(directory, sizeof(directory), "%s", path);
+      char *slash = strrchr(directory, '/');
+      char *backslash = strrchr(directory, '\\');
+      if (backslash && (!slash || backslash > slash)) {
+        slash = backslash;
+      }
+      if (slash) {
+        *slash = '\0';
+        const String8 text = string8_create_from_cstr(
+            (const uint8_t *)directory, strlen(directory));
+        if (!file_ensure_directory(scene->alloc, &text)) {
+          snprintf(error, capacity, "Could not create %s", directory);
+          return false_v;
+        }
+      }
+    }
+    if (!vkr_heightfield_save(&record->field, path, error, capacity)) {
+      return false_v;
+    }
+    if (staged) {
+      terrain_unstage(path);
     }
     record->unsaved = false_v;
   }
