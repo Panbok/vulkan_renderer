@@ -1237,6 +1237,35 @@ parse_error:
   return false_v;
 }
 
+extern "C" bool8_t
+vkr_bake_texture_store_resample(const VkrBakeTextureStore *store,
+                                VkrBakeMaterialTextureRef ref, uint32_t width,
+                                uint32_t height, float32_t *out_rgba) {
+  if (!store || !out_rgba || !ref.present ||
+      ref.texture_index >= store->count || width == 0u || height == 0u) {
+    return false_v;
+  }
+  for (uint32_t y = 0u; y < height; ++y) {
+    for (uint32_t x = 0u; x < width; ++x) {
+      Vec4 sum = vec4_new(0.0f, 0.0f, 0.0f, 0.0f);
+      for (uint32_t s = 0u; s < 4u; ++s) {
+        const Vec2 uv = vec2_new(
+            ((float32_t)x + 0.25f + 0.5f * (float32_t)(s & 1u)) / width,
+            ((float32_t)y + 0.25f + 0.5f * (float32_t)(s >> 1u)) / height);
+        const Vec4 sample = texture_sample(store, ref, uv);
+        sum = vec4_new(sum.x + sample.x, sum.y + sample.y, sum.z + sample.z,
+                       sum.w + sample.w);
+      }
+      float32_t *texel = &out_rgba[4u * ((size_t)y * width + x)];
+      texel[0] = 0.25f * sum.x;
+      texel[1] = 0.25f * sum.y;
+      texel[2] = 0.25f * sum.z;
+      texel[3] = 0.25f * sum.w;
+    }
+  }
+  return true_v;
+}
+
 extern "C" void vkr_bake_material_sample(const VkrBakeTextureStore *store,
                                          const VkrBakeMaterial *material,
                                          Vec2 uv, Vec4 vertex_color,

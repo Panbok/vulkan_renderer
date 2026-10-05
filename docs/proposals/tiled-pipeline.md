@@ -286,12 +286,46 @@ Phases:
    hosts without Metal ray tracing.
    [`vkr_bake_metal.h`](../../tools/bake/vkr_bake_metal.h) builds the
    acceleration structure and runs a closest-hit benchmark. On the same
-   Bistro pages and 8 samples per texel (`--gpu 1`), it builds a 706 MB
+   Bistro pages and 8 samples per texel (`--gpu trace`), it builds a 706 MB
    structure in 363 ms and traces 34.2 million rays in 0.96 s of GPU time,
    35.8 million rays per second (20.9 to 55.4 million by page) against 1.77
    million CPU path segments per second. On the first 20,000 texels of each
    page, the CPU BVH re-traced the same seeded rays: mean hit fractions
    differ by at most 0.00001.
+
+   The same context gathers a layer's irradiance (`--gpu gather`). It also
+   uploads per-corner normals, UVs and colors, materials with base color and
+   emission textures resampled to 128 × 128 RGBA16F layers, the lights, the
+   renderer's DFG table and a 512 × 256 equirectangular sky from the bake
+   environment. A path scatters through one cosine lobe whose albedo is the
+   CPU BSDF's split-sum specular reflectance plus its diffuse residual, so
+   specular energy is kept but spread diffusely; a surface's glass fraction
+   passes the path straight through, tinted by base color; shadow rays follow
+   the CPU shadow walk. A layer names its lights and whether it takes the sky,
+   emission and direct light at the texel. The tool bakes sun key 0 (the
+   directional light and sky, without the sun's direct term at the texel) and
+   lamp group 0 (the 72 other lights and emission, with their direct term).
+   On page 0 (1,060,457 texels, 16 samples, depth 4, Release, M1 Pro), each
+   layer takes 6.2 to 7.1 s of GPU time, 2.4 to 2.7 million paths per second
+   against 457,000 on the CPU; the scene upload takes 1.3 to 1.6 s.
+
+   Parity (`--check-texels 4096 --check-samples 1024`): at 4,096 evenly
+   spaced texels of page 0, a layer with every light, the sky and emission
+   but no texel direct term estimates what the CPU integrator's paths carry.
+   Mean luminance differs by -0.9% (z = -0.71, seed 1) and -2.4% (z = -0.97,
+   seed 7), and the per-texel RMS difference is 0.79 and 0.72 of the combined
+   sampling noise. By transport (seed 7, `--check-transport`): sky and
+   emission +0.1% (z = 0.09); sun bounce -0.85% (z = -1.8), of which -0.17%
+   remains when every material is made Lambert without glass, so about 0.7%
+   comes from spreading specular light diffusely and from the straight glass.
+   Sun key plus lamp group without its texel term equals the full layer
+   exactly. The check found two transport differences, now fixed: a bounce
+   sampled about the shading normal ended the path when it fell below the
+   geometric surface (-1.2% of sun bounce), and lights below the geometric
+   surface were rejected where the CPU accepts them by shading normal. The
+   Bistro bundle defers textures, so no run has exercised the texture layers
+   yet. Layer accumulation across pages, gap filling at chart edges, ASTC
+   encoding and storage are pending.
 3. Time of day: light groups and mobility in scene data; a system driving
    sun, moon, sky and group intensities.
 4. Tiled runtime: lightmap sampling in the tiled pipeline's forward shader,

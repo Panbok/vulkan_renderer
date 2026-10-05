@@ -1,16 +1,28 @@
 #include "bake/vkr_bake_metal.h"
 
+#include "vkr_dfg_lut.h"
+
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <map>
 #include <new>
+#include <utility>
 
 namespace {
 
 /* Texels per command buffer: each buffer stays short so a long bake never
    holds the GPU long enough to trip the system watchdog. */
 constexpr uint32_t kTexelsPerDispatch = 65536u;
+/* Material textures are resampled to this edge for transport: bounce light
+   needs their low frequencies only. */
+constexpr uint32_t kTextureEdge = 128u;
+constexpr uint32_t kSkyWidth = 512u;
+constexpr uint32_t kSkyHeight = 256u;
+constexpr float kPi = 3.14159265358979323846f;
 
 const char *kKernelSource = R"METAL(
 #include <metal_stdlib>
@@ -18,14 +30,30 @@ const char *kKernelSource = R"METAL(
 using namespace metal;
 using namespace raytracing;
 
+constant float kPi = 3.14159265358979323846f;
+constant float kEpsilon = 1.0e-4f;
+constant uint kMaxSkips = 16u;
+
 static uint mix_seed(uint x) {
-  x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu;
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
   return x ^ (x >> 16);
 }
 
 static float random_unit(uint seed) {
   return float(mix_seed(seed) >> 8) * (1.0f / 16777216.0f);
 }
+
+/* Counter-based stream for one (texel, sample) pair. */
+struct Rng {
+  uint state;
+  float next() {
+    state = mix_seed(state + 0x9e3779b9u);
+    return float(state >> 8) * (1.0f / 16777216.0f);
+  }
+};
 
 /* Cosine-weighted direction about a unit normal (same frame as the CPU
    baker's cosine_direction). */
@@ -57,7 +85,9 @@ kernel void lightmap_trace_benchmark(
     constant BenchmarkArgs &args [[buffer(3)]],
     primitive_acceleration_structure scene [[buffer(4)]],
     uint id [[thread_position_in_grid]]) {
-  if (id >= args.texel_count) return;
+  if (id >= args.texel_count) {
+    return;
+  }
   uint texel = args.first_texel + id;
   float3 normal = normals[texel].xyz;
   float3 origin = positions[texel].xyz + normal * 1.0e-3f;
@@ -77,6 +107,490 @@ kernel void lightmap_trace_benchmark(
   }
   hit_fraction[texel] = float(hits) / float(args.samples);
 }
+
+struct GpuMaterial {
+  float4 base_color;
+  float4 emissive_metallic;
+  /* x alpha cutoff, y transmission, z alpha mode, w 1 when shadow rays pass
+     through tinted (thin transmissive or index-matched). */
+  float4 misc;
+  /* xyz dielectric specular color, w perceptual roughness. */
+  float4 specular;
+  /* x base color layer, y emissive layer; -1 when absent. */
+  int4 layers;
+};
+
+struct GpuLight {
+  /* xyz position, w kind (0 directional, 1 point, 2 spot, 3 polynomial,
+     4 rectangle). */
+  float4 position_kind;
+  float4 direction_range;
+  float4 color_intensity;
+  /* x constant, y linear, z quadratic, w rectangle radiance. */
+  float4 attenuation;
+  float4 right_half_width;
+  float4 up_half_height;
+  /* x cos inner, y cos outer, z casts shadow, w enabled. */
+  float4 cone;
+};
+
+struct GatherArgs {
+  uint first_texel;
+  uint texel_count;
+  uint samples;
+  uint seed;
+  uint max_depth;
+  uint rr_start_depth;
+  uint light_count;
+  /* bit 0 sky, bit 1 emission, bit 2 texel direct. */
+  uint flags;
+};
+
+struct Scene {
+  primitive_acceleration_structure as;
+  device const float *positions;
+  device const float *normals;
+  device const float2 *uvs;
+  device const uint *colors;
+  device const uint *triangle_materials;
+  device const GpuMaterial *materials;
+  texture2d_array<half> textures;
+  sampler texture_sampler;
+};
+
+struct Material {
+  float4 base;
+  float3 emissive;
+  float metallic;
+  float cutoff;
+  float transmission;
+  uint mode;
+  bool shadow_layer;
+  float3 dielectric_specular;
+  float roughness;
+};
+
+static Material material_at(thread const Scene &scene, uint triangle,
+                            float2 bary) {
+  float w0 = 1.0f - bary.x - bary.y;
+  float2 uv = scene.uvs[3u * triangle] * w0 +
+              scene.uvs[3u * triangle + 1u] * bary.x +
+              scene.uvs[3u * triangle + 2u] * bary.y;
+  float4 color = unpack_unorm4x8_to_float(scene.colors[3u * triangle]) * w0 +
+                 unpack_unorm4x8_to_float(scene.colors[3u * triangle + 1u]) *
+                     bary.x +
+                 unpack_unorm4x8_to_float(scene.colors[3u * triangle + 2u]) *
+                     bary.y;
+  GpuMaterial source = scene.materials[scene.triangle_materials[triangle]];
+  Material material;
+  material.base = source.base_color * color;
+  if (source.layers.x >= 0) {
+    material.base *= float4(scene.textures.sample(scene.texture_sampler, uv,
+                                                  uint(source.layers.x)));
+  }
+  material.emissive = source.emissive_metallic.xyz;
+  if (source.layers.y >= 0) {
+    material.emissive *= float3(
+        scene.textures.sample(scene.texture_sampler, uv, uint(source.layers.y))
+            .xyz);
+  }
+  material.metallic = source.emissive_metallic.w;
+  material.cutoff = source.misc.x;
+  material.transmission = source.misc.y;
+  material.mode = uint(source.misc.z);
+  material.shadow_layer = source.misc.w != 0.0f;
+  material.dielectric_specular = source.specular.xyz;
+  material.roughness = source.specular.w;
+  return material;
+}
+
+static float3 corner(device const float *values, uint triangle, uint c) {
+  uint i = 9u * triangle + 3u * c;
+  return float3(values[i], values[i + 1u], values[i + 2u]);
+}
+
+/* Whether a hit is passed through: cutout below its cutoff, or blended and
+   rejected by its alpha. */
+static bool passes(thread const Material &material, thread Rng &rng) {
+  float alpha = saturate(material.base.w);
+  if (material.mode == 1u) {
+    return alpha < saturate(material.cutoff);
+  }
+  if (material.mode == 2u) {
+    return alpha <= 0.0f || (alpha < 1.0f && rng.next() >= alpha);
+  }
+  return false;
+}
+
+struct Hit {
+  bool found;
+  float3 position;
+  float3 geometric;
+  float3 normal;
+  Material material;
+};
+
+/* Closest surface the ray stops at, skipping passed-through surfaces. The
+   geometric normal faces the ray origin and the shading normal its side. */
+static Hit trace_surface(thread const Scene &scene, float3 origin,
+                         float3 direction, thread Rng &rng) {
+  intersector<triangle_data> query;
+  Hit result;
+  result.found = false;
+  for (uint skip = 0u; skip < kMaxSkips; ++skip) {
+    ray r;
+    r.origin = origin;
+    r.direction = direction;
+    r.min_distance = kEpsilon;
+    r.max_distance = INFINITY;
+    auto hit = query.intersect(r, scene.as);
+    if (hit.type == intersection_type::none) {
+      return result;
+    }
+    uint triangle = hit.primitive_id;
+    float2 bary = hit.triangle_barycentric_coord;
+    Material material = material_at(scene, triangle, bary);
+    float3 position = origin + direction * hit.distance;
+    if (passes(material, rng)) {
+      origin = position;
+      continue;
+    }
+    float3 p0 = corner(scene.positions, triangle, 0u);
+    float3 p1 = corner(scene.positions, triangle, 1u);
+    float3 p2 = corner(scene.positions, triangle, 2u);
+    float3 geometric = normalize(cross(p1 - p0, p2 - p0));
+    if (dot(geometric, direction) > 0.0f) {
+      geometric = -geometric;
+    }
+    float w0 = 1.0f - bary.x - bary.y;
+    float3 normal = normalize(corner(scene.normals, triangle, 0u) * w0 +
+                              corner(scene.normals, triangle, 1u) * bary.x +
+                              corner(scene.normals, triangle, 2u) * bary.y);
+    if (dot(normal, geometric) < 0.0f) {
+      normal = -normal;
+    }
+    result.found = true;
+    result.position = position;
+    result.geometric = geometric;
+    result.normal = normal;
+    result.material = material;
+    return result;
+  }
+  return result;
+}
+
+/* Transmittance toward a light, as the CPU integrator's shadow walk: cutout
+   surfaces below their cutoff pass; thin transmissive or index-matched
+   surfaces tint by their glass color, blended ones mixed with (1 - alpha);
+   anything else blocks. */
+static float3 shadow_transmittance(thread const Scene &scene, float3 origin,
+                                   float3 direction, float distance) {
+  intersector<triangle_data> query;
+  float3 transmittance = float3(1.0f);
+  for (uint skip = 0u; skip < kMaxSkips; ++skip) {
+    ray r;
+    r.origin = origin;
+    r.direction = direction;
+    r.min_distance = kEpsilon;
+    r.max_distance = distance;
+    auto hit = query.intersect(r, scene.as);
+    if (hit.type == intersection_type::none) {
+      return transmittance;
+    }
+    Material material =
+        material_at(scene, hit.primitive_id, hit.triangle_barycentric_coord);
+    float alpha = saturate(material.base.w);
+    bool cutout_pass = material.mode == 1u && alpha < saturate(material.cutoff);
+    if (!cutout_pass) {
+      if (!material.shadow_layer) {
+        return float3(0.0f);
+      }
+      float3 glass = max(material.base.xyz, float3(0.0f)) *
+                     saturate(material.transmission);
+      transmittance *= material.mode == 2u ? (1.0f - alpha) + glass * alpha
+                                           : glass;
+      if (max3(transmittance.x, transmittance.y, transmittance.z) <= 1.0e-6f) {
+        return float3(0.0f);
+      }
+    }
+    origin += direction * hit.distance;
+    distance -= hit.distance;
+    if (distance <= kEpsilon) {
+      return transmittance;
+    }
+  }
+  return float3(0.0f);
+}
+
+struct LightSample {
+  bool valid;
+  float3 direction;
+  float3 radiance;
+  float distance;
+  float weight;
+};
+
+/* The CPU integrator's evaluate_light and sample_rectangle_light. */
+static LightSample sample_light(GpuLight light, float3 position,
+                                thread Rng &rng) {
+  LightSample sample;
+  sample.valid = false;
+  sample.weight = 1.0f;
+  uint kind = uint(light.position_kind.w);
+  if (light.cone.w == 0.0f) {
+    return sample;
+  }
+  if (kind == 4u) {
+    float radiance = light.attenuation.w;
+    if (radiance <= 0.0f) {
+      return sample;
+    }
+    float3 point = light.position_kind.xyz +
+                   light.right_half_width.xyz *
+                       ((2.0f * rng.next() - 1.0f) * light.right_half_width.w) +
+                   light.up_half_height.xyz *
+                       ((2.0f * rng.next() - 1.0f) * light.up_half_height.w);
+    float3 to_light = point - position;
+    float distance_squared = dot(to_light, to_light);
+    if (!(distance_squared > 1.0e-12f)) {
+      return sample;
+    }
+    float distance = sqrt(distance_squared);
+    float3 direction = to_light / distance;
+    float emitter_cosine = dot(light.direction_range.xyz, -direction);
+    if (!(emitter_cosine > 0.0f)) {
+      return sample;
+    }
+    float area = 4.0f * light.right_half_width.w * light.up_half_height.w;
+    sample.valid = true;
+    sample.direction = direction;
+    sample.radiance = light.color_intensity.xyz * radiance;
+    sample.distance = distance;
+    sample.weight = emitter_cosine * area / distance_squared;
+    return sample;
+  }
+  float intensity = light.color_intensity.w;
+  if (intensity <= 0.0f) {
+    return sample;
+  }
+  if (kind == 0u) {
+    sample.valid = true;
+    sample.direction = normalize(-light.direction_range.xyz);
+    sample.radiance = light.color_intensity.xyz * intensity;
+    sample.distance = INFINITY;
+    return sample;
+  }
+  float3 to_light = light.position_kind.xyz - position;
+  float distance_squared = dot(to_light, to_light);
+  if (!(distance_squared > 1.0e-12f)) {
+    return sample;
+  }
+  float distance = sqrt(distance_squared);
+  float range = light.direction_range.w;
+  if (kind != 3u && range > 0.0f && distance > range) {
+    return sample;
+  }
+  float3 direction = to_light / distance;
+  float attenuation;
+  if (kind == 3u) {
+    attenuation = 1.0f / max(max(light.attenuation.x, 1.0f) +
+                                 light.attenuation.y * distance +
+                                 light.attenuation.z * distance_squared,
+                             1.0e-6f);
+  } else {
+    float range_attenuation = 1.0f;
+    if (range > 0.0f) {
+      float ratio = distance / range;
+      range_attenuation = saturate(1.0f - ratio * ratio * ratio * ratio);
+      range_attenuation *= range_attenuation;
+    }
+    attenuation = range_attenuation / max(distance_squared, 1.0e-4f);
+    if (kind == 2u) {
+      float3 axis = normalize(light.direction_range.xyz);
+      float inner = light.cone.x;
+      float outer = light.cone.y;
+      float cosine = dot(-direction, axis);
+      float cone = inner > outer ? saturate((cosine - outer) / (inner - outer))
+                                 : (cosine >= outer ? 1.0f : 0.0f);
+      attenuation *= cone * cone;
+    }
+  }
+  if (!(attenuation > 0.0f)) {
+    return sample;
+  }
+  sample.valid = true;
+  sample.direction = direction;
+  sample.radiance = light.color_intensity.xyz * (intensity * attenuation);
+  sample.distance = distance;
+  return sample;
+}
+
+/* Albedo of the one diffuse lobe an opaque bounce scatters with: the CPU
+   BSDF's view-dependent split-sum specular reflectance R plus its diffuse
+   residual (1 - R)(1 - metallic) base. Specular energy is kept and
+   redistributed as a cosine lobe. */
+static float3 bounce_albedo(thread const Material &material, float no_v,
+                            texture2d<float> dfg) {
+  constexpr sampler dfg_sampler(coord::normalized, address::clamp_to_edge,
+                                filter::linear);
+  float metallic = saturate(material.metallic);
+  float3 base = saturate(material.base.xyz);
+  float3 f0 = saturate(material.dielectric_specular) * (1.0f - metallic) +
+              base * metallic;
+  float size = float(dfg.get_width());
+  float2 coordinate = (float2(sqrt(saturate(no_v)),
+                              saturate(material.roughness)) *
+                           (size - 1.0f) +
+                       0.5f) /
+                      size;
+  float2 split_sum = dfg.sample(dfg_sampler, coordinate, level(0.0f)).xy;
+  float3 scale = 1.0f + f0 * (1.0f / max(split_sum.x + split_sum.y, 0.25f) -
+                              1.0f);
+  float f90 = saturate(max3(f0.x, f0.y, f0.z) * 25.0f);
+  float3 reflectance = saturate((f0 * split_sum.x + f90 * split_sum.y) * scale);
+  return reflectance + (1.0f - reflectance) * (1.0f - metallic) * base;
+}
+
+/* A point just off a surface on the side `direction` leaves through. */
+static float3 leave_surface(float3 position, float3 geometric,
+                            float3 direction) {
+  float side = dot(geometric, direction) >= 0.0f ? 1.0f : -1.0f;
+  return position + geometric * (side * 1.0e-3f);
+}
+
+/* Direct irradiance from the layer's lights at a point with this normal. As
+   in the CPU integrator, a light above the shading normal counts even when it
+   is below the geometric surface; its shadow ray leaves on the light's side. */
+static float3 direct_irradiance(thread const Scene &scene,
+                                device const GpuLight *lights,
+                                device const uint *layer_lights,
+                                uint light_count, float3 position,
+                                float3 normal, float3 geometric,
+                                thread Rng &rng) {
+  float3 result = float3(0.0f);
+  for (uint i = 0u; i < light_count; ++i) {
+    GpuLight light = lights[layer_lights[i]];
+    LightSample sample = sample_light(light, position, rng);
+    if (!sample.valid) {
+      continue;
+    }
+    float cosine = dot(normal, sample.direction);
+    if (cosine <= 0.0f) {
+      continue;
+    }
+    float3 visibility = float3(1.0f);
+    bool rectangle = uint(light.position_kind.w) == 4u;
+    if (rectangle || light.cone.z != 0.0f) {
+      float3 origin = leave_surface(position, geometric, sample.direction);
+      visibility = shadow_transmittance(
+          scene, origin, sample.direction,
+          isinf(sample.distance) ? INFINITY : sample.distance - 2.0e-3f);
+    }
+    result += sample.radiance * visibility * (cosine * sample.weight);
+  }
+  return result;
+}
+
+static float3 sky_radiance(texture2d<float> sky, sampler sky_sampler,
+                           float3 direction) {
+  float u = atan2(direction.z, direction.x) / (2.0f * kPi) + 0.5f;
+  float v = acos(clamp(direction.y, -1.0f, 1.0f)) / kPi;
+  return sky.sample(sky_sampler, float2(u, v), level(0.0f)).xyz;
+}
+
+kernel void lightmap_gather(
+    device const float4 *texel_positions [[buffer(0)]],
+    device const float4 *texel_normals [[buffer(1)]],
+    device float4 *irradiance [[buffer(2)]],
+    constant GatherArgs &args [[buffer(3)]],
+    primitive_acceleration_structure as [[buffer(4)]],
+    device const float *positions [[buffer(5)]],
+    device const float *normals [[buffer(6)]],
+    device const float2 *uvs [[buffer(7)]],
+    device const uint *colors [[buffer(8)]],
+    device const uint *triangle_materials [[buffer(9)]],
+    device const GpuMaterial *materials [[buffer(10)]],
+    device const GpuLight *lights [[buffer(11)]],
+    device const uint *layer_lights [[buffer(12)]],
+    texture2d_array<half> textures [[texture(0)]],
+    texture2d<float> sky [[texture(1)]],
+    texture2d<float> dfg [[texture(2)]],
+    uint id [[thread_position_in_grid]]) {
+  if (id >= args.texel_count) {
+    return;
+  }
+  constexpr sampler texture_sampler(coord::normalized, address::repeat,
+                                    filter::linear);
+  constexpr sampler sky_sampler(coord::normalized, s_address::repeat,
+                                t_address::clamp_to_edge, filter::linear);
+  Scene scene = {as, positions, normals, uvs, colors, triangle_materials,
+                 materials, textures, texture_sampler};
+  uint texel = args.first_texel + id;
+  float3 texel_normal = texel_normals[texel].xyz;
+  float3 texel_position = texel_positions[texel].xyz;
+  float3 origin = texel_position + texel_normal * 1.0e-3f;
+  bool use_sky = (args.flags & 1u) != 0u;
+  bool use_emission = (args.flags & 2u) != 0u;
+  bool texel_direct = (args.flags & 4u) != 0u;
+  uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
+  float3 total = float3(0.0f);
+  for (uint s = 0u; s < args.samples; ++s) {
+    Rng rng;
+    rng.state = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
+    if (texel_direct) {
+      total += direct_irradiance(scene, lights, layer_lights,
+                                 args.light_count, texel_position,
+                                 texel_normal, texel_normal, rng);
+    }
+    float3 direction = cosine_direction(texel_normal, rng.next(), rng.next());
+    float3 ray_origin = origin;
+    float3 throughput = float3(1.0f);
+    float3 radiance = float3(0.0f);
+    for (uint depth = 0u; depth < args.max_depth; ++depth) {
+      Hit hit = trace_surface(scene, ray_origin, direction, rng);
+      if (!hit.found) {
+        if (use_sky) {
+          radiance += throughput * sky_radiance(sky, sky_sampler, direction);
+        }
+        break;
+      }
+      if (use_emission) {
+        radiance += throughput * max(hit.material.emissive, float3(0.0f));
+      }
+      /* The glass fraction passes the path straight through, tinted by the
+         base color (a thin-walled or slab approximation of refraction). */
+      float glass = (1.0f - saturate(hit.material.metallic)) *
+                    saturate(hit.material.transmission);
+      if (glass > 0.0f && rng.next() < glass) {
+        throughput *= max(hit.material.base.xyz, float3(0.0f));
+        ray_origin = leave_surface(hit.position, hit.geometric, direction);
+        continue;
+      }
+      float3 albedo = bounce_albedo(hit.material,
+                                    dot(hit.normal, -direction), dfg);
+      radiance += throughput * albedo * (1.0f / kPi) *
+                  direct_irradiance(scene, lights, layer_lights,
+                                    args.light_count, hit.position,
+                                    hit.normal, hit.geometric, rng);
+      throughput *= albedo;
+      /* As in the CPU integrator, a direction sampled about the shading
+         normal continues even below the geometric surface. */
+      direction = cosine_direction(hit.normal, rng.next(), rng.next());
+      ray_origin = leave_surface(hit.position, hit.geometric, direction);
+      if (args.rr_start_depth > 0u && depth + 1u >= args.rr_start_depth) {
+        float survival = min(0.95f, max3(throughput.x, throughput.y,
+                                         throughput.z));
+        if (survival <= 0.0f || rng.next() >= survival) {
+          break;
+        }
+        throughput /= survival;
+      }
+    }
+    /* Cosine-weighted sampling: irradiance is pi times mean radiance. */
+    total += kPi * radiance;
+  }
+  irradiance[texel] = float4(total / float(args.samples), 1.0f);
+}
 )METAL";
 
 struct BenchmarkArgs {
@@ -86,6 +600,49 @@ struct BenchmarkArgs {
   uint32_t seed;
 };
 
+struct GatherArgs {
+  uint32_t first_texel;
+  uint32_t texel_count;
+  uint32_t samples;
+  uint32_t seed;
+  uint32_t max_depth;
+  uint32_t rr_start_depth;
+  uint32_t light_count;
+  uint32_t flags;
+};
+
+struct GpuMaterial {
+  float base_color[4];
+  float emissive_metallic[4];
+  float misc[4];
+  float specular[4];
+  int32_t layers[4];
+};
+
+struct GpuLight {
+  float position_kind[4];
+  float direction_range[4];
+  float color_intensity[4];
+  float attenuation[4];
+  float right_half_width[4];
+  float up_half_height[4];
+  float cone[4];
+};
+
+uint32_t pack_unorm4(Vec4 color) {
+  auto channel = [](float value) {
+    const float clamped = std::fmin(std::fmax(value, 0.0f), 1.0f);
+    return (uint32_t)std::lround(clamped * 255.0f);
+  };
+  return channel(color.x) | (channel(color.y) << 8u) |
+         (channel(color.z) << 16u) | (channel(color.w) << 24u);
+}
+
+id<MTLBuffer> shared_buffer(id<MTLDevice> device, NSUInteger length) {
+  return [device newBufferWithLength:std::max<NSUInteger>(length, 16u)
+                             options:MTLResourceStorageModeShared];
+}
+
 } // namespace
 
 struct VkrBakeMetalContext {
@@ -93,6 +650,17 @@ struct VkrBakeMetalContext {
   id<MTLCommandQueue> queue = nil;
   id<MTLAccelerationStructure> scene = nil;
   id<MTLComputePipelineState> benchmark = nil;
+  id<MTLComputePipelineState> gather = nil;
+  id<MTLBuffer> positions = nil;
+  id<MTLBuffer> normals = nil;
+  id<MTLBuffer> uvs = nil;
+  id<MTLBuffer> colors = nil;
+  id<MTLBuffer> triangle_materials = nil;
+  id<MTLBuffer> materials = nil;
+  id<MTLBuffer> lights = nil;
+  id<MTLTexture> textures = nil;
+  id<MTLTexture> sky = nil;
+  id<MTLTexture> dfg = nil;
 };
 
 bool vkr_bake_metal_available() {
@@ -102,79 +670,290 @@ bool vkr_bake_metal_available() {
   }
 }
 
-VkrBakeMetalContext *
-vkr_bake_metal_create(const VkrBakeTriangle *triangles,
-                      uint32_t triangle_count) {
+namespace {
+
+bool build_acceleration_structure(VkrBakeMetalContext *context,
+                                  uint32_t triangle_count) {
+  MTLAccelerationStructureTriangleGeometryDescriptor *geometry =
+      [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+  geometry.vertexBuffer = context->positions;
+  geometry.vertexStride = 3u * sizeof(float);
+  geometry.vertexFormat = MTLAttributeFormatFloat3;
+  geometry.triangleCount = triangle_count;
+  geometry.opaque = YES;
+  MTLPrimitiveAccelerationStructureDescriptor *descriptor =
+      [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+  descriptor.geometryDescriptors = @[ geometry ];
+  const MTLAccelerationStructureSizes sizes =
+      [context->device accelerationStructureSizesWithDescriptor:descriptor];
+  context->scene = [context->device
+      newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+  id<MTLBuffer> scratch =
+      [context->device newBufferWithLength:sizes.buildScratchBufferSize
+                                   options:MTLResourceStorageModePrivate];
+  if (!context->scene || !scratch) {
+    return false;
+  }
+  id<MTLCommandBuffer> command = [context->queue commandBuffer];
+  id<MTLAccelerationStructureCommandEncoder> encoder =
+      [command accelerationStructureCommandEncoder];
+  [encoder buildAccelerationStructure:context->scene
+                           descriptor:descriptor
+                        scratchBuffer:scratch
+                  scratchBufferOffset:0u];
+  [encoder endEncoding];
+  [command commit];
+  [command waitUntilCompleted];
+  if (command.status != MTLCommandBufferStatusCompleted) {
+    return false;
+  }
+  std::printf("gpu_acceleration_structure_mb=%.1f build_ms=%.1f\n",
+              sizes.accelerationStructureSize / 1048576.0,
+              (command.GPUEndTime - command.GPUStartTime) * 1000.0);
+  return true;
+}
+
+/* Corner attributes, triangle materials and positions, three corners per
+   triangle in the scene's (BVH-partitioned) triangle order. */
+bool upload_triangles(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+  const NSUInteger count = scene.triangles.size();
+  context->positions =
+      shared_buffer(context->device, count * 9u * sizeof(float));
+  context->normals = shared_buffer(context->device, count * 9u * sizeof(float));
+  context->uvs = shared_buffer(context->device, count * 6u * sizeof(float));
+  context->colors =
+      shared_buffer(context->device, count * 3u * sizeof(uint32_t));
+  context->triangle_materials =
+      shared_buffer(context->device, count * sizeof(uint32_t));
+  if (!context->positions || !context->normals || !context->uvs ||
+      !context->colors || !context->triangle_materials) {
+    return false;
+  }
+  float *positions = static_cast<float *>(context->positions.contents);
+  float *normals = static_cast<float *>(context->normals.contents);
+  float *uvs = static_cast<float *>(context->uvs.contents);
+  uint32_t *colors = static_cast<uint32_t *>(context->colors.contents);
+  uint32_t *materials =
+      static_cast<uint32_t *>(context->triangle_materials.contents);
+  for (NSUInteger t = 0u; t < count; ++t) {
+    const VkrBakeTriangle &triangle = scene.triangles[t];
+    for (uint32_t c = 0u; c < 3u; ++c) {
+      const VkrBakeVertex &vertex = triangle.vertex[c];
+      positions[9u * t + 3u * c + 0u] = vertex.position.x;
+      positions[9u * t + 3u * c + 1u] = vertex.position.y;
+      positions[9u * t + 3u * c + 2u] = vertex.position.z;
+      normals[9u * t + 3u * c + 0u] = vertex.normal.x;
+      normals[9u * t + 3u * c + 1u] = vertex.normal.y;
+      normals[9u * t + 3u * c + 2u] = vertex.normal.z;
+      uvs[6u * t + 2u * c + 0u] = vertex.uv.x;
+      uvs[6u * t + 2u * c + 1u] = vertex.uv.y;
+      colors[3u * t + c] = pack_unorm4(vertex.color);
+    }
+    materials[t] = triangle.material_index;
+  }
+  return true;
+}
+
+/* Materials and their base color and emission textures, resampled into one
+   RGBA16F array of kTextureEdge layers. */
+bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+  std::map<std::pair<uint32_t, bool>, int32_t> layer_of;
+  std::vector<VkrBakeMaterialTextureRef> layer_refs;
+  auto layer_for = [&](VkrBakeMaterialTextureRef ref) -> int32_t {
+    if (!ref.present) {
+      return -1;
+    }
+    const auto key = std::make_pair(ref.texture_index, (bool)ref.srgb);
+    const auto found = layer_of.find(key);
+    if (found != layer_of.end()) {
+      return found->second;
+    }
+    const int32_t layer = (int32_t)layer_refs.size();
+    layer_of.emplace(key, layer);
+    layer_refs.push_back(ref);
+    return layer;
+  };
+  const NSUInteger count = std::max<size_t>(scene.materials.size(), 1u);
+  context->materials =
+      shared_buffer(context->device, count * sizeof(GpuMaterial));
+  if (!context->materials) {
+    return false;
+  }
+  GpuMaterial *gpu = static_cast<GpuMaterial *>(context->materials.contents);
+  for (size_t m = 0u; m < scene.materials.size(); ++m) {
+    const VkrBakeMaterial &material = scene.materials[m];
+    gpu[m] = {
+        {material.base_color.x, material.base_color.y, material.base_color.z,
+         material.base_color.w},
+        {material.emissive_factor.x, material.emissive_factor.y,
+         material.emissive_factor.z, material.metallic},
+        {material.alpha_cutoff, material.transmission_factor,
+         (float)material.alpha_mode,
+         (material.transmission_factor > 0.0f &&
+          material.thickness_factor <= 0.0f) ||
+                 std::fabs(material.ior - 1.0f) <= 1.0e-4f
+             ? 1.0f
+             : 0.0f},
+        {material.dielectric_specular.x, material.dielectric_specular.y,
+         material.dielectric_specular.z, material.roughness},
+        {layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_BASE_COLOR]),
+         layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_EMISSIVE]), -1,
+         -1}};
+  }
+
+  const NSUInteger layers = std::max<size_t>(layer_refs.size(), 1u);
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+  descriptor.textureType = MTLTextureType2DArray;
+  descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
+  descriptor.width = kTextureEdge;
+  descriptor.height = kTextureEdge;
+  descriptor.arrayLength = layers;
+  descriptor.usage = MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModeShared;
+  context->textures = [context->device newTextureWithDescriptor:descriptor];
+  if (!context->textures) {
+    return false;
+  }
+  std::vector<float> rgba(4u * kTextureEdge * kTextureEdge, 1.0f);
+  std::vector<uint16_t> halves(rgba.size());
+  for (NSUInteger layer = 0u; layer < layers; ++layer) {
+    if (layer < layer_refs.size() &&
+        !vkr_bake_texture_store_resample(scene.texture_store, layer_refs[layer],
+                                         kTextureEdge, kTextureEdge,
+                                         rgba.data())) {
+      return false;
+    }
+    for (size_t i = 0u; i < rgba.size(); ++i) {
+      _Float16 half = (_Float16)rgba[i];
+      std::memcpy(&halves[i], &half, sizeof(uint16_t));
+    }
+    [context->textures
+        replaceRegion:MTLRegionMake2D(0u, 0u, kTextureEdge, kTextureEdge)
+          mipmapLevel:0u
+                slice:layer
+            withBytes:halves.data()
+          bytesPerRow:kTextureEdge * 4u * sizeof(uint16_t)
+        bytesPerImage:0u];
+  }
+  std::printf("gpu_materials=%zu texture_layers=%zu\n", scene.materials.size(),
+              layer_refs.size());
+  return true;
+}
+
+bool upload_lights(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+  const NSUInteger count = std::max<size_t>(scene.lights.size(), 1u);
+  context->lights = shared_buffer(context->device, count * sizeof(GpuLight));
+  if (!context->lights) {
+    return false;
+  }
+  GpuLight *gpu = static_cast<GpuLight *>(context->lights.contents);
+  for (size_t i = 0u; i < scene.lights.size(); ++i) {
+    const VkrBakeSceneLight &light = scene.lights[i];
+    gpu[i] = {
+        {light.position.x, light.position.y, light.position.z,
+         (float)(uint8_t)light.kind},
+        {light.direction.x, light.direction.y, light.direction.z, light.range},
+        {light.color.x, light.color.y, light.color.z, light.intensity},
+        {light.constant, light.linear, light.quadratic, light.radiance},
+        {light.right.x, light.right.y, light.right.z, light.half_width},
+        {light.up.x, light.up.y, light.up.z, light.half_height},
+        {std::cos(light.inner_cone_angle), std::cos(light.outer_cone_angle),
+         light.casts_shadow ? 1.0f : 0.0f, light.enabled ? 1.0f : 0.0f}};
+  }
+  return true;
+}
+
+/* The renderer's split-sum table, as the CPU BSDF reads it. */
+bool upload_dfg(VkrBakeMetalContext *context) {
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
+                                   width:VKR_DFG_LUT_SIZE
+                                  height:VKR_DFG_LUT_SIZE
+                               mipmapped:NO];
+  descriptor.usage = MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModeShared;
+  context->dfg = [context->device newTextureWithDescriptor:descriptor];
+  if (!context->dfg) {
+    return false;
+  }
+  [context->dfg
+      replaceRegion:MTLRegionMake2D(0u, 0u, VKR_DFG_LUT_SIZE, VKR_DFG_LUT_SIZE)
+        mipmapLevel:0u
+          withBytes:vkr_dfg_lut_pixels
+        bytesPerRow:VKR_DFG_LUT_SIZE * 2u * sizeof(uint16_t)];
+  return true;
+}
+
+/* Equirectangular sky from the CPU scene environment, so escaped paths see
+   the same radiance as the reference integrator up to filtering. */
+bool upload_sky(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                                   width:kSkyWidth
+                                  height:kSkyHeight
+                               mipmapped:NO];
+  descriptor.usage = MTLTextureUsageShaderRead;
+  descriptor.storageMode = MTLStorageModeShared;
+  context->sky = [context->device newTextureWithDescriptor:descriptor];
+  if (!context->sky) {
+    return false;
+  }
+  std::vector<float> rgba(4u * kSkyWidth * kSkyHeight, 0.0f);
+  for (uint32_t y = 0u; y < kSkyHeight; ++y) {
+    for (uint32_t x = 0u; x < kSkyWidth; ++x) {
+      const float phi = ((x + 0.5f) / kSkyWidth - 0.5f) * 2.0f * kPi;
+      const float theta = (y + 0.5f) / kSkyHeight * kPi;
+      const Vec3 direction =
+          vec3_new(std::sin(theta) * std::cos(phi), std::cos(theta),
+                   std::sin(theta) * std::sin(phi));
+      const Vec3 radiance =
+          vkr_bake_scene_sample_environment(&scene, direction);
+      float *texel = &rgba[4u * (y * kSkyWidth + x)];
+      texel[0] = radiance.x;
+      texel[1] = radiance.y;
+      texel[2] = radiance.z;
+      texel[3] = 1.0f;
+    }
+  }
+  [context->sky replaceRegion:MTLRegionMake2D(0u, 0u, kSkyWidth, kSkyHeight)
+                  mipmapLevel:0u
+                    withBytes:rgba.data()
+                  bytesPerRow:kSkyWidth * 4u * sizeof(float)];
+  return true;
+}
+
+id<MTLComputePipelineState>
+make_pipeline(id<MTLDevice> device, id<MTLLibrary> library, NSString *name) {
+  NSError *error = nil;
+  id<MTLFunction> function = [library newFunctionWithName:name];
+  id<MTLComputePipelineState> pipeline =
+      function
+          ? [device newComputePipelineStateWithFunction:function error:&error]
+          : nil;
+  if (!pipeline) {
+    std::fprintf(stderr, "Lightmap pipeline %s failed: %s\n", name.UTF8String,
+                 error ? error.localizedDescription.UTF8String : "missing");
+  }
+  return pipeline;
+}
+
+} // namespace
+
+VkrBakeMetalContext *vkr_bake_metal_create(const VkrBakeScene &scene) {
   @autoreleasepool {
-    if (!triangles || triangle_count == 0u)
+    if (scene.triangles.empty()) {
       return nullptr;
+    }
     VkrBakeMetalContext *context = new (std::nothrow) VkrBakeMetalContext();
-    if (!context)
+    if (!context) {
       return nullptr;
+    }
     context->device = MTLCreateSystemDefaultDevice();
     if (!context->device || !context->device.supportsRaytracing) {
       delete context;
       return nullptr;
     }
     context->queue = [context->device newCommandQueue];
-
-    /* World-space corners, three per triangle, as packed float3. */
-    id<MTLBuffer> vertices = [context->device
-        newBufferWithLength:(NSUInteger)triangle_count * 9u * sizeof(float)
-                    options:MTLResourceStorageModeShared];
-    if (!vertices) {
-      vkr_bake_metal_destroy(context);
-      return nullptr;
-    }
-    float *corner = static_cast<float *>(vertices.contents);
-    for (uint32_t t = 0u; t < triangle_count; ++t) {
-      for (uint32_t c = 0u; c < 3u; ++c) {
-        const Vec3 position = triangles[t].vertex[c].position;
-        *corner++ = position.x;
-        *corner++ = position.y;
-        *corner++ = position.z;
-      }
-    }
-    MTLAccelerationStructureTriangleGeometryDescriptor *geometry =
-        [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-    geometry.vertexBuffer = vertices;
-    geometry.vertexStride = 3u * sizeof(float);
-    geometry.vertexFormat = MTLAttributeFormatFloat3;
-    geometry.triangleCount = triangle_count;
-    geometry.opaque = YES;
-    MTLPrimitiveAccelerationStructureDescriptor *descriptor =
-        [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-    descriptor.geometryDescriptors = @[ geometry ];
-    const MTLAccelerationStructureSizes sizes =
-        [context->device accelerationStructureSizesWithDescriptor:descriptor];
-    context->scene = [context->device
-        newAccelerationStructureWithSize:sizes.accelerationStructureSize];
-    id<MTLBuffer> scratch = [context->device
-        newBufferWithLength:sizes.buildScratchBufferSize
-                    options:MTLResourceStorageModePrivate];
-    if (!context->scene || !scratch) {
-      vkr_bake_metal_destroy(context);
-      return nullptr;
-    }
-    id<MTLCommandBuffer> command = [context->queue commandBuffer];
-    id<MTLAccelerationStructureCommandEncoder> encoder =
-        [command accelerationStructureCommandEncoder];
-    [encoder buildAccelerationStructure:context->scene
-                             descriptor:descriptor
-                          scratchBuffer:scratch
-                    scratchBufferOffset:0u];
-    [encoder endEncoding];
-    [command commit];
-    [command waitUntilCompleted];
-    if (command.status != MTLCommandBufferStatusCompleted) {
-      std::fprintf(stderr, "Acceleration structure build failed\n");
-      vkr_bake_metal_destroy(context);
-      return nullptr;
-    }
-    std::printf("gpu_acceleration_structure_mb=%.1f build_ms=%.1f\n",
-                sizes.accelerationStructureSize / 1048576.0,
-                (command.GPUEndTime - command.GPUStartTime) * 1000.0);
-
     NSError *error = nil;
     MTLCompileOptions *options = [MTLCompileOptions new];
     options.languageVersion = MTLLanguageVersion3_0;
@@ -182,26 +961,73 @@ vkr_bake_metal_create(const VkrBakeTriangle *triangles,
         [context->device newLibraryWithSource:@(kKernelSource)
                                       options:options
                                         error:&error];
-    id<MTLFunction> function =
-        library ? [library newFunctionWithName:@"lightmap_trace_benchmark"]
-                : nil;
-    context->benchmark =
-        function ? [context->device newComputePipelineStateWithFunction:function
-                                                                   error:&error]
-                 : nil;
-    if (!context->benchmark) {
+    if (!library) {
       std::fprintf(stderr, "Lightmap kernel compile failed: %s\n",
                    error ? error.localizedDescription.UTF8String : "unknown");
-      vkr_bake_metal_destroy(context);
+      delete context;
+      return nullptr;
+    }
+    context->benchmark =
+        make_pipeline(context->device, library, @"lightmap_trace_benchmark");
+    context->gather =
+        make_pipeline(context->device, library, @"lightmap_gather");
+    if (!context->benchmark || !context->gather ||
+        !upload_triangles(context, scene) ||
+        !build_acceleration_structure(context,
+                                      (uint32_t)scene.triangles.size()) ||
+        !upload_materials(context, scene) || !upload_lights(context, scene) ||
+        !upload_sky(context, scene) || !upload_dfg(context)) {
+      std::fprintf(stderr, "Lightmap GPU scene upload failed\n");
+      delete context;
       return nullptr;
     }
     return context;
   }
 }
 
-void vkr_bake_metal_destroy(VkrBakeMetalContext *context) {
-  delete context;
+void vkr_bake_metal_destroy(VkrBakeMetalContext *context) { delete context; }
+
+namespace {
+
+/* Texel positions and normals as float4 arrays. */
+bool upload_texels(id<MTLDevice> device,
+                   const std::vector<VkrBakeLightmapTexel> &texels,
+                   id<MTLBuffer> *out_positions, id<MTLBuffer> *out_normals) {
+  const NSUInteger count = texels.size();
+  *out_positions = shared_buffer(device, count * 4u * sizeof(float));
+  *out_normals = shared_buffer(device, count * 4u * sizeof(float));
+  if (!*out_positions || !*out_normals) {
+    return false;
+  }
+  float *p = static_cast<float *>((*out_positions).contents);
+  float *n = static_cast<float *>((*out_normals).contents);
+  for (NSUInteger i = 0u; i < count; ++i) {
+    const VkrBakeLightmapTexel &texel = texels[i];
+    p[4u * i + 0u] = texel.position.x;
+    p[4u * i + 1u] = texel.position.y;
+    p[4u * i + 2u] = texel.position.z;
+    p[4u * i + 3u] = 1.0f;
+    n[4u * i + 0u] = texel.normal.x;
+    n[4u * i + 1u] = texel.normal.y;
+    n[4u * i + 2u] = texel.normal.z;
+    n[4u * i + 3u] = 0.0f;
+  }
+  return true;
 }
+
+bool finish(id<MTLCommandBuffer> command, double *in_out_seconds) {
+  [command commit];
+  [command waitUntilCompleted];
+  if (command.status != MTLCommandBufferStatusCompleted) {
+    std::fprintf(stderr, "Lightmap dispatch failed: %s\n",
+                 command.error.localizedDescription.UTF8String);
+    return false;
+  }
+  *in_out_seconds += command.GPUEndTime - command.GPUStartTime;
+  return true;
+}
+
+} // namespace
 
 bool vkr_bake_metal_trace_benchmark(
     VkrBakeMetalContext *context,
@@ -209,36 +1035,21 @@ bool vkr_bake_metal_trace_benchmark(
     uint32_t seed, std::vector<float32_t> *out_hit_fraction,
     double *out_gpu_seconds) {
   @autoreleasepool {
-    if (!context || !out_hit_fraction || !out_gpu_seconds || samples == 0u)
+    if (!context || !out_hit_fraction || !out_gpu_seconds || samples == 0u) {
       return false;
+    }
     const NSUInteger count = texels.size();
     out_hit_fraction->assign(count, 0.0f);
     *out_gpu_seconds = 0.0;
-    if (count == 0u)
+    if (count == 0u) {
       return true;
-    id<MTLBuffer> positions = [context->device
-        newBufferWithLength:count * 4u * sizeof(float)
-                    options:MTLResourceStorageModeShared];
-    id<MTLBuffer> normals = [context->device
-        newBufferWithLength:count * 4u * sizeof(float)
-                    options:MTLResourceStorageModeShared];
-    id<MTLBuffer> hits =
-        [context->device newBufferWithLength:count * sizeof(float)
-                                     options:MTLResourceStorageModeShared];
-    if (!positions || !normals || !hits)
+    }
+    id<MTLBuffer> positions = nil;
+    id<MTLBuffer> normals = nil;
+    id<MTLBuffer> hits = shared_buffer(context->device, count * sizeof(float));
+    if (!hits ||
+        !upload_texels(context->device, texels, &positions, &normals)) {
       return false;
-    float *p = static_cast<float *>(positions.contents);
-    float *n = static_cast<float *>(normals.contents);
-    for (NSUInteger i = 0u; i < count; ++i) {
-      const VkrBakeLightmapTexel &texel = texels[i];
-      p[4u * i + 0u] = texel.position.x;
-      p[4u * i + 1u] = texel.position.y;
-      p[4u * i + 2u] = texel.position.z;
-      p[4u * i + 3u] = 1.0f;
-      n[4u * i + 0u] = texel.normal.x;
-      n[4u * i + 1u] = texel.normal.y;
-      n[4u * i + 2u] = texel.normal.z;
-      n[4u * i + 3u] = 0.0f;
     }
     const NSUInteger width = context->benchmark.threadExecutionWidth;
     for (NSUInteger first = 0u; first < count; first += kTexelsPerDispatch) {
@@ -258,17 +1069,92 @@ bool vkr_bake_metal_trace_benchmark(
       [encoder dispatchThreads:MTLSizeMake(args.texel_count, 1u, 1u)
           threadsPerThreadgroup:MTLSizeMake(width, 1u, 1u)];
       [encoder endEncoding];
-      [command commit];
-      [command waitUntilCompleted];
-      if (command.status != MTLCommandBufferStatusCompleted) {
-        std::fprintf(stderr, "Lightmap dispatch failed: %s\n",
-                     command.error.localizedDescription.UTF8String);
+      if (!finish(command, out_gpu_seconds)) {
         return false;
       }
-      *out_gpu_seconds += command.GPUEndTime - command.GPUStartTime;
     }
     const float *result = static_cast<const float *>(hits.contents);
     std::copy(result, result + count, out_hit_fraction->begin());
+    return true;
+  }
+}
+
+bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
+                           const std::vector<VkrBakeLightmapTexel> &texels,
+                           const VkrBakeMetalLayer &layer,
+                           const VkrBakeMetalGatherSettings &settings,
+                           std::vector<Vec3> *out_irradiance,
+                           double *out_gpu_seconds) {
+  @autoreleasepool {
+    if (!context || !out_irradiance || !out_gpu_seconds ||
+        settings.samples == 0u || settings.max_depth == 0u) {
+      return false;
+    }
+    const NSUInteger count = texels.size();
+    out_irradiance->assign(count, vec3_zero());
+    *out_gpu_seconds = 0.0;
+    if (count == 0u) {
+      return true;
+    }
+    id<MTLBuffer> positions = nil;
+    id<MTLBuffer> normals = nil;
+    id<MTLBuffer> result =
+        shared_buffer(context->device, count * 4u * sizeof(float));
+    id<MTLBuffer> layer_lights =
+        shared_buffer(context->device, layer.lights.size() * sizeof(uint32_t));
+    if (!result || !layer_lights ||
+        !upload_texels(context->device, texels, &positions, &normals)) {
+      return false;
+    }
+    if (!layer.lights.empty()) {
+      std::memcpy(layer_lights.contents, layer.lights.data(),
+                  layer.lights.size() * sizeof(uint32_t));
+    }
+    const uint32_t flags = (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
+                           (layer.texel_direct ? 4u : 0u);
+    const NSUInteger width = context->gather.threadExecutionWidth;
+    for (NSUInteger first = 0u; first < count; first += kTexelsPerDispatch) {
+      const GatherArgs args = {
+          (uint32_t)first,
+          (uint32_t)std::min<NSUInteger>(kTexelsPerDispatch, count - first),
+          settings.samples,
+          settings.seed,
+          settings.max_depth,
+          settings.rr_start_depth,
+          (uint32_t)layer.lights.size(),
+          flags};
+      id<MTLCommandBuffer> command = [context->queue commandBuffer];
+      id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+      [encoder setComputePipelineState:context->gather];
+      [encoder setBuffer:positions offset:0u atIndex:0u];
+      [encoder setBuffer:normals offset:0u atIndex:1u];
+      [encoder setBuffer:result offset:0u atIndex:2u];
+      [encoder setBytes:&args length:sizeof(args) atIndex:3u];
+      [encoder setAccelerationStructure:context->scene atBufferIndex:4u];
+      [encoder setBuffer:context->positions offset:0u atIndex:5u];
+      [encoder setBuffer:context->normals offset:0u atIndex:6u];
+      [encoder setBuffer:context->uvs offset:0u atIndex:7u];
+      [encoder setBuffer:context->colors offset:0u atIndex:8u];
+      [encoder setBuffer:context->triangle_materials offset:0u atIndex:9u];
+      [encoder setBuffer:context->materials offset:0u atIndex:10u];
+      [encoder setBuffer:context->lights offset:0u atIndex:11u];
+      [encoder setBuffer:layer_lights offset:0u atIndex:12u];
+      [encoder setTexture:context->textures atIndex:0u];
+      [encoder setTexture:context->sky atIndex:1u];
+      [encoder setTexture:context->dfg atIndex:2u];
+      [encoder useResource:context->scene usage:MTLResourceUsageRead];
+      [encoder dispatchThreads:MTLSizeMake(args.texel_count, 1u, 1u)
+          threadsPerThreadgroup:MTLSizeMake(width, 1u, 1u)];
+      [encoder endEncoding];
+      if (!finish(command, out_gpu_seconds)) {
+        return false;
+      }
+    }
+    const float *values = static_cast<const float *>(result.contents);
+    for (NSUInteger i = 0u; i < count; ++i) {
+      (*out_irradiance)[i] =
+          vec3_new(values[4u * i], values[4u * i + 1u], values[4u * i + 2u]);
+    }
     return true;
   }
 }

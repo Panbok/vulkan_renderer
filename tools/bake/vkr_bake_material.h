@@ -135,6 +135,16 @@ bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
                                VkrBakeMaterial *out_material,
                                VkrBakeMaterialError *out_error);
 
+/* Resamples a present texture reference into a width x height grid of linear
+   RGBA at grid-texel centers through the same repeat-addressed bilinear
+   sampling as vkr_bake_material_sample, averaging a 2x2 set of samples per
+   grid texel. `out_rgba` holds 4 * width * height floats. Used to upload
+   reduced material textures to GPU bakes (ADR-087). */
+bool8_t vkr_bake_texture_store_resample(const VkrBakeTextureStore *store,
+                                        VkrBakeMaterialTextureRef ref,
+                                        uint32_t width, uint32_t height,
+                                        float32_t *out_rgba);
+
 /* `uv` and vertex color came from validated cooked geometry. Sampling repeats
    UVs and uses mip-zero bilinear filtering; it allocates nothing. */
 void vkr_bake_material_sample(const VkrBakeTextureStore *store,
