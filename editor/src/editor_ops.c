@@ -159,8 +159,10 @@ static bool8_t ops_equals(String8 text, const char *word) {
 }
 
 /* An optional three-number array; false with an error when malformed. */
-static bool8_t ops_arg_vec3(OpsContext *ctx, const VkrBakeryJson *args,
-                            const char *key, Vec3 *out, bool8_t *present) {
+/* An optional array of `count` finite numbers named `key`. */
+static bool8_t ops_arg_floats(OpsContext *ctx, const VkrBakeryJson *args,
+                              const char *key, float32_t *out, uint32_t count,
+                              bool8_t *present) {
   const VkrBakeryJson *value = vkr_bakery_json_get(args, key);
   if (present) {
     *present = value != NULL;
@@ -168,26 +170,40 @@ static bool8_t ops_arg_vec3(OpsContext *ctx, const VkrBakeryJson *args,
   if (!value) {
     return true_v;
   }
-  float32_t parts[3] = {0};
-  if (value->type != VKR_BAKERY_JSON_ARRAY || value->count != 3u) {
-    return ops_fail(ctx, OPS_INVALID, "'%s' must be an array of 3 numbers",
-                    key);
+  if (value->type != VKR_BAKERY_JSON_ARRAY || value->count != count) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' must be an array of %u numbers",
+                    key, count);
   }
-  for (uint32_t i = 0; i < 3u; ++i) {
+  for (uint32_t i = 0; i < count; ++i) {
     const VkrBakeryJson *part = vkr_bakery_json_at(value, i);
     if (part->type == VKR_BAKERY_JSON_INT) {
-      parts[i] = (float32_t)part->integer;
+      out[i] = (float32_t)part->integer;
     } else if (part->type == VKR_BAKERY_JSON_FLOAT) {
-      parts[i] = (float32_t)part->number;
+      out[i] = (float32_t)part->number;
     } else {
-      return ops_fail(ctx, OPS_INVALID, "'%s' must be an array of 3 numbers",
-                      key);
+      return ops_fail(ctx, OPS_INVALID, "'%s' must be an array of %u numbers",
+                      key, count);
     }
-    if (!isfinite(parts[i])) {
+    if (!isfinite(out[i])) {
       return ops_fail(ctx, OPS_INVALID, "'%s' must be finite", key);
     }
   }
-  *out = vec3_new(parts[0], parts[1], parts[2]);
+  return true_v;
+}
+
+static bool8_t ops_arg_vec3(OpsContext *ctx, const VkrBakeryJson *args,
+                            const char *key, Vec3 *out, bool8_t *present) {
+  float32_t parts[3] = {0};
+  bool8_t found = false_v;
+  if (!ops_arg_floats(ctx, args, key, parts, 3u, &found)) {
+    return false_v;
+  }
+  if (present) {
+    *present = found;
+  }
+  if (found) {
+    *out = vec3_new(parts[0], parts[1], parts[2]);
+  }
   return true_v;
 }
 
@@ -1704,6 +1720,10 @@ static bool8_t ops_build_set_material(OpsContext *ctx,
 // Brush editing (ADR-084)
 // -----------------------------------------------------------------------------
 
+static uint32_t ops_arg_points(OpsContext *ctx, const VkrBakeryJson *args,
+                               const char *key, Vec3 *out, uint32_t min_count,
+                               uint32_t max_count);
+
 /* A brush as its faces read it: planes, face entities and their values. */
 typedef struct OpsBrushRead {
   VkrEntityId entity;
@@ -2282,6 +2302,189 @@ static bool8_t ops_build_merge(OpsContext *ctx, const VkrBakeryJson *args,
       return false_v;
     }
     removal->request.entity = brushes[b].entity;
+  }
+  batch->op_item[batch->op_count] = item;
+  return true_v;
+}
+
+/* A face's world-space unit normal. */
+static Vec3 ops_face_world_normal(const OpsBrushRead *brush, uint32_t face) {
+  const Vec3 n = vec3_normalize(brush->planes[face].normal);
+  const Vec4 world = mat4_mul_vec4(
+      mat4_transpose(mat4_inverse_affine(brush->transform->world)),
+      vec3_to_vec4(n, 0.0f));
+  return vec3_normalize(vec3_new(world.x, world.y, world.z));
+}
+
+/* Pulls a grid rectangle of a face out, or pushes it in (ADR-084): pulled,
+   it joins the brush when the union stays convex and is a new brush
+   otherwise; pushed, it carves a recess, or a hole when it goes through. */
+static bool8_t ops_build_patch(OpsContext *ctx, const VkrBakeryJson *args,
+                               OpsBatch *batch) {
+  OpsBrushRead *brush =
+      arena_alloc(ops_arena(ctx), sizeof(*brush), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPiece *pieces =
+      arena_alloc(ops_arena(ctx), VKR_BRUSH_FACE_MAX * sizeof(*pieces),
+                  ARENA_MEMORY_TAG_STRUCT);
+  SceneBrushFace *extra =
+      arena_alloc(ops_arena(ctx), VKR_BRUSH_FACE_MAX * sizeof(*extra),
+                  ARENA_MEMORY_TAG_STRUCT);
+  if (!brush || !geometry || !pieces || !extra) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  uint32_t face = 0u;
+  float32_t min[2] = {0};
+  float32_t max[2] = {0};
+  bool8_t has_min = false_v;
+  bool8_t has_max = false_v;
+  float64_t distance = 0.0;
+  if (!ops_face_arg(ctx, batch, args, brush, &face) ||
+      !ops_brush_unscaled(ctx, brush) ||
+      !ops_arg_floats(ctx, args, "min", min, 2u, &has_min) ||
+      !ops_arg_floats(ctx, args, "max", max, 2u, &has_max)) {
+    return false_v;
+  }
+  if (!has_min || !has_max || !(max[0] > min[0]) || !(max[1] > min[1])) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'min' and 'max' are the rectangle's [u, v] corners on "
+                    "the face's grid axes, max above min");
+  }
+  if (!ops_arg_number(args, "distance", &distance) || !isfinite(distance) ||
+      fabs(distance) < 1.0e-4) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'distance' in meters pulls the patch out, or pushes it "
+                    "in when negative");
+  }
+
+  /* The rectangle's sides, from the face's world grid axes. */
+  const Vec3 normal = ops_face_world_normal(brush, face);
+  Vec3 u = {0};
+  Vec3 v = {0};
+  vkr_brush_grid_axes(normal, &u, &v);
+  const VkrBrushPlane rect[4] = {
+      ops_plane_to_brush(brush, u, vec3_scale(u, max[0])),
+      ops_plane_to_brush(brush, vec3_scale(u, -1.0f), vec3_scale(u, min[0])),
+      ops_plane_to_brush(brush, v, vec3_scale(v, max[1])),
+      ops_plane_to_brush(brush, vec3_scale(v, -1.0f), vec3_scale(v, min[1])),
+  };
+  for (uint32_t i = 0; i < VKR_BRUSH_FACE_MAX; ++i) {
+    extra[i] = brush->values[face];
+  }
+  VkrBrushPiece prism = {0};
+  const bool8_t pull = distance > 0.0;
+  /* A pushed patch's cutter starts just outside the face. */
+  if (!vkr_brush_patch_prism(brush->planes, brush->count, face, rect,
+                             pull ? 0.0f : (float32_t)distance,
+                             pull ? (float32_t)distance : 0.01f, &prism,
+                             geometry)) {
+    return ops_fail(ctx, OPS_INVALID, "The rectangle does not lie on the face");
+  }
+
+  uint32_t item = UINT32_MAX;
+  if (pull) {
+    const VkrBrushPlane *lists[2] = {brush->planes, prism.planes};
+    const uint32_t counts[2] = {brush->count, prism.count};
+    if (vkr_brush_merge(lists, counts, 2u, &pieces[0], geometry)) {
+      if (!ops_brush_replace(ctx, batch, brush, pieces, 1u, extra, prism.count,
+                             &brush->values[face], true_v, "", &item)) {
+        return false_v;
+      }
+    } else if (!ops_brush_replace(ctx, batch, brush, &prism, 1u, NULL, 0u,
+                                  &brush->values[face], false_v, " patch",
+                                  &item)) {
+      return false_v;
+    }
+  } else {
+    const uint32_t count =
+        vkr_brush_carve(brush->planes, brush->count, prism.planes, prism.count,
+                        pieces, VKR_BRUSH_FACE_MAX, geometry);
+    if (count == UINT32_MAX) {
+      return ops_fail(ctx, OPS_INVALID, "The patch does not reach the brush");
+    }
+    if (!ops_brush_replace(ctx, batch, brush, pieces, count, extra, prism.count,
+                           &brush->values[face], true_v, NULL, &item)) {
+      return false_v;
+    }
+  }
+  if (item != UINT32_MAX) {
+    batch->op_item[batch->op_count] = item;
+  }
+  return true_v;
+}
+
+/* Moves corners of a brush (ADR-084): a vertex, the two ends of an edge, or
+   the ends of a grid line, which first splits the brush along `split`. Each
+   piece becomes the hull of its moved corners; a move that would dent one
+   fails. */
+static bool8_t ops_build_reshape(OpsContext *ctx, const VkrBakeryJson *args,
+                                 OpsBatch *batch) {
+  OpsBrushRead *brush =
+      arena_alloc(ops_arena(ctx), sizeof(*brush), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushGeometry *geometry =
+      arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
+  VkrBrushPiece *pieces = arena_alloc(ops_arena(ctx), 2u * sizeof(*pieces),
+                                      ARENA_MEMORY_TAG_STRUCT);
+  if (!brush || !geometry || !pieces) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  Vec3 points[8];
+  Vec3 delta = {0};
+  bool8_t has_delta = false_v;
+  if (!ops_brush_arg(ctx, batch, args, "brush", brush) ||
+      !ops_brush_unscaled(ctx, brush) ||
+      !ops_arg_vec3(ctx, args, "delta", &delta, &has_delta)) {
+    return false_v;
+  }
+  const uint32_t point_count =
+      ops_arg_points(ctx, args, "points", points, 1u, ArrayCount(points));
+  if (!point_count) {
+    return false_v;
+  }
+  if (!has_delta || vec3_length(delta) < 1.0e-4f) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'delta' is the world move of the corners in meters");
+  }
+
+  /* Corners and the move in the brush's space. */
+  const Mat4 inverse = mat4_inverse_affine(brush->transform->world);
+  for (uint32_t i = 0; i < point_count; ++i) {
+    points[i] = mat4_mul_vec3(inverse, points[i]);
+  }
+  const Vec4 local_delta = mat4_mul_vec4(inverse, vec3_to_vec4(delta, 0.0f));
+  const Vec3 move = vec3_new(local_delta.x, local_delta.y, local_delta.z);
+  VkrBrushPlane split = {0};
+  const VkrBakeryJson *split_args = vkr_bakery_json_get(args, "split");
+  if (split_args) {
+    Vec3 normal = {0};
+    Vec3 point = {0};
+    bool8_t has_normal = false_v;
+    bool8_t has_point = false_v;
+    if (split_args->type != VKR_BAKERY_JSON_OBJECT ||
+        !ops_arg_vec3(ctx, split_args, "normal", &normal, &has_normal) ||
+        !ops_arg_vec3(ctx, split_args, "point", &point, &has_point) ||
+        !has_normal || !has_point || vec3_length(normal) < 1.0e-4f) {
+      return ctx->call->error_code
+                 ? false_v
+                 : ops_fail(ctx, OPS_INVALID,
+                            "'split' is {point, normal}, a world plane");
+    }
+    split = ops_plane_to_brush(brush, normal, point);
+  }
+
+  uint32_t piece_count = 0u;
+  const VkrBrushError error = vkr_brush_reshape(
+      brush->planes, brush->count, split_args ? &split : NULL, points,
+      point_count, move, pieces, &piece_count, geometry);
+  if (error != VKR_BRUSH_OK) {
+    return ops_fail(ctx, OPS_INVALID, "The brush cannot take that shape: %s",
+                    vkr_brush_error_text(error));
+  }
+  uint32_t item = UINT32_MAX;
+  if (!ops_brush_replace(ctx, batch, brush, pieces, piece_count, NULL, 0u,
+                         &brush->values[0], true_v, NULL, &item)) {
+    return false_v;
   }
   batch->op_item[batch->op_count] = item;
   return true_v;
@@ -4470,12 +4673,13 @@ static VkrEditorOpStatus ops_run_terrain_sample(OpsContext *ctx) {
 
 /* World points of `key`: 2 to VKR_SPLINE_POINT_MAX [x, y, z] arrays. */
 static uint32_t ops_arg_points(OpsContext *ctx, const VkrBakeryJson *args,
-                               const char *key, Vec3 *out) {
+                               const char *key, Vec3 *out, uint32_t min_count,
+                               uint32_t max_count) {
   const VkrBakeryJson *points = vkr_bakery_json_get(args, key);
-  if (!points || points->type != VKR_BAKERY_JSON_ARRAY || points->count < 2u ||
-      points->count > VKR_SPLINE_POINT_MAX) {
-    ops_fail(ctx, OPS_INVALID, "'%s' is 2 to %u [x, y, z] points", key,
-             VKR_SPLINE_POINT_MAX);
+  if (!points || points->type != VKR_BAKERY_JSON_ARRAY ||
+      points->count < min_count || points->count > max_count) {
+    ops_fail(ctx, OPS_INVALID, "'%s' is %u to %u [x, y, z] points", key,
+             min_count, max_count);
     return 0u;
   }
   uint32_t count = 0u;
@@ -4536,7 +4740,8 @@ static bool8_t ops_build_spline_create(OpsContext *ctx,
   if (!ops_arg_container(ctx, args, &container)) {
     return false_v;
   }
-  const uint32_t count = ops_arg_points(ctx, args, "points", points);
+  const uint32_t count =
+      ops_arg_points(ctx, args, "points", points, 2u, VKR_SPLINE_POINT_MAX);
   if (!count) {
     return false_v;
   }
@@ -5285,6 +5490,32 @@ static const OpsDef s_ops[] = {
      "\"array\",\"items\":" OPS_ENTITY_SCHEMA ",\"minItems\":2,"
      "\"maxItems\":8}," OPS_REVIEW_SCHEMA "},\"required\":[\"brushes\"]}",
      NULL, ops_build_merge},
+    {"brush.patch",
+     "Pull a rectangle of a face's grid out by 'distance' meters, or push it "
+     "in when negative. 'min' and 'max' are [u, v] corners on the face's "
+     "grid axes (world X and Z on a floor). A pulled patch joins the brush "
+     "when the result stays convex and is a new brush otherwise; a pushed "
+     "one carves a recess or a hole.",
+     "{\"type\":\"object\",\"properties\":{\"face\":" OPS_ENTITY_SCHEMA
+     ",\"brush\":" OPS_ENTITY_SCHEMA "," OPS_SIDE_SCHEMA
+     ",\"min\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},"
+     "\"minItems\":2,\"maxItems\":2},\"max\":{\"type\":\"array\","
+     "\"items\":{\"type\":\"number\"},\"minItems\":2,\"maxItems\":2},"
+     "\"distance\":{\"type\":\"number\"}," OPS_REVIEW_SCHEMA
+     "},\"required\":[\"min\",\"max\",\"distance\"]}",
+     NULL, ops_build_patch},
+    {"brush.reshape",
+     "Move corners of a brush by the world 'delta': one vertex, an edge's "
+     "two ends, or with 'split' {point, normal} the ends of a grid line after "
+     "cutting the brush along that plane. Each piece becomes the hull of its "
+     "corners; a move that would dent a piece fails.",
+     "{\"type\":\"object\",\"properties\":{\"brush\":" OPS_ENTITY_SCHEMA
+     ",\"points\":{\"type\":\"array\",\"items\":" OPS_VEC3_SCHEMA
+     ",\"minItems\":1,\"maxItems\":8},\"delta\":" OPS_VEC3_SCHEMA
+     ",\"split\":{\"type\":\"object\",\"properties\":{"
+     "\"point\":" OPS_VEC3_SCHEMA ",\"normal\":" OPS_VEC3_SCHEMA
+     "}}," OPS_REVIEW_SCHEMA "},\"required\":[\"brush\",\"points\",\"delta\"]}",
+     NULL, ops_build_reshape},
     {"blockout.room",
      "Create a closed room under a group: floor, ceiling and four walls of "
      "'wall' thickness around an interior box from 'min' (interior corner) "
