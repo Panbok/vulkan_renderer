@@ -10,6 +10,10 @@
  * post_process component (ADR-076). */
 typedef struct VkrGraphicsSettings {
   bool8_t vsync, hdr, temporal_upscaling, dynamic_resolution, anti_aliasing;
+  /* The tiled graphics pipeline (ADR-087): forward four-sample shading with
+   * baked lightmaps instead of the desktop pipeline; Metal only, without
+   * temporal upscaling. Takes effect at the next start. */
+  bool8_t tiled_pipeline;
   /* Render the display's physical pixels; off renders one pixel per point,
    * a quarter of the pixels on a 2x Retina display. macOS only. */
   bool8_t high_dpi;
@@ -42,6 +46,7 @@ typedef struct VkrGraphicsSettingsState {
   bool8_t restart_required;
   bool8_t temporal_upscaling_available;
   bool8_t dynamic_resolution_available;
+  bool8_t tiled_pipeline_available;
   /* Whether render scale applies without temporal upscaling; otherwise the
      Scene renders at unit scale until temporal upscaling is enabled. */
   bool8_t spatial_render_scale_available;
@@ -89,6 +94,10 @@ uint32_t vkr_graphics_settings_texture_max_dimension(
 bool8_t
 vkr_graphics_settings_restart_required(const VkrGraphicsSettings *requested,
                                        const VkrGraphicsSettings *started);
+/* Copies the settings that take effect only at start from `running` into
+ * `settings`, so a project's stored values cannot override the machine's. */
+void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
+                                        const VkrGraphicsSettings *running);
 /* The Scene render scale `settings` selects under `state`'s capabilities: unit
  * scale where the backend cannot scale without temporal upscaling. */
 float32_t

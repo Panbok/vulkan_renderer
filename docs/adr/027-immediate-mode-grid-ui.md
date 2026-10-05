@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -479,7 +479,8 @@ The sample runtime owns player Graphics settings in `VkrGraphicsSettings`.
 Settings > Graphics uses a left tab rail and a clipped, scrollable right pane
 with Display, Quality, Lighting, Effects, and Color tabs. The editor borrows
 current state during UI build and sends a typed `VkrGraphicsSettingsRequest`;
-the runtime validates and applies the request. HDR and temporal upscaling are
+the runtime validates and applies the request. HDR, temporal upscaling and
+the tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)) are
 startup-owned values and set a restart-required notice when changed. Vsync
 switches between frames (`vkr_renderer_set_present_mode`: the Metal layer's
 display sync, a recreated Vulkan swapchain); a windowed macOS editor still
@@ -496,7 +497,9 @@ apply to live frame state; lighting changes invalidate the relevant shadow and
 temporal histories.
 
 Settings load from `VKR_GRAPHICS_SETTINGS_PATH`, or the project
-`.vkr-graphics-settings.json` default when the variable is absent. Missing files
+`.vkr-graphics-settings.json` default when the variable is absent. The
+project-managed editor ignores both and uses a machine-local `graphics.json`
+([ADR-069](069-editor-projects-and-workspaces.md)). Missing files
 keep backend defaults; invalid files leave defaults intact and report a message.
 Changes save after 0.25 seconds without another edit and flush during shutdown.
 Saving uses a temporary file and atomic rename. The persisted record is versioned

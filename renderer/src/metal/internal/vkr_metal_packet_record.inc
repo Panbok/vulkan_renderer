@@ -253,6 +253,19 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
           destinationBytesPerRow:sizeof(uint32_t)
         destinationBytesPerImage:sizeof(uint32_t)
                          options:MTLBlitOptionNone];
+    /* The depth follows the object id in the readback layout. */
+    if (pass->picking_readback.depth_source)
+      [encoder copyFromTexture:pass->picking_readback.depth_source
+                       sourceSlice:0u
+                       sourceLevel:0u
+                      sourceOrigin:pass->picking_readback.origin
+                        sourceSize:MTLSizeMake(1u, 1u, 1u)
+                          toBuffer:pass->picking_readback.destination
+                 destinationOffset:pass->picking_readback.destination_offset +
+                                   sizeof(uint32_t)
+            destinationBytesPerRow:sizeof(float32_t)
+          destinationBytesPerImage:sizeof(float32_t)
+                           options:MTLBlitOptionNone];
     break;
   default:
     vkr_metal_packet_record_dispatch(renderer, encoder, &pass->dispatch);
@@ -389,6 +402,7 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
   case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
   case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
+  case VKR_RG_EXECUTOR_TILED_PICKING:
     vkr_metal_packet_record_indirect_pass(renderer, encoder, pass);
     break;
   case VKR_RG_EXECUTOR_WORLD_BLEND:

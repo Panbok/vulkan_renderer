@@ -230,8 +230,8 @@ Remaining phases:
    Bistro measured against the 16.7 ms budget and checked against the
    desktop image, transmission and ordinary blending, a bounded set of
    dynamic and shadowed local lights, the remaining material layers, IBL
-   probes, fog, the editor's passes and picking, and making the tiled
-   pipeline the Apple default.
+   probes, fog, and making the tiled pipeline the Apple default. The editor
+   runs it (ADR-087, decision 9).
 
 ## Acceptance evidence
 

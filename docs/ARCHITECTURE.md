@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-05
+updated: 2026-10-06
 authority: architecture
 ---
 
@@ -259,7 +259,9 @@ show a restart-required notice; render scale and dynamic resolution do too unles
 range covers them (ADR-027). Other controls apply live and
 invalidate the affected histories. Legacy app/scene settings load from
 `VKR_GRAPHICS_SETTINGS_PATH` or `.vkr-graphics-settings.json`, debounce saves, and
-flush on exit. Managed editor preferences use the project writer described below. Render Stop retains the last Scene image while UI continues;
+flush on exit. Managed editor preferences use the project writer described below;
+the managed editor starts from a machine-local `graphics.json` beside the
+workspace locator, which keeps the restart-time Graphics settings (ADR-069). Render Stop retains the last Scene image while UI continues;
 Vulkan UI-only frames reset Scene readback copies before skipping absent producers.
 Scene allocation failures trigger bounded output-resolution reductions while UI
 resolution stays unchanged; an error at the minimum stops Scene retries.

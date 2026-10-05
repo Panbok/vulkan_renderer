@@ -51,6 +51,13 @@ static const VkrPropertyDesc s_graphics_properties[] = {
                 "gameplay",
      .offset = GRAPHICS_OFFSET(invert_mouse_y),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "tiled_pipeline",
+     .label = "Tiled pipeline",
+     .tooltip = "Render with forward multisampled shading and baked "
+                "lightmaps for Apple GPUs; no glass, local lights or "
+                "screen-space effects yet. Applies after restart",
+     .offset = GRAPHICS_OFFSET(tiled_pipeline),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "temporal_upscaling",
      .label = "Temporal upscaling",
      .tooltip = "Reconstruct a higher-resolution image from temporal data",
@@ -189,11 +196,21 @@ static bool8_t graphics_validate(const void *value, char *error,
     snprintf(error, capacity, "Dynamic resolution requires temporal upscaling");
     return false_v;
   }
+  if (settings->tiled_pipeline && settings->temporal_upscaling) {
+    snprintf(error, capacity,
+             "The tiled pipeline resolves multisampled edges without "
+             "temporal upscaling");
+    return false_v;
+  }
   return true_v;
 }
 
 static void graphics_normalize(void *value) {
   VkrGraphicsSettings *settings = value;
+  /* The pipeline class is the explicit choice; upscaling follows it. */
+  if (settings->tiled_pipeline) {
+    settings->temporal_upscaling = false_v;
+  }
   if (settings->temporal_upscaling) {
     settings->anti_aliasing = true_v;
   } else {
@@ -208,8 +225,25 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
   const VkrGraphicsSettingsState *state = context;
   VkrPropertyState result = {0};
   const uint32_t offset = s_graphics_properties[property].offset;
-  if (offset == offsetof(VkrGraphicsSettings, temporal_upscaling)) {
-    if (state && !state->temporal_upscaling_available) {
+  /* Effects the tiled pipeline does not draw (ADR-087). */
+  const bool8_t tiled_unused =
+      offset == offsetof(VkrGraphicsSettings, ambient_occlusion) ||
+      offset == offsetof(VkrGraphicsSettings, screen_space_gi) ||
+      offset == offsetof(VkrGraphicsSettings, screen_space_reflections) ||
+      offset == offsetof(VkrGraphicsSettings, subsurface_scattering) ||
+      offset == offsetof(VkrGraphicsSettings, volumetric_fog) ||
+      offset == offsetof(VkrGraphicsSettings, depth_of_field) ||
+      offset == offsetof(VkrGraphicsSettings, motion_blur);
+  if (settings->tiled_pipeline && tiled_unused) {
+    result.flags |= VKR_PROPERTY_STATE_DISABLED;
+  }
+  if (offset == offsetof(VkrGraphicsSettings, tiled_pipeline)) {
+    if (state && !state->tiled_pipeline_available) {
+      result.flags |= VKR_PROPERTY_STATE_DISABLED;
+    }
+  } else if (offset == offsetof(VkrGraphicsSettings, temporal_upscaling)) {
+    if ((state && !state->temporal_upscaling_available) ||
+        settings->tiled_pipeline) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
     if (state && state->temporal_upscaling_name.length) {
@@ -371,9 +405,22 @@ bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings) {
 bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
                                                const VkrGraphicsSettings *b) {
   return a->vsync != b->vsync || a->hdr != b->hdr ||
+         a->tiled_pipeline != b->tiled_pipeline ||
          a->temporal_upscaling != b->temporal_upscaling ||
          a->dynamic_resolution != b->dynamic_resolution ||
          a->render_scale != b->render_scale;
+}
+
+void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
+                                        const VkrGraphicsSettings *running) {
+  /* The fields vkr_graphics_settings_restart_required compares. */
+  settings->vsync = running->vsync;
+  settings->hdr = running->hdr;
+  settings->tiled_pipeline = running->tiled_pipeline;
+  settings->temporal_upscaling = running->temporal_upscaling;
+  settings->dynamic_resolution = running->dynamic_resolution;
+  settings->render_scale = running->render_scale;
+  graphics_normalize(settings);
 }
 
 uint32_t vkr_graphics_settings_texture_max_dimension(

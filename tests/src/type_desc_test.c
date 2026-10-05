@@ -323,6 +323,33 @@ static void test_graphics_preferences_type(void) {
   const VkrPropertyState state = vkr_type_property_state(
       &vkr_graphics_settings_type, &settings, dynamic, NULL);
   assert(state.flags & VKR_PROPERTY_STATE_DISABLED);
+
+  /* A project opened in a running editor keeps the machine's restart-time
+   * settings and its own others, and leaves no restart pending. */
+  VkrGraphicsSettings running =
+      vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_METAL);
+  running.tiled_pipeline = true_v;
+  running.temporal_upscaling = false_v;
+  running.dynamic_resolution = false_v;
+  running.vsync = false_v;
+  running.hdr = true_v;
+  running.render_scale = 0.75f;
+  VkrGraphicsSettings project =
+      vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_METAL);
+  project.tiled_pipeline = false_v;
+  project.temporal_upscaling = true_v;
+  project.dynamic_resolution = true_v;
+  project.anti_aliasing = true_v;
+  project.vsync = true_v;
+  project.hdr = false_v;
+  project.render_scale = 1.0f;
+  project.shadow_quality = 0u;
+  assert(vkr_graphics_settings_valid(&project));
+  assert(vkr_graphics_settings_restart_required(&project, &running));
+  vkr_graphics_settings_keep_restart(&project, &running);
+  assert(!vkr_graphics_settings_restart_required(&project, &running));
+  assert(vkr_graphics_settings_valid(&project));
+  assert(project.shadow_quality == 0u);
   printf("  test_graphics_preferences_type PASSED\n");
 }
 

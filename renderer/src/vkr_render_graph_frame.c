@@ -434,6 +434,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                       VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_TILED_CLOUDS] = {"pass.tiled.clouds",
                                       VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_TILED_PICKING] = {"pass.picking.tiled",
+                                       VKR_RG_PASS_TYPE_GRAPHICS},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

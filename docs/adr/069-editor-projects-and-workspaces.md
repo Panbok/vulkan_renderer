@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -161,6 +161,11 @@ Projects and Scenes use the shared navigation-button style on the left before Me
 with a distinct background highlight.
 Graphics controls, runtime input/presentation preferences, layout, panel state,
 Console filters, Bakery defaults and Content preferences belong to the project.
+Graphics settings that apply only at start (vsync, HDR, the tiled pipeline,
+temporal upscaling, dynamic resolution and render scale) belong to the
+machine: the editor starts from the last applied settings in a machine-local
+`graphics.json` beside the workspace locator, and a project's stored values
+of those settings do not apply.
 Viewport and hierarchy recall are keyed by scene within the project. Lights,
 environment, probes, fog, authored cameras and edit overrides remain scene data.
 Native window/display placement and the workspace locator remain machine-local.

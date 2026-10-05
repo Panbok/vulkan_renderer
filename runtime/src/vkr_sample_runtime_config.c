@@ -129,8 +129,12 @@ vkr_internal bool8_t
 sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
                      VkrSampleRuntimeOptions *options) {
   const bool8_t project_managed = runtime_config->project_managed;
-  const char *graphics_path =
-      project_managed ? "" : getenv("VKR_GRAPHICS_SETTINGS_PATH");
+  const char *graphics_path = project_managed
+                                  ? runtime_config->graphics_settings_path
+                                  : getenv("VKR_GRAPHICS_SETTINGS_PATH");
+  if (project_managed && !graphics_path) {
+    graphics_path = "";
+  }
   if (!graphics_path) {
     graphics_path = runtime_config->graphics_settings_path;
   }
@@ -168,6 +172,14 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
   if (!temporal_available) {
     settings.temporal_upscaling = false_v;
   }
+  /* The tiled pipeline runs on Metal only and replaces temporal upscaling
+     (ADR-087). */
+  if (!metal) {
+    settings.tiled_pipeline = false_v;
+  }
+  if (settings.tiled_pipeline) {
+    settings.temporal_upscaling = false_v;
+  }
   if (!dynamic_available || !settings.temporal_upscaling) {
     settings.dynamic_resolution = false_v;
   }
@@ -181,6 +193,7 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
       .settings = settings,
       .temporal_upscaling_available = temporal_available,
       .dynamic_resolution_available = dynamic_available,
+      .tiled_pipeline_available = metal,
       .spatial_render_scale_available = metal,
       .high_dpi_available = high_dpi_available,
       .temporal_upscaling_name =
@@ -284,7 +297,7 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
   const VkrGraphicsSettings *graphics = &options->graphics.settings;
   const bool8_t paneled = runtime_config->presentation.paneled;
   VkrUpscaleMode upscale_mode = VKR_UPSCALE_MODE_SPATIAL;
-  if (graphics->temporal_upscaling) {
+  if (graphics->temporal_upscaling && !graphics->tiled_pipeline) {
     upscale_mode = options->renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL
                        ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
                        : VKR_UPSCALE_MODE_FSR31;
@@ -346,6 +359,9 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .render_scale =
           vkr_graphics_settings_render_scale(&options->graphics, graphics),
       .upscale_mode = upscale_mode,
+      .graphics_pipeline = graphics->tiled_pipeline
+                               ? VKR_GRAPHICS_PIPELINE_TILED
+                               : VKR_GRAPHICS_PIPELINE_DESKTOP,
       .dynamic_resolution =
           {
               .min_scale = .334f,

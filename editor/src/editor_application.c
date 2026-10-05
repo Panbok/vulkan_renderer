@@ -404,6 +404,14 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
   config.project_managed = editor->project_managed;
   if (editor->project_managed) {
     editor->layout_path = NULL;
+    /* Restart-time settings such as the tiled pipeline take effect before
+       a project opens, so the machine keeps them (ADR-087). */
+    VkrEditorProjectError error = {0};
+    if (vkr_editor_project_local_graphics_path(editor->graphics_path, &error)) {
+      config.graphics_settings_path = editor->graphics_path;
+    } else {
+      log_warn("Graphics settings stay unsaved: %s", error.message);
+    }
   }
   config.title = "VKR Editor";
   /* A headless target cannot resize, so it takes the editor's size from the

@@ -965,6 +965,13 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
           false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
           VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
           VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled forward");
+  /* Without a visibility buffer, a pick replays the opaque draws; their
+     alpha-tested surfaces pick whole. */
+  renderer->tiled_picking_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, slang, "vkr_metal_packet_vertex", slang,
+      "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint, false_v,
+      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      true_v, @"VKR tiled picking");
   renderer->tiled_sky_pipeline = vkr_metal_packet_create_pipeline_with_targets(
       renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
       "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float, false_v,
@@ -1741,8 +1748,8 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
   if (renderer->tiled &&
       (!renderer->tiled_depth_pipeline || !renderer->tiled_forward_pipeline ||
        !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
-       !renderer->tiled_prepass_state || !renderer->tiled_shade_state ||
-       !renderer->tiled_sky_state)) {
+       !renderer->tiled_picking_pipeline || !renderer->tiled_prepass_state ||
+       !renderer->tiled_shade_state || !renderer->tiled_sky_state)) {
     log_error("Metal renderer startup object unavailable: tiled pipeline");
     return false_v;
   }

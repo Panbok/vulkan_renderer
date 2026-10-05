@@ -9,9 +9,9 @@ authority: adr
 ## Status
 
 Accepted (partial). The decision is in force. A first tiled pipeline runs on
-Metal when a renderer selects it (decisions 6 and 7); every device runs the
-desktop pipeline by default until the tiled one draws transmission, dynamic
-lights and the editor. The remaining design is in
+Metal when a renderer or the editor selects it (decisions 6, 7 and 9); every
+device runs the desktop pipeline by default until the tiled one draws
+transmission and dynamic lights. The remaining design is in
 [Tiled graphics pipeline](../proposals/tiled-pipeline.md).
 
 ## Context
@@ -122,6 +122,21 @@ pipeline rather than a backend mechanism.
    drawn yet. The vertex stage is MSL, because the Slang module numbers entry
    point buffers in declaration order and the GPU-encoded commands bind the
    draw root at buffer 0.
+9. The editor runs the tiled pipeline. The tiled graph carries the editor's
+   Scene image passes (resolve, grid, selection mask and outline, overlay
+   and composite), which read the resolved `hdr_scene_color` and
+   `opaque_vbuffer_depth`. Without a visibility buffer, a pick replays the
+   opaque GPU-driven draws into the picking target (`Picking.Tiled`,
+   `pass.picking.tiled`); picks are rare, so frames without one pay nothing,
+   and an alpha-tested surface picks whole. The pick readback also copies the
+   picked pixel's resolved depth, which grid fit reads in scenes without
+   collision. Preferences ▸ Graphics ▸ Tiled pipeline and `gfx.tiled`
+   ([ADR-075](075-editor-cmd-bar-and-evaluator.md)) select the class for the
+   next start. A project-managed editor starts from a machine-local
+   `graphics.json` beside the workspace locator
+   ([ADR-069](069-editor-projects-and-workspaces.md)), and a project's stored
+   restart-time settings do not override it
+   ([`vkr_graphics_settings_keep_restart`](../../runtime/src/vkr_graphics_settings.h)).
 
 ### First tiled pipeline measurement
 
@@ -148,6 +163,17 @@ trace and cloud draw 0.35 and 0.32 ms. By inspection, street-view captures
 of both pipelines (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`)
 match in sky and sunlit surfaces; the tiled one lacks lamp light, glass and
 ambient occlusion.
+
+### Editor evidence
+
+Release editor, M1 Pro, 2026-10-06, isolated `HOME`. On the toolkit test
+level, a headless run setting `gfx.tiled = true` wrote the machine-local
+`graphics.json`; the next start ran the tiled pipeline with `gfx.restart`
+false after the project opened, a click picked the floor and its outline,
+grid and labels drew. On Bistro, which has no collision, `camera.view top;
+grid.fit` read the picked depth as 16.8432 m on the tiled pipeline and
+16.8431 m on the desktop one. The CPU test `test_tiled_graph_topology`
+compiles an editor frame that picks.
 
 ## Consequences
 

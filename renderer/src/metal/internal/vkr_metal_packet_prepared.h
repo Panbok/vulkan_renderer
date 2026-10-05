@@ -171,6 +171,9 @@ typedef struct VkrMetalPacketPreparedPass {
     VkrMetalPacketTransferPass transfer;
     struct {
       id<MTLTexture> source;
+      /* The tiled pipeline reads the picked pixel's resolved depth here,
+         which the desktop picking resolve writes itself. */
+      id<MTLTexture> depth_source;
       id<MTLBuffer> destination;
       uint64_t destination_offset;
       MTLOrigin origin;

@@ -2415,7 +2415,7 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
       source_name = "scene_pre_transmission";
     else if (string_equals(channel->name, "hdr_post_transmission") &&
              packet->input.frame.editor_enabled)
-      source_name = "scene_color";
+      source_name = renderer->tiled ? "hdr_scene_color" : "scene_color";
     else if (string_equals(channel->name,
                            "transmission_visibility_ids_layer_1"))
       source_slice = 1u;
@@ -3038,7 +3038,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_picking_readback(
       MIN((NSUInteger)packet->input.picking->x, source.width - 1);
   const NSUInteger y =
       MIN((NSUInteger)packet->input.picking->y, source.height - 1);
+  const VkrRgImageUse *depth_read =
+      vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  id<MTLTexture> depth_source =
+      depth_read ? vkr_metal_packet_texture(renderer, depth_read->image) : nil;
+  if (depth_read && (!depth_source || depth_source.width != source.width ||
+                     depth_source.height != source.height))
+    return false_v;
   prepared->picking_readback.source = source;
+  prepared->picking_readback.depth_source = depth_source;
   prepared->picking_readback.destination = readback_buffer;
   prepared->picking_readback.destination_offset = readback_offset;
   prepared->picking_readback.origin = MTLOriginMake(x, y, 0u);

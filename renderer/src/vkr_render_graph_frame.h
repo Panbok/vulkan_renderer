@@ -120,6 +120,8 @@ typedef enum VkrRgExecutorKind {
    * (ADR-087). */
   VKR_RG_EXECUTOR_TILED_OPAQUE,
   VKR_RG_EXECUTOR_TILED_CLOUDS,
+  /** Object ids of the tiled pipeline's opaque draws for a pick. */
+  VKR_RG_EXECUTOR_TILED_PICKING,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

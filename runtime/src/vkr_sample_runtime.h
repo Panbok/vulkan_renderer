@@ -496,7 +496,8 @@ typedef struct VkrSampleRuntimeConfig {
   bool8_t project_managed;
   /** Graphics preferences file when $VKR_GRAPHICS_SETTINGS_PATH is unset;
    * NULL keeps `<content root>.vkr-graphics-settings.json`. A packaged game
-   * names a per-user file. Ignored in project mode. */
+   * names a per-user file. In project mode, the machine-local file the editor
+   * starts with, whatever the variable says; NULL keeps no file. */
   const char *graphics_settings_path;
   /** Graphics settings JSON applied over the backend defaults before the
    * preferences file, such as a packaged game's `graphics`; may be empty. */

@@ -914,6 +914,10 @@ static void project_restore_settings(VkrEditorProjects *projects,
   if (graphics.length) {
     (void)vkr_graphics_settings_read_json(graphics, &projects->graphics);
   }
+  /* The process started with the machine's restart-time settings; a project
+     cannot change them until the next start. */
+  vkr_graphics_settings_keep_restart(&projects->graphics,
+                                     &frame->graphics->settings);
   *frame->graphics_request = (VkrGraphicsSettingsRequest){
       .apply = true_v, .settings = projects->graphics};
   /* Settings written before workbenches hold one `layout`, which becomes

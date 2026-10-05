@@ -2461,15 +2461,34 @@ bool8_t vkr_editor_project_json_merge_objects(VkrAllocator *allocator,
   return true_v;
 }
 
-bool8_t vkr_editor_project_local_jobs_directory(
-    char out[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error) {
-  char locator[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  if (!out || !project_locator_path(NULL, locator, error)) {
+static bool8_t project_ensure_directory(const char *path) {
+  Arena *arena = arena_create(KB(16), KB(4));
+  if (!arena) {
     return false_v;
   }
-  char *separator = strrchr(locator, '/');
+  VkrAllocator allocator = {.ctx = arena};
+  bool8_t initialized = vkr_allocator_arena(&allocator);
+  String8 directory = project_string(path);
+  bool8_t created =
+      initialized && file_ensure_directory(&allocator, &directory);
+  if (initialized) {
+    vkr_allocator_release_global_accounting(&allocator);
+  }
+  arena_destroy(arena);
+  return created;
+}
+
+/* The OS-local VKR directory that holds the workspace locator, created when
+   missing. */
+static bool8_t
+project_local_directory(char out[VKR_EDITOR_PROJECT_PATH_CAPACITY],
+                        VkrEditorProjectError *error) {
+  if (!project_locator_path(NULL, out, error)) {
+    return false_v;
+  }
+  char *separator = strrchr(out, '/');
 #if defined(PLATFORM_WINDOWS)
-  char *backslash = strrchr(locator, '\\');
+  char *backslash = strrchr(out, '\\');
   if (backslash && (!separator || backslash > separator)) {
     separator = backslash;
   }
@@ -2478,23 +2497,22 @@ bool8_t vkr_editor_project_local_jobs_directory(
     return project_error(error, "Local settings path has no parent");
   }
   *separator = 0;
-  if (!project_join(out, locator, "jobs")) {
+  if (!project_ensure_directory(out)) {
+    return project_error(error, "Cannot create local settings directory");
+  }
+  return true_v;
+}
+
+bool8_t vkr_editor_project_local_jobs_directory(
+    char out[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error) {
+  char local[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!out || !project_local_directory(local, error)) {
+    return false_v;
+  }
+  if (!project_join(out, local, "jobs")) {
     return project_error(error, "Local jobs path exceeds supported capacity");
   }
-  Arena *arena = arena_create(KB(16), KB(4));
-  if (!arena) {
-    return project_error(error, "Unable to allocate local path scratch");
-  }
-  VkrAllocator allocator = {.ctx = arena};
-  bool8_t initialized = vkr_allocator_arena(&allocator);
-  String8 directory = project_string(out);
-  bool8_t created =
-      initialized && file_ensure_directory(&allocator, &directory);
-  if (initialized) {
-    vkr_allocator_release_global_accounting(&allocator);
-  }
-  arena_destroy(arena);
-  if (!created) {
+  if (!project_ensure_directory(out)) {
     return project_error(error, "Cannot create local job directory");
   }
   FilePath path = project_path(out);
@@ -2503,6 +2521,19 @@ bool8_t vkr_editor_project_local_jobs_directory(
       !vkr_string_copy_bounded(out, VKR_EDITOR_PROJECT_PATH_CAPACITY,
                                resolved)) {
     return project_error(error, "Cannot resolve local job directory");
+  }
+  return true_v;
+}
+
+bool8_t vkr_editor_project_local_graphics_path(
+    char out[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error) {
+  char local[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  if (!out || !project_local_directory(local, error)) {
+    return false_v;
+  }
+  if (!project_join(out, local, "graphics.json")) {
+    return project_error(error,
+                         "Local graphics path exceeds supported capacity");
   }
   return true_v;
 }

@@ -1488,7 +1488,8 @@ vkr_internal void test_subresource_range_resolve(void) {
    passes by their data: the opaque pass after the shadows, sky and cloud
    inputs it samples, the cloud trace after the depth the pass resolves, the
    cloud draw after the trace, and post-processing reading the resolved
-   colour. */
+   colour. The editor's frame resolves, picks and reads back from the same
+   resolved targets. */
 vkr_internal void test_tiled_graph_topology(void) {
   printf("  Running test_tiled_graph_topology...\n");
   Arena *arena = arena_create(MB(16), MB(2));
@@ -1577,6 +1578,56 @@ vkr_internal void test_tiled_graph_topology(void) {
   assert(last_shadow < opaque && sky_view < opaque && cloud_light < opaque);
   assert(opaque < trace && trace < clouds && clouds < tonemap);
   assert(tonemap != UINT64_MAX);
+  assert(vkr_rg_compile_schedule(graph));
+  vkr_rg_end_frame(graph);
+
+  /* An editor frame that picks: the pick draws after the resolved depth it
+     reads back, and the Scene image resolves the tiled colour. */
+  frame.editor_enabled = true_v;
+  frame.picking_pending = true_v;
+  frame.editor_image_available = true_v;
+  frame.editor_overlay_enabled = true_v;
+  frame.editor_selection_enabled = true_v;
+  frame.editor_grid_enabled = true_v;
+  frame.post_transform_cache_enabled = true_v;
+  frame.editor_image_width = 1000u;
+  frame.editor_image_height = 800u;
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  const VkrRgImageHandle editor_color =
+      vkr_rg_find_image(graph, string8_lit("hdr_scene_color"));
+  const VkrRgImageHandle editor_depth =
+      vkr_rg_find_image(graph, string8_lit("opaque_vbuffer_depth"));
+  uint64_t editor_opaque = UINT64_MAX;
+  uint64_t pick = UINT64_MAX;
+  uint64_t readback = UINT64_MAX;
+  uint64_t resolve = UINT64_MAX;
+  uint64_t grid = UINT64_MAX;
+  for (uint64_t i = 0u; i < graph->passes.length; ++i) {
+    const VkrRgPass *pass = rg_barrier_test_pass(graph, (uint32_t)i);
+    assert(pass);
+    assert(
+        !vkr_string8_equals_cstr(&pass->desc.name, "Post.Tonemap.Fullscreen"));
+    if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Opaque")) {
+      editor_opaque = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Picking.Tiled")) {
+      pick = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Picking.Readback")) {
+      const VkrRgImageUse *pick_depth =
+          vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+      assert(pick_depth && pick_depth->image.id == editor_depth.id);
+      readback = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Editor.Resolve")) {
+      const VkrRgImageUse *source =
+          vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+      assert(source && source->image.id == editor_color.id);
+      resolve = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Editor.Grid")) {
+      grid = i;
+    }
+  }
+  assert(editor_opaque < pick && pick < readback);
+  assert(editor_opaque < resolve && resolve < grid && grid != UINT64_MAX);
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_end_frame(graph);
   arena_destroy(arena);

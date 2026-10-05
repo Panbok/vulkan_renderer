@@ -765,6 +765,8 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> tiled_forward_pipeline;
   id<MTLRenderPipelineState> tiled_sky_pipeline;
   id<MTLRenderPipelineState> tiled_clouds_pipeline;
+  /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
+  id<MTLRenderPipelineState> tiled_picking_pipeline;
   id<MTLDepthStencilState> tiled_prepass_state;
   id<MTLDepthStencilState> tiled_shade_state;
   id<MTLDepthStencilState> tiled_sky_state;

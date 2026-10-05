@@ -56,7 +56,7 @@
     {
       "name": "hdr_scene_color",
       "type": "image",
-      "condition": "scene_rendering && !editor_enabled",
+      "condition": "scene_rendering",
       "extent": {
         "mode": "viewport"
       },
@@ -474,6 +474,93 @@
       ],
       "flags": [
         "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "editor_scene_image",
+      "type": "image",
+      "condition": "editor_enabled && editor_image_available",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "SWAPCHAIN",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "editor_selection_mask",
+      "type": "image",
+      "condition": "editor_enabled && editor_image_available",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R8_UNORM",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "post_display_linear_editor",
+      "type": "image",
+      "condition": "scene_rendering && post_transform_cache_enabled && editor_enabled",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "picking_color",
+      "type": "image",
+      "condition": "scene_rendering && picking_pending",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R32_UINT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "picking_depth",
+      "type": "image",
+      "condition": "scene_rendering && picking_pending",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "SWAPCHAIN_DEPTH",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE"
       ]
     }
   ],
@@ -965,6 +1052,143 @@
       "execute": "pass.tiled.clouds"
     },
     {
+      "name": "Picking.Tiled",
+      "type": "graphics",
+      "domain": "PICKING",
+      "condition": "scene_rendering && picking_pending",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "picking_color",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ],
+        "depth": {
+          "image": "picking_depth",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.picking.tiled"
+    },
+    {
+      "name": "Picking.Features",
+      "type": "graphics",
+      "domain": "PICKING",
+      "condition": "scene_rendering && picking_pending",
+      "flags": [
+        "NO_CULL"
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "picking_color",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ],
+        "depth": {
+          "image": "picking_depth",
+          "load": "LOAD",
+          "store": "DONT_CARE"
+        }
+      },
+      "execute": "pass.picking",
+      "reads": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ]
+    },
+    {
+      "name": "Picking.EditorOverlay",
+      "type": "graphics",
+      "domain": "PICKING",
+      "condition": "scene_rendering && editor_overlay_enabled && picking_pending",
+      "flags": [
+        "NO_CULL"
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "picking_color",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.editor.overlay.picking",
+      "reads": []
+    },
+    {
+      "name": "Picking.Readback",
+      "type": "compute",
+      "condition": "scene_rendering && picking_pending",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "picking_color",
+          "access": "TRANSFER_SRC",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "TRANSFER_SRC",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.picking.readback"
+    },
+    {
       "name": "Post.Exposure.Histogram",
       "type": "compute",
       "condition": "scene_rendering && exposure_automatic",
@@ -1160,7 +1384,7 @@
       "name": "Post.DisplayLinear.Fullscreen",
       "type": "graphics",
       "domain": "POST",
-      "condition": "scene_rendering && post_transform_cache_enabled",
+      "condition": "scene_rendering && post_transform_cache_enabled && !editor_enabled",
       "reads": [
         {
           "image": "hdr_scene_color",
@@ -1208,7 +1432,7 @@
       "name": "Post.Tonemap.Fullscreen",
       "type": "graphics",
       "domain": "POST",
-      "condition": "scene_rendering",
+      "condition": "scene_rendering && !editor_enabled",
       "reads": [
         {
           "image": "hdr_scene_color",
@@ -1259,6 +1483,251 @@
       "execute": "pass.tonemap"
     },
     {
+      "name": "Post.DisplayLinear.Editor",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "scene_rendering && post_transform_cache_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 1,
+          "when": "exposure_automatic"
+        },
+        {
+          "image": "bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          },
+          "when": "bloom_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "post_display_linear_editor",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.tonemap.prepare"
+    },
+    {
+      "name": "Editor.Resolve",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "scene_rendering && editor_enabled",
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 1,
+          "when": "exposure_automatic"
+        },
+        {
+          "image": "bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          },
+          "when": "bloom_enabled"
+        },
+        {
+          "image": "post_display_linear_editor",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "post_transform_cache_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_scene_image",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.tonemap"
+    },
+    {
+      "name": "Editor.Grid",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_grid_enabled",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_scene_image",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.editor.grid"
+    },
+    {
+      "name": "Editor.SelectionMask",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_selection_enabled",
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_selection_mask",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.editor.selection.mask",
+      "reads": []
+    },
+    {
+      "name": "Editor.SelectionOutline",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_selection_enabled",
+      "reads": [
+        {
+          "image": "editor_selection_mask",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_scene_image",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.editor.selection.outline"
+    },
+    {
+      "name": "Editor.Overlay",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "scene_rendering && editor_overlay_enabled",
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_scene_image",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.editor.overlay",
+      "reads": []
+    },
+    {
+      "name": "Editor.Composite",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled && editor_image_available",
+      "reads": [
+        {
+          "image": "editor_scene_image",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "swapchain",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.editor"
+    },
+    {
+      "name": "Editor.Clear",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled && !editor_image_available",
+      "attachments": {
+        "color": [
+          {
+            "image": "swapchain",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.clear"
+    },
+    {
       "name": "Animation.Preview",
       "type": "graphics",
       "domain": "UI",
@@ -1304,6 +1773,30 @@
       "type": "graphics",
       "domain": "UI",
       "condition": "ui_fullscreen_enabled",
+      "attachments": {
+        "color": [
+          {
+            "image": "swapchain",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.ui",
+      "reads": [
+        {
+          "image": "animation_preview_color",
+          "access": "SAMPLED",
+          "binding": 30,
+          "when": "animation_preview_enabled"
+        }
+      ]
+    },
+    {
+      "name": "UI.Editor",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled",
       "attachments": {
         "color": [
           {

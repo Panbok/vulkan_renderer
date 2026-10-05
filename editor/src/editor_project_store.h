@@ -293,6 +293,11 @@ uint32_t vkr_editor_project_world_meshes(const char *world_path,
 bool8_t vkr_editor_project_local_jobs_directory(
     char out[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error);
 
+/** OS-local graphics settings file of the project-managed editor: the
+ * settings it starts with, which hold the machine's restart-time choices. */
+bool8_t vkr_editor_project_local_graphics_path(
+    char out[VKR_EDITOR_PROJECT_PATH_CAPACITY], VkrEditorProjectError *error);
+
 // Game settings and build profiles (docs/proposals/project-packaging.md):
 // game.json beside project.json. `vkr_bakery bundle <project>` reads the same
 // document and owns its validation; the editor edits and saves it. Unknown

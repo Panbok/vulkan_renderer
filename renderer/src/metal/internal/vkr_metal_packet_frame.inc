@@ -4473,6 +4473,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   if (kind == VKR_RG_EXECUTOR_TILED_CLOUDS)
     return vkr_metal_packet_prepare_tiled_clouds(renderer, pass, packet,
                                                  prepared, upload, target);
+  if (kind == VKR_RG_EXECUTOR_TILED_PICKING)
+    return renderer->tiled &&
+           vkr_metal_packet_prepare_gpu_draws(renderer, pass, packet, prepared,
+                                              renderer->tiled_picking_pipeline,
+                                              nil, upload);
   if (kind == VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION)
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, packet, prepared,

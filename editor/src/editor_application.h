@@ -1,5 +1,6 @@
 #pragma once
 
+#include "editor_project_store.h"
 #include "editor_ui.h"
 #include "vkr_sample_runtime.h"
 
@@ -9,6 +10,9 @@ typedef struct VkrEditorApplication {
   int argc;
   char **argv;
   bool8_t project_managed;
+  /** Machine-local Graphics settings a project-managed editor starts with;
+   * empty when the local directory is unavailable. */
+  char graphics_path[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   /** `--exec` Cmd script from argv; VKR_EDITOR_EXEC runs before it. */
   const char *exec_script;
   /** `--headless`: no window; the editor quits when its Cmd script ends. */
