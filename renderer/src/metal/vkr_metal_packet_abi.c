@@ -240,6 +240,7 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, local_shadow_transmission,
                   "local_shadow_transmission", 528),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, sky, "sky", 536),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, lightmap, "lightmap", 544),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_fields[] = {
@@ -438,6 +439,31 @@ vkr_global const VkrMetalPacketAbiField vkr_diffuse_volume_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, inverse_spacing,
                   "inverse_spacing", 16),
     VKR_ABI_FIELD(VkrMetalPacketDiffuseVolume, dimensions, "dimensions", 32),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_lightmap_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, texture_id, "texture", 0),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, rects, "rects", 8),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, rect_count, "rect_count", 16),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, layer_count, "layer_count", 20),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, inverse_page_size,
+                  "inverse_page_size", 24),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, active_layer_count,
+                  "active_layer_count", 28),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, active_layers, "active_layers", 32),
+    VKR_ABI_FIELD(VkrMetalPacketLightmap, active_weights, "active_weights", 64),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_tiled_sky_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, frame, "frame", 0),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_view_texture_id, "sky_view", 8),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, inverse_view_projection,
+                  "inverse_view_projection", 16),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, extent, "extent", 80),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_mode, "sky_mode", 88),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, clouds_enabled, "clouds_enabled", 92),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_radiance, "sky_radiance", 96),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, depth_texture_id, "depth", 112),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
@@ -1682,7 +1708,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            16, vkr_draw_root_fields),
         [VKR_METAL_PACKET_ABI_FRAME_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketFrameRoot, "VkrMetalPacketFrameRoot",
-                           544, 16, vkr_frame_root_fields),
+                           560, 16, vkr_frame_root_fields),
         [VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION] =
             VKR_ABI_RECORD(VkrMetalPacketLocalShadowTransmission,
                            "VkrMetalPacketLocalShadowTransmission", 48, 16,
@@ -1702,6 +1728,12 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME] = VKR_ABI_RECORD(
             VkrMetalPacketDiffuseVolume, "VkrMetalPacketDiffuseVolume", 48, 16,
             vkr_diffuse_volume_fields),
+        [VKR_METAL_PACKET_ABI_LIGHTMAP] =
+            VKR_ABI_RECORD(VkrMetalPacketLightmap, "VkrMetalPacketLightmap", 96,
+                           16, vkr_lightmap_fields),
+        [VKR_METAL_PACKET_ABI_TILED_SKY_ROOT] =
+            VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 128,
+                           16, vkr_tiled_sky_root_fields),
         [VKR_METAL_PACKET_ABI_IBL_PROBE] =
             VKR_ABI_RECORD(VkrMetalPacketIblProbe, "VkrMetalPacketIblProbe", 64,
                            16, vkr_ibl_probe_fields),

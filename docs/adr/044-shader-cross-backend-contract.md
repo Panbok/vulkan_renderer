@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -39,6 +39,31 @@ resize pass. Material rows are 320 bytes on Metal and 256 on Vulkan; array-table
 reference records are 32 and 16 bytes. Frame roots remain 528 and 608 bytes.
 Shared arithmetic and compiled layouts do not establish native parity.
 [ADR-064](064-anisotropic-ggx-reflection.md) owns the accepted feature and budgets.
+
+## Tiled pipeline evidence state
+
+The tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)) is a
+Metal-only pipeline class; Vulkan implements no tiled class, so its shaders
+have no bilateral gate yet.
+
+- **Changed contracts.**
+  - The Metal frame root grows to 560 bytes with `lightmap`, a 96-byte
+    `VkrMetalPacketLightmap`; the tiled sky root is 128 bytes. Both are
+    pinned in `vkr_metal_packet_abi.c` and checked against reflection at
+    pipeline creation.
+  - The prepared instance row carries the lightmap slot in
+    `normal_column2.w`; every shader on both backends reads only its xyz.
+  - The deferred background moves into `vkr_metal_packet_sky_clear`,
+    `vkr_metal_packet_sky_discs` and `vkr_metal_packet_sky_background`, which
+    the tiled sky and cloud draws share; the operations and their order are
+    unchanged.
+- **Metal evidence.** Pipeline creation validates the new layouts, and the
+  Bistro street view renders on both pipeline classes
+  (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`).
+- **Vulkan evidence.** The Vulkan frame layouts are unchanged; the Vulkan
+  sources build on macOS. No native Vulkan run.
+- **Missing gates.** A numeric before/after comparison of the desktop Metal
+  background, and lightmap sampling on a baked scene.
 
 ## Thin-sheet diffuse transmission evidence state
 

@@ -1770,6 +1770,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   char legacy_v9_path[VKR_HARNESS_PATH_MAX];
   char legacy_v14_path[VKR_HARNESS_PATH_MAX];
   char legacy_v15_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v17_path[VKR_HARNESS_PATH_MAX];
   char current_path[VKR_HARNESS_PATH_MAX];
   snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
   snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
@@ -1783,6 +1784,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   snprintf(legacy_v14_path, sizeof(legacy_v14_path), "%s/legacy-v14.bin",
            directory);
   snprintf(legacy_v15_path, sizeof(legacy_v15_path), "%s/legacy-v15.bin",
+           directory);
+  snprintf(legacy_v17_path, sizeof(legacy_v17_path), "%s/legacy-v17.bin",
            directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3 *legacy = calloc(1u, sizeof(*legacy));
@@ -2132,12 +2135,36 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   /* Versions before 17 predate the texture load limit and loaded every mip. */
   assert(summary.case_manifest.renderer.texture_max_load_dimension == 0u);
 
+  /* Version 18 added the graphics pipeline class after the texture load
+   * limit; version-17 summaries keep their limit and ran the desktop
+   * pipeline. */
+  VkrHarnessCaptureSummaryHeaderV17 *legacy_v17 =
+      calloc(1u, sizeof(*legacy_v17));
+  assert(legacy_v17);
+  MemCopy(legacy_v17->magic, magic, sizeof(magic));
+  legacy_v17->version = 17u;
+  legacy_v17->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v17->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy_v17->case_manifest.renderer.texture_max_load_dimension = 1024u;
+  legacy_v17->case_manifest.content_scale = 1.5f;
+  VKR_STRING_COPY_LITERAL(legacy_v17->profile.id, "legacy.v17.profile");
+  assert(vkr_harness_atomic_write(legacy_v17_path, legacy_v17,
+                                  sizeof(*legacy_v17), &error));
+  free(legacy_v17);
+  assert(vkr_harness_capture_summary_read(legacy_v17_path, arena, &summary));
+  assert(summary.case_manifest.renderer.texture_max_load_dimension == 1024u);
+  assert(summary.case_manifest.renderer.graphics_pipeline ==
+         VKR_GRAPHICS_PIPELINE_DESKTOP);
+  assert(summary.case_manifest.content_scale == 1.5f);
+  assert(strcmp(summary.profile.id, "legacy.v17.profile") == 0);
+
   report.case_manifest.single_capture_session = true_v;
   report.case_manifest.capture_count = 1u;
   report.case_manifest.captures[0].at_frame = 8u;
   report.case_manifest.captures[0].has_camera_mode = true_v;
   report.case_manifest.captures[0].camera_mode = VKR_HARNESS_CAMERA_CUBEMAP_NY;
   report.case_manifest.renderer.texture_max_load_dimension = 2048u;
+  report.case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_TILED;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -2147,7 +2174,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 17u);
+  assert(current_version == 18u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(summary.capture_count == 1u);
   assert(summary.case_manifest.single_capture_session);
@@ -2157,6 +2184,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
              VKR_HARNESS_CAMERA_CUBEMAP_NY);
   assert(summary.case_manifest.renderer.physics_fixture);
   assert(summary.case_manifest.renderer.texture_max_load_dimension == 2048u);
+  assert(summary.case_manifest.renderer.graphics_pipeline ==
+         VKR_GRAPHICS_PIPELINE_TILED);
   assert(summary.case_manifest.asset_context ==
          VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE);
   assert(summary.case_manifest.renderer.editor_stop_frame == 1u);
@@ -2204,6 +2233,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(unlink(legacy_v9_path) == 0);
   assert(unlink(legacy_v14_path) == 0);
   assert(unlink(legacy_v15_path) == 0);
+  assert(unlink(legacy_v17_path) == 0);
   assert(unlink(current_path) == 0);
   assert(rmdir(directory) == 0);
   arena_destroy(arena);

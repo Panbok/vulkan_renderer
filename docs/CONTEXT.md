@@ -27,12 +27,13 @@ below are starting points for checking a definition, not alternate API specs.
 | Render thread | Renderer-owned worker, on by default, that acquires and renders a submitted frame while the frame-loop thread builds the next; every other renderer call waits for it. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
 | Decoupled frame | A frame built from the previous frame's target values and acquired by the render thread; coupled frames are acquired on the frame-loop thread. | [ADR-082](adr/082-renderer-owned-render-thread.md) |
 | Present target | Window/swapchain or ordinary-image offscreen output, with explicit extent and attachment properties. | [vkr_renderer.h](../renderer/src/vkr_renderer.h) |
+| Graphics pipeline class | Desktop or tiled (`VkrGraphicsPipelineClass`): which render graph and shading path a renderer runs. The tiled class shades forward in one multisampled render pass with baked lightmaps. | [ADR-087](adr/087-gpu-class-graphics-pipelines.md) |
 
 ## Graph and lifetime
 
 | Term | Meaning in VKR | Owner |
 |---|---|---|
-| Authored graph | JSON resource/pass declarations, conditions, and executor names. | [main.rendergraph.json](../assets/render_graphs/main.rendergraph.json) |
+| Authored graph | JSON resource/pass declarations, conditions, and executor names; one per graphics pipeline class. | [main.rendergraph.json](../assets/render_graphs/main.rendergraph.json), [tiled.rendergraph.json](../assets/render_graphs/tiled.rendergraph.json) |
 | Compiled schedule | Shared ordering, dependency, culling, and resource-lifetime result lowered into native commands by each backend. | [vkr_rg_compile.c](../renderer/src/vkr_rg_compile.c) |
 | Executor | Named operation resolved to a backend ID during graph realization and recorded by that backend's native dispatcher. | [vkr_render_graph.h](../renderer/src/vkr_render_graph.h) |
 | Subresource | A mip/layer/aspect range tracked for accesses and dependencies. | [vkr_render_graph.h](../renderer/src/vkr_render_graph.h) |
@@ -65,6 +66,7 @@ below are starting points for checking a definition, not alternate API specs.
 | Sky light | The scene `environment` block: enable flag, intensity, diffuse/specular scale and SH window applied to the atmosphere or a constant global source. Disabling it keeps the atmosphere sky visible. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
 | Lightmap set | A scene's baked lightmap layers as ASTC 4×4 HDR pages with the page rectangle of each lightmapped instance, keyed by document id, entity index and source node; one VKLM file named by the scene's `lightmaps` block. The runtime does not sample it yet. | [ADR-088](adr/088-baked-lightmap-sets.md) |
 | Light layer | One baked layer of a lightmap set or diffuse volume: a sun key or a lamp group, stored as a 64-byte record. | [ADR-088](adr/088-baked-lightmap-sets.md) |
+| Lightmap slot | A draw's lightmap rectangle index plus one, which the scene gives each matched mesh instance or generated mesh; zero draws without a lightmap. | [ADR-088](adr/088-baked-lightmap-sets.md) |
 | Sun key | A light layer holding sun bounce and sky light for one sun direction, without the sun's direct term, which stays at runtime. | [ADR-088](adr/088-baked-lightmap-sets.md) |
 | Lamp group | A light layer holding the light of the static lights of one light group (direct and bounce in a lightmap, bounce in a diffuse volume), scaled at runtime by the group's factor; the `default` group also holds surface emission. | [ADR-088](adr/088-baked-lightmap-sets.md) |
 | Light group | The name (`light_group`) that assigns a static point or rectangle light to a lamp group; empty is `default`. A level bakes at most four. | [ADR-088](adr/088-baked-lightmap-sets.md) |

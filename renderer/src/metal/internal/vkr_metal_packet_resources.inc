@@ -2224,6 +2224,9 @@ typedef struct VkrMetalPacketUploadPlan {
   uint32_t ibl_probe_count;
   uint64_t ibl_probes_offset;
   uint64_t diffuse_volume_offset;
+  uint64_t lightmap_offset;
+  uint64_t lightmap_rects_offset;
+  uint32_t lightmap_rect_count;
   uint32_t rectangle_light_count;
   uint64_t ltc_offset;
   uint64_t rectangle_lights_offset;
@@ -2291,8 +2294,11 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
       plan->world ? plan->world->static_candidate_count : 0u;
   plan->source_dynamic_count =
       plan->source_gpu_draw_count - plan->source_static_count;
+  /* The tiled pipeline draws no transmission yet (ADR-087). */
   plan->source_transmission_gpu_draw_count =
-      plan->world ? plan->world->transmission_gpu_candidate_count : 0u;
+      plan->world && !renderer->tiled
+          ? plan->world->transmission_gpu_candidate_count
+          : 0u;
   VkrMetalPacketGraphBufferInstance *gpu_draw_candidates_buffer = NULL;
   plan->gpu_draw_instances_buffer = NULL;
   plan->resource_generation = 0u;
@@ -2573,8 +2579,25 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
   plan->rectangle_light_count =
       packet->input.lighting ? packet->input.lighting->rectangle_light_count
                              : 0u;
-  plan->ltc_offset = vkr_metal_packet_align_up(plan->diffuse_volume_offset +
-                                                   diffuse_volume_bytes,
+  /* Every frame root names a lightmap record; only the tiled pipeline samples
+     a set, so only it copies the rectangle table (ADR-088). */
+  const VkrLightmapBinding *lightmap =
+      packet->input.lighting ? &packet->input.lighting->lightmap : NULL;
+  plan->lightmap_rect_count =
+      renderer->tiled && lightmap && lightmap->texture.id != 0u &&
+              lightmap->texture.generation != VKR_INVALID_ID
+          ? lightmap->rect_count
+          : 0u;
+  plan->lightmap_offset = vkr_metal_packet_align_up(
+      plan->diffuse_volume_offset + diffuse_volume_bytes,
+      AlignOf(VkrMetalPacketLightmap));
+  plan->lightmap_rects_offset = vkr_metal_packet_align_up(
+      plan->lightmap_offset + sizeof(VkrMetalPacketLightmap),
+      AlignOf(VkrLightmapRect));
+  const uint64_t lightmap_rects_bytes =
+      (uint64_t)plan->lightmap_rect_count * sizeof(VkrLightmapRect);
+  plan->ltc_offset = vkr_metal_packet_align_up(plan->lightmap_rects_offset +
+                                                   lightmap_rects_bytes,
                                                AlignOf(VkrMetalPacketLtc));
   plan->rectangle_lights_offset = plan->ltc_offset + sizeof(VkrMetalPacketLtc);
   const uint64_t rectangle_lights_bytes =
@@ -3058,6 +3081,47 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_lights(
 }
 
 /* Writes fog, froxel-fog, subsurface, diffuse-volume and IBL probe data. */
+/* Writes the frame's lightmap record and, on the tiled pipeline, the set's
+   rectangle table (ADR-088). Without a sampled set the record holds no
+   rectangles, so every draw's slot misses it. */
+vkr_internal bool8_t vkr_metal_packet_upload_lightmap(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    const VkrMetalPacketUploadPlan *plan, uint8_t *cpu, uint64_t gpu,
+    VkrMetalPacketFrameUpload *upload) {
+  VkrMetalPacketLightmap *record =
+      (VkrMetalPacketLightmap *)(cpu + plan->lightmap_offset);
+  *record = (VkrMetalPacketLightmap){0};
+  upload->lightmap_gpu = gpu + plan->lightmap_offset;
+  if (plan->lightmap_rect_count == 0u)
+    return true_v;
+  const VkrLightmapBinding *lightmap = &packet->input.lighting->lightmap;
+  VkrMetalPacketTexture *texture =
+      vkr_metal_packet_resolve_texture(renderer, lightmap->texture);
+  id<MTLTexture> native =
+      texture ? (id<MTLTexture>)texture->resource.metal_texture : nil;
+  if (!native || native.pixelFormat != MTLPixelFormatASTC_4x4_HDR ||
+      native.textureType != MTLTextureType2DArray ||
+      native.width != lightmap->page_size ||
+      native.arrayLength % lightmap->layer_count != 0u)
+    return false_v;
+  MemCopy(cpu + plan->lightmap_rects_offset, lightmap->rects,
+          (uint64_t)plan->lightmap_rect_count * sizeof(VkrLightmapRect));
+  *record = (VkrMetalPacketLightmap){
+      .texture_id = texture->resource.resource_id,
+      .rects = gpu + plan->lightmap_rects_offset,
+      .rect_count = plan->lightmap_rect_count,
+      .layer_count = lightmap->layer_count,
+      .inverse_page_size = 1.0f / (float32_t)lightmap->page_size,
+      .active_layer_count = lightmap->active_layer_count,
+  };
+  for (uint32_t i = 0u; i < lightmap->active_layer_count; ++i) {
+    record->active_layers[i] = lightmap->active_layers[i];
+    record->active_weights[i] = lightmap->active_weights[i];
+  }
+  texture->last_use_submit_value = renderer->submit_value + 1u;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     VkrMetalPacketFrameUpload *upload, const VkrMetalPacketUploadPlan *plan) {
@@ -3212,6 +3276,9 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
       texture->last_use_submit_value = renderer->submit_value + 1u;
     }
   }
+  if (!vkr_metal_packet_upload_lightmap(renderer, packet, plan, cpu, gpu,
+                                        upload))
+    return false_v;
   /* Resolved from the packet's environment source, so a probe that aliases the
      scene environment shares this publication instead of projecting a
      duplicate. */
@@ -3473,7 +3540,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   }
   vkr_metal_packet_write_upload_draw_views(renderer, packet, upload, &plan);
   vkr_metal_packet_write_upload_text_and_ui(renderer, packet, upload, &plan);
-  if (packet->input.world &&
+  /* The tiled pipeline draws no transmission yet (ADR-087). */
+  if (!renderer->tiled && packet->input.world &&
       packet->input.world->transmission_gpu_candidate_count > 0) {
     id<MTLTexture> transmission_texture = vkr_metal_packet_named_texture(
         renderer, packet->subsurface_enabled ? "subsurface_color"

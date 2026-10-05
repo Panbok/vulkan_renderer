@@ -184,8 +184,13 @@ endif()
 set(VKR_RENDER_GRAPH_PATH "${CMAKE_CURRENT_BINARY_DIR}/resources/main.rendergraph.json")
 configure_file("${CMAKE_SOURCE_DIR}/assets/render_graphs/main.rendergraph.json"
                "${VKR_RENDER_GRAPH_PATH}" COPYONLY)
+# The tiled pipeline's graph (ADR-087).
+set(VKR_TILED_RENDER_GRAPH_PATH "${CMAKE_CURRENT_BINARY_DIR}/resources/tiled.rendergraph.json")
+configure_file("${CMAKE_SOURCE_DIR}/assets/render_graphs/tiled.rendergraph.json"
+               "${VKR_TILED_RENDER_GRAPH_PATH}" COPYONLY)
 target_compile_definitions(renderer_lib PRIVATE
-    VKR_RENDER_GRAPH_PATH="${VKR_RENDER_GRAPH_PATH}")
+    VKR_RENDER_GRAPH_PATH="${VKR_RENDER_GRAPH_PATH}"
+    VKR_TILED_RENDER_GRAPH_PATH="${VKR_TILED_RENDER_GRAPH_PATH}")
 
 # Set compile definitions for logging based on build type
 target_compile_definitions(renderer_lib PRIVATE

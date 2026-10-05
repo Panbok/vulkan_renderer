@@ -840,6 +840,16 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->depth_clear_pipeline release];
   [renderer->vbuffer_opaque_pipeline release];
   [renderer->blend_pipeline release];
+  [renderer->tiled_depth_pipeline release];
+  [renderer->tiled_forward_pipeline release];
+  [renderer->tiled_sky_pipeline release];
+  [renderer->tiled_clouds_pipeline release];
+  [renderer->tiled_prepass_state release];
+  [renderer->tiled_shade_state release];
+  [renderer->tiled_sky_state release];
+  [renderer->tiled_msaa_color release];
+  [renderer->tiled_msaa_depth release];
+  [renderer->tiled_residency release];
   [renderer->ui_pipeline release];
   [renderer->picking_pipeline release];
   [renderer->editor_overlay_pipeline release];

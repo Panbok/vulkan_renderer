@@ -9,6 +9,9 @@
 typedef struct VkrPreparedFrame {
   VkrFrameInput input;
   bool8_t scene_rendering;
+  /** The tiled graphics pipeline (ADR-087): no temporal reconstruction,
+   * screen-space effects, local shadows or transmission. */
+  bool8_t tiled_pipeline;
   /** FXAA filters the final draw: enabled and no temporal reconstruction. */
   bool8_t fxaa_enabled;
   bool8_t post_transform_cache_enabled;

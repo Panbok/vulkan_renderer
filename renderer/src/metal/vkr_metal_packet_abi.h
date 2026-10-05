@@ -17,6 +17,7 @@
 #include "vkr_gtao.h"
 #include "vkr_lighting.h"
 #include "vkr_motion_blur.h"
+#include "vkr_render_resources.h"
 #include "vkr_shadow.h"
 #include "vkr_ssgi.h"
 #include "vkr_ssr.h"
@@ -52,6 +53,42 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolume {
 } VkrMetalPacketDiffuseVolume;
 _Static_assert(sizeof(VkrMetalPacketDiffuseVolume) == 48u,
                "Metal diffuse volume parameters ABI drift");
+
+/** Frame lightmap record (ADR-088); mirrors VkrMetalPacketLightmap in
+    common/draw.metalh and draw.slangh. `texture_id` is a 2D array whose slice
+    page * layer_count + layer holds one layer of one page; `rects` holds
+    rect_count VkrLightmapRect, selected by an instance's lightmap slot minus
+    one. A zero rect_count leaves every draw without lightmaps. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketLightmap {
+  uint64_t texture_id;
+  uint64_t rects;
+  uint32_t rect_count;
+  uint32_t layer_count;
+  float32_t inverse_page_size;
+  uint32_t active_layer_count;
+  uint32_t active_layers[8];
+  float32_t active_weights[8];
+} VkrMetalPacketLightmap;
+_Static_assert(sizeof(VkrMetalPacketLightmap) == 96u,
+               "Metal lightmap record ABI drift");
+_Static_assert(VKR_LIGHTMAP_MAX_ACTIVE_LAYERS <= 8u,
+               "Metal lightmap record holds at most eight active layers");
+
+/** The tiled pipeline's sky draws (ADR-087); mirrors VkrMetalTiledSkyRoot in
+    world/tiled.metal. `depth_texture_id` is the resolved depth the cloud
+    draw reads, zero for the clear sky. */
+typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
+  uint64_t frame;
+  uint64_t sky_view_texture_id;
+  Mat4 inverse_view_projection;
+  uint32_t extent[2];
+  uint32_t sky_mode;
+  uint32_t clouds_enabled;
+  Vec4 sky_radiance;
+  uint64_t depth_texture_id;
+} VkrMetalTiledSkyRoot;
+_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 128u,
+               "Metal tiled sky root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketLtc {
   uint64_t lights;
@@ -194,6 +231,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t anisotropy;
   uint64_t local_shadow_transmission;
   uint64_t sky;
+  /** The frame's VkrMetalPacketLightmap; always set. */
+  uint64_t lightmap;
 } VkrMetalPacketFrameRoot;
 
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, dfg_texture_id) == 472u,
@@ -218,7 +257,9 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot, local_shadow_transmission) ==
                "Metal local shadow transmission sampling offset drift");
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, sky) == 536u,
                "Metal sky record offset drift");
-_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 544u,
+_Static_assert(offsetof(VkrMetalPacketFrameRoot, lightmap) == 544u,
+               "Metal lightmap record offset drift");
+_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 560u,
                "Metal frame root ABI size drift");
 
 /* Frame records are cold, shared records. They may span the fixed draw-root
@@ -1417,6 +1458,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_FRAME_ROOT,
   VKR_METAL_PACKET_ABI_IBL_PROBE,
   VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME,
+  VKR_METAL_PACKET_ABI_LIGHTMAP,
   VKR_METAL_PACKET_ABI_LTC,
   VKR_METAL_PACKET_ABI_SHEEN,
   VKR_METAL_PACKET_ABI_ANISOTROPY,
@@ -1493,6 +1535,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT,
   VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT,
   VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
+  VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

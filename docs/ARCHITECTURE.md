@@ -715,9 +715,13 @@ with explicit native barriers and completion ownership. See [ADR-002](adr/002-re
 
 ## Rendering pipeline
 
-Every device runs the desktop pipeline described here.
+Every device runs the desktop pipeline described here by default.
 [ADR-087](adr/087-gpu-class-graphics-pipelines.md) adds a separate pipeline
-class for tile-based GPUs, which is not implemented.
+class for tile-based GPUs: on Metal, a renderer that selects it runs
+`tiled.rendergraph.json`, whose `Tiled.Opaque` pass shades the culled opaque
+draws forward after a depth pre-pass in one four-sample render pass resolved
+on chip, with baked lightmaps for static diffuse light. It draws no
+transmission, local lights, screen-space effects or editor passes yet.
 
 Editor inspection adds Detail lighting, Lighting only and visible-edge Wireframe
 to Lit and Unlit. The two lighting views use neutral material response; Detail
@@ -1423,8 +1427,9 @@ These are limits of current code or retained acceptance, not scheduled promises:
   execution remains unavailable; see [ADR-054](adr/054-baked-diffuse-volumes.md).
 - Lightmap sets bake on Metal ray tracing into VKLM files that projects store
   and package, and scenes load them as ASTC 4×4 HDR textures and bind them to
-  their draws, but no renderer samples them, the desktop pipeline ignores
-  light mobility, and hosts without Metal ray tracing cannot bake them; see
+  their draws. Only the opt-in tiled pipeline samples them, and no baked scene
+  has checked that sampling yet; the desktop pipeline ignores light mobility,
+  and hosts without Metal ray tracing cannot bake them; see
   [ADR-088](adr/088-baked-lightmap-sets.md).
 - Charlie sheen is implemented below clearcoat in runtime and offline lighting.
   Its two-component rectangle fit retains measured errors for dim tilted lights;

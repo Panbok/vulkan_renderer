@@ -76,14 +76,16 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->scene_rendering &&
       packet->exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
   frame->light_contribution_enabled =
-      packet->scene_rendering && packet->input.lighting &&
+      !packet->tiled_pipeline && packet->scene_rendering &&
+      packet->input.lighting &&
       packet->input.lighting->point_light_count > 0u &&
       packet->input.frame.frame_index % VKR_LOCAL_LIGHT_CONTRIBUTION_PERIOD ==
           0u;
   frame->picking_pending = packet->scene_rendering && packet->input.picking &&
                            packet->input.picking->pending;
+  /* The tiled pipeline draws no transmission yet (ADR-087). */
   frame->transmission_pending =
-      packet->input.world &&
+      !packet->tiled_pipeline && packet->input.world &&
       packet->input.world->transmission_gpu_candidate_count > 0u;
   frame->gpu_draw_candidate_capacity = vkr_render_graph_draw_capacity(
       packet->input.world ? packet->input.world->gpu_candidate_count : 0u);
@@ -117,8 +119,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->timing_enabled = packet->input.debug &&
                           packet->input.debug->enable_timing &&
                           packet->input.debug->capture_pass_timestamps;
-  frame->sdsm_enabled =
-      packet->input.shadow && packet->input.shadow->sdsm_enabled;
+  /* Sample-distribution shadow fitting reduces the visibility buffer, which
+     the tiled pipeline does not draw. */
+  frame->sdsm_enabled = !packet->tiled_pipeline && packet->input.shadow &&
+                        packet->input.shadow->sdsm_enabled;
   frame->shadow_cascade_count = packet->input.shadow
                                     ? Min(packet->input.shadow->cascade_count,
                                           VKR_SHADOW_CASCADE_COUNT_MAX)
@@ -426,6 +430,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_FSR31_STABILIZE] = {"pass.fsr31.stabilize",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TILED_OPAQUE] = {"pass.tiled.opaque",
+                                      VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_TILED_CLOUDS] = {"pass.tiled.clouds",
+                                      VKR_RG_PASS_TYPE_GRAPHICS},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

@@ -139,6 +139,7 @@ struct VkrRenderer {
   float32_t render_scale_min;
   float32_t render_scale_max;
   VkrUpscaleMode upscale_mode;
+  VkrGraphicsPipelineClass graphics_pipeline;
   /** The caller's dynamic-resolution request before normalization, kept so
       the controller can be switched on again between frames. */
   VkrDynamicResolutionConfig dynamic_resolution_request;

@@ -1,5 +1,6 @@
 # Engine resources every game package carries and an installed editor serves
-# from its content directory: the render graph, the runtime's fonts with
+# from its content directory: the render graphs of both pipeline classes
+# (ADR-087), the runtime's fonts with
 # every file their configurations name, and the default mannequin the FPS
 # module spawns at a Player Start with its materials, textures and credits
 # notice (listed by the generated vkr_mannequin_content.cmake).
@@ -9,6 +10,7 @@
 include("${CMAKE_CURRENT_LIST_DIR}/vkr_mannequin_content.cmake")
 set(VKR_ENGINE_INCLUDE
     assets/render_graphs/main.rendergraph.json
+    assets/render_graphs/tiled.rendergraph.json
     assets/fonts/UbuntuMono-cooked.fontcfg
     assets/fonts/UbuntuMono-bitmap.fontcfg
     assets/fonts/UbuntuMono21px.fnt.vkf

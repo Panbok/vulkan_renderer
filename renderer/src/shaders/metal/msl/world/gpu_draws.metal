@@ -1323,46 +1323,74 @@ static float vkr_metal_packet_deferred_filter_roughness(
   return vkr_ggx_filter_roughness(roughness, normal_variance);
 }
 
-static float3
-vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
-                              uint2 pixel) {
-  if (root.sky_mode == VKR_SKY_MODE_NONE)
-    return float3(0.02, 0.02, 0.03) * root.frame->pre_exposure;
-  if (root.sky_mode == VKR_SKY_MODE_CONSTANT)
-    return root.sky_radiance.rgb;
-  float2 ndc = vkr_metal_packet_resolve_ndc(float2(pixel) + 0.5, root.extent);
-  float4 far_world = root.inverse_view_projection * float4(ndc, 1.0, 1.0);
-  float3 direction = -vkr_metal_packet_view_direction(root.frame,
+// The view direction through a pixel's center toward the far plane.
+static float3 vkr_metal_packet_sky_direction(
+    constant VkrMetalPacketFrameRoot *frame, float4x4 inverse_view_projection,
+    uint2 extent, float2 pixel_center) {
+  float2 ndc = vkr_metal_packet_resolve_ndc(pixel_center, extent);
+  float4 far_world = inverse_view_projection * float4(ndc, 1.0, 1.0);
+  return -vkr_metal_packet_view_direction(frame,
       far_world.xyz / max(abs(far_world.w), 1e-7) * sign(far_world.w));
+}
+
+// The atmosphere's transmittance from the observer along `direction`.
+static float3 vkr_metal_packet_sky_view_transmittance(
+    constant VkrMetalPacketSky &sky, float3 direction) {
+  VkrAtmosphereParams params = sky.params.atmosphere;
+  return sky.transmittance
+      .sample(vkr_metal_packet_sky_sampler,
+              vkr_atmosphere_transmittance_uv(
+                  params, params.planet.x + params.planet.z, direction.y))
+      .rgb;
+}
+
+// The sun and moon discs along `direction` above the horizon.
+static float3 vkr_metal_packet_sky_discs(constant VkrMetalPacketSky &sky,
+                                         float3 direction,
+                                         float3 view_transmittance) {
+  VkrAtmosphereParams params = sky.params.atmosphere;
+  return vkr_atmosphere_sun_disc(params, direction, view_transmittance) +
+         vkr_atmosphere_moon_disc(params, direction, view_transmittance);
+}
+
+// A pixel's background without the cloud layer: the fallback colour, a
+// uniform radiance or the atmosphere with its glows and stars. `disc` takes
+// the sun and moon discs, which clouds hide (zero outside the atmosphere and
+// below the horizon).
+static float3 vkr_metal_packet_sky_clear(
+    constant VkrMetalPacketFrameRoot *frame,
+    texture2d<float, access::sample> sky_view, float4x4 inverse_view_projection,
+    uint2 extent, uint sky_mode, float4 sky_radiance, uint2 pixel,
+    thread float3 &disc) {
+  disc = float3(0.0);
+  if (sky_mode == VKR_SKY_MODE_NONE)
+    return float3(0.02, 0.02, 0.03) * frame->pre_exposure;
+  if (sky_mode == VKR_SKY_MODE_CONSTANT)
+    return sky_radiance.rgb;
+  float3 direction = vkr_metal_packet_sky_direction(
+      frame, inverse_view_projection, extent, float2(pixel) + 0.5);
   // The sky-view lookup already integrates to the top of the atmosphere, so
   // sky pixels take no aerial perspective. Its sun and moon tables add; the
   // discs and their glows are analytic; clouds carry aerial perspective at
   // their own depth.
-  constant VkrMetalPacketSky &sky = *root.frame->sky;
+  constant VkrMetalPacketSky &sky = *frame->sky;
   VkrAtmosphereParams params = sky.params.atmosphere;
   float3 radiance =
-      root.sky_view
+      sky_view
           .sample(vkr_metal_packet_sky_sampler,
                   vkr_sky_view_uv(params, direction, params.sun.xyz,
                                   VKR_ATMOSPHERE_SKY_VIEW_SUN_TABLE))
           .rgb;
   if (!vkr_atmosphere_light_dark(params.lunar))
-    radiance += root.sky_view
+    radiance += sky_view
                     .sample(vkr_metal_packet_sky_sampler,
                             vkr_sky_view_uv(params, direction, params.moon.xyz,
                                             VKR_ATMOSPHERE_SKY_VIEW_MOON_TABLE))
                     .rgb;
-  float3 disc = float3(0.0);
   if (!vkr_sky_view_hits_ground(params, direction.y)) {
     float3 view_transmittance =
-        sky.transmittance
-            .sample(vkr_metal_packet_sky_sampler,
-                    vkr_atmosphere_transmittance_uv(
-                        params, params.planet.x + params.planet.z,
-                        direction.y))
-            .rgb;
-    disc = vkr_atmosphere_sun_disc(params, direction, view_transmittance) +
-           vkr_atmosphere_moon_disc(params, direction, view_transmittance);
+        vkr_metal_packet_sky_view_transmittance(sky, direction);
+    disc = vkr_metal_packet_sky_discs(sky, direction, view_transmittance);
     radiance += vkr_atmosphere_light_glow(params, direction, params.sun,
                                           params.solar, view_transmittance) +
                 vkr_atmosphere_light_glow(params, direction, params.moon,
@@ -1370,21 +1398,35 @@ vkr_metal_packet_deferred_sky(constant VkrMetalPacketDeferredLightingRoot &root,
     // Stars sit behind the whole atmosphere; the neighbouring pixel's ray
     // sets each star's footprint.
     if (sky.params.star_axis.w > 0.0f) {
-      float2 next_ndc = vkr_metal_packet_resolve_ndc(
-          float2(pixel) + float2(1.5, 0.5), root.extent);
-      float4 next_world =
-          root.inverse_view_projection * float4(next_ndc, 1.0, 1.0);
-      float3 next = -vkr_metal_packet_view_direction(root.frame,
-          next_world.xyz / max(abs(next_world.w), 1e-7) * sign(next_world.w));
+      float3 next = vkr_metal_packet_sky_direction(
+          frame, inverse_view_projection, extent,
+          float2(pixel) + float2(1.5, 0.5));
       radiance += vkr_atmosphere_stars(sky.params, direction,
                                        length(cross(direction, next))) *
                   view_transmittance;
     }
   }
+  return radiance;
+}
+
+// A pixel's background: the clear sky, then the cloud layer over it and the
+// discs as the clouds let them through. Deferred lighting and the tiled
+// pipeline share it (ADR-087).
+static float3 vkr_metal_packet_sky_background(
+    constant VkrMetalPacketFrameRoot *frame,
+    texture2d<float, access::sample> sky_view, float4x4 inverse_view_projection,
+    uint2 extent, uint sky_mode, float4 sky_radiance, uint2 pixel) {
+  float3 disc;
+  float3 radiance =
+      vkr_metal_packet_sky_clear(frame, sky_view, inverse_view_projection,
+                                 extent, sky_mode, sky_radiance, pixel, disc);
+  if (sky_mode != VKR_SKY_MODE_ATMOSPHERE)
+    return radiance;
+  constant VkrMetalPacketSky &sky = *frame->sky;
   // The cloud trace shares screen coordinates with this pass. The disc
   // follows the cloud's apparent opacity; see vkr_cloud_disc_visibility.
   if (sky.params.clouds.noise.w > 0.0f) {
-    float2 uv = (float2(pixel) + 0.5) / float2(root.extent);
+    float2 uv = (float2(pixel) + 0.5) / float2(extent);
     float4 cloud = sky.cloud_radiance.sample(vkr_metal_packet_sky_sampler, uv);
     radiance = vkr_cloud_composite(radiance, cloud);
     disc *= vkr_cloud_disc_visibility(cloud.a);
@@ -1670,7 +1712,10 @@ static void vkr_metal_packet_deferred_shade(
     // vk_deferred_lighting.
     float3 background = root.frame->render_mode == 9u || root.frame->render_mode == 12u
                             ? float3(0.0)
-                            : vkr_metal_packet_deferred_sky(root, pixel);
+                            : vkr_metal_packet_sky_background(
+                                  root.frame, root.sky_view,
+                                  root.inverse_view_projection, root.extent,
+                                  root.sky_mode, root.sky_radiance, pixel);
     root.hdr.write(float4(background, 1.0), pixel);
     return;
   }

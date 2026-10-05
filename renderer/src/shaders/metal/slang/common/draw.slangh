@@ -76,6 +76,28 @@ struct VkrMetalPacketDiffuseVolume {
     uint4 dimensions;
 };
 
+// Mirrors VkrLightmapRect: x and y in `origin`, width and height in
+// `extent`, low 16 bits first.
+struct VkrLightmapRect {
+    uint page;
+    uint origin;
+    uint extent;
+    uint reserved;
+};
+
+// Mirrors VkrMetalPacketLightmap in vkr_metal_packet_abi.h (ADR-088). Only
+// MSL samples the page array, so the texture stays a resource id here.
+struct VkrMetalPacketLightmap {
+    uint64_t texture;
+    VkrLightmapRect* rects;
+    uint rect_count;
+    uint layer_count;
+    float inverse_page_size;
+    uint active_layer_count;
+    uint4 active_layers[2];
+    float4 active_weights[2];
+};
+
 struct VkrMetalPacketSheen {
     uint64_t directional_albedo_texture;
     uint64_t ltc_matrix_texture;
@@ -203,6 +225,7 @@ struct VkrMetalPacketFrameRoot
     VkrMetalPacketAnisotropy* anisotropy;
     VkrMetalPacketLocalShadowTransmission* local_shadow_transmission;
     VkrMetalPacketSky* sky;
+    VkrMetalPacketLightmap* lightmap;
 };
 
 #include "../../../shared/gpu_draw.slangh"

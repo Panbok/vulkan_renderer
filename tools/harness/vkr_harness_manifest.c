@@ -534,6 +534,7 @@ typedef struct VkrHarnessRendererFields {
   int32_t gtao_power_token;
   int32_t ibl_probe_limit_token;
   int32_t motion_blur_entity_velocity_token;
+  char graphics_pipeline[16];
 } VkrHarnessRendererFields;
 
 void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
@@ -605,6 +606,9 @@ vkr_internal bool8_t vkr_harness_parse_renderer_fields(
       !vkr_harness_manifest_string(doc, token, "upscaler", false_v,
                                    renderer->upscaler,
                                    sizeof(renderer->upscaler), error) ||
+      !vkr_harness_manifest_string(doc, token, "graphics_pipeline", false_v,
+                                   fields->graphics_pipeline,
+                                   sizeof(fields->graphics_pipeline), error) ||
       !vkr_harness_manifest_bool(doc, token, "dynamic_resolution", false_v,
                                  &renderer->dynamic_resolution, error) ||
       !vkr_harness_manifest_f64(doc, token, "dynamic_resolution_min_scale",
@@ -773,6 +777,14 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       string_equals(renderer->upscaler, "spatial") ||
       string_equals(renderer->upscaler, "metalfx_temporal") ||
       string_equals(renderer->upscaler, "fsr31");
+  const bool8_t graphics_pipeline_valid =
+      fields->graphics_pipeline[0] == '\0' ||
+      string_equals(fields->graphics_pipeline, "desktop") ||
+      string_equals(fields->graphics_pipeline, "tiled");
+  renderer->graphics_pipeline =
+      string_equals(fields->graphics_pipeline, "tiled")
+          ? VKR_GRAPHICS_PIPELINE_TILED
+          : VKR_GRAPHICS_PIPELINE_DESKTOP;
   const bool8_t exposure_mode_valid =
       string_equals(renderer->exposure_mode, "manual") ||
       string_equals(renderer->exposure_mode, "automatic");
@@ -828,11 +840,12 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
        renderer->motion_blur_entity_velocity_y == 0.0f &&
        renderer->motion_blur_entity_velocity_z == 0.0f);
   if (!preset_valid || !mode_valid || !backend_valid || !upscaler_valid ||
-      !display_output_valid || fields->cascades < 1u || fields->cascades > 8u ||
-      !exposure_mode_valid || !display_transform_valid ||
-      !automatic_controls_valid || !bloom_controls_valid ||
-      !gtao_controls_valid || !dof_focus_valid || !dof_f_stop_valid ||
-      !motion_blur_controls_valid || !motion_blur_entity_valid ||
+      !graphics_pipeline_valid || !display_output_valid ||
+      fields->cascades < 1u || fields->cascades > 8u || !exposure_mode_valid ||
+      !display_transform_valid || !automatic_controls_valid ||
+      !bloom_controls_valid || !gtao_controls_valid || !dof_focus_valid ||
+      !dof_f_stop_valid || !motion_blur_controls_valid ||
+      !motion_blur_entity_valid ||
       (fields->ibl_probe_limit_token >= 0 &&
        fields->ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
       !isfinite(fields->manual_exposure) || fields->manual_exposure <= 0.0 ||
@@ -1031,6 +1044,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "render_scale",
       "texture_max_load_dimension",
       "upscaler",
+      "graphics_pipeline",
       "dynamic_resolution",
       "dynamic_resolution_min_scale",
       "dynamic_resolution_max_scale",

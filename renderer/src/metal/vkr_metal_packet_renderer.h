@@ -75,6 +75,8 @@ typedef struct VkrMetalPacketRendererConfig {
   float32_t render_scale_min;
   float32_t render_scale_max;
   VkrUpscaleMode upscale_mode;
+  /** The tiled class runs the tiled graph's forward pass (ADR-087). */
+  VkrGraphicsPipelineClass graphics_pipeline;
   VkrDynamicResolutionConfig dynamic_resolution;
   /** Borrowed CAMetalLayer pointer; required only for WINDOW. */
   void *metal_layer;

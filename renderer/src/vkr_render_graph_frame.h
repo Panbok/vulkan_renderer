@@ -116,6 +116,10 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_FSR31_PREPARE,
   VKR_RG_EXECUTOR_FSR31_UPSCALE,
   VKR_RG_EXECUTOR_FSR31_STABILIZE,
+  /** The tiled pipeline's opaque render pass and its cloud layer
+   * (ADR-087). */
+  VKR_RG_EXECUTOR_TILED_OPAQUE,
+  VKR_RG_EXECUTOR_TILED_CLOUDS,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

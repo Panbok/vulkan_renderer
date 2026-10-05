@@ -1484,6 +1484,105 @@ vkr_internal void test_subresource_range_resolve(void) {
   printf("  test_subresource_range_resolve PASSED\n");
 }
 
+/* The tiled graph (ADR-087) names only registered executors and orders its
+   passes by their data: the opaque pass after the shadows, sky and cloud
+   inputs it samples, the cloud trace after the depth the pass resolves, the
+   cloud draw after the trace, and post-processing reading the resolved
+   colour. */
+vkr_internal void test_tiled_graph_topology(void) {
+  printf("  Running test_tiled_graph_topology...\n");
+  Arena *arena = arena_create(MB(16), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  VkrRgJsonGraph json = {0};
+  assert(vkr_rg_json_load_file(
+      &allocator, "assets/render_graphs/tiled.rendergraph.json", &json));
+  VkrRgExecutorRegistry registry = {0};
+  assert(vkr_rg_executor_registry_init(&registry, &allocator));
+  assert(vkr_render_graph_register_executors(&registry));
+  assert(vkr_rg_json_bind_executors(&json, &registry));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph);
+  VkrRenderGraphFrameInfo frame = {
+      .scene_rendering = true_v,
+      .gpu_draw_candidate_capacity = 1u,
+      .gpu_draw_visible_capacity = 8u,
+      .target_width = 1000u,
+      .target_height = 800u,
+      .window_width = 1000u,
+      .window_height = 800u,
+      .scene_output_width = 1000u,
+      .scene_output_height = 800u,
+      .viewport_width = 1000u,
+      .viewport_height = 800u,
+      .render_scale = 1.0f,
+      .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+      .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+      .shadow_map_size = 2048u,
+      .shadow_map_layer_count = 4u,
+      .shadow_cascade_count = 4u,
+      .shadow_cascade_render_mask = 0xfu,
+      .hzb_build_enabled = true_v,
+      .atmosphere_enabled = true_v,
+      .aerial_perspective_enabled = true_v,
+      .clouds_enabled = true_v,
+      .exposure_automatic = true_v,
+  };
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+
+  const VkrRgImageHandle color =
+      vkr_rg_find_image(graph, string8_lit("hdr_scene_color"));
+  const VkrRgImageHandle depth =
+      vkr_rg_find_image(graph, string8_lit("opaque_vbuffer_depth"));
+  assert(vkr_rg_image_handle_valid(color) && vkr_rg_image_handle_valid(depth));
+  uint64_t last_shadow = 0u;
+  uint64_t sky_view = UINT64_MAX;
+  uint64_t cloud_light = UINT64_MAX;
+  uint64_t opaque = UINT64_MAX;
+  uint64_t trace = UINT64_MAX;
+  uint64_t clouds = UINT64_MAX;
+  uint64_t tonemap = UINT64_MAX;
+  for (uint64_t i = 0u; i < graph->passes.length; ++i) {
+    const VkrRgPass *pass = rg_barrier_test_pass(graph, (uint32_t)i);
+    assert(pass);
+    if (vkr_string8_starts_with(&pass->desc.name, "Shadow.Cascade."))
+      last_shadow = i;
+    else if (vkr_string8_equals_cstr(&pass->desc.name, "Sky.ViewLut"))
+      sky_view = i;
+    else if (vkr_string8_equals_cstr(&pass->desc.name, "Clouds.SkyLight"))
+      cloud_light = i;
+    else if (vkr_string8_equals_cstr(&pass->desc.name, "Clouds.Trace"))
+      trace = i;
+    else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Clouds"))
+      clouds = i;
+    else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Opaque")) {
+      const VkrRgAttachment *attachment =
+          vector_get_VkrRgAttachment(&pass->desc.color_attachments, 0u);
+      assert(attachment && attachment->image.id == color.id);
+      assert(pass->desc.has_depth_attachment &&
+             pass->desc.depth_attachment.image.id == depth.id);
+      opaque = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name,
+                                       "Post.Tonemap.Fullscreen")) {
+      const VkrRgImageUse *source =
+          vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+      assert(source && source->image.id == color.id);
+      tonemap = i;
+    }
+  }
+  assert(last_shadow < opaque && sky_view < opaque && cloud_light < opaque);
+  assert(opaque < trace && trace < clouds && clouds < tonemap);
+  assert(tonemap != UINT64_MAX);
+  assert(vkr_rg_compile_schedule(graph));
+  vkr_rg_end_frame(graph);
+  arena_destroy(arena);
+  printf("  test_tiled_graph_topology PASSED\n");
+}
+
 vkr_internal void test_main_graph_editor_metalfx_topology(void) {
   printf("  Running test_main_graph_editor_metalfx_topology...\n");
   Arena *arena = arena_create(MB(16), MB(2));
@@ -2557,6 +2656,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
   test_main_graph_editor_metalfx_topology();
+  test_tiled_graph_topology();
   test_main_graph_fits_runtime_pass_capacity();
   test_subresource_range_resolve();
   test_same_layout_write_then_read_emits_barrier();

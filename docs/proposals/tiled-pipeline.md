@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-05
+updated: 2026-10-06
 authority: proposal
 ---
 
@@ -14,9 +14,13 @@ to accept the design.
 
 ## Current baseline
 
-Apple M-series runs the desktop pipeline. At the budget's resolution it takes
-56.12 ms mean per frame on the M1 Pro; ADR-087 records the configuration and
-the passes. Three further measurements from the same day (Release, M1 Pro,
+Apple M-series runs the desktop pipeline by default. At the budget's
+resolution it takes 56.12 ms mean per frame on the M1 Pro; ADR-087 records
+the configuration and the passes. A first tiled pipeline runs on Metal when
+selected: its graph, opaque pass, forward shader, lightmap sampling and
+measurement (13.2 ms median, 16.8 ms p95 without transmission or local
+lights) are in [ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
+decisions 6 to 8. Three further measurements from the same day (Release, M1 Pro,
 native 2560×1440, single local runs, not authoritative) bound what tuning the
 desktop pipeline can recover:
 
@@ -79,11 +83,10 @@ for tile-memory reads and lazily allocated transient attachments.
 - Forward shading or deferred shading in tile memory: decided, forward after
   a depth pre-pass ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
   measured below).
-- MSAA sample count: two or four.
 - The M1 Pro quality tier: which effects drop or lower first.
-- Graph representation: a graph pass is one render pass today. Several
-  subpasses that share tile memory need either a graph pass that owns
-  sub-stages or merged pass groups in the graph compiler.
+- MSAA sample count and graph representation: decided, four samples and one
+  graph pass that owns its sub-stages
+  ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision 6).
 
 ## Prototype gate
 
@@ -222,9 +225,13 @@ Remaining phases:
    integrator for hosts without Metal ray tracing, and a faster path through
    stacked cutout foliage (textured Bistro bakes at a third of the untextured
    rate).
-2. Tiled runtime: sample the blended sun keys and scaled lamp groups that
-   scenes already load and bind (ADR-088, runtime set) in the tiled
-   pipeline's forward shader, measured against the 16.7 ms budget.
+2. Tiled runtime: the forward shader samples the blended sun keys and
+   scaled lamp groups (ADR-087, decision 8). Remaining: a lightmap-baked
+   Bistro measured against the 16.7 ms budget and checked against the
+   desktop image, transmission and ordinary blending, a bounded set of
+   dynamic and shadowed local lights, the remaining material layers, IBL
+   probes, fog, the editor's passes and picking, and making the tiled
+   pipeline the Apple default.
 
 ## Acceptance evidence
 

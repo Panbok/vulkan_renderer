@@ -1,0 +1,1330 @@
+{
+  "version": 1,
+  "name": "tiled",
+  "resources": [
+    {
+      "name": "swapchain",
+      "type": "image",
+      "import": "swapchain",
+      "flags": [
+        "EXTERNAL",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "shadow_map",
+      "condition": "scene_rendering",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "shadow_map_size"
+      },
+      "layers_source": "shadow_map_layer_count",
+      "format": "SHADOW_DEPTH",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "shadow_moments",
+      "condition": "scene_rendering && shadow_evsm_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "shadow_moments_size"
+      },
+      "layers_source": "shadow_moments_layer_count",
+      "format": "R32G32B32A32_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "hdr_scene_color",
+      "type": "image",
+      "condition": "scene_rendering && !editor_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "STORAGE",
+        "TRANSFER_SRC",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "gpu_draw_candidates",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_candidate_capacity",
+        "bytes_per_element": 48
+      },
+      "usage": [
+        "STORAGE",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "gpu_draw_instances",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_candidate_capacity",
+        "bytes_per_element": 144
+      },
+      "usage": [
+        "STORAGE",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "gpu_visible_draws",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_view_rows",
+        "bytes_per_element": 32
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "gpu_draw_classifications",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_view_rows",
+        "bytes_per_element": 4
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "gpu_draw_compaction_state",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_view_count",
+        "bytes_per_element": 144
+      },
+      "usage": [
+        "STORAGE",
+        "INDIRECT",
+        "TRANSFER_SRC",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "gpu_draw_arguments",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_view_rows",
+        "bytes_per_element": 20
+      },
+      "usage": [
+        "STORAGE",
+        "INDIRECT"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "sdsm_reduce_state",
+      "condition": "scene_rendering",
+      "type": "buffer",
+      "size": 16,
+      "usage": [
+        "STORAGE",
+        "TRANSFER_SRC",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
+      "name": "opaque_vbuffer_depth",
+      "condition": "scene_rendering",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "SWAPCHAIN_DEPTH",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "hzb_history",
+      "condition": "scene_rendering",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R32_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "exposure_histogram",
+      "type": "buffer",
+      "condition": "scene_rendering && exposure_automatic",
+      "size": 1024,
+      "usage": [
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
+      "name": "exposure_state",
+      "type": "buffer",
+      "condition": "scene_rendering && exposure_automatic",
+      "size": 32,
+      "usage": [
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "HISTORY"
+      ]
+    },
+    {
+      "name": "bloom_chain",
+      "type": "image",
+      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "bloom_accum",
+      "type": "image",
+      "condition": "scene_rendering && bloom_enabled && !fsr31_enabled",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "mip_levels": "full_chain",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "bloom_combined",
+      "type": "image",
+      "condition": "scene_rendering && bloom_enabled && !metalfx_enabled && !fsr31_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "sky_view_lut",
+      "type": "image",
+      "condition": "scene_rendering && atmosphere_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 384,
+        "height": 108
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT"
+      ]
+    },
+    {
+      "name": "aerial_perspective",
+      "type": "image",
+      "condition": "scene_rendering && aerial_perspective_enabled",
+      "dimension": "3d",
+      "depth": 32,
+      "extent": {
+        "mode": "fixed",
+        "width": 32,
+        "height": 32
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT"
+      ]
+    },
+    {
+      "name": "cloud_shadow",
+      "type": "image",
+      "condition": "scene_rendering && clouds_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 512,
+        "height": 512
+      },
+      "format": "R16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
+      "name": "cloud_history",
+      "type": "image",
+      "condition": "scene_rendering && clouds_enabled",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "post_display_linear_fullscreen",
+      "type": "image",
+      "condition": "scene_rendering && post_transform_cache_enabled && !editor_enabled",
+      "extent": {
+        "mode": "window"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "skinning_output",
+      "condition": "skinning_enabled",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "skinning_vertex_capacity",
+        "bytes_per_element": 32
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "animation_preview_color",
+      "type": "image",
+      "condition": "animation_preview_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 512,
+        "height": 512
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "animation_preview_depth",
+      "type": "image",
+      "condition": "animation_preview_enabled",
+      "extent": {
+        "mode": "fixed",
+        "width": 512,
+        "height": 512
+      },
+      "format": "D32_SFLOAT",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT"
+      ],
+      "flags": [
+        "PER_IMAGE"
+      ]
+    }
+  ],
+  "passes": [
+    {
+      "name": "IBL.Bake",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "execute": "pass.ibl_bake"
+    },
+    {
+      "name": "Cull.Upload",
+      "condition": "scene_rendering",
+      "type": "transfer",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "gpu_draw_candidates",
+          "access": "TRANSFER_DST",
+          "binding": 0
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "TRANSFER_DST",
+          "binding": 1
+        },
+        {
+          "buffer": "sdsm_reduce_state",
+          "access": "TRANSFER_DST",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "TRANSFER_DST",
+          "binding": 3
+        }
+      ],
+      "execute": "pass.gpu_draw_upload"
+    },
+    {
+      "name": "Animation.Skinning",
+      "condition": "skinning_enabled",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.animation.skinning"
+    },
+    {
+      "name": "Cull.Classify",
+      "condition": "scene_rendering",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "gpu_draw_candidates",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "image": "hzb_history",
+          "access": "STORAGE_READ",
+          "binding": 3,
+          "when": "hzb_build_enabled"
+        }
+      ],
+      "writes": [
+        {
+          "buffer": "gpu_draw_classifications",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.gpu_draw_classify"
+    },
+    {
+      "name": "Cull.Prefix",
+      "condition": "scene_rendering",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.gpu_draw_prefix"
+    },
+    {
+      "name": "Cull.Encode",
+      "condition": "scene_rendering",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "gpu_draw_candidates",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "buffer": "gpu_draw_classifications",
+          "access": "STORAGE_READ",
+          "binding": 1
+        }
+      ],
+      "writes": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 3
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "STORAGE_WRITE",
+          "binding": 4
+        }
+      ],
+      "execute": "pass.gpu_draw_encode"
+    },
+    {
+      "name": "Shadow.Cascade.${i}",
+      "condition": "scene_rendering",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "shadow_cascade_count",
+        "condition_mask_source": "shadow_cascade_render_mask"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "shadow_map",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          },
+          "slice": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.shadow.cascade"
+    },
+    {
+      "name": "Shadow.Moments.${i}",
+      "condition": "scene_rendering && shadow_evsm_active",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "repeat": {
+        "count_source": "shadow_moments_layer_count",
+        "condition_mask_source": "shadow_moments_render_mask"
+      },
+      "reads": [
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "shadow_moments",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "execute": "pass.shadow.moments"
+    },
+    {
+      "name": "Sky.ViewLut",
+      "type": "compute",
+      "condition": "scene_rendering && atmosphere_enabled",
+      "writes": [
+        {
+          "image": "sky_view_lut",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.sky.view_lut"
+    },
+    {
+      "name": "Sky.AerialPerspective",
+      "type": "compute",
+      "condition": "scene_rendering && aerial_perspective_enabled",
+      "writes": [
+        {
+          "image": "aerial_perspective",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.sky.aerial_perspective"
+    },
+    {
+      "name": "Clouds.Shadow",
+      "type": "compute",
+      "condition": "scene_rendering && clouds_enabled",
+      "writes": [
+        {
+          "image": "cloud_shadow",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.clouds.shadow"
+    },
+    {
+      "name": "Clouds.SkyLight",
+      "type": "compute",
+      "condition": "scene_rendering && clouds_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "execute": "pass.clouds.sky_light"
+    },
+    {
+      "name": "Tiled.Opaque",
+      "condition": "scene_rendering",
+      "type": "graphics",
+      "domain": "WORLD",
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        },
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "shadow_cascades_active"
+        },
+        {
+          "image": "shadow_moments",
+          "access": "SAMPLED",
+          "binding": 17,
+          "when": "shadow_evsm_active"
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "hdr_scene_color",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ],
+        "depth": {
+          "image": "opaque_vbuffer_depth",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.tiled.opaque"
+    },
+    {
+      "name": "HZB.BuildBase",
+      "condition": "hzb_build_enabled",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "hzb_history",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          }
+        }
+      ],
+      "execute": "pass.hzb.build"
+    },
+    {
+      "name": "HZB.BuildMip.${i}",
+      "condition": "hzb_build_enabled",
+      "type": "compute",
+      "repeat": {
+        "count_source": "hzb_reduce_pass_count"
+      },
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "hzb_history",
+          "access": "STORAGE_READ",
+          "binding": 0,
+          "subresource": {
+            "base_mip": "${i}",
+            "mip_count": 1
+          }
+        }
+      ],
+      "writes": [
+        {
+          "image": "hzb_history",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": {
+            "base_mip": "${i+1}",
+            "mip_count": 1
+          }
+        }
+      ],
+      "execute": "pass.hzb.build"
+    },
+    {
+      "name": "Clouds.Trace",
+      "type": "compute",
+      "condition": "scene_rendering && clouds_enabled",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 2
+        }
+      ],
+      "writes": [
+        {
+          "image": "cloud_history",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.clouds.trace"
+    },
+    {
+      "name": "Tiled.Clouds",
+      "condition": "scene_rendering && clouds_enabled",
+      "type": "graphics",
+      "domain": "WORLD",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_history",
+          "access": "SAMPLED",
+          "binding": 34
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "hdr_scene_color",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.tiled.clouds"
+    },
+    {
+      "name": "Post.Exposure.Histogram",
+      "type": "compute",
+      "condition": "scene_rendering && exposure_automatic",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "buffer": "exposure_histogram",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.exposure.histogram"
+    },
+    {
+      "name": "Post.Exposure.Resolve",
+      "type": "compute",
+      "condition": "scene_rendering && exposure_automatic",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "exposure_histogram",
+          "access": "STORAGE_READ",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.exposure.resolve"
+    },
+    {
+      "name": "Post.Bloom.Prefilter",
+      "type": "compute",
+      "condition": "scene_rendering && bloom_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "bloom_chain",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          }
+        }
+      ],
+      "execute": "pass.bloom.prefilter"
+    },
+    {
+      "name": "Post.Bloom.Downsample.${i}",
+      "type": "compute",
+      "condition": "scene_rendering && bloom_enabled",
+      "repeat": {
+        "count_source": "bloom_downsample_pass_count"
+      },
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "bloom_chain",
+          "access": "SAMPLED",
+          "binding": 0,
+          "subresource": {
+            "base_mip": "${i}",
+            "mip_count": 1
+          }
+        }
+      ],
+      "writes": [
+        {
+          "image": "bloom_chain",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": {
+            "base_mip": "${i+1}",
+            "mip_count": 1
+          }
+        }
+      ],
+      "execute": "pass.bloom.downsample"
+    },
+    {
+      "name": "Post.Bloom.Upsample.${i}",
+      "type": "compute",
+      "condition": "scene_rendering && bloom_enabled",
+      "repeat": {
+        "count_source": "bloom_upsample_pass_count",
+        "reverse": true
+      },
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "bloom_chain",
+          "access": "SAMPLED",
+          "binding": 0,
+          "subresource": {
+            "base_mip": "${i}",
+            "mip_count": 1
+          }
+        },
+        {
+          "image": "bloom_accum",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": {
+            "base_mip": "${i+1}",
+            "mip_count": 1
+          }
+        },
+        {
+          "image": "bloom_chain",
+          "access": "SAMPLED",
+          "binding": 3,
+          "subresource": {
+            "base_mip": "${i+1}",
+            "mip_count": 1
+          }
+        }
+      ],
+      "writes": [
+        {
+          "image": "bloom_accum",
+          "access": "STORAGE_WRITE",
+          "binding": 1,
+          "subresource": {
+            "base_mip": "${i}",
+            "mip_count": 1
+          }
+        }
+      ],
+      "execute": "pass.bloom.upsample"
+    },
+    {
+      "name": "Post.Bloom.Combine",
+      "type": "compute",
+      "condition": "scene_rendering && bloom_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "bloom_accum",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          }
+        }
+      ],
+      "writes": [
+        {
+          "image": "bloom_combined",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.bloom.combine"
+    },
+    {
+      "name": "Post.DisplayLinear.Fullscreen",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "scene_rendering && post_transform_cache_enabled",
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 1,
+          "when": "exposure_automatic"
+        },
+        {
+          "image": "bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          },
+          "when": "bloom_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "post_display_linear_fullscreen",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.tonemap.prepare"
+    },
+    {
+      "name": "Post.Tonemap.Fullscreen",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "scene_rendering",
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 1,
+          "when": "exposure_automatic"
+        },
+        {
+          "image": "bloom_combined",
+          "access": "SAMPLED",
+          "binding": 2,
+          "subresource": {
+            "base_mip": 0,
+            "mip_count": 1
+          },
+          "when": "bloom_enabled"
+        },
+        {
+          "image": "post_display_linear_fullscreen",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "post_transform_cache_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "swapchain",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      },
+      "execute": "pass.tonemap"
+    },
+    {
+      "name": "Animation.Preview",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "animation_preview_enabled",
+      "reads": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "animation_preview_color",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0.045,
+                0.055,
+                0.07,
+                1
+              ]
+            }
+          }
+        ],
+        "depth": {
+          "image": "animation_preview_depth",
+          "load": "CLEAR",
+          "store": "DONT_CARE",
+          "clear": {
+            "depth": 1,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.animation.preview"
+    },
+    {
+      "name": "UI.Fullscreen",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "ui_fullscreen_enabled",
+      "attachments": {
+        "color": [
+          {
+            "image": "swapchain",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.ui",
+      "reads": [
+        {
+          "image": "animation_preview_color",
+          "access": "SAMPLED",
+          "binding": 30,
+          "when": "animation_preview_enabled"
+        }
+      ]
+    }
+  ],
+  "outputs": {
+    "present": "swapchain"
+  }
+}

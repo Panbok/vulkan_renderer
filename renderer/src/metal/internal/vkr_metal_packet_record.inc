@@ -308,10 +308,80 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   }
 }
 
+/* The tiled pipeline's opaque pass (ADR-087): a depth pre-pass over the
+   opaque buckets, which cannot discard, then shading of every bucket at the
+   laid depth, then the clear sky behind them. */
+vkr_internal void vkr_metal_packet_record_tiled_opaque(
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
+  const VkrMetalPacketIndirectPass *draw = &pass->tiled.draws;
+  [encoder setViewport:draw->viewport];
+  if (draw->commands) {
+    [encoder setDepthStencilState:renderer->tiled_prepass_state];
+    [encoder setRenderPipelineState:renderer->tiled_depth_pipeline];
+    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+         ++bucket) {
+      if ((bucket & 2u) != 0u)
+        continue;
+      [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
+      [encoder
+          setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                    ? MTLWindingClockwise
+                                    : MTLWindingCounterClockwise];
+      [encoder executeCommandsInBuffer:draw->commands
+                        indirectBuffer:draw->arguments + (uint64_t)bucket * 2u *
+                                                             sizeof(uint32_t)];
+    }
+    [encoder setDepthStencilState:renderer->tiled_shade_state];
+    [encoder setRenderPipelineState:renderer->tiled_forward_pipeline];
+    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+         ++bucket) {
+      [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
+      [encoder
+          setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                    ? MTLWindingClockwise
+                                    : MTLWindingCounterClockwise];
+      [encoder executeCommandsInBuffer:draw->commands
+                        indirectBuffer:draw->arguments + (uint64_t)bucket * 2u *
+                                                             sizeof(uint32_t)];
+    }
+  }
+  [renderer->argument_table setAddress:pass->tiled.sky_root atIndex:1u];
+  [encoder setArgumentTable:renderer->argument_table
+                   atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+  [encoder setDepthStencilState:renderer->tiled_sky_state];
+  [encoder setRenderPipelineState:renderer->tiled_sky_pipeline];
+  [encoder setCullMode:MTLCullModeNone];
+  [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+              vertexStart:0u
+              vertexCount:3u];
+}
+
+/* The cloud layer over the tiled pipeline's resolved image. */
+vkr_internal void vkr_metal_packet_record_tiled_clouds(
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
+  [encoder setViewport:pass->tiled_clouds.viewport];
+  [renderer->argument_table setAddress:pass->tiled_clouds.root atIndex:1u];
+  [encoder setArgumentTable:renderer->argument_table
+                   atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+  [encoder setRenderPipelineState:renderer->tiled_clouds_pipeline];
+  [encoder setCullMode:MTLCullModeNone];
+  [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+              vertexStart:0u
+              vertexCount:3u];
+}
+
 vkr_internal void vkr_metal_packet_record_graphics_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
+  case VKR_RG_EXECUTOR_TILED_OPAQUE:
+    vkr_metal_packet_record_tiled_opaque(renderer, encoder, pass);
+    break;
+  case VKR_RG_EXECUTOR_TILED_CLOUDS:
+    vkr_metal_packet_record_tiled_clouds(renderer, encoder, pass);
+    break;
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:

@@ -24,15 +24,18 @@
 
 #include <math.h>
 
-/* The render graph ships in the build tree beside the renderer; a mounted
- * bundle or an installed program carries it as content instead (ADR-077). */
-vkr_internal const char *vkr_renderer_graph_path(char *storage,
-                                                 uint64_t capacity) {
+/* The render graph of a pipeline class (ADR-087) ships in the build tree
+ * beside the renderer; a mounted bundle or an installed program carries it as
+ * content instead (ADR-077). */
+vkr_internal const char *
+vkr_renderer_graph_path(VkrGraphicsPipelineClass graphics, char *storage,
+                        uint64_t capacity) {
+  const bool8_t tiled = graphics == VKR_GRAPHICS_PIPELINE_TILED;
   if (!vkr_vfs_pack_count() && vkr_content_root_is_repository()) {
-    return VKR_RENDER_GRAPH_PATH;
+    return tiled ? VKR_TILED_RENDER_GRAPH_PATH : VKR_RENDER_GRAPH_PATH;
   }
-  snprintf(storage, capacity, "%sassets/render_graphs/main.rendergraph.json",
-           vkr_content_root());
+  snprintf(storage, capacity, "%sassets/render_graphs/%s.rendergraph.json",
+           vkr_content_root(), tiled ? "tiled" : "main");
   return storage;
 }
 
@@ -521,7 +524,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .ssr = ssr_config,
       .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
-      .graph_path = vkr_renderer_graph_path(graph_path, sizeof(graph_path)),
+      .graph_path = vkr_renderer_graph_path(renderer->graphics_pipeline,
+                                            graph_path, sizeof(graph_path)),
       .slang_msl_path = slang_msl,
       .fragment_msl_path = fragment_msl,
       .slang_metallib_path = use_metallib ? slang_metallib : NULL,
@@ -537,6 +541,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .render_scale_min = renderer->render_scale_min,
       .render_scale_max = renderer->render_scale_max,
       .upscale_mode = renderer->upscale_mode,
+      .graphics_pipeline = renderer->graphics_pipeline,
       .dynamic_resolution = renderer->dynamic_resolution_config,
       .metal_layer = surface ? surface->metal_layer : NULL,
       .display_output_mode = backend_config->display_output_mode,
@@ -587,7 +592,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .ssr = ssr_config,
       .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
-      .graph_path = vkr_renderer_graph_path(graph_path, sizeof(graph_path)),
+      .graph_path = vkr_renderer_graph_path(renderer->graphics_pipeline,
+                                            graph_path, sizeof(graph_path)),
       .surface = surface ? *surface : (VkrNativeSurface){0},
       .display_output_mode = backend_config->display_output_mode,
       .target_kind = renderer->present_target.kind,
@@ -789,6 +795,31 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     log_error("FSR 3.1 render scale must be in [1/3, 1]");
     return false_v;
   }
+  VkrGraphicsPipelineClass requested_graphics =
+      backend_config ? backend_config->graphics_pipeline
+                     : VKR_GRAPHICS_PIPELINE_DESKTOP;
+  const char *graphics_override = getenv("VKR_GRAPHICS_PIPELINE");
+  if (graphics_override && strcmp(graphics_override, "tiled") == 0) {
+    requested_graphics = VKR_GRAPHICS_PIPELINE_TILED;
+  } else if (graphics_override && strcmp(graphics_override, "desktop") == 0) {
+    requested_graphics = VKR_GRAPHICS_PIPELINE_DESKTOP;
+  }
+  if (requested_graphics < VKR_GRAPHICS_PIPELINE_DESKTOP ||
+      requested_graphics >= VKR_GRAPHICS_PIPELINE_COUNT) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    log_error("Renderer graphics pipeline class is invalid");
+    return false_v;
+  }
+  /* The tiled pipeline resolves MSAA at native resolution (ADR-087). */
+  if (requested_graphics == VKR_GRAPHICS_PIPELINE_TILED &&
+      (backend_type != VKR_RENDERER_BACKEND_TYPE_METAL ||
+       requested_upscale_mode != VKR_UPSCALE_MODE_SPATIAL ||
+       requested_dynamic_resolution.enabled)) {
+    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
+    log_error("The tiled graphics pipeline requires the Metal backend without "
+              "temporal upscaling or dynamic resolution");
+    return false_v;
+  }
   if (requested_dynamic_resolution.enabled &&
       requested_upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
@@ -863,6 +894,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->render_scale_min = live_min;
   renderer->render_scale_max = live_max;
   renderer->upscale_mode = requested_upscale_mode;
+  renderer->graphics_pipeline = requested_graphics;
   renderer->dynamic_resolution_request = dynamic_resolution_request;
   renderer->dynamic_resolution_config = requested_dynamic_resolution;
   vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state,
@@ -1036,13 +1068,20 @@ vkr_internal void
 vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
                                 VkrFramePreparation *prepared) {
   const bool8_t orthographic = packet->globals.projection.m32 == 0.0f;
+  const bool8_t tiled = rf->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
   prepared->frame.input = *packet;
+  prepared->frame.tiled_pipeline = tiled;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
+  /* The tiled pipeline resolves multisampled edges and keeps no temporal
+     history; its static lights are baked and it draws no local shadows yet
+     (ADR-087). */
+  if (tiled)
+    prepared->frame.input.local_shadow = NULL;
   /* Portable TAA, MetalFX and FSR all reconstruct edges temporally, so FXAA
      filters only frames without temporal reconstruction. */
   const bool8_t temporal_frame =
-      rf->temporal_enabled &&
+      rf->temporal_enabled && !tiled &&
       packet->globals.render_mode != VKR_RENDER_MODE_INDIRECT_DIFFUSE &&
       packet->globals.render_mode != VKR_RENDER_MODE_WIREFRAME && !orthographic;
   prepared->frame.fxaa_enabled = rf->fxaa_enabled && !temporal_frame;
@@ -1308,6 +1347,18 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.gtao_enabled && !rf->gtao_forced_disabled &&
           !orthographic && !wireframe,
       packet->globals.gtao_radius, packet->globals.gtao_power);
+  /* The tiled graph has none of the desktop pipeline's screen-space effects,
+     surface diffusion, lens effects or froxel fog (ADR-087). */
+  if (tiled) {
+    prepared->frame.subsurface_enabled = false_v;
+    prepared->frame.dof_enabled = false_v;
+    prepared->frame.motion_blur_enabled = false_v;
+    prepared->frame.ssr_enabled = false_v;
+    prepared->frame.ssgi_enabled = false_v;
+    prepared->frame.gtao = vkr_gtao_prepare(
+        false_v, packet->globals.gtao_radius, packet->globals.gtao_power);
+    prepared->frame.froxel_fog = (VkrFroxelFogGpuParams){0};
+  }
 }
 
 vkr_internal void vkr_renderer_backend_get_device_information(

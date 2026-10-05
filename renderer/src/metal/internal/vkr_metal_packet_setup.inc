@@ -389,6 +389,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "diffuse_volume_params",
             VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME) ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
+                                              "lightmap",
+                                              VKR_METAL_PACKET_ABI_LIGHTMAP) ||
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "fog",
             VKR_METAL_PACKET_ABI_FOG_PARAMS) ||
@@ -581,6 +584,9 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "diffuse_volume_params",
             VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME) ||
+        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
+                                              "lightmap",
+                                              VKR_METAL_PACKET_ABI_LIGHTMAP) ||
         !vkr_metal_packet_validate_nested_abi(
             pipeline_label, frame_type, "fog",
             VKR_METAL_PACKET_ABI_FOG_PARAMS) ||
@@ -619,8 +625,8 @@ vkr_metal_packet_create_pipeline_with_targets(
     const char *fragment_name, MTLPixelFormat color_format, bool8_t blend,
     VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
-    bool8_t temporal_targets, bool8_t temporal_writes, NSString *label)
-    API_AVAILABLE(macos(26.0)) {
+    bool8_t temporal_targets, bool8_t temporal_writes, uint32_t sample_count,
+    NSString *label) API_AVAILABLE(macos(26.0)) {
   MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
   vertex.library = vertex_library;
   vertex.name = [NSString stringWithUTF8String:vertex_name];
@@ -646,7 +652,7 @@ vkr_metal_packet_create_pipeline_with_targets(
   descriptor.supportIndirectCommandBuffers =
       supports_icb ? MTL4IndirectCommandBufferSupportStateEnabled
                    : MTL4IndirectCommandBufferSupportStateDisabled;
-  descriptor.rasterSampleCount = 1;
+  descriptor.rasterSampleCount = sample_count;
   if (color_format != MTLPixelFormatInvalid) {
     descriptor.colorAttachments[0].pixelFormat = color_format;
     if (blend) {
@@ -702,7 +708,7 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
   return vkr_metal_packet_create_pipeline_with_targets(
       renderer, vertex_library, vertex_name, fragment_library, fragment_name,
       color_format, blend, vertex_abi, fragment_abi, supports_icb, false_v,
-      false_v, label);
+      false_v, 1u, label);
 }
 
 vkr_internal id<MTLComputePipelineState>
@@ -933,8 +939,81 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
       renderer, slang, "vkr_metal_packet_temporal_vertex", fragment,
       "vkr_metal_packet_temporal_blend_fragment", MTLPixelFormatRGBA16Float,
       true_v, VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
-      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v, 1u,
       @"VKR Metal packet alpha blend");
+}
+
+/* Creates the tiled pipeline's raster pipelines (ADR-087): the depth
+   pre-pass, forward shading and the clear sky, multisampled, and the cloud
+   draw over the resolved image, which adds cloud radiance to the destination
+   scaled by the cloud's transmittance (vkr_cloud_composite). */
+vkr_internal void vkr_metal_packet_create_tiled_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
+    id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
+  /* Without a fragment stage the pre-pass writes depth only. */
+  renderer->tiled_depth_pipeline =
+      vkr_metal_packet_create_pipeline_with_targets(
+          renderer, fragment, "vkr_metal_tiled_vertex", nil, NULL,
+          MTLPixelFormatRGBA16Float, false_v,
+          VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
+          true_v, false_v, false_v, VKR_METAL_TILED_SAMPLE_COUNT,
+          @"VKR tiled depth pre-pass");
+  renderer->tiled_forward_pipeline =
+      vkr_metal_packet_create_pipeline_with_targets(
+          renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+          "vkr_metal_tiled_forward_fragment", MTLPixelFormatRGBA16Float,
+          false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+          VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
+          VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled forward");
+  renderer->tiled_sky_pipeline = vkr_metal_packet_create_pipeline_with_targets(
+      renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
+      "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float, false_v,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,
+      false_v, false_v, false_v, VKR_METAL_TILED_SAMPLE_COUNT,
+      @"VKR tiled sky");
+  MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
+  vertex.library = fragment;
+  vertex.name = @"vkr_metal_tiled_sky_vertex";
+  MTL4LibraryFunctionDescriptor *clouds = [MTL4LibraryFunctionDescriptor new];
+  clouds.library = fragment;
+  clouds.name = @"vkr_metal_tiled_clouds_fragment";
+  MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
+  descriptor.label = @"VKR tiled clouds";
+  descriptor.vertexFunctionDescriptor = vertex;
+  descriptor.fragmentFunctionDescriptor = clouds;
+  MTL4PipelineOptions *options = [MTL4PipelineOptions new];
+  options.shaderReflection =
+      MTL4ShaderReflectionBindingInfo | MTL4ShaderReflectionBufferTypeInfo;
+  descriptor.options = options;
+  [options release];
+  descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+  descriptor.rasterSampleCount = 1;
+  descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+  descriptor.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+  descriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+  descriptor.colorAttachments[0].destinationRGBBlendFactor =
+      MTLBlendFactorSourceAlpha;
+  descriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
+  descriptor.colorAttachments[0].destinationAlphaBlendFactor =
+      MTLBlendFactorOne;
+  NSError *error = nil;
+  renderer->tiled_clouds_pipeline = [renderer->compiler
+      newRenderPipelineStateWithDescriptor:descriptor
+                       compilerTaskOptions:renderer->compiler_options
+                                     error:&error];
+  if (!renderer->tiled_clouds_pipeline)
+    vkr_metal_packet_print_error("tiled_clouds_pipeline", error);
+  if (renderer->tiled_clouds_pipeline &&
+      !vkr_metal_packet_validate_abi_binding(
+          descriptor.label,
+          renderer->tiled_clouds_pipeline.reflection.fragmentBindings,
+          VKR_METAL_PACKET_ABI_TILED_SKY_ROOT)) {
+    [renderer->tiled_clouds_pipeline release];
+    renderer->tiled_clouds_pipeline = nil;
+  }
+  [descriptor release];
+  [clouds release];
+  [vertex release];
 }
 
 /* Creates the picking and text raster pipelines. */
@@ -963,7 +1042,7 @@ vkr_internal void vkr_metal_packet_create_picking_text_pipelines(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float, true_v,
       VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
-      true_v, false_v, @"VKR Metal packet world text");
+      true_v, false_v, 1u, @"VKR Metal packet world text");
   renderer->picking_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_picking_fragment", MTLPixelFormatR32Uint, false_v,
@@ -1491,6 +1570,21 @@ vkr_metal_packet_create_render_states(VkrMetalPacketRenderer *renderer)
   depth.depthWriteEnabled = NO;
   renderer->depth_read_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
+  if (renderer->tiled) {
+    /* The pre-pass lays opaque depth; shading passes its equal depth and
+       lays the alpha-tested surfaces the pre-pass skipped; the sky passes
+       where no surface was drawn. */
+    depth.depthCompareFunction = MTLCompareFunctionLess;
+    depth.depthWriteEnabled = YES;
+    renderer->tiled_prepass_state =
+        [renderer->device newDepthStencilStateWithDescriptor:depth];
+    depth.depthCompareFunction = MTLCompareFunctionLessEqual;
+    renderer->tiled_shade_state =
+        [renderer->device newDepthStencilStateWithDescriptor:depth];
+    depth.depthWriteEnabled = NO;
+    renderer->tiled_sky_state =
+        [renderer->device newDepthStencilStateWithDescriptor:depth];
+  }
   [depth release];
   MTL4ArgumentTableDescriptor *table = [MTL4ArgumentTableDescriptor new];
   table.maxBufferBindCount = 3;
@@ -1644,6 +1738,14 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       return false_v;
     }
   }
+  if (renderer->tiled &&
+      (!renderer->tiled_depth_pipeline || !renderer->tiled_forward_pipeline ||
+       !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
+       !renderer->tiled_prepass_state || !renderer->tiled_shade_state ||
+       !renderer->tiled_sky_state)) {
+    log_error("Metal renderer startup object unavailable: tiled pipeline");
+    return false_v;
+  }
   return true_v;
 }
 
@@ -1668,6 +1770,8 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   if (!slang || !fragment)
     goto cleanup;
   vkr_metal_packet_create_scene_raster_pipelines(renderer, slang, fragment);
+  if (renderer->tiled)
+    vkr_metal_packet_create_tiled_pipelines(renderer, slang, fragment);
   VkrMetalPacketPresentationPipelines presentation_pipelines;
   if (!vkr_metal_packet_create_presentation_pipelines(
           renderer, fragment, vkr_metal_packet_target_pixel_format(renderer),
@@ -2858,6 +2962,7 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->tonemap_enabled = config->tonemap_enabled;
   renderer->metalfx_enabled =
       config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
+  renderer->tiled = config->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
   renderer->metalfx_dynamic_resolution_enabled =
       renderer->metalfx_enabled && config->dynamic_resolution.enabled;
   renderer->metalfx_min_render_scale =

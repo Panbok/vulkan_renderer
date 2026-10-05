@@ -139,6 +139,17 @@ typedef struct VkrMetalPacketPreparedPass {
     } world;
     VkrMetalPacketUiPass ui;
     VkrMetalPacketIndirectPass indirect;
+    /* The tiled pipeline's opaque pass: the camera's culled opaque draws
+       and its clear sky draw's root (ADR-087). */
+    struct {
+      VkrMetalPacketIndirectPass draws;
+      uint64_t sky_root;
+    } tiled;
+    /* The tiled pipeline's cloud draw over the resolved image. */
+    struct {
+      uint64_t root;
+      MTLViewport viewport;
+    } tiled_clouds;
     struct {
       uint64_t root;
       MTLViewport viewport;

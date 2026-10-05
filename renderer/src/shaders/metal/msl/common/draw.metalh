@@ -157,6 +157,27 @@ struct VkrMetalPacketDiffuseVolume {
     uint4 dimensions;
 };
 
+// A lightmapped instance's page rectangle in texels: x and y in `origin`,
+// width and height in `extent`, low 16 bits first. Mirrors VkrLightmapRect.
+struct VkrLightmapRect {
+  uint page;
+  uint origin;
+  uint extent;
+  uint reserved;
+};
+
+// Mirrors VkrMetalPacketLightmap in vkr_metal_packet_abi.h (ADR-088).
+struct alignas(16) VkrMetalPacketLightmap {
+  texture2d_array<float, access::sample> texture;
+  device const VkrLightmapRect *rects;
+  uint rect_count;
+  uint layer_count;
+  float inverse_page_size;
+  uint active_layer_count;
+  uint active_layers[8];
+  float active_weights[8];
+};
+
 struct alignas(16) VkrMetalPacketSheen {
   texture2d<float, access::sample> directional_albedo_texture;
   texture2d<float, access::sample> ltc_matrix_texture;
@@ -279,6 +300,7 @@ struct VkrMetalPacketFrameRoot {
   constant VkrMetalPacketAnisotropy *anisotropy;
   constant VkrMetalPacketLocalShadowTransmission *local_shadow_transmission;
   constant VkrMetalPacketSky *sky;
+  constant VkrMetalPacketLightmap *lightmap;
 };
 
 struct VkrGpuGeometryRow {
@@ -369,6 +391,9 @@ inline VkrGpuDecodedVertex vkr_decode_packed_vertex(
                  255.0f;
   return result;
 }
+
+/* Mirrors VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV in vkr_gpu_abi.h. */
+constant uint VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV = 2u;
 
 /* Mirrors vkr_decode_packed_lightmap_uv in shared/gpu_draw.slangh. */
 inline float2 vkr_decode_packed_lightmap_uv(VkrPackedStaticVertex packed) {
@@ -544,6 +569,21 @@ struct VkrMetalPacketVertexOutput {
   uint instance_index [[user(TEXCOORD_10), flat]];
 };
 
+// The tiled pipeline's forward varyings (ADR-087): the shading inputs and,
+// for a lightmapped draw, its lightmap coordinates on its page;
+// `lightmap_page` is ~0u without a lightmap.
+struct VkrMetalTiledVertexOutput {
+  float4 position [[position]];
+  float2 texcoord [[user(TEXCOORD)]];
+  float4 color [[user(COLOR)]];
+  float3 world_position [[user(TEXCOORD_2)]];
+  float3 world_normal [[user(TEXCOORD_3)]];
+  float4 world_tangent [[user(TEXCOORD_4)]];
+  uint visible_row_index [[user(TEXCOORD_5), flat]];
+  float2 lightmap_uv [[user(TEXCOORD_6)]];
+  uint lightmap_page [[user(TEXCOORD_7), flat]];
+};
+
 struct VkrMetalPacketTemporalVertexOutput {
   float4 position [[position]];
   float2 texcoord [[user(TEXCOORD)]];
@@ -574,8 +614,8 @@ static_assert(sizeof(VkrMetalPacketMaterial) == 352,
               "Metal material row ABI must remain 352 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 544,
-              "Metal packet frame root ABI must remain 544 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 560,
+              "Metal packet frame root ABI must remain 560 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,

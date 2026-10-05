@@ -345,6 +345,11 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t physics_fixture;
   /** Largest loaded texture extent: 0 loads every mip, else 1024 or 2048. */
   uint32_t texture_max_load_dimension;
+  /** VkrGraphicsPipelineClass (ADR-087), from the manifest's
+      `graphics_pipeline`: `desktop` (the default) or `tiled`. It fills the
+      tail padding that stored version-17 summaries left zero, so they read
+      as desktop. */
+  uint32_t graphics_pipeline;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

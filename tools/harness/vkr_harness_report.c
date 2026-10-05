@@ -627,6 +627,12 @@ vkr_internal bool8_t vkr_harness_report_write_effective_config(
              writer, "render_scale",
              report->case_manifest.renderer.render_scale) &&
          vkr_harness_json_emit_string(writer, "upscaler", upscaler) &&
+         vkr_harness_json_emit_string(
+             writer, "graphics_pipeline",
+             report->case_manifest.renderer.graphics_pipeline ==
+                     VKR_GRAPHICS_PIPELINE_TILED
+                 ? "tiled"
+                 : "desktop") &&
          vkr_harness_json_emit_bool(
              writer, "dynamic_resolution",
              report->case_manifest.renderer.dynamic_resolution) &&

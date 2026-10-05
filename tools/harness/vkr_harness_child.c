@@ -1514,6 +1514,8 @@ vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
           : string_equals(case_manifest->renderer.upscaler, "fsr31")
               ? VKR_UPSCALE_MODE_FSR31
               : VKR_UPSCALE_MODE_SPATIAL,
+      .graphics_pipeline =
+          (VkrGraphicsPipelineClass)case_manifest->renderer.graphics_pipeline,
       .dynamic_resolution =
           {
               .min_scale = case_manifest->renderer.dynamic_resolution_min_scale,

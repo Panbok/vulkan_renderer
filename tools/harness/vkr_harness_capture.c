@@ -204,8 +204,14 @@ static const VkrHarnessSummaryLayout s_summary_layouts[] = {
         offsetof(VkrHarnessCaseV16, content_scale),
         offsetof(VkrHarnessCaseV16, asset_context),
         offsetof(VkrHarnessCaseV16, single_capture_session)),
+    [17] = VKR_HARNESS_SUMMARY_LAYOUT_SESSION(
+        VkrHarnessCaptureSummaryHeaderV17, VkrHarnessCaseV17,
+        sizeof(VkrHarnessRendererConfigV17),
+        offsetof(VkrHarnessCaseV17, content_scale),
+        offsetof(VkrHarnessCaseV17, asset_context),
+        offsetof(VkrHarnessCaseV17, single_capture_session)),
     [VKR_HARNESS_CAPTURE_SUMMARY_VERSION] = VKR_HARNESS_SUMMARY_LAYOUT_SESSION(
-        VkrHarnessCaptureSummaryHeaderV17, VkrHarnessCase,
+        VkrHarnessCaptureSummaryHeaderV18, VkrHarnessCase,
         sizeof(VkrHarnessRendererConfig),
         offsetof(VkrHarnessCase, content_scale),
         offsetof(VkrHarnessCase, asset_context),
@@ -1124,7 +1130,7 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
       (uint64_t)report->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
       (uint64_t)report->artifact_count * sizeof(VkrHarnessArtifact);
-  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV17) +
+  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV18) +
                         capture_bytes + artifact_bytes;
   Scratch scratch = scratch_create(transient);
   uint8_t *bytes = arena_alloc(transient, size, ARENA_MEMORY_TAG_ARRAY);
@@ -1133,8 +1139,8 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
     return false_v;
   }
   MemZero(bytes, size);
-  VkrHarnessCaptureSummaryHeaderV17 *header =
-      (VkrHarnessCaptureSummaryHeaderV17 *)bytes;
+  VkrHarnessCaptureSummaryHeaderV18 *header =
+      (VkrHarnessCaptureSummaryHeaderV18 *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
   header->version = VKR_HARNESS_CAPTURE_SUMMARY_VERSION;
   header->capture_count = report->capture_count;

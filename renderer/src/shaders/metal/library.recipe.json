@@ -53,6 +53,7 @@
     "msl/editor/animation_preview.metal",
     "msl/world/gpu_draws.metal",
     "msl/world/default.metal",
+    "msl/world/tiled.metal",
     "msl/ibl/common.metalh",
     "msl/ibl/sh_projection.metal",
     "msl/ibl/specular_prefilter.metal",

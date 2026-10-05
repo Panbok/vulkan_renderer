@@ -406,6 +406,8 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t subsurface_texture_id;
   uint64_t diffuse_volume_texture_id;
   uint64_t diffuse_volume_params_gpu;
+  /* This frame's VkrMetalPacketLightmap, written for every frame. */
+  uint64_t lightmap_gpu;
   uint64_t ltc_gpu;
   uint64_t sheen_gpu;
   uint64_t fog_gpu;
@@ -629,6 +631,10 @@ typedef struct VkrMetalPacketTextureUploadBatch {
   bool8_t active;
 } VkrMetalPacketTextureUploadBatch;
 
+/* Samples of the tiled pipeline's opaque render pass (ADR-087): four cost
+   0.3 to 0.5 ms over one on the M1 Pro. */
+#define VKR_METAL_TILED_SAMPLE_COUNT 4u
+
 struct VkrMetalPacketRenderer {
   VkrPixelReadbackResult picking_result;
   uint64_t picking_submit_value;
@@ -749,6 +755,24 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> vbuffer_pipeline;
   id<MTLRenderPipelineState> transmission_vbuffer_pipeline;
   id<MTLRenderPipelineState> blend_pipeline;
+  /* The tiled pipeline (ADR-087), nil on the desktop pipeline, with
+     VKR_METAL_TILED_SAMPLE_COUNT samples: a depth
+     pre-pass, forward shading and the clear sky draw into memoryless
+     multisampled targets that resolve into the graph's colour and depth, and
+     the cloud draw over the resolved image. */
+  bool8_t tiled;
+  id<MTLRenderPipelineState> tiled_depth_pipeline;
+  id<MTLRenderPipelineState> tiled_forward_pipeline;
+  id<MTLRenderPipelineState> tiled_sky_pipeline;
+  id<MTLRenderPipelineState> tiled_clouds_pipeline;
+  id<MTLDepthStencilState> tiled_prepass_state;
+  id<MTLDepthStencilState> tiled_shade_state;
+  id<MTLDepthStencilState> tiled_sky_state;
+  id<MTLTexture> tiled_msaa_color;
+  id<MTLTexture> tiled_msaa_depth;
+  id<MTLResidencySet> tiled_residency;
+  uint32_t tiled_width;
+  uint32_t tiled_height;
   id<MTLRenderPipelineState> ui_pipeline;
   id<MTLRenderPipelineState> picking_pipeline;
   id<MTLRenderPipelineState> editor_overlay_pipeline;

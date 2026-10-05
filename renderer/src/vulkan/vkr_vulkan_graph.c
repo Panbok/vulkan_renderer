@@ -65,6 +65,14 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
           (int)pass->desc.name.length, pass->desc.name.str, executor_name);
       return false_v;
     }
+    /* Vulkan implements only the desktop pipeline (ADR-087). */
+    if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE ||
+        kind == VKR_RG_EXECUTOR_TILED_CLOUDS) {
+      log_error("Vulkan graph pass '%.*s' requires the tiled pipeline, which "
+                "Vulkan does not implement",
+                (int)pass->desc.name.length, pass->desc.name.str);
+      return false_v;
+    }
     if (pass->desc.type != executor_type) {
       log_error("Vulkan graph pass '%.*s' has type %u; executor '%s' "
                 "requires type %u",

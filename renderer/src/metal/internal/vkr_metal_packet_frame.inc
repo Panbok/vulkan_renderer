@@ -219,6 +219,7 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
   frame_root->froxel_integrated_texture_id =
       upload->froxel_integrated_texture_id;
   frame_root->sky = upload->sky_gpu;
+  frame_root->lightmap = upload->lightmap_gpu;
   uint64_t anisotropy_gpu = 0u;
   VkrMetalPacketAnisotropy *anisotropy =
       vkr_metal_packet_next_root(upload, sizeof(*anisotropy), &anisotropy_gpu);
@@ -234,7 +235,9 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
   renderer->sheen_lut_last_use_submit_value = renderer->submit_value + 1u;
   renderer->dfg_lut_last_use_submit_value = renderer->submit_value + 1u;
   renderer->anisotropy_lut_last_use_submit_value = renderer->submit_value + 1u;
-  if (lighting_pass && !transmission_pass &&
+  /* The tiled pipeline keeps no temporal history, so its passes carry no
+     previous transforms (ADR-087). */
+  if (lighting_pass && !transmission_pass && !renderer->tiled &&
       instances_gpu == upload->world_instances_gpu) {
     const uint32_t current_temporal_instance =
         (uint32_t)(renderer->active_command_slot - renderer->command_slots);
@@ -4212,6 +4215,174 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_shadow(
   return true_v;
 }
 
+/* Keeps memoryless multisampled colour and depth of the tiled pipeline's
+   opaque pass at the target's extent. Earlier frames may still render into
+   replaced targets, so a resize first waits for every submitted frame. */
+vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
+    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
+    API_AVAILABLE(macos(26.0)) {
+  if (renderer->tiled_msaa_color && renderer->tiled_width == width &&
+      renderer->tiled_height == height)
+    return true_v;
+  if (renderer->tiled_msaa_color &&
+      renderer->submit_value > renderer->completion.signaledValue &&
+      !vkr_metal_packet_wait(renderer, renderer->submit_value))
+    return false_v;
+  [renderer->tiled_msaa_color release];
+  [renderer->tiled_msaa_depth release];
+  [renderer->tiled_residency release];
+  renderer->tiled_msaa_color = nil;
+  renderer->tiled_msaa_depth = nil;
+  renderer->tiled_residency = nil;
+
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+  descriptor.textureType = MTLTextureType2DMultisample;
+  descriptor.width = width;
+  descriptor.height = height;
+  descriptor.sampleCount = VKR_METAL_TILED_SAMPLE_COUNT;
+  descriptor.usage = MTLTextureUsageRenderTarget;
+  descriptor.storageMode = MTLStorageModeMemoryless;
+  descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
+  renderer->tiled_msaa_color =
+      [renderer->device newTextureWithDescriptor:descriptor];
+  descriptor.pixelFormat = MTLPixelFormatDepth32Float;
+  renderer->tiled_msaa_depth =
+      [renderer->device newTextureWithDescriptor:descriptor];
+  [descriptor release];
+  MTLResidencySetDescriptor *residency = [MTLResidencySetDescriptor new];
+  residency.label = @"VKR tiled multisampled targets";
+  NSError *error = nil;
+  renderer->tiled_residency =
+      [renderer->device newResidencySetWithDescriptor:residency error:&error];
+  [residency release];
+  if (!renderer->tiled_msaa_color || !renderer->tiled_msaa_depth ||
+      !renderer->tiled_residency) {
+    vkr_metal_packet_print_error("tiled_targets", error);
+    return false_v;
+  }
+  [renderer->tiled_residency addAllocation:renderer->tiled_msaa_color];
+  [renderer->tiled_residency addAllocation:renderer->tiled_msaa_depth];
+  [renderer->tiled_residency commit];
+  [renderer->tiled_residency requestResidency];
+  renderer->tiled_width = width;
+  renderer->tiled_height = height;
+  return true_v;
+}
+
+/* The sky draws' root: the frame, the sky-view lookup at `sky_view_binding`
+   and the sky mode, as deferred lighting reads them. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketFrameUpload *upload,
+    uint32_t width, uint32_t height, uint32_t sky_view_binding,
+    id<MTLTexture> depth, uint64_t *out_root_gpu) API_AVAILABLE(macos(26.0)) {
+  const VkrSkyPassPayload *sky = packet->input.sky;
+  const VkrSkyMode sky_mode = !sky ? VKR_SKY_MODE_NONE
+                              : sky->atmosphere.enabled
+                                  ? VKR_SKY_MODE_ATMOSPHERE
+                                  : VKR_SKY_MODE_CONSTANT;
+  id<MTLTexture> sky_view =
+      sky_mode == VKR_SKY_MODE_ATMOSPHERE
+          ? vkr_metal_packet_pass_texture(renderer, pass, sky_view_binding)
+          : nil;
+  if (sky_mode == VKR_SKY_MODE_ATMOSPHERE && !sky_view)
+    return false_v;
+  uint64_t frame_root_gpu = 0u;
+  uint32_t frame_flags = 0u;
+  const Mat4 view_projection = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y,
+      mat4_mul(packet->temporal.jittered_projection,
+               packet->input.globals.view));
+  if (!vkr_metal_packet_create_frame_root(
+          renderer, packet, upload, upload->gpu_draw_instances_gpu, width,
+          height, view_projection, true_v, false_v, &frame_root_gpu,
+          &frame_flags))
+    return false_v;
+  VkrMetalTiledSkyRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), out_root_gpu);
+  if (!root)
+    return false_v;
+  const float32_t pre_exposure = packet->exposure.pre_exposure;
+  *root = (VkrMetalTiledSkyRoot){
+      .frame = frame_root_gpu,
+      .sky_view_texture_id = sky_view ? sky_view.gpuResourceID._impl : 0u,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .extent = {width, height},
+      .sky_mode = sky_mode,
+      .clouds_enabled = renderer->prepared_frame.clouds_enabled ? 1u : 0u,
+      .sky_radiance =
+          sky_mode == VKR_SKY_MODE_CONSTANT
+              ? (Vec4){sky->constant_radiance.x * pre_exposure,
+                       sky->constant_radiance.y * pre_exposure,
+                       sky->constant_radiance.z * pre_exposure, 0.0f}
+              : (Vec4){0},
+      .depth_texture_id = depth ? depth.gpuResourceID._impl : 0u,
+  };
+  return true_v;
+}
+
+/* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
+   opaque draws, the clear sky's root, and multisampled targets in place of
+   the pass's graph colour and depth, which they resolve into. Depth resolves
+   to the nearest sample, so a pixel any surface covers is not sky. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload, id<MTLTexture> target)
+    API_AVAILABLE(macos(26.0)) {
+  if (!renderer->tiled || !vkr_metal_packet_prepare_gpu_draws(
+                              renderer, pass, packet, prepared,
+                              renderer->tiled_forward_pipeline, nil, upload))
+    return false_v;
+  VkrMetalPacketIndirectPass draws = prepared->indirect;
+  const uint32_t width = (uint32_t)target.width;
+  const uint32_t height = (uint32_t)target.height;
+  draws.viewport = (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
+  uint64_t sky_root = 0u;
+  if (!vkr_metal_packet_tiled_ensure_targets(renderer, width, height) ||
+      !vkr_metal_packet_prepare_tiled_sky_root(
+          renderer, pass, packet, upload, width, height, 15u, nil, &sky_root))
+    return false_v;
+  MTL4RenderPassDescriptor *descriptor =
+      renderer->render_passes[prepared->index];
+  MTLRenderPassColorAttachmentDescriptor *color =
+      descriptor.colorAttachments[0];
+  color.resolveTexture = color.texture;
+  color.texture = renderer->tiled_msaa_color;
+  color.storeAction = MTLStoreActionMultisampleResolve;
+  MTLRenderPassDepthAttachmentDescriptor *depth = descriptor.depthAttachment;
+  depth.resolveTexture = depth.texture;
+  depth.texture = renderer->tiled_msaa_depth;
+  depth.storeAction = MTLStoreActionMultisampleResolve;
+  depth.depthResolveFilter = MTLMultisampleDepthResolveFilterMin;
+  prepared->tiled.draws = draws;
+  prepared->tiled.sky_root = sky_root;
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Prepares the cloud draw over the tiled pipeline's resolved image: it reads
+   the resolved depth at binding 0 and the sky-view lookup at 15. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_clouds(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload, id<MTLTexture> target)
+    API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  if (!renderer->tiled || !depth)
+    return false_v;
+  const uint32_t width = (uint32_t)target.width;
+  const uint32_t height = (uint32_t)target.height;
+  if (!vkr_metal_packet_prepare_tiled_sky_root(renderer, pass, packet, upload,
+                                               width, height, 15u, depth,
+                                               &prepared->tiled_clouds.root))
+    return false_v;
+  prepared->tiled_clouds.viewport =
+      (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
+  prepared->active = true_v;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -4296,6 +4467,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, packet, prepared, renderer->vbuffer_pipeline,
         renderer->vbuffer_opaque_pipeline, upload);
+  if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE)
+    return vkr_metal_packet_prepare_tiled_opaque(renderer, pass, packet,
+                                                 prepared, upload, target);
+  if (kind == VKR_RG_EXECUTOR_TILED_CLOUDS)
+    return vkr_metal_packet_prepare_tiled_clouds(renderer, pass, packet,
+                                                 prepared, upload, target);
   if (kind == VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION)
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, packet, prepared,
@@ -5259,6 +5436,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
         submission->deferred_state =
             vkr_metal_packet_pass_buffer(renderer, pass, 7u);
       break;
+    /* The tiled pipeline reads the same culling state, without G-buffer
+       resolve counters (ADR-087). */
+    case VKR_RG_EXECUTOR_TILED_OPAQUE:
+      if (submission->deferred_diagnostics)
+        submission->deferred_state =
+            vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+      break;
     case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
       if (submission->deferred_diagnostics)
         submission->transmission_deferred_state =
@@ -5700,7 +5884,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
   [renderer->command_buffer
       beginCommandBufferWithAllocator:renderer->command_allocator];
   id<MTLResidencySet>
-      residency_sets[2u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
+      residency_sets[3u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
           (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
               renderer->memory),
           (id<MTLResidencySet>)vkr_metal_material_table_device_residency_set(
@@ -5712,6 +5896,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
        ++group)
     residency_sets[residency_set_count++] =
         renderer->active_command_slot->gpu_draw_icb_residencies[group];
+  if (renderer->tiled_residency)
+    residency_sets[residency_set_count++] = renderer->tiled_residency;
   [renderer->command_buffer useResidencySets:residency_sets
                                        count:residency_set_count];
   bool8_t passed = true_v;

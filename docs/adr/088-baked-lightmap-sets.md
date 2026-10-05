@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -9,11 +9,12 @@ authority: adr
 ## Status
 
 Accepted (partial). Baking, storage, packaging, light mobility and groups,
-the editor controls, and runtime loading and binding of a set are
-implemented. No pipeline samples lightmaps yet: the tiled pipeline that will
-does not exist ([ADR-087](087-gpu-class-graphics-pipelines.md)), and the
-desktop pipeline lights static and dynamic lights alike. The bake needs Metal
-ray tracing.
+the editor controls, runtime loading and binding of a set, and sampling in
+the tiled pipeline's forward shader
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8) are
+implemented. No baked scene has been rendered on the tiled pipeline yet: the
+editor does not run it and Bistro has no current set. The desktop pipeline
+lights static and dynamic lights alike. The bake needs Metal ray tracing.
 
 ## Context
 
@@ -226,7 +227,10 @@ loads and again whenever entities or meshes change. The slot travels in
 instance row's `normal_column2.w`. Each frame `VkrFrameLighting.lightmap`
 carries the texture, the rectangle table and the layers with nonzero weight:
 the two sun keys nearest the current sun and every lamp group at its group's
-factor ([ADR-090](090-time-of-day.md)), at most six.
+factor ([ADR-090](090-time-of-day.md)), at most six. The Metal frame root
+carries them in `VkrMetalPacketLightmap` with the rectangle table, which only
+the tiled pipeline copies; its vertex stage maps the lightmap UVs into the
+draw's rectangle and its forward shader sums the active layers.
 
 ## Consequences
 

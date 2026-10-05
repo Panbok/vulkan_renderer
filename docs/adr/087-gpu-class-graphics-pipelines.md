@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 
@@ -8,10 +8,11 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The decision is in force. The tiled pipeline is not
-implemented; every device, including Apple M-series, runs the current
-desktop pipeline until it ships. The open design and the prototype gate are
-in [Tiled graphics pipeline](../proposals/tiled-pipeline.md).
+Accepted (partial). The decision is in force. A first tiled pipeline runs on
+Metal when a renderer selects it (decisions 6 and 7); every device runs the
+desktop pipeline by default until the tiled one draws transmission, dynamic
+lights and the editor. The remaining design is in
+[Tiled graphics pipeline](../proposals/tiled-pipeline.md).
 
 ## Context
 
@@ -86,6 +87,67 @@ pipeline rather than a backend mechanism.
    it costs the same as a G-buffer kept in tile memory without multisampling
    and 1.7 to 3.4 ms less with four samples
    ([measurements](../proposals/tiled-pipeline.md#first-prototype-measurements)).
+
+6. The tiled pipeline has its own render graph,
+   [`tiled.rendergraph.json`](../../assets/render_graphs/tiled.rendergraph.json),
+   and keeps the desktop graph's culling, cascades, sky, cloud and post
+   passes. One graph pass, `Tiled.Opaque` (`pass.tiled.opaque`), owns the
+   depth pre-pass, forward shading and the clear sky in one render pass whose
+   colour and depth are memoryless four-sample targets the Metal backend
+   owns; they resolve on chip into the graph's `hdr_scene_color` and
+   `opaque_vbuffer_depth`, depth to the nearest sample. The graph compiler is
+   unchanged. The cloud trace needs that depth, so `Tiled.Clouds`
+   (`pass.tiled.clouds`) lays the cloud layer and the discs it lets through
+   over the resolved sky pixels afterwards; edge pixels mixing sky and surface
+   samples miss the clouds.
+7. `VkrRendererBackendConfig.graphics_pipeline` selects the class
+   (`VKR_GRAPHICS_PIPELINE=desktop|tiled` overrides it, and harness cases set
+   `renderer.graphics_pipeline`). Zero is the desktop pipeline. The tiled
+   class requires the Metal backend without temporal upscaling or dynamic
+   resolution; it turns off temporal reconstruction, SSR, SSGI, GTAO,
+   surface diffusion, depth of field, motion blur, froxel fog, local shadows,
+   SDSM and transmission
+   ([`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
+   [`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)).
+8. The forward shader
+   ([`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal))
+   uses the shared material model: filtered roughness, the DFG energy, the
+   shared direct term for the sun with its cascades and cloud shadow, and
+   environment specular with horizon and specular occlusion. Diffuse light
+   comes from the draw's lightmap
+   ([ADR-088](088-baked-lightmap-sets.md)): the frame's active layers, each
+   weighed by the sun and its light group; a draw without one takes the baked
+   diffuse volume, else the global environment. Clearcoat, sheen, anisotropy,
+   diffuse transmission, IBL probes and punctual and rectangle lights are not
+   drawn yet. The vertex stage is MSL, because the Slang module numbers entry
+   point buffers in declaration order and the GPU-encoded commands bind the
+   draw root at buffer 0.
+
+### First tiled pipeline measurement
+
+Release, M1 Pro, 2026-10-06: the production Bistro orbit at 2560×1440 pixels,
+render scale 1.0, 120 warm-up and 300 measured frames, one process per run,
+`./build_release/tools/vkr_harness profile --case
+tools/cases/local/tiled_bistro_native.case.json --profile
+tools/profiles/local-windowed-gpu-submission-single.json` and its desktop
+counterpart `tiled_bistro_native_desktop`, run alternately twice:
+
+| Pipeline | `gpu.submission` median | p95 | Reports |
+|---|---|---|---|
+| Desktop | 54.27 / 54.34 ms | 69.06 / 69.03 ms | `sha256:52045c82ae920695d2b6c330f612b2f2c849c36f1f33559fb4558cee4c8ac3f3`, `sha256:9478cf49688c75b32e835190940fb01124cb2331c6d72d6846324a67e1e1f090` |
+| Tiled | 13.25 / 13.23 ms | 16.81 / 16.76 ms | `sha256:9be628556e916fa02f684e2bedcaa9f5aefdded56db17a9271d16f92ba4924df`, `sha256:35342b3c425b3295cef3b2c0730c4c3eb7cb2e5114a65ccddbb135be4dccf0e4` |
+
+The work differs: the tiled frame draws no transmission, local lights or
+local shadows, and Bistro has no lightmap set, so its lamps add no light. The
+p95 sits 0.1 ms above the budget before those return. With pass timestamps
+(`local-windowed-gpu-single`,
+`sha256:a8f07f292013cecff3cdbce2fd45347bdbf6648ea970c86a811ce838d0578a74`),
+`Tiled.Opaque` takes 8.1 ms median (11.6 ms p95), a re-rendered cascade 1.4
+to 2.1 ms, tonemapping with its display-linear cache 1.75 ms, and the cloud
+trace and cloud draw 0.35 and 0.32 ms. By inspection, street-view captures
+of both pipelines (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`)
+match in sky and sunlit surfaces; the tiled one lacks lamp light, glass and
+ambient occlusion.
 
 ## Consequences
 

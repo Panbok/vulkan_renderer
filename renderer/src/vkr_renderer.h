@@ -44,6 +44,19 @@ typedef enum VkrUpscaleMode {
   VKR_UPSCALE_MODE_COUNT,
 } VkrUpscaleMode;
 
+/** Graphics pipeline class (ADR-087): which render graph and shading path a
+ * renderer runs. Zero-initialized selects the desktop pipeline. */
+typedef enum VkrGraphicsPipelineClass {
+  /** Visibility buffer, compute deferred lighting and temporal
+   * reconstruction, for immediate-mode GPUs. */
+  VKR_GRAPHICS_PIPELINE_DESKTOP = 0,
+  /** Forward shading after a depth pre-pass in one multisampled render pass,
+   * with baked lightmaps, for tile-based GPUs. Metal only, without the
+   * editor or temporal upscaling. */
+  VKR_GRAPHICS_PIPELINE_TILED,
+  VKR_GRAPHICS_PIPELINE_COUNT,
+} VkrGraphicsPipelineClass;
+
 /**
  * Completion-feedback policy for bounded scene-resolution changes.
  *
@@ -975,6 +988,8 @@ typedef struct VkrRendererBackendConfig {
   float32_t render_scale;
   /** Reconstruction path. Zero-initialized preserves spatial sampling. */
   VkrUpscaleMode upscale_mode;
+  /** VKR_GRAPHICS_PIPELINE=desktop or tiled overrides it. */
+  VkrGraphicsPipelineClass graphics_pipeline;
   /** Valid only with VKR_UPSCALE_MODE_METALFX_TEMPORAL on Metal. */
   VkrDynamicResolutionConfig dynamic_resolution;
   bool8_t capture_enabled;

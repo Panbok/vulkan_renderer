@@ -245,6 +245,11 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
     ADD("renderer.texture_max_load_dimension", "%u",
         renderer->texture_max_load_dimension);
   }
+  /* Desktop, the default, preserves identities authored before the tiled
+     pipeline (ADR-087). */
+  if (renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
+    ADD("renderer.graphics_pipeline", "%s", "tiled");
+  }
   const char *upscaler = renderer->upscaler[0] ? renderer->upscaler : "spatial";
   if (!string_equals(upscaler, "spatial")) {
     ADD("renderer.upscaler", "%s", upscaler);
