@@ -1758,7 +1758,7 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
   if (mega->live && vertex_end <= mega->vertices.size &&
       index_end <= mega->indices.size)
     return true_v;
-  if (mega->copy_pending || renderer->pending_buffer_initialization_count) {
+  if (mega->copy_pending) {
     return false_v;
   }
   bool8_t retirement_available = mega->live ? false_v : true_v;
@@ -1802,6 +1802,21 @@ vkr_internal bool8_t vkr_vk_ensure_geometry_megabuffer(
     mega->copy_index_size = mega->accounting.index_high_water;
     mega->copy_pending = true_v;
     mega->accounting.generation_replacements++;
+    /* Uploads not yet recorded, staged ones included, follow the preservation
+       copy in the next submission, so they write the new generation; earlier
+       chunks reach it through that copy. Streaming keeps uploads pending, so
+       refusing to grow until none remain would fail publications. */
+    for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
+         ++i) {
+      VkrVulkanPendingBufferInitialization *initialization =
+          &renderer->pending_buffer_initializations[i];
+      if (initialization->destination == mega->copy_source_vertices.handle) {
+        initialization->destination = vertices.handle;
+      } else if (initialization->destination ==
+                 mega->copy_source_indices.handle) {
+        initialization->destination = indices.handle;
+      }
+    }
   }
   mega->vertices = vertices;
   mega->indices = indices;
