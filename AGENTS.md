@@ -64,9 +64,10 @@ stack storage or reused capacity. State the owner, release point, pointer
 stability, and GPU last use. Frame age is not GPU completion. `vkr-memory` owns
 allocator, borrowed-view, and retirement rules.
 
-Metal and Vulkan share portable rendering semantics, contracts, and feature
-behavior. A backend-specific mechanism needs an explicit capability boundary
-and measured justification. Every production shader or shader-visible host
+Within one graphics pipeline class (ADR-087: tiled or desktop), Metal and
+Vulkan share portable rendering semantics, contracts, and feature behavior;
+the classes share only ADR-087's art-level contract. A backend-specific
+mechanism needs an explicit capability boundary and measured justification. Every production shader or shader-visible host
 change uses `vkr-shaders` and inspects both native roots, shared helpers, host
 layout, bindings, and consumers. A one-backend build, source review, or
 cross-compilation does not establish native parity.

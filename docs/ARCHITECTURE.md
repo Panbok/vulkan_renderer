@@ -711,6 +711,10 @@ with explicit native barriers and completion ownership. See [ADR-002](adr/002-re
 
 ## Rendering pipeline
 
+Every device runs the desktop pipeline described here.
+[ADR-087](adr/087-gpu-class-graphics-pipelines.md) adds a separate pipeline
+class for tile-based GPUs, which is not implemented.
+
 Editor inspection adds Detail lighting, Lighting only and visible-edge Wireframe
 to Lit and Unlit. The two lighting views use neutral material response; Detail
 lighting retains mapped normals and Lighting only uses interpolated vertex normals.
