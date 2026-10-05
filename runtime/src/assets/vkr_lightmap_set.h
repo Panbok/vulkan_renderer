@@ -21,7 +21,7 @@ extern "C" {
  * layer of a scene's lightmap pages as ASTC 4x4 blocks (HDR RGB, LDR alpha),
  * the layers' meanings and each lightmapped instance's page rectangle.
  *
- * VKLM v1 writes every scalar explicitly in little-endian order: a fixed
+ * VKLM v2 writes every scalar explicitly in little-endian order: a fixed
  * header, the layer table, the instance table, padding to
  * VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT, then one page image per page and layer,
  * page-major. Producers stream the payload and write the prefix last, so a
@@ -29,11 +29,11 @@ extern "C" {
  */
 
 #define VKR_LIGHTMAP_SET_MAGIC 0x4d4c4b56u /* "VKLM" in little-endian. */
-#define VKR_LIGHTMAP_SET_VERSION 1u
+#define VKR_LIGHTMAP_SET_VERSION 2u
 #define VKR_LIGHTMAP_SET_ENDIAN_TAG 0x01020304u
 #define VKR_LIGHTMAP_SET_HEADER_BYTES 128u
 #define VKR_LIGHTMAP_SET_LAYER_BYTES 32u
-#define VKR_LIGHTMAP_SET_INSTANCE_BYTES 28u
+#define VKR_LIGHTMAP_SET_INSTANCE_BYTES 44u
 #define VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT 256u
 #define VKR_LIGHTMAP_SET_BLOCK_BYTES 16u
 /* ASTC 4x4 blocks in the HDR RGB, LDR alpha profile. */
@@ -59,13 +59,17 @@ typedef struct VkrLightmapLayer {
 } VkrLightmapLayer;
 
 /*
- * The rectangle in texels of one instance of a scene entity's model: the
- * entity's position in the scene document's entity array and the instance's
- * source-node index in the entity's cooked model (zero for a model without
- * source nodes). Its lightmap UVs span the rectangle. Rectangles lie on whole
- * 4x4 blocks.
+ * The rectangle in texels of one instance of a scene entity: the entity's
+ * document id (all zero for an entity without one), its index in the baked
+ * entity array (the scene document's entities, then the project World's,
+ * then editor-created ones), and the instance's source-node index in the
+ * entity's cooked model (zero for a model without source nodes and for a
+ * brush). The runtime matches an instance by document id when it has one and
+ * by index otherwise. Its lightmap UVs span the rectangle. Rectangles lie on
+ * whole 4x4 blocks.
  */
 typedef struct VkrLightmapInstance {
+  uint8_t document_id[16];
   uint32_t entity_index;
   uint32_t instance_index;
   uint32_t page;
@@ -113,7 +117,7 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
                                       uint64_t prefix_size);
 
 /*
- * Validates and decodes a complete VKLM v1 file: header, table and payload
+ * Validates and decodes a complete VKLM v2 file: header, table and payload
  * checksums, sizes and offsets, layer meanings, and every rectangle lying on
  * whole blocks within its page.
  */

@@ -69,6 +69,38 @@ void vkr_brush_texture_axes(Vec3 normal, Vec3 *out_u, Vec3 *out_v);
 Vec2 vkr_brush_uv(Vec3 point, Vec3 normal, Vec2 offset, Vec2 scale,
                   float32_t rotation);
 
+/* Lightmap UVs of a built brush (ADR-088). Every face with a polygon is one
+   chart: its polygon projected on an orthonormal basis of the face plane at
+   VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT texels per brush unit, with
+   VKR_BRUSH_LIGHTMAP_PADDING texels around it, shelf-packed tallest first
+   into an atlas about as wide as it is tall. A brush whose atlas would pass
+   VKR_BRUSH_LIGHTMAP_MAX_SIZE halves the density, up to eight times. The
+   layout depends only on the geometry, so a bake and the runtime that
+   samples it compute the same UVs. */
+#define VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT 8.0f
+#define VKR_BRUSH_LIGHTMAP_PADDING 2u
+#define VKR_BRUSH_LIGHTMAP_MAX_SIZE 1024u
+
+typedef struct VkrBrushLightmapLayout {
+  uint32_t width;
+  uint32_t height;
+  /* Texels per brush unit after any halving. */
+  float32_t texels_per_unit;
+  /* Per face: the chart's lower corner in texels, inside its padding, and
+     the polygon's minimum on the face basis. */
+  Vec2 chart_corner[VKR_BRUSH_FACE_MAX];
+  Vec2 projected_min[VKR_BRUSH_FACE_MAX];
+} VkrBrushLightmapLayout;
+
+/* Lays out the charts of a built brush. False when no face has a polygon or
+   the atlas stays too large. */
+bool8_t vkr_brush_lightmap_layout(const VkrBrushGeometry *geometry,
+                                  VkrBrushLightmapLayout *out);
+/* The normalized lightmap UV of `point`, in brush space, on face `face`. */
+Vec2 vkr_brush_lightmap_uv(const VkrBrushLightmapLayout *layout,
+                           const VkrBrushGeometry *geometry, uint32_t face,
+                           Vec3 point);
+
 /* Planes of common solids in local space; each returns the plane count.
    `out` holds at least VKR_BRUSH_FACE_MAX planes. */
 uint32_t vkr_brush_box_planes(Vec3 min, Vec3 max, VkrBrushPlane *out);

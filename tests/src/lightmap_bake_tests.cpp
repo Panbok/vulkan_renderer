@@ -324,9 +324,18 @@ void test_lightmap_set_round_trip_and_rejects() {
   const VkrLightmapLayer layers[] = {
       {VKR_LIGHTMAP_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f)},
       {VKR_LIGHTMAP_LAYER_LAMP_GROUP, 0u, vec3_zero()}};
-  const VkrLightmapInstance instances[] = {{2u, 0u, 0u, 0u, 0u, 8u, 4u},
-                                           {2u, 3u, 0u, 8u, 0u, 4u, 4u},
-                                           {5u, 0u, 0u, 0u, 4u, 12u, 12u}};
+  const VkrLightmapInstance instances[] = {
+      {{0u}, 2u, 0u, 0u, 0u, 0u, 8u, 4u},
+      {{0u}, 2u, 3u, 0u, 8u, 0u, 4u, 4u},
+      {{0xabu, 0x01u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+        0x7fu},
+       5u,
+       0u,
+       0u,
+       0u,
+       4u,
+       12u,
+       12u}};
   VkrLightmapSet set = {};
   set.page_size = 16u;
   set.page_count = 1u;
@@ -348,6 +357,8 @@ void test_lightmap_set_round_trip_and_rejects() {
   assert(decoded.layers[0].sun_direction.z == 0.8f);
   assert(decoded.instances[2].entity_index == 5u);
   assert(decoded.instances[2].width == 12u);
+  assert(decoded.instances[2].document_id[0] == 0xabu &&
+         decoded.instances[2].document_id[15] == 0x7fu);
   const uint64_t page_bytes = vkr_lightmap_set_page_bytes(16u);
   assert(page_bytes == 16u * 16u);
   assert(decoded.payload + 2u * page_bytes == file.data() + file.size());

@@ -5,6 +5,7 @@
 
 extern "C" {
 #include "core/vkr_json.h"
+#include "level/vkr_brush.h"
 }
 
 #include <algorithm>
@@ -13,6 +14,8 @@ extern "C" {
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <new>
 #include <string>
 #include <vector>
@@ -24,8 +27,25 @@ constexpr uint32_t k_max_transform_depth = 256u;
 
 enum class ShapeKind : uint8_t { None, Cube, Unsupported };
 
+/* The material a brush face without one draws, as at runtime. */
+constexpr const char *k_brush_default_material =
+    "assets/materials/dev/dev_grid.mt";
+
 struct EntityImport {
   int32_t parent = -1;
+  /* The document id, the stable key of the entity's lightmaps. */
+  std::array<uint8_t, 16> document_id = {};
+  bool has_document_id = false;
+  /* A solid or visual brush draws; clip and trigger brushes do not. */
+  bool brush = false;
+  bool brush_draws = false;
+  bool brush_face = false;
+  VkrBrushPlane face_plane = {};
+  std::string face_material;
+  Vec2 face_uv_offset = {0.0f, 0.0f};
+  Vec2 face_uv_scale = {1.0f, 1.0f};
+  float32_t face_uv_rotation = 0.0f;
+  bool8_t face_uv_world = false_v;
   Vec3 position = {0.0f, 0.0f, 0.0f};
   VkrQuat rotation = vkr_quat_identity();
   Vec3 scale = {1.0f, 1.0f, 1.0f};
@@ -490,6 +510,83 @@ bool parse_rectangle_light(const VkrJsonReader *entity, EntityImport *out) {
   return true;
 }
 
+/* A UUID's 32 hex digits, hyphens ignored. */
+bool parse_uuid(const std::string &text, std::array<uint8_t, 16> *out) {
+  uint32_t digits = 0u;
+  std::array<uint8_t, 16> bytes = {};
+  for (char c : text) {
+    if (c == '-') {
+      continue;
+    }
+    uint32_t value = 0u;
+    if (c >= '0' && c <= '9') {
+      value = (uint32_t)(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      value = (uint32_t)(c - 'a') + 10u;
+    } else if (c >= 'A' && c <= 'F') {
+      value = (uint32_t)(c - 'A') + 10u;
+    } else {
+      return false;
+    }
+    if (digits == 32u) {
+      return false;
+    }
+    bytes[digits / 2u] |= (uint8_t)(value << ((digits % 2u) ? 0u : 4u));
+    ++digits;
+  }
+  if (digits != 32u) {
+    return false;
+  }
+  *out = bytes;
+  return true;
+}
+
+bool parse_document_id(const VkrJsonReader *entity, EntityImport *out) {
+  VkrJsonReader reader = *entity;
+  if (!vkr_json_find_root_field(&reader, "id")) {
+    return true;
+  }
+  String8 text = {};
+  if (!vkr_json_parse_string(&reader, &text)) {
+    return true;
+  }
+  out->has_document_id = parse_uuid(
+      std::string((const char *)text.str, text.length), &out->document_id);
+  return true;
+}
+
+/* `brush` and `brush_face` components (ADR-084): a brush's role, and one
+   face plane with its material and texture placement. */
+bool parse_brush(const VkrJsonReader *entity, EntityImport *out) {
+  VkrJsonReader reader = *entity;
+  if (vkr_json_find_field(&reader, "brush") && !parse_null(&reader)) {
+    VkrJsonReader object = {};
+    if (!vkr_json_enter_object(&reader, &object)) {
+      return false;
+    }
+    std::string role = "solid";
+    (void)read_string(&object, "role", &role);
+    out->brush = true;
+    out->brush_draws = role == "solid" || role == "visual";
+  }
+  reader = *entity;
+  if (vkr_json_find_field(&reader, "brush_face") && !parse_null(&reader)) {
+    VkrJsonReader object = {};
+    if (!vkr_json_enter_object(&reader, &object) ||
+        !read_vec3(&object, "normal", &out->face_plane.normal) ||
+        !read_float(&object, "distance", &out->face_plane.distance) ||
+        !read_optional_vec2(&object, "uv_offset", &out->face_uv_offset) ||
+        !read_optional_vec2(&object, "uv_scale", &out->face_uv_scale) ||
+        !read_optional_float(&object, "uv_rotation", &out->face_uv_rotation) ||
+        !read_optional_bool(&object, "uv_world", &out->face_uv_world)) {
+      return false;
+    }
+    (void)read_string(&object, "material", &out->face_material);
+    out->brush_face = true;
+  }
+  return true;
+}
+
 bool parse_entities(const std::vector<uint8_t> &bytes,
                     std::vector<EntityImport> *out) {
   VkrJsonReader root = vkr_json_reader_create(bytes.data(), bytes.size());
@@ -508,7 +605,9 @@ bool parse_entities(const std::vector<uint8_t> &bytes,
     if (vkr_json_find_field(&parent, "parent") &&
         !parse_parent(&parent, &imported.parent))
       return false;
-    if (!parse_transform(&entity, &imported) ||
+    if (!parse_document_id(&entity, &imported) ||
+        !parse_brush(&entity, &imported) ||
+        !parse_transform(&entity, &imported) ||
         !parse_mesh(&entity, &imported) || !parse_shape(&entity, &imported) ||
         !parse_point_light(&entity, &imported) ||
         !parse_directional_light(&entity, &imported) ||
@@ -854,6 +953,7 @@ bool triangle_area_is_exactly_zero(const VkrBakeTriangle *triangle,
 
 struct MeshAppendContext {
   VkrBakeScene *scene;
+  const EntityImport *entity;
   uint32_t entity_index;
   std::vector<uint32_t> material_by_range;
 };
@@ -929,6 +1029,8 @@ bool8_t append_mesh_instance(void *user, const VkrBakeMeshInstance *instance) {
     VkrBakeLightmapInstance lightmap;
     lightmap.source_instance_index = instance->source_instance_index;
     lightmap.entity_index = context->entity_index;
+    lightmap.document_id = context->entity->document_id;
+    lightmap.has_document_id = context->entity->has_document_id;
     lightmap.source_node_index = instance->source_node_index;
     lightmap.world = instance->world;
     lightmap.atlas_width = instance->atlas_width;
@@ -941,13 +1043,129 @@ bool8_t append_mesh_instance(void *user, const VkrBakeMeshInstance *instance) {
   }
 }
 
+/* A solid or visual brush built from its brush_face children, as the
+   runtime builds its mesh: one triangle fan per face in the face material
+   (the dev grid when it names none), texture UVs from the face placement and
+   lightmap UVs from the shared brush layout. The brush is one lightmap
+   instance. A brush that does not build is left out, as the editor reports
+   it. */
+bool append_brush(VkrBakeScene *scene,
+                  const std::vector<EntityImport> &entities,
+                  const std::vector<uint32_t> &faces, uint32_t entity_index,
+                  Mat4 world, uint32_t source_instance_index,
+                  std::map<std::string, uint32_t> *materials) {
+  if (faces.empty() || faces.size() > VKR_BRUSH_FACE_MAX) {
+    return true;
+  }
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  for (size_t i = 0u; i < faces.size(); ++i) {
+    planes[i] = entities[faces[i]].face_plane;
+  }
+  std::unique_ptr<VkrBrushGeometry> geometry(new VkrBrushGeometry());
+  if (vkr_brush_build(planes, (uint32_t)faces.size(), geometry.get(),
+                      nullptr) != VKR_BRUSH_OK) {
+    return true;
+  }
+  VkrBrushLightmapLayout layout = {};
+  const bool lightmapped =
+      vkr_brush_lightmap_layout(geometry.get(), &layout) != false_v;
+  Mat4 normal_world = {};
+  bool flipped = false;
+  if (!normal_matrix(world, &normal_world, &flipped)) {
+    return false;
+  }
+  for (uint32_t f = 0u; f < geometry->face_count; ++f) {
+    const VkrBrushPolygon polygon = geometry->polygons[f];
+    if (polygon.count < 3u) {
+      continue;
+    }
+    const EntityImport &face = entities[faces[f]];
+    const std::string path = face.face_material.empty()
+                                 ? std::string(k_brush_default_material)
+                                 : face.face_material;
+    uint32_t material_index = 0u;
+    const auto cached = materials->find(path);
+    if (cached != materials->end()) {
+      material_index = cached->second;
+    } else {
+      if (!append_material(scene, path, vec4_new(1.0f, 1.0f, 1.0f, 1.0f),
+                           &material_index)) {
+        return false;
+      }
+      materials->emplace(path, material_index);
+    }
+    const Vec3 local_normal = geometry->normals[f];
+    const Vec4 transformed =
+        mat4_mul_vec4(normal_world, vec4_new(local_normal.x, local_normal.y,
+                                             local_normal.z, 0.0f));
+    const Vec3 world_normal =
+        vec3_normalize(vec3_new(transformed.x, transformed.y, transformed.z));
+    const Vec3 projection_normal =
+        face.face_uv_world ? world_normal : local_normal;
+    VkrBakeVertex corners[VKR_BRUSH_POLYGON_MAX];
+    for (uint32_t i = 0u; i < polygon.count; ++i) {
+      const Vec3 local = geometry->vertices[polygon.first + i];
+      const Vec3 position = mat4_mul_vec3(world, local);
+      corners[i] = VkrBakeVertex{};
+      corners[i].position = position;
+      corners[i].normal = world_normal;
+      corners[i].uv = vkr_brush_uv(face.face_uv_world ? position : local,
+                                   projection_normal, face.face_uv_offset,
+                                   face.face_uv_scale, face.face_uv_rotation);
+      corners[i].color = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
+      if (lightmapped) {
+        corners[i].lightmap_uv =
+            vkr_brush_lightmap_uv(&layout, geometry.get(), f, local);
+      }
+      if (!finite_vec3(position) || !finite_vec3(world_normal)) {
+        return false;
+      }
+    }
+    for (uint32_t i = 2u; i < polygon.count; ++i) {
+      VkrBakeTriangle triangle = {};
+      triangle.material_index = material_index;
+      triangle.source_instance_index = source_instance_index;
+      triangle.vertex[0] = corners[0];
+      triangle.vertex[1] = corners[i - 1u];
+      triangle.vertex[2] = corners[i];
+      if (flipped) {
+        std::swap(triangle.vertex[1], triangle.vertex[2]);
+      }
+      bool zero_area = false;
+      if (!triangle_area_is_exactly_zero(&triangle, &zero_area)) {
+        return false;
+      }
+      if (zero_area) {
+        ++scene->zero_area_triangle_count;
+        continue;
+      }
+      scene->triangles.push_back(triangle);
+    }
+  }
+  if (lightmapped) {
+    VkrBakeLightmapInstance instance;
+    instance.source_instance_index = source_instance_index;
+    instance.document_id = entities[entity_index].document_id;
+    instance.has_document_id = entities[entity_index].has_document_id;
+    instance.entity_index = entity_index;
+    instance.source_node_index = 0u;
+    instance.world = world;
+    instance.atlas_width = layout.width;
+    instance.atlas_height = layout.height;
+    instance.texels_per_unit = layout.texels_per_unit;
+    scene->lightmap_instances.push_back(instance);
+  }
+  return true;
+}
+
 bool append_mesh(VkrBakeScene *scene, const std::string &path,
-                 uint32_t entity_index, Mat4 entity_world,
-                 uint32_t *next_instance) {
+                 const EntityImport &entity, uint32_t entity_index,
+                 Mat4 entity_world, uint32_t *next_instance) {
   std::vector<uint8_t> bytes;
   if (!read_file(path.c_str(), &bytes))
     return false;
-  MeshAppendContext context = {.scene = scene, .entity_index = entity_index};
+  MeshAppendContext context = {
+      .scene = scene, .entity = &entity, .entity_index = entity_index};
   const VkrBakeMeshDecodeCallbacks callbacks = {
       .emit_triangle = append_mesh_triangle,
       .emit_light = append_mesh_light,
@@ -1141,6 +1359,14 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       return false;
     }
     uint32_t next_instance = 0u;
+    /* A brush's faces are its brush_face children. */
+    std::vector<std::vector<uint32_t>> brush_faces(entities.size());
+    for (uint32_t i = 0; i < entities.size(); ++i) {
+      if (entities[i].brush_face && entities[i].parent >= 0) {
+        brush_faces[(size_t)entities[i].parent].push_back(i);
+      }
+    }
+    std::map<std::string, uint32_t> brush_materials;
     for (uint32_t i = 0; i < entities.size(); ++i) {
       const EntityImport &entity = entities[i];
       if (!append_authored_lights(scene, entity, worlds[i], rigid_worlds[i],
@@ -1150,7 +1376,8 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
         return false;
       }
       if (!entity.skip_geometry && !entity.mesh_path.empty() &&
-          !append_mesh(scene, entity.mesh_path, i, worlds[i], &next_instance)) {
+          !append_mesh(scene, entity.mesh_path, entity, i, worlds[i],
+                       &next_instance)) {
         set_error(VkrBakeSceneError::CookedMesh, out_error);
         reset_scene(scene);
         return false;
@@ -1159,6 +1386,13 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
           (entity.shape == ShapeKind::Cube &&
            !append_cube(scene, entity, worlds[i], next_instance++))) {
         set_error(VkrBakeSceneError::Unsupported, out_error);
+        reset_scene(scene);
+        return false;
+      }
+      if (entity.brush && entity.brush_draws &&
+          !append_brush(scene, entities, brush_faces[i], i, worlds[i],
+                        next_instance++, &brush_materials)) {
+        set_error(VkrBakeSceneError::Parse, out_error);
         reset_scene(scene);
         return false;
       }

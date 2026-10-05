@@ -201,6 +201,71 @@ static void brush_test_uv(void) {
          brush_test_near(floor.y, 7.0f, 1.0e-5f));
 }
 
+/* Lightmap charts of a box and a wedge stay inside the atlas, keep the
+   brush's proportions at the layout density, and never share texels; a
+   brush too large for one atlas halves its density until it fits. */
+static void brush_test_lightmap(VkrBrushGeometry *geometry) {
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  const Vec3 shapes[2][2] = {{{0.0f, 0.0f, 0.0f}, {4.0f, 3.0f, 6.0f}},
+                             {{-2.0f, 0.0f, -1.0f}, {3.0f, 2.0f, 5.0f}}};
+  for (uint32_t shape = 0; shape < 2u; ++shape) {
+    const uint32_t count =
+        shape == 0u
+            ? vkr_brush_box_planes(shapes[0][0], shapes[0][1], planes)
+            : vkr_brush_wedge_planes(shapes[1][0], shapes[1][1], 0u, planes);
+    assert(vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK);
+    VkrBrushLightmapLayout layout;
+    assert(vkr_brush_lightmap_layout(geometry, &layout));
+    assert(layout.texels_per_unit == VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
+    Vec2 lower[VKR_BRUSH_FACE_MAX];
+    Vec2 upper[VKR_BRUSH_FACE_MAX];
+    for (uint32_t face = 0; face < geometry->face_count; ++face) {
+      const VkrBrushPolygon polygon = geometry->polygons[face];
+      lower[face] = vec2_new(INFINITY, INFINITY);
+      upper[face] = vec2_new(-INFINITY, -INFINITY);
+      for (uint32_t i = 0; i < polygon.count; ++i) {
+        const Vec3 point = geometry->vertices[polygon.first + i];
+        const Vec2 uv = vkr_brush_lightmap_uv(&layout, geometry, face, point);
+        assert(uv.x >= 0.0f && uv.x <= 1.0f && uv.y >= 0.0f && uv.y <= 1.0f);
+        const Vec2 texel = vec2_new(uv.x * (float32_t)layout.width,
+                                    uv.y * (float32_t)layout.height);
+        lower[face] = vec2_new(fminf(lower[face].x, texel.x),
+                               fminf(lower[face].y, texel.y));
+        upper[face] = vec2_new(fmaxf(upper[face].x, texel.x),
+                               fmaxf(upper[face].y, texel.y));
+      }
+      /* The first edge keeps its length in texels. */
+      const Vec3 a = geometry->vertices[polygon.first];
+      const Vec3 b = geometry->vertices[polygon.first + 1u];
+      const Vec2 ua = vkr_brush_lightmap_uv(&layout, geometry, face, a);
+      const Vec2 ub = vkr_brush_lightmap_uv(&layout, geometry, face, b);
+      const float32_t texels =
+          sqrtf(powf((ub.x - ua.x) * (float32_t)layout.width, 2.0f) +
+                powf((ub.y - ua.y) * (float32_t)layout.height, 2.0f));
+      assert(brush_test_near(
+          texels, vec3_length(vec3_sub(b, a)) * layout.texels_per_unit,
+          1.0e-2f));
+    }
+    for (uint32_t f = 0; f < geometry->face_count; ++f) {
+      for (uint32_t g = f + 1u; g < geometry->face_count; ++g) {
+        const bool8_t apart =
+            upper[f].x <= lower[g].x || upper[g].x <= lower[f].x ||
+            upper[f].y <= lower[g].y || upper[g].y <= lower[f].y;
+        assert(apart);
+      }
+    }
+  }
+  /* 600 units at 8 texels each would pass the atlas limit. */
+  const uint32_t count = vkr_brush_box_planes(
+      vec3_new(0.0f, 0.0f, 0.0f), vec3_new(600.0f, 4.0f, 600.0f), planes);
+  assert(vkr_brush_build(planes, count, geometry, NULL) == VKR_BRUSH_OK);
+  VkrBrushLightmapLayout layout;
+  assert(vkr_brush_lightmap_layout(geometry, &layout));
+  assert(layout.texels_per_unit < VKR_BRUSH_LIGHTMAP_TEXELS_PER_UNIT);
+  assert(layout.width <= VKR_BRUSH_LIGHTMAP_MAX_SIZE &&
+         layout.height <= VKR_BRUSH_LIGHTMAP_MAX_SIZE);
+}
+
 bool32_t run_brush_tests(void) {
   printf("--- Brush Tests ---\n");
   VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
@@ -208,6 +273,7 @@ bool32_t run_brush_tests(void) {
   brush_test_solids(geometry);
   brush_test_editing(geometry);
   brush_test_uv();
+  brush_test_lightmap(geometry);
   free(geometry);
   printf("--- Brush Tests Completed ---\n");
   return true_v;

@@ -502,13 +502,331 @@ vkr_internal bool8_t vkr_project_collect_bake_edits(
   return true_v;
 }
 
+/* Up to `count` numbers of an overlay record's array `key`. */
+vkr_internal bool8_t vkr_project_record_numbers(const VkrBakeryJson *record,
+                                                const char *key,
+                                                VkrBakeryJson **out_values,
+                                                uint32_t count) {
+  const VkrBakeryJson *values = vkr_bakery_json_get(record, key);
+  if (!values || values->type != VKR_BAKERY_JSON_ARRAY ||
+      values->count < count) {
+    return false_v;
+  }
+  uint32_t i = 0u;
+  for (VkrBakeryJson *value = values->first; value && i < count;
+       value = value->next, ++i) {
+    out_values[i] = value;
+  }
+  return i == count;
+}
+
+vkr_internal VkrBakeryJson *
+vkr_project_record_array(VkrProjectJob *job, const VkrBakeryJson *record,
+                         const char *key, uint32_t first, uint32_t count) {
+  VkrBakeryJson *values[8];
+  if (first + count > ArrayCount(values) ||
+      !vkr_project_record_numbers(record, key, values, first + count)) {
+    return NULL;
+  }
+  VkrBakeryJson *array = vkr_bakery_json_array(job->arena);
+  for (uint32_t i = first; i < first + count; ++i) {
+    vkr_bakery_json_append(array, vkr_bakery_json_clone(job->arena, values[i]));
+  }
+  return array;
+}
+
+/* Sets `key` of `block` to the record's value of `from`, when present. */
+vkr_internal void vkr_project_record_copy(VkrProjectJob *job,
+                                          VkrBakeryJson *block, const char *key,
+                                          const VkrBakeryJson *record,
+                                          const char *from) {
+  const VkrBakeryJson *value = vkr_bakery_json_get(record, from);
+  if (value) {
+    vkr_bakery_json_set(job->arena, block, key,
+                        vkr_bakery_json_clone(job->arena, value));
+  }
+}
+
+/* An editor-created overlay record in the runtime scene form the bakers
+   read: its document id, name, parent index (-1 for a root), pose, the light
+   blocks its edit values describe and its components, as the runtime builds
+   the entity when it applies the overlay. */
+vkr_internal VkrBakeryJson *
+vkr_project_created_entity(VkrProjectJob *job, const VkrBakeryJson *record,
+                           int64_t parent) {
+  Arena *arena = job->arena;
+  VkrBakeryJson *entity = vkr_bakery_json_object(arena);
+  vkr_project_record_copy(job, entity, "id", record, "uuid");
+  vkr_project_record_copy(job, entity, "name", record, "name");
+  vkr_bakery_json_set(arena, entity, "parent",
+                      parent >= 0 ? vkr_bakery_json_int(arena, parent)
+                                  : vkr_bakery_json_null(arena));
+  if (vkr_bakery_json_get(record, "position")) {
+    VkrBakeryJson *transform = vkr_bakery_json_object(arena);
+    vkr_project_record_copy(job, transform, "pos", record, "position");
+    vkr_project_record_copy(job, transform, "rot", record, "rotation");
+    vkr_project_record_copy(job, transform, "scale", record, "scale");
+    vkr_bakery_json_set(arena, entity, "transform", transform);
+  }
+  if (vkr_bakery_json_get(record, "point_color")) {
+    /* point_params: intensity, constant, linear, quadratic, range, inner
+       and outer cone angles. */
+    VkrBakeryJson *params[7];
+    if (vkr_project_record_numbers(record, "point_params", params, 7u)) {
+      VkrBakeryJson *light = vkr_bakery_json_object(arena);
+      vkr_project_record_copy(job, light, "enabled", record, "point_enabled");
+      vkr_project_record_copy(job, light, "casts_shadow", record,
+                              "point_casts_shadow");
+      vkr_project_record_copy(job, light, "color", record, "point_color");
+      vkr_project_record_copy(job, light, "direction_local", record,
+                              "point_direction");
+      vkr_project_record_copy(job, light, "kind", record, "point_kind");
+      static const char *const names[] = {
+          "intensity",       NULL, NULL, NULL, "range", "inner_cone_angle",
+          "outer_cone_angle"};
+      for (uint32_t i = 0u; i < 7u; ++i) {
+        if (names[i]) {
+          vkr_bakery_json_set(arena, light, names[i],
+                              vkr_bakery_json_clone(arena, params[i]));
+        }
+      }
+      VkrBakeryJson *attenuation = vkr_bakery_json_object(arena);
+      vkr_bakery_json_set(arena, attenuation, "constant",
+                          vkr_bakery_json_clone(arena, params[1]));
+      vkr_bakery_json_set(arena, attenuation, "linear",
+                          vkr_bakery_json_clone(arena, params[2]));
+      vkr_bakery_json_set(arena, attenuation, "quadratic",
+                          vkr_bakery_json_clone(arena, params[3]));
+      vkr_bakery_json_set(arena, light, "attenuation", attenuation);
+      vkr_bakery_json_set(arena, entity, "point_light", light);
+    }
+  }
+  if (vkr_bakery_json_get(record, "directional_color")) {
+    VkrBakeryJson *light = vkr_bakery_json_object(arena);
+    vkr_project_record_copy(job, light, "enabled", record,
+                            "directional_enabled");
+    vkr_project_record_copy(job, light, "color", record, "directional_color");
+    vkr_project_record_copy(job, light, "direction_local", record,
+                            "directional_direction");
+    VkrBakeryJson *scalars[1];
+    if (vkr_project_record_numbers(record, "directional_intensity", scalars,
+                                   1u)) {
+      vkr_bakery_json_set(arena, light, "intensity",
+                          vkr_bakery_json_clone(arena, scalars[0]));
+    }
+    if (vkr_project_record_numbers(
+            record, "directional_sun_angular_diameter_degrees", scalars, 1u)) {
+      vkr_bakery_json_set(arena, light, "sun_angular_diameter_degrees",
+                          vkr_bakery_json_clone(arena, scalars[0]));
+    }
+    if (vkr_project_record_numbers(record, "directional_temperature_kelvin",
+                                   scalars, 1u)) {
+      vkr_bakery_json_set(arena, light, "temperature_kelvin",
+                          vkr_bakery_json_clone(arena, scalars[0]));
+    }
+    vkr_project_record_copy(job, light, "atmosphere_sun", record,
+                            "directional_atmosphere_sun");
+    vkr_project_record_copy(job, light, "atmosphere_moon", record,
+                            "directional_atmosphere_moon");
+    vkr_bakery_json_set(arena, entity, "directional_light", light);
+  }
+  if (vkr_bakery_json_get(record, "rectangle_color")) {
+    VkrBakeryJson *light = vkr_bakery_json_object(arena);
+    vkr_project_record_copy(job, light, "enabled", record, "rectangle_enabled");
+    vkr_project_record_copy(job, light, "color", record, "rectangle_color");
+    VkrBakeryJson *scalars[1];
+    if (vkr_project_record_numbers(record, "rectangle_radiance", scalars, 1u)) {
+      vkr_bakery_json_set(arena, light, "radiance",
+                          vkr_bakery_json_clone(arena, scalars[0]));
+    }
+    VkrBakeryJson *size =
+        vkr_project_record_array(job, record, "rectangle_size", 0u, 2u);
+    if (size) {
+      vkr_bakery_json_set(arena, light, "size", size);
+    }
+    vkr_bakery_json_set(arena, entity, "rectangle_light", light);
+  }
+  const VkrBakeryJson *components = vkr_bakery_json_get(record, "components");
+  if (components && components->type == VKR_BAKERY_JSON_OBJECT &&
+      components->count) {
+    vkr_bakery_json_set(arena, entity, "components",
+                        vkr_bakery_json_clone(arena, components));
+  }
+  return entity;
+}
+
+/* Appends an overlay's editor-created entities to `entities` in overlay
+   order. A record's parent is another created entity, an entity of the
+   document the overlay edits (its index plus `document_first`; a glTF node
+   parent counts as its entity), or none. A hidden record and everything
+   below it stay out, as they render nothing. */
+vkr_internal bool8_t vkr_project_append_created(VkrProjectJob *job,
+                                                const VkrBakeryJson *overlay,
+                                                VkrBakeryJson *entities,
+                                                uint32_t document_first,
+                                                uint32_t document_count) {
+  Arena *arena = job->arena;
+  const VkrBakeryJson *created = vkr_bakery_json_get(overlay, "created");
+  if (!created || created->type != VKR_BAKERY_JSON_ARRAY || !created->count) {
+    return true_v;
+  }
+  const uint32_t count = created->count;
+  const VkrBakeryJson **records = (const VkrBakeryJson **)arena_alloc(
+      arena, count * sizeof(*records), ARENA_MEMORY_TAG_ARRAY);
+  int64_t *ids = (int64_t *)arena_alloc(arena, count * sizeof(int64_t),
+                                        ARENA_MEMORY_TAG_ARRAY);
+  int64_t *parents = (int64_t *)arena_alloc(arena, count * sizeof(int64_t),
+                                            ARENA_MEMORY_TAG_ARRAY);
+  int64_t *indices = (int64_t *)arena_alloc(arena, count * sizeof(int64_t),
+                                            ARENA_MEMORY_TAG_ARRAY);
+  if (!records || !ids || !parents || !indices) {
+    return vkr_project_fail(job, "Out of memory");
+  }
+  /* parents[i]: -1 none, -2 - k a created record k, else a document index
+     already offset into `entities`. */
+  uint32_t i = 0u;
+  for (const VkrBakeryJson *record = created->first; record;
+       record = record->next, ++i) {
+    records[i] = record;
+    ids[i] = -1;
+    (void)vkr_project_integer(vkr_bakery_json_get(record, "id"), &ids[i]);
+    parents[i] = -1;
+  }
+  for (i = 0u; i < count; ++i) {
+    const VkrBakeryJson *parent = vkr_bakery_json_get(records[i], "parent");
+    int64_t value = 0;
+    if (vkr_project_integer(vkr_bakery_json_get(parent, "created"), &value)) {
+      for (uint32_t k = 0u; k < count; ++k) {
+        if (ids[k] == value) {
+          parents[i] = -2 - (int64_t)k;
+          break;
+        }
+      }
+    } else if (vkr_project_integer(vkr_bakery_json_get(parent, "scene_entity"),
+                                   &value) &&
+               value >= 0 && value < (int64_t)document_count) {
+      parents[i] = (int64_t)document_first + value;
+    }
+  }
+  /* A record is out when it or a created ancestor is hidden; the walk is
+     bounded by the record count, which also stops a cycle. */
+  uint32_t next = entities->count;
+  for (i = 0u; i < count; ++i) {
+    bool8_t hidden = false_v;
+    uint32_t at = i;
+    for (uint32_t depth = 0u; depth <= count; ++depth) {
+      bool8_t visible = true_v;
+      if (vkr_bakery_json_get_bool(records[at], "visible", &visible) &&
+          !visible) {
+        hidden = true_v;
+        break;
+      }
+      if (parents[at] > -2) {
+        break;
+      }
+      at = (uint32_t)(-2 - parents[at]);
+      hidden = depth == count;
+    }
+    indices[i] = hidden ? -1 : (int64_t)next++;
+  }
+  for (i = 0u; i < count; ++i) {
+    if (indices[i] < 0) {
+      continue;
+    }
+    const int64_t parent =
+        parents[i] <= -2 ? indices[-2 - parents[i]] : parents[i];
+    VkrBakeryJson *entity = vkr_project_created_entity(job, records[i], parent);
+    VKR_PROJECT_TRY(entity);
+    vkr_bakery_json_append(entities, entity);
+  }
+  return true_v;
+}
+
+/* The project World joins every scene at runtime, so a bake sees its
+   document entities and its overlay's created entities after the scene's
+   own. */
+vkr_internal bool8_t vkr_project_append_world(VkrProjectJob *job,
+                                              VkrBakeryJson *entities) {
+  Arena *arena = job->arena;
+  char document[VKR_PROJECT_PATH];
+  char overlay_path[VKR_PROJECT_PATH];
+  (void)snprintf(document, sizeof(document), "%s/world.scene.json",
+                 job->project_root);
+  (void)snprintf(overlay_path, sizeof(overlay_path), "%s/world.editor.json",
+                 job->project_root);
+  const uint32_t first = entities->count;
+  uint32_t world_count = 0u;
+  if (vkr_bakery_is_file(document)) {
+    VkrBakeryJson *world =
+        vkr_project_load_json(job, document, VKR_PROJECT_MAX_JSON_BYTES);
+    VKR_PROJECT_TRY(world);
+    const VkrBakeryJson *listed = vkr_bakery_json_get(world, "entities");
+    for (const VkrBakeryJson *entity = listed ? listed->first : NULL; entity;
+         entity = entity->next) {
+      VkrBakeryJson *copy = vkr_bakery_json_clone(arena, entity);
+      int64_t parent = 0;
+      if (vkr_project_integer(vkr_bakery_json_get(copy, "parent"), &parent) &&
+          parent >= 0) {
+        vkr_bakery_json_set(arena, copy, "parent",
+                            vkr_bakery_json_int(arena, first + parent));
+      }
+      vkr_bakery_json_append(entities, copy);
+      ++world_count;
+    }
+  }
+  if (vkr_bakery_is_file(overlay_path)) {
+    VkrBakeryJson *overlay =
+        vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_JSON_BYTES);
+    VKR_PROJECT_TRY(overlay && vkr_project_checked_overlay(job, overlay));
+    VKR_PROJECT_TRY(
+        vkr_project_append_created(job, overlay, entities, first, world_count));
+  }
+  return true_v;
+}
+
 VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
                                                   VkrBakeryJson *scene,
                                                   const char *root) {
   Arena *arena = job->arena;
   VkrBakeryJson *result = vkr_project_lower(job, scene, root, true_v);
-  if (!result ||
-      !vkr_project_truthy(vkr_bakery_json_get(scene, "edit_overlay"))) {
+  if (!result) {
+    return NULL;
+  }
+  if (!vkr_project_truthy(vkr_bakery_json_get(scene, "edit_overlay"))) {
+    /* The lowered scene plus the project World, written beside it. */
+    VkrBakeryJson *runtime = vkr_project_load_json(
+        job, vkr_project_json_text(result, "runtime_path"),
+        VKR_PROJECT_MAX_JSON_BYTES);
+    if (!runtime) {
+      return NULL;
+    }
+    VkrBakeryJson *entities = vkr_bakery_json_get(runtime, "entities");
+    if (!entities) {
+      entities = vkr_bakery_json_array(arena);
+      vkr_bakery_json_set(arena, runtime, "entities", entities);
+    }
+    const uint32_t before = entities->count;
+    if (!vkr_project_append_world(job, entities)) {
+      return NULL;
+    }
+    if (entities->count == before) {
+      return result;
+    }
+    char id[37];
+    vkr_project_uuid4(id);
+    char bake_root[VKR_PROJECT_PATH];
+    (void)snprintf(bake_root, sizeof(bake_root), "%s/jobs/effective-%s",
+                   job->workspace, id);
+    if (!vkr_project_make_dirs(job, bake_root)) {
+      return NULL;
+    }
+    const char *runtime_path =
+        vkr_project_printf(job, "%s/scene.json", bake_root);
+    if (!vkr_project_atomic_json(job, runtime_path, runtime)) {
+      return NULL;
+    }
+    vkr_bakery_json_set(arena, result, "runtime_path",
+                        vkr_bakery_json_cstr(arena, runtime_path));
     return result;
   }
   char overlay[VKR_PROJECT_PATH];
@@ -531,6 +849,7 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
   VkrBakeryJson *entities = vkr_bakery_json_get(runtime, "entities");
   if (!entities) {
     entities = vkr_bakery_json_array(arena);
+    vkr_bakery_json_set(arena, runtime, "entities", entities);
   }
   if (!vkr_project_remap_overlay_indices(job, journal, entities)) {
     return NULL;
@@ -601,6 +920,13 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
         vkr_bakery_json_remove(entity, hidden[h]);
       }
     }
+  }
+  /* The World and the overlay's created entities follow the document's
+     entities and light anchors, as the runtime adds them. */
+  const uint32_t document_count = count;
+  if (!vkr_project_append_world(job, entities) ||
+      !vkr_project_append_created(job, journal, entities, 0u, document_count)) {
+    return NULL;
   }
   const char *runtime_path =
       vkr_project_printf(job, "%s/scene.json", bake_root);

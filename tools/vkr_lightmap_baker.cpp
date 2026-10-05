@@ -830,8 +830,19 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     const VkrBakeLightmapInstance &source =
         scene
             .lightmap_instances[lightmap_by_source[rect.source_instance_index]];
-    instances.push_back({source.entity_index, source.source_node_index,
-                         rect.page, rect.x, rect.y, rect.width, rect.height});
+    VkrLightmapInstance instance = {};
+    if (source.has_document_id) {
+      std::memcpy(instance.document_id, source.document_id.data(),
+                  sizeof(instance.document_id));
+    }
+    instance.entity_index = source.entity_index;
+    instance.instance_index = source.source_node_index;
+    instance.page = rect.page;
+    instance.x = rect.x;
+    instance.y = rect.y;
+    instance.width = rect.width;
+    instance.height = rect.height;
+    instances.push_back(instance);
   }
   std::sort(instances.begin(), instances.end(),
             [](const VkrLightmapInstance &a, const VkrLightmapInstance &b) {

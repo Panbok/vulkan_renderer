@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-27
+updated: 2026-10-05
 authority: adr
 ---
 
@@ -31,6 +31,20 @@ and [KHR_materials_volume](https://registry.khronos.org/glTF/extensions/2.0/Khro
 
 ### Offline bake
 
+A managed project bakes the scene the runtime loads
+([`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)): the
+lowered document with its authored overrides, then the project World's
+entities, then the overlay's editor-created entities, whose light edit values
+become the scene's light blocks and whose components carry over; a hidden
+created entity and its subtree stay out. The bake scene loader builds every
+solid or visual brush from its `brush_face` children as the runtime does
+([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with the face
+material or the dev grid, and keeps each entity's document id. Verified 2026-10-05 on a blockout made
+through `vkr_mcp` (two rooms joined by a doorway, a sealed room, three lamps
+and the World sun): before this the effective scene held no entity and every
+bake of an editor-built level was empty; after it, the volume bake found 39
+valid probes in two regions and published.
+
 The CPU baker flattens the scene into caller-owned triangles and builds a
 deterministic, binned-SAH BVH. Scene creation discards exact zero-area triangles
 from cooked geometry, retaining every positive finite area. The BVH rejects
@@ -43,7 +57,9 @@ Automatic room detection voxelizes blocking triangles conservatively. Voxel
 occupancy is limited to 8,000,000 cells, the grid has at most 256 probe nodes in
 total, and the voxel size is at most half the smallest derived probe spacing.
 One-cell dilation supplies clearance from boundaries. Exterior empty voxels are
-flood-filled, then remaining empty components receive region IDs.
+flood-filled from the bounds' faces, so explicit `--bounds` must enclose the
+rooms' walls, floors and ceilings; then remaining empty components receive
+region IDs.
 
 A region is retained only when a representative's nearest blocking boundary on
 all six axial rays is front-facing toward room air. Missing, grazing, mixed, or

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -15,12 +16,14 @@ extern "C" {
  * texel records are the only per-texel state alive during a bake.
  */
 
-/* One lightmapped instance: its source mesh's chart atlas in texels at
-   texels_per_unit mesh units, its world transform, and its key in the scene
-   document: the entity's index in the entity array and the instance's
-   source-node index in the entity's cooked model. */
+/* One lightmapped instance: its chart atlas in texels at texels_per_unit
+   local units, its world transform, and its key: the entity's document id
+   when it has one, its index in the baked entity array, and the instance's
+   source-node index in the entity's cooked model (zero for a brush). */
 struct VkrBakeLightmapInstance {
   uint32_t source_instance_index = 0u;
+  std::array<uint8_t, 16> document_id = {};
+  bool has_document_id = false;
   uint32_t entity_index = 0u;
   uint32_t source_node_index = 0u;
   Mat4 world = {};

@@ -189,13 +189,14 @@ static void vkr_lightmap_set_write_layer(uint8_t *dst,
 
 static void vkr_lightmap_set_write_instance(uint8_t *dst,
                                             const VkrLightmapInstance *i) {
-  vkr_store_le_u32(dst + 0u, i->entity_index);
-  vkr_store_le_u32(dst + 4u, i->instance_index);
-  vkr_store_le_u32(dst + 8u, i->page);
-  vkr_store_le_u32(dst + 12u, i->x);
-  vkr_store_le_u32(dst + 16u, i->y);
-  vkr_store_le_u32(dst + 20u, i->width);
-  vkr_store_le_u32(dst + 24u, i->height);
+  MemCopy(dst, i->document_id, sizeof(i->document_id));
+  vkr_store_le_u32(dst + 16u, i->entity_index);
+  vkr_store_le_u32(dst + 20u, i->instance_index);
+  vkr_store_le_u32(dst + 24u, i->page);
+  vkr_store_le_u32(dst + 28u, i->x);
+  vkr_store_le_u32(dst + 32u, i->y);
+  vkr_store_le_u32(dst + 36u, i->width);
+  vkr_store_le_u32(dst + 40u, i->height);
 }
 
 bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
@@ -368,14 +369,15 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     const uint8_t *src =
         instance_table + (uint64_t)i * VKR_LIGHTMAP_SET_INSTANCE_BYTES;
     instances[i] = (VkrLightmapInstance){
-        .entity_index = vkr_load_le_u32(src + 0u),
-        .instance_index = vkr_load_le_u32(src + 4u),
-        .page = vkr_load_le_u32(src + 8u),
-        .x = vkr_load_le_u32(src + 12u),
-        .y = vkr_load_le_u32(src + 16u),
-        .width = vkr_load_le_u32(src + 20u),
-        .height = vkr_load_le_u32(src + 24u),
+        .entity_index = vkr_load_le_u32(src + 16u),
+        .instance_index = vkr_load_le_u32(src + 20u),
+        .page = vkr_load_le_u32(src + 24u),
+        .x = vkr_load_le_u32(src + 28u),
+        .y = vkr_load_le_u32(src + 32u),
+        .width = vkr_load_le_u32(src + 36u),
+        .height = vkr_load_le_u32(src + 40u),
     };
+    MemCopy(instances[i].document_id, src, sizeof(instances[i].document_id));
   }
   set.layers = layers;
   set.instances = instances;

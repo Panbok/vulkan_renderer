@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-04
+updated: 2026-10-05
 authority: adr
 ---
 # ADR-084: Agent channel and level design toolkit
@@ -185,7 +185,10 @@ than 64 faces, a zero or non-finite plane, a face that does not touch the
 solid, an open solid or one without volume fails with the reason and the
 face. UVs project on the world axis plane nearest the face, as Hammer does:
 floors use X and Z, walls read left to right from outside with up the world.
-It also generates box, wedge and cylinder planes.
+It also generates box, wedge and cylinder planes, and the lightmap chart
+layout scene bakes use for brushes ([ADR-088](088-baked-lightmap-sets.md));
+scene bakes build solid and visual brushes from their faces
+([ADR-054](054-baked-diffuse-volumes.md)).
 
 [vkr_scene_brush.c](../../runtime/src/renderer/systems/vkr_scene_brush.c)
 rebuilds a brush after a change to it or its faces, or after its transform

@@ -45,6 +45,16 @@ setting ([`vkr_project_import.c`](../../tools/bakery/project/vkr_project_import.
 editor's Bakery panel option "Lightmap UVs on model import and rebuild" sends
 8 texels per world unit.
 
+### Brushes
+
+A solid or visual brush is lightmapped from its geometry alone
+([`vkr_brush.h`](../../runtime/src/level/vkr_brush.h),
+`vkr_brush_lightmap_layout`): every face is a chart projected on an
+orthonormal basis of its plane at 8 texels per brush unit with two texels of
+padding, shelf-packed tallest first; a brush whose atlas would pass 1,024
+texels halves its density. The bake and the runtime compute the same UVs
+from the same planes, so brushes need no cooked lightmap data.
+
 ### Layout
 
 [`vkr_bake_lightmap.h`](../../tools/bake/vkr_bake_lightmap.h) gives every
@@ -108,12 +118,16 @@ profile at effort 10.
 ### VKLM file
 
 [`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h) defines
-VKLM v1: a 128-byte header, the layer table (kind, number, sun direction), the
+VKLM v2: a 128-byte header, the layer table (kind, number, sun direction), the
 instance table and, aligned to 256 bytes, one page image per page and layer,
-page-major. Every scalar is little-endian. An instance is keyed by its entity's
-index in the scene document's entity array and its source-node index in the
-entity's cooked model (zero without source nodes), and records its page
-rectangle. Instances are sorted by that key. Producers stream the payload and
+page-major. Every scalar is little-endian. An instance carries its entity's
+document id (zero when the entity has none), the entity's index in the baked
+entity array (the document's entities, then the World's, then editor-created
+ones) and its source-node index in the entity's cooked model (zero without
+source nodes and for brushes), and records its page rectangle. The runtime
+matches an instance by document id and falls back to the index. Instances are
+sorted by index and node. Version 1, keyed by index only, was never read by a
+runtime. Producers stream the payload and
 write the header last; the decoder checks header, table and payload CRCs,
 sizes, layer meanings and that every rectangle lies on whole blocks within its
 page, and returns the payload as a view into the caller's bytes.
@@ -216,6 +230,16 @@ texels per meter with deferred textures:
   cutouts were tested in one traversal it was 5.6 times slower than with every
   cutout forced opaque. `vkr_bakery bake lightmap --samples 16` published the
   set in 116.7 s, 65.6 s of it GPU time and 4.9 s encoding.
+
+- A blockout built in the editor through `vkr_mcp` (`vkr_blockout_room` and
+  `vkr_blockout_doorway`: two rooms joined by a doorway, a sealed room and a
+  ground slab, three point lights, the World sun) and baked with a managed
+  `bake_scene` (`bakes.diffuse` and `bakes.lightmap`, 64 samples): 276
+  triangles, 23 lightmapped brushes on one 1,024 page, keyed by their
+  document ids; the lightmaps published in 3.4 s and the volume (39 valid
+  probes, 7 valid cells, two regions) in 5.2 s. Parity on that level at 2,048
+  samples: -0.12% overall, sky -0.02%, lamps +0.31% (z = 0.95), sun -0.80%.
+  Rebaking produced the same file digest.
 
 Unavailable: any runtime use, and a Windows or Vulkan host.
 
