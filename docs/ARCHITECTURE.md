@@ -1413,6 +1413,10 @@ These are limits of current code or retained acceptance, not scheduled promises:
 - Baked diffuse volumes have CPU room classification, multi-bounce and glass
   transport, portable assets, scene loading and Metal execution. Native Vulkan
   execution remains unavailable; see [ADR-054](adr/054-baked-diffuse-volumes.md).
+- Lightmap sets bake on Metal ray tracing into VKLM files that projects store
+  and package, but no renderer samples them, only one sun key and one lamp
+  group are baked, and hosts without Metal ray tracing cannot bake them; see
+  [ADR-088](adr/088-baked-lightmap-sets.md).
 - Charlie sheen is implemented below clearcoat in runtime and offline lighting.
   Its two-component rectangle fit retains measured errors for dim tilted lights;
   [ADR-063](adr/063-charlie-sheen.md) records those approximation limits and the

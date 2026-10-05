@@ -91,8 +91,9 @@ pipeline rather than a backend mechanism.
   within a pipeline class.
 - Ray and path tracing can be added to the desktop pipeline without a
   tile-based equivalent.
-- The tiled pipeline may need more baked data, such as lightmaps or denser
-  probes, which `vkr_bakery` owns ([ADR-077](077-asset-build-system.md)).
+- The tiled pipeline needs more baked data, which `vkr_bakery` owns
+  ([ADR-077](077-asset-build-system.md)): lightmap sets
+  ([ADR-088](088-baked-lightmap-sets.md)) and possibly denser probes.
 
 ## Alternatives considered
 

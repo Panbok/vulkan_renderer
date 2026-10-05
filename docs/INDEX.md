@@ -243,6 +243,7 @@ record identifies its code owner and any remaining integration or evidence gap.
 | [085](adr/085-gpu-geometry-lod-and-terrain-geomorphing.md) | GPU geometry LOD table: per-range levels in decode metadata, per-view selection during culling, level ranges and LOD state in visible rows; terrain tiles' seven levels with geomorphing in raster, resolves, transmission and motion vectors; cooked mesh levels pending | partial |
 | [086](adr/086-world-partition.md) | World partition: streaming sources, tiled heightfields up to 8,192 cells with a tile window, overview tiles with holes and one windowed collision body; `world_partition` cells of editor-created roots, per-cell documents and the cell index; budgeted cell streaming with the unload rules, Play holds and IO router refresh; baked brush proxies; origin rebasing during Play with exact restore; the World Partition window and `partition.*` operations; the measured local-shadow hitch over terrain | partial |
 | [087](adr/087-gpu-class-graphics-pipelines.md) | Graphics pipelines per GPU class: a tiled pipeline for tile-based GPUs (M-series, later mobile) and the current desktop pipeline for discrete GPUs, selected by GPU architecture; Metal/Vulkan parity within a class; a shared art-level contract; the M1 Pro budget of 2560×1440 at 16.7 ms p95 without upscaling; the measured native-resolution cost of the desktop pipeline | partial |
+| [088](adr/088-baked-lightmap-sets.md) | Baked lightmap sets for the tiled pipeline: lightmap UVs on cooked and managed models, world-density packing, sun-key and lamp-group layers, the Metal ray-traced baker and its CPU parity, ASTC 4×4 HDR pages in VKLM files, `vkr_bakery bake lightmap`, project storage, packaging and the Bakery panel options; runtime sampling, time-of-day keys and a CPU bake path pending | partial |
 
 ## Proposals
 
@@ -279,7 +280,7 @@ decisions before dependent implementation.
 | [Level toolkit audit](proposals/level-toolkit-audit.md) | Review of the level toolkit, terrain, geometry LOD and world partition (ADR-084 to ADR-086): findings by severity with evidence, fixes made during the audit, and the verification each finding still needs. |
 | [Level toolkit Windows/Vulkan handoff](proposals/level-toolkit-windows-vulkan-handoff.md) | Steps for a Windows Vulkan host to verify the level toolkit, terrain, geometry LOD and world partition natively, with the commands, expected results and the audit findings each step closes. |
 | [Visibility-buffer MSAA](proposals/visibility-buffer-msaa.md) | Multisample visibility and resolve after a demonstrated quality need. |
-| [Tiled graphics pipeline](proposals/tiled-pipeline.md) | Open design of the ADR-087 tiled pipeline: measured limits of tuning the desktop pipeline on M1 Pro, the candidate stage-by-stage design, open shading and graph choices, and the Metal prototype gate against the 16.7 ms budget. |
+| [Tiled graphics pipeline](proposals/tiled-pipeline.md) | Open design of the ADR-087 tiled pipeline: measured limits of tuning the desktop pipeline on M1 Pro, the candidate stage-by-stage design, open shading and graph choices, the Metal prototype gate against the 16.7 ms budget, and the lightmap work left after ADR-088. |
 
 ## Maintaining this tree
 

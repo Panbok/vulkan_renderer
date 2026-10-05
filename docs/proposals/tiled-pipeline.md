@@ -61,17 +61,18 @@ for tile-memory reads and lazily allocated transient attachments.
 
 ## Open choices
 
-- Day/night cycle (owner requirement, 2026-10-05): the sun moves and lamps
-  switch with time of day, so lightmaps cannot hold sun light or fixed lamp
-  light. Candidates: sun direct light and shadows stay at runtime through the
-  retained cascades ([ADR-041](../adr/041-retained-cascaded-shadows.md)); sky
-  and sun bounce come from a relightable baked transfer, such as per-texel
-  sky visibility or SH transfer; static lamps bake into per-group lightmaps
-  that the runtime scales by each group's current intensity.
-- Lightmap design: UV unwrapping and packing in `vkr_bakery`, texel density,
-  encoding (for example SH or a dominant direction for specular), the baker's
-  reuse of the ADR-054 BVH and photon pass, and how dynamic objects and
-  specular highlights of static lights are lit.
+- Day/night cycle (owner requirement, 2026-10-05): sun direct light and
+  shadows stay at runtime through the retained cascades
+  ([ADR-041](../adr/041-retained-cascaded-shadows.md)); sun bounce and sky
+  light come from baked sun keys blended by the sun position, and static
+  lamps from lamp-group layers the runtime scales
+  ([ADR-088](../adr/088-baked-lightmap-sets.md)). Open: the sun path and the
+  per-key atmosphere.
+- Lightmap design: unwrapping, packing, density, the GPU baker and ASTC 4×4
+  HDR storage are decided ([ADR-088](../adr/088-baked-lightmap-sets.md)).
+  Open: a directional encoding (SH or a dominant direction) for normal maps
+  and specular, and how dynamic objects and the specular highlights of static
+  lights are lit.
 
 - Forward shading with clustered lights or deferred shading in tile memory.
   Forward suits MSAA and the hardware's hidden-surface removal; tile-memory
@@ -174,161 +175,31 @@ The gate therefore needs a cheaper lighting model as well as the tiled
 structure: direct light from static lights baked offline, a bounded runtime
 budget for dynamic lights, and base shading near half its current cost.
 
-## Lightmap baseline and design
+## Lightmaps
 
-What exists (2026-10-05):
-
-- The ADR-054 baker in [`tools/bake/`](../../tools/bake/) flattens the scene,
-  builds a CPU BVH, traces paths with a photon pass and projects to SH. One
-  trace sums sun, sky, every lamp and emission
-  ([`vkr_bake_integrator.cpp`](../../tools/bake/vkr_bake_integrator.cpp)), so
-  its output cannot be split by light or group.
-- `VkrPackedStaticVertex` has one UV set; word 7 is always zero and validated
-  as zero ([`vkr_packed_geometry.c`](../../renderer/src/vkr_packed_geometry.c)).
-  The glTF importer reads only `TEXCOORD_0`. No UV unwrapping or chart packing
-  code exists in the tree or in `vendor/`.
-- Scene lights carry only `enabled`; there is no light group, mobility or
-  intensity animation, and no time-of-day system. The sun is whichever
-  directional light is resolved each frame.
-- Scene bakes run as explicit `vkr_bakery bake` commands with project-level
-  storage under `builds/<uuid>/` ([`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)),
-  and the editor's Bake panel triggers them.
-
-Proposed design:
-
-1. **Second UV set.** The mesh producer unwraps static meshes into charts and
-   stores UV2 as two unorm16 values in word 7. Per-instance atlas scale and
-   offset live in a side table indexed by instance, leaving the prepared
-   instance row unchanged.
-2. **Separable bake.** A `vkr_bakery bake lightmap` scene bake reuses the
-   ADR-054 BVH, scene flattening and integrator, but traces from lightmap
-   texels and writes separate layers: one irradiance layer per lamp group,
-   which the runtime scales by the group's current intensity, and a sky
-   transfer layer, such as SH sky visibility, that relights with the current
-   sky. Sun direct light stays at runtime through the retained cascades.
-3. **Scene and time of day.** Lights gain a group and a baked or dynamic
-   mobility. A time-of-day system drives the sun, moon, sky and lamp-group
-   intensities; it is shared by both pipeline classes.
-4. **Runtime.** Static surfaces in the tiled pipeline sample the lightmap
-   layers; dynamic objects use the baked volumes and probes.
-
-Owner decisions (2026-10-05): `vkr_bakery` unwraps with vendored
-[xatlas](https://github.com/jpcy/xatlas) (MIT). Sun bounce light follows the
-day/night cycle through baked sun keys: four to eight sun positions baked as
-separate layers and blended at runtime by the current sun position.
-
-Owner decisions (2026-10-05): eight sun keys, and lightmap layers stored as
-ASTC 4×4 HDR, one byte per texel. A native probe on the M1 Pro (Apple7)
-created `MTLPixelFormatASTC_4x4_HDR`, `BC6H_RGBUfloat` and `RGB9E5Float`
-textures. At 8 texels per unit Bistro needs an estimated 30 million texels
-once instances are counted (12.7 million for one instance per mesh times the
-2.4 instance-to-unique triangle ratio): about 30 MB per layer and 360 MB for
-eight sun keys, three lamp groups and one sky layer.
+[ADR-088](../adr/088-baked-lightmap-sets.md) records what is implemented:
+lightmap UVs on cooked and managed models, the layout, sun-key and lamp-group
+layers, the Metal GPU baker and its parity with the CPU integrator, ASTC 4×4
+HDR pages in VKLM files, `vkr_bakery bake lightmap`, project storage,
+packaging and the Bakery panel options, with the owner decisions and Bistro
+measurements.
 
 Open: irradiance only or directional SH per layer for normal-mapped surfaces,
 the sun path the eight keys sample before a time-of-day model exists, and the
-texel density budget once instances are packed.
+texel density budget for the M1 memory floor (Bistro stores 16 MiB per layer
+page; twelve layers on three pages would be 576 MiB).
 
-Phases:
+Remaining phases:
 
-1. UV2: vendor xatlas; an opt-in mesh recipe field unwraps and packs each mesh
-   into one normalized chart atlas with a recorded lightmap size; UV2 packs
-   into word 7 under a new packed-geometry version; both native decoders read
-   it.
-   Status: implemented on the CPU and in both shader roots: the recipe field,
-   the cooked flag and atlas block
-   ([ADR-030](../adr/030-offline-mesh-optimization-and-cooking.md)), word 7
-   ([ADR-031](../adr/031-versioned-packed-static-geometry-abi.md)) and the
-   decoders, covered by `run_mesh_lightmap_uv_tests` and
-   `test_mesh_cooked_lightmap_uv_round_trip`. The baker's mesh decode does
-   not read UV2 yet. Bistro (`bistro-lights.gltf`, Release mesh tool, managed
-   output in a temporary bundle, deferred textures, 8 texels per unit,
-   2026-10-05) cooks in 17.7 s at 1.27 GB peak memory, against 0.7 s and
-   0.68 GB without lightmap UVs, and byte-identically on a second run. All
-   646 cooked source meshes get an atlas at full density; seams raise the
-   vertex count from 1,741,441 to 2,158,263 and the artifact from 30.8 to
-   42.9 MB. The largest atlas is 1,368 × 1,364 texels and the median 28 ×
-   28. One instance of each mesh needs 12.7 million texels, about 97 MiB per
-   uncompressed RGBA16F layer, before the 2,909 instances are counted
-   separately, so lamp-group, sky and sun-key layers need block compression,
-   a compact encoding or a lower density to fit the M1 memory floor.
-2. Separable bake: texel tracing in the ADR-054 baker with lamp-group and
-   sun-key layers; project storage and the editor Bake panel. Gather rays
-   from a texel never reach a delta light, so a sun-key layer (sky and sun at
-   that time, through a per-key integrator) holds sun bounce and sky light
-   without the sun's direct term, which stays at runtime; lamp-group layers
-   add explicit lamp sampling at the texel for direct light.
-   Status: the baker reads lightmap UVs and each instance's atlas, and
-   [`vkr_bake_lightmap.h`](../../tools/bake/vkr_bake_lightmap.h) packs
-   instances onto pages and rasterizes a page's texels to world positions and
-   normals, covered by `run_lightmap_bake_tests`. Integration, layer output
-   and ASTC encoding are pending.
-
-   Cost measurement (2026-10-05, `vkr_bakery tool lightmap-baker`, Release,
-   M1 Pro, 8 worker threads, Bistro cooked at 8 texels per meter with
-   deferred textures, 4,096-texel pages, path depth 4 with Russian roulette
-   from depth 4): the scene packs 2,909 instances onto 3 pages, 32.1 million
-   rectangle texels of which 4.28 million lie inside triangles. Bistro's world
-   unit is the meter; its meshes are authored at 1/100 scale under node
-   scales of 34 to 200. Gathering 8 cosine-weighted samples per covered texel
-   took 74.9 s, 457,000 paths or 1.77 million segments per second, with
-   3.5 GB peak memory and 8.4 s of scene load and BVH build. One layer costs
-   about 9.4 s per sample per texel: 10 minutes at 64 samples and 40 minutes
-   at 256, so twelve layers take 2 to 8 hours on the CPU without denoising.
-
-   Owner decision (2026-10-05): a Metal GPU baker. It traces with Metal's
-   ray-tracing API (an acceleration structure and intersector queries in
-   compute), which the M1 Pro supports in software and M3 and later in
-   hardware, and implements a lightmap subset of the ADR-054 transport:
-   diffuse paths with material albedo, alpha masking and emission, the sky,
-   explicit sun and lamp sampling with shadow rays, and Russian roulette.
-   The CPU integrator stays the reference for parity checks and the path on
-   hosts without Metal ray tracing.
-   [`vkr_bake_metal.h`](../../tools/bake/vkr_bake_metal.h) builds the
-   acceleration structure and runs a closest-hit benchmark. On the same
-   Bistro pages and 8 samples per texel (`--gpu trace`), it builds a 706 MB
-   structure in 363 ms and traces 34.2 million rays in 0.96 s of GPU time,
-   35.8 million rays per second (20.9 to 55.4 million by page) against 1.77
-   million CPU path segments per second. On the first 20,000 texels of each
-   page, the CPU BVH re-traced the same seeded rays: mean hit fractions
-   differ by at most 0.00001.
-
-   The same context gathers a layer's irradiance (`--gpu gather`). It also
-   uploads per-corner normals, UVs and colors, materials with base color and
-   emission textures resampled to 128 × 128 RGBA16F layers, the lights, the
-   renderer's DFG table and a 512 × 256 equirectangular sky from the bake
-   environment. A path scatters through one cosine lobe whose albedo is the
-   CPU BSDF's split-sum specular reflectance plus its diffuse residual, so
-   specular energy is kept but spread diffusely; a surface's glass fraction
-   passes the path straight through, tinted by base color; shadow rays follow
-   the CPU shadow walk. A layer names its lights and whether it takes the sky,
-   emission and direct light at the texel. The tool bakes sun key 0 (the
-   directional light and sky, without the sun's direct term at the texel) and
-   lamp group 0 (the 72 other lights and emission, with their direct term).
-   On page 0 (1,060,457 texels, 16 samples, depth 4, Release, M1 Pro), each
-   layer takes 6.2 to 7.1 s of GPU time, 2.4 to 2.7 million paths per second
-   against 457,000 on the CPU; the scene upload takes 1.3 to 1.6 s.
-
-   Parity (`--check-texels 4096 --check-samples 1024`): at 4,096 evenly
-   spaced texels of page 0, a layer with every light, the sky and emission
-   but no texel direct term estimates what the CPU integrator's paths carry.
-   Mean luminance differs by -0.9% (z = -0.71, seed 1) and -2.4% (z = -0.97,
-   seed 7), and the per-texel RMS difference is 0.79 and 0.72 of the combined
-   sampling noise. By transport (seed 7, `--check-transport`): sky and
-   emission +0.1% (z = 0.09); sun bounce -0.85% (z = -1.8), of which -0.17%
-   remains when every material is made Lambert without glass, so about 0.7%
-   comes from spreading specular light diffusely and from the straight glass.
-   Sun key plus lamp group without its texel term equals the full layer
-   exactly. The check found two transport differences, now fixed: a bounce
-   sampled about the shading normal ended the path when it fell below the
-   geometric surface (-1.2% of sun bounce), and lights below the geometric
-   surface were rejected where the CPU accepts them by shading normal. The
-   Bistro bundle defers textures, so no run has exercised the texture layers
-   yet. Layer accumulation across pages, gap filling at chart edges, ASTC
-   encoding and storage are pending.
-3. Time of day: light groups and mobility in scene data; a system driving
+1. Bake completion: eight sun keys from a sun path with a per-key atmosphere,
+   one layer per lamp group once lights carry groups, the layer split and
+   texel direct term in the CPU integrator for hosts without Metal ray
+   tracing, and a textured-scene check of the GPU baker's material textures.
+2. Time of day: light groups and mobility in scene data; a system driving
    sun, moon, sky and group intensities.
-4. Tiled runtime: lightmap sampling in the tiled pipeline's forward shader,
+3. Tiled runtime: load VKLM sets (an ASTC 4×4 HDR texture format in both
+   backends), map instances to their rectangles, and sample the blended sun
+   keys and scaled lamp groups in the tiled pipeline's forward shader,
    measured against the 16.7 ms budget.
 
 ## Acceptance evidence

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-09-29
+updated: 2026-10-05
 authority: adr
 ---
 
@@ -197,7 +197,9 @@ from it.
 - **Bakes and previews.** `bake diffuse` and `bake probe`
   ([bakes](../../tools/bakery/vkr_bakery_bake.c)) keep the former scripts'
   options, provenance sidecars, evidence directories, `--check` and exit
-  status 3 for a volume without closed-room cells. `preview material` renders a
+  status 3 for a volume without closed-room cells. `bake lightmap` follows
+  `bake diffuse` and exits 4 when no model carries lightmap UVs
+  ([ADR-088](088-baked-lightmap-sets.md)). `preview material` renders a
   managed material thumbnail in an isolated harness run; `preview prune`
   bounds the thumbnail cache. The diffuse baker traces probes on worker threads
   (`--threads`, zero for every hardware thread).

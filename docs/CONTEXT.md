@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-04
+updated: 2026-10-05
 authority: context
 ---
 # Project vocabulary
@@ -63,6 +63,9 @@ below are starting points for checking a definition, not alternate API specs.
 | Atmosphere sun light | The enabled directional light whose `atmosphere_sun` flag makes it drive the atmosphere's sun direction, tinted irradiance and disc; scene files default the flag on, glTF imports off. The drawn sky and direct light follow it every frame; the sky light refreshes at most every 0.25 s. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
 | Sun glow | Visual-only 1/theta^2 veiling glow around the sun disc, `atmosphere.sun_glow` (default 2, zero off), faded out 25 degrees from the sun; never part of lighting or the bake. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
 | Sky light | The scene `environment` block: enable flag, intensity, diffuse/specular scale and SH window applied to the atmosphere or a constant global source. Disabling it keeps the atmosphere sky visible. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
+| Lightmap set | A scene's baked lightmap layers as ASTC 4×4 HDR pages with the page rectangle of each lightmapped instance, keyed by entity index and source node; one VKLM file named by the scene's `lightmaps` block. The runtime does not sample it yet. | [ADR-088](adr/088-baked-lightmap-sets.md) |
+| Sun key | A lightmap layer holding sun bounce and sky light for one sun direction, without the sun's direct term, which stays at runtime. | [ADR-088](adr/088-baked-lightmap-sets.md) |
+| Lamp group | A lightmap layer holding a set of non-directional lights' direct and bounce light and surface emission, scaled at runtime by the group's intensity. | [ADR-088](adr/088-baked-lightmap-sets.md) |
 | Sky-view lookup / aerial perspective | Per-frame atmosphere radiance around the camera, sampled for the visible sky / in-scatter and transmittance between the camera and a surface, applied before fog. | [ADR-058](adr/058-revision-baked-sky-atmosphere.md) |
 | Cloud layer / cloud shadow map | One volumetric layer between two altitudes, traced at half resolution into a history composited over the sky / the layer's transmittance along the sun, sampled by every sun evaluation. | [ADR-074](adr/074-volumetric-cloud-layer.md) |
 | SH L2 | Nine spherical-harmonic coefficients per color channel describing normalized diffuse response (`E/pi`), with authored deringing. | [vkr_ibl_math.h](../renderer/src/vkr_ibl_math.h) |
