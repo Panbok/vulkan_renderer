@@ -15,6 +15,7 @@
 #include "hash_test.h"
 #include "heightfield_test.h"
 #include "io_test.h"
+#include "mesh_lightmap_uv_tests.h"
 #include "mesh_skin_tests.h"
 #include "physics_test.h"
 #include "player_animation_test.h"
@@ -122,6 +123,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_scene_animation_tests),
     VKR_TEST_SUITE(run_material_pbr_tests),
     VKR_TEST_SUITE(run_mesh_cooked_tests),
+    VKR_TEST_SUITE(run_mesh_lightmap_uv_tests),
     VKR_TEST_SUITE(run_filesystem_tests),
     VKR_TEST_SUITE(run_asset_path_tests),
     VKR_TEST_SUITE(run_path_io_tests),

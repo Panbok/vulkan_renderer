@@ -78,6 +78,17 @@ if(VKR_BUILD_TOOLS)
     add_subdirectory("${CMAKE_SOURCE_DIR}/vendor/meshoptimizer"
                      "${CMAKE_BINARY_DIR}/vendor/meshoptimizer" EXCLUDE_FROM_ALL)
     vkr_configure_cooker_dependencies(meshoptimizer)
+    # Lightmap UV unwrapping and chart packing for static meshes.
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/vendor/xatlas/source/xatlas/xatlas.cpp")
+        message(FATAL_ERROR "vendor/xatlas is missing. Run: "
+            "git submodule update --init vendor/xatlas")
+    endif()
+    add_library(vkr_xatlas STATIC
+        "${CMAKE_SOURCE_DIR}/vendor/xatlas/source/xatlas/xatlas.cpp")
+    target_include_directories(vkr_xatlas SYSTEM PUBLIC
+        "${CMAKE_SOURCE_DIR}/vendor/xatlas/source/xatlas")
+    target_compile_features(vkr_xatlas PRIVATE cxx_std_11)
+    vkr_configure_cooker_dependencies(vkr_xatlas)
 endif()
 add_library(vkr_mesh_codecs STATIC
     "${CMAKE_SOURCE_DIR}/vendor/meshoptimizer/src/indexcodec.cpp"

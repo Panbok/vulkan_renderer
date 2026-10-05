@@ -10,3 +10,6 @@
 [submodule "vendor/JoltPhysics"]
 	path = vendor/JoltPhysics
 	url = https://github.com/jrouwe/JoltPhysics.git
+[submodule "vendor/xatlas"]
+	path = vendor/xatlas
+	url = https://github.com/jpcy/xatlas.git

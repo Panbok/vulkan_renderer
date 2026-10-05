@@ -131,6 +131,7 @@ add_library(vkr_asset_cooking STATIC
     assets/vkr_scene_light_bake.c
     assets/vkr_mesh_deduplicate.c
     assets/vkr_meshoptimizer_bridge.cpp
+    assets/vkr_mesh_lightmap_uv.cpp
     assets/mesh_loader_gltf.c
     assets/vkr_gltf_material_conversion.c
     assets/cgltf_impl.c)
@@ -138,7 +139,7 @@ vkr_configure_library(vkr_asset_cooking)
 vkr_configure_cooker_target(vkr_asset_cooking)
 target_include_directories(vkr_asset_cooking PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${CMAKE_SOURCE_DIR}/vendor")
-target_link_libraries(vkr_asset_cooking PUBLIC vkr_asset_formats PRIVATE meshoptimizer vkr_image_decode vkr_image_write)
+target_link_libraries(vkr_asset_cooking PUBLIC vkr_asset_formats PRIVATE meshoptimizer vkr_xatlas vkr_image_decode vkr_image_write)
 target_compile_features(vkr_asset_cooking PRIVATE cxx_std_11)
 
 add_library(vkr_vkt_cooking STATIC
