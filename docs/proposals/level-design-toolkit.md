@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-04
+updated: 2026-10-05
 authority: proposal
 ---
 # Level design toolkit
@@ -38,9 +38,15 @@ are recorded in ADR-084 and ADR-085.
 - **Descriptor limits.** Properties never describe dynamic arrays
   ([vkr_type_desc.h](../../runtime/src/core/vkr_type_desc.h)), so lists such
   as spline points are child entities.
-- **Not present.** Brush vertex and edge edits, glTF export of a blockout,
-  Replace with mesh, movers, IO across containers, terrain holes, meshes
-  bent along a spline and linked prefabs. The
+- **Face grid.** A selected brush shows a grid on its faces; a patch of
+  cells pulls out into a new brush or pushes in as a recess
+  (`brush.patch`), and a corner, an edge or a grid line moves along its
+  face's normal or along the face (`brush.reshape`), which splits the brush
+  at a grid line. A move that would dent a brush is refused. ADR-084
+  records it; its follow-ups are below.
+- **Not present.** glTF export of a blockout, Replace with mesh, movers, IO
+  across containers, terrain holes, meshes bent along a spline and linked
+  prefabs. The
   [behavior proposal](entity-behavior-system.md#second-deliverable-connections-and-constrained-state-charts)
   plans connection assets that bind a typed event to an action on an entity.
 
@@ -57,11 +63,26 @@ are recorded in ADR-084 and ADR-085.
 
 ### Brush tools
 
-- **Vertex and edge moves** that keep a brush convex, by splitting it or
-  refusing the move.
 - **Export to glTF**, which hands a blockout to an artist.
 - **Replace with mesh**, which swaps a brush group for the finished model and
   keeps its brushes as collision only.
+
+### Face grid follow-ups
+
+The face grid's limits, each with its next step and the evidence that
+closes it. The first two change what a designer can build; the rest are
+comfort.
+
+| Limit | Next step | Evidence |
+|---|---|---|
+| A corner or outer edge pushed into the solid is refused, because the dented shape is not convex. | Build the dented solid from the brush's faces with the moved corners, then cut it along the face planes at its reflex edges until every piece is convex (at most eight pieces, else refuse), as one batch. | CPU test: a cube's top edge pushed 0.5 m inward gives non-overlapping convex pieces whose volumes sum to the dented solid's. |
+| A patch or a reshape replaces the brush with new entities, so its id, its components, scripts and IO connections, and references to it do not carry over. | Edit the faces in place when the result is one piece: set the moved planes, create the added faces and delete the vanished ones in one journal group. With several pieces the original keeps the first. | `scene_edit` test and a headless run: the brush keeps its id and an IO connection through a reshape, and `undo` restores the faces. |
+| A patch is one rectangle. | Ctrl+drag adds rectangles to the patch, pulled or pushed together in one batch, with adjacent ones merged; an inset (ProBuilder) shrinks a patch inside its face first. | Headless run: an L-shaped patch pulls into a wall with one `undo`. |
+| One corner, edge or grid line moves per drag. | Ctrl+click collects corners and edges and one drag moves them together; `brush.reshape` already takes eight points. | Headless run: two opposite top edges raised together make a gable. |
+| A bend is one ridge per grid line. | An arch or ramp operation raises consecutive grid lines along a curve in one batch. | CPU test: a 4 m wide top bent into a 1 m arch over four lines matches the arc's area within the grid step. |
+| Picking tolerances scale with distance (corners within 2.5% of it), so they vary with the field of view and orthographic views. | Measure in window pixels through the view projection: corners 8, edges 6 and grid lines 5 pixels. | Headless run: the same pixel offsets pick in perspective and top orthographic views. |
+| Light icons over a grid target take its press. | Give grid targets of the selected brush priority over icons, or fade icons while a brush is selected in Level Design. | Headless run with icons on: an edge under a light icon drags. |
+| No Metal run. | Run suite `brush` and a headless Level Design session on macOS. | macOS Debug suite and Release captures. |
 
 ### Gameplay
 

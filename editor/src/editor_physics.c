@@ -1,5 +1,7 @@
 #include "editor_physics.h"
+
 #include "editor_agent.h"
+#include "editor_brush_grid.h"
 #include "editor_internal.h"
 #include "editor_level.h"
 #include "editor_ops.h"
@@ -467,6 +469,14 @@ static uint32_t physics_population_lines(VkrEditorUi *editor,
 static void physics_level_tools(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 uint32_t capacity) {
+  /* The brush grid: edges, face grids, corners, the target and its
+     preview. */
+  const VkrEditorBrushGridLine *grid_lines = NULL;
+  const uint32_t grid_count = vkr_editor_brush_grid_lines(editor, &grid_lines);
+  for (uint32_t i = 0; i < grid_count; ++i) {
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, grid_lines[i].from,
+                 grid_lines[i].to, grid_lines[i].color, capacity);
+  }
   if (editor->face_handle_count) {
     /* The brush's edges, each face's arrow, the hot face's outline and
        where a drag would put it. */
@@ -653,6 +663,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
            : 0u) +
       (editor->terrain_tool && editor->terrain_hit_valid ? 1u : 0u) +
       (editor->face_handle_count ? 1u : 0u) +
+      vkr_editor_brush_grid_lines(editor, NULL) +
       (report && report->checked &&
                vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_LEVEL)
            ? 1u

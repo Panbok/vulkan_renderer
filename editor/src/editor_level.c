@@ -787,6 +787,18 @@ bool8_t vkr_editor_brush_pick(const VkrSampleUiFrame *frame, Vec3 origin,
   return found;
 }
 
+uint32_t vkr_editor_brush_world_planes(const VkrScene *scene, VkrEntityId brush,
+                                       VkrBrushPlane *out, uint32_t capacity) {
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  uint32_t count = 0u;
+  if (!vkr_scene_entity_alive(scene, brush) ||
+      !level_brush_planes(scene, brush, planes, &count) || count > capacity) {
+    return 0u;
+  }
+  MemCopy(out, planes, count * sizeof(*out));
+  return count;
+}
+
 uint32_t vkr_editor_brush_build(const VkrScene *scene, VkrEntityId brush,
                                 VkrBrushGeometry *scratch, VkrEntityId *faces) {
   VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];

@@ -1,5 +1,6 @@
 #include "editor_application.h"
 #include "editor_agent.h"
+#include "editor_brush_grid.h"
 #include "editor_content.h"
 #include "editor_install.h"
 #include "editor_internal.h"
@@ -319,6 +320,7 @@ static bool8_t editor_application_shutdown(void *state,
   editor->ui.agent = NULL;
   free(editor->ui.level_report);
   editor->ui.level_report = NULL;
+  vkr_editor_brush_grid_destroy(&editor->ui);
   /* A running game stops with the editor; Bakery cancels a package job. */
   vkr_editor_build_destroy(editor->ui.build);
   editor->ui.build = NULL;

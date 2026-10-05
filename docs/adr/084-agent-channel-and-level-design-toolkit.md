@@ -227,8 +227,10 @@ In the editor, the Create menu's Level group adds Brush Box, Brush Wedge,
 Brush Cylinder and Blockout Room at the placement point. Brush drawing (B,
 View > Draw brushes, Cmd `brush.draw`) takes the Scene's mouse and draws in
 two steps, as Chisel and Source 2 Hammer do: a left drag outlines the base,
-then the pointer raises the box from one step and a click creates it; Escape
-cancels the box, then ends drawing. The Scene's Snapping menu picks where the
+then the pointer raises the box from one step and a click creates and
+selects it; Escape cancels the box, then ends drawing. Between boxes the
+selected brush keeps its face handles, and a press on one drags that face
+instead of starting a box. The Scene's Snapping menu picks where the
 box starts and its steps. Surface starts it on the upward-facing collision
 surface under the pointer, so a brush drawn on another brush sits on top of
 it, and falls back to the grid plane. Grid draws on the grid plane. Both keep
@@ -250,18 +252,41 @@ derived face's material and texture settings from the face it copies
 | `brush.hollow` | Replaces a brush with walls of `thickness` around its inside |
 | `brush.carve` | Subtracts a `cutter` from `target`, or from every brush it touches, as non-overlapping convex pieces, at most one per cutter face; deletes the cutter unless `keep_cutter` |
 | `brush.merge` | Joins 2 to 8 brushes into one when their union is convex: the merged solid's volume must equal the sum of theirs |
+| `brush.patch` | Pulls a rectangle of a face's grid (`min` and `max` as `[u, v]` on the face's grid axes) out by `distance`, or pushes it in when negative. Pulled, it joins the brush when the union stays convex (a whole face stretches the brush) and is a new brush otherwise; pushed, it carves a recess or a hole. Every new face copies the face's material |
+| `brush.reshape` | Moves brush corners at `points` by the world `delta`: a corner, an edge's two ends, or with `split` {`point`, `normal`} a grid line's ends after cutting the brush along that plane. Each piece becomes the hull of its corners; refused when a moved corner would end inside its piece, a dent a convex brush cannot show |
 
 Carving keeps no boolean tree: pieces are ordinary brushes. Operations work
 on unscaled brushes, since a scaled brush's planes are not the planes the
 designer sees.
 
-A brush selected with the Select tool (Q) shows its edges and a handle on
-every face: an arrow out of the face center along its normal with a knob at
-the tip. A drag on a handle pushes or pulls that face in grid cells (1/16 m
-with Free snapping) and previews where it lands; the move tools keep their
-gizmo instead. Alt+click selects the brush face under the pointer instead of
-its object, which then shows its outline and handle alone, and Alt+Up or
-Alt+Down moves it 0.25 m out or in (1 m with Shift). The clip tool (View > Clip brushes,
+A brush selected with the Select tool (Q) shows its edges, its corners and,
+on each face turned toward the view, a grid on the editing grid's lines; a
+face wider than 24 cells doubles its grid step until it fits
+([editor_brush_grid.c](../../editor/src/editor_brush_grid.c)). The move
+tools keep their gizmo instead. Under the pointer, nearest kind first, the
+patch arrow, a corner, an edge, a grid line or a cell lights up and takes the
+press from object picking:
+
+- A drag across cells selects a patch, a rectangle of cells on one face; a
+  second press on the face within 0.4 s selects all of it, and Escape clears
+  it. The patch shows an arrow out of its center: dragging it out pulls the
+  patch (`brush.patch`), so a strip of a floor becomes a wall; dragging it in
+  pushes a recess or a hole through.
+- A drag on a corner or an edge moves it along the normal of the face it was
+  picked on, or along that face with Shift (`brush.reshape`).
+- A drag on a grid line splits the brush along it and moves the line the
+  same way, so a ridge or a valley bends the face into two brushes.
+
+Moves snap to the grid step, or 1/16 m with Free snapping. A drag previews
+its result in orange and refuses a dent in red, with the reason in the hint
+under the Scene. While boxes are drawn, cells start boxes and only corners,
+edges and grid lines take presses. Dents, kept brush identity and the other
+limits have next steps in the
+[Level design toolkit proposal](../proposals/level-design-toolkit.md#face-grid-follow-ups).
+Alt+click selects the brush face under
+the pointer instead of its object, which then shows its outline and a handle
+out of its center that pushes or pulls it, and Alt+Up or Alt+Down moves it
+0.25 m out or in (1 m with Shift). The clip tool (View > Clip brushes,
 Cmd `brush.clip_tool`) cuts the selected brush with the vertical plane
 through two clicks on the grid plane and keeps both pieces. All three submit
 the operations above through the agent queue, so they undo like agent work.
@@ -568,7 +593,8 @@ measurement put that at about 0.4 µs per brush (see Evidence). Brush
 collision follows the brush only after its transform rests, so a dragged
 brush collides at its old place until the drag ends. A rebuilt brush keeps
 drawing its previous mesh until the new geometry and materials settle, as a
-terrain does (level toolkit audit A1).
+terrain does (level toolkit audit A1); a brush without a mesh, such as a new
+one, takes its mesh at once and shows it as the uploads finish.
 
 ## Revisit when
 
@@ -673,3 +699,15 @@ material then).
   [Windows record](../proposals/windows-vulkan-verification.md) lists the
   fixes this needed and the open items. The socket and `vkr_mcp` remain
   unavailable on Windows.
+- Windows and native Vulkan, 2026-10-05 (RX 6700 XT, headless Release
+  editor, Bistro): `./build_test.bat` suite `brush` covers a cube's hull, a
+  raised edge (1.5 m³), a grid-line bend split into two 1.25 m³ pieces with
+  a new shared face, a refused dent, a corner off the brush, a pulled cell
+  (1 m³, no merge), a pushed recess (16 - 0.5 m³) and a whole pulled top
+  merged into one 32 m³ brush. Through `op`, a pulled cell made a new brush,
+  a pulled whole top merged, a push carved parts, a grid-line bend split a
+  brush in two, an edge raise reshaped one, and a dent was refused with its
+  reason. In Level Design's Scene a 4 x 2 x 4 m box showed its top and front
+  grids; a cell drag selected a 2 x 3 patch whose arrow pulled a new brush
+  up (`undo` removed it), a grid-line drag made a ridge, and an edge drag
+  raised the front top edge. No Metal run.

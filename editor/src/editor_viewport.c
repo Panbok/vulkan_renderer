@@ -1,4 +1,5 @@
 #include "editor_agent.h"
+#include "editor_brush_grid.h"
 #include "editor_internal.h"
 #include "editor_level.h"
 #include "editor_projects.h"
@@ -694,7 +695,9 @@ static float32_t brush_draw_base(const VkrEditorUi *editor,
 /* Brush drawing (ADR-084): while it is on,
    the Scene image takes the mouse from picking, a left drag outlines the
    base, then the pointer raises the box, as Chisel and Hammer draw, and a
-   click creates it through brush.box. The Snapping menu picks the plane and
+   click creates and selects it through brush.box. Between boxes the
+   selected brush keeps its face handles, and a press on one drags that face
+   instead of starting a box. The Snapping menu picks the plane and
    the steps: Surface starts on the solid under the pointer, Grid on the grid
    plane, both on grid crossings and in whole cells; Free draws on the grid
    plane in 1/16 m steps. Escape cancels a box, or turns drawing off. */
@@ -711,7 +714,8 @@ static void viewport_brush_draw(VkrEditorUi *editor,
   (void)vkr_ui_input_layer_register(
       ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
       (VkrUiRect){image.x, image.y, image.z, image.w});
-  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE) &&
+      !editor->face_dragging) {
     if (editor->brush_dragging || editor->brush_raising) {
       editor->brush_dragging = false_v;
       editor->brush_raising = false_v;
@@ -756,6 +760,12 @@ static void viewport_brush_draw(VkrEditorUi *editor,
   }
   Vec3 point = {0};
   if (!editor->brush_dragging) {
+    const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
+                        input_is_key_down(frame->input, KEY_RMENU);
+    if (editor->face_dragging || editor->face_handle_hot >= 0 || alt ||
+        vkr_editor_brush_grid_busy(editor)) {
+      return;
+    }
     if (ui->mouse_pressed && inside && editor->menu == VKR_EDITOR_MENU_NONE &&
         brush_plane_point(frame, mouse, brush_draw_base(editor, frame, mouse),
                           grid, &point)) {
@@ -856,7 +866,8 @@ static void viewport_brush_create(VkrEditorUi *editor,
   snprintf(line, sizeof(line),
            "{\"v\":1,\"id\":\"draw\",\"op\":\"brush.box\",\"args\":{"
            "\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
-           "\"role\":\"%s\",\"grid\":0,\"review\":false}}",
+           "\"role\":\"%s\",\"grid\":0,\"review\":false,"
+           "\"select\":true}}",
            Min(a.x, b.x), a.y, Min(a.z, b.z), Max(a.x, b.x),
            a.y + editor->brush_draw_height, Max(a.z, b.z), target,
            vkr_editor_brush_roles[editor->brush_role]);
@@ -1055,10 +1066,14 @@ static void viewport_face_tools(VkrEditorUi *editor,
   editor->face_handle_count = 0u;
   if (frame->scene_rendering_stopped || frame->mouse_captured ||
       editor->cmd_active || editor->menu != VKR_EDITOR_MENU_NONE ||
-      editor->brush_draw || editor->clip_tool ||
-      editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE) {
+      (editor->brush_draw &&
+       (editor->brush_dragging || editor->brush_raising)) ||
+      editor->clip_tool || editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE) {
     editor->face_dragging = false_v;
     editor->face_handle_hot = -1;
+    vkr_editor_brush_grid_update(editor, frame, NULL, VKR_ENTITY_ID_INVALID,
+                                 false_v, vec3_zero(), vec3_zero(), false_v,
+                                 false_v, true_v);
     return;
   }
   const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
@@ -1090,8 +1105,8 @@ static void viewport_face_tools(VkrEditorUi *editor,
   const bool8_t alive = scene && vkr_scene_entity_alive(scene, selected);
   const bool8_t face_selected =
       alive && vkr_scene_get_typed(scene, selected, &vkr_scene_brush_face_type);
-  /* A brush selected with the Select tool shows a handle on every face; the
-     transform tools keep their gizmo instead. */
+  /* A brush selected with the Select tool shows its grid; the transform
+     tools keep their gizmo instead. */
   const bool8_t brush_selected =
       alive && frame->view_state.gizmo_tool == VKR_GIZMO_MODE_NONE &&
       vkr_scene_get_typed(scene, selected, &vkr_scene_brush_type);
@@ -1101,13 +1116,15 @@ static void viewport_face_tools(VkrEditorUi *editor,
     viewport_face_handle_targets(
         editor, frame, scene,
         transform ? transform->parent : VKR_ENTITY_ID_INVALID, selected);
-  } else if (brush_selected) {
-    viewport_face_handle_targets(editor, frame, scene, selected,
-                                 VKR_ENTITY_ID_INVALID);
   }
   if (!alt || editor->face_dragging) {
     viewport_face_handles(editor, frame, origin, direction, has_ray, inside);
   }
+  /* While boxes are drawn, cells start boxes rather than patches. */
+  vkr_editor_brush_grid_update(
+      editor, frame, scene, brush_selected ? selected : VKR_ENTITY_ID_INVALID,
+      !editor->brush_draw, origin, direction, has_ray, inside,
+      alt || editor->face_handle_hot >= 0 || editor->face_dragging);
   if (!face_selected) {
     return;
   }
@@ -1333,7 +1350,16 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
                : "Click where the corridor starts. Esc stops.";
     break;
   default:
-    return;
+    hint = vkr_editor_brush_grid_hint(editor);
+    if (!hint) {
+      return;
+    }
+    break;
+  }
+  /* A grid target under the pointer speaks for itself while drawing. */
+  if (vkr_editor_scene_tool(editor) == VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW &&
+      !editor->brush_raising && vkr_editor_brush_grid_busy(editor)) {
+    hint = vkr_editor_brush_grid_hint(editor);
   }
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
@@ -1375,10 +1401,12 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
     editor->view_popup = VIEW_POPUP_NONE;
     return;
   }
-  viewport_brush_draw(editor, frame);
   viewport_clip_tool(editor, frame);
   viewport_path_tool(editor, frame);
+  /* Face handles find the one under the pointer before drawing reads it, so
+     a press on a handle drags the face instead of starting a box. */
   viewport_face_tools(editor, frame);
+  viewport_brush_draw(editor, frame);
   const ViewHeaderLayout layout = view_header_layout(editor, frame);
   const float32_t scale = ui->content_scale;
   if (frame->mouse_captured || editor->cmd_active ||

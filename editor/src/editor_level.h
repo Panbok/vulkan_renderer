@@ -91,6 +91,11 @@ bool8_t vkr_editor_brush_pick(const VkrSampleUiFrame *frame, Vec3 origin,
                               Vec3 direction, float32_t max_distance,
                               VkrEntityId *out_face);
 
+/* The world-space planes of `brush`'s faces, at most `capacity`, in the
+   order vkr_scene_brush_faces lists them; zero when it has more. */
+uint32_t vkr_editor_brush_world_planes(const VkrScene *scene, VkrEntityId brush,
+                                       VkrBrushPlane *out, uint32_t capacity);
+
 /* Builds `brush` in world space into `scratch` from its faces, whose
    entities `faces` (VKR_BRUSH_FACE_MAX) receives parallel to the polygons;
    returns the face count, or zero when the brush does not build. */

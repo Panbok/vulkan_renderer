@@ -472,6 +472,8 @@ typedef struct VkrEditorUi {
   VkrEntityId face_drag_face;
   float32_t face_drag_start;
   float32_t face_drag_distance;
+  /* Brush grid editing of the selected brush (editor_brush_grid.h). */
+  struct VkrEditorBrushGrid *brush_grid;
   /* Terrain sculpting (editor_terrain.h): the tool, its settings, the
      stroke in progress and the ground under the pointer. */
   bool8_t terrain_tool;
