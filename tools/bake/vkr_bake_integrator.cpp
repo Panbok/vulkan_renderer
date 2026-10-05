@@ -1435,8 +1435,9 @@ extern "C" bool8_t vkr_bake_integrator_trace(
       set_error(VKR_BAKE_INTEGRATOR_ERROR_NONFINITE_TRANSPORT, out_error);
       return false_v;
     }
-    radiance = add(radiance, mul(throughput,
-        mul(max0(surface.material.emissive), vkr_bake_bsdf_base_transmission(&bsdf, wo))));
+    if (!integrator->settings.exclude_emission)
+      radiance = add(radiance, mul(throughput,
+          mul(max0(surface.material.emissive), vkr_bake_bsdf_base_transmission(&bsdf, wo))));
     const bool8_t diffuse = diffuse_capable(surface.material);
     const bool8_t photon_map_active =
         integrator->settings.photon_map &&

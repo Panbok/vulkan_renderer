@@ -45,11 +45,26 @@ sun light reached closed rooms; volumes and lightmaps baked before then need
 a rebake, which `--check` does not report. The bake scene loader builds every
 solid or visual brush from its `brush_face` children as the runtime does
 ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with the face
-material or the dev grid, and keeps each entity's document id. Verified 2026-10-05 on a blockout made
+material or the dev grid, and keeps each entity's document id. It reads the
+`atmosphere`, `environment` and `subsurface` blocks at the top level of the
+document only; when the scene has no `atmosphere` or `environment` block of
+its own, the effective scene takes the component of the scene's own entities
+or else the World's, as runtime resolution does. An authored override of an
+entity the loader synthesizes from a top-level block, such as a block's
+Sky Atmosphere, has no document entity and fails the bake; edit the block
+instead. Verified 2026-10-05 on a blockout made
 through `vkr_mcp` (two rooms joined by a doorway, a sealed room, three lamps
 and the World sun): before this the effective scene held no entity and every
 bake of an editor-built level was empty; after it, the volume bake found 39
 valid probes in two regions and published.
+
+The volume holds one SH set per probe for each baked light layer
+([ADR-088](088-baked-lightmap-sets.md)), planned as for lightmaps
+([`vkr_bake_layers.h`](../../tools/bake/vkr_bake_layers.h)): in an atmosphere
+scene one layer per sun key, baked under that key's atmosphere with the key
+light and the sky, then one per static light group with the group's lights,
+where only the default group holds surface emission and, without a sun key,
+the sky. Caustic photons are emitted per layer from its own analytic lights.
 
 The CPU baker flattens the scene into caller-owned triangles and builds a
 deterministic, binned-SAH BVH. Scene creation discards exact zero-area triangles
@@ -84,12 +99,17 @@ based on [PBRT's stochastic progressive photon mapping treatment](https://pbr-bo
 
 ### Portable artifact and provenance
 
-`DVOL` v1 is a versioned, explicit little-endian byte format. It has a 112-byte
-header, 116-byte probe record, and 4-byte cell record. The header carries
-layout, dimensions, coordinate data, payload layout, and separate payload and
-header CRC32 values. Each probe stores a nonzero room region and the canonical
-`VkrShL2Packed` coefficients; each cell stores its valid region or zero. Native
-struct serialization is prohibited.
+`DVOL` v2 is a versioned, explicit little-endian byte format. It has a
+112-byte header, the layer table of 64-byte light-layer records
+([`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h)), one
+probe record per probe and a 4-byte cell record. The header carries layout,
+dimensions, the layer count, coordinate data, payload layout, and separate
+payload and header CRC32 values. Each probe stores a nonzero room region and
+one canonical `VkrShL2Packed` set per layer; each cell stores its valid region
+or zero. Native struct serialization is prohibited. Version 1 held one SH set
+of all light per probe; the loader refuses it and asks for a new bake, which
+the sun-shadow fix requires anyway. `vkr_bakery` verifies outputs with the
+runtime decoder.
 
 [`vkr_bakery bake diffuse`](../../tools/bakery/vkr_bakery_bake.c) writes an
 inspect manifest before baking, records the complete source dependency closure,
@@ -111,6 +131,14 @@ A scene's optional `diffuse_volume.path` is prepared on a worker and uploaded on
 the render thread under the existing resource finalization contract. The scene
 owns one immutable `8 × probe_count` RGBA32F texture and its lattice binding;
 replacement and scene reset retire the texture after its last completed GPU use.
+The scene also keeps every layer's SH and composes the texture as their
+weighted sum ([ADR-090](090-time-of-day.md)): the two sun keys nearest the
+current sun on its daily circle share weight one by angle
+(`vkr_light_layers_sun_weights`), and each lamp group weighs its light group's
+factor. When a weight moves by more than one percent, at most every 0.25
+seconds, the scene composes a new texture and releases the previous one
+(`vkr_scene_update_diffuse_volume`). Shaders read the composed texture as
+before.
 Texels 0 through 6 contain canonical SH vectors. Texel 7 stores probe region in
 `x` and lower-corner cell region in `y`, with zero marking an invalid cell.
 
@@ -130,7 +158,8 @@ cross-backend ABI validation.
 ## Consequences
 
 Static geometry, material boundary policy, and baked lighting changes require a
-rebake. Invalid coverage preserves the old global/probe diffuse path, which can
+rebake. A volume costs one SH set per probe per layer: ten layers on the
+blockout baked in 14.6 s instead of 5.2 s for one. Invalid coverage preserves the old global/probe diffuse path, which can
 be less local but cannot claim a room proof. The volume does not supply dynamic
 indirect lighting, sharp caustic maps, or runtime glass transport.
 
@@ -171,6 +200,15 @@ On Metal, an all-invalid volume and a scene without a volume produce byte-identi
 HDR payloads (SHA-256
 `d130dbb29986f49ef80044a67dbdad3f0679a82c64531b7f360e0dd1754018f7`).
 `bake diffuse --check` detects stale source files, corrupt output, and source/output aliasing.
+
+The ADR-088 blockout (atmosphere celestial pole set to (0, 0.8, −0.6) so its
+sun sets) baked ten layers, eight sun keys and the `default` and `warm` lamp
+groups, at 1.4 to 1.6 s each. Before root-scoped block lookup the bake read
+the World entity's atmosphere component instead of the scene's block and
+turned the keys about the default pole. In the editor with every lamp group
+at zero and manual exposure, the closed room shows daylight bounce at noon and
+is black at midnight. `test_light_layer_sun_weights` and
+`test_diffuse_volume_layers_round_trip` cover the weights and the codec.
 
 Native Vulkan execution is unavailable; Metal evidence and compiled reflection
 do not establish Vulkan parity. These checks establish the implemented transport,

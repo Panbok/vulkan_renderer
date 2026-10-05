@@ -2460,6 +2460,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   if (render_scene) {
     (void)vkr_scene_resolve_world(render_scene);
     vkr_scene_sync_sun(render_scene, delta);
+    /* The volume's sun keys and lamp groups follow the turned sun and the
+       light group factors (ADR-090). */
+    vkr_scene_update_diffuse_volume(render_scene, &application->assets, delta);
     (void)vkr_world_resources_prepare_scene_atmosphere(
         &application->assets, &application->assets.world_resources,
         render_scene);

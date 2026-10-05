@@ -656,7 +656,9 @@ vkr_internal bool8_t vkr_project_append_created(VkrProjectJob *job,
    document entities and its overlay's created entities after the scene's
    own. */
 vkr_internal bool8_t vkr_project_append_world(VkrProjectJob *job,
-                                              VkrBakeryJson *entities) {
+                                              VkrBakeryJson *entities,
+                                              uint32_t *out_world_first,
+                                              uint32_t *out_world_end) {
   Arena *arena = job->arena;
   char document[VKR_PROJECT_PATH];
   char overlay_path[VKR_PROJECT_PATH];
@@ -684,6 +686,8 @@ vkr_internal bool8_t vkr_project_append_world(VkrProjectJob *job,
       ++world_count;
     }
   }
+  *out_world_first = first;
+  *out_world_end = first + world_count;
   if (vkr_bakery_is_file(overlay_path)) {
     VkrBakeryJson *overlay =
         vkr_project_load_json(job, overlay_path, VKR_PROJECT_MAX_JSON_BYTES);
@@ -692,6 +696,67 @@ vkr_internal bool8_t vkr_project_append_world(VkrProjectJob *job,
         vkr_project_append_created(job, overlay, entities, first, world_count));
   }
   return true_v;
+}
+
+/* An environment component in its top-level block form: a constant source
+   names its radiance `constant`. */
+vkr_internal VkrBakeryJson *
+vkr_project_environment_block(VkrProjectJob *job,
+                              const VkrBakeryJson *component) {
+  VkrBakeryJson *block = vkr_bakery_json_clone(job->arena, component);
+  if (vkr_bakery_json_is_string(vkr_bakery_json_get(component, "source"),
+                                "constant")) {
+    const VkrBakeryJson *radiance =
+        vkr_bakery_json_get(component, "constant_radiance");
+    if (radiance) {
+      vkr_bakery_json_set(job->arena, block, "constant",
+                          vkr_bakery_json_clone(job->arena, radiance));
+    }
+  }
+  vkr_bakery_json_remove(block, "source");
+  vkr_bakery_json_remove(block, "constant_radiance");
+  return block;
+}
+
+/* The world singletons the bakers read as top-level blocks resolve as the
+   runtime resolves them (ADR-076): the scene's own block, else its own
+   entities' component (document and overlay-created ones), else the World's
+   entities' component. */
+vkr_internal void vkr_project_lift_world_blocks(VkrProjectJob *job,
+                                                VkrBakeryJson *runtime,
+                                                uint32_t world_first,
+                                                uint32_t world_end) {
+  static const char *const keys[] = {"atmosphere", "environment"};
+  const VkrBakeryJson *entities = vkr_bakery_json_get(runtime, "entities");
+  for (uint32_t k = 0u; k < ArrayCount(keys); ++k) {
+    if (vkr_bakery_json_get(runtime, keys[k])) {
+      continue;
+    }
+    const VkrBakeryJson *own = NULL;
+    const VkrBakeryJson *world = NULL;
+    uint32_t index = 0u;
+    for (const VkrBakeryJson *entity = entities ? entities->first : NULL;
+         entity; entity = entity->next, ++index) {
+      const VkrBakeryJson *value = vkr_bakery_json_get(
+          vkr_bakery_json_get(entity, "components"), keys[k]);
+      if (!value || value->type != VKR_BAKERY_JSON_OBJECT) {
+        continue;
+      }
+      const bool8_t in_world = index >= world_first && index < world_end;
+      if (!in_world && !own) {
+        own = value;
+      } else if (in_world && !world) {
+        world = value;
+      }
+    }
+    const VkrBakeryJson *chosen = own ? own : world;
+    if (!chosen) {
+      continue;
+    }
+    vkr_bakery_json_set(job->arena, runtime, keys[k],
+                        k == 1u ? vkr_project_environment_block(job, chosen)
+                                : vkr_bakery_json_clone(job->arena, chosen));
+  }
 }
 
 VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
@@ -716,12 +781,15 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
       vkr_bakery_json_set(arena, runtime, "entities", entities);
     }
     const uint32_t before = entities->count;
-    if (!vkr_project_append_world(job, entities)) {
+    uint32_t world_first = 0u;
+    uint32_t world_end = 0u;
+    if (!vkr_project_append_world(job, entities, &world_first, &world_end)) {
       return NULL;
     }
     if (entities->count == before) {
       return result;
     }
+    vkr_project_lift_world_blocks(job, runtime, world_first, world_end);
     char id[37];
     vkr_project_uuid4(id);
     char bake_root[VKR_PROJECT_PATH];
@@ -834,10 +902,13 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
   /* The World and the overlay's created entities follow the document's
      entities and light anchors, as the runtime adds them. */
   const uint32_t document_count = count;
-  if (!vkr_project_append_world(job, entities) ||
+  uint32_t world_first = 0u;
+  uint32_t world_end = 0u;
+  if (!vkr_project_append_world(job, entities, &world_first, &world_end) ||
       !vkr_project_append_created(job, journal, entities, 0u, document_count)) {
     return NULL;
   }
+  vkr_project_lift_world_blocks(job, runtime, world_first, world_end);
   const char *runtime_path =
       vkr_project_printf(job, "%s/scene.json", bake_root);
   if (!vkr_project_atomic_json(job, runtime_path, runtime)) {

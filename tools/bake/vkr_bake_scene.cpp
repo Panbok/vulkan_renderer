@@ -392,9 +392,9 @@ bool parse_light_baking(const VkrJsonReader *object, VkrBakeSceneLight *light,
     }
   }
   if (!read_string(object, "light_group", &text) || text.empty()) {
-    text = VKR_LIGHTMAP_DEFAULT_GROUP;
+    text = VKR_LIGHT_GROUP_DEFAULT;
   }
-  if (!vkr_lightmap_group_name_valid(text.data(), text.size())) {
+  if (!vkr_light_group_name_valid(text.data(), text.size())) {
     return false;
   }
   std::copy(text.begin(), text.end(), light->group);
@@ -681,7 +681,7 @@ bool parse_environment(const std::vector<uint8_t> &bytes,
                        VkrBakeSceneEnvironment *out) {
   VkrJsonReader root = vkr_json_reader_create(bytes.data(), bytes.size());
   VkrJsonReader reader = root;
-  const bool has_block = vkr_json_find_field(&reader, "environment");
+  const bool has_block = vkr_json_find_root_field(&reader, "environment");
   if (has_block && !parse_null(&reader)) {
     VkrJsonReader object = {};
     if (!vkr_json_enter_object(&reader, &object)) {
@@ -729,7 +729,7 @@ bool parse_environment(const std::vector<uint8_t> &bytes,
 
 bool parse_subsurface(const std::vector<uint8_t> &bytes, VkrBakeScene *scene) {
   VkrJsonReader reader = vkr_json_reader_create(bytes.data(), bytes.size());
-  if (!vkr_json_find_field(&reader, "subsurface") || parse_null(&reader))
+  if (!vkr_json_find_root_field(&reader, "subsurface") || parse_null(&reader))
     return true;
   VkrJsonReader object = {};
   if (!vkr_json_enter_object(&reader, &object))
@@ -764,7 +764,7 @@ bool parse_atmosphere(const std::vector<uint8_t> &bytes,
   out->enabled = false_v;
   VkrJsonReader root = vkr_json_reader_create(bytes.data(), bytes.size());
   VkrJsonReader reader = root;
-  if (!vkr_json_find_field(&reader, "atmosphere") || parse_null(&reader))
+  if (!vkr_json_find_root_field(&reader, "atmosphere") || parse_null(&reader))
     return true;
   VkrJsonReader object = {};
   if (!vkr_json_enter_object(&reader, &object))
@@ -1056,7 +1056,7 @@ bool8_t append_mesh_light(void *user, const VkrBakeMeshLight *source) {
       light.casts_shadow = true_v;
     else
       std::snprintf(light.group, sizeof(light.group), "%s",
-                    VKR_LIGHTMAP_DEFAULT_GROUP);
+                    VKR_LIGHT_GROUP_DEFAULT);
     context->scene->lights.push_back(light);
     return true_v;
   } catch (const std::bad_alloc &) {

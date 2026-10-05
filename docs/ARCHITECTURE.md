@@ -1425,8 +1425,6 @@ These are limits of current code or retained acceptance, not scheduled promises:
   and package, but no renderer samples them, the desktop pipeline ignores
   light mobility, and hosts without Metal ray tracing cannot bake them; see
   [ADR-088](adr/088-baked-lightmap-sets.md).
-- The time of day turns the sun, but baked diffuse volumes keep the authored
-  sun's bounce; see [ADR-090](adr/090-time-of-day.md).
 - Charlie sheen is implemented below clearcoat in runtime and offline lighting.
   Its two-component rectangle fit retains measured errors for dim tilted lights;
   [ADR-063](adr/063-charlie-sheen.md) records those approximation limits and the

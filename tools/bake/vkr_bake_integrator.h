@@ -86,6 +86,9 @@ typedef struct VkrBakeIntegratorSettings {
   /* A grid-ready map adds analytic-light caustic density after thick
      eta-changing glass or metal chains. Null disables photon lookup. */
   const VkrBakePhotonMap *photon_map;
+  /* Leaves surface emission out, for a baked light layer that does not hold
+     it (ADR-088). */
+  bool8_t exclude_emission;
 } VkrBakeIntegratorSettings;
 
 /* Prepared once before workers begin. It owns no storage and performs all

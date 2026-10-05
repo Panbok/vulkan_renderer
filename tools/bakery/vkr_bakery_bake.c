@@ -1,5 +1,6 @@
 #include "vkr_bakery_bake.h"
 
+#include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
@@ -30,11 +31,6 @@
  * `vkr_bakery tool <name>` children of this process. */
 
 #define VKR_BAKE_VERSION 1
-#define VKR_BAKE_DVOL_MAGIC 0x4C4F5644u
-#define VKR_BAKE_DVOL_ENDIAN 0x01020304u
-#define VKR_BAKE_DVOL_HEADER_BYTES 112u
-#define VKR_BAKE_DVOL_PROBE_BYTES 116u
-#define VKR_BAKE_DVOL_CELL_BYTES 4u
 #define VKR_BAKE_DIAGNOSTIC_BYTES 4096u
 #define VKR_BAKE_MAX_JSON_BYTES (256ull * 1024ull * 1024ull)
 #define VKR_BAKE_PATH VKR_BAKERY_PATH_CAPACITY
@@ -683,18 +679,8 @@ vkr_internal bool8_t vkr_bake_protect(VkrBake *bake,
   return true_v;
 }
 
-vkr_internal uint32_t vkr_bake_u32(const uint8_t *data, uint64_t offset) {
-  uint32_t value = 0u;
-  MemCopy(&value, data + offset, 4u);
-  return value;
-}
-
-vkr_internal uint64_t vkr_bake_u64(const uint8_t *data, uint64_t offset) {
-  uint64_t value = 0u;
-  MemCopy(&value, data + offset, 8u);
-  return value;
-}
-
+/* Decodes a DVOL file with the runtime's validator and records its shape and
+   digest. */
 vkr_internal VkrBakeryJson *vkr_bake_verify_dvol(VkrBake *bake,
                                                  const char *path) {
   Arena *arena = bake->arena;
@@ -705,65 +691,12 @@ vkr_internal VkrBakeryJson *vkr_bake_verify_dvol(VkrBake *bake,
     return NULL;
   }
   VkrBakeryJson *result = NULL;
-  const char *error = NULL;
-  uint32_t dimensions[3] = {0u, 0u, 0u};
-  float32_t origin[3];
-  float32_t spacing[3];
-  if (length < VKR_BAKE_DVOL_HEADER_BYTES) {
-    error = "DVOL output is shorter than its v1 header";
-    goto cleanup;
-  }
-  if (vkr_bake_u32(data, 0u) != VKR_BAKE_DVOL_MAGIC ||
-      vkr_bake_u32(data, 4u) != VKR_BAKE_VERSION ||
-      vkr_bake_u32(data, 8u) != VKR_BAKE_DVOL_ENDIAN ||
-      vkr_bake_u32(data, 12u) != VKR_BAKE_DVOL_HEADER_BYTES ||
-      vkr_bake_u64(data, 16u) != length || vkr_bake_u32(data, 44u) != 0u ||
-      vkr_bake_u32(data, 104u) != 0u || vkr_bake_u32(data, 108u) != 0u) {
-    error = "DVOL output has an invalid v1 header";
-    goto cleanup;
-  }
-  for (uint32_t i = 0u; i < 3u; ++i) {
-    dimensions[i] = vkr_bake_u32(data, 24u + i * 4u);
-    if (dimensions[i] < 2u || dimensions[i] > 256u) {
-      error = "DVOL output has invalid dimensions";
-      goto cleanup;
-    }
-  }
-  const uint64_t probes =
-      (uint64_t)dimensions[0] * dimensions[1] * dimensions[2];
-  const uint64_t cells = (uint64_t)(dimensions[0] - 1u) * (dimensions[1] - 1u) *
-                         (dimensions[2] - 1u);
-  const uint64_t cell_offset =
-      VKR_BAKE_DVOL_HEADER_BYTES + probes * VKR_BAKE_DVOL_PROBE_BYTES;
-  if (probes > 256u || vkr_bake_u32(data, 36u) != probes ||
-      vkr_bake_u32(data, 40u) != cells ||
-      vkr_bake_u64(data, 72u) != VKR_BAKE_DVOL_HEADER_BYTES ||
-      vkr_bake_u64(data, 80u) != cell_offset ||
-      vkr_bake_u32(data, 88u) != VKR_BAKE_DVOL_PROBE_BYTES ||
-      vkr_bake_u32(data, 92u) != VKR_BAKE_DVOL_CELL_BYTES ||
-      length != cell_offset + cells * VKR_BAKE_DVOL_CELL_BYTES) {
-    error = "DVOL output layout does not match its header";
-    goto cleanup;
-  }
-  MemCopy(origin, data + 48u, sizeof(origin));
-  MemCopy(spacing, data + 60u, sizeof(spacing));
-  for (uint32_t i = 0u; i < 3u; ++i) {
-    if (!isfinite(origin[i]) || !isfinite(spacing[i]) || !(spacing[i] > 0.0f)) {
-      error = "DVOL output has invalid volume coordinates";
-      goto cleanup;
-    }
-  }
-  uint8_t header[VKR_BAKE_DVOL_HEADER_BYTES];
-  MemCopy(header, data, sizeof(header));
-  MemZero(header + 100u, 4u);
-  if (vkr_bake_u32(data, 96u) !=
-          vkr_crc32(data + VKR_BAKE_DVOL_HEADER_BYTES,
-                    length - VKR_BAKE_DVOL_HEADER_BYTES) ||
-      vkr_bake_u32(data, 100u) != vkr_crc32(header, sizeof(header))) {
-    error = "DVOL output checksum mismatch";
-    goto cleanup;
-  }
+  VkrDiffuseVolume volume = {0};
   char digest[72];
+  if (!vkr_diffuse_volume_decode(data, length, arena, &volume)) {
+    vkr_bake_fail(bake, "DVOL output is invalid: %s", path);
+    goto cleanup;
+  }
   if (!vkr_bake_digest(bake, path, digest)) {
     goto cleanup;
   }
@@ -771,7 +704,7 @@ vkr_internal VkrBakeryJson *vkr_bake_verify_dvol(VkrBake *bake,
   vkr_bakery_json_set(arena, result, "format",
                       vkr_bakery_json_cstr(arena, "DVOL"));
   vkr_bakery_json_set(arena, result, "version",
-                      vkr_bakery_json_int(arena, VKR_BAKE_VERSION));
+                      vkr_bakery_json_int(arena, VKR_DIFFUSE_VOLUME_VERSION));
   vkr_bakery_json_set(arena, result, "bytes",
                       vkr_bakery_json_int(arena, (int64_t)length));
   vkr_bakery_json_set(arena, result, "sha256",
@@ -781,20 +714,21 @@ vkr_internal VkrBakeryJson *vkr_bake_verify_dvol(VkrBake *bake,
   VkrBakeryJson *spacing_list = vkr_bakery_json_array(arena);
   for (uint32_t i = 0u; i < 3u; ++i) {
     vkr_bakery_json_append(dimension_list,
-                           vkr_bakery_json_int(arena, dimensions[i]));
-    vkr_bakery_json_append(origin_list,
-                           vkr_bakery_json_float(arena, (float64_t)origin[i]));
-    vkr_bakery_json_append(spacing_list,
-                           vkr_bakery_json_float(arena, (float64_t)spacing[i]));
+                           vkr_bakery_json_int(arena, volume.dimensions[i]));
+    vkr_bakery_json_append(
+        origin_list,
+        vkr_bakery_json_float(arena, (float64_t)volume.origin.elements[i]));
+    vkr_bakery_json_append(
+        spacing_list,
+        vkr_bakery_json_float(arena, (float64_t)volume.spacing.elements[i]));
   }
   vkr_bakery_json_set(arena, result, "dimensions", dimension_list);
   vkr_bakery_json_set(arena, result, "origin", origin_list);
   vkr_bakery_json_set(arena, result, "spacing", spacing_list);
+  vkr_bakery_json_set(arena, result, "layers",
+                      vkr_bakery_json_int(arena, volume.layer_count));
 cleanup:
   free(data);
-  if (error) {
-    vkr_bake_fail(bake, "%s", error);
-  }
   return result;
 }
 

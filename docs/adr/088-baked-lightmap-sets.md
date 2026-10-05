@@ -70,7 +70,11 @@ UVs, one triangle per texel.
 ### Layers
 
 A layer names its lights and whether it adds the sky, surface emission and the
-lights' direct term at the texel:
+lights' direct term at the texel. Lightmap and diffuse-volume bakes plan the
+same layers ([`vkr_bake_layers.h`](../../tools/bake/vkr_bake_layers.h),
+[ADR-054](054-baked-diffuse-volumes.md)), and both assets store them as the
+64-byte records of
+[`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h):
 
 | Layer | Lights | Sky | Emission | Direct at texel |
 |---|---|---|---|---|
@@ -98,8 +102,8 @@ Point and rectangle lights carry `mobility`, `"static"` (the default) or
 `"dynamic"`, and `light_group`, a name of at most 31 letters, digits, `_` or
 `-`; an empty or absent name is the group `default`
 ([`vkr_scene_system.h`](../../runtime/src/renderer/systems/vkr_scene_system.h),
-`vkr_lightmap_group_name_valid` in
-[`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h)). Scene
+`vkr_light_group_name_valid` in
+[`vkr_light_layers.h`](../../runtime/src/assets/vkr_light_layers.h)). Scene
 documents, the editor overlay (`point_mobility`, `point_group`,
 `rectangle_mobility`, `rectangle_group`; older overlays default them), the
 Details panel's Baking heading and `vkr_component_set` carry them, and the
@@ -111,7 +115,7 @@ included. Each distinct group among the enabled static lights bakes into one
 lamp layer: lamp group 0 is `default`, which always exists and also holds
 surface emission and, without a sun key, the sky; the other groups follow in
 name order. A scene whose static lights name more than
-`VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS` (4) groups, `default` included, fails to
+`VKR_LIGHT_LAYER_MAX_LAMP_GROUPS` (4) groups, `default` included, fails to
 bake. The runtime will scale each group's layer by the group's factor
 ([ADR-090](090-time-of-day.md)), which the desktop pipeline already applies
 to the group's lights; a dynamic light is the choice for a light that moves or
@@ -157,8 +161,9 @@ profile at effort 10.
 ### VKLM file
 
 [`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h) defines
-VKLM v3: a 128-byte header, the layer table (64-byte records: kind, number,
-sun direction and, for a lamp group, its group name), the instance table and,
+VKLM v3: a 128-byte header, the layer table (64-byte light-layer records:
+kind, number, sun direction and, for a lamp group, its group name), the
+instance table and,
 aligned to 256 bytes, one page image per page and layer,
 page-major. Every scalar is little-endian. An instance carries its entity's
 document id (zero when the entity has none), the entity's index in the baked

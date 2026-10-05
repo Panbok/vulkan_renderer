@@ -117,7 +117,7 @@ _Static_assert(sizeof(VkrLightMobility) == sizeof(uint32_t),
 /* A group name the validators accept, or the reason it is not. */
 static bool8_t scene_light_baking_validate(const char *group, char *error,
                                            uint32_t capacity) {
-  if (!vkr_lightmap_group_name_valid(group, strlen(group))) {
+  if (!vkr_light_group_name_valid(group, strlen(group))) {
     snprintf(error, capacity,
              "Name light groups with letters, digits, '_' or '-'.");
     return false_v;
@@ -1759,7 +1759,7 @@ static bool8_t time_of_day_validate(const void *value, char *error,
   String8 name = {0};
   uint32_t cursor = 0u;
   while (vkr_scene_night_group_next(time->night_groups, &cursor, &name)) {
-    if (!vkr_lightmap_group_name_valid((const char *)name.str, name.length)) {
+    if (!vkr_light_group_name_valid((const char *)name.str, name.length)) {
       snprintf(error, capacity,
                "Night groups are light group names separated by commas.");
       return false_v;

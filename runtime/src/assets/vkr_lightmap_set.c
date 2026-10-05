@@ -32,9 +32,6 @@ _Static_assert(sizeof(float32_t) == 4u, "VKLM requires 32-bit float32_t");
 /* Bytes 92 to 127 are reserved and zero. */
 #define VKR_LIGHTMAP_SET_H_RESERVED 92u
 
-/* Unit-length tolerance for a sun key's direction. */
-#define VKR_LIGHTMAP_SET_UNIT_TOLERANCE 1.0e-3f
-
 typedef struct VkrLightmapSetLayout {
   uint64_t instance_offset;
   uint64_t payload_offset;
@@ -78,7 +75,7 @@ static bool8_t vkr_lightmap_set_compute_layout(uint32_t page_size,
       !vkr_checked_add_u64(tables_end,
                            VKR_LIGHTMAP_SET_HEADER_BYTES +
                                (uint64_t)layer_count *
-                                   VKR_LIGHTMAP_SET_LAYER_BYTES,
+                                   VKR_LIGHT_LAYER_RECORD_BYTES,
                            &tables_end) ||
       !vkr_checked_mul_u64(vkr_lightmap_set_page_bytes(page_size),
                            (uint64_t)page_count * layer_count,
@@ -92,55 +89,11 @@ static bool8_t vkr_lightmap_set_compute_layout(uint32_t page_size,
     return false_v;
   }
   out->instance_offset = VKR_LIGHTMAP_SET_HEADER_BYTES +
-                         (uint64_t)layer_count * VKR_LIGHTMAP_SET_LAYER_BYTES;
+                         (uint64_t)layer_count * VKR_LIGHT_LAYER_RECORD_BYTES;
   out->payload_offset = payload_offset;
   out->payload_bytes = payload_bytes;
   out->file_size = file_size;
   return true_v;
-}
-
-bool8_t vkr_lightmap_group_name_valid(const char *name, uint64_t length) {
-  if (!name || length >= VKR_LIGHTMAP_GROUP_NAME_BYTES) {
-    return false_v;
-  }
-  for (uint64_t i = 0u; i < length; ++i) {
-    const char c = name[i];
-    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-          (c >= '0' && c <= '9') || c == '_' || c == '-')) {
-      return false_v;
-    }
-  }
-  return true_v;
-}
-
-/* The name's length when it is terminated within the field, or the field
-   size when it is not. */
-static uint64_t vkr_lightmap_set_name_length(const char *name) {
-  uint64_t length = 0u;
-  while (length < VKR_LIGHTMAP_GROUP_NAME_BYTES && name[length] != '\0') {
-    ++length;
-  }
-  return length;
-}
-
-static bool8_t vkr_lightmap_set_layer_valid(const VkrLightmapLayer *layer) {
-  const Vec3 d = layer->sun_direction;
-  if (!isfinite(d.x) || !isfinite(d.y) || !isfinite(d.z)) {
-    return false_v;
-  }
-  const uint64_t name_length = vkr_lightmap_set_name_length(layer->name);
-  if (!vkr_lightmap_group_name_valid(layer->name, name_length)) {
-    return false_v;
-  }
-  if (layer->kind == VKR_LIGHTMAP_LAYER_SUN_KEY) {
-    const float32_t length = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
-    return name_length == 0u &&
-           fabsf(length - 1.0f) <= VKR_LIGHTMAP_SET_UNIT_TOLERANCE;
-  }
-  if (layer->kind == VKR_LIGHTMAP_LAYER_LAMP_GROUP) {
-    return name_length != 0u && d.x == 0.0f && d.y == 0.0f && d.z == 0.0f;
-  }
-  return false_v;
 }
 
 static bool8_t vkr_lightmap_set_instance_valid(const VkrLightmapSet *set,
@@ -167,32 +120,8 @@ static bool8_t vkr_lightmap_set_tables_valid(const VkrLightmapSet *set) {
       (set->instance_count != 0u && !set->instances)) {
     return false_v;
   }
-  for (uint32_t i = 0u; i < set->layer_count; ++i) {
-    const VkrLightmapLayer *layer = &set->layers[i];
-    if (!vkr_lightmap_set_layer_valid(layer)) {
-      return false_v;
-    }
-    const uint64_t name_length = vkr_lightmap_set_name_length(layer->name);
-    uint32_t lamp_groups = 0u;
-    for (uint32_t j = 0u; j < i; ++j) {
-      const VkrLightmapLayer *other = &set->layers[j];
-      if (other->kind != layer->kind) {
-        continue;
-      }
-      /* Sun keys have no name; lamp groups are found by theirs. */
-      const bool8_t same_name =
-          vkr_lightmap_set_name_length(other->name) == name_length &&
-          MemCompare(other->name, layer->name, name_length) == 0;
-      if (other->index == layer->index ||
-          (layer->kind == VKR_LIGHTMAP_LAYER_LAMP_GROUP && same_name)) {
-        return false_v;
-      }
-      lamp_groups += layer->kind == VKR_LIGHTMAP_LAYER_LAMP_GROUP;
-    }
-    if (set->layers[i].kind == VKR_LIGHTMAP_LAYER_LAMP_GROUP &&
-        lamp_groups >= VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS) {
-      return false_v;
-    }
+  if (!vkr_light_layers_valid(set->layers, set->layer_count)) {
+    return false_v;
   }
   for (uint32_t i = 0u; i < set->instance_count; ++i) {
     if (!vkr_lightmap_set_instance_valid(set, &set->instances[i])) {
@@ -220,19 +149,6 @@ bool8_t vkr_lightmap_set_layout(const VkrLightmapSet *set,
   *out_payload_offset = layout.payload_offset;
   *out_file_size = layout.file_size;
   return true_v;
-}
-
-static void vkr_lightmap_set_write_layer(uint8_t *dst,
-                                         const VkrLightmapLayer *layer) {
-  vkr_store_le_u32(dst + 0u, layer->kind);
-  vkr_store_le_u32(dst + 4u, layer->index);
-  vkr_store_le_f32(dst + 8u, layer->sun_direction.x);
-  vkr_store_le_f32(dst + 12u, layer->sun_direction.y);
-  vkr_store_le_f32(dst + 16u, layer->sun_direction.z);
-  /* Bytes 20 to 31 are reserved and zero; the name fills bytes 32 to 63,
-     zero-padded. */
-  const uint64_t length = vkr_lightmap_set_name_length(layer->name);
-  MemCopy(dst + 32u, layer->name, length);
 }
 
 static void vkr_lightmap_set_write_instance(uint8_t *dst,
@@ -263,8 +179,8 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
 
   uint8_t *tables = out_prefix + VKR_LIGHTMAP_SET_HEADER_BYTES;
   for (uint32_t i = 0u; i < set->layer_count; ++i) {
-    vkr_lightmap_set_write_layer(
-        tables + (uint64_t)i * VKR_LIGHTMAP_SET_LAYER_BYTES, &set->layers[i]);
+    vkr_light_layer_write(tables + (uint64_t)i * VKR_LIGHT_LAYER_RECORD_BYTES,
+                          &set->layers[i]);
   }
   uint8_t *instances = out_prefix + layout.instance_offset;
   for (uint32_t i = 0u; i < set->instance_count; ++i) {
@@ -384,8 +300,8 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     return false_v;
   }
 
-  VkrLightmapLayer *layers = (VkrLightmapLayer *)arena_alloc(
-      arena, (uint64_t)set.layer_count * sizeof(VkrLightmapLayer),
+  VkrLightLayer *layers = (VkrLightLayer *)arena_alloc(
+      arena, (uint64_t)set.layer_count * sizeof(VkrLightLayer),
       ARENA_MEMORY_TAG_ARRAY);
   VkrLightmapInstance *instances = NULL;
   if (set.instance_count != 0u) {
@@ -397,30 +313,9 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     return false_v;
   }
   for (uint32_t i = 0u; i < set.layer_count; ++i) {
-    const uint8_t *src = tables + (uint64_t)i * VKR_LIGHTMAP_SET_LAYER_BYTES;
-    layers[i] = (VkrLightmapLayer){
-        .kind = vkr_load_le_u32(src + 0u),
-        .index = vkr_load_le_u32(src + 4u),
-        .sun_direction =
-            vec3_new(vkr_load_le_f32(src + 8u), vkr_load_le_f32(src + 12u),
-                     vkr_load_le_f32(src + 16u)),
-    };
-    for (uint32_t offset = 20u; offset < 32u; ++offset) {
-      if (src[offset] != 0u) {
-        return false_v;
-      }
-    }
-    /* A name ends at its first zero, and its padding is zero. */
-    MemCopy(layers[i].name, src + 32u, VKR_LIGHTMAP_GROUP_NAME_BYTES);
-    const uint64_t name_length = vkr_lightmap_set_name_length(layers[i].name);
-    if (name_length == VKR_LIGHTMAP_GROUP_NAME_BYTES) {
+    if (!vkr_light_layer_read(
+            tables + (uint64_t)i * VKR_LIGHT_LAYER_RECORD_BYTES, &layers[i])) {
       return false_v;
-    }
-    for (uint64_t offset = name_length; offset < VKR_LIGHTMAP_GROUP_NAME_BYTES;
-         ++offset) {
-      if (layers[i].name[offset] != '\0') {
-        return false_v;
-      }
     }
   }
   const uint8_t *instance_table = bytes + layout.instance_offset;

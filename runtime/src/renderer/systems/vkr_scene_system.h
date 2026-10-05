@@ -16,7 +16,8 @@
 #include "vkr_froxel_fog.h"
 #include "vkr_lighting.h"
 
-#include "assets/vkr_lightmap_set.h"
+#include "assets/vkr_diffuse_volume.h"
+#include "assets/vkr_light_layers.h"
 #include "containers/str.h"
 #include "core/vkr_entity.h"
 #include "core/vkr_type_desc.h"
@@ -517,9 +518,9 @@ typedef struct ScenePointLight {
   bool8_t enabled;      // Whether this light is active
   bool8_t casts_shadow; // Requires a finite positive range.
   VkrLightMobility mobility;
-  /* A light group name (vkr_lightmap_group_name_valid); empty is the
+  /* A light group name (vkr_light_group_name_valid); empty is the
      default group. */
-  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  char light_group[VKR_LIGHT_GROUP_NAME_BYTES];
   /* Runtime: the group's slot in its scene's light groups, which setting the
      light assigns; VKR_SCENE_LIGHT_GROUP_NONE for a dynamic light. */
   uint8_t light_group_slot;
@@ -533,9 +534,9 @@ typedef struct SceneRectangleLight {
   Vec2 size;
   bool8_t enabled;
   VkrLightMobility mobility;
-  /* A light group name (vkr_lightmap_group_name_valid); empty is the
+  /* A light group name (vkr_light_group_name_valid); empty is the
      default group. */
-  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  char light_group[VKR_LIGHT_GROUP_NAME_BYTES];
   /* Runtime: as ScenePointLight's. */
   uint8_t light_group_slot;
 } SceneRectangleLight;
@@ -810,13 +811,33 @@ typedef struct SceneTimeOfDay {
 #define VKR_SCENE_LIGHT_GROUP_NONE 0xFFu
 
 typedef struct VkrSceneLightGroups {
-  char names[VKR_SCENE_LIGHT_GROUP_MAX][VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  char names[VKR_SCENE_LIGHT_GROUP_MAX][VKR_LIGHT_GROUP_NAME_BYTES];
   /* Set by scripts and commands, one until then; a simulation reset restores
      one. */
   float32_t intensities[VKR_SCENE_LIGHT_GROUP_MAX];
   float32_t factors[VKR_SCENE_LIGHT_GROUP_MAX];
   uint32_t count;
 } VkrSceneLightGroups;
+
+/** A diffuse volume's light layers (ADR-054, ADR-090): each probe's SH per
+ * layer and the region texel of its row, kept so the scene can recompose the
+ * published texture as the sun turns and light group factors change.
+ * Heap-owned by the scene; `probe_sh` and `probe_regions` are malloc'd. */
+typedef struct VkrSceneDiffuseVolumeLayers {
+  VkrLightLayer layers[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
+  uint32_t layer_count;
+  uint32_t probe_count;
+  /** probe_count * layer_count SH, probe-major. */
+  VkrShL2Packed *probe_sh;
+  /** Texel 7 of each probe's row: probe region, lower-corner cell region. */
+  float32_t *probe_regions;
+  /** Weights of the published texture. */
+  float32_t weights[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
+  float64_t since_compose;
+  uint32_t version;
+  /** Texture name stem: the volume's path. */
+  char name[256];
+} VkrSceneDiffuseVolumeLayers;
 
 /** The live time of day: the hour this frame, and a script-set hour that
  * advances from the tick it was set at until a simulation reset. */
@@ -1089,6 +1110,8 @@ typedef struct VkrScene {
   VkrSceneSettings settings;
   /** Scene-owned baked diffuse-volume texture and lattice mapping. */
   VkrDiffuseVolumeBinding diffuse_volume;
+  /** The volume's layers, or NULL; see VkrSceneDiffuseVolumeLayers. */
+  VkrSceneDiffuseVolumeLayers *diffuse_volume_layers;
   VkrSubsurfaceBinding subsurface;
   VkrSceneReflectionProbe reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t reflection_probe_count;
@@ -1191,9 +1214,33 @@ void vkr_scene_set_world_fallback(VkrScene *scene, const VkrScene *root);
 bool8_t vkr_scene_singleton_active(const VkrScene *scene, VkrEntityId entity,
                                    const struct VkrTypeDesc *type);
 
-/** Releases the scene's diffuse-volume texture and disables volume sampling. */
+/** Releases the scene's diffuse-volume texture and layers and disables
+    volume sampling. */
 void vkr_scene_reset_diffuse_volume(VkrScene *scene,
                                     struct VkrRenderAssets *assets);
+
+/** The upload of a diffuse-volume texture: 8-by-probe-count RGBA32F rows of
+    `layers` weighted by `weights` (one per layer), in malloc'd storage that
+    vkr_texture_system_release_prepared_load frees. */
+bool8_t vkr_scene_diffuse_volume_prepare_texture(
+    const VkrSceneDiffuseVolumeLayers *layers, const float32_t *weights,
+    struct VkrTexturePreparedLoad *out_prepared);
+
+/** The layer weights for the scene's current sun and light group factors:
+    sun keys by vkr_light_layers_sun_weights, lamp groups by their group's
+    factor (one for a group no light has named). */
+void vkr_scene_diffuse_volume_weights(const VkrScene *scene,
+                                      const VkrSceneDiffuseVolumeLayers *layers,
+                                      float32_t *out_weights);
+
+/** Recomposes the volume texture when a layer weight has moved by more than
+    one percent since the last composition, at most every
+    VKR_SCENE_SUN_REFRESH_SECONDS, replacing the texture and releasing the
+    previous one. Call once per frame after vkr_scene_sync_sun on the thread
+    that finalizes textures. */
+void vkr_scene_update_diffuse_volume(VkrScene *scene,
+                                     struct VkrRenderAssets *assets,
+                                     float64_t delta_seconds);
 
 /** Queues an atmosphere revision. GPU work begins at the cold world seam.
     `clouds` publishes with the revision and requires an enabled atmosphere.

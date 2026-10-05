@@ -56,7 +56,7 @@ typedef struct ScenePointLightImport {
   VkrPointLightKind kind;
   bool8_t enabled;
   VkrLightMobility mobility;
-  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  char light_group[VKR_LIGHT_GROUP_NAME_BYTES];
 } ScenePointLightImport;
 
 typedef struct SceneRectangleLightImport {
@@ -65,7 +65,7 @@ typedef struct SceneRectangleLightImport {
   Vec2 size;
   bool8_t enabled;
   VkrLightMobility mobility;
-  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  char light_group[VKR_LIGHT_GROUP_NAME_BYTES];
 } SceneRectangleLightImport;
 
 typedef struct SceneDirectionalLightImport {
@@ -255,6 +255,8 @@ typedef struct VkrSceneLoaderAsyncPayload {
   SceneDiffuseVolumeImport diffuse_volume_import;
   VkrTexturePreparedLoad diffuse_volume_prepared;
   VkrDiffuseVolumeBinding diffuse_volume_binding;
+  /* Handed to the scene when applied; freed with the payload otherwise. */
+  VkrSceneDiffuseVolumeLayers *diffuse_volume_layers;
   bool8_t diffuse_volume_prepared_ready;
   bool8_t diffuse_volume_applied;
   SceneSubsurfaceImport subsurface_import;
@@ -313,12 +315,15 @@ vkr_internal SceneDiffuseVolumeImport
 scene_loader_parse_diffuse_volume_import(String8 json);
 vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
     String8 path, VkrAllocator *temp_alloc,
-    VkrDiffuseVolumeBinding *out_binding, VkrTexturePreparedLoad *out_prepared);
-vkr_internal void scene_loader_apply_diffuse_volume_import(
-    VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneDiffuseVolumeImport *import,
-    const VkrDiffuseVolumeBinding *binding,
-    const VkrTexturePreparedLoad *prepared);
+    VkrDiffuseVolumeBinding *out_binding, VkrTexturePreparedLoad *out_prepared,
+    VkrSceneDiffuseVolumeLayers **out_layers);
+vkr_internal void
+scene_loader_apply_diffuse_volume_import(VkrScene *scene,
+                                         struct VkrRenderAssets *assets,
+                                         const SceneDiffuseVolumeImport *import,
+                                         const VkrDiffuseVolumeBinding *binding,
+                                         const VkrTexturePreparedLoad *prepared,
+                                         VkrSceneDiffuseVolumeLayers **layers);
 vkr_internal SceneSubsurfaceImport scene_subsurface_import_defaults(void);
 vkr_internal SceneSubsurfaceImport
 scene_loader_parse_subsurface_import(String8 json);
@@ -1278,13 +1283,14 @@ vkr_internal uint32_t scene_loader_diffuse_volume_cell_index(
   return x + width * (y + height * z);
 }
 
-vkr_internal bool8_t
-scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
-                                    VkrDiffuseVolumeBinding *out_binding,
-                                    VkrTexturePreparedLoad *out_prepared) {
+vkr_internal bool8_t scene_loader_prepare_diffuse_volume(
+    String8 path, VkrAllocator *temp_alloc,
+    VkrDiffuseVolumeBinding *out_binding, VkrTexturePreparedLoad *out_prepared,
+    VkrSceneDiffuseVolumeLayers **out_layers) {
   if (!path.str || path.length == 0u || !temp_alloc || !out_binding ||
-      !out_prepared)
+      !out_prepared || !out_layers)
     return false_v;
+  *out_layers = NULL;
   *out_binding = (VkrDiffuseVolumeBinding){
       .texture = VKR_TEXTURE_HANDLE_INVALID,
   };
@@ -1333,8 +1339,18 @@ scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
       vkr_diffuse_volume_decode(bytes, byte_count, decode_arena, &volume);
   if (!decoded) {
     arena_destroy(decode_arena);
-    log_error("Scene loader: diffuse volume validation failed for '%.*s'",
-              (int)path.length, path.str);
+    uint32_t version = 0u;
+    if (byte_count >= 8u) {
+      MemCopy(&version, bytes + 4u, sizeof(version));
+    }
+    if (version == 1u) {
+      log_error("Scene loader: diffuse volume '%.*s' predates light layers "
+                "and sun shadows in bakes; bake lighting again",
+                (int)path.length, path.str);
+    } else {
+      log_error("Scene loader: diffuse volume validation failed for '%.*s'",
+                (int)path.length, path.str);
+    }
     return false_v;
   }
   const Vec3 inverse_spacing = {1.0f / volume.spacing.x,
@@ -1348,29 +1364,41 @@ scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
     return false_v;
   }
 
-  const uint64_t texel_count = (uint64_t)volume.probe_count * 8u;
-  const uint64_t pixel_bytes = texel_count * 4u * sizeof(float32_t);
-  float32_t *pixels = (float32_t *)malloc((size_t)pixel_bytes);
-  VkrTextureUploadRegion *region =
-      (VkrTextureUploadRegion *)malloc(sizeof(*region));
-  if (!pixels || !region) {
-    free(region);
-    free(pixels);
+  /* The scene keeps every layer to recompose the texture as the sun and
+     light groups change (ADR-090); the first texture weighs sun key 0 and
+     every lamp group fully. */
+  VkrSceneDiffuseVolumeLayers *layers =
+      (VkrSceneDiffuseVolumeLayers *)calloc(1u, sizeof(*layers));
+  if (layers) {
+    layers->probe_sh =
+        (VkrShL2Packed *)malloc((size_t)volume.probe_count *
+                                volume.layer_count * sizeof(VkrShL2Packed));
+    layers->probe_regions = (float32_t *)malloc((size_t)volume.probe_count *
+                                                2u * sizeof(float32_t));
+  }
+  if (!layers || !layers->probe_sh || !layers->probe_regions) {
+    if (layers) {
+      free(layers->probe_sh);
+      free(layers->probe_regions);
+      free(layers);
+    }
     arena_destroy(decode_arena);
     log_error(
         "Scene loader: diffuse volume upload allocation failed for '%.*s'",
         (int)path.length, path.str);
     return false_v;
   }
-
+  layers->layer_count = volume.layer_count;
+  layers->probe_count = volume.probe_count;
+  MemCopy(layers->layers, volume.layers,
+          volume.layer_count * sizeof(VkrLightLayer));
+  MemCopy(layers->probe_sh, volume.probe_sh,
+          (uint64_t)volume.probe_count * volume.layer_count *
+              sizeof(VkrShL2Packed));
+  snprintf(layers->name, sizeof(layers->name), "%.*s", (int)path.length,
+           path.str);
   for (uint32_t probe_index = 0u; probe_index < volume.probe_count;
        ++probe_index) {
-    const VkrDiffuseVolumeProbe *probe = &volume.probes[probe_index];
-    float32_t *row = pixels + (uint64_t)probe_index * 8u * 4u;
-    for (uint32_t vector = 0u; vector < VKR_SH_PACKED_VECTOR_COUNT; ++vector)
-      for (uint32_t component = 0u; component < 4u; ++component)
-        row[vector * 4u + component] = probe->sh.v[vector][component];
-
     const uint32_t x = probe_index % volume.dimensions[0];
     const uint32_t yz = probe_index / volume.dimensions[0];
     const uint32_t y = yz % volume.dimensions[1];
@@ -1381,50 +1409,29 @@ scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
             ? volume.cell_region_ids[scene_loader_diffuse_volume_cell_index(
                   &volume, x, y, z)]
             : 0u;
-    row[7u * 4u + 0u] = (float32_t)probe->region_id;
-    row[7u * 4u + 1u] = (float32_t)cell_region;
-    row[7u * 4u + 2u] = 0.0f;
-    row[7u * 4u + 3u] = 0.0f;
+    layers->probe_regions[probe_index * 2u + 0u] =
+        (float32_t)volume.probe_region_ids[probe_index];
+    layers->probe_regions[probe_index * 2u + 1u] = (float32_t)cell_region;
   }
-
-  *region = (VkrTextureUploadRegion){
-      .mip_level = 0u,
-      .array_layer = 0u,
-      .width = 8u,
-      .height = volume.probe_count,
-      .depth = 1u,
-      .byte_offset = 0u,
-      .byte_size = pixel_bytes,
-  };
-  *out_prepared = (VkrTexturePreparedLoad){
-      .description =
-          {
-              .width = 8u,
-              .height = volume.probe_count,
-              .channels = 4u,
-              .mip_levels = 1u,
-              .array_layers = 1u,
-              .type = VKR_TEXTURE_TYPE_2D,
-              .format = VKR_TEXTURE_FORMAT_R32G32B32A32_SFLOAT,
-              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-              .sample_count = VKR_SAMPLE_COUNT_1,
-              .properties = vkr_texture_property_flags_create(),
-              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .min_filter = VKR_FILTER_NEAREST,
-              .mag_filter = VKR_FILTER_NEAREST,
-              .mip_filter = VKR_MIP_FILTER_NONE,
-              .anisotropy_enable = false_v,
-          },
-      .upload_data = (uint8_t *)pixels,
-      .upload_data_size = pixel_bytes,
-      .upload_regions = region,
-      .upload_region_count = 1u,
-      .upload_mip_levels = 1u,
-      .upload_array_layers = 1u,
-      .upload_is_compressed = false_v,
-  };
+  vkr_light_layers_sun_weights(layers->layers, layers->layer_count, vec3_zero(),
+                               layers->weights);
+  for (uint32_t layer = 0u; layer < layers->layer_count; ++layer) {
+    if (layers->layers[layer].kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
+      layers->weights[layer] = 1.0f;
+    }
+  }
+  if (!vkr_scene_diffuse_volume_prepare_texture(layers, layers->weights,
+                                                out_prepared)) {
+    free(layers->probe_sh);
+    free(layers->probe_regions);
+    free(layers);
+    arena_destroy(decode_arena);
+    log_error(
+        "Scene loader: diffuse volume upload allocation failed for '%.*s'",
+        (int)path.length, path.str);
+    return false_v;
+  }
+  *out_layers = layers;
   *out_binding = (VkrDiffuseVolumeBinding){
       .texture = VKR_TEXTURE_HANDLE_INVALID,
       .origin = volume.origin,
@@ -1436,11 +1443,13 @@ scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
   return true_v;
 }
 
-vkr_internal void scene_loader_apply_diffuse_volume_import(
-    VkrScene *scene, struct VkrRenderAssets *assets,
-    const SceneDiffuseVolumeImport *import,
-    const VkrDiffuseVolumeBinding *binding,
-    const VkrTexturePreparedLoad *prepared) {
+vkr_internal void
+scene_loader_apply_diffuse_volume_import(VkrScene *scene,
+                                         struct VkrRenderAssets *assets,
+                                         const SceneDiffuseVolumeImport *import,
+                                         const VkrDiffuseVolumeBinding *binding,
+                                         const VkrTexturePreparedLoad *prepared,
+                                         VkrSceneDiffuseVolumeLayers **layers) {
   if (!scene)
     return;
   vkr_scene_reset_diffuse_volume(scene, assets);
@@ -1466,6 +1475,10 @@ vkr_internal void scene_loader_apply_diffuse_volume_import(
 
   scene->diffuse_volume = *binding;
   scene->diffuse_volume.texture = texture;
+  scene->diffuse_volume_layers = layers ? *layers : NULL;
+  if (layers) {
+    *layers = NULL;
+  }
 }
 
 vkr_internal bool8_t scene_loader_subsurface_texture_key(
@@ -2528,10 +2541,10 @@ vkr_internal bool8_t scene_json_parse_light_baking(
     }
   }
   if (scene_json_read_string_field(object, "light_group", &text)) {
-    if (!vkr_lightmap_group_name_valid((const char *)text.str, text.length)) {
+    if (!vkr_light_group_name_valid((const char *)text.str, text.length)) {
       log_error("Scene loader: entity %u %s light_group must be at most %u "
                 "letters, digits, '_' or '-'",
-                entity_index, block, VKR_LIGHTMAP_GROUP_NAME_BYTES - 1u);
+                entity_index, block, VKR_LIGHT_GROUP_NAME_BYTES - 1u);
       return false_v;
     }
     MemCopy(out_group, text.str, text.length);
@@ -4216,10 +4229,10 @@ vkr_internal bool8_t scene_loader_prepare_payload(
   if (payload->diffuse_volume_import.has_block &&
       payload->diffuse_volume_import.valid) {
     payload->diffuse_volume_prepared_ready =
-        scene_loader_prepare_diffuse_volume(payload->diffuse_volume_import.path,
-                                            temp_alloc,
-                                            &payload->diffuse_volume_binding,
-                                            &payload->diffuse_volume_prepared);
+        scene_loader_prepare_diffuse_volume(
+            payload->diffuse_volume_import.path, temp_alloc,
+            &payload->diffuse_volume_binding, &payload->diffuse_volume_prepared,
+            &payload->diffuse_volume_layers);
     if (!payload->diffuse_volume_prepared_ready)
       payload->diffuse_volume_import.valid = false_v;
   }
@@ -4659,7 +4672,8 @@ vkr_internal bool8_t scene_loader_finalize_step(
         &async_payload->diffuse_volume_binding,
         async_payload->diffuse_volume_prepared_ready
             ? &async_payload->diffuse_volume_prepared
-            : NULL);
+            : NULL,
+        &async_payload->diffuse_volume_layers);
     if (async_payload->diffuse_volume_prepared_ready) {
       vkr_texture_system_release_prepared_load(
           &async_payload->diffuse_volume_prepared);
@@ -4963,6 +4977,12 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
   if (payload->diffuse_volume_prepared_ready) {
     vkr_texture_system_release_prepared_load(&payload->diffuse_volume_prepared);
     payload->diffuse_volume_prepared_ready = false_v;
+  }
+  if (payload->diffuse_volume_layers) {
+    free(payload->diffuse_volume_layers->probe_sh);
+    free(payload->diffuse_volume_layers->probe_regions);
+    free(payload->diffuse_volume_layers);
+    payload->diffuse_volume_layers = NULL;
   }
   for (uint32_t i = 0u; i < payload->reflection_probe_import_count; ++i) {
     if (payload->reflection_probe_prepared_ready[i]) {

@@ -3629,19 +3629,18 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 36:
       ok = edit_json_string(j, v->point_light.light_group,
                             sizeof(v->point_light.light_group)) &&
-           vkr_lightmap_group_name_valid(v->point_light.light_group,
-                                         strlen(v->point_light.light_group));
+           vkr_light_group_name_valid(v->point_light.light_group,
+                                      strlen(v->point_light.light_group));
       break;
     case 37:
       ok = edit_json_int(j, 0, 1, &integer);
       v->rectangle_light.mobility = (VkrLightMobility)integer;
       break;
     case 38:
-      ok =
-          edit_json_string(j, v->rectangle_light.light_group,
-                           sizeof(v->rectangle_light.light_group)) &&
-          vkr_lightmap_group_name_valid(v->rectangle_light.light_group,
-                                        strlen(v->rectangle_light.light_group));
+      ok = edit_json_string(j, v->rectangle_light.light_group,
+                            sizeof(v->rectangle_light.light_group)) &&
+           vkr_light_group_name_valid(v->rectangle_light.light_group,
+                                      strlen(v->rectangle_light.light_group));
       break;
     }
     if (!ok)

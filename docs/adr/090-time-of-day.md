@@ -9,10 +9,10 @@ authority: adr
 ## Status
 
 Accepted (partial). The World clock, the turning sun and moon, the night fade,
-light group factors in the runtime lighting, and the script and command
-controls are implemented. Lamp-layer scaling in the tiled pipeline
-([ADR-088](088-baked-lightmap-sets.md)) and diffuse volumes that follow the
-sun are pending.
+light group factors in the runtime lighting, diffuse volumes that follow the
+sun and the light groups, and the script and command controls are
+implemented. Lamp-layer scaling in the tiled pipeline
+([ADR-088](088-baked-lightmap-sets.md)) is pending.
 
 ## Context
 
@@ -78,6 +78,10 @@ group's factor and skips a light whose factor is zero
 ([`vkr_lighting_system.c`](../../runtime/src/renderer/systems/vkr_lighting_system.c)).
 Additive scenes use the rendered scene's night fade and night groups.
 
+Baked diffuse volumes hold one layer per sun key and lamp group; the scene
+recomposes the volume texture from the two sun keys nearest the current sun
+and the lamp groups' factors ([ADR-054](054-baked-diffuse-volumes.md)).
+
 ### Control
 
 Scripts read the hour with `vkr_time_of_day` and set it with
@@ -94,9 +98,9 @@ component's property, which the Details slider and `vkr_component_set` edit.
 
 - The desktop pipeline switches and dims static lamps the way the tiled
   pipeline will scale their baked lamp layers.
-- Baked diffuse volumes ([ADR-054](054-baked-diffuse-volumes.md)) hold the
-  bounce of the authored sun only, so interiors keep daylight bounce at night
-  until volumes follow the sun as lightmap sun keys do.
+- Diffuse volumes take one SH set per probe per layer, about ten times the
+  bake time of a single layer, and between two sun keys the blend
+  approximates the bounce of a sun between them.
 - Volumetric clouds shadow the sun as it turns: a level can fall into cloud
   shadow at some hours.
 - A sun close to the celestial pole never sets, so its night groups never
@@ -136,5 +140,5 @@ Unavailable: a Vulkan run, and a script module calling the SDK entries.
 
 ## Revisit when
 
-The tiled runtime scales lamp layers by the group factors, diffuse volumes
-follow the sun, or a level needs more than 16 light groups.
+The tiled runtime scales lamp layers by the group factors, a level needs more
+than 16 light groups, or sun-key blending shows between keys.

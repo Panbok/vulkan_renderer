@@ -6,6 +6,7 @@ add_library(vkr_asset_formats STATIC
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_animation_cooked.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_diffuse_volume.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_font_cooked_decode.c"
+    "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_light_layers.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_lightmap_set.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_cooked_decode.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_decode.cpp")

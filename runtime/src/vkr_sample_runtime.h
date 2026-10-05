@@ -129,7 +129,7 @@ typedef struct VkrSampleTimeOfDayRequest {
   bool8_t set_hour;
   float64_t hour;
   bool8_t set_group;
-  char group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  char group[VKR_LIGHT_GROUP_NAME_BYTES];
   float32_t intensity;
 } VkrSampleTimeOfDayRequest;
 

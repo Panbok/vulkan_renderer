@@ -6,6 +6,7 @@
 #include "assets/vkr_diffuse_volume.h"
 #include "bake/vkr_bake_bvh.h"
 #include "bake/vkr_bake_integrator.h"
+#include "bake/vkr_bake_layers.h"
 #include "bake/vkr_bake_scene.h"
 #include "bake/vkr_bake_sh.h"
 #include "bake/vkr_bake_voxels.h"
@@ -200,35 +201,44 @@ Vec3 scene_environment(void *scene, Vec3 direction) {
                                            direction);
 }
 
-int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
-                const VkrBakeVoxelResult &rooms, Arena *arena) {
+/*
+ * Bakes one layer's SH for every valid probe into `sh` (probe p at
+ * sh[p * stride]): the layer's lights, the sky when it holds it and surface
+ * emission when it holds it, with caustic photons from the layer's analytic
+ * lights.
+ */
+bool bake_layer(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
+                const VkrBakeVoxelResult &rooms, const VkrBakeLayerPlan &plan,
+                Arena *arena, VkrShL2Packed *sh, uint32_t stride) {
+  std::vector<VkrBakeSceneLight> lights;
+  for (uint32_t index : plan.lights) {
+    lights.push_back(scene.lights[index]);
+  }
   VkrBakeIntegratorSettings settings = {};
   settings.scene = {&bvh,
                     scene.texture_store,
                     scene.materials.data(),
                     (uint32_t)scene.materials.size(),
-                    scene.lights.data(),
-                    (uint32_t)scene.lights.size(),
-                    scene.subsurface_profiles, scene.subsurface_profile_count};
-  settings.environment_radiance =
-      scene.environment.enabled &&
-              scene.environment.kind != VkrBakeSceneEnvironmentKind::None
-          ? scene_environment
-          : nullptr;
+                    lights.data(),
+                    (uint32_t)lights.size(),
+                    scene.subsurface_profiles,
+                    scene.subsurface_profile_count};
+  settings.environment_radiance = plan.sky ? scene_environment : nullptr;
   settings.environment_user = &scene;
   settings.max_depth = options.max_depth;
   settings.rr_start_depth = options.max_depth >= 4u ? 4u : 0u;
   settings.max_transparent_layers = VKR_BAKE_INTEGRATOR_MAX_TRANSPARENT_LAYERS;
   settings.ray_epsilon = 0.00001f;
+  settings.exclude_emission = plan.emission ? false_v : true_v;
   VkrBakeIntegrator integrator = {};
   VkrBakeIntegratorError error = {};
   if (!vkr_bake_integrator_init(&settings, &integrator, &error)) {
     std::fprintf(stderr, "Transport preparation failed: %u\n", error);
-    return 1;
+    return false;
   }
   VkrBakePhotonMap photons = {};
   bool analytic_lights = false;
-  for (const auto &light : scene.lights)
+  for (const auto &light : lights)
     analytic_lights |=
         light.enabled && (light.kind == VkrBakeSceneLightKind::Rectangle
                               ? light.radiance > 0.0f
@@ -260,22 +270,20 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
                                           &photons, &error) ||
         !vkr_bake_integrator_build_photon_grid(&photons, &error)) {
       std::fprintf(stderr, "Photon transport failed: %u\n", error);
-      return 1;
+      return false;
     }
     std::printf("photons_emitted=%u caustic_deposits=%u radius=%g\n",
                 options.photons, photons.photon_count, photon_settings.radius);
     settings.photon_map = &photons;
     if (!vkr_bake_integrator_init(&settings, &integrator, &error))
-      return 1;
+      return false;
   }
-  std::vector<VkrDiffuseVolumeProbe> probes(rooms.probe_count);
   const float32_t sh_deringing = scene.environment.sh_deringing;
   // Every path's seed derives from (probe, pixel, sample) and the integrator,
   // scene, textures and photon map are read-only while tracing, so probes
   // bake on independent workers and each probe keeps its serial sample
   // order: the volume is byte-identical for any worker count.
   std::atomic<uint32_t> next_probe{0u};
-  std::atomic<uint32_t> baked_probes{0u};
   std::atomic<bool> failed{false};
   std::mutex report_mutex;
   auto bake_probes = [&]() {
@@ -285,8 +293,7 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
       if (probe >= rooms.probe_count || failed.load()) {
         return;
       }
-      probes[probe].region_id = rooms.probes[probe].region_id;
-      if (!probes[probe].region_id) {
+      if (!rooms.probes[probe].region_id) {
         continue;
       }
       for (uint32_t face = 0; face < 6; ++face)
@@ -307,10 +314,9 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
                       1.0f);
               VkrBakeIntegratorResult traced = {};
               VkrBakeIntegratorError trace_error = {};
-              if (!vkr_bake_integrator_trace(&integrator,
-                                             rooms.probes[probe].position,
-                                             direction, seed, &traced,
-                                             &trace_error)) {
+              if (!vkr_bake_integrator_trace(
+                      &integrator, rooms.probes[probe].position, direction,
+                      seed, &traced, &trace_error)) {
                 std::lock_guard<std::mutex> lock(report_mutex);
                 if (!failed.exchange(true)) {
                   std::fprintf(stderr,
@@ -328,16 +334,11 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
                                (float)(sum[1] / options.samples),
                                (float)(sum[2] / options.samples)};
           }
-      if (!vkr_bake_sh_project(radiance.data(), options.face_size,
-                               sh_deringing, &probes[probe].sh)) {
+      if (!vkr_bake_sh_project(radiance.data(), options.face_size, sh_deringing,
+                               &sh[(uint64_t)probe * stride])) {
         failed.store(true);
         return;
       }
-      std::lock_guard<std::mutex> lock(report_mutex);
-      std::printf("baked_probe=%u/%u region=%u done=%u\n", probe + 1,
-                  rooms.probe_count, probes[probe].region_id,
-                  baked_probes.fetch_add(1u) + 1u);
-      std::fflush(stdout);
     }
   };
   uint32_t worker_count = options.threads;
@@ -354,16 +355,86 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
   for (std::thread &worker : workers) {
     worker.join();
   }
-  if (failed.load()) {
+  return !failed.load();
+}
+
+/*
+ * Bakes the volume's light layers (ADR-088): in an atmosphere scene one per
+ * sun key, each under its key's atmosphere, then one per static light group.
+ * The runtime weights them by the current sun and light group factors.
+ */
+int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
+                const VkrBakeVoxelResult &rooms, Arena *arena) {
+  std::vector<Vec3> sun_keys;
+  std::vector<VkrBakeAtmosphere> key_atmospheres;
+  if (scene.atmosphere.enabled &&
+      scene.atmosphere_light < scene.lights.size()) {
+    sun_keys = vkr_bake_sun_key_directions(scene);
+    key_atmospheres.resize(sun_keys.size());
+    for (size_t k = 0u; k < sun_keys.size(); ++k) {
+      if (!vkr_bake_scene_build_sun_atmosphere(&scene, sun_keys[k],
+                                               &key_atmospheres[k])) {
+        std::fprintf(stderr, "Building the atmosphere of sun key %zu failed\n",
+                     k);
+        return 1;
+      }
+    }
+  }
+  std::vector<VkrBakeLayerPlan> plans;
+  std::string plan_error;
+  if (!vkr_bake_plan_layers(scene, sun_keys, &plans, &plan_error)) {
+    std::fprintf(stderr, "%s\n", plan_error.c_str());
     return 1;
+  }
+  if (plans.size() > VKR_DIFFUSE_VOLUME_MAX_LAYERS) {
+    std::fprintf(stderr,
+                 "The scene makes %zu light layers; a volume holds at "
+                 "most %u\n",
+                 plans.size(), VKR_DIFFUSE_VOLUME_MAX_LAYERS);
+    return 1;
+  }
+  const uint32_t layer_count = (uint32_t)plans.size();
+  std::vector<VkrLightLayer> layers;
+  std::vector<uint32_t> region_ids(rooms.probe_count);
+  std::vector<VkrShL2Packed> probe_sh((size_t)rooms.probe_count * layer_count,
+                                      VkrShL2Packed{});
+  for (uint32_t probe = 0u; probe < rooms.probe_count; ++probe) {
+    region_ids[probe] = rooms.probes[probe].region_id;
+  }
+  for (uint32_t l = 0u; l < layer_count; ++l) {
+    const VkrBakeLayerPlan &plan = plans[l];
+    layers.push_back(plan.record);
+    if (plan.sun_key >= 0) {
+      vkr_bake_scene_use_atmosphere(&scene,
+                                    key_atmospheres[(size_t)plan.sun_key]);
+    }
+    const auto start = std::chrono::steady_clock::now();
+    if (!bake_layer(options, scene, bvh, rooms, plan, arena,
+                    probe_sh.data() + l, layer_count)) {
+      return 1;
+    }
+    std::printf(
+        "baked_layer=%u/%u %s=%s lights=%zu seconds=%.2f\n", l + 1u,
+        layer_count,
+        plan.record.kind == VKR_LIGHT_LAYER_SUN_KEY ? "sun_key" : "lamp_group",
+        plan.record.kind == VKR_LIGHT_LAYER_SUN_KEY
+            ? std::to_string(plan.record.index).c_str()
+            : plan.record.name,
+        plan.lights.size(),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count());
+    std::fflush(stdout);
   }
   VkrDiffuseVolume volume = {rooms.origin,
                              rooms.spacing,
                              {rooms.probe_dimensions[0],
                               rooms.probe_dimensions[1],
                               rooms.probe_dimensions[2]},
-                             probes.data(),
+                             region_ids.data(),
+                             probe_sh.data(),
                              rooms.probe_count,
+                             layers.data(),
+                             layer_count,
                              rooms.cell_region_ids,
                              rooms.cell_count};
   const uint8_t *bytes = nullptr;

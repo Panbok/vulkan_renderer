@@ -1910,7 +1910,7 @@ static bool8_t cmd_run_time_of_day(CmdContext *ctx, const CmdDef *def,
   }
   const String8 value = cmd_split(rest, NULL);
   if (word.length >= sizeof(request->group) ||
-      !vkr_lightmap_group_name_valid((const char *)word.str, word.length) ||
+      !vkr_light_group_name_valid((const char *)word.str, word.length) ||
       !cmd_number(value, &number) || !(number >= 0.0) || !isfinite(number)) {
     snprintf(ctx->message, sizeof(ctx->message),
              "light.group needs a group name and an intensity of 0 or more");
@@ -1921,7 +1921,7 @@ static bool8_t cmd_run_time_of_day(CmdContext *ctx, const CmdDef *def,
   request->group[word.length] = '\0';
   request->intensity = (float32_t)number;
   snprintf(ctx->message, sizeof(ctx->message), "Light group %s at %.2f",
-           request->group[0] ? request->group : VKR_LIGHTMAP_DEFAULT_GROUP,
+           request->group[0] ? request->group : VKR_LIGHT_GROUP_DEFAULT,
            number);
   return true_v;
 }

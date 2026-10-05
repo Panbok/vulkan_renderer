@@ -1,6 +1,7 @@
 #include "lightmap_bake_tests.h"
 
 extern "C" {
+#include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
 #include "core/vkr_hash.h"
 }
@@ -323,10 +324,10 @@ std::vector<uint8_t> write_lightmap_set(const VkrLightmapSet &set) {
 }
 
 void test_lightmap_set_round_trip_and_rejects() {
-  const VkrLightmapLayer layers[] = {
-      {VKR_LIGHTMAP_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f), ""},
-      {VKR_LIGHTMAP_LAYER_LAMP_GROUP, 0u, vec3_zero(), "default"},
-      {VKR_LIGHTMAP_LAYER_LAMP_GROUP, 1u, vec3_zero(), "street_lamps"}};
+  const VkrLightLayer layers[] = {
+      {VKR_LIGHT_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f), ""},
+      {VKR_LIGHT_LAYER_LAMP_GROUP, 0u, vec3_zero(), "default"},
+      {VKR_LIGHT_LAYER_LAMP_GROUP, 1u, vec3_zero(), "street_lamps"}};
   const VkrLightmapInstance instances[] = {
       {{0u}, 2u, 0u, 0u, 0u, 0u, 8u, 4u},
       {{0u}, 2u, 3u, 0u, 8u, 0u, 4u, 4u},
@@ -356,7 +357,7 @@ void test_lightmap_set_round_trip_and_rejects() {
   assert(vkr_lightmap_set_decode(file.data(), file.size(), arena, &decoded));
   assert(decoded.page_size == 16u && decoded.page_count == 1u);
   assert(decoded.layer_count == 3u && decoded.instance_count == 3u);
-  assert(decoded.layers[0].kind == VKR_LIGHTMAP_LAYER_SUN_KEY);
+  assert(decoded.layers[0].kind == VKR_LIGHT_LAYER_SUN_KEY);
   assert(decoded.layers[0].sun_direction.z == 0.8f);
   assert(decoded.layers[0].name[0] == '\0');
   assert(strcmp(decoded.layers[2].name, "street_lamps") == 0);
@@ -389,7 +390,7 @@ void test_lightmap_set_round_trip_and_rejects() {
 
   /* The runtime finds a lamp group by name, so each lamp group has a
      distinct one and a sun key has none. */
-  VkrLightmapLayer named[] = {layers[0], layers[1], layers[2]};
+  VkrLightLayer named[] = {layers[0], layers[1], layers[2]};
   strcpy(named[2].name, "default");
   set.layers = named;
   assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
@@ -404,6 +405,96 @@ void test_lightmap_set_round_trip_and_rejects() {
   printf("  test_lightmap_set_round_trip_and_rejects PASSED\n");
 }
 
+/* Sun-key weights follow the sun around the daily circle: a sun on a key
+   weighs that key alone, a sun between two neighbouring keys splits by angle,
+   no sun weighs key 0, and lamp-group weights are the caller's. */
+void test_light_layer_sun_weights() {
+  VkrLightLayer layers[9] = {};
+  for (uint32_t k = 0u; k < 8u; ++k) {
+    const float32_t angle = (float32_t)k * 0.78539816339f;
+    layers[k].kind = VKR_LIGHT_LAYER_SUN_KEY;
+    layers[k].index = k;
+    layers[k].sun_direction = vec3_new(cosf(angle), 0.0f, sinf(angle));
+  }
+  layers[8].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+  strcpy(layers[8].name, "default");
+  assert(vkr_light_layers_valid(layers, 9u));
+  float32_t weights[9];
+  weights[8] = -1.0f;
+  vkr_light_layers_sun_weights(layers, 9u, layers[2].sun_direction, weights);
+  for (uint32_t k = 0u; k < 8u; ++k) {
+    assert(fabsf(weights[k] - (k == 2u ? 1.0f : 0.0f)) < 1.0e-5f);
+  }
+  assert(weights[8] == -1.0f);
+  const float32_t between = 6.5f * 0.78539816339f;
+  vkr_light_layers_sun_weights(
+      layers, 9u, vec3_new(2.0f * cosf(between), 0.0f, 2.0f * sinf(between)),
+      weights);
+  assert(fabsf(weights[6] - 0.5f) < 1.0e-4f &&
+         fabsf(weights[7] - 0.5f) < 1.0e-4f);
+  /* Across key 0: between keys 7 and 0. */
+  const float32_t wrap = 7.75f * 0.78539816339f;
+  vkr_light_layers_sun_weights(layers, 9u,
+                               vec3_new(cosf(wrap), 0.0f, sinf(wrap)), weights);
+  assert(fabsf(weights[7] - 0.25f) < 1.0e-4f &&
+         fabsf(weights[0] - 0.75f) < 1.0e-4f);
+  vkr_light_layers_sun_weights(layers, 9u, vec3_zero(), weights);
+  assert(weights[0] == 1.0f && weights[1] == 0.0f && weights[8] == -1.0f);
+  printf("  test_light_layer_sun_weights PASSED\n");
+}
+
+/* A layered DVOL v2 volume round-trips every probe's SH per layer and its
+   layer names; an invalid layer table is refused. */
+void test_diffuse_volume_layers_round_trip() {
+  VkrLightLayer layers[3] = {};
+  layers[0].kind = VKR_LIGHT_LAYER_SUN_KEY;
+  layers[0].sun_direction = vec3_new(0.0f, 1.0f, 0.0f);
+  layers[1].kind = VKR_LIGHT_LAYER_SUN_KEY;
+  layers[1].index = 1u;
+  layers[1].sun_direction = vec3_new(1.0f, 0.0f, 0.0f);
+  layers[2].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+  strcpy(layers[2].name, "street");
+  uint32_t regions[8];
+  std::vector<VkrShL2Packed> sh(8u * 3u);
+  for (uint32_t probe = 0u; probe < 8u; ++probe) {
+    regions[probe] = 1u;
+    for (uint32_t layer = 0u; layer < 3u; ++layer)
+      for (uint32_t v = 0u; v < VKR_SH_PACKED_VECTOR_COUNT; ++v)
+        for (uint32_t c = 0u; c < 4u; ++c)
+          sh[probe * 3u + layer].v[v][c] =
+              (float32_t)(probe * 100u + layer * 10u + v) + 0.25f * c;
+  }
+  uint32_t cells[1] = {1u};
+  VkrDiffuseVolume volume = {};
+  volume.origin = vec3_new(-1.0f, 0.0f, 2.0f);
+  volume.spacing = vec3_new(2.0f, 1.0f, 2.0f);
+  volume.dimensions[0] = volume.dimensions[1] = volume.dimensions[2] = 2u;
+  volume.probe_region_ids = regions;
+  volume.probe_sh = sh.data();
+  volume.probe_count = 8u;
+  volume.layers = layers;
+  volume.layer_count = 3u;
+  volume.cell_region_ids = cells;
+  volume.cell_count = 1u;
+  Arena *arena = arena_create(KB(64), KB(64));
+  assert(arena);
+  const uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  assert(vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  VkrDiffuseVolume decoded = {};
+  assert(vkr_diffuse_volume_decode(bytes, size, arena, &decoded));
+  assert(decoded.layer_count == 3u && decoded.probe_count == 8u);
+  assert(strcmp(decoded.layers[2].name, "street") == 0);
+  assert(decoded.layers[1].sun_direction.x == 1.0f);
+  for (uint32_t i = 0u; i < 8u * 3u; ++i) {
+    assert(memcmp(&decoded.probe_sh[i], &sh[i], sizeof(VkrShL2Packed)) == 0);
+  }
+  strcpy(layers[2].name, "two words");
+  assert(!vkr_diffuse_volume_encode(&volume, arena, &bytes, &size));
+  arena_destroy(arena);
+  printf("  test_diffuse_volume_layers_round_trip PASSED\n");
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -415,6 +506,8 @@ bool32_t run_lightmap_bake_tests(void) {
   test_compose_fills_each_rect_alone();
   test_astc_hdr_round_trip_keeps_range();
   test_lightmap_set_round_trip_and_rejects();
+  test_light_layer_sun_weights();
+  test_diffuse_volume_layers_round_trip();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }
