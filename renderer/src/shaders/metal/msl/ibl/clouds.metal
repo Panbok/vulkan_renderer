@@ -363,8 +363,10 @@ kernel void vkr_metal_packet_cloud_sky_light_sh(
 // texel, so global reflections read the layer at their roughness.
 kernel void vkr_metal_packet_cloud_sky_light_mips(
     constant VkrMetalPacketCloudSkyLightRoot &root [[buffer(0)]],
-    uint2 texel [[thread_position_in_threadgroup]],
+    uint3 position [[thread_position_in_threadgroup]],
     uint3 group [[threadgroup_position_in_grid]]) {
+  // Thread attributes share one vector width; the threadgroup is 2D.
+  uint2 texel = position.xy;
   threadgroup float4 tile[VKR_CLOUD_SKY_LIGHT_TILE * VKR_CLOUD_SKY_LIGHT_TILE];
   uint face_size = root.face_size;
   uint face = group.z;
