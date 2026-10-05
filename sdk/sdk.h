@@ -70,7 +70,7 @@
 #include <stdio.h>
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 6u
+#define VKR_SDK_VERSION 7u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -711,6 +711,12 @@ typedef struct VkrSdkTable {
                          const char *name);
   bool8_t (*io_send)(VkrCtx *ctx, VkrEntity target, VkrIoInput input,
                      const VkrIoValue *value);
+
+  /* Time of day. */
+  float64_t (*time_of_day)(VkrCtx *ctx);
+  bool8_t (*set_time_of_day)(VkrCtx *ctx, float64_t hour);
+  bool8_t (*set_light_group)(VkrCtx *ctx, const char *name,
+                             float32_t intensity);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -1076,6 +1082,25 @@ static inline void vkr_set_time_step(VkrCtx *ctx, float64_t dt) {
 }
 
 static inline Vec3 vkr_gravity(VkrCtx *ctx) { return ctx->sdk->gravity(ctx); }
+
+/** The active scene's hour of day in [0, 24); 12 without a time of day. */
+static inline float64_t vkr_time_of_day(VkrCtx *ctx) {
+  return ctx->sdk->time_of_day(ctx);
+}
+
+/** Runs the time of day from `hour` until Play stops; the sun and moon turn
+ * with it. */
+static inline bool8_t vkr_set_time_of_day(VkrCtx *ctx, float64_t hour) {
+  return ctx->sdk->set_time_of_day(ctx, hour);
+}
+
+/** Scales the static lights of light group `name` ("" is the default group)
+ * in every container until Play stops; zero switches them off. A night group
+ * also fades with the sun. */
+static inline bool8_t vkr_set_light_group(VkrCtx *ctx, const char *name,
+                                          float32_t intensity) {
+  return ctx->sdk->set_light_group(ctx, name, intensity);
+}
 
 /** The game owns keyboard and mouse this frame. */
 static inline bool8_t vkr_input_focused(VkrCtx *ctx) {

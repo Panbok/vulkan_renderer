@@ -122,6 +122,17 @@ typedef enum VkrSamplePickPurpose {
   VKR_SAMPLE_PICK_SELECT_TOGGLE,
 } VkrSamplePickPurpose;
 
+/* Set the live time of day (ADR-090): the rendered scene's clock hour, and
+ * one light group's intensity in every loaded container. Both last until
+ * the simulation resets. */
+typedef struct VkrSampleTimeOfDayRequest {
+  bool8_t set_hour;
+  float64_t hour;
+  bool8_t set_group;
+  char group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  float32_t intensity;
+} VkrSampleTimeOfDayRequest;
+
 /* Lift the ground grid onto the surface at a window pixel of the Scene:
  * collision answers at once, else the GPU depth at that pixel a few frames
  * later; the frame's grid_status reports the outcome. */
@@ -367,6 +378,7 @@ typedef struct VkrSampleUiFrame {
   VkrSamplePickPurpose context_purpose;
   VkrSamplePickRequest *pick_request;
   VkrSampleGridFitRequest *grid_fit_request;
+  VkrSampleTimeOfDayRequest *time_of_day_request;
   /* The last grid fit's outcome, or empty. */
   String8 grid_status;
   uint64_t scene_generation;

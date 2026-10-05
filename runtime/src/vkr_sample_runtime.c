@@ -4953,6 +4953,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleEditorStateRequest editor_state_request;
   VkrSamplePickRequest pick_request;
   VkrSampleGridFitRequest grid_fit_request;
+  VkrSampleTimeOfDayRequest time_of_day_request;
   VkrSampleCloseResponse close_response;
   bool8_t quit;
   bool8_t scene_shortcuts_blocked;
@@ -5033,6 +5034,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .context_purpose = state->context_ready_purpose,
       .pick_request = &requests->pick_request,
       .grid_fit_request = &requests->grid_fit_request,
+      .time_of_day_request = &requests->time_of_day_request,
       .grid_status = string8_create_from_cstr(
           (const uint8_t *)state->grid_status, strlen(state->grid_status)),
       .scene_generation = application->scene_generation,
@@ -5316,6 +5318,34 @@ vkr_internal void sample_world_request(VkrStandardSceneRuntime *application,
   } else if (request->load) {
     (void)sample_world_load(application, request->path, request->sidecar_path,
                             request->reload);
+  }
+}
+
+/* ---- Time of day (ADR-090) ---- */
+
+/* The rendered scene takes the hour; every loaded container takes a light
+   group's intensity, so its lights follow wherever they load. */
+vkr_internal void
+sample_time_of_day_apply(VkrStandardSceneRuntime *application,
+                         const VkrSampleTimeOfDayRequest *request) {
+  VkrScene *render = vkr_standard_scene_runtime_render_scene(application);
+  if (request->set_hour && render) {
+    (void)vkr_scene_set_time_of_day_hour(render, request->hour);
+  }
+  if (!request->set_group) {
+    return;
+  }
+  VkrScene *scenes[VKR_SCENE_ADDITIVE_MAX + 2u] = {application->active_scene,
+                                                   application->world_scene};
+  uint32_t count = 2u;
+  for (uint32_t i = 0u; i < application->additive_count; ++i) {
+    scenes[count++] = application->additive_scenes[i];
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (scenes[i]) {
+      (void)vkr_scene_set_light_group_intensity(scenes[i], request->group,
+                                                request->intensity);
+    }
   }
 }
 
@@ -6357,6 +6387,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   if (requests.grid_fit_request.request) {
     sample_grid_fit_begin(application, requests.grid_fit_request.position_px);
   }
+  sample_time_of_day_apply(application, &requests.time_of_day_request);
   /* A UI pick runs as a context click does, at the given pixel. */
   if (requests.pick_request.request) {
     state->context_click_pending = true_v;

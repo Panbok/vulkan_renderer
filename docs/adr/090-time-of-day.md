@@ -8,11 +8,11 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The World clock, the turning sun and moon, the night fade
-and light group factors in the runtime lighting are implemented. Script SDK
-and `vkr_cmd` entry points for the hour and group intensities, lamp-layer
-scaling in the tiled pipeline ([ADR-088](088-baked-lightmap-sets.md)) and
-diffuse volumes that follow the sun are pending.
+Accepted (partial). The World clock, the turning sun and moon, the night fade,
+light group factors in the runtime lighting, and the script and command
+controls are implemented. Lamp-layer scaling in the tiled pipeline
+([ADR-088](088-baked-lightmap-sets.md)) and diffuse volumes that follow the
+sun are pending.
 
 ## Context
 
@@ -78,6 +78,18 @@ group's factor and skips a light whose factor is zero
 ([`vkr_lighting_system.c`](../../runtime/src/renderer/systems/vkr_lighting_system.c)).
 Additive scenes use the rendered scene's night fade and night groups.
 
+### Control
+
+Scripts read the hour with `vkr_time_of_day` and set it with
+`vkr_set_time_of_day`; `vkr_set_light_group` sets a group's intensity in
+every attached container ([`sdk.h`](../../sdk/sdk.h), SDK version 7,
+[ADR-079](079-c-script-modules.md)). The editor commands `time.hour <hour>`
+and `light.group <group> <intensity>` ([ADR-075](075-editor-cmd-bar-and-evaluator.md))
+reach the runtime through the frame's time-of-day request: the hour goes to
+the rendered scene and the intensity to the active scene, the World and the
+added scenes. Both last until the simulation resets; the authored hour is the
+component's property, which the Details slider and `vkr_component_set` edit.
+
 ## Consequences
 
 - The desktop pipeline switches and dims static lamps the way the tiled
@@ -115,10 +127,14 @@ Release build, M1 Pro, 2026-10-05:
   clouds disabled, captures at 12:00 and 17:00 show the sun lowering and the
   shadows lengthening; at 21:00 the sky is dark and lamp group `warm` lights
   its room, which it leaves dark at noon.
+- The same editor through `vkr_mcp`'s `vkr_cmd`: `time.hour 21` lit the night
+  group, `light.group warm 0` switched it off and `light.group warm 0.25`
+  dimmed it; `light.group "bad name" 1` and `time.hour x` were refused with
+  their messages.
 
-Unavailable: a Vulkan run.
+Unavailable: a Vulkan run, and a script module calling the SDK entries.
 
 ## Revisit when
 
-Scripts or commands drive the clock and groups, the tiled runtime scales lamp
-layers by the group factors, or diffuse volumes follow the sun.
+The tiled runtime scales lamp layers by the group factors, diffuse volumes
+follow the sun, or a level needs more than 16 light groups.

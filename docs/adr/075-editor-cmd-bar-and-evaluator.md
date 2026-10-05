@@ -96,6 +96,8 @@ dependable channel for scripts.
 | `grid.spacing` | `<units>` | Grid cell size (shows the grid) |
 | `grid.height` | `<y>` | Grid world height (shows the grid) |
 | `grid.fit` | | Lift the grid onto the surface at the Scene's centre: collision, else the GPU depth there |
+| `time.hour` | `<hour>` | Run the time of day from an hour until the simulation resets; the World's Time of Day keeps its authored hour ([ADR-090](090-time-of-day.md)) |
+| `light.group` | `<group> <intensity>` | Scale a light group's static lights in every loaded container until the simulation resets; 0 switches them off ([ADR-090](090-time-of-day.md)) |
 | `grid.labels` | `[on\|off\|toggle]` | Grid cell numbers and letters |
 | `labels`, `labels.directional`, `labels.spot`, `labels.point` | `[on\|off\|toggle]` | Light icons |
 | `create` | `<object>` | Create an object kind (`empty`, `cube`, `text`, a light kind or a world component type) in the selection's container, else the primary scene, else the World, at the Scene's centre by the Snapping settings ([ADR-076](076-project-object-model.md)); World-only settings always go to the World |

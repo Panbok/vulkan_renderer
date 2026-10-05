@@ -106,6 +106,10 @@ NULL when the version differs; there is no compatibility with older modules.
     `late_update`; a later module's camera wins.
   - `vkr_set_time_step` from `update` replaces the frame's elapsed time, as
     a module that owns the input clock does.
+  - `vkr_time_of_day` reads the active scene's hour, `vkr_set_time_of_day`
+    runs it from an hour and `vkr_set_light_group` scales a light group in
+    every attached container, all until the simulation resets
+    ([ADR-090](090-time-of-day.md)); SDK version 7 added them.
   - The host refreshes changed transforms and child lists before reads and
     after frame hooks; there is no `update_transforms` call.
 - **Structural edits in ticks.** In `fixed_update` and `late_fixed_update`,

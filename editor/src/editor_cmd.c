@@ -1883,6 +1883,49 @@ static bool8_t cmd_run_physics_motion(CmdContext *ctx, const CmdDef *def,
   return false_v;
 }
 
+/* time.hour <hour> runs the time of day from an hour, and light.group <group>
+   <intensity> scales a light group's static lights, both until the
+   simulation resets (ADR-090). */
+static bool8_t cmd_run_time_of_day(CmdContext *ctx, const CmdDef *def,
+                                   String8 arg) {
+  VkrSampleTimeOfDayRequest *request = ctx->frame->time_of_day_request;
+  if (!request) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "The time of day is not available");
+    return false_v;
+  }
+  String8 rest = {0};
+  const String8 word = cmd_split(arg, &rest);
+  float64_t number = 0.0;
+  if (def->value == 0u) {
+    if (!cmd_number(word, &number)) {
+      snprintf(ctx->message, sizeof(ctx->message),
+               "Expected an hour, not '%.*s'", (int)word.length, word.str);
+      return false_v;
+    }
+    request->set_hour = true_v;
+    request->hour = number;
+    snprintf(ctx->message, sizeof(ctx->message), "Hour %.2f", number);
+    return true_v;
+  }
+  const String8 value = cmd_split(rest, NULL);
+  if (word.length >= sizeof(request->group) ||
+      !vkr_lightmap_group_name_valid((const char *)word.str, word.length) ||
+      !cmd_number(value, &number) || !(number >= 0.0) || !isfinite(number)) {
+    snprintf(ctx->message, sizeof(ctx->message),
+             "light.group needs a group name and an intensity of 0 or more");
+    return false_v;
+  }
+  request->set_group = true_v;
+  MemCopy(request->group, word.str, word.length);
+  request->group[word.length] = '\0';
+  request->intensity = (float32_t)number;
+  snprintf(ctx->message, sizeof(ctx->message), "Light group %s at %.2f",
+           request->group[0] ? request->group : VKR_LIGHTMAP_DEFAULT_GROUP,
+           number);
+  return true_v;
+}
+
 /* preset.save <type> saves the selection's component as a preset;
    preset.apply <name> applies a preset to the selection's component of its
    type (ADR-076). */
@@ -2099,6 +2142,14 @@ static const CmdDef cmd_defs[] = {
     {"grid.fit", CMD_ARG_NONE, "",
      "Lift the grid onto the surface at the Scene's centre",
      cmd_run_grid_height, CMD_COUNT, 1u},
+    {"time.hour", CMD_ARG_NUMBER, "<hour>",
+     "Run the time of day from an hour until the simulation resets; the "
+     "World's Time of Day keeps its authored hour",
+     cmd_run_time_of_day, CMD_COUNT, 0u},
+    {"light.group", CMD_ARG_TEXT, "<group> <intensity>",
+     "Scale a light group's static lights until the simulation resets; 0 "
+     "switches them off",
+     cmd_run_time_of_day, CMD_COUNT, 1u},
     {"labels", CMD_ARG_SWITCH, "[on|off|toggle]", "Show or hide light icons",
      cmd_run_labels, CMD_COUNT, 0u},
     {"labels.directional", CMD_ARG_SWITCH, "[on|off|toggle]",

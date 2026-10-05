@@ -978,6 +978,38 @@ static Vec3 sdk_gravity(VkrCtx *ctx) {
   return vkr_scene_gravity(sdk_active(sdk_ctx(ctx)));
 }
 
+static float64_t sdk_time_of_day(VkrCtx *ctx) {
+  const VkrScene *scene = sdk_active(sdk_ctx(ctx));
+  return scene ? scene->clock.hour : 12.0;
+}
+
+static bool8_t sdk_set_time_of_day(VkrCtx *ctx, float64_t hour) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScene *scene = sdk_active(script);
+  if (!scene || !vkr_scene_set_time_of_day_hour(scene, hour)) {
+    return script_ctx_error(script, "The hour must be finite, with a scene");
+  }
+  return true_v;
+}
+
+/* Every attached container scales the group, so its lights follow wherever
+   they load (ADR-090). */
+static bool8_t sdk_set_light_group(VkrCtx *ctx, const char *name,
+                                   float32_t intensity) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  bool8_t set = host->container_count > 0u;
+  for (uint32_t i = 0; i < host->container_count; ++i) {
+    set &= vkr_scene_set_light_group_intensity(host->containers[i].scene, name,
+                                               intensity);
+  }
+  if (!set) {
+    return script_ctx_error(script, "Light groups take a valid name and a "
+                                    "finite intensity of zero or more");
+  }
+  return true_v;
+}
+
 static bool8_t sdk_input_focused(VkrCtx *ctx) {
   return sdk_ctx(ctx)->host->frame.input_focused;
 }
@@ -1781,5 +1813,8 @@ void script_sdk_table(VkrSdkTable *table) {
       .io_fire = sdk_io_fire,
       .io_input = sdk_io_input,
       .io_send = sdk_io_send,
+      .time_of_day = sdk_time_of_day,
+      .set_time_of_day = sdk_set_time_of_day,
+      .set_light_group = sdk_set_light_group,
   };
 }
