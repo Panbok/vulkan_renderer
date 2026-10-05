@@ -175,8 +175,8 @@ Typed and scripted editor control share one validated path with the panels.
 Statements apply one per frame, so a script's reads see the previous
 statement's result. The evaluator has no loops, user functions or file access,
 and it cannot create entities; `create` and `component.add` do. The field accepts at most
-255 bytes; the queue holds 4 KiB. A headless run proves scripted editor state,
-not window resize, DPI, input or presentation.
+255 bytes; the queue holds 32 KiB, a Windows command line's length. A headless
+run proves scripted editor state, not window resize, DPI, input or presentation.
 
 ## Alternatives considered
 

@@ -353,7 +353,9 @@ typedef struct VkrEditorUi {
   VkrEditorCmdVariable cmd_variables[32];
   uint32_t cmd_variable_count;
   /* Script queue: pending text, read offset and the active wait. */
-  char cmd_queue[4096];
+  /* Holds an --exec script as long as a Windows command line (32767
+     characters), such as a measured flight of a few hundred camera moves. */
+  char cmd_queue[32768];
   uint32_t cmd_queue_length;
   uint32_t cmd_queue_offset;
   float64_t cmd_wait_seconds;
