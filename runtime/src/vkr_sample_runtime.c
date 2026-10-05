@@ -241,6 +241,14 @@ typedef struct State {
   String8 scene_path;
   char scene_path_storage[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   char sidecar_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
+  /* Mesh assets of the primary scene the last switch closed, which stay
+     loaded so switching back skips loading them (ADR-088), and the set
+     before it, kept until the next scene to open is known and, when it is
+     that set's scene, until it opens. */
+  VkrMeshAssetHold warm_hold;
+  char warm_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
+  VkrMeshAssetHold opening_hold;
+  char opening_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   /* World partition (ADR-086): the journal revision and scene structure the
      primary scene's cells were last tracked at. */
   uint64_t partition_revision;
@@ -1940,6 +1948,75 @@ vkr_internal void vkr_standard_scene_runtime_apply_filter_mode(
   }
 }
 
+/* Returns whether `path` (null-terminated storage) names `next`. */
+vkr_internal bool8_t sample_warm_path_is(const char *path, String8 next) {
+  const String8 held =
+      string8_create_from_cstr((const uint8_t *)path, string_length(path));
+  return next.length && string8_equals(&held, &next);
+}
+
+/* Holds the loaded mesh assets of the primary scene a switch closes, and with
+   them their materials and textures, so opening that scene again skips
+   loading them. One closed scene stays warm. The set before it waits as
+   the opening set while the next scene is unknown (a project switch unloads
+   before its Bakery job and opens afterwards) or is the set's scene, and is
+   released otherwise; the opening set lasts until a scene opens. */
+vkr_internal void sample_warm_hold_take(VkrStandardSceneRuntime *application,
+                                        String8 next_path) {
+  VkrMeshManager *manager = &application->assets.mesh_manager;
+  uint32_t released = 0u;
+  if (!application->active_scene) {
+    if (next_path.length &&
+        !sample_warm_path_is(state->opening_path, next_path)) {
+      released = state->opening_hold.count;
+      vkr_mesh_manager_release_hold(manager, &state->opening_hold);
+      state->opening_path[0] = '\0';
+    }
+    if (released) {
+      log_info("WARM_ASSETS kept=0 opening=0 released=%u", released);
+    }
+    return;
+  }
+
+  VkrMeshAssetHold hold = {0};
+  if (state->scene_path.length < sizeof(state->warm_path) &&
+      !vkr_mesh_manager_hold_drawn_assets(manager, &hold)) {
+    log_warn("Out of memory keeping the closed scene's assets loaded");
+  }
+
+  released = state->opening_hold.count;
+  vkr_mesh_manager_release_hold(manager, &state->opening_hold);
+  state->opening_path[0] = '\0';
+  if (!next_path.length || sample_warm_path_is(state->warm_path, next_path)) {
+    state->opening_hold = state->warm_hold;
+    MemCopy(state->opening_path, state->warm_path, sizeof(state->warm_path));
+  } else {
+    released += state->warm_hold.count;
+    vkr_mesh_manager_release_hold(manager, &state->warm_hold);
+  }
+  log_info("WARM_ASSETS kept=%u opening=%u released=%u", hold.count,
+           state->opening_hold.count, released);
+
+  state->warm_hold = hold;
+  state->warm_path[0] = '\0';
+  if (hold.count) {
+    MemCopy(state->warm_path, state->scene_path.str, state->scene_path.length);
+    state->warm_path[state->scene_path.length] = '\0';
+  }
+}
+
+/* Lets the closed scenes' assets go once nothing will reopen them. */
+vkr_internal void sample_warm_hold_release(VkrStandardSceneRuntime *application,
+                                           bool8_t keep_warm) {
+  VkrMeshManager *manager = &application->assets.mesh_manager;
+  vkr_mesh_manager_release_hold(manager, &state->opening_hold);
+  state->opening_path[0] = '\0';
+  if (!keep_warm) {
+    vkr_mesh_manager_release_hold(manager, &state->warm_hold);
+    state->warm_path[0] = '\0';
+  }
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     VkrStandardSceneRuntime *application) {
   if (!application || !state ||
@@ -1956,6 +2033,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
   case VKR_RESOURCE_LOAD_STATE_READY:
     break;
   case VKR_RESOURCE_LOAD_STATE_FAILED:
+    sample_warm_hold_release(application, true_v);
     if (!state->scene_load_terminal_logged) {
       String8 err = vkr_renderer_get_error_string(state_error);
       float64_t elapsed =
@@ -1973,6 +2051,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     }
     return false_v;
   case VKR_RESOURCE_LOAD_STATE_CANCELED:
+    sample_warm_hold_release(application, true_v);
     if (!state->scene_load_terminal_logged) {
       float64_t elapsed =
           vkr_standard_scene_runtime_consume_scene_load_elapsed_seconds(
@@ -2041,6 +2120,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
                                                strlen(state->sidecar_path)));
     }
     sample_partition_open(scene);
+    sample_warm_hold_release(application, true_v);
     /* A fit from the previous scene is framed by a camera and caster set that
        no longer exist, so it is not a previous value of the same quantity. The
        configuration stamps cannot catch this: they are all identical across a
@@ -2516,8 +2596,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_handle_hotkeys(
       snprintf(state->edits.status, sizeof(state->edits.status),
                "Save edits before unloading the scene.");
       log_warn("Save editor overrides before unloading the scene");
-    } else
+    } else {
+      sample_warm_hold_release(application, false_v);
       vkr_standard_scene_runtime_unload_scene_system(application);
+    }
   }
 
   if (input_is_key_up(input_state, KEY_F4) &&
@@ -5440,6 +5522,9 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
         MemCopy(next_sidecar, scene_request->sidecar_path.str,
                 scene_request->sidecar_path.length);
       }
+      sample_warm_hold_take(application,
+                            string8_create_from_cstr((const uint8_t *)next_path,
+                                                     string_length(next_path)));
       vkr_standard_scene_runtime_unload_scene_system(application);
       MemCopy(state->scene_path_storage, next_path, sizeof(next_path));
       MemCopy(state->sidecar_path, next_sidecar, sizeof(next_sidecar));
@@ -6271,6 +6356,11 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                "Save edits before reloading or unloading.");
       log_warn("Save editor overrides before reloading or unloading");
     } else {
+      if (requests.scene_edit.action == VKR_SCENE_EDIT_RELOAD) {
+        sample_warm_hold_take(application, state->scene_path);
+      } else {
+        sample_warm_hold_release(application, false_v);
+      }
       vkr_standard_scene_runtime_unload_scene_system(application);
       if (requests.scene_edit.action == VKR_SCENE_EDIT_RELOAD)
         vkr_standard_scene_runtime_init_scene_system(application);
@@ -6789,6 +6879,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
     }
   }
 
+  sample_warm_hold_release(&application, false_v);
   vkr_standard_scene_runtime_unload_scene_system(&application);
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
     sample_additive_remove(&application, i);

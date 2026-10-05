@@ -2521,6 +2521,75 @@ vkr_internal void vkr_mesh_manager_release_asset(VkrMeshManager *manager,
   }
 }
 
+/* A loaded asset that at least one instance draws. The reverse index lists
+   an asset's instances, so an asset only a hold keeps has no head. */
+vkr_internal bool8_t
+vkr_mesh_manager_asset_is_drawn(const VkrMeshManager *manager, uint32_t slot) {
+  const VkrMeshAsset *asset = &manager->mesh_assets.data[slot];
+  return asset->id != 0u &&
+         asset->loading_state == VKR_MESH_LOADING_STATE_LOADED &&
+         manager->asset_instance_generations.data[slot] == asset->generation &&
+         manager->asset_instance_heads.data[slot] != VKR_INVALID_ID;
+}
+
+bool8_t vkr_mesh_manager_hold_drawn_assets(VkrMeshManager *manager,
+                                           VkrMeshAssetHold *out_hold) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(out_hold != NULL, "Out hold is NULL");
+
+  *out_hold = (VkrMeshAssetHold){0};
+
+  uint32_t count = 0u;
+  for (uint32_t slot = 0u; slot < manager->next_asset_index; ++slot) {
+    if (vkr_mesh_manager_asset_is_drawn(manager, slot)) {
+      ++count;
+    }
+  }
+  if (count == 0u) {
+    return true_v;
+  }
+
+  VkrMeshAssetHandle *assets = vkr_allocator_alloc(
+      &manager->asset_allocator, (uint64_t)count * sizeof(*assets),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!assets) {
+    return false_v;
+  }
+
+  uint32_t held = 0u;
+  for (uint32_t slot = 0u; slot < manager->next_asset_index; ++slot) {
+    if (vkr_mesh_manager_asset_is_drawn(manager, slot)) {
+      VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+      asset->ref_count++;
+      assets[held++] = (VkrMeshAssetHandle){.id = asset->id,
+                                            .generation = asset->generation};
+    }
+  }
+
+  out_hold->assets = assets;
+  out_hold->count = held;
+  return true_v;
+}
+
+void vkr_mesh_manager_release_hold(VkrMeshManager *manager,
+                                   VkrMeshAssetHold *hold) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(hold != NULL, "Hold is NULL");
+
+  if (!hold->assets) {
+    *hold = (VkrMeshAssetHold){0};
+    return;
+  }
+
+  for (uint32_t i = 0u; i < hold->count; ++i) {
+    vkr_mesh_manager_release_asset(manager, hold->assets[i]);
+  }
+  vkr_allocator_free(&manager->asset_allocator, hold->assets,
+                     (uint64_t)hold->count * sizeof(*hold->assets),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  *hold = (VkrMeshAssetHold){0};
+}
+
 void vkr_mesh_manager_pump_async(VkrMeshManager *manager) {
   assert_log(manager != NULL, "Manager is NULL");
 

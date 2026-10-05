@@ -369,6 +369,27 @@ void vkr_mesh_manager_pump_async(VkrMeshManager *manager);
 VkrMeshAsset *vkr_mesh_manager_get_live_asset(VkrMeshManager *manager,
                                               VkrMeshAssetHandle handle);
 
+/** Mesh assets held loaded with or without instances; the hold owns one
+    reference on each and `assets` comes from the manager. */
+typedef struct VkrMeshAssetHold {
+  VkrMeshAssetHandle *assets;
+  uint32_t count;
+} VkrMeshAssetHold;
+
+/**
+ * @brief Takes a reference on every loaded asset an instance draws, so the
+ * assets, their materials and those materials' textures outlive the instances
+ * and a later instance of the same key reuses them without loading.
+ * @return false when out of memory, leaving `out_hold` empty.
+ */
+bool8_t vkr_mesh_manager_hold_drawn_assets(VkrMeshManager *manager,
+                                           VkrMeshAssetHold *out_hold);
+
+/** Drops a hold's references and empties it; an asset no instance or other
+    hold uses is destroyed. */
+void vkr_mesh_manager_release_hold(VkrMeshManager *manager,
+                                   VkrMeshAssetHold *hold);
+
 // ============================================================================
 // Mesh Instance API
 // ============================================================================
