@@ -254,6 +254,7 @@ decisions before dependent implementation.
 | Proposal | Scope |
 |---|---|
 | [Codebase audit remediation](proposals/codebase-audit-remediation.md) | Applied owner decisions and what remains after the 2026-09-23 audit: re-checking the Vulkan text baseline on a Vulkan machine, the Bistro re-cook, deferred items and host-unavailable checks. |
+| [Container audit and Array/Vector merge](proposals/container-audit.md) | Hash table probe-limit insert failures, tombstone buildup, weak low hash bits and per-probe division; smaller `Vector`, `Queue`, bitset and freelist items; a single growable `Array` that replaces `Vector`, with the slot-table stability rule and the evidence for each fix. |
 | [Renderer features and performance audit](proposals/renderer-features-perf/renderer-features-perf.md) | Normal/fog corrections, optional material storage, screen-space and post-processing costs, and remaining native acceptance. |
 | [Conditional D3D12 backend evaluation](proposals/d3d12-backend-evaluation.md) | Conditions for considering a third backend. |
 | [Metal follow-ups from the Windows Vulkan sessions](proposals/metal-followups.md) | Results of the Metal checks of Windows-only work, the Metal baseline needed for cross-backend captures, and deferred cross-backend lighting work with its Metal costs. |
