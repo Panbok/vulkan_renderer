@@ -67,7 +67,8 @@ struct VkrVkCullRoot
     uint transmission_first_view;
     uint transmission_required_flags;
     uint local_shadow_excluded_flags;
-    uint reserved;
+    // Retained cascades' views, whose passes do not run this frame.
+    uint encode_idle_view_mask;
     VkrGpuLodView *lod_views;
     VkrVkGeometryRow *geometry_rows;
 };
@@ -761,7 +762,9 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     uint candidate_index = thread_id.x;
     uint view_index = thread_id.y;
     if (candidate_index >= root.candidate_count ||
-        view_index >= root.view_count)
+        view_index >= root.view_count ||
+        (view_index < 32u &&
+         (root.encode_idle_view_mask & (1u << view_index)) != 0u))
         return;
     uint classification_index =
         view_index * root.candidate_capacity + candidate_index;

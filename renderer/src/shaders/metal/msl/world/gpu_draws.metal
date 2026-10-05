@@ -37,7 +37,8 @@ struct VkrMetalPacketGpuDrawView {
   uint required_candidate_flags;
   uint hzb_enabled;
   uint excluded_candidate_flags;
-  uint reserved;
+  // Nonzero for a retained cascade, whose pass does not run this frame.
+  uint encode_idle;
 };
 
 struct VkrMetalPacketIcbContainer {
@@ -495,7 +496,7 @@ vkr_metal_packet_gpu_draw_encode_impl(constant VkrMetalPacketGpuDrawRoot &root,
   uint index = position.x;
   uint view_index = root.encode_view_index + position.y;
   if (index >= root.candidate_count || view_index >= root.view_count ||
-      icb == nullptr)
+      icb == nullptr || root.views[view_index].encode_idle != 0u)
     return;
   uint view_base = view_index * root.visible_capacity;
   uint classification = root.classifications[view_base + index];

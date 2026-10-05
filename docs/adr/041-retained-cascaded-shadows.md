@@ -49,12 +49,13 @@ local light redraws it every frame. Pending fits and
 content validity commit only after successful submit. Reused cascades publish
 the fit that actually produced their depth.
 
-A retained cascade keeps its culling view index, but the view does no work:
-on Metal it excludes every candidate flag and the encode pass skips its
-indirect-command reset; on Vulkan its first frustum plane rejects every
-sphere. The view is idle exactly when `shadow_cascade_render_mask` leaves its
-graph pass uninstantiated, so a stale command range is never executed and the
-next redraw resets it first. Local faces achieve the same by omitting reused
+A retained cascade keeps its culling view and classification, so
+`draw.shadow.cascadeN.indirect_commands` still counts the casters behind its
+depth, but encoding writes no commands for it: Metal sets the view's
+`encode_idle` and skips its indirect-command reset, and Vulkan sets its bit in
+`VkrVulkanCullRoot.encode_idle_view_mask`. The view is idle exactly when
+`shadow_cascade_render_mask` leaves its graph pass uninstantiated, so a stale
+command range is never executed and the next redraw resets it first. Local faces achieve the same by omitting reused
 faces' views (ADR-019).
 
 Classification skips a caster in a directional cascade when its world
@@ -224,9 +225,14 @@ compiled SPIR-V; native Vulkan execution remains unavailable.
 
 Metal Release on the M1 Pro, 2026-10-05, dirty tree, non-authoritative.
 `bistro_native_perf_audit_steady` under `local-offscreen-perf-audit-gpu` (five
-children of 300 frames, every cascade retained) measured `Cull.Classify` at
-0.014 ms against 0.022 ms p50 and `Cull.Encode` at 0.035 ms against 0.159 ms;
-with one cascade redrawing, `Cull.Encode` took 0.067 ms. A temporary diagnostic
+children of 300 frames, every cascade retained) measured `Cull.Encode` at
+0.035 ms against 0.159 ms p50, with `Cull.Classify` unchanged at 0.023 ms.
+An earlier variant that also rejected every candidate in classification
+saved a further 0.008 ms but zeroed the retained cascades' command counts that
+twelve cases assert on. `bistro_shadow_orbit` and `bistro_metal_production_040`
+pass their `min >= 1` cascade assertions, and the Bistro street, indoor and
+fourteen-view text snapshots, whose camera jumps redraw cascades partially,
+pass against their accepted generations. A temporary diagnostic
 that redraws one cascade per three frames in rotation, leaving the other views
 idle, produced cascade depth captures byte-identical to a normal run's for all
 four cascades. A Metal API validation run passes; native Vulkan execution

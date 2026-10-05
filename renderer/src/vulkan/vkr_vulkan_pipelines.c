@@ -1265,7 +1265,7 @@ vkr_global const VkrVulkanReflectedField s_vk_cull_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, transmission_first_view),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, transmission_required_flags),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, local_shadow_excluded_flags),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, encode_idle_view_mask),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, lod_views),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, geometry_rows),
 };

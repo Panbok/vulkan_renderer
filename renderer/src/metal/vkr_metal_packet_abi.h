@@ -313,7 +313,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawView {
   uint32_t required_candidate_flags;
   uint32_t hzb_enabled;
   uint32_t excluded_candidate_flags;
-  uint32_t reserved;
+  /** Nonzero for a retained cascade: classification still counts its casters,
+   * but encoding writes no commands, since its pass does not run. */
+  uint32_t encode_idle;
 } VkrMetalPacketGpuDrawView;
 
 _Static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,

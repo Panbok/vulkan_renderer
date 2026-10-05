@@ -1,8 +1,6 @@
 #include "math/vkr_frustum.h"
 #include "vulkan/vkr_vulkan_internal.h"
 
-#include <float.h>
-
 enum {
   VKR_VULKAN_DEFERRED_BUCKET_COUNT = VKR_WORLD_DRAW_STATE_BUCKET_COUNT,
   VKR_VULKAN_INDIRECT_COMMAND_SIZE = sizeof(VkDrawIndexedIndirectCommand),
@@ -567,17 +565,6 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
     if (!renderer->config.frustum_enabled)
       MemZero(planes,
               (uint64_t)view_count * VKR_FRUSTUM_PLANE_COUNT * sizeof(*planes));
-    /* A retained cascade draws nothing this frame, so its view rejects every
-       candidate at its first plane. */
-    for (uint32_t cascade = 0u;
-         !transmission &&
-         cascade < renderer->prepared_frame.shadow_cascade_count;
-         ++cascade) {
-      if ((renderer->prepared_frame.shadow_cascade_render_mask &
-           (UINT32_C(1) << cascade)) == 0u)
-        planes[(1u + cascade) * VKR_FRUSTUM_PLANE_COUNT] =
-            (Vec4){0.0f, 0.0f, 0.0f, -FLT_MAX};
-    }
   }
   const uint32_t visible_capacity =
       transmission
@@ -618,6 +605,17 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
               : 0u,
   };
+  /* A retained cascade draws nothing this frame: its view still counts
+     casters for the cascade metrics, but encodes no commands. */
+  for (uint32_t cascade = 0u;
+       !transmission &&
+       cascade < renderer->prepared_frame.shadow_cascade_count &&
+       cascade + 1u < 32u;
+       ++cascade) {
+    if ((renderer->prepared_frame.shadow_cascade_render_mask &
+         (UINT32_C(1) << cascade)) == 0u)
+      out_root->encode_idle_view_mask |= UINT32_C(1) << (cascade + 1u);
+  }
   for (uint32_t mip = 0u; mip < VKR_VULKAN_TEXTURE_MIP_MAX; ++mip)
     out_root->hzb_textures[mip] = UINT32_MAX;
   if (pipeline == VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY && !transmission) {

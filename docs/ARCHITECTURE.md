@@ -1100,7 +1100,7 @@ cascade redraws.
 Static reuse requires guard
 containment, matching generations, valid retained layers and a match with the
 common submitted fit; stale physical copies redraw that fit once. A retained
-cascade's culling view rejects every candidate and skips its command reset,
+cascade's culling view classifies but encodes no commands and skips its reset,
 and casters smaller than one cascade texel skip the cascades. Dynamic overlap or
 incomplete publication forces rendering. SDSM and proactive refresh are opt-in;
 fixed splits and zero proactive budget remain defaults. See

@@ -547,7 +547,7 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_view_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawView, hzb_enabled, "hzb_enabled", 100),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawView, excluded_candidate_flags,
                   "excluded_candidate_flags", 104),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawView, reserved, "reserved", 108),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawView, encode_idle, "encode_idle", 108),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_root_fields[] = {

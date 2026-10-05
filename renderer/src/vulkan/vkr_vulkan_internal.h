@@ -580,7 +580,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   uint32_t transmission_first_view;
   uint32_t transmission_required_flags;
   uint32_t local_shadow_excluded_flags;
-  uint32_t reserved;
+  /** Views, a bit each below 32, of retained cascades: classification still
+      counts their casters, but encoding writes no commands. */
+  uint32_t encode_idle_view_mask;
   /** One VkrGpuLodView per culling view, and the geometry rows whose
       decode records lead to LOD rows (ADR-084). */
   uint64_t lod_views;
