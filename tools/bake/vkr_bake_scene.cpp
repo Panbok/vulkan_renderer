@@ -1333,6 +1333,7 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       return false;
     }
     apply_sun_light(entities, authored_sun, &atmosphere_settings);
+    scene->atmosphere_settings = atmosphere_settings;
     if (!vkr_bake_atmosphere_build(&scene->atmosphere, &atmosphere_settings) ||
         !parse_environment(json, scene->atmosphere.enabled,
                            &scene->environment)) {
@@ -1399,6 +1400,7 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
     }
     if (scene->atmosphere.enabled) {
       const Vec3 key = scene->atmosphere.key_light_direction;
+      scene->atmosphere_light = (uint32_t)scene->lights.size();
       scene->lights.push_back((VkrBakeSceneLight){
           .kind = VkrBakeSceneLightKind::Directional,
           .direction = vec3_new(-key.x, -key.y, -key.z),
@@ -1431,6 +1433,29 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
     reset_scene(scene);
     set_error(VkrBakeSceneError::OutOfMemory, out_error);
     return false;
+  }
+}
+
+bool vkr_bake_scene_build_sun_atmosphere(const VkrBakeScene *scene,
+                                         Vec3 sun_direction,
+                                         VkrBakeAtmosphere *out) {
+  if (!scene || !out || !scene->atmosphere.enabled ||
+      !finite_vec3(sun_direction)) {
+    return false;
+  }
+  VkrAtmosphereSettings settings = scene->atmosphere_settings;
+  settings.sun_direction = vec3_normalize(sun_direction);
+  return vkr_bake_atmosphere_build(out, &settings);
+}
+
+void vkr_bake_scene_use_atmosphere(VkrBakeScene *scene,
+                                   const VkrBakeAtmosphere &atmosphere) {
+  scene->atmosphere = atmosphere;
+  if (scene->atmosphere_light < scene->lights.size()) {
+    VkrBakeSceneLight &light = scene->lights[scene->atmosphere_light];
+    const Vec3 key = atmosphere.key_light_direction;
+    light.direction = vec3_new(-key.x, -key.y, -key.z);
+    light.color = atmosphere.observer_irradiance;
   }
 }
 

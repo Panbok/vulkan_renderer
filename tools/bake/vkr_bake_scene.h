@@ -94,6 +94,12 @@ struct VkrBakeScene {
   std::vector<std::string> dependency_paths;
   VkrBakeSceneEnvironment environment;
   VkrBakeAtmosphere atmosphere;
+  /* The settings `atmosphere` was built from, so a bake can rebuild it for
+     another sun direction (ADR-088 sun keys). */
+  VkrAtmosphereSettings atmosphere_settings = {};
+  /* The directional light the atmosphere's key light became; UINT32_MAX
+     without an atmosphere. */
+  uint32_t atmosphere_light = UINT32_MAX;
   VkrSubsurfaceProfile subsurface_profiles[VKR_SUBSURFACE_PROFILE_COUNT] = {};
   uint32_t subsurface_profile_count = 0u;
   VkrBakeTextureStore *texture_store = nullptr;
@@ -106,6 +112,19 @@ struct VkrBakeScene {
  */
 bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                          VkrBakeSceneError *out_error);
+
+/* Builds the atmosphere `scene` would have with its sun toward the unit
+   `sun_direction`, everything else as authored. `scene` has an enabled
+   atmosphere. */
+bool vkr_bake_scene_build_sun_atmosphere(const VkrBakeScene *scene,
+                                         Vec3 sun_direction,
+                                         VkrBakeAtmosphere *out);
+
+/* Makes `atmosphere` the scene's sky and its key light the atmosphere
+   light's direction and color: the sun's while the sun lights the observer,
+   else the moon's (ADR-081). */
+void vkr_bake_scene_use_atmosphere(VkrBakeScene *scene,
+                                   const VkrBakeAtmosphere &atmosphere);
 
 /* `scene` is successfully loaded and `direction` is finite and unit length.
    Returns the sky light's linear radiance: the baked atmosphere or constant

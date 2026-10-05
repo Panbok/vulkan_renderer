@@ -749,48 +749,99 @@ bool write_manifest(const Options &options, const VkrBakeScene &scene,
   return write_atomic(options.manifest, manifest.str());
 }
 
-/* One baked layer: its record in the set and the transport that fills it. */
+/* One baked layer: its record in the set, the transport that fills it, and
+   for a sun key the index of its atmosphere. */
 struct BakeLayer {
   VkrLightmapLayer record;
   VkrBakeMetalLayer transport;
+  int32_t sun_key = -1;
 };
 
+/* Sun keys of an atmosphere scene (owner decision 2026-10-05: eight keys on
+   the sun's daily circle). */
+constexpr uint32_t kSunKeyCount = 8u;
+
+/* Unit `v` turned by `angle` radians about the unit `axis`, right-handed. */
+Vec3 rotate_about(Vec3 v, Vec3 axis, float32_t angle) {
+  const float32_t c = std::cos(angle);
+  const float32_t s = std::sin(angle);
+  return vec3_normalize(
+      vec3_add(vec3_add(vec3_scale(v, c), vec3_scale(vec3_cross(axis, v), s)),
+               vec3_scale(axis, vec3_dot(axis, v) * (1.0f - c))));
+}
+
+/* The keys' sun directions: the authored sun turned about the atmosphere's
+   celestial pole in steps of 360 / kSunKeyCount degrees of hour angle, so
+   the sun keeps its angle to the pole (its season). Key 0 is the authored
+   sun. */
+std::vector<Vec3> sun_key_directions(const VkrBakeScene &scene) {
+  const Vec3 pole = vec3_normalize(scene.atmosphere_settings.celestial_pole);
+  const Vec3 sun = vec3_normalize(scene.atmosphere_settings.sun_direction);
+  std::vector<Vec3> directions;
+  for (uint32_t k = 0u; k < kSunKeyCount; ++k) {
+    directions.push_back(rotate_about(
+        sun, pole, 6.28318530718f * (float32_t)k / (float32_t)kSunKeyCount));
+  }
+  return directions;
+}
+
 /*
- * The layers this scene's lights make (ADR-087): sun key 0 holds the
- * directional lights' bounce and the sky, without the sun's direct term at the
- * texel, which the runtime adds; lamp group 0 holds the other lights' direct
- * and bounce light and surface emission. A scene without a directional light
- * has no sun key, and its sky joins lamp group 0 as static light.
+ * The layers this scene's lights make (ADR-088). In an atmosphere scene the
+ * kSunKeyCount sun keys hold the bounce of the atmosphere's key light and the
+ * sky for each key's sun, without the sun's direct term at the texel, which
+ * the runtime adds; lamp group 0 holds every other light's direct and bounce
+ * light and surface emission. Without an atmosphere, sun key 0 holds the
+ * directional lights' bounce and the sky; a scene without a directional
+ * light has no sun key, and its sky joins lamp group 0 as static light.
  */
-std::vector<BakeLayer> scene_layers(const VkrBakeScene &scene) {
+std::vector<BakeLayer> scene_layers(const VkrBakeScene &scene,
+                                    const std::vector<Vec3> &sun_keys) {
   const bool sky = scene.environment.enabled &&
                    scene.environment.kind != VkrBakeSceneEnvironmentKind::None;
-  BakeLayer sun = {};
-  BakeLayer lamps = {};
-  bool has_sun = false;
-  for (uint32_t i = 0u; i < scene.lights.size(); ++i) {
-    const VkrBakeSceneLight &light = scene.lights[i];
-    if (light.kind != VkrBakeSceneLightKind::Directional) {
-      lamps.transport.lights.push_back(i);
-      continue;
-    }
-    sun.transport.lights.push_back(i);
-    if (!has_sun) {
-      has_sun = true;
-      sun.record.sun_direction = vec3_normalize(
-          vec3_new(-light.direction.x, -light.direction.y, -light.direction.z));
-    }
-  }
   std::vector<BakeLayer> layers;
-  if (has_sun) {
-    sun.record.kind = VKR_LIGHTMAP_LAYER_SUN_KEY;
-    sun.record.index = 0u;
-    sun.transport.sky = sky;
-    layers.push_back(sun);
+  BakeLayer lamps = {};
+  if (!sun_keys.empty()) {
+    for (uint32_t k = 0u; k < sun_keys.size(); ++k) {
+      BakeLayer key = {};
+      key.record.kind = VKR_LIGHTMAP_LAYER_SUN_KEY;
+      key.record.index = k;
+      key.record.sun_direction = sun_keys[k];
+      key.transport.lights.push_back(scene.atmosphere_light);
+      key.transport.sky = sky;
+      key.sun_key = (int32_t)k;
+      layers.push_back(key);
+    }
+    for (uint32_t i = 0u; i < scene.lights.size(); ++i) {
+      if (i != scene.atmosphere_light) {
+        lamps.transport.lights.push_back(i);
+      }
+    }
+  } else {
+    BakeLayer sun = {};
+    bool has_sun = false;
+    for (uint32_t i = 0u; i < scene.lights.size(); ++i) {
+      const VkrBakeSceneLight &light = scene.lights[i];
+      if (light.kind != VkrBakeSceneLightKind::Directional) {
+        lamps.transport.lights.push_back(i);
+        continue;
+      }
+      sun.transport.lights.push_back(i);
+      if (!has_sun) {
+        has_sun = true;
+        sun.record.sun_direction = vec3_normalize(vec3_new(
+            -light.direction.x, -light.direction.y, -light.direction.z));
+      }
+    }
+    if (has_sun) {
+      sun.record.kind = VKR_LIGHTMAP_LAYER_SUN_KEY;
+      sun.record.index = 0u;
+      sun.transport.sky = sky;
+      layers.push_back(sun);
+    }
+    lamps.transport.sky = sky && !has_sun;
   }
   lamps.record.kind = VKR_LIGHTMAP_LAYER_LAMP_GROUP;
   lamps.record.index = 0u;
-  lamps.transport.sky = sky && !has_sun;
   lamps.transport.emission = true;
   lamps.transport.texel_direct = true;
   layers.push_back(lamps);
@@ -815,7 +866,27 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     return 1;
   }
 
-  const std::vector<BakeLayer> layers = scene_layers(scene);
+  /* Each sun key's atmosphere is built once and made current before the key's
+     layer of every page. */
+  std::vector<Vec3> sun_keys;
+  std::vector<VkrBakeAtmosphere> key_atmospheres;
+  if (scene.atmosphere.enabled &&
+      scene.atmosphere_light < scene.lights.size()) {
+    const auto atmosphere_start = std::chrono::steady_clock::now();
+    sun_keys = sun_key_directions(scene);
+    key_atmospheres.resize(sun_keys.size());
+    for (size_t k = 0u; k < sun_keys.size(); ++k) {
+      if (!vkr_bake_scene_build_sun_atmosphere(&scene, sun_keys[k],
+                                               &key_atmospheres[k])) {
+        std::fprintf(stderr, "Building the atmosphere of sun key %zu failed\n",
+                     k);
+        return 1;
+      }
+    }
+    std::printf("sun_keys=%zu atmosphere_s=%.2f\n", sun_keys.size(),
+                seconds_since(atmosphere_start));
+  }
+  const std::vector<BakeLayer> layers = scene_layers(scene, sun_keys);
   std::vector<VkrLightmapLayer> layer_records;
   for (const BakeLayer &layer : layers) {
     layer_records.push_back(layer.record);
@@ -907,6 +978,14 @@ int bake_set(const Options &options, VkrBakeScene &scene,
                                           (uint32_t)scene.triangles.size(),
                                           layout, page, &texels);
     for (uint32_t l = 0u; ok && l < layers.size(); ++l) {
+      if (layers[l].sun_key >= 0) {
+        vkr_bake_scene_use_atmosphere(
+            &scene, key_atmospheres[(size_t)layers[l].sun_key]);
+        ok = vkr_bake_metal_update_lighting(gpu, scene);
+        if (!ok) {
+          break;
+        }
+      }
       std::vector<Vec3> irradiance;
       double seconds = 0.0;
       ok = vkr_bake_metal_gather(gpu, texels, layers[l].transport, settings,
@@ -926,9 +1005,15 @@ int bake_set(const Options &options, VkrBakeScene &scene,
           vkr_crc32_update(payload_crc, blocks.data(), (uint64_t)blocks.size());
       stream.write((const char *)blocks.data(), (std::streamsize)blocks.size());
       ok = (bool)stream;
-      std::printf("baked page=%u/%u layer=%u/%zu texels=%zu gpu_s=%.2f\n",
+      float64_t luminance_sum = 0.0;
+      for (const Vec3 &value : irradiance) {
+        luminance_sum += luminance(value);
+      }
+      std::printf("baked page=%u/%u layer=%u/%zu texels=%zu gpu_s=%.2f "
+                  "mean_luminance=%.5g\n",
                   page + 1u, layout.page_count, l + 1u, layers.size(),
-                  texels.size(), seconds);
+                  texels.size(), seconds,
+                  texels.empty() ? 0.0 : luminance_sum / texels.size());
       std::fflush(stdout);
     }
   }

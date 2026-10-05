@@ -10,7 +10,8 @@ authority: adr
 
 Accepted (partial). Baking, storage, packaging and the editor controls are
 implemented. The runtime does not sample lightmaps yet (the scene loader
-ignores the `lightmaps` block), only one sun key and one lamp group are baked,
+ignores the `lightmaps` block), lights have no groups yet so every lamp bakes
+into lamp group 0,
 and the bake needs Metal ray tracing.
 
 ## Context
@@ -72,13 +73,24 @@ lights' direct term at the texel:
 
 | Layer | Lights | Sky | Emission | Direct at texel |
 |---|---|---|---|---|
-| Sun key | directional | yes | no | no; the runtime adds the sun |
-| Lamp group | the others | only without a sun key | yes | yes |
+| Sun key | the atmosphere's key light | yes | no | no; the runtime adds the sun |
+| Lamp group | every other light | only without a sun key | yes | yes |
 
 Gather paths never hit a delta light, so a sun key holds sun bounce and sky
 light only. Sun key plus lamp group, without the lamps' texel term, equals one
-path of the full transport. Today a scene bakes sun key 0 (its first
-directional light's direction recorded) and lamp group 0.
+path of the full transport.
+
+A scene with an atmosphere bakes eight sun keys on the sun's daily circle
+(owner decision 2026-10-05): key k turns the authored sun by k × 45 degrees,
+right-handed, about the atmosphere's `celestial_pole`, so the sun keeps its
+angle to the pole. Each key rebuilds the atmosphere for its sun
+(`vkr_bake_scene_build_sun_atmosphere`): the sky the key's paths escape to
+and the key light, the sun while it lights the observer, else the moon
+(ADR-081). A key records its sun direction; the runtime blends the two keys
+nearest the current sun along the circle. A scene without an atmosphere bakes
+one sun key from its directional lights, and a scene without a directional
+light bakes none. Lamp group 0 holds every light that is not the
+atmosphere's key light.
 
 ### GPU transport
 
@@ -156,9 +168,10 @@ and mappable under pack loader `VKR_PACK_LOADER_LIGHTMAP`. The Bakery panel's
 
 ## Consequences
 
-- Bistro (2,909 lightmapped instances at 8 texels per meter, three 4096 pages,
-  two layers) bakes in 46 s at 16 samples per texel on the M1 Pro and stores
-  100.7 MB; each further layer adds 16 MiB per page. Cooking lightmap UVs
+- Bistro (2,909 lightmapped instances at 8 texels per meter, three 4096 pages)
+  bakes nine layers, eight sun keys and a lamp group, in 180 s at 16 samples
+  per texel on the M1 Pro and stores 453 MB; each layer takes 16 MiB per
+  page, so lamp groups and the texel density set the memory floor. Cooking lightmap UVs
   costs about 25 times the cook time of the same model without them.
 - Bakes need Metal ray tracing. Windows and Linux hosts cannot bake lightmaps
   until the CPU integrator gains the layer split and texel direct term.
@@ -240,6 +253,13 @@ texels per meter with deferred textures:
   probes, 7 valid cells, two regions) in 5.2 s. Parity on that level at 2,048
   samples: -0.12% overall, sky -0.02%, lamps +0.31% (z = 0.95), sun -0.80%.
   Rebaking produced the same file digest.
+
+- Sun keys: the eight key atmospheres build in 6.8 s. On the blockout each
+  key layer bakes in 0.14 s, with mean luminance from 0.20 to 0.41 around
+  the circle (that sun never sets: it stays 10 degrees above the horizon at
+  its lowest). Bistro with eight keys and lamp group 0 at 16 samples: 180 s,
+  131 s of it GPU time and 31 s encoding, 453 MB, 6.4 GB peak memory; key
+  luminance 0.28 to 0.59.
 
 Unavailable: any runtime use, and a Windows or Vulkan host.
 

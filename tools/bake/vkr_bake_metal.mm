@@ -1190,6 +1190,14 @@ VkrBakeMetalContext *vkr_bake_metal_create(const VkrBakeScene &scene) {
 
 void vkr_bake_metal_destroy(VkrBakeMetalContext *context) { delete context; }
 
+bool vkr_bake_metal_update_lighting(VkrBakeMetalContext *context,
+                                    const VkrBakeScene &scene) {
+  @autoreleasepool {
+    return context && upload_lights(context, scene) &&
+           upload_sky(context, scene);
+  }
+}
+
 namespace {
 
 /* Texel positions and normals as float4 arrays. */

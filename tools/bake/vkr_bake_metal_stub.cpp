@@ -11,6 +11,13 @@ VkrBakeMetalContext *vkr_bake_metal_create(const VkrBakeScene &scene) {
 
 void vkr_bake_metal_destroy(VkrBakeMetalContext *context) { (void)context; }
 
+bool vkr_bake_metal_update_lighting(VkrBakeMetalContext *context,
+                                    const VkrBakeScene &scene) {
+  (void)context;
+  (void)scene;
+  return false;
+}
+
 bool vkr_bake_metal_trace_benchmark(
     VkrBakeMetalContext *context,
     const std::vector<VkrBakeLightmapTexel> &texels, uint32_t samples,

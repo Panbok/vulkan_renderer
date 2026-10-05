@@ -66,8 +66,9 @@ for tile-memory reads and lazily allocated transient attachments.
   ([ADR-041](../adr/041-retained-cascaded-shadows.md)); sun bounce and sky
   light come from baked sun keys blended by the sun position, and static
   lamps from lamp-group layers the runtime scales
-  ([ADR-088](../adr/088-baked-lightmap-sets.md)). Open: the sun path and the
-  per-key atmosphere.
+  ([ADR-088](../adr/088-baked-lightmap-sets.md)), eight keys on the sun's
+  daily circle about the celestial pole, each with its own atmosphere. Open:
+  the time-of-day system that turns the sun and moon and scales lamp groups.
 - Lightmap design: unwrapping, packing, density, the GPU baker and ASTC 4×4
   HDR storage are decided ([ADR-088](../adr/088-baked-lightmap-sets.md)).
   Open: a directional encoding (SH or a dominant direction) for normal maps
@@ -185,14 +186,14 @@ packaging and the Bakery panel options, with the owner decisions and Bistro
 measurements.
 
 Open: irradiance only or directional SH per layer for normal-mapped surfaces,
-the sun path the eight keys sample before a time-of-day model exists, and the
-texel density budget for the M1 memory floor (Bistro stores 16 MiB per layer
-page; twelve layers on three pages would be 576 MiB).
+and the texel density budget for the M1 memory floor (Bistro stores 16 MiB
+per layer page: 453 MB for eight sun keys and one lamp group on three
+pages).
 
 Remaining phases:
 
-1. Bake completion: eight sun keys from a sun path with a per-key atmosphere,
-   one layer per lamp group once lights carry groups, the layer split and
+1. Bake completion: one layer per lamp group once lights carry groups, the
+   layer split and
    texel direct term in the CPU integrator for hosts without Metal ray
    tracing, and a faster path through stacked cutout foliage (textured Bistro
    bakes at a third of the untextured rate).

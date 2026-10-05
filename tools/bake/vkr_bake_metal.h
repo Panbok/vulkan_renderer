@@ -59,6 +59,12 @@ VkrBakeMetalContext *vkr_bake_metal_create(const VkrBakeScene &scene);
 
 void vkr_bake_metal_destroy(VkrBakeMetalContext *context);
 
+/* Uploads the scene's lights and sky again after the bake changed them, as
+   between sun keys. The light count is unchanged. No dispatch is in flight
+   between calls, so the previous buffers are free. */
+bool vkr_bake_metal_update_lighting(VkrBakeMetalContext *context,
+                                    const VkrBakeScene &scene);
+
 /* Throughput measurement: traces `samples` cosine-weighted closest-hit rays
  * from every texel and writes each texel's hit fraction. Reports the GPU time
  * of the dispatches in seconds. */
