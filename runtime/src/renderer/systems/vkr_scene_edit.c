@@ -2223,7 +2223,11 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !WRITE_INT("point_kind", p->kind) ||
         !WRITE_BOOL("point_enabled", p->enabled) ||
         !WRITE_BOOL("point_casts_shadow", p->casts_shadow) ||
-        !json_floats(w, "point_source_radius", &p->source_radius, 1))
+        !json_floats(w, "point_source_radius", &p->source_radius, 1) ||
+        !WRITE_INT("point_mobility", p->mobility) ||
+        !vkr_json_writer_name(w, string8_lit("point_group")) ||
+        !vkr_json_writer_string(w, string8_create((uint8_t *)p->light_group,
+                                                  strlen(p->light_group))))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) {
@@ -2245,7 +2249,11 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
     if (!json_floats(w, "rectangle_color", &p->color.x, 3) ||
         !json_floats(w, "rectangle_radiance", &p->radiance, 1) ||
         !json_floats(w, "rectangle_size", &p->size.x, 2) ||
-        !WRITE_BOOL("rectangle_enabled", p->enabled))
+        !WRITE_BOOL("rectangle_enabled", p->enabled) ||
+        !WRITE_INT("rectangle_mobility", p->mobility) ||
+        !vkr_json_writer_name(w, string8_lit("rectangle_group")) ||
+        !vkr_json_writer_string(w, string8_create((uint8_t *)p->light_group,
+                                                  strlen(p->light_group))))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_PHYSICS) {
@@ -3277,7 +3285,11 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
                                "id",
                                "directional_atmosphere_moon",
                                "uuid",
-                               "point_source_radius"};
+                               "point_source_radius",
+                               "point_mobility",
+                               "point_group",
+                               "rectangle_mobility",
+                               "rectangle_group"};
   MemZero(v, sizeof(*v));
   MemZero(extra, sizeof(*extra));
   components->count = 0u;
@@ -3445,6 +3457,27 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 34:
       ok = edit_json_floats(j, &v->point_light.source_radius, 1);
       break;
+    case 35:
+      ok = edit_json_int(j, 0, 1, &integer);
+      v->point_light.mobility = (VkrLightMobility)integer;
+      break;
+    case 36:
+      ok = edit_json_string(j, v->point_light.light_group,
+                            sizeof(v->point_light.light_group)) &&
+           vkr_lightmap_group_name_valid(v->point_light.light_group,
+                                         strlen(v->point_light.light_group));
+      break;
+    case 37:
+      ok = edit_json_int(j, 0, 1, &integer);
+      v->rectangle_light.mobility = (VkrLightMobility)integer;
+      break;
+    case 38:
+      ok =
+          edit_json_string(j, v->rectangle_light.light_group,
+                           sizeof(v->rectangle_light.light_group)) &&
+          vkr_lightmap_group_name_valid(v->rectangle_light.light_group,
+                                        strlen(v->rectangle_light.light_group));
+      break;
     }
     if (!ok)
       return false_v;
@@ -3480,6 +3513,11 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     required |= seen & (1u << 19u); /* Old journals default shadows off. */
   if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
     required |= seen & (1ull << 34u); /* Old journals have no source radius. */
+  /* Old journals bake every light into the default group. */
+  if (v->fields & VKR_SCENE_EDIT_POINT_LIGHT)
+    required |= seen & (3ull << 35u);
+  if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
+    required |= seen & (3ull << 37u);
   if (v->fields & VKR_SCENE_EDIT_RECTANGLE_LIGHT)
     required |= 15u << 21u;
   if (v->fields & VKR_SCENE_EDIT_PHYSICS) {

@@ -392,15 +392,18 @@ static void edit_test_structure(void) {
   vkr_scene_set_position(&scene, parent, vec3_new(10, 0, 0));
   vkr_scene_set_position(&scene, child, vec3_new(2, 3, 4));
   vkr_scene_set_parent(&scene, child, parent);
-  assert(vkr_scene_set_point_light(&scene, lamp,
-                                   &(ScenePointLight){.color = vec3_one(),
-                                                      .intensity = 4.0f,
-                                                      .constant = 1.0f,
-                                                      .range = 6.0f,
-                                                      .inner_cone_angle = 0.35f,
-                                                      .outer_cone_angle = 0.6f,
-                                                      .source_radius = 0.05f,
-                                                      .enabled = true_v}));
+  assert(vkr_scene_set_point_light(
+      &scene, lamp,
+      &(ScenePointLight){.color = vec3_one(),
+                         .intensity = 4.0f,
+                         .constant = 1.0f,
+                         .range = 6.0f,
+                         .inner_cone_angle = 0.35f,
+                         .outer_cone_angle = 0.6f,
+                         .source_radius = 0.05f,
+                         .enabled = true_v,
+                         .mobility = VKR_LIGHT_MOBILITY_DYNAMIC,
+                         .light_group = "street"}));
   vkr_scene_update(&scene, 0.0);
   VkrSceneEditState state = {0};
   vkr_scene_edit_reset(&state, &allocator, 1);
@@ -554,6 +557,10 @@ static void edit_test_structure(void) {
   assert(vkr_scene_get_transform(&scene, found)->parent.u64 == parent.u64);
   assert(vkr_scene_get_point_light(&scene, found)->intensity == 4.0f);
   assert(vkr_scene_get_point_light(&scene, found)->source_radius == 0.05f);
+  assert(vkr_scene_get_point_light(&scene, found)->mobility ==
+         VKR_LIGHT_MOBILITY_DYNAMIC);
+  assert(strcmp(vkr_scene_get_point_light(&scene, found)->light_group,
+                "street") == 0);
   assert(state.created_count == 1u && state.created[0].entity.u64 == found.u64);
   assert(vkr_scene_entity_ref(&scene, found, &ref) &&
          MemCompare(&ref, &created_ref, sizeof(ref)) == 0);

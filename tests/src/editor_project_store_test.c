@@ -489,9 +489,14 @@ static void project_test_presets(void) {
   VkrEditorPresets restored = {.presets = restored_presets,
                                .capacity = ArrayCount(restored_presets)};
   VkrEditorProjectError error = {0};
+  /* String properties, such as a light's group, decode through scratch. */
+  Arena *scratch_arena = arena_create(KB(64), KB(64));
+  assert(scratch_arena);
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&scratch));
   assert(vkr_editor_presets_parse(
-      (String8){.str = buffer.data, .length = buffer.length}, &restored, NULL,
-      &error));
+      (String8){.str = buffer.data, .length = buffer.length}, &restored,
+      &scratch, &error));
   assert(restored.count == 2u);
   for (uint32_t i = 0; i < 2u; ++i) {
     assert(restored_presets[i].type == presets[i].type);
@@ -514,6 +519,8 @@ static void project_test_presets(void) {
   assert(!vkr_editor_presets_parse(
       string8_lit("{\"version\":2,\"presets\":[]}"), &restored, NULL, &error));
   assert(restored.count == 0u);
+  vkr_allocator_release_global_accounting(&scratch);
+  arena_destroy(scratch_arena);
 }
 
 bool32_t run_editor_project_store_tests(void) {

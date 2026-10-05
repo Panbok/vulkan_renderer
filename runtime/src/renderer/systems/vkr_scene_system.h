@@ -16,6 +16,7 @@
 #include "vkr_froxel_fog.h"
 #include "vkr_lighting.h"
 
+#include "assets/vkr_lightmap_set.h"
 #include "containers/str.h"
 #include "core/vkr_entity.h"
 #include "core/vkr_type_desc.h"
@@ -484,6 +485,15 @@ typedef struct VkrSceneSun {
   Vec3 tint;
 } VkrSceneSun;
 
+/* How a light reaches the tiled pipeline (ADR-088): a static light is baked
+   into its light group's lightmap layer and adds nothing at runtime; a
+   dynamic light is never baked and lights at runtime. The desktop pipeline
+   lights both at runtime. Zero is static, so a zero-initialized light is. */
+typedef enum VkrLightMobility {
+  VKR_LIGHT_MOBILITY_STATIC = 0,
+  VKR_LIGHT_MOBILITY_DYNAMIC = 1,
+} VkrLightMobility;
+
 /**
  * @brief Point light component.
  *
@@ -506,6 +516,10 @@ typedef struct ScenePointLight {
   VkrPointLightKind kind;
   bool8_t enabled;      // Whether this light is active
   bool8_t casts_shadow; // Requires a finite positive range.
+  VkrLightMobility mobility;
+  /* A light group name (vkr_lightmap_group_name_valid); empty is the
+     default group. */
+  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
 } ScenePointLight;
 
 /** One-sided rectangular emitter. Entity translation is its center; rotation
@@ -515,6 +529,10 @@ typedef struct SceneRectangleLight {
   float32_t radiance;
   Vec2 size;
   bool8_t enabled;
+  VkrLightMobility mobility;
+  /* A light group name (vkr_lightmap_group_name_valid); empty is the
+     default group. */
+  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
 } SceneRectangleLight;
 
 /**

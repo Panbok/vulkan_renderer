@@ -192,13 +192,11 @@ pages).
 
 Remaining phases:
 
-1. Bake completion: one layer per lamp group once lights carry groups, the
-   layer split and
-   texel direct term in the CPU integrator for hosts without Metal ray
-   tracing, and a faster path through stacked cutout foliage (textured Bistro
-   bakes at a third of the untextured rate).
-2. Time of day: light groups and mobility in scene data; a system driving
-   sun, moon, sky and group intensities.
+1. Bake completion: the layer split and texel direct term in the CPU
+   integrator for hosts without Metal ray tracing, and a faster path through
+   stacked cutout foliage (textured Bistro bakes at a third of the untextured
+   rate).
+2. Time of day: a system driving sun, moon, sky and light group intensities.
 3. Tiled runtime: load VKLM sets (an ASTC 4×4 HDR texture format in both
    backends), map instances to their rectangles, and sample the blended sun
    keys and scaled lamp groups in the tiled pipeline's forward shader,

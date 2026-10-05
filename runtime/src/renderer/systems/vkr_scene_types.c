@@ -85,6 +85,46 @@ const VkrTypeDesc vkr_scene_visibility_type = {
 static const char *const s_point_light_kind_names[] = {"polynomial", "point",
                                                        "spot", NULL};
 
+static const char *const s_light_mobility_names[] = {"static", "dynamic", NULL};
+
+_Static_assert(sizeof(VkrLightMobility) == sizeof(uint32_t),
+               "ENUM properties store four bytes");
+
+/* The light-baking properties of point and rectangle lights (ADR-088). */
+#define SCENE_LIGHT_MOBILITY_PROPERTY(type)                                    \
+  {                                                                            \
+      .name = "mobility",                                                      \
+      .label = "Mobility",                                                     \
+      .group = "Baking",                                                       \
+      .tooltip = "Static lights bake into their group's lightmaps on tiled "   \
+                 "GPUs; dynamic lights light at runtime",                      \
+      .names = s_light_mobility_names,                                         \
+      .offset = TYPE_OFFSET(type, mobility),                                   \
+      .kind = VKR_PROPERTY_ENUM,                                               \
+  }
+
+#define SCENE_LIGHT_GROUP_PROPERTY(type)                                       \
+  {                                                                            \
+      .name = "light_group",                                                   \
+      .label = "Light group",                                                  \
+      .tooltip = "Baked lights of one group switch and dim together; empty "   \
+                 "is the default group",                                       \
+      .offset = TYPE_OFFSET(type, light_group),                                \
+      .capacity = sizeof(((type *)0)->light_group),                            \
+      .kind = VKR_PROPERTY_STRING,                                             \
+  }
+
+/* A group name the validators accept, or the reason it is not. */
+static bool8_t scene_light_baking_validate(const char *group, char *error,
+                                           uint32_t capacity) {
+  if (!vkr_lightmap_group_name_valid(group, strlen(group))) {
+    snprintf(error, capacity,
+             "Name light groups with letters, digits, '_' or '-'.");
+    return false_v;
+  }
+  return true_v;
+}
+
 _Static_assert(sizeof(VkrPointLightKind) == sizeof(uint32_t),
                "ENUM properties store four bytes");
 
@@ -187,6 +227,8 @@ static const VkrPropertyDesc s_point_light_properties[] = {
      .flags = VKR_PROPERTY_FLAG_HIDDEN,
      .min = 0.0f,
      .max = FLT_MAX},
+    SCENE_LIGHT_MOBILITY_PROPERTY(ScenePointLight),
+    SCENE_LIGHT_GROUP_PROPERTY(ScenePointLight),
 };
 
 static bool8_t point_light_validate(const void *value, char *error,
@@ -215,7 +257,7 @@ static bool8_t point_light_validate(const void *value, char *error,
     snprintf(error, capacity, "A spot light needs a nonzero direction.");
     return false_v;
   }
-  return true_v;
+  return scene_light_baking_validate(light->light_group, error, capacity);
 }
 
 static VkrPropertyState point_light_state(const void *value, uint32_t property,
@@ -233,6 +275,11 @@ static VkrPropertyState point_light_state(const void *value, uint32_t property,
   /* The radius only shapes shadow penumbrae. */
   if (!light->casts_shadow &&
       offset == offsetof(ScenePointLight, source_radius)) {
+    state.flags |= VKR_PROPERTY_STATE_DISABLED;
+  }
+  /* Only baked lights belong to a group. */
+  if (light->mobility == VKR_LIGHT_MOBILITY_DYNAMIC &&
+      offset == offsetof(ScenePointLight, light_group)) {
     state.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
   return state;
@@ -422,6 +469,8 @@ static const VkrPropertyDesc s_rectangle_light_properties[] = {
      .min = 0.0f,
      .max = FLT_MAX,
      .step = 0.01f},
+    SCENE_LIGHT_MOBILITY_PROPERTY(SceneRectangleLight),
+    SCENE_LIGHT_GROUP_PROPERTY(SceneRectangleLight),
 };
 
 static bool8_t rectangle_light_validate(const void *value, char *error,
@@ -431,7 +480,7 @@ static bool8_t rectangle_light_validate(const void *value, char *error,
     snprintf(error, capacity, "Rectangle size must be positive.");
     return false_v;
   }
-  return true_v;
+  return scene_light_baking_validate(light->light_group, error, capacity);
 }
 
 static void rectangle_light_defaults(void *value) {

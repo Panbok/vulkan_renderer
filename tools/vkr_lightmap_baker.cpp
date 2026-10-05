@@ -789,17 +789,23 @@ std::vector<Vec3> sun_key_directions(const VkrBakeScene &scene) {
  * The layers this scene's lights make (ADR-088). In an atmosphere scene the
  * kSunKeyCount sun keys hold the bounce of the atmosphere's key light and the
  * sky for each key's sun, without the sun's direct term at the texel, which
- * the runtime adds; lamp group 0 holds every other light's direct and bounce
- * light and surface emission. Without an atmosphere, sun key 0 holds the
- * directional lights' bounce and the sky; a scene without a directional
- * light has no sun key, and its sky joins lamp group 0 as static light.
+ * the runtime adds. Without an atmosphere, sun key 0 holds the directional
+ * lights' bounce and the sky; a scene without a directional light has no sun
+ * key, and its sky is static light of the default group.
+ *
+ * Every other enabled light is static (the scene leaves dynamic ones out)
+ * and bakes its direct and bounce light into its group's lamp layer. Lamp
+ * group 0 is the default group, which also holds surface emission; the other
+ * groups follow in name order. More than VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS
+ * groups fail.
  */
-std::vector<BakeLayer> scene_layers(const VkrBakeScene &scene,
-                                    const std::vector<Vec3> &sun_keys) {
+bool scene_layers(const VkrBakeScene &scene, const std::vector<Vec3> &sun_keys,
+                  std::vector<BakeLayer> *out_layers) {
   const bool sky = scene.environment.enabled &&
                    scene.environment.kind != VkrBakeSceneEnvironmentKind::None;
   std::vector<BakeLayer> layers;
-  BakeLayer lamps = {};
+  std::vector<uint32_t> lamp_lights;
+  bool has_sun = false;
   if (!sun_keys.empty()) {
     for (uint32_t k = 0u; k < sun_keys.size(); ++k) {
       BakeLayer key = {};
@@ -811,18 +817,18 @@ std::vector<BakeLayer> scene_layers(const VkrBakeScene &scene,
       key.sun_key = (int32_t)k;
       layers.push_back(key);
     }
+    has_sun = true;
     for (uint32_t i = 0u; i < scene.lights.size(); ++i) {
       if (i != scene.atmosphere_light) {
-        lamps.transport.lights.push_back(i);
+        lamp_lights.push_back(i);
       }
     }
   } else {
     BakeLayer sun = {};
-    bool has_sun = false;
     for (uint32_t i = 0u; i < scene.lights.size(); ++i) {
       const VkrBakeSceneLight &light = scene.lights[i];
       if (light.kind != VkrBakeSceneLightKind::Directional) {
-        lamps.transport.lights.push_back(i);
+        lamp_lights.push_back(i);
         continue;
       }
       sun.transport.lights.push_back(i);
@@ -838,14 +844,47 @@ std::vector<BakeLayer> scene_layers(const VkrBakeScene &scene,
       sun.transport.sky = sky;
       layers.push_back(sun);
     }
-    lamps.transport.sky = sky && !has_sun;
   }
-  lamps.record.kind = VKR_LIGHTMAP_LAYER_LAMP_GROUP;
-  lamps.record.index = 0u;
-  lamps.transport.emission = true;
-  lamps.transport.texel_direct = true;
-  layers.push_back(lamps);
-  return layers;
+
+  // A light without a group, such as a directional light, is in the default.
+  auto group_of = [&](uint32_t light) {
+    const char *group = scene.lights[light].group;
+    return std::string(group[0] ? group : VKR_LIGHTMAP_DEFAULT_GROUP);
+  };
+  std::vector<std::string> groups = {VKR_LIGHTMAP_DEFAULT_GROUP};
+  for (uint32_t i : lamp_lights) {
+    const std::string group = group_of(i);
+    if (scene.lights[i].enabled &&
+        std::find(groups.begin(), groups.end(), group) == groups.end()) {
+      groups.push_back(group);
+    }
+  }
+  std::sort(groups.begin() + 1, groups.end());
+  if (groups.size() > VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS) {
+    std::fprintf(stderr,
+                 "The scene's static lights make %zu light groups, the "
+                 "default group included; a lightmap set holds at most %u\n",
+                 groups.size(), VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS);
+    return false;
+  }
+  for (uint32_t g = 0u; g < groups.size(); ++g) {
+    BakeLayer lamps = {};
+    lamps.record.kind = VKR_LIGHTMAP_LAYER_LAMP_GROUP;
+    lamps.record.index = g;
+    std::snprintf(lamps.record.name, sizeof(lamps.record.name), "%s",
+                  groups[g].c_str());
+    for (uint32_t i : lamp_lights) {
+      if (scene.lights[i].enabled && groups[g] == group_of(i)) {
+        lamps.transport.lights.push_back(i);
+      }
+    }
+    lamps.transport.emission = g == 0u;
+    lamps.transport.sky = g == 0u && sky && !has_sun;
+    lamps.transport.texel_direct = true;
+    layers.push_back(lamps);
+  }
+  *out_layers = std::move(layers);
+  return true;
 }
 
 /*
@@ -886,7 +925,10 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     std::printf("sun_keys=%zu atmosphere_s=%.2f\n", sun_keys.size(),
                 seconds_since(atmosphere_start));
   }
-  const std::vector<BakeLayer> layers = scene_layers(scene, sun_keys);
+  std::vector<BakeLayer> layers;
+  if (!scene_layers(scene, sun_keys, &layers)) {
+    return 1;
+  }
   std::vector<VkrLightmapLayer> layer_records;
   for (const BakeLayer &layer : layers) {
     layer_records.push_back(layer.record);
@@ -1009,9 +1051,15 @@ int bake_set(const Options &options, VkrBakeScene &scene,
       for (const Vec3 &value : irradiance) {
         luminance_sum += luminance(value);
       }
-      std::printf("baked page=%u/%u layer=%u/%zu texels=%zu gpu_s=%.2f "
-                  "mean_luminance=%.5g\n",
+      const VkrLightmapLayer &record = layers[l].record;
+      std::printf("baked page=%u/%u layer=%u/%zu %s=%s texels=%zu "
+                  "gpu_s=%.2f mean_luminance=%.5g\n",
                   page + 1u, layout.page_count, l + 1u, layers.size(),
+                  record.kind == VKR_LIGHTMAP_LAYER_SUN_KEY ? "sun_key"
+                                                            : "lamp_group",
+                  record.kind == VKR_LIGHTMAP_LAYER_SUN_KEY
+                      ? std::to_string(record.index).c_str()
+                      : record.name,
                   texels.size(), seconds,
                   texels.empty() ? 0.0 : luminance_sum / texels.size());
       std::fflush(stdout);

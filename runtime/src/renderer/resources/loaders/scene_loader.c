@@ -55,6 +55,8 @@ typedef struct ScenePointLightImport {
   float32_t source_radius;
   VkrPointLightKind kind;
   bool8_t enabled;
+  VkrLightMobility mobility;
+  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
 } ScenePointLightImport;
 
 typedef struct SceneRectangleLightImport {
@@ -62,6 +64,8 @@ typedef struct SceneRectangleLightImport {
   float32_t radiance;
   Vec2 size;
   bool8_t enabled;
+  VkrLightMobility mobility;
+  char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
 } SceneRectangleLightImport;
 
 typedef struct SceneDirectionalLightImport {
@@ -2505,6 +2509,37 @@ vkr_internal void scene_json_parse_shape(const VkrJsonReader *entity_reader,
   }
 }
 
+/* The baking fields of a point or rectangle light block (ADR-088):
+   "mobility" is "static" or "dynamic" and "light_group" a group name. */
+vkr_internal bool8_t scene_json_parse_light_baking(
+    const VkrJsonReader *object, uint32_t entity_index, const char *block,
+    VkrLightMobility *out_mobility, char *out_group) {
+  String8 text = {0};
+  if (scene_json_read_string_field(object, "mobility", &text)) {
+    if (vkr_string8_equals_cstr(&text, "static")) {
+      *out_mobility = VKR_LIGHT_MOBILITY_STATIC;
+    } else if (vkr_string8_equals_cstr(&text, "dynamic")) {
+      *out_mobility = VKR_LIGHT_MOBILITY_DYNAMIC;
+    } else {
+      log_error("Scene loader: entity %u %s mobility must be \"static\" or "
+                "\"dynamic\"",
+                entity_index, block);
+      return false_v;
+    }
+  }
+  if (scene_json_read_string_field(object, "light_group", &text)) {
+    if (!vkr_lightmap_group_name_valid((const char *)text.str, text.length)) {
+      log_error("Scene loader: entity %u %s light_group must be at most %u "
+                "letters, digits, '_' or '-'",
+                entity_index, block, VKR_LIGHTMAP_GROUP_NAME_BYTES - 1u);
+      return false_v;
+    }
+    MemCopy(out_group, text.str, text.length);
+    out_group[text.length] = '\0';
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t scene_json_parse_point_light(
     const VkrJsonReader *entity_reader, uint32_t entity_index,
     SceneEntityImport *out_entity) {
@@ -2565,6 +2600,13 @@ vkr_internal bool8_t scene_json_parse_point_light(
     }
     out_entity->point_light.source_radius =
         Min(source_radius, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX);
+  }
+
+  if (!scene_json_parse_light_baking(&point_light_obj, entity_index,
+                                     "point_light",
+                                     &out_entity->point_light.mobility,
+                                     out_entity->point_light.light_group)) {
+    return false_v;
   }
 
   float32_t kind = (float32_t)out_entity->point_light.kind;
@@ -2630,6 +2672,10 @@ vkr_internal bool8_t scene_json_parse_rectangle_light(
   if (vkr_json_find_field(&field, "size") &&
       !scene_json_parse_vec2(&field, &light.size))
     goto invalid;
+  if (!scene_json_parse_light_baking(&object, entity_index, "rectangle_light",
+                                     &light.mobility, light.light_group)) {
+    return false_v;
+  }
   if (light.enabled > 1u || !isfinite(light.color.x) ||
       !isfinite(light.color.y) || !isfinite(light.color.z) ||
       light.color.x < 0.0f || light.color.y < 0.0f || light.color.z < 0.0f ||
@@ -3574,6 +3620,12 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
     }
   }
 
+  /* Only the text copies above use the scratch scope. The shape and lights
+     below add components, which can create archetype chunks that must not
+     live in memory the scope rewinds when the scene and scratch allocators
+     share an arena. */
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
   if (entity_import->has_shape) {
     /* The authored shape is a typed component whose value builds the mesh
        (ADR-076). The request made while preparing already loaded any named
@@ -3632,7 +3684,10 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .casts_shadow = light_import->casts_shadow,
         .kind = light_import->kind,
         .enabled = light_import->enabled,
+        .mobility = light_import->mobility,
     };
+    MemCopy(light.light_group, light_import->light_group,
+            sizeof(light.light_group));
 
     if (!vkr_scene_set_point_light(scene, entity, &light)) {
       log_error("Scene loader: failed to set point light for entity %u",
@@ -3668,27 +3723,25 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
   if (entity_import->has_rectangle_light) {
     const SceneRectangleLightImport *light_import =
         &entity_import->rectangle_light;
-    const SceneRectangleLight light = {
+    SceneRectangleLight light = {
         .color = light_import->color,
         .radiance = light_import->radiance,
         .size = light_import->size,
         .enabled = light_import->enabled,
+        .mobility = light_import->mobility,
     };
+    MemCopy(light.light_group, light_import->light_group,
+            sizeof(light.light_group));
     if (!vkr_scene_set_rectangle_light(scene, entity, &light)) {
       log_error("Scene loader: failed to set rectangle light for entity %u",
                 entity_index);
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       return false_v;
     }
   }
 
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  /* After the scratch scope: adding a component can create an archetype
-     chunk, which must not live in memory the scope rewinds when the scene
-     and scratch allocators share an arena. Parsing already validated the map,
-     so storing can only fail on memory. */
+  /* Parsing already validated the component map, so storing can only fail
+     on memory. */
   if (entity_import->components_json.length) {
     SceneComponentTarget target = {.scene = scene, .entity = entity};
     if (!scene_json_each_component(entity_import->components_json, entity_index,

@@ -29,6 +29,31 @@ vkr_internal VkrBakeryJson *vkr_project_edit_first(VkrProjectJob *job,
                : vkr_bakery_json_null(job->arena);
 }
 
+/* A point or rectangle light's baking fields from the overlay's
+   `<prefix>_mobility` (0 static, 1 dynamic) and `<prefix>_group`, in the
+   scene document's form (ADR-088). Absent values keep the defaults. */
+vkr_internal void vkr_project_apply_light_baking(VkrProjectJob *job,
+                                                 VkrBakeryJson *light,
+                                                 const VkrBakeryJson *edit,
+                                                 const char *prefix) {
+  Arena *arena = job->arena;
+  char key[32];
+  int64_t mobility = 0;
+  (void)snprintf(key, sizeof(key), "%s_mobility", prefix);
+  if (vkr_project_integer(vkr_bakery_json_get(edit, key), &mobility)) {
+    vkr_bakery_json_set(
+        arena, light, "mobility",
+        vkr_bakery_json_string(arena, mobility == 1 ? string8_lit("dynamic")
+                                                    : string8_lit("static")));
+  }
+  (void)snprintf(key, sizeof(key), "%s_group", prefix);
+  const VkrBakeryJson *group = vkr_bakery_json_get(edit, key);
+  if (group && group->type == VKR_BAKERY_JSON_STRING) {
+    vkr_bakery_json_set(arena, light, "light_group",
+                        vkr_bakery_json_clone(arena, group));
+  }
+}
+
 vkr_internal void vkr_project_apply_wrapper(VkrProjectJob *job,
                                             VkrBakeryJson *entity,
                                             const VkrBakeryJson *edit) {
@@ -84,6 +109,7 @@ vkr_internal void vkr_project_apply_wrapper(VkrProjectJob *job,
         arena, light, "source_radius",
         vkr_project_edit_first(job, edit, "point_source_radius",
                                vkr_bakery_json_float(arena, 0.0)));
+    vkr_project_apply_light_baking(job, light, edit, "point");
     vkr_bakery_json_set(arena, entity, "point_light", light);
   }
   if (fields & 16) {
@@ -132,6 +158,7 @@ vkr_internal void vkr_project_apply_wrapper(VkrProjectJob *job,
                         vkr_project_edit_value(job, edit, "rectangle_size"));
     vkr_bakery_json_set(arena, light, "enabled",
                         vkr_project_edit_value(job, edit, "rectangle_enabled"));
+    vkr_project_apply_light_baking(job, light, edit, "rectangle");
     vkr_bakery_json_set(arena, entity, "rectangle_light", light);
   }
 }
@@ -502,39 +529,6 @@ vkr_internal bool8_t vkr_project_collect_bake_edits(
   return true_v;
 }
 
-/* Up to `count` numbers of an overlay record's array `key`. */
-vkr_internal bool8_t vkr_project_record_numbers(const VkrBakeryJson *record,
-                                                const char *key,
-                                                VkrBakeryJson **out_values,
-                                                uint32_t count) {
-  const VkrBakeryJson *values = vkr_bakery_json_get(record, key);
-  if (!values || values->type != VKR_BAKERY_JSON_ARRAY ||
-      values->count < count) {
-    return false_v;
-  }
-  uint32_t i = 0u;
-  for (VkrBakeryJson *value = values->first; value && i < count;
-       value = value->next, ++i) {
-    out_values[i] = value;
-  }
-  return i == count;
-}
-
-vkr_internal VkrBakeryJson *
-vkr_project_record_array(VkrProjectJob *job, const VkrBakeryJson *record,
-                         const char *key, uint32_t first, uint32_t count) {
-  VkrBakeryJson *values[8];
-  if (first + count > ArrayCount(values) ||
-      !vkr_project_record_numbers(record, key, values, first + count)) {
-    return NULL;
-  }
-  VkrBakeryJson *array = vkr_bakery_json_array(job->arena);
-  for (uint32_t i = first; i < first + count; ++i) {
-    vkr_bakery_json_append(array, vkr_bakery_json_clone(job->arena, values[i]));
-  }
-  return array;
-}
-
 /* Sets `key` of `block` to the record's value of `from`, when present. */
 vkr_internal void vkr_project_record_copy(VkrProjectJob *job,
                                           VkrBakeryJson *block, const char *key,
@@ -548,104 +542,20 @@ vkr_internal void vkr_project_record_copy(VkrProjectJob *job,
 }
 
 /* An editor-created overlay record in the runtime scene form the bakers
-   read: its document id, name, parent index (-1 for a root), pose, the light
-   blocks its edit values describe and its components, as the runtime builds
-   the entity when it applies the overlay. */
+   read: its document id, parent index (-1 for a root), the values its
+   `fields` carry, converted as for an authored override, and its
+   components, as the runtime builds the entity when it applies the
+   overlay. */
 vkr_internal VkrBakeryJson *
 vkr_project_created_entity(VkrProjectJob *job, const VkrBakeryJson *record,
                            int64_t parent) {
   Arena *arena = job->arena;
   VkrBakeryJson *entity = vkr_bakery_json_object(arena);
   vkr_project_record_copy(job, entity, "id", record, "uuid");
-  vkr_project_record_copy(job, entity, "name", record, "name");
   vkr_bakery_json_set(arena, entity, "parent",
                       parent >= 0 ? vkr_bakery_json_int(arena, parent)
                                   : vkr_bakery_json_null(arena));
-  if (vkr_bakery_json_get(record, "position")) {
-    VkrBakeryJson *transform = vkr_bakery_json_object(arena);
-    vkr_project_record_copy(job, transform, "pos", record, "position");
-    vkr_project_record_copy(job, transform, "rot", record, "rotation");
-    vkr_project_record_copy(job, transform, "scale", record, "scale");
-    vkr_bakery_json_set(arena, entity, "transform", transform);
-  }
-  if (vkr_bakery_json_get(record, "point_color")) {
-    /* point_params: intensity, constant, linear, quadratic, range, inner
-       and outer cone angles. */
-    VkrBakeryJson *params[7];
-    if (vkr_project_record_numbers(record, "point_params", params, 7u)) {
-      VkrBakeryJson *light = vkr_bakery_json_object(arena);
-      vkr_project_record_copy(job, light, "enabled", record, "point_enabled");
-      vkr_project_record_copy(job, light, "casts_shadow", record,
-                              "point_casts_shadow");
-      vkr_project_record_copy(job, light, "color", record, "point_color");
-      vkr_project_record_copy(job, light, "direction_local", record,
-                              "point_direction");
-      vkr_project_record_copy(job, light, "kind", record, "point_kind");
-      static const char *const names[] = {
-          "intensity",       NULL, NULL, NULL, "range", "inner_cone_angle",
-          "outer_cone_angle"};
-      for (uint32_t i = 0u; i < 7u; ++i) {
-        if (names[i]) {
-          vkr_bakery_json_set(arena, light, names[i],
-                              vkr_bakery_json_clone(arena, params[i]));
-        }
-      }
-      VkrBakeryJson *attenuation = vkr_bakery_json_object(arena);
-      vkr_bakery_json_set(arena, attenuation, "constant",
-                          vkr_bakery_json_clone(arena, params[1]));
-      vkr_bakery_json_set(arena, attenuation, "linear",
-                          vkr_bakery_json_clone(arena, params[2]));
-      vkr_bakery_json_set(arena, attenuation, "quadratic",
-                          vkr_bakery_json_clone(arena, params[3]));
-      vkr_bakery_json_set(arena, light, "attenuation", attenuation);
-      vkr_bakery_json_set(arena, entity, "point_light", light);
-    }
-  }
-  if (vkr_bakery_json_get(record, "directional_color")) {
-    VkrBakeryJson *light = vkr_bakery_json_object(arena);
-    vkr_project_record_copy(job, light, "enabled", record,
-                            "directional_enabled");
-    vkr_project_record_copy(job, light, "color", record, "directional_color");
-    vkr_project_record_copy(job, light, "direction_local", record,
-                            "directional_direction");
-    VkrBakeryJson *scalars[1];
-    if (vkr_project_record_numbers(record, "directional_intensity", scalars,
-                                   1u)) {
-      vkr_bakery_json_set(arena, light, "intensity",
-                          vkr_bakery_json_clone(arena, scalars[0]));
-    }
-    if (vkr_project_record_numbers(
-            record, "directional_sun_angular_diameter_degrees", scalars, 1u)) {
-      vkr_bakery_json_set(arena, light, "sun_angular_diameter_degrees",
-                          vkr_bakery_json_clone(arena, scalars[0]));
-    }
-    if (vkr_project_record_numbers(record, "directional_temperature_kelvin",
-                                   scalars, 1u)) {
-      vkr_bakery_json_set(arena, light, "temperature_kelvin",
-                          vkr_bakery_json_clone(arena, scalars[0]));
-    }
-    vkr_project_record_copy(job, light, "atmosphere_sun", record,
-                            "directional_atmosphere_sun");
-    vkr_project_record_copy(job, light, "atmosphere_moon", record,
-                            "directional_atmosphere_moon");
-    vkr_bakery_json_set(arena, entity, "directional_light", light);
-  }
-  if (vkr_bakery_json_get(record, "rectangle_color")) {
-    VkrBakeryJson *light = vkr_bakery_json_object(arena);
-    vkr_project_record_copy(job, light, "enabled", record, "rectangle_enabled");
-    vkr_project_record_copy(job, light, "color", record, "rectangle_color");
-    VkrBakeryJson *scalars[1];
-    if (vkr_project_record_numbers(record, "rectangle_radiance", scalars, 1u)) {
-      vkr_bakery_json_set(arena, light, "radiance",
-                          vkr_bakery_json_clone(arena, scalars[0]));
-    }
-    VkrBakeryJson *size =
-        vkr_project_record_array(job, record, "rectangle_size", 0u, 2u);
-    if (size) {
-      vkr_bakery_json_set(arena, light, "size", size);
-    }
-    vkr_bakery_json_set(arena, entity, "rectangle_light", light);
-  }
+  vkr_project_apply_wrapper(job, entity, record);
   const VkrBakeryJson *components = vkr_bakery_json_get(record, "components");
   if (components && components->type == VKR_BAKERY_JSON_OBJECT &&
       components->count) {

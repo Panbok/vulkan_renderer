@@ -36,7 +36,8 @@ A managed project bakes the scene the runtime loads
 lowered document with its authored overrides, then the project World's
 entities, then the overlay's editor-created entities, whose light edit values
 become the scene's light blocks and whose components carry over; a hidden
-created entity and its subtree stay out. The bake scene loader builds every
+created entity and its subtree stay out, as do dynamic lights, which no bake
+holds ([ADR-088](088-baked-lightmap-sets.md)). The bake scene loader builds every
 solid or visual brush from its `brush_face` children as the runtime does
 ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), with the face
 material or the dev grid, and keeps each entity's document id. Verified 2026-10-05 on a blockout made

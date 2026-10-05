@@ -8,11 +8,10 @@ authority: adr
 
 ## Status
 
-Accepted (partial). Baking, storage, packaging and the editor controls are
-implemented. The runtime does not sample lightmaps yet (the scene loader
-ignores the `lightmaps` block), lights have no groups yet so every lamp bakes
-into lamp group 0,
-and the bake needs Metal ray tracing.
+Accepted (partial). Baking, storage, packaging, light mobility and groups and
+the editor controls are implemented. The runtime does not sample lightmaps yet
+(the scene loader ignores the `lightmaps` block, and the desktop pipeline
+lights static and dynamic lights alike), and the bake needs Metal ray tracing.
 
 ## Context
 
@@ -27,7 +26,9 @@ eight sun keys blended by the current sun position; group lamps into layers
 the runtime scales; store layers as ASTC 4×4 HDR; bake on the GPU with Metal
 ray tracing, with the CPU integrator of
 [ADR-054](054-baked-diffuse-volumes.md) as the reference and the path for
-hosts without Metal ray tracing.
+hosts without Metal ray tracing; give each light a mobility and a named group
+(static lights bake into their group's layer, dynamic lights never bake; at
+most four groups).
 
 ## Decision
 
@@ -74,7 +75,7 @@ lights' direct term at the texel:
 | Layer | Lights | Sky | Emission | Direct at texel |
 |---|---|---|---|---|
 | Sun key | the atmosphere's key light | yes | no | no; the runtime adds the sun |
-| Lamp group | every other light | only without a sun key | yes | yes |
+| Lamp group | the group's static lights | default group, only without a sun key | default group | yes |
 
 Gather paths never hit a delta light, so a sun key holds sun bounce and sky
 light only. Sun key plus lamp group, without the lamps' texel term, equals one
@@ -89,8 +90,31 @@ and the key light, the sun while it lights the observer, else the moon
 (ADR-081). A key records its sun direction; the runtime blends the two keys
 nearest the current sun along the circle. A scene without an atmosphere bakes
 one sun key from its directional lights, and a scene without a directional
-light bakes none. Lamp group 0 holds every light that is not the
-atmosphere's key light.
+light bakes none.
+
+### Light mobility and groups
+
+Point and rectangle lights carry `mobility`, `"static"` (the default) or
+`"dynamic"`, and `light_group`, a name of at most 31 letters, digits, `_` or
+`-`; an empty or absent name is the group `default`
+([`vkr_scene_system.h`](../../runtime/src/renderer/systems/vkr_scene_system.h),
+`vkr_lightmap_group_name_valid` in
+[`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h)). Scene
+documents, the editor overlay (`point_mobility`, `point_group`,
+`rectangle_mobility`, `rectangle_group`; older overlays default them), the
+Details panel's Baking heading and `vkr_component_set` carry them, and the
+scene loader rejects an unknown mobility or an invalid name. A model's own
+lights are static members of `default`.
+
+Every bake leaves dynamic lights out, the diffuse volumes of ADR-054
+included. Each distinct group among the enabled static lights bakes into one
+lamp layer: lamp group 0 is `default`, which always exists and also holds
+surface emission and, without a sun key, the sky; the other groups follow in
+name order. A scene whose static lights name more than
+`VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS` (4) groups, `default` included, fails to
+bake. The runtime will scale each group's layer to switch or dim its lights
+together; a dynamic light is the choice for a light that moves or changes
+color.
 
 ### GPU transport
 
@@ -130,19 +154,22 @@ profile at effort 10.
 ### VKLM file
 
 [`vkr_lightmap_set.h`](../../runtime/src/assets/vkr_lightmap_set.h) defines
-VKLM v2: a 128-byte header, the layer table (kind, number, sun direction), the
-instance table and, aligned to 256 bytes, one page image per page and layer,
+VKLM v3: a 128-byte header, the layer table (64-byte records: kind, number,
+sun direction and, for a lamp group, its group name), the instance table and,
+aligned to 256 bytes, one page image per page and layer,
 page-major. Every scalar is little-endian. An instance carries its entity's
 document id (zero when the entity has none), the entity's index in the baked
 entity array (the document's entities, then the World's, then editor-created
 ones) and its source-node index in the entity's cooked model (zero without
 source nodes and for brushes), and records its page rectangle. The runtime
 matches an instance by document id and falls back to the index. Instances are
-sorted by index and node. Version 1, keyed by index only, was never read by a
-runtime. Producers stream the payload and
+sorted by index and node. Versions 1 (keyed by index only) and 2 (without
+group names) were never read by a runtime. Producers stream the payload and
 write the header last; the decoder checks header, table and payload CRCs,
-sizes, layer meanings and that every rectangle lies on whole blocks within its
-page, and returns the payload as a view into the caller's bytes.
+sizes, layer meanings, that lamp groups have distinct valid names and sun
+keys none, that a set holds at most four lamp groups, and that every
+rectangle lies on whole blocks within its page, and returns the payload as a
+view into the caller's bytes.
 
 ### Bakery and projects
 
@@ -177,6 +204,9 @@ and mappable under pack loader `VKR_PACK_LOADER_LIGHTMAP`. The Bakery panel's
   until the CPU integrator gains the layer split and texel direct term.
 - The GPU baker approximates the CPU BSDF; the measured bias is below 1% of
   sun bounce on Bistro and within sampling noise overall.
+- A level has at most four independently switchable baked light groups;
+  further variation needs dynamic lights, which the tiled pipeline's runtime
+  light budget bounds.
 - Entity indices key the instance table, so any edit that reorders or inserts
   entities, or changes a model's source nodes, stales the set until the scene
   is baked again with lightmaps selected.
@@ -261,9 +291,20 @@ texels per meter with deferred textures:
   131 s of it GPU time and 31 s encoding, 453 MB, 6.4 GB peak memory; key
   luminance 0.28 to 0.59.
 
+- Light groups, on the same blockout through `vkr_mcp`
+  (`vkr_component_set`): an invalid group name was refused with the
+  validator's message; Lamp B set to group `warm` and Lamp C to `dynamic`
+  saved into the overlay. The managed `bake_scene` loaded 3 lights instead of
+  4 (the atmosphere key light, Lamp A and Lamp B) and published ten layers:
+  eight sun keys, lamp group `default` (Lamp A and emission, mean luminance
+  0.073) and `warm` (Lamp B, 0.054), decoded with their names from the VKLM v3
+  layer table. CPU tests cover the loader fields and name rejection, the
+  overlay round trip of a dynamic light's group, and VKLM name rules.
+
 Unavailable: any runtime use, and a Windows or Vulkan host.
 
 ## Revisit when
 
 The tiled runtime samples lightmaps, the time-of-day system defines sun keys
-and lamp groups, or the CPU path gains the layer split.
+and drives group intensities, a level needs more than four baked groups, or
+the CPU path gains the layer split.

@@ -12,6 +12,7 @@ extern "C" {
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -58,6 +59,8 @@ struct EntityImport {
   Vec4 shape_color = {1.0f, 1.0f, 1.0f, 1.0f};
   std::string shape_material_path;
   bool has_point_light = false;
+  // A dynamic point or rectangle light is never baked.
+  bool point_light_static = true;
   VkrBakeSceneLight point_light = {};
   bool has_directional_light = false;
   VkrBakeSceneLight directional_light = {};
@@ -66,6 +69,7 @@ struct EntityImport {
   bool8_t directional_atmosphere_sun = true_v;
   bool8_t directional_atmosphere_moon = false_v;
   bool has_rectangle_light = false;
+  bool rectangle_light_static = true;
   VkrBakeSceneLight rectangle_light = {};
 };
 
@@ -372,6 +376,32 @@ bool parse_shape(const VkrJsonReader *entity, EntityImport *out) {
          finite_vec4(out->shape_color);
 }
 
+/*
+ * The baking fields of a point or rectangle light block (ADR-088): its
+ * group, the default group when it names none, and whether it is static.
+ */
+bool parse_light_baking(const VkrJsonReader *object, VkrBakeSceneLight *light,
+                        bool *out_static) {
+  std::string text;
+  *out_static = true;
+  if (read_string(object, "mobility", &text)) {
+    if (text == "dynamic") {
+      *out_static = false;
+    } else if (text != "static") {
+      return false;
+    }
+  }
+  if (!read_string(object, "light_group", &text) || text.empty()) {
+    text = VKR_LIGHTMAP_DEFAULT_GROUP;
+  }
+  if (!vkr_lightmap_group_name_valid(text.data(), text.size())) {
+    return false;
+  }
+  std::copy(text.begin(), text.end(), light->group);
+  light->group[text.size()] = '\0';
+  return true;
+}
+
 bool parse_point_light(const VkrJsonReader *entity, EntityImport *out) {
   VkrJsonReader reader = *entity;
   if (!vkr_json_find_field(&reader, "point_light"))
@@ -426,6 +456,8 @@ bool parse_point_light(const VkrJsonReader *entity, EntityImport *out) {
       !std::isfinite(light.quadratic) ||
       !std::isfinite(light.inner_cone_angle) ||
       !std::isfinite(light.outer_cone_angle))
+    return false;
+  if (!parse_light_baking(&object, &light, &out->point_light_static))
     return false;
   out->point_light = light;
   out->has_point_light = true;
@@ -505,6 +537,8 @@ bool parse_rectangle_light(const VkrJsonReader *entity, EntityImport *out) {
     return false;
   light.half_width = size.x * 0.5f;
   light.half_height = size.y * 0.5f;
+  if (!parse_light_baking(&object, &light, &out->rectangle_light_static))
+    return false;
   out->rectangle_light = light;
   out->has_rectangle_light = true;
   return true;
@@ -1014,6 +1048,10 @@ bool8_t append_mesh_light(void *user, const VkrBakeMeshLight *source) {
     light.inner_cone_angle = source->inner_cone_angle;
     light.outer_cone_angle = source->outer_cone_angle;
     light.enabled = true_v;
+    // A model's own lights are static members of the default group.
+    if (light.kind != VkrBakeSceneLightKind::Directional)
+      std::snprintf(light.group, sizeof(light.group), "%s",
+                    VKR_LIGHTMAP_DEFAULT_GROUP);
     context->scene->lights.push_back(light);
     return true_v;
   } catch (const std::bad_alloc &) {
@@ -1263,6 +1301,7 @@ bool append_cube(VkrBakeScene *scene, const EntityImport &entity, Mat4 world,
   return true;
 }
 
+/* A dynamic point or rectangle light stays out: no bake holds it. */
 bool append_authored_lights(VkrBakeScene *scene, const EntityImport &entity,
                             Mat4 world, Mat4 rigid_world,
                             bool suppress_directional) {
@@ -1290,10 +1329,11 @@ bool append_authored_lights(VkrBakeScene *scene, const EntityImport &entity,
     scene->lights.push_back(light);
     return true;
   };
-  return (!entity.has_point_light || append(entity.point_light)) &&
+  return (!entity.has_point_light || !entity.point_light_static ||
+          append(entity.point_light)) &&
          (suppress_directional || !entity.has_directional_light ||
           append(entity.directional_light)) &&
-         (!entity.has_rectangle_light ||
+         (!entity.has_rectangle_light || !entity.rectangle_light_static ||
           append_rectangle(entity.rectangle_light));
 }
 

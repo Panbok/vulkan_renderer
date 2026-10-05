@@ -12,6 +12,7 @@ extern "C" {
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <vector>
 
@@ -322,8 +323,9 @@ std::vector<uint8_t> write_lightmap_set(const VkrLightmapSet &set) {
 
 void test_lightmap_set_round_trip_and_rejects() {
   const VkrLightmapLayer layers[] = {
-      {VKR_LIGHTMAP_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f)},
-      {VKR_LIGHTMAP_LAYER_LAMP_GROUP, 0u, vec3_zero()}};
+      {VKR_LIGHTMAP_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f), ""},
+      {VKR_LIGHTMAP_LAYER_LAMP_GROUP, 0u, vec3_zero(), "default"},
+      {VKR_LIGHTMAP_LAYER_LAMP_GROUP, 1u, vec3_zero(), "street_lamps"}};
   const VkrLightmapInstance instances[] = {
       {{0u}, 2u, 0u, 0u, 0u, 0u, 8u, 4u},
       {{0u}, 2u, 3u, 0u, 8u, 0u, 4u, 4u},
@@ -339,7 +341,7 @@ void test_lightmap_set_round_trip_and_rejects() {
   VkrLightmapSet set = {};
   set.page_size = 16u;
   set.page_count = 1u;
-  set.layer_count = 2u;
+  set.layer_count = 3u;
   set.instance_count = 3u;
   set.texels_per_unit = 8.0f;
   set.layers = layers;
@@ -352,16 +354,18 @@ void test_lightmap_set_round_trip_and_rejects() {
   VkrLightmapSet decoded = {};
   assert(vkr_lightmap_set_decode(file.data(), file.size(), arena, &decoded));
   assert(decoded.page_size == 16u && decoded.page_count == 1u);
-  assert(decoded.layer_count == 2u && decoded.instance_count == 3u);
+  assert(decoded.layer_count == 3u && decoded.instance_count == 3u);
   assert(decoded.layers[0].kind == VKR_LIGHTMAP_LAYER_SUN_KEY);
   assert(decoded.layers[0].sun_direction.z == 0.8f);
+  assert(decoded.layers[0].name[0] == '\0');
+  assert(strcmp(decoded.layers[2].name, "street_lamps") == 0);
   assert(decoded.instances[2].entity_index == 5u);
   assert(decoded.instances[2].width == 12u);
   assert(decoded.instances[2].document_id[0] == 0xabu &&
          decoded.instances[2].document_id[15] == 0x7fu);
   const uint64_t page_bytes = vkr_lightmap_set_page_bytes(16u);
   assert(page_bytes == 16u * 16u);
-  assert(decoded.payload + 2u * page_bytes == file.data() + file.size());
+  assert(decoded.payload + 3u * page_bytes == file.data() + file.size());
 
   std::vector<uint8_t> corrupt = file;
   corrupt[corrupt.size() - 1u] ^= 1u;
@@ -379,6 +383,21 @@ void test_lightmap_set_round_trip_and_rejects() {
   const VkrLightmapInstance unsorted[] = {instances[1], instances[0],
                                           instances[2]};
   set.instances = unsorted;
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  set.instances = instances;
+
+  /* The runtime finds a lamp group by name, so each lamp group has a
+     distinct one and a sun key has none. */
+  VkrLightmapLayer named[] = {layers[0], layers[1], layers[2]};
+  strcpy(named[2].name, "default");
+  set.layers = named;
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  named[2].name[0] = '\0';
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  strcpy(named[2].name, "street lamps");
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  strcpy(named[2].name, "street_lamps");
+  strcpy(named[0].name, "sun");
   assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
   arena_destroy(arena);
   printf("  test_lightmap_set_round_trip_and_rejects PASSED\n");

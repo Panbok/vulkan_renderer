@@ -21,7 +21,7 @@ extern "C" {
  * layer of a scene's lightmap pages as ASTC 4x4 blocks (HDR RGB, LDR alpha),
  * the layers' meanings and each lightmapped instance's page rectangle.
  *
- * VKLM v2 writes every scalar explicitly in little-endian order: a fixed
+ * VKLM v3 writes every scalar explicitly in little-endian order: a fixed
  * header, the layer table, the instance table, padding to
  * VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT, then one page image per page and layer,
  * page-major. Producers stream the payload and write the prefix last, so a
@@ -29,10 +29,10 @@ extern "C" {
  */
 
 #define VKR_LIGHTMAP_SET_MAGIC 0x4d4c4b56u /* "VKLM" in little-endian. */
-#define VKR_LIGHTMAP_SET_VERSION 2u
+#define VKR_LIGHTMAP_SET_VERSION 3u
 #define VKR_LIGHTMAP_SET_ENDIAN_TAG 0x01020304u
 #define VKR_LIGHTMAP_SET_HEADER_BYTES 128u
-#define VKR_LIGHTMAP_SET_LAYER_BYTES 32u
+#define VKR_LIGHTMAP_SET_LAYER_BYTES 64u
 #define VKR_LIGHTMAP_SET_INSTANCE_BYTES 44u
 #define VKR_LIGHTMAP_SET_PAYLOAD_ALIGNMENT 256u
 #define VKR_LIGHTMAP_SET_BLOCK_BYTES 16u
@@ -41,6 +41,20 @@ extern "C" {
 #define VKR_LIGHTMAP_SET_MAX_PAGE_SIZE 8192u
 #define VKR_LIGHTMAP_SET_MAX_PAGES 64u
 #define VKR_LIGHTMAP_SET_MAX_LAYERS 32u
+/* Lamp-group layers of one set; a scene with more static groups fails to
+   bake. */
+#define VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS 4u
+
+/*
+ * Light group names (ADR-088): at most VKR_LIGHTMAP_GROUP_NAME_BYTES - 1
+ * letters, digits, '_' or '-'. Scene lights and lamp-group layers share the
+ * rule; a scene light's empty name is the group VKR_LIGHTMAP_DEFAULT_GROUP.
+ */
+#define VKR_LIGHTMAP_GROUP_NAME_BYTES 32u
+#define VKR_LIGHTMAP_DEFAULT_GROUP "default"
+
+/* Whether `name` is a light group name, empty included. */
+bool8_t vkr_lightmap_group_name_valid(const char *name, uint64_t length);
 
 typedef enum VkrLightmapLayerKind {
   /* Sky light and sun bounce for one sun direction, without the sun's direct
@@ -56,6 +70,9 @@ typedef struct VkrLightmapLayer {
   uint32_t index;
   /* Unit direction toward the sun for a sun key; zero for a lamp group. */
   Vec3 sun_direction;
+  /* A lamp group's light group name, unique among the set's lamp groups;
+     empty for a sun key. Null-terminated. */
+  char name[VKR_LIGHTMAP_GROUP_NAME_BYTES];
 } VkrLightmapLayer;
 
 /*
@@ -117,9 +134,9 @@ bool8_t vkr_lightmap_set_write_prefix(const VkrLightmapSet *set,
                                       uint64_t prefix_size);
 
 /*
- * Validates and decodes a complete VKLM v2 file: header, table and payload
- * checksums, sizes and offsets, layer meanings, and every rectangle lying on
- * whole blocks within its page.
+ * Validates and decodes a complete VKLM v3 file: header, table and payload
+ * checksums, sizes and offsets, layer meanings and names, and every rectangle
+ * lying on whole blocks within its page.
  */
 bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
                                 Arena *arena, VkrLightmapSet *out_set);

@@ -8,6 +8,7 @@
 #include "vkr_bake_lightmap.h"
 
 extern "C" {
+#include "assets/vkr_lightmap_set.h"
 #include "memory/vkr_allocator.h"
 #include "vkr_bake_geometry.h"
 #include "vkr_bake_material.h"
@@ -42,6 +43,9 @@ struct VkrBakeSceneLight {
   float32_t radiance = 0.0f;
   bool8_t casts_shadow = false_v;
   bool8_t enabled = true_v;
+  /* The light group of a point or rectangle light, VKR_LIGHTMAP_DEFAULT_GROUP
+     when the scene names none; empty for other lights. Null-terminated. */
+  char group[VKR_LIGHTMAP_GROUP_NAME_BYTES] = {};
 };
 
 enum class VkrBakeSceneEnvironmentKind : uint8_t {

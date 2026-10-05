@@ -1415,12 +1415,62 @@ vkr_internal void test_scene_loader_point_light_source_radius(void) {
   printf("  test_scene_loader_point_light_source_radius PASSED\n");
 }
 
+/* A point or rectangle light's mobility and group load as authored and
+   default to a static light of the default group; an unknown mobility or a
+   name the lightmap layers cannot carry rejects the scene. */
+vkr_internal void test_scene_loader_light_baking(void) {
+  printf("  Running test_scene_loader_light_baking...\n");
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  assert(scene_loader_test_load(
+             &ctx, string8_lit("{\"version\":2,\"entities\":["
+                               "{\"name\":\"A\",\"point_light\":{"
+                               "\"mobility\":\"dynamic\","
+                               "\"light_group\":\"street-1\"}},"
+                               "{\"name\":\"B\",\"rectangle_light\":{"
+                               "\"light_group\":\"hall\"}},"
+                               "{\"name\":\"C\",\"point_light\":{}}]}")) ==
+         true_v);
+  const ScenePointLight *a = vkr_entity_get_component(
+      ctx.scene.world, vkr_entity_id_from_index(ctx.scene.world, 0),
+      ctx.scene.comp_point_light);
+  assert(a && a->mobility == VKR_LIGHT_MOBILITY_DYNAMIC &&
+         strcmp(a->light_group, "street-1") == 0);
+  const SceneRectangleLight *b = vkr_scene_get_rectangle_light(
+      &ctx.scene, vkr_entity_id_from_index(ctx.scene.world, 1));
+  assert(b && b->mobility == VKR_LIGHT_MOBILITY_STATIC &&
+         strcmp(b->light_group, "hall") == 0);
+  const ScenePointLight *c = vkr_entity_get_component(
+      ctx.scene.world, vkr_entity_id_from_index(ctx.scene.world, 2),
+      ctx.scene.comp_point_light);
+  assert(c && c->mobility == VKR_LIGHT_MOBILITY_STATIC &&
+         c->light_group[0] == '\0');
+  scene_loader_test_context_shutdown(&ctx);
+
+  const String8 rejected[] = {
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"point_light\":{\"mobility\":\"baked\"}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"rectangle_light\":{\"light_group\":\"two words\"}}]}"),
+      string8_lit("{\"version\":2,\"entities\":[{\"name\":\"A\","
+                  "\"point_light\":{\"light_group\":"
+                  "\"abcdefghijklmnopqrstuvwxyz012345\"}}]}"),
+  };
+  for (uint32_t i = 0; i < ArrayCount(rejected); ++i) {
+    assert(scene_loader_test_context_init(&ctx) == true_v);
+    assert(scene_loader_test_load(&ctx, rejected[i]) == false_v);
+    scene_loader_test_context_shutdown(&ctx);
+  }
+  printf("  test_scene_loader_light_baking PASSED\n");
+}
+
 bool32_t run_scene_loader_tests(void) {
   printf("--- Starting Scene Loader Tests ---\n");
 
   test_scene_derived_matrix_is_lossless_and_exclusive();
   test_scene_loader_entity_components();
   test_scene_loader_point_light_source_radius();
+  test_scene_loader_light_baking();
   test_scene_loader_registered_type();
   test_scene_loader_document_ids();
   test_scene_loader_legacy_atmosphere_sun();
