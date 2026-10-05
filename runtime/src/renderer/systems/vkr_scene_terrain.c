@@ -1122,6 +1122,39 @@ static VkrMaterialHandle terrain_material_create(VkrScene *scene,
              (int)error);
     return handle;
   }
+  /* The vertex colors hold layer weights, which a plain material would draw
+     as a tint. Until the layers stream in, the terrain is an opaque PBR
+     terrain material whose every layer is white and rough, so it draws
+     white. */
+  VkrMaterial *placeholder =
+      vkr_material_system_get_by_handle(&assets->material_system, handle);
+  if (placeholder) {
+    placeholder->material_type = VKR_MATERIAL_TYPE_PBR;
+    placeholder->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
+    placeholder->alpha_mode_explicit = true_v;
+    placeholder->pbr.metallic = 0.0f;
+    placeholder->pbr.roughness = 1.0f;
+    placeholder->terrain = true_v;
+    for (uint32_t i = 0; i < ArrayCount(placeholder->layers); ++i) {
+      placeholder->layers[i] = (VkrMaterialLayer){
+          .base_color = placeholder->pbr.base_color,
+          .metallic = 0.0f,
+          .roughness = 1.0f,
+          .normal_scale = 1.0f,
+          .occlusion_strength = 1.0f,
+      };
+    }
+    for (uint32_t slot = VKR_TEXTURE_SLOT_LAYER1_BASE_COLOR;
+         slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
+      placeholder->textures[slot] = vkr_material_system_get_default_texture(
+          &assets->material_system, (VkrTextureSlot)slot);
+    }
+    if (!vkr_material_system_publish(&assets->material_system, handle,
+                                     &error)) {
+      log_warn("Scene: the terrain placeholder material did not publish (%d)",
+               (int)error);
+    }
+  }
   const char *layers[VKR_MATERIAL_TERRAIN_LAYERS] = {
       terrain->layer0[0] ? terrain->layer0 : VKR_SCENE_BRUSH_DEFAULT_MATERIAL,
       terrain->layer1, terrain->layer2, terrain->layer3};
