@@ -1124,11 +1124,12 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   /* A size limit below the requested density's atlas halves the density. */
   VkrMeshCookedEncodeInfo small_info = info;
   small_info.lightmap.max_size = 64u;
-  uint8_t *small = NULL;
+  uint8_t *small_cooked = NULL;
   uint64_t small_size = 0;
-  assert(vkr_mesh_cooked_encode(&scratch, &small_info, &small, &small_size));
+  assert(vkr_mesh_cooked_encode(&scratch, &small_info, &small_cooked,
+                                &small_size));
   VkrMeshCookedDecoded small_decoded = {0};
-  assert(vkr_mesh_cooked_decode(&result, &scratch, small, small_size,
+  assert(vkr_mesh_cooked_decode(&result, &scratch, small_cooked, small_size,
                                 &small_decoded));
   for (uint32_t i = 0u; i < 2u; ++i) {
     const VkrMeshCookedLightmapAtlas *atlas =

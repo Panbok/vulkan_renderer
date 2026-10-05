@@ -64,11 +64,12 @@ void test_pack_sizes_and_places_rects() {
   assert(layout.rect_by_instance[2] == UINT32_MAX);
   const VkrBakeLightmapRect &unit = layout.rects[layout.rect_by_instance[0]];
   const VkrBakeLightmapRect &doubled = layout.rects[layout.rect_by_instance[3]];
-  const VkrBakeLightmapRect &small = layout.rects[layout.rect_by_instance[1]];
+  const VkrBakeLightmapRect &small_rect =
+      layout.rects[layout.rect_by_instance[1]];
   const VkrBakeLightmapRect &large = layout.rects[layout.rect_by_instance[4]];
   assert(unit.width == 64u && unit.height == 64u);
   assert(doubled.width == 128u && doubled.height == 128u);
-  assert(small.width == 20u && small.height == 12u);
+  assert(small_rect.width == 20u && small_rect.height == 12u);
   assert(large.width == 256u && large.height == 128u);
   for (size_t i = 0; i < layout.rects.size(); ++i) {
     const VkrBakeLightmapRect &rect = layout.rects[i];
@@ -217,10 +218,10 @@ void test_cooked_cube_texels_lie_on_its_faces() {
    page; a rectangle wider than every smaller page keeps the full size rather
    than being scaled down. */
 void test_pack_fitted_shrinks_small_scenes() {
-  const std::vector<VkrBakeLightmapInstance> small = {
+  const std::vector<VkrBakeLightmapInstance> small_instances = {
       make_instance(0u, 60u, 40u, 1.0f), make_instance(1u, 30u, 30u, 1.0f)};
   VkrBakeLightmapLayout layout;
-  assert(vkr_bake_lightmap_pack_fitted(small, 4096u, 8.0f, &layout));
+  assert(vkr_bake_lightmap_pack_fitted(small_instances, 4096u, 8.0f, &layout));
   assert(layout.page_count == 1u && layout.page_size == 256u);
   assert(layout.rects[layout.rect_by_instance[0]].width == 60u);
 
