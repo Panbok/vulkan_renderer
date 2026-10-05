@@ -46,7 +46,8 @@ Every item below is open until the prototype measures it.
 | Culling and draw encoding | GPU classification, ICB or indirect-count draws | Shared |
 | Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass: forward shading with clustered light lists, or a G-buffer kept in tile memory and lit in the same pass |
 | Anti-aliasing | Portable TAA, MetalFX or FSR 3.1 | MSAA resolved in tile memory; no temporal history |
-| Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | IBL and baked volumes; no SSGI |
+| Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
+| Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects; no SSGI |
 | Ambient occlusion | GTAO in compute | Baked or probe occlusion |
 | Reflections | IBL and optional SSR | IBL and local probes |
 | Directional shadows | Retained cascades with PCF | Shared retained cascades; a tier may lower filtering |
@@ -59,6 +60,11 @@ Mobile Vulkan implements the same structure with dynamic-rendering local read
 for tile-memory reads and lazily allocated transient attachments.
 
 ## Open choices
+
+- Lightmap design: UV unwrapping and packing in `vkr_bakery`, texel density,
+  encoding (for example SH or a dominant direction for specular), the baker's
+  reuse of the ADR-054 BVH and photon pass, and how dynamic objects and
+  specular highlights of static lights are lit.
 
 - Forward shading with clustered lights or deferred shading in tile memory.
   Forward suits MSAA and the hardware's hidden-surface removal; tile-memory
@@ -115,6 +121,28 @@ Findings:
   baked diffuse volumes hold only indirect diffuse light
   ([ADR-054](../adr/054-baked-diffuse-volumes.md)), so every static lamp's
   direct light is evaluated per pixel each frame.
+
+A second series (same configuration, one sample with the depth pre-pass, no
+punctual or rectangle lights) removed one part of the forward shader per run.
+The desktop baseline measured 50.35 and 51.84 ms before and after the series;
+added costs below are against their mean, 51.1 ms, with about ±1 ms drift:
+
+| Forward base shading variant | Median | Added |
+|---|---|---|
+| Full base shading | 63.45 ms | +12.4 ms |
+| Clearcoat, sheen and anisotropy compiled out | 58.25 ms | +7.2 ms |
+| Sun shadow sampling removed | 59.78 ms | +8.7 ms |
+| IBL probe loop removed (global environment only) | 60.68 ms | +9.6 ms |
+| Baked-volume lookup removed | 61.68 ms | +10.6 ms |
+| Cloud shadow removed | 62.21 ms | +11.1 ms |
+| Layers, probes, volumes and clouds removed; sun shadow kept | 57.55 ms | +6.5 ms |
+
+The savings do not add: compiling out the material layers frees registers,
+and that occupancy gain carries most of the lean variant's saving. Per-material
+shader variants, which the desktop deferred path already uses per tile
+([ADR-062](../adr/062-layered-clearcoat.md)), are therefore the first base
+shading change. Lightmaps replace the probe and volume diffuse lookups on
+static surfaces.
 
 The gate therefore needs a cheaper lighting model as well as the tiled
 structure: direct light from static lights baked offline, a bounded runtime
