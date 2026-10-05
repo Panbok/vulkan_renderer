@@ -520,6 +520,9 @@ typedef struct ScenePointLight {
   /* A light group name (vkr_lightmap_group_name_valid); empty is the
      default group. */
   char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  /* Runtime: the group's slot in its scene's light groups, which setting the
+     light assigns; VKR_SCENE_LIGHT_GROUP_NONE for a dynamic light. */
+  uint8_t light_group_slot;
 } ScenePointLight;
 
 /** One-sided rectangular emitter. Entity translation is its center; rotation
@@ -533,6 +536,8 @@ typedef struct SceneRectangleLight {
   /* A light group name (vkr_lightmap_group_name_valid); empty is the
      default group. */
   char light_group[VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  /* Runtime: as ScenePointLight's. */
+  uint8_t light_group_slot;
 } SceneRectangleLight;
 
 /**
@@ -780,6 +785,52 @@ typedef struct SceneAnimationWorldSettings {
   float32_t time_scale;
 } SceneAnimationWorldSettings;
 
+/** Bytes of a time of day's night group list: four group names, commas and
+ * the terminator. */
+#define SCENE_TIME_OF_DAY_NIGHT_GROUPS_CAPACITY 128u
+
+/** World time of day (ADR-090): the sun and moon turn about the atmosphere's
+ * celestial pole as the sky does, their authored directions taken as noon
+ * (`hour` 12). While the scene's simulation runs, the hour advances 24 hours
+ * per `day_minutes` real minutes; zero keeps it. `night_groups` names,
+ * separated by commas, the light groups that light only while the sun is
+ * down. */
+typedef struct SceneTimeOfDay {
+  bool8_t enabled;
+  float32_t hour;
+  float32_t day_minutes;
+  char night_groups[SCENE_TIME_OF_DAY_NIGHT_GROUPS_CAPACITY];
+} SceneTimeOfDay;
+
+/** Light groups a scene's lights name (ADR-090), registered as lights are
+ * set; a light keeps its group's slot. Each frame a group's factor is its
+ * intensity, times the night fade when the time of day lists it as a night
+ * group; lights scale their output by it. */
+#define VKR_SCENE_LIGHT_GROUP_MAX 16u
+#define VKR_SCENE_LIGHT_GROUP_NONE 0xFFu
+
+typedef struct VkrSceneLightGroups {
+  char names[VKR_SCENE_LIGHT_GROUP_MAX][VKR_LIGHTMAP_GROUP_NAME_BYTES];
+  /* Set by scripts and commands, one until then; a simulation reset restores
+     one. */
+  float32_t intensities[VKR_SCENE_LIGHT_GROUP_MAX];
+  float32_t factors[VKR_SCENE_LIGHT_GROUP_MAX];
+  uint32_t count;
+} VkrSceneLightGroups;
+
+/** The live time of day: the hour this frame, and a script-set hour that
+ * advances from the tick it was set at until a simulation reset. */
+typedef struct VkrSceneClock {
+  /** In [0, 24); 12 without an enabled time of day. */
+  float64_t hour;
+  /** Night fade: zero while the sun stands 5 degrees or more above the
+      horizon, one once it has set, and one without a sun. */
+  float32_t night;
+  bool8_t set;
+  float64_t set_hour;
+  uint64_t set_tick;
+} VkrSceneClock;
+
 typedef struct VkrSceneWorldState {
   uint64_t revision;
   SceneEnvironmentSettings environment;
@@ -793,6 +844,7 @@ typedef struct VkrSceneWorldState {
   SceneSubsurfaceSettings subsurface;
   ScenePhysicsSettings physics_settings;
   SceneAnimationWorldSettings animation_settings;
+  SceneTimeOfDay time_of_day;
   bool8_t has_environment;
   bool8_t has_atmosphere;
   bool8_t has_clouds;
@@ -808,6 +860,7 @@ typedef struct VkrSceneWorldState {
   VkrEntityId subsurface_entity;
   VkrEntityId physics_settings_entity;
   VkrEntityId animation_settings_entity;
+  VkrEntityId time_of_day_entity;
   uint32_t probe_count;
   SceneReflectionProbeSettings probes[VKR_SCENE_REFLECTION_PROBE_MAX];
 } VkrSceneWorldState;
@@ -1011,6 +1064,10 @@ typedef struct VkrScene {
   /** The atmosphere's moon light; never found without an enabled
       atmosphere. */
   VkrSceneSun moon;
+  /** Time of day and light groups (ADR-090); vkr_scene_sync_sun updates
+      both. */
+  VkrSceneClock clock;
+  VkrSceneLightGroups light_groups;
   /** Descriptor-typed component types registered with the ECS (ADR-076). */
   VkrSceneComponentType types[VKR_SCENE_TYPE_MAX];
   uint32_t type_count;
@@ -1157,10 +1214,47 @@ bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
     light no moon. A sun or moon that differs from the requested
     revision queues a new one immediately while nothing is published or the
     latest request has not started baking, otherwise once
-    VKR_SCENE_SUN_REFRESH_SECONDS have passed since the last. Call once per
-    frame, with its duration, before the atmosphere preparation and the
-    lighting system read them (ADR-058). */
+    VKR_SCENE_SUN_REFRESH_SECONDS have passed since the last. With an
+    enabled time of day the sun and moon first turn to the clock's hour.
+    The clock's night fade and the scene's light group factors follow the
+    resulting sun (ADR-090). Call once per frame, with its duration, before
+    the atmosphere preparation and the lighting system read them
+    (ADR-058). */
 void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds);
+
+/** Hours the sun turns from noon at `hour`, as radians about the celestial
+    pole, right-handed: negative after noon, as the sky turns. */
+float32_t vkr_scene_time_of_day_angle(float64_t hour);
+
+/** Starts the clock at `hour` from the current simulation tick, until the
+    simulation resets. False for a non-finite hour. */
+bool8_t vkr_scene_set_time_of_day_hour(VkrScene *scene, float64_t hour);
+
+/** Sets a light group's intensity, registering the group when no light has
+    named it yet; zero switches its lights off. False for an invalid name, a
+    negative or non-finite intensity, or a full registry. */
+bool8_t vkr_scene_set_light_group_intensity(VkrScene *scene, const char *name,
+                                            float32_t intensity);
+
+/** The next name of a night group list from `*cursor`, with surrounding
+    spaces trimmed and empty entries skipped; false at the end. The name
+    borrows the list. */
+bool8_t vkr_scene_night_group_next(const char *list, uint32_t *cursor,
+                                   String8 *out_name);
+
+/** Recomputes the scene's light group factors for a night fade and a time of
+    day's night group list; vkr_scene_sync_sun calls it with the scene's
+    own, and the runtime with the rendered scene's for additive scenes. */
+void vkr_scene_update_light_groups(VkrScene *scene, float32_t night,
+                                   const char *night_groups);
+
+/** The output factor of a light in group `slot`: one for
+    VKR_SCENE_LIGHT_GROUP_NONE. */
+vkr_internal INLINE float32_t
+vkr_scene_light_group_factor(const VkrScene *scene, uint8_t slot) {
+  return slot < scene->light_groups.count ? scene->light_groups.factors[slot]
+                                          : 1.0f;
+}
 
 /** The frame's atmosphere: the published medium, which the published lookups
     baked, lit by the scene's current sun. Meaningful while a revision is

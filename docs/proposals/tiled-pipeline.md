@@ -67,8 +67,9 @@ for tile-memory reads and lazily allocated transient attachments.
   light come from baked sun keys blended by the sun position, and static
   lamps from lamp-group layers the runtime scales
   ([ADR-088](../adr/088-baked-lightmap-sets.md)), eight keys on the sun's
-  daily circle about the celestial pole, each with its own atmosphere. Open:
-  the time-of-day system that turns the sun and moon and scales lamp groups.
+  daily circle about the celestial pole, each with its own atmosphere. The
+  time of day ([ADR-090](../adr/090-time-of-day.md)) turns the sun and moon
+  and sets each light group's factor.
 - Lightmap design: unwrapping, packing, density, the GPU baker and ASTC 4×4
   HDR storage are decided ([ADR-088](../adr/088-baked-lightmap-sets.md)).
   Open: a directional encoding (SH or a dominant direction) for normal maps
@@ -196,7 +197,9 @@ Remaining phases:
    integrator for hosts without Metal ray tracing, and a faster path through
    stacked cutout foliage (textured Bistro bakes at a third of the untextured
    rate).
-2. Time of day: a system driving sun, moon, sky and light group intensities.
+2. Time of day: script and command control of the hour and group
+   intensities ([ADR-090](../adr/090-time-of-day.md) holds the clock, the
+   turning sun and the group factors).
 3. Tiled runtime: load VKLM sets (an ASTC 4×4 HDR texture format in both
    backends), map instances to their rectangles, and sample the blended sun
    keys and scaled lamp groups in the tiled pipeline's forward shader,

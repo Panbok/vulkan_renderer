@@ -193,7 +193,10 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     return;
 
   for (uint32_t i = 0; i < count; i++) {
-    if (!lights[i].enabled || !vkr_scene_entity_visible(scene, entities[i]))
+    const float32_t group =
+        vkr_scene_light_group_factor(scene, lights[i].light_group_slot);
+    if (!lights[i].enabled || group <= 0.0f ||
+        !vkr_scene_entity_visible(scene, entities[i]))
       continue;
 
     // Get world position from transform
@@ -205,7 +208,7 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
         ctx, (VkrPointLight){
                  .position = world_position,
                  .color = lights[i].color,
-                 .intensity = lights[i].intensity,
+                 .intensity = lights[i].intensity * group,
                  .constant = lights[i].constant,
                  .linear = lights[i].linear,
                  .quadratic = lights[i].quadratic,
@@ -236,7 +239,10 @@ vkr_internal void sync_rectangle_lights_cb(const VkrArchetype *arch,
     return;
 
   for (uint32_t i = 0u; i < count; ++i) {
-    if (!lights[i].enabled || !vkr_scene_entity_visible(scene, entities[i]))
+    const float32_t group =
+        vkr_scene_light_group_factor(scene, lights[i].light_group_slot);
+    if (!lights[i].enabled || group <= 0.0f ||
+        !vkr_scene_entity_visible(scene, entities[i]))
       continue;
     VkrQuat world_rotation;
     if (!rectangle_light_world_rotation(scene, &transforms[i], &world_rotation))
@@ -250,7 +256,7 @@ vkr_internal void sync_rectangle_lights_cb(const VkrArchetype *arch,
         .color = lights[i].color,
         .half_width = lights[i].size.x * 0.5f,
         .half_height = lights[i].size.y * 0.5f,
-        .radiance = lights[i].radiance,
+        .radiance = lights[i].radiance * group,
         .render_id = vkr_scene_get_render_id(scene, entities[i]),
     };
     if (vkr_rectangle_light_valid(&candidate))

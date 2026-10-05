@@ -2468,7 +2468,12 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     vkr_standard_scene_runtime_advance_cloud_wind(application, delta);
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
                                         render_scene);
+    /* Additive scenes' light groups follow the rendered scene's sun and
+       time of day (ADR-090). */
     for (uint32_t i = 0; i < application->additive_count; ++i) {
+      vkr_scene_update_light_groups(
+          application->additive_scenes[i], render_scene->clock.night,
+          render_scene->world_state.time_of_day.night_groups);
       vkr_lighting_system_append_scene(&application->lighting_system,
                                        application->additive_scenes[i]);
     }

@@ -32,6 +32,8 @@ extern const VkrTypeDesc vkr_scene_diffuse_volume_type;
 extern const VkrTypeDesc vkr_scene_subsurface_type;
 extern const VkrTypeDesc vkr_scene_physics_settings_type;
 extern const VkrTypeDesc vkr_scene_animation_settings_type;
+/** World time of day (ADR-090). */
+extern const VkrTypeDesc vkr_scene_time_of_day_type;
 extern const VkrTypeDesc vkr_scene_shape_type;
 extern const VkrTypeDesc vkr_scene_text_type;
 extern const VkrTypeDesc vkr_scene_animation_type;

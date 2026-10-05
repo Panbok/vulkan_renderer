@@ -623,6 +623,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_PHYSICS;
   if (type == &vkr_scene_animation_settings_type)
     return VKR_UI_ICON_ANIMATION;
+  if (type == &vkr_scene_time_of_day_type)
+    return VKR_UI_ICON_CLOCK;
   if (type == &vkr_scene_shape_type)
     return VKR_UI_ICON_SHAPES;
   if (type == &vkr_scene_text_type)
@@ -723,6 +725,8 @@ static const EditorObjectKind s_object_kinds[] = {
      &vkr_scene_fog_box_type, false_v, "Environment"},
     {"post_process", "Post Process", VKR_UI_ICON_PALETTE,
      &vkr_scene_post_process_type, false_v, "Environment"},
+    {"time_of_day", "Time of Day", VKR_UI_ICON_CLOCK,
+     &vkr_scene_time_of_day_type, false_v, "Environment"},
     {"physics_settings", "Physics Settings", VKR_UI_ICON_PHYSICS,
      &vkr_scene_physics_settings_type, false_v, "Settings"},
     {"animation_settings", "Animation Settings", VKR_UI_ICON_ANIMATION,

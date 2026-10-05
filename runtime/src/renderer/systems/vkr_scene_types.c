@@ -1708,6 +1708,79 @@ const VkrTypeDesc vkr_scene_animation_settings_type = {
     .defaults = animation_settings_defaults,
 };
 
+/* ---- Time of day (ADR-090) ---- */
+
+static const VkrPropertyDesc s_time_of_day_properties[] = {
+    {.name = "enabled",
+     .label = "Enabled",
+     .tooltip = "Turns the sun and moon to the hour",
+     .offset = TYPE_OFFSET(SceneTimeOfDay, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "hour",
+     .label = "Hour",
+     .tooltip = "Hour of the day; at 12 the sun and moon keep their authored "
+                "directions",
+     .unit = "h",
+     .offset = TYPE_OFFSET(SceneTimeOfDay, hour),
+     .kind = VKR_PROPERTY_F32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 0.0f,
+     .max = 24.0f,
+     .step = 0.05f},
+    {.name = "day_minutes",
+     .label = "Day length",
+     .tooltip = "Real minutes per day while the game runs",
+     .unit = "min",
+     .zero_label = "Paused",
+     .offset = TYPE_OFFSET(SceneTimeOfDay, day_minutes),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 100000.0f,
+     .step = 1.0f},
+    {.name = "night_groups",
+     .label = "Night groups",
+     .tooltip = "Light groups, separated by commas, that light only while the "
+                "sun is down",
+     .offset = TYPE_OFFSET(SceneTimeOfDay, night_groups),
+     .capacity = sizeof(((SceneTimeOfDay *)0)->night_groups),
+     .kind = VKR_PROPERTY_STRING},
+};
+
+static void time_of_day_defaults(void *value) {
+  *(SceneTimeOfDay *)value = (SceneTimeOfDay){
+      .enabled = true_v,
+      .hour = 12.0f,
+  };
+}
+
+static bool8_t time_of_day_validate(const void *value, char *error,
+                                    uint32_t capacity) {
+  const SceneTimeOfDay *time = (const SceneTimeOfDay *)value;
+  String8 name = {0};
+  uint32_t cursor = 0u;
+  while (vkr_scene_night_group_next(time->night_groups, &cursor, &name)) {
+    if (!vkr_lightmap_group_name_valid((const char *)name.str, name.length)) {
+      snprintf(error, capacity,
+               "Night groups are light group names separated by commas.");
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+const VkrTypeDesc vkr_scene_time_of_day_type = {
+    .name = "time_of_day",
+    .label = "Time of day",
+    .category = "Environment",
+    .flags = VKR_TYPE_FLAG_SINGLETON | VKR_TYPE_FLAG_WORLD_ONLY,
+    .properties = s_time_of_day_properties,
+    .property_count = ArrayCount(s_time_of_day_properties),
+    .size = sizeof(SceneTimeOfDay),
+    .align = _Alignof(SceneTimeOfDay),
+    .defaults = time_of_day_defaults,
+    .validate = time_of_day_validate,
+};
+
 static const VkrPropertyDesc s_player_start_properties[] = {
     {.name = "enabled",
      .label = "Enabled",
@@ -2465,6 +2538,7 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_subsurface_type,
     &vkr_scene_physics_settings_type,
     &vkr_scene_animation_settings_type,
+    &vkr_scene_time_of_day_type,
     &vkr_scene_shape_type,
     &vkr_scene_text_type,
     &vkr_scene_animation_type,
@@ -2545,8 +2619,8 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_post_process_type ||
          type == &vkr_scene_physics_settings_type ||
          type == &vkr_scene_animation_settings_type ||
-         type == &vkr_scene_shape_type || type == &vkr_scene_text_type ||
-         type == &vkr_scene_player_start_type ||
+         type == &vkr_scene_time_of_day_type || type == &vkr_scene_shape_type ||
+         type == &vkr_scene_text_type || type == &vkr_scene_player_start_type ||
          type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_timer_type || type == &vkr_scene_counter_type ||

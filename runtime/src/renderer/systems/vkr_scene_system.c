@@ -675,6 +675,8 @@ bool8_t vkr_scene_resolve_world(VkrScene *scene) {
   (void)scene_world_singleton(scene, &vkr_scene_animation_settings_type,
                               &state->animation_settings,
                               &state->animation_settings_entity);
+  (void)scene_world_singleton(scene, &vkr_scene_time_of_day_type,
+                              &state->time_of_day, &state->time_of_day_entity);
 
   uint32_t indices[VKR_SCENE_REFLECTION_PROBE_MAX];
   SceneWorldGather probes = {.type = &vkr_scene_reflection_probe_type,
@@ -808,6 +810,7 @@ bool8_t vkr_scene_singleton_active(const VkrScene *scene, VkrEntityId entity,
           ? state->physics_settings_entity
       : type == &vkr_scene_animation_settings_type
           ? state->animation_settings_entity
+      : type == &vkr_scene_time_of_day_type    ? state->time_of_day_entity
       : type == &vkr_scene_diffuse_volume_type ? state->diffuse_volume_entity
       : type == &vkr_scene_subsurface_type     ? state->subsurface_entity
                                                : entity;
@@ -2267,6 +2270,172 @@ vkr_internal void scene_find_world_sun(SceneSunLightSearch *search) {
   }
 }
 
+// =============================================================================
+// Time of day and light groups (ADR-090)
+// =============================================================================
+
+float32_t vkr_scene_time_of_day_angle(float64_t hour) {
+  return (float32_t)(-(hour - 12.0) * ((float64_t)VKR_PI / 12.0));
+}
+
+/* The clock's hour: the authored hour, or a script-set one, advanced by the
+   simulation ticks since while the day has a length. */
+vkr_internal float64_t scene_clock_hour(const VkrScene *scene,
+                                        const SceneTimeOfDay *time) {
+  if (!time->enabled) {
+    return 12.0;
+  }
+  const VkrSceneClock *clock = &scene->clock;
+  float64_t hour = clock->set ? clock->set_hour : (float64_t)time->hour;
+  const uint64_t start = clock->set ? clock->set_tick : 0u;
+  const uint64_t ticks = scene->simulation.completed_ticks;
+  if (time->day_minutes > 0.0f && ticks > start) {
+    const float64_t seconds =
+        (float64_t)(ticks - start) * VKR_SCENE_SIMULATION_FIXED_DT;
+    hour += seconds * 24.0 / ((float64_t)time->day_minutes * 60.0);
+  }
+  hour = fmod(hour, 24.0);
+  return hour < 0.0 ? hour + 24.0 : hour;
+}
+
+/* `direction` turned from noon to the clock's hour about the celestial pole
+   of the scene's atmosphere, or the default pole without one. */
+vkr_internal Vec3 scene_time_of_day_turn(const VkrScene *scene,
+                                         Vec3 direction) {
+  if (!scene->world_state.time_of_day.enabled) {
+    return direction;
+  }
+  const Vec3 pole = scene->atmosphere.authored_settings.enabled
+                        ? scene->atmosphere.authored_settings.celestial_pole
+                        : vkr_atmosphere_settings_defaults().celestial_pole;
+  const VkrQuat turn = vkr_quat_from_axis_angle(
+      pole, vkr_scene_time_of_day_angle(scene->clock.hour));
+  return vkr_quat_rotate_vec3(turn, direction);
+}
+
+/* Night fade of the resolved sun: zero at 5 degrees above the horizon and
+   higher, one from the horizon down, smooth between; one without a sun. */
+vkr_internal float32_t scene_night(const VkrSceneSun *sun) {
+  const float32_t length = vec3_length(sun->light.direction);
+  if (!sun->found || !(length > 0.0f)) {
+    return 1.0f;
+  }
+  const float32_t height = Clamp(-sun->light.direction.y / length, -1.0f, 1.0f);
+  const float32_t elevation = vkr_to_degrees(asinf(height));
+  const float32_t t = Clamp(elevation / 5.0f, 0.0f, 1.0f);
+  return 1.0f - t * t * (3.0f - 2.0f * t);
+}
+
+bool8_t vkr_scene_night_group_next(const char *list, uint32_t *cursor,
+                                   String8 *out_name) {
+  uint32_t at = *cursor;
+  while (list[at] == ' ' || list[at] == ',') {
+    ++at;
+  }
+  if (!list[at]) {
+    *cursor = at;
+    return false_v;
+  }
+  const uint32_t start = at;
+  while (list[at] && list[at] != ',') {
+    ++at;
+  }
+  uint32_t end = at;
+  while (end > start && list[end - 1u] == ' ') {
+    --end;
+  }
+  *cursor = at;
+  *out_name = (String8){.str = (uint8_t *)list + start, .length = end - start};
+  return true_v;
+}
+
+/* The slot of light group `name`, empty naming the default group,
+   registered when new; NONE once the registry is full. */
+vkr_internal uint8_t scene_light_group_slot(VkrScene *scene, const char *name) {
+  const char *group = name[0] ? name : VKR_LIGHTMAP_DEFAULT_GROUP;
+  VkrSceneLightGroups *groups = &scene->light_groups;
+  for (uint32_t i = 0u; i < groups->count; ++i) {
+    if (strcmp(groups->names[i], group) == 0) {
+      return (uint8_t)i;
+    }
+  }
+  if (groups->count >= VKR_SCENE_LIGHT_GROUP_MAX) {
+    log_warn("Scene: light group '%s' exceeds the %u groups a scene scales; "
+             "its lights keep full output",
+             group, VKR_SCENE_LIGHT_GROUP_MAX);
+    return VKR_SCENE_LIGHT_GROUP_NONE;
+  }
+  const uint32_t slot = groups->count++;
+  snprintf(groups->names[slot], sizeof(groups->names[slot]), "%s", group);
+  groups->intensities[slot] = 1.0f;
+  groups->factors[slot] = 1.0f;
+  return (uint8_t)slot;
+}
+
+/* A light's group slot, validating its baking fields: a static light joins
+   its group, a dynamic one none. False for an invalid mobility or name. */
+vkr_internal bool8_t scene_light_slot(VkrScene *scene,
+                                      VkrLightMobility mobility,
+                                      const char *group, uint8_t *out_slot) {
+  const uint64_t length = strnlen(group, VKR_LIGHTMAP_GROUP_NAME_BYTES);
+  if (mobility > VKR_LIGHT_MOBILITY_DYNAMIC ||
+      !vkr_lightmap_group_name_valid(group, length)) {
+    return false_v;
+  }
+  *out_slot = mobility == VKR_LIGHT_MOBILITY_DYNAMIC
+                  ? VKR_SCENE_LIGHT_GROUP_NONE
+                  : scene_light_group_slot(scene, group);
+  return true_v;
+}
+
+bool8_t vkr_scene_set_time_of_day_hour(VkrScene *scene, float64_t hour) {
+  if (!scene || !isfinite(hour)) {
+    return false_v;
+  }
+  hour = fmod(hour, 24.0);
+  scene->clock.set = true_v;
+  scene->clock.set_hour = hour < 0.0 ? hour + 24.0 : hour;
+  scene->clock.set_tick = scene->simulation.completed_ticks;
+  return true_v;
+}
+
+bool8_t vkr_scene_set_light_group_intensity(VkrScene *scene, const char *name,
+                                            float32_t intensity) {
+  if (!scene || !name || !isfinite(intensity) || intensity < 0.0f) {
+    return false_v;
+  }
+  const uint64_t length = strnlen(name, VKR_LIGHTMAP_GROUP_NAME_BYTES);
+  if (!vkr_lightmap_group_name_valid(name, length)) {
+    return false_v;
+  }
+  const uint8_t slot = scene_light_group_slot(scene, name);
+  if (slot == VKR_SCENE_LIGHT_GROUP_NONE) {
+    return false_v;
+  }
+  scene->light_groups.intensities[slot] = intensity;
+  return true_v;
+}
+
+void vkr_scene_update_light_groups(VkrScene *scene, float32_t night,
+                                   const char *night_groups) {
+  VkrSceneLightGroups *groups = &scene->light_groups;
+  for (uint32_t i = 0u; i < groups->count; ++i) {
+    float32_t factor = groups->intensities[i];
+    const uint64_t length = strlen(groups->names[i]);
+    uint32_t cursor = 0u;
+    String8 name = {0};
+    while (night_groups &&
+           vkr_scene_night_group_next(night_groups, &cursor, &name)) {
+      if (name.length == length &&
+          MemCompare(name.str, groups->names[i], length) == 0) {
+        factor *= night;
+        break;
+      }
+    }
+    groups->factors[i] = factor;
+  }
+}
+
 /* Resolves the sun, or with `moon` the moon, into `sun`. */
 vkr_internal void scene_resolve_sun(VkrScene *scene, VkrSceneSun *sun,
                                     bool8_t moon) {
@@ -2301,14 +2470,16 @@ vkr_internal void scene_resolve_sun(VkrScene *scene, VkrSceneSun *sun,
     color = vec3_mul(color, sun->tint);
   }
 
-  // A directional light turns with its own rotation.
+  // A directional light turns with its own rotation and the time of day.
   const SceneTransform *transform =
       (const SceneTransform *)vkr_entity_get_component(
           search.scene->world, search.entity, search.scene->comp_transform);
+  const Vec3 direction =
+      transform
+          ? vkr_quat_rotate_vec3(transform->rotation, light->direction_local)
+          : light->direction_local;
   sun->light = (VkrSceneSunLight){
-      .direction = transform ? vkr_quat_rotate_vec3(transform->rotation,
-                                                    light->direction_local)
-                             : light->direction_local,
+      .direction = scene_time_of_day_turn(scene, direction),
       .color = color,
       .intensity = light->intensity,
       .sun_angular_diameter_degrees = light->sun_angular_diameter_degrees,
@@ -2348,7 +2519,11 @@ void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
     return;
   }
 
+  const SceneTimeOfDay *time = &scene->world_state.time_of_day;
+  scene->clock.hour = scene_clock_hour(scene, time);
   scene_resolve_sun(scene, &scene->sun, false_v);
+  scene->clock.night = scene_night(&scene->sun);
+  vkr_scene_update_light_groups(scene, scene->clock.night, time->night_groups);
   VkrSceneAtmosphere *atmosphere = &scene->atmosphere;
   if (!atmosphere->authored_settings.enabled) {
     return;
@@ -3126,6 +3301,12 @@ bool8_t vkr_scene_set_point_light(VkrScene *scene, VkrEntityId entity,
   if (!scene || !scene->world || !light)
     return false_v;
 
+  ScenePointLight value = *light;
+  if (!scene_light_slot(scene, light->mobility, light->light_group,
+                        &value.light_group_slot))
+    return false_v;
+  light = &value;
+
   if (!isfinite(light->source_radius) || light->source_radius < 0.0f ||
       light->source_radius > VKR_POINT_LIGHT_SOURCE_RADIUS_MAX)
     return false_v;
@@ -3183,6 +3364,12 @@ bool8_t vkr_scene_set_rectangle_light(VkrScene *scene, VkrEntityId entity,
       light->color.y < 0.0f || light->color.z < 0.0f ||
       !vkr_entity_has_component(scene->world, entity, scene->comp_transform))
     return false_v;
+
+  SceneRectangleLight value = *light;
+  if (!scene_light_slot(scene, light->mobility, light->light_group,
+                        &value.light_group_slot))
+    return false_v;
+  light = &value;
 
   SceneRectangleLight *existing =
       (SceneRectangleLight *)vkr_entity_get_component_mut(

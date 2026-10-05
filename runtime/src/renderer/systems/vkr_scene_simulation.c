@@ -165,6 +165,12 @@ void vkr_scene_simulation_reset_state(VkrScene *scene) {
   simulation->overload_updates = 0;
   simulation->faulted = false_v;
   simulation->error = NULL;
+  /* A script-set hour and light group intensities last until the reset
+     (ADR-090). */
+  scene->clock.set = false_v;
+  for (uint32_t i = 0u; i < scene->light_groups.count; ++i) {
+    scene->light_groups.intensities[i] = 1.0f;
+  }
   if (simulation->callbacks.reset) {
     simulation->active = true_v;
     const bool8_t locked = vkr_entity_structural_read_begin(scene->world);

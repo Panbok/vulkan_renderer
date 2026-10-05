@@ -112,9 +112,10 @@ lamp layer: lamp group 0 is `default`, which always exists and also holds
 surface emission and, without a sun key, the sky; the other groups follow in
 name order. A scene whose static lights name more than
 `VKR_LIGHTMAP_SET_MAX_LAMP_GROUPS` (4) groups, `default` included, fails to
-bake. The runtime will scale each group's layer to switch or dim its lights
-together; a dynamic light is the choice for a light that moves or changes
-color.
+bake. The runtime will scale each group's layer by the group's factor
+([ADR-090](090-time-of-day.md)), which the desktop pipeline already applies
+to the group's lights; a dynamic light is the choice for a light that moves or
+changes color.
 
 ### GPU transport
 

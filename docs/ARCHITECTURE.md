@@ -962,7 +962,11 @@ disc read as a sun without changing lighting. A light flagged
 `atmosphere_moon` is the atmosphere's second light, a phase-scaled moon that is
 never the sun; the direct light, its shadows and the cloud shadow map follow
 the moon while the sun is below the horizon
-([ADR-081](adr/081-physical-night-sky.md)). Every frame builds a 384×108
+([ADR-081](adr/081-physical-night-sky.md)). A World `time_of_day` component
+turns the sun and moon about the celestial pole by the hour, which advances
+with the simulation, and fades its night light groups in after sunset; static
+lights scale by their light group's factor
+([ADR-090](adr/090-time-of-day.md)). Every frame builds a 384×108
 sky-view image, a sun table beside a moon table, and a 32³ aerial-perspective
 volume from the published lookups at the camera's altitude. The deferred
 background samples both tables and adds an analytic limb-darkened sun disc, a
@@ -1421,6 +1425,9 @@ These are limits of current code or retained acceptance, not scheduled promises:
   and package, but no renderer samples them, the desktop pipeline ignores
   light mobility, and hosts without Metal ray tracing cannot bake them; see
   [ADR-088](adr/088-baked-lightmap-sets.md).
+- The time of day turns the sun, but baked diffuse volumes keep the authored
+  sun's bounce, and scripts and `vkr_cmd` cannot set the hour or group
+  intensities yet; see [ADR-090](adr/090-time-of-day.md).
 - Charlie sheen is implemented below clearcoat in runtime and offline lighting.
   Its two-component rectangle fit retains measured errors for dim tilted lights;
   [ADR-063](adr/063-charlie-sheen.md) records those approximation limits and the

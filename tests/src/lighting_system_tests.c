@@ -4,6 +4,7 @@
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_lighting_system.h"
+#include "renderer/systems/vkr_scene_types.h"
 
 vkr_internal bool8_t lighting_test_vec3_near(Vec3 left, Vec3 right) {
   return fabsf(left.x - right.x) < 0.00001f &&
@@ -695,6 +696,155 @@ static bool32_t test_invisible_key_light_is_disabled(void) {
   return true_v;
 }
 
+/* The point light the system kept with intensity `intensity`, or NULL. */
+static const VkrPointLight *time_test_point(const VkrLightingSystem *system,
+                                            float32_t intensity) {
+  for (uint32_t i = 0u; i < system->point_light_count; ++i) {
+    const float32_t value = system->point_lights[i].intensity;
+    if (fabsf(value - intensity) < 1.0e-5f) {
+      return &system->point_lights[i];
+    }
+  }
+  return NULL;
+}
+
+/* A time of day turns the sun about the celestial pole by the hour, the way
+ * the sky turns (setting toward +X under the default pole), and its night
+ * groups light only while the sun is down; a script-set hour and group
+ * intensities scale static lights alone and last until the simulation
+ * resets (ADR-090). */
+static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
+  printf("  Running test_time_of_day_turns_sun_and_switches_night_groups...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(
+      vkr_scene_init(&scene, &allocator, VKR_SCENE_WORLD_ROOT_ID, 8u, &error));
+  VkrLightingSystem system;
+  assert(vkr_lighting_system_init(&system));
+
+  /* Noon sun 45 degrees above the horizon, perpendicular to the default
+     pole (0, 0.7071, 0.7071). */
+  const float32_t h = 0.70710678f;
+  VkrEntityId sun = vkr_scene_create_entity(&scene, &error);
+  assert(vkr_scene_set_directional_light(
+      &scene, sun,
+      &(SceneDirectionalLight){
+          .color = vec3_one(),
+          .intensity = 1.0f,
+          .direction_local = vec3_new(0.0f, -h, h),
+          .enabled = true_v,
+      }));
+  const struct {
+    const char *group;
+    VkrLightMobility mobility;
+    float32_t intensity;
+  } lamps[] = {{"street", VKR_LIGHT_MOBILITY_STATIC, 2.0f},
+               {"", VKR_LIGHT_MOBILITY_STATIC, 3.0f},
+               {"", VKR_LIGHT_MOBILITY_DYNAMIC, 5.0f}};
+  for (uint32_t i = 0u; i < ArrayCount(lamps); ++i) {
+    VkrEntityId lamp = vkr_scene_create_entity(&scene, &error);
+    assert(vkr_scene_set_transform(&scene, lamp, vec3_new((float32_t)i, 1, 0),
+                                   vkr_quat_identity(), vec3_one()));
+    ScenePointLight light = {.color = vec3_one(),
+                             .intensity = lamps[i].intensity,
+                             .constant = 1.0f,
+                             .enabled = true_v,
+                             .mobility = lamps[i].mobility};
+    snprintf(light.light_group, sizeof(light.light_group), "%s",
+             lamps[i].group);
+    assert(vkr_scene_set_point_light(&scene, lamp, &light));
+  }
+  VkrEntityId panel = vkr_scene_create_entity(&scene, &error);
+  assert(vkr_scene_set_transform(&scene, panel, vec3_zero(),
+                                 vkr_quat_identity(), vec3_one()));
+  assert(vkr_scene_set_rectangle_light(&scene, panel,
+                                       &(SceneRectangleLight){
+                                           .color = vec3_one(),
+                                           .radiance = 4.0f,
+                                           .size = vec2_new(1.0f, 1.0f),
+                                           .enabled = true_v,
+                                           .light_group = "porch",
+                                       }));
+  ScenePointLight invalid = {.color = vec3_one(), .light_group = "two words"};
+  assert(!vkr_scene_set_point_light(&scene, panel, &invalid));
+
+  VkrEntityId clock = vkr_scene_create_entity(&scene, &error);
+  SceneTimeOfDay time;
+  vkr_type_defaults(&vkr_scene_time_of_day_type, &time);
+  snprintf(time.night_groups, sizeof(time.night_groups), "street, porch");
+  assert(
+      vkr_scene_set_typed(&scene, clock, &vkr_scene_time_of_day_type, &time));
+  vkr_scene_update(&scene, 0.0);
+  (void)vkr_scene_resolve_world(&scene);
+  vkr_scene_sync_sun(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  /* Noon keeps the authored sun; the night groups are off. */
+  assert(lighting_test_vec3_near(system.directional.direction,
+                                 vec3_new(0.0f, -h, h)));
+  assert(system.point_light_count == 2u && !time_test_point(&system, 2.0f));
+  assert(system.rectangle_light_count == 0u);
+
+  /* At 18:00 the sun sets toward +X and the night groups light. */
+  time.hour = 18.0f;
+  assert(
+      vkr_scene_set_typed(&scene, clock, &vkr_scene_time_of_day_type, &time));
+  (void)vkr_scene_resolve_world(&scene);
+  vkr_scene_sync_sun(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  assert(lighting_test_vec3_near(system.directional.direction,
+                                 vec3_new(-1.0f, 0.0f, 0.0f)));
+  assert(system.point_light_count == 3u && time_test_point(&system, 2.0f));
+  assert(system.rectangle_light_count == 1u &&
+         system.rectangle_lights[0].radiance == 4.0f);
+
+  /* Group intensities scale static lights only. */
+  assert(vkr_scene_set_light_group_intensity(&scene, "street", 0.5f));
+  assert(vkr_scene_set_light_group_intensity(&scene, "", 0.0f));
+  assert(!vkr_scene_set_light_group_intensity(&scene, "street", -1.0f));
+  vkr_scene_sync_sun(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  assert(system.point_light_count == 2u && time_test_point(&system, 1.0f) &&
+         time_test_point(&system, 5.0f));
+
+  /* A script-set 06:00 raises the sun from -X; a day of 24 real minutes
+     then advances it an hour per 3,600 ticks. */
+  assert(vkr_scene_set_time_of_day_hour(&scene, 6.0));
+  vkr_scene_sync_sun(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  assert(lighting_test_vec3_near(system.directional.direction,
+                                 vec3_new(1.0f, 0.0f, 0.0f)));
+  time.day_minutes = 24.0f;
+  assert(
+      vkr_scene_set_typed(&scene, clock, &vkr_scene_time_of_day_type, &time));
+  (void)vkr_scene_resolve_world(&scene);
+  scene.simulation.completed_ticks += 3600u;
+  vkr_scene_sync_sun(&scene, 0.0);
+  assert(fabs(scene.clock.hour - 7.0) < 1.0e-6);
+
+  /* A reset returns to the authored hour and full group intensities. */
+  vkr_scene_simulation_reset_state(&scene);
+  vkr_scene_sync_sun(&scene, 0.0);
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  assert(fabs(scene.clock.hour - 18.0) < 1.0e-6);
+  assert(system.point_light_count == 3u && time_test_point(&system, 2.0f) &&
+         time_test_point(&system, 3.0f));
+
+  SceneTimeOfDay rejected = time;
+  snprintf(rejected.night_groups, sizeof(rejected.night_groups), "street,a b");
+  assert(!vkr_type_validate(&vkr_scene_time_of_day_type, &rejected, NULL, 0u));
+
+  vkr_lighting_system_shutdown(&system);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_time_of_day_turns_sun_and_switches_night_groups PASSED\n");
+  return true_v;
+}
+
 bool32_t run_lighting_system_tests(void) {
   printf("--- Running Lighting System tests... ---\n");
   bool32_t passed = true_v;
@@ -713,6 +863,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_point_light_grid_build_is_deterministic();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
+  passed &= test_time_of_day_turns_sun_and_switches_night_groups();
   printf("--- Lighting System tests completed. ---\n");
   return passed;
 }
