@@ -77,9 +77,9 @@ for tile-memory reads and lazily allocated transient attachments.
   lights are lit.
 
 - Forward shading with clustered lights or deferred shading in tile memory.
-  Forward suits MSAA and the hardware's hidden-surface removal; tile-memory
-  deferred keeps lighting cost independent of overdraw. The prototype measures
-  both on Bistro opaque surfaces.
+  Measured below: equal without MSAA, forward 1.7 to 3.4 ms cheaper with four
+  samples. Forward with a depth pre-pass is recommended; the owner's choice is
+  pending.
 - MSAA sample count: two or four.
 - The M1 Pro quality tier: which effects drop or lower first.
 - Graph representation: a graph pass is one render pass today. Several
@@ -176,6 +176,32 @@ adds 0.3 to 0.5 ms to the compact shader.
 The gate therefore needs a cheaper lighting model as well as the tiled
 structure: direct light from static lights baked offline, a bounded runtime
 budget for dynamic lights, and base shading near half its current cost.
+
+A fourth series (2026-10-05) compared the compact forward shader with
+single-pass deferred shading in tile memory: G-buffer draws write emission
+(RGBA16F), albedo and occlusion (RGBA8 sRGB), normal (RGB10A2), roughness,
+metalness and dielectric reflectance (RGBA8) and depth (R32F) to memoryless
+attachments, 24 bytes per sample, and one full-screen draw in the same render
+pass reads them through programmable blending, reconstructs the position and
+lights it with the same model; with multisampling it runs once per sample.
+Both variants produced the same image: frame-mean colour within 0.1% and
+identical reconstructed positions. Two series ran in opposite orders; the
+baselines measured 51.71 and 50.98 ms, then 50.44 ms:
+
+| Variant | Added, 1 sample | Added, 4 samples |
+|---|---|---|
+| Compact forward, depth pre-pass | +5.6 / +4.8 ms | +6.0 / +5.4 ms |
+| Tile deferred, depth pre-pass | +5.6 ms | +7.7 / +7.3 ms |
+| Tile deferred, no pre-pass | +4.9 / +4.8 ms | +9.0 / +8.8 ms |
+
+Without multisampling the two structures cost the same. With four samples,
+tile deferred costs 1.7 to 3.4 ms more: its G-buffer takes four times the
+tile memory and its lighting runs per sample, while forward shading pays
+0.4 to 0.6 ms for four samples. Lighting only edge pixels per sample would at
+best bring tile deferred to the forward cost. Forward shading with a depth
+pre-pass is therefore the recommended opaque structure; tile deferred would
+pay off only with many dynamic lights per pixel, which the baked lamp groups
+avoid.
 
 ## Lightmaps
 
