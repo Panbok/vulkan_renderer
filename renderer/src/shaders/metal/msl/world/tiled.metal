@@ -7,9 +7,10 @@
  * Static surfaces take diffuse light from their baked lightmap (ADR-088):
  * the frame's active layers, the two sun keys nearest the sun and every lamp
  * group, each scaled by its weight. The runtime adds the sun's direct light
- * with its cascades and cloud shadow, and specular light from the global
- * environment. Surfaces without a lightmap take diffuse light from the baked
- * diffuse volume, else the global environment. */
+ * with its cascades and cloud shadow, the dynamic local lights with their
+ * shadows, and specular light from the global environment. Surfaces without a
+ * lightmap take diffuse light from the baked diffuse volume, else the global
+ * environment. */
 
 // The forward and depth pre-pass vertex. It transforms like the Slang
 // vkr_metal_packet_vertex, whose draw root sits at the same buffer for the
@@ -176,8 +177,8 @@ struct VkrMetalTiledSurfaceLight {
 };
 
 // Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
-// diffuse light from its lightmap, the diffuse volume or the global
-// environment, and environment specular.
+// the dynamic local lights, diffuse light from its lightmap, the diffuse
+// volume or the global environment, and environment specular.
 static VkrMetalTiledSurfaceLight
 vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                       constant VkrMetalPacketFrameRoot *frame,
@@ -256,6 +257,27 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     light.diffuse += direct.diffuse;
     light.specular += direct.specular;
   }
+
+  // The dynamic local lights, the bounded set the runtime keeps, through the
+  // world-space light grid with their shadows filtered inline. Static lights
+  // are baked (ADR-088).
+  VkrClearcoatLayer no_coat = {};
+  VkrSheenLayer no_sheen = {};
+  float3 punctual_irradiance = float3(0.0f);
+  float3 coat_unused = float3(0.0f);
+  float3 sheen_unused = float3(0.0f);
+  vkr_metal_packet_punctual_layered<true>(
+      frame, input.world_position, normal, view, base, metallic, roughness,
+      f0, energy, false, no_coat, false, no_sheen, 0.0f, punctual_irradiance,
+      light.diffuse, light.specular, coat_unused, sheen_unused,
+      VkrMetalInlineLocalShadow{});
+  VkrMetalPacketDirectResult rectangles =
+      vkr_metal_packet_layered_rectangle_lights<true>(
+          frame, input.world_position, normal, view, base, metallic, roughness,
+          f0, energy, false, no_coat, false, no_sheen, coat_unused,
+          sheen_unused);
+  light.diffuse += rectangles.diffuse;
+  light.specular += rectangles.specular;
 
   // Diffuse light: the lightmap stores irradiance, the volume and the global
   // environment the Lambertian response; each is pre-exposed here.

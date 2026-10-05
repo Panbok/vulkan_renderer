@@ -155,6 +155,44 @@ static bool32_t test_point_light_grid_build_is_deterministic(void) {
   return true_v;
 }
 
+/* The tiled pipeline keeps the lights nearest the camera by the distance to
+ * their range, in table order, and shadows the nearest casters among them
+ * (ADR-087). */
+static bool32_t test_point_light_limit_keeps_nearest(void) {
+  printf("  Running test_point_light_limit_keeps_nearest...\n");
+  VkrLightingSystem system = {0};
+  /* Range 2 at x = 10 * i: light i's range starts 10 * i - 2 from the
+     origin, so the table order is the distance order reversed. */
+  const uint32_t count = 6u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const uint32_t slot = count - 1u - i;
+    system.point_lights[slot] =
+        make_gltf_point(slot + 1u, vec3_new(10.0f * (float32_t)i, 0, 0), 2.0f);
+    system.point_lights[slot].casts_shadow = i != 1u;
+  }
+  system.point_light_count = count;
+  vkr_lighting_system_build_point_light_grid(&system);
+
+  vkr_lighting_system_limit_point_lights(&system, vec3_zero(), 4u, 2u);
+  /* The four nearest, x = 0..30, remain in their table order (ids 3..6);
+     of the casters among them, x = 0 and x = 20, keep shadows. */
+  assert(system.point_light_count == 4u);
+  assert(system.point_light_dropped_count == 2u);
+  const uint32_t ids[] = {3u, 4u, 5u, 6u};
+  const bool8_t shadowed[] = {false_v, true_v, false_v, true_v};
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    assert(system.point_lights[i].render_id == ids[i]);
+    assert(system.point_lights[i].casts_shadow == shadowed[i]);
+  }
+  /* The grid follows the kept table, where the light at the origin moved
+     from index 5 to index 3. */
+  const VkrPointLightMask origin =
+      vkr_lighting_system_point_light_mask_at(&system, vec3_zero());
+  assert(vkr_lighting_system_point_light_mask_contains(&origin, 3u));
+  printf("  test_point_light_limit_keeps_nearest PASSED\n");
+  return true_v;
+}
+
 static bool32_t test_point_light_gpu_row_packing(void) {
   printf("  Running test_point_light_gpu_row_packing...\n");
   VkrPointLight light = {
@@ -802,6 +840,14 @@ static bool32_t test_time_of_day_turns_sun_and_switches_night_groups(void) {
   assert(system.rectangle_light_count == 1u &&
          system.rectangle_lights[0].radiance == 4.0f);
 
+  /* A pipeline that bakes static light keeps the dynamic lights alone
+     (ADR-087). */
+  system.static_lights_baked = true_v;
+  vkr_lighting_system_sync_from_scene(&system, &scene);
+  assert(system.point_light_count == 1u && time_test_point(&system, 5.0f));
+  assert(system.rectangle_light_count == 0u);
+  system.static_lights_baked = false_v;
+
   /* Group intensities scale static lights only. */
   assert(vkr_scene_set_light_group_intensity(&scene, "street", 0.5f));
   assert(vkr_scene_set_light_group_intensity(&scene, "", 0.0f));
@@ -861,6 +907,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_moon_light_lights_the_night();
   passed &= test_invisible_key_light_is_disabled();
   passed &= test_point_light_grid_build_is_deterministic();
+  passed &= test_point_light_limit_keeps_nearest();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
   passed &= test_time_of_day_turns_sun_and_switches_night_groups();

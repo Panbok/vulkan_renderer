@@ -54,6 +54,26 @@
       ]
     },
     {
+      "name": "local_shadow_map",
+      "condition": "scene_rendering && local_shadows_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "local_shadow_atlas_size"
+      },
+      "layers_source": "local_shadow_atlas_layer_count",
+      "format": "D16_UNORM",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "RETAINED",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "hdr_scene_color",
       "type": "image",
       "condition": "scene_rendering",
@@ -799,6 +819,81 @@
       "execute": "pass.shadow.moments"
     },
     {
+      "name": "Shadow.Local.Clear.${i}",
+      "condition": "scene_rendering && local_shadow_atlas_clear",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "local_shadow_atlas_layer_count",
+        "condition_mask_source": "local_shadow_atlas_clear_mask"
+      },
+      "attachments": {
+        "depth": {
+          "image": "local_shadow_map",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          },
+          "slice": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.clear"
+    },
+    {
+      "name": "Shadow.Local.${i}",
+      "condition": "scene_rendering && local_shadows_active",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": {
+        "count_source": "local_shadow_render_count"
+      },
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "local_shadow_map",
+          "load": "LOAD",
+          "store": "STORE",
+          "slice": {
+            "base_layer": "${local_shadow_render_atlas_layer}",
+            "layer_count": 1
+          }
+        }
+      },
+      "execute": "pass.local_shadow"
+    },
+    {
       "name": "Sky.ViewLut",
       "type": "compute",
       "condition": "scene_rendering && atmosphere_enabled",
@@ -901,6 +996,12 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
         }
       ],
       "attachments": {
@@ -1080,6 +1181,12 @@
           "access": "SAMPLED",
           "binding": 33,
           "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
         }
       ],
       "attachments": {

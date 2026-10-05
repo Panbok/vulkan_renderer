@@ -3373,8 +3373,11 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER, false_v,
           renderer->frustum_enabled);
       /* Opaque faces leave refractive casters to the transmission layers,
-         which only the first render slots draw. */
-      if (renderer->prepared_frame.local_shadow_refractive_casters)
+         which only the first render slots draw. The tiled pipeline has no
+         transmission layers, and its glass casts no local shadow
+         (ADR-087). */
+      if (renderer->prepared_frame.local_shadow_refractive_casters ||
+          renderer->tiled)
         views[first_local_view + slot].excluded_candidate_flags =
             VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION;
       if (slot <

@@ -196,6 +196,8 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     const float32_t group =
         vkr_scene_light_group_factor(scene, lights[i].light_group_slot);
     if (!lights[i].enabled || group <= 0.0f ||
+        (ctx->system->static_lights_baked &&
+         lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC) ||
         !vkr_scene_entity_visible(scene, entities[i]))
       continue;
 
@@ -242,6 +244,8 @@ vkr_internal void sync_rectangle_lights_cb(const VkrArchetype *arch,
     const float32_t group =
         vkr_scene_light_group_factor(scene, lights[i].light_group_slot);
     if (!lights[i].enabled || group <= 0.0f ||
+        (ctx->system->static_lights_baked &&
+         lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC) ||
         !vkr_scene_entity_visible(scene, entities[i]))
       continue;
     VkrQuat world_rotation;
@@ -397,6 +401,70 @@ void vkr_lighting_system_apply_atmosphere_light(
   system->directional.color = irradiance;
   system->directional.intensity = 1.0f;
   system->directional.sun_angular_diameter_degrees = angular_diameter_degrees;
+  system->dirty = true_v;
+}
+
+/* Distance from the camera to a light's range; an unbounded light is at
+   zero. */
+vkr_internal float32_t point_light_camera_distance(const VkrPointLight *light,
+                                                   Vec3 camera_position) {
+  if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL || light->range <= 0.0f)
+    return 0.0f;
+  return Max(vec3_length(vec3_sub(light->position, camera_position)) -
+                 light->range,
+             0.0f);
+}
+
+/* Indices of the `count` lights in ascending distance, ties in table order
+   (an insertion sort: the table holds at most VKR_MAX_SCENE_POINT_LIGHTS). */
+vkr_internal void point_light_order_by_distance(const float32_t *distances,
+                                                uint32_t count,
+                                                uint32_t *order) {
+  for (uint32_t i = 0u; i < count; ++i) {
+    uint32_t insert = i;
+    while (insert > 0u && distances[order[insert - 1u]] > distances[i]) {
+      order[insert] = order[insert - 1u];
+      --insert;
+    }
+    order[insert] = i;
+  }
+}
+
+void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
+                                            Vec3 camera_position,
+                                            uint32_t light_max,
+                                            uint32_t shadow_max) {
+  if (!system)
+    return;
+  const uint32_t count = system->point_light_count;
+  float32_t distances[VKR_MAX_SCENE_POINT_LIGHTS];
+  uint32_t order[VKR_MAX_SCENE_POINT_LIGHTS];
+  bool8_t keep[VKR_MAX_SCENE_POINT_LIGHTS];
+  for (uint32_t i = 0u; i < count; ++i)
+    distances[i] =
+        point_light_camera_distance(&system->point_lights[i], camera_position);
+  point_light_order_by_distance(distances, count, order);
+
+  uint32_t shadowed = 0u;
+  for (uint32_t rank = 0u; rank < count; ++rank) {
+    VkrPointLight *light = &system->point_lights[order[rank]];
+    keep[order[rank]] = rank < light_max;
+    if (keep[order[rank]] && light->casts_shadow) {
+      light->casts_shadow = shadowed < shadow_max;
+      ++shadowed;
+    }
+  }
+  if (count <= light_max)
+    return;
+
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (keep[i])
+      system->point_lights[kept++] = system->point_lights[i];
+  }
+  system->point_light_count = kept;
+  system->point_light_dropped_count += count - kept;
+  vkr_lighting_system_build_point_light_grid(system);
   system->dirty = true_v;
 }
 

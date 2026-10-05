@@ -54,8 +54,9 @@ static const VkrPropertyDesc s_graphics_properties[] = {
     {.name = "tiled_pipeline",
      .label = "Tiled pipeline",
      .tooltip = "Render with forward multisampled shading and baked "
-                "lightmaps for Apple GPUs; no glass, local lights or "
-                "screen-space effects yet. Applies after restart",
+                "lightmaps for Apple GPUs; static lights need a lightmap "
+                "bake, and there are no screen-space effects yet. Applies "
+                "after restart",
      .offset = GRAPHICS_OFFSET(tiled_pipeline),
      .kind = VKR_PROPERTY_BOOL},
     {.name = "temporal_upscaling",

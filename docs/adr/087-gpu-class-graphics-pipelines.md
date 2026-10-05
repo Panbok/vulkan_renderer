@@ -9,9 +9,10 @@ authority: adr
 ## Status
 
 Accepted (partial). The decision is in force. A first tiled pipeline runs on
-Metal when a renderer or the editor selects it (decisions 6, 7 and 9) and
-draws glass (decision 10); every device runs the desktop pipeline by default
-until the tiled one draws dynamic lights. The remaining design is in
+Metal when a renderer or the editor selects it (decisions 6, 7 and 9), draws
+glass (decision 10) and a bounded set of dynamic lights (decision 11); every
+device runs the desktop pipeline by default until the tiled one is measured
+complete on a baked Bistro. The remaining design is in
 [Tiled graphics pipeline](../proposals/tiled-pipeline.md).
 
 ## Context
@@ -105,8 +106,8 @@ pipeline rather than a backend mechanism.
    `renderer.graphics_pipeline`). Zero is the desktop pipeline. The tiled
    class requires the Metal backend without temporal upscaling or dynamic
    resolution; it turns off temporal reconstruction, SSR, SSGI, GTAO,
-   surface diffusion, depth of field, motion blur, froxel fog, local shadows,
-   SDSM and the transmission passes
+   surface diffusion, depth of field, motion blur, froxel fog, the local
+   shadow mask, SDSM and the transmission passes
    ([`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
    [`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)).
 8. The forward shader
@@ -152,6 +153,21 @@ pipeline rather than a backend mechanism.
     thickness and an effective roughness of zero. The pass runs only on
     frames with blended draws or world text, because its load and store of
     the resolved colour and depth cost about 0.4 ms at 2560×1440.
+11. The tiled pipeline lights static lights only through baked data, the
+    lightmaps and diffuse volumes, and draws a bounded set of dynamic lights
+    forward. With `static_lights_baked`, which the runtime sets for the tiled
+    class, the lighting system leaves static lights out of its tables; then
+    `vkr_lighting_system_limit_point_lights`
+    ([`vkr_lighting_system.h`](../../runtime/src/renderer/systems/vkr_lighting_system.h))
+    keeps the 16 dynamic point and spot lights nearest the camera by the
+    distance to their range, and lets the 4 nearest shadow casters among
+    them cast shadows. The forward shader evaluates them through the shared
+    light grid and local-light loop (`vkr_metal_packet_punctual_layered`),
+    filtering their local shadow maps inline as desktop forward shading
+    does, and dynamic rectangle lights through the shared LTC path. The
+    tiled graph renders the local shadow atlas with the desktop passes
+    `Shadow.Local.Clear` and `Shadow.Local`; glass casts no local shadow.
+    A static light in an unbaked scene adds no light.
 
 ### First tiled pipeline measurement
 
@@ -193,6 +209,15 @@ show the interior through the panes on both. The tiled panes reflect the
 sky where the desktop ones reflect the street, because the tiled pipeline
 has no local reflection probes or SSR yet, and the desktop interior is lit
 by lamps the tiled one does not draw yet.
+
+### Dynamic light evidence
+
+Release editor, M1 Pro, 2026-10-06, the toolkit test level at 22:00: a
+dynamic spot light casting shadows over a brush pillar and an unshadowed
+dynamic point light, added through `vkr_mcp`, light the room on both
+pipelines with the same pool, pillar shadow and tint, over the baked lamp
+groups on the tiled one. `test_point_light_limit_keeps_nearest` and the
+time-of-day lighting test cover the limit and the static-light filter.
 
 ### Editor evidence
 

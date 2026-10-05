@@ -26,6 +26,10 @@ typedef struct VkrLightingSystem {
   VkrPointLight point_lights[VKR_MAX_SCENE_POINT_LIGHTS];
   uint32_t point_light_count;
   uint32_t point_light_dropped_count;
+  /* Static lights light only through baked data, the lightmaps and diffuse
+     volumes, so the tables keep the dynamic lights (the tiled pipeline,
+     ADR-087 and ADR-088). Read by the scene syncs. */
+  bool8_t static_lights_baked;
   VkrPointLightGrid point_light_grid;
 
   VkrRectangleLight rectangle_lights[VKR_MAX_SCENE_RECTANGLE_LIGHTS];
@@ -76,6 +80,15 @@ void vkr_lighting_system_append_scene(VkrLightingSystem *system,
 void vkr_lighting_system_apply_atmosphere_light(
     VkrLightingSystem *system, Vec3 toward_light, Vec3 irradiance,
     float32_t angular_diameter_degrees, float32_t display_exposure);
+
+/** Keeps the `light_max` point lights nearest `camera_position` by the
+ * distance to their range, in table order, and shadows only the `shadow_max`
+ * nearest of those that cast shadows; rebuilds the grid when lights drop. The
+ * tiled pipeline's bounded set of dynamic lights (ADR-087). */
+void vkr_lighting_system_limit_point_lights(VkrLightingSystem *system,
+                                            Vec3 camera_position,
+                                            uint32_t light_max,
+                                            uint32_t shadow_max);
 
 /** Rebuilds the conservative world-space lookup from point_lights. Public for
  * deterministic CPU coverage tests; scene sync calls it automatically. */

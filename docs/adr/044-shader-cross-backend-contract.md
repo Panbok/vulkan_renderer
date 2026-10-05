@@ -61,6 +61,9 @@ have no bilateral gate yet.
     `vkr_transmission_compose` and returns the factor the destination keeps
     as its second, dual-source output; the transmission kernels and the
     desktop composition are unchanged.
+  - The tiled shading calls the shared local-light loop and rectangle-light
+    path with inline local shadows, unchanged, without the coat and sheen
+    layers.
 - **Metal evidence.** Pipeline creation validates the new layouts, and the
   Bistro street view renders on both pipeline classes
   (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`), as do the café

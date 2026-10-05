@@ -11,6 +11,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The tiled pipeline's bounded dynamic lights (ADR-087): the point and spot
+   lights it draws, nearest the camera first, and how many of them cast
+   shadows. */
+#define VKR_STANDARD_SCENE_TILED_LIGHT_MAX 16u
+#define VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX 4u
+
 /* Payload storage for one scene frame. Each draw_frame stage fills its part
    through a pointer; the packet and its payloads borrow these members. */
 typedef struct VkrStandardSceneRuntimeDrawContext {
@@ -2474,6 +2480,11 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     vkr_world_resources_poll_scene_atmosphere(&application->assets,
                                               render_scene);
     vkr_standard_scene_runtime_advance_cloud_wind(application, delta);
+    /* The tiled pipeline lights static lights through baked data only
+       (ADR-087). */
+    const bool8_t tiled =
+        application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
+    application->lighting_system.static_lights_baked = tiled;
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
                                         render_scene);
     /* Additive scenes' light groups follow the rendered scene's sun and
@@ -2493,6 +2504,13 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
           &application->lighting_system, key.toward, key.irradiance,
           key.angular_diameter_degrees, application->display_exposure);
     }
+    /* It draws a bounded set of the dynamic lights nearest the camera, and
+       shadows fewer still. */
+    if (tiled && camera)
+      vkr_lighting_system_limit_point_lights(
+          &application->lighting_system, camera->position,
+          VKR_STANDARD_SCENE_TILED_LIGHT_MAX,
+          VKR_STANDARD_SCENE_TILED_SHADOWED_LIGHT_MAX);
   }
 
   /* The frame fits and resolves shadows once acquired, on the thread that

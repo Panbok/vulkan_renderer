@@ -1073,11 +1073,6 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.tiled_pipeline = tiled;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
-  /* The tiled pipeline resolves multisampled edges and keeps no temporal
-     history; its static lights are baked and it draws no local shadows yet
-     (ADR-087). */
-  if (tiled)
-    prepared->frame.input.local_shadow = NULL;
   /* Portable TAA, MetalFX and FSR all reconstruct edges temporally, so FXAA
      filters only frames without temporal reconstruction. */
   const bool8_t temporal_frame =
