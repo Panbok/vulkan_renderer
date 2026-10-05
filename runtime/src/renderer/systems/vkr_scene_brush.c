@@ -512,9 +512,25 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
     };
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  brush_pending_drop(scene, state, record->entity);
+  /* A brush with no mesh has nothing to keep drawing, so it takes the new
+     one at once and shows it as the uploads finish. */
+  if (!record->built) {
+    vkr_scene_detach_generated_mesh(scene, record->entity);
+    VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
+    if (ok) {
+      ok = vkr_scene_attach_generated_mesh(scene, record->entity, submeshes,
+                                           submesh_count, &scene_error);
+    }
+    /* The mesh holds its own references now, or none after a failure. */
+    for (uint32_t i = 0; i < submesh_count; ++i) {
+      vkr_geometry_system_release(&assets->geometry_system,
+                                  submeshes[i].geometry);
+    }
+    return ok;
+  }
   /* The new mesh waits beside the old one for its uploads; an older waiting
      mesh is superseded. */
-  brush_pending_drop(scene, state, record->entity);
   if (ok && brush_grow(scene->alloc, (void **)&state->pending,
                        &state->pending_capacity, state->pending_count + 1u,
                        sizeof(*state->pending))) {
