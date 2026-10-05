@@ -590,6 +590,26 @@ vkr_internal void vkr_standard_scene_runtime_update_ibl_validation_controls(
     return;
   }
 
+  /* F8 to F10 override the sky light only while a mode or scale is chosen;
+     otherwise the scene's own values, edits and the enable a later
+     atmosphere bake makes included, stand. Ending an override restores the
+     values it replaced. F9 and F10 step by 0.1, so 1.0 compares loosely. */
+  const bool8_t override = state->ibl_validation_mode != 0u ||
+                           fabsf(state->ibl_validation_scalar - 1.0f) > 1e-3f;
+  if (!override) {
+    if (state->ibl_validation_defaults_captured &&
+        state->ibl_validation_scene == scene) {
+      scene->environment.enabled = state->ibl_validation_base_enabled;
+      scene->environment.intensity = state->ibl_validation_base_intensity;
+      scene->environment.diffuse_intensity =
+          state->ibl_validation_base_diffuse_intensity;
+      scene->environment.specular_intensity =
+          state->ibl_validation_base_specular_intensity;
+    }
+    state->ibl_validation_defaults_captured = false_v;
+    return;
+  }
+
   if (state->ibl_validation_scene != scene ||
       !state->ibl_validation_defaults_captured) {
     state->ibl_validation_scene = scene;
