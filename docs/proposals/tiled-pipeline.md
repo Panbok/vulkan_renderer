@@ -54,13 +54,20 @@ Every item below is open until the prototype measures it.
 | Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights with PCF, drawn in the lighting pass |
 | Transmission | Four peeled layers shaded in compute | Sorted forward blend with one refraction sample |
 | Post-processing | Compute bloom, exposure, tonemap | Shared color pipeline; tonemap and bloom combine in the final render pass where possible |
-| Arithmetic | 32-bit throughout | 16-bit where the art-level contract allows |
+| Arithmetic | 32-bit throughout | 32-bit; 16-bit only where a measured kernel is register-bound (no ALU gain on M1, see below) |
 
 Mobile Vulkan implements the same structure with dynamic-rendering local read
 for tile-memory reads and lazily allocated transient attachments.
 
 ## Open choices
 
+- Day/night cycle (owner requirement, 2026-10-05): the sun moves and lamps
+  switch with time of day, so lightmaps cannot hold sun light or fixed lamp
+  light. Candidates: sun direct light and shadows stay at runtime through the
+  retained cascades ([ADR-041](../adr/041-retained-cascaded-shadows.md)); sky
+  and sun bounce come from a relightable baked transfer, such as per-texel
+  sky visibility or SH transfer; static lamps bake into per-group lightmaps
+  that the runtime scales by each group's current intensity.
 - Lightmap design: UV unwrapping and packing in `vkr_bakery`, texel density,
   encoding (for example SH or a dominant direction for specular), the baker's
   reuse of the ADR-054 BVH and photon pass, and how dynamic objects and
@@ -144,9 +151,72 @@ shader variants, which the desktop deferred path already uses per tile
 shading change. Lightmaps replace the probe and volume diffuse lookups on
 static surfaces.
 
+A third series compared the lean variant with a compact forward shader
+written for the prototype (`vkr_metal_tiled_minimal_shade`: base, normal,
+ORM and emissive textures, alpha test, GGX sun light with the cascades,
+global SH and prefiltered environment), compiled once in 32-bit and once in
+16-bit arithmetic. The baseline measured 49.32 and 49.38 ms:
+
+| Variant (depth pre-pass) | Median, 1 sample | Median, 4 samples |
+|---|---|---|
+| Lean über-shader | 55.65 ms (+6.3) | not run |
+| Compact shader, 32-bit | 54.53 ms (+5.2) | 54.99 ms (+5.7) |
+| Compact shader, 16-bit | 54.42 ms (+5.1) | 54.76 ms (+5.4) |
+
+The whole opaque pass, including the depth pre-pass, the raster of every
+Bistro opaque draw, shading and four-sample MSAA, costs 5.4 to 5.7 ms with a
+compact shader, within the half-budget gate. 16-bit arithmetic gains about
+0.1 to 0.3 ms: the M1 runs 16-bit and 32-bit arithmetic at the same rate, and
+this pass is limited by texture fetches and raster, not ALU. Four-sample MSAA
+adds 0.3 to 0.5 ms to the compact shader.
+
 The gate therefore needs a cheaper lighting model as well as the tiled
 structure: direct light from static lights baked offline, a bounded runtime
 budget for dynamic lights, and base shading near half its current cost.
+
+## Lightmap baseline and design
+
+What exists (2026-10-05):
+
+- The ADR-054 baker in [`tools/bake/`](../../tools/bake/) flattens the scene,
+  builds a CPU BVH, traces paths with a photon pass and projects to SH. One
+  trace sums sun, sky, every lamp and emission
+  ([`vkr_bake_integrator.cpp`](../../tools/bake/vkr_bake_integrator.cpp)), so
+  its output cannot be split by light or group.
+- `VkrPackedStaticVertex` has one UV set; word 7 is always zero and validated
+  as zero ([`vkr_packed_geometry.c`](../../renderer/src/vkr_packed_geometry.c)).
+  The glTF importer reads only `TEXCOORD_0`. No UV unwrapping or chart packing
+  code exists in the tree or in `vendor/`.
+- Scene lights carry only `enabled`; there is no light group, mobility or
+  intensity animation, and no time-of-day system. The sun is whichever
+  directional light is resolved each frame.
+- Scene bakes run as explicit `vkr_bakery bake` commands with project-level
+  storage under `builds/<uuid>/` ([`vkr_project_bake.c`](../../tools/bakery/project/vkr_project_bake.c)),
+  and the editor's Bake panel triggers them.
+
+Proposed design:
+
+1. **Second UV set.** The mesh producer unwraps static meshes into charts and
+   stores UV2 as two unorm16 values in word 7. Per-instance atlas scale and
+   offset live in a side table indexed by instance, leaving the prepared
+   instance row unchanged.
+2. **Separable bake.** A `vkr_bakery bake lightmap` scene bake reuses the
+   ADR-054 BVH, scene flattening and integrator, but traces from lightmap
+   texels and writes separate layers: one irradiance layer per lamp group,
+   which the runtime scales by the group's current intensity, and a sky
+   transfer layer, such as SH sky visibility, that relights with the current
+   sky. Sun direct light stays at runtime through the retained cascades.
+3. **Scene and time of day.** Lights gain a group and a baked or dynamic
+   mobility. A time-of-day system drives the sun, moon, sky and lamp-group
+   intensities; it is shared by both pipeline classes.
+4. **Runtime.** Static surfaces in the tiled pipeline sample the lightmap
+   layers; dynamic objects use the baked volumes and probes.
+
+Open: the unwrapper (a vendored library or an in-tree one), the encoding of
+lamp-group layers for normal-mapped surfaces (irradiance only or directional
+SH), how sun bounce light follows the sun (the sky transfer layer alone, or a
+few baked sun positions blended at runtime), texture compression for HDR
+layers on M-series, and the texel density budget for Bistro.
 
 ## Acceptance evidence
 

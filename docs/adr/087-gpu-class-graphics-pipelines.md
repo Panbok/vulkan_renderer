@@ -53,8 +53,8 @@ limited by memory bandwidth; the M1 Pro provides about 200 GB/s. Keeping the
 current G-buffer in tile memory would remove about 100 MB of traffic per frame,
 at most about 1 ms. The cost is per-pixel shading in techniques built for
 discrete GPUs. Cheaper techniques that suit tile-based GPUs, such as MSAA
-resolved on chip, render-pass-local deferred shading, baked lighting and
-half-precision arithmetic, change visible output and therefore need a separate
+resolved on chip, render-pass-local or forward shading and baked lighting,
+change visible output and therefore need a separate
 pipeline rather than a backend mechanism.
 
 ## Decision
@@ -62,8 +62,8 @@ pipeline rather than a backend mechanism.
 1. The renderer has two graphics pipeline classes, selected by GPU
    architecture, not by graphics API:
    - The **tiled pipeline** targets tile-based GPUs: Apple M-series now, mobile
-     GPUs later. It favors work that stays in tile memory, MSAA, baked or
-     precomputed lighting and half precision.
+     GPUs later. It favors work that stays in tile memory, MSAA and baked or
+     precomputed lighting.
    - The **desktop pipeline** targets immediate-mode discrete GPUs. It is the
      current pipeline and may add ray-traced and path-traced techniques.
    Either backend may implement either pipeline. The tiled pipeline is
