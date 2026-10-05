@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-04
+updated: 2026-10-05
 authority: proposal
 ---
 
@@ -76,8 +76,11 @@ Follow-up the same day:
   ([ADR-051](../adr/051-renderer-harness-and-evidence.md)), and the glTF source
   fingerprint ignores CR line endings. The Vulkan text generation was
   re-accepted under the new fingerprint (`f184f283648e494618ecad6ffcf0713d8012d849b8bd3f86c96d10c02fc00e94`).
-  The cross-backend local-shadow comparison waits for the Mac to re-accept its
-  generations ([Metal follow-ups](metal-followups.md)).
+  The Mac re-accepted both local-shadow generations on 2026-10-05, so the
+  cross-backend comparison can run ([Metal follow-ups](metal-followups.md)).
+  Bistro's editor override file, which carries the lamp source radii, now
+  joins the scene content digest, so the Vulkan text generation needs one
+  more re-acceptance on this host.
 - Three runs of `smoke.bistro.vulkan.text.snapshot` with identical inputs
   differ in captures 5, 8, 9, 12 and 13, by up to 6.3% of pixels (peak
   157/255), on foliage and pot shadows near the lamps. The accepted generation

@@ -386,8 +386,12 @@ CRLF checkout of `bistro.scene.json`. A direct comparison of the canonical
 captures, outside the gate, measured mean errors of 0.0027 (street) and 0.0056
 (indoor) against the cases' 0.0005 limit. Vulkan's automatic exposure was 1.8%
 and 2.7% higher, and the differences follow texture detail and geometry edges.
-The scene content digest is now host-neutral (ADR-051); the gate runs once the
-Mac re-accepts these generations under it.
+The scene content digest is now host-neutral (ADR-051). On 2026-10-05 the Mac
+re-accepted both generations under it, with Bistro's lamp source radii and its
+editor override file in the digest: street
+`sha256:e9391d671d3234815dd31c6875acbee1615052213ea3fcfd89c8d37f5d30e5f7`,
+indoor `sha256:4d9fdfd3f650878f777dc63bed0e9b1027767edf075f9e3953c8e0ea882e2be6`.
+The Windows `--cross-backend` run remains.
 Both backends run the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
 with its own 128-byte root: frame, G-buffer inputs, visible rows, inverse
 view-projection, extent, the contact-shadow noise index (byte 120 on Metal,

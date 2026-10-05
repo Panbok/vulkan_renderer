@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-03
+updated: 2026-10-05
 authority: proposal
 ---
 # Metal follow-ups from the Windows Vulkan sessions
@@ -46,14 +46,17 @@ which changed every workload fingerprint once. On the Mac:
 1. Build at the revision that carries the change and recook Bistro's meshes;
    the glTF source fingerprint now ignores CR line endings, and LF sources keep
    their fingerprints.
-2. Snapshot and re-accept the four Metal generations: both local-shadow
-   captures, `smoke.bistro.metal.text.snapshot` and
-   `smoke.sh_ibl.single_probe.snapshot`. Commit and push them.
-3. Run `smoke.bistro.metal.text.snapshot` twice and compare the two runs'
-   captures. On Vulkan, three runs with identical inputs differ in captures
-   5, 8, 9, 12 and 13, by up to 6.3% of pixels (peak 157/255), on foliage and
-   pot shadows near the lamps. The local-light contribution readback, which picks the fully
-   filtered lights, is the suspected source.
+2. Snapshot and re-accept `smoke.sh_ibl.single_probe.snapshot`. The other
+   three Metal generations were re-accepted on 2026-10-05 together with
+   Bistro's lamp source radii (ADR-019): street `e9391d67…`, indoor
+   `4d9fdfd3…` and `smoke.bistro.metal.text.snapshot` `ac640a40…`; a fresh
+   snapshot of each passes against its generation.
+3. On Vulkan, three runs of the text snapshot with identical inputs differ in
+   captures 5, 8, 9, 12 and 13, by up to 6.3% of pixels (peak 157/255), on
+   foliage and pot shadows near the lamps. The local-light contribution
+   readback, which picks the fully filtered lights, is the suspected source.
+   On Metal, two runs at `20eb4355` differ in at most 11 pixels per checked
+   view, and none in view 3.
 
 Windows then runs each local-shadow case with `vkr_harness snapshot --profile
 tools/profiles/local-offscreen.json --cross-backend` and records the result in

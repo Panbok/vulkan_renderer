@@ -80,15 +80,13 @@ system-font, bitmap, and MTSDF text:
 
 - `local.offscreen/smoke.bistro.vulkan.text.snapshot` — legacy Vulkan 1.2
 - `local.offscreen/smoke.bistro.metal.text.snapshot` — Metal 4; generation
-  `sha256:5a10ac6d9881514da1cea7b107f35afa9461533ca1c46701b07a718542cfabbf`,
+  `sha256:ac640a40415ddc187055988fb660e007623c4c068869eb4f640f58782be494db`,
   source report
-  `sha256:b566c28dc7623f21f2a3fe807d83a67fd4edc460ea531ae7ae863d7bfec3f1ec`,
-  records the atmosphere sky, sky-lit analytic fog and cloud layer of ADR-058
-  and ADR-074, with the per-frame sun of the scene's directional light and its
-  glow. Against the prior generation `sha256:d3a548c5…` only view 13, where
-  the glow brightens the sky around the sun, changes (mean absolute error
-  1.21e-3); a fresh run compares with failed-pixel ratio 0 and mean absolute
-  error at most 8.4e-7.
+  `sha256:a94eb5142656ac7189ca94801f2d364608048af606ce009adbad3d92578becc8`,
+  accepted 2026-10-05 at `20eb4355` with Bistro's 0.05 m lamp source radii
+  (ADR-019) and its editor override file in the scene content digest. A run
+  with every shadow cascade redrawn each frame matches it, and a fresh run
+  passes against it.
 
 The case manifests pin their backend and reject a conflicting environment
 request. They cannot be used with `--cross-backend`; each root is compared only
