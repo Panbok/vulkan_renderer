@@ -31,6 +31,14 @@ loading and capture no frame work. The harness launches renderer children;
 check recorded process identities and intervals rather than assuming the parent
 alone represents rendering. Native Vulkan does not run on macOS in this tree.
 
+Choose the profile by question. A profile with `gpu_timing: true`, such as the
+one above, writes precise per-pass timestamps that split each shared compute
+encoder at every pass. Use it for counters per pass, but measure encoder idle,
+overlap or barrier cost from a recording that uses a profile without per-pass
+timing, such as `tools/profiles/local-windowed-single.json`. Omit
+`--instrument 'Metal GPU Counters'` when only intervals are needed: one
+420-frame Bistro counter export is about 4.6 GB of XML.
+
 ## Export and inspect
 
 ```sh
@@ -45,7 +53,11 @@ Read the actual table of contents before selecting schemas. Useful schemas
 include `metal-gpu-intervals`, `gpu-counter-info`, and `gpu-counter-value` when
 present. Resolve XML `id`/`ref` values and inspect units before aggregation.
 Pass names may be in `event-label` formatted values rather than object labels.
-Filter to verified renderer-child processes; compositor work is separate.
+Metal 4 encoders can appear with empty labels; then group intervals by frame
+and encoder id and match the encoder order to the graph execution order, where
+each graphics pass owns one encoder and consecutive compute/transfer passes
+share one. Filter to verified renderer-child processes; compositor work is
+separate.
 
 Both backends label graph GPU work. Check current encoder creation sites under
 `renderer/src/metal/` and debug-label calls under
