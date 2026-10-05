@@ -143,7 +143,9 @@ VkrGeometryQuantizationBudgets vkr_packed_geometry_default_budgets(void) {
 
 bool8_t
 vkr_packed_geometry_decode_is_valid(const VkrGpuGeometryDecodeRecord *decode) {
-  if (!decode || decode->flags != VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
+  if (!decode ||
+      (decode->flags & ~VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) !=
+          VKR_GPU_GEOMETRY_DECODE_STATIC_V1 ||
       decode->lod_record != 0u) {
     return false_v;
   }
@@ -263,15 +265,45 @@ bool8_t vkr_packed_geometry_vertices_are_valid(
       !vkr_packed_geometry_decode_is_valid(decode)) {
     return false_v;
   }
+  const bool8_t lightmap_uv =
+      (decode->flags & VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u;
   for (uint32_t i = 0u; i < vertex_count; ++i) {
     if ((vertices[i].words[1] & 0xfffe0000u) != 0u ||
-        vertices[i].words[7] != 0u ||
+        (!lightmap_uv && vertices[i].words[7] != 0u) ||
         !isfinite(vkr_packed_bits_float(vertices[i].words[4])) ||
         !isfinite(vkr_packed_bits_float(vertices[i].words[5]))) {
       return false_v;
     }
   }
   return true_v;
+}
+
+bool8_t vkr_packed_geometry_set_lightmap_uv(VkrPackedStaticVertex *vertices,
+                                            uint32_t vertex_count,
+                                            const float32_t *uv2,
+                                            VkrGpuGeometryDecodeRecord *decode) {
+  if (!vertices || vertex_count == 0u || !uv2 || !decode ||
+      !vkr_packed_geometry_decode_is_valid(decode)) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < 2u * vertex_count; ++i) {
+    if (!(uv2[i] >= 0.0f && uv2[i] <= 1.0f)) {
+      return false_v;
+    }
+  }
+  for (uint32_t i = 0u; i < vertex_count; ++i) {
+    vertices[i].words[7] = (uint32_t)vkr_packed_unorm16(uv2[2u * i]) |
+                           ((uint32_t)vkr_packed_unorm16(uv2[2u * i + 1u])
+                            << 16u);
+  }
+  decode->flags |= VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV;
+  return true_v;
+}
+
+Vec2 vkr_packed_geometry_lightmap_uv(const VkrPackedStaticVertex *vertex) {
+  return vec2_new(
+      vkr_packed_unorm16_decode((uint16_t)vertex->words[7]),
+      vkr_packed_unorm16_decode((uint16_t)(vertex->words[7] >> 16u)));
 }
 
 void vkr_packed_geometry_unpack(const VkrPackedStaticVertex *source,

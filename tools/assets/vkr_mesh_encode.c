@@ -1,4 +1,5 @@
 #include "assets/vkr_mesh_encode.h"
+#include "assets/vkr_mesh_lightmap_uv.h"
 
 #include "assets/vkr_mesh_decode.h"
 #include "assets/vkr_meshoptimizer_encode.h"
@@ -27,6 +28,13 @@ typedef struct VkrMeshCookedSkinVertex {
   VkrVertex3d vertex;
   VkrMeshSkinVertex skin;
 } VkrMeshCookedSkinVertex;
+
+/* A static vertex and its lightmap UV pair travel together through the
+   meshoptimizer locality pass. */
+typedef struct VkrMeshCookedLightmapVertex {
+  VkrVertex3d vertex;
+  float32_t uv2[2];
+} VkrMeshCookedLightmapVertex;
 
 typedef struct VkrMeshCookedRangeBuild {
   VkrMeshSkinVertex *skin_vertices;
@@ -309,6 +317,7 @@ typedef struct VkrMeshCookedHeaderBuild {
   VkrGeometryQuantizationMetrics quantization_max;
   uint8_t source_hash[32];
   uint8_t settings_hash[32];
+  VkrMeshCookedLightmap lightmap;
   uint64_t directory_offset;
   uint64_t dependency_offset;
   uint64_t string_offset;
@@ -369,7 +378,8 @@ vkr_internal bool8_t vkr_mesh_cooked_validate_vertices(
  * vkr_mesh_cooked_accumulate_range. Ranges encode on worker threads. */
 vkr_internal bool8_t vkr_mesh_cooked_encode_range(
     VkrAllocator *scratch_allocator, const VkrMeshCookedEncodeInfo *info,
-    uint32_t i, bool8_t has_skin, VkrMeshCookedRangeBuild *out_range) {
+    uint32_t i, bool8_t has_skin, const float32_t *lightmap_uv,
+    VkrMeshCookedRangeBuild *out_range) {
   const VkrVertex3d *source_vertices =
       (const VkrVertex3d *)info->mesh_buffer.vertices;
   const uint32_t *source_indices = (const uint32_t *)info->mesh_buffer.indices;
@@ -417,6 +427,7 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
   }
 
   VkrMeshSkinVertex *optimized_skin = NULL;
+  float32_t *optimized_lightmap_uv = NULL;
   size_t optimized_vertex_count = 0;
   if (has_skin) {
     VkrMeshCookedSkinVertex *combined = vkr_allocator_alloc(
@@ -442,6 +453,32 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
     for (size_t j = 0; j < optimized_vertex_count; ++j) {
       optimized_vertices[j] = remapped[j].vertex;
       optimized_skin[j] = remapped[j].skin;
+    }
+  } else if (lightmap_uv) {
+    VkrMeshCookedLightmapVertex *combined = vkr_allocator_alloc(
+        scratch_allocator, (uint64_t)span * sizeof(*combined),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkrMeshCookedLightmapVertex *remapped = vkr_allocator_alloc(
+        scratch_allocator, (uint64_t)span * sizeof(*remapped),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    optimized_lightmap_uv = vkr_allocator_alloc(
+        scratch_allocator, (uint64_t)span * 2u * sizeof(float32_t),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!combined || !remapped || !optimized_lightmap_uv) {
+      return false_v;
+    }
+    for (uint32_t j = 0; j < span; ++j) {
+      combined[j].vertex = source_vertices[min_vertex + j];
+      combined[j].uv2[0] = lightmap_uv[2u * (min_vertex + j)];
+      combined[j].uv2[1] = lightmap_uv[2u * (min_vertex + j) + 1u];
+    }
+    optimized_vertex_count = vkr_meshopt_optimize_range(
+        remapped, optimized_indices, combined, source_local_indices, span,
+        range->index_count, sizeof(*combined));
+    for (size_t j = 0; j < optimized_vertex_count; ++j) {
+      optimized_vertices[j] = remapped[j].vertex;
+      optimized_lightmap_uv[2u * j] = remapped[j].uv2[0];
+      optimized_lightmap_uv[2u * j + 1u] = remapped[j].uv2[1];
     }
   } else {
     optimized_vertex_count = vkr_meshopt_optimize_range(
@@ -480,6 +517,13 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
               range_quantization.normal_degrees_max,
               range_quantization.tangent_degrees_max, range_quantization.uv_max,
               range_quantization.color_max);
+    return false_v;
+  }
+  if (optimized_lightmap_uv &&
+      !vkr_packed_geometry_set_lightmap_uv(
+          packed_vertices, (uint32_t)optimized_vertex_count,
+          optimized_lightmap_uv, &range_decode)) {
+    log_error("MeshCooked: range %u has lightmap UVs outside [0,1]", i);
     return false_v;
   }
   size_t vertex_bound = vkr_meshopt_vertex_encode_bound(
@@ -575,6 +619,8 @@ typedef struct VkrMeshCookedRangeJob {
   const VkrMeshCookedEncodeInfo *info;
   VkrMeshCookedRangeBuild *ranges;
   bool8_t has_skin;
+  /* Two floats per merged vertex when the mesh has a lightmap UV set. */
+  const float32_t *lightmap_uv;
   VkrAtomicUint32 next;
   VkrAtomicBool failed;
   Arena *arenas[VKR_MESH_COOKED_RANGE_WORKERS];
@@ -605,7 +651,7 @@ vkr_internal void *vkr_mesh_cooked_range_worker(void *argument) {
       return NULL;
     }
     if (!vkr_mesh_cooked_encode_range(&allocator, job->info, i, job->has_skin,
-                                      &job->ranges[i])) {
+                                      job->lightmap_uv, &job->ranges[i])) {
       vkr_atomic_bool_store(&job->failed, true_v, VKR_MEMORY_ORDER_RELAXED);
       return NULL;
     }
@@ -666,6 +712,9 @@ vkr_internal bool8_t vkr_mesh_cooked_compute_layout(
                                header->total_vertices * 32u,
                            &source_bytes)) {
     return false_v;
+  }
+  if (header->lightmap.width != 0u) {
+    source_bytes += VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE;
   }
   header->directory_offset = VKR_MESH_COOKED_HEADER_SIZE;
   if (!vkr_checked_add_u64(header->directory_offset, range_bytes,
@@ -730,7 +779,9 @@ vkr_internal bool8_t vkr_mesh_cooked_write_header(
   ok = ok && vkr_byte_writer_u64(writer, header->file_size);
   ok = ok && vkr_byte_writer_u64(writer, 0u);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)info->source_path.length);
-  ok = ok && vkr_byte_writer_u32(writer, 0u);
+  ok = ok && vkr_byte_writer_u32(writer, header->lightmap.width != 0u
+                                             ? VKR_MESH_COOKED_FLAG_LIGHTMAP_UV
+                                             : 0u);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_vertices);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_indices);
   ok = ok && vkr_byte_writer_bytes(writer, header->source_hash, 32u);
@@ -857,6 +908,12 @@ vkr_internal bool8_t vkr_mesh_cooked_write_metadata(
       }
     }
   }
+  if (header->lightmap.width != 0u) {
+    ok = ok && vkr_byte_writer_u32(writer, header->lightmap.width);
+    ok = ok && vkr_byte_writer_u32(writer, header->lightmap.height);
+    ok = ok && vkr_byte_writer_f32(writer, header->lightmap.texels_per_unit);
+    ok = ok && vkr_byte_writer_u32(writer, header->lightmap.padding);
+  }
   return ok;
 }
 
@@ -878,6 +935,84 @@ vkr_internal bool8_t vkr_mesh_cooked_write_strings(
                                ranges[i].source->shader_override.length);
   }
   return ok;
+}
+
+/**
+ * Unwraps the merged static mesh into one lightmap chart atlas (ADR-087).
+ * Faces keep their order, so every range's index span stays valid; chart
+ * seams split vertices, each copying its source vertex. The copied info
+ * points at scratch-owned vertices, indices and UV pairs.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_unwrap_lightmap(
+    VkrAllocator *scratch_allocator, const VkrMeshCookedEncodeInfo *info,
+    VkrMeshCookedEncodeInfo *out_info, const float32_t **out_lightmap_uv,
+    VkrMeshCookedLightmap *out_lightmap) {
+  const VkrMeshCookedLightmapOptions *options = &info->lightmap;
+  if (!isfinite(options->texels_per_unit) || options->texels_per_unit <= 0.0f ||
+      options->max_size == 0u ||
+      options->max_size > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE) {
+    log_error("MeshCooked: invalid lightmap UV options");
+    return false_v;
+  }
+  const VkrVertex3d *vertices = (const VkrVertex3d *)info->mesh_buffer.vertices;
+  const VkrMeshLightmapUvInput input = {
+      .positions = &vertices[0].position.x,
+      .position_stride = sizeof(VkrVertex3d),
+      .normals = &vertices[0].normal.x,
+      .normal_stride = sizeof(VkrVertex3d),
+      .indices = (const uint32_t *)info->mesh_buffer.indices,
+      .index_count = info->mesh_buffer.index_count,
+      .vertex_count = info->mesh_buffer.vertex_count,
+      .texels_per_unit = options->texels_per_unit,
+      .padding = options->padding,
+      .max_size = options->max_size,
+  };
+  VkrMeshLightmapUvAtlas *atlas = NULL;
+  VkrMeshLightmapUvInfo atlas_info = {0};
+  const VkrMeshLightmapUvStatus status =
+      vkr_mesh_lightmap_uv_generate(&input, &atlas, &atlas_info);
+  if (status != VKR_MESH_LIGHTMAP_UV_OK) {
+    log_error("MeshCooked: lightmap unwrap failed (status %u, %ux%u texels)",
+              (uint32_t)status, atlas_info.width, atlas_info.height);
+    return false_v;
+  }
+
+  uint32_t *source_vertices = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)atlas_info.vertex_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  float32_t *lightmap_uv = vkr_allocator_alloc(
+      scratch_allocator,
+      (uint64_t)atlas_info.vertex_count * 2u * sizeof(float32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *indices = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)atlas_info.index_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *unwrapped_vertices = vkr_allocator_alloc(
+      scratch_allocator,
+      (uint64_t)atlas_info.vertex_count * sizeof(VkrVertex3d),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!source_vertices || !lightmap_uv || !indices || !unwrapped_vertices) {
+    vkr_mesh_lightmap_uv_destroy(atlas);
+    return false_v;
+  }
+  vkr_mesh_lightmap_uv_copy(atlas, source_vertices, lightmap_uv, indices);
+  vkr_mesh_lightmap_uv_destroy(atlas);
+  for (uint32_t i = 0; i < atlas_info.vertex_count; ++i) {
+    unwrapped_vertices[i] = vertices[source_vertices[i]];
+  }
+
+  *out_info = *info;
+  out_info->mesh_buffer.vertices = unwrapped_vertices;
+  out_info->mesh_buffer.vertex_count = atlas_info.vertex_count;
+  out_info->mesh_buffer.indices = indices;
+  *out_lightmap_uv = lightmap_uv;
+  *out_lightmap = (VkrMeshCookedLightmap){
+      .width = atlas_info.width,
+      .height = atlas_info.height,
+      .texels_per_unit = options->texels_per_unit,
+      .padding = options->padding,
+  };
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_mesh_cooked_encode_artifact(
@@ -955,9 +1090,21 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_artifact(
   if (!vkr_mesh_cooked_validate_vertices(info, has_skin)) {
     return false_v;
   }
+  VkrMeshCookedEncodeInfo unwrapped_info;
+  const float32_t *lightmap_uv = NULL;
+  if (info->lightmap.texels_per_unit != 0.0f) {
+    if (has_skin || !info->range_count ||
+        !vkr_mesh_cooked_unwrap_lightmap(scratch_allocator, info,
+                                         &unwrapped_info, &lightmap_uv,
+                                         &header.lightmap)) {
+      return false_v;
+    }
+    info = &unwrapped_info;
+  }
   range_job->info = info;
   range_job->ranges = ranges;
   range_job->has_skin = has_skin;
+  range_job->lightmap_uv = lightmap_uv;
   if (info->range_count &&
       !vkr_mesh_cooked_encode_ranges(scratch_allocator, range_job)) {
     return false_v;
@@ -1098,6 +1245,7 @@ bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
     return false_v;
   }
   const uint32_t version = vkr_load_le_u32(input + 4u);
+  const uint32_t header_flags = vkr_load_le_u32(input + 108u);
   const uint32_t range_count = vkr_load_le_u32(input + 40u);
   const uint32_t dependency_count = vkr_load_le_u32(input + 44u);
   const uint64_t directory_offset = vkr_load_le_u64(input + 48u);
@@ -1175,8 +1323,15 @@ bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
       return false_v;
     }
   }
+  /* A static mesh's lightmap block follows its source metadata and is copied
+     verbatim with the streams. */
+  const uint64_t static_tail =
+      (header_flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u
+          ? VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE
+          : 0u;
   const uint64_t source_end = original.offset;
-  if ((version == VKR_MESH_COOKED_VERSION && source_end != string_offset) ||
+  if ((version == VKR_MESH_COOKED_VERSION &&
+       string_offset - source_end != static_tail) ||
       (version == VKR_MESH_COOKED_SKIN_VERSION &&
        string_offset - source_end < 16u)) {
     return false_v;

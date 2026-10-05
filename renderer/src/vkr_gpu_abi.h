@@ -32,6 +32,9 @@ typedef enum VkrInstanceTemporalFlag {
   VKR_INSTANCE_TEMPORAL_OWNER = 1u << 0u,
 } VkrInstanceTemporalFlag;
 #define VKR_GPU_GEOMETRY_DECODE_STATIC_V1 1u
+/* Set beside STATIC_V1 when a range's vertices carry a lightmap UV set in
+   word 7 as two unorm16 values, U in the low half (ADR-031, ADR-087). */
+#define VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV 2u
 
 enum {
   VKR_GPU_TRANSMISSION_LAYER_COUNT = 4,

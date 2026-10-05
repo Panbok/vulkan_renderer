@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-03
+updated: 2026-10-05
 authority: adr
 ---
 
@@ -29,6 +29,18 @@ alternate production static draw format. ADR-030 owns cooked artifact layout,
 provenance and optimization order.
 
 The rejected 24-byte float16-UV candidate is not a selectable runtime mode.
+
+Word 7 is zero unless the range's decode record also sets
+`VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV`; then it holds a lightmap UV pair in
+[0,1] as two unorm16 values, U in the low half
+([ADR-087](087-gpu-class-graphics-pipelines.md)). Validation rejects any other
+flag bit and a nonzero word 7 without the flag.
+`vkr_packed_geometry_set_lightmap_uv` and `vkr_packed_geometry_lightmap_uv`
+pack and decode it on the CPU; `vkr_decode_packed_lightmap_uv` decodes it in
+[`gpu_draw.slangh`](../../renderer/src/shaders/shared/gpu_draw.slangh) and its
+Metal mirror in
+[`draw.metalh`](../../renderer/src/shaders/metal/msl/common/draw.metalh). No
+production shader reads it yet.
 
 ## Consequences
 

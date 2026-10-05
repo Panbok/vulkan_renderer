@@ -61,6 +61,16 @@ bool8_t vkr_packed_geometry_pack(const VkrVertex3d *source,
                                  VkrGpuGeometryDecodeRecord *out_decode,
                                  VkrGeometryQuantizationMetrics *out_metrics);
 
+/** Stores a lightmap UV pair in [0,1] per vertex in word 7 as two unorm16
+    values and marks the range's decode record; rejects values outside [0,1]. */
+bool8_t vkr_packed_geometry_set_lightmap_uv(VkrPackedStaticVertex *vertices,
+                                            uint32_t vertex_count,
+                                            const float32_t *uv2,
+                                            VkrGpuGeometryDecodeRecord *decode);
+
+/** Decodes word 7 of a vertex whose range carries a lightmap UV set. */
+Vec2 vkr_packed_geometry_lightmap_uv(const VkrPackedStaticVertex *vertex);
+
 void vkr_packed_geometry_unpack(const VkrPackedStaticVertex *source,
                                 uint32_t vertex_count,
                                 const VkrGpuGeometryDecodeRecord *decode,

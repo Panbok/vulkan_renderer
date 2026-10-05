@@ -44,6 +44,15 @@ void vkr_mesh_cook_set_dependency_list(const char *path);
  * textures (the "deferred" texture tier); a later cook adds them. */
 void vkr_mesh_cook_set_defer_textures(bool8_t defer);
 
+/* Charts between lightmap UV islands, in texels, and the largest accepted
+ * per-mesh lightmap atlas edge. */
+#define VKR_MESH_COOK_LIGHTMAP_PADDING 2u
+#define VKR_MESH_COOK_LIGHTMAP_MAX_SIZE 4096u
+
+/* Every later static mesh cook in this process unwraps a lightmap UV set at
+ * this density, in texels per mesh unit (ADR-087); zero disables it. */
+void vkr_mesh_cook_set_lightmap_uv(float32_t texels_per_unit);
+
 /** Later glTF cooks append a JSON line to `path` for each material whose
  * textures are final once its file is written; NULL stops. Borrowed. */
 void vkr_mesh_cook_set_ready_log(const char *path);

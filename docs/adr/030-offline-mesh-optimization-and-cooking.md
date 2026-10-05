@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-28
+updated: 2026-10-05
 authority: adr
 ---
 # ADR-030: Versioned meshoptimizer-cooked mesh artifacts
@@ -77,6 +77,23 @@ adds a little-endian skin extension after source metadata, covered by the metada
 checksum. It contains the animation fingerprint, skin and vertex counts, per-skin
 joint counts, then four uint32 joint indices and four float32 weights per vertex.
 This CPU asset representation does not establish the eventual GPU influence ABI.
+
+A static mesh cooked with the mesh recipe's `lightmap_texels_per_unit`
+(the mesh tool's `--lightmap-texels-per-unit`) stays at version 17 and sets
+header flag `VKR_MESH_COOKED_FLAG_LIGHTMAP_UV` (bit 0 of the formerly zero
+flags word). Before range encoding, the cooker unwraps the merged mesh with
+xatlas into one block-aligned chart atlas with two-texel padding and at most
+4,096 texels per edge
+([`vkr_mesh_lightmap_uv.h`](../../tools/assets/vkr_mesh_lightmap_uv.h)).
+Faces keep their order, so range index spans are unchanged; seams split
+vertices, and the lightmap UV pair travels with each vertex through the
+meshoptimizer fetch pass. A 16-byte block after the source metadata records
+the atlas width, height, texel density and padding. Every range's decode
+record then carries the lightmap flag of
+[ADR-031](031-versioned-packed-static-geometry-abi.md), and the reader rejects
+a header flag that disagrees with the ranges, a flag on a skinned or empty
+artifact, and a block outside its limits. Source-metadata variants copy the
+block verbatim. Meshes without the recipe field cook byte-identical artifacts.
 
 The importer supports paired `JOINTS_0` and `WEIGHTS_0`, including sparse/strided
 accessors and normalized unsigned-byte/unsigned-short weights. It rejects extra

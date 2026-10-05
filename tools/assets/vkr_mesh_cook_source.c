@@ -183,6 +183,9 @@ vkr_internal bool8_t vkr_mesh_loader_collect_source_dependencies(
 
 /* Set by vkr_mesh_cook_set_defer_textures for every later cook. */
 vkr_internal bool8_t vkr_mesh_cook_defer_textures = false_v;
+/* Set by vkr_mesh_cook_set_lightmap_uv for every later cook; zero cooks no
+   lightmap UV set. */
+vkr_internal float32_t vkr_mesh_cook_lightmap_texels_per_unit = 0.0f;
 /* Set by vkr_mesh_cook_set_ready_log and vkr_mesh_cook_set_material_priority
    for every later glTF cook; borrowed from the caller. */
 vkr_internal const char *vkr_mesh_cook_ready_log = NULL;
@@ -1976,6 +1979,10 @@ vkr_internal const char *vkr_mesh_cook_dependency_list_path = NULL;
 void vkr_mesh_cook_set_defer_textures(bool8_t defer) {
   vkr_mesh_cook_defer_textures = defer;
 }
+
+void vkr_mesh_cook_set_lightmap_uv(float32_t texels_per_unit) {
+  vkr_mesh_cook_lightmap_texels_per_unit = texels_per_unit;
+}
 void vkr_mesh_cook_set_ready_log(const char *path) {
   vkr_mesh_cook_ready_log = path;
 }
@@ -2250,6 +2257,12 @@ vkr_internal bool8_t vkr_mesh_cook_source_internal(
       .ranges = cooked_ranges,
       .range_count = (uint32_t)state.merged_submeshes.length,
       .budgets = vkr_packed_geometry_default_budgets(),
+      .lightmap =
+          {
+              .texels_per_unit = vkr_mesh_cook_lightmap_texels_per_unit,
+              .padding = VKR_MESH_COOK_LIGHTMAP_PADDING,
+              .max_size = VKR_MESH_COOK_LIGHTMAP_MAX_SIZE,
+          },
   };
   uint8_t *artifact = NULL;
   uint64_t artifact_size = 0;

@@ -228,11 +228,13 @@ Phases:
    into one normalized chart atlas with a recorded lightmap size; UV2 packs
    into word 7 under a new packed-geometry version; both native decoders read
    it.
-   Status: xatlas is vendored at `f700c779` as `vkr_xatlas`, and
-   [`vkr_mesh_lightmap_uv.h`](../../tools/assets/vkr_mesh_lightmap_uv.h)
-   unwraps one mesh with face order kept, block-aligned charts and a size
-   limit, covered by `run_mesh_lightmap_uv_tests`. The recipe field, word 7
-   packing and decoders are pending.
+   Status: implemented on the CPU and in both shader roots: the recipe field,
+   the cooked flag and atlas block
+   ([ADR-030](../adr/030-offline-mesh-optimization-and-cooking.md)), word 7
+   ([ADR-031](../adr/031-versioned-packed-static-geometry-abi.md)) and the
+   decoders, covered by `run_mesh_lightmap_uv_tests` and
+   `test_mesh_cooked_lightmap_uv_round_trip`. No Bistro mesh is cooked with
+   lightmap UVs yet, and the baker's mesh decode does not read them.
 2. Separable bake: texel tracing in the ADR-054 baker with lamp-group,
    sky and sun-key layers; project storage and the editor Bake panel.
 3. Time of day: light groups and mobility in scene data; a system driving

@@ -100,6 +100,14 @@ VkrGpuDecodedVertex vkr_decode_packed_vertex(
     return result;
 }
 
+// Lightmap UV set of a range whose decode record carries
+// VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV: two unorm16 values in word 7.
+float2 vkr_decode_packed_lightmap_uv(VkrPackedStaticVertex packed)
+{
+    return float2(float(packed.words[7] & 0xffffu),
+                  float(packed.words[7] >> 16u)) / 65535.0f;
+}
+
 
 struct VkrGpuDeformedVertex
 {

@@ -117,7 +117,32 @@ static void test_packed_geometry_validation_contract(void) {
   MemCopy(&invalid.words[4], &nan_value, sizeof(nan_value));
   assert(!vkr_packed_geometry_vertices_are_valid(&invalid, 1u, &decode));
 
+  /* A lightmap UV set lives in word 7 only under the decode flag. */
+  VkrPackedStaticVertex lightmapped[3];
+  MemCopy(lightmapped, packed, sizeof(packed));
+  VkrGpuGeometryDecodeRecord lightmap_decode = decode;
+  const float32_t uv2[6] = {0.0f, 0.0f, 1.0f, 0.25f, 0.5f, 1.0f};
+  assert(vkr_packed_geometry_set_lightmap_uv(lightmapped, 3u, uv2,
+                                             &lightmap_decode));
+  assert(lightmap_decode.flags == (VKR_GPU_GEOMETRY_DECODE_STATIC_V1 |
+                                   VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV));
+  assert(vkr_packed_geometry_decode_is_valid(&lightmap_decode));
+  assert(vkr_packed_geometry_vertices_are_valid(lightmapped, 3u,
+                                                &lightmap_decode));
+  assert(!vkr_packed_geometry_vertices_are_valid(&lightmapped[1], 1u, &decode));
+  const Vec2 decoded_uv2 = vkr_packed_geometry_lightmap_uv(&lightmapped[1]);
+  assert(fabsf(decoded_uv2.x - 1.0f) < 1.0e-5f &&
+         fabsf(decoded_uv2.y - 0.25f) < 1.0e-4f);
+  const float32_t outside_uv2[2] = {0.5f, 1.5f};
+  VkrGpuGeometryDecodeRecord outside_decode = decode;
+  assert(!vkr_packed_geometry_set_lightmap_uv(lightmapped, 1u, outside_uv2,
+                                              &outside_decode));
+  assert(outside_decode.flags == VKR_GPU_GEOMETRY_DECODE_STATIC_V1);
+
   VkrGpuGeometryDecodeRecord invalid_decode = decode;
+  invalid_decode.flags = VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV;
+  assert(!vkr_packed_geometry_decode_is_valid(&invalid_decode));
+  invalid_decode = decode;
   invalid_decode.lod_record = 1u;
   assert(!vkr_packed_geometry_decode_is_valid(&invalid_decode));
   invalid_decode = decode;
@@ -889,11 +914,226 @@ static void test_metadata_only_gltf_cooked_load_without_source(void) {
   printf("  test_metadata_only_gltf_cooked_load_without_source PASSED\n");
 }
 
+#define TEST_HEADER_FLAGS_FIELD 108u
+
+static float32_t test_uv_edge(Vec2 a, Vec2 b, Vec2 p) {
+  return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+}
+
+/* A unit cube in two ranges, cooked with a lightmap UV set: the artifact
+ * carries the header flag, the atlas block and flagged ranges; every source
+ * triangle survives; lightmap triangles keep area and never share a texel;
+ * the header flag must agree with the ranges. */
+static void test_mesh_cooked_lightmap_uv_round_trip(void) {
+  printf("  Running test_mesh_cooked_lightmap_uv_round_trip...\n");
+  static const char dependency_path[] = "build/vkr_mesh_cooked_lightmap.bin";
+  FILE *dependency = fopen(dependency_path, "wb");
+  assert(dependency != NULL);
+  assert(fwrite("lightmap\n", 1u, 9u, dependency) == 9u);
+  assert(fclose(dependency) == 0);
+
+  Arena *scratch_arena = arena_create(MB(64), MB(4));
+  Arena *result_arena = arena_create(MB(8), MB(1));
+  assert(scratch_arena != NULL && result_arena != NULL);
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  VkrAllocator result = {.ctx = result_arena};
+  assert(vkr_allocator_arena(&scratch));
+  assert(vkr_allocator_arena(&result));
+
+  VkrVertex3d vertices[24];
+  uint32_t indices[36];
+  const float32_t normals[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                   {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+  for (uint32_t face = 0u; face < 6u; ++face) {
+    const float32_t *n = normals[face];
+    const float32_t u[3] = {n[1], n[2], n[0]};
+    const float32_t v[3] = {n[2], n[0], n[1]};
+    for (uint32_t corner = 0u; corner < 4u; ++corner) {
+      const float32_t su = (corner == 1u || corner == 2u) ? 0.5f : -0.5f;
+      const float32_t sv = corner >= 2u ? 0.5f : -0.5f;
+      VkrVertex3d *vertex = &vertices[face * 4u + corner];
+      *vertex = test_vertex(0.5f * n[0] + su * u[0] + sv * v[0],
+                            0.5f * n[1] + su * u[1] + sv * v[1],
+                            0.5f * n[2] + su * u[2] + sv * v[2]);
+      vertex->normal = (VkrPackedVec3){n[0], n[1], n[2]};
+      vertex->tangent = (Vec4){u[0], u[1], u[2], 1.0f};
+    }
+    const uint32_t base = face * 4u;
+    const uint32_t face_indices[6] = {base, base + 1u, base + 2u,
+                                      base, base + 2u, base + 3u};
+    MemCopy(&indices[face * 6u], face_indices, sizeof(face_indices));
+  }
+  VkrGeometryUploadRange ranges[2] = {
+      {.range_id = 0,
+       .first_index = 0,
+       .index_count = 18,
+       .min_extents = {-0.5f, -0.5f, -0.5f},
+       .max_extents = {0.5f, 0.5f, 0.5f},
+       .material_name = string8_lit("material.first"),
+       .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD},
+      {.range_id = 1,
+       .first_index = 18,
+       .index_count = 18,
+       .min_extents = {-0.5f, -0.5f, -0.5f},
+       .max_extents = {0.5f, 0.5f, 0.5f},
+       .material_name = string8_lit("material.second"),
+       .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD},
+  };
+  VkrMeshSourceMesh source_mesh = {
+      .source_mesh_index = 0, .first_range = 0, .range_count = 2};
+  VkrMeshSourceNode node = {.name = string8_lit("cube"),
+                            .local = mat4_identity(),
+                            .parent = UINT32_MAX,
+                            .mesh = 0,
+                            .mesh_variant = 0,
+                            .camera = UINT32_MAX,
+                            .skin = UINT32_MAX,
+                            .light = UINT32_MAX,
+                            .in_scene = true_v};
+  String8 dependency_string = string8_lit(dependency_path);
+  VkrMeshCookedEncodeInfo info = {
+      .source = {.nodes = {.data = &node, .length = 1},
+                 .meshes = {.data = &source_mesh, .length = 1}},
+      .source_path = dependency_string,
+      .dependency_paths = &dependency_string,
+      .dependency_count = 1,
+      .mesh_buffer = {.vertex_size = sizeof(VkrVertex3d),
+                      .vertex_count = 24,
+                      .vertices = vertices,
+                      .index_size = sizeof(uint32_t),
+                      .index_count = 36,
+                      .indices = indices},
+      .ranges = ranges,
+      .range_count = 2,
+      .budgets = vkr_packed_geometry_default_budgets(),
+  };
+  uint8_t *plain = NULL;
+  uint64_t plain_size = 0;
+  assert(vkr_mesh_cooked_encode(&scratch, &info, &plain, &plain_size));
+  assert(test_read_le32(plain + TEST_HEADER_FLAGS_FIELD) == 0u);
+
+  info.lightmap = (VkrMeshCookedLightmapOptions){
+      .texels_per_unit = 32.0f, .padding = 2u, .max_size = 4096u};
+  uint8_t *cooked = NULL;
+  uint64_t cooked_size = 0;
+  uint8_t *again = NULL;
+  uint64_t again_size = 0;
+  assert(vkr_mesh_cooked_encode(&scratch, &info, &cooked, &cooked_size));
+  assert(vkr_mesh_cooked_encode(&scratch, &info, &again, &again_size));
+  assert(cooked_size == again_size &&
+         MemCompare(cooked, again, cooked_size) == 0);
+  assert(test_read_le32(cooked + TEST_HEADER_FLAGS_FIELD) ==
+         VKR_MESH_COOKED_FLAG_LIGHTMAP_UV);
+
+  VkrMeshCookedDecoded decoded = {0};
+  assert(
+      vkr_mesh_cooked_decode(&result, &scratch, cooked, cooked_size, &decoded));
+  const VkrMeshCookedLightmap *lightmap = &decoded.lightmap;
+  assert(lightmap->width > 0u && lightmap->width % 4u == 0u);
+  assert(lightmap->height > 0u && lightmap->height % 4u == 0u);
+  assert(lightmap->texels_per_unit == 32.0f && lightmap->padding == 2u);
+  assert(decoded.ranges.length == 2u);
+
+  /* Each source face's two triangles come back, and in the lightmap every
+     triangle has area and no texel center lies inside two triangles. */
+  const VkrPackedStaticVertex *packed = decoded.mesh_buffer.vertices;
+  const uint32_t *decoded_indices = decoded.mesh_buffer.indices;
+  uint8_t *coverage =
+      calloc((size_t)lightmap->width * lightmap->height, sizeof(uint8_t));
+  assert(coverage != NULL);
+  uint32_t triangles = 0u;
+  for (uint32_t r = 0u; r < 2u; ++r) {
+    const VkrGeometryUploadRange *range = &decoded.ranges.data[r];
+    const VkrGpuGeometryDecodeRecord *decode =
+        &decoded.mesh_buffer.decodes[range->decode_index];
+    assert((decode->flags & VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u);
+    for (uint32_t t = 0u; t < range->index_count; t += 3u) {
+      Vec2 uv[3];
+      VkrPackedVec3 centroid = {0};
+      for (uint32_t c = 0u; c < 3u; ++c) {
+        const uint32_t index = decoded_indices[range->first_index + t + c];
+        assert(
+            vkr_packed_geometry_vertices_are_valid(&packed[index], 1u, decode));
+        VkrVertex3d unpacked = {0};
+        vkr_packed_geometry_unpack(&packed[index], 1u, decode, &unpacked);
+        centroid.x += unpacked.position.x / 3.0f;
+        centroid.y += unpacked.position.y / 3.0f;
+        centroid.z += unpacked.position.z / 3.0f;
+        uv[c] = vkr_packed_geometry_lightmap_uv(&packed[index]);
+        uv[c].x *= (float32_t)lightmap->width;
+        uv[c].y *= (float32_t)lightmap->height;
+      }
+      /* A face's triangle centroids lie at a third of the way across it. */
+      const float32_t extent =
+          fmaxf(fabsf(centroid.x), fmaxf(fabsf(centroid.y), fabsf(centroid.z)));
+      assert(fabsf(extent - 0.5f) < 1.0e-3f);
+      const float32_t area = test_uv_edge(uv[0], uv[1], uv[2]);
+      assert(fabsf(area) > 1.0f);
+      const float32_t sign = area > 0.0f ? 1.0f : -1.0f;
+      for (uint32_t y = 0u; y < lightmap->height; ++y) {
+        for (uint32_t x = 0u; x < lightmap->width; ++x) {
+          const Vec2 p = vec2_new((float32_t)x + 0.5f, (float32_t)y + 0.5f);
+          if (sign * test_uv_edge(uv[0], uv[1], p) > 1.0e-3f &&
+              sign * test_uv_edge(uv[1], uv[2], p) > 1.0e-3f &&
+              sign * test_uv_edge(uv[2], uv[0], p) > 1.0e-3f) {
+            uint8_t *cell = &coverage[(size_t)y * lightmap->width + x];
+            assert(*cell == 0u);
+            *cell = 1u;
+          }
+        }
+      }
+      ++triangles;
+    }
+  }
+  assert(triangles == 12u);
+  free(coverage);
+
+  /* A source-metadata patch keeps the lightmap block. */
+  VkrMeshSource patched_source = decoded.source;
+  VkrMeshSourceNode patched_node = decoded.source.nodes.data[0];
+  patched_node.local.elements[12] = 3.0f;
+  patched_source.nodes.data = &patched_node;
+  uint8_t *variant = NULL;
+  assert(vkr_mesh_cooked_source_variant(&scratch, cooked, cooked_size,
+                                        &patched_source, &variant));
+  VkrMeshCookedDecoded variant_decoded = {0};
+  assert(vkr_mesh_cooked_decode(&result, &scratch, variant, cooked_size,
+                                &variant_decoded));
+  assert(variant_decoded.source.nodes.data[0].local.elements[12] == 3.0f);
+  assert(MemCompare(&variant_decoded.lightmap, &decoded.lightmap,
+                    sizeof(decoded.lightmap)) == 0);
+
+  /* The header flag must agree with the ranges' decode records. */
+  uint8_t *mutated = vkr_allocator_alloc(&scratch, cooked_size,
+                                         VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  assert(mutated != NULL);
+  MemCopy(mutated, cooked, cooked_size);
+  test_write_le32(mutated + TEST_HEADER_FLAGS_FIELD, 0u);
+  test_refresh_integrity(mutated);
+  VkrMeshCookedDecoded rejected = {0};
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, cooked_size,
+                                 &rejected));
+  uint8_t *flagged = vkr_allocator_alloc(&scratch, plain_size,
+                                         VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  assert(flagged != NULL);
+  MemCopy(flagged, plain, plain_size);
+  test_write_le32(flagged + TEST_HEADER_FLAGS_FIELD,
+                  VKR_MESH_COOKED_FLAG_LIGHTMAP_UV);
+  test_refresh_integrity(flagged);
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, flagged, plain_size,
+                                 &rejected));
+
+  arena_destroy(result_arena);
+  arena_destroy(scratch_arena);
+  printf("  test_mesh_cooked_lightmap_uv_round_trip PASSED\n");
+}
+
 bool32_t run_mesh_cooked_tests(void) {
   printf("--- Starting Mesh Cooked Tests ---\n");
   test_packed_geometry_validation_contract();
   test_tangent_generation_repairs_parallel_accumulation();
   test_mesh_cooked_round_trip_and_malformed_boundaries();
+  test_mesh_cooked_lightmap_uv_round_trip();
   test_cooked_optimization_preserves_triangles();
   test_obj_face_storage_grows_geometrically();
   test_metadata_only_gltf_cooked_load_without_source();

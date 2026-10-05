@@ -30,6 +30,7 @@ static void vkr_mesh_cooker_print_usage(const char *program) {
           "[--link-root <absolute-directory>]] "
           "[--texture-tier preview|deferred|final] "
           "[--texture-encoding astc|astc-fast|bc|bc-fast] "
+          "[--lightmap-texels-per-unit <texels>] "
           "[--dependency-list <file>] [--ready-log <file>] "
           "[--material-priority <file>]\n",
           program, program, program);
@@ -389,6 +390,16 @@ VKR_TOOL_ENTRY(vkr_mesh_cooker_tool_main) {
         return 2;
       }
       vkr_vkt_set_encoding(encoding);
+    } else if (strcmp(argv[i], "--lightmap-texels-per-unit") == 0 &&
+               i + 1 < argc) {
+      char *end = NULL;
+      const float32_t texels = strtof(argv[++i], &end);
+      if (!end || *end != '\0' || !isfinite(texels) || texels <= 0.0f) {
+        fprintf(stderr, "--lightmap-texels-per-unit expects a positive "
+                        "number\n");
+        return 2;
+      }
+      vkr_mesh_cook_set_lightmap_uv(texels);
     } else if (strcmp(argv[i], "--light-range") == 0 && i + 1 < argc) {
       if (light_range_count == VKR_MESH_COOKER_MAX_LIGHT_RANGES) {
         vkr_mesh_cooker_print_usage(argv[0]);

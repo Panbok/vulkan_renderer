@@ -426,8 +426,8 @@ const VkrBakeryProducer vkr_bakery_producer_texture = {
 // mesh
 // =============================================================================
 
-vkr_internal const char *const vkr_bakery_mesh_fields[] = {"light_ranges",
-                                                           NULL};
+vkr_internal const char *const vkr_bakery_mesh_fields[] = {
+    "light_ranges", "lightmap_texels_per_unit", NULL};
 
 vkr_internal bool8_t vkr_bakery_mesh_plan(VkrBakeryGraph *graph,
                                           VkrBakeryAction *action) {
@@ -454,11 +454,23 @@ vkr_internal bool8_t vkr_bakery_mesh_plan(VkrBakeryGraph *graph,
       }
     }
   }
+  /* Opt-in lightmap UV set for static meshes (ADR-087), in texels per mesh
+     unit; absent leaves the cooked artifact unchanged. */
+  const VkrBakeryJson *lightmap =
+      vkr_bakery_json_get(action->recipe, "lightmap_texels_per_unit");
+  if (lightmap && ((lightmap->type != VKR_BAKERY_JSON_FLOAT &&
+                    lightmap->type != VKR_BAKERY_JSON_INT) ||
+                   !(lightmap->number > 0.0) || lightmap->number > 65536.0)) {
+    vkr_bakery_plan_diag(graph, action, VKR_BAKERY_DIAG_REC_INVALID_VALUE,
+                         "lightmap_texels_per_unit must be a positive number");
+    return false_v;
+  }
   char default_output[VKR_BAKERY_PATH_CAPACITY];
   vkr_bakery_stem_path(default_output, sizeof(default_output), action->source,
                        ".vkb");
-  vkr_bakery_action_label(graph, action, "meshoptimizer%s",
-                          ranges && ranges->count ? " + light ranges" : "");
+  vkr_bakery_action_label(graph, action, "meshoptimizer%s%s",
+                          ranges && ranges->count ? " + light ranges" : "",
+                          lightmap ? " + lightmap UVs" : "");
   return vkr_bakery_default_output(graph, action, "vkb", default_output);
 }
 
@@ -559,6 +571,15 @@ vkr_internal bool8_t vkr_bakery_mesh_run(VkrBakeryTask *task) {
                    (int)range->key.length, range->key.str, range->number);
     arguments[count++] = "--light-range";
     arguments[count++] = value;
+  }
+  const VkrBakeryJson *lightmap =
+      vkr_bakery_json_get(action->recipe, "lightmap_texels_per_unit");
+  char lightmap_value[48];
+  if (lightmap) {
+    (void)snprintf(lightmap_value, sizeof(lightmap_value), "%.9g",
+                   lightmap->number);
+    arguments[count++] = "--lightmap-texels-per-unit";
+    arguments[count++] = lightmap_value;
   }
   int32_t exit_code = -1;
   if (!vkr_bakery_task_tool(task, "mesh", arguments, count, &exit_code)) {

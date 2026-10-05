@@ -14,6 +14,15 @@ typedef struct VkrMeshCookedDependencyDigest {
   uint8_t hash[32];
 } VkrMeshCookedDependencyDigest;
 
+/* Optional lightmap UV set (ADR-087). A positive texels_per_unit unwraps the
+ * static mesh into one chart atlas of at most max_size texels per edge and
+ * stores UV2 in packed word 7; skinned meshes reject it. */
+typedef struct VkrMeshCookedLightmapOptions {
+  float32_t texels_per_unit;
+  uint32_t padding;
+  uint32_t max_size;
+} VkrMeshCookedLightmapOptions;
+
 typedef struct VkrMeshCookedEncodeInfo {
   String8 source_path;
   const String8 *dependency_paths;
@@ -28,6 +37,7 @@ typedef struct VkrMeshCookedEncodeInfo {
   const VkrGeometryUploadRange *ranges;
   uint32_t range_count;
   VkrGeometryQuantizationBudgets budgets;
+  VkrMeshCookedLightmapOptions lightmap;
 } VkrMeshCookedEncodeInfo;
 
 typedef struct VkrMeshCookStats {

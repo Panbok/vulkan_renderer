@@ -330,7 +330,9 @@ vkr_internal bool8_t vkr_mesh_cooked_header_valid(
       (!header->range_count &&
        (header->total_vertex_count || header->total_index_count ||
         !header->header_reserved[0])) ||
-      header->flags != 0 ||
+      (header->flags & ~VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u ||
+      ((header->flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u &&
+       (header->version != VKR_MESH_COOKED_VERSION || !header->range_count)) ||
       header->header_reserved[0] > VKR_MESH_COOKED_MAX_RANGES ||
       header->header_reserved[1] > VKR_MESH_COOKED_MAX_RANGES ||
       header->file_size != size ||
@@ -455,14 +457,31 @@ vkr_internal bool8_t vkr_mesh_cooked_read_skin(
   return true_v;
 }
 
+/** Reads and validates the lightmap atlas block of a static mesh. */
+vkr_internal bool8_t
+vkr_mesh_cooked_read_lightmap(VkrByteReader *source_reader,
+                              VkrMeshCookedLightmap *lightmap) {
+  return vkr_byte_reader_u32(source_reader, &lightmap->width) &&
+         vkr_byte_reader_u32(source_reader, &lightmap->height) &&
+         vkr_byte_reader_f32(source_reader, &lightmap->texels_per_unit) &&
+         vkr_byte_reader_u32(source_reader, &lightmap->padding) &&
+         lightmap->width != 0u && lightmap->height != 0u &&
+         lightmap->width <= VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE &&
+         lightmap->height <= VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE &&
+         isfinite(lightmap->texels_per_unit) &&
+         lightmap->texels_per_unit > 0.0f &&
+         lightmap->padding < Min(lightmap->width, lightmap->height);
+}
+
 /**
- * Reads the source scene nodes, mesh ranges, and skin block that fill the
- * space between the dependency records and the string table.
+ * Reads the source scene nodes, mesh ranges, and the skin or lightmap block
+ * that fill the space between the dependency records and the string table.
  */
 vkr_internal bool8_t vkr_mesh_cooked_read_source(
     VkrAllocator *result_allocator, const uint8_t *data,
     const VkrMeshCookedHeaderView *header, uint64_t expected_string_offset,
-    VkrMeshSource *source, VkrMeshSkinData *skin) {
+    VkrMeshSource *source, VkrMeshSkinData *skin,
+    VkrMeshCookedLightmap *lightmap) {
   source->nodes = array_create_VkrMeshSourceNode(result_allocator,
                                                  header->header_reserved[0]);
   source->meshes = array_create_VkrMeshSourceMesh(result_allocator,
@@ -545,6 +564,10 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
   if (header->version == VKR_MESH_COOKED_SKIN_VERSION &&
       !vkr_mesh_cooked_read_skin(&source_reader, result_allocator, header,
                                  skin)) {
+    return false_v;
+  }
+  if ((header->flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u &&
+      !vkr_mesh_cooked_read_lightmap(&source_reader, lightmap)) {
     return false_v;
   }
   if (source_reader.offset != header->string_offset ||
@@ -671,6 +694,8 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
         pipeline_domain >= VKR_PIPELINE_DOMAIN_COUNT || range_reserved != 0 ||
         quantization_reserved != 0 ||
         !vkr_packed_geometry_decode_is_valid(&range->decode) ||
+        ((range->decode.flags & VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u) !=
+            ((header->flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u) ||
         !isfinite(range_position_budget) ||
         !isfinite(range->quantization.position_max) ||
         !isfinite(range->quantization.normal_degrees_max) ||
@@ -844,7 +869,8 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   VkrMeshSource *source = &out_decoded->source;
   VkrMeshSkinData *skin = &out_decoded->skin;
   if (!vkr_mesh_cooked_read_source(result_allocator, data, &header,
-                                   expected_string_offset, source, skin)) {
+                                   expected_string_offset, source, skin,
+                                   &out_decoded->lightmap)) {
     return false_v;
   }
   if (!vkr_mesh_cooked_source_validate(scratch_allocator, source,

@@ -362,6 +362,13 @@ inline VkrGpuDecodedVertex vkr_decode_packed_vertex(
   return result;
 }
 
+/* Mirrors vkr_decode_packed_lightmap_uv in shared/gpu_draw.slangh. */
+inline float2 vkr_decode_packed_lightmap_uv(VkrPackedStaticVertex packed) {
+  return float2(float(packed.words[7] & 0xffffu),
+                float(packed.words[7] >> 16u)) /
+         65535.0f;
+}
+
 
 struct VkrGpuDeformedVertex
 {

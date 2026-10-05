@@ -26,6 +26,23 @@
 #define VKR_MESH_COOKED_HEADER_CRC_OFFSET 184u
 #define VKR_MESH_COOKED_METADATA_CRC_OFFSET 188u
 
+/* Header flag: the static mesh carries a lightmap UV set (ADR-087). Every
+ * range's decode record then carries VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV, and
+ * a VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE block follows the source metadata. */
+#define VKR_MESH_COOKED_FLAG_LIGHTMAP_UV 1u
+#define VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE 16u
+#define VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE 8192u
+
+/* Lightmap chart atlas of a cooked mesh: UV2 spans width x height texels at
+ * texels_per_unit, with padding texels between charts. Zero width means the
+ * mesh has no lightmap UV set. */
+typedef struct VkrMeshCookedLightmap {
+  uint32_t width;
+  uint32_t height;
+  float32_t texels_per_unit;
+  uint32_t padding;
+} VkrMeshCookedLightmap;
+
 typedef struct VkrMeshCookedDecoded {
   uint64_t source_bytes;
   uint64_t cooked_bytes;
@@ -33,6 +50,7 @@ typedef struct VkrMeshCookedDecoded {
   VkrGeometryUploadBuffer mesh_buffer;
   VkrMeshSource source;
   VkrMeshSkinData skin;
+  VkrMeshCookedLightmap lightmap;
   Array_VkrGeometryUploadRange ranges;
   VkrGeometryQuantizationMetrics quantization;
 } VkrMeshCookedDecoded;
