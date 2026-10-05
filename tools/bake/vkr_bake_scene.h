@@ -113,6 +113,8 @@ struct VkrBakeScene {
  * Fully prepares `scene`: all paths are read, geometry is flattened to world
  * space, and all material texture dependencies are resident in texture_store.
  * It never starts workers. On failure it leaves `scene` empty and releasable.
+ * A scene without geometry loads with no triangles; the caller decides
+ * whether it can bake one.
  */
 bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
                          VkrBakeSceneError *out_error);

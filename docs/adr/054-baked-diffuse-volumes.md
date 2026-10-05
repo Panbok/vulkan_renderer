@@ -98,7 +98,8 @@ same closure before publication and writes the sidecar `.vkdv.bake.json`;
 `--check --output volume.vkdv` rejects stale inputs or corrupt output. The
 command publishes only after its temporary output, manifest, and source checks
 succeed. When inspection finds no valid cell, it stops before the bake pass and
-exits 3 without output. The baker traces probes on worker threads; each path's
+exits 3 without output; a scene without geometry inspects as zero probes and
+cells and takes the same path. The baker traces probes on worker threads; each path's
 seed derives from its probe, pixel and sample, so the volume is byte-identical
 for any `--threads` value ([ADR-077](077-asset-build-system.md)). The baker refuses to bake an
 all-invalid volume, and such a volume would render like no volume. Open and

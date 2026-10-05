@@ -1364,7 +1364,7 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       return false;
     }
     std::vector<EntityImport> entities;
-    if (!parse_entities(json, &entities) || entities.empty()) {
+    if (!parse_entities(json, &entities)) {
       set_error(VkrBakeSceneError::Parse, out_error);
       return false;
     }
@@ -1468,11 +1468,6 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
         reset_scene(scene);
         return false;
       }
-    }
-    if (scene->triangles.empty()) {
-      set_error(VkrBakeSceneError::Unsupported, out_error);
-      reset_scene(scene);
-      return false;
     }
     return true;
   } catch (const std::bad_alloc &) {

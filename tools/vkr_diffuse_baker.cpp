@@ -382,44 +382,23 @@ int bake_volume(const Options &options, VkrBakeScene &scene, VkrBakeBvh &bvh,
   return 0;
 }
 
-int inspect_scene(const Options &options, VkrAllocator *allocator,
-                  Arena *arena) {
-  VkrBakeScene scene(allocator);
-  VkrBakeSceneError error;
-  if (!vkr_bake_scene_load(&scene, options.scene, &error)) {
-    std::fprintf(stderr, "Scene preparation failed (error %u): %s\n",
-                 (unsigned)error, options.scene);
-    return 1;
-  }
-  // Resolve aliases before any output can replace a source used by the bake.
-  for (const auto &dependency : scene.dependency_paths) {
-    const fs::path source = fs::weakly_canonical(vkr_filesystem_native_utf8_path(dependency));
-    if ((options.output && fs::weakly_canonical(options.output) == source) ||
-        (options.manifest &&
-         fs::weakly_canonical(options.manifest) == source)) {
-      std::fprintf(stderr, "Output aliases a bake input: %s\n",
-                   dependency.c_str());
-      return 1;
-    }
-  }
-  if (options.output && options.manifest &&
-      fs::weakly_canonical(options.output) ==
-          fs::weakly_canonical(options.manifest))
-    return 1;
+/* Builds the BVH of a scene with geometry, partitioning its triangles, and
+   finds its rooms on the probe grid. */
+bool find_rooms(const Options &options, VkrBakeScene &scene, Arena *arena,
+                VkrBakeBvh *bvh, VkrBakeVoxelResult *rooms) {
   if (scene.triangles.size() > VKR_BAKE_BVH_MAX_TRIANGLES)
-    return 1;
-  VkrBakeBvh bvh = {};
+    return false;
   if (!vkr_bake_bvh_build(
           {scene.triangles.data(), (uint32_t)scene.triangles.size()}, arena,
-          &bvh)) {
+          bvh)) {
     std::fprintf(
         stderr,
         "BVH construction rejected invalid geometry or exhausted memory\n");
-    return 1;
+    return false;
   }
   VkrBakeVoxelGridDesc grid = options.grid;
   if (!options.explicit_bounds)
-    grid.bounds = bvh.nodes[0].bounds;
+    grid.bounds = bvh->nodes[0].bounds;
   const Vec3 extent = vec3_sub(grid.bounds.max, grid.bounds.min);
   if (!std::isfinite(extent.x) || !std::isfinite(extent.y) ||
       !std::isfinite(extent.z) || extent.x <= 0.0f || extent.y <= 0.0f ||
@@ -432,7 +411,7 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
                      ? "Correct --bounds so every minimum is below its maximum."
                      : "The scene geometry does not enclose a 3D volume; "
                        "choose an enclosed room scene for baking.");
-    return 1;
+    return false;
   }
   if (grid.voxel_size == 0.0f) {
     grid.voxel_size =
@@ -448,12 +427,47 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
     room_boundaries[i] = material.alpha_mode != VKR_BAKE_MATERIAL_ALPHA_BLEND ||
                          material.transmission_factor > 0.0f;
   }
-  VkrBakeVoxelResult rooms = {};
-  if (!vkr_bake_voxels_build(&bvh, room_boundaries.get(),
+  if (!vkr_bake_voxels_build(bvh, room_boundaries.get(),
                              (uint32_t)scene.materials.size(), grid, arena,
-                             &rooms)) {
+                             rooms)) {
     std::fprintf(stderr, "Room detection failed: bounds/grid must be finite, "
                          "at most 256 probes and 8M voxels\n");
+    return false;
+  }
+  return true;
+}
+
+int inspect_scene(const Options &options, VkrAllocator *allocator,
+                  Arena *arena) {
+  VkrBakeScene scene(allocator);
+  VkrBakeSceneError error;
+  if (!vkr_bake_scene_load(&scene, options.scene, &error)) {
+    std::fprintf(stderr, "Scene preparation failed (error %u): %s\n",
+                 (unsigned)error, options.scene);
+    return 1;
+  }
+  // Resolve aliases before any output can replace a source used by the bake.
+  for (const auto &dependency : scene.dependency_paths) {
+    const fs::path source =
+        fs::weakly_canonical(vkr_filesystem_native_utf8_path(dependency));
+    if ((options.output && fs::weakly_canonical(options.output) == source) ||
+        (options.manifest &&
+         fs::weakly_canonical(options.manifest) == source)) {
+      std::fprintf(stderr, "Output aliases a bake input: %s\n",
+                   dependency.c_str());
+      return 1;
+    }
+  }
+  if (options.output && options.manifest &&
+      fs::weakly_canonical(options.output) ==
+          fs::weakly_canonical(options.manifest))
+    return 1;
+  /* A scene without geometry has no closed room: the manifest reports zero
+     probes and cells, and the bakery skips the volume. */
+  VkrBakeBvh bvh = {};
+  VkrBakeVoxelResult rooms = {};
+  if (!scene.triangles.empty() &&
+      !find_rooms(options, scene, arena, &bvh, &rooms)) {
     return 1;
   }
   uint32_t valid_probes = 0, valid_cells = 0, regions = 0;
