@@ -63,7 +63,7 @@ have no bilateral gate yet.
 - **Vulkan evidence.** The Vulkan frame layouts are unchanged; the Vulkan
   sources build on macOS. No native Vulkan run.
 - **Missing gates.** A numeric before/after comparison of the desktop Metal
-  background, and lightmap sampling on a baked scene.
+  background, and lightmap sampling on a baked Bistro.
 
 ## Thin-sheet diffuse transmission evidence state
 

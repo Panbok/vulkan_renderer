@@ -12,9 +12,10 @@ Accepted (partial). Baking, storage, packaging, light mobility and groups,
 the editor controls, runtime loading and binding of a set, and sampling in
 the tiled pipeline's forward shader
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8) are
-implemented. No baked scene has been rendered on the tiled pipeline yet: the
-editor does not run it and Bistro has no current set. The desktop pipeline
-lights static and dynamic lights alike. The bake needs Metal ray tracing.
+implemented. The toolkit test level renders with its set on the tiled
+pipeline; Bistro has no current set, and the editor does not run the tiled
+pipeline. The desktop pipeline lights static and dynamic lights alike. The
+bake needs Metal ray tracing.
 
 ## Context
 
@@ -215,6 +216,11 @@ bytes in place. Metal 4 devices always sample ASTC HDR; Vulkan enables
 `textureCompressionASTC_HDR` when the device has it and reports
 `supports_texture_astc_hdr`, and a device without it keeps the set off.
 
+Runtime brush meshes pack the same lightmap UVs the bake computes for them
+(`vkr_brush_lightmap_layout`,
+[`vkr_scene_brush.c`](../../runtime/src/renderer/systems/vkr_scene_brush.c));
+cooked models carry theirs from the cook.
+
 The scene keeps the layers and instances
 ([`vkr_scene_lightmaps.c`](../../runtime/src/renderer/systems/vkr_scene_lightmaps.c))
 and gives each matched draw its lightmap slot, the instance's index plus one:
@@ -255,6 +261,13 @@ draw's rectangle and its forward shader sums the active layers.
   project World's entities, which the bake includes, stay unbound.
 - The texels store irradiance, so a surface's diffuse response is its
   diffuse albedo over π times the blended texel.
+- On the toolkit test level (23 brushes, ten layers on one 1024 page), the
+  tiled pipeline's view of a room matches the desktop pipeline's in exposure
+  and tone, with the bake's sampling noise
+  (`sha256:91f74e06739cb7bcc50bb0a2641235d70437ab2a4d90739b59ab8def310ab80c`
+  tiled, `sha256:c55355971b2cb89ba6181ef19285052ae42b1e8280a5170cfe0b051e2b9e8970`
+  desktop, 2026-10-06, temporary local cases on a copy of its effective
+  runtime scene).
 
 ## Alternatives considered
 

@@ -9,6 +9,7 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
+#include "vkr_packed_geometry.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -371,9 +372,14 @@ static uint64_t brush_cell_key(Vec3 point) {
 }
 
 /* Writes one face's polygon as a triangle fan with Hammer-style UVs. */
+/* Writes one face's triangle fan. With a lightmap layout it also writes each
+   vertex's lightmap UV pair into `lightmap_uvs`, as the bake computes it
+   (ADR-088). */
 static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
                              const SceneBrushFace *settings, const Mat4 *world,
-                             const Mat4 *world_inverse, VkrVertex3d *vertices,
+                             const Mat4 *world_inverse,
+                             const VkrBrushLightmapLayout *lightmap,
+                             VkrVertex3d *vertices, float32_t *lightmap_uvs,
                              uint32_t *vertex_count, uint32_t *indices,
                              uint32_t *index_count) {
   const VkrBrushPolygon polygon = geometry->polygons[face];
@@ -409,6 +415,11 @@ static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
         .colour = vec4_one(),
         .tangent = vec4_new(tangent.x, tangent.y, tangent.z, handedness),
     };
+    if (lightmap) {
+      const Vec2 uv = vkr_brush_lightmap_uv(lightmap, geometry, face, local);
+      lightmap_uvs[*vertex_count * 2u + 0u] = uv.x;
+      lightmap_uvs[*vertex_count * 2u + 1u] = uv.y;
+    }
     (*vertex_count)++;
   }
   for (uint32_t i = 2; i < polygon.count; ++i) {
@@ -449,6 +460,11 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
   uint32_t submesh_count = 0u;
   bool8_t ok = true_v;
   record->serial = ++state->serial;
+  /* The brush's lightmap UVs, which a scene lightmap set rectangles. */
+  VkrBrushLightmapLayout lightmap_layout;
+  const VkrBrushLightmapLayout *lightmap =
+      vkr_brush_lightmap_layout(geometry, &lightmap_layout) ? &lightmap_layout
+                                                            : NULL;
   VkrAllocatorScope scope =
       vkr_allocator_begin_scope(&assets->scratch_allocator);
   for (uint32_t group = 0; group < group_count && ok; ++group) {
@@ -466,7 +482,12 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
     uint32_t *indices =
         vkr_allocator_alloc(&assets->scratch_allocator,
                             index_capacity * sizeof(*indices), BRUSH_TAG);
-    if (!vertices || !indices) {
+    float32_t *lightmap_uvs =
+        lightmap ? vkr_allocator_alloc(&assets->scratch_allocator,
+                                       vertex_capacity * 2u * sizeof(float32_t),
+                                       BRUSH_TAG)
+                 : NULL;
+    if (!vertices || !indices || (lightmap && !lightmap_uvs)) {
       ok = false_v;
       break;
     }
@@ -475,7 +496,8 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
     for (uint32_t face = 0; face < geometry->face_count; ++face) {
       if (face_group[face] == group) {
         brush_write_face(geometry, face, faces[face], world, &world_inverse,
-                         vertices, &vertex_count, indices, &index_count);
+                         lightmap, vertices, lightmap_uvs, &vertex_count,
+                         indices, &index_count);
       }
     }
     VkrGeometryConfig config = {
@@ -493,6 +515,25 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
              (unsigned)record->entity.parts.world,
              (unsigned)record->entity.parts.index,
              (unsigned)record->entity.parts.generation, record->serial, group);
+    /* A lightmapped brush packs here to store its lightmap UVs in the packed
+       vertices, which the geometry system would pack without them. */
+    if (lightmap) {
+      VkrPackedStaticVertex *packed =
+          vkr_allocator_alloc(&assets->scratch_allocator,
+                              vertex_count * sizeof(*packed), BRUSH_TAG);
+      VkrGpuGeometryDecodeRecord *decodes = vkr_allocator_alloc(
+          &assets->scratch_allocator,
+          VKR_GEOMETRY_PACKED_DECODES_MAX * sizeof(*decodes), BRUSH_TAG);
+      VkrGeometryConfig packed_config;
+      if (!packed || !decodes ||
+          !vkr_geometry_pack(&config, packed, decodes, &packed_config) ||
+          !vkr_packed_geometry_set_lightmap_uv(packed, vertex_count,
+                                               lightmap_uvs, &decodes[0])) {
+        ok = false_v;
+        break;
+      }
+      config = packed_config;
+    }
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
     const VkrGeometryHandle handle = vkr_geometry_system_create(
         &assets->geometry_system, &config, true_v, &error);

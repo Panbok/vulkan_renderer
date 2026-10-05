@@ -15,6 +15,7 @@
 #include "math/vec.h"
 #include "math/vkr_quat.h"
 #include "math/vkr_transform.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
@@ -3116,7 +3117,19 @@ vkr_internal bool8_t scene_json_each_component(String8 json,
     _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
     char error[160] = {0};
     vkr_type_defaults(type, value);
-    if (!vkr_type_read_json(&reader, type, value, NULL, error, sizeof(error))) {
+    /* String properties decode through scratch memory. A value holds at most
+       VKR_TYPE_VALUE_MAX bytes, so a longer string fails either way. */
+    _Alignas(16)
+        uint8_t scratch_storage[ARENA_HEADER_SIZE + 2u * VKR_TYPE_VALUE_MAX];
+    VkrAllocator scratch = {
+        .ctx =
+            arena_create_from_buffer(scratch_storage, sizeof(scratch_storage)),
+    };
+    if (!scratch.ctx || !vkr_allocator_arena(&scratch)) {
+      return false_v;
+    }
+    if (!vkr_type_read_json(&reader, type, value, &scratch, error,
+                            sizeof(error))) {
       log_error("Scene loader: entity %u %s: %s", entity_index, type->name,
                 error);
       return false_v;
