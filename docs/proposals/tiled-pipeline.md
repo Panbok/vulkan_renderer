@@ -194,7 +194,8 @@ Remaining phases:
 1. Bake completion: eight sun keys from a sun path with a per-key atmosphere,
    one layer per lamp group once lights carry groups, the layer split and
    texel direct term in the CPU integrator for hosts without Metal ray
-   tracing, and a textured-scene check of the GPU baker's material textures.
+   tracing, and a faster path through stacked cutout foliage (textured Bistro
+   bakes at a third of the untextured rate).
 2. Time of day: light groups and mobility in scene data; a system driving
    sun, moon, sky and group intensities.
 3. Tiled runtime: load VKLM sets (an ASTC 4×4 HDR texture format in both

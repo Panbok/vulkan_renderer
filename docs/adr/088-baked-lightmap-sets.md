@@ -11,8 +11,7 @@ authority: adr
 Accepted (partial). Baking, storage, packaging and the editor controls are
 implemented. The runtime does not sample lightmaps yet (the scene loader
 ignores the `lightmaps` block), only one sun key and one lamp group are baked,
-the bake needs Metal ray tracing, and no run has exercised textured materials
-on the GPU baker.
+and the bake needs Metal ray tracing.
 
 ## Context
 
@@ -74,11 +73,17 @@ directional light's direction recorded) and lamp group 0.
 ### GPU transport
 
 [`vkr_bake_metal.h`](../../tools/bake/vkr_bake_metal.h) uploads the scene once
-(an acceleration structure, corner attributes, materials, base color and
-emission textures resampled to 128×128 RGBA16F, the lights, the renderer's DFG
-table and a 512×256 equirectangular sky) and gathers cosine-weighted paths per
-texel in 65,536-texel command buffers, which stay under the system watchdog.
-It is a lightmap subset of the ADR-054 transport:
+(an acceleration structure, corner attributes, materials, base color,
+emission, metallic-roughness and transmission textures resampled to 128×128
+RGBA16F, the lights, the renderer's DFG table and a 512×256 equirectangular
+sky) and gathers cosine-weighted paths per texel in 65,536-texel command
+buffers, which stay under the system watchdog. The acceleration structure
+holds two geometries: opaque triangles, and cutout triangles whose lowest
+alpha can fall below their cutoff. Rays test those as candidates in one
+traversal; blended and tinting surfaces stop the traversal and are resolved
+after it, because their pass must be drawn once per surface. A shadow ray
+first accepts any stop, and walks its segment in order only when that stop
+tints. It is a lightmap subset of the ADR-054 transport:
 
 - a bounce scatters through one cosine lobe whose albedo is the CPU BSDF's
   split-sum specular reflectance R plus the diffuse residual
@@ -89,7 +94,7 @@ It is a lightmap subset of the ADR-054 transport:
 - cutout and blended surfaces, the shadow walk, light falloff, cones,
   rectangle lights, the shading-normal side rules and Russian roulette follow
   the CPU integrator;
-- clearcoat, sheen, subsurface and anisotropy are not modeled.
+- normal maps, clearcoat, sheen, subsurface and anisotropy are not modeled.
 
 ### Encoding
 
@@ -199,8 +204,20 @@ texels per meter with deferred textures:
   131 KB set keyed to entity 0 that survived workspace cleanup; a rebuild with
   `model_settings` added lightmap UVs to a model imported without them.
 
-Unavailable: a textured scene through the GPU baker, any runtime use, and a
-Windows or Vulkan host.
+- Textured Bistro, imported through a managed `create_scene` with
+  `texture_tier` `preview` and `model_settings` at 8 texels per unit (39 s):
+  389 texture layers and 951,845 alpha-tested triangles. Parity of every lamp
+  and emission (the scene has no sun) on page 0 at 1,024 samples: +0.34%
+  (z = 0.19); emission alone -0.03%. Before the metallic-roughness texture was
+  sampled, lamp light was 18% dark, because Bistro's materials keep glTF's
+  metallic factor of one and take metalness from the texture. One layer page
+  takes 21.4 s at 16 samples (0.79 million paths per second, against 2.17
+  million untextured): rays pass through stacked foliage cards, and before
+  cutouts were tested in one traversal it was 5.6 times slower than with every
+  cutout forced opaque. `vkr_bakery bake lightmap --samples 16` published the
+  set in 116.7 s, 65.6 s of it GPU time and 4.9 s encoding.
+
+Unavailable: any runtime use, and a Windows or Vulkan host.
 
 ## Revisit when
 

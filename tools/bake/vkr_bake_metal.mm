@@ -92,6 +92,8 @@ kernel void lightmap_trace_benchmark(
   float3 normal = normals[texel].xyz;
   float3 origin = positions[texel].xyz + normal * 1.0e-3f;
   intersector<triangle_data> query;
+  /* Closest hits as the CPU BVH finds them: every triangle is solid. */
+  query.force_opacity(forced_opacity::opaque);
   uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
   uint hits = 0u;
   for (uint s = 0u; s < args.samples; ++s) {
@@ -116,7 +118,8 @@ struct GpuMaterial {
   float4 misc;
   /* xyz dielectric specular color, w perceptual roughness. */
   float4 specular;
-  /* x base color layer, y emissive layer; -1 when absent. */
+  /* Texture layers, -1 when absent: x base color, y emission,
+     z metallic-roughness, w transmission. */
   int4 layers;
 };
 
@@ -144,6 +147,9 @@ struct GatherArgs {
   uint light_count;
   /* bit 0 sky, bit 1 emission, bit 2 texel direct. */
   uint flags;
+  /* First triangle of each geometry in the acceleration structure's index
+     buffer: opaque triangles, then cutout and blended ones. */
+  uint geometry_first[2];
 };
 
 struct Scene {
@@ -156,6 +162,10 @@ struct Scene {
   device const GpuMaterial *materials;
   texture2d_array<half> textures;
   sampler texture_sampler;
+  /* Corner indices, three per triangle, grouped by geometry; a corner index
+     divided by three is the scene triangle. */
+  device const uint *as_indices;
+  uint geometry_first[2];
 };
 
 struct Material {
@@ -194,13 +204,29 @@ static Material material_at(thread const Scene &scene, uint triangle,
         scene.textures.sample(scene.texture_sampler, uv, uint(source.layers.y))
             .xyz);
   }
-  material.metallic = source.emissive_metallic.w;
+  /* As vkr_bake_material_sample: metallic and roughness scale by the
+     metallic-roughness texture's blue and green, transmission by the
+     transmission texture's red. */
+  material.metallic = saturate(source.emissive_metallic.w);
+  material.roughness = clamp(source.specular.w, 0.04f, 1.0f);
+  if (source.layers.z >= 0) {
+    float4 orm = float4(
+        scene.textures.sample(scene.texture_sampler, uv, uint(source.layers.z)));
+    material.metallic = saturate(material.metallic * orm.z);
+    material.roughness = clamp(material.roughness * orm.y, 0.04f, 1.0f);
+  }
+  material.transmission = saturate(source.misc.y);
+  if (source.layers.w >= 0) {
+    material.transmission = saturate(
+        material.transmission *
+        float(scene.textures
+                  .sample(scene.texture_sampler, uv, uint(source.layers.w))
+                  .x));
+  }
   material.cutoff = source.misc.x;
-  material.transmission = source.misc.y;
   material.mode = uint(source.misc.z);
   material.shadow_layer = source.misc.w != 0.0f;
   material.dielectric_specular = source.specular.xyz;
-  material.roughness = source.specular.w;
   return material;
 }
 
@@ -230,27 +256,102 @@ struct Hit {
   Material material;
 };
 
+static uint scene_triangle(thread const Scene &scene, uint geometry,
+                           uint primitive) {
+  uint first = scene.geometry_first[min(geometry, 1u)];
+  return scene.as_indices[3u * (first + primitive)] / 3u;
+}
+
+/* Whether a cutout texel lies below its cutoff; only the alpha inputs of
+   material_at are evaluated. */
+static bool cutout_passes(thread const Scene &scene, uint triangle,
+                          float2 bary) {
+  GpuMaterial source = scene.materials[scene.triangle_materials[triangle]];
+  if (uint(source.misc.z) != 1u) {
+    return false;
+  }
+  float w0 = 1.0f - bary.x - bary.y;
+  float alpha =
+      source.base_color.w *
+      (unpack_unorm4x8_to_float(scene.colors[3u * triangle]).w * w0 +
+       unpack_unorm4x8_to_float(scene.colors[3u * triangle + 1u]).w * bary.x +
+       unpack_unorm4x8_to_float(scene.colors[3u * triangle + 2u]).w * bary.y);
+  if (source.layers.x >= 0) {
+    float2 uv = scene.uvs[3u * triangle] * w0 +
+                scene.uvs[3u * triangle + 1u] * bary.x +
+                scene.uvs[3u * triangle + 2u] * bary.y;
+    alpha *= float(scene.textures
+                       .sample(scene.texture_sampler, uv, uint(source.layers.x))
+                       .w);
+  }
+  return saturate(alpha) < saturate(source.misc.x);
+}
+
+struct Stop {
+  bool found;
+  uint triangle;
+  float2 bary;
+  float distance;
+};
+
+/* The closest triangle within (kEpsilon, max_distance) that is not a cutout
+   texel below its cutoff, in one traversal: opaque triangles commit as the
+   traversal finds them, and cutout and blended candidates commit unless the
+   cutout passes. Blended surfaces are resolved by the caller, because their
+   stochastic pass must be drawn once per surface. With `any`, the first such
+   triangle found ends the traversal instead of the closest. */
+static Stop find_stop(thread const Scene &scene, float3 origin,
+                      float3 direction, float max_distance, bool any) {
+  ray r;
+  r.origin = origin;
+  r.direction = direction;
+  r.min_distance = kEpsilon;
+  r.max_distance = max_distance;
+  intersection_params params;
+  params.accept_any_intersection(any);
+  intersection_query<triangle_data> query;
+  query.reset(r, scene.as, params);
+  while (query.next()) {
+    if (query.get_candidate_intersection_type() !=
+        intersection_type::triangle) {
+      continue;
+    }
+    uint triangle =
+        scene_triangle(scene, query.get_candidate_geometry_id(),
+                       query.get_candidate_primitive_id());
+    if (cutout_passes(scene, triangle,
+                      query.get_candidate_triangle_barycentric_coord())) {
+      continue;
+    }
+    query.commit_triangle_intersection();
+  }
+  Stop stop;
+  stop.found =
+      query.get_committed_intersection_type() == intersection_type::triangle;
+  if (stop.found) {
+    stop.triangle = scene_triangle(scene, query.get_committed_geometry_id(),
+                                   query.get_committed_primitive_id());
+    stop.bary = query.get_committed_triangle_barycentric_coord();
+    stop.distance = query.get_committed_distance();
+  }
+  return stop;
+}
+
 /* Closest surface the ray stops at, skipping passed-through surfaces. The
    geometric normal faces the ray origin and the shading normal its side. */
 static Hit trace_surface(thread const Scene &scene, float3 origin,
                          float3 direction, thread Rng &rng) {
-  intersector<triangle_data> query;
   Hit result;
   result.found = false;
   for (uint skip = 0u; skip < kMaxSkips; ++skip) {
-    ray r;
-    r.origin = origin;
-    r.direction = direction;
-    r.min_distance = kEpsilon;
-    r.max_distance = INFINITY;
-    auto hit = query.intersect(r, scene.as);
-    if (hit.type == intersection_type::none) {
+    Stop stop = find_stop(scene, origin, direction, INFINITY, false);
+    if (!stop.found) {
       return result;
     }
-    uint triangle = hit.primitive_id;
-    float2 bary = hit.triangle_barycentric_coord;
+    uint triangle = stop.triangle;
+    float2 bary = stop.bary;
     Material material = material_at(scene, triangle, bary);
-    float3 position = origin + direction * hit.distance;
+    float3 position = origin + direction * stop.distance;
     if (passes(material, rng)) {
       origin = position;
       continue;
@@ -282,23 +383,27 @@ static Hit trace_surface(thread const Scene &scene, float3 origin,
 /* Transmittance toward a light, as the CPU integrator's shadow walk: cutout
    surfaces below their cutoff pass; thin transmissive or index-matched
    surfaces tint by their glass color, blended ones mixed with (1 - alpha);
-   anything else blocks. */
+   anything else blocks. Any blocker zeroes the product whatever its order, so
+   one any-hit traversal settles a segment unless the surface it finds tints;
+   then the segment is walked in order. */
 static float3 shadow_transmittance(thread const Scene &scene, float3 origin,
                                    float3 direction, float distance) {
-  intersector<triangle_data> query;
+  Stop any = find_stop(scene, origin, direction, distance, true);
+  if (!any.found) {
+    return float3(1.0f);
+  }
+  GpuMaterial any_source =
+      scene.materials[scene.triangle_materials[any.triangle]];
+  if (any_source.misc.w == 0.0f && uint(any_source.misc.z) != 2u) {
+    return float3(0.0f);
+  }
   float3 transmittance = float3(1.0f);
   for (uint skip = 0u; skip < kMaxSkips; ++skip) {
-    ray r;
-    r.origin = origin;
-    r.direction = direction;
-    r.min_distance = kEpsilon;
-    r.max_distance = distance;
-    auto hit = query.intersect(r, scene.as);
-    if (hit.type == intersection_type::none) {
+    Stop stop = find_stop(scene, origin, direction, distance, false);
+    if (!stop.found) {
       return transmittance;
     }
-    Material material =
-        material_at(scene, hit.primitive_id, hit.triangle_barycentric_coord);
+    Material material = material_at(scene, stop.triangle, stop.bary);
     float alpha = saturate(material.base.w);
     bool cutout_pass = material.mode == 1u && alpha < saturate(material.cutoff);
     if (!cutout_pass) {
@@ -313,8 +418,8 @@ static float3 shadow_transmittance(thread const Scene &scene, float3 origin,
         return float3(0.0f);
       }
     }
-    origin += direction * hit.distance;
-    distance -= hit.distance;
+    origin += direction * stop.distance;
+    distance -= stop.distance;
     if (distance <= kEpsilon) {
       return transmittance;
     }
@@ -512,6 +617,7 @@ kernel void lightmap_gather(
     device const GpuMaterial *materials [[buffer(10)]],
     device const GpuLight *lights [[buffer(11)]],
     device const uint *layer_lights [[buffer(12)]],
+    device const uint *as_indices [[buffer(13)]],
     texture2d_array<half> textures [[texture(0)]],
     texture2d<float> sky [[texture(1)]],
     texture2d<float> dfg [[texture(2)]],
@@ -523,8 +629,17 @@ kernel void lightmap_gather(
                                     filter::linear);
   constexpr sampler sky_sampler(coord::normalized, s_address::repeat,
                                 t_address::clamp_to_edge, filter::linear);
-  Scene scene = {as, positions, normals, uvs, colors, triangle_materials,
-                 materials, textures, texture_sampler};
+  Scene scene = {as,
+                 positions,
+                 normals,
+                 uvs,
+                 colors,
+                 triangle_materials,
+                 materials,
+                 textures,
+                 texture_sampler,
+                 as_indices,
+                 {args.geometry_first[0], args.geometry_first[1]}};
   uint texel = args.first_texel + id;
   float3 texel_normal = texel_normals[texel].xyz;
   float3 texel_position = texel_positions[texel].xyz;
@@ -609,6 +724,7 @@ struct GatherArgs {
   uint32_t rr_start_depth;
   uint32_t light_count;
   uint32_t flags;
+  uint32_t geometry_first[2];
 };
 
 struct GpuMaterial {
@@ -658,6 +774,12 @@ struct VkrBakeMetalContext {
   id<MTLBuffer> triangle_materials = nil;
   id<MTLBuffer> materials = nil;
   id<MTLBuffer> lights = nil;
+  /* Corner indices of the acceleration structure, grouped by geometry. */
+  id<MTLBuffer> as_indices = nil;
+  /* Per material, the lowest alpha its factor and base color texture give,
+     as the kernel samples them. */
+  std::vector<float> material_alpha_floor;
+  uint32_t geometry_first[2] = {0u, 0u};
   id<MTLTexture> textures = nil;
   id<MTLTexture> sky = nil;
   id<MTLTexture> dfg = nil;
@@ -672,18 +794,83 @@ bool vkr_bake_metal_available() {
 
 namespace {
 
+/* Whether a triangle needs its alpha tested during traversal: a cutout
+   triangle whose lowest alpha (material floor times its lowest vertex alpha,
+   which bounds the interpolated one) falls below the cutoff. Blended surfaces
+   always stop a traversal and are resolved after it, so they gain nothing
+   from testing. */
+bool triangle_alpha_tested(const VkrBakeMetalContext *context,
+                           const VkrBakeScene &scene, uint32_t triangle) {
+  const VkrBakeTriangle &source = scene.triangles[triangle];
+  const uint32_t material = source.material_index;
+  if (material >= scene.materials.size() ||
+      scene.materials[material].alpha_mode != VKR_BAKE_MATERIAL_ALPHA_CUTOUT) {
+    return false;
+  }
+  float vertex_alpha = 1.0f;
+  for (uint32_t c = 0u; c < 3u; ++c) {
+    /* The kernel reads vertex colors as RGBA8. */
+    const uint32_t packed = pack_unorm4(source.vertex[c].color);
+    vertex_alpha = std::fmin(vertex_alpha, (float)(packed >> 24u) / 255.0f);
+  }
+  const float cutoff =
+      std::fmin(std::fmax(scene.materials[material].alpha_cutoff, 0.0f), 1.0f);
+  return context->material_alpha_floor[material] * vertex_alpha < cutoff;
+}
+
+/* Two geometries over the corner positions: opaque triangles, which commit
+   during traversal, then cutout triangles that can pass, which the kernels
+   test as candidates. An empty group gets no geometry. */
 bool build_acceleration_structure(VkrBakeMetalContext *context,
-                                  uint32_t triangle_count) {
-  MTLAccelerationStructureTriangleGeometryDescriptor *geometry =
-      [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-  geometry.vertexBuffer = context->positions;
-  geometry.vertexStride = 3u * sizeof(float);
-  geometry.vertexFormat = MTLAttributeFormatFloat3;
-  geometry.triangleCount = triangle_count;
-  geometry.opaque = YES;
+                                  const VkrBakeScene &scene) {
+  const uint32_t triangle_count = (uint32_t)scene.triangles.size();
+  context->as_indices = shared_buffer(
+      context->device, (NSUInteger)triangle_count * 3u * sizeof(uint32_t));
+  if (!context->as_indices) {
+    return false;
+  }
+  uint32_t *indices = static_cast<uint32_t *>(context->as_indices.contents);
+  uint32_t written = 0u;
+  for (uint32_t pass = 0u; pass < 2u; ++pass) {
+    context->geometry_first[pass] = written;
+    for (uint32_t t = 0u; t < triangle_count; ++t) {
+      const bool alpha = triangle_alpha_tested(context, scene, t);
+      if (alpha != (pass == 1u)) {
+        continue;
+      }
+      indices[3u * written + 0u] = 3u * t;
+      indices[3u * written + 1u] = 3u * t + 1u;
+      indices[3u * written + 2u] = 3u * t + 2u;
+      ++written;
+    }
+  }
+  const uint32_t counts[2] = {context->geometry_first[1],
+                              triangle_count - context->geometry_first[1]};
+  NSMutableArray *geometries = [NSMutableArray array];
+  for (uint32_t g = 0u; g < 2u; ++g) {
+    if (counts[g] == 0u) {
+      continue;
+    }
+    MTLAccelerationStructureTriangleGeometryDescriptor *geometry =
+        [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    geometry.vertexBuffer = context->positions;
+    geometry.vertexStride = 3u * sizeof(float);
+    geometry.vertexFormat = MTLAttributeFormatFloat3;
+    geometry.indexBuffer = context->as_indices;
+    geometry.indexType = MTLIndexTypeUInt32;
+    geometry.indexBufferOffset =
+        (NSUInteger)context->geometry_first[g] * 3u * sizeof(uint32_t);
+    geometry.triangleCount = counts[g];
+    geometry.opaque = g == 0u ? YES : NO;
+    [geometries addObject:geometry];
+  }
+  /* With one group, geometry 0 is that group. */
+  if (counts[0] == 0u) {
+    context->geometry_first[0] = context->geometry_first[1];
+  }
   MTLPrimitiveAccelerationStructureDescriptor *descriptor =
       [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-  descriptor.geometryDescriptors = @[ geometry ];
+  descriptor.geometryDescriptors = geometries;
   const MTLAccelerationStructureSizes sizes =
       [context->device accelerationStructureSizesWithDescriptor:descriptor];
   context->scene = [context->device
@@ -707,9 +894,10 @@ bool build_acceleration_structure(VkrBakeMetalContext *context,
   if (command.status != MTLCommandBufferStatusCompleted) {
     return false;
   }
-  std::printf("gpu_acceleration_structure_mb=%.1f build_ms=%.1f\n",
+  std::printf("gpu_acceleration_structure_mb=%.1f build_ms=%.1f "
+              "alpha_tested_triangles=%u\n",
               sizes.accelerationStructureSize / 1048576.0,
-              (command.GPUEndTime - command.GPUStartTime) * 1000.0);
+              (command.GPUEndTime - command.GPUStartTime) * 1000.0, counts[1]);
   return true;
 }
 
@@ -791,14 +979,16 @@ bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
          (float)material.alpha_mode,
          (material.transmission_factor > 0.0f &&
           material.thickness_factor <= 0.0f) ||
-                 std::fabs(material.ior - 1.0f) <= 1.0e-4f
+                 std::fabs(std::fmax(material.ior, 1.0f) - 1.0f) <= 1.0e-4f
              ? 1.0f
              : 0.0f},
         {material.dielectric_specular.x, material.dielectric_specular.y,
          material.dielectric_specular.z, material.roughness},
         {layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_BASE_COLOR]),
-         layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_EMISSIVE]), -1,
-         -1}};
+         layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_EMISSIVE]),
+         layer_for(
+             material.textures[VKR_BAKE_MATERIAL_TEXTURE_METALLIC_ROUGHNESS]),
+         layer_for(material.textures[VKR_BAKE_MATERIAL_TEXTURE_TRANSMISSION])}};
   }
 
   const NSUInteger layers = std::max<size_t>(layer_refs.size(), 1u);
@@ -816,6 +1006,7 @@ bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
   }
   std::vector<float> rgba(4u * kTextureEdge * kTextureEdge, 1.0f);
   std::vector<uint16_t> halves(rgba.size());
+  std::vector<float> layer_min_alpha(layers, 1.0f);
   for (NSUInteger layer = 0u; layer < layers; ++layer) {
     if (layer < layer_refs.size() &&
         !vkr_bake_texture_store_resample(scene.texture_store, layer_refs[layer],
@@ -826,6 +1017,9 @@ bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
     for (size_t i = 0u; i < rgba.size(); ++i) {
       _Float16 half = (_Float16)rgba[i];
       std::memcpy(&halves[i], &half, sizeof(uint16_t));
+      if (i % 4u == 3u) {
+        layer_min_alpha[layer] = std::fmin(layer_min_alpha[layer], (float)half);
+      }
     }
     [context->textures
         replaceRegion:MTLRegionMake2D(0u, 0u, kTextureEdge, kTextureEdge)
@@ -834,6 +1028,15 @@ bool upload_materials(VkrBakeMetalContext *context, const VkrBakeScene &scene) {
             withBytes:halves.data()
           bytesPerRow:kTextureEdge * 4u * sizeof(uint16_t)
         bytesPerImage:0u];
+  }
+  /* Bilinear filtering stays within its texels, so a layer's lowest texel
+     alpha bounds every sample. */
+  context->material_alpha_floor.assign(scene.materials.size(), 1.0f);
+  for (size_t m = 0u; m < scene.materials.size(); ++m) {
+    const int32_t layer = gpu[m].layers[0];
+    context->material_alpha_floor[m] =
+        std::fmax(scene.materials[m].base_color.w, 0.0f) *
+        (layer >= 0 ? layer_min_alpha[(size_t)layer] : 1.0f);
   }
   std::printf("gpu_materials=%zu texture_layers=%zu\n", scene.materials.size(),
               layer_refs.size());
@@ -973,10 +1176,10 @@ VkrBakeMetalContext *vkr_bake_metal_create(const VkrBakeScene &scene) {
         make_pipeline(context->device, library, @"lightmap_gather");
     if (!context->benchmark || !context->gather ||
         !upload_triangles(context, scene) ||
-        !build_acceleration_structure(context,
-                                      (uint32_t)scene.triangles.size()) ||
-        !upload_materials(context, scene) || !upload_lights(context, scene) ||
-        !upload_sky(context, scene) || !upload_dfg(context)) {
+        !upload_materials(context, scene) ||
+        !build_acceleration_structure(context, scene) ||
+        !upload_lights(context, scene) || !upload_sky(context, scene) ||
+        !upload_dfg(context)) {
       std::fprintf(stderr, "Lightmap GPU scene upload failed\n");
       delete context;
       return nullptr;
@@ -1122,7 +1325,8 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
           settings.max_depth,
           settings.rr_start_depth,
           (uint32_t)layer.lights.size(),
-          flags};
+          flags,
+          {context->geometry_first[0], context->geometry_first[1]}};
       id<MTLCommandBuffer> command = [context->queue commandBuffer];
       id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
       [encoder setComputePipelineState:context->gather];
@@ -1139,6 +1343,7 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       [encoder setBuffer:context->materials offset:0u atIndex:10u];
       [encoder setBuffer:context->lights offset:0u atIndex:11u];
       [encoder setBuffer:layer_lights offset:0u atIndex:12u];
+      [encoder setBuffer:context->as_indices offset:0u atIndex:13u];
       [encoder setTexture:context->textures atIndex:0u];
       [encoder setTexture:context->sky atIndex:1u];
       [encoder setTexture:context->dfg atIndex:2u];
