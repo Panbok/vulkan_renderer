@@ -81,6 +81,45 @@ prototype passes when opaque shading, including the main pass and resolve,
 fits within half of the 16.7 ms budget, leaving the rest for shadows,
 transmission, blend and post-processing.
 
+### First prototype measurements
+
+A Metal prototype (2026-10-05, worktree only, not landed) replays the culled
+`VBuffer.Opaque` draws after that pass into one render pass with memoryless
+color and depth, shades them with the existing forward shader
+(`vkr_metal_packet_opaque_fragment`) and resolves on chip. Its output feeds
+nothing, so its cost is the change in whole-frame GPU time. Each row is one
+process of a temporary native-resolution copy of `bistro_metal_production_040`
+(2560×1440, render scale 1.0, portable TAA, 120 warmup and 180 measured
+frames) under a temporary single-process copy of
+`performance-windowed-gpu-submission` (Release, M1 Pro, non-authoritative).
+The desktop baseline measured 50.14 to 50.30 ms `gpu.submission` median in
+four runs.
+
+| Prototype variant | Median | Added |
+|---|---|---|
+| Forward, no depth pre-pass, 1 / 2 / 4 samples | 110.15 / 124.15 / 128.49 ms | +60 to +78 ms |
+| Forward with depth pre-pass, 1 / 4 samples | 81.56 / 86.71 ms | +31.4 / +36.6 ms |
+| Same, local shadows faded out (baseline 45.96 ms) | 79.27 ms at 4 samples | +33.3 ms |
+| Forward with pre-pass, no punctual or rectangle lights, 1 / 4 samples | 61.70 / 63.55 ms | +11.6 / +13.4 ms |
+
+Findings:
+
+- The forward shader can discard, so without a depth pre-pass hidden-surface
+  removal does not apply and overdraw is shaded in full.
+- Four-sample MSAA in tile memory costs about 2 to 5 ms over one sample.
+- Shading each pixel once with the current lighting model costs about 31 ms,
+  more than the desktop chain's resolve, lighting and mask passes. Bistro's
+  72 static local lights cost about 23 ms of it; inline local shadows about
+  3 ms. The remaining base shading costs 12 to 13 ms.
+- The render-pass structure is not the limit; the lighting model is. The
+  baked diffuse volumes hold only indirect diffuse light
+  ([ADR-054](../adr/054-baked-diffuse-volumes.md)), so every static lamp's
+  direct light is evaluated per pixel each frame.
+
+The gate therefore needs a cheaper lighting model as well as the tiled
+structure: direct light from static lights baked offline, a bounded runtime
+budget for dynamic lights, and base shading near half its current cost.
+
 ## Acceptance evidence
 
 - Matched Release `gpu.submission` runs of the complete tiled pipeline on the
