@@ -29,6 +29,10 @@ typedef struct VkrSampleRuntimeOptions {
   const char *auto_close_rejected;
   float64_t metrics_interval_seconds;
   const char *metrics_interval_rejected;
+  /* VKR_RG_SLOW_FRAME_MS: frames whose pass GPU time reaches it log their
+     slowest passes; needs VKR_RG_GPU_TIMING. */
+  float64_t rg_slow_frame_ms;
+  const char *rg_slow_frame_rejected;
   /* Saved preferences clamped to what this backend and validation mode can
    * start with. */
   VkrGraphicsSettingsState graphics;

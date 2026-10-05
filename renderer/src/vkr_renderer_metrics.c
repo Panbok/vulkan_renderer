@@ -1134,6 +1134,54 @@ vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
    instrumentation out removes them together with their only caller,
    vkr_renderer_metrics_collect. */
 #if VKR_METRICS_ENABLED
+/* Logs the three slowest passes of a frame at or over the slow-frame
+   threshold. */
+vkr_internal void
+vkr_renderer_metrics_log_slow_frame(const VkrRendererMetrics *renderer_metrics,
+                                    uint64_t source_frame) {
+  if (!(renderer_metrics->slow_frame_gpu_ms > 0.0)) {
+    return;
+  }
+  const VkrRendererMetricsPassTable *table = &renderer_metrics->passes;
+  float64_t total_ms = 0.0;
+  uint32_t slowest[3] = {UINT32_MAX, UINT32_MAX, UINT32_MAX};
+  for (uint32_t i = 0; i < table->count; ++i) {
+    const VkrRendererMetricsPassSample *sample = &table->samples[i];
+    if (!sample->gpu_valid || sample->culled || sample->disabled) {
+      continue;
+    }
+    total_ms += sample->gpu_ms;
+    uint32_t candidate = i;
+    for (uint32_t rank = 0; rank < ArrayCount(slowest); ++rank) {
+      if (slowest[rank] == UINT32_MAX ||
+          table->samples[candidate].gpu_ms >
+              table->samples[slowest[rank]].gpu_ms) {
+        const uint32_t displaced = slowest[rank];
+        slowest[rank] = candidate;
+        candidate = displaced;
+        if (candidate == UINT32_MAX) {
+          break;
+        }
+      }
+    }
+  }
+  if (total_ms < renderer_metrics->slow_frame_gpu_ms) {
+    return;
+  }
+  char passes[3][VKR_METRIC_NAME_MAX + 16u] = {{0}};
+  for (uint32_t rank = 0; rank < ArrayCount(slowest); ++rank) {
+    if (slowest[rank] != UINT32_MAX) {
+      const VkrRendererMetricsPassSample *sample =
+          &table->samples[slowest[rank]];
+      snprintf(passes[rank], sizeof(passes[rank]), " %.*s %.2f",
+               (int)sample->name_length, sample->name, sample->gpu_ms);
+    }
+  }
+  log_warn("Slow GPU frame %llu: passes %.2f ms;%s%s%s",
+           (unsigned long long)source_frame, total_ms, passes[0], passes[1],
+           passes[2]);
+}
+
 vkr_internal void
 vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
                                     VkrRenderer *renderer,
@@ -1178,6 +1226,7 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
       for (uint32_t i = 0; i < table->count; ++i) {
         table->samples[i].gpu_source_frame_index = source_frame;
       }
+      vkr_renderer_metrics_log_slow_frame(renderer_metrics, source_frame);
     }
     return;
   }

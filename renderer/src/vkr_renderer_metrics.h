@@ -329,6 +329,10 @@ typedef struct VkrRendererMetrics {
   VkrMetrics *metrics;
   VkrRendererMetricIds ids;
   VkrRendererMetricsPassTable passes;
+  /* A collected frame whose valid pass GPU times sum to at least this logs
+     its slowest passes, so a headless run can attribute hitches; zero
+     disables. Diagnostic only: no metric or report reads it. */
+  float64_t slow_frame_gpu_ms;
   VkrRendererMetricsProducerConfig producers;
   VkrRendererCumulativeBaselines previous;
   uint64_t boot_scene_ns;

@@ -75,6 +75,7 @@ new work.
 |---|---|
 | CPU work or queue-slot waits | Harness CPU metrics; inspect scope definitions before interpreting duration |
 | GPU pass duration | Harness pass rows collected from completed `VkrRendererImplSubmitResult.pass_timings` in `vkr_renderer_metrics.c`; use `gpu_ms` only when `gpu_valid` and retain source frame/submit identity. On Metal, per-pass timestamps split each shared compute encoder at every pass (about 10 us idle each, about 0.5 ms per Bistro frame), so compute rows and intra-encoder gaps are inflated; use `gpu.submission` from `performance-windowed-gpu-submission.json` for frame cost and a trace without per-pass timing for idle |
+| Editor hitch attribution | Headless editor with `VKR_RG_GPU_TIMING=1` and `VKR_RG_SLOW_FRAME_MS=<ms>`: each collected frame whose valid pass GPU times sum to at least that logs `Slow GPU frame` with its three slowest passes. Passes can overlap, so the sum exceeds the frame time; tune the threshold to the run and treat the lines as attribution, not timing claims |
 | Draw, visibility, overflow equivalence | Harness work-volume rows plus relevant captures; fewer calls alone does not prove equivalent work |
 | Upload stall attribution | Harness upload metrics; `vkr_renderer_get_and_reset_upload_wait_stats()` consumes counters, so do not read it in competition with the metrics collector |
 | Graph resource churn | Harness `rendergraph.*` resource rows collected from native backend caches in `vkr_renderer_metrics.c`; a higher peak is a clue, not proof of recreation or a leak |

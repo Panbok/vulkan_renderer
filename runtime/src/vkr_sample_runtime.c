@@ -6714,6 +6714,18 @@ int vkr_sample_runtime_run(int argc, char **argv,
   if (application.metrics->config.pass_gpu_timings) {
     log_info("RenderGraph GPU timings enabled via VKR_RG_GPU_TIMING");
   }
+  if (options.rg_slow_frame_rejected) {
+    log_warn("Ignoring invalid VKR_RG_SLOW_FRAME_MS value '%s'",
+             options.rg_slow_frame_rejected);
+  } else if (options.rg_slow_frame_ms > 0.0) {
+    application.renderer_metrics.slow_frame_gpu_ms = options.rg_slow_frame_ms;
+    log_info("Frames with at least %.2f ms of pass GPU time log their slowest "
+             "passes (VKR_RG_SLOW_FRAME_MS)%s",
+             options.rg_slow_frame_ms,
+             application.metrics->config.pass_gpu_timings
+                 ? ""
+                 : "; it needs VKR_RG_GPU_TIMING=1");
+  }
   if (options.metrics_event_subjects) {
     log_info("Metrics event subjects enabled via VKR_METRICS_EVENT_SUBJECTS");
   }

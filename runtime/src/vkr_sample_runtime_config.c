@@ -269,6 +269,8 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
       "VKR_AUTOCLOSE_SECONDS", &options->auto_close_rejected);
   options->metrics_interval_seconds = sample_env_seconds(
       "VKR_METRICS_INTERVAL_SECONDS", &options->metrics_interval_rejected);
+  options->rg_slow_frame_ms = sample_env_seconds(
+      "VKR_RG_SLOW_FRAME_MS", &options->rg_slow_frame_rejected);
   options->assert_no_upload_waits =
       sample_env_flag("VKR_ASSERT_NO_UPLOAD_WAITS", false_v);
   options->scene_memory_verbose =
