@@ -94,6 +94,9 @@ Answer focused questions and perform one-step edits directly. Multi-step work
 uses one compact `.scratch/` note. Delegate only independent bounded work when
 parallel progress repays the handoff; use one writer per overlapping file and
 serialize GPU runs. Do not create persistent agent roles to delegate a task.
+This is standing user authorization to spawn subagents without asking when
+those criteria hold. Run at most 3 subagents at once, and at most one of them
+may build, cook, or use the GPU.
 
 ## Evidence and completion
 
