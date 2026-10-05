@@ -126,6 +126,38 @@ bool vkr_bake_lightmap_pack(
   }
 }
 
+bool vkr_bake_lightmap_pack_fitted(
+    const std::vector<VkrBakeLightmapInstance> &instances, uint32_t page_size,
+    float32_t texels_per_world_unit, VkrBakeLightmapLayout *out_layout) {
+  VkrBakeLightmapLayout full;
+  if (!vkr_bake_lightmap_pack(instances, page_size, texels_per_world_unit,
+                              &full)) {
+    return false;
+  }
+  if (full.page_count == 1u) {
+    uint32_t largest = 0u;
+    for (const VkrBakeLightmapRect &rect : full.rects) {
+      largest = std::max(largest, std::max(rect.width, rect.height));
+    }
+    for (uint32_t size = 256u; size < page_size; size *= 2u) {
+      if (size < largest) {
+        continue;
+      }
+      VkrBakeLightmapLayout fitted;
+      if (!vkr_bake_lightmap_pack(instances, size, texels_per_world_unit,
+                                  &fitted)) {
+        return false;
+      }
+      if (fitted.page_count == 1u) {
+        *out_layout = std::move(fitted);
+        return true;
+      }
+    }
+  }
+  *out_layout = std::move(full);
+  return true;
+}
+
 bool vkr_bake_lightmap_rasterize_page(
     const VkrBakeTriangle *triangles, uint32_t triangle_count,
     const VkrBakeLightmapLayout &layout, uint32_t page,

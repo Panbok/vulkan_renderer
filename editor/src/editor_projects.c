@@ -31,6 +31,9 @@
 #define PROJECT_CARD_COUNT 128u
 #define PROJECT_MODEL_COUNT 16u
 #define PROJECT_LIGHT_COUNT 32u
+/* Lightmap UV density a model import or rebuild asks for: texels per world
+   unit, the lightmap bake's default (ADR-087). */
+#define PROJECT_LIGHTMAP_TEXELS_PER_UNIT 8.0
 #define PROJECT_SETTINGS_CAPACITY KB(64)
 #define PROJECT_MODAL_LAYER 1000u
 /* Launcher heading row, aligned with the native window controls. */
@@ -276,6 +279,8 @@ struct VkrEditorProjects {
   bool8_t bake_reflection;
   bool8_t bake_diffuse;
   bool8_t bake_lightmap;
+  /* Model imports and rebuilds cook lightmap UVs (the Bakery setting). */
+  bool8_t lightmap_uvs;
   bool8_t prepare_assets;
   ProjectProbeDraft probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t probe_count;
@@ -1700,6 +1705,12 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
          has one. */
       project_json_text(writer, "texture_tier", "deferred") &&
       project_json_text(writer, "texture_encode_speed", "fast") &&
+      vkr_json_writer_name(writer, string8_lit("model_settings")) &&
+      vkr_json_writer_begin_object(writer) &&
+      (!projects->lightmap_uvs ||
+       project_json_number(writer, "lightmap_texels_per_unit",
+                           PROJECT_LIGHTMAP_TEXELS_PER_UNIT)) &&
+      vkr_json_writer_end_object(writer) &&
       project_json_text(writer, "legacy_root",
                         projects->legacy_root[0] ? projects->legacy_root
                                                  : vkr_content_root()) &&
@@ -2547,6 +2558,7 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
     return;
   }
   projects->message[0] = '\0';
+  projects->lightmap_uvs = vkr_editor_bakery_lightmap_uvs(editor->bakery);
   if (!project_write_job(projects, frame, create)) {
     return;
   }

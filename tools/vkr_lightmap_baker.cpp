@@ -977,8 +977,9 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
               bounds.max.y, bounds.max.z);
 
   VkrBakeLightmapLayout layout;
-  if (!vkr_bake_lightmap_pack(scene.lightmap_instances, options.page_size,
-                              options.texels_per_unit, &layout)) {
+  if (!vkr_bake_lightmap_pack_fitted(scene.lightmap_instances,
+                                     options.page_size, options.texels_per_unit,
+                                     &layout)) {
     std::fprintf(stderr, "Lightmap packing failed\n");
     return 1;
   }

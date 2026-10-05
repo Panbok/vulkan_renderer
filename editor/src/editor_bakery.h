@@ -61,6 +61,9 @@ bool8_t vkr_editor_bakery_scene_bake_available(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
                                           bool8_t *reflection, bool8_t *diffuse,
                                           bool8_t *lightmap);
+/** Whether model imports and rebuilds cook lightmap UVs (ADR-087), as the
+ * managed panel sets it. */
+bool8_t vkr_editor_bakery_lightmap_uvs(const VkrEditorBakery *bakery);
 /** The editor's Bakery daemon, or NULL where it is unavailable. */
 EditorBakeryService *vkr_editor_bakery_service(VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_busy(const VkrEditorBakery *bakery);

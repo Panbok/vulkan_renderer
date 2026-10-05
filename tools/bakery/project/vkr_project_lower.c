@@ -1297,9 +1297,9 @@ vkr_internal bool8_t vkr_project_build_record(VkrProjectJob *job,
         job, scene_root, vkr_project_json_text(record, "source"), true_v,
         source));
     (void)snprintf(output, sizeof(output), "%s/mesh.vkb", bundle);
-    VKR_PROJECT_TRY(vkr_project_cook_mesh(job, source, output, bundle,
-                                          import_id ? import_id : "",
-                                          "Preparing model"));
+    VKR_PROJECT_TRY(vkr_project_cook_mesh(
+        job, source, output, bundle, import_id ? import_id : "",
+        vkr_project_record_lightmap_density(record), "Preparing model"));
     VKR_PROJECT_TRY(vkr_project_index_bundle(job, bundle, import_id));
   } else if (kind && strcmp(kind, "font") == 0) {
     char config[VKR_PROJECT_PATH];
@@ -1759,9 +1759,11 @@ vkr_internal const char *vkr_project_source_key(VkrProjectJob *job,
    records into the records of the same import. */
 vkr_internal bool8_t vkr_project_rebuild_mesh(
     VkrProjectJob *job, const char *asset_id, const char *import_id,
-    const char *source, const char *bundle, const char *output) {
+    const char *source, const char *bundle, const char *output,
+    float32_t lightmap_texels_per_unit) {
   Arena *arena = job->arena;
   VKR_PROJECT_TRY(vkr_project_cook_mesh(job, source, output, bundle, import_id,
+                                        lightmap_texels_per_unit,
                                         "Rebuilding model"));
   VkrProjectNodes existing = {0};
   VkrProjectStrings existing_keys = {0};
@@ -1859,9 +1861,20 @@ vkr_internal bool8_t vkr_project_rebuild_asset(VkrProjectJob *job,
                           vkr_bakery_json_cstr(arena, reference));
     }
     (void)snprintf(output, sizeof(output), "%s/mesh.vkb", bundle);
+    /* A rebuild or reimport the request asks for applies the request's
+       model settings when it names them, so a model can gain or drop
+       lightmap UVs; texture finalization and any request without them
+       repeat the recorded settings. */
+    const bool8_t requested =
+        job->operation && strcmp(job->operation, operation) == 0 &&
+        vkr_bakery_json_get(job->request, "model_settings") != NULL;
+    const float32_t lightmap_density =
+        requested ? vkr_project_requested_lightmap_density(job)
+                  : vkr_project_record_lightmap_density(record);
     VKR_PROJECT_TRY(vkr_project_rebuild_mesh(job, asset_id, import_id, source,
-                                             bundle, output));
+                                             bundle, output, lightmap_density));
     vkr_project_mark_tier(job, record);
+    vkr_project_set_mesh_recipe(job, record, lightmap_density);
   } else if (kind && strcmp(kind, "font") == 0) {
     VkrBakeryJson *previous = job->assets;
     job->assets = vkr_bakery_json_array(arena);

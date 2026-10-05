@@ -212,6 +212,25 @@ void test_cooked_cube_texels_lie_on_its_faces() {
          texel_count);
 }
 
+/* A few small instances share one page sized to them instead of a full
+   page; a rectangle wider than every smaller page keeps the full size rather
+   than being scaled down. */
+void test_pack_fitted_shrinks_small_scenes() {
+  const std::vector<VkrBakeLightmapInstance> small = {
+      make_instance(0u, 60u, 40u, 1.0f), make_instance(1u, 30u, 30u, 1.0f)};
+  VkrBakeLightmapLayout layout;
+  assert(vkr_bake_lightmap_pack_fitted(small, 4096u, 8.0f, &layout));
+  assert(layout.page_count == 1u && layout.page_size == 256u);
+  assert(layout.rects[layout.rect_by_instance[0]].width == 60u);
+
+  const std::vector<VkrBakeLightmapInstance> wide = {
+      make_instance(0u, 3000u, 8u, 1.0f)};
+  assert(vkr_bake_lightmap_pack_fitted(wide, 4096u, 8.0f, &layout));
+  assert(layout.page_count == 1u && layout.page_size == 4096u);
+  assert(layout.rects[0].width == 3000u);
+  printf("  test_pack_fitted_shrinks_small_scenes PASSED\n");
+}
+
 /* Two adjacent rectangles with one covered texel each: dilation and the
    rectangle mean fill each rectangle with its own value, nothing crosses the
    shared edge, and texels outside both stay zero. */
@@ -361,6 +380,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_pack_sizes_and_places_rects();
   test_rasterize_covers_a_quad_once();
   test_cooked_cube_texels_lie_on_its_faces();
+  test_pack_fitted_shrinks_small_scenes();
   test_compose_fills_each_rect_alone();
   test_astc_hdr_round_trip_keeps_range();
   test_lightmap_set_round_trip_and_rejects();

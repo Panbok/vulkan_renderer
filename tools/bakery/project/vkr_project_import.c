@@ -3,6 +3,7 @@
 #include "../vkr_bakery_buffer.h"
 #include "filesystem/filesystem.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1201,11 +1202,8 @@ VkrBakeryJson *vkr_project_import_model(VkrProjectJob *job,
                         vkr_bakery_json_cstr(arena, reference));
     vkr_bakery_json_set(arena, record, "artifacts",
                         vkr_bakery_json_array(arena));
-    VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, recipe, "tool",
-                        vkr_bakery_json_cstr(arena, "mesh"));
-    vkr_bakery_json_set(arena, recipe, "version", vkr_project_int(job, 1));
-    vkr_bakery_json_set(arena, record, "recipe", recipe);
+    vkr_project_set_mesh_recipe(job, record,
+                                vkr_project_requested_lightmap_density(job));
     vkr_bakery_json_set(arena, record, "fingerprint",
                         vkr_bakery_json_cstr(
                             arena, vkr_project_printf(job, "sha256:%s", hash)));
@@ -1219,14 +1217,17 @@ VkrBakeryJson *vkr_project_import_model(VkrProjectJob *job,
     }
     return vkr_project_reference(job, job->asset_scope, asset_id, "mesh");
   }
+  const float32_t lightmap_density =
+      vkr_project_requested_lightmap_density(job);
   if (!vkr_project_cook_mesh(job, snapshot, mesh, bundle, import_id,
-                             "Cooking model")) {
+                             lightmap_density, "Cooking model")) {
     return NULL;
   }
   VkrBakeryJson *reference = vkr_project_artifact(job, "mesh", stem, mesh, NULL,
                                                   import_id, snapshot, NULL);
   if (reference) {
     vkr_project_mark_tier(job, job->assets->last);
+    vkr_project_set_mesh_recipe(job, job->assets->last, lightmap_density);
   }
   if (!reference ||
       !vkr_project_cook_model_animation(job, job->assets->last, snapshot,
@@ -1495,13 +1496,55 @@ vkr_internal void vkr_project_adopt_digests(VkrProjectJob *job,
 }
 
 /* Cooks one model into `bundle` through `tool mesh` at the job's tier. */
+float32_t vkr_project_requested_lightmap_density(const VkrProjectJob *job) {
+  float64_t density = 0.0;
+  if (!vkr_bakery_json_get_number(
+          vkr_bakery_json_get(job->request, "model_settings"),
+          "lightmap_texels_per_unit", &density) ||
+      !isfinite(density) || density <= 0.0 || density > 1024.0) {
+    return 0.0f;
+  }
+  return (float32_t)density;
+}
+
+float32_t vkr_project_record_lightmap_density(const VkrBakeryJson *record) {
+  float64_t density = 0.0;
+  if (!vkr_bakery_json_get_number(
+          vkr_bakery_json_get(vkr_bakery_json_get(record, "recipe"),
+                              "settings"),
+          "lightmap_texels_per_unit", &density) ||
+      !isfinite(density) || density <= 0.0 || density > 1024.0) {
+    return 0.0f;
+  }
+  return (float32_t)density;
+}
+
+void vkr_project_set_mesh_recipe(VkrProjectJob *job, VkrBakeryJson *record,
+                                 float32_t lightmap_texels_per_unit) {
+  Arena *arena = job->arena;
+  VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, recipe, "tool",
+                      vkr_bakery_json_cstr(arena, "mesh"));
+  vkr_bakery_json_set(arena, recipe, "version", vkr_project_int(job, 1));
+  if (lightmap_texels_per_unit > 0.0f) {
+    VkrBakeryJson *settings = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(
+        arena, settings, "lightmap_texels_per_unit",
+        vkr_bakery_json_float(arena, (float64_t)lightmap_texels_per_unit));
+    vkr_bakery_json_set(arena, recipe, "settings", settings);
+  }
+  vkr_bakery_json_set(arena, record, "recipe", recipe);
+}
+
 bool8_t vkr_project_cook_mesh(VkrProjectJob *job, const char *source,
                               const char *output, const char *bundle,
-                              const char *import_id, const char *label) {
+                              const char *import_id,
+                              float32_t lightmap_texels_per_unit,
+                              const char *label) {
   VKR_PROJECT_TRY(vkr_project_make_dirs(job, job->generated_root));
   /* The workspace publishes every file by rename, so the cook may hard
      link its files into the bundle where the volume cannot clone them. */
-  const char *arguments[26] = {"--input",          source,
+  const char *arguments[28] = {"--input",          source,
                                "--output",         output,
                                "--bundle-root",    bundle,
                                "--import-id",      import_id,
@@ -1525,6 +1568,11 @@ bool8_t vkr_project_cook_mesh(VkrProjectJob *job, const char *source,
   if (job->ready_log) {
     arguments[count++] = "--ready-log";
     arguments[count++] = job->ready_log;
+  }
+  if (lightmap_texels_per_unit > 0.0f) {
+    arguments[count++] = "--lightmap-texels-per-unit";
+    arguments[count++] =
+        vkr_project_printf(job, "%.9g", (float64_t)lightmap_texels_per_unit);
   }
   const char *priority = NULL;
   if (job->material_priority && job->material_priority->first) {

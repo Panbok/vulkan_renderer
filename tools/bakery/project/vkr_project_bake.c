@@ -1027,8 +1027,8 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
     }
     vkr_bakery_json_remove(scene, "lightmaps");
     const char *warning =
-        "Lightmaps skipped: no scene model carries lightmap UVs; cook models "
-        "with lightmap_texels_per_unit to bake them";
+        "Lightmaps skipped: no scene model carries lightmap UVs; turn on "
+        "Lightmap UVs in Bakery and rebuild the scene's models";
     vkr_bakery_json_append(job->warnings, vkr_bakery_json_cstr(arena, warning));
     printf("Warning: %s\n", warning);
     fflush(stdout);

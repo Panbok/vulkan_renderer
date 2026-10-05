@@ -435,10 +435,24 @@ bool8_t vkr_project_pack_bundle_textures(VkrProjectJob *job,
                                          const VkrProjectStrings *materials);
 /** Points a material's source-image texture lines at their packed .vkt. */
 bool8_t vkr_project_point_material(VkrProjectJob *job, const char *material);
-/** Cooks a model into `bundle` with `tool mesh` at the job's texture tier. */
+/** Cooks a model into `bundle` with `tool mesh` at the job's texture tier,
+ * with lightmap UVs at `lightmap_texels_per_unit` world density when it is
+ * positive (ADR-087). */
 bool8_t vkr_project_cook_mesh(VkrProjectJob *job, const char *source,
                               const char *output, const char *bundle,
-                              const char *import_id, const char *label);
+                              const char *import_id,
+                              float32_t lightmap_texels_per_unit,
+                              const char *label);
+/** The lightmap density the request's `model_settings` ask new imports and
+ * rebuilds to cook with; zero for none. */
+float32_t vkr_project_requested_lightmap_density(const VkrProjectJob *job);
+/** The lightmap density a mesh record's recipe settings keep; zero for none.
+ */
+float32_t vkr_project_record_lightmap_density(const VkrBakeryJson *record);
+/** Records a mesh cook's settings in its record's recipe so later cooks of
+ * the record repeat them. */
+void vkr_project_set_mesh_recipe(VkrProjectJob *job, VkrBakeryJson *record,
+                                 float32_t lightmap_texels_per_unit);
 bool8_t vkr_project_cook_model_animation(VkrProjectJob *job,
                                          VkrBakeryJson *record,
                                          const char *source, const char *mesh);

@@ -70,6 +70,16 @@ bool vkr_bake_lightmap_pack(
     float32_t texels_per_world_unit, VkrBakeLightmapLayout *out_layout);
 
 /*
+ * Packs as vkr_bake_lightmap_pack does, but when every rectangle fits on one
+ * page smaller than page_size without being scaled down, uses the smallest
+ * such page from 256 texels upward in powers of two, so a small scene does not
+ * store a mostly empty page.
+ */
+bool vkr_bake_lightmap_pack_fitted(
+    const std::vector<VkrBakeLightmapInstance> &instances, uint32_t page_size,
+    float32_t texels_per_world_unit, VkrBakeLightmapLayout *out_layout);
+
+/*
  * Collects every texel center of `page` that lies inside a triangle of a
  * lightmapped instance, in row-major order. A texel claimed by one triangle
  * is not claimed again by a neighbor sharing its edge.
