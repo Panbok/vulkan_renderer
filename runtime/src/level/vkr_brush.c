@@ -76,6 +76,10 @@ const char *vkr_brush_error_text(VkrBrushError error) {
     return "the faces do not enclose a solid";
   case VKR_BRUSH_ERROR_FLAT:
     return "the solid has no volume";
+  case VKR_BRUSH_ERROR_CONCAVE:
+    return "that would dent the brush, and a brush stays convex";
+  case VKR_BRUSH_ERROR_NO_CORNER:
+    return "no corner of the brush is at the dragged point";
   }
   return "invalid";
 }
@@ -602,4 +606,275 @@ bool8_t vkr_brush_merge(const VkrBrushPlane *const *planes,
   }
   /* Overlapping or non-convex inputs change the volume. */
   return fabsf(scratch->volume - volume) <= 1.0e-3f * Max(volume, 1.0f);
+}
+
+// =============================================================================
+// Grid editing
+// =============================================================================
+
+void vkr_brush_grid_axes(Vec3 normal, Vec3 *out_u, Vec3 *out_v) {
+  Vec3 u = {0};
+  Vec3 v = {0};
+  vkr_brush_texture_axes(normal, &u, &v);
+  u = vec3_sub(u, vec3_scale(normal, vec3_dot(u, normal)));
+  if (vec3_length(u) < 1.0e-4f) {
+    u = vec3_cross(v, normal);
+  }
+  *out_u = vec3_normalize(u);
+  *out_v = vec3_cross(normal, *out_u);
+}
+
+/* Appends `point` unless a stored point lies within `weld` of it; false
+   when `points` is full. */
+static bool8_t brush_point_add(Vec3 *points, uint32_t *count, uint32_t capacity,
+                               Vec3 point, float32_t weld) {
+  for (uint32_t i = 0; i < *count; ++i) {
+    if (vec3_length(vec3_sub(points[i], point)) <= weld) {
+      return true_v;
+    }
+  }
+  if (*count >= capacity) {
+    return false_v;
+  }
+  points[(*count)++] = point;
+  return true_v;
+}
+
+static BrushPoint brush_point(Vec3 v) { return (BrushPoint){v.x, v.y, v.z}; }
+
+uint32_t vkr_brush_hull(const Vec3 *points, uint32_t count, VkrBrushPlane *out,
+                        uint32_t capacity) {
+  Vec3 unique[VKR_BRUSH_HULL_POINT_MAX];
+  uint32_t n = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!brush_point_add(unique, &n, VKR_BRUSH_HULL_POINT_MAX, points[i],
+                         VKR_BRUSH_WELD)) {
+      return 0u;
+    }
+  }
+  if (n < 4u) {
+    return 0u;
+  }
+
+  /* Every plane through three points with all points on one side bounds
+     the hull; coplanar triples repeat a plane, kept once. */
+  const float64_t tolerance = 1.0e-4;
+  uint32_t written = 0u;
+  for (uint32_t i = 0; i < n; ++i) {
+    const BrushPoint a = brush_point(unique[i]);
+    for (uint32_t j = i + 1u; j < n; ++j) {
+      const BrushPoint ab = brush_sub(brush_point(unique[j]), a);
+      for (uint32_t k = j + 1u; k < n; ++k) {
+        BrushPoint normal =
+            brush_cross(ab, brush_sub(brush_point(unique[k]), a));
+        const float64_t length = brush_length(normal);
+        if (!(length > 1.0e-9)) {
+          continue;
+        }
+        normal = brush_scale(normal, 1.0 / length);
+        float64_t distance = brush_dot(normal, a);
+        float64_t above = -INFINITY;
+        float64_t below = INFINITY;
+        for (uint32_t m = 0; m < n; ++m) {
+          const float64_t s =
+              brush_dot(normal, brush_point(unique[m])) - distance;
+          above = Max(above, s);
+          below = Min(below, s);
+          if (above > tolerance && below < -tolerance) {
+            break;
+          }
+        }
+        if (above > tolerance && below < -tolerance) {
+          continue;
+        }
+        if (above > tolerance) {
+          normal = brush_scale(normal, -1.0);
+          distance = -distance;
+        }
+
+        const VkrBrushPlane plane = {.normal = vec3_new((float32_t)normal.x,
+                                                        (float32_t)normal.y,
+                                                        (float32_t)normal.z),
+                                     .distance = (float32_t)distance};
+        bool8_t repeated = false_v;
+        for (uint32_t p = 0; p < written && !repeated; ++p) {
+          repeated = vec3_dot(out[p].normal, plane.normal) > 1.0f - 1.0e-5f &&
+                     fabsf(out[p].distance - plane.distance) < 1.0e-3f;
+        }
+        if (repeated) {
+          continue;
+        }
+        if (written >= capacity) {
+          return 0u;
+        }
+        out[written++] = plane;
+      }
+    }
+  }
+  return written >= VKR_BRUSH_FACE_MIN ? written : 0u;
+}
+
+/* The input plane a hull plane copies: the one it lies on, else the one
+   facing most like it. */
+static uint32_t brush_reshape_source(const VkrBrushPiece *input,
+                                     VkrBrushPlane plane) {
+  float32_t best = -2.0f;
+  uint32_t source = VKR_BRUSH_SOURCE_NEW;
+  for (uint32_t i = 0; i < input->count; ++i) {
+    const float32_t length = vec3_length(input->planes[i].normal);
+    const Vec3 n = vec3_scale(input->planes[i].normal, 1.0f / length);
+    const float32_t facing = vec3_dot(n, plane.normal);
+    if (facing > 0.9999f &&
+        fabsf(input->planes[i].distance / length - plane.distance) < 1.0e-3f) {
+      return input->source[i];
+    }
+    if (facing > best) {
+      best = facing;
+      source = input->source[i];
+    }
+  }
+  return source;
+}
+
+VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
+                                const VkrBrushPlane *split, const Vec3 *points,
+                                uint32_t point_count, Vec3 delta,
+                                VkrBrushPiece out[2], uint32_t *out_count,
+                                VkrBrushGeometry *scratch) {
+  *out_count = 0u;
+  if (count < VKR_BRUSH_FACE_MIN || count > VKR_BRUSH_FACE_MAX) {
+    return VKR_BRUSH_ERROR_FACE_COUNT;
+  }
+  VkrBrushPiece whole = {0};
+  for (uint32_t i = 0; i < count; ++i) {
+    (void)brush_piece_push(&whole, planes[i], i);
+  }
+
+  /* A split that misses the brush leaves it whole. */
+  VkrBrushPiece inputs[2];
+  uint32_t input_count = 0u;
+  if (split) {
+    for (uint32_t side = 0; side < 2u; ++side) {
+      VkrBrushPiece piece = whole;
+      if (brush_piece_push(&piece, side ? brush_flip(*split) : *split,
+                           VKR_BRUSH_SOURCE_NEW) &&
+          vkr_brush_prune(&piece, scratch)) {
+        inputs[input_count++] = piece;
+      }
+    }
+    if (input_count < 2u) {
+      input_count = 0u;
+    }
+  }
+  if (!input_count) {
+    inputs[input_count++] = whole;
+  }
+
+  bool8_t moved_any = false_v;
+  for (uint32_t p = 0; p < input_count; ++p) {
+    const VkrBrushError error =
+        vkr_brush_build(inputs[p].planes, inputs[p].count, scratch, NULL);
+    if (error != VKR_BRUSH_OK) {
+      return error;
+    }
+    Vec3 corners[VKR_BRUSH_HULL_POINT_MAX];
+    bool8_t moved[VKR_BRUSH_HULL_POINT_MAX];
+    uint32_t corner_count = 0u;
+    for (uint32_t v = 0; v < scratch->vertex_count; ++v) {
+      if (!brush_point_add(corners, &corner_count, VKR_BRUSH_HULL_POINT_MAX,
+                           scratch->vertices[v], VKR_BRUSH_WELD)) {
+        return VKR_BRUSH_ERROR_FACE_COUNT;
+      }
+    }
+    for (uint32_t c = 0; c < corner_count; ++c) {
+      moved[c] = false_v;
+      for (uint32_t i = 0; i < point_count && !moved[c]; ++i) {
+        moved[c] = vec3_length(vec3_sub(corners[c], points[i])) <= 1.0e-3f;
+      }
+      if (moved[c]) {
+        corners[c] = vec3_add(corners[c], delta);
+        moved_any = true_v;
+      }
+    }
+
+    VkrBrushPlane hull[VKR_BRUSH_FACE_MAX];
+    const uint32_t hull_count =
+        vkr_brush_hull(corners, corner_count, hull, VKR_BRUSH_FACE_MAX);
+    if (!hull_count) {
+      return VKR_BRUSH_ERROR_FLAT;
+    }
+    /* A moved corner the hull swallows was meant to dent the solid. */
+    for (uint32_t c = 0; c < corner_count; ++c) {
+      if (!moved[c]) {
+        continue;
+      }
+      float32_t outside = -INFINITY;
+      for (uint32_t h = 0; h < hull_count; ++h) {
+        outside = Max(outside,
+                      vec3_dot(hull[h].normal, corners[c]) - hull[h].distance);
+      }
+      if (outside < -1.0e-3f) {
+        return VKR_BRUSH_ERROR_CONCAVE;
+      }
+    }
+
+    out[p] = (VkrBrushPiece){0};
+    for (uint32_t h = 0; h < hull_count; ++h) {
+      (void)brush_piece_push(&out[p], hull[h],
+                             brush_reshape_source(&inputs[p], hull[h]));
+    }
+    const VkrBrushError built =
+        vkr_brush_build(out[p].planes, out[p].count, scratch, NULL);
+    if (built != VKR_BRUSH_OK) {
+      return built;
+    }
+  }
+  if (!moved_any) {
+    return VKR_BRUSH_ERROR_NO_CORNER;
+  }
+  *out_count = input_count;
+  return VKR_BRUSH_OK;
+}
+
+bool8_t vkr_brush_patch_prism(const VkrBrushPlane *planes, uint32_t count,
+                              uint32_t face, const VkrBrushPlane rect[4],
+                              float32_t inner, float32_t outer,
+                              VkrBrushPiece *out, VkrBrushGeometry *scratch) {
+  if (face >= count || !(outer > inner)) {
+    return false_v;
+  }
+  const float32_t length = vec3_length(planes[face].normal);
+  const Vec3 normal = vec3_scale(planes[face].normal, 1.0f / length);
+  const float32_t base = planes[face].distance / length;
+  *out = (VkrBrushPiece){0};
+  (void)brush_piece_push(out, brush_flip((VkrBrushPlane){normal, base + inner}),
+                         face);
+  (void)brush_piece_push(out, (VkrBrushPlane){normal, base + outer}, face);
+  VkrBrushPlane sides[4u + VKR_BRUSH_FACE_MAX];
+  uint32_t side_count = 0u;
+  for (uint32_t r = 0; r < 4u; ++r) {
+    sides[side_count++] = rect[r];
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const float32_t side_length = vec3_length(planes[i].normal);
+    const Vec3 side = vec3_scale(planes[i].normal, 1.0f / side_length);
+    if (i != face && fabsf(vec3_dot(side, normal)) < 0.05f) {
+      sides[side_count++] =
+          (VkrBrushPlane){side, planes[i].distance / side_length};
+    }
+  }
+  /* Of parallel sides, as when the patch reaches the face's edge, the
+     tighter one bounds: a repeated plane would repeat its face. */
+  for (uint32_t i = 0; i < side_count; ++i) {
+    bool8_t looser = false_v;
+    for (uint32_t j = 0; j < side_count && !looser; ++j) {
+      looser = j != i && vec3_dot(sides[i].normal, sides[j].normal) > 0.9999f &&
+               (sides[j].distance < sides[i].distance ||
+                (sides[j].distance == sides[i].distance && j < i));
+    }
+    if (!looser && !brush_piece_push(out, sides[i], face)) {
+      return false_v;
+    }
+  }
+  return vkr_brush_prune(out, scratch);
 }

@@ -176,6 +176,146 @@ static void brush_test_editing(VkrBrushGeometry *geometry) {
   free(pieces);
 }
 
+/* The face of `planes` whose normal is `normal`. */
+static uint32_t brush_test_face(const VkrBrushPlane *planes, uint32_t count,
+                                Vec3 normal) {
+  for (uint32_t i = 0; i < count; ++i) {
+    if (vec3_dot(vec3_normalize(planes[i].normal), normal) > 0.999f) {
+      return i;
+    }
+  }
+  assert(false && "no face with that normal");
+  return 0u;
+}
+
+static void brush_test_grid_editing(VkrBrushGeometry *geometry) {
+  /* The hull of a cube's corners is the cube. */
+  const Vec3 cube[8] = {
+      {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+      {1.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 1.0f},
+      {0.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f},
+  };
+  VkrBrushPlane hull[VKR_BRUSH_FACE_MAX];
+  const uint32_t hull_count =
+      vkr_brush_hull(cube, 8u, hull, VKR_BRUSH_FACE_MAX);
+  assert(hull_count == 6u);
+  assert(vkr_brush_build(hull, hull_count, geometry, NULL) == VKR_BRUSH_OK);
+  assert(brush_test_near(geometry->volume, 1.0f, 1.0e-4f));
+  /* Four points in one plane span nothing. */
+  assert(vkr_brush_hull(cube, 4u, hull, VKR_BRUSH_FACE_MAX) == 0u);
+
+  /* Raising a unit box's top back edge by 1 m adds a triangular prism of
+     half a cubic meter; the bottom keeps its face. */
+  VkrBrushPlane box[6];
+  (void)vkr_brush_box_planes(vec3_zero(), vec3_one(), box);
+  VkrBrushPiece pieces[2];
+  uint32_t piece_count = 0u;
+  const Vec3 edge[2] = {{0.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}};
+  assert(vkr_brush_reshape(box, 6u, NULL, edge, 2u, vec3_new(0.0f, 1.0f, 0.0f),
+                           pieces, &piece_count, geometry) == VKR_BRUSH_OK);
+  assert(piece_count == 1u);
+  assert(vkr_brush_build(pieces[0].planes, pieces[0].count, geometry, NULL) ==
+         VKR_BRUSH_OK);
+  assert(brush_test_near(geometry->volume, 1.5f, 1.0e-3f));
+  const uint32_t bottom = brush_test_face(box, 6u, vec3_new(0.0f, -1.0f, 0.0f));
+  const uint32_t reshaped_bottom = brush_test_face(
+      pieces[0].planes, pieces[0].count, vec3_new(0.0f, -1.0f, 0.0f));
+  assert(pieces[0].source[reshaped_bottom] == bottom);
+
+  /* Raising the grid line across the middle of a 2 x 1 x 1 box's top by
+     half a meter splits it into two pieces that each gain a quarter of a
+     cubic meter; their shared face is new. */
+  VkrBrushPlane long_box[6];
+  (void)vkr_brush_box_planes(vec3_zero(), vec3_new(2.0f, 1.0f, 1.0f), long_box);
+  const VkrBrushPlane split = {vec3_new(1.0f, 0.0f, 0.0f), 1.0f};
+  const Vec3 line[2] = {{1.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
+  assert(vkr_brush_reshape(long_box, 6u, &split, line, 2u,
+                           vec3_new(0.0f, 0.5f, 0.0f), pieces, &piece_count,
+                           geometry) == VKR_BRUSH_OK);
+  assert(piece_count == 2u);
+  for (uint32_t p = 0; p < 2u; ++p) {
+    assert(vkr_brush_build(pieces[p].planes, pieces[p].count, geometry, NULL) ==
+           VKR_BRUSH_OK);
+    assert(brush_test_near(geometry->volume, 1.25f, 1.0e-3f));
+    const uint32_t inner =
+        brush_test_face(pieces[p].planes, pieces[p].count,
+                        vec3_new(p ? -1.0f : 1.0f, 0.0f, 0.0f));
+    assert(pieces[p].source[inner] == VKR_BRUSH_SOURCE_NEW);
+  }
+
+  /* Pushing a corner deep inside would dent the cube; a point off the brush
+     moves nothing. */
+  const Vec3 corner = {1.0f, 1.0f, 1.0f};
+  assert(vkr_brush_reshape(box, 6u, NULL, &corner, 1u,
+                           vec3_new(-0.6f, -0.6f, -0.6f), pieces, &piece_count,
+                           geometry) == VKR_BRUSH_ERROR_CONCAVE);
+  const Vec3 away = {5.0f, 5.0f, 5.0f};
+  assert(vkr_brush_reshape(box, 6u, NULL, &away, 1u, vec3_one(), pieces,
+                           &piece_count,
+                           geometry) == VKR_BRUSH_ERROR_NO_CORNER);
+
+  /* A 1 m cell of a 4 x 1 x 4 slab's top pulled up 1 m is a 1 m cube on
+     it; pushed in half a meter it carves half a cubic meter out. */
+  VkrBrushPlane slab[6];
+  (void)vkr_brush_box_planes(vec3_zero(), vec3_new(4.0f, 1.0f, 4.0f), slab);
+  const uint32_t top = brush_test_face(slab, 6u, vec3_new(0.0f, 1.0f, 0.0f));
+  const VkrBrushPlane cell[4] = {
+      {{1.0f, 0.0f, 0.0f}, 2.0f},
+      {{-1.0f, 0.0f, 0.0f}, -1.0f},
+      {{0.0f, 0.0f, 1.0f}, 2.0f},
+      {{0.0f, 0.0f, -1.0f}, -1.0f},
+  };
+  VkrBrushPiece prism = {0};
+  assert(
+      vkr_brush_patch_prism(slab, 6u, top, cell, 0.0f, 1.0f, &prism, geometry));
+  assert(brush_test_near(geometry->volume, 1.0f, 1.0e-3f));
+  assert(brush_test_near(geometry->min.y, 1.0f, 1.0e-4f) &&
+         brush_test_near(geometry->max.y, 2.0f, 1.0e-4f));
+  for (uint32_t i = 0; i < prism.count; ++i) {
+    assert(prism.source[i] == top);
+  }
+  const VkrBrushPlane *with_cell[2] = {slab, prism.planes};
+  const uint32_t cell_counts[2] = {6u, prism.count};
+  VkrBrushPiece merged = {0};
+  assert(!vkr_brush_merge(with_cell, cell_counts, 2u, &merged, geometry));
+  assert(vkr_brush_patch_prism(slab, 6u, top, cell, -0.5f, 0.01f, &prism,
+                               geometry));
+  VkrBrushPiece *carved = malloc(sizeof(*carved) * VKR_BRUSH_FACE_MAX);
+  assert(carved);
+  const uint32_t carved_count =
+      vkr_brush_carve(slab, 6u, prism.planes, prism.count, carved,
+                      VKR_BRUSH_FACE_MAX, geometry);
+  assert(carved_count != UINT32_MAX && carved_count > 0u);
+  float32_t volume = 0.0f;
+  for (uint32_t i = 0; i < carved_count; ++i) {
+    assert(vkr_brush_build(carved[i].planes, carved[i].count, geometry, NULL) ==
+           VKR_BRUSH_OK);
+    volume += geometry->volume;
+  }
+  assert(brush_test_near(volume, 16.0f - 0.5f, 1.0e-3f));
+  free(carved);
+
+  /* The whole top pulled up 1 m merges into one 4 x 2 x 4 brush. */
+  const VkrBrushPlane whole[4] = {
+      {{1.0f, 0.0f, 0.0f}, 4.0f},
+      {{-1.0f, 0.0f, 0.0f}, 0.0f},
+      {{0.0f, 0.0f, 1.0f}, 4.0f},
+      {{0.0f, 0.0f, -1.0f}, 0.0f},
+  };
+  assert(vkr_brush_patch_prism(slab, 6u, top, whole, 0.0f, 1.0f, &prism,
+                               geometry));
+  const uint32_t whole_counts[2] = {6u, prism.count};
+  assert(vkr_brush_merge(with_cell, whole_counts, 2u, &merged, geometry));
+  assert(brush_test_near(geometry->volume, 32.0f, 1.0e-3f));
+
+  /* A top face's grid runs along world X and Z. */
+  Vec3 u = {0};
+  Vec3 v = {0};
+  vkr_brush_grid_axes(vec3_new(0.0f, 1.0f, 0.0f), &u, &v);
+  assert(brush_test_near(fabsf(u.x), 1.0f, 1.0e-5f) &&
+         brush_test_near(fabsf(v.z), 1.0f, 1.0e-5f));
+}
+
 static void brush_test_uv(void) {
   /* A +X wall reads left to right toward -Z, and down the image is down. */
   const Vec2 uv =
@@ -272,6 +412,7 @@ bool32_t run_brush_tests(void) {
   assert(geometry);
   brush_test_solids(geometry);
   brush_test_editing(geometry);
+  brush_test_grid_editing(geometry);
   brush_test_uv();
   brush_test_lightmap(geometry);
   free(geometry);
