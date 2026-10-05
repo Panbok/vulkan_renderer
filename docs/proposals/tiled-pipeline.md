@@ -275,6 +275,23 @@ Phases:
    3.5 GB peak memory and 8.4 s of scene load and BVH build. One layer costs
    about 9.4 s per sample per texel: 10 minutes at 64 samples and 40 minutes
    at 256, so twelve layers take 2 to 8 hours on the CPU without denoising.
+
+   Owner decision (2026-10-05): a Metal GPU baker. It traces with Metal's
+   ray-tracing API (an acceleration structure and intersector queries in
+   compute), which the M1 Pro supports in software and M3 and later in
+   hardware, and implements a lightmap subset of the ADR-054 transport:
+   diffuse paths with material albedo, alpha masking and emission, the sky,
+   explicit sun and lamp sampling with shadow rays, and Russian roulette.
+   The CPU integrator stays the reference for parity checks and the path on
+   hosts without Metal ray tracing.
+   [`vkr_bake_metal.h`](../../tools/bake/vkr_bake_metal.h) builds the
+   acceleration structure and runs a closest-hit benchmark. On the same
+   Bistro pages and 8 samples per texel (`--gpu 1`), it builds a 706 MB
+   structure in 363 ms and traces 34.2 million rays in 0.96 s of GPU time,
+   35.8 million rays per second (20.9 to 55.4 million by page) against 1.77
+   million CPU path segments per second. On the first 20,000 texels of each
+   page, the CPU BVH re-traced the same seeded rays: mean hit fractions
+   differ by at most 0.00001.
 3. Time of day: light groups and mobility in scene data; a system driving
    sun, moon, sky and group intensities.
 4. Tiled runtime: lightmap sampling in the tiled pipeline's forward shader,

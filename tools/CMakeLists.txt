@@ -209,6 +209,16 @@ target_compile_features(vkr_bake_core PRIVATE cxx_std_17)
 target_include_directories(vkr_bake_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${CMAKE_SOURCE_DIR}/renderer/src" "${CMAKE_SOURCE_DIR}/vendor" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(vkr_bake_core PUBLIC vkr_asset_formats PRIVATE ktx vkr_image_decode)
+# Metal ray-traced lightmap transport on Apple hosts; others bake on the CPU.
+if(APPLE)
+    target_sources(vkr_bake_core PRIVATE bake/vkr_bake_metal.mm)
+    set_source_files_properties(bake/vkr_bake_metal.mm PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(vkr_bake_core PUBLIC "-framework Metal"
+        "-framework Foundation")
+else()
+    target_sources(vkr_bake_core PRIVATE bake/vkr_bake_metal_stub.cpp)
+endif()
 add_library(vkr_diffuse_baker STATIC vkr_diffuse_baker.cpp)
 vkr_configure_cooker_target(vkr_diffuse_baker)
 target_compile_features(vkr_diffuse_baker PRIVATE cxx_std_17)

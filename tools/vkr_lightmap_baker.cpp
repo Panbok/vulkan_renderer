@@ -7,6 +7,7 @@ extern "C" {
 #include "bake/vkr_bake_bvh.h"
 #include "bake/vkr_bake_integrator.h"
 #include "bake/vkr_bake_lightmap.h"
+#include "bake/vkr_bake_metal.h"
 #include "bake/vkr_bake_scene.h"
 
 #include <atomic>
@@ -37,6 +38,7 @@ struct Options {
   uint32_t pages = UINT32_MAX;
   uint32_t threads = 0u;
   uint32_t seed = 1u;
+  bool gpu = false;
 };
 
 void usage() {
@@ -81,6 +83,8 @@ bool parse(int argc, char **argv, Options *options) {
     } else if (std::strcmp(flag, "--threads") == 0) {
       if (!parse_u32(value, &options->threads))
         return false;
+    } else if (std::strcmp(flag, "--gpu") == 0) {
+      options->gpu = std::strcmp(value, "0") != 0;
     } else if (std::strcmp(flag, "--seed") == 0) {
       if (!parse_u32(value, &options->seed))
         return false;
@@ -132,6 +136,94 @@ Vec3 cosine_direction(Vec3 normal, float32_t u1, float32_t u2) {
 double seconds_since(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
       .count();
+}
+
+/* Texels whose GPU hit fractions the CPU BVH re-traces as a cross-check. */
+constexpr uint32_t kCpuCheckTexels = 20000u;
+
+/*
+ * Traces the benchmark rays on the GPU and checks a prefix of each page
+ * against the CPU BVH with the same seeds. Directions differ only by float
+ * rounding between the two math libraries, so hit fractions agree except for
+ * grazing rays.
+ */
+int run_gpu_benchmark(const Options &options, VkrBakeScene &scene,
+                      const VkrBakeBvh &bvh,
+                      const VkrBakeLightmapLayout &layout) {
+  if (!vkr_bake_metal_available()) {
+    std::fprintf(stderr, "Metal ray tracing is unavailable on this host\n");
+    return 3;
+  }
+  const auto setup_start = std::chrono::steady_clock::now();
+  VkrBakeMetalContext *gpu = vkr_bake_metal_create(
+      scene.triangles.data(), (uint32_t)scene.triangles.size());
+  if (!gpu)
+    return 1;
+  std::printf("gpu_setup_s=%.2f\n", seconds_since(setup_start));
+  const uint32_t page_end = std::min(options.pages, layout.page_count);
+  uint64_t rays_total = 0u;
+  double gpu_seconds_total = 0.0;
+  double max_check_difference = 0.0;
+  for (uint32_t page = 0u; page < page_end; ++page) {
+    std::vector<VkrBakeLightmapTexel> texels;
+    if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
+                                          (uint32_t)scene.triangles.size(),
+                                          layout, page, &texels)) {
+      vkr_bake_metal_destroy(gpu);
+      return 1;
+    }
+    std::vector<float32_t> hit_fraction;
+    double gpu_seconds = 0.0;
+    if (!vkr_bake_metal_trace_benchmark(gpu, texels, options.samples,
+                                        options.seed, &hit_fraction,
+                                        &gpu_seconds)) {
+      vkr_bake_metal_destroy(gpu);
+      return 1;
+    }
+    const uint32_t check =
+        (uint32_t)std::min<size_t>(texels.size(), kCpuCheckTexels);
+    double gpu_sum = 0.0;
+    double cpu_sum = 0.0;
+    for (uint32_t t = 0u; t < check; ++t) {
+      const VkrBakeLightmapTexel &texel = texels[t];
+      const Vec3 origin =
+          vec3_add(texel.position, vec3_scale(texel.normal, 1.0e-3f));
+      const uint32_t texel_seed = mix_seed(options.seed ^ mix_seed(t));
+      uint32_t hits = 0u;
+      for (uint32_t s = 0u; s < options.samples; ++s) {
+        const uint32_t seed = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
+        VkrBakeRay ray = {};
+        ray.origin = origin;
+        ray.direction = cosine_direction(texel.normal, random_unit(seed),
+                                         random_unit(seed ^ 0x68bc21ebu));
+        ray.t_min = 0.0f;
+        ray.t_max = 3.0e38f;
+        VkrBakeHit hit = {};
+        hits += vkr_bake_bvh_intersect_closest(&bvh, ray, &hit) ? 1u : 0u;
+      }
+      cpu_sum += (double)hits / options.samples;
+      gpu_sum += hit_fraction[t];
+    }
+    const double difference =
+        check ? std::fabs(gpu_sum - cpu_sum) / check : 0.0;
+    max_check_difference = std::max(max_check_difference, difference);
+    const uint64_t rays = (uint64_t)texels.size() * options.samples;
+    rays_total += rays;
+    gpu_seconds_total += gpu_seconds;
+    std::printf("gpu page=%u texels=%zu gpu_s=%.3f rays_per_s=%.3g "
+                "cpu_check_texels=%u mean_hit_gpu=%.4f mean_hit_cpu=%.4f\n",
+                page, texels.size(), gpu_seconds, rays / gpu_seconds, check,
+                check ? gpu_sum / check : 0.0, check ? cpu_sum / check : 0.0);
+    std::fflush(stdout);
+  }
+  if (gpu_seconds_total > 0.0) {
+    std::printf("gpu measured_pages=%u rays=%llu gpu_s=%.3f rays_per_s=%.3g "
+                "max_mean_hit_difference=%.5f\n",
+                page_end, (unsigned long long)rays_total, gpu_seconds_total,
+                rays_total / gpu_seconds_total, max_check_difference);
+  }
+  vkr_bake_metal_destroy(gpu);
+  return 0;
 }
 
 int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
@@ -199,6 +291,9 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
                  integrator_error);
     return 1;
   }
+
+  if (options.gpu)
+    return run_gpu_benchmark(options, scene, bvh, layout);
 
   const uint32_t threads =
       options.threads ? options.threads
