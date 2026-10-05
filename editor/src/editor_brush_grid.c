@@ -629,12 +629,12 @@ static void grid_press(VkrEditorBrushGrid *grid, const VkrSampleUiFrame *frame,
         now - grid->click_time < 0.4) {
       const VkrBrushPolygon polygon = grid->geometry.polygons[hot.face];
       for (uint32_t axis = 0; axis < 2u; ++axis) {
-        const Vec3 direction = axis ? hot.v : hot.u;
+        const Vec3 face_axis = axis ? hot.v : hot.u;
         grid->patch_min[axis] = INFINITY;
         grid->patch_max[axis] = -INFINITY;
         for (uint32_t c = 0; c < polygon.count; ++c) {
           const float32_t value =
-              vec3_dot(grid->geometry.vertices[polygon.first + c], direction);
+              vec3_dot(grid->geometry.vertices[polygon.first + c], face_axis);
           grid->patch_min[axis] = Min(grid->patch_min[axis], value);
           grid->patch_max[axis] = Max(grid->patch_max[axis], value);
         }
