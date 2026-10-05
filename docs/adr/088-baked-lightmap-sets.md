@@ -204,8 +204,10 @@ and mappable under pack loader `VKR_PACK_LOADER_LIGHTMAP`. The Bakery panel's
   costs about 25 times the cook time of the same model without them.
 - Bakes need Metal ray tracing. Windows and Linux hosts cannot bake lightmaps
   until the CPU integrator gains the layer split and texel direct term.
-- The GPU baker approximates the CPU BSDF; the measured bias is below 1% of
-  sun bounce on Bistro and within sampling noise overall.
+- The GPU baker approximates the CPU BSDF. Spreading specular reflection
+  diffusely ignores where a delta sun's specular lobe points, which darkens
+  shadowed sun bounce by about 2% on the blockout; overall light stays within
+  sampling noise.
 - A level has at most four independently switchable baked light groups;
   further variation needs dynamic lights, which the tiled pipeline's runtime
   light budget bounds.
@@ -314,8 +316,10 @@ texels per meter with deferred textures:
   runs matched. Parity at 2,048 samples, seeds 1 and 7: overall -0.07% and
   -0.11% (z = -1.3 and -2.1), sky -0.02%, sun -1.94% and -1.65% (z = -7.6
   and -6.4, per-texel RMS 1.6 and 1.5 of the noise). Starting the GPU shadow
-  ray as the CPU does did not change the sun difference; its cause is not
-  identified.
+  ray as the CPU does did not change the sun difference; with every brush
+  material's dielectric specular set to zero it fell to -0.13% and +0.20%
+  (z = -0.5 and 0.8, RMS 1.0 and 0.97), so it comes from the diffusely spread
+  specular lobe.
 
 Unavailable: any runtime use, and a Windows or Vulkan host.
 
@@ -323,5 +327,5 @@ Unavailable: any runtime use, and a Windows or Vulkan host.
 
 The tiled runtime samples lightmaps, the time-of-day system defines sun keys
 and drives group intensities, a level needs more than four baked groups, the
-GPU sun-bounce bias against the CPU integrator is explained, or the CPU path
-gains the layer split.
+spread specular lobe's sun bias shows against the art-level contract, or the
+CPU path gains the layer split.
