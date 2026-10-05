@@ -993,6 +993,8 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
           &application->assets.mesh_manager,
           &application->assets.material_system, false_v, 1u,
           application->globals.view, application->globals.projection,
+          application->renderer.graphics_pipeline ==
+              VKR_GRAPHICS_PIPELINE_TILED,
           draw->scratch, &draw->world_payload, &visibility_stats);
   }
   if (world_error != VKR_RENDERER_ERROR_NONE) {

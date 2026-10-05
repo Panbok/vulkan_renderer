@@ -767,6 +767,9 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> tiled_clouds_pipeline;
   /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
   id<MTLRenderPipelineState> tiled_picking_pipeline;
+  /* Glass and blended surfaces, and world text, over the resolved image. */
+  id<MTLRenderPipelineState> tiled_blend_pipeline;
+  id<MTLRenderPipelineState> tiled_text_pipeline;
   id<MTLDepthStencilState> tiled_prepass_state;
   id<MTLDepthStencilState> tiled_shade_state;
   id<MTLDepthStencilState> tiled_sky_state;

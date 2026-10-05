@@ -618,12 +618,21 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
   return true_v;
 }
 
+/* How a pipeline's first color target blends. */
+typedef enum VkrMetalPacketBlend {
+  VKR_METAL_PACKET_BLEND_NONE = 0,
+  /* Source alpha over the destination. */
+  VKR_METAL_PACKET_BLEND_ALPHA,
+  /* The first output plus the destination times the second output. */
+  VKR_METAL_PACKET_BLEND_BEHIND,
+} VkrMetalPacketBlend;
+
 vkr_internal id<MTLRenderPipelineState>
 vkr_metal_packet_create_pipeline_with_targets(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> vertex_library,
     const char *vertex_name, id<MTLLibrary> fragment_library,
-    const char *fragment_name, MTLPixelFormat color_format, bool8_t blend,
-    VkrMetalPacketAbiRecordId vertex_abi,
+    const char *fragment_name, MTLPixelFormat color_format,
+    VkrMetalPacketBlend blend, VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
     bool8_t temporal_targets, bool8_t temporal_writes, uint32_t sample_count,
     NSString *label) API_AVAILABLE(macos(26.0)) {
@@ -655,7 +664,7 @@ vkr_metal_packet_create_pipeline_with_targets(
   descriptor.rasterSampleCount = sample_count;
   if (color_format != MTLPixelFormatInvalid) {
     descriptor.colorAttachments[0].pixelFormat = color_format;
-    if (blend) {
+    if (blend == VKR_METAL_PACKET_BLEND_ALPHA) {
       descriptor.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
       descriptor.colorAttachments[0].sourceRGBBlendFactor =
           MTLBlendFactorSourceAlpha;
@@ -664,6 +673,17 @@ vkr_metal_packet_create_pipeline_with_targets(
       descriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
       descriptor.colorAttachments[0].destinationAlphaBlendFactor =
           MTLBlendFactorOneMinusSourceAlpha;
+    } else if (blend == VKR_METAL_PACKET_BLEND_BEHIND) {
+      /* Dual-source: the fragment's second output is the factor the
+         destination keeps per channel; destination alpha is kept. */
+      descriptor.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+      descriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+      descriptor.colorAttachments[0].destinationRGBBlendFactor =
+          MTLBlendFactorSource1Color;
+      descriptor.colorAttachments[0].sourceAlphaBlendFactor =
+          MTLBlendFactorZero;
+      descriptor.colorAttachments[0].destinationAlphaBlendFactor =
+          MTLBlendFactorOne;
     }
   }
   if (temporal_targets) {
@@ -701,8 +721,8 @@ vkr_metal_packet_create_pipeline_with_targets(
 vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> vertex_library,
     const char *vertex_name, id<MTLLibrary> fragment_library,
-    const char *fragment_name, MTLPixelFormat color_format, bool8_t blend,
-    VkrMetalPacketAbiRecordId vertex_abi,
+    const char *fragment_name, MTLPixelFormat color_format,
+    VkrMetalPacketBlend blend, VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
     NSString *label) API_AVAILABLE(macos(26.0)) {
   return vkr_metal_packet_create_pipeline_with_targets(
@@ -776,30 +796,30 @@ vkr_internal bool8_t vkr_metal_packet_create_presentation_pipelines(
   *out_pipelines = (VkrMetalPacketPresentationPipelines){0};
   out_pipelines->ui = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_ui_vertex", fragment,
-      "vkr_metal_packet_ui_fragment", target_format, true_v,
-      VKR_METAL_PACKET_ABI_UI_ROOT, VKR_METAL_PACKET_ABI_UI_ROOT, false_v,
-      @"VKR Metal packet UI stream");
+      "vkr_metal_packet_ui_fragment", target_format,
+      VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_UI_ROOT,
+      VKR_METAL_PACKET_ABI_UI_ROOT, false_v, @"VKR Metal packet UI stream");
   out_pipelines->editor_overlay = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_editor_overlay_vertex", fragment,
-      "vkr_metal_packet_editor_overlay_fragment", target_format, false_v,
-      VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
+      "vkr_metal_packet_editor_overlay_fragment", target_format,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v, @"VKR Metal editor overlay");
   out_pipelines->editor_selection_outline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_selection_outline_vertex", fragment,
-      "vkr_metal_packet_selection_outline_fragment", target_format, true_v,
-      VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      "vkr_metal_packet_selection_outline_fragment", target_format,
+      VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_RECORD_COUNT,
       VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT, false_v,
       @"VKR Metal editor selection outline");
   out_pipelines->editor_grid = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_editor_grid_vertex", fragment,
-      "vkr_metal_packet_editor_grid_fragment", target_format, true_v,
-      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
-      false_v, @"VKR Metal editor grid");
+      "vkr_metal_packet_editor_grid_fragment", target_format,
+      VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT, false_v, @"VKR Metal editor grid");
   out_pipelines->tonemap = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_tonemap_vertex", fragment,
-      "vkr_metal_packet_tonemap_fragment", target_format, false_v,
-      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
-      false_v, @"VKR Metal packet tonemap");
+      "vkr_metal_packet_tonemap_fragment", target_format,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      VKR_METAL_PACKET_ABI_TONEMAP_ROOT, false_v, @"VKR Metal packet tonemap");
   if (out_pipelines->ui && out_pipelines->editor_overlay &&
       out_pipelines->editor_selection_outline && out_pipelines->editor_grid &&
       out_pipelines->tonemap)
@@ -873,13 +893,13 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
   renderer->animation_preview_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_animation_preview_vertex", fragment,
       "vkr_metal_packet_animation_preview_fragment", MTLPixelFormatRGBA8Unorm,
-      false_v, VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v, @"VKR animation preview");
   renderer->gpu_shadow_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid, false_v,
-      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-      true_v, @"VKR Metal packet GPU shadow");
+      "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, @"VKR Metal packet GPU shadow");
   const char *local_transmission_fragments[] = {
       "vkr_metal_packet_local_shadow_transmission0_fragment",
       "vkr_metal_packet_local_shadow_transmission1_fragment",
@@ -892,7 +912,7 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
             "vkr_metal_packet_local_shadow_transmission_vertex", fragment,
             local_transmission_fragments[layer],
             layer < 2u ? MTLPixelFormatRGBA16Float : MTLPixelFormatInvalid,
-            false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+            VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
             VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
             [NSString
                 stringWithFormat:@"VKR local shadow transmission %u", layer]);
@@ -900,31 +920,32 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
   // Opaque cascade geometry never alpha-tests, so it needs no fragment stage.
   renderer->gpu_shadow_opaque_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", nil, NULL,
-      MTLPixelFormatInvalid, false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-      VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-      @"VKR Metal packet GPU shadow opaque");
+      MTLPixelFormatInvalid, VKR_METAL_PACKET_BLEND_NONE,
+      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
+      true_v, @"VKR Metal packet GPU shadow opaque");
   renderer->depth_clear_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_depth_clear_vertex", nil, NULL,
-      MTLPixelFormatInvalid, false_v, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
-      @"VKR Metal packet depth clear");
+      MTLPixelFormatInvalid, VKR_METAL_PACKET_BLEND_NONE,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      false_v, @"VKR Metal packet depth clear");
   renderer->vbuffer_opaque_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
       "vkr_metal_packet_vbuffer_opaque_fragment", MTLPixelFormatRG32Uint,
-      false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
       // The opaque variant binds no fragment root buffer, so there is no
       // fragment-side ABI record to validate.
       VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
       @"VKR Metal packet vbuffer opaque");
   renderer->vbuffer_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint, false_v,
-      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-      true_v, @"VKR Metal packet opaque visibility buffer");
+      "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+      @"VKR Metal packet opaque visibility buffer");
   renderer->transmission_vbuffer_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", fragment,
       "vkr_metal_packet_transmission_vbuffer_fragment", MTLPixelFormatRG32Uint,
-      false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
       @"VKR Metal packet transmission peel visibility buffer");
   if (renderer->transmission_vbuffer_pipeline &&
@@ -938,15 +959,17 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
   renderer->blend_pipeline = vkr_metal_packet_create_pipeline_with_targets(
       renderer, slang, "vkr_metal_packet_temporal_vertex", fragment,
       "vkr_metal_packet_temporal_blend_fragment", MTLPixelFormatRGBA16Float,
-      true_v, VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_BLEND_ALPHA,
+      VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v, 1u,
       @"VKR Metal packet alpha blend");
 }
 
 /* Creates the tiled pipeline's raster pipelines (ADR-087): the depth
-   pre-pass, forward shading and the clear sky, multisampled, and the cloud
-   draw over the resolved image, which adds cloud radiance to the destination
-   scaled by the cloud's transmittance (vkr_cloud_composite). */
+   pre-pass, forward shading and the clear sky, multisampled; the cloud draw
+   over the resolved image, which adds cloud radiance to the destination
+   scaled by the cloud's transmittance (vkr_cloud_composite); and the blend
+   pass's glass, blended surfaces and world text. */
 vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
@@ -954,7 +977,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
   renderer->tiled_depth_pipeline =
       vkr_metal_packet_create_pipeline_with_targets(
           renderer, fragment, "vkr_metal_tiled_vertex", nil, NULL,
-          MTLPixelFormatRGBA16Float, false_v,
+          MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_NONE,
           VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
           true_v, false_v, false_v, VKR_METAL_TILED_SAMPLE_COUNT,
           @"VKR tiled depth pre-pass");
@@ -962,22 +985,34 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       vkr_metal_packet_create_pipeline_with_targets(
           renderer, fragment, "vkr_metal_tiled_vertex", fragment,
           "vkr_metal_tiled_forward_fragment", MTLPixelFormatRGBA16Float,
-          false_v, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+          VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
           VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
           VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled forward");
   /* Without a visibility buffer, a pick replays the opaque draws; their
      alpha-tested surfaces pick whole. */
   renderer->tiled_picking_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", slang,
-      "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint, false_v,
-      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      true_v, @"VKR tiled picking");
+      "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v, @"VKR tiled picking");
   renderer->tiled_sky_pipeline = vkr_metal_packet_create_pipeline_with_targets(
       renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
-      "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float, false_v,
-      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,
-      false_v, false_v, false_v, VKR_METAL_TILED_SAMPLE_COUNT,
-      @"VKR tiled sky");
+      "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v, false_v, false_v,
+      VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled sky");
+  /* Glass and alpha-blended surfaces, back to front over the resolved
+     image, and world text over them. */
+  renderer->tiled_blend_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+      "vkr_metal_tiled_blend_fragment", MTLPixelFormatRGBA16Float,
+      VKR_METAL_PACKET_BLEND_BEHIND, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, @"VKR tiled blend");
+  renderer->tiled_text_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
+      "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float,
+      VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_TEXT_ROOT,
+      VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v, @"VKR tiled world text");
   MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
   vertex.library = fragment;
   vertex.name = @"vkr_metal_tiled_sky_vertex";
@@ -1029,31 +1064,34 @@ vkr_internal void vkr_metal_packet_create_picking_text_pipelines(
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
   renderer->picking_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", slang,
-      "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint, false_v,
-      VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      false_v, @"VKR Metal packet feature picking");
+      "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
+      @"VKR Metal packet feature picking");
   renderer->editor_overlay_picking_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_editor_overlay_vertex", fragment,
       "vkr_metal_packet_editor_overlay_picking_fragment", MTLPixelFormatR32Uint,
-      false_v, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
       @"VKR Metal editor overlay picking");
   /* Same overlay geometry path; the mask only keeps red. */
   renderer->editor_selection_mask_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_editor_overlay_vertex", fragment,
       "vkr_metal_packet_editor_overlay_fragment", MTLPixelFormatR8Unorm,
-      false_v, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
       @"VKR Metal editor selection mask");
   renderer->world_text_pipeline = vkr_metal_packet_create_pipeline_with_targets(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
-      "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float, true_v,
-      VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
-      true_v, false_v, 1u, @"VKR Metal packet world text");
+      "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float,
+      VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_TEXT_ROOT,
+      VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v, true_v, false_v, 1u,
+      @"VKR Metal packet world text");
   renderer->picking_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
-      "vkr_metal_packet_text_picking_fragment", MTLPixelFormatR32Uint, false_v,
-      VKR_METAL_PACKET_ABI_TEXT_ROOT, VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
+      "vkr_metal_packet_text_picking_fragment", MTLPixelFormatR32Uint,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_TEXT_ROOT,
+      VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v,
       @"VKR Metal packet text picking");
 }
 
@@ -1477,9 +1515,10 @@ vkr_internal bool8_t vkr_metal_packet_create_post_pipelines(
       @"VKR Metal packet bloom upsample");
   renderer->display_linear_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_tonemap_vertex", fragment,
-      "vkr_metal_packet_tonemap_fragment", MTLPixelFormatRGBA16Float, false_v,
-      VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_TONEMAP_ROOT,
-      false_v, @"VKR Metal display-linear preparation");
+      "vkr_metal_packet_tonemap_fragment", MTLPixelFormatRGBA16Float,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      VKR_METAL_PACKET_ABI_TONEMAP_ROOT, false_v,
+      @"VKR Metal display-linear preparation");
   renderer->bloom_combine_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_bloom_combine",
       VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
@@ -1748,7 +1787,8 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
   if (renderer->tiled &&
       (!renderer->tiled_depth_pipeline || !renderer->tiled_forward_pipeline ||
        !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
-       !renderer->tiled_picking_pipeline || !renderer->tiled_prepass_state ||
+       !renderer->tiled_picking_pipeline || !renderer->tiled_blend_pipeline ||
+       !renderer->tiled_text_pipeline || !renderer->tiled_prepass_state ||
        !renderer->tiled_shade_state || !renderer->tiled_sky_state)) {
     log_error("Metal renderer startup object unavailable: tiled pipeline");
     return false_v;

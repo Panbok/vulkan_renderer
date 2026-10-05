@@ -57,9 +57,14 @@ have no bilateral gate yet.
     `vkr_metal_packet_sky_discs` and `vkr_metal_packet_sky_background`, which
     the tiled sky and cloud draws share; the operations and their order are
     unchanged.
+  - The tiled blend fragment composes glass with the shared
+    `vkr_transmission_compose` and returns the factor the destination keeps
+    as its second, dual-source output; the transmission kernels and the
+    desktop composition are unchanged.
 - **Metal evidence.** Pipeline creation validates the new layouts, and the
   Bistro street view renders on both pipeline classes
-  (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`).
+  (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`), as do the café
+  windows (`tiled_bistro_glass`, `tiled_bistro_glass_desktop`).
 - **Vulkan evidence.** The Vulkan frame layouts are unchanged; the Vulkan
   sources build on macOS. No native Vulkan run.
 - **Missing gates.** A numeric before/after comparison of the desktop Metal

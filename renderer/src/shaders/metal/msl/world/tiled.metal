@@ -164,21 +164,25 @@ static float3 vkr_metal_tiled_lightmap_irradiance(
   return irradiance;
 }
 
-fragment float4 vkr_metal_tiled_forward_fragment(
-    VkrMetalTiledVertexOutput input [[stage_in]],
-    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
-    bool front_facing [[front_facing]]) {
-  constant VkrMetalPacketFrameRoot *frame = root->frame;
-  const device VkrGpuVisibleDrawRow &visible =
-      root->visible_rows[input.visible_row_index];
-  const device VkrMetalPacketMaterial &material =
-      frame->materials[visible.material_index];
-  float4 base = material.base_color_texture.sample(material.base_color_sampler,
-                                                   input.texcoord) *
-                material.tint * input.color;
-  if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
-    discard_fragment();
+// One surface's light under the shared material model, split into the lobes
+// transmission composes separately (vkr_transmission_compose).
+struct VkrMetalTiledSurfaceLight {
+  float3 diffuse;
+  float3 specular;
+  float3 emissive;
+  float3 base;
+  float3 reflectance;
+  float metallic;
+};
 
+// Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
+// diffuse light from its lightmap, the diffuse volume or the global
+// environment, and environment specular.
+static VkrMetalTiledSurfaceLight
+vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
+                      constant VkrMetalPacketFrameRoot *frame,
+                      const device VkrMetalPacketMaterial &material,
+                      float3 base, bool front_facing) {
   float3 geometric_normal =
       normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f);
   float3 normal = geometric_normal;
@@ -222,28 +226,35 @@ fragment float4 vkr_metal_tiled_forward_fragment(
 
   // The shared material model: clearcoat, sheen, anisotropy and diffuse
   // transmission are not modeled yet (ADR-087).
-  float3 f0 = mix(saturate(material.material_dielectric_specular.rgb),
-                  base.rgb, metallic);
+  float3 f0 =
+      mix(saturate(material.material_dielectric_specular.rgb), base, metallic);
   VkrGgxMaterialEnergy energy =
       vkr_metal_packet_prepare_brdf(frame, no_v, roughness, f0);
-  float3 color = float3(0.0f);
+  VkrMetalTiledSurfaceLight light;
+  light.diffuse = float3(0.0f);
+  light.specular = float3(0.0f);
+  light.emissive = emissive;
+  light.base = base;
+  light.reflectance = energy.reflectance;
+  light.metallic = metallic;
 
   // The sun, shadowed by its cascades and the cloud layer.
   if (frame->directional_direction_enabled.w > 0.5f) {
-    float3 light = normalize(-frame->directional_direction_enabled.xyz);
+    float3 sun = normalize(-frame->directional_direction_enabled.xyz);
     float shadow =
-        dot(normal, light) > 0.0f
+        dot(normal, sun) > 0.0f
             ? vkr_metal_packet_directional_shadow_sample(
                   frame, input.world_position, normal)
                       .factor *
                   vkr_metal_packet_cloud_shadow(frame, input.world_position)
             : 0.0f;
     VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
-        normal, view, light,
+        normal, view, sun,
         frame->directional_color_intensity.rgb *
             frame->directional_color_intensity.w * shadow,
-        base.rgb, metallic, roughness, f0, energy);
-    color += direct.diffuse + direct.specular;
+        base, metallic, roughness, f0, energy);
+    light.diffuse += direct.diffuse;
+    light.specular += direct.specular;
   }
 
   // Diffuse light: the lightmap stores irradiance, the volume and the global
@@ -277,13 +288,85 @@ fragment float4 vkr_metal_tiled_forward_fragment(
     float3 prefiltered = vkr_metal_packet_global_prefiltered(
         frame, environment_sampler, reflection,
         roughness * float(max(frame->prefilter_mip_count, 1u) - 1u));
-    color += prefiltered * energy.reflectance * specular_visibility *
-             frame->ibl_controls.z * frame->ibl_controls.x;
+    light.specular += prefiltered * energy.reflectance * specular_visibility *
+                      frame->ibl_controls.z * frame->ibl_controls.x;
   } else if (environment_diffuse) {
     diffuse_light = frame->ambient_color.rgb;
   }
-  color += energy.diffuse_weight * (1.0f - metallic) * base.rgb *
-           diffuse_light * ao;
-  color += emissive;
-  return float4(color, 1.0f);
+  light.diffuse +=
+      energy.diffuse_weight * (1.0f - metallic) * base * diffuse_light * ao;
+  return light;
+}
+
+fragment float4 vkr_metal_tiled_forward_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  constant VkrMetalPacketFrameRoot *frame = root->frame;
+  const device VkrGpuVisibleDrawRow &visible =
+      root->visible_rows[input.visible_row_index];
+  const device VkrMetalPacketMaterial &material =
+      frame->materials[visible.material_index];
+  float4 base = material.base_color_texture.sample(material.base_color_sampler,
+                                                   input.texcoord) *
+                material.tint * input.color;
+  if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
+    discard_fragment();
+  VkrMetalTiledSurfaceLight light =
+      vkr_metal_tiled_shade(input, frame, material, base.rgb, front_facing);
+  return float4(light.diffuse + light.specular + light.emissive, 1.0f);
+}
+
+// The blend pass's two outputs: the surface's own light, and the factor the
+// light behind it keeps, per channel (dual-source blending: destination
+// times the second output plus the first).
+struct VkrMetalTiledBlendOutput {
+  float4 color [[color(0), index(0)]];
+  float4 behind [[color(0), index(1)]];
+};
+
+// Glass and alpha-blended surfaces, drawn back to front over the resolved
+// image. Glass composes as the transmission passes do
+// (vkr_transmission_compose): the light behind it arrives through the
+// hardware blend, so stacked panes compose in draw order. The tiled pipeline
+// draws all glass as thin and smooth: it takes no refraction offset, rough
+// blur, volume attenuation or transmission textures (ADR-087).
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  constant VkrMetalPacketFrameRoot *frame = root->frame;
+  const device VkrGpuVisibleDrawRow &visible =
+      root->visible_rows[input.visible_row_index];
+  const device VkrMetalPacketMaterial &material =
+      frame->materials[visible.material_index];
+  float4 base = material.base_color_texture.sample(material.base_color_sampler,
+                                                   input.texcoord) *
+                material.tint * input.color;
+  float transmission = saturate(material.material_alpha.y);
+  float alpha = transmission > 0.0f ? 1.0f : base.a;
+  if (alpha <= 1e-4f)
+    discard_fragment();
+  VkrMetalTiledSurfaceLight light =
+      vkr_metal_tiled_shade(input, frame, material, base.rgb, front_facing);
+  VkrMetalTiledBlendOutput output;
+  if (transmission > 0.0f) {
+    VkrTransmissionLobes lobes = {light.diffuse, light.specular,
+                                  light.emissive};
+    VkrTransmissionLobes no_lobes = {float3(0.0f), float3(0.0f),
+                                     float3(0.0f)};
+    output.color = float4(vkr_transmission_compose(
+                              lobes, float3(0.0f), light.base,
+                              light.reflectance, transmission, light.metallic),
+                          0.0f);
+    output.behind = float4(vkr_transmission_compose(
+                               no_lobes, float3(1.0f), light.base,
+                               light.reflectance, transmission, light.metallic),
+                           1.0f);
+  } else {
+    output.color =
+        float4((light.diffuse + light.specular + light.emissive) * alpha, 0.0f);
+    output.behind = float4(1.0f - alpha);
+  }
+  return output;
 }

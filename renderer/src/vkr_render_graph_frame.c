@@ -83,7 +83,11 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           0u;
   frame->picking_pending = packet->scene_rendering && packet->input.picking &&
                            packet->input.picking->pending;
-  /* The tiled pipeline draws no transmission yet (ADR-087). */
+  frame->blend_pending = packet->scene_rendering && packet->input.world &&
+                         (packet->input.world->transparent_draw_count > 0u ||
+                          packet->input.world->text_draw_count > 0u);
+  /* The tiled pipeline draws glass with the blended surfaces, so it takes
+     no transmission candidates (ADR-087). */
   frame->transmission_pending =
       !packet->tiled_pipeline && packet->input.world &&
       packet->input.world->transmission_gpu_candidate_count > 0u;
@@ -436,6 +440,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                       VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_TILED_PICKING] = {"pass.picking.tiled",
                                        VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_TILED_BLEND] = {"pass.tiled.blend",
+                                     VKR_RG_PASS_TYPE_GRAPHICS},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

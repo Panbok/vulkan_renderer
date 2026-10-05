@@ -20,7 +20,7 @@ the configuration and the passes. A first tiled pipeline runs on Metal when
 selected: its graph, opaque pass, forward shader, lightmap sampling and
 measurement (13.2 ms median, 16.8 ms p95 without transmission or local
 lights) are in [ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
-decisions 6 to 8. Three further measurements from the same day (Release, M1 Pro,
+decisions 6 to 10. Three further measurements from the same day (Release, M1 Pro,
 native 2560×1440, single local runs, not authoritative) bound what tuning the
 desktop pipeline can recover:
 
@@ -56,7 +56,7 @@ Every item below is open until the prototype measures it.
 | Reflections | IBL and optional SSR | IBL and local probes |
 | Directional shadows | Retained cascades with PCF | Shared retained cascades; a tier may lower filtering |
 | Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights with PCF, drawn in the lighting pass |
-| Transmission | Four peeled layers shaded in compute | Sorted forward blend with one refraction sample |
+| Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance (decided for thin glass, ADR-087); one refraction sample for thick and rough glass |
 | Post-processing | Compute bloom, exposure, tonemap | Shared color pipeline; tonemap and bloom combine in the final render pass where possible |
 | Arithmetic | 32-bit throughout | 32-bit; 16-bit only where a measured kernel is register-bound (no ALU gain on M1, see below) |
 
@@ -228,10 +228,10 @@ Remaining phases:
 2. Tiled runtime: the forward shader samples the blended sun keys and
    scaled lamp groups (ADR-087, decision 8). Remaining: a lightmap-baked
    Bistro measured against the 16.7 ms budget and checked against the
-   desktop image, transmission and ordinary blending, a bounded set of
-   dynamic and shadowed local lights, the remaining material layers, IBL
-   probes, fog, and making the tiled pipeline the Apple default. The editor
-   runs it (ADR-087, decision 9).
+   desktop image, a bounded set of dynamic and shadowed local lights, the
+   remaining material layers, IBL probes, fog, rough and thick glass, and
+   making the tiled pipeline the Apple default. The editor runs it and it
+   draws thin glass (ADR-087, decisions 9 and 10).
 
 ## Acceptance evidence
 

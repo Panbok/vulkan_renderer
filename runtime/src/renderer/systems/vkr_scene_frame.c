@@ -42,6 +42,24 @@ vkr_scene_pack_transparent_sort_key(float32_t distance, uint32_t tie_breaker) {
   return ((uint64_t)distance_bits << 32) | (uint64_t)tie_breaker;
 }
 
+/* Where a source draws for the camera besides the opaque view: the
+   transmission candidates, or the sorted blend draws, which alpha-blended
+   sources and, with `transmission_blended`, transmissive ones join. */
+typedef struct VkrSceneWorldRoute {
+  bool8_t transmission;
+  bool8_t blended;
+} VkrSceneWorldRoute;
+
+vkr_internal INLINE VkrSceneWorldRoute
+vkr_scene_world_route(bool8_t transmissive, bool8_t world_transparent,
+                      bool8_t transmission_blended) {
+  const bool8_t transmission = transmissive && !transmission_blended;
+  return (VkrSceneWorldRoute){
+      .transmission = transmission,
+      .blended = !transmission && (transmissive || world_transparent),
+  };
+}
+
 typedef struct VkrSceneWorldSource {
   VkrMeshHandle mesh;
   VkrGeometryHandle geometry;
@@ -65,6 +83,7 @@ typedef struct VkrSceneWorldSource {
 
 typedef struct VkrSceneWorldEmitContext {
   Mat4 view;
+  bool8_t transmission_blended;
   const uint8_t *transparent_visible;
   VkrWorldDrawCandidate *gpu_candidates;
   VkrWorldDrawCandidate *transmission_gpu_candidates;
@@ -123,7 +142,10 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
                            : gpu_index < context->gpu_count,
              "World emission exceeded its counted candidate span");
   context->gpu_candidates[gpu_index] = candidate;
-  if (source->transmissive) {
+  const VkrSceneWorldRoute route = vkr_scene_world_route(
+      source->transmissive, source->alpha.world_transparent,
+      context->transmission_blended);
+  if (route.transmission) {
     assert_log(context->transmission_index < context->transmission_count,
                "World emission exceeded its counted transmission span");
     context->transmission_gpu_candidates[context->transmission_index++] =
@@ -131,8 +153,7 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
   }
   assert_log(context->source_index < context->gpu_count,
              "World emission visited more sources than it counted");
-  if (!source->transmissive && source->alpha.world_transparent &&
-      context->transparent_visible[context->source_index]) {
+  if (route.blended && context->transparent_visible[context->source_index]) {
     assert_log(context->transparent_index < context->transparent_count,
                "World emission exceeded its counted transparent span");
     const float32_t depth = vkr_scene_transparent_depth(
@@ -262,12 +283,12 @@ vkr_internal void vkr_scene_count_world_sources(
 }
 
 /* Visibility pass: classifies each counted source and camera-tests the
-   alpha-blended ones into `transparent_visible`. */
+   blended ones into `transparent_visible`. */
 vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
     VkrMeshManager *meshes, VkrMaterialSystem *materials,
     const VkrFrustum *camera_frustum, uint32_t mesh_count,
     uint32_t live_instance_count, uint32_t gpu_candidate_count,
-    uint8_t *transparent_visible) {
+    bool8_t transmission_blended, uint8_t *transparent_visible) {
   VkrVisibilityStats stats = {0};
   uint32_t opaque_material_features = 0u;
   uint32_t gpu_camera_opaque_candidate_count = 0u;
@@ -297,8 +318,10 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
       stats.objects_without_bounds += mesh->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=
           !transmissive && !alpha.world_transparent ? 1u : 0u;
-      transmission_gpu_candidate_count += transmissive ? 1u : 0u;
-      if (!transmissive && alpha.world_transparent) {
+      const VkrSceneWorldRoute route = vkr_scene_world_route(
+          transmissive, alpha.world_transparent, transmission_blended);
+      transmission_gpu_candidate_count += route.transmission ? 1u : 0u;
+      if (route.blended) {
         bool8_t visible = true_v;
         if (mesh->bounds_valid) {
           Vec3 center = {0};
@@ -343,8 +366,10 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
       stats.objects_without_bounds += instance->bounds_valid ? 0u : 1u;
       gpu_camera_opaque_candidate_count +=
           !transmissive && !alpha.world_transparent ? 1u : 0u;
-      transmission_gpu_candidate_count += transmissive ? 1u : 0u;
-      if (!transmissive && alpha.world_transparent) {
+      const VkrSceneWorldRoute route = vkr_scene_world_route(
+          transmissive, alpha.world_transparent, transmission_blended);
+      transmission_gpu_candidate_count += route.transmission ? 1u : 0u;
+      if (route.blended) {
         bool8_t visible = true_v;
         if (instance->bounds_valid && !instance->skinning) {
           Vec3 center = {0};
@@ -504,13 +529,14 @@ vkr_internal void vkr_scene_emit_world_sources(
  *
  * Opaque, cutout, transmission, and shadow visibility remain unculled packet
  * candidates; the selected backend owns their multi-view classification.
- * Ordinary alpha blend is the only camera-culled and depth-sorted CPU list.
+ * Ordinary alpha blend, and transmission when `transmission_blended`, is the
+ * only camera-culled and depth-sorted CPU list.
  */
 VkrRendererError vkr_scene_build_world_draws(
     VkrMeshManager *meshes, VkrMaterialSystem *materials,
     bool8_t publication_pending, uint64_t publication_generation, Mat4 view,
-    Mat4 projection, VkrAllocator *scratch, VkrWorldPassPayload *out_payload,
-    VkrVisibilityStats *out_stats) {
+    Mat4 projection, bool8_t transmission_blended, VkrAllocator *scratch,
+    VkrWorldPassPayload *out_payload, VkrVisibilityStats *out_stats) {
   *out_payload = (VkrWorldPassPayload){0};
   if (out_stats)
     *out_stats = (VkrVisibilityStats){0};
@@ -575,7 +601,7 @@ VkrRendererError vkr_scene_build_world_draws(
 
   const VkrSceneWorldClassification totals = vkr_scene_classify_world_sources(
       meshes, materials, &camera_frustum, mesh_count, live_instance_count,
-      gpu_candidate_count, transparent_visible);
+      gpu_candidate_count, transmission_blended, transparent_visible);
   const uint32_t transmission_gpu_candidate_count =
       totals.transmission_gpu_candidate_count;
   const uint32_t transparent_draw_count = totals.transparent_draw_count;
@@ -619,6 +645,7 @@ VkrRendererError vkr_scene_build_world_draws(
 
   const VkrSceneWorldEmitContext emit = {
       .view = view,
+      .transmission_blended = transmission_blended,
       .transparent_visible = transparent_visible,
       .gpu_candidates = gpu_candidates,
       .dynamic_gpu_index = static_candidate_count,

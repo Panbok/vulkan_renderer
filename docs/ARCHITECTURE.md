@@ -722,8 +722,10 @@ Every device runs the desktop pipeline described here by default.
 class for tile-based GPUs: on Metal, a renderer that selects it runs
 `tiled.rendergraph.json`, whose `Tiled.Opaque` pass shades the culled opaque
 draws forward after a depth pre-pass in one four-sample render pass resolved
-on chip, with baked lightmaps for static diffuse light. It draws no
-transmission, local lights, screen-space effects or editor passes yet.
+on chip, with baked lightmaps for static diffuse light. Its `Tiled.Blend`
+pass draws glass with the blended surfaces, back to front over the resolved
+image, and the editor runs it. It draws no local lights or screen-space
+effects yet.
 
 Editor inspection adds Detail lighting, Lighting only and visible-edge Wireframe
 to Lit and Unlit. The two lighting views use neutral material response; Detail

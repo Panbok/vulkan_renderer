@@ -1052,6 +1052,53 @@
       "execute": "pass.tiled.clouds"
     },
     {
+      "name": "Tiled.Blend",
+      "condition": "scene_rendering && blend_pending",
+      "type": "graphics",
+      "domain": "WORLD",
+      "reads": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        },
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "shadow_cascades_active"
+        },
+        {
+          "image": "shadow_moments",
+          "access": "SAMPLED",
+          "binding": 17,
+          "when": "shadow_evsm_active"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "hdr_scene_color",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ],
+        "depth": {
+          "image": "opaque_vbuffer_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.tiled.blend"
+    },
+    {
       "name": "Picking.Tiled",
       "type": "graphics",
       "domain": "PICKING",

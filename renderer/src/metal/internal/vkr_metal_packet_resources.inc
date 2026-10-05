@@ -2369,7 +2369,8 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
              .data[renderer->graph->execution_order.data[order]];
     if (pass->culled || !plan->world)
       continue;
-    if (vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_WORLD_BLEND)) {
+    if (vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_WORLD_BLEND) ||
+        vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_TILED_BLEND)) {
       direct_pass_count++;
       /* One frame root and one temporal draw-state record. */
       direct_auxiliary_root_cells += 2u;

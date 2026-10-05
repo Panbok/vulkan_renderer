@@ -68,7 +68,8 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
     /* Vulkan implements only the desktop pipeline (ADR-087). */
     if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE ||
         kind == VKR_RG_EXECUTOR_TILED_CLOUDS ||
-        kind == VKR_RG_EXECUTOR_TILED_PICKING) {
+        kind == VKR_RG_EXECUTOR_TILED_PICKING ||
+        kind == VKR_RG_EXECUTOR_TILED_BLEND) {
       log_error("Vulkan graph pass '%.*s' requires the tiled pipeline, which "
                 "Vulkan does not implement",
                 (int)pass->desc.name.length, pass->desc.name.str);

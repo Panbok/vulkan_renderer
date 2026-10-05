@@ -406,6 +406,7 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     vkr_metal_packet_record_indirect_pass(renderer, encoder, pass);
     break;
   case VKR_RG_EXECUTOR_WORLD_BLEND:
+  case VKR_RG_EXECUTOR_TILED_BLEND:
   case VKR_RG_EXECUTOR_PICKING: {
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
     if (direct->count)

@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "id": "local.tiled.bistro_glass",
+  "suite": "local",
+  "description": "Bistro exterior windows over the lit interior on the tiled pipeline (ADR-087): glass composition compared between the pipelines.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 60,
+    "measure": 4
+  },
+  "renderer": {
+    "backend": "metal",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "graphics_pipeline": "tiled"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -14.76,
+      2.21,
+      4.59
+    ],
+    "yaw": 29.16,
+    "pitch": -6.58,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    }
+  ],
+  "target_image_count": 3,
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "scene_color",
+        "depth"
+      ]
+    }
+  ]
+}

@@ -4482,23 +4482,29 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, packet, prepared,
         renderer->transmission_vbuffer_pipeline, nil, upload);
-  if (kind == VKR_RG_EXECUTOR_WORLD_BLEND) {
+  /* The tiled blend pass draws the same sorted list, glass included, with
+     its own single-target pipelines (ADR-087). */
+  if (kind == VKR_RG_EXECUTOR_WORLD_BLEND ||
+      kind == VKR_RG_EXECUTOR_TILED_BLEND) {
     prepared->active = true_v;
     if (!packet->input.world)
       return true_v;
+    const bool8_t tiled = kind == VKR_RG_EXECUTOR_TILED_BLEND;
     const Mat4 view_projection = vkr_metal_packet_clip_matrix(
         renderer->convert_vulkan_clip_y,
         mat4_mul(packet->temporal.jittered_projection,
                  packet->input.globals.view));
     if (!vkr_metal_packet_prepare_draws(
-            renderer, &prepared->world.direct, renderer->blend_pipeline,
+            renderer, &prepared->world.direct,
+            tiled ? renderer->tiled_blend_pipeline : renderer->blend_pipeline,
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
             packet, true_v, false_v, upload, &result->blend_draw_count, result))
       return false_v;
     return vkr_metal_packet_prepare_text_draws(
-        renderer, &prepared->world.text, renderer->world_text_pipeline,
+        renderer, &prepared->world.text,
+        tiled ? renderer->tiled_text_pipeline : renderer->world_text_pipeline,
         renderer->depth_read_state, packet->input.world->text_draws,
         packet->input.world->text_draw_count, 0, (uint32_t)target.width,
         (uint32_t)target.height, view_projection, false_v, upload,

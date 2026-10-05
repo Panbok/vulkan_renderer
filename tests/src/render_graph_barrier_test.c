@@ -1487,9 +1487,9 @@ vkr_internal void test_subresource_range_resolve(void) {
 /* The tiled graph (ADR-087) names only registered executors and orders its
    passes by their data: the opaque pass after the shadows, sky and cloud
    inputs it samples, the cloud trace after the depth the pass resolves, the
-   cloud draw after the trace, and post-processing reading the resolved
-   colour. The editor's frame resolves, picks and reads back from the same
-   resolved targets. */
+   cloud draw after the trace, glass and blended surfaces over the clouds,
+   and post-processing reading the resolved colour. The editor's frame
+   resolves, picks and reads back from the same resolved targets. */
 vkr_internal void test_tiled_graph_topology(void) {
   printf("  Running test_tiled_graph_topology...\n");
   Arena *arena = arena_create(MB(16), MB(2));
@@ -1531,6 +1531,7 @@ vkr_internal void test_tiled_graph_topology(void) {
       .aerial_perspective_enabled = true_v,
       .clouds_enabled = true_v,
       .exposure_automatic = true_v,
+      .blend_pending = true_v,
   };
   assert(vkr_rg_begin_frame(graph, &frame));
   assert(vkr_rg_build_from_json(graph, &json, &frame));
@@ -1546,6 +1547,7 @@ vkr_internal void test_tiled_graph_topology(void) {
   uint64_t opaque = UINT64_MAX;
   uint64_t trace = UINT64_MAX;
   uint64_t clouds = UINT64_MAX;
+  uint64_t blend = UINT64_MAX;
   uint64_t tonemap = UINT64_MAX;
   for (uint64_t i = 0u; i < graph->passes.length; ++i) {
     const VkrRgPass *pass = rg_barrier_test_pass(graph, (uint32_t)i);
@@ -1560,6 +1562,8 @@ vkr_internal void test_tiled_graph_topology(void) {
       trace = i;
     else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Clouds"))
       clouds = i;
+    else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Blend"))
+      blend = i;
     else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Opaque")) {
       const VkrRgAttachment *attachment =
           vector_get_VkrRgAttachment(&pass->desc.color_attachments, 0u);
@@ -1576,7 +1580,7 @@ vkr_internal void test_tiled_graph_topology(void) {
     }
   }
   assert(last_shadow < opaque && sky_view < opaque && cloud_light < opaque);
-  assert(opaque < trace && trace < clouds && clouds < tonemap);
+  assert(opaque < trace && trace < clouds && clouds < blend && blend < tonemap);
   assert(tonemap != UINT64_MAX);
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_end_frame(graph);

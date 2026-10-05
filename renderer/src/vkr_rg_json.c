@@ -167,6 +167,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_PICKING_PENDING_TRANSMISSION},
     {"picking_pending && !transmission_pending",
      VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION},
+    {"blend_pending", VKR_RG_JSON_CONDITION_BLEND_PENDING},
 };
 
 vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
@@ -2217,6 +2218,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->picking_pending && frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION:
     return frame->picking_pending && !frame->transmission_pending;
+  case VKR_RG_JSON_CONDITION_BLEND_PENDING:
+    return frame->blend_pending;
   default:
     return false_v;
   }

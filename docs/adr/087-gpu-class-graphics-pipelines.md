@@ -9,9 +9,9 @@ authority: adr
 ## Status
 
 Accepted (partial). The decision is in force. A first tiled pipeline runs on
-Metal when a renderer or the editor selects it (decisions 6, 7 and 9); every
-device runs the desktop pipeline by default until the tiled one draws
-transmission and dynamic lights. The remaining design is in
+Metal when a renderer or the editor selects it (decisions 6, 7 and 9) and
+draws glass (decision 10); every device runs the desktop pipeline by default
+until the tiled one draws dynamic lights. The remaining design is in
 [Tiled graphics pipeline](../proposals/tiled-pipeline.md).
 
 ## Context
@@ -106,7 +106,7 @@ pipeline rather than a backend mechanism.
    class requires the Metal backend without temporal upscaling or dynamic
    resolution; it turns off temporal reconstruction, SSR, SSGI, GTAO,
    surface diffusion, depth of field, motion blur, froxel fog, local shadows,
-   SDSM and transmission
+   SDSM and the transmission passes
    ([`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),
    [`vkr_render_graph_frame.c`](../../renderer/src/vkr_render_graph_frame.c)).
 8. The forward shader
@@ -137,6 +137,21 @@ pipeline rather than a backend mechanism.
    ([ADR-069](069-editor-projects-and-workspaces.md)), and a project's stored
    restart-time settings do not override it
    ([`vkr_graphics_settings_keep_restart`](../../runtime/src/vkr_graphics_settings.h)).
+10. The tiled pipeline draws glass with the alpha-blended surfaces. The
+    runtime puts transmissive draws in the camera-culled, back-to-front blend
+    list (`transmission_blended` in
+    [`vkr_scene_build_world_draws`](../../runtime/src/renderer/systems/vkr_scene_frame.h)),
+    and `Tiled.Blend` (`pass.tiled.blend`) draws that list single-sampled
+    over the resolved image after the clouds, then world text. Glass
+    composes as the transmission passes do (`vkr_transmission_compose`), but
+    the light behind it arrives through dual-source blending: the fragment's
+    second output is the factor the destination keeps per channel, so tinted
+    and stacked panes compose in draw order. All glass draws as thin, smooth
+    glass, without a refraction offset, rough blur, volume attenuation or
+    transmission and thickness textures; Bistro's 18 glass materials have no
+    thickness and an effective roughness of zero. The pass runs only on
+    frames with blended draws or world text, because its load and store of
+    the resolved colour and depth cost about 0.4 ms at 2560×1440.
 
 ### First tiled pipeline measurement
 
@@ -163,6 +178,21 @@ trace and cloud draw 0.35 and 0.32 ms. By inspection, street-view captures
 of both pipelines (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`)
 match in sky and sunlit surfaces; the tiled one lacks lamp light, glass and
 ambient occlusion.
+
+### Glass evidence
+
+Release, M1 Pro, 2026-10-06: the Bistro orbit with pass timestamps
+(`tiled_bistro_native`, `local-windowed-gpu-single`, report
+`sha256:88d5f93cdc606960a49341ae3d0622b7b4cefa3f9561aff1428b9054edaf26a9`)
+draws 325 blended draws, all glass, and `Tiled.Blend` takes 0.40 ms median
+and 0.60 ms p95. Captures of the café windows on both pipelines
+(`tiled_bistro_glass`, `tiled_bistro_glass_desktop`, reports
+`sha256:e526a05950f7929f62d2eff55c7980e1596b24637d0ebcd2cc8d6109fd2f5599`
+and `sha256:a665f9223234785166e38502f335266702e156483cb1f6f4db4aa1c77d42b571`)
+show the interior through the panes on both. The tiled panes reflect the
+sky where the desktop ones reflect the street, because the tiled pipeline
+has no local reflection probes or SSR yet, and the desktop interior is lit
+by lamps the tiled one does not draw yet.
 
 ### Editor evidence
 

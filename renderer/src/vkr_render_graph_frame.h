@@ -122,6 +122,8 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_TILED_CLOUDS,
   /** Object ids of the tiled pipeline's opaque draws for a pick. */
   VKR_RG_EXECUTOR_TILED_PICKING,
+  /** The tiled pipeline's glass, blended surfaces and world text. */
+  VKR_RG_EXECUTOR_TILED_BLEND,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 
