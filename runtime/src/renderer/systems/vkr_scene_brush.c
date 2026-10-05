@@ -54,6 +54,16 @@ typedef struct BrushCell {
   uint32_t chunks;
 } BrushCell;
 
+/* A rebuilt mesh waiting for its uploads. The brush draws its old mesh until
+   every geometry and material settles, so a rebuild never leaves a frame
+   without the brush (level toolkit audit A1). Holds one reference to each
+   geometry. */
+typedef struct BrushPending {
+  VkrEntityId entity;
+  VkrSubMeshDesc submeshes[BRUSH_MATERIAL_GROUPS];
+  uint32_t submesh_count;
+} BrushPending;
+
 struct s_VkrSceneBrushes {
   BrushRecord *records;
   uint32_t record_count;
@@ -67,6 +77,9 @@ struct s_VkrSceneBrushes {
   BrushMaterial *materials;
   uint32_t material_count;
   uint32_t material_capacity;
+  BrushPending *pending;
+  uint32_t pending_count;
+  uint32_t pending_capacity;
   /* Scratch for one rebuild; the scene rebuilds on one thread. */
   VkrBrushGeometry *geometry;
   uint32_t serial;
@@ -179,8 +192,29 @@ static uint64_t brush_trigger_key(VkrEntityId entity) {
 }
 
 /* Drops a brush's mesh and collision; the record stays. */
+static void brush_pending_release(VkrScene *scene, BrushPending *pending) {
+  for (uint32_t i = 0; i < pending->submesh_count; ++i) {
+    vkr_geometry_system_release(&scene->assets->geometry_system,
+                                pending->submeshes[i].geometry);
+  }
+  pending->submesh_count = 0u;
+}
+
+/* Drops `entity`'s waiting mesh, if it has one. */
+static void brush_pending_drop(VkrScene *scene, VkrSceneBrushes *state,
+                               VkrEntityId entity) {
+  for (uint32_t i = 0; i < state->pending_count; ++i) {
+    if (state->pending[i].entity.u64 == entity.u64) {
+      brush_pending_release(scene, &state->pending[i]);
+      state->pending[i] = state->pending[--state->pending_count];
+      return;
+    }
+  }
+}
+
 static void brush_clear(VkrScene *scene, VkrSceneBrushes *state,
                         BrushRecord *record) {
+  brush_pending_drop(scene, state, record->entity);
   vkr_scene_detach_generated_mesh(scene, record->entity);
   if (record->cell) {
     brush_mark_cell(scene, state, record->cell);
@@ -478,18 +512,76 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
     };
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  vkr_scene_detach_generated_mesh(scene, record->entity);
-  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
-  if (ok) {
-    ok = vkr_scene_attach_generated_mesh(scene, record->entity, submeshes,
-                                         submesh_count, &scene_error);
+  /* The new mesh waits beside the old one for its uploads; an older waiting
+     mesh is superseded. */
+  brush_pending_drop(scene, state, record->entity);
+  if (ok && brush_grow(scene->alloc, (void **)&state->pending,
+                       &state->pending_capacity, state->pending_count + 1u,
+                       sizeof(*state->pending))) {
+    BrushPending *pending = &state->pending[state->pending_count++];
+    pending->entity = record->entity;
+    pending->submesh_count = submesh_count;
+    MemCopy(pending->submeshes, submeshes, submesh_count * sizeof(*submeshes));
+    return true_v;
   }
-  /* The mesh holds its own references now, or none after a failure. */
   for (uint32_t i = 0; i < submesh_count; ++i) {
     vkr_geometry_system_release(&assets->geometry_system,
                                 submeshes[i].geometry);
   }
-  return ok;
+  return false_v;
+}
+
+/* Whether every geometry and material of a waiting mesh finished uploading.
+   A failed upload settles too and attaches as the terrain's does. */
+static bool8_t brush_pending_settled(VkrScene *scene,
+                                     const BrushPending *pending) {
+  struct VkrRenderAssets *assets = scene->assets;
+  for (uint32_t i = 0; i < pending->submesh_count; ++i) {
+    const VkrSubMeshDesc *submesh = &pending->submeshes[i];
+    const VkrGeometry *geometry = vkr_geometry_system_get_by_handle(
+        &assets->geometry_system, submesh->geometry);
+    if (geometry && !vkr_publication_state_settled(&geometry->publication)) {
+      return false_v;
+    }
+    const VkrPublicationState *material =
+        submesh->material.id ? vkr_material_system_publication(
+                                   &assets->material_system, submesh->material)
+                             : NULL;
+    if (material && !vkr_publication_state_settled(material)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Swaps in each waiting mesh whose uploads settled. */
+static void brush_pending_attach(VkrScene *scene, VkrSceneBrushes *state) {
+  for (uint32_t i = 0; i < state->pending_count;) {
+    BrushPending *pending = &state->pending[i];
+    if (!brush_pending_settled(scene, pending)) {
+      ++i;
+      continue;
+    }
+    const VkrEntityId entity = pending->entity;
+    VkrSceneError error = VKR_SCENE_ERROR_NONE;
+    bool8_t ok = vkr_scene_replace_generated_mesh(
+        scene, entity, pending->submeshes, pending->submesh_count, NULL, NULL,
+        0u, &error);
+    if (!ok) {
+      vkr_scene_detach_generated_mesh(scene, entity);
+      ok = vkr_scene_attach_generated_mesh(scene, entity, pending->submeshes,
+                                           pending->submesh_count, &error);
+    }
+    /* The mesh holds its own references now, or none after a failure. */
+    brush_pending_release(scene, pending);
+    state->pending[i] = state->pending[--state->pending_count];
+    const int32_t index = brush_find(state, entity);
+    if (!ok && index >= 0) {
+      BrushRecord *record = &state->records[index];
+      brush_clear(scene, state, record);
+      snprintf(record->status, sizeof(record->status), "the mesh failed");
+    }
+  }
 }
 
 /* World-space hull points of the brush, for solid and clip collision. */
@@ -715,6 +807,7 @@ void vkr_scene_brush_update(VkrScene *scene) {
     brush_rebuild_cell(scene, state, state->dirty_cells[i]);
   }
   state->dirty_cell_count = 0u;
+  brush_pending_attach(scene, state);
 }
 
 void vkr_scene_brush_shutdown(VkrScene *scene) {
@@ -728,6 +821,14 @@ void vkr_scene_brush_shutdown(VkrScene *scene) {
           scene->alloc, state->records[i].hull,
           state->records[i].hull_capacity * 3u * sizeof(float32_t), BRUSH_TAG);
     }
+  }
+  for (uint32_t i = 0; scene->assets && i < state->pending_count; ++i) {
+    brush_pending_release(scene, &state->pending[i]);
+  }
+  if (state->pending) {
+    vkr_allocator_free(scene->alloc, state->pending,
+                       state->pending_capacity * sizeof(*state->pending),
+                       BRUSH_TAG);
   }
   for (uint32_t i = 0; scene->assets && i < state->material_count; ++i) {
     if (state->materials[i].owned) {
