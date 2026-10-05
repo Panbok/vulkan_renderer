@@ -457,20 +457,51 @@ vkr_internal bool8_t vkr_mesh_cooked_read_skin(
   return true_v;
 }
 
-/** Reads and validates the lightmap atlas block of a static mesh. */
-vkr_internal bool8_t
-vkr_mesh_cooked_read_lightmap(VkrByteReader *source_reader,
-                              VkrMeshCookedLightmap *lightmap) {
-  return vkr_byte_reader_u32(source_reader, &lightmap->width) &&
-         vkr_byte_reader_u32(source_reader, &lightmap->height) &&
-         vkr_byte_reader_f32(source_reader, &lightmap->texels_per_unit) &&
-         vkr_byte_reader_u32(source_reader, &lightmap->padding) &&
-         lightmap->width != 0u && lightmap->height != 0u &&
-         lightmap->width <= VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE &&
-         lightmap->height <= VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE &&
-         isfinite(lightmap->texels_per_unit) &&
-         lightmap->texels_per_unit > 0.0f &&
-         lightmap->padding < Min(lightmap->width, lightmap->height);
+/**
+ * Reads and validates the lightmap block of a static artifact: one atlas per
+ * source mesh, or one when it has none. An all-zero atlas marks a source mesh
+ * without ranges or whose geometry forms no chart; every other atlas is a
+ * whole number of 4x4 blocks.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_read_lightmap(
+    VkrByteReader *source_reader, VkrAllocator *result_allocator,
+    const VkrMeshSource *source, VkrMeshCookedLightmap *lightmap) {
+  const uint64_t expected_count =
+      source->meshes.length ? source->meshes.length : 1u;
+  if (!vkr_byte_reader_u32(source_reader, &lightmap->atlas_count) ||
+      !vkr_byte_reader_u32(source_reader, &lightmap->padding) ||
+      lightmap->atlas_count != expected_count ||
+      lightmap->padding >= VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE) {
+    return false_v;
+  }
+  lightmap->atlases = vkr_allocator_alloc(result_allocator,
+                                          (uint64_t)lightmap->atlas_count *
+                                              sizeof(*lightmap->atlases),
+                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!lightmap->atlases) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < lightmap->atlas_count; ++i) {
+    VkrMeshCookedLightmapAtlas *atlas = &lightmap->atlases[i];
+    if (!vkr_byte_reader_u32(source_reader, &atlas->width) ||
+        !vkr_byte_reader_u32(source_reader, &atlas->height) ||
+        !vkr_byte_reader_f32(source_reader, &atlas->texels_per_unit)) {
+      return false_v;
+    }
+    if (atlas->width == 0u && atlas->height == 0u &&
+        atlas->texels_per_unit == 0.0f) {
+      continue;
+    }
+    if (atlas->width == 0u || atlas->height == 0u || atlas->width % 4u != 0u ||
+        atlas->height % 4u != 0u ||
+        atlas->width > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE ||
+        atlas->height > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE ||
+        lightmap->padding >= Min(atlas->width, atlas->height) ||
+        !isfinite(atlas->texels_per_unit) || atlas->texels_per_unit <= 0.0f) {
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 /**
@@ -567,7 +598,8 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
     return false_v;
   }
   if ((header->flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u &&
-      !vkr_mesh_cooked_read_lightmap(&source_reader, lightmap)) {
+      !vkr_mesh_cooked_read_lightmap(&source_reader, result_allocator, source,
+                                     lightmap)) {
     return false_v;
   }
   if (source_reader.offset != header->string_offset ||

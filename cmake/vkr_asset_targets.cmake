@@ -88,6 +88,13 @@ if(VKR_BUILD_TOOLS)
     target_include_directories(vkr_xatlas SYSTEM PUBLIC
         "${CMAKE_SOURCE_DIR}/vendor/xatlas/source/xatlas")
     target_compile_features(vkr_xatlas PRIVATE cxx_std_11)
+    # xatlas's task scheduler loses a shutdown wakeup: ~TaskScheduler sets a
+    # worker's flag and notifies without the worker's mutex, so a worker
+    # between its predicate check and its wait sleeps forever and Destroy
+    # never returns (seen once in Bistro's 551 per-mesh unwraps). The cook
+    # unwraps one mesh per atlas, so it runs xatlas single-threaded, which
+    # also makes chart generation independent of thread timing.
+    target_compile_definitions(vkr_xatlas PRIVATE XA_MULTITHREADED=0)
     vkr_configure_cooker_dependencies(vkr_xatlas)
 endif()
 add_library(vkr_mesh_codecs STATIC

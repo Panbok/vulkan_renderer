@@ -28,6 +28,7 @@ typedef enum VkrMeshLightmapUvStatus {
   VKR_MESH_LIGHTMAP_UV_OK = 0,
   VKR_MESH_LIGHTMAP_UV_INVALID_INPUT = 1,
   VKR_MESH_LIGHTMAP_UV_ADD_MESH_FAILED = 2,
+  /* No face forms a chart: the geometry is degenerate. */
   VKR_MESH_LIGHTMAP_UV_EMPTY_ATLAS = 3,
   VKR_MESH_LIGHTMAP_UV_TOO_LARGE = 4,
 } VkrMeshLightmapUvStatus;

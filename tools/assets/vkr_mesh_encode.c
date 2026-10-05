@@ -713,8 +713,10 @@ vkr_internal bool8_t vkr_mesh_cooked_compute_layout(
                            &source_bytes)) {
     return false_v;
   }
-  if (header->lightmap.width != 0u) {
-    source_bytes += VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE;
+  if (header->lightmap.atlas_count != 0u) {
+    source_bytes += VKR_MESH_COOKED_LIGHTMAP_BLOCK_HEADER_SIZE +
+                    (uint64_t)header->lightmap.atlas_count *
+                        VKR_MESH_COOKED_LIGHTMAP_ATLAS_SIZE;
   }
   header->directory_offset = VKR_MESH_COOKED_HEADER_SIZE;
   if (!vkr_checked_add_u64(header->directory_offset, range_bytes,
@@ -779,7 +781,7 @@ vkr_internal bool8_t vkr_mesh_cooked_write_header(
   ok = ok && vkr_byte_writer_u64(writer, header->file_size);
   ok = ok && vkr_byte_writer_u64(writer, 0u);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)info->source_path.length);
-  ok = ok && vkr_byte_writer_u32(writer, header->lightmap.width != 0u
+  ok = ok && vkr_byte_writer_u32(writer, header->lightmap.atlas_count != 0u
                                              ? VKR_MESH_COOKED_FLAG_LIGHTMAP_UV
                                              : 0u);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_vertices);
@@ -908,11 +910,15 @@ vkr_internal bool8_t vkr_mesh_cooked_write_metadata(
       }
     }
   }
-  if (header->lightmap.width != 0u) {
-    ok = ok && vkr_byte_writer_u32(writer, header->lightmap.width);
-    ok = ok && vkr_byte_writer_u32(writer, header->lightmap.height);
-    ok = ok && vkr_byte_writer_f32(writer, header->lightmap.texels_per_unit);
+  if (header->lightmap.atlas_count != 0u) {
+    ok = ok && vkr_byte_writer_u32(writer, header->lightmap.atlas_count);
     ok = ok && vkr_byte_writer_u32(writer, header->lightmap.padding);
+    for (uint32_t i = 0; ok && i < header->lightmap.atlas_count; ++i) {
+      const VkrMeshCookedLightmapAtlas *atlas = &header->lightmap.atlases[i];
+      ok = ok && vkr_byte_writer_u32(writer, atlas->width);
+      ok = ok && vkr_byte_writer_u32(writer, atlas->height);
+      ok = ok && vkr_byte_writer_f32(writer, atlas->texels_per_unit);
+    }
   }
   return ok;
 }
@@ -937,11 +943,135 @@ vkr_internal bool8_t vkr_mesh_cooked_write_strings(
   return ok;
 }
 
+/* Scratch-owned destination of an artifact's lightmap unwrap. */
+typedef struct VkrMeshCookedUnwrapOutput {
+  VkrVertex3d *vertices;
+  uint32_t *source_vertices;
+  float32_t *lightmap_uv;
+  uint32_t *indices;
+  uint32_t *local_indices;
+  uint64_t vertex_count;
+  uint64_t vertex_capacity;
+} VkrMeshCookedUnwrapOutput;
+
+/* Density halvings tried before a source mesh's atlas is rejected. */
+#define VKR_MESH_COOKED_LIGHTMAP_DENSITY_STEPS 4u
+
 /**
- * Unwraps the merged static mesh into one lightmap chart atlas (ADR-087).
- * Faces keep their order, so every range's index span stays valid; chart
- * seams split vertices, each copying its source vertex. The copied info
- * points at scratch-owned vertices, indices and UV pairs.
+ * Unwraps one source mesh's index span [first_index, end_index) into its own
+ * chart atlas. Its vertices are the span between the lowest and highest index;
+ * a too large atlas retries at half the density. Appends the output vertices,
+ * their UV pairs and the rewritten indices at the given cursors.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_unwrap_source_mesh(
+    const VkrMeshCookedEncodeInfo *info, uint32_t first_index,
+    uint32_t end_index, VkrMeshCookedUnwrapOutput *output,
+    VkrMeshCookedLightmapAtlas *out_atlas) {
+  const VkrVertex3d *vertices = (const VkrVertex3d *)info->mesh_buffer.vertices;
+  const uint32_t *indices = (const uint32_t *)info->mesh_buffer.indices;
+  uint32_t min_vertex = UINT32_MAX;
+  uint32_t max_vertex = 0u;
+  for (uint32_t i = first_index; i < end_index; ++i) {
+    min_vertex = Min(min_vertex, indices[i]);
+    max_vertex = Max(max_vertex, indices[i]);
+  }
+  const uint32_t index_count = end_index - first_index;
+  for (uint32_t i = 0; i < index_count; ++i) {
+    output->local_indices[i] = indices[first_index + i] - min_vertex;
+  }
+
+  float32_t texels_per_unit = info->lightmap.texels_per_unit;
+  VkrMeshLightmapUvAtlas *atlas = NULL;
+  VkrMeshLightmapUvInfo atlas_info = {0};
+  VkrMeshLightmapUvStatus status = VKR_MESH_LIGHTMAP_UV_TOO_LARGE;
+  for (uint32_t step = 0u; step < VKR_MESH_COOKED_LIGHTMAP_DENSITY_STEPS &&
+                           status == VKR_MESH_LIGHTMAP_UV_TOO_LARGE;
+       ++step) {
+    if (step > 0u) {
+      texels_per_unit *= 0.5f;
+    }
+    const VkrMeshLightmapUvInput input = {
+        .positions = &vertices[min_vertex].position.x,
+        .position_stride = sizeof(VkrVertex3d),
+        .normals = &vertices[min_vertex].normal.x,
+        .normal_stride = sizeof(VkrVertex3d),
+        .indices = output->local_indices,
+        .index_count = index_count,
+        .vertex_count = max_vertex - min_vertex + 1u,
+        .texels_per_unit = texels_per_unit,
+        .padding = info->lightmap.padding,
+        .max_size = info->lightmap.max_size,
+    };
+    status = vkr_mesh_lightmap_uv_generate(&input, &atlas, &atlas_info);
+  }
+  if (status == VKR_MESH_LIGHTMAP_UV_EMPTY_ATLAS) {
+    /* Degenerate geometry forms no chart. It keeps its vertices, UV2 zero
+       and an all-zero atlas, so the runtime lights it like a dynamic
+       object. */
+    const uint32_t span = max_vertex - min_vertex + 1u;
+    if (output->vertex_count + (uint64_t)span > output->vertex_capacity) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < span; ++i) {
+      output->vertices[output->vertex_count + i] = vertices[min_vertex + i];
+      output->lightmap_uv[2u * (output->vertex_count + i)] = 0.0f;
+      output->lightmap_uv[2u * (output->vertex_count + i) + 1u] = 0.0f;
+    }
+    for (uint32_t i = 0; i < index_count; ++i) {
+      output->indices[first_index + i] =
+          output->local_indices[i] + (uint32_t)output->vertex_count;
+    }
+    output->vertex_count += span;
+    *out_atlas = (VkrMeshCookedLightmapAtlas){0};
+    log_warn("MeshCooked: indices [%u, %u) form no lightmap chart", first_index,
+             end_index);
+    return true_v;
+  }
+  if (status != VKR_MESH_LIGHTMAP_UV_OK) {
+    log_error("MeshCooked: lightmap unwrap failed for indices [%u, %u) "
+              "(status %u, %ux%u texels)",
+              first_index, end_index, (uint32_t)status, atlas_info.width,
+              atlas_info.height);
+    return false_v;
+  }
+  if (texels_per_unit != info->lightmap.texels_per_unit) {
+    log_warn("MeshCooked: lightmap density for indices [%u, %u) lowered to "
+             "%g texels per unit to fit %u texels",
+             first_index, end_index, texels_per_unit, info->lightmap.max_size);
+  }
+  if (output->vertex_count + (uint64_t)atlas_info.vertex_count >
+      output->vertex_capacity) {
+    vkr_mesh_lightmap_uv_destroy(atlas);
+    return false_v;
+  }
+
+  uint32_t *source_vertices = output->source_vertices + output->vertex_count;
+  vkr_mesh_lightmap_uv_copy(atlas, source_vertices,
+                            output->lightmap_uv + 2u * output->vertex_count,
+                            output->indices + first_index);
+  vkr_mesh_lightmap_uv_destroy(atlas);
+  for (uint32_t i = 0; i < atlas_info.vertex_count; ++i) {
+    output->vertices[output->vertex_count + i] =
+        vertices[min_vertex + source_vertices[i]];
+  }
+  for (uint32_t i = 0; i < index_count; ++i) {
+    output->indices[first_index + i] += output->vertex_count;
+  }
+  output->vertex_count += atlas_info.vertex_count;
+  *out_atlas = (VkrMeshCookedLightmapAtlas){
+      .width = atlas_info.width,
+      .height = atlas_info.height,
+      .texels_per_unit = texels_per_unit,
+  };
+  return true_v;
+}
+
+/**
+ * Unwraps every source mesh of a static artifact into its own lightmap chart
+ * atlas (ADR-087), or the whole artifact when it has no source meshes. Faces
+ * keep their order, so every range's index span stays valid; chart seams split
+ * vertices, each copying its source vertex. The copied info points at
+ * scratch-owned vertices, indices and UV pairs.
  */
 vkr_internal bool8_t vkr_mesh_cooked_unwrap_lightmap(
     VkrAllocator *scratch_allocator, const VkrMeshCookedEncodeInfo *info,
@@ -949,68 +1079,91 @@ vkr_internal bool8_t vkr_mesh_cooked_unwrap_lightmap(
     VkrMeshCookedLightmap *out_lightmap) {
   const VkrMeshCookedLightmapOptions *options = &info->lightmap;
   if (!isfinite(options->texels_per_unit) || options->texels_per_unit <= 0.0f ||
-      options->max_size == 0u ||
-      options->max_size > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE) {
+      options->max_size < 4u ||
+      options->max_size > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE ||
+      options->padding >= options->max_size) {
     log_error("MeshCooked: invalid lightmap UV options");
     return false_v;
   }
-  const VkrVertex3d *vertices = (const VkrVertex3d *)info->mesh_buffer.vertices;
-  const VkrMeshLightmapUvInput input = {
-      .positions = &vertices[0].position.x,
-      .position_stride = sizeof(VkrVertex3d),
-      .normals = &vertices[0].normal.x,
-      .normal_stride = sizeof(VkrVertex3d),
-      .indices = (const uint32_t *)info->mesh_buffer.indices,
-      .index_count = info->mesh_buffer.index_count,
-      .vertex_count = info->mesh_buffer.vertex_count,
-      .texels_per_unit = options->texels_per_unit,
-      .padding = options->padding,
-      .max_size = options->max_size,
+  const VkrMeshSource *source = &info->source;
+  const uint32_t atlas_count =
+      source->meshes.length ? (uint32_t)source->meshes.length : 1u;
+  /* xatlas emits at most one output vertex per triangle corner. */
+  const uint64_t vertex_capacity = (uint64_t)info->mesh_buffer.index_count;
+  VkrMeshCookedUnwrapOutput output = {
+      .vertices = vkr_allocator_alloc(scratch_allocator,
+                                      vertex_capacity * sizeof(VkrVertex3d),
+                                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY),
+      .source_vertices = vkr_allocator_alloc(scratch_allocator,
+                                             vertex_capacity * sizeof(uint32_t),
+                                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY),
+      .lightmap_uv = vkr_allocator_alloc(
+          scratch_allocator, vertex_capacity * 2u * sizeof(float32_t),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY),
+      .indices = vkr_allocator_alloc(scratch_allocator,
+                                     (uint64_t)info->mesh_buffer.index_count *
+                                         sizeof(uint32_t),
+                                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY),
+      .local_indices = vkr_allocator_alloc(
+          scratch_allocator,
+          (uint64_t)info->mesh_buffer.index_count * sizeof(uint32_t),
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY),
+      .vertex_capacity = vertex_capacity,
   };
-  VkrMeshLightmapUvAtlas *atlas = NULL;
-  VkrMeshLightmapUvInfo atlas_info = {0};
-  const VkrMeshLightmapUvStatus status =
-      vkr_mesh_lightmap_uv_generate(&input, &atlas, &atlas_info);
-  if (status != VKR_MESH_LIGHTMAP_UV_OK) {
-    log_error("MeshCooked: lightmap unwrap failed (status %u, %ux%u texels)",
-              (uint32_t)status, atlas_info.width, atlas_info.height);
+  VkrMeshCookedLightmapAtlas *atlases = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)atlas_count * sizeof(*atlases),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!output.vertices || !output.source_vertices || !output.lightmap_uv ||
+      !output.indices || !output.local_indices || !atlases) {
     return false_v;
   }
+  MemZero(atlases, (uint64_t)atlas_count * sizeof(*atlases));
 
-  uint32_t *source_vertices = vkr_allocator_alloc(
-      scratch_allocator, (uint64_t)atlas_info.vertex_count * sizeof(uint32_t),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  float32_t *lightmap_uv = vkr_allocator_alloc(
-      scratch_allocator,
-      (uint64_t)atlas_info.vertex_count * 2u * sizeof(float32_t),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(
-      scratch_allocator, (uint64_t)atlas_info.index_count * sizeof(uint32_t),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrVertex3d *unwrapped_vertices = vkr_allocator_alloc(
-      scratch_allocator,
-      (uint64_t)atlas_info.vertex_count * sizeof(VkrVertex3d),
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!source_vertices || !lightmap_uv || !indices || !unwrapped_vertices) {
-    vkr_mesh_lightmap_uv_destroy(atlas);
-    return false_v;
+  /* Each source mesh's ranges must tile one contiguous index span, and the
+     spans together every index, so the unwrap rewrites every index once. */
+  uint32_t next_index = 0u;
+  for (uint32_t m = 0; m < atlas_count; ++m) {
+    uint32_t first_range = 0u;
+    uint32_t range_count = info->range_count;
+    if (source->meshes.length) {
+      first_range = source->meshes.data[m].first_range;
+      range_count = source->meshes.data[m].range_count;
+    }
+    if (range_count == 0u) {
+      continue;
+    }
+    if (first_range > info->range_count ||
+        range_count > info->range_count - first_range) {
+      return false_v;
+    }
+    const uint32_t first_index = next_index;
+    for (uint32_t r = first_range; r < first_range + range_count; ++r) {
+      if (info->ranges[r].first_index != next_index) {
+        log_error("MeshCooked: lightmap UVs need contiguous source mesh "
+                  "ranges");
+        return false_v;
+      }
+      next_index += info->ranges[r].index_count;
+    }
+    if (!vkr_mesh_cooked_unwrap_source_mesh(info, first_index, next_index,
+                                            &output, &atlases[m])) {
+      return false_v;
+    }
   }
-  vkr_mesh_lightmap_uv_copy(atlas, source_vertices, lightmap_uv, indices);
-  vkr_mesh_lightmap_uv_destroy(atlas);
-  for (uint32_t i = 0; i < atlas_info.vertex_count; ++i) {
-    unwrapped_vertices[i] = vertices[source_vertices[i]];
+  if (next_index != info->mesh_buffer.index_count) {
+    log_error("MeshCooked: lightmap UVs need ranges covering every index");
+    return false_v;
   }
 
   *out_info = *info;
-  out_info->mesh_buffer.vertices = unwrapped_vertices;
-  out_info->mesh_buffer.vertex_count = atlas_info.vertex_count;
-  out_info->mesh_buffer.indices = indices;
-  *out_lightmap_uv = lightmap_uv;
+  out_info->mesh_buffer.vertices = output.vertices;
+  out_info->mesh_buffer.vertex_count = (uint32_t)output.vertex_count;
+  out_info->mesh_buffer.indices = output.indices;
+  *out_lightmap_uv = output.lightmap_uv;
   *out_lightmap = (VkrMeshCookedLightmap){
-      .width = atlas_info.width,
-      .height = atlas_info.height,
-      .texels_per_unit = options->texels_per_unit,
+      .atlas_count = atlas_count,
       .padding = options->padding,
+      .atlases = atlases,
   };
   return true_v;
 }
@@ -1327,7 +1480,9 @@ bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
      verbatim with the streams. */
   const uint64_t static_tail =
       (header_flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u
-          ? VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE
+          ? VKR_MESH_COOKED_LIGHTMAP_BLOCK_HEADER_SIZE +
+                (uint64_t)Max(mesh_count, 1u) *
+                    VKR_MESH_COOKED_LIGHTMAP_ATLAS_SIZE
           : 0u;
   const uint64_t source_end = original.offset;
   if ((version == VKR_MESH_COOKED_VERSION &&

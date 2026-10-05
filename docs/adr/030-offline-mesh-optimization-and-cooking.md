@@ -81,19 +81,27 @@ This CPU asset representation does not establish the eventual GPU influence ABI.
 A static mesh cooked with the mesh recipe's `lightmap_texels_per_unit`
 (the mesh tool's `--lightmap-texels-per-unit`) stays at version 17 and sets
 header flag `VKR_MESH_COOKED_FLAG_LIGHTMAP_UV` (bit 0 of the formerly zero
-flags word). Before range encoding, the cooker unwraps the merged mesh with
-xatlas into one block-aligned chart atlas with two-texel padding and at most
-4,096 texels per edge
-([`vkr_mesh_lightmap_uv.h`](../../tools/assets/vkr_mesh_lightmap_uv.h)).
-Faces keep their order, so range index spans are unchanged; seams split
-vertices, and the lightmap UV pair travels with each vertex through the
-meshoptimizer fetch pass. A 16-byte block after the source metadata records
-the atlas width, height, texel density and padding. Every range's decode
-record then carries the lightmap flag of
-[ADR-031](031-versioned-packed-static-geometry-abi.md), and the reader rejects
-a header flag that disagrees with the ranges, a flag on a skinned or empty
-artifact, and a block outside its limits. Source-metadata variants copy the
-block verbatim. Meshes without the recipe field cook byte-identical artifacts.
+flags word). Before range encoding, the cooker unwraps each source mesh, or
+the whole artifact when it has none, into its own chart atlas with xatlas
+([`vkr_mesh_lightmap_uv.h`](../../tools/assets/vkr_mesh_lightmap_uv.h)):
+block-aligned charts, two-texel padding and at most 4,096 texels per edge,
+halving the density up to three times for a larger mesh. Each mesh is scaled
+to a unit extent first, because xatlas drops faces below a fixed area as
+degenerate; a mesh that still forms no chart keeps its vertices with zero UV2
+and an all-zero atlas. Instances of one source mesh share its UV2 and take
+separate rectangles in a scene lightmap. Faces keep their order, so range
+index spans are unchanged; seams split vertices, and the lightmap UV pair
+travels with each vertex through the meshoptimizer fetch pass. The lightmap
+block after the source metadata records the atlas count and padding, then
+width, height and texel density per atlas. Every range's decode record carries
+the lightmap flag of [ADR-031](031-versioned-packed-static-geometry-abi.md),
+and the reader rejects a header flag that disagrees with the ranges, a flag on
+a skinned or empty artifact, and atlases outside their limits.
+Source-metadata variants copy the block verbatim. xatlas is built with
+`XA_MULTITHREADED=0`: its task scheduler can lose a shutdown wakeup and hang in
+`xatlas::Destroy`, which happened once across Bistro's per-mesh unwraps, and
+single-threaded charting is also independent of thread timing. Meshes without
+the recipe field cook byte-identical artifacts.
 
 The importer supports paired `JOINTS_0` and `WEIGHTS_0`, including sparse/strided
 accessors and normalized unsigned-byte/unsigned-short weights. It rejects extra

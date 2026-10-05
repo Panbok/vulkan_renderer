@@ -233,8 +233,18 @@ Phases:
    ([ADR-030](../adr/030-offline-mesh-optimization-and-cooking.md)), word 7
    ([ADR-031](../adr/031-versioned-packed-static-geometry-abi.md)) and the
    decoders, covered by `run_mesh_lightmap_uv_tests` and
-   `test_mesh_cooked_lightmap_uv_round_trip`. No Bistro mesh is cooked with
-   lightmap UVs yet, and the baker's mesh decode does not read them.
+   `test_mesh_cooked_lightmap_uv_round_trip`. The baker's mesh decode does
+   not read UV2 yet. Bistro (`bistro-lights.gltf`, Release mesh tool, managed
+   output in a temporary bundle, deferred textures, 8 texels per unit,
+   2026-10-05) cooks in 17.7 s at 1.27 GB peak memory, against 0.7 s and
+   0.68 GB without lightmap UVs, and byte-identically on a second run. All
+   646 cooked source meshes get an atlas at full density; seams raise the
+   vertex count from 1,741,441 to 2,158,263 and the artifact from 30.8 to
+   42.9 MB. The largest atlas is 1,368 × 1,364 texels and the median 28 ×
+   28. One instance of each mesh needs 12.7 million texels, about 97 MiB per
+   uncompressed RGBA16F layer, before the 2,909 instances are counted
+   separately, so lamp-group, sky and sun-key layers need block compression,
+   a compact encoding or a lower density to fit the M1 memory floor.
 2. Separable bake: texel tracing in the ADR-054 baker with lamp-group,
    sky and sun-key layers; project storage and the editor Bake panel.
 3. Time of day: light groups and mobility in scene data; a system driving

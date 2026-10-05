@@ -26,21 +26,32 @@
 #define VKR_MESH_COOKED_HEADER_CRC_OFFSET 184u
 #define VKR_MESH_COOKED_METADATA_CRC_OFFSET 188u
 
-/* Header flag: the static mesh carries a lightmap UV set (ADR-087). Every
- * range's decode record then carries VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV, and
- * a VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE block follows the source metadata. */
+/* Header flag: the static artifact carries a lightmap UV set (ADR-087).
+ * Every range's decode record then carries VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV,
+ * and the lightmap block follows the source metadata: the atlas count and
+ * chart padding, then one atlas per source mesh in source-mesh order, or one
+ * for the whole artifact when it has no source meshes. Each source mesh's UV2
+ * is normalized over its own atlas, so instances of one mesh share UV2 and
+ * take separate rectangles in a scene lightmap. */
 #define VKR_MESH_COOKED_FLAG_LIGHTMAP_UV 1u
-#define VKR_MESH_COOKED_LIGHTMAP_BLOCK_SIZE 16u
+#define VKR_MESH_COOKED_LIGHTMAP_BLOCK_HEADER_SIZE 8u
+#define VKR_MESH_COOKED_LIGHTMAP_ATLAS_SIZE 12u
 #define VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE 8192u
 
-/* Lightmap chart atlas of a cooked mesh: UV2 spans width x height texels at
- * texels_per_unit, with padding texels between charts. Zero width means the
- * mesh has no lightmap UV set. */
-typedef struct VkrMeshCookedLightmap {
+/* One source mesh's chart atlas: UV2 spans width x height texels at
+ * texels_per_unit. */
+typedef struct VkrMeshCookedLightmapAtlas {
   uint32_t width;
   uint32_t height;
   float32_t texels_per_unit;
+} VkrMeshCookedLightmapAtlas;
+
+/* Lightmap atlases of a cooked artifact; atlas_count is zero when it has no
+ * lightmap UV set. The atlases share the decoded result's allocator. */
+typedef struct VkrMeshCookedLightmap {
+  uint32_t atlas_count;
   uint32_t padding;
+  VkrMeshCookedLightmapAtlas *atlases;
 } VkrMeshCookedLightmap;
 
 typedef struct VkrMeshCookedDecoded {

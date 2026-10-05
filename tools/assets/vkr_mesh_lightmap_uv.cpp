@@ -4,6 +4,8 @@
 
 #include <math.h>
 
+#include <vector>
+
 /* The atlas handle is the xatlas atlas itself; xatlas owns its memory until
    vkr_mesh_lightmap_uv_destroy. */
 struct VkrMeshLightmapUvAtlas {
@@ -26,13 +28,45 @@ vkr_mesh_lightmap_uv_generate(const VkrMeshLightmapUvInput *input,
   *out_atlas = nullptr;
   *out_info = VkrMeshLightmapUvInfo{};
 
+  /* xatlas treats faces below a fixed area epsilon as degenerate, which
+     drops whole meshes authored at small scale. Unwrap a copy scaled to a
+     unit largest extent at the matching density: the texel layout is the
+     same, and only the epsilon stops depending on the authoring scale. */
+  float lower[3] = {INFINITY, INFINITY, INFINITY};
+  float upper[3] = {-INFINITY, -INFINITY, -INFINITY};
+  for (uint32_t i = 0u; i < input->index_count; ++i) {
+    const uint32_t index = input->indices[i];
+    if (index >= input->vertex_count)
+      return VKR_MESH_LIGHTMAP_UV_INVALID_INPUT;
+    const float *position =
+        (const float *)((const uint8_t *)input->positions +
+                        (size_t)index * input->position_stride);
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      lower[axis] = fminf(lower[axis], position[axis]);
+      upper[axis] = fmaxf(upper[axis], position[axis]);
+    }
+  }
+  const float extent = fmaxf(upper[0] - lower[0],
+                             fmaxf(upper[1] - lower[1], upper[2] - lower[2]));
+  if (!isfinite(extent))
+    return VKR_MESH_LIGHTMAP_UV_INVALID_INPUT;
+  if (!(extent > 0.0f))
+    return VKR_MESH_LIGHTMAP_UV_EMPTY_ATLAS;
+  std::vector<float> scaled((size_t)input->vertex_count * 3u);
+  for (uint32_t i = 0u; i < input->vertex_count; ++i) {
+    const float *position = (const float *)((const uint8_t *)input->positions +
+                                            (size_t)i * input->position_stride);
+    for (uint32_t axis = 0u; axis < 3u; ++axis)
+      scaled[3u * i + axis] = (position[axis] - lower[axis]) / extent;
+  }
+
   xatlas::Atlas *atlas = xatlas::Create();
   if (!atlas)
     return VKR_MESH_LIGHTMAP_UV_ADD_MESH_FAILED;
 
   xatlas::MeshDecl mesh;
-  mesh.vertexPositionData = input->positions;
-  mesh.vertexPositionStride = input->position_stride;
+  mesh.vertexPositionData = scaled.data();
+  mesh.vertexPositionStride = 3u * sizeof(float);
   mesh.vertexNormalData = input->normals;
   mesh.vertexNormalStride = input->normals ? input->normal_stride : 0u;
   mesh.vertexCount = input->vertex_count;
@@ -47,7 +81,7 @@ vkr_mesh_lightmap_uv_generate(const VkrMeshLightmapUvInput *input,
   xatlas::ChartOptions chart_options;
   xatlas::PackOptions pack_options;
   pack_options.padding = input->padding;
-  pack_options.texelsPerUnit = input->texels_per_unit;
+  pack_options.texelsPerUnit = input->texels_per_unit * extent;
   pack_options.bilinear = true;
   /* Block-compressed lightmap layers keep each chart inside whole 4x4
      blocks. */
@@ -55,6 +89,7 @@ vkr_mesh_lightmap_uv_generate(const VkrMeshLightmapUvInput *input,
   xatlas::Generate(atlas, chart_options, pack_options);
 
   if (atlas->meshCount != 1u || atlas->width == 0u || atlas->height == 0u ||
+      atlas->meshes[0].chartCount == 0u ||
       atlas->meshes[0].indexCount != input->index_count) {
     xatlas::Destroy(atlas);
     return VKR_MESH_LIGHTMAP_UV_EMPTY_ATLAS;

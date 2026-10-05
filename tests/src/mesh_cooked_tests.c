@@ -920,10 +920,12 @@ static float32_t test_uv_edge(Vec2 a, Vec2 b, Vec2 p) {
   return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 }
 
-/* A unit cube in two ranges, cooked with a lightmap UV set: the artifact
- * carries the header flag, the atlas block and flagged ranges; every source
- * triangle survives; lightmap triangles keep area and never share a texel;
- * the header flag must agree with the ranges. */
+/* A unit cube split into two source meshes of three faces, one range each,
+ * cooked with a lightmap UV set: the artifact carries the header flag, one
+ * atlas per source mesh and flagged ranges; every source triangle survives;
+ * within each mesh's atlas lightmap triangles keep area and never share a
+ * texel; a small size limit lowers the density; the header flag must agree
+ * with the ranges. */
 static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   printf("  Running test_mesh_cooked_lightmap_uv_round_trip...\n");
   static const char dependency_path[] = "build/vkr_mesh_cooked_lightmap.bin";
@@ -979,21 +981,26 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
        .material_name = string8_lit("material.second"),
        .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD},
   };
-  VkrMeshSourceMesh source_mesh = {
-      .source_mesh_index = 0, .first_range = 0, .range_count = 2};
-  VkrMeshSourceNode node = {.name = string8_lit("cube"),
-                            .local = mat4_identity(),
-                            .parent = UINT32_MAX,
-                            .mesh = 0,
-                            .mesh_variant = 0,
-                            .camera = UINT32_MAX,
-                            .skin = UINT32_MAX,
-                            .light = UINT32_MAX,
-                            .in_scene = true_v};
+  VkrMeshSourceMesh source_meshes[2] = {
+      {.source_mesh_index = 0, .first_range = 0, .range_count = 1},
+      {.source_mesh_index = 1, .first_range = 1, .range_count = 1},
+  };
+  VkrMeshSourceNode nodes[2];
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    nodes[i] = (VkrMeshSourceNode){.name = string8_lit("half"),
+                                   .local = mat4_identity(),
+                                   .parent = UINT32_MAX,
+                                   .mesh = i,
+                                   .mesh_variant = i,
+                                   .camera = UINT32_MAX,
+                                   .skin = UINT32_MAX,
+                                   .light = UINT32_MAX,
+                                   .in_scene = true_v};
+  }
   String8 dependency_string = string8_lit(dependency_path);
   VkrMeshCookedEncodeInfo info = {
-      .source = {.nodes = {.data = &node, .length = 1},
-                 .meshes = {.data = &source_mesh, .length = 1}},
+      .source = {.nodes = {.data = nodes, .length = 2},
+                 .meshes = {.data = source_meshes, .length = 2}},
       .source_path = dependency_string,
       .dependency_paths = &dependency_string,
       .dependency_count = 1,
@@ -1029,20 +1036,23 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   assert(
       vkr_mesh_cooked_decode(&result, &scratch, cooked, cooked_size, &decoded));
   const VkrMeshCookedLightmap *lightmap = &decoded.lightmap;
-  assert(lightmap->width > 0u && lightmap->width % 4u == 0u);
-  assert(lightmap->height > 0u && lightmap->height % 4u == 0u);
-  assert(lightmap->texels_per_unit == 32.0f && lightmap->padding == 2u);
+  assert(lightmap->atlas_count == 2u && lightmap->padding == 2u);
   assert(decoded.ranges.length == 2u);
 
-  /* Each source face's two triangles come back, and in the lightmap every
-     triangle has area and no texel center lies inside two triangles. */
+  /* Each source face's two triangles come back, and in its source mesh's
+     atlas every triangle has area and no texel center lies inside two
+     triangles. Source mesh r owns range r. */
   const VkrPackedStaticVertex *packed = decoded.mesh_buffer.vertices;
   const uint32_t *decoded_indices = decoded.mesh_buffer.indices;
-  uint8_t *coverage =
-      calloc((size_t)lightmap->width * lightmap->height, sizeof(uint8_t));
-  assert(coverage != NULL);
   uint32_t triangles = 0u;
   for (uint32_t r = 0u; r < 2u; ++r) {
+    const VkrMeshCookedLightmapAtlas *atlas = &lightmap->atlases[r];
+    assert(atlas->width > 0u && atlas->width % 4u == 0u);
+    assert(atlas->height > 0u && atlas->height % 4u == 0u);
+    assert(atlas->texels_per_unit == 32.0f);
+    uint8_t *coverage =
+        calloc((size_t)atlas->width * atlas->height, sizeof(uint8_t));
+    assert(coverage != NULL);
     const VkrGeometryUploadRange *range = &decoded.ranges.data[r];
     const VkrGpuGeometryDecodeRecord *decode =
         &decoded.mesh_buffer.decodes[range->decode_index];
@@ -1060,8 +1070,8 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
         centroid.y += unpacked.position.y / 3.0f;
         centroid.z += unpacked.position.z / 3.0f;
         uv[c] = vkr_packed_geometry_lightmap_uv(&packed[index]);
-        uv[c].x *= (float32_t)lightmap->width;
-        uv[c].y *= (float32_t)lightmap->height;
+        uv[c].x *= (float32_t)atlas->width;
+        uv[c].y *= (float32_t)atlas->height;
       }
       /* A face's triangle centroids lie at a third of the way across it. */
       const float32_t extent =
@@ -1070,13 +1080,13 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
       const float32_t area = test_uv_edge(uv[0], uv[1], uv[2]);
       assert(fabsf(area) > 1.0f);
       const float32_t sign = area > 0.0f ? 1.0f : -1.0f;
-      for (uint32_t y = 0u; y < lightmap->height; ++y) {
-        for (uint32_t x = 0u; x < lightmap->width; ++x) {
+      for (uint32_t y = 0u; y < atlas->height; ++y) {
+        for (uint32_t x = 0u; x < atlas->width; ++x) {
           const Vec2 p = vec2_new((float32_t)x + 0.5f, (float32_t)y + 0.5f);
           if (sign * test_uv_edge(uv[0], uv[1], p) > 1.0e-3f &&
               sign * test_uv_edge(uv[1], uv[2], p) > 1.0e-3f &&
               sign * test_uv_edge(uv[2], uv[0], p) > 1.0e-3f) {
-            uint8_t *cell = &coverage[(size_t)y * lightmap->width + x];
+            uint8_t *cell = &coverage[(size_t)y * atlas->width + x];
             assert(*cell == 0u);
             *cell = 1u;
           }
@@ -1084,15 +1094,32 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
       }
       ++triangles;
     }
+    free(coverage);
   }
   assert(triangles == 12u);
-  free(coverage);
+
+  /* A size limit below the requested density's atlas halves the density. */
+  VkrMeshCookedEncodeInfo small_info = info;
+  small_info.lightmap.max_size = 64u;
+  uint8_t *small = NULL;
+  uint64_t small_size = 0;
+  assert(vkr_mesh_cooked_encode(&scratch, &small_info, &small, &small_size));
+  VkrMeshCookedDecoded small_decoded = {0};
+  assert(vkr_mesh_cooked_decode(&result, &scratch, small, small_size,
+                                &small_decoded));
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    const VkrMeshCookedLightmapAtlas *atlas =
+        &small_decoded.lightmap.atlases[i];
+    assert(atlas->texels_per_unit < 32.0f && atlas->texels_per_unit > 0.0f);
+    assert(atlas->width <= 64u && atlas->height <= 64u);
+  }
 
   /* A source-metadata patch keeps the lightmap block. */
   VkrMeshSource patched_source = decoded.source;
-  VkrMeshSourceNode patched_node = decoded.source.nodes.data[0];
-  patched_node.local.elements[12] = 3.0f;
-  patched_source.nodes.data = &patched_node;
+  VkrMeshSourceNode patched_nodes[2] = {decoded.source.nodes.data[0],
+                                        decoded.source.nodes.data[1]};
+  patched_nodes[0].local.elements[12] = 3.0f;
+  patched_source.nodes.data = patched_nodes;
   uint8_t *variant = NULL;
   assert(vkr_mesh_cooked_source_variant(&scratch, cooked, cooked_size,
                                         &patched_source, &variant));
@@ -1100,8 +1127,10 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   assert(vkr_mesh_cooked_decode(&result, &scratch, variant, cooked_size,
                                 &variant_decoded));
   assert(variant_decoded.source.nodes.data[0].local.elements[12] == 3.0f);
-  assert(MemCompare(&variant_decoded.lightmap, &decoded.lightmap,
-                    sizeof(decoded.lightmap)) == 0);
+  assert(variant_decoded.lightmap.atlas_count == lightmap->atlas_count &&
+         variant_decoded.lightmap.padding == lightmap->padding);
+  assert(MemCompare(variant_decoded.lightmap.atlases, lightmap->atlases,
+                    lightmap->atlas_count * sizeof(*lightmap->atlases)) == 0);
 
   /* The header flag must agree with the ranges' decode records. */
   uint8_t *mutated = vkr_allocator_alloc(&scratch, cooked_size,
