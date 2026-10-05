@@ -11,13 +11,88 @@ ADRs define the feature contracts. A successful build or compiled SPIR-V
 reflection does not prove native Vulkan execution, synchronization, display
 behavior, or Metal/Vulkan pixel parity.
 
-## Pending: level toolkit and world partition
+## 2026-10-04 Windows execution record: level toolkit
 
-The level toolkit, terrain, geometry LOD and world partition (ADR-084 to
-ADR-086) have no native Vulkan or Windows run. The
-[level toolkit handoff](level-toolkit-windows-vulkan-handoff.md) lists the
-steps (H1 to H9) and the [audit](level-toolkit-audit.md) the findings they
-close. Record their results here.
+This record covers the [level toolkit handoff](level-toolkit-windows-vulkan-handoff.md)
+(H1 to H9) for ADR-084 to ADR-086. It ran at `40fa0996` plus the fixes below,
+on an AMD Radeon RX 6700 XT, driver 26.6.3, Vulkan 1.4, Windows 10, Ryzen 5
+2600 with 16 GB of RAM, one GPU process at a time. Bistro was not recooked:
+the pulled `.vkb` decode change is layout-compatible. Debug runs enable
+`VK_LAYER_KHRONOS_validation` with synchronization checks; Release runs leave
+validation off. Captures are local (`%TEMP%\vkr\captures`).
+
+| Step | Result | Evidence |
+| --- | --- | --- |
+| H1 CPU suites | Pass. `build_test.bat` (Debug) exits 0 with 92 suites, including `scene_edit`, `heightfield` (file, streamed, operations, journal, tile levels), `io`, `scene_physics`, `brush` and `spline`; the Windows `file_flush_durable` compiles and runs | "All tests completed." |
+| H2 Terrain layer blend | Pass after fixes 4 to 7. No VUID or synchronization error. Two hills on the dev grid; `"layer":4` paints the blue fourth layer and `"layer":3` the orange third (the operation's layer is 1-based) | Debug editor captures |
+| H3 LOD and geomorph | Pass. No validation error. Tiles near the camera are dense and far ones coarser, and a hill gets finer as the camera nears it; no cracks on the 1 km terrain. Two end captures cannot show popping | Debug editor wireframe and lit captures |
+| H4 Streamed 8 km terrain | Pass after fix 12. The file is 410,548,278 bytes (391.5 MiB); `held` reports `"streamed":true`, 64 overview tiles, and 139 detail and 20 body tiles with the camera 96 m inside the terrain's edge (233 and 25 at `[0,60,-5800]`); the raycast hits `Terrain`; the lit capture shows the far hills. Before fix 12, `[0,60,-700]` showed thin dark strips along tile-row edges 100 to 250 m away (audit A20); after it, 0.18% of the view's pixels are dark against 1.03% before, and a Debug run under validation reports no VUID (2026-10-05) | Release editor captures |
+| H5 Proxies | Pass. The cell document and `index.json` exist; the bake prints `proxies: 1 cells, 1 cooked`, then `0 cooked`; cell `[4,-5]` reports `"proxy":true` and the capture shows the proxy boxes, then `"loaded":true` and the brushes | Release editor captures |
+| H6 Origin rebase | Pass. `Origin rebased by 4096, 0 m`; `SceneRoot` at `[-4096,0,0]` during Play and the raycast hits `Terrain`; `[0,0,0]` exactly after `sim.stop`; the clouds keep their layout | Release editor captures |
+| H7 Hitch measurement | Measured; see below. With `VKR_RG_GPU_TIMING=1` and `VKR_RG_SLOW_FRAME_MS=8`, the slowest frames are local shadow redraws: `Shadow.Local.*` fills 2,027 of the slow frames' top-three entries and `Shadow.Cascade.*` 19 (2026-10-05) | Release editor |
+| H8 Large files | Pass. A raise at `[0,-6000]` samples 59.498 m, saves, and a second run samples 59.498 m; the file stays 410,548,278 bytes. Offsets past 2 GiB remain untested | Release editor |
+| H9 Agent operations | Pass. Every `op` above printed `"ok":true`. The socket and `vkr_mcp` remain unavailable on Windows (ADR-084) | logs |
+
+H7, Release, 240 gliding 3 m moves every 0.1 s from `[0,60,-700]`, reading
+`stats.frame_ms`, `frame_ms_p95` and `frame_ms_max` every 40 moves (ms,
+indicative, not a harness claim):
+
+| Configuration | frame_ms | p95 | max |
+| --- | --- | --- | --- |
+| No terrain | 2.6 to 2.9 | 2.9 to 4.3 | 3.1 to 13.1 |
+| H4 terrain | 2.7 to 3.1 | 5.7 to 9.9 | 14.2 to 35.4 |
+| H4 terrain, `local_shadows` off | 2.7 to 3.9 | 3.7 to 6.1 | 6.2 to 15.9 |
+
+During the first terrain flights 2 to 3 terrain geometry publications failed
+with "Resource creation failed": Vulkan refused to grow the geometry
+megabuffer while any upload was pending, and streaming keeps uploads pending.
+Fix 9 below closes it.
+
+2026-10-05, after pulling to the commits that build terrain tiles on workers
+(fixes 9 to 11 applied): the H7 terrain flight has no failed publication and
+measures p95 7.0 to 9.0 ms and max 9.5 to 14.7 ms; a Debug flight that grew
+the megabuffer under validation with synchronization checks reports no VUID or
+hazard; `build_test.bat` passes 92 suites. The H4 strips (audit A20) were
+cascade shadow cast by holed overview tiles that read a wrong LOD row; fix 12
+closes them.
+
+Fixes made to complete the steps:
+
+1. Locals named `far`, `near` and `small`, which `windows.h` defines as macros,
+   broke the Windows build of `vkr_scene_partition.c`, `editor_level.c` and four
+   test files; they are renamed.
+2. `view.capture` failed on Windows: the agent directory returned false, the
+   captures directory was never created and the process id was 0. Captures now
+   go to `vkr\captures` in the user's temporary directory
+   (`VKR_PLATFORM_USER_TEMP`).
+3. Scripts read whole `[agent]` results; the line was cut at 400 characters.
+4. Vulkan rejected every geometry publication past about 85 in one batch: the
+   pending upload queue held 256 entries and each geometry takes three. The
+   queue now holds three per geometry record.
+5. Vulkan uploaded one geometry part per staging round trip, so a new 1 km
+   terrain took minutes to appear and Bistro's load omitted all its first
+   candidates. The bounded staging chunk now packs every pending buffer upload
+   that fits.
+6. The editor's Vulkan renderer had no capture ring, so `view.capture` failed
+   and stopped scene rendering. The sample runtime now enables a one-entry
+   capture ring on both backends.
+7. Until its layer textures streamed in (50 s in Debug on Vulkan), a terrain
+   drew its layer weights as a red tint. Its placeholder is now a white
+   terrain material.
+8. The Cmd queue held 4 KiB, too little for H7; it holds 32 KiB, a Windows
+   command line's length.
+9. The geometry megabuffer grows while uploads are pending; they move to the
+   new buffers.
+10. An `op` statement holds the Cmd queue until its operation answers.
+11. `VKR_RG_SLOW_FRAME_MS` logs the slowest passes of frames over a pass GPU
+    time, so a headless run can attribute hitches.
+12. The shared `vkr_gpu_geometry_lod_row` computes the LOD row's address in
+    bytes. This driver offset the pointer cast of `records + lod_record` by
+    the row's 128-byte stride instead of the record's 32, so every LOD row
+    read on Vulkan landed 96 bytes late; 3-level rows read zeros.
+
+The Metal side of fixes 6 and 7 (a one-entry capture ring, the white
+placeholder) needs a Mac run.
 
 ## 2026-10-03 Windows execution record
 

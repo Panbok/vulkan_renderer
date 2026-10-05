@@ -14,6 +14,10 @@ toolkit, terrain, geometry LOD and world partition natively
 [level toolkit audit](level-toolkit-audit.md); record results in the
 [Windows/Vulkan verification checklist](windows-vulkan-verification.md).
 
+The 2026-10-04 run on an RX 6700 XT passed every step except H4's strips and
+H7's pass attribution, and its fixes changed the commands below; the
+2026-10-05 run fixed both (audit A20, A23).
+
 ## Before you start
 
 - Check out `main` at or after `1b4bacea` and recook as the checklist's
@@ -25,6 +29,12 @@ toolkit, terrain, geometry LOD and world partition natively
   line and each statement as `[cmd]` lines.
 - Each run creates `assets\terrain\<uuid>.vkrhf`. Delete only the files your
   runs created, and the `wp_test` scene copies, when you finish.
+- `op` holds the Cmd queue until its operation answers, so a capture, save
+  or read sees every earlier operation. Captures land in
+  `%TEMP%\vkr\captures`.
+- On Vulkan a new terrain draws white until its layer textures stream in
+  behind Bistro's; `stats.pending_replacements` reads 0 once they have. The
+  Debug editor takes up to 75 s.
 
 Use this PowerShell setup for every editor run. `$Exe` is the Release editor
 for H4 to H8 and the Debug editor, which enables Vulkan validation with
@@ -65,7 +75,7 @@ suite's read-only check is POSIX-only.
 Debug editor, Bistro:
 
 ```powershell
-Run-Editor $Exe assets\scenes\bistro.scene.json 'wait.scene; op terrain.create {"position":[0,-0.5,-720],"size":1024,"review":false}; op terrain.brush {"terrain":"Terrain","mode":"raise","points":[[-150,0,-500],[120,0,-650]],"radius":90,"strength":40,"review":false}; op terrain.brush {"terrain":"Terrain","mode":"paint","layer":3,"points":[[120,0,-650]],"radius":60,"strength":1,"review":false}; op view.camera {"eye":[0,45,-240],"target":[0,0,-700]}; wait 4; op view.capture {}' .scratch\wp\h2.log
+Run-Editor $Exe assets\scenes\bistro.scene.json 'wait.scene; op terrain.create {"position":[0,-0.5,-720],"size":1024,"review":false}; op terrain.brush {"terrain":"Terrain","mode":"raise","points":[[-150,0,-500],[120,0,-650]],"radius":90,"strength":40,"review":false}; op terrain.brush {"terrain":"Terrain","mode":"paint","layer":4,"points":[[120,0,-650]],"radius":60,"strength":1,"review":false}; op view.camera {"eye":[0,45,-240],"target":[0,0,-700]}; select Sun; wait 75; op view.capture {}; wait 3' .scratch\wp\h2.log
 ```
 
 Expected: Vulkan validation initializes, the log has no VUID or validation
@@ -90,8 +100,10 @@ Release editor:
 Run-Editor $Exe assets\scenes\bistro.scene.json 'wait.scene; op view.camera {"eye":[0,60,-700],"target":[0,0,-1200],"far":9000}; op terrain.create {"position":[0,-0.5,-4700],"size":8192,"review":false}; op terrain.brush {"terrain":"Terrain","mode":"raise","points":[[-150,0,-1500],[0,0,-6000],[2000,0,-4000]],"radius":120,"strength":60,"review":false}; wait 8; op scene.describe {"region":{"min":[-5,-5,-4705],"max":[5,5,-4695]}}; op query.raycast {"origin":[0,200,-750],"direction":[0,-1,0],"distance":400}; op view.capture {}; view.mode wireframe; wait 1; op view.capture {}' .scratch\wp\h4.log
 ```
 
-Expected: the terrain file is 409 MiB; `held` reports `"streamed":true`,
-about 250 detail tiles, 64 overview tiles and 25 body tiles; the raycast hits
+Expected: the terrain file is 410,548,278 bytes; `held` reports
+`"streamed":true` and 64 overview tiles, with about 140 detail tiles and 20
+body tiles at this camera near the terrain's edge (about 250 and 25 away from
+it); the raycast hits
 `Terrain`; the lit capture shows the far hills and the wireframe shows dense
 tiles near the camera and coarse overview tiles beyond, with no gaps.
 
@@ -101,7 +113,7 @@ Copy `assets\scenes\bistro.scene.json` to `assets\scenes\wp_test.scene.json`.
 Release editor, scene `assets\scenes\wp_test.scene.json`:
 
 ```powershell
-Run-Editor $Exe assets\scenes\wp_test.scene.json 'wait.scene; op entity.create {"name":"Partition","component":{"type":"world_partition","values":{"load_radius":256,"proxy_radius":3000}},"review":false}; op brush.box {"min":[580,0,-620],"max":[600,12,-600],"review":false}; op brush.box {"min":[610,0,-630],"max":[625,6,-615],"review":false}; scene.save' .scratch\wp\h5a.log
+Run-Editor $Exe assets\scenes\wp_test.scene.json 'wait.scene; op entity.create {"name":"Partition","component":{"type":"world_partition","values":{"load_radius":256,"proxy_radius":3000}},"review":false}; op brush.box {"min":[580,0,-620],"max":[600,12,-600],"review":false}; op brush.box {"min":[610,0,-630],"max":[625,6,-615],"review":false}; wait 2; scene.save' .scratch\wp\h5a.log
 build_release\tools\bakery\vkr_bakery.exe bake proxies --scene assets\scenes\wp_test.scene.json
 Run-Editor $Exe assets\scenes\wp_test.scene.json 'wait.scene; op view.camera {"eye":[600,120,-150],"target":[600,0,-600],"far":5000}; wait 4; op partition.describe {}; op view.capture {}; op view.camera {"eye":[600,60,-480],"target":[600,0,-600]}; wait 4; op partition.describe {}; op view.capture {}' .scratch\wp\h5b.log
 ```
@@ -131,25 +143,29 @@ Release editor, Bistro, `gfx.preset = "high"` as the first statement after
 `wait.scene`. Run 240 moves of 3 m along -Z every 0.1 s from
 `"eye":[0,60,-700]`, each `op view.camera {..., "glide":true}`, reading
 `stats.frame_ms`, `stats.frame_ms_p95` and `stats.frame_ms_max` every 40
-moves. Run it three times: without terrain, with the H4 terrain, and with the
-H4 terrain and `"local_shadows": false` in `graphics.json`.
+moves; the script is about 23 KB, within the Cmd queue's 32 KiB. Run it three
+times: without terrain, with the H4 terrain, and with the H4 terrain and
+`graphics.json` set to `{"version": 1, "local_shadows": false}` without the
+preset statement, because the High preset turns local shadows back on.
 
 Expected on Metal for comparison (ADR-086): p95 6.4 ms without terrain and
 9–11 ms with it at `1b4bacea`. Retained shadow staleness is shared code
 (`vkr_shadow_system.c`, `vkr_local_shadow_system.c`); with
 `VKR_RG_GPU_TIMING=1`, record whether slow frames on Vulkan show
-`Shadow.Local.*` or `Shadow.Cascade.*` passes.
+`Shadow.Local.*` or `Shadow.Cascade.*` passes; `VKR_RG_SLOW_FRAME_MS=<ms>`
+logs each slow frame's three slowest passes.
 
 ### H8. Large files (audit A3, A9)
 
 Copy Bistro to `wp_test` as in H5. In one run on that scene, create the H4
 terrain, raise it with `op terrain.brush` at `[0,0,-6000]` (60 m), read
-`op terrain.sample {"terrain":"Terrain","points":[[0,0,-6000]]}` and
+`op terrain.sample {"terrain":"Terrain","points":[[0,-6000]]}` (points are
+`[x, z]`) and
 `scene.save`. In a second run on the same scene, read the sample again.
 
 Expected: the second run reads the same raised height, which proves the
-in-place tile write and the overview on Windows file I/O; the file stays
-409 MiB. The file stays below 2 GiB, so offsets past 2 GiB remain untested.
+in-place tile write and the overview on Windows file I/O; the file keeps its
+size. The file stays below 2 GiB, so offsets past 2 GiB remain untested.
 
 ### H9. Agent operations without the socket (audit A2)
 

@@ -11,8 +11,8 @@ authority: adr
 Accepted (partial). Terrain streaming, cells with cell documents, the
 streaming runtime, origin rebasing during Play, baked cell proxies, the World
 Partition window and the `partition.*` operations are implemented and
-verified on Metal. Imported scene documents do not split into cells, and
-native Vulkan execution is unverified. The
+verified on Metal and on Windows/Vulkan.
+Imported scene documents do not split into cells. The
 [level toolkit audit](../proposals/level-toolkit-audit.md) tracks these.
 
 ## Context
@@ -281,6 +281,4 @@ rebase to −4,096 m that Reset returned to 0.
 
 - A matched Release report shows streaming hitches above one frame, or the
   Vulkan measurement (handoff H7) differs from Metal.
-- A Windows/Vulkan run of the
-  [handoff](../proposals/level-toolkit-windows-vulkan-handoff.md) passes.
 - Imported scenes, the World or added scenes need to stream.

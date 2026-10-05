@@ -11,7 +11,8 @@ authority: adr
 Accepted (partial). The LOD table, per-view selection, level encoding and
 terrain geomorphing are implemented in both backends; terrain tiles are the
 only ranges with levels. Cooked mesh levels remain in the automatic mesh LOD
-proposal. Native Vulkan execution is unverified.
+proposal. Native Vulkan runs both (2026-10-04); a bilateral comparison is
+pending.
 
 ## Context
 
@@ -124,5 +125,13 @@ need morphing.
 - Indicative, not a harness claim: the headless editor's `stats.frame_ms`
   with the hilly 1 km terrain in view was 8.78 ms while selection was inert
   and 8.55 ms with it.
-- Native Vulkan execution and a matched Release harness measurement are
+- Headless Windows Debug editor on Bistro, RX 6700 XT (2026-10-04): the same
+  1 km terrain under Vulkan validation with synchronization checks reports no
+  VUID; wireframe captures show coarser tiles far away and finer ones as the
+  camera nears a hill, with no cracks; the layer blend paints the chosen
+  layer. An 8 km streamed terrain showed thin dark strips at some tile edges
+  (level toolkit audit A20): the driver offset the LOD row's pointer cast by
+  the row's stride, so holed overview tiles read a zero row. The row's address
+  is now byte arithmetic, and the strips are gone (2026-10-05).
+- A Metal/Vulkan comparison and a matched Release harness measurement are
   unverified.

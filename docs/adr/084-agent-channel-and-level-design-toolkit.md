@@ -650,4 +650,9 @@ material then).
   M1 Pro (MacBookPro18,3) with Bistro in view rendered a median frame of
   8.72 ms (p95 9.07 ms) before and 9.14 ms (p95 9.40 ms) after adding 1,000
   visible box brushes, from the editor's `stats.frame_ms` over 120 frames.
-- Windows and native Vulkan are unverified.
+- Windows and native Vulkan, 2026-10-04 (RX 6700 XT, headless editor driven
+  by `--exec` and in-process `op`): the CPU suites, terrain sculpt and paint,
+  proxies, rebase and large terrain files pass; the
+  [Windows record](../proposals/windows-vulkan-verification.md) lists the
+  fixes this needed and the open items. The socket and `vkr_mcp` remain
+  unavailable on Windows.

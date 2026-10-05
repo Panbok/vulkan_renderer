@@ -45,7 +45,7 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 
 | # | Finding | Evidence | Closes it |
 |---|---|---|---|
-| A2 | Native Vulkan has never run the terrain material, LOD selection, geomorph, streamed terrain, proxies or rebase. Both ADR-085 entries in [ADR-044](../adr/044-shader-cross-backend-contract.md) stay UNALIGNED | 105 Vulkan modules pass `spirv-val`; no Vulkan frame was produced | H2 to H6 |
+| A2 | Native Vulkan runs the terrain material, LOD selection, geomorph, streamed terrain, proxies and rebase (H2 to H6, 2026-10-04), but no bilateral comparison exists, so both ADR-085 entries in [ADR-044](../adr/044-shader-cross-backend-contract.md) stay UNALIGNED | [Windows record](windows-vulkan-verification.md) | Matched Metal and Vulkan captures of the H2 and H4 views |
 
 ### P2
 
@@ -95,18 +95,26 @@ features are in the [level design toolkit](level-design-toolkit.md) and
 | A re-attached terrain mesh waited unpublished for its new tiles' uploads, so the terrain left that frame and every local shadow redrew twice more | The mesh re-attaches once its tiles have uploaded; streaming holds the drawn tiles until then | `f01956ee` |
 | Every completed publication, geometry uploads included, marked every retained shadow (local faces and cascades) stale; adding or removing a generated mesh did not move the static-world generation, so retained shadows and Metal's static candidate rows relied on that publication churn | Retained shadows follow only texture, sampler and material publications, and adding or removing a drawn mesh is a topology change | `b2de2834` |
 | A10: each streaming change cost the main thread 1.2–6.4 ms: a 3–4 ms Jolt height field for the body and about 0.6 ms of geometry packing per tile | Bodies build on physics workers and tiles in batches on job workers from copied samples; a body rebuild now costs the main thread under 0.5 ms | `99720bcc` |
+| Windows: locals named `far`, `near` and `small` are `windows.h` macros and broke the build; `view.capture` had no captures directory; `[agent]` results were cut at 400 characters; the Cmd queue's 4 KiB could not hold the H7 flight | Renamed; captures go to `vkr\captures` in the user's temporary directory; whole results; a 32 KiB queue | `2e8b4479`, `8d6fed30`, `51eae2ba`, `166857a3` |
+| Vulkan rejected geometry publications past about 85 per batch and uploaded one geometry part per staging round trip, so a new terrain took minutes to appear; the editor's Vulkan renderer had no capture ring | Three queued uploads per geometry record; the staging chunk packs every pending buffer upload that fits; the sample runtime enables a one-entry capture ring | `c58696b6`, `9d394791`, `658339e5` |
+| A terrain drew its layer weights as a red tint until its layer textures streamed in | The placeholder is a white terrain material | `a905a151` |
+| A21: Vulkan refused to grow the geometry megabuffer while any upload was pending; streaming keeps uploads pending, so 2 to 3 terrain tile publications per H7 flight failed | Growth retargets pending uploads, staged ones included, to the new buffers, which the preservation copy precedes; the H7 flight has no failed publication, and a Debug flight that grew the buffer under validation with synchronization checks reports no VUID or hazard | `b4589ea2` |
+| A22: an `op` statement only queued its operation, so `scene.save` ran before a queued `brush.box` and captures rendered after the next `view.mode` | `op` holds the Cmd queue until its operation answers (`op cmd` excepted); the H5 script without waits saves both brushes and captures in order | `929cc290` |
+| A23: slow frames could not be attributed to render graph passes headless | `VKR_RG_SLOW_FRAME_MS` with `VKR_RG_GPU_TIMING=1` logs each slow frame's three slowest passes; in H7, `Shadow.Local.*` dominates and `Shadow.Cascade.*` rarely appears | `b4dffcae` |
+| A20: on Vulkan an 8 km streamed terrain showed thin dark strips along tile-row edges 100 to 250 m from the camera at `[0,60,-700]`. They were cascade shadow cast by holed overview tiles: AMD's driver (26.6.3, RX 6700 XT) offset the pointer cast of `records + lod_record` by the LOD row's 128-byte stride instead of the record's 32, so a 3-level row read zeros and its draws morphed toward a level their indices did not hold. The SPIR-V is correct (`OpPtrAccessChain` at stride 32, then `OpBitcast`) | `vkr_gpu_geometry_lod_row` computes the row's address in bytes; at the H4 view the dark-pixel share falls from 1.03% to 0.18%, the same as with the camera's LOD forced to 0; a Debug run under validation with synchronization checks reports no VUID or hazard; H3 still passes | `42b7a565` |
 | A1: moving over a streamed terrain with local shadows on raised the frame p95 from 6.4 ms to about 30 ms; every terrain mesh swap marked every local shadow face and cascade stale, and the cache redrew its 30-face High budget at 0.4–0.9 ms GPU each | Static changes carry the world boxes they may alter and a terrain swap names its changed tiles' footprints, so far streaming redraws no local face; the flight now measures p95 9.0–10.9 ms (indicative). A resident terrain was never affected | `1b4bacea` |
 
 ## Verification still needed
 
 | Claim | Status | Step |
 |---|---|---|
-| CPU behaviour of heightfields, cells, IO refresh and rebase on Windows, and the Windows `file_flush_durable` | Unrun | H1 |
-| Terrain layer blend on Vulkan matches Metal | Unrun | H2 |
-| LOD selection and geomorph on Vulkan, with no validation errors | Unrun | H3 |
-| Streamed terrain, overview holes and seams on Vulkan | Unrun | H4 |
-| Proxies cook and draw on Windows | Unrun | H5 |
-| Rebase and exact Reset on Vulkan | Unrun | H6 |
-| Hitch measurement on Vulkan (A1) | Unrun | H7 |
-| Large-file I/O for an 8 km terrain on Windows (64-bit seeks) | Unrun | H8 |
-| Agent channel and `vkr_mcp` on Windows | Unrun | H9 |
+| CPU behaviour of heightfields, cells, IO refresh and rebase on Windows, and the Windows `file_flush_durable` | Passed 2026-10-04 | H1 |
+| Terrain layer blend on Vulkan matches Metal | Runs without validation errors; Metal comparison pending | H2 |
+| LOD selection and geomorph on Vulkan, with no validation errors | Passed 2026-10-04; popping unmeasured | H3 |
+| Streamed terrain, overview holes and seams on Vulkan | Passed 2026-10-05 | H4 |
+| Proxies cook and draw on Windows | Passed 2026-10-04 | H5 |
+| Rebase and exact Reset on Vulkan | Passed 2026-10-04 | H6 |
+| Hitch measurement on Vulkan (A1) | Measured 2026-10-05 (p95 7.0–9.0 ms, max 9.5–14.7 ms with terrain); slow frames are local shadow redraws | H7 |
+| Large-file I/O for an 8 km terrain on Windows (64-bit seeks) | Passed below 2 GiB 2026-10-04 | H8 |
+| Agent channel and `vkr_mcp` on Windows | In-process `op` passes; socket and `vkr_mcp` unavailable | H9 |
+| Metal side of the one-entry capture ring and the white terrain placeholder | Unrun | Mac |

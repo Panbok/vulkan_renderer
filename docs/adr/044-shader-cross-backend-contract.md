@@ -56,7 +56,8 @@ The zero-strength witness preserves all eight captured channels byte-for-byte.
 ## Terrain layer evidence state
 
 The terrain material blend ([ADR-084](084-agent-channel-and-level-design-toolkit.md#terrain))
-is **UNALIGNED** pending native Vulkan execution and a bilateral comparison.
+is **UNALIGNED** pending a bilateral comparison; native Vulkan execution
+passed on Windows (2026-10-04).
 Both G-buffer resolves call the shared `terrain_kernel.slangh` for weights,
 per-layer surfaces and the blend; each samples its own terrain segment.
 Common material rows are unchanged. The terrain segment rows are 192 bytes on
@@ -69,7 +70,11 @@ terrain passes, and the four Vulkan resolve modules pass `spirv-val`.
 
 Level selection, level encoding and terrain geomorphing
 ([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)) are **UNALIGNED**
-pending native Vulkan execution and a bilateral comparison. Both backends
+pending a bilateral comparison; native Vulkan execution passed on Windows
+(2026-10-04, and the 8 km terrain's strips of audit A20 on 2026-10-05).
+`vkr_gpu_geometry_lod_row` computes the LOD row's address in bytes, because
+AMD's Vulkan driver offset a pointer cast of `records + lod_record` by the
+row's stride. Both backends
 select through the shared `lod_kernel.slangh` and morph through
 `vkr_gpu_terrain_morph` (shared Slang, mirrored in `draw.metalh`) with
 `terrain_kernel.slangh`'s topology. The Metal culling root carries the LOD
