@@ -81,6 +81,11 @@ pipeline rather than a backend mechanism.
    1.0, no upscaler, 16.7 ms p95 (60 fps). Quality tiers that lower M1 cost are
    allowed. Until the tiled pipeline ships, `bistro_metal_production_040` (0.4
    render scale) remains the M-series regression case for the desktop pipeline.
+5. The tiled pipeline shades opaque surfaces forward, after a depth pre-pass,
+   in one multisampled render pass (owner decision 2026-10-05). On Bistro
+   it costs the same as a G-buffer kept in tile memory without multisampling
+   and 1.7 to 3.4 ms less with four samples
+   ([measurements](../proposals/tiled-pipeline.md#first-prototype-measurements)).
 
 ## Consequences
 

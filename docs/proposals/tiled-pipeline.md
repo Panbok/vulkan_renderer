@@ -44,7 +44,7 @@ Every item below is open until the prototype measures it.
 | Stage | Desktop pipeline today | Tiled candidate |
 |---|---|---|
 | Culling and draw encoding | GPU classification, ICB or indirect-count draws | Shared |
-| Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass: forward shading with clustered light lists, or a G-buffer kept in tile memory and lit in the same pass |
+| Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass: depth pre-pass, then forward shading with clustered lists of the dynamic lights (decided) |
 | Anti-aliasing | Portable TAA, MetalFX or FSR 3.1 | MSAA resolved in tile memory; no temporal history |
 | Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
 | Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects; no SSGI |
@@ -76,10 +76,9 @@ for tile-memory reads and lazily allocated transient attachments.
   and specular, and how dynamic objects and the specular highlights of static
   lights are lit.
 
-- Forward shading with clustered lights or deferred shading in tile memory.
-  Measured below: equal without MSAA, forward 1.7 to 3.4 ms cheaper with four
-  samples. Forward with a depth pre-pass is recommended; the owner's choice is
-  pending.
+- Forward shading or deferred shading in tile memory: decided, forward after
+  a depth pre-pass ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
+  measured below).
 - MSAA sample count: two or four.
 - The M1 Pro quality tier: which effects drop or lower first.
 - Graph representation: a graph pass is one render pass today. Several
