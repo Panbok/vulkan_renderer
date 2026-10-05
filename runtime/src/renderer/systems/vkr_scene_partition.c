@@ -313,8 +313,8 @@ void vkr_scene_partition_plan(const VkrScene *scene,
   /* Over the budget, the farthest loaded cells inside the radius go too. */
   if (staying > settings->cell_budget) {
     uint32_t excess = staying - settings->cell_budget;
-    PartitionCandidate far[VKR_SCENE_PARTITION_PLAN_MAX];
-    uint32_t far_count = 0u;
+    PartitionCandidate farthest[VKR_SCENE_PARTITION_PLAN_MAX];
+    uint32_t farthest_count = 0u;
     for (uint32_t i = 0; i < state->record_count; ++i) {
       const VkrScenePartitionCellRecord *record = &state->records[i];
       const float32_t distance =
@@ -323,16 +323,17 @@ void vkr_scene_partition_plan(const VkrScene *scene,
           !(record->flags & (VKR_SCENE_PARTITION_CELL_PINNED |
                              VKR_SCENE_PARTITION_CELL_HELD)) &&
           distance <= keep) {
-        partition_candidate_offer(far, &far_count,
+        partition_candidate_offer(farthest, &farthest_count,
                                   (PartitionCandidate){distance, record->cell},
                                   true_v);
       }
     }
-    qsort(far, far_count, sizeof(*far), partition_candidate_compare);
-    for (uint32_t i = far_count;
+    qsort(farthest, farthest_count, sizeof(*farthest),
+          partition_candidate_compare);
+    for (uint32_t i = farthest_count;
          i > 0u && excess && out->unload_count < VKR_SCENE_PARTITION_PLAN_MAX;
          --i, --excess) {
-      out->unload[out->unload_count++] = far[i - 1u].cell;
+      out->unload[out->unload_count++] = farthest[i - 1u].cell;
     }
   }
 }

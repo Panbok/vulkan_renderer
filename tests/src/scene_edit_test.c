@@ -616,16 +616,16 @@ static VkrEntityId edit_test_create_at(VkrSceneEditState *state,
 static void edit_test_partition(VkrAllocator *allocator) {
   char root[1024];
   char sidecar[1024];
-  char near[1100];
-  char far[1100];
+  char near_path[1100];
+  char far_path[1100];
   char index[1100];
   snprintf(root, sizeof(root), PROJECT_SOURCE_DIR "tests/tmp/cells_%u",
            vkr_platform_get_process_id());
   snprintf(sidecar, sizeof(sidecar),
            PROJECT_SOURCE_DIR "tests/tmp/cells_%u.editor.json",
            vkr_platform_get_process_id());
-  snprintf(near, sizeof(near), "%s/0_0.json", root);
-  snprintf(far, sizeof(far), "%s/2_-1.json", root);
+  snprintf(near_path, sizeof(near_path), "%s/0_0.json", root);
+  snprintf(far_path, sizeof(far_path), "%s/2_-1.json", root);
   snprintf(index, sizeof(index), "%s/index.json", root);
   const String8 sidecar_path =
       string8_create_from_cstr((const uint8_t *)sidecar, strlen(sidecar));
@@ -661,12 +661,13 @@ static void edit_test_partition(VkrAllocator *allocator) {
   assert(edit_test_read(sidecar, text, sizeof(text)));
   assert(strstr(text, "\"keep\"") && !strstr(text, "\"crate\"") &&
          !strstr(text, "\"tower\""));
-  assert(edit_test_read(near, text, sizeof(text)));
+  assert(edit_test_read(near_path, text, sizeof(text)));
   assert(strstr(text, "\"crate\"") && !strstr(text, "\"tower\""));
-  assert(edit_test_read(far, text, sizeof(text)));
+  assert(edit_test_read(far_path, text, sizeof(text)));
   assert(strstr(text, "\"tower\"") && strstr(text, "\"flag\""));
   static char far_before[16384];
-  const size_t far_size = edit_test_read(far, far_before, sizeof(far_before));
+  const size_t far_size =
+      edit_test_read(far_path, far_before, sizeof(far_before));
   assert(edit_test_read(index, text, sizeof(text)));
   assert(strstr(text, "[0,0]") && strstr(text, "[2,-1]"));
 
@@ -678,9 +679,9 @@ static void edit_test_partition(VkrAllocator *allocator) {
   assert(vkr_scene_edit_apply(&state, &scene, crate, &values));
   vkr_scene_update_transforms(&scene);
   assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
-  assert(edit_test_read(far, text, sizeof(text)) == far_size &&
+  assert(edit_test_read(far_path, text, sizeof(text)) == far_size &&
          MemCompare(text, far_before, far_size) == 0);
-  assert(edit_test_read(near, text, sizeof(text)) && strstr(text, "20"));
+  assert(edit_test_read(near_path, text, sizeof(text)) && strstr(text, "20"));
   /* The journal names the tower, so its cell stays. */
   assert(!vkr_scene_edit_cell_unloadable(&state, &scene,
                                          (VkrScenePartitionCell){2, -1}));
@@ -729,7 +730,7 @@ static void edit_test_partition(VkrAllocator *allocator) {
                                  vkr_quat_identity(), vec3_one()));
   vkr_scene_update_transforms(&scene);
   assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
-  assert(edit_test_read(far, text, sizeof(text)) == far_size &&
+  assert(edit_test_read(far_path, text, sizeof(text)) == far_size &&
          MemCompare(text, far_before, far_size) == 0);
   assert(vkr_scene_edit_cell_unloadable(&state, &scene, far_cell));
   vkr_scene_edit_cell_unload(&state, &scene, far_cell);
@@ -740,7 +741,7 @@ static void edit_test_partition(VkrAllocator *allocator) {
   /* Saving with the cell unloaded keeps its document. */
   vkr_scene_update_transforms(&scene);
   assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
-  assert(edit_test_read(far, text, sizeof(text)) == far_size &&
+  assert(edit_test_read(far_path, text, sizeof(text)) == far_size &&
          MemCompare(text, far_before, far_size) == 0);
 
   /* A cell loading while the origin is rebased (ADR-086) places its roots
@@ -768,7 +769,7 @@ static void edit_test_partition(VkrAllocator *allocator) {
 
   /* An unreadable document stays listed and untouched: streaming does not
      load it, and a save refuses an object that would land in it. */
-  edit_test_write(far, "{", 1u);
+  edit_test_write(far_path, "{", 1u);
   assert(!vkr_scene_edit_cell_load(&state, &scene, far_cell));
   assert(vkr_scene_partition_cell(&scene, far_cell, false_v)->flags &
          VKR_SCENE_PARTITION_CELL_UNREADABLE);
@@ -781,25 +782,25 @@ static void edit_test_partition(VkrAllocator *allocator) {
   }
   assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
   assert(edit_test_read(index, text, sizeof(text)) && strstr(text, "[2,-1]"));
-  assert(edit_test_read(far, text, sizeof(text)) == 1u && text[0] == '{');
+  assert(edit_test_read(far_path, text, sizeof(text)) == 1u && text[0] == '{');
   (void)edit_test_create_at(&state, &scene, (VkrEntityId){0}, "barrel",
                             vec3_new(320, 0, -30));
   vkr_scene_update_transforms(&scene);
   assert(!vkr_scene_edit_save(&state, &scene, sidecar_path));
-  assert(edit_test_read(far, text, sizeof(text)) == 1u && text[0] == '{');
+  assert(edit_test_read(far_path, text, sizeof(text)) == 1u && text[0] == '{');
 
   /* A listed document that is missing loads as an empty cell. */
-  FilePath far_file = {
-      .path = string8_create_from_cstr((const uint8_t *)far, strlen(far)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath far_file = {.path = string8_create_from_cstr(
+                           (const uint8_t *)far_path, strlen(far_path)),
+                       .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_remove(&far_file) == FILE_ERROR_NONE);
   assert(vkr_scene_edit_save(&state, &scene, sidecar_path));
-  assert(edit_test_read(far, text, sizeof(text)) &&
+  assert(edit_test_read(far_path, text, sizeof(text)) &&
          strstr(text, "\"barrel\"") && !strstr(text, "\"tower\""));
   vkr_scene_edit_reset(&state, allocator, 1);
   vkr_scene_shutdown(&scene, NULL);
 
-  const char *paths[] = {near, far, index, sidecar};
+  const char *paths[] = {near_path, far_path, index, sidecar};
   for (uint32_t i = 0; i < ArrayCount(paths); ++i) {
     FilePath file = {.path = string8_create_from_cstr((const uint8_t *)paths[i],
                                                       strlen(paths[i])),

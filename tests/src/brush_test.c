@@ -120,10 +120,10 @@ static void brush_test_editing(VkrBrushGeometry *geometry) {
   assert(brush_test_near(volume, 4.0f * 3.0f * 0.25f - 1.0f * 2.0f * 0.25f,
                          1.0e-3f));
   /* A cutter beside the wall does not touch it; one around it removes it. */
-  VkrBrushPlane far[6];
+  VkrBrushPlane beside[6];
   (void)vkr_brush_box_planes(vec3_new(10.0f, 0.0f, 0.0f),
-                             vec3_new(11.0f, 1.0f, 1.0f), far);
-  assert(vkr_brush_carve(wall, 6u, far, 6u, pieces, 6u, geometry) ==
+                             vec3_new(11.0f, 1.0f, 1.0f), beside);
+  assert(vkr_brush_carve(wall, 6u, beside, 6u, pieces, 6u, geometry) ==
          UINT32_MAX);
   VkrBrushPlane around[6];
   (void)vkr_brush_box_planes(vec3_new(-1.0f, -1.0f, -1.0f),

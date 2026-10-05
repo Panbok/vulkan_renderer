@@ -37,7 +37,8 @@ static void heightfield_test_end(HeightfieldTest *test) {
   vkr_dmemory_allocator_destroy(&test->allocator);
 }
 
-static bool8_t near(float32_t a, float32_t b, float32_t tolerance) {
+static bool8_t heightfield_test_near(float32_t a, float32_t b,
+                                     float32_t tolerance) {
   return fabsf(a - b) <= tolerance;
 }
 
@@ -121,12 +122,15 @@ static void heightfield_test_operations(void) {
   assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
   assert(MemCompare(&predicted, &touched, sizeof(touched)) == 0);
   /* Full strength at the centre, nothing at the radius. */
-  assert(near(vkr_heightfield_at(&field, 32u, 32u), 2.0f, 2.0f * step));
-  assert(near(vkr_heightfield_at(&field, 36u, 32u), 0.0f, step));
-  assert(near(vkr_heightfield_at(&field, 10u, 10u), 0.0f, step));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 32u, 32u), 2.0f,
+                               2.0f * step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 36u, 32u), 0.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 10u, 10u), 0.0f, step));
   float32_t h = 0.0f;
   assert(vkr_heightfield_sample(&field, 0.0f, 0.0f, &h) &&
-         near(h, 2.0f, 2.0f * step));
+         heightfield_test_near(h, 2.0f, 2.0f * step));
   assert(!vkr_heightfield_sample(&field, 40.0f, 0.0f, &h));
 
   /* A flattened rectangle is level inside and untouched past its
@@ -137,8 +141,9 @@ static void heightfield_test_operations(void) {
                           .height = 5.0f,
                           .falloff = 2.0f};
   assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
-  assert(near(vkr_heightfield_at(&field, 17u, 17u), 5.0f, step));
-  assert(near(vkr_heightfield_at(&field, 7u, 7u), 0.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 17u, 17u), 5.0f, step));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 7u, 7u), 0.0f, step));
 
   /* A ramp's centreline follows its ends. */
   op = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_RAMP,
@@ -146,9 +151,12 @@ static void heightfield_test_operations(void) {
                           .b = vec3_new(20.0f, 10.0f, 0.0f),
                           .width = 2.0f};
   assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
-  assert(near(vkr_heightfield_at(&field, 42u, 32u), 0.0f, step));
-  assert(near(vkr_heightfield_at(&field, 47u, 32u), 5.0f, step));
-  assert(near(vkr_heightfield_at(&field, 52u, 32u), 10.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 42u, 32u), 0.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 47u, 32u), 5.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 52u, 32u), 10.0f, step));
 
   /* A road follows its centreline's heights inside its width and leaves
      ground past its falloff alone. */
@@ -163,9 +171,12 @@ static void heightfield_test_operations(void) {
   assert(vkr_heightfield_op_rect(&field, &op, &predicted));
   assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
   assert(MemCompare(&predicted, &touched, sizeof(touched)) == 0);
-  assert(near(vkr_heightfield_at(&field, 22u, 52u), 2.0f, step));
-  assert(near(vkr_heightfield_at(&field, 42u, 51u), 3.0f, step));
-  assert(near(vkr_heightfield_at(&field, 42u, 59u), 0.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 22u, 52u), 2.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 42u, 51u), 3.0f, step));
+  assert(
+      heightfield_test_near(vkr_heightfield_at(&field, 42u, 59u), 0.0f, step));
   op.path_count = 1u;
   assert(!vkr_heightfield_op_rect(&field, &op, &predicted));
 
@@ -341,16 +352,16 @@ static void heightfield_test_tile_levels(void) {
       assert(cross < 0.0f);
       area -= 0.5f * cross;
     }
-    assert(near(area, 128.0f * 128.0f, 1.0e-2f));
+    assert(heightfield_test_near(area, 128.0f * 128.0f, 1.0e-2f));
     if (level > 0u) {
       assert(range.error >= lod.levels[level - 1u].error);
     }
   }
   /* Level 1 drops the spike: 3 m against a 0.4 m floor. */
-  assert(near(lod.levels[1].error, 3.0f, 1.0e-5f));
+  assert(heightfield_test_near(lod.levels[1].error, 3.0f, 1.0e-5f));
   /* Flat elsewhere: level 6's floor is a tenth of its 128 m cells, above
      the spike. */
-  assert(near(lod.levels[6].error, 12.8f, 1.0e-4f));
+  assert(heightfield_test_near(lod.levels[6].error, 12.8f, 1.0e-4f));
   free(indices);
   printf("  heightfield_test_tile_levels PASSED\n");
 }
@@ -379,7 +390,7 @@ static void heightfield_test_streamed(void) {
   assert(vkr_heightfield_streamed(&field) && field.resident_tiles == 0u);
   float32_t height = 0.0f;
   assert(vkr_heightfield_sample(&field, 0.0f, 0.0f, &height));
-  assert(near(height, 5.0f, 0.01f));
+  assert(heightfield_test_near(height, 5.0f, 0.01f));
 
   /* Samples (192..207, 256..271) lie in tile (3, 4); (192, 256) is an
      overview sample. */
@@ -395,7 +406,8 @@ static void heightfield_test_streamed(void) {
     weights[i] = 0xFF00u;
   }
   vkr_heightfield_write_rect(&field, rect, heights, weights);
-  assert(near(vkr_heightfield_overview_at(&field, 12u, 16u), 40.0f, 0.01f));
+  assert(heightfield_test_near(vkr_heightfield_overview_at(&field, 12u, 16u),
+                               40.0f, 0.01f));
   /* Unsaved samples stay resident. */
   assert(!vkr_heightfield_tile_release(&field, 3u, 4u));
   assert(vkr_heightfield_save(&field, path, error, sizeof(error)));
@@ -405,12 +417,16 @@ static void heightfield_test_streamed(void) {
 
   assert(vkr_heightfield_load(&field, path, &test.allocator, error,
                               sizeof(error)));
-  assert(near(vkr_heightfield_overview_at(&field, 12u, 16u), 40.0f, 0.01f));
-  assert(near(vkr_heightfield_overview_at(&field, 13u, 16u), 5.0f, 0.01f));
+  assert(heightfield_test_near(vkr_heightfield_overview_at(&field, 12u, 16u),
+                               40.0f, 0.01f));
+  assert(heightfield_test_near(vkr_heightfield_overview_at(&field, 13u, 16u),
+                               5.0f, 0.01f));
   assert(vkr_heightfield_tile_load(&field, 3u, 4u));
-  assert(near(vkr_heightfield_at(&field, 200u, 260u), 40.0f, 0.01f));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 200u, 260u), 40.0f,
+                               0.01f));
   assert(vkr_heightfield_weights_at(&field, 200u, 260u) == 0xFF00u);
-  assert(near(vkr_heightfield_at(&field, 210u, 260u), 5.0f, 0.01f));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 210u, 260u), 5.0f,
+                               0.01f));
   /* Span-wise heights, across tile edges, match vkr_heightfield_at bit for
      bit. */
   const VkrHeightfieldRect span = {150u, 250u, 270u, 262u};
@@ -464,8 +480,10 @@ static void heightfield_test_streamed(void) {
                                 sizeof(error)));
     assert(!file_exists(&journal_file));
     assert(vkr_heightfield_tile_load(&field, 3u, 4u));
-    assert(near(vkr_heightfield_at(&field, 200u, 260u), 60.0f, 0.01f));
-    assert(near(vkr_heightfield_overview_at(&field, 12u, 16u), 60.0f, 0.01f));
+    assert(heightfield_test_near(vkr_heightfield_at(&field, 200u, 260u), 60.0f,
+                                 0.01f));
+    assert(heightfield_test_near(vkr_heightfield_overview_at(&field, 12u, 16u),
+                                 60.0f, 0.01f));
     vkr_heightfield_destroy(&field, &test.allocator);
   }
 
@@ -475,7 +493,8 @@ static void heightfield_test_streamed(void) {
   assert(vkr_heightfield_load(&field, path, &test.allocator, error,
                               sizeof(error)));
   assert(field.read_only && vkr_heightfield_tile_load(&field, 3u, 4u));
-  assert(near(vkr_heightfield_at(&field, 200u, 260u), 60.0f, 0.01f));
+  assert(heightfield_test_near(vkr_heightfield_at(&field, 200u, 260u), 60.0f,
+                               0.01f));
   vkr_heightfield_write_rect(&field, rect, heights, weights);
   assert(!vkr_heightfield_save(&field, path, error, sizeof(error)));
   vkr_heightfield_destroy(&field, &test.allocator);
@@ -501,7 +520,7 @@ static void heightfield_test_streamed(void) {
   Vec3 normal = vec3_zero();
   assert(vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 500.0f, -764.0f),
                                   -500.0f, &ground, &normal));
-  assert(near(ground.y, 70.0f, 0.01f) && normal.y > 0.999f);
+  assert(heightfield_test_near(ground.y, 70.0f, 0.01f) && normal.y > 0.999f);
   assert(!vkr_scene_terrain_ground(&scene, vec3_new(-824.0f, 60.0f, -764.0f),
                                    -500.0f, &ground, &normal));
   vkr_scene_shutdown(&scene, NULL);

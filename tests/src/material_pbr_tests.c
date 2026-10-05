@@ -1701,12 +1701,12 @@ vkr_internal void test_material_texture_limit_reloads_changed_textures(
   assert(vkr_resource_system_register_loader(&ctx->texture_system,
                                              vkr_texture_loader_create()));
 
-  const char *big = "tests/tmp/material_pbr/limit_big.vkt";
-  const char *small = "tests/tmp/material_pbr/limit_small.vkt";
+  const char *big_path = "tests/tmp/material_pbr/limit_big.vkt";
+  const char *small_path = "tests/tmp/material_pbr/limit_small.vkt";
   char absolute[1024];
-  snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, big);
+  snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, big_path);
   assert(material_pbr_test_write_mipped_texture(absolute, 16u, 3u));
-  snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, small);
+  snprintf(absolute, sizeof(absolute), "%s%s", PROJECT_SOURCE_DIR, small_path);
   assert(material_pbr_test_write_mipped_texture(absolute, 4u, 1u));
 
   VkrMaterialSystem *system = &ctx->material_system;
@@ -1785,8 +1785,8 @@ vkr_internal void test_material_texture_limit_reloads_changed_textures(
   vkr_material_system_cancel_texture_streams(system, material);
   vkr_resource_system_shutdown();
   vkr_job_system_shutdown(&jobs);
-  material_pbr_test_remove_file(big);
-  material_pbr_test_remove_file(small);
+  material_pbr_test_remove_file(big_path);
+  material_pbr_test_remove_file(small_path);
   printf("  test_material_texture_limit_reloads_changed_textures PASSED\n");
 }
 

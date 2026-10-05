@@ -413,12 +413,12 @@ static void level_lint_floor(LevelGrid *grid, LevelIssues *issues) {
             continue;
           }
           const uint8_t next_layers = grid->layers[(size_t)nz * grid->nx + nx];
-          bool8_t near = false_v;
+          bool8_t reachable = false_v;
           for (uint32_t m = 0; m < next_layers; ++m) {
             const LevelNode *b =
                 level_node(grid, (uint32_t)nx, (uint32_t)nz, m);
             const float32_t rise = b->position.y - a->position.y;
-            near |= fabsf(rise) < VKR_EDITOR_LEVEL_DROP_MAX;
+            reachable |= fabsf(rise) < VKR_EDITOR_LEVEL_DROP_MAX;
             const Vec3 middle =
                 vec3_scale(vec3_add(a->position, b->position), 0.5f);
             if (b->state == LEVEL_WALKABLE && rise > grid->capsule->step_up &&
@@ -432,7 +432,7 @@ static void level_lint_floor(LevelGrid *grid, LevelIssues *issues) {
                               57.29577951f);
             }
           }
-          if (!near) {
+          if (!reachable) {
             level_issue(issues, VKR_EDITOR_LEVEL_VOID_EDGE, a->position,
                         a->entity, 0.0f);
           }
