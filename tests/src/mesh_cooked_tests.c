@@ -920,6 +920,81 @@ static float32_t test_uv_edge(Vec2 a, Vec2 b, Vec2 p) {
   return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 }
 
+/* A unit cube split into two source meshes of three faces, one range each.
+ * The encode info points into the record, which the caller keeps alive. */
+typedef struct TestLightmapCube {
+  VkrVertex3d vertices[24];
+  uint32_t indices[36];
+  VkrGeometryUploadRange ranges[2];
+  VkrMeshSourceMesh source_meshes[2];
+  VkrMeshSourceNode nodes[2];
+  VkrMeshCookedEncodeInfo info;
+} TestLightmapCube;
+
+static void test_lightmap_cube_build(TestLightmapCube *cube,
+                                     String8 dependency_string) {
+  const float32_t normals[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                   {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+  for (uint32_t face = 0u; face < 6u; ++face) {
+    const float32_t *n = normals[face];
+    const float32_t u[3] = {n[1], n[2], n[0]};
+    const float32_t v[3] = {n[2], n[0], n[1]};
+    for (uint32_t corner = 0u; corner < 4u; ++corner) {
+      const float32_t su = (corner == 1u || corner == 2u) ? 0.5f : -0.5f;
+      const float32_t sv = corner >= 2u ? 0.5f : -0.5f;
+      VkrVertex3d *vertex = &cube->vertices[face * 4u + corner];
+      *vertex = test_vertex(0.5f * n[0] + su * u[0] + sv * v[0],
+                            0.5f * n[1] + su * u[1] + sv * v[1],
+                            0.5f * n[2] + su * u[2] + sv * v[2]);
+      vertex->normal = (VkrPackedVec3){n[0], n[1], n[2]};
+      vertex->tangent = (Vec4){u[0], u[1], u[2], 1.0f};
+    }
+    const uint32_t base = face * 4u;
+    const uint32_t face_indices[6] = {base, base + 1u, base + 2u,
+                                      base, base + 2u, base + 3u};
+    MemCopy(&cube->indices[face * 6u], face_indices, sizeof(face_indices));
+  }
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    cube->ranges[i] = (VkrGeometryUploadRange){
+        .range_id = i,
+        .first_index = 18u * i,
+        .index_count = 18,
+        .min_extents = {-0.5f, -0.5f, -0.5f},
+        .max_extents = {0.5f, 0.5f, 0.5f},
+        .material_name = i == 0u ? string8_lit("material.first")
+                                 : string8_lit("material.second"),
+        .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD};
+    cube->source_meshes[i] = (VkrMeshSourceMesh){
+        .source_mesh_index = i, .first_range = i, .range_count = 1};
+    cube->nodes[i] = (VkrMeshSourceNode){.name = string8_lit("half"),
+                                         .local = mat4_identity(),
+                                         .parent = UINT32_MAX,
+                                         .mesh = i,
+                                         .mesh_variant = i,
+                                         .camera = UINT32_MAX,
+                                         .skin = UINT32_MAX,
+                                         .light = UINT32_MAX,
+                                         .in_scene = true_v};
+  }
+  cube->info = (VkrMeshCookedEncodeInfo){
+      .source = {.nodes = {.data = cube->nodes, .length = 2},
+                 .meshes = {.data = cube->source_meshes, .length = 2}},
+      .source_path = dependency_string,
+      .dependency_paths = &cube->info.source_path,
+      .dependency_count = 1,
+      .mesh_buffer = {.vertex_size = sizeof(VkrVertex3d),
+                      .vertex_count = 24,
+                      .vertices = cube->vertices,
+                      .index_size = sizeof(uint32_t),
+                      .index_count = 36,
+                      .indices = cube->indices},
+      .ranges = cube->ranges,
+      .range_count = 2,
+      .budgets = vkr_packed_geometry_default_budgets(),
+  };
+  cube->info.dependency_paths = &cube->info.source_path;
+}
+
 /* A unit cube split into two source meshes of three faces, one range each,
  * cooked with a lightmap UV set: the artifact carries the header flag, one
  * atlas per source mesh and flagged ranges; every source triangle survives;
@@ -942,78 +1017,9 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   assert(vkr_allocator_arena(&scratch));
   assert(vkr_allocator_arena(&result));
 
-  VkrVertex3d vertices[24];
-  uint32_t indices[36];
-  const float32_t normals[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
-                                   {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
-  for (uint32_t face = 0u; face < 6u; ++face) {
-    const float32_t *n = normals[face];
-    const float32_t u[3] = {n[1], n[2], n[0]};
-    const float32_t v[3] = {n[2], n[0], n[1]};
-    for (uint32_t corner = 0u; corner < 4u; ++corner) {
-      const float32_t su = (corner == 1u || corner == 2u) ? 0.5f : -0.5f;
-      const float32_t sv = corner >= 2u ? 0.5f : -0.5f;
-      VkrVertex3d *vertex = &vertices[face * 4u + corner];
-      *vertex = test_vertex(0.5f * n[0] + su * u[0] + sv * v[0],
-                            0.5f * n[1] + su * u[1] + sv * v[1],
-                            0.5f * n[2] + su * u[2] + sv * v[2]);
-      vertex->normal = (VkrPackedVec3){n[0], n[1], n[2]};
-      vertex->tangent = (Vec4){u[0], u[1], u[2], 1.0f};
-    }
-    const uint32_t base = face * 4u;
-    const uint32_t face_indices[6] = {base, base + 1u, base + 2u,
-                                      base, base + 2u, base + 3u};
-    MemCopy(&indices[face * 6u], face_indices, sizeof(face_indices));
-  }
-  VkrGeometryUploadRange ranges[2] = {
-      {.range_id = 0,
-       .first_index = 0,
-       .index_count = 18,
-       .min_extents = {-0.5f, -0.5f, -0.5f},
-       .max_extents = {0.5f, 0.5f, 0.5f},
-       .material_name = string8_lit("material.first"),
-       .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD},
-      {.range_id = 1,
-       .first_index = 18,
-       .index_count = 18,
-       .min_extents = {-0.5f, -0.5f, -0.5f},
-       .max_extents = {0.5f, 0.5f, 0.5f},
-       .material_name = string8_lit("material.second"),
-       .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD},
-  };
-  VkrMeshSourceMesh source_meshes[2] = {
-      {.source_mesh_index = 0, .first_range = 0, .range_count = 1},
-      {.source_mesh_index = 1, .first_range = 1, .range_count = 1},
-  };
-  VkrMeshSourceNode nodes[2];
-  for (uint32_t i = 0u; i < 2u; ++i) {
-    nodes[i] = (VkrMeshSourceNode){.name = string8_lit("half"),
-                                   .local = mat4_identity(),
-                                   .parent = UINT32_MAX,
-                                   .mesh = i,
-                                   .mesh_variant = i,
-                                   .camera = UINT32_MAX,
-                                   .skin = UINT32_MAX,
-                                   .light = UINT32_MAX,
-                                   .in_scene = true_v};
-  }
-  String8 dependency_string = string8_lit(dependency_path);
-  VkrMeshCookedEncodeInfo info = {
-      .source = {.nodes = {.data = nodes, .length = 2},
-                 .meshes = {.data = source_meshes, .length = 2}},
-      .source_path = dependency_string,
-      .dependency_paths = &dependency_string,
-      .dependency_count = 1,
-      .mesh_buffer = {.vertex_size = sizeof(VkrVertex3d),
-                      .vertex_count = 24,
-                      .vertices = vertices,
-                      .index_size = sizeof(uint32_t),
-                      .index_count = 36,
-                      .indices = indices},
-      .ranges = ranges,
-      .range_count = 2,
-      .budgets = vkr_packed_geometry_default_budgets(),
-  };
+  static TestLightmapCube cube;
+  test_lightmap_cube_build(&cube, string8_lit(dependency_path));
+  VkrMeshCookedEncodeInfo info = cube.info;
   uint8_t *plain = NULL;
   uint64_t plain_size = 0;
   assert(vkr_mesh_cooked_encode(&scratch, &info, &plain, &plain_size));
@@ -1155,6 +1161,30 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   arena_destroy(result_arena);
   arena_destroy(scratch_arena);
   printf("  test_mesh_cooked_lightmap_uv_round_trip PASSED\n");
+}
+
+uint8_t *test_cook_lightmap_cube(float32_t texels_per_unit,
+                                 uint64_t *out_size) {
+  static const char dependency_path[] = "build/vkr_mesh_cooked_lightmap.bin";
+  FILE *dependency = fopen(dependency_path, "wb");
+  assert(dependency != NULL);
+  assert(fwrite("lightmap\n", 1u, 9u, dependency) == 9u);
+  assert(fclose(dependency) == 0);
+  Arena *scratch_arena = arena_create(MB(64), MB(4));
+  assert(scratch_arena != NULL);
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&scratch));
+  static TestLightmapCube cube;
+  test_lightmap_cube_build(&cube, string8_lit(dependency_path));
+  cube.info.lightmap = (VkrMeshCookedLightmapOptions){
+      .texels_per_unit = texels_per_unit, .padding = 2u, .max_size = 4096u};
+  uint8_t *cooked = NULL;
+  assert(vkr_mesh_cooked_encode(&scratch, &cube.info, &cooked, out_size));
+  uint8_t *copy = malloc(*out_size);
+  assert(copy != NULL);
+  MemCopy(copy, cooked, *out_size);
+  arena_destroy(scratch_arena);
+  return copy;
 }
 
 bool32_t run_mesh_cooked_tests(void) {

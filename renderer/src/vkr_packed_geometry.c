@@ -278,10 +278,10 @@ bool8_t vkr_packed_geometry_vertices_are_valid(
   return true_v;
 }
 
-bool8_t vkr_packed_geometry_set_lightmap_uv(VkrPackedStaticVertex *vertices,
-                                            uint32_t vertex_count,
-                                            const float32_t *uv2,
-                                            VkrGpuGeometryDecodeRecord *decode) {
+bool8_t
+vkr_packed_geometry_set_lightmap_uv(VkrPackedStaticVertex *vertices,
+                                    uint32_t vertex_count, const float32_t *uv2,
+                                    VkrGpuGeometryDecodeRecord *decode) {
   if (!vertices || vertex_count == 0u || !uv2 || !decode ||
       !vkr_packed_geometry_decode_is_valid(decode)) {
     return false_v;
@@ -292,9 +292,9 @@ bool8_t vkr_packed_geometry_set_lightmap_uv(VkrPackedStaticVertex *vertices,
     }
   }
   for (uint32_t i = 0u; i < vertex_count; ++i) {
-    vertices[i].words[7] = (uint32_t)vkr_packed_unorm16(uv2[2u * i]) |
-                           ((uint32_t)vkr_packed_unorm16(uv2[2u * i + 1u])
-                            << 16u);
+    vertices[i].words[7] =
+        (uint32_t)vkr_packed_unorm16(uv2[2u * i]) |
+        ((uint32_t)vkr_packed_unorm16(uv2[2u * i + 1u]) << 16u);
   }
   decode->flags |= VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV;
   return true_v;

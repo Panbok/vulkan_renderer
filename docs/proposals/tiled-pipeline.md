@@ -252,8 +252,17 @@ Phases:
    uncompressed RGBA16F layer, before the 2,909 instances are counted
    separately, so lamp-group, sky and sun-key layers need block compression,
    a compact encoding or a lower density to fit the M1 memory floor.
-2. Separable bake: texel tracing in the ADR-054 baker with lamp-group,
-   sky and sun-key layers; project storage and the editor Bake panel.
+2. Separable bake: texel tracing in the ADR-054 baker with lamp-group and
+   sun-key layers; project storage and the editor Bake panel. Gather rays
+   from a texel never reach a delta light, so a sun-key layer (sky and sun at
+   that time, through a per-key integrator) holds sun bounce and sky light
+   without the sun's direct term, which stays at runtime; lamp-group layers
+   add explicit lamp sampling at the texel for direct light.
+   Status: the baker reads lightmap UVs and each instance's atlas, and
+   [`vkr_bake_lightmap.h`](../../tools/bake/vkr_bake_lightmap.h) packs
+   instances onto pages and rasterizes a page's texels to world positions and
+   normals, covered by `run_lightmap_bake_tests`. Integration, layer output
+   and ASTC encoding are pending.
 3. Time of day: light groups and mobility in scene data; a system driving
    sun, moon, sky and group intensities.
 4. Tiled runtime: lightmap sampling in the tiled pipeline's forward shader,

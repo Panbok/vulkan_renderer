@@ -6,6 +6,7 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS src/*.c)
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
 target_sources(vulkan_renderer_tester PRIVATE
     src/atmosphere_bake_dark_tests.cpp
+    src/lightmap_bake_tests.cpp
     "${CMAKE_SOURCE_DIR}/editor/src/editor_project_store.c"
     "${CMAKE_SOURCE_DIR}/app/src/app_ui.c"
     "${CMAKE_SOURCE_DIR}/app/src/debug_overlay.c"

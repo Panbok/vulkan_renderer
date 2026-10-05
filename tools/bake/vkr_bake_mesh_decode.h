@@ -32,9 +32,23 @@ typedef bool8_t (*VkrBakeMeshTriangleCallback)(void *user,
 typedef bool8_t (*VkrBakeMeshLightCallback)(void *user,
                                             const VkrBakeMeshLight *light);
 
+/* One emitted source mesh instance and its lightmap chart atlas (ADR-087). A
+   zero atlas means the instance has no lightmap UV set. */
+typedef struct VkrBakeMeshInstance {
+  uint32_t source_instance_index;
+  Mat4 world;
+  uint32_t atlas_width;
+  uint32_t atlas_height;
+  float32_t texels_per_unit;
+} VkrBakeMeshInstance;
+typedef bool8_t (*VkrBakeMeshInstanceCallback)(
+    void *user, const VkrBakeMeshInstance *instance);
+
 typedef struct VkrBakeMeshDecodeCallbacks {
   VkrBakeMeshTriangleCallback emit_triangle;
   VkrBakeMeshLightCallback emit_light;
+  /* Optional; called before an instance's triangles. */
+  VkrBakeMeshInstanceCallback emit_instance;
 } VkrBakeMeshDecodeCallbacks;
 
 /*

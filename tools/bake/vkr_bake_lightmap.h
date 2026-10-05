@@ -1,0 +1,75 @@
+#pragma once
+
+#include <cstdint>
+#include <vector>
+
+extern "C" {
+#include "math/mat.h"
+#include "vkr_bake_geometry.h"
+}
+
+/*
+ * Scene lightmap layout and texel generation (ADR-087). Each lightmapped
+ * instance takes one rectangle on a square page; its source mesh's normalized
+ * lightmap UVs span that rectangle. Pages are baked one at a time, so a page's
+ * texel records are the only per-texel state alive during a bake.
+ */
+
+/* One lightmapped instance: its source mesh's chart atlas in texels at
+   texels_per_unit mesh units, and its world transform. */
+struct VkrBakeLightmapInstance {
+  uint32_t source_instance_index = 0u;
+  Mat4 world = {};
+  uint32_t atlas_width = 0u;
+  uint32_t atlas_height = 0u;
+  float32_t texels_per_unit = 0.0f;
+};
+
+/* An instance's rectangle in texels on one page. */
+struct VkrBakeLightmapRect {
+  uint32_t source_instance_index = 0u;
+  uint32_t page = 0u;
+  uint32_t x = 0u;
+  uint32_t y = 0u;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+};
+
+struct VkrBakeLightmapLayout {
+  uint32_t page_size = 0u;
+  uint32_t page_count = 0u;
+  std::vector<VkrBakeLightmapRect> rects;
+  /* Rect index per source instance index; UINT32_MAX when unlit. */
+  std::vector<uint32_t> rect_by_instance;
+};
+
+/* One texel center that lies inside a lightmapped triangle on a page. */
+struct VkrBakeLightmapTexel {
+  uint32_t x = 0u;
+  uint32_t y = 0u;
+  Vec3 position = {};
+  /* Interpolated shading normal, unit length. */
+  Vec3 normal = {};
+  uint32_t triangle_index = 0u;
+};
+
+/*
+ * Sizes each instance's rectangle as its atlas times the instance's uniform
+ * world scale times density_scale, in whole 4x4 blocks, and shelf-packs the
+ * rectangles tallest first onto page_size pages. A rectangle larger than a
+ * page is scaled down to fit. Instances without an atlas get no rectangle.
+ * page_size is a positive multiple of four.
+ */
+bool vkr_bake_lightmap_pack(
+    const std::vector<VkrBakeLightmapInstance> &instances, uint32_t page_size,
+    float32_t density_scale, VkrBakeLightmapLayout *out_layout);
+
+/*
+ * Collects every texel center of `page` that lies inside a triangle of a
+ * lightmapped instance, in row-major order. A texel claimed by one triangle
+ * is not claimed again by a neighbor sharing its edge.
+ */
+bool vkr_bake_lightmap_rasterize_page(
+    const VkrBakeTriangle *triangles, uint32_t triangle_count,
+    const VkrBakeLightmapLayout &layout, uint32_t page,
+    std::vector<VkrBakeLightmapTexel> *out_texels);

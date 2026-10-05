@@ -16,6 +16,9 @@ typedef struct VkrBakeVertex {
   Vec4 color;
   /* Cooked world tangent and handedness, zero only for procedural inputs. */
   Vec4 tangent;
+  /* Lightmap UV in [0,1] over the source mesh's chart atlas (ADR-087);
+     zero when the mesh has no lightmap UV set. */
+  Vec2 lightmap_uv;
 } VkrBakeVertex;
 
 /**

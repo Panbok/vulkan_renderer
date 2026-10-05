@@ -920,6 +920,24 @@ bool8_t append_mesh_light(void *user, const VkrBakeMeshLight *source) {
   }
 }
 
+bool8_t append_mesh_instance(void *user, const VkrBakeMeshInstance *instance) {
+  MeshAppendContext *context = static_cast<MeshAppendContext *>(user);
+  if (instance->atlas_width == 0u || instance->atlas_height == 0u)
+    return true_v;
+  try {
+    VkrBakeLightmapInstance lightmap;
+    lightmap.source_instance_index = instance->source_instance_index;
+    lightmap.world = instance->world;
+    lightmap.atlas_width = instance->atlas_width;
+    lightmap.atlas_height = instance->atlas_height;
+    lightmap.texels_per_unit = instance->texels_per_unit;
+    context->scene->lightmap_instances.push_back(lightmap);
+    return true_v;
+  } catch (const std::bad_alloc &) {
+    return false_v;
+  }
+}
+
 bool append_mesh(VkrBakeScene *scene, const std::string &path,
                  Mat4 entity_world, uint32_t *next_instance) {
   std::vector<uint8_t> bytes;
@@ -929,6 +947,7 @@ bool append_mesh(VkrBakeScene *scene, const std::string &path,
   const VkrBakeMeshDecodeCallbacks callbacks = {
       .emit_triangle = append_mesh_triangle,
       .emit_light = append_mesh_light,
+      .emit_instance = append_mesh_instance,
   };
   String8 source_path = {.str = (uint8_t *)path.data(), .length = path.size()};
   if (!vkr_bake_mesh_decode_file(source_path, bytes.data(), bytes.size(),

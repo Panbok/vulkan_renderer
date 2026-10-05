@@ -38,6 +38,29 @@ vkr_internal bool8_t vkr_bake_mesh_normal_matrix(Mat4 world, Mat4 *out_normal,
   return true_v;
 }
 
+/* Reports an instance and its source mesh's lightmap atlas, if any. */
+vkr_internal bool8_t vkr_bake_mesh_emit_instance(
+    const VkrMeshCookedDecoded *decoded, uint32_t atlas_index, Mat4 world,
+    uint32_t source_instance, const VkrBakeMeshDecodeCallbacks *callbacks,
+    void *user) {
+  if (!callbacks->emit_instance) {
+    return true_v;
+  }
+  VkrBakeMeshInstance instance = {.source_instance_index = source_instance,
+                                  .world = world};
+  if (decoded->lightmap.atlas_count != 0u) {
+    if (atlas_index >= decoded->lightmap.atlas_count) {
+      return false_v;
+    }
+    const VkrMeshCookedLightmapAtlas *atlas =
+        &decoded->lightmap.atlases[atlas_index];
+    instance.atlas_width = atlas->width;
+    instance.atlas_height = atlas->height;
+    instance.texels_per_unit = atlas->texels_per_unit;
+  }
+  return callbacks->emit_instance(user, &instance);
+}
+
 vkr_internal bool8_t vkr_bake_mesh_emit_ranges(
     const VkrMeshCookedDecoded *decoded, uint32_t first_range,
     uint32_t range_count, Mat4 world, uint32_t source_instance,
@@ -72,6 +95,8 @@ vkr_internal bool8_t vkr_bake_mesh_emit_ranges(
 
     const VkrGpuGeometryDecodeRecord *decode =
         &decoded->mesh_buffer.decodes[range->decode_index];
+    const bool8_t lightmap_uv =
+        (decode->flags & VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u;
     for (uint32_t index = range->first_index;
          index < range->first_index + range->index_count; index += 3u) {
       VkrBakeTriangle triangle = {0};
@@ -101,7 +126,10 @@ vkr_internal bool8_t vkr_bake_mesh_emit_ranges(
             .color = vertex.colour,
             .tangent =
                 vec4_new(world_tangent.x, world_tangent.y, world_tangent.z,
-                         flipped ? -vertex.tangent.w : vertex.tangent.w)};
+                         flipped ? -vertex.tangent.w : vertex.tangent.w),
+            .lightmap_uv = lightmap_uv ? vkr_packed_geometry_lightmap_uv(
+                                             &packed[indices[index + corner]])
+                                       : vec2_zero()};
         if (!vkr_bake_mesh_finite_vec3(triangle.vertex[corner].position) ||
             !vkr_bake_mesh_finite_vec3(triangle.vertex[corner].normal) ||
             vec3_length(triangle.vertex[corner].normal) <= 1.0e-8f ||
@@ -275,9 +303,12 @@ bool8_t vkr_bake_mesh_decode_file(String8 source_path, const uint8_t *data,
         }
         const VkrMeshSourceMesh *mesh =
             &decoded.source.meshes.data[node->mesh_variant];
-        success = vkr_bake_mesh_emit_ranges(
-            &decoded, mesh->first_range, mesh->range_count, world,
-            (*in_out_source_instance)++, callbacks, user);
+        success = vkr_bake_mesh_emit_instance(&decoded, node->mesh_variant,
+                                              world, *in_out_source_instance,
+                                              callbacks, user) &&
+                  vkr_bake_mesh_emit_ranges(
+                      &decoded, mesh->first_range, mesh->range_count, world,
+                      (*in_out_source_instance)++, callbacks, user);
       }
       if (success && callbacks->emit_light) {
         success = vkr_bake_mesh_emit_source_light(&node->punctual, world,
@@ -285,9 +316,12 @@ bool8_t vkr_bake_mesh_decode_file(String8 source_path, const uint8_t *data,
       }
     }
   } else if (success) {
-    success = vkr_bake_mesh_emit_ranges(
-        &decoded, 0u, (uint32_t)decoded.ranges.length, entity_world,
-        (*in_out_source_instance)++, callbacks, user);
+    success =
+        vkr_bake_mesh_emit_instance(&decoded, 0u, entity_world,
+                                    *in_out_source_instance, callbacks, user) &&
+        vkr_bake_mesh_emit_ranges(&decoded, 0u, (uint32_t)decoded.ranges.length,
+                                  entity_world, (*in_out_source_instance)++,
+                                  callbacks, user);
   }
 
   vkr_allocator_release_global_accounting(&scratch_allocator);

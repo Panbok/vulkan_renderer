@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "vkr_bake_atmosphere.h"
+#include "vkr_bake_lightmap.h"
 
 extern "C" {
 #include "memory/vkr_allocator.h"
@@ -88,6 +89,8 @@ struct VkrBakeScene {
   std::vector<VkrBakeTriangle> triangles;
   uint32_t zero_area_triangle_count = 0;
   std::vector<VkrBakeSceneLight> lights;
+  /* Instances of cooked meshes that carry a lightmap UV set (ADR-087). */
+  std::vector<VkrBakeLightmapInstance> lightmap_instances;
   std::vector<std::string> dependency_paths;
   VkrBakeSceneEnvironment environment;
   VkrBakeAtmosphere atmosphere;
