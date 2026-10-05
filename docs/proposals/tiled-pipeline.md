@@ -217,10 +217,17 @@ Owner decisions (2026-10-05): `vkr_bakery` unwraps with vendored
 day/night cycle through baked sun keys: four to eight sun positions baked as
 separate layers and blended at runtime by the current sun position.
 
-Open: the encoding of lamp-group and sun-key layers for normal-mapped surfaces
-(irradiance only or directional SH), the number of sun keys and their memory
-cost, texture compression for HDR layers on M-series, and the texel density
-budget for Bistro.
+Owner decisions (2026-10-05): eight sun keys, and lightmap layers stored as
+ASTC 4×4 HDR, one byte per texel. A native probe on the M1 Pro (Apple7)
+created `MTLPixelFormatASTC_4x4_HDR`, `BC6H_RGBUfloat` and `RGB9E5Float`
+textures. At 8 texels per unit Bistro needs an estimated 30 million texels
+once instances are counted (12.7 million for one instance per mesh times the
+2.4 instance-to-unique triangle ratio): about 30 MB per layer and 360 MB for
+eight sun keys, three lamp groups and one sky layer.
+
+Open: irradiance only or directional SH per layer for normal-mapped surfaces,
+the sun path the eight keys sample before a time-of-day model exists, and the
+texel density budget once instances are packed.
 
 Phases:
 
