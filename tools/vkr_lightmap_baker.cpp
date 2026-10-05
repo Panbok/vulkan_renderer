@@ -1,14 +1,18 @@
 #include "vkr_tool_entry.h"
 
 extern "C" {
+#include "assets/vkr_lightmap_set.h"
 #include "core/logger.h"
+#include "core/vkr_hash.h"
 #include "memory/vkr_arena_allocator.h"
 }
+#include "bake/vkr_bake_atmosphere.h"
 #include "bake/vkr_bake_bvh.h"
 #include "bake/vkr_bake_integrator.h"
 #include "bake/vkr_bake_lightmap.h"
 #include "bake/vkr_bake_metal.h"
 #include "bake/vkr_bake_scene.h"
+#include "filesystem/vkr_filesystem_cpp.h"
 
 #include <algorithm>
 #include <atomic>
@@ -17,7 +21,11 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <new>
+#include <sstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -27,7 +35,9 @@ extern "C" {
  * gathers cosine-weighted samples per texel through the ADR-054 integrator and
  * reports throughput. `--gpu trace` measures Metal ray throughput; `--gpu
  * gather` bakes the layer irradiance on Metal and checks it against the CPU
- * integrator. Layer output follows.
+ * integrator. `--output` bakes the scene's lightmap set (VKLM) on Metal and
+ * `--manifest` writes the bake's source closure for `vkr_bakery bake
+ * lightmap`; `--inspect` stops after the manifest.
  */
 
 namespace {
@@ -49,6 +59,9 @@ enum class CheckTransport : uint8_t {
 
 struct Options {
   const char *scene = nullptr;
+  const char *output = nullptr;
+  const char *manifest = nullptr;
+  bool inspect = false;
   uint32_t page_size = 4096u;
   float32_t texels_per_unit = 8.0f;
   uint32_t samples = 16u;
@@ -68,7 +81,8 @@ struct Options {
 void usage() {
   std::fprintf(
       stderr,
-      "Lightmap baker: --scene <scene.json> [--page-size <texels>] "
+      "Lightmap baker: --scene <scene.json> [--output <set.vklm>] "
+      "[--manifest <path>] [--inspect] [--page-size <texels>] "
       "[--texels-per-unit <world density>] [--samples <n>] [--max-depth <n>] "
       "[--pages <n>] [--threads <n>] [--seed <n>] [--gpu <trace|gather>] "
       "[--check-texels <n>] [--check-samples <n>] "
@@ -89,12 +103,20 @@ bool parse_u32(const char *text, uint32_t *out) {
 bool parse(int argc, char **argv, Options *options) {
   for (int i = 1; i < argc; ++i) {
     const char *flag = argv[i];
+    if (std::strcmp(flag, "--inspect") == 0) {
+      options->inspect = true;
+      continue;
+    }
     if (i + 1 >= argc) {
       return false;
     }
     const char *value = argv[++i];
     if (std::strcmp(flag, "--scene") == 0) {
       options->scene = value;
+    } else if (std::strcmp(flag, "--output") == 0) {
+      options->output = value;
+    } else if (std::strcmp(flag, "--manifest") == 0) {
+      options->manifest = value;
     } else if (std::strcmp(flag, "--page-size") == 0) {
       if (!parse_u32(value, &options->page_size)) {
         return false;
@@ -158,6 +180,12 @@ bool parse(int argc, char **argv, Options *options) {
     } else {
       return false;
     }
+  }
+  if (options->inspect && (!options->manifest || options->output)) {
+    return false;
+  }
+  if (options->output && options->gpu != GpuMode::Off) {
+    return false;
   }
   return options->scene && options->samples > 0u &&
          options->astc_effort >= 0.0f && options->astc_effort <= 100.0f &&
@@ -649,6 +677,278 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
   return 0;
 }
 
+std::string json_string(const std::string &value) {
+  static const char hex[] = "0123456789abcdef";
+  std::string result = "\"";
+  for (unsigned char c : value) {
+    if (c == '"' || c == '\\') {
+      result += '\\';
+      result += (char)c;
+    } else if (c < 0x20u) {
+      result += "\\u00";
+      result += hex[c >> 4];
+      result += hex[c & 15];
+    } else {
+      result += (char)c;
+    }
+  }
+  return result + "\"";
+}
+
+/* Writes `bytes` beside `path` and renames the file over it. */
+bool write_atomic(const char *path, const std::string &bytes) {
+  const std::filesystem::path target = vkr_filesystem_native_utf8_path(path);
+  std::filesystem::path temporary = target;
+  temporary += ".tmp";
+  {
+    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+    stream.write(bytes.data(), (std::streamsize)bytes.size());
+    if (!stream) {
+      return false;
+    }
+  }
+  std::error_code error;
+  std::filesystem::rename(temporary, target, error);
+  if (error) {
+    std::filesystem::remove(temporary, error);
+    return false;
+  }
+  return true;
+}
+
+/*
+ * The bake's source closure and counts in the inspect-manifest shape that
+ * `vkr_bakery bake` validates: dependencies, atmosphere provenance and the
+ * counts that decide whether anything is lightmapped.
+ */
+bool write_manifest(const Options &options, const VkrBakeScene &scene,
+                    const VkrBakeLightmapLayout &layout) {
+  std::ostringstream manifest;
+  manifest << "{\"version\":1,\"dependencies\":[";
+  for (size_t i = 0u; i < scene.dependency_paths.size(); ++i) {
+    if (i != 0u) {
+      manifest << ',';
+    }
+    manifest << json_string(
+        std::filesystem::weakly_canonical(scene.dependency_paths[i])
+            .generic_string());
+  }
+  manifest << "],\"atmosphere\":{\"enabled\":"
+           << (scene.atmosphere.enabled ? "true" : "false")
+           << ",\"model_version\":" << VKR_BAKE_ATMOSPHERE_MODEL_VERSION
+           << ",\"params_hash\":\"" << std::hex
+           << vkr_bake_atmosphere_recipe_hash(&scene.atmosphere) << std::dec
+           << "\",\"sh_deringing\":"
+           << (scene.atmosphere.enabled ? scene.environment.sh_deringing : 0.0f)
+           << "},\"triangles\":" << scene.triangles.size()
+           << ",\"materials\":" << scene.materials.size()
+           << ",\"lights\":" << scene.lights.size()
+           << ",\"lightmap_instances\":" << layout.rects.size()
+           << ",\"pages\":" << layout.page_count
+           << ",\"page_size\":" << layout.page_size << "}\n";
+  return write_atomic(options.manifest, manifest.str());
+}
+
+/* One baked layer: its record in the set and the transport that fills it. */
+struct BakeLayer {
+  VkrLightmapLayer record;
+  VkrBakeMetalLayer transport;
+};
+
+/*
+ * The layers this scene's lights make (ADR-087): sun key 0 holds the
+ * directional lights' bounce and the sky, without the sun's direct term at the
+ * texel, which the runtime adds; lamp group 0 holds the other lights' direct
+ * and bounce light and surface emission. A scene without a directional light
+ * has no sun key, and its sky joins lamp group 0 as static light.
+ */
+std::vector<BakeLayer> scene_layers(const VkrBakeScene &scene) {
+  const bool sky = scene.environment.enabled &&
+                   scene.environment.kind != VkrBakeSceneEnvironmentKind::None;
+  BakeLayer sun = {};
+  BakeLayer lamps = {};
+  bool has_sun = false;
+  for (uint32_t i = 0u; i < scene.lights.size(); ++i) {
+    const VkrBakeSceneLight &light = scene.lights[i];
+    if (light.kind != VkrBakeSceneLightKind::Directional) {
+      lamps.transport.lights.push_back(i);
+      continue;
+    }
+    sun.transport.lights.push_back(i);
+    if (!has_sun) {
+      has_sun = true;
+      sun.record.sun_direction = vec3_normalize(
+          vec3_new(-light.direction.x, -light.direction.y, -light.direction.z));
+    }
+  }
+  std::vector<BakeLayer> layers;
+  if (has_sun) {
+    sun.record.kind = VKR_LIGHTMAP_LAYER_SUN_KEY;
+    sun.record.index = 0u;
+    sun.transport.sky = sky;
+    layers.push_back(sun);
+  }
+  lamps.record.kind = VKR_LIGHTMAP_LAYER_LAMP_GROUP;
+  lamps.record.index = 0u;
+  lamps.transport.sky = sky && !has_sun;
+  lamps.transport.emission = true;
+  lamps.transport.texel_direct = true;
+  layers.push_back(lamps);
+  return layers;
+}
+
+/*
+ * Bakes the scene's lightmap set into `options.output`. Pages are baked one
+ * at a time and each layer image is encoded and appended as soon as it is
+ * gathered; the header and tables, which carry the payload checksum, are
+ * written last. The file appears under its name only when complete.
+ */
+int bake_set(const Options &options, VkrBakeScene &scene,
+             const VkrBakeLightmapLayout &layout) {
+  if (layout.rects.empty()) {
+    std::fprintf(stderr, "The scene has no lightmapped instances\n");
+    return 1;
+  }
+  if (!vkr_bake_metal_available()) {
+    std::fprintf(stderr, "Lightmap bakes need Metal ray tracing, which this "
+                         "host does not have\n");
+    return 1;
+  }
+
+  const std::vector<BakeLayer> layers = scene_layers(scene);
+  std::vector<VkrLightmapLayer> layer_records;
+  for (const BakeLayer &layer : layers) {
+    layer_records.push_back(layer.record);
+  }
+  std::vector<uint32_t> lightmap_by_source(layout.rect_by_instance.size(),
+                                           UINT32_MAX);
+  for (uint32_t i = 0u; i < scene.lightmap_instances.size(); ++i) {
+    lightmap_by_source[scene.lightmap_instances[i].source_instance_index] = i;
+  }
+  std::vector<VkrLightmapInstance> instances;
+  for (const VkrBakeLightmapRect &rect : layout.rects) {
+    const VkrBakeLightmapInstance &source =
+        scene
+            .lightmap_instances[lightmap_by_source[rect.source_instance_index]];
+    instances.push_back({source.entity_index, source.source_node_index,
+                         rect.page, rect.x, rect.y, rect.width, rect.height});
+  }
+  std::sort(instances.begin(), instances.end(),
+            [](const VkrLightmapInstance &a, const VkrLightmapInstance &b) {
+              if (a.entity_index != b.entity_index) {
+                return a.entity_index < b.entity_index;
+              }
+              return a.instance_index < b.instance_index;
+            });
+
+  VkrLightmapSet set = {};
+  set.page_size = layout.page_size;
+  set.page_count = layout.page_count;
+  set.layer_count = (uint32_t)layer_records.size();
+  set.instance_count = (uint32_t)instances.size();
+  set.texels_per_unit = options.texels_per_unit;
+  set.layers = layer_records.data();
+  set.instances = instances.data();
+  uint64_t payload_offset = 0u;
+  uint64_t file_size = 0u;
+  if (!vkr_lightmap_set_layout(&set, &payload_offset, &file_size)) {
+    std::fprintf(stderr, "The lightmap set layout is invalid\n");
+    return 1;
+  }
+
+  const std::filesystem::path target =
+      vkr_filesystem_native_utf8_path(options.output);
+  std::filesystem::path temporary = target;
+  temporary += ".tmp";
+  std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+  std::vector<uint8_t> prefix(payload_offset, 0u);
+  stream.write((const char *)prefix.data(), (std::streamsize)prefix.size());
+  if (!stream) {
+    std::fprintf(stderr, "Cannot write %s\n", temporary.string().c_str());
+    return 1;
+  }
+
+  const auto setup_start = std::chrono::steady_clock::now();
+  VkrBakeMetalContext *gpu = vkr_bake_metal_create(scene);
+  if (!gpu) {
+    return 1;
+  }
+  std::printf("gpu_setup_s=%.2f layers=%zu\n", seconds_since(setup_start),
+              layers.size());
+  VkrBakeMetalGatherSettings settings;
+  settings.samples = options.samples;
+  settings.max_depth = options.max_depth;
+  settings.rr_start_depth = options.max_depth >= 4u ? 4u : 0u;
+  settings.seed = options.seed;
+  const uint32_t threads =
+      options.threads ? options.threads
+                      : std::max(1u, std::thread::hardware_concurrency());
+
+  uint32_t payload_crc = VKR_CRC32_INITIAL;
+  bool ok = true;
+  double gpu_seconds = 0.0;
+  double encode_seconds = 0.0;
+  std::vector<float32_t> rgba;
+  std::vector<uint8_t> blocks;
+  for (uint32_t page = 0u; ok && page < layout.page_count; ++page) {
+    std::vector<VkrBakeLightmapTexel> texels;
+    ok = vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
+                                          (uint32_t)scene.triangles.size(),
+                                          layout, page, &texels);
+    for (uint32_t l = 0u; ok && l < layers.size(); ++l) {
+      std::vector<Vec3> irradiance;
+      double seconds = 0.0;
+      ok = vkr_bake_metal_gather(gpu, texels, layers[l].transport, settings,
+                                 &irradiance, &seconds);
+      gpu_seconds += seconds;
+      const auto encode_start = std::chrono::steady_clock::now();
+      ok = ok &&
+           vkr_bake_lightmap_compose_page(layout, page, texels, irradiance,
+                                          options.dilation_passes, &rgba) &&
+           vkr_bake_lightmap_encode_astc_hdr(
+               rgba, layout.page_size, options.astc_effort, threads, &blocks);
+      encode_seconds += seconds_since(encode_start);
+      if (!ok) {
+        break;
+      }
+      payload_crc =
+          vkr_crc32_update(payload_crc, blocks.data(), (uint64_t)blocks.size());
+      stream.write((const char *)blocks.data(), (std::streamsize)blocks.size());
+      ok = (bool)stream;
+      std::printf("baked page=%u/%u layer=%u/%zu texels=%zu gpu_s=%.2f\n",
+                  page + 1u, layout.page_count, l + 1u, layers.size(),
+                  texels.size(), seconds);
+      std::fflush(stdout);
+    }
+  }
+  vkr_bake_metal_destroy(gpu);
+
+  ok = ok && vkr_lightmap_set_write_prefix(&set, ~payload_crc, prefix.data(),
+                                           prefix.size());
+  if (ok) {
+    stream.seekp(0);
+    stream.write((const char *)prefix.data(), (std::streamsize)prefix.size());
+    stream.close();
+    ok = !stream.fail();
+  }
+  std::error_code error;
+  if (ok) {
+    std::filesystem::rename(temporary, target, error);
+    ok = !error;
+  }
+  if (!ok) {
+    stream.close();
+    std::filesystem::remove(temporary, error);
+    std::fprintf(stderr, "Lightmap bake failed\n");
+    return 1;
+  }
+  std::printf("saved=%s bytes=%llu pages=%u layers=%zu instances=%zu "
+              "gpu_s=%.2f encode_s=%.2f\n",
+              options.output, (unsigned long long)file_size, layout.page_count,
+              layers.size(), instances.size(), gpu_seconds, encode_seconds);
+  return 0;
+}
+
 int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
   const auto load_start = std::chrono::steady_clock::now();
   VkrBakeScene scene(allocator);
@@ -689,6 +989,17 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
   std::printf("pages=%u page_size=%u rects=%zu rect_texels=%llu\n",
               layout.page_count, layout.page_size, layout.rects.size(),
               (unsigned long long)rect_texels);
+
+  if (options.manifest && !write_manifest(options, scene, layout)) {
+    std::fprintf(stderr, "Writing the bake manifest failed\n");
+    return 1;
+  }
+  if (options.inspect) {
+    return 0;
+  }
+  if (options.output) {
+    return bake_set(options, scene, layout);
+  }
 
   VkrBakeIntegratorSettings settings = {};
   settings.scene = {&bvh,

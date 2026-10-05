@@ -1,5 +1,6 @@
 #include "vkr_bakery_bake.h"
 
+#include "assets/vkr_lightmap_set.h"
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
@@ -20,11 +21,13 @@
 #include <sys/stat.h>
 #endif
 
-/* `vkr_bakery bake diffuse` and `vkr_bakery bake probe`: the scene bakes of
- * ADR-054 and ADR-019, formerly tools/bake_diffuse_volume.py and
- * tools/bake_reflection_probe.py. Options, provenance sidecars, evidence
- * directories and exit codes keep those scripts' contracts; the cookers run
- * as `vkr_bakery tool <name>` children of this process. */
+/* `vkr_bakery bake diffuse`, `vkr_bakery bake probe` and `vkr_bakery bake
+ * lightmap`: the scene bakes of ADR-054, ADR-019 and ADR-087. Diffuse and
+ * probe bakes were tools/bake_diffuse_volume.py and
+ * tools/bake_reflection_probe.py; their options, provenance sidecars,
+ * evidence directories and exit codes keep those scripts' contracts, and the
+ * lightmap bake follows the diffuse one. The bakers run as
+ * `vkr_bakery tool <name>` children of this process. */
 
 #define VKR_BAKE_VERSION 1
 #define VKR_BAKE_DVOL_MAGIC 0x4C4F5644u
@@ -557,12 +560,31 @@ vkr_bake_valid_atmosphere(const VkrBakeryJson *atmosphere) {
          isfinite(deringing) && deringing >= 0.0;
 }
 
+/* What tells one scene bake's inspect manifest from another's: the name
+   its messages use and the counts its baker reports. */
+typedef struct VkrBakeKind {
+  const char *label;
+  const char *const *counts;
+  uint32_t count_count;
+} VkrBakeKind;
+
+vkr_internal const char *const vkr_bake_diffuse_counts[] = {
+    "triangles",    "materials", "lights",     "probes",
+    "valid_probes", "cells",     "valid_cells"};
+vkr_internal const VkrBakeKind vkr_bake_diffuse_kind = {
+    "Diffuse-volume", vkr_bake_diffuse_counts,
+    ArrayCount(vkr_bake_diffuse_counts)};
+
+vkr_internal const char *const vkr_bake_lightmap_counts[] = {
+    "triangles", "materials", "lights", "lightmap_instances", "pages"};
+vkr_internal const VkrBakeKind vkr_bake_lightmap_kind = {
+    "Lightmap", vkr_bake_lightmap_counts, ArrayCount(vkr_bake_lightmap_counts)};
+
 /* Validates a baker manifest and records its dependency closure sorted by
    path as {path, bytes, sha256}. */
-vkr_internal bool8_t vkr_bake_inspect_manifest(VkrBake *bake, const char *path,
-                                               const char *scene,
-                                               VkrBakeryJson **out_manifest,
-                                               VkrBakeryJson **out_records) {
+vkr_internal bool8_t vkr_bake_inspect_manifest(
+    VkrBake *bake, const VkrBakeKind *kind, const char *path, const char *scene,
+    VkrBakeryJson **out_manifest, VkrBakeryJson **out_records) {
   Arena *arena = bake->arena;
   VkrBakeryJson *manifest =
       vkr_bake_load(bake, path, "Baker did not write a valid inspect manifest");
@@ -571,30 +593,29 @@ vkr_internal bool8_t vkr_bake_inspect_manifest(VkrBake *bake, const char *path,
   if (manifest->type != VKR_BAKERY_JSON_OBJECT ||
       !vkr_bake_int(vkr_bakery_json_get(manifest, "version"), &version) ||
       version != VKR_BAKE_VERSION) {
-    return vkr_bake_fail(bake,
-                         "Unexpected diffuse-volume inspect manifest version");
+    return vkr_bake_fail(bake, "Unexpected %s inspect manifest version",
+                         kind->label);
   }
   const VkrBakeryJson *dependencies =
       vkr_bakery_json_get(manifest, "dependencies");
   if (!dependencies || dependencies->type != VKR_BAKERY_JSON_ARRAY ||
       !dependencies->count) {
-    return vkr_bake_fail(bake,
-                         "Diffuse-volume inspect manifest has no dependencies");
+    return vkr_bake_fail(bake, "%s inspect manifest has no dependencies",
+                         kind->label);
   }
-  static const char *const counts[] = {"triangles",  "materials",    "lights",
-                                       "probes",     "valid_probes", "cells",
-                                       "valid_cells"};
-  for (uint32_t i = 0u; i < ArrayCount(counts); ++i) {
+  for (uint32_t i = 0u; i < kind->count_count; ++i) {
     int64_t value = 0;
-    if (!vkr_bake_int(vkr_bakery_json_get(manifest, counts[i]), &value) ||
+    if (!vkr_bake_int(vkr_bakery_json_get(manifest, kind->counts[i]), &value) ||
         value < 0) {
-      return vkr_bake_fail(
-          bake, "Diffuse-volume inspect manifest has invalid bake counts");
+      return vkr_bake_fail(bake, "%s inspect manifest has invalid bake counts",
+                           kind->label);
     }
   }
   if (!vkr_bake_valid_atmosphere(vkr_bakery_json_get(manifest, "atmosphere"))) {
-    return vkr_bake_fail(bake, "Diffuse-volume inspect manifest has invalid "
-                               "atmosphere provenance");
+    return vkr_bake_fail(bake,
+                         "%s inspect manifest has invalid atmosphere "
+                         "provenance",
+                         kind->label);
   }
   const char *paths[4096];
   uint32_t path_count = 0u;
@@ -613,8 +634,8 @@ vkr_internal bool8_t vkr_bake_inspect_manifest(VkrBake *bake, const char *path,
     has_scene = has_scene || strcmp(resolved, scene) == 0;
   }
   if (!has_scene) {
-    return vkr_bake_fail(
-        bake, "Diffuse-volume inspect manifest does not include its scene");
+    return vkr_bake_fail(bake, "%s inspect manifest does not include its scene",
+                         kind->label);
   }
   qsort((void *)paths, path_count, sizeof(paths[0]), vkr_bake_compare_paths);
   VkrBakeryJson *records = vkr_bakery_json_array(arena);
@@ -787,6 +808,8 @@ vkr_internal bool8_t vkr_bake_run_baker(VkrBake *bake,
   if (code == 0) {
     return true_v;
   }
+  /* Arguments start with "tool <name>". */
+  const char *tool = arguments->count > 1u ? arguments->items[1] : "baker";
   uint8_t *output = NULL;
   uint64_t length = 0u;
   (void)vkr_bakery_read_file(log, 0u, &output, &length);
@@ -804,12 +827,12 @@ vkr_internal bool8_t vkr_bake_run_baker(VkrBake *bake,
     size -= 1u;
   }
   if (size) {
-    vkr_bake_fail(
-        bake, "vkr_diffuse_baker failed (%d); log: %s; diagnostic: %s%.*s",
-        code, log, length > VKR_BAKE_DIAGNOSTIC_BYTES ? "\xE2\x80\xA6" : "",
-        (int)size, start);
+    vkr_bake_fail(bake, "%s failed (%d); log: %s; diagnostic: %s%.*s", tool,
+                  code, log,
+                  length > VKR_BAKE_DIAGNOSTIC_BYTES ? "\xE2\x80\xA6" : "",
+                  (int)size, start);
   } else {
-    vkr_bake_fail(bake, "vkr_diffuse_baker failed (%d); log: %s", code, log);
+    vkr_bake_fail(bake, "%s failed (%d); log: %s", tool, code, log);
   }
   free(output);
   return false_v;
@@ -828,15 +851,15 @@ vkr_internal bool8_t vkr_bake_write_command(VkrBake *bake, const char *path,
   return vkr_bake_write_json(bake, path, command, false_v);
 }
 
-vkr_internal bool8_t vkr_bake_run_inspect(VkrBake *bake,
-                                          const VkrBakeDiffuse *args,
-                                          const char *scene, const char *job,
-                                          const char *name,
-                                          char *out_manifest) {
+/* Runs a baker's recipe with --inspect, writing its manifest and evidence as
+   `name` in the job directory. */
+vkr_internal bool8_t vkr_bake_run_recipe_inspect(VkrBake *bake,
+                                                 const VkrBakeArguments *recipe,
+                                                 const char *job,
+                                                 const char *name,
+                                                 char *out_manifest) {
   (void)snprintf(out_manifest, VKR_BAKE_PATH, "%s/%s.manifest.json", job, name);
-  VkrBakeArguments arguments = {0};
-  VKR_BAKE_TRY(
-      vkr_bake_recipe_arguments(bake, args, scene, false_v, &arguments));
+  VkrBakeArguments arguments = *recipe;
   vkr_bake_push(&arguments, "--inspect");
   vkr_bake_push(&arguments, "--manifest");
   vkr_bake_push(&arguments, out_manifest);
@@ -845,6 +868,16 @@ vkr_internal bool8_t vkr_bake_run_inspect(VkrBake *bake,
       &arguments));
   return vkr_bake_run_baker(bake, &arguments,
                             vkr_bake_printf(bake, "%s/%s.log", job, name));
+}
+
+vkr_internal bool8_t vkr_bake_run_inspect(VkrBake *bake,
+                                          const VkrBakeDiffuse *args,
+                                          const char *scene, const char *job,
+                                          const char *name,
+                                          char *out_manifest) {
+  VkrBakeArguments recipe = {0};
+  VKR_BAKE_TRY(vkr_bake_recipe_arguments(bake, args, scene, false_v, &recipe));
+  return vkr_bake_run_recipe_inspect(bake, &recipe, job, name, out_manifest);
 }
 
 vkr_internal bool8_t vkr_bake_manifest_spacing(VkrBake *bake,
@@ -965,11 +998,84 @@ vkr_internal VkrBakeryJson *vkr_bake_recipe_record(VkrBake *bake,
   return recipe;
 }
 
+/* A verified bake output and the provenance its sidecar records. */
+typedef struct VkrBakePublication {
+  const char *scene_source;
+  const char *scene;
+  VkrBakeryJson *recipe;
+  VkrBakeryJson *dependencies;
+  VkrBakeryJson *baked;
+  /* The verifier's record of the output, with its sha256. */
+  VkrBakeryJson *output_record;
+  const char *temporary;
+  const char *output;
+  const char *sidecar;
+  const char *bake_manifest;
+  const char *manifest_destination;
+  const char *job;
+} VkrBakePublication;
+
+/* Publishes a verified temporary output under its name, then writes the
+   provenance sidecar, the manifest copy and the evidence record, and prints
+   the status line. */
+vkr_internal bool8_t vkr_bake_publish(VkrBake *bake,
+                                      const VkrBakePublication *publication) {
+  Arena *arena = bake->arena;
+  char self_digest[72];
+  VKR_BAKE_TRY(vkr_bake_digest(bake, bake->config->self_path, self_digest));
+  VkrBakeryJson *metadata = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, metadata, "version",
+                      vkr_bakery_json_int(arena, VKR_BAKE_VERSION));
+  VkrBakeryJson *scene_record = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, scene_record, "source",
+                      vkr_bakery_json_cstr(arena, publication->scene_source));
+  vkr_bakery_json_set(arena, scene_record, "canonical",
+                      vkr_bakery_json_cstr(arena, publication->scene));
+  vkr_bakery_json_set(arena, metadata, "scene", scene_record);
+  vkr_bakery_json_set(arena, metadata, "tool_sha256",
+                      vkr_bakery_json_cstr(arena, self_digest));
+  vkr_bakery_json_set(arena, metadata, "recipe", publication->recipe);
+  vkr_bakery_json_set(arena, metadata, "dependencies",
+                      publication->dependencies);
+  vkr_bakery_json_set(arena, metadata, "baker_manifest", publication->baked);
+  vkr_bakery_json_set(
+      arena, metadata, "atmosphere",
+      vkr_bakery_json_clone(
+          arena, vkr_bakery_json_get(publication->baked, "atmosphere")));
+  vkr_bakery_json_set(arena, metadata, "output", publication->output_record);
+  const char *sha256 = vkr_bake_text(publication->output_record, "sha256");
+  vkr_bakery_json_set(arena, metadata, "output_sha256",
+                      vkr_bakery_json_cstr(arena, sha256));
+  if (!vkr_bakery_rename(publication->temporary, publication->output, true_v)) {
+    return vkr_bake_fail(bake, "Cannot publish %s", publication->output);
+  }
+  VKR_BAKE_TRY(
+      vkr_bake_write_json(bake, publication->sidecar, metadata, true_v) &&
+      vkr_bake_copy(bake, publication->bake_manifest,
+                    publication->manifest_destination) &&
+      vkr_bake_write_json(
+          bake, vkr_bake_printf(bake, "%s/bake.json", publication->job),
+          metadata, true_v));
+  VkrBakeryJson *status = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, status, "status",
+                      vkr_bakery_json_cstr(arena, "baked"));
+  vkr_bakery_json_set(arena, status, "output",
+                      vkr_bakery_json_cstr(arena, publication->output));
+  vkr_bakery_json_set(arena, status, "sha256",
+                      vkr_bakery_json_cstr(arena, sha256));
+  vkr_bakery_json_set(arena, status, "evidence",
+                      vkr_bakery_json_cstr(arena, publication->job));
+  String8 text = {0};
+  if (vkr_bakery_json_write(arena, status, VKR_BAKERY_JSON_COMPACT, &text)) {
+    printf("%.*s\n", (int)text.length, (const char *)text.str);
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
                                       const char *output, const char *sidecar,
                                       const char *manifest_destination,
                                       bool8_t *out_no_room) {
-  Arena *arena = bake->arena;
   char scene[VKR_BAKE_PATH];
   char job[VKR_BAKE_PATH];
   char inspect_path[VKR_BAKE_PATH];
@@ -981,7 +1087,8 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
       vkr_bake_run_inspect(bake, args, scene, job, "inspect", inspect_path));
   VkrBakeryJson *inspect = NULL;
   VkrBakeryJson *dependencies = NULL;
-  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, inspect_path, scene, &inspect,
+  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind,
+                                         inspect_path, scene, &inspect,
                                          &dependencies));
   char resolved_targets[3][VKR_BAKE_PATH];
   const char *targets[] = {output, sidecar, manifest_destination};
@@ -1043,8 +1150,8 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   VkrBakeryJson *baked = NULL;
   VkrBakeryJson *after = NULL;
   VkrBakeryJson *dvol = NULL;
-  ok = ok &&
-       vkr_bake_inspect_manifest(bake, bake_manifest, scene, &baked, &after);
+  ok = ok && vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind,
+                                       bake_manifest, scene, &baked, &after);
   if (ok && !vkr_bakery_json_equal(dependencies, after)) {
     ok = vkr_bake_fail(bake, "Bake source closure changed while the volume was "
                              "prepared");
@@ -1056,8 +1163,8 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
   ok = ok &&
        vkr_bake_run_inspect(bake, args, scene, job, "inspect_after",
                             final_inspect) &&
-       vkr_bake_inspect_manifest(bake, final_inspect, scene, &final_manifest,
-                                 &final_dependencies);
+       vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind, final_inspect,
+                                 scene, &final_manifest, &final_dependencies);
   if (ok && !vkr_bakery_json_equal(dependencies, final_dependencies)) {
     ok = vkr_bake_fail(bake, "Bake source closure changed before publication");
   }
@@ -1067,58 +1174,24 @@ vkr_internal bool8_t vkr_bake_diffuse(VkrBake *bake, const VkrBakeDiffuse *args,
     ok = vkr_bake_manifest_spacing(bake, baked, args, &spacing);
     photon_radius = spacing * 0.25;
   }
-  VkrBakeryJson *metadata = NULL;
-  char self_digest[72];
-  if (ok && vkr_bake_digest(bake, bake->config->self_path, self_digest)) {
-    metadata = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, metadata, "version",
-                        vkr_bakery_json_int(arena, VKR_BAKE_VERSION));
-    VkrBakeryJson *scene_record = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, scene_record, "source",
-                        vkr_bakery_json_cstr(arena, args->scene));
-    vkr_bakery_json_set(arena, scene_record, "canonical",
-                        vkr_bakery_json_cstr(arena, scene));
-    vkr_bakery_json_set(arena, metadata, "scene", scene_record);
-    vkr_bakery_json_set(arena, metadata, "tool_sha256",
-                        vkr_bakery_json_cstr(arena, self_digest));
-    vkr_bakery_json_set(arena, metadata, "recipe",
-                        vkr_bake_recipe_record(bake, args, photon_radius));
-    vkr_bakery_json_set(arena, metadata, "dependencies", dependencies);
-    vkr_bakery_json_set(arena, metadata, "baker_manifest", baked);
-    vkr_bakery_json_set(
-        arena, metadata, "atmosphere",
-        vkr_bakery_json_clone(arena, vkr_bakery_json_get(baked, "atmosphere")));
-    vkr_bakery_json_set(arena, metadata, "output", dvol);
-    vkr_bakery_json_set(
-        arena, metadata, "output_sha256",
-        vkr_bakery_json_cstr(arena, vkr_bake_text(dvol, "sha256")));
-  } else {
-    ok = false_v;
-  }
-  if (ok && !vkr_bakery_rename(temporary, output, true_v)) {
-    ok = vkr_bake_fail(bake, "Cannot publish %s", output);
-  }
-  ok = ok && vkr_bake_write_json(bake, sidecar, metadata, true_v) &&
-       vkr_bake_copy(bake, bake_manifest, manifest_destination) &&
-       vkr_bake_write_json(bake, vkr_bake_printf(bake, "%s/bake.json", job),
-                           metadata, true_v);
-  (void)vkr_bakery_remove_file(temporary);
   if (ok) {
-    VkrBakeryJson *status = vkr_bakery_json_object(arena);
-    vkr_bakery_json_set(arena, status, "status",
-                        vkr_bakery_json_cstr(arena, "baked"));
-    vkr_bakery_json_set(arena, status, "output",
-                        vkr_bakery_json_cstr(arena, output));
-    vkr_bakery_json_set(
-        arena, status, "sha256",
-        vkr_bakery_json_cstr(arena, vkr_bake_text(dvol, "sha256")));
-    vkr_bakery_json_set(arena, status, "evidence",
-                        vkr_bakery_json_cstr(arena, job));
-    String8 text = {0};
-    if (vkr_bakery_json_write(arena, status, VKR_BAKERY_JSON_COMPACT, &text)) {
-      printf("%.*s\n", (int)text.length, (const char *)text.str);
-    }
+    const VkrBakePublication publication = {
+        .scene_source = args->scene,
+        .scene = scene,
+        .recipe = vkr_bake_recipe_record(bake, args, photon_radius),
+        .dependencies = dependencies,
+        .baked = baked,
+        .output_record = dvol,
+        .temporary = temporary,
+        .output = output,
+        .sidecar = sidecar,
+        .bake_manifest = bake_manifest,
+        .manifest_destination = manifest_destination,
+        .job = job,
+    };
+    ok = vkr_bake_publish(bake, &publication);
   }
+  (void)vkr_bakery_remove_file(temporary);
   return ok;
 }
 
@@ -1137,7 +1210,8 @@ vkr_bake_diffuse_inspect(VkrBake *bake, const VkrBakeDiffuse *args,
       vkr_bake_run_inspect(bake, args, scene, job, "inspect", temporary));
   VkrBakeryJson *manifest = NULL;
   VkrBakeryJson *dependencies = NULL;
-  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, temporary, scene, &manifest,
+  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_diffuse_kind,
+                                         temporary, scene, &manifest,
                                          &dependencies));
   const char *targets[] = {manifest_destination};
   VKR_BAKE_TRY(vkr_bake_protect(
@@ -1196,8 +1270,13 @@ vkr_internal bool8_t vkr_bake_legacy_atmosphere(VkrBake *bake,
            !enabled->boolean);
 }
 
-vkr_internal bool8_t vkr_bake_diffuse_current(VkrBake *bake, const char *output,
-                                              const char *sidecar) {
+typedef VkrBakeryJson *(*VkrBakeVerify)(VkrBake *bake, const char *path);
+
+/* Whether a published output still matches its sidecar: the output digest,
+   every dependency's size and digest, and the atmosphere provenance. */
+vkr_internal bool8_t vkr_bake_current(VkrBake *bake, const char *output,
+                                      const char *sidecar,
+                                      VkrBakeVerify verify) {
   VkrBakeryJson *metadata = vkr_bake_load(bake, sidecar, "metadata");
   int64_t version = 0;
   if (!metadata ||
@@ -1205,9 +1284,9 @@ vkr_internal bool8_t vkr_bake_diffuse_current(VkrBake *bake, const char *output,
       version != VKR_BAKE_VERSION) {
     return false_v;
   }
-  VkrBakeryJson *dvol = vkr_bake_verify_dvol(bake, output);
-  if (!dvol ||
-      !vkr_bakery_json_equal(vkr_bakery_json_get(dvol, "sha256"),
+  VkrBakeryJson *verified = verify(bake, output);
+  if (!verified ||
+      !vkr_bakery_json_equal(vkr_bakery_json_get(verified, "sha256"),
                              vkr_bakery_json_get(metadata, "output_sha256"))) {
     return false_v;
   }
@@ -1371,7 +1450,8 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
     (void)snprintf(sidecar, sizeof(sidecar), "%s.bake.json", output);
   }
   if (args.check) {
-    const bool8_t current = vkr_bake_diffuse_current(bake, output, sidecar);
+    const bool8_t current =
+        vkr_bake_current(bake, output, sidecar, vkr_bake_verify_dvol);
     printf("%s\n", current ? "current" : "stale");
     return current ? 0 : 1;
   }
@@ -1396,6 +1476,364 @@ vkr_internal int vkr_bake_diffuse_main(VkrBake *bake, int argc, char **argv) {
     return VKR_BAKERY_BAKE_NO_ROOM_CELLS;
   }
   fprintf(stderr, "Diffuse-volume bake failed: %s\n", bake->error);
+  return 1;
+}
+
+// =============================================================================
+// Lightmaps (ADR-087)
+// =============================================================================
+
+typedef struct VkrBakeLightmap {
+  const char *scene;
+  const char *workspace_root;
+  const char *output;
+  const char *manifest;
+  bool8_t inspect;
+  bool8_t check;
+  int64_t samples;
+  int64_t max_depth;
+  int64_t seed;
+  int64_t page_size;
+  float64_t texels_per_unit;
+} VkrBakeLightmap;
+
+vkr_internal bool8_t vkr_bake_lightmap_validate(VkrBake *bake,
+                                                const VkrBakeLightmap *args) {
+  if (args->samples < 1 || args->samples > 65536 || args->max_depth < 1 ||
+      args->max_depth > 64) {
+    return vkr_bake_fail(bake, "--samples must be 1..65536 and --max-depth "
+                               "must be 1..64");
+  }
+  if (args->seed < 0 || args->seed > 0xffffffffll) {
+    return vkr_bake_fail(bake, "--seed must be an unsigned 32-bit value");
+  }
+  if (args->page_size < 64 ||
+      args->page_size > VKR_LIGHTMAP_SET_MAX_PAGE_SIZE ||
+      args->page_size % 4 != 0) {
+    return vkr_bake_fail(bake, "--page-size must be a multiple of 4 from 64 "
+                               "through 8192");
+  }
+  if (!isfinite(args->texels_per_unit) || args->texels_per_unit <= 0.0 ||
+      args->texels_per_unit > 1024.0) {
+    return vkr_bake_fail(bake, "--texels-per-unit must be finite and in "
+                               "(0, 1024]");
+  }
+  return true_v;
+}
+
+vkr_internal void vkr_bake_lightmap_arguments(VkrBake *bake,
+                                              const VkrBakeLightmap *args,
+                                              const char *scene,
+                                              VkrBakeArguments *out) {
+  vkr_bake_push(out, "tool");
+  vkr_bake_push(out, "lightmap-baker");
+  vkr_bake_push(out, "--scene");
+  vkr_bake_push(out, scene);
+  vkr_bake_push(out, "--samples");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->samples));
+  vkr_bake_push(out, "--max-depth");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->max_depth));
+  vkr_bake_push(out, "--seed");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->seed));
+  vkr_bake_push(out, "--page-size");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%lld", (long long)args->page_size));
+  vkr_bake_push(out, "--texels-per-unit");
+  vkr_bake_push(out, vkr_bake_printf(bake, "%.9g", args->texels_per_unit));
+}
+
+vkr_internal VkrBakeryJson *
+vkr_bake_lightmap_recipe(VkrBake *bake, const VkrBakeLightmap *args) {
+  Arena *arena = bake->arena;
+  VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, recipe, "samples",
+                      vkr_bakery_json_int(arena, args->samples));
+  vkr_bakery_json_set(arena, recipe, "max_depth",
+                      vkr_bakery_json_int(arena, args->max_depth));
+  vkr_bakery_json_set(arena, recipe, "seed",
+                      vkr_bakery_json_int(arena, args->seed));
+  vkr_bakery_json_set(arena, recipe, "page_size",
+                      vkr_bakery_json_int(arena, args->page_size));
+  vkr_bakery_json_set(arena, recipe, "texels_per_unit",
+                      vkr_bakery_json_float(arena, args->texels_per_unit));
+  return recipe;
+}
+
+/* Decodes a VKLM file with the runtime's validator and records its shape and
+   digest. */
+vkr_internal VkrBakeryJson *vkr_bake_verify_vklm(VkrBake *bake,
+                                                 const char *path) {
+  Arena *arena = bake->arena;
+  uint8_t *data = NULL;
+  uint64_t length = 0u;
+  if (!vkr_bakery_read_file(path, 0u, &data, &length)) {
+    vkr_bake_fail(bake, "[Errno 2] No such file or directory: '%s'", path);
+    return NULL;
+  }
+  VkrBakeryJson *result = NULL;
+  VkrLightmapSet set = {0};
+  char digest[72];
+  if (!vkr_lightmap_set_decode(data, length, arena, &set)) {
+    vkr_bake_fail(bake, "VKLM output is invalid: %s", path);
+    goto cleanup;
+  }
+  if (!vkr_bake_digest(bake, path, digest)) {
+    goto cleanup;
+  }
+  result = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, result, "format",
+                      vkr_bakery_json_cstr(arena, "VKLM"));
+  vkr_bakery_json_set(arena, result, "version",
+                      vkr_bakery_json_int(arena, VKR_LIGHTMAP_SET_VERSION));
+  vkr_bakery_json_set(arena, result, "bytes",
+                      vkr_bakery_json_int(arena, (int64_t)length));
+  vkr_bakery_json_set(arena, result, "sha256",
+                      vkr_bakery_json_cstr(arena, digest));
+  vkr_bakery_json_set(arena, result, "page_size",
+                      vkr_bakery_json_int(arena, set.page_size));
+  vkr_bakery_json_set(arena, result, "pages",
+                      vkr_bakery_json_int(arena, set.page_count));
+  vkr_bakery_json_set(arena, result, "layers",
+                      vkr_bakery_json_int(arena, set.layer_count));
+  vkr_bakery_json_set(arena, result, "instances",
+                      vkr_bakery_json_int(arena, set.instance_count));
+cleanup:
+  free(data);
+  return result;
+}
+
+vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
+                                       const VkrBakeLightmap *args,
+                                       const char *output, const char *sidecar,
+                                       const char *manifest_destination,
+                                       bool8_t *out_nothing) {
+  char scene[VKR_BAKE_PATH];
+  char job[VKR_BAKE_PATH];
+  char inspect_path[VKR_BAKE_PATH];
+  VKR_BAKE_TRY(vkr_bake_lightmap_validate(bake, args));
+  VKR_BAKE_TRY(vkr_bake_existing_file(bake, args->scene, "--scene", scene));
+  VKR_BAKE_TRY(vkr_bake_job_directory(bake, args->workspace_root, "lightmap_",
+                                      "lightmap_bake", job));
+  VkrBakeArguments recipe = {0};
+  vkr_bake_lightmap_arguments(bake, args, scene, &recipe);
+  VKR_BAKE_TRY(
+      vkr_bake_run_recipe_inspect(bake, &recipe, job, "inspect", inspect_path));
+  VkrBakeryJson *inspect = NULL;
+  VkrBakeryJson *dependencies = NULL;
+  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind,
+                                         inspect_path, scene, &inspect,
+                                         &dependencies));
+  const char *targets[] = {output, sidecar, manifest_destination};
+  char resolved_targets[3][VKR_BAKE_PATH];
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    (void)vkr_bake_resolve(targets[i], resolved_targets[i]);
+    for (uint32_t j = 0u; j < i; ++j) {
+      if (strcmp(resolved_targets[i], resolved_targets[j]) == 0) {
+        return vkr_bake_fail(bake, "Output, metadata, and manifest must have "
+                                   "distinct paths");
+      }
+    }
+  }
+  VKR_BAKE_TRY(vkr_bake_protect(
+      bake, dependencies, targets, ArrayCount(targets),
+      "Output, metadata, or manifest would overwrite a bake source asset"));
+  int64_t instances = 0;
+  (void)vkr_bake_int(vkr_bakery_json_get(inspect, "lightmap_instances"),
+                     &instances);
+  if (instances == 0) {
+    *out_nothing = true_v;
+    return vkr_bake_fail(bake,
+                         "no scene model carries lightmap UVs; cook meshes "
+                         "with lightmap_texels_per_unit. Inspection: %s",
+                         job);
+  }
+
+  char output_directory[VKR_BAKE_PATH];
+  vkr_bakery_path_parent(output_directory, sizeof(output_directory), output);
+  if (!vkr_bakery_make_directories(output_directory)) {
+    return vkr_bake_fail(bake, "Cannot create %s", output_directory);
+  }
+  char id[33];
+  vkr_bake_hex_id(id);
+  const char *temporary = vkr_bake_printf(bake, "%s.%.8s.vklm", output, id);
+  const char *bake_manifest =
+      vkr_bake_printf(bake, "%s/bake.manifest.json", job);
+  VkrBakeArguments arguments = recipe;
+  vkr_bake_push(&arguments, "--output");
+  vkr_bake_push(&arguments, temporary);
+  vkr_bake_push(&arguments, "--manifest");
+  vkr_bake_push(&arguments, bake_manifest);
+  VKR_BAKE_TRY(vkr_bake_write_command(
+      bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));
+  bool8_t ok = vkr_bake_run_baker(bake, &arguments,
+                                  vkr_bake_printf(bake, "%s/bake.log", job));
+  VkrBakeryJson *baked = NULL;
+  VkrBakeryJson *after = NULL;
+  VkrBakeryJson *vklm = NULL;
+  ok = ok && vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind,
+                                       bake_manifest, scene, &baked, &after);
+  if (ok && !vkr_bakery_json_equal(dependencies, after)) {
+    ok = vkr_bake_fail(bake, "Bake source closure changed while the lightmaps "
+                             "were prepared");
+  }
+  ok = ok && (vklm = vkr_bake_verify_vklm(bake, temporary)) != NULL;
+  char final_inspect[VKR_BAKE_PATH];
+  VkrBakeryJson *final_manifest = NULL;
+  VkrBakeryJson *final_dependencies = NULL;
+  ok = ok &&
+       vkr_bake_run_recipe_inspect(bake, &recipe, job, "inspect_after",
+                                   final_inspect) &&
+       vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind, final_inspect,
+                                 scene, &final_manifest, &final_dependencies);
+  if (ok && !vkr_bakery_json_equal(dependencies, final_dependencies)) {
+    ok = vkr_bake_fail(bake, "Bake source closure changed before publication");
+  }
+  if (ok) {
+    const VkrBakePublication publication = {
+        .scene_source = args->scene,
+        .scene = scene,
+        .recipe = vkr_bake_lightmap_recipe(bake, args),
+        .dependencies = dependencies,
+        .baked = baked,
+        .output_record = vklm,
+        .temporary = temporary,
+        .output = output,
+        .sidecar = sidecar,
+        .bake_manifest = bake_manifest,
+        .manifest_destination = manifest_destination,
+        .job = job,
+    };
+    ok = vkr_bake_publish(bake, &publication);
+  }
+  (void)vkr_bakery_remove_file(temporary);
+  return ok;
+}
+
+vkr_internal bool8_t
+vkr_bake_lightmap_inspect(VkrBake *bake, const VkrBakeLightmap *args,
+                          const char *manifest_destination) {
+  char scene[VKR_BAKE_PATH];
+  char job[VKR_BAKE_PATH];
+  char temporary[VKR_BAKE_PATH];
+  VKR_BAKE_TRY(vkr_bake_lightmap_validate(bake, args));
+  VKR_BAKE_TRY(vkr_bake_existing_file(bake, args->scene, "--scene", scene));
+  VKR_BAKE_TRY(vkr_bake_job_directory(bake, args->workspace_root, "lightmap_",
+                                      "lightmap_bake", job));
+  VkrBakeArguments recipe = {0};
+  vkr_bake_lightmap_arguments(bake, args, scene, &recipe);
+  VKR_BAKE_TRY(
+      vkr_bake_run_recipe_inspect(bake, &recipe, job, "inspect", temporary));
+  VkrBakeryJson *manifest = NULL;
+  VkrBakeryJson *dependencies = NULL;
+  VKR_BAKE_TRY(vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind,
+                                         temporary, scene, &manifest,
+                                         &dependencies));
+  const char *targets[] = {manifest_destination};
+  VKR_BAKE_TRY(vkr_bake_protect(
+      bake, dependencies, targets, 1u,
+      "Output, metadata, or manifest would overwrite a bake source asset"));
+  VKR_BAKE_TRY(vkr_bake_copy(bake, temporary, manifest_destination));
+  printf("{\"status\":\"inspected\",\"manifest\":\"%s\",\"dependencies\":%u,"
+         "\"evidence\":\"%s\"}\n",
+         manifest_destination, dependencies->count, job);
+  return true_v;
+}
+
+vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
+  VkrBakeLightmap args = {.samples = 64,
+                          .max_depth = 4,
+                          .seed = 1,
+                          .page_size = 4096,
+                          .texels_per_unit = 8.0};
+  for (int i = 1; i < argc; ++i) {
+    const char *flag = argv[i];
+    bool8_t ok = true_v;
+    if (!strcmp(flag, "--scene")) {
+      ok = (args.scene = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--workspace-root")) {
+      ok = (args.workspace_root = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--output")) {
+      ok = (args.output = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--manifest")) {
+      ok = (args.manifest = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--inspect")) {
+      args.inspect = true_v;
+    } else if (!strcmp(flag, "--check")) {
+      args.check = true_v;
+    } else if (!strcmp(flag, "--samples")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.samples);
+    } else if (!strcmp(flag, "--max-depth")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.max_depth);
+    } else if (!strcmp(flag, "--seed")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.seed);
+    } else if (!strcmp(flag, "--page-size")) {
+      ok = vkr_bake_parse_integer(argv, argc, &i, &args.page_size);
+    } else if (!strcmp(flag, "--texels-per-unit")) {
+      ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.texels_per_unit);
+    } else {
+      ok = false_v;
+    }
+    if (!ok) {
+      fprintf(stderr, "bake lightmap: invalid argument %s\n", flag);
+      return 2;
+    }
+  }
+  if (args.check) {
+    if (!args.output) {
+      fprintf(stderr, "bake lightmap: --output is required with --check\n");
+      return 2;
+    }
+  } else if (!args.scene) {
+    fprintf(stderr, "bake lightmap: --scene is required\n");
+    return 2;
+  } else if (args.inspect && args.output) {
+    fprintf(stderr, "bake lightmap: --inspect does not write --output\n");
+    return 2;
+  } else if (args.inspect && !args.manifest) {
+    fprintf(stderr, "bake lightmap: --manifest is required with --inspect\n");
+    return 2;
+  } else if (!args.inspect && !args.output) {
+    fprintf(stderr, "bake lightmap: --output is required\n");
+    return 2;
+  }
+  char output[VKR_BAKE_PATH] = {0};
+  char sidecar[VKR_BAKE_PATH] = {0};
+  if (args.output) {
+    (void)vkr_bake_resolve(args.output, output);
+    const uint64_t length = strlen(output);
+    if (length < 5u || strcmp(output + length - 5u, ".vklm") != 0) {
+      fprintf(stderr, "Lightmap bake failed: --output must name a .vklm "
+                      "file\n");
+      return 1;
+    }
+    (void)snprintf(sidecar, sizeof(sidecar), "%s.bake.json", output);
+  }
+  if (args.check) {
+    const bool8_t current =
+        vkr_bake_current(bake, output, sidecar, vkr_bake_verify_vklm);
+    printf("%s\n", current ? "current" : "stale");
+    return current ? 0 : 1;
+  }
+  char manifest[VKR_BAKE_PATH];
+  if (args.manifest) {
+    (void)vkr_bake_resolve(args.manifest, manifest);
+  } else {
+    char joined[VKR_BAKE_PATH];
+    (void)snprintf(joined, sizeof(joined), "%s.manifest.json", output);
+    (void)vkr_bake_resolve(joined, manifest);
+  }
+  bool8_t nothing = false_v;
+  const bool8_t ok =
+      args.inspect
+          ? vkr_bake_lightmap_inspect(bake, &args, manifest)
+          : vkr_bake_lightmap(bake, &args, output, sidecar, manifest, &nothing);
+  if (ok) {
+    return 0;
+  }
+  if (nothing) {
+    fprintf(stderr, "Lightmap bake skipped: %s\n", bake->error);
+    return VKR_BAKERY_BAKE_NO_LIGHTMAPPED_INSTANCES;
+  }
+  fprintf(stderr, "Lightmap bake failed: %s\n", bake->error);
   return 1;
 }
 
@@ -2390,8 +2828,10 @@ vkr_internal int vkr_bake_proxies_main(VkrBake *bake, int argc, char **argv);
 
 int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
   if (argc < 1 || (strcmp(argv[0], "diffuse") && strcmp(argv[0], "probe") &&
-                   strcmp(argv[0], "proxies"))) {
-    fprintf(stderr, "usage: vkr_bakery bake diffuse|probe|proxies [options]\n");
+                   strcmp(argv[0], "lightmap") && strcmp(argv[0], "proxies"))) {
+    fprintf(
+        stderr,
+        "usage: vkr_bakery bake diffuse|probe|lightmap|proxies [options]\n");
     return 2;
   }
   VkrBake bake = {.config = config};
@@ -2402,11 +2842,12 @@ int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv) {
   }
   (void)vkr_bake_resolve(vkr_content_root(), bake.repo);
   vkr_bakery_install_cancel_signals();
-  const int code = strcmp(argv[0], "diffuse") == 0
-                       ? vkr_bake_diffuse_main(&bake, argc, argv)
-                   : strcmp(argv[0], "probe") == 0
-                       ? vkr_bake_probe_main(&bake, argc, argv)
-                       : vkr_bake_proxies_main(&bake, argc, argv);
+  const int code =
+      strcmp(argv[0], "diffuse") == 0 ? vkr_bake_diffuse_main(&bake, argc, argv)
+      : strcmp(argv[0], "probe") == 0 ? vkr_bake_probe_main(&bake, argc, argv)
+      : strcmp(argv[0], "lightmap") == 0
+          ? vkr_bake_lightmap_main(&bake, argc, argv)
+          : vkr_bake_proxies_main(&bake, argc, argv);
   fflush(stdout);
   arena_destroy(bake.arena);
   return code;

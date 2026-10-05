@@ -854,6 +854,7 @@ bool triangle_area_is_exactly_zero(const VkrBakeTriangle *triangle,
 
 struct MeshAppendContext {
   VkrBakeScene *scene;
+  uint32_t entity_index;
   std::vector<uint32_t> material_by_range;
 };
 
@@ -927,6 +928,8 @@ bool8_t append_mesh_instance(void *user, const VkrBakeMeshInstance *instance) {
   try {
     VkrBakeLightmapInstance lightmap;
     lightmap.source_instance_index = instance->source_instance_index;
+    lightmap.entity_index = context->entity_index;
+    lightmap.source_node_index = instance->source_node_index;
     lightmap.world = instance->world;
     lightmap.atlas_width = instance->atlas_width;
     lightmap.atlas_height = instance->atlas_height;
@@ -939,11 +942,12 @@ bool8_t append_mesh_instance(void *user, const VkrBakeMeshInstance *instance) {
 }
 
 bool append_mesh(VkrBakeScene *scene, const std::string &path,
-                 Mat4 entity_world, uint32_t *next_instance) {
+                 uint32_t entity_index, Mat4 entity_world,
+                 uint32_t *next_instance) {
   std::vector<uint8_t> bytes;
   if (!read_file(path.c_str(), &bytes))
     return false;
-  MeshAppendContext context = {.scene = scene};
+  MeshAppendContext context = {.scene = scene, .entity_index = entity_index};
   const VkrBakeMeshDecodeCallbacks callbacks = {
       .emit_triangle = append_mesh_triangle,
       .emit_light = append_mesh_light,
@@ -1146,7 +1150,7 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
         return false;
       }
       if (!entity.skip_geometry && !entity.mesh_path.empty() &&
-          !append_mesh(scene, entity.mesh_path, worlds[i], &next_instance)) {
+          !append_mesh(scene, entity.mesh_path, i, worlds[i], &next_instance)) {
         set_error(VkrBakeSceneError::CookedMesh, out_error);
         reset_scene(scene);
         return false;

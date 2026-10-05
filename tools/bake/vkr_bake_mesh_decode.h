@@ -36,6 +36,9 @@ typedef bool8_t (*VkrBakeMeshLightCallback)(void *user,
    zero atlas means the instance has no lightmap UV set. */
 typedef struct VkrBakeMeshInstance {
   uint32_t source_instance_index;
+  /* The instance's source-node index in its cooked model; zero for a model
+     without source nodes. */
+  uint32_t source_node_index;
   Mat4 world;
   uint32_t atlas_width;
   uint32_t atlas_height;

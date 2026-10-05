@@ -41,12 +41,13 @@ vkr_internal bool8_t vkr_bake_mesh_normal_matrix(Mat4 world, Mat4 *out_normal,
 /* Reports an instance and its source mesh's lightmap atlas, if any. */
 vkr_internal bool8_t vkr_bake_mesh_emit_instance(
     const VkrMeshCookedDecoded *decoded, uint32_t atlas_index, Mat4 world,
-    uint32_t source_instance, const VkrBakeMeshDecodeCallbacks *callbacks,
-    void *user) {
+    uint32_t source_instance, uint32_t source_node,
+    const VkrBakeMeshDecodeCallbacks *callbacks, void *user) {
   if (!callbacks->emit_instance) {
     return true_v;
   }
   VkrBakeMeshInstance instance = {.source_instance_index = source_instance,
+                                  .source_node_index = source_node,
                                   .world = world};
   if (decoded->lightmap.atlas_count != 0u) {
     if (atlas_index >= decoded->lightmap.atlas_count) {
@@ -304,7 +305,7 @@ bool8_t vkr_bake_mesh_decode_file(String8 source_path, const uint8_t *data,
         const VkrMeshSourceMesh *mesh =
             &decoded.source.meshes.data[node->mesh_variant];
         success = vkr_bake_mesh_emit_instance(&decoded, node->mesh_variant,
-                                              world, *in_out_source_instance,
+                                              world, *in_out_source_instance, i,
                                               callbacks, user) &&
                   vkr_bake_mesh_emit_ranges(
                       &decoded, mesh->first_range, mesh->range_count, world,
@@ -316,12 +317,12 @@ bool8_t vkr_bake_mesh_decode_file(String8 source_path, const uint8_t *data,
       }
     }
   } else if (success) {
-    success =
-        vkr_bake_mesh_emit_instance(&decoded, 0u, entity_world,
-                                    *in_out_source_instance, callbacks, user) &&
-        vkr_bake_mesh_emit_ranges(&decoded, 0u, (uint32_t)decoded.ranges.length,
-                                  entity_world, (*in_out_source_instance)++,
-                                  callbacks, user);
+    success = vkr_bake_mesh_emit_instance(&decoded, 0u, entity_world,
+                                          *in_out_source_instance, 0u,
+                                          callbacks, user) &&
+              vkr_bake_mesh_emit_ranges(
+                  &decoded, 0u, (uint32_t)decoded.ranges.length, entity_world,
+                  (*in_out_source_instance)++, callbacks, user);
   }
 
   vkr_allocator_release_global_accounting(&scratch_allocator);

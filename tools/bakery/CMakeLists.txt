@@ -82,7 +82,7 @@ if(VKR_BUILD_TOOLS)
         "${CMAKE_SOURCE_DIR}/runtime/src"
         "${CMAKE_SOURCE_DIR}/vendor/ktx-software/external/basisu/zstd")
     target_compile_definitions(vkr_bakery PRIVATE VKR_BAKERY_WITH_COOKERS=1)
-    target_link_libraries(vkr_bakery PRIVATE ktx
+    target_link_libraries(vkr_bakery PRIVATE ktx vkr_asset_formats
         vkr_mesh_cooker vkr_animation_cooker vkr_collision_cooker
         vkr_font_cooker vkr_vkt_packer vkr_hdr_cube_packer
         vkr_dfg_cooker vkr_sheen_cooker vkr_anisotropy_cooker

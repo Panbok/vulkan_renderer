@@ -1,5 +1,9 @@
 #include "lightmap_bake_tests.h"
 
+extern "C" {
+#include "assets/vkr_lightmap_set.h"
+#include "core/vkr_hash.h"
+}
 #include "bake/vkr_bake_lightmap.h"
 #include "bake/vkr_bake_mesh_decode.h"
 #include "mesh_cooked_tests.h"
@@ -15,7 +19,8 @@
  * The oracles are geometric: rectangles never overlap and stay on their page,
  * a texel's world position lies on the surface its UVs came from, and every
  * texel is claimed once. Page composition keeps each rectangle's fill inside
- * it, and the page encoding keeps HDR values above one. */
+ * it, the page encoding keeps HDR values above one, and a lightmap set file
+ * round-trips while a corrupted payload or malformed table is rejected. */
 
 namespace {
 
@@ -279,6 +284,76 @@ void test_astc_hdr_round_trip_keeps_range() {
          largest);
 }
 
+/* Writes a two-layer, one-page set with distinct payload bytes the way a
+   producer streams it: payload CRC first, prefix last. */
+std::vector<uint8_t> write_lightmap_set(const VkrLightmapSet &set) {
+  uint64_t payload_offset = 0u;
+  uint64_t file_size = 0u;
+  assert(vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  std::vector<uint8_t> file(file_size, 0u);
+  for (uint64_t i = payload_offset; i < file_size; ++i) {
+    file[i] = (uint8_t)(i * 31u + 7u);
+  }
+  const uint32_t payload_crc =
+      vkr_crc32(file.data() + payload_offset, file_size - payload_offset);
+  assert(vkr_lightmap_set_write_prefix(&set, payload_crc, file.data(),
+                                       payload_offset));
+  return file;
+}
+
+void test_lightmap_set_round_trip_and_rejects() {
+  const VkrLightmapLayer layers[] = {
+      {VKR_LIGHTMAP_LAYER_SUN_KEY, 0u, vec3_new(0.0f, 0.6f, 0.8f)},
+      {VKR_LIGHTMAP_LAYER_LAMP_GROUP, 0u, vec3_zero()}};
+  const VkrLightmapInstance instances[] = {{2u, 0u, 0u, 0u, 0u, 8u, 4u},
+                                           {2u, 3u, 0u, 8u, 0u, 4u, 4u},
+                                           {5u, 0u, 0u, 0u, 4u, 12u, 12u}};
+  VkrLightmapSet set = {};
+  set.page_size = 16u;
+  set.page_count = 1u;
+  set.layer_count = 2u;
+  set.instance_count = 3u;
+  set.texels_per_unit = 8.0f;
+  set.layers = layers;
+  set.instances = instances;
+  const std::vector<uint8_t> file = write_lightmap_set(set);
+  assert(file.size() % 4u == 0u);
+
+  Arena *arena = arena_create(KB(64), KB(64));
+  assert(arena);
+  VkrLightmapSet decoded = {};
+  assert(vkr_lightmap_set_decode(file.data(), file.size(), arena, &decoded));
+  assert(decoded.page_size == 16u && decoded.page_count == 1u);
+  assert(decoded.layer_count == 2u && decoded.instance_count == 3u);
+  assert(decoded.layers[0].kind == VKR_LIGHTMAP_LAYER_SUN_KEY);
+  assert(decoded.layers[0].sun_direction.z == 0.8f);
+  assert(decoded.instances[2].entity_index == 5u);
+  assert(decoded.instances[2].width == 12u);
+  const uint64_t page_bytes = vkr_lightmap_set_page_bytes(16u);
+  assert(page_bytes == 16u * 16u);
+  assert(decoded.payload + 2u * page_bytes == file.data() + file.size());
+
+  std::vector<uint8_t> corrupt = file;
+  corrupt[corrupt.size() - 1u] ^= 1u;
+  assert(!vkr_lightmap_set_decode(corrupt.data(), corrupt.size(), arena,
+                                  &decoded));
+  assert(
+      !vkr_lightmap_set_decode(file.data(), file.size() - 4u, arena, &decoded));
+
+  VkrLightmapInstance unaligned[] = {instances[0], instances[1], instances[2]};
+  unaligned[1].x = 6u;
+  set.instances = unaligned;
+  uint64_t payload_offset = 0u;
+  uint64_t file_size = 0u;
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  const VkrLightmapInstance unsorted[] = {instances[1], instances[0],
+                                          instances[2]};
+  set.instances = unsorted;
+  assert(!vkr_lightmap_set_layout(&set, &payload_offset, &file_size));
+  arena_destroy(arena);
+  printf("  test_lightmap_set_round_trip_and_rejects PASSED\n");
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -288,6 +363,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_cooked_cube_texels_lie_on_its_faces();
   test_compose_fills_each_rect_alone();
   test_astc_hdr_round_trip_keeps_range();
+  test_lightmap_set_round_trip_and_rejects();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }

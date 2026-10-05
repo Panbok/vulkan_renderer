@@ -16,9 +16,13 @@ extern "C" {
  */
 
 /* One lightmapped instance: its source mesh's chart atlas in texels at
-   texels_per_unit mesh units, and its world transform. */
+   texels_per_unit mesh units, its world transform, and its key in the scene
+   document: the entity's index in the entity array and the instance's
+   source-node index in the entity's cooked model. */
 struct VkrBakeLightmapInstance {
   uint32_t source_instance_index = 0u;
+  uint32_t entity_index = 0u;
+  uint32_t source_node_index = 0u;
   Mat4 world = {};
   uint32_t atlas_width = 0u;
   uint32_t atlas_height = 0u;
