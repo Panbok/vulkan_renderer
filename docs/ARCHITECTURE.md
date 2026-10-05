@@ -209,7 +209,7 @@ and lets clicks through to the gizmo beneath it. A quick right click in the
 Scene opens the menu of the object under the pointer.
 Details rows come from each component's type descriptor and apply through the
 edit journal.
-RMB holds free-camera capture; Tab/F3 and the toolbar remain toggle alternatives.
+RMB holds free-camera capture; F, Tab/F3 and the toolbar remain toggle alternatives.
 Console snapshots bounded structured logger history with a checkbox filter dropdown.
 The Build menu packages the open project and its Build tab shows the stages;
 Bakery sits under Develop. In

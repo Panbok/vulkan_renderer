@@ -912,7 +912,9 @@ bool8_t vkr_ui_input_layer_register(VkrUiSystem *system, uint32_t layer,
   if (!system || !system->frame_open || layer == 0u ||
       !vkr_ui_rect_has_area(rect_px))
     return false_v;
-  if (vkr_ui_point_in_rect(system->mouse_x, system->mouse_y, rect_px) &&
+  /* A captured pointer is virtual; it lies over no layer. */
+  if (!system->mouse_captured &&
+      vkr_ui_point_in_rect(system->mouse_x, system->mouse_y, rect_px) &&
       layer > system->mouse_input_layer) {
     system->mouse_input_layer = layer;
     if (system->mouse_pressed)

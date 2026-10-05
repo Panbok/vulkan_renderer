@@ -18,6 +18,12 @@
 #define EDITOR_MENU_SEPARATOR_PT 9.0f
 #define EDITOR_MENU_PADDING_PT 5.0f
 #define EDITOR_TRANSPORT_BUTTON_PT 27.0f
+/* Floating windows resize from borders just past their right and bottom
+   edges, both ways this near the corner, down to a minimum size. */
+#define EDITOR_WINDOW_EDGE_PT 6.0f
+#define EDITOR_WINDOW_CORNER_PT 14.0f
+#define EDITOR_WINDOW_MIN_WIDTH_PT 280.0f
+#define EDITOR_WINDOW_MIN_HEIGHT_PT 140.0f
 
 #if defined(PLATFORM_APPLE)
 #define EDITOR_SHORTCUT(apple, other) apple
@@ -245,7 +251,7 @@ static const EditorKeyBinding s_keymap[] = {
     {CMD_TOOL_MOVE, KEY_W, 0u},
     {CMD_TOOL_ROTATE, KEY_E, 0u},
     {CMD_TOOL_SCALE, KEY_R, 0u},
-    {CMD_FRAME, KEY_F, 0u},
+    {CMD_FRAME, KEY_F, VKR_INPUT_MOD_SHIFT},
     {CMD_SNAP, KEY_END, 0u},
     {CMD_DUPLICATE, KEY_D, EDITOR_MOD_PRIMARY},
     {CMD_DELETE, KEY_DELETE, 0u},
@@ -253,6 +259,7 @@ static const EditorKeyBinding s_keymap[] = {
     {CMD_DELETE, KEY_BACKSPACE, 0u},
 #endif
     {CMD_RENAME, KEY_F2, 0u},
+    {CMD_CAMERA, KEY_F, 0u, true_v},
     {CMD_CAMERA, KEY_F3, 0u, true_v},
     /* Level design. */
     {CMD_BRUSH_DRAW, KEY_B, 0u},
@@ -1650,6 +1657,45 @@ static VkrUiRect editor_window_rect(const VkrUiSystem *ui,
   };
 }
 
+/* The window and its resize borders, which its input layer covers. */
+static VkrUiRect editor_window_input_rect(const VkrUiSystem *ui,
+                                          const VkrEditorWindowState *window) {
+  VkrUiRect rect = editor_window_rect(ui, window);
+  rect.width += EDITOR_WINDOW_EDGE_PT * ui->content_scale;
+  rect.height += EDITOR_WINDOW_EDGE_PT * ui->content_scale;
+  return rect;
+}
+
+/* The resize borders (VKR_EDITOR_WINDOW_EDGE_*) under a point; zero inside
+   the window and away from it. */
+static uint8_t editor_window_edges_at(const VkrEditorWindowState *window,
+                                      Vec2 point_pt) {
+  const float32_t right = window->position_pt.x + window->size_pt.x;
+  const float32_t bottom = window->position_pt.y + window->size_pt.y;
+  if (point_pt.x < window->position_pt.x ||
+      point_pt.y < window->position_pt.y ||
+      point_pt.x >= right + EDITOR_WINDOW_EDGE_PT ||
+      point_pt.y >= bottom + EDITOR_WINDOW_EDGE_PT) {
+    return 0u;
+  }
+
+  uint8_t edges = 0u;
+  if (point_pt.x >= right ||
+      (point_pt.y >= bottom && point_pt.x >= right - EDITOR_WINDOW_CORNER_PT)) {
+    edges |= VKR_EDITOR_WINDOW_EDGE_RIGHT;
+  }
+  if (point_pt.y >= bottom ||
+      (point_pt.x >= right && point_pt.y >= bottom - EDITOR_WINDOW_CORNER_PT)) {
+    edges |= VKR_EDITOR_WINDOW_EDGE_BOTTOM;
+  }
+  return edges;
+}
+
+static VkrWindowCursor editor_window_edge_cursor(uint8_t edges) {
+  return edges == VKR_EDITOR_WINDOW_EDGE_BOTTOM ? VKR_WINDOW_CURSOR_RESIZE_NS
+                                                : VKR_WINDOW_CURSOR_RESIZE_EW;
+}
+
 static void editor_window_clamp(VkrUiSystem *ui, VkrEditorWindowState *window) {
   const float32_t width_pt = (float32_t)ui->target_width / ui->content_scale;
   const float32_t height_pt = (float32_t)ui->target_height / ui->content_scale;
@@ -1689,7 +1735,7 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
       editor_window_clamp(ui, window);
       if (window->visible && window->z_order > top_z &&
           editor_point_in_rect(press_x, press_y,
-                               editor_window_rect(ui, window))) {
+                               editor_window_input_rect(ui, window))) {
         top_z = window->z_order;
         top_kind = (VkrEditorWindowKind)i;
       }
@@ -1703,7 +1749,7 @@ void vkr_editor_windows_register_input_layers(VkrEditorUi *editor,
     editor_window_clamp(ui, window);
     if (window->visible)
       (void)vkr_ui_input_layer_register(ui, window->z_order + 2u,
-                                        editor_window_rect(ui, window));
+                                        editor_window_input_rect(ui, window));
   }
   if (editor->menu != VKR_EDITOR_MENU_NONE)
     (void)vkr_ui_input_layer_register(ui, EDITOR_MENU_LAYER,
@@ -1811,50 +1857,60 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     return;
   }
 
-  if (ui->mouse_pressed && !frame->mouse_captured &&
+  /* The pointer reaches this window when no window, menu or popup above it
+     covers the point; only then do its title and borders take a press. */
+  const bool8_t topmost = ui->mouse_input_layer == window->z_order + 2u;
+  const Vec2 mouse = {ui->mouse_x / ui->content_scale,
+                      ui->mouse_y / ui->content_scale};
+  if (ui->mouse_pressed && !frame->mouse_captured && topmost &&
       editor->menu == VKR_EDITOR_MENU_NONE) {
     int32_t press_x = 0;
     int32_t press_y = 0;
     input_get_button_press_position(input, BUTTON_LEFT, &press_x, &press_y);
     const Vec2 press = {press_x / ui->content_scale,
                         press_y / ui->content_scale};
-    bool8_t occluded = false_v;
-    for (uint32_t i = 0; i < VKR_EDITOR_WINDOW_COUNT; ++i) {
-      const VkrEditorWindowState *other = &editor->windows[i];
-      if (other->visible && other->z_order > window->z_order &&
-          editor_point_in_rect(press_x, press_y,
-                               editor_window_rect(ui, other))) {
-        occluded = true_v;
-      }
-    }
-    if (!occluded && press.x >= window->position_pt.x &&
-        press.x < window->position_pt.x + window->size_pt.x - 30 &&
-        press.y >= window->position_pt.y &&
-        press.y < window->position_pt.y + 28) {
+    const uint8_t edges = editor_window_edges_at(window, press);
+    if (edges) {
+      /* The grab keeps the border's offset from the pointer. */
+      window->resize_edges = edges;
+      window->drag_grab_pt =
+          (Vec2){press.x - window->position_pt.x - window->size_pt.x,
+                 press.y - window->position_pt.y - window->size_pt.y};
+    } else if (press.x >= window->position_pt.x &&
+               press.x < window->position_pt.x + window->size_pt.x - 30 &&
+               press.y >= window->position_pt.y &&
+               press.y < window->position_pt.y + 28) {
       window->dragging = true_v;
       window->drag_grab_pt = (Vec2){press.x - window->position_pt.x,
                                     press.y - window->position_pt.y};
     }
-    /* The bottom-right corner resizes a resizable window. */
-    if (!occluded && window->resizable &&
-        press.x >= window->position_pt.x + window->size_pt.x - 16 &&
-        press.x < window->position_pt.x + window->size_pt.x &&
-        press.y >= window->position_pt.y + window->size_pt.y - 16 &&
-        press.y < window->position_pt.y + window->size_pt.y) {
-      window->resizing = true_v;
-    }
   }
   const bool8_t down = input_is_button_down(input, BUTTON_LEFT);
-  if (window->resizing && !frame->mouse_captured &&
+  if (window->resize_edges && !frame->mouse_captured &&
       (down || ui->mouse_released)) {
-    window->size_pt = (Vec2){
-        Max(420.0f, ui->mouse_x / ui->content_scale - window->position_pt.x),
-        Max(260.0f, ui->mouse_y / ui->content_scale - window->position_pt.y)};
+    const float32_t width_pt = (float32_t)ui->target_width / ui->content_scale;
+    const float32_t height_pt =
+        (float32_t)ui->target_height / ui->content_scale;
+    if (window->resize_edges & VKR_EDITOR_WINDOW_EDGE_RIGHT) {
+      const float32_t right = Min(mouse.x - window->drag_grab_pt.x, width_pt);
+      window->size_pt.x =
+          Max(EDITOR_WINDOW_MIN_WIDTH_PT, right - window->position_pt.x);
+    }
+    if (window->resize_edges & VKR_EDITOR_WINDOW_EDGE_BOTTOM) {
+      const float32_t bottom = Min(mouse.y - window->drag_grab_pt.y, height_pt);
+      window->size_pt.y =
+          Max(EDITOR_WINDOW_MIN_HEIGHT_PT, bottom - window->position_pt.y);
+    }
     ui->capture.mouse = true_v;
-    ui->cursor = VKR_WINDOW_CURSOR_RESIZE_EW;
+    ui->cursor = editor_window_edge_cursor(window->resize_edges);
+  } else if (!window->dragging && !down && topmost && !frame->mouse_captured) {
+    const uint8_t edges = editor_window_edges_at(window, mouse);
+    if (edges) {
+      ui->cursor = editor_window_edge_cursor(edges);
+    }
   }
   if (!down || frame->mouse_captured) {
-    window->resizing = false_v;
+    window->resize_edges = 0u;
   }
   if (window->dragging && !frame->mouse_captured &&
       (down || ui->mouse_released)) {
@@ -2053,21 +2109,31 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
       (void)vkr_ui_panel_end(ui);
     }
   } else {
-    VkrUiWidgetConfig body = vkr_editor_text_config(
-        monospace ? theme->font_caption : theme->font_body,
-        monospace ? theme->text_secondary : theme->text);
-    if (monospace)
-      body.text.font = editor->mono_font;
-    body.placement = (VkrUiPlacement){
-        .column = 0u,
-        .row = 1u,
-        .column_span = 1u,
-        .row_span = 1u,
-        .justify = VKR_UI_ALIGN_START,
-        .align = VKR_UI_ALIGN_START,
-        .margin_pt = {10.0f, 12.0f, 10.0f, 12.0f},
-    };
-    vkr_ui_label(ui, string8_lit("body"), body_text, &body);
+    /* Text longer than the window scrolls. */
+    const VkrUiTrack text_row = {.unit = VKR_UI_TRACK_AUTO};
+    VkrUiPanelConfig scroll = vkr_ui_panel_config_default();
+    scroll.placement.column = 0u;
+    scroll.placement.row = 1u;
+    scroll.rows = &text_row;
+    scroll.row_count = 1u;
+    scroll.style.padding_pt = (VkrUiEdges){10.0f, 14.0f, 10.0f, 12.0f};
+    if (vkr_ui_scroll_area_begin(ui, string8_lit("body.scroll"), &scroll)) {
+      VkrUiWidgetConfig body = vkr_editor_text_config(
+          monospace ? theme->font_caption : theme->font_body,
+          monospace ? theme->text_secondary : theme->text);
+      if (monospace)
+        body.text.font = editor->mono_font;
+      body.placement = (VkrUiPlacement){
+          .column = 0u,
+          .row = 0u,
+          .column_span = 1u,
+          .row_span = 1u,
+          .justify = VKR_UI_ALIGN_START,
+          .align = VKR_UI_ALIGN_START,
+      };
+      vkr_ui_label(ui, string8_lit("body"), body_text, &body);
+      (void)vkr_ui_scroll_area_end(ui);
+    }
   }
   (void)vkr_ui_panel_end(ui);
   (void)vkr_ui_pop_id(ui);
@@ -2530,8 +2596,11 @@ static uint32_t editor_context_entity_items(VkrEditorUi *editor,
   const VkrTypeDesc *script = vkr_editor_entity_script(scene, entity);
   uint32_t count = 0u;
   context_push(items, &count,
-               (EditorContextItem){"Frame", VKR_UI_ICON_FRAME, "F", false_v,
-                                   CONTEXT_FRAME});
+               (EditorContextItem){"Frame", VKR_UI_ICON_FRAME,
+                                   EDITOR_SHORTCUT("â§"
+                                                   "F",
+                                                   "Shift+F"),
+                                   false_v, CONTEXT_FRAME});
   /* Snapping rests the object under the Scene's Snapping settings. */
   static const char *const snap_labels[VKR_EDITOR_SNAP_COUNT] = {
       "Snap to ground", "Snap to surface", "Snap to grid"};

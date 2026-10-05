@@ -109,7 +109,7 @@ after Unity's conventions, with Cmd in place of Ctrl on macOS: Ctrl+S save,
 Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Ctrl+K the Cmd field, Ctrl+Space the
 Content browser, Ctrl+= / Ctrl+- / Ctrl+0 interface zoom, Ctrl+1 to Ctrl+5 and
 Ctrl+PageUp / Ctrl+PageDown workbenches (ADR-089), F1 controls, Q/W/E/R
-tools, F frame, End snap, Ctrl+D duplicate, Delete delete, F2 rename, B brush
+tools, Shift+F frame, F free camera, End snap, Ctrl+D duplicate, Delete delete, F2 rename, B brush
 drawing, Shift+X the clip tool, Ctrl+P play (again stops and resets),
 Ctrl+Shift+P pause and resume, Ctrl+Alt+P step, Ctrl+B build and run,
 Ctrl+Shift+B build settings. A plain
@@ -118,8 +118,8 @@ unless a text field does; none act while the camera flies or a menu or the Cmd
 field is open. Menus, toolbar tooltips and the controls window print each
 command's first binding from the same table, so a hint cannot disagree with
 its key. The editor owns save and undo, so the runtime's own Ctrl+S and
-Ctrl+Z stay off under it; the runtime keeps F3 and Tab for the free camera and
-its F-key diagnostics. The paneled
+Ctrl+Z stay off under it; the runtime keeps F, F3 and Tab for the free camera
+and its F-key diagnostics. The paneled
 editor merges this bar with the title bar, and the UI publishes the bar's empty
 space as the drag region each frame so controls keep their clicks. On macOS the
 window draws under a transparent native title and keeps the system window
@@ -131,7 +131,11 @@ published region. `WM_NCMOUSEMOVE` is forwarded to input, so hovering a control
 still withdraws the region. Because `vkr_window_draws_caption_buttons` is true
 only on Windows, the bar draws minimize, maximize/restore and close buttons
 there. Floating windows, menus and popups have input priority above
-the Scene header.
+the Scene header. The Scene's tools (brush drawing, face handles, the clip,
+path and terrain tools) take a press only where no window, menu, popup or
+header covers the image. Every floating window resizes from borders just past
+its right and bottom edges, down to 280 x 140 points, and the text windows
+(Draws, Memory, controls) scroll.
 
 In project-managed mode the editor starts as a compact, centered 1000 x 640
 point launcher. With no project open, the Projects view fills that window: its
@@ -230,11 +234,17 @@ close button; splitters highlight on hover.
 Enabled visible controls support Tab/Shift-Tab focus and Enter/Space activation.
 An unobstructed Scene click clears widget focus and gives Tab to free-camera
 capture. Clicking a panel or control restores Tab/Shift-Tab widget navigation.
-F3 and the toolbar camera button also enter camera mode; Escape releases capture.
-Stopped or hidden Scene views do not accept camera entry.
+F, F3 and the toolbar camera button also toggle camera mode; F follows the
+plain-key rule while the camera is free and always releases it. Escape
+releases capture. Stopped or hidden Scene views do not accept camera entry.
 Holding right mouse over an unobstructed live Scene captures the free camera
-until release; focus loss synthesizes the right-button release. This temporary
-capture has separate state from Tab/F3/toolbar toggles. Camera capture clears
+until release; focus loss synthesizes the right-button release. For the right
+button, unobstructed means that no window, menu, popup or header layer covers
+the pointer and no widget or dock gesture holds the mouse. Keyboard focus and
+a hovered light icon do not block it, and the press takes keyboard focus and
+the keyboard layer to the Scene. This temporary capture has separate state
+from Tab/F/F3/toolbar toggles; a toggle during the hold latches the camera
+until the next toggle. Camera capture clears
 widget focus and consumes editor input even when its virtual pointer crosses
 an overlay. The capture-entry frame consumes no mouse motion.
 Window input retains press/release edges, button press positions and press-time

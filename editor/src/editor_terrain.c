@@ -146,9 +146,7 @@ void vkr_editor_terrain_update(VkrEditorUi *editor,
   }
   const Vec4 image = frame->mapping.image_rect_px;
   const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
-  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
-                         mouse.x < image.x + image.z &&
-                         mouse.y < image.y + image.w;
+  const bool8_t inside = editor->scene_pointer_free;
   if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
     editor->terrain_tool = false_v;
     editor->terrain_stroke = 0u;

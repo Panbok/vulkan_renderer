@@ -725,9 +725,7 @@ static void viewport_brush_draw(VkrEditorUi *editor,
     return;
   }
   const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
-  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
-                         mouse.x < image.x + image.z &&
-                         mouse.y < image.y + image.w;
+  const bool8_t inside = editor->scene_pointer_free;
   const bool8_t grid = editor->placement.target != VKR_EDITOR_SNAP_FREE;
   const float32_t cell = frame->view_state.grid_spacing > 0.0f
                              ? frame->view_state.grid_spacing
@@ -1080,9 +1078,7 @@ static void viewport_face_tools(VkrEditorUi *editor,
                       input_is_key_down(frame->input, KEY_RMENU);
   const Vec4 image = frame->mapping.image_rect_px;
   const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
-  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
-                         mouse.x < image.x + image.z &&
-                         mouse.y < image.y + image.w;
+  const bool8_t inside = editor->scene_pointer_free;
   Vec3 origin = {0};
   Vec3 direction = {0};
   const bool8_t has_ray = viewport_ray(frame, mouse, &origin, &direction);
@@ -1199,9 +1195,7 @@ static void viewport_clip_tool(VkrEditorUi *editor,
     return;
   }
   const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
-  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
-                         mouse.x < image.x + image.z &&
-                         mouse.y < image.y + image.w;
+  const bool8_t inside = editor->scene_pointer_free;
   Vec3 point = {0};
   if (!brush_plane_point(frame, mouse, frame->view_state.grid_height, true_v,
                          &point)) {
@@ -1270,9 +1264,7 @@ static void viewport_path_tool(VkrEditorUi *editor,
     return;
   }
   const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
-  const bool8_t inside = mouse.x >= image.x && mouse.y >= image.y &&
-                         mouse.x < image.x + image.z &&
-                         mouse.y < image.y + image.w;
+  const bool8_t inside = editor->scene_pointer_free;
   Vec3 point = {0};
   if (!brush_plane_point(frame, mouse, frame->view_state.grid_height, true_v,
                          &point)) {
@@ -1399,14 +1391,9 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
   if (!frame->mapping_valid) {
     editor->view_toolbar_rect_pt = (Vec4){0};
     editor->view_popup = VIEW_POPUP_NONE;
+    editor->scene_pointer_free = false_v;
     return;
   }
-  viewport_clip_tool(editor, frame);
-  viewport_path_tool(editor, frame);
-  /* Face handles find the one under the pointer before drawing reads it, so
-     a press on a handle drags the face instead of starting a box. */
-  viewport_face_tools(editor, frame);
-  viewport_brush_draw(editor, frame);
   const ViewHeaderLayout layout = view_header_layout(editor, frame);
   const float32_t scale = ui->content_scale;
   if (frame->mouse_captured || editor->cmd_active ||
@@ -1432,6 +1419,24 @@ void vkr_editor_viewport_update(VkrEditorUi *editor,
   view_register_rect(ui, layout.left);
   view_register_rect(ui, layout.right);
   view_register_rect(ui, editor->view_popup_rect_pt);
+
+  /* Floating windows, menus and popups registered their layers before this
+     update and the toolbars just did; the tools below register their own
+     claim on the image, so they read this instead of the layer. */
+  const Vec4 image = frame->mapping.image_rect_px;
+  const float32_t mouse_x = (float32_t)ui->mouse_x;
+  const float32_t mouse_y = (float32_t)ui->mouse_y;
+  editor->scene_pointer_free =
+      !frame->mouse_captured && ui->mouse_input_layer == 0u &&
+      mouse_x >= image.x && mouse_y >= image.y && mouse_x < image.x + image.z &&
+      mouse_y < image.y + image.w;
+
+  viewport_clip_tool(editor, frame);
+  viewport_path_tool(editor, frame);
+  /* Face handles find the one under the pointer before drawing reads it, so
+     a press on a handle drags the face instead of starting a box. */
+  viewport_face_tools(editor, frame);
+  viewport_brush_draw(editor, frame);
 }
 
 static VkrUiPanelConfig view_panel(Vec4 rect) {

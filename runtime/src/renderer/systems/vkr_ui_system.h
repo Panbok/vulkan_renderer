@@ -540,7 +540,8 @@ bool8_t vkr_ui_pop_id(VkrUiSystem *system);
 /**
  * Register an input-occluding rectangle before building interactive widgets.
  * The highest registered layer under the pointer receives interaction; layer
- * zero is the ordinary UI behind popups and floating windows.
+ * zero is the ordinary UI behind popups and floating windows. A captured
+ * mouse is over no layer.
  */
 bool8_t vkr_ui_input_layer_register(VkrUiSystem *system, uint32_t layer,
                                     VkrUiRect rect_px);

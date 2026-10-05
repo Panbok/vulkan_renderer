@@ -2518,7 +2518,7 @@ void vkr_editor_code_build(VkrEditorCode *code, VkrEditorUi *editor,
       code_keys(code, editor, doc, frame->input);
     }
     code_build_view(code, editor, doc, ui, view_row,
-                    !editor->windows[VKR_EDITOR_WINDOW_SCRIPT].resizing);
+                    !editor->windows[VKR_EDITOR_WINDOW_SCRIPT].resize_edges);
   } else {
     const VkrUiTheme *theme = vkr_ui_theme();
     VkrUiWidgetConfig empty =

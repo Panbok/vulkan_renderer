@@ -59,10 +59,13 @@ typedef struct VkrEditorWindowState {
   bool8_t visible;
   bool8_t dragging;
   Vec2 drag_grab_pt;
-  /* Windows with a corner grip: the grip is held. */
-  bool8_t resizable;
-  bool8_t resizing;
+  /* The right and bottom borders resize every window; the held ones
+     (VKR_EDITOR_WINDOW_EDGE_*), or zero. */
+  uint8_t resize_edges;
 } VkrEditorWindowState;
+
+#define VKR_EDITOR_WINDOW_EDGE_RIGHT 1u
+#define VKR_EDITOR_WINDOW_EDGE_BOTTOM 2u
 
 /* Empty objects one container shows icons for, cached until its structure
    changes. */
@@ -541,6 +544,9 @@ typedef struct VkrEditorUi {
   /* Pinned Scene header: left chip group rectangle, open dropdown, its
    * anchor chip and popup rectangle, all in points. */
   Vec4 view_toolbar_rect_pt;
+  /* The pointer is over the Scene image and no window, menu, popup or
+   * toolbar covers it; Scene tools take presses only then. */
+  bool8_t scene_pointer_free;
   Vec4 view_popup_anchor_pt;
   Vec4 view_popup_rect_pt;
   uint32_t view_popup;

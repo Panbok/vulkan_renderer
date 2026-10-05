@@ -2705,6 +2705,17 @@ vkr_internal void vkr_standard_scene_runtime_handle_gameplay_input(
   }
 }
 
+/* Whether the pointer reaches the editor Scene for the right button: no
+   window, menu, popup or toolbar layer covers it and no widget or dock
+   gesture holds the mouse. Keyboard focus and a hovered Scene label do not
+   block it; the right button gives neither a use. */
+vkr_internal bool8_t
+sample_scene_pointer_free(const VkrStandardSceneRuntime *application) {
+  return application->ui_system.mouse_input_layer == 0u &&
+         application->ui_capture.active_id == VKR_UI_ID_NONE &&
+         !application->editor_viewport.dock_capture.mouse;
+}
+
 /* Starts, toggles or releases free-camera mouse capture. Returns true_v when
    this frame started a capture. */
 vkr_internal bool8_t vkr_standard_scene_runtime_update_camera_capture(
@@ -2730,13 +2741,30 @@ vkr_internal bool8_t vkr_standard_scene_runtime_update_camera_capture(
       application->editor_viewport.enabled && !application->ui_capture.text &&
       application->ui_system.keyboard_input_layer == 0u &&
       input_key_just_pressed(input_state, KEY_F3);
-  if ((camera_tab || camera_shortcut) &&
+  /* Plain F toggles too, under the editor's rule for plain keys: while the
+     Scene or no widget holds the keyboard, and always while flying. */
+  const uint8_t f_modifiers = input_key_press_modifiers(input_state, KEY_F) &
+                              (VKR_INPUT_MOD_SHIFT | VKR_INPUT_MOD_CONTROL |
+                               VKR_INPUT_MOD_ALT | VKR_INPUT_MOD_SUPER);
+  const bool8_t camera_f =
+      application->editor_viewport.enabled &&
+      input_key_just_pressed(input_state, KEY_F) && f_modifiers == 0u &&
+      (camera_captured ||
+       (!application->ui_capture.text &&
+        application->ui_system.keyboard_input_layer == 0u &&
+        (state->scene_keyboard_focus ||
+         application->ui_system.focused_id == VKR_UI_ID_NONE)));
+  if ((camera_tab || camera_shortcut || camera_f) &&
       (camera_captured ||
        !vkr_standard_scene_runtime_editor_scene_rendering_stopped(
            application))) {
-    vkr_window_set_mouse_capture(&application->host.window, !camera_captured);
+    /* A toggle while the right button holds the camera keeps it flying
+       after the release; the next toggle ends it. */
+    if (!state->free_camera_held) {
+      vkr_window_set_mouse_capture(&application->host.window, !camera_captured);
+      camera_started = !camera_captured;
+    }
     state->free_camera_held = false_v;
-    camera_started = !camera_captured;
     state->free_camera_use_gamepad = false_v;
   }
 
@@ -2754,14 +2782,15 @@ vkr_internal bool8_t vkr_standard_scene_runtime_update_camera_capture(
     }
   }
 
+  /* A right press over the Scene flies whatever held the keyboard: it takes
+     focus from fields and from the layer of the last clicked window, menu or
+     toolbar, as a left click in the Scene does. */
   if (application->editor_viewport.enabled &&
       vkr_standard_scene_runtime_is_windowed(application) &&
       !vkr_window_is_mouse_captured(&application->host.window) &&
       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
-      !application->ui_capture.mouse && !application->ui_capture.text &&
-      application->ui_system.mouse_input_layer == 0u &&
-      application->ui_system.keyboard_input_layer == 0u &&
-      !state->gizmo_drag.active && !state->gizmo_drag.pending_pick &&
+      sample_scene_pointer_free(application) && !state->gizmo_drag.active &&
+      !state->gizmo_drag.pending_pick &&
       !input_is_key_down(input_state, KEY_ESCAPE) &&
       input_button_just_pressed(input_state, BUTTON_RIGHT) &&
       input_is_button_down(input_state, BUTTON_RIGHT)) {
@@ -2778,7 +2807,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_update_camera_capture(
       state->scene_keyboard_focus = true_v;
       application->ui_system.focused_id = VKR_UI_ID_NONE;
       application->ui_system.focused_is_text = false_v;
+      application->ui_system.keyboard_input_layer = 0u;
       application->ui_capture.keyboard = false_v;
+      application->ui_capture.text = false_v;
       camera_started = true_v;
     }
   }
@@ -2910,8 +2941,7 @@ static void sample_track_context_click(VkrStandardSceneRuntime *application,
     const VkrViewportHitInfo hit =
         vkr_standard_scene_runtime_get_viewport_hit_info(application, x, y);
     state->context_armed =
-        hit.has_target_coords && !application->ui_capture.mouse &&
-        application->ui_system.mouse_input_layer == 0u &&
+        hit.has_target_coords && sample_scene_pointer_free(application) &&
         !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application);
     state->context_press_x = x;
     state->context_press_y = y;
