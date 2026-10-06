@@ -55,11 +55,21 @@ and an `--exec` of `wait.scene; wait 3`; it stays open while a client is
 connected. Send one JSON request per line
 (`{"v":1,"id":1,"op":"ops.list"}`) and read one response line per request;
 the first request should be `{"op":"cmd","args":{"line":"wait.scene"}}`.
-Through MCP, run `build_release/tools/vkr_mcp --socket <path>` and send MCP
-2026-07-28 requests with the version in `_meta`. Captures land in
+Through MCP, run `build_release/tools/vkr_mcp --socket <path> --agent <task>`
+and send MCP 2026-07-28 requests with the version in `_meta`. Captures land in
 `$TMPDIR/vkr/captures/` (`%TEMP%\vkr\captures` on Windows); read the PNG to
 see the result. Windows uses the same AF_UNIX socket, but Python's `socket`
 module there has no `AF_UNIX`, so script it through `vkr_mcp`.
+
+Name yourself with `agent` (or `--agent`) so your changes carry an author and
+`undo` takes only your own batches; to drop another step, `changes.reject`
+its change. Raycasts, `query.reachable`, `query.bounds`, `level.lint`,
+`level.map` and captures wait for rebuilds of earlier edits; a result with
+`"settled": false` read a scene that was still rebuilding, so repeat it
+before relying on it. Add `"settle": true` to a write to get each entity's
+world bounds and build status in its answer. Check layouts with
+`level.map` and queries before captures, and lint regions of 76 m or less
+for 0.3 m cells.
 
 ## Read results
 

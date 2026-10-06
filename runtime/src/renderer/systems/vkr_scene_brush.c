@@ -1374,3 +1374,15 @@ const char *vkr_scene_brush_status(const VkrScene *scene, VkrEntityId brush) {
   }
   return record->built ? NULL : record->status;
 }
+
+uint32_t vkr_scene_brush_pending(const VkrScene *scene) {
+  const VkrSceneBrushes *state = scene ? scene->brushes : NULL;
+  if (!state) {
+    return 0u;
+  }
+  uint32_t pending = state->pending_count;
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    pending += state->records[i].dirty;
+  }
+  return pending;
+}

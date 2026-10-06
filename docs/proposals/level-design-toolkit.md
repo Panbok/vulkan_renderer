@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-05
+updated: 2026-10-06
 authority: proposal
 ---
 # Level design toolkit
@@ -96,6 +96,19 @@ closes it. They are comfort.
 - **Scatter rules** that a designer can stack, as PCG does: density from
   terrain layers, slope limits and exclusion near roads.
 
+### Agents
+
+ADR-084 gives agents authors, scoped undo, reads that wait for rebuilds,
+quick reads that share a build and `level.map`. These remain:
+
+| Item | Need | Evidence |
+|---|---|---|
+| `entity.place` with anchors (on top of, against a side of, centred in) | Agents compute fewer absolute corners, where orientation errors enter | Headless run: a crate placed against a wall's +x side is flush within the grid step |
+| Capture options: image size, several views in one sheet, entity labels, the view-projection matrix | Fewer captures and pixels an agent can map back to world points | Headless run: a sheet of top and perspective views, and a labelled entity at its projected pixel |
+| An offscreen capture view | Captures leave the designer's camera alone | A capture during a designer's camera drag leaves the drag unchanged |
+| `scene.changes` from a journal revision, then pushed events | Agents see each other's work without paging `scene.describe` | Two clients: the second lists the first one's batch by revision |
+| Lint and map spread over several builds | A large region does not stall one frame | Release frame times during a 256 m lint stay under the frame budget |
+
 ## Acceptance evidence
 
 Each item lands with the CPU test that falsifies its contract and a
@@ -104,8 +117,9 @@ headless Bistro run that exercises its operations and captures the result.
 ## Risks
 
 - LLM agents make arithmetic and orientation errors in 3D. Intent operations,
-  grid snapping, `level.lint`, labelled top-down captures and the review step
-  each reduce this; none removes it.
+  grid snapping, `level.lint`, `level.map` text plans, checks that wait for
+  rebuilds, labelled top-down captures and the review step each reduce this;
+  none removes it.
 
 ## Sources
 

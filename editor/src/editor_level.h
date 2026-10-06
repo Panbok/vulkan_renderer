@@ -75,6 +75,29 @@ bool8_t vkr_editor_level_reachable(const VkrScene *scene, Vec3 from, Vec3 to,
                                    Vec3 *path, uint32_t path_capacity,
                                    uint32_t *path_count, float32_t *length);
 
+/* The cell edge and the columns and rows a level map of [min, max] with
+   cells of at least `cell` gets. */
+float32_t vkr_editor_level_map_size(Vec3 min, Vec3 max,
+                                    const VkrEditorLevelCapsule *capsule,
+                                    float32_t cell, uint32_t *out_columns,
+                                    uint32_t *out_rows);
+
+/* A text map of the region [min, max] for agents (level.map): one character
+   for each grid cell, row by row from min z, each row running +x, as a top
+   capture shows it. A cell shows its highest walkable floor, else its
+   highest floor: '.' walkable (and reached from `start` when one is
+   given), ',' walkable but out of reach, 'S' the start, '#' too close to a
+   wall for the capsule, 'n' a gap narrower than the capsule, '_' a ceiling
+   too low, '/' too steep and '-' no floor. `heights`, when not NULL,
+   receives each shown floor's world y, NAN where none. False when the grid
+   needs more than `capacity` cells. */
+bool8_t vkr_editor_level_map(const VkrScene *scene, Vec3 min, Vec3 max,
+                             const VkrEditorLevelCapsule *capsule,
+                             const Vec3 *start, float32_t cell, char *text,
+                             float32_t *heights, uint32_t capacity,
+                             VkrEditorLevelStats *stats,
+                             bool8_t *out_start_found);
+
 const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind);
 
 /* The first face of `brush` a ray from `origin` along unit `direction`

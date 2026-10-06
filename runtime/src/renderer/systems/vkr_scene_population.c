@@ -597,3 +597,13 @@ void vkr_scene_population_update(VkrScene *scene) {
     population_build(scene, rule, signature);
   }
 }
+
+uint32_t vkr_scene_population_pending(const VkrScene *scene) {
+  const VkrScenePopulation *state = scene ? scene->population : NULL;
+  uint32_t pending = 0u;
+  for (uint32_t i = 0; state && i < state->rule_count; ++i) {
+    pending += population_signature(scene, &state->rules[i]) !=
+               state->rules[i].signature;
+  }
+  return pending;
+}

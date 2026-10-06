@@ -6,7 +6,8 @@
  * `_meta`. Every editor operation from `ops.list` becomes the tool
  * `vkr_<operation with dots as underscores>`; a call forwards to the editor
  * socket and returns the operation's JSON as structured content. A capture
- * also returns its PNG as image content. Logs go to stderr. */
+ * also returns its PNG as image content. `--agent <name>` names every
+ * request's author unless a call names its own. Logs go to stderr. */
 
 #include "defines.h"
 #include "filesystem/filesystem.h"
@@ -38,23 +39,40 @@
 #define MCP_LINE_MAX MB(16)
 
 static const char *s_instructions =
-    "Tools drive the open VKR editor. Start with vkr_editor_status and "
-    "vkr_scene_describe. Write tools (create, set, delete, component, batch) "
-    "apply as one undo step; by default each becomes a pending change the "
-    "designer accepts or rejects in the editor, so report what you changed. "
-    "vkr_batch applies several writes at once and $k names the entity that "
-    "operation k created. Use vkr_view_capture with view top and grid_labels "
-    "true to see a layout from above. Rotations are degrees XYZ; units are "
-    "meters with Y up.";
+    "Tools drive the open VKR editor. Units are meters with Y up; rotations "
+    "are degrees XYZ. Start with vkr_editor_status and vkr_scene_describe "
+    "(page it with root or region). Plan a layout as data, then send it as "
+    "one vkr_batch: its writes apply as one undo step, $k names the entity "
+    "operation k created, and dry_run checks it first. Each write becomes a "
+    "pending change the designer accepts or rejects, so pass 'agent' (your "
+    "name) and a 'label', and report what you changed. Prefer blockout "
+    "shapes and snapping to computed corners. Pass settle true on a write "
+    "to get each entity's world bounds and build status once it rebuilt. "
+    "Collision and geometry reads (raycast, reachable, bounds, level_lint, "
+    "level_map, capture) wait for rebuilds by default, so they never see a "
+    "stale scene. Verify with numbers before pictures: vkr_query_raycast and "
+    "vkr_terrain_sample for heights and openings, vkr_query_reachable for "
+    "routes, vkr_level_map for a text floor plan (rows run +z down the "
+    "page, +x across, as a top capture shows), vkr_level_lint in regions "
+    "of 76 m or less for full detail. Use vkr_view_capture (view top with "
+    "grid_labels, or eye and target) to judge the look. Undo takes only "
+    "your own batches; reject your change with vkr_changes_reject instead "
+    "of undoing other work.";
 
 typedef struct McpState {
   char socket_path[512];
+  /* The author every request names unless its arguments name one. */
+  char agent[32];
   VkrLocalSocket socket;
   uint64_t next_id;
   /* Bytes received after the last complete editor line. */
   char *pending;
   uint64_t pending_length;
   uint64_t pending_capacity;
+  /* The editor's `ops.list` result as JSON text, kept for the connection,
+     so a tool call costs the editor one request instead of two. */
+  char *ops_text;
+  uint64_t ops_length;
 } McpState;
 
 static void mcp_log(const char *format, ...) {
@@ -161,6 +179,10 @@ static bool8_t mcp_connect(McpState *state) {
     return false_v;
   }
   state->pending_length = 0u;
+  /* A new connection can reach a restarted editor with other operations. */
+  free(state->ops_text);
+  state->ops_text = NULL;
+  state->ops_length = 0u;
   return true_v;
 }
 
@@ -218,6 +240,10 @@ static const VkrBakeryJson *mcp_editor_call(McpState *state, Arena *arena,
   vkr_bakery_json_set(arena, request, "id",
                       vkr_bakery_json_int(arena, (int64_t)++state->next_id));
   vkr_bakery_json_set(arena, request, "op", vkr_bakery_json_cstr(arena, op));
+  if (state->agent[0]) {
+    vkr_bakery_json_set(arena, request, "agent",
+                        vkr_bakery_json_cstr(arena, state->agent));
+  }
   vkr_bakery_json_set(arena, request, "args",
                       args && args->type == VKR_BAKERY_JSON_OBJECT
                           ? vkr_bakery_json_clone(arena, args)
@@ -286,8 +312,18 @@ static void mcp_tool_name(String8 op, char *out, uint64_t capacity) {
   }
 }
 
+/* The editor's operations, from the copy kept for the connection or from
+   `ops.list`. */
 static const VkrBakeryJson *mcp_ops(McpState *state, Arena *arena, char *error,
                                     uint64_t capacity) {
+  if (state->ops_text && state->socket != VKR_LOCAL_SOCKET_INVALID) {
+    const VkrBakeryJson *kept = vkr_bakery_json_parse(
+        arena, (const uint8_t *)state->ops_text, state->ops_length, 64u, NULL);
+    const VkrBakeryJson *ops = kept ? vkr_bakery_json_get(kept, "ops") : NULL;
+    if (ops && ops->type == VKR_BAKERY_JSON_ARRAY) {
+      return ops;
+    }
+  }
   const VkrBakeryJson *response =
       mcp_editor_call(state, arena, "ops.list", NULL, error, capacity);
   bool8_t ok = false_v;
@@ -299,8 +335,27 @@ static const VkrBakeryJson *mcp_ops(McpState *state, Arena *arena, char *error,
   }
   if (!vkr_bakery_json_get_bool(response, "ok", &ok) || !ok || !ops ||
       ops->type != VKR_BAKERY_JSON_ARRAY) {
-    snprintf(error, capacity, "The editor did not list its operations");
+    /* The editor's own reason, as when it serves its most clients. */
+    const VkrBakeryJson *editor_error = vkr_bakery_json_get(response, "error");
+    String8 message = {0};
+    if (editor_error &&
+        vkr_bakery_json_get_string(editor_error, "message", &message)) {
+      snprintf(error, capacity, "%.*s", (int)message.length,
+               (const char *)message.str);
+    } else {
+      snprintf(error, capacity, "The editor did not list its operations");
+    }
     return NULL;
+  }
+  String8 text = {0};
+  if (vkr_bakery_json_write(arena, result, VKR_BAKERY_JSON_COMPACT, &text)) {
+    char *copy = malloc(text.length);
+    if (copy) {
+      MemCopy(copy, text.str, text.length);
+      free(state->ops_text);
+      state->ops_text = copy;
+      state->ops_length = text.length;
+    }
   }
   return ops;
 }
@@ -573,15 +628,23 @@ int main(int argc, char **argv) {
   (void)_setmode(_fileno(stdout), _O_BINARY);
 #endif
   const char *socket = getenv("VKR_EDITOR_AGENT_SOCKET");
+  const char *agent = getenv("VKR_AGENT_NAME");
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
       socket = argv[++i];
+    } else if (strcmp(argv[i], "--agent") == 0 && i + 1 < argc) {
+      agent = argv[++i];
     } else if (strcmp(argv[i], "--help") == 0) {
-      printf("Usage: vkr_mcp [--socket <path>]\n"
-             "MCP %s server over stdio for the VKR editor's agent channel.\n",
+      printf("Usage: vkr_mcp [--socket <path>] [--agent <name>]\n"
+             "MCP %s server over stdio for the VKR editor's agent channel.\n"
+             "--agent (or VKR_AGENT_NAME) names the author of every request "
+             "unless a call names its own.\n",
              MCP_VERSION);
       return 0;
     }
+  }
+  if (agent && agent[0]) {
+    snprintf(state.agent, sizeof(state.agent), "%s", agent);
   }
   if (socket && socket[0]) {
     snprintf(state.socket_path, sizeof(state.socket_path), "%s", socket);
@@ -631,6 +694,7 @@ int main(int argc, char **argv) {
   }
   free(line);
   free(state.pending);
+  free(state.ops_text);
   mcp_disconnect(&state);
   arena_destroy(arena);
   return 0;

@@ -10,6 +10,9 @@
  * journal group. */
 typedef struct VkrEditorOps VkrEditorOps;
 
+/* Bytes of an author name, with its terminator. */
+#define VKR_EDITOR_AUTHOR_CAPACITY 32u
+
 typedef enum VkrEditorOpStatus {
   VKR_EDITOR_OP_DONE = 0,
   /* The operation continues in a later build: a batch result, a capture or
@@ -32,19 +35,29 @@ typedef struct VkrEditorOpCall {
   uint32_t frames;
   uint64_t token;
   void *state;
+  /* Who asks: an agent's name or client slot, recorded on its changes and
+     limiting its undo to its own steps; empty for the editor's own
+     requests. */
+  char author[VKR_EDITOR_AUTHOR_CAPACITY];
+  /* Builds a read waited for the scene to settle, whether it is done
+     waiting and whether it gave up first. */
+  uint32_t settle_frames;
+  bool8_t settle_done;
+  bool8_t settle_timeout;
 } VkrEditorOpCall;
 
 #define VKR_EDITOR_CHANGE_MAX 64u
 #define VKR_EDITOR_CHANGE_ENTITY_MAX 128u
 
-/* A batch an agent applied for review: its journal group in `container` and
- * the entities it created or edited. Accept drops the mark; Reject reverts
- * the group. */
+/* A batch an agent applied for review: its journal group in `container`,
+ * its author and the entities it created or edited. Accept drops the mark;
+ * Reject reverts the group. */
 typedef struct VkrEditorChange {
   uint32_t id;
   uint64_t group;
   uint16_t container;
   char label[96];
+  char author[VKR_EDITOR_AUTHOR_CAPACITY];
   uint32_t entity_count;
   VkrEntityId entities[VKR_EDITOR_CHANGE_ENTITY_MAX];
 } VkrEditorChange;
@@ -56,6 +69,10 @@ void vkr_editor_ops_destroy(VkrEditorOps *ops);
 VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrEditorOpCall *call);
+
+/* Whether `op` is a cheap read that changes nothing, so it may run in a
+   build after other cheap reads (ADR-084). */
+bool8_t vkr_editor_ops_quick(String8 op);
 
 /* Drops changes whose group left its journal, as after a scene reload or an
    undo followed by another edit. Call once per build. */

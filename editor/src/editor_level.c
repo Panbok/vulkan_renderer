@@ -203,18 +203,31 @@ static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
   }
 }
 
-/* A grid over [min, max] with cells of at least the capsule radius. */
-static bool8_t level_grid_build(LevelGrid *grid, VkrScene *scene, Vec3 min,
-                                Vec3 max,
-                                const VkrEditorLevelCapsule *capsule) {
-  *grid =
-      (LevelGrid){.scene = scene, .capsule = capsule, .min = min, .max = max};
+/* The cell edge of a grid over [min, max]: at least `cell` and the capsule
+   radius, and large enough that the grid stays within
+   VKR_EDITOR_LEVEL_CELL_MAX cells. Writes the cells along x and z. */
+static float32_t level_grid_size(Vec3 min, Vec3 max,
+                                 const VkrEditorLevelCapsule *capsule,
+                                 float32_t cell, uint32_t *out_nx,
+                                 uint32_t *out_nz) {
   const float32_t width = Max(max.x - min.x, 0.01f);
   const float32_t depth = Max(max.z - min.z, 0.01f);
-  grid->cell = Max(capsule->radius,
-                   sqrtf(width * depth / (float32_t)VKR_EDITOR_LEVEL_CELL_MAX));
-  grid->nx = (uint32_t)Max(1.0f, ceilf(width / grid->cell));
-  grid->nz = (uint32_t)Max(1.0f, ceilf(depth / grid->cell));
+  const float32_t edge =
+      Max(Max(capsule->radius, cell),
+          sqrtf(width * depth / (float32_t)VKR_EDITOR_LEVEL_CELL_MAX));
+  *out_nx = (uint32_t)Max(1.0f, ceilf(width / edge));
+  *out_nz = (uint32_t)Max(1.0f, ceilf(depth / edge));
+  return edge;
+}
+
+/* A grid over [min, max] with cells of at least `cell` (zero for none) and
+   the capsule radius. */
+static bool8_t level_grid_build(LevelGrid *grid, VkrScene *scene, Vec3 min,
+                                Vec3 max, const VkrEditorLevelCapsule *capsule,
+                                float32_t cell) {
+  *grid =
+      (LevelGrid){.scene = scene, .capsule = capsule, .min = min, .max = max};
+  grid->cell = level_grid_size(min, max, capsule, cell, &grid->nx, &grid->nz);
   const size_t cells = (size_t)grid->nx * grid->nz;
   grid->nodes = calloc(cells * LEVEL_LAYER_MAX, sizeof(*grid->nodes));
   grid->layers = calloc(cells, sizeof(*grid->layers));
@@ -618,7 +631,7 @@ uint32_t vkr_editor_level_lint(const VkrScene *scene, Vec3 min, Vec3 max,
   LevelIssues issues = {.items = out, .capacity = capacity};
   LevelGrid grid;
   /* Physics queries take a mutable scene but change none of its state. */
-  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule)) {
+  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule, 0.0f)) {
     return 0u;
   }
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
@@ -672,7 +685,7 @@ bool8_t vkr_editor_level_reachable(const VkrScene *scene, Vec3 from, Vec3 to,
   const Vec3 max = vec3_add(
       vec3_new(Max(from.x, to.x), Max(from.y, to.y), Max(from.z, to.z)), pad);
   LevelGrid grid;
-  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule)) {
+  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule, 0.0f)) {
     return false_v;
   }
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
@@ -707,6 +720,84 @@ bool8_t vkr_editor_level_reachable(const VkrScene *scene, Vec3 from, Vec3 to,
   free(queue);
   level_grid_free(&grid);
   return reached;
+}
+
+float32_t vkr_editor_level_map_size(Vec3 min, Vec3 max,
+                                    const VkrEditorLevelCapsule *capsule,
+                                    float32_t cell, uint32_t *out_columns,
+                                    uint32_t *out_rows) {
+  return level_grid_size(min, max, capsule, cell, out_columns, out_rows);
+}
+
+bool8_t vkr_editor_level_map(const VkrScene *scene, Vec3 min, Vec3 max,
+                             const VkrEditorLevelCapsule *capsule,
+                             const Vec3 *start, float32_t cell, char *text,
+                             float32_t *heights, uint32_t capacity,
+                             VkrEditorLevelStats *stats,
+                             bool8_t *out_start_found) {
+  LevelGrid grid;
+  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule, cell)) {
+    return false_v;
+  }
+  const size_t cells = (size_t)grid.nx * grid.nz;
+  if (cells > capacity) {
+    level_grid_free(&grid);
+    return false_v;
+  }
+  const size_t total = cells * LEVEL_LAYER_MAX;
+  int32_t *queue = start ? malloc(total * sizeof(*queue)) : NULL;
+  const int32_t origin = queue ? level_nearest(&grid, *start) : -1;
+  uint32_t reachable = 0u;
+  if (origin >= 0) {
+    reachable = level_walk(&grid, origin, queue);
+  }
+  free(queue);
+  uint32_t samples = 0u;
+  uint32_t walkable = 0u;
+  for (size_t c = 0; c < cells; ++c) {
+    /* The highest walkable floor of the cell, else its highest floor;
+       floors are found from the top down. */
+    const LevelNode *shown = NULL;
+    for (uint32_t l = 0; l < grid.layers[c]; ++l) {
+      const LevelNode *node = &grid.nodes[c * LEVEL_LAYER_MAX + l];
+      samples++;
+      walkable += node->state == LEVEL_WALKABLE;
+      if (!shown ||
+          (node->state == LEVEL_WALKABLE && shown->state != LEVEL_WALKABLE)) {
+        shown = node;
+      }
+    }
+    char mark = '-';
+    if (shown && shown->state == LEVEL_WALKABLE) {
+      mark = origin >= 0 && !shown->visited ? ',' : '.';
+    } else if (shown && shown->state == LEVEL_STEEP) {
+      mark = '/';
+    } else if (shown && shown->state == LEVEL_LOW) {
+      mark = '_';
+    } else if (shown && shown->state == LEVEL_NARROW) {
+      mark = 'n';
+    } else if (shown) {
+      mark = '#';
+    }
+    text[c] = mark;
+    if (heights) {
+      heights[c] = shown ? shown->position.y : NAN;
+    }
+  }
+  if (origin >= 0) {
+    text[(size_t)origin / LEVEL_LAYER_MAX] = 'S';
+  }
+  if (stats) {
+    *stats = (VkrEditorLevelStats){.cell = grid.cell,
+                                   .samples = samples,
+                                   .walkable = walkable,
+                                   .reachable = reachable};
+  }
+  if (out_start_found) {
+    *out_start_found = origin >= 0;
+  }
+  level_grid_free(&grid);
+  return true_v;
 }
 
 bool8_t vkr_editor_brush_ray(const VkrScene *scene, VkrEntityId brush,

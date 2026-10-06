@@ -42,6 +42,7 @@
 #define OPS_BUSY "VKR-AGENT-0006"
 #define OPS_CAPTURE "VKR-AGENT-0007"
 #define OPS_LIMIT "VKR-AGENT-0008"
+#define OPS_NOT_OWNER "VKR-AGENT-0009"
 
 /* Entities scene.describe lists per request, and its default page. */
 #define OPS_DESCRIBE_MAX 500u
@@ -54,6 +55,18 @@
 #define OPS_CAPTURE_KEEP 32u
 /* Builds a capture waits after changing the view, so the frame shows it. */
 #define OPS_CAPTURE_SETTLE_FRAMES 4u
+/* Builds a request waits for brush, shape, terrain and scatter rebuilds
+   before it answers with `settled` false. */
+#define OPS_SCENE_SETTLE_FRAMES 240u
+/* Newest agent batches whose author an agent's undo can check. */
+#define OPS_AUTHORED_MAX 64u
+
+/* The journal group of an agent batch, reviewed or not, and its author. */
+typedef struct OpsAuthored {
+  uint64_t group;
+  uint16_t container;
+  char author[VKR_EDITOR_AUTHOR_CAPACITY];
+} OpsAuthored;
 
 struct VkrEditorOps {
   VkrAllocator *allocator;
@@ -68,6 +81,10 @@ struct VkrEditorOps {
   uint32_t change_count;
   uint32_t next_change_id;
   uint32_t capture_serial;
+  /* A ring of the newest agent batches; `authored_next` counts every one
+     recorded. */
+  OpsAuthored authored[OPS_AUTHORED_MAX];
+  uint32_t authored_next;
 };
 
 typedef struct OpsContext {
@@ -104,6 +121,13 @@ typedef VkrEditorOpStatus (*OpsRun)(OpsContext *ctx);
 typedef bool8_t (*OpsBuild)(OpsContext *ctx, const VkrBakeryJson *args,
                             OpsBatch *batch);
 
+/* A cheap read that changes nothing: it may run in a build after other
+   cheap reads, and takes `settle`. */
+#define OPS_QUICK 1u
+/* A read of collision or built geometry: it waits for the scene to settle
+   unless `settle` is false. */
+#define OPS_SETTLES 2u
+
 typedef struct OpsDef {
   const char *name;
   const char *description;
@@ -112,6 +136,8 @@ typedef struct OpsDef {
   /* Read operations and batches run; write operations build batch items. */
   OpsRun run;
   OpsBuild build;
+  /* OPS_QUICK and OPS_SETTLES. */
+  uint32_t flags;
 } OpsDef;
 
 // =============================================================================
@@ -256,6 +282,43 @@ static const VkrSceneEditState *ops_journal(const VkrSampleUiFrame *frame,
   }
   return world <= VKR_SCENE_ADDITIVE_MAX ? frame->additive_edits[world - 1u]
                                          : NULL;
+}
+
+/* What the loaded scenes still rebuild after their edits: brushes and
+   shapes, terrain meshes and collision, and scatter or spline copies. */
+typedef struct OpsSettle {
+  uint32_t brushes;
+  uint32_t population;
+  bool8_t terrain;
+  bool8_t loading;
+} OpsSettle;
+
+/* Whether nothing rebuilds and no scene loads. The scene does not rebuild
+   while the simulation runs, so Play counts as settled. */
+static bool8_t ops_settled(const VkrSampleUiFrame *frame, OpsSettle *out) {
+  OpsSettle settle = {.loading = frame->scene_loading ||
+                                 frame->additive_loading ||
+                                 frame->world_loading};
+  if (!frame->simulation_running) {
+    const VkrScene *scenes[VKR_SCENE_ADDITIVE_MAX + 2u] = {frame->scene,
+                                                           frame->world};
+    for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+      scenes[i + 2u] = frame->additive[i];
+    }
+    for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+      if (!scenes[i]) {
+        continue;
+      }
+      settle.brushes += vkr_scene_brush_pending(scenes[i]);
+      settle.population += vkr_scene_population_pending(scenes[i]);
+      settle.terrain = settle.terrain || !vkr_scene_terrain_settled(scenes[i]);
+    }
+  }
+  if (out) {
+    *out = settle;
+  }
+  return !settle.loading && !settle.brushes && !settle.population &&
+         !settle.terrain;
 }
 
 static const char *ops_container_name(uint32_t world, char *buffer,
@@ -471,6 +534,43 @@ static bool8_t ops_world_bounds(const VkrScene *scene, VkrEntityId entity,
   *out_min = lo;
   *out_max = hi;
   return true_v;
+}
+
+/* Adds what a write made of `entity` to its result `entry`: its world
+   bounds, and the build status of a brush, shape, terrain or population
+   rule. */
+static void ops_entity_built(OpsContext *ctx, const VkrScene *scene,
+                             VkrEntityId entity, VkrBakeryJson *entry) {
+  if (!scene || !entity.u64 || !vkr_scene_entity_alive(scene, entity)) {
+    return;
+  }
+  Vec3 lo = {0};
+  Vec3 hi = {0};
+  if (ops_world_bounds(scene, entity, &lo, &hi)) {
+    VkrBakeryJson *bounds = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, bounds, "min", ops_vec3(ctx, lo));
+    ops_set(ctx, bounds, "max", ops_vec3(ctx, hi));
+    ops_set(ctx, entry, "bounds", bounds);
+  }
+  const char *status = NULL;
+  if (vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
+      vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type)) {
+    status = vkr_scene_brush_status(scene, entity);
+    status = status ? status : "built";
+  } else if (vkr_scene_get_typed(scene, entity, &vkr_scene_terrain_type)) {
+    status = vkr_scene_terrain_status(scene, entity);
+    status = status ? status : "loaded";
+  } else if (vkr_scene_get_typed(scene, entity, &vkr_scene_spline_mesh_type) ||
+             vkr_scene_get_typed(scene, entity, &vkr_scene_scatter_type)) {
+    status = vkr_scene_population_status(scene, entity);
+    status = status ? status : "placed";
+    ops_set(ctx, entry, "copies",
+            vkr_bakery_json_int(ops_arena(ctx),
+                                vkr_scene_population_instances(scene, entity)));
+  }
+  if (status) {
+    ops_set(ctx, entry, "status", vkr_bakery_json_cstr(ops_arena(ctx), status));
+  }
 }
 
 /* Component type named `name`: an edit component (transform, visibility,
@@ -3337,6 +3437,10 @@ static VkrBakeryJson *ops_change_json(OpsContext *ctx,
           vkr_bakery_json_int(ops_arena(ctx), change->id));
   ops_set(ctx, object, "label",
           vkr_bakery_json_cstr(ops_arena(ctx), change->label));
+  if (change->author[0]) {
+    ops_set(ctx, object, "author",
+            vkr_bakery_json_cstr(ops_arena(ctx), change->author));
+  }
   ops_set(ctx, object, "container",
           vkr_bakery_json_cstr(
               ops_arena(ctx),
@@ -3358,7 +3462,36 @@ static VkrBakeryJson *ops_change_json(OpsContext *ctx,
 typedef struct OpsPendingBatch {
   OpsBatch batch;
   uint64_t token;
+  /* With `settle`, an applied batch answers once the scene rebuilt what it
+     changed; `results` holds its answer's entries and `entities` their
+     entities, one per operation. */
+  bool8_t settle;
+  bool8_t applied;
+  VkrBakeryJson *results;
+  VkrEntityId *entities;
 } OpsPendingBatch;
+
+/* Remembers that `author` made `group`, for the undo of agents. */
+static void ops_authored_add(VkrEditorOps *ops, uint64_t group,
+                             uint16_t container, const char *author) {
+  OpsAuthored *slot = &ops->authored[ops->authored_next % OPS_AUTHORED_MAX];
+  *slot = (OpsAuthored){.group = group, .container = container};
+  snprintf(slot->author, sizeof(slot->author), "%s", author);
+  ops->authored_next++;
+}
+
+/* The author of `group`, or NULL when no recent agent batch made it. */
+static const char *ops_authored_find(const VkrEditorOps *ops, uint64_t group,
+                                     uint16_t container) {
+  const uint32_t count = Min(ops->authored_next, OPS_AUTHORED_MAX);
+  for (uint32_t i = 0; group && i < count; ++i) {
+    const OpsAuthored *entry = &ops->authored[i];
+    if (entry->group == group && entry->container == container) {
+      return entry->author;
+    }
+  }
+  return NULL;
+}
 
 /* Builds one write operation into `batch`. */
 static bool8_t ops_build_one(OpsContext *ctx, const OpsDef *def,
@@ -3405,8 +3538,10 @@ static VkrEditorOpStatus ops_submit(OpsContext *ctx, OpsBatch *batch,
     ops_fail(ctx, OPS_LIMIT, "Out of request memory");
     return VKR_EDITOR_OP_DONE;
   }
+  MemZero(pending, sizeof(*pending));
   pending->batch = *batch;
   pending->token = ++ctx->ops->next_token;
+  pending->settle = ops_arg_bool(call->args, "settle", false_v);
   *ctx->frame->edit_batch = (VkrSampleEditBatchRequest){
       .token = pending->token,
       .items = ctx->ops->items,
@@ -3419,11 +3554,35 @@ static VkrEditorOpStatus ops_submit(OpsContext *ctx, OpsBatch *batch,
   return VKR_EDITOR_OP_WAIT;
 }
 
+/* Answers an applied batch with `settle` once nothing rebuilds, adding each
+   operation entity's bounds and build status. */
+static VkrEditorOpStatus ops_batch_settle(OpsContext *ctx,
+                                          OpsPendingBatch *pending) {
+  VkrEditorOpCall *call = ctx->call;
+  const bool8_t settled = ops_settled(ctx->frame, NULL);
+  if (!settled && call->frames < OPS_SCENE_SETTLE_FRAMES) {
+    call->frames++;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  call->settle_timeout = !settled;
+  const VkrScene *scene =
+      ops_scene(ctx->frame, (uint32_t)pending->batch.container);
+  uint32_t op = 0u;
+  for (VkrBakeryJson *entry = pending->results->first;
+       entry && op < pending->batch.op_count; entry = entry->next, ++op) {
+    ops_entity_built(ctx, scene, pending->entities[op], entry);
+  }
+  return VKR_EDITOR_OP_DONE;
+}
+
 /* Reads the runtime's batch result and answers with each operation's entity;
    a reviewed batch becomes a pending change. */
 static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   VkrEditorOpCall *call = ctx->call;
-  const OpsPendingBatch *pending = call->state;
+  OpsPendingBatch *pending = call->state;
+  if (pending->applied) {
+    return ops_batch_settle(ctx, pending);
+  }
   const VkrSampleEditBatchResult *result = ctx->frame->edit_batch_result;
   if (!result || result->token != pending->token) {
     if (++call->frames > OPS_WAIT_FRAMES) {
@@ -3448,6 +3607,13 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   VkrBakeryJson *results = vkr_bakery_json_array(call->arena);
   VkrEditorChange change = {.group = result->group,
                             .container = (uint16_t)batch->container};
+  snprintf(change.author, sizeof(change.author), "%s", call->author);
+  if (pending->settle) {
+    pending->entities =
+        arena_alloc(call->arena, sizeof(VkrEntityId) * Max(batch->op_count, 1u),
+                    ARENA_MEMORY_TAG_ARRAY);
+    pending->settle = pending->entities != NULL;
+  }
   for (uint32_t op = 0; op < batch->op_count; ++op) {
     VkrEntityId entity = batch->op_target[op];
     if (batch->op_item[op] != UINT32_MAX) {
@@ -3457,6 +3623,9 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
     ops_set(ctx, entry, "entity", ops_entity(ctx, scene, entity));
     vkr_bakery_json_append(results, entry);
     ops_change_touch(&change, entity);
+    if (pending->settle) {
+      pending->entities[op] = entity;
+    }
   }
   /* A change lists objects; faces and connections are parts of their
      owner. */
@@ -3476,6 +3645,9 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
         .action = VKR_SCENE_EDIT_SELECT, .entity = selected};
   }
   VkrEditorOps *ops = ctx->ops;
+  if (call->author[0]) {
+    ops_authored_add(ops, result->group, change.container, call->author);
+  }
   if (batch->review && ops->change_count < VKR_EDITOR_CHANGE_MAX) {
     change.id = ++ops->next_change_id;
     snprintf(change.label, sizeof(change.label), "%.*s",
@@ -3497,7 +3669,13 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
                                  "Too many pending changes; this one applied "
                                  "without review"));
   }
-  return VKR_EDITOR_OP_DONE;
+  if (!pending->settle) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  pending->applied = true_v;
+  pending->results = results;
+  call->frames = 0u;
+  return ops_batch_settle(ctx, pending);
 }
 
 // =============================================================================
@@ -3586,6 +3764,10 @@ static VkrEditorOpStatus ops_run_status(OpsContext *ctx) {
       ops_set(ctx, container, "unsaved",
               vkr_bakery_json_bool(arena, edits && edits->revision !=
                                                        edits->saved_revision));
+      /* Grows with every edit, undo and redo, so a client can tell that
+         someone changed the scene. */
+      ops_set(ctx, container, "revision",
+              vkr_bakery_json_int(arena, edits ? (int64_t)edits->revision : 0));
     }
     ops_set(ctx, result, keys[i], container);
   }
@@ -3617,6 +3799,15 @@ static VkrEditorOpStatus ops_run_status(OpsContext *ctx) {
   ops_set(ctx, result, "simulation", simulation);
   ops_set(ctx, result, "pending_changes",
           vkr_bakery_json_int(arena, ctx->ops->change_count));
+  OpsSettle pending = {0};
+  VkrBakeryJson *settle = vkr_bakery_json_object(arena);
+  ops_set(ctx, settle, "settled",
+          vkr_bakery_json_bool(arena, ops_settled(frame, &pending)));
+  ops_set(ctx, settle, "brushes", vkr_bakery_json_int(arena, pending.brushes));
+  ops_set(ctx, settle, "terrain", vkr_bakery_json_bool(arena, pending.terrain));
+  ops_set(ctx, settle, "population",
+          vkr_bakery_json_int(arena, pending.population));
+  ops_set(ctx, result, "rebuilding", settle);
   VkrBakeryJson *view = vkr_bakery_json_object(arena);
   ops_set(
       ctx, view, "camera",
@@ -4149,7 +4340,10 @@ static VkrEditorOpStatus ops_run_write(OpsContext *ctx, const OpsDef *def) {
   batch->container = -1;
   batch->review = ops_arg_bool(call->args, "review", true_v);
   batch->select = ops_arg_bool(call->args, "select", false_v);
-  batch->label = call->op;
+  if (!vkr_bakery_json_get_string(call->args, "label", &batch->label) ||
+      !batch->label.length) {
+    batch->label = call->op;
+  }
   if (!ops_build_one(ctx, def, call->args, batch)) {
     return VKR_EDITOR_OP_DONE;
   }
@@ -4323,10 +4517,54 @@ static VkrEditorOpStatus ops_run_cmd(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Whether the step undo (or redo) takes next is one of the caller's own
+   batches. Undo follows the most recent entry across every journal, as the
+   runtime does, so an agent would otherwise undo whatever another agent or
+   the designer did last. */
+static bool8_t ops_undo_own(OpsContext *ctx, bool8_t redo) {
+  uint32_t containers[VKR_SCENE_ADDITIVE_MAX + 2u] = {0u,
+                                                      VKR_SCENE_WORLD_ROOT_ID};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    containers[i + 2u] = i + 1u;
+  }
+  const VkrSceneEditState *best = NULL;
+  uint32_t best_container = 0u;
+  uint64_t best_sequence = 0u;
+  for (uint32_t i = 0; i < ArrayCount(containers); ++i) {
+    const VkrSceneEditState *journal = ops_journal(ctx->frame, containers[i]);
+    const uint64_t sequence =
+        journal ? vkr_scene_edit_next_sequence(journal, redo) : 0u;
+    if (sequence && (!best_sequence || (redo ? sequence < best_sequence
+                                             : sequence > best_sequence))) {
+      best = journal;
+      best_container = containers[i];
+      best_sequence = sequence;
+    }
+  }
+  if (!best) {
+    return true_v;
+  }
+  const VkrSceneEditEntry *entry =
+      &best->undo[redo ? best->undo_cursor : best->undo_cursor - 1u];
+  const char *owner =
+      ops_authored_find(ctx->ops, entry->group, (uint16_t)best_container);
+  if (owner && strcmp(owner, ctx->call->author) == 0) {
+    return true_v;
+  }
+  return ops_fail(ctx, OPS_NOT_OWNER,
+                  "The next %s step belongs to %s%s; an agent undoes only its "
+                  "own batches, or rejects its change with changes.reject",
+                  redo ? "redo" : "undo", owner ? owner : "the designer",
+                  owner ? "" : " or an older edit");
+}
+
 static VkrEditorOpStatus ops_run_undo(OpsContext *ctx) {
   /* Undo and redo run as Cmd lines, which own the scene edit slot. */
   if (!ctx->call->stage) {
     const bool8_t redo = ops_equals(ctx->call->op, "redo");
+    if (ctx->call->author[0] && !ops_undo_own(ctx, redo)) {
+      return VKR_EDITOR_OP_DONE;
+    }
     VkrBakeryJson *args = vkr_bakery_json_object(ops_arena(ctx));
     ops_set(ctx, args, "line",
             vkr_bakery_json_cstr(ops_arena(ctx), redo ? "redo" : "undo"));
@@ -4666,39 +4904,57 @@ static bool8_t ops_player_start(const VkrScene *scene, Vec3 *out) {
   return false_v;
 }
 
-static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
+/* The arguments level.lint and level.map share: a `region` box with volume,
+   its container, the capsule and the walk's start (`start`, else the first
+   enabled Player Start). */
+typedef struct OpsLevelArgs {
+  Vec3 min;
+  Vec3 max;
+  const VkrScene *scene;
+  VkrEditorLevelCapsule capsule;
+  Vec3 start;
+  bool8_t has_start;
+} OpsLevelArgs;
+
+static bool8_t ops_level_args(OpsContext *ctx, OpsLevelArgs *out) {
   const VkrBakeryJson *args = ctx->call->args;
   const VkrBakeryJson *region = vkr_bakery_json_get(args, "region");
-  Vec3 min = {0};
-  Vec3 max = {0};
   bool8_t has_min = false_v;
   bool8_t has_max = false_v;
   uint16_t container = 0u;
-  VkrEditorLevelCapsule capsule;
+  *out = (OpsLevelArgs){0};
   if (!region || region->type != VKR_BAKERY_JSON_OBJECT ||
-      !ops_arg_vec3(ctx, region, "min", &min, &has_min) ||
-      !ops_arg_vec3(ctx, region, "max", &max, &has_max) || !has_min ||
-      !has_max || max.x <= min.x || max.y <= min.y || max.z <= min.z) {
-    if (!ctx->call->error_code) {
-      ops_fail(ctx, OPS_INVALID,
-               "'region' is {\"min\": [..], \"max\": [..]}, a box with "
-               "volume");
-    }
-    return VKR_EDITOR_OP_DONE;
+      !ops_arg_vec3(ctx, region, "min", &out->min, &has_min) ||
+      !ops_arg_vec3(ctx, region, "max", &out->max, &has_max) || !has_min ||
+      !has_max || out->max.x <= out->min.x || out->max.y <= out->min.y ||
+      out->max.z <= out->min.z) {
+    return ctx->call->error_code
+               ? false_v
+               : ops_fail(ctx, OPS_INVALID,
+                          "'region' is {\"min\": [..], \"max\": [..]}, a box "
+                          "with volume");
   }
   if (!ops_arg_container(ctx, args, &container) ||
-      !ops_arg_capsule(ctx, args, &capsule)) {
+      !ops_arg_capsule(ctx, args, &out->capsule) ||
+      !ops_arg_vec3(ctx, args, "start", &out->start, &out->has_start)) {
+    return false_v;
+  }
+  out->scene = ops_scene(ctx->frame, container);
+  if (!out->has_start) {
+    out->has_start = ops_player_start(out->scene, &out->start);
+  }
+  return true_v;
+}
+
+static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  OpsLevelArgs level;
+  if (!ops_level_args(ctx, &level)) {
     return VKR_EDITOR_OP_DONE;
   }
-  const VkrScene *scene = ops_scene(ctx->frame, container);
-  Vec3 start = {0};
-  bool8_t has_start = false_v;
-  if (!ops_arg_vec3(ctx, args, "start", &start, &has_start)) {
-    return VKR_EDITOR_OP_DONE;
-  }
-  if (!has_start) {
-    has_start = ops_player_start(scene, &start);
-  }
+  const VkrScene *scene = level.scene;
+  const Vec3 start = level.start;
+  const bool8_t has_start = level.has_start;
   float64_t limit = 100.0;
   (void)ops_arg_number(args, "limit", &limit);
   const uint32_t capacity = (uint32_t)vkr_clamp_f64(limit, 1.0, 500.0);
@@ -4709,9 +4965,9 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   VkrEditorLevelStats stats = {0};
-  const uint32_t found = vkr_editor_level_lint(scene, min, max, &capsule,
-                                               has_start ? &start : NULL,
-                                               issues, capacity, &stats);
+  const uint32_t found = vkr_editor_level_lint(
+      scene, level.min, level.max, &level.capsule, has_start ? &start : NULL,
+      issues, capacity, &stats);
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *list = vkr_bakery_json_array(arena);
   for (uint32_t i = 0; i < Min(found, capacity); ++i) {
@@ -4746,6 +5002,102 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
   }
   ops_set(ctx, result, "found", vkr_bakery_json_int(arena, found));
   ops_set(ctx, result, "issues", list);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Cells along a level map's longer side without `cell`, and the columns
+   and rows one answers with at most. */
+#define OPS_MAP_SIDE_DEFAULT 96u
+#define OPS_MAP_SIDE_MAX 200u
+
+/* level.map: the region's floors as rows of characters, a floor plan an
+   agent reads as text. */
+static VkrEditorOpStatus ops_run_map(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  OpsLevelArgs level;
+  if (!ops_level_args(ctx, &level)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t cell =
+      (float64_t)Max(level.max.x - level.min.x, level.max.z - level.min.z) /
+      (float64_t)OPS_MAP_SIDE_DEFAULT;
+  (void)ops_arg_number(args, "cell", &cell);
+  if (!(cell > 0.0)) {
+    ops_fail(ctx, OPS_INVALID, "'cell' must be positive");
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint32_t columns = 0u;
+  uint32_t rows = 0u;
+  const float32_t edge = vkr_editor_level_map_size(
+      level.min, level.max, &level.capsule, (float32_t)cell, &columns, &rows);
+  if (columns > OPS_MAP_SIDE_MAX || rows > OPS_MAP_SIDE_MAX) {
+    ops_fail(ctx, OPS_LIMIT,
+             "A map of %u by %u cells of %.2f m passes %u a side; raise "
+             "'cell' or split the region",
+             columns, rows, (float64_t)edge, OPS_MAP_SIDE_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  const uint32_t cells = columns * rows;
+  const bool8_t want_heights = ops_arg_bool(args, "heights", false_v);
+  char *text = arena_alloc(arena, cells, ARENA_MEMORY_TAG_STRING);
+  float32_t *heights = want_heights
+                           ? arena_alloc(arena, sizeof(float32_t) * cells,
+                                         ARENA_MEMORY_TAG_ARRAY)
+                           : NULL;
+  VkrEditorLevelStats stats = {0};
+  bool8_t start_found = false_v;
+  if (!text || (want_heights && !heights) ||
+      !vkr_editor_level_map(level.scene, level.min, level.max, &level.capsule,
+                            level.has_start ? &level.start : NULL,
+                            (float32_t)cell, text, heights, cells, &stats,
+                            &start_found)) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrBakeryJson *lines = vkr_bakery_json_array(arena);
+  VkrBakeryJson *floors = vkr_bakery_json_array(arena);
+  for (uint32_t z = 0; z < rows; ++z) {
+    const String8 line = {.str = (uint8_t *)text + (size_t)z * columns,
+                          .length = columns};
+    vkr_bakery_json_append(lines, ops_string(ctx, line));
+    if (!heights) {
+      continue;
+    }
+    VkrBakeryJson *row = vkr_bakery_json_array(arena);
+    for (uint32_t x = 0; x < columns; ++x) {
+      const float32_t y = heights[(size_t)z * columns + x];
+      vkr_bakery_json_append(
+          row, isfinite(y)
+                   ? ops_number(ctx, floor((float64_t)y * 100.0 + 0.5) / 100.0)
+                   : vkr_bakery_json_null(arena));
+    }
+    vkr_bakery_json_append(floors, row);
+  }
+  VkrBakeryJson *first = vkr_bakery_json_array(arena);
+  vkr_bakery_json_append(first, ops_number(ctx, level.min.x + 0.5f * edge));
+  vkr_bakery_json_append(first, ops_number(ctx, level.min.z + 0.5f * edge));
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "cell", ops_number(ctx, edge));
+  ops_set(ctx, result, "first", first);
+  ops_set(ctx, result, "columns", vkr_bakery_json_int(arena, columns));
+  ops_set(ctx, result, "rows", lines);
+  ops_set(ctx, result, "legend",
+          vkr_bakery_json_cstr(
+              arena, "'.' walkable; ',' walkable, out of reach of the start; "
+                     "'S' start; '#' too close to a wall; 'n' gap too "
+                     "narrow; '_' ceiling too low; '/' too steep; '-' no "
+                     "floor"));
+  ops_set(ctx, result, "walkable", vkr_bakery_json_int(arena, stats.walkable));
+  if (start_found) {
+    ops_set(ctx, result, "start", ops_vec3(ctx, level.start));
+    ops_set(ctx, result, "reachable",
+            vkr_bakery_json_int(arena, stats.reachable));
+  }
+  if (heights) {
+    ops_set(ctx, result, "heights", floors);
+  }
   ctx->call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
@@ -4975,16 +5327,23 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
     call->frames = 0u;
     return VKR_EDITOR_OP_WAIT;
   }
-  case 1u:
-    if (++call->frames < OPS_CAPTURE_SETTLE_FRAMES) {
+  case 1u: {
+    /* The new view can stream terrain tiles in, so the scene settles again
+       before the frame is taken. */
+    const bool8_t settled =
+        !ops_arg_bool(call->args, "settle", true_v) || ops_settled(frame, NULL);
+    if (++call->frames < OPS_CAPTURE_SETTLE_FRAMES ||
+        (!settled && call->frames < OPS_SCENE_SETTLE_FRAMES)) {
       return VKR_EDITOR_OP_WAIT;
     }
+    call->settle_timeout = call->settle_timeout || !settled;
     call->token = ++ctx->ops->next_token;
     *frame->capture_request =
         (VkrSampleCaptureRequest){.request = true_v, .token = call->token};
     call->stage = 2u;
     call->frames = 0u;
     return VKR_EDITOR_OP_WAIT;
+  }
   case 2u: {
     const VkrSampleCaptureReady *ready = frame->capture_ready;
     if (!ready || ready->token != call->token) {
@@ -5432,26 +5791,115 @@ static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
   return ops_terrain_item(ctx, batch, &ref, &op) != NULL;
 }
 
-/* terrain.sample: ground heights at points, for placing things. */
+/* Heights one terrain.sample returns at most, as points or as a grid. */
+#define OPS_TERRAIN_SAMPLE_MAX 4096u
+/* Samples along the longer side of a grid without `step`. */
+#define OPS_TERRAIN_GRID_SIDE 64u
+
+/* The world ground height at world x and z, which `origin` maps to the
+   terrain's local space; null outside the terrain or over a hole. A grid
+   rounds it to centimetres to keep the answer short. */
+static VkrBakeryJson *ops_terrain_height(OpsContext *ctx,
+                                         const VkrHeightfield *field,
+                                         Vec3 origin, float32_t x, float32_t z,
+                                         bool8_t rounded) {
+  float32_t h = 0.0f;
+  /* A hole has no ground. */
+  if (!vkr_heightfield_sample(field, x + origin.x, z + origin.z, &h) ||
+      vkr_heightfield_open(field, x + origin.x, z + origin.z)) {
+    return vkr_bakery_json_null(ops_arena(ctx));
+  }
+  const float64_t height = (float64_t)(h - origin.y);
+  return ops_number(ctx,
+                    rounded ? floor(height * 100.0 + 0.5) / 100.0 : height);
+}
+
+/* terrain.sample with `region`: rows of heights from min z to max z, each
+   running +x, as level.map and a top capture lay them out. */
+static bool8_t ops_terrain_grid(OpsContext *ctx, const VkrHeightfield *field,
+                                Vec3 origin, const VkrBakeryJson *region) {
+  Vec3 min = {0};
+  Vec3 max = {0};
+  bool8_t has_min = false_v;
+  bool8_t has_max = false_v;
+  if (region->type != VKR_BAKERY_JSON_OBJECT ||
+      !ops_arg_vec3(ctx, region, "min", &min, &has_min) ||
+      !ops_arg_vec3(ctx, region, "max", &max, &has_max) || !has_min ||
+      !has_max || max.x <= min.x || max.z <= min.z) {
+    return ctx->call->error_code
+               ? false_v
+               : ops_fail(ctx, OPS_INVALID,
+                          "'region' is {\"min\": [x, y, z], \"max\": [x, y, "
+                          "z]} with max beyond min in x and z");
+  }
+  const float32_t width = max.x - min.x;
+  const float32_t depth = max.z - min.z;
+  float64_t step = (float64_t)Max(Max(width, depth) /
+                                      (float32_t)(OPS_TERRAIN_GRID_SIDE - 1u),
+                                  field->spacing);
+  (void)ops_arg_number(ctx->call->args, "step", &step);
+  if (!(step > 0.0)) {
+    return ops_fail(ctx, OPS_INVALID, "'step' must be positive");
+  }
+  const uint32_t columns = (uint32_t)floor((float64_t)width / step) + 1u;
+  const uint32_t rows = (uint32_t)floor((float64_t)depth / step) + 1u;
+  if ((uint64_t)columns * rows > OPS_TERRAIN_SAMPLE_MAX) {
+    return ops_fail(ctx, OPS_LIMIT,
+                    "A grid of %u by %u heights passes %u; raise 'step' or "
+                    "split the region",
+                    columns, rows, OPS_TERRAIN_SAMPLE_MAX);
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint32_t z = 0; z < rows; ++z) {
+    VkrBakeryJson *row = vkr_bakery_json_array(arena);
+    const float32_t pz = min.z + (float32_t)((float64_t)z * step);
+    for (uint32_t x = 0; x < columns; ++x) {
+      const float32_t px = min.x + (float32_t)((float64_t)x * step);
+      vkr_bakery_json_append(
+          row, ops_terrain_height(ctx, field, origin, px, pz, true_v));
+    }
+    vkr_bakery_json_append(list, row);
+  }
+  VkrBakeryJson *grid = vkr_bakery_json_object(arena);
+  VkrBakeryJson *first = vkr_bakery_json_array(arena);
+  vkr_bakery_json_append(first, ops_number(ctx, min.x));
+  vkr_bakery_json_append(first, ops_number(ctx, min.z));
+  ops_set(ctx, grid, "first", first);
+  ops_set(ctx, grid, "step", ops_number(ctx, step));
+  ops_set(ctx, grid, "columns", vkr_bakery_json_int(arena, columns));
+  ops_set(ctx, grid, "rows", list);
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "grid", grid);
+  return true_v;
+}
+
+/* terrain.sample: ground heights at points, for placing things, or a grid of
+   them over a region. */
 static VkrEditorOpStatus ops_run_terrain_sample(OpsContext *ctx) {
   OpsRef ref;
   const VkrHeightfield *field = NULL;
   const VkrBakeryJson *points = vkr_bakery_json_get(ctx->call->args, "points");
+  const VkrBakeryJson *region = vkr_bakery_json_get(ctx->call->args, "region");
   if (!ops_terrain_arg(ctx, NULL, ctx->call->args, &ref, &field)) {
-    return VKR_EDITOR_OP_DONE;
-  }
-  if (!points || points->type != VKR_BAKERY_JSON_ARRAY ||
-      points->count > 1024u) {
-    ops_fail(ctx, OPS_INVALID, "'points' is up to 1024 [x, z] pairs");
     return VKR_EDITOR_OP_DONE;
   }
   const VkrScene *scene = ops_scene(ctx->frame, ref.container);
   Vec3 origin = {0};
   (void)vkr_scene_terrain_to_local(scene, ref.entity, vec3_zero(), &origin);
+  if (region) {
+    (void)ops_terrain_grid(ctx, field, origin, region);
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!points || points->type != VKR_BAKERY_JSON_ARRAY ||
+      points->count > OPS_TERRAIN_SAMPLE_MAX) {
+    ops_fail(ctx, OPS_INVALID, "'points' is up to %u [x, z] pairs",
+             OPS_TERRAIN_SAMPLE_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *heights = vkr_bakery_json_array(arena);
   for (const VkrBakeryJson *entry = points->first; entry; entry = entry->next) {
-    float32_t h = 0.0f;
     if (entry->type != VKR_BAKERY_JSON_ARRAY || entry->count != 2u) {
       ops_fail(ctx, OPS_INVALID, "Each point is [x, z]");
       return VKR_EDITOR_OP_DONE;
@@ -5464,12 +5912,8 @@ static VkrEditorOpStatus ops_run_terrain_sample(OpsContext *ctx) {
     const float32_t pz =
         (float32_t)(z->type == VKR_BAKERY_JSON_INT ? (float64_t)z->integer
                                                    : z->number);
-    /* A hole has no ground. */
-    const bool8_t ground =
-        vkr_heightfield_sample(field, px + origin.x, pz + origin.z, &h) &&
-        !vkr_heightfield_open(field, px + origin.x, pz + origin.z);
-    vkr_bakery_json_append(heights, ground ? ops_number(ctx, h - origin.y)
-                                           : vkr_bakery_json_null(arena));
+    vkr_bakery_json_append(
+        heights, ops_terrain_height(ctx, field, origin, px, pz, false_v));
   }
   ctx->call->result = vkr_bakery_json_object(arena);
   ops_set(ctx, ctx->call->result, "heights", heights);
@@ -6180,11 +6624,27 @@ static VkrEditorOpStatus ops_run_io_trace(OpsContext *ctx) {
   "{\"description\":\"primary, world, or an added scene slot 1-6\","           \
   "\"oneOf\":[{\"type\":\"string\",\"enum\":[\"primary\",\"world\"]},"         \
   "{\"type\":\"integer\",\"minimum\":1,\"maximum\":6}]}"
+#define OPS_AGENT_SCHEMA                                                       \
+  "\"agent\":{\"type\":\"string\",\"maxLength\":31,\"description\":\"Your "    \
+  "name: the author of the change, whose own steps alone its undo takes\"}"
 #define OPS_REVIEW_SCHEMA                                                      \
   "\"review\":{\"type\":\"boolean\",\"description\":\"Keep the edit as a "     \
   "pending change the designer accepts or rejects (default true)\"},"          \
   "\"dry_run\":{\"type\":\"boolean\"},\"select\":{\"type\":\"boolean\","       \
-  "\"description\":\"Select the first entity once applied\"}"
+  "\"description\":\"Select the first entity once applied\"},"                 \
+  "\"label\":{\"type\":\"string\",\"description\":\"The change's name in "     \
+  "the designer's review (default the operation)\"},"                          \
+  "\"settle\":{\"type\":\"boolean\",\"description\":\"Answer once brushes, "   \
+  "shapes, terrain and scatters rebuilt, with each entity's world bounds "     \
+  "and build status (default false)\"}," OPS_AGENT_SCHEMA
+#define OPS_SETTLE_SCHEMA                                                      \
+  "\"settle\":{\"type\":\"boolean\",\"description\":\"Wait until brushes, "    \
+  "shapes, terrain and scatters rebuilt after earlier edits (default "         \
+  "true)\"}"
+#define OPS_SETTLE_OFF_SCHEMA                                                  \
+  "\"settle\":{\"type\":\"boolean\",\"description\":\"Wait until brushes, "    \
+  "shapes, terrain and scatters rebuilt after earlier edits (default "         \
+  "false)\"}"
 #define OPS_BRUSH_SCHEMA                                                       \
   "\"name\":{\"type\":\"string\"},\"parent\":" OPS_ENTITY_SCHEMA               \
   ",\"container\":" OPS_CONTAINER_SCHEMA ",\"role\":{\"type\":\"string\","     \
@@ -6205,15 +6665,17 @@ static VkrEditorOpStatus ops_run_io_trace(OpsContext *ctx) {
 
 static const OpsDef s_ops[] = {
     {"ops.list", "Every operation with its description and argument schema.",
-     "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL},
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL, OPS_QUICK},
     {"editor.status",
      "Loaded scenes, selection, simulation, view, pending changes, the "
      "active workbench and the running Scene tool.",
-     "{\"type\":\"object\",\"properties\":{}}", ops_run_status, NULL},
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_status, NULL,
+     OPS_QUICK},
     {"workbench.list",
      "Each workbench's id, name, position, shortcut, dock panels, open "
      "windows and Scene mode, and the active one.",
-     "{\"type\":\"object\",\"properties\":{}}", ops_run_workbench_list, NULL},
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_workbench_list, NULL,
+     OPS_QUICK},
     {"workbench.switch",
      "Switch to a workbench by id, name or position; answers once it shows "
      "with the Scene rectangle in window points [x, y, width, height].",
@@ -6230,13 +6692,14 @@ static const OpsDef s_ops[] = {
      "\"offset\":{\"type\":\"integer\",\"minimum\":0},"
      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500},"
      "\"faces\":{\"type\":\"boolean\",\"description\":\"Also list brush "
-     "faces and IO connections, which their owners otherwise summarise\"}}}",
-     ops_run_describe, NULL},
+     "faces and IO connections, which their owners otherwise "
+     "summarise\"}," OPS_SETTLE_OFF_SCHEMA "}}",
+     ops_run_describe, NULL, OPS_QUICK},
     {"entity.get",
      "One entity: pose, children, bounds and every component's values.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
-     "},\"required\":[\"entity\"]}",
-     ops_run_get, NULL},
+     "," OPS_SETTLE_OFF_SCHEMA "},\"required\":[\"entity\"]}",
+     ops_run_get, NULL, OPS_QUICK},
     {"entity.create",
      "Create an entity with a name, pose (rotation in degrees XYZ) and "
      "optionally one component.",
@@ -6555,12 +7018,18 @@ static const OpsDef s_ops[] = {
      NULL, ops_build_terrain_stamp},
     {"terrain.sample",
      "Ground heights (world y) of a terrain at [x, z] points; null outside "
-     "it or over a hole.",
+     "it or over a hole. With 'region' instead, a grid every 'step' metres "
+     "(64 along the longer side by default, 4096 heights at most): rows from "
+     "min z to max z, each running +x from 'first', rounded to "
+     "centimetres.",
      "{\"type\":\"object\",\"properties\":{\"terrain\":" OPS_ENTITY_SCHEMA
-     ",\"points\":{\"type\":\"array\",\"maxItems\":1024,\"items\":{"
+     ",\"points\":{\"type\":\"array\",\"maxItems\":4096,\"items\":{"
      "\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":2,"
-     "\"maxItems\":2}}},\"required\":[\"terrain\",\"points\"]}",
-     ops_run_terrain_sample, NULL},
+     "\"maxItems\":2}},\"region\":{\"type\":\"object\",\"properties\":{"
+     "\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA
+     "},\"required\":[\"min\",\"max\"]},\"step\":{\"type\":\"number\","
+     "\"exclusiveMinimum\":0}},\"required\":[\"terrain\"]}",
+     ops_run_terrain_sample, NULL, OPS_QUICK},
     {"terrain.hole",
      "Cut a hole in the terrain's mesh and collision for an entrance: the "
      "samples strictly inside the box from 'min' to 'max' (world x and z; "
@@ -6590,7 +7059,7 @@ static const OpsDef s_ops[] = {
      "unit tangent and distance, and the spline's length.",
      "{\"type\":\"object\",\"properties\":{\"spline\":" OPS_ENTITY_SCHEMA
      ",\"spacing\":{\"type\":\"number\"}},\"required\":[\"spline\"]}",
-     ops_run_spline_sample, NULL},
+     ops_run_spline_sample, NULL, OPS_QUICK},
     {"scatter.create",
      "Create a scatter at 'position' whose box drops seeded copies of a "
      "cooked mesh onto the ground below; 'values' sets the scatter "
@@ -6634,7 +7103,7 @@ static const OpsDef s_ops[] = {
      "that reach it, each with the reason it does not route if it does not.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
      "},\"required\":[\"entity\"]}",
-     ops_run_io_list, NULL},
+     ops_run_io_list, NULL, OPS_QUICK},
     {"io.fire",
      "While the game plays, send 'input' (with optional 'value' text) to an "
      "entity as a connection would.",
@@ -6652,11 +7121,11 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\","
      "\"maxItems\":256,\"items\":{\"type\":\"object\",\"properties\":{\"op\":"
      "{\"type\":\"string\"},\"args\":{\"type\":\"object\"}},\"required\":["
-     "\"op\"]}},\"label\":{\"type\":\"string\"}," OPS_REVIEW_SCHEMA
-     "},\"required\":[\"ops\"]}",
+     "\"op\"]}}," OPS_REVIEW_SCHEMA "},\"required\":[\"ops\"]}",
      ops_run_batch, NULL},
     {"changes.list", "Pending changes awaiting the designer's review.",
-     "{\"type\":\"object\",\"properties\":{}}", ops_run_changes_list, NULL},
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_changes_list, NULL,
+     OPS_QUICK},
     {"changes.accept",
      "Accept one pending change, or all of them without 'change'.",
      "{\"type\":\"object\",\"properties\":{\"change\":{\"type\":\"integer\"}}}",
@@ -6667,10 +7136,14 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"change\":{\"type\":\"integer\"}},"
      "\"required\":[\"change\"]}",
      ops_run_changes_reject, NULL},
-    {"undo", "Undo the newest edit step.",
-     "{\"type\":\"object\",\"properties\":{}}", ops_run_undo, NULL},
-    {"redo", "Redo the next edit step.",
-     "{\"type\":\"object\",\"properties\":{}}", ops_run_undo, NULL},
+    {"undo",
+     "Undo the newest edit step. An agent undoes only its own batches; "
+     "otherwise it rejects its change.",
+     "{\"type\":\"object\",\"properties\":{" OPS_AGENT_SCHEMA "}}",
+     ops_run_undo, NULL},
+    {"redo", "Redo the next edit step; an agent redoes only its own batches.",
+     "{\"type\":\"object\",\"properties\":{" OPS_AGENT_SCHEMA "}}",
+     ops_run_undo, NULL},
     {"partition.describe",
      "The open scene's world partition: settings and its known cells, each "
      "loaded, pinned, saved as a document or drawn as a proxy; 'region' (in "
@@ -6678,7 +7151,7 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
      "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
      ",\"max\":" OPS_VEC3_SCHEMA "}}}}",
-     ops_run_partition_describe, NULL},
+     ops_run_partition_describe, NULL, OPS_QUICK},
     {"partition.load",
      "Load and pin the world partition cells 'region' (in metres) covers, so "
      "they stay loaded for editing wherever the camera goes.",
@@ -6699,9 +7172,9 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"origin\":" OPS_VEC3_SCHEMA
      ",\"direction\":" OPS_VEC3_SCHEMA
      ",\"max_distance\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
-     "\"container\":" OPS_CONTAINER_SCHEMA "},\"required\":[\"origin\","
-     "\"direction\"]}",
-     ops_run_raycast, NULL},
+     "\"container\":" OPS_CONTAINER_SCHEMA "," OPS_SETTLE_SCHEMA
+     "},\"required\":[\"origin\",\"direction\"]}",
+     ops_run_raycast, NULL, OPS_QUICK | OPS_SETTLES},
     {"level.lint",
      "Check a region's walkable floor against the player capsule: steps too "
      "high, slopes too steep, low ceilings, gaps too narrow, edges into the "
@@ -6713,20 +7186,38 @@ static const OpsDef s_ops[] = {
      ",\"max\":" OPS_VEC3_SCHEMA
      "},\"required\":[\"min\",\"max\"]},\"start\":" OPS_VEC3_SCHEMA
      ",\"container\":" OPS_CONTAINER_SCHEMA "," OPS_CAPSULE_SCHEMA
-     ",\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500}},"
-     "\"required\":[\"region\"]}",
-     ops_run_lint, NULL},
+     ",\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500}"
+     "," OPS_SETTLE_SCHEMA "},\"required\":[\"region\"]}",
+     ops_run_lint, NULL, OPS_SETTLES},
+    {"level.map",
+     "The region's floors as text, a floor plan to read instead of a "
+     "picture: 'rows' run from min z to max z, each character a cell along "
+     "+x from 'first', as a top capture shows them. Each cell shows its "
+     "highest walkable floor, else its highest floor, against the player "
+     "capsule; set the region's top below ceilings to map the floor under "
+     "them. 'cell' sets the cell edge (default: 96 cells along the longer "
+     "side, 200 at most); 'heights' adds each shown floor's world y.",
+     "{\"type\":\"object\",\"properties\":{\"region\":{\"type\":"
+     "\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
+     ",\"max\":" OPS_VEC3_SCHEMA
+     "},\"required\":[\"min\",\"max\"]},\"start\":" OPS_VEC3_SCHEMA
+     ",\"cell\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
+     "\"heights\":{\"type\":\"boolean\"},\"container\":" OPS_CONTAINER_SCHEMA
+     "," OPS_CAPSULE_SCHEMA "," OPS_SETTLE_SCHEMA
+     "},\"required\":[\"region\"]}",
+     ops_run_map, NULL, OPS_SETTLES},
     {"query.reachable",
      "Whether the player capsule can walk from one floor point to another, "
      "with the route.",
      "{\"type\":\"object\",\"properties\":{\"from\":" OPS_VEC3_SCHEMA
      ",\"to\":" OPS_VEC3_SCHEMA ",\"container\":" OPS_CONTAINER_SCHEMA
-     "," OPS_CAPSULE_SCHEMA "},\"required\":[\"from\",\"to\"]}",
-     ops_run_reachable, NULL},
+     "," OPS_CAPSULE_SCHEMA "," OPS_SETTLE_SCHEMA
+     "},\"required\":[\"from\",\"to\"]}",
+     ops_run_reachable, NULL, OPS_SETTLES},
     {"query.bounds", "World bounds of an entity and its descendants.",
      "{\"type\":\"object\",\"properties\":{\"entity\":" OPS_ENTITY_SCHEMA
-     "},\"required\":[\"entity\"]}",
-     ops_run_bounds, NULL},
+     "," OPS_SETTLE_SCHEMA "},\"required\":[\"entity\"]}",
+     ops_run_bounds, NULL, OPS_QUICK | OPS_SETTLES},
     {"view.capture",
      "Capture the Scene as a PNG, optionally from another view (top is an "
      "orthographic map), framed on an entity or box, from a perspective "
@@ -6739,8 +7230,9 @@ static const OpsDef s_ops[] = {
      "\"grid_labels\":{\"type\":\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA
      ",\"target\":" OPS_VEC3_SCHEMA ",\"area\":{\"type\":"
      "\"string\",\"enum\":[\"scene\",\"window\"],\"description\":\"The "
-     "Scene image (default) or the whole editor window\"}}}",
-     ops_run_capture, NULL},
+     "Scene image (default) or the whole editor window\"}," OPS_SETTLE_SCHEMA
+     "}}",
+     ops_run_capture, NULL, OPS_SETTLES},
     {"view.camera",
      "Place the perspective Scene camera at 'eye' looking at 'target'; "
      "'far' sets the far plane in metres. 'glide' moves it as free flight "
@@ -6787,6 +7279,8 @@ static VkrEditorOpStatus ops_run_list(OpsContext *ctx) {
     ops_set(ctx, entry, "writes",
             vkr_bakery_json_bool(arena, s_ops[i].build != NULL ||
                                             s_ops[i].run == ops_run_batch));
+    ops_set(ctx, entry, "settles",
+            vkr_bakery_json_bool(arena, (s_ops[i].flags & OPS_SETTLES) != 0u));
     ops_set(ctx, entry, "schema", schema);
     vkr_bakery_json_append(list, entry);
   }
@@ -6838,7 +7332,32 @@ VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
     ops_fail(&ctx, OPS_BUSY, "No scene is loaded");
     return ops_done(&ctx);
   }
-  return def->run ? def->run(&ctx) : ops_run_write(&ctx, def);
+  /* A read of collision or built geometry first waits for the rebuilds that
+     earlier edits started, so it never checks a stale scene. */
+  if (!call->stage && !call->settle_done &&
+      (def->flags & (OPS_QUICK | OPS_SETTLES)) &&
+      ops_arg_bool(call->args, "settle", (def->flags & OPS_SETTLES) != 0u)) {
+    const bool8_t settled = ops_settled(frame, NULL);
+    if (!settled && call->settle_frames < OPS_SCENE_SETTLE_FRAMES) {
+      call->settle_frames++;
+      return VKR_EDITOR_OP_WAIT;
+    }
+    call->settle_done = true_v;
+    call->settle_timeout = !settled;
+  }
+  const VkrEditorOpStatus status =
+      def->run ? def->run(&ctx) : ops_run_write(&ctx, def);
+  if (status == VKR_EDITOR_OP_DONE && call->settle_timeout && call->result &&
+      call->result->type == VKR_BAKERY_JSON_OBJECT) {
+    ops_set(&ctx, call->result, "settled",
+            vkr_bakery_json_bool(call->arena, false_v));
+  }
+  return status;
+}
+
+bool8_t vkr_editor_ops_quick(String8 op) {
+  const OpsDef *def = ops_find(op);
+  return def && (def->flags & OPS_QUICK) != 0u;
 }
 
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
@@ -7037,10 +7556,10 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
     row.style.border_pt = (VkrUiEdges){0.0f, 0.0f, 1.0f, 0.0f};
     row.style.border_color = theme->separator;
     if (vkr_ui_panel_begin(ui, string8_lit("row"), &row)) {
-      char text[160];
-      snprintf(text, sizeof(text), "%u  %s  (%u object%s)", change->id,
-               change->label, change->entity_count,
-               change->entity_count == 1u ? "" : "s");
+      char text[200];
+      snprintf(text, sizeof(text), "%u  %s%s%s  (%u object%s)", change->id,
+               change->author, change->author[0] ? ": " : "", change->label,
+               change->entity_count, change->entity_count == 1u ? "" : "s");
       VkrUiWidgetConfig label =
           vkr_editor_text_config(theme->font_body, theme->text);
       label.placement = (VkrUiPlacement){.column = 0u,

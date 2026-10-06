@@ -31,6 +31,9 @@ void vkr_scene_population_entity_destroying(VkrScene *scene,
                                             VkrEntityId entity);
 /* Rebuilds the rules whose inputs changed. */
 void vkr_scene_population_update(VkrScene *scene);
+/* Rules whose copies do not follow their inputs yet, as a scatter waiting
+   for terrain collision. */
+uint32_t vkr_scene_population_pending(const VkrScene *scene);
 void vkr_scene_population_shutdown(VkrScene *scene);
 
 /* Calls `visit` with each rule entity that has instances, so the render

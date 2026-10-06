@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 # ADR-084: Agent channel and level design toolkit
@@ -47,17 +47,27 @@ nobody answers is stale and is replaced. `--agent-socket <path>` and
 `VKR_EDITOR_AGENT_SOCKET` choose the path; `--no-agent-socket` turns the
 listener off. `vkr_mcp` computes the same default path.
 
-The editor polls the nonblocking listener once per UI build, serves at most 4
+The editor polls the nonblocking listener once per UI build, serves at most 8
 clients, closes a client whose unfinished line passes 1 MiB, and queues at
-most 64 requests. A request is
-`{"v":1,"id":<number|string>,"op":"<name>","args":{...}}`; a response is
+most 64 requests. A ninth client receives one `VKR-AGENT-0008` line before
+the editor closes it. A request is
+`{"v":1,"id":<number|string>,"op":"<name>","agent":"<name>","args":{...}}`
+with `agent` optional; a response is
 `{"v":1,"id":<same>,"ok":true,"result":{...}}` or
 `{"v":1,"id":<same>,"ok":false,"error":{"code":"VKR-AGENT-NNNN","message":"..."}}`.
-Requests from every client run one at a time in arrival order; a request whose
-edits apply after the UI build, or whose capture renders later, answers in a
-later build. A headless editor (ADR-075) stays open while a client is
-connected or a request waits or runs, so a script only needs to outlast the
-client's connection.
+The request's author is `args.agent`, else `agent`, else `client<slot>`; the
+editor's own requests (Cmd `op`, the Changes window) have none.
+
+Requests from every client run one at a time in arrival order
+([editor_agent.c](../../editor/src/editor_agent.c)). A build runs the active
+request. While every request the build ran was a quick read (a cheap
+operation that changes nothing, such as `editor.status`, `scene.describe` or
+`query.raycast`) and 1 ms of the build remains, the next quick read runs in
+the same build, so the reads of several agents do not wait a frame each. Any
+other request waits for the next build. A request whose edits apply after
+the UI build, or whose capture renders later, answers in a later build. A
+headless editor (ADR-075) stays open while a client is connected or a request
+waits or runs, so a script only needs to outlast the client's connection.
 
 | Code | Meaning |
 |---|---|
@@ -69,6 +79,7 @@ client's connection.
 | `VKR-AGENT-0006` | No scene is loaded, the simulation runs, or another batch is in flight |
 | `VKR-AGENT-0007` | Capture failed |
 | `VKR-AGENT-0008` | A limit was exceeded |
+| `VKR-AGENT-0009` | An agent's undo or redo would take another author's step |
 
 ### Operations
 
@@ -79,7 +90,7 @@ thread during the editor's build.
 
 | Operation | Purpose |
 |---|---|
-| `ops.list`, `editor.status` | The table; loaded containers, selection, simulation, view and pending changes |
+| `ops.list`, `editor.status` | The table, with whether each operation settles; loaded containers with their journal `revision`, selection, simulation, view, pending changes and what still rebuilds |
 | `scene.describe`, `entity.get`, `query.bounds` | Entities with ID, name, parent, component types, local pose and world bounds; one entity's components as descriptor JSON |
 | `entity.create`, `entity.set`, `entity.delete`, `entity.parent` | Structure and pose; delete with `recursive` deletes descendants first |
 | `component.add`, `component.set`, `component.remove` | Component values by descriptor property name, partial for `set` |
@@ -99,7 +110,7 @@ degrees XYZ. Lights are set through `component.set` and created through
 
 ### Batches and journal groups
 
-Every write runs as a batch: one `VkrSampleEditBatchRequest` of at most 1,024
+Every write runs as a batch: one `VkrSampleEditBatchRequest` of at most 2,048
 `VkrSampleEditBatchItem` edits, all in one container, that the runtime applies
 after the UI build ([vkr_sample_runtime.c](../../runtime/src/vkr_sample_runtime.c)).
 The editor validates every argument and component value before submission.
@@ -112,15 +123,37 @@ wait while the simulation runs, as Details edits do.
 A journal group ([vkr_scene_edit.c](../../runtime/src/renderer/systems/vkr_scene_edit.c))
 tags each entry appended between `vkr_scene_edit_group_begin` and
 `vkr_scene_edit_group_end`. Undo and redo move over a whole group; a failure
-inside one stops there, as between two entries. The journal holds 1,024
-entries; eviction removes the oldest whole group, and a group past 1,024
+inside one stops there, as between two entries. The journal holds 4,096
+entries; eviction removes the oldest whole group, and a group past 2,048
 entries, one full batch, fails. `vkr_scene_edit_group_rollback` undoes and drops the open group.
+
+### Settling
+
+An edit rebuilds brushes and shapes, terrain meshes and collision, and
+scatter and spline copies in later updates: a moved brush waits for its
+transform to rest, terrain collision waits eight updates after the last
+edit, and a scatter waits for terrain collision. A check that ran at once
+would read the old scene. A read of collision or built geometry
+(`query.raycast`, `query.reachable`, `query.bounds`, `level.lint`,
+`level.map`, `view.capture`) therefore first waits until no brush or shape
+rebuilds or waits for its uploads (`vkr_scene_brush_pending`), every terrain
+is settled, no population rule waits (`vkr_scene_population_pending`) and no
+scene loads, unless `settle` is false. After 240 builds it reads anyway and
+answers with `settled` false. `scene.describe` and `entity.get` wait only
+with `settle`. A capture waits again after it changes the view, as the new
+view can stream terrain tiles in.
+
+A write with `settle` answers once the scene settles and adds each
+operation entity's world bounds and build status to its result, so one
+request applies, rebuilds and measures. `editor.status` reports what still
+rebuilds under `rebuilding`. The scene does not rebuild while the simulation
+runs, so Play counts as settled. Texture and mesh streaming do not count.
 
 ### Review
 
 A batch with `review` (the default) becomes a pending change: its group,
-container, label and the entities it created or edited, held in memory by the
-operation table. The Agent changes window (View menu, Cmd `window changes`)
+container, label (`label`, else the operation's name) and the entities it
+created or edited, held in memory by the operation table. The Agent changes window (View menu, Cmd `window changes`)
 lists pending changes with Focus, Reject and Accept, the Scene outlines their
 entities' local bounds in orange through the editor's line overlay, and a
 toast announces each new change. Accept removes the mark only. Reject calls
@@ -137,11 +170,22 @@ A refused reject names the conflicting entity. A change disappears when its
 group leaves the journal, as after a scene reload or an undo followed by a new
 edit.
 
+A change records its author, which `changes.list` returns and the Changes
+window shows before the label. Undo follows the newest entry across every
+journal, so an agent's `undo` would take whatever another agent or the
+designer did last. The operation table therefore remembers the groups of the
+newest 64 agent batches, reviewed or not, with their authors. An agent's
+`undo` or `redo` runs only when the step it would take belongs to one of its
+own batches, and otherwise fails with `VKR-AGENT-0009` naming the step's
+author; the agent rejects its change instead. The editor's own requests and
+the Cmd `undo` stay unrestricted.
+
 ### Captures
 
 `view.capture` optionally switches the camera view and grid labels and frames
 an entity's world bounds or a box (`VkrSampleViewRequest.frame_box`). After
-four builds it asks the runtime for one `final_color` capture
+four builds, and once the scene settles, it asks the runtime for one
+`final_color` capture
 (`VkrSampleCaptureRequest`). The runtime marks editor captures with the high
 bit of the request id, lends the poll result to the next build and releases it
 after that build; the harness owns the capture slot when it runs, and the
@@ -162,7 +206,9 @@ the [2026-07-28 revision](https://modelcontextprotocol.io/specification/2026-07-
   request returns `UnsupportedProtocolVersion` (-32022) with the supported
   versions;
 - `server/discover` returns the version, the `tools` capability, usage
-  instructions and the server identity;
+  instructions (the verification order: plan as data and send one batch,
+  measure with queries and `level.map`, then capture) and the server
+  identity;
 - `tools/list` maps each operation to `vkr_<operation with dots as
   underscores>` in table order with `ttlMs` 60000 and `cacheScope` `private`;
 - `tools/call` forwards the arguments to the editor and returns the result as
@@ -171,9 +217,11 @@ the [2026-07-28 revision](https://modelcontextprotocol.io/specification/2026-07-
 - every result carries `resultType` `complete` and `serverInfo` in `_meta`;
   notifications are ignored and logs go to stderr.
 
-The adapter reconnects once per call, so it survives an editor restart. It
-links Bakery's JSON tree, which the `vkr_bakery_json` library now shares with
-Bakery and the editor.
+The adapter reconnects once per call, so it survives an editor restart.
+`--agent <name>` (or `VKR_AGENT_NAME`) adds `agent` to every request, so
+each agent of a swarm that runs its own adapter is its own author; a call's
+own `agent` argument takes precedence. It links Bakery's JSON tree, which the
+`vkr_bakery_json` library now shares with Bakery and the editor.
 
 ### Brushes
 
@@ -477,7 +525,22 @@ cannot reach, overlapping solid brushes and brushes that did not build. Each
 issue names its position, the entity at fault and the step height, slope,
 headroom or gap; issues of one kind on one entity within 8 m merge.
 `query.reachable` flood-fills from `from` and returns whether `to` is
-reachable with one route and its length.
+reachable with one route and its length. The grid's cell grows with the
+region past 65,536 cells of the capsule radius: a square up to 76.8 m keeps
+0.3 m cells, while a 256 m square samples every metre and can miss a gap
+narrower than the capsule.
+
+`level.map` returns the same grid as text, a floor plan a model reads more
+exactly than a picture ([editor_level.c](../../editor/src/editor_level.c),
+`vkr_editor_level_map`). Its rows run from the region's minimum z to its
+maximum, each character a cell along +x, as a top capture shows them. A cell
+shows its highest walkable floor, else its highest floor: `.` walkable and,
+with a start, reached from it, `,` walkable but out of reach, `S` the start,
+`#` too close to a wall, `n` a gap narrower than the capsule, `_` a ceiling
+too low, `/` too steep and `-` no floor. `cell` sets the cell edge (by
+default 96 cells along the longer side) and a map holds at most 200 a side;
+`heights` adds each shown floor's world height. A region whose top lies
+below the ceilings maps the floor under them.
 
 The Level checks window (View > Level checks, Cmd `window level`) runs the
 lint over 40 m around the point the Scene's center looks at, lists issues
@@ -695,7 +758,7 @@ Agents edit regions with operations that take world coordinates:
 | `terrain.flatten` | Level a footprint at a height, blending over a falloff |
 | `terrain.ramp` | A straight slope of a width between two surface points |
 | `terrain.stamp` | Add or set heights from a grayscale PNG over a square |
-| `terrain.sample` | Ground heights at x and z points; null over a hole |
+| `terrain.sample` | Ground heights at x and z points, or with `region` a grid every `step` metres in rows from minimum z, each running +x, rounded to centimetres; at most 4,096 heights; null over a hole |
 | `terrain.hole` | Cut holes for an entrance, the samples strictly inside a `min`/`max` box (a box on grid lines opens exactly) or within `radius` of `points`; `fill` closes them |
 
 In the editor ([editor_terrain.c](../../editor/src/editor_terrain.c)), the
@@ -765,6 +828,14 @@ request makes agent work undoable and reviewable as the unit the agent chose.
 Reverting a group out of order is refused instead of guessed whenever a later
 edit could depend on it. A capture needs a rendered frame, so it reports the
 Scene as rendered, not what the editor shows while rendering is stopped.
+
+Checks wait for rebuilds, so an agent never verifies a stale scene; a scene
+that keeps rebuilding, such as terrain streaming around a moving camera,
+costs a read up to 240 builds and answers with `settled` false. Quick reads
+share a build only after other quick reads, so every other request still
+sees all that earlier requests asked for; across clients, the order of
+arrival is the only order. A designer working beside agents keeps an
+unrestricted undo, while each agent undoes only its own batches.
 
 ## Alternatives considered
 
@@ -946,3 +1017,17 @@ material then).
   grids; a cell drag selected a 2 x 3 patch whose arrow pulled a new brush
   up (`undo` removed it), a grid-line drag made a ridge, and an edge drag
   raised the front top edge. No Metal run.
+- Windows and native Vulkan, 2026-10-06 (RX 6700 XT, headless Release
+  editor on Bistro, driven by `vkr_mcp` clients from a Python script): after
+  `terrain.brush` raised a terrain by 4 m, a raycast with `settle` false hit
+  the old ground at y 0.00 and the default raycast, 82 ms later, hit
+  y 3.99; a moved brush was missed with `settle` false and hit at its 3 m
+  top by default; `brush.box` and `terrain.create` with `settle` answered
+  `built` and `loaded` with their bounds; `terrain.sample` returned a 5 by 5
+  grid; `level.map` drew a room's walls, its floor, a crate out of reach and
+  the start; an agent's `undo` was refused with `VKR-AGENT-0009` over
+  another agent's step, whose own `undo` ran; `changes.list` and the Changes
+  window named both authors and labels; 48 `editor.status` calls took
+  0.58 s from one client and 0.14 s spread over four; and an eighth client
+  was served while a ninth received the refusal line. Release and Debug
+  editor builds and `./build_test.bat` (685 passed) succeeded. No Metal run.

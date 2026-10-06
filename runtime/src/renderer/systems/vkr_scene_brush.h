@@ -51,6 +51,10 @@ void vkr_scene_brush_shutdown(VkrScene *scene);
 /* NULL when brush or blockout shape `brush` built, else why it did not.
    Unbuilt ones report "pending". */
 const char *vkr_scene_brush_status(const VkrScene *scene, VkrEntityId brush);
+/* Brushes and blockout shapes whose mesh or collision does not match their
+   components yet: waiting to rebuild, or drawing their previous mesh until
+   the new one's uploads settle. */
+uint32_t vkr_scene_brush_pending(const VkrScene *scene);
 /* Faces (direct children with `brush_face`) of `brush`, at most `capacity`;
    returns the total. */
 uint32_t vkr_scene_brush_faces(const VkrScene *scene, VkrEntityId brush,

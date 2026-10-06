@@ -13,9 +13,12 @@
 
 /* Clients a listener serves at once, the longest request line and the
  * requests that may wait behind the active one. */
-#define AGENT_CLIENT_MAX 4u
+#define AGENT_CLIENT_MAX 8u
 #define AGENT_LINE_MAX MB(1)
 #define AGENT_QUEUE_MAX 64u
+/* Time a build may spend on quick reads after its first request, so reads
+   from several agents share a build without slowing the frame. */
+#define AGENT_QUICK_SECONDS 0.001
 #define AGENT_ARENA_RESERVE MB(64)
 /* A client slot for requests the editor submits itself. */
 #define AGENT_CLIENT_SELF UINT32_MAX
@@ -170,6 +173,34 @@ static void agent_finish(VkrEditorAgent *agent) {
   arena_clear(agent->arena, ARENA_MEMORY_TAG_STRUCT);
 }
 
+/* Names the author of the current request: `agent` in its arguments or
+   beside them, else its client slot. The editor's own requests have none,
+   so the designer's undo and review stay unrestricted. */
+static void agent_author(VkrEditorAgent *agent, const VkrBakeryJson *request,
+                         const VkrBakeryJson *args) {
+  char *author = agent->call.author;
+  if (agent->current.client == AGENT_CLIENT_SELF) {
+    author[0] = '\0';
+    return;
+  }
+  String8 name = {0};
+  if ((!args || !vkr_bakery_json_get_string(args, "agent", &name) ||
+       !name.length) &&
+      (!vkr_bakery_json_get_string(request, "agent", &name) || !name.length)) {
+    snprintf(author, VKR_EDITOR_AUTHOR_CAPACITY, "client%u",
+             agent->current.client + 1u);
+    return;
+  }
+  const uint64_t length =
+      Min(name.length, (uint64_t)VKR_EDITOR_AUTHOR_CAPACITY - 1u);
+  for (uint64_t i = 0; i < length; ++i) {
+    /* Names show in the Changes window and in messages. */
+    const uint8_t c = name.str[i];
+    author[i] = c >= 0x20u && c < 0x7fu ? (char)c : '?';
+  }
+  author[length] = '\0';
+}
+
 /* Parses the next queued line and starts its operation. A malformed line
    answers at once. */
 static void agent_begin(VkrEditorAgent *agent) {
@@ -213,29 +244,51 @@ static void agent_begin(VkrEditorAgent *agent) {
       .op = op,
       .args = args ? args : vkr_bakery_json_object(agent->arena),
   };
+  agent_author(agent, request, args);
 }
 
+/* Runs requests in arrival order. A build runs the active request; while
+   every request it ran was a quick read and AGENT_QUICK_SECONDS remain, the
+   next quick read runs in the same build. Any other request waits for the
+   next build, so it sees everything earlier requests asked for. */
 static void agent_advance(VkrEditorAgent *agent, VkrEditorUi *editor,
                           const VkrSampleUiFrame *frame) {
-  if (!agent->active) {
-    if (!agent->queue_count) {
-      return;
-    }
-    agent_begin(agent);
+  /* Read once a request runs, so an idle channel costs nothing. */
+  float64_t start = 0.0;
+  bool8_t ran = false_v;
+  bool8_t quick_only = true_v;
+  for (;;) {
     if (!agent->active) {
+      if (!agent->queue_count) {
+        return;
+      }
+      agent_begin(agent);
+      if (!agent->active) {
+        continue;
+      }
+    }
+    const bool8_t quick = vkr_editor_ops_quick(agent->call.op);
+    if (ran &&
+        (!quick || !quick_only ||
+         vkr_platform_get_absolute_time() - start > AGENT_QUICK_SECONDS)) {
       return;
     }
+    if (!ran) {
+      start = vkr_platform_get_absolute_time();
+    }
+    ran = true_v;
+    quick_only = quick_only && quick;
+    if (vkr_editor_ops_run(agent->ops, editor, frame, &agent->call) ==
+        VKR_EDITOR_OP_WAIT) {
+      return;
+    }
+    agent_respond(agent, agent->current.client, agent->current.generation,
+                  agent->current_id, agent->call.result,
+                  agent->call.error_code ? agent->call.error_code
+                                         : "VKR-AGENT-0005",
+                  agent->call.error);
+    agent_finish(agent);
   }
-  if (vkr_editor_ops_run(agent->ops, editor, frame, &agent->call) ==
-      VKR_EDITOR_OP_WAIT) {
-    return;
-  }
-  agent_respond(agent, agent->current.client, agent->current.generation,
-                agent->current_id, agent->call.result,
-                agent->call.error_code ? agent->call.error_code
-                                       : "VKR-AGENT-0005",
-                agent->call.error);
-  agent_finish(agent);
 }
 
 static bool8_t agent_enqueue(VkrEditorAgent *agent, uint32_t client,
@@ -345,6 +398,18 @@ static void agent_accept(VkrEditorAgent *agent) {
       }
     }
     if (!slot) {
+      /* One line tells the client why before it closes. */
+      char refusal[192];
+      const int length = snprintf(
+          refusal, sizeof(refusal),
+          "{\"v\":1,\"id\":null,\"ok\":false,\"error\":{\"code\":"
+          "\"VKR-AGENT-0008\",\"message\":\"The editor serves %u agent "
+          "clients at once; close one and retry.\"}}\n",
+          AGENT_CLIENT_MAX);
+      uint64_t sent = 0u;
+      if (length > 0 && (uint64_t)length < sizeof(refusal)) {
+        (void)vkr_local_socket_send(accepted, refusal, (uint64_t)length, &sent);
+      }
       vkr_local_socket_close(accepted);
       continue;
     }
