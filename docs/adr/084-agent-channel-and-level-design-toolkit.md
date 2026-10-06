@@ -239,6 +239,19 @@ RGBA8 PNG of the Scene image rectangle, or of the whole window with `area`
 in the user's temporary directory), keeps the newest 32, and
 restores the previous view, grid labels and camera.
 
+Three options cut what an agent spends on pictures. `max_width` shrinks the
+image, each pixel the average of the pixels it covers. `views` takes up to
+four views, each with its own `view`, `focus`, `eye` and `target` and
+`grid_labels`, captures them one after another and writes one sheet of two
+columns, `max_width` wide (the Scene's width without it); the answer gives
+each view's rectangle in the sheet. `marks` takes up to 32 world points:
+each view projects them through the camera of the build that asked for its
+frame (`VkrSampleUiFrame.view_projection`) and draws each as a numbered
+magenta cross over the scene, hidden by geometry or not, and the answer
+gives each mark's pixel in the image, or null outside the view. An agent
+checks where a door or a spawn point lands in one request instead of
+reading coordinates off a picture.
+
 ### MCP adapter
 
 [vkr_mcp](../../tools/agent/vkr_mcp.c) is an MCP server over stdio that the
@@ -1099,3 +1112,10 @@ material then).
   room's floor at its centre (1114, 0, 1113), on a crate's top at
   (1102, 3, 1102) and 0.5 m beside its +x side. The Changes window listed
   both authors' changes and claims, and its Release claim freed alpha's.
+- Windows and native Vulkan, 2026-10-06 (RX 6700 XT, headless Release
+  editor on Bistro): `view.capture` with `max_width` 640 wrote a 640 by 351
+  top view; three views with `max_width` 1024 wrote one 1024 by 564 sheet
+  with cells at x 0 and 514; each reported mark pixel held the mark's
+  magenta, a crate's mark lay near the centre of the top view framed on it,
+  and a point outside all three views answered null in each. The sheet took
+  0.29 s; three separate captures took 0.48 s.

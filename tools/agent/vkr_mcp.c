@@ -59,7 +59,10 @@ static const char *s_instructions =
     "routes, vkr_level_map for a text floor plan (rows run +z down the "
     "page, +x across, as a top capture shows), vkr_level_lint in regions "
     "of 76 m or less for full detail. Use vkr_view_capture (view top with "
-    "grid_labels, or eye and target) to judge the look. Undo takes only "
+    "grid_labels, or eye and target) to judge the look: pass max_width (768 "
+    "is plenty), put several views in one sheet with 'views', and pass "
+    "'marks' (world points) to see numbered crosses where they land. Undo "
+    "takes only "
     "your own batches; reject your change with vkr_changes_reject instead "
     "of undoing other work.";
 

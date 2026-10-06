@@ -71,7 +71,9 @@ its change. Beside other agents, `claims.set` your region before building
 before relying on it. Add `"settle": true` to a write to get each entity's
 world bounds and build status in its answer. Check layouts with
 `level.map` and queries before captures, and lint regions of 76 m or less
-for 0.3 m cells.
+for 0.3 m cells. A capture takes `max_width`, up to four `views` in one
+sheet, and world `marks` drawn as numbered crosses with their pixels in the
+answer.
 
 ## Read results
 

@@ -5070,6 +5070,32 @@ static VkrEditorOpStatus ops_run_partition_change(OpsContext *ctx) {
 // view.capture
 // -----------------------------------------------------------------------------
 
+/* Views one capture composes into a sheet, world points it marks, and the
+   gap between a sheet's cells in pixels. */
+#define OPS_CAPTURE_VIEWS_MAX 4u
+#define OPS_CAPTURE_MARKS_MAX 32u
+#define OPS_CAPTURE_GAP 4u
+
+/* One view of a capture: how to show it and, once taken, its pixels. */
+typedef struct OpsCaptureView {
+  VkrSampleViewRequest request;
+  bool8_t has_eye;
+  Vec3 eye;
+  Vec3 target;
+  char name[16];
+  /* The matrix of the build that asked for the frame; the camera rests
+     there while the capture waits. */
+  Mat4 view_projection;
+  /* RGBA8 pixels at the cell size, in the request arena. */
+  uint8_t *pixels;
+  uint32_t width;
+  uint32_t height;
+  /* Each mark's pixel in the cell, when it lies in front of the camera and
+     inside the image. */
+  Vec2 marks[OPS_CAPTURE_MARKS_MAX];
+  bool8_t mark_shown[OPS_CAPTURE_MARKS_MAX];
+} OpsCaptureView;
+
 typedef struct OpsPendingCapture {
   /* Capture the whole window instead of the Scene's image. */
   bool8_t window;
@@ -5079,6 +5105,16 @@ typedef struct OpsPendingCapture {
   char path[512];
   uint32_t width;
   uint32_t height;
+  /* The widest image the agent wants, zero for the captured size. */
+  uint32_t max_width;
+  /* A sheet or marks report each view's place; a plain capture answers
+     with its path and size alone. */
+  bool8_t describe_views;
+  uint32_t view_count;
+  uint32_t view_index;
+  OpsCaptureView views[OPS_CAPTURE_VIEWS_MAX];
+  uint32_t mark_count;
+  Vec3 marks[OPS_CAPTURE_MARKS_MAX];
 } OpsPendingCapture;
 
 static float32_t ops_half_to_float(uint16_t half) {
@@ -5121,16 +5157,21 @@ static void ops_png_sink(void *context, void *data, int size) {
 }
 
 /* Writes the Scene image area of the captured window as an RGBA8 PNG. */
-static bool8_t ops_capture_write(OpsContext *ctx, OpsPendingCapture *pending,
-                                 const VkrCaptureItemResult *item) {
+/* The captured frame as RGBA8 rows from the top, of the Scene's image
+   rectangle or the whole window; heap memory the caller frees. */
+static uint8_t *ops_capture_rgba(OpsContext *ctx,
+                                 const OpsPendingCapture *pending,
+                                 const VkrCaptureItemResult *item,
+                                 uint32_t *out_width, uint32_t *out_height) {
   const bool8_t rgba8 = item->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM ||
                         item->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
   const bool8_t bgra8 = item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM ||
                         item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
   const bool8_t half = item->format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
   if (!rgba8 && !bgra8 && !half) {
-    return ops_fail(ctx, OPS_CAPTURE, "Unsupported capture format %u",
-                    (unsigned)item->format);
+    (void)ops_fail(ctx, OPS_CAPTURE, "Unsupported capture format %u",
+                   (unsigned)item->format);
+    return NULL;
   }
   /* The Scene's image rectangle, clamped to the captured window. */
   const Vec4 rect = ctx->frame->mapping_valid && !pending->window
@@ -5146,11 +5187,13 @@ static bool8_t ops_capture_write(OpsContext *ctx, OpsPendingCapture *pending,
   const uint32_t width = x1 - x0;
   const uint32_t height = y1 - y0;
   if (!width || !height) {
-    return ops_fail(ctx, OPS_CAPTURE, "The Scene has no visible area");
+    (void)ops_fail(ctx, OPS_CAPTURE, "The Scene has no visible area");
+    return NULL;
   }
   uint8_t *pixels = malloc((size_t)width * height * 4u);
   if (!pixels) {
-    return ops_fail(ctx, OPS_LIMIT, "Out of memory for the capture");
+    (void)ops_fail(ctx, OPS_LIMIT, "Out of memory for the capture");
+    return NULL;
   }
   const uint32_t texel = half ? 8u : 4u;
   for (uint32_t y = 0; y < height; ++y) {
@@ -5178,6 +5221,123 @@ static bool8_t ops_capture_write(OpsContext *ctx, OpsPendingCapture *pending,
       }
     }
   }
+  *out_width = width;
+  *out_height = height;
+  return pixels;
+}
+
+/* `source` (RGBA8, width by height) at `target_width` pixels wide, its
+   aspect kept: each pixel averages the source pixels it covers. Arena
+   memory; NULL when it does not fit. */
+static uint8_t *ops_image_shrink(Arena *arena, const uint8_t *source,
+                                 uint32_t width, uint32_t height,
+                                 uint32_t target_width, uint32_t *out_height) {
+  const uint32_t w = Max(1u, Min(target_width, width));
+  const uint32_t h =
+      Max(1u, (uint32_t)(((uint64_t)height * w + width / 2u) / width));
+  uint8_t *out =
+      arena_alloc(arena, (uint64_t)w * h * 4u, ARENA_MEMORY_TAG_ARRAY);
+  if (!out) {
+    return NULL;
+  }
+  for (uint32_t y = 0; y < h; ++y) {
+    const uint32_t ya = (uint32_t)((uint64_t)y * height / h);
+    const uint32_t yb =
+        Max(ya + 1u, (uint32_t)((uint64_t)(y + 1u) * height / h));
+    for (uint32_t x = 0; x < w; ++x) {
+      const uint32_t xa = (uint32_t)((uint64_t)x * width / w);
+      const uint32_t xb =
+          Max(xa + 1u, (uint32_t)((uint64_t)(x + 1u) * width / w));
+      uint32_t sum[3] = {0u, 0u, 0u};
+      for (uint32_t sy = ya; sy < yb; ++sy) {
+        const uint8_t *row = source + ((size_t)sy * width + xa) * 4u;
+        for (uint32_t sx = xa; sx < xb; ++sx, row += 4) {
+          sum[0] += row[0];
+          sum[1] += row[1];
+          sum[2] += row[2];
+        }
+      }
+      const uint32_t count = (yb - ya) * (xb - xa);
+      uint8_t *pixel = out + ((size_t)y * w + x) * 4u;
+      pixel[0] = (uint8_t)(sum[0] / count);
+      pixel[1] = (uint8_t)(sum[1] / count);
+      pixel[2] = (uint8_t)(sum[2] / count);
+      pixel[3] = 255u;
+    }
+  }
+  *out_height = h;
+  return out;
+}
+
+static void ops_image_dot(uint8_t *pixels, uint32_t width, uint32_t height,
+                          int32_t x, int32_t y, const uint8_t color[3]) {
+  if (x < 0 || y < 0 || x >= (int32_t)width || y >= (int32_t)height) {
+    return;
+  }
+  uint8_t *pixel = pixels + ((size_t)y * width + (uint32_t)x) * 4u;
+  pixel[0] = color[0];
+  pixel[1] = color[1];
+  pixel[2] = color[2];
+}
+
+/* Digits 0 to 9 in a 3 by 5 grid, rows from the top, three bits each. */
+static const uint16_t s_ops_digits[10] = {
+    0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9,
+    0x79CF, 0x79EF, 0x7292, 0x7BEF, 0x7BCF,
+};
+
+/* Mark `number` at (x, y): a cross in a ring and its number beside it,
+   magenta outlined in black so it reads on any scene. */
+static void ops_image_mark(uint8_t *pixels, uint32_t width, uint32_t height,
+                           int32_t x, int32_t y, uint32_t number) {
+  static const uint8_t ink[3] = {255u, 40u, 210u};
+  static const uint8_t edge[3] = {0u, 0u, 0u};
+  for (uint32_t pass = 0; pass < 2u; ++pass) {
+    const uint8_t *color = pass ? ink : edge;
+    const int32_t grow = pass ? 0 : 1;
+    for (int32_t d = -7 - grow; d <= 7 + grow; ++d) {
+      for (int32_t t = -grow; t <= grow; ++t) {
+        ops_image_dot(pixels, width, height, x + d, y + t, color);
+        ops_image_dot(pixels, width, height, x + t, y + d, color);
+      }
+    }
+    for (int32_t a = 0; a < 48; ++a) {
+      const float32_t angle = (float32_t)a * (6.2831853f / 48.0f);
+      const int32_t rx = (int32_t)lroundf(cosf(angle) * 5.0f);
+      const int32_t ry = (int32_t)lroundf(sinf(angle) * 5.0f);
+      for (int32_t t = -grow; t <= grow; ++t) {
+        ops_image_dot(pixels, width, height, x + rx + t, y + ry, color);
+        ops_image_dot(pixels, width, height, x + rx, y + ry + t, color);
+      }
+    }
+    /* The number, two pixels a grid cell, up and to the right. */
+    char text[8];
+    snprintf(text, sizeof(text), "%u", number);
+    int32_t left = x + 9;
+    for (const char *c = text; *c; ++c, left += 8) {
+      const uint16_t glyph = s_ops_digits[*c - '0'];
+      for (int32_t row = 0; row < 5; ++row) {
+        for (int32_t column = 0; column < 3; ++column) {
+          if (!(glyph & (1u << (14 - row * 3 - column)))) {
+            continue;
+          }
+          for (int32_t py = -grow; py < 2 + grow; ++py) {
+            for (int32_t px = -grow; px < 2 + grow; ++px) {
+              ops_image_dot(pixels, width, height, left + column * 2 + px,
+                            y - 14 + row * 2 + py, color);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/* Writes RGBA8 `pixels` as the next capture PNG in the private directory,
+   keeping the newest OPS_CAPTURE_KEEP. */
+static bool8_t ops_capture_png(OpsContext *ctx, OpsPendingCapture *pending,
+                               const uint8_t *pixels, uint32_t width,
+                               uint32_t height) {
   char directory[256];
   bool8_t written = false_v;
   if (vkr_editor_agent_directory(directory, sizeof(directory))) {
@@ -5213,7 +5373,6 @@ static bool8_t ops_capture_write(OpsContext *ctx, OpsPendingCapture *pending,
       (void)file_remove(&old_path);
     }
   }
-  free(pixels);
   if (!written) {
     return ops_fail(ctx, OPS_CAPTURE, "The capture PNG could not be written");
   }
@@ -5587,6 +5746,229 @@ static bool8_t ops_capture_view(OpsContext *ctx, String8 word,
                   "'view' is current, perspective, top, left, right or bottom");
 }
 
+/* One view of a capture from `spec` (the arguments, or one entry of
+   `views`): a camera view, framing, eye and target, and grid labels. */
+static bool8_t ops_capture_view_parse(OpsContext *ctx,
+                                      const VkrBakeryJson *spec,
+                                      OpsCaptureView *out) {
+  const VkrSampleUiFrame *frame = ctx->frame;
+  MemZero(out, sizeof(*out));
+  VkrSampleViewState next = frame->view_state;
+  String8 view = {0};
+  snprintf(out->name, sizeof(out->name), "current");
+  if (vkr_bakery_json_get_string(spec, "view", &view) &&
+      !ops_equals(view, "current")) {
+    if (!ops_capture_view(ctx, view, &next.camera_view)) {
+      return false_v;
+    }
+    snprintf(out->name, sizeof(out->name), "%.*s",
+             (int)Min(view.length, (uint64_t)15u), (const char *)view.str);
+  }
+  bool8_t labels = false_v;
+  if (vkr_bakery_json_get_bool(spec, "grid_labels", &labels)) {
+    next.grid_labels = labels;
+    next.grid_enabled = next.grid_enabled || labels;
+  }
+  out->request = (VkrSampleViewRequest){.value = next, .apply = true_v};
+  const VkrBakeryJson *focus = vkr_bakery_json_get(spec, "focus");
+  if (focus && focus->type == VKR_BAKERY_JSON_OBJECT) {
+    if (!ops_arg_vec3(ctx, focus, "min", &out->request.frame_min, NULL) ||
+        !ops_arg_vec3(ctx, focus, "max", &out->request.frame_max, NULL)) {
+      return false_v;
+    }
+    out->request.frame_box = true_v;
+  } else if (focus) {
+    OpsRef ref;
+    if (!ops_ref(ctx, NULL, focus, "focus", &ref)) {
+      return false_v;
+    }
+    if (!ops_world_bounds(ops_scene(frame, ref.container), ref.entity,
+                          &out->request.frame_min, &out->request.frame_max)) {
+      const SceneTransform *transform =
+          ops_transform(ops_scene(frame, ref.container), ref.entity);
+      const Vec3 at = transform ? mat4_position(transform->world) : vec3_zero();
+      out->request.frame_min = vec3_sub(at, vec3_one());
+      out->request.frame_max = vec3_add(at, vec3_one());
+    }
+    out->request.frame_box = true_v;
+  }
+  /* An explicit eye and target place the perspective camera. */
+  bool8_t has_target = false_v;
+  if (!ops_arg_vec3(ctx, spec, "eye", &out->eye, &out->has_eye) ||
+      !ops_arg_vec3(ctx, spec, "target", &out->target, &has_target)) {
+    return false_v;
+  }
+  if (out->has_eye != has_target ||
+      (out->has_eye &&
+       vec3_length(vec3_sub(out->target, out->eye)) < 1.0e-3f)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'eye' and 'target' come together and differ");
+  }
+  if (out->has_eye) {
+    out->request.value.camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE;
+    out->request.frame_box = false_v;
+    snprintf(out->name, sizeof(out->name), "eye");
+  }
+  return true_v;
+}
+
+/* Shows `view` from the next build. */
+static void ops_capture_view_apply(const VkrSampleUiFrame *frame,
+                                   const OpsCaptureView *view) {
+  *frame->view_request = view->request;
+  if (view->has_eye && frame->editor_state_request) {
+    const Vec3 d = vec3_normalize(vec3_sub(view->target, view->eye));
+    VkrSampleEditorStateRequest *state_request = frame->editor_state_request;
+    state_request->apply_recall = true_v;
+    state_request->recall = frame->scene_recall;
+    state_request->recall.camera_valid = true_v;
+    state_request->recall.position = view->eye;
+    state_request->recall.pitch =
+        asinf(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
+    state_request->recall.yaw = atan2f(d.z, d.x) * 57.29577951f;
+    state_request->recall.selection_valid = false_v;
+    if (state_request->recall.field_of_view <= 0.0f) {
+      state_request->recall.field_of_view = 60.0f;
+      state_request->recall.near_plane = 0.1f;
+      state_request->recall.far_plane = 1000.0f;
+    }
+  }
+}
+
+/* Keeps the captured frame of the current view at its cell size, with
+   its marks drawn, and frees the full frame. */
+static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
+                                const VkrCaptureItemResult *item) {
+  OpsCaptureView *view = &pending->views[pending->view_index];
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  uint8_t *full = ops_capture_rgba(ctx, pending, item, &width, &height);
+  if (!full) {
+    return false_v;
+  }
+  /* A sheet spreads the wanted width over two columns. */
+  const uint32_t columns = pending->view_count > 1u ? 2u : 1u;
+  const uint32_t sheet = pending->max_width ? pending->max_width : width;
+  const uint32_t cell =
+      Max(16u, (sheet - OPS_CAPTURE_GAP * (columns - 1u)) / columns);
+  view->pixels = ops_image_shrink(ops_arena(ctx), full, width, height, cell,
+                                  &view->height);
+  view->width = Min(cell, width);
+  free(full);
+  if (!view->pixels) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory for the capture");
+  }
+  /* Marks through the captured camera, in this cell's pixels. A window
+     capture places the Scene's image where the window shows it. */
+  const Vec4 image = ctx->frame->mapping.image_rect_px;
+  const float32_t scale = (float32_t)view->width / (float32_t)width;
+  for (uint32_t i = 0; i < pending->mark_count; ++i) {
+    const Vec4 clip = mat4_mul_vec4(view->view_projection,
+                                    vec3_to_vec4(pending->marks[i], 1.0f));
+    if (!isfinite(clip.w) || clip.w <= 1.0e-6f) {
+      continue;
+    }
+    Vec2 at = {(clip.x / clip.w * 0.5f + 0.5f) * image.z,
+               (clip.y / clip.w * 0.5f + 0.5f) * image.w};
+    if (pending->window) {
+      at = (Vec2){at.x + image.x, at.y + image.y};
+    }
+    at = (Vec2){at.x * scale, at.y * scale};
+    if (!isfinite(at.x) || !isfinite(at.y) || at.x < 0.0f || at.y < 0.0f ||
+        at.x >= (float32_t)view->width || at.y >= (float32_t)view->height) {
+      continue;
+    }
+    view->marks[i] = at;
+    view->mark_shown[i] = true_v;
+    ops_image_mark(view->pixels, view->width, view->height,
+                   (int32_t)lroundf(at.x), (int32_t)lroundf(at.y), i + 1u);
+  }
+  return true_v;
+}
+
+/* Writes the capture: one view as it is, several as a sheet of two
+   columns. Each view's place joins the answer when the agent asked for
+   views or marks. */
+static bool8_t ops_capture_finish(OpsContext *ctx, OpsPendingCapture *pending) {
+  const uint32_t columns = pending->view_count > 1u ? 2u : 1u;
+  const uint32_t rows = (pending->view_count + columns - 1u) / columns;
+  uint32_t cell_w = 0u;
+  uint32_t cell_h = 0u;
+  for (uint32_t i = 0; i < pending->view_count; ++i) {
+    cell_w = Max(cell_w, pending->views[i].width);
+    cell_h = Max(cell_h, pending->views[i].height);
+  }
+  const uint32_t width = columns * cell_w + (columns - 1u) * OPS_CAPTURE_GAP;
+  const uint32_t height = rows * cell_h + (rows - 1u) * OPS_CAPTURE_GAP;
+  uint8_t *sheet = pending->views[0].pixels;
+  if (pending->view_count > 1u) {
+    sheet = arena_alloc(ops_arena(ctx), (uint64_t)width * height * 4u,
+                        ARENA_MEMORY_TAG_ARRAY);
+    if (!sheet) {
+      return ops_fail(ctx, OPS_LIMIT, "Out of request memory for the sheet");
+    }
+    for (uint64_t i = 0; i < (uint64_t)width * height; ++i) {
+      sheet[i * 4u + 0u] = 24u;
+      sheet[i * 4u + 1u] = 24u;
+      sheet[i * 4u + 2u] = 27u;
+      sheet[i * 4u + 3u] = 255u;
+    }
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *views = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < pending->view_count; ++i) {
+    const OpsCaptureView *view = &pending->views[i];
+    const uint32_t x = (i % columns) * (cell_w + OPS_CAPTURE_GAP);
+    const uint32_t y = (i / columns) * (cell_h + OPS_CAPTURE_GAP);
+    for (uint32_t row = 0; sheet != view->pixels && row < view->height; ++row) {
+      MemCopy(sheet + ((size_t)(y + row) * width + x) * 4u,
+              view->pixels + (size_t)row * view->width * 4u,
+              (size_t)view->width * 4u);
+    }
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    ops_set(ctx, entry, "view", vkr_bakery_json_cstr(arena, view->name));
+    ops_set(ctx, entry, "x", vkr_bakery_json_int(arena, x));
+    ops_set(ctx, entry, "y", vkr_bakery_json_int(arena, y));
+    ops_set(ctx, entry, "width", vkr_bakery_json_int(arena, view->width));
+    ops_set(ctx, entry, "height", vkr_bakery_json_int(arena, view->height));
+    if (pending->mark_count) {
+      VkrBakeryJson *marks = vkr_bakery_json_array(arena);
+      for (uint32_t m = 0; m < pending->mark_count; ++m) {
+        if (!view->mark_shown[m]) {
+          vkr_bakery_json_append(marks, vkr_bakery_json_null(arena));
+          continue;
+        }
+        VkrBakeryJson *at = vkr_bakery_json_array(arena);
+        vkr_bakery_json_append(
+            at,
+            vkr_bakery_json_int(arena, x + (int64_t)lroundf(view->marks[m].x)));
+        vkr_bakery_json_append(
+            at,
+            vkr_bakery_json_int(arena, y + (int64_t)lroundf(view->marks[m].y)));
+        vkr_bakery_json_append(marks, at);
+      }
+      ops_set(ctx, entry, "marks", marks);
+    }
+    vkr_bakery_json_append(views, entry);
+  }
+  if (!ops_capture_png(ctx, pending, sheet, width, height)) {
+    return false_v;
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "path",
+          vkr_bakery_json_cstr(arena, pending->path));
+  ops_set(ctx, ctx->call->result, "width", vkr_bakery_json_int(arena, width));
+  ops_set(ctx, ctx->call->result, "height", vkr_bakery_json_int(arena, height));
+  if (pending->describe_views) {
+    ops_set(ctx, ctx->call->result, "views", views);
+  }
+  return true_v;
+}
+
+/* view.capture: one view or a sheet of up to four, at most `max_width`
+   wide, with numbered `marks` at world points. Each view switches the
+   Scene's view, waits OPS_CAPTURE_SETTLE_FRAMES builds and for the scene to
+   settle, then asks for one frame; the end restores the view. */
 static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
   VkrEditorOpCall *call = ctx->call;
   const VkrSampleUiFrame *frame = ctx->frame;
@@ -5614,81 +5996,76 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
       }
       pending->window = ops_equals(area, "window");
     }
-    VkrSampleViewState next = frame->view_state;
-    String8 view = {0};
-    if (vkr_bakery_json_get_string(call->args, "view", &view) &&
-        !ops_equals(view, "current") &&
-        !ops_capture_view(ctx, view, &next.camera_view)) {
-      return VKR_EDITOR_OP_DONE;
-    }
-    bool8_t labels = false_v;
-    if (vkr_bakery_json_get_bool(call->args, "grid_labels", &labels)) {
-      next.grid_labels = labels;
-      next.grid_enabled = next.grid_enabled || labels;
-    }
-    VkrSampleViewRequest request = {.value = next, .apply = true_v};
-    const VkrBakeryJson *focus = vkr_bakery_json_get(call->args, "focus");
-    if (focus && focus->type == VKR_BAKERY_JSON_OBJECT) {
-      if (!ops_arg_vec3(ctx, focus, "min", &request.frame_min, NULL) ||
-          !ops_arg_vec3(ctx, focus, "max", &request.frame_max, NULL)) {
+    float64_t max_width = 0.0;
+    if (ops_arg_number(call->args, "max_width", &max_width)) {
+      if (!(max_width >= 64.0 && max_width <= 8192.0)) {
+        ops_fail(ctx, OPS_INVALID, "'max_width' is 64 to 8192 pixels");
         return VKR_EDITOR_OP_DONE;
       }
-      request.frame_box = true_v;
-    } else if (focus) {
-      OpsRef ref;
-      if (!ops_ref(ctx, NULL, focus, "focus", &ref)) {
+      pending->max_width = (uint32_t)max_width;
+    }
+    const VkrBakeryJson *marks = vkr_bakery_json_get(call->args, "marks");
+    if (marks && (marks->type != VKR_BAKERY_JSON_ARRAY ||
+                  marks->count > OPS_CAPTURE_MARKS_MAX)) {
+      ops_fail(ctx, OPS_INVALID, "'marks' is up to %u world points [x, y, z]",
+               OPS_CAPTURE_MARKS_MAX);
+      return VKR_EDITOR_OP_DONE;
+    }
+    for (const VkrBakeryJson *mark = marks ? marks->first : NULL; mark;
+         mark = mark->next) {
+      float32_t xyz[3] = {0};
+      uint32_t axis = 0u;
+      for (const VkrBakeryJson *part =
+               mark->type == VKR_BAKERY_JSON_ARRAY && mark->count == 3u
+                   ? mark->first
+                   : NULL;
+           part; part = part->next, ++axis) {
+        xyz[axis] = part->type == VKR_BAKERY_JSON_INT ? (float32_t)part->integer
+                    : part->type == VKR_BAKERY_JSON_FLOAT
+                        ? (float32_t)part->number
+                        : NAN;
+      }
+      if (axis != 3u || !isfinite(xyz[0]) || !isfinite(xyz[1]) ||
+          !isfinite(xyz[2])) {
+        ops_fail(ctx, OPS_INVALID, "Each mark is a world point [x, y, z]");
         return VKR_EDITOR_OP_DONE;
       }
-      if (!ops_world_bounds(ops_scene(frame, ref.container), ref.entity,
-                            &request.frame_min, &request.frame_max)) {
-        const SceneTransform *transform =
-            ops_transform(ops_scene(frame, ref.container), ref.entity);
-        const Vec3 at =
-            transform ? mat4_position(transform->world) : vec3_zero();
-        request.frame_min = vec3_sub(at, vec3_one());
-        request.frame_max = vec3_add(at, vec3_one());
+      pending->marks[pending->mark_count++] = vec3_new(xyz[0], xyz[1], xyz[2]);
+    }
+    const VkrBakeryJson *views = vkr_bakery_json_get(call->args, "views");
+    if (views) {
+      if (views->type != VKR_BAKERY_JSON_ARRAY || !views->count ||
+          views->count > OPS_CAPTURE_VIEWS_MAX) {
+        ops_fail(ctx, OPS_INVALID, "'views' is 1 to %u view objects",
+                 OPS_CAPTURE_VIEWS_MAX);
+        return VKR_EDITOR_OP_DONE;
       }
-      request.frame_box = true_v;
-    }
-    /* An explicit eye and target place the perspective camera. */
-    Vec3 eye = {0};
-    Vec3 target = {0};
-    bool8_t has_eye = false_v;
-    bool8_t has_target = false_v;
-    if (!ops_arg_vec3(ctx, call->args, "eye", &eye, &has_eye) ||
-        !ops_arg_vec3(ctx, call->args, "target", &target, &has_target)) {
-      return VKR_EDITOR_OP_DONE;
-    }
-    if (has_eye != has_target ||
-        (has_eye && vec3_length(vec3_sub(target, eye)) < 1.0e-3f)) {
-      ops_fail(ctx, OPS_INVALID, "'eye' and 'target' come together and differ");
-      return VKR_EDITOR_OP_DONE;
-    }
-    if (has_eye && frame->editor_state_request) {
-      const Vec3 d = vec3_normalize(vec3_sub(target, eye));
-      VkrSampleEditorStateRequest *state_request = frame->editor_state_request;
-      state_request->apply_recall = true_v;
-      state_request->recall = frame->scene_recall;
-      state_request->recall.camera_valid = true_v;
-      state_request->recall.position = eye;
-      state_request->recall.pitch =
-          asinf(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
-      state_request->recall.yaw = atan2f(d.z, d.x) * 57.29577951f;
-      state_request->recall.selection_valid = false_v;
-      if (state_request->recall.field_of_view <= 0.0f) {
-        state_request->recall.field_of_view = 60.0f;
-        state_request->recall.near_plane = 0.1f;
-        state_request->recall.far_plane = 1000.0f;
+      for (const VkrBakeryJson *spec = views->first; spec; spec = spec->next) {
+        if (spec->type != VKR_BAKERY_JSON_OBJECT ||
+            !ops_capture_view_parse(ctx, spec,
+                                    &pending->views[pending->view_count])) {
+          if (!call->error_code) {
+            ops_fail(ctx, OPS_INVALID, "Each view is an object");
+          }
+          return VKR_EDITOR_OP_DONE;
+        }
+        pending->view_count++;
       }
-      next.camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE;
-      request.value = next;
-      request.frame_box = false_v;
+    } else {
+      if (!ops_capture_view_parse(ctx, call->args, &pending->views[0])) {
+        return VKR_EDITOR_OP_DONE;
+      }
+      pending->view_count = 1u;
     }
-    pending->restore = has_eye || request.frame_box ||
-                       next.camera_view != frame->view_state.camera_view ||
-                       next.grid_labels != frame->view_state.grid_labels ||
-                       next.grid_enabled != frame->view_state.grid_enabled;
-    *frame->view_request = request;
+    pending->describe_views = views || pending->mark_count;
+    const OpsCaptureView *first = &pending->views[0];
+    pending->restore =
+        pending->view_count > 1u || first->has_eye ||
+        first->request.frame_box ||
+        first->request.value.camera_view != frame->view_state.camera_view ||
+        first->request.value.grid_labels != frame->view_state.grid_labels ||
+        first->request.value.grid_enabled != frame->view_state.grid_enabled;
+    ops_capture_view_apply(frame, first);
     call->state = pending;
     call->stage = 1u;
     call->frames = 0u;
@@ -5704,6 +6081,8 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
       return VKR_EDITOR_OP_WAIT;
     }
     call->settle_timeout = call->settle_timeout || !settled;
+    pending->views[pending->view_index].view_projection =
+        frame->view_projection;
     call->token = ++ctx->ops->next_token;
     *frame->capture_request =
         (VkrSampleCaptureRequest){.request = true_v, .token = call->token};
@@ -5722,14 +6101,14 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
     }
     if (ready->failed || !ready->item) {
       ops_fail(ctx, OPS_CAPTURE, "The renderer could not capture the window");
-    } else if (ops_capture_write(ctx, pending, ready->item)) {
-      call->result = vkr_bakery_json_object(call->arena);
-      ops_set(ctx, call->result, "path",
-              vkr_bakery_json_cstr(call->arena, pending->path));
-      ops_set(ctx, call->result, "width",
-              vkr_bakery_json_int(call->arena, pending->width));
-      ops_set(ctx, call->result, "height",
-              vkr_bakery_json_int(call->arena, pending->height));
+    } else if (ops_capture_keep(ctx, pending, ready->item)) {
+      if (++pending->view_index < pending->view_count) {
+        ops_capture_view_apply(frame, &pending->views[pending->view_index]);
+        call->stage = 1u;
+        call->frames = 0u;
+        return VKR_EDITOR_OP_WAIT;
+      }
+      (void)ops_capture_finish(ctx, pending);
     }
     call->stage = 3u;
   }
@@ -7422,6 +7801,14 @@ static bool8_t ops_build_place(OpsContext *ctx, const VkrBakeryJson *args,
   "{\"type\":\"object\",\"description\":\"Property values by descriptor "      \
   "name, as scene documents store them\"}"
 
+#define OPS_CAPTURE_VIEW_SCHEMA                                                \
+  "{\"type\":\"string\",\"enum\":[\"current\",\"perspective\",\"top\","        \
+  "\"left\",\"right\",\"bottom\"]}"
+#define OPS_CAPTURE_FOCUS_SCHEMA                                               \
+  "{\"oneOf\":[" OPS_ENTITY_SCHEMA ",{\"type\":\"object\",\"properties\":{"    \
+  "\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":["    \
+  "\"min\",\"max\"]}]}"
+
 static const OpsDef s_ops[] = {
     {"ops.list", "Every operation with its description and argument schema.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL, OPS_QUICK},
@@ -8024,17 +8411,25 @@ static const OpsDef s_ops[] = {
     {"view.capture",
      "Capture the Scene as a PNG, optionally from another view (top is an "
      "orthographic map), framed on an entity or box, from a perspective "
-     "'eye' looking at 'target', with grid labels.",
-     "{\"type\":\"object\",\"properties\":{\"view\":{\"type\":\"string\","
-     "\"enum\":[\"current\",\"perspective\",\"top\",\"left\",\"right\","
-     "\"bottom\"]},\"focus\":{\"oneOf\":[" OPS_ENTITY_SCHEMA
-     ",{\"type\":\"object\",\"properties\":{\"min\":" OPS_VEC3_SCHEMA
-     ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":[\"min\",\"max\"]}]},"
-     "\"grid_labels\":{\"type\":\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA
-     ",\"target\":" OPS_VEC3_SCHEMA ",\"area\":{\"type\":"
-     "\"string\",\"enum\":[\"scene\",\"window\"],\"description\":\"The "
-     "Scene image (default) or the whole editor window\"}," OPS_SETTLE_SCHEMA
-     "}}",
+     "'eye' looking at 'target', with grid labels. 'views' takes up to 4 "
+     "such views in one sheet of two columns; 'max_width' shrinks the image "
+     "(a sheet's whole width); 'marks' draws up to 32 world points as "
+     "numbered magenta crosses over the scene in every view, hidden by "
+     "geometry or not, and answers each one's pixel in the image, or null "
+     "where it lies outside the view.",
+     "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
+     ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
+     "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
+     ",\"views\":{\"type\":\"array\",\"maxItems\":4,\"items\":{\"type\":"
+     "\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
+     ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
+     "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
+     "}}},\"max_width\":{\"type\":\"integer\",\"minimum\":64,\"maximum\":"
+     "8192},\"marks\":{\"type\":\"array\",\"maxItems\":32,"
+     "\"items\":" OPS_VEC3_SCHEMA
+     "},\"area\":{\"type\":\"string\",\"enum\":[\"scene\","
+     "\"window\"],\"description\":\"The Scene image (default) or the whole "
+     "editor window\"}," OPS_SETTLE_SCHEMA "}}",
      ops_run_capture, NULL, OPS_SETTLES},
     {"view.camera",
      "Place the perspective Scene camera at 'eye' looking at 'target'; "
