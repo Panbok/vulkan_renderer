@@ -10,10 +10,14 @@ authority: adr
 
 Accepted (partial). The decision is in force. A first tiled pipeline runs on
 Metal when a renderer or the editor selects it (decisions 6, 7 and 9), draws
-glass (decision 10) and a bounded set of dynamic lights (decision 11). On a
-lightmap-baked Bistro it takes 18.5 ms p95, 1.8 ms over the budget (see
-[Baked Bistro measurement](#baked-bistro-measurement)); every device runs the
-desktop pipeline by default until the tiled one meets it. The remaining design is in
+glass (decision 10) and a bounded set of dynamic lights (decision 11), and
+holds the frame with adaptive quality (decision 12). On a lightmap-baked
+Bistro it takes 16.9 to 18.0 ms p95 at native scale and 15.8 ms with
+adaptive quality; 16 dynamic lights still reach 17.1 to 17.5 ms at the
+lowest scale (see
+[Adaptive quality measurement](#adaptive-quality-measurement)). Every device
+runs the desktop pipeline by default until the tiled one meets the budget.
+The remaining design is in
 [Tiled graphics pipeline](../proposals/tiled-pipeline.md).
 
 ## Context

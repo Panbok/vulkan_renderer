@@ -228,13 +228,33 @@ Remaining phases:
 2. Tiled runtime: the forward shader samples the blended sun keys and
    scaled lamp groups (ADR-087, decision 8); the editor runs it, and it
    draws thin glass and a bounded set of dynamic lights (decisions 9 to
-   11). The lightmap-baked Bistro takes 14.5 ms median and 18.5 ms p95
-   ([measurement](../adr/087-gpu-class-graphics-pipelines.md#baked-bistro-measurement)).
-   Remaining: 1.8 ms of p95, mostly the opaque pass on the widest views and
-   cascade re-renders; a cheaper dynamic-light tier, since 16 lights with 4
-   shadowed add 4 ms median and 10 ms p95; the remaining material layers,
-   IBL probes, fog, rough and thick glass, specular highlights of static lights, and making the tiled
-   pipeline the Apple default.
+   11). After the light shading variants, the anti-aliasing change and the
+   bloom fold, the lightmap-baked Bistro takes about 12.6 ms median and
+   16.7 to 17.0 ms p95 at native scale, and adaptive quality (decision 12)
+   holds 15.8 ms p95
+   ([measurements](../adr/087-gpu-class-graphics-pipelines.md#adaptive-quality-measurement)).
+   Remaining: the opaque pass on the widest views, the dynamic-light tier
+   at its 0.65 floor (17.1 to 17.5 ms p95), the remaining material layers,
+   IBL probes, fog, rough and thick glass, specular highlights of static
+   lights, and making the tiled pipeline the Apple default.
+3. Cooked mesh LOD. The runtime selects and encodes geometry levels
+   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)),
+   but cooked meshes carry none, so Bistro always draws full detail. A
+   diagnostic that drew only the first half of every index range
+   (2026-10-06, Release, M1 Pro, the tiled native cases alternating with
+   the unchanged build twice, incomplete image) lowered `Tiled.Opaque` from
+   8.57 / 12.45 to 7.42 / 8.58 ms median / p95, and from 10.29 / 17.76 to
+   9.99 / 11.91 ms with the dynamic lights; cascade re-renders fell about
+   42%, from 1.35, 2.15 and 1.63 ms to 0.78, 1.25 and 0.93 ms, and
+   `gpu.submission` from 12.61 / 16.76 to 11.77 / 13.39 ms
+   (`sha256:23159b0a148b7934729775a9a8f4572bec3b3698c7d145fe5ea3225ce295e498`,
+   `sha256:9debfb308675f0c6b217bfb477abe93bf71240dba078e834dad073fd790f29a0`,
+   `sha256:6d7c661b105ce1b05365c62d0ca8def16c9d78a86c783fb18d8046a819af8025`,
+   `sha256:6a04af645bef9b83e8daef7d8ed8c19ba7956441d21fcf3bccb00e36399ad290`).
+   The widest views, which set the p95, are bound by geometry: the
+   pre-pass and forward pass both draw every triangle. Cooked levels are
+   the largest remaining lever for the tiled p95; their saving is below
+   this bound, since near geometry keeps its detail.
 
 ## Acceptance evidence
 
