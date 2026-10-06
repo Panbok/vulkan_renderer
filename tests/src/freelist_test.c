@@ -226,7 +226,8 @@ static void test_freelist_resize_empty(void) {
   assert(new_memory != NULL);
 
   void *old_memory = NULL;
-  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, new_mem_size,
+                             &old_memory));
   assert(old_memory == memory);
 
   // Verify new size
@@ -271,7 +272,8 @@ static void test_freelist_resize_with_allocations(void) {
   assert(new_memory != NULL);
 
   void *old_memory = NULL;
-  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, new_mem_size,
+                             &old_memory));
 
   // Verify allocations are preserved (free space should have grown by NEW_SIZE
   // - INITIAL_SIZE)
@@ -312,7 +314,8 @@ static void test_freelist_resize_and_allocate_new(void) {
   assert(new_memory != NULL);
 
   void *old_memory = NULL;
-  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, new_mem_size,
+                             &old_memory));
 
   // Now allocate from the new space
   uint64_t off2 = VKR_INVALID_ID;
@@ -347,7 +350,8 @@ static void test_freelist_resize_coalescing(void) {
   assert(new_memory != NULL);
 
   void *old_memory = NULL;
-  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, new_mem_size,
+                             &old_memory));
 
   // Should be able to allocate a large block from the coalesced free space
   uint64_t off2 = VKR_INVALID_ID;
@@ -392,7 +396,8 @@ static void test_freelist_resize_node_copy(void) {
   assert(new_memory != NULL);
 
   void *old_memory = NULL;
-  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, new_mem_size,
+                             &old_memory));
 
   // Free space should be previous free + growth
   uint64_t free_after = vkr_freelist_free_space(&freelist);

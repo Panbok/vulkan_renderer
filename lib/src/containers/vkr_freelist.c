@@ -304,7 +304,8 @@ uint64_t vkr_freelist_free_space(VkrFreeList *freelist) {
 }
 
 bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
-                            void *new_memory, void **out_old_memory) {
+                            void *new_memory, uint64_t new_memory_size,
+                            void **out_old_memory) {
   assert_log(freelist != NULL, "Freelist must not be NULL");
   assert_log(freelist->memory != NULL, "Freelist memory must not be NULL");
   assert_log(new_memory != NULL, "New node memory must not be NULL");
@@ -312,9 +313,7 @@ bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
   assert_log(new_total_size > freelist->total_size,
              "New total size must be greater than current size");
 
-  uint64_t required_mem_size =
-      vkr_freelist_calculate_memory_requirement(new_total_size);
-  uint64_t new_max_count = required_mem_size / sizeof(VkrFreeListNode);
+  uint64_t new_max_count = new_memory_size / sizeof(VkrFreeListNode);
   if (new_max_count > UINT32_MAX) {
     new_max_count = UINT32_MAX;
   }
@@ -331,7 +330,7 @@ bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
   const VkrFreeList previous = *freelist;
   freelist->memory = new_memory;
   freelist->nodes = new_nodes;
-  freelist->nodes_allocated_size = required_mem_size;
+  freelist->nodes_allocated_size = new_memory_size;
   freelist->max_count = (uint32_t)new_max_count;
   freelist->head = new_head;
   freelist->total_size = new_total_size;

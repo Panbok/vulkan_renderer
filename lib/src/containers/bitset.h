@@ -39,21 +39,19 @@ typedef struct Bitset8 {
  * @brief Creates and initializes a new 8-bit bitset with all bits set to 0.
  * @return A new Bitset8 instance.
  */
-Bitset8 bitset8_create();
+Bitset8 bitset8_create(void);
 
 /**
  * @brief Sets (turns on) the specified flag bit(s) in the bitset.
  * @param bitset A pointer to the Bitset8 instance to modify.
- * @param flag The flag bit(s) to set (e.g., 1 << 2). This can be a single
- *             flag or multiple flags OR'd together.
+ * @param flag The single flag bit to set (e.g., 1 << 2).
  */
 void bitset8_set(Bitset8 *bitset, uint8_t flag);
 
 /**
  * @brief Clears (turns off) the specified flag bit(s) in the bitset.
  * @param bitset A pointer to the Bitset8 instance to modify.
- * @param flag The flag bit(s) to clear (e.g., 1 << 2). This can be a single
- *             flag or multiple flags OR'd together.
+ * @param flag The single flag bit to clear (e.g., 1 << 2).
  */
 void bitset8_clear(Bitset8 *bitset, uint8_t flag);
 
@@ -62,8 +60,7 @@ void bitset8_clear(Bitset8 *bitset, uint8_t flag);
  *        If a bit in 'flag' is set, the corresponding bit in 'bitset' is
  * flipped.
  * @param bitset A pointer to the Bitset8 instance to modify.
- * @param flag The flag bit(s) to toggle (e.g., 1 << 2). This can be a single
- *             flag or multiple flags OR'd together.
+ * @param flag The single flag bit to toggle (e.g., 1 << 2).
  */
 void bitset8_toggle(Bitset8 *bitset, uint8_t flag);
 

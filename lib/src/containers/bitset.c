@@ -1,6 +1,6 @@
 #include "bitset.h"
 
-Bitset8 bitset8_create() { return (Bitset8){0}; }
+Bitset8 bitset8_create(void) { return (Bitset8){0}; }
 
 void bitset8_set(Bitset8 *bitset, uint8_t flag) {
   assert((flag & (flag - 1)) == 0 && flag != 0 && flag <= 0x80 &&

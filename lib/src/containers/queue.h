@@ -111,7 +111,10 @@
       return false;                                                            \
     }                                                                          \
     q->data[q->tail] = data;                                                   \
-    q->tail = (q->tail + 1) % q->capacity; /* wrap around if needed */         \
+    q->tail++;                                                                 \
+    if (q->tail == q->capacity) {                                              \
+      q->tail = 0;                                                             \
+    }                                                                          \
     q->size++;                                                                 \
     return true;                                                               \
   }                                                                            \
@@ -131,7 +134,10 @@
     if (value_ptr != NULL) {                                                   \
       *value_ptr = q->data[q->head];                                           \
     }                                                                          \
-    q->head = (q->head + 1) % q->capacity; /* wrap around if needed */         \
+    q->head++;                                                                 \
+    if (q->head == q->capacity) {                                              \
+      q->head = 0;                                                             \
+    }                                                                          \
     q->size--;                                                                 \
     return true;                                                               \
   }                                                                            \

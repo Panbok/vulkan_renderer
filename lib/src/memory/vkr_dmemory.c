@@ -502,7 +502,8 @@ bool8_t vkr_dmemory_resize(VkrDMemory *dmemory, uint64_t new_total_size) {
 
     void *old_freelist_memory = NULL;
     if (!vkr_freelist_resize(&dmemory->freelist, aligned_new_size,
-                             new_freelist_memory, &old_freelist_memory)) {
+                             new_freelist_memory, aligned_new_freelist_size,
+                             &old_freelist_memory)) {
       log_error("Failed to resize freelist");
       vkr_platform_mem_decommit(new_freelist_memory, aligned_new_freelist_size);
       vkr_platform_mem_release(new_freelist_memory, aligned_new_freelist_size);
