@@ -90,9 +90,10 @@ The tiled pipeline ([ADR-087](087-gpu-class-graphics-pipelines.md)) runs only
 on Metal. It shares kernels and host records with the desktop pipeline:
 
 - **Changed contracts.**
-  - The 560-byte Metal frame root carries `lightmap` at byte 544, the address
-    of a 96-byte `VkrMetalPacketLightmap`, and `terrain_materials` at byte
-    552; the tiled sky root is 128 bytes. Both are pinned in
+  - The 576-byte Metal frame root carries `lightmap` at byte 544, the address
+    of a 96-byte `VkrMetalPacketLightmap`, `terrain_materials` at byte 552
+    and `transmission_materials` at byte 560; the tiled sky root is 128
+    bytes. Both are pinned in
     `vkr_metal_packet_abi.c` and checked against reflection at pipeline
     creation.
   - The prepared instance row carries the lightmap slot in

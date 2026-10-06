@@ -243,6 +243,8 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, lightmap, "lightmap", 544),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, terrain_materials,
                   "terrain_materials", 552),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, transmission_materials,
+                  "transmission_materials", 560),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sky_fields[] = {
@@ -773,7 +775,7 @@ vkr_global const VkrMetalPacketAbiRecord
                            16, vkr_draw_root_fields),
         [VKR_METAL_PACKET_ABI_FRAME_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketFrameRoot, "VkrMetalPacketFrameRoot",
-                           560, 16, vkr_frame_root_fields),
+                           576, 16, vkr_frame_root_fields),
         [VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION] =
             VKR_ABI_RECORD(VkrMetalPacketLocalShadowTransmission,
                            "VkrMetalPacketLocalShadowTransmission", 48, 16,

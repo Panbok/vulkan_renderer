@@ -218,6 +218,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   /** The material table's terrain rows, which the tiled pipeline's forward
       shading reads by material index (ADR-084). */
   uint64_t terrain_materials;
+  /** The material table's transmission rows (transmission and thickness
+      textures), which the tiled pipeline's glass reads by material index. */
+  uint64_t transmission_materials;
 } VkrMetalPacketFrameRoot;
 
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, dfg_texture_id) == 472u,
@@ -246,7 +249,10 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot, lightmap) == 544u,
                "Metal lightmap record offset drift");
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, terrain_materials) == 552u,
                "Metal terrain material rows offset drift");
-_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 560u,
+_Static_assert(offsetof(VkrMetalPacketFrameRoot, transmission_materials) ==
+                   560u,
+               "Metal transmission material rows offset drift");
+_Static_assert(sizeof(VkrMetalPacketFrameRoot) == 576u,
                "Metal frame root ABI size drift");
 
 /* Frame records are cold, shared records. They may span the fixed draw-root

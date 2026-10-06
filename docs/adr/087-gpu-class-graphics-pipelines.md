@@ -214,10 +214,23 @@ pipeline rather than a backend mechanism.
     composes as the transmission passes do (`vkr_transmission_compose`), but
     the light behind it arrives through dual-source blending: the fragment's
     second output is the factor the destination keeps per channel, so tinted
-    and stacked panes compose in draw order. All glass draws as thin, smooth
-    glass, without a refraction offset, rough blur, volume attenuation or
-    transmission and thickness textures; Bistro's 18 glass materials have no
-    thickness and an effective roughness of zero. The pass runs only on
+    and stacked panes compose in draw order. Glass reads its transmission
+    and thickness textures through the frame root's transmission rows, and a
+    volume absorbs the light behind it as the desktop pipeline does,
+    `pow(attenuation colour, path length / attenuation distance)` along the
+    refracted path through its object-space thickness
+    (`vkr_transmission_exit_point`); that light still arrives from straight
+    behind the pane, without a refraction offset or rough blur. Bistro's 18
+    glass materials have no thickness and an effective roughness of zero;
+    the blend pass on the baked orbit took 0.47 / 0.85 and 0.48 / 0.78 ms
+    median / p95 before the volume and 0.51 / 1.11 and 0.49 / 0.83 ms after
+    (`sha256:043adce36b03e4b35ee87fe64b4f69c2ce7b48bf8266bf2381fcfc22bcaa0c24`,
+    `sha256:d98e4027a1b5d7336414344fc5cdcefefe6f4558f561517d9dca2e809b27a072`,
+    `sha256:f2919e430321daee721233ced99a5fdc3fb07baf5fc148c38d38696a0e623d36`,
+    `sha256:fe4c9f0377318e0fec628d3af78b1e7090b720d9d604be7b3184f7dc50dda3d4`).
+    With Bistro's glass temporarily given a 2 cm world thickness and a
+    green attenuation colour at 10 cm, the restaurant interior seen through
+    its windows turns cooler and less saturated. The pass runs only on
     frames with blended draws or world text, because its load and store of
     the resolved colour and depth cost about 0.4 ms at 2560×1440.
 11. The tiled pipeline lights a baked scene's static lights only through its

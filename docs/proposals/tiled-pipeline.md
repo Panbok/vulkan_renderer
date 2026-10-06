@@ -259,9 +259,10 @@ this order as one measured change each against the 16.7 ms p95 budget:
 3. A small fixed PCF for the four shadowed dynamic lights: done, a four-tap
    tent ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), decision
    11).
-4. Thick glass: Beer-Lambert absorption in the blend shader first, then
-   refraction and rough blur from a half-resolution copy of the scene, only
-   on frames with thick or rough glass.
+4. Thick glass: Beer-Lambert absorption with the transmission and thickness
+   textures is done (ADR-087, decision 10); refraction and rough blur from a
+   half-resolution copy of the scene, only on frames with thick or rough
+   glass, remain.
 
 SSR is not planned for the tiled pipeline (owner decision, 2026-10-06).
 Mirror-like surfaces get [planar reflections](planar-reflections.md) per

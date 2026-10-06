@@ -828,9 +828,9 @@ struct VkrMetalTiledBlendOutput {
 // Glass and alpha-blended surfaces, drawn back to front over the resolved
 // image. Glass composes as the transmission passes do
 // (vkr_transmission_compose): the light behind it arrives through the
-// hardware blend, so stacked panes compose in draw order. The tiled pipeline
-// draws all glass as thin and smooth: it takes no refraction offset, rough
-// blur, volume attenuation or transmission textures (ADR-087).
+// hardware blend, so stacked panes compose in draw order, absorbed through a
+// volume's thickness. The tiled pipeline takes no refraction offset or rough
+// blur (ADR-087).
 template <VkrMetalTiledLighting Lighting, bool Probes>
 static VkrMetalTiledBlendOutput
 vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
@@ -847,6 +847,24 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   float alpha = transmission > 0.0f ? 1.0f : surface.base.a;
   if (alpha <= 1e-4f)
     discard_fragment();
+  // The transmission texture scales the material's factor (red), and the
+  // thickness texture its volume (green), as the desktop transmission does.
+  float thickness = 0.0f;
+  if (transmission > 0.0f) {
+    const device VkrMetalPacketTransmissionMaterial &volume =
+        frame->transmission_materials[visible.material_index];
+    if ((material.flags & 8u) != 0u)
+      transmission *=
+          volume.transmission_texture
+              .sample(volume.transmission_sampler, input.texcoord)
+              .r;
+    thickness = max(material.material_alpha.w, 0.0f);
+    if (thickness > 0.0f && (material.flags & 16u) != 0u)
+      thickness *=
+          volume.thickness_texture.sample(volume.thickness_sampler,
+                                          input.texcoord)
+              .g;
+  }
   VkrMetalTiledBlendOutput output;
   if (Lighting == VKR_METAL_TILED_LIGHTING_INSPECT) {
     float3 inspected;
@@ -869,8 +887,24 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
                               lobes, float3(0.0f), light.base,
                               light.reflectance, transmission, light.metallic),
                           0.0f);
+    // A volume absorbs the light behind it along the refracted path through
+    // its thickness (Beer-Lambert). The light arrives from straight behind
+    // the pane: the tiled pipeline takes no refraction offset (ADR-087).
+    float3 absorption = float3(1.0f);
+    const float4 attenuation = material.material_attenuation_color;
+    if (thickness > 0.0f && attenuation.w > 1e-4f) {
+      const device VkrMetalPacketInstance &instance =
+          frame->instances[visible.instance_index];
+      VkrTransmissionExit exit = vkr_transmission_exit_point(
+          input.world_position, frame->view_position.xyz,
+          normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f),
+          instance.model[0].xyz, instance.model[1].xyz, instance.model[2].xyz,
+          material.material_alpha.z, thickness);
+      absorption = pow(clamp(attenuation.rgb, 1e-4f, 1.0f),
+                       exit.path_length / attenuation.w);
+    }
     output.behind = float4(vkr_transmission_compose(
-                               no_lobes, float3(1.0f), light.base,
+                               no_lobes, absorption, light.base,
                                light.reflectance, transmission, light.metallic),
                            1.0f);
   } else {

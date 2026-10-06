@@ -216,6 +216,9 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
   frame_root->lightmap = upload->lightmap_gpu;
   frame_root->terrain_materials =
       vkr_metal_material_table_device_terrain_gpu_address(renderer->materials);
+  frame_root->transmission_materials =
+      vkr_metal_material_table_device_transmission_gpu_address(
+          renderer->materials);
   uint64_t anisotropy_gpu = 0u;
   VkrMetalPacketAnisotropy *anisotropy =
       vkr_metal_packet_next_root(upload, sizeof(*anisotropy), &anisotropy_gpu);

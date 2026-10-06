@@ -300,6 +300,7 @@ struct VkrMetalPacketFrameRoot {
   constant VkrMetalPacketSky *sky;
   constant VkrMetalPacketLightmap *lightmap;
   device VkrMetalPacketTerrainMaterial *terrain_materials;
+  device VkrMetalPacketTransmissionMaterial *transmission_materials;
 };
 
 struct VkrGpuGeometryRow {
@@ -590,8 +591,8 @@ static_assert(sizeof(VkrMetalPacketMaterial) == 352,
               "Metal material row ABI must remain 352 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,
               "Metal transmission material row ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketFrameRoot) == 560,
-              "Metal packet frame root ABI must remain 560 bytes");
+static_assert(sizeof(VkrMetalPacketFrameRoot) == 576,
+              "Metal packet frame root ABI must remain 576 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 48,
               "Metal packet draw root ABI must remain 48 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
