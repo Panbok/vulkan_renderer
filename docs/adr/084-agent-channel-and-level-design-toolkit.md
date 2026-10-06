@@ -592,9 +592,17 @@ region past 65,536 cells of the capsule radius: a square up to 76.8 m keeps
 0.3 m cells, while a 256 m square samples every metre and can miss a gap
 narrower than the capsule.
 
+A check runs as a job (`VkrEditorLevelJob`) that samples a slice of its
+cells each build and then reads the grid once: 4 ms of each build in a
+windowed editor, so the designer's frames stay smooth, and 50 ms in a
+headless one, which no one watches. Over terrain, a 65,536-cell check costs
+about 0.6 s of sampling, which one build used to spend at once. The request
+holds the agent queue until it answers, as a capture does, and a scene that
+loads meanwhile fails it.
+
 `level.map` returns the same grid as text, a floor plan a model reads more
 exactly than a picture ([editor_level.c](../../editor/src/editor_level.c),
-`vkr_editor_level_map`). Its rows run from the region's minimum z to its
+`vkr_editor_level_job_map`). Its rows run from the region's minimum z to its
 maximum, each character a cell along +x, as a top capture shows them. A cell
 shows its highest walkable floor, else its highest floor: `.` walkable and,
 with a start, reached from it, `,` walkable but out of reach, `S` the start,
@@ -605,7 +613,8 @@ default 96 cells along the longer side) and a map holds at most 200 a side;
 below the ceilings maps the floor under them.
 
 The Level checks window (View > Level checks, Cmd `window level`) runs the
-lint over 40 m around the point the Scene's center looks at, lists issues
+lint over 40 m around the point the Scene's center looks at, 4 ms of each
+frame while it shows "Checking" with the share sampled, then lists issues
 nearest first with Focus, and marks them with crosses in the Scene while it
 is open.
 
@@ -1119,3 +1128,12 @@ material then).
   magenta, a crate's mark lay near the centre of the top view framed on it,
   and a point outside all three views answered null in each. The sheet took
   0.29 s; three separate captures took 0.48 s.
+- Windows and native Vulkan, 2026-10-06 (RX 6700 XT, headless Release
+  editor on Bistro, a 256 m terrain): before the checks ran as jobs, a
+  65,536-cell `level.lint` answered in 0.62 s, a 37,000-cell `level.map` in
+  0.35 s and `query.reachable` in 0.30 s, each in one build. As jobs they
+  answered in 0.64 s, 0.36 s and 0.31 s, and the editor's longest frame
+  (`stats.frame_ms_max`) was 55 ms. While the Level checks window checked
+  40 m of terrain, it showed 12 % sampled, and the longest frames stayed
+  between 12.7 and 16.6 ms (median 8.7 ms). `level.lint` over a room
+  reported a 1 m crate's top as out of reach.

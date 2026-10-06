@@ -447,6 +447,9 @@ typedef struct VkrEditorUi {
   float64_t cmd_hold_seconds;
   /* Headless: quit once the queue has drained. */
   bool8_t cmd_quit_when_done;
+  /* No window: no one watches its frames, so long agent checks may
+     take more of a build (ADR-084). */
+  bool8_t headless;
   /* Borrowed buffer that collects [cmd] result lines while set. */
   char *cmd_capture;
   uint32_t cmd_capture_capacity;

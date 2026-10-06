@@ -100,8 +100,8 @@ closes it. They are comfort.
 
 ADR-084 gives agents authors, scoped undo, reads that wait for rebuilds,
 quick reads that share a build, `level.map`, claims, the change feed and
-`entity.place` and capture options (`max_width`, sheets of views,
-numbered marks). These remain:
+`entity.place`, capture options (`max_width`, sheets of views,
+numbered marks) and checks spread over builds. These remain:
 
 | Item | Need | Evidence |
 |---|---|---|
@@ -109,7 +109,6 @@ numbered marks). These remain:
 | An offscreen capture view | Captures leave the designer's camera alone | A capture during a designer's camera drag leaves the drag unchanged |
 | Pushed feed events | Agents learn of others' work without polling `changes.feed` | Two clients: the second receives the first one's batch without a request |
 | Persistent claims | Claims survive an editor restart and name their agents' sessions | Restart: a claim made before it still refuses another agent's write |
-| Lint and map spread over several builds | A large region does not stall one frame | Release frame times during a 256 m lint stay under the frame budget |
 
 ## Acceptance evidence
 

@@ -5,6 +5,7 @@
 #include "editor_internal.h"
 
 #include "level/vkr_brush.h"
+#include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -221,12 +222,11 @@ static float32_t level_grid_size(Vec3 min, Vec3 max,
 }
 
 /* A grid over [min, max] with cells of at least `cell` (zero for none) and
-   the capsule radius. */
-static bool8_t level_grid_build(LevelGrid *grid, VkrScene *scene, Vec3 min,
-                                Vec3 max, const VkrEditorLevelCapsule *capsule,
+   the capsule radius, its cells not sampled yet. */
+static bool8_t level_grid_alloc(LevelGrid *grid, Vec3 min, Vec3 max,
+                                const VkrEditorLevelCapsule *capsule,
                                 float32_t cell) {
-  *grid =
-      (LevelGrid){.scene = scene, .capsule = capsule, .min = min, .max = max};
+  *grid = (LevelGrid){.capsule = capsule, .min = min, .max = max};
   grid->cell = level_grid_size(min, max, capsule, cell, &grid->nx, &grid->nz);
   const size_t cells = (size_t)grid->nx * grid->nz;
   grid->nodes = calloc(cells * LEVEL_LAYER_MAX, sizeof(*grid->nodes));
@@ -236,17 +236,67 @@ static bool8_t level_grid_build(LevelGrid *grid, VkrScene *scene, Vec3 min,
     free(grid->layers);
     return false_v;
   }
-  for (uint32_t z = 0; z < grid->nz; ++z) {
-    for (uint32_t x = 0; x < grid->nx; ++x) {
-      level_sample_cell(grid, x, z);
-    }
-  }
   return true_v;
 }
 
 static void level_grid_free(LevelGrid *grid) {
   free(grid->nodes);
   free(grid->layers);
+}
+
+/* A check's grid and how far its sampling came. The job owns the grid's
+   arrays and its own copy of the capsule. */
+struct VkrEditorLevelJob {
+  LevelGrid grid;
+  VkrEditorLevelCapsule capsule;
+  uint32_t next_cell;
+};
+
+VkrEditorLevelJob *vkr_editor_level_job_begin(
+    Vec3 min, Vec3 max, const VkrEditorLevelCapsule *capsule, float32_t cell) {
+  VkrEditorLevelJob *job = calloc(1u, sizeof(*job));
+  if (!job) {
+    return NULL;
+  }
+  job->capsule = *capsule;
+  if (!level_grid_alloc(&job->grid, min, max, &job->capsule, cell)) {
+    free(job);
+    return NULL;
+  }
+  return job;
+}
+
+bool8_t vkr_editor_level_job_step(VkrEditorLevelJob *job, const VkrScene *scene,
+                                  float64_t seconds) {
+  LevelGrid *grid = &job->grid;
+  /* Physics queries take a mutable scene but change none of its state. */
+  grid->scene = (VkrScene *)scene;
+  const uint32_t cells = grid->nx * grid->nz;
+  const float64_t start = vkr_platform_get_absolute_time();
+  while (job->next_cell < cells) {
+    level_sample_cell(grid, job->next_cell % grid->nx,
+                      job->next_cell / grid->nx);
+    job->next_cell++;
+    /* The clock is read every 32 cells, a fraction of a millisecond. */
+    if ((job->next_cell & 31u) == 0u &&
+        vkr_platform_get_absolute_time() - start >= seconds) {
+      break;
+    }
+  }
+  return job->next_cell >= cells;
+}
+
+float32_t vkr_editor_level_job_progress(const VkrEditorLevelJob *job) {
+  const uint32_t cells = job->grid.nx * job->grid.nz;
+  return cells ? (float32_t)job->next_cell / (float32_t)cells : 1.0f;
+}
+
+void vkr_editor_level_job_end(VkrEditorLevelJob *job) {
+  if (!job) {
+    return;
+  }
+  level_grid_free(&job->grid);
+  free(job);
 }
 
 /* Whether a capsule walks from node `a` to node `b` of the next cell. */
@@ -624,16 +674,14 @@ static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
   free(piece);
 }
 
-uint32_t vkr_editor_level_lint(const VkrScene *scene, Vec3 min, Vec3 max,
-                               const VkrEditorLevelCapsule *capsule,
-                               const Vec3 *start, VkrEditorLevelIssue *out,
-                               uint32_t capacity, VkrEditorLevelStats *stats) {
+uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
+                                   const VkrScene *scene, const Vec3 *start,
+                                   VkrEditorLevelIssue *out, uint32_t capacity,
+                                   VkrEditorLevelStats *stats) {
   LevelIssues issues = {.items = out, .capacity = capacity};
-  LevelGrid grid;
   /* Physics queries take a mutable scene but change none of its state. */
-  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule, 0.0f)) {
-    return 0u;
-  }
+  LevelGrid grid = job->grid;
+  grid.scene = (VkrScene *)scene;
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
   uint32_t walkable = 0u;
   uint32_t samples = 0u;
@@ -669,25 +717,28 @@ uint32_t vkr_editor_level_lint(const VkrScene *scene, Vec3 min, Vec3 max,
                                    .walkable = walkable,
                                    .reachable = reachable};
   }
-  level_grid_free(&grid);
   return issues.found;
 }
 
-bool8_t vkr_editor_level_reachable(const VkrScene *scene, Vec3 from, Vec3 to,
-                                   const VkrEditorLevelCapsule *capsule,
-                                   Vec3 *path, uint32_t path_capacity,
-                                   uint32_t *path_count, float32_t *length) {
+void vkr_editor_level_reachable_region(Vec3 from, Vec3 to, Vec3 *out_min,
+                                       Vec3 *out_max) {
+  const Vec3 pad = vec3_new(16.0f, 4.0f, 16.0f);
+  *out_min = vec3_sub(
+      vec3_new(Min(from.x, to.x), Min(from.y, to.y), Min(from.z, to.z)), pad);
+  *out_max = vec3_add(
+      vec3_new(Max(from.x, to.x), Max(from.y, to.y), Max(from.z, to.z)), pad);
+}
+
+bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
+                                       const VkrScene *scene, Vec3 from,
+                                       Vec3 to, Vec3 *path,
+                                       uint32_t path_capacity,
+                                       uint32_t *path_count,
+                                       float32_t *length) {
   *path_count = 0u;
   *length = 0.0f;
-  const Vec3 pad = vec3_new(16.0f, 4.0f, 16.0f);
-  const Vec3 min = vec3_sub(
-      vec3_new(Min(from.x, to.x), Min(from.y, to.y), Min(from.z, to.z)), pad);
-  const Vec3 max = vec3_add(
-      vec3_new(Max(from.x, to.x), Max(from.y, to.y), Max(from.z, to.z)), pad);
-  LevelGrid grid;
-  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule, 0.0f)) {
-    return false_v;
-  }
+  LevelGrid grid = job->grid;
+  grid.scene = (VkrScene *)scene;
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
   int32_t *queue = malloc(total * sizeof(*queue));
   const int32_t start = level_nearest(&grid, from);
@@ -718,7 +769,6 @@ bool8_t vkr_editor_level_reachable(const VkrScene *scene, Vec3 from, Vec3 to,
     *path_count = count;
   }
   free(queue);
-  level_grid_free(&grid);
   return reached;
 }
 
@@ -729,19 +779,15 @@ float32_t vkr_editor_level_map_size(Vec3 min, Vec3 max,
   return level_grid_size(min, max, capsule, cell, out_columns, out_rows);
 }
 
-bool8_t vkr_editor_level_map(const VkrScene *scene, Vec3 min, Vec3 max,
-                             const VkrEditorLevelCapsule *capsule,
-                             const Vec3 *start, float32_t cell, char *text,
-                             float32_t *heights, uint32_t capacity,
-                             VkrEditorLevelStats *stats,
-                             bool8_t *out_start_found) {
-  LevelGrid grid;
-  if (!level_grid_build(&grid, (VkrScene *)scene, min, max, capsule, cell)) {
-    return false_v;
-  }
+bool8_t vkr_editor_level_job_map(VkrEditorLevelJob *job, const VkrScene *scene,
+                                 const Vec3 *start, char *text,
+                                 float32_t *heights, uint32_t capacity,
+                                 VkrEditorLevelStats *stats,
+                                 bool8_t *out_start_found) {
+  LevelGrid grid = job->grid;
+  grid.scene = (VkrScene *)scene;
   const size_t cells = (size_t)grid.nx * grid.nz;
   if (cells > capacity) {
-    level_grid_free(&grid);
     return false_v;
   }
   const size_t total = cells * LEVEL_LAYER_MAX;
@@ -796,7 +842,6 @@ bool8_t vkr_editor_level_map(const VkrScene *scene, Vec3 min, Vec3 max,
   if (out_start_found) {
     *out_start_found = origin >= 0;
   }
-  level_grid_free(&grid);
   return true_v;
 }
 
@@ -1429,19 +1474,53 @@ static void level_run(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       has_start = true_v;
     }
   }
-  report->found = vkr_editor_level_lint(
-      scene, report->min, report->max, &capsule, has_start ? &start : NULL,
+  /* The check samples a slice each frame (level_window_step), so a dense region
+     never stalls the Scene. */
+  vkr_editor_level_job_end(report->job);
+  report->job =
+      vkr_editor_level_job_begin(report->min, report->max, &capsule, 0.0f);
+  report->center = pose.position;
+  report->start = start;
+  report->has_start = has_start;
+  report->generation = frame->scene_generation;
+}
+
+/* Time a Level checks frame spends sampling. */
+#define LEVEL_WINDOW_STEP_SECONDS 0.004
+
+/* Samples the running check and, once every cell is sampled, turns it into
+   the report, nearest issue first. A new scene drops the check. */
+static void level_window_step(VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame) {
+  VkrEditorLevelReport *report = editor->level_report;
+  if (!report || !report->job) {
+    return;
+  }
+  const VkrScene *scene = frame->scene ? frame->scene : frame->world;
+  if (!scene || frame->scene_generation != report->generation) {
+    vkr_editor_level_job_end(report->job);
+    report->job = NULL;
+    return;
+  }
+  if (!vkr_editor_level_job_step(report->job, scene,
+                                 LEVEL_WINDOW_STEP_SECONDS)) {
+    return;
+  }
+  report->found = vkr_editor_level_job_lint(
+      report->job, scene, report->has_start ? &report->start : NULL,
       report->issues, VKR_EDITOR_LEVEL_SHOWN_MAX, &report->stats);
+  vkr_editor_level_job_end(report->job);
+  report->job = NULL;
   report->count = Min(report->found, VKR_EDITOR_LEVEL_SHOWN_MAX);
   report->checked = true_v;
   /* Nearest to the view first, by insertion. */
   for (uint32_t i = 1; i < report->count; ++i) {
     const VkrEditorLevelIssue issue = report->issues[i];
     const float32_t distance =
-        vec3_length(vec3_sub(issue.position, pose.position));
+        vec3_length(vec3_sub(issue.position, report->center));
     uint32_t j = i;
     while (j > 0u && vec3_length(vec3_sub(report->issues[j - 1u].position,
-                                          pose.position)) > distance) {
+                                          report->center)) > distance) {
       report->issues[j] = report->issues[j - 1u];
       --j;
     }
@@ -1450,9 +1529,14 @@ static void level_run(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
 }
 
 static bool8_t level_button(VkrEditorUi *editor, VkrUiSystem *ui, String8 id,
-                            String8 text, uint32_t column) {
+                            String8 text, uint32_t column, bool8_t primary,
+                            bool8_t disabled) {
   VkrUiWidgetConfig button = vkr_ui_widget_config_default();
-  vkr_editor_action_style(&button, editor->heading_font);
+  if (primary) {
+    vkr_editor_primary_style(&button, editor->heading_font);
+  } else {
+    vkr_editor_action_style(&button, editor->heading_font);
+  }
   button.placement = (VkrUiPlacement){.column = column,
                                       .row = 0u,
                                       .column_span = 1u,
@@ -1460,6 +1544,9 @@ static bool8_t level_button(VkrEditorUi *editor, VkrUiSystem *ui, String8 id,
                                       .justify = VKR_UI_ALIGN_STRETCH,
                                       .align = VKR_UI_ALIGN_CENTER,
                                       .margin_pt = {0.0f, 3.0f, 0.0f, 3.0f}};
+  button.style.padding_pt = (VkrUiEdges){3.0f, 10.0f, 3.0f, 10.0f};
+  button.style.min_size_pt.y = vkr_ui_theme()->control_height;
+  button.disabled = disabled;
   return vkr_ui_button(ui, id, text, &button);
 }
 
@@ -1472,6 +1559,7 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
   if (!report) {
     return;
   }
+  level_window_step(editor, frame);
   /* The rows that fit below the header; the summary counts the rest. */
   const float32_t body_pt = bounds.height / ui->content_scale - 52.0f;
   const uint32_t shown =
@@ -1510,7 +1598,10 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
   header.style.padding_pt = (VkrUiEdges){0};
   if (vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
     char text[200];
-    if (report->checked) {
+    if (report->job) {
+      snprintf(text, sizeof(text), "Checking 40 m around the view... %.0f%%",
+               100.0f * vkr_editor_level_job_progress(report->job));
+    } else if (report->checked) {
       snprintf(text, sizeof(text),
                "%u issue%s in 40 m around the view, nearest first",
                report->found, report->found == 1u ? "" : "s");
@@ -1529,8 +1620,10 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
     vkr_ui_label(ui, string8_lit("summary"),
                  string8_create_from_cstr((const uint8_t *)text, strlen(text)),
                  &label);
-    if (level_button(editor, ui, string8_lit("check"), string8_lit("Check"),
-                     1u)) {
+    if (level_button(editor, ui, string8_lit("check"),
+                     report->job ? string8_lit("Checking")
+                                 : string8_lit("Check"),
+                     1u, true_v, report->job != NULL)) {
       level_run(editor, frame);
     }
     (void)vkr_ui_panel_end(ui);
@@ -1577,7 +1670,7 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
           string8_create_from_cstr((const uint8_t *)text, strlen(text)),
           &label);
       if (level_button(editor, ui, string8_lit("focus"), string8_lit("Focus"),
-                       1u) &&
+                       1u, false_v, false_v) &&
           frame->view_request) {
         frame->view_request->frame_box = true_v;
         frame->view_request->frame_min =

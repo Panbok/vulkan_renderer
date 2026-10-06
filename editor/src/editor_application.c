@@ -104,6 +104,7 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
     goto cleanup;
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;
+  editor->ui.headless = editor->headless;
   const char *env_script = getenv("VKR_EDITOR_EXEC");
   if (env_script && env_script[0])
     (void)vkr_editor_cmd_enqueue(&editor->ui, env_script);
@@ -320,6 +321,9 @@ static bool8_t editor_application_shutdown(void *state,
   editor->ui.content = NULL;
   vkr_editor_agent_destroy(editor->ui.agent);
   editor->ui.agent = NULL;
+  if (editor->ui.level_report) {
+    vkr_editor_level_job_end(editor->ui.level_report->job);
+  }
   free(editor->ui.level_report);
   editor->ui.level_report = NULL;
   vkr_editor_brush_grid_destroy(&editor->ui);

@@ -132,6 +132,9 @@ struct VkrEditorOps {
      OPS_FEED_MAX`; `feed_last` is the newest sequence, zero for none. */
   OpsFeedEvent feed[OPS_FEED_MAX];
   uint64_t feed_last;
+  /* The level check the running request samples over builds; one request
+     runs at a time, so one slot. */
+  VkrEditorLevelJob *level_job;
 };
 
 typedef struct OpsContext {
@@ -5430,6 +5433,11 @@ static bool8_t ops_player_start(const VkrScene *scene, Vec3 *out) {
   return false_v;
 }
 
+/* Time a level check samples in one build: a windowed editor keeps its
+   frames smooth, and a headless one has no one watching. */
+#define OPS_LEVEL_STEP_SECONDS 0.004
+#define OPS_LEVEL_STEP_HEADLESS_SECONDS 0.050
+
 /* The arguments level.lint and level.map share: a `region` box with volume,
    its container, the capsule and the walk's start (`start`, else the first
    enabled Player Start). */
@@ -5437,10 +5445,71 @@ typedef struct OpsLevelArgs {
   Vec3 min;
   Vec3 max;
   const VkrScene *scene;
+  uint16_t container;
   VkrEditorLevelCapsule capsule;
   Vec3 start;
   bool8_t has_start;
 } OpsLevelArgs;
+
+/* A level check across builds: its arguments, the scene it samples and
+   what the finished check needs. */
+typedef struct OpsPendingLevel {
+  OpsLevelArgs level;
+  uint64_t generation;
+  uint32_t limit;
+  /* level.map */
+  float64_t cell;
+  float32_t edge;
+  uint32_t columns;
+  uint32_t rows;
+  char *text;
+  float32_t *heights;
+  /* query.reachable */
+  Vec3 from;
+  Vec3 to;
+} OpsPendingLevel;
+
+static void ops_level_end(VkrEditorOps *ops) {
+  vkr_editor_level_job_end(ops->level_job);
+  ops->level_job = NULL;
+}
+
+/* Starts the request's job over [min, max]. */
+static bool8_t ops_level_begin(OpsContext *ctx, OpsPendingLevel *pending,
+                               Vec3 min, Vec3 max, float32_t cell) {
+  ops_level_end(ctx->ops);
+  ctx->ops->level_job =
+      vkr_editor_level_job_begin(min, max, &pending->level.capsule, cell);
+  pending->generation = ctx->frame->scene_generation;
+  ctx->call->state = pending;
+  ctx->call->stage = 1u;
+  return ctx->ops->level_job
+             ? true_v
+             : ops_fail(ctx, OPS_LIMIT, "Out of memory for the check's grid");
+}
+
+typedef enum OpsLevelStep {
+  OPS_LEVEL_FAILED = 0,
+  OPS_LEVEL_WAITING,
+  OPS_LEVEL_SAMPLED,
+} OpsLevelStep;
+
+/* Samples the job for this build's share; fails when its scene left. */
+static OpsLevelStep ops_level_step(OpsContext *ctx, OpsPendingLevel *pending) {
+  const VkrScene *scene = ops_scene(ctx->frame, pending->level.container);
+  if (!ctx->ops->level_job || scene != pending->level.scene ||
+      ctx->frame->scene_generation != pending->generation) {
+    ops_fail(ctx, OPS_BUSY, "The scene changed during the check; run it again");
+    ops_level_end(ctx->ops);
+    return OPS_LEVEL_FAILED;
+  }
+  const float64_t seconds = ctx->editor->headless
+                                ? OPS_LEVEL_STEP_HEADLESS_SECONDS
+                                : OPS_LEVEL_STEP_SECONDS;
+  return vkr_editor_level_job_step(ctx->ops->level_job, scene, seconds)
+             ? OPS_LEVEL_SAMPLED
+             : OPS_LEVEL_WAITING;
+}
 
 static bool8_t ops_level_args(OpsContext *ctx, OpsLevelArgs *out) {
   const VkrBakeryJson *args = ctx->call->args;
@@ -5466,6 +5535,7 @@ static bool8_t ops_level_args(OpsContext *ctx, OpsLevelArgs *out) {
     return false_v;
   }
   out->scene = ops_scene(ctx->frame, container);
+  out->container = container;
   if (!out->has_start) {
     out->has_start = ops_player_start(out->scene, &out->start);
   }
@@ -5473,27 +5543,45 @@ static bool8_t ops_level_args(OpsContext *ctx, OpsLevelArgs *out) {
 }
 
 static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
-  const VkrBakeryJson *args = ctx->call->args;
-  OpsLevelArgs level;
-  if (!ops_level_args(ctx, &level)) {
-    return VKR_EDITOR_OP_DONE;
+  OpsPendingLevel *pending = ctx->call->state;
+  if (!ctx->call->stage) {
+    pending =
+        arena_alloc(ops_arena(ctx), sizeof(*pending), ARENA_MEMORY_TAG_STRUCT);
+    if (!pending) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      return VKR_EDITOR_OP_DONE;
+    }
+    MemZero(pending, sizeof(*pending));
+    float64_t limit = 100.0;
+    (void)ops_arg_number(ctx->call->args, "limit", &limit);
+    pending->limit = (uint32_t)vkr_clamp_f64(limit, 1.0, 500.0);
+    if (!ops_level_args(ctx, &pending->level) ||
+        !ops_level_begin(ctx, pending, pending->level.min, pending->level.max,
+                         0.0f)) {
+      return VKR_EDITOR_OP_DONE;
+    }
   }
+  const OpsLevelStep step = ops_level_step(ctx, pending);
+  if (step != OPS_LEVEL_SAMPLED) {
+    return step == OPS_LEVEL_WAITING ? VKR_EDITOR_OP_WAIT : VKR_EDITOR_OP_DONE;
+  }
+  const OpsLevelArgs level = pending->level;
   const VkrScene *scene = level.scene;
   const Vec3 start = level.start;
   const bool8_t has_start = level.has_start;
-  float64_t limit = 100.0;
-  (void)ops_arg_number(args, "limit", &limit);
-  const uint32_t capacity = (uint32_t)vkr_clamp_f64(limit, 1.0, 500.0);
+  const uint32_t capacity = pending->limit;
   VkrEditorLevelIssue *issues = arena_alloc(
       ops_arena(ctx), capacity * sizeof(*issues), ARENA_MEMORY_TAG_STRUCT);
   if (!issues) {
+    ops_level_end(ctx->ops);
     ops_fail(ctx, OPS_LIMIT, "Out of request memory");
     return VKR_EDITOR_OP_DONE;
   }
   VkrEditorLevelStats stats = {0};
-  const uint32_t found = vkr_editor_level_lint(
-      scene, level.min, level.max, &level.capsule, has_start ? &start : NULL,
-      issues, capacity, &stats);
+  const uint32_t found = vkr_editor_level_job_lint(ctx->ops->level_job, scene,
+                                                   has_start ? &start : NULL,
+                                                   issues, capacity, &stats);
+  ops_level_end(ctx->ops);
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *list = vkr_bakery_json_array(arena);
   for (uint32_t i = 0; i < Min(found, capacity); ++i) {
@@ -5541,45 +5629,74 @@ static VkrEditorOpStatus ops_run_lint(OpsContext *ctx) {
    agent reads as text. */
 static VkrEditorOpStatus ops_run_map(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
-  OpsLevelArgs level;
-  if (!ops_level_args(ctx, &level)) {
-    return VKR_EDITOR_OP_DONE;
-  }
-  float64_t cell =
-      (float64_t)Max(level.max.x - level.min.x, level.max.z - level.min.z) /
-      (float64_t)OPS_MAP_SIDE_DEFAULT;
-  (void)ops_arg_number(args, "cell", &cell);
-  if (!(cell > 0.0)) {
-    ops_fail(ctx, OPS_INVALID, "'cell' must be positive");
-    return VKR_EDITOR_OP_DONE;
-  }
-  uint32_t columns = 0u;
-  uint32_t rows = 0u;
-  const float32_t edge = vkr_editor_level_map_size(
-      level.min, level.max, &level.capsule, (float32_t)cell, &columns, &rows);
-  if (columns > OPS_MAP_SIDE_MAX || rows > OPS_MAP_SIDE_MAX) {
-    ops_fail(ctx, OPS_LIMIT,
-             "A map of %u by %u cells of %.2f m passes %u a side; raise "
-             "'cell' or split the region",
-             columns, rows, (float64_t)edge, OPS_MAP_SIDE_MAX);
-    return VKR_EDITOR_OP_DONE;
-  }
   Arena *arena = ops_arena(ctx);
-  const uint32_t cells = columns * rows;
-  const bool8_t want_heights = ops_arg_bool(args, "heights", false_v);
-  char *text = arena_alloc(arena, cells, ARENA_MEMORY_TAG_STRING);
-  float32_t *heights = want_heights
+  OpsPendingLevel *pending = ctx->call->state;
+  if (!ctx->call->stage) {
+    pending = arena_alloc(arena, sizeof(*pending), ARENA_MEMORY_TAG_STRUCT);
+    if (!pending) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      return VKR_EDITOR_OP_DONE;
+    }
+    MemZero(pending, sizeof(*pending));
+    if (!ops_level_args(ctx, &pending->level)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    const OpsLevelArgs *level = &pending->level;
+    pending->cell = (float64_t)Max(level->max.x - level->min.x,
+                                   level->max.z - level->min.z) /
+                    (float64_t)OPS_MAP_SIDE_DEFAULT;
+    (void)ops_arg_number(args, "cell", &pending->cell);
+    if (!(pending->cell > 0.0)) {
+      ops_fail(ctx, OPS_INVALID, "'cell' must be positive");
+      return VKR_EDITOR_OP_DONE;
+    }
+    pending->edge = vkr_editor_level_map_size(
+        level->min, level->max, &level->capsule, (float32_t)pending->cell,
+        &pending->columns, &pending->rows);
+    if (pending->columns > OPS_MAP_SIDE_MAX ||
+        pending->rows > OPS_MAP_SIDE_MAX) {
+      ops_fail(ctx, OPS_LIMIT,
+               "A map of %u by %u cells of %.2f m passes %u a side; raise "
+               "'cell' or split the region",
+               pending->columns, pending->rows, (float64_t)pending->edge,
+               OPS_MAP_SIDE_MAX);
+      return VKR_EDITOR_OP_DONE;
+    }
+    const uint32_t cells = pending->columns * pending->rows;
+    pending->text = arena_alloc(arena, cells, ARENA_MEMORY_TAG_STRING);
+    pending->heights = ops_arg_bool(args, "heights", false_v)
                            ? arena_alloc(arena, sizeof(float32_t) * cells,
                                          ARENA_MEMORY_TAG_ARRAY)
                            : NULL;
+    if (!pending->text ||
+        (ops_arg_bool(args, "heights", false_v) && !pending->heights)) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!ops_level_begin(ctx, pending, level->min, level->max,
+                         (float32_t)pending->cell)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+  const OpsLevelStep step = ops_level_step(ctx, pending);
+  if (step != OPS_LEVEL_SAMPLED) {
+    return step == OPS_LEVEL_WAITING ? VKR_EDITOR_OP_WAIT : VKR_EDITOR_OP_DONE;
+  }
+  const OpsLevelArgs level = pending->level;
+  const uint32_t columns = pending->columns;
+  const uint32_t rows = pending->rows;
+  const float32_t edge = pending->edge;
+  const uint32_t cells = columns * rows;
+  char *text = pending->text;
+  float32_t *heights = pending->heights;
   VkrEditorLevelStats stats = {0};
   bool8_t start_found = false_v;
-  if (!text || (want_heights && !heights) ||
-      !vkr_editor_level_map(level.scene, level.min, level.max, &level.capsule,
-                            level.has_start ? &level.start : NULL,
-                            (float32_t)cell, text, heights, cells, &stats,
-                            &start_found)) {
-    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  const bool8_t mapped = vkr_editor_level_job_map(
+      ctx->ops->level_job, level.scene, level.has_start ? &level.start : NULL,
+      text, heights, cells, &stats, &start_found);
+  ops_level_end(ctx->ops);
+  if (!mapped) {
+    ops_fail(ctx, OPS_LIMIT, "The map's grid outgrew its text");
     return VKR_EDITOR_OP_DONE;
   }
   VkrBakeryJson *lines = vkr_bakery_json_array(arena);
@@ -5630,30 +5747,47 @@ static VkrEditorOpStatus ops_run_map(OpsContext *ctx) {
 
 static VkrEditorOpStatus ops_run_reachable(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
-  Vec3 from = {0};
-  Vec3 to = {0};
-  bool8_t has_from = false_v;
-  bool8_t has_to = false_v;
-  uint16_t container = 0u;
-  VkrEditorLevelCapsule capsule;
-  if (!ops_arg_vec3(ctx, args, "from", &from, &has_from) ||
-      !ops_arg_vec3(ctx, args, "to", &to, &has_to) ||
-      !ops_arg_container(ctx, args, &container) ||
-      !ops_arg_capsule(ctx, args, &capsule)) {
-    return VKR_EDITOR_OP_DONE;
+  OpsPendingLevel *pending = ctx->call->state;
+  if (!ctx->call->stage) {
+    pending =
+        arena_alloc(ops_arena(ctx), sizeof(*pending), ARENA_MEMORY_TAG_STRUCT);
+    if (!pending) {
+      ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+      return VKR_EDITOR_OP_DONE;
+    }
+    MemZero(pending, sizeof(*pending));
+    bool8_t has_from = false_v;
+    bool8_t has_to = false_v;
+    if (!ops_arg_vec3(ctx, args, "from", &pending->from, &has_from) ||
+        !ops_arg_vec3(ctx, args, "to", &pending->to, &has_to) ||
+        !ops_arg_container(ctx, args, &pending->level.container) ||
+        !ops_arg_capsule(ctx, args, &pending->level.capsule)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!has_from || !has_to) {
+      ops_fail(ctx, OPS_INVALID,
+               "query.reachable needs floor points 'from' and 'to'");
+      return VKR_EDITOR_OP_DONE;
+    }
+    pending->level.scene = ops_scene(ctx->frame, pending->level.container);
+    Vec3 min = {0};
+    Vec3 max = {0};
+    vkr_editor_level_reachable_region(pending->from, pending->to, &min, &max);
+    if (!ops_level_begin(ctx, pending, min, max, 0.0f)) {
+      return VKR_EDITOR_OP_DONE;
+    }
   }
-  if (!has_from || !has_to) {
-    ops_fail(ctx, OPS_INVALID,
-             "query.reachable needs floor points 'from' "
-             "and 'to'");
-    return VKR_EDITOR_OP_DONE;
+  const OpsLevelStep step = ops_level_step(ctx, pending);
+  if (step != OPS_LEVEL_SAMPLED) {
+    return step == OPS_LEVEL_WAITING ? VKR_EDITOR_OP_WAIT : VKR_EDITOR_OP_DONE;
   }
   Vec3 path[512];
   uint32_t count = 0u;
   float32_t length = 0.0f;
-  const bool8_t reached = vkr_editor_level_reachable(
-      ops_scene(ctx->frame, container), from, to, &capsule, path,
-      ArrayCount(path), &count, &length);
+  const bool8_t reached = vkr_editor_level_job_reachable(
+      ctx->ops->level_job, pending->level.scene, pending->from, pending->to,
+      path, ArrayCount(path), &count, &length);
+  ops_level_end(ctx->ops);
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *points = vkr_bakery_json_array(arena);
   /* At most 32 points along the route. */
@@ -8510,6 +8644,7 @@ void vkr_editor_ops_destroy(VkrEditorOps *ops) {
   if (!ops) {
     return;
   }
+  ops_level_end(ops);
   free(ops->items);
   free(ops);
 }

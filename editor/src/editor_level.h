@@ -59,22 +59,6 @@ typedef struct VkrEditorLevelStats {
 /* The engine's default character capsule. */
 VkrEditorLevelCapsule vkr_editor_level_capsule_default(void);
 
-/* Checks the region [min, max] of `scene` and writes up to `capacity`
-   issues, nearby duplicates merged; returns how many it found. With `start`,
-   walkable areas the start cannot reach are reported. */
-uint32_t vkr_editor_level_lint(const VkrScene *scene, Vec3 min, Vec3 max,
-                               const VkrEditorLevelCapsule *capsule,
-                               const Vec3 *start, VkrEditorLevelIssue *out,
-                               uint32_t capacity, VkrEditorLevelStats *stats);
-
-/* Whether a capsule standing at `from` can walk to `to` inside the region
-   both points span, padded by 16 m. Writes up to `path_capacity` floor
-   points of one route and its length. */
-bool8_t vkr_editor_level_reachable(const VkrScene *scene, Vec3 from, Vec3 to,
-                                   const VkrEditorLevelCapsule *capsule,
-                                   Vec3 *path, uint32_t path_capacity,
-                                   uint32_t *path_count, float32_t *length);
-
 /* The cell edge and the columns and rows a level map of [min, max] with
    cells of at least `cell` gets. */
 float32_t vkr_editor_level_map_size(Vec3 min, Vec3 max,
@@ -82,21 +66,52 @@ float32_t vkr_editor_level_map_size(Vec3 min, Vec3 max,
                                     float32_t cell, uint32_t *out_columns,
                                     uint32_t *out_rows);
 
-/* A text map of the region [min, max] for agents (level.map): one character
-   for each grid cell, row by row from min z, each row running +x, as a top
-   capture shows it. A cell shows its highest walkable floor, else its
-   highest floor: '.' walkable (and reached from `start` when one is
-   given), ',' walkable but out of reach, 'S' the start, '#' too close to a
-   wall for the capsule, 'n' a gap narrower than the capsule, '_' a ceiling
-   too low, '/' too steep and '-' no floor. `heights`, when not NULL,
-   receives each shown floor's world y, NAN where none. False when the grid
-   needs more than `capacity` cells. */
-bool8_t vkr_editor_level_map(const VkrScene *scene, Vec3 min, Vec3 max,
-                             const VkrEditorLevelCapsule *capsule,
-                             const Vec3 *start, float32_t cell, char *text,
-                             float32_t *heights, uint32_t capacity,
-                             VkrEditorLevelStats *stats,
-                             bool8_t *out_start_found);
+/* A level check spread over builds (ADR-084): a job samples a slice of its
+   grid's cells each step, so a large region never stalls a frame, then one
+   finisher reads the grid, once, after a step returned true. The caller
+   owns the job until vkr_editor_level_job_end.
+
+   The finishers: _lint writes up to `capacity` issues of the region, nearby
+   duplicates merged, and returns how many it found; with `start`, walkable
+   areas the start cannot reach count too. _reachable says whether a capsule
+   at `from` walks to `to` and writes up to `path_capacity` floor points of
+   one route and its length; its job covers
+   vkr_editor_level_reachable_region. _map writes the text map
+   (level.map): one character a cell, row by row from min z, each row
+   running +x, as a top capture shows it. A cell shows its highest walkable
+   floor, else its highest floor: '.' walkable (and reached from `start`
+   when one is given), ',' walkable but out of reach, 'S' the start, '#'
+   too close to a wall, 'n' a gap narrower than the capsule, '_' a ceiling
+   too low, '/' too steep and '-' no floor; `heights`, when not NULL,
+   receives each shown floor's world y, NAN where none; false when the grid
+   holds more than `capacity` cells. */
+typedef struct VkrEditorLevelJob VkrEditorLevelJob;
+
+VkrEditorLevelJob *vkr_editor_level_job_begin(
+    Vec3 min, Vec3 max, const VkrEditorLevelCapsule *capsule, float32_t cell);
+/* Samples cells for about `seconds`; true once every cell is sampled. */
+bool8_t vkr_editor_level_job_step(VkrEditorLevelJob *job, const VkrScene *scene,
+                                  float64_t seconds);
+/* The share of cells sampled, 0 to 1. */
+float32_t vkr_editor_level_job_progress(const VkrEditorLevelJob *job);
+uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
+                                   const VkrScene *scene, const Vec3 *start,
+                                   VkrEditorLevelIssue *out, uint32_t capacity,
+                                   VkrEditorLevelStats *stats);
+bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
+                                       const VkrScene *scene, Vec3 from,
+                                       Vec3 to, Vec3 *path,
+                                       uint32_t path_capacity,
+                                       uint32_t *path_count, float32_t *length);
+bool8_t vkr_editor_level_job_map(VkrEditorLevelJob *job, const VkrScene *scene,
+                                 const Vec3 *start, char *text,
+                                 float32_t *heights, uint32_t capacity,
+                                 VkrEditorLevelStats *stats,
+                                 bool8_t *out_start_found);
+void vkr_editor_level_job_end(VkrEditorLevelJob *job);
+/* The region query.reachable samples between two floor points. */
+void vkr_editor_level_reachable_region(Vec3 from, Vec3 to, Vec3 *out_min,
+                                       Vec3 *out_max);
 
 const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind);
 
@@ -143,6 +158,14 @@ typedef struct VkrEditorLevelReport {
   uint32_t count;
   VkrEditorLevelIssue issues[VKR_EDITOR_LEVEL_SHOWN_MAX];
   VkrEditorLevelStats stats;
+  /* A check in progress: its job, sampled a slice each frame while the
+     window shows, the view point issues sort by, the walk's start and the
+     scene generation it samples. The report owns the job. */
+  VkrEditorLevelJob *job;
+  Vec3 center;
+  Vec3 start;
+  bool8_t has_start;
+  uint64_t generation;
 } VkrEditorLevelReport;
 
 /* The report the Level checks window and overlay share, created on first
