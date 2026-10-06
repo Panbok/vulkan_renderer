@@ -134,11 +134,22 @@ in 28 s instead of 26 s. Locked open borders and the lightmap's chart seams
 stop most of its ranges after one to three levels: without a lightmap the same
 model reaches level 2 with 1.08 million indices instead of 0.83 million.
 
+Simplifying a source mesh's primitives together, with one selection sphere
+per group so its rows switch level at once, unlocks the borders between
+them without cracks. It was built and dropped (2026-10-06) because Bistro
+gains nothing: each of its meshes has one primitive, and grouping the
+per-material meshes that always share a transform would unlock 2.5% of its
+open-border vertices. The rest are true open edges of cards, petals and open
+shells. Unlocking every open border, the ceiling of any grouping, saved
+0.3 ms of `Tiled.Opaque` p95 and up to 0.2 ms per cascade but visibly thinned
+alpha-tested petals ([evidence](#evidence)).
+
 ## Revisit when
 
 A camera threshold other than one pixel is wanted per quality preset, shadow
-views need morphing, or a source mesh's primitives should simplify together so
-the borders between them unlock.
+views need morphing, or meshes whose primitives, or per-material meshes
+sharing one transform, meet along their borders carry a large share of a
+scene's triangles.
 
 ## Evidence
 
@@ -234,5 +245,28 @@ the borders between them unlock.
   median from `Tiled.Opaque`; pruning alone moved cascade 3 from 1.20 to
   0.91 ms. Both capture cases pass under Metal API validation with the
   levels published.
+- Border unlocking, Release, M1 Pro (2026-10-06): `bistro-lights.gltf` places
+  551 single-primitive meshes on 5,982 nodes. Of its 404,551 open-border
+  vertices, counted per mesh in position space, 10,104 lie on the border of
+  another mesh that every node places with the same transform (35 groups).
+  A diagnostic cook of lightmapped Bistro without meshoptimizer's border
+  lock alternated with the locked levels on one build, two runs each
+  (`local-windowed-gpu-single`, median / p95): `Tiled.Opaque` in
+  `tiled_bistro_baked_native` went from 7.44 / 11.55 ms (both runs) to
+  7.25 / 11.23 and 7.32 / 11.23 ms, and in `tiled_bistro_baked_dynamic_native`
+  from 9.29 / 16.55 and 9.34 / 16.58 ms to 9.09 / 16.26 and 9.08 / 16.16 ms.
+  In the native case cascade 0 went from 1.13 to 1.02 to 1.04 ms and
+  cascade 3 from 0.85 to 0.64 ms. Its `tiled_bistro_baked_capture` differs in
+  3,891 pixels by more than 2 of 255: flower baskets lose petals, and thin
+  frames shift by a pixel. Reports, locked then unlocked: native
+  `sha256:9eaffc00325b59c9c51d1f78cb72c1bdb35238aa8662f4fb4ae558f819319d77`,
+  `sha256:5a08c00e519459de551ec8b2acd9ce54ed29a4cb367c83c66cf9ea3e2c2442d0`,
+  `sha256:7649960cfc46b58eb8c6def165dab825693f9e86f1e363985287a9fe51ff5472`,
+  `sha256:155a9ca783bd9dc30862a22f4588a8a89c3295363e4985d03dc0492043fe2b91`;
+  dynamic
+  `sha256:8ba5dd4c39c21826598325c6138a3fb4e6dc2dd7b847b4d41f01135239d3c08e`,
+  `sha256:fcf79f6e8841ea2a9030225613b42c922fab9ea9164f1f515211675d90b5a08e`,
+  `sha256:7ffa586e183ea765a446a691edf60b6933d35a6d6055cb9446a3d022b37ecb2d`,
+  `sha256:7429d8809e20a66ef8c68f999daaad518f8600860b12dfa27cd68a3ca2ced1eb`.
 - A Metal/Vulkan comparison and native Vulkan execution of cooked levels are
   unverified.

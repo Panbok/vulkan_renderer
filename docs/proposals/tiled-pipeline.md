@@ -240,8 +240,10 @@ Remaining phases:
 3. Cooked mesh LOD: implemented
    ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels));
    the tiled native orbit takes 11.3 ms median and 15.5 ms p95 with it.
-   Remaining: simplifying a source mesh's primitives together, so the
-   borders between them unlock. Before the levels, a
+   Bistro's levels stop at true open borders; unlocking them would save
+   at most 0.3 ms of `Tiled.Opaque` p95 and thin alpha-tested petals
+   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md#alternatives-considered)).
+   Before the levels, a
    diagnostic that drew only the first half of every index range
    (2026-10-06, Release, M1 Pro, the tiled native cases alternating with
    the unchanged build twice, incomplete image) lowered `Tiled.Opaque` from
