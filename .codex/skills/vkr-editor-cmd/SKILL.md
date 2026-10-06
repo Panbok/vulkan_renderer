@@ -62,18 +62,9 @@ see the result. Windows uses the same AF_UNIX socket, but Python's `socket`
 module there has no `AF_UNIX`, so script it through `vkr_mcp`.
 
 Name yourself with `agent` (or `--agent`) so your changes carry an author and
-`undo` takes only your own batches; to drop another step, `changes.reject`
-its change. Beside other agents, `claims.set` your region before building
-(writes into another agent's claim fail with `VKR-AGENT-0010`) and read
-`changes.feed` from the last `next` to see their work. Raycasts, `query.reachable`, `query.bounds`, `level.lint`,
-`level.map` and captures wait for rebuilds of earlier edits; a result with
-`"settled": false` read a scene that was still rebuilding, so repeat it
-before relying on it. Add `"settle": true` to a write to get each entity's
-world bounds and build status in its answer. Check layouts with
-`level.map` and queries before captures, and lint regions of 76 m or less
-for 0.3 m cells. A capture takes `max_width`, up to four `views` in one
-sheet, and world `marks` drawn as numbered crosses with their pixels in the
-answer.
+`undo` takes only your own batches. Reads of collision or built geometry
+wait for rebuilds of earlier edits; repeat a result with `"settled": false`.
+To build or check a level through the channel, follow `vkr-level-design`.
 
 ## Read results
 
