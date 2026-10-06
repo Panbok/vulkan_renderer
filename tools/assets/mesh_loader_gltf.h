@@ -2,8 +2,8 @@
 
 #include "assets/vkr_mesh_skin.h"
 #include "assets/vkr_mesh_source.h"
+#include "containers/array.h"
 #include "containers/str.h"
-#include "containers/vector.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 #include "vkr_buffer.h"
@@ -62,10 +62,10 @@ typedef struct VkrMeshLoaderGltfParseInfo {
   void *user_data;           // User-defined data to pass to the callback.
   VkrMeshSource *out_source; // Required for local-space node-preserving import.
   VkrMeshSkinData *out_skin; // Optional result-arena metadata; no vertex array.
-  Vector_String8 *out_dependency_paths; // The paths to the dependency files.
-  Vector_String8 *out_generated_material_paths; // The paths to the generated
-                                                // material files.
-  Vector_String8 *out_generated_asset_paths;    // Persistent derived textures.
+  Array_String8 *out_dependency_paths; // The paths to the dependency files.
+  Array_String8 *out_generated_material_paths; // The paths to the generated
+                                               // material files.
+  Array_String8 *out_generated_asset_paths;    // Persistent derived textures.
   // Materials keep their factors and name no textures; nothing is converted,
   // baked or recorded as a texture dependency. A scene can open at once and
   // gain its textures from a later cook.

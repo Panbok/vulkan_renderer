@@ -59,6 +59,5 @@
 #include "transform_test.h"
 #include "ui_layout_test.h"
 #include "vec_test.h"
-#include "vector_test.h"
 #include "visibility_test.h"
 #include "vulkan_test.h"

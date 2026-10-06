@@ -31,8 +31,7 @@ vkr_vk_deferred_image(VkrVulkanRenderer *renderer, VkrRgImageHandle handle) {
 vkr_internal VkrVulkanGraphImage *
 vkr_vk_temporal_graph_image(VkrVulkanRenderer *renderer, const char *name) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (image && image->declared_this_frame &&
         vkr_string8_equals_cstr(&image->name, name))
       return &renderer->graph_images[i];

@@ -40,7 +40,9 @@ typedef struct VkrGeometrySystem {
 
   const VkrAssetPublisher *asset_publisher;
 
-  // Geometry storage and ID free list
+  // Geometry storage and ID free list. The geometries are a slot table:
+  // sized once at init and never grown, so element pointers stay valid
+  // until shutdown.
   Array_VkrGeometry geometries;
   Array_uint32_t free_ids; // stack of free indices
   uint32_t free_count;

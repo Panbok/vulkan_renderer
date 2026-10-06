@@ -61,7 +61,9 @@ typedef struct VkrTextureSystem {
   VkrTextureSystemConfig config;
   const VkrAssetPublisher *asset_publisher;
 
-  Array_VkrTexture textures; // contiguous array of textures
+  // Slot table: sized once at init and never grown, so element pointers
+  // stay valid until shutdown.
+  Array_VkrTexture textures;
   VkrHashTable_VkrTextureEntry
       texture_map;                    // name -> ref (index, refcount, flags)
   const char **texture_keys_by_index; // slot index -> stable texture-map key

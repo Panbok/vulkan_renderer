@@ -238,7 +238,7 @@ static uint64_t gltf_test_hash_file_bytes(const char *path) {
   return hash;
 }
 
-static bool8_t gltf_test_vector_contains_path(Vector_String8 *paths,
+static bool8_t gltf_test_vector_contains_path(Array_String8 *paths,
                                               const char *path_cstr) {
   if (!paths || !path_cstr) {
     return false_v;
@@ -247,7 +247,7 @@ static bool8_t gltf_test_vector_contains_path(Vector_String8 *paths,
   String8 expected = string8_create_from_cstr((const uint8_t *)path_cstr,
                                               string_length(path_cstr));
   for (uint64_t i = 0; i < paths->length; ++i) {
-    String8 *value = vector_get_String8(paths, i);
+    String8 *value = array_get_String8(paths, i);
     if (value && string8_equalsi(value, &expected)) {
       return true_v;
     }
@@ -567,7 +567,7 @@ gltf_test_run_decal_case(const char *stem, const Vec3 *normal,
   GltfImporterTestCapture capture = {.allocator = &allocator};
   VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
       &allocator, &scratch, gltf_path, &error, &capture);
-  Vector_String8 dependencies = vector_create_String8(&allocator);
+  Array_String8 dependencies = array_create_String8(&allocator, 16);
   parse_info.out_dependency_paths = &dependencies;
   const bool8_t parsed = vkr_mesh_loader_gltf_parse(&parse_info);
   GltfDecalCaseResult result = {
@@ -577,7 +577,7 @@ gltf_test_run_decal_case(const char *stem, const Vec3 *normal,
       .position_count = capture.first_position_count,
   };
   for (uint64_t i = 0; i < dependencies.length; ++i) {
-    String8 *dependency = vector_get_String8(&dependencies, i);
+    String8 *dependency = array_get_String8(&dependencies, i);
     if (dependency && dependency->length == strlen(sidecar_path) &&
         MemCompare(dependency->str, sidecar_path, dependency->length) == 0) {
       result.sidecar_dependency = true_v;
@@ -1203,8 +1203,8 @@ static void test_gltf_import_collects_external_dependencies(void) {
   assert(vkr_allocator_arena(&allocator));
   assert(vkr_allocator_arena(&scratch_allocator));
 
-  Vector_String8 dependency_paths = vector_create_String8(&allocator);
-  Vector_String8 generated_material_paths = vector_create_String8(&allocator);
+  Array_String8 dependency_paths = array_create_String8(&allocator, 16);
+  Array_String8 generated_material_paths = array_create_String8(&allocator, 16);
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   GltfImporterTestCapture capture = {.allocator = &allocator};
   VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
@@ -1288,8 +1288,8 @@ test_gltf_import_generate_materials_regenerates_missing_files(void) {
   assert(vkr_allocator_arena(&allocator));
   assert(vkr_allocator_arena(&scratch_allocator));
 
-  Vector_String8 dependency_paths = vector_create_String8(&allocator);
-  Vector_String8 generated_material_paths = vector_create_String8(&allocator);
+  Array_String8 dependency_paths = array_create_String8(&allocator, 16);
+  Array_String8 generated_material_paths = array_create_String8(&allocator, 16);
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
       &allocator, &scratch_allocator, gltf_path, &error, NULL);
@@ -1310,8 +1310,8 @@ test_gltf_import_generate_materials_regenerates_missing_files(void) {
   gltf_test_remove_file(mt_path);
   assert(gltf_test_file_exists(mt_path) == false_v);
 
-  vector_clear_String8(&dependency_paths);
-  vector_clear_String8(&generated_material_paths);
+  array_clear_String8(&dependency_paths);
+  array_clear_String8(&generated_material_paths);
   error = VKR_RENDERER_ERROR_NONE;
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
   assert(error == VKR_RENDERER_ERROR_NONE);
@@ -1562,8 +1562,8 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   assert(vkr_allocator_arena(&allocator));
   assert(vkr_allocator_arena(&scratch_allocator));
 
-  Vector_String8 dependency_paths = vector_create_String8(&allocator);
-  Vector_String8 generated_asset_paths = vector_create_String8(&allocator);
+  Array_String8 dependency_paths = array_create_String8(&allocator, 16);
+  Array_String8 generated_asset_paths = array_create_String8(&allocator, 16);
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   GltfImporterTestCapture capture = {.allocator = &allocator};
   VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
@@ -1611,10 +1611,10 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   assert(stbi_write_png(diffuse_path, 2, 1, 4, diffuse_alpha_texels, 8) != 0);
   assert(stbi_write_png(spec_gloss_path, 2, 1, 4, spec_gloss_uniform_texels,
                         8) != 0);
-  vector_clear_String8(&generated_asset_paths);
+  array_clear_String8(&generated_asset_paths);
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
   assert(generated_asset_paths.length == 1u);
-  String8 mixed_base = *vector_get_String8(&generated_asset_paths, 0u);
+  String8 mixed_base = *array_get_String8(&generated_asset_paths, 0u);
   assert(string8_contains_cstr(&mixed_base, "/basecolor_") == true_v);
   String8 mixed_contents = {0};
   assert(gltf_test_read_file_text(&allocator, mt_path, &mixed_contents) ==
@@ -1638,10 +1638,10 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   assert(stbi_write_png(diffuse_path, 2, 1, 4, diffuse_uniform_texels, 8) != 0);
   assert(stbi_write_png(spec_gloss_path, 2, 1, 4, spec_gloss_alpha_texels, 8) !=
          0);
-  vector_clear_String8(&generated_asset_paths);
+  array_clear_String8(&generated_asset_paths);
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
   assert(generated_asset_paths.length == 1u);
-  String8 mixed_mr = *vector_get_String8(&generated_asset_paths, 0u);
+  String8 mixed_mr = *array_get_String8(&generated_asset_paths, 0u);
   assert(string8_contains_cstr(&mixed_mr, "/metalrough_") == true_v);
   mixed_contents = (String8){0};
   assert(gltf_test_read_file_text(&allocator, mt_path, &mixed_contents) ==
@@ -1666,14 +1666,14 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   assert(stbi_write_png(diffuse_path, 2, 1, 4, diffuse_texels, 8) != 0);
   assert(stbi_write_png(spec_gloss_path, 2, 1, 4, spec_gloss_texels, 8) != 0);
 
-  vector_clear_String8(&generated_asset_paths);
+  array_clear_String8(&generated_asset_paths);
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
   assert(generated_asset_paths.length == 2u);
 
   String8 generated_base = {0};
   String8 generated_mr = {0};
   for (uint64_t i = 0; i < generated_asset_paths.length; ++i) {
-    String8 *path = vector_get_String8(&generated_asset_paths, i);
+    String8 *path = array_get_String8(&generated_asset_paths, i);
     if (path && string8_contains_cstr(path, "/basecolor_")) {
       generated_base = *path;
     } else if (path && string8_contains_cstr(path, "/metalrough_")) {
@@ -1734,7 +1734,7 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   assert(MemCompare(prepared_mr, prepared_mr + 4, 4u) != 0);
   stbi_image_free(prepared_mr);
 
-  vector_clear_String8(&generated_asset_paths);
+  array_clear_String8(&generated_asset_paths);
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
   assert(generated_asset_paths.length == 2u);
   assert(gltf_test_vector_contains_path(&generated_asset_paths,
@@ -1751,7 +1751,7 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   snprintf(generated_mr_temp_path, sizeof(generated_mr_temp_path), "%s.tmp.%u",
            generated_mr_path, vkr_platform_get_process_id());
   assert(gltf_test_make_dir(generated_mr_temp_path) == true_v);
-  vector_clear_String8(&generated_asset_paths);
+  array_clear_String8(&generated_asset_paths);
   error = VKR_RENDERER_ERROR_NONE;
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == false_v);
   assert(error == VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED);
@@ -1886,7 +1886,7 @@ static void test_gltf_import_bakes_cutout_texture_variants(void) {
   VkrAllocator scratch_allocator = {.ctx = scratch_arena};
   assert(vkr_allocator_arena(&allocator));
   assert(vkr_allocator_arena(&scratch_allocator));
-  Vector_String8 generated_assets = vector_create_String8(&allocator);
+  Array_String8 generated_assets = array_create_String8(&allocator, 16);
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
       &allocator, &scratch_allocator, gltf_path, &error, NULL);
@@ -1898,7 +1898,7 @@ static void test_gltf_import_bakes_cutout_texture_variants(void) {
   String8 variant_quarter = {0};
   String8 variant_three_quarters = {0};
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
-    String8 *path = vector_get_String8(&generated_assets, i);
+    String8 *path = array_get_String8(&generated_assets, i);
     assert(path != NULL);
     if (string8_contains_cstr(path, "cutoff_3e800000")) {
       variant_quarter = *path;
@@ -1939,7 +1939,7 @@ static void test_gltf_import_bakes_cutout_texture_variants(void) {
   assert(strstr((const char *)material[4].str, source_reference) != NULL);
 
   const String8 first_material = material[0];
-  vector_clear_String8(&generated_assets);
+  array_clear_String8(&generated_assets);
   error = VKR_RENDERER_ERROR_NONE;
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
   assert(error == VKR_RENDERER_ERROR_NONE);
@@ -2106,7 +2106,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   VkrAllocator scratch_allocator = {.ctx = scratch_arena};
   assert(vkr_allocator_arena(&allocator));
   assert(vkr_allocator_arena(&scratch_allocator));
-  Vector_String8 generated_assets = vector_create_String8(&allocator);
+  Array_String8 generated_assets = array_create_String8(&allocator, 16);
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
       &allocator, &scratch_allocator, gltf_path, &error, NULL);
@@ -2121,7 +2121,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   String8 rougher_metallic_roughness = {0};
   String8 factor_only_metallic_roughness = {0};
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
-    String8 *path = vector_get_String8(&generated_assets, i);
+    String8 *path = array_get_String8(&generated_assets, i);
     assert(path != NULL);
     assert(string8_contains_cstr(path, "normalrough_v2") == true_v);
     if (string8_contains_cstr(path, "scale_3f000000_factor_3e800000") &&
@@ -2220,9 +2220,9 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   const String8 first_material = materials[0];
   String8 first_generated_assets[6] = {0};
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
-    first_generated_assets[i] = *vector_get_String8(&generated_assets, i);
+    first_generated_assets[i] = *array_get_String8(&generated_assets, i);
   }
-  vector_clear_String8(&generated_assets);
+  array_clear_String8(&generated_assets);
   error = VKR_RENDERER_ERROR_NONE;
   assert(vkr_mesh_loader_gltf_generate_materials(&parse_info));
   assert(error == VKR_RENDERER_ERROR_NONE);
@@ -2239,7 +2239,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
                     first_material.length) == 0);
 
   for (uint64_t i = 0; i < generated_assets.length; ++i) {
-    String8 *path = vector_get_String8(&generated_assets, i);
+    String8 *path = array_get_String8(&generated_assets, i);
     char absolute_path[1200];
     snprintf(absolute_path, sizeof(absolute_path), "%s%.*s", PROJECT_SOURCE_DIR,
              (int32_t)path->length, path->str);

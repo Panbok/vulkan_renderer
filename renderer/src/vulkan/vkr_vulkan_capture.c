@@ -85,7 +85,7 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
       return false_v;
 
     const VkrRgImage *graph_image =
-        vector_get_VkrRgImage(&renderer->graph->images, handle.id - 1u);
+        array_get_VkrRgImage(&renderer->graph->images, handle.id - 1u);
     VkrTextureFormatInfo format_info = {0};
     if (!graph_image ||
         !vkr_texture_format_get_info(graph_image->desc.format, &format_info) ||
@@ -164,7 +164,7 @@ bool8_t vkr_vk_prepare_capture(VkrVulkanRenderer *renderer,
         renderer, handle, renderer->prepared_frame.image_index);
     const VkrRgImage *graph_image =
         vkr_rg_image_handle_valid(handle)
-            ? vector_get_VkrRgImage(&renderer->graph->images, handle.id - 1u)
+            ? array_get_VkrRgImage(&renderer->graph->images, handle.id - 1u)
             : NULL;
     const VkrCaptureBackendItemPlan *plan = &slot->capture_plans[i];
     /* A layer or mip capture copies that subresource, whose terminal layout

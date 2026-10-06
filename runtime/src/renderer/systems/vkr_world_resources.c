@@ -147,7 +147,7 @@ bool8_t vkr_world_resources_init(VkrRenderAssets *assets,
     return false_v;
   }
   MemZero(resources, sizeof(*resources));
-  resources->text_slots = array_create_VkrWorldTextSlot(
+  resources->text_slots = array_create_filled_VkrWorldTextSlot(
       &assets->allocator, VKR_WORLD_RESOURCES_MAX_TEXTS);
   if (!resources->text_slots.data) {
     return false_v;

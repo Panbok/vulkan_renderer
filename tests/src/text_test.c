@@ -154,6 +154,44 @@ vkr_internal void test_text_measurement(void) {
   printf("  test_text_measurement PASSED\n");
 }
 
+/* Legacy glyphs resolve through the sorted codepoint index. The glyphs are
+ * out of codepoint order and 'a' repeats; the first 'a' wins. */
+vkr_internal void test_text_legacy_glyph_index(void) {
+  printf("  Running test_text_legacy_glyph_index...\n");
+  setup_suite();
+
+  VkrFont font = {.size = 10};
+  font.glyphs = array_create_filled_VkrFontGlyph(&allocator, 4);
+  assert(font.glyphs.data);
+  font.glyphs.data[0] = (VkrFontGlyph){.codepoint = 'c', .x_advance = 7};
+  font.glyphs.data[1] = (VkrFontGlyph){.codepoint = 'a', .x_advance = 3};
+  font.glyphs.data[2] = (VkrFontGlyph){.codepoint = 'b', .x_advance = 5};
+  font.glyphs.data[3] = (VkrFontGlyph){.codepoint = 'a', .x_advance = 9};
+  assert(vkr_text_font_index_glyphs(&font, &allocator));
+  assert(font.glyph_index.length == 4);
+
+  VkrTextStyle base =
+      vkr_text_style_new(VKR_FONT_HANDLE_INVALID, 10.0f, VKR_TEXT_COLOR_WHITE);
+  VkrTextStyle style = vkr_text_style_with_font_data(&base, &font);
+  VkrText text = vkr_text_from_cstr("abca", &style);
+  VkrTextLayoutOptions opts = vkr_text_layout_options_default();
+  opts.word_wrap = false_v;
+  VkrTextLayout layout = vkr_text_layout_compute(&allocator, &text, &opts);
+
+  assert(layout.glyphs.length == 4);
+  assert_f32_eq(layout.glyphs.data[1].position.x, 3.0f, 0.001f,
+                "'b' follows the first 'a'");
+  assert_f32_eq(layout.glyphs.data[2].position.x, 8.0f, 0.001f,
+                "'c' follows 'b'");
+  assert_f32_eq(layout.glyphs.data[3].position.x, 15.0f, 0.001f,
+                "'a' follows 'c'");
+
+  vkr_text_layout_destroy(&layout);
+  vkr_text_destroy(&allocator, &text);
+  teardown_suite();
+  printf("  test_text_legacy_glyph_index PASSED\n");
+}
+
 vkr_internal void test_text_layout(void) {
   printf("  Running test_text_layout...\n");
   setup_suite();
@@ -1575,6 +1613,7 @@ bool32_t run_text_tests(void) {
   test_text_creation_and_destroy();
   test_text_measurement();
   test_text_layout();
+  test_text_legacy_glyph_index();
   test_layout_allocation_failure();
   test_mtsdf_unit_range();
   test_cooked_float_layout_contract();

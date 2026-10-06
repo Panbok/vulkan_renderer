@@ -102,7 +102,7 @@ VkrRgImage *vkr_rg_image_from_handle(VkrRenderGraph *graph,
     return NULL;
   }
 
-  VkrRgImage *image = vector_get_VkrRgImage(&graph->images, index);
+  VkrRgImage *image = array_get_VkrRgImage(&graph->images, index);
   if (image->generation != handle.generation) {
     return NULL;
   }
@@ -121,7 +121,7 @@ VkrRgBuffer *vkr_rg_buffer_from_handle(VkrRenderGraph *graph,
     return NULL;
   }
 
-  VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&graph->buffers, index);
+  VkrRgBuffer *buffer = array_get_VkrRgBuffer(&graph->buffers, index);
   if (buffer->generation != handle.generation) {
     return NULL;
   }
@@ -158,14 +158,14 @@ const VkrRgImageUse *vkr_rg_pass_find_image_use(const VkrRgPassDesc *pass,
   }
   for (uint64_t i = 0; i < pass->image_reads.length; ++i) {
     const VkrRgImageUse *use =
-        vector_get_VkrRgImageUse((Vector_VkrRgImageUse *)&pass->image_reads, i);
+        array_get_VkrRgImageUse((Array_VkrRgImageUse *)&pass->image_reads, i);
     if (use && use->binding == binding && use->array_index == array_index) {
       return use;
     }
   }
   for (uint64_t i = 0; i < pass->image_writes.length; ++i) {
-    const VkrRgImageUse *use = vector_get_VkrRgImageUse(
-        (Vector_VkrRgImageUse *)&pass->image_writes, i);
+    const VkrRgImageUse *use =
+        array_get_VkrRgImageUse((Array_VkrRgImageUse *)&pass->image_writes, i);
     if (use && use->binding == binding && use->array_index == array_index) {
       return use;
     }
@@ -180,15 +180,15 @@ const VkrRgBufferUse *vkr_rg_pass_find_buffer_use(const VkrRgPassDesc *pass,
     return NULL;
   }
   for (uint64_t i = 0; i < pass->buffer_reads.length; ++i) {
-    const VkrRgBufferUse *use = vector_get_VkrRgBufferUse(
-        (Vector_VkrRgBufferUse *)&pass->buffer_reads, i);
+    const VkrRgBufferUse *use = array_get_VkrRgBufferUse(
+        (Array_VkrRgBufferUse *)&pass->buffer_reads, i);
     if (use && use->binding == binding && use->array_index == array_index) {
       return use;
     }
   }
   for (uint64_t i = 0; i < pass->buffer_writes.length; ++i) {
-    const VkrRgBufferUse *use = vector_get_VkrRgBufferUse(
-        (Vector_VkrRgBufferUse *)&pass->buffer_writes, i);
+    const VkrRgBufferUse *use = array_get_VkrRgBufferUse(
+        (Array_VkrRgBufferUse *)&pass->buffer_writes, i);
     if (use && use->binding == binding && use->array_index == array_index) {
       return use;
     }
@@ -228,7 +228,7 @@ vkr_rg_image_final_subresource_layout(const VkrRenderGraph *graph,
       handle.id > (uint32_t)graph->images.length)
     return VKR_TEXTURE_LAYOUT_UNDEFINED;
   const uint32_t index = handle.id - 1u;
-  const VkrRgImage *image = vector_get_VkrRgImage(&graph->images, index);
+  const VkrRgImage *image = array_get_VkrRgImage(&graph->images, index);
   const uint32_t mips = image->desc.mip_levels ? image->desc.mip_levels : 1u;
   const uint32_t layers = image->desc.layers ? image->desc.layers : 1u;
   if (mip >= mips || layer >= layers)
@@ -244,7 +244,7 @@ void vkr_rg_commit_retained_state(VkrRenderGraph *graph) {
     return;
   const uint32_t image_count = (uint32_t)graph->images.length;
   for (uint32_t i = 0; i < image_count; ++i) {
-    const VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&graph->images, i);
     if (!image || !(image->desc.flags & VKR_RG_RESOURCE_FLAG_RETAINED))
       continue;
     const uint32_t offset = graph->image_state_offsets[i];
@@ -277,17 +277,17 @@ void vkr_rg_reset_passes(VkrRenderGraph *graph) {
   VkrAllocator *allocator =
       graph->frame_allocator ? graph->frame_allocator : graph->allocator;
   for (uint64_t i = 0; i < graph->passes.length; ++i) {
-    VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, i);
-    vector_destroy_VkrRgAttachment(&pass->desc.color_attachments);
-    vector_destroy_VkrRgImageUse(&pass->desc.image_reads);
-    vector_destroy_VkrRgImageUse(&pass->desc.image_writes);
-    vector_destroy_VkrRgBufferUse(&pass->desc.buffer_reads);
-    vector_destroy_VkrRgBufferUse(&pass->desc.buffer_writes);
+    VkrRgPass *pass = array_get_VkrRgPass(&graph->passes, i);
+    array_destroy_VkrRgAttachment(&pass->desc.color_attachments);
+    array_destroy_VkrRgImageUse(&pass->desc.image_reads);
+    array_destroy_VkrRgImageUse(&pass->desc.image_writes);
+    array_destroy_VkrRgBufferUse(&pass->desc.buffer_reads);
+    array_destroy_VkrRgBufferUse(&pass->desc.buffer_writes);
 
-    vector_destroy_uint32_t(&pass->out_edges);
-    vector_destroy_uint32_t(&pass->in_edges);
-    vector_destroy_VkrRgImageBarrier(&pass->pre_image_barriers);
-    vector_destroy_VkrRgBufferBarrier(&pass->pre_buffer_barriers);
+    array_destroy_uint32_t(&pass->out_edges);
+    array_destroy_uint32_t(&pass->in_edges);
+    array_destroy_VkrRgImageBarrier(&pass->pre_image_barriers);
+    array_destroy_VkrRgBufferBarrier(&pass->pre_buffer_barriers);
 
     if (pass->desc.name.str) {
       vkr_allocator_free(allocator, pass->desc.name.str,
@@ -296,7 +296,7 @@ void vkr_rg_reset_passes(VkrRenderGraph *graph) {
     }
   }
 
-  vector_clear_VkrRgPass(&graph->passes);
+  array_clear_VkrRgPass(&graph->passes);
 }
 
 void vkr_rg_reset_exports(VkrRenderGraph *graph) {
@@ -305,16 +305,16 @@ void vkr_rg_reset_exports(VkrRenderGraph *graph) {
   }
 
   for (uint64_t i = 0; i < graph->images.length; ++i) {
-    VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
+    VkrRgImage *image = array_get_VkrRgImage(&graph->images, i);
     image->exported = false_v;
   }
   for (uint64_t i = 0; i < graph->buffers.length; ++i) {
-    VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&graph->buffers, i);
+    VkrRgBuffer *buffer = array_get_VkrRgBuffer(&graph->buffers, i);
     buffer->exported = false_v;
   }
 
-  vector_clear_VkrRgImageHandle(&graph->export_images);
-  vector_clear_VkrRgBufferHandle(&graph->export_buffers);
+  array_clear_VkrRgImageHandle(&graph->export_images);
+  array_clear_VkrRgBufferHandle(&graph->export_buffers);
   graph->present_image = VKR_RG_IMAGE_HANDLE_INVALID;
 }
 
@@ -323,7 +323,7 @@ void vkr_rg_clear_compiled(VkrRenderGraph *graph) {
     return;
   }
 
-  vector_clear_uint32_t(&graph->execution_order);
+  array_clear_uint32_t(&graph->execution_order);
 }
 
 bool8_t vkr_rg_executor_registry_init(VkrRgExecutorRegistry *reg,
@@ -335,7 +335,7 @@ bool8_t vkr_rg_executor_registry_init(VkrRgExecutorRegistry *reg,
 
   *reg = (VkrRgExecutorRegistry){0};
   reg->allocator = allocator;
-  reg->entries = (Vector_VkrRgPassExecutor){.allocator = allocator};
+  reg->entries = (Array_VkrRgPassExecutor){.allocator = allocator};
   reg->initialized = true_v;
   return true_v;
 }
@@ -346,7 +346,7 @@ void vkr_rg_executor_registry_destroy(VkrRgExecutorRegistry *reg) {
   }
 
   for (uint64_t i = 0; i < reg->entries.length; ++i) {
-    VkrRgPassExecutor *entry = vector_get_VkrRgPassExecutor(&reg->entries, i);
+    VkrRgPassExecutor *entry = array_get_VkrRgPassExecutor(&reg->entries, i);
     if (entry->name.str) {
       vkr_allocator_free(reg->allocator, entry->name.str,
                          entry->name.length + 1,
@@ -354,7 +354,7 @@ void vkr_rg_executor_registry_destroy(VkrRgExecutorRegistry *reg) {
     }
   }
 
-  vector_destroy_VkrRgPassExecutor(&reg->entries);
+  array_destroy_VkrRgPassExecutor(&reg->entries);
   *reg = (VkrRgExecutorRegistry){0};
 }
 
@@ -377,8 +377,7 @@ bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
   }
 
   for (uint64_t i = 0; i < reg->entries.length; ++i) {
-    VkrRgPassExecutor *existing =
-        vector_get_VkrRgPassExecutor(&reg->entries, i);
+    VkrRgPassExecutor *existing = array_get_VkrRgPassExecutor(&reg->entries, i);
     if (string8_equals(&existing->name, &entry->name)) {
       log_error("RenderGraph executor '%.*s' already registered",
                 (int)entry->name.length, entry->name.str);
@@ -399,7 +398,7 @@ bool8_t vkr_rg_executor_registry_register(VkrRgExecutorRegistry *reg,
     return false_v;
   }
 
-  if (!vector_push_VkrRgPassExecutor(&reg->entries, stored)) {
+  if (!array_push_VkrRgPassExecutor(&reg->entries, stored)) {
     vkr_allocator_free(reg->allocator, stored.name.str, stored.name.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return false_v;
@@ -414,7 +413,7 @@ vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name) {
   }
 
   for (uint64_t i = 0; i < reg->entries.length; ++i) {
-    VkrRgPassExecutor *entry = vector_get_VkrRgPassExecutor(&reg->entries, i);
+    VkrRgPassExecutor *entry = array_get_VkrRgPassExecutor(&reg->entries, i);
     if (string8_equals(&entry->name, &name)) {
       return entry;
     }
@@ -443,16 +442,16 @@ VkrRenderGraph *vkr_rg_create(VkrAllocator *allocator) {
   *graph = (VkrRenderGraph){0};
   graph->allocator = allocator;
   graph->frame_allocator = allocator;
-  graph->images = (Vector_VkrRgImage){.allocator = allocator};
-  graph->buffers = (Vector_VkrRgBuffer){.allocator = allocator};
+  graph->images = (Array_VkrRgImage){.allocator = allocator};
+  graph->buffers = (Array_VkrRgBuffer){.allocator = allocator};
   graph->image_index_by_name = (VkrHashTable_uint32_t){.allocator = allocator};
   graph->buffer_index_by_name = (VkrHashTable_uint32_t){.allocator = allocator};
-  graph->passes = (Vector_VkrRgPass){.allocator = allocator};
-  graph->export_images = (Vector_VkrRgImageHandle){.allocator = allocator};
-  graph->export_buffers = (Vector_VkrRgBufferHandle){.allocator = allocator};
-  graph->execution_order = (Vector_uint32_t){.allocator = allocator};
+  graph->passes = (Array_VkrRgPass){.allocator = allocator};
+  graph->export_images = (Array_VkrRgImageHandle){.allocator = allocator};
+  graph->export_buffers = (Array_VkrRgBufferHandle){.allocator = allocator};
+  graph->execution_order = (Array_uint32_t){.allocator = allocator};
   graph->terminal_image_barriers =
-      (Vector_VkrRgImageBarrier){.allocator = allocator};
+      (Array_VkrRgImageBarrier){.allocator = allocator};
   graph->present_image = VKR_RG_IMAGE_HANDLE_INVALID;
   return graph;
 }
@@ -466,9 +465,9 @@ bool8_t vkr_rg_set_frame_allocator(VkrRenderGraph *graph,
     return false_v;
   }
 
-  vector_destroy_VkrRgPass(&graph->passes);
+  array_destroy_VkrRgPass(&graph->passes);
   graph->frame_allocator = allocator;
-  graph->passes = (Vector_VkrRgPass){.allocator = allocator};
+  graph->passes = (Array_VkrRgPass){.allocator = allocator};
   return true_v;
 }
 
@@ -482,11 +481,11 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
     vkr_allocator_end_scope(&graph->frame_scope,
                             VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     graph->frame_scope_active = false_v;
-    graph->passes = (Vector_VkrRgPass){0};
+    graph->passes = (Array_VkrRgPass){0};
   }
 
   for (uint64_t i = 0; i < graph->images.length; ++i) {
-    VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
+    VkrRgImage *image = array_get_VkrRgImage(&graph->images, i);
     if (image->name.str) {
       vkr_allocator_free(graph->allocator, image->name.str,
                          image->name.length + 1,
@@ -494,7 +493,7 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
     }
   }
   for (uint64_t i = 0; i < graph->buffers.length; ++i) {
-    VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&graph->buffers, i);
+    VkrRgBuffer *buffer = array_get_VkrRgBuffer(&graph->buffers, i);
     if (buffer->name.str) {
       vkr_allocator_free(graph->allocator, buffer->name.str,
                          buffer->name.length + 1,
@@ -549,13 +548,13 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
 
   vkr_hash_table_destroy_uint32_t(&graph->image_index_by_name);
   vkr_hash_table_destroy_uint32_t(&graph->buffer_index_by_name);
-  vector_destroy_VkrRgImage(&graph->images);
-  vector_destroy_VkrRgBuffer(&graph->buffers);
-  vector_destroy_VkrRgPass(&graph->passes);
-  vector_destroy_VkrRgImageHandle(&graph->export_images);
-  vector_destroy_VkrRgBufferHandle(&graph->export_buffers);
-  vector_destroy_uint32_t(&graph->execution_order);
-  vector_destroy_VkrRgImageBarrier(&graph->terminal_image_barriers);
+  array_destroy_VkrRgImage(&graph->images);
+  array_destroy_VkrRgBuffer(&graph->buffers);
+  array_destroy_VkrRgPass(&graph->passes);
+  array_destroy_VkrRgImageHandle(&graph->export_images);
+  array_destroy_VkrRgBufferHandle(&graph->export_buffers);
+  array_destroy_uint32_t(&graph->execution_order);
+  array_destroy_VkrRgImageBarrier(&graph->terminal_image_barriers);
 
   vkr_allocator_free(graph->allocator, graph, sizeof(VkrRenderGraph),
                      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -576,19 +575,19 @@ bool8_t vkr_rg_begin_frame(VkrRenderGraph *graph,
     graph->frame_scope = vkr_allocator_begin_scope(graph->frame_allocator);
     if (!vkr_allocator_scope_is_valid(&graph->frame_scope)) {
       log_error("RenderGraph begin frame failed: frame allocation scope");
-      graph->passes = (Vector_VkrRgPass){.allocator = graph->frame_allocator};
+      graph->passes = (Array_VkrRgPass){.allocator = graph->frame_allocator};
       return false_v;
     }
     graph->frame_scope_active = true_v;
-    graph->passes = (Vector_VkrRgPass){.allocator = graph->frame_allocator};
+    graph->passes = (Array_VkrRgPass){.allocator = graph->frame_allocator};
   }
 
   for (uint64_t i = 0; i < graph->images.length; ++i) {
-    VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
+    VkrRgImage *image = array_get_VkrRgImage(&graph->images, i);
     image->declared_this_frame = false_v;
   }
   for (uint64_t i = 0; i < graph->buffers.length; ++i) {
-    VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&graph->buffers, i);
+    VkrRgBuffer *buffer = array_get_VkrRgBuffer(&graph->buffers, i);
     buffer->declared_this_frame = false_v;
   }
 
@@ -624,7 +623,7 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
 
   int64_t index = vkr_rg_find_image_index(graph, name);
   if (index >= 0) {
-    VkrRgImage *image = vector_get_VkrRgImage(&graph->images, (uint32_t)index);
+    VkrRgImage *image = array_get_VkrRgImage(&graph->images, (uint32_t)index);
     if (!vkr_rg_image_desc_equal(&image->desc, desc)) {
       if (!(image->desc.flags & VKR_RG_RESOURCE_FLAG_RESIZABLE)) {
         log_warn("RenderGraph image '%.*s' resized without RESIZABLE flag",
@@ -653,14 +652,14 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
   image.desc = *desc;
   image.generation = 1;
   image.declared_this_frame = true_v;
-  if (!vector_push_VkrRgImage(&graph->images, image)) {
+  if (!array_push_VkrRgImage(&graph->images, image)) {
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_IMAGE_HANDLE_INVALID;
   }
   if (!vkr_rg_index_name(&graph->image_index_by_name, stored,
                          graph->images.length - 1u)) {
-    (void)vector_pop_VkrRgImage(&graph->images);
+    (void)array_pop_VkrRgImage(&graph->images);
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_IMAGE_HANDLE_INVALID;
@@ -693,7 +692,7 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
 
   int64_t index = vkr_rg_find_image_index(graph, name);
   if (index >= 0) {
-    VkrRgImage *image = vector_get_VkrRgImage(&graph->images, (uint32_t)index);
+    VkrRgImage *image = array_get_VkrRgImage(&graph->images, (uint32_t)index);
     if (has_desc) {
       if (!vkr_rg_image_desc_equal(&image->desc, &resolved_desc)) {
         image->desc = resolved_desc;
@@ -729,14 +728,14 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
   image.imported_handle = handle;
   image.imported_access = current_access;
   image.imported_layout = current_layout;
-  if (!vector_push_VkrRgImage(&graph->images, image)) {
+  if (!array_push_VkrRgImage(&graph->images, image)) {
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_IMAGE_HANDLE_INVALID;
   }
   if (!vkr_rg_index_name(&graph->image_index_by_name, stored,
                          graph->images.length - 1u)) {
-    (void)vector_pop_VkrRgImage(&graph->images);
+    (void)array_pop_VkrRgImage(&graph->images);
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_IMAGE_HANDLE_INVALID;
@@ -753,7 +752,7 @@ bool8_t vkr_rg_imported_image_add_usage(VkrRenderGraph *graph,
       handle.id > graph->images.length) {
     return false_v;
   }
-  VkrRgImage *image = vector_get_VkrRgImage(&graph->images, handle.id - 1u);
+  VkrRgImage *image = array_get_VkrRgImage(&graph->images, handle.id - 1u);
   if (image->generation != handle.generation || !image->imported) {
     return false_v;
   }
@@ -786,7 +785,7 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
   int64_t index = vkr_rg_find_buffer_index(graph, name);
   if (index >= 0) {
     VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&graph->buffers, (uint32_t)index);
+        array_get_VkrRgBuffer(&graph->buffers, (uint32_t)index);
     if (!vkr_rg_buffer_desc_equal(&buffer->desc, desc)) {
       if (!(buffer->desc.flags & VKR_RG_RESOURCE_FLAG_RESIZABLE)) {
         log_warn("RenderGraph buffer '%.*s' resized without RESIZABLE flag",
@@ -816,14 +815,14 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
   buffer.desc = *desc;
   buffer.generation = 1;
   buffer.declared_this_frame = true_v;
-  if (!vector_push_VkrRgBuffer(&graph->buffers, buffer)) {
+  if (!array_push_VkrRgBuffer(&graph->buffers, buffer)) {
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
   if (!vkr_rg_index_name(&graph->buffer_index_by_name, stored,
                          graph->buffers.length - 1u)) {
-    (void)vector_pop_VkrRgBuffer(&graph->buffers);
+    (void)array_pop_VkrRgBuffer(&graph->buffers);
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_BUFFER_HANDLE_INVALID;
@@ -844,7 +843,7 @@ VkrRgBufferHandle vkr_rg_import_buffer(VkrRenderGraph *graph, String8 name,
   int64_t index = vkr_rg_find_buffer_index(graph, name);
   if (index >= 0) {
     VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&graph->buffers, (uint32_t)index);
+        array_get_VkrRgBuffer(&graph->buffers, (uint32_t)index);
     if (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) {
       log_error("RenderGraph buffer '%.*s': GROW_ONLY cannot be imported",
                 (int)name.length, name.str);
@@ -877,14 +876,14 @@ VkrRgBufferHandle vkr_rg_import_buffer(VkrRenderGraph *graph, String8 name,
   buffer.imported = true_v;
   buffer.imported_handle = handle;
   buffer.imported_access = current_access;
-  if (!vector_push_VkrRgBuffer(&graph->buffers, buffer)) {
+  if (!array_push_VkrRgBuffer(&graph->buffers, buffer)) {
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
   if (!vkr_rg_index_name(&graph->buffer_index_by_name, stored,
                          graph->buffers.length - 1u)) {
-    (void)vector_pop_VkrRgBuffer(&graph->buffers);
+    (void)array_pop_VkrRgBuffer(&graph->buffers);
     vkr_allocator_free(graph->allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return VKR_RG_BUFFER_HANDLE_INVALID;
@@ -901,7 +900,7 @@ bool8_t vkr_rg_imported_buffer_add_usage(VkrRenderGraph *graph,
       handle.id > graph->buffers.length) {
     return false_v;
   }
-  VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&graph->buffers, handle.id - 1u);
+  VkrRgBuffer *buffer = array_get_VkrRgBuffer(&graph->buffers, handle.id - 1u);
   if (buffer->generation != handle.generation || !buffer->imported) {
     return false_v;
   }
@@ -928,20 +927,18 @@ VkrRgPassBuilder vkr_rg_add_pass(VkrRenderGraph *graph, VkrRgPassType type,
   pass.desc = (VkrRgPassDesc){0};
   pass.desc.name = stored;
   pass.desc.type = type;
-  pass.desc.color_attachments =
-      (Vector_VkrRgAttachment){.allocator = allocator};
-  pass.desc.image_reads = (Vector_VkrRgImageUse){.allocator = allocator};
-  pass.desc.image_writes = (Vector_VkrRgImageUse){.allocator = allocator};
-  pass.desc.buffer_reads = (Vector_VkrRgBufferUse){.allocator = allocator};
-  pass.desc.buffer_writes = (Vector_VkrRgBufferUse){.allocator = allocator};
+  pass.desc.color_attachments = (Array_VkrRgAttachment){.allocator = allocator};
+  pass.desc.image_reads = (Array_VkrRgImageUse){.allocator = allocator};
+  pass.desc.image_writes = (Array_VkrRgImageUse){.allocator = allocator};
+  pass.desc.buffer_reads = (Array_VkrRgBufferUse){.allocator = allocator};
+  pass.desc.buffer_writes = (Array_VkrRgBufferUse){.allocator = allocator};
 
-  pass.out_edges = (Vector_uint32_t){.allocator = allocator};
-  pass.in_edges = (Vector_uint32_t){.allocator = allocator};
-  pass.pre_image_barriers = (Vector_VkrRgImageBarrier){.allocator = allocator};
-  pass.pre_buffer_barriers =
-      (Vector_VkrRgBufferBarrier){.allocator = allocator};
+  pass.out_edges = (Array_uint32_t){.allocator = allocator};
+  pass.in_edges = (Array_uint32_t){.allocator = allocator};
+  pass.pre_image_barriers = (Array_VkrRgImageBarrier){.allocator = allocator};
+  pass.pre_buffer_barriers = (Array_VkrRgBufferBarrier){.allocator = allocator};
 
-  if (!vector_push_VkrRgPass(&graph->passes, pass)) {
+  if (!array_push_VkrRgPass(&graph->passes, pass)) {
     vkr_allocator_free(allocator, stored.str, stored.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return (VkrRgPassBuilder){0};
@@ -958,7 +955,7 @@ vkr_internal VkrRgPass *vkr_rg_builder_get_pass(VkrRgPassBuilder *pb) {
   if (pb->pass_index >= pb->graph->passes.length) {
     return NULL;
   }
-  return vector_get_VkrRgPass(&pb->graph->passes, pb->pass_index);
+  return array_get_VkrRgPass(&pb->graph->passes, pb->pass_index);
 }
 
 void vkr_rg_pass_set_flags(VkrRgPassBuilder *pb, VkrRgPassFlags flags) {
@@ -994,7 +991,7 @@ bool8_t vkr_rg_pass_add_color_attachment(VkrRgPassBuilder *pb,
   VkrRgAttachmentDesc local_desc =
       desc ? *desc : (VkrRgAttachmentDesc){.slice = VKR_RG_IMAGE_SLICE_DEFAULT};
   VkrRgAttachment attachment = {.image = image, .desc = local_desc};
-  return vector_push_VkrRgAttachment(&pass->desc.color_attachments, attachment);
+  return array_push_VkrRgAttachment(&pass->desc.color_attachments, attachment);
 }
 
 bool8_t vkr_rg_pass_set_depth_attachment(VkrRgPassBuilder *pb,
@@ -1045,7 +1042,7 @@ bool8_t vkr_rg_pass_read_image_at_stages(
                        .stages = stages,
                        .binding = binding,
                        .array_index = array_index};
-  return vector_push_VkrRgImageUse(&pass->desc.image_reads, use);
+  return array_push_VkrRgImageUse(&pass->desc.image_reads, use);
 }
 
 bool8_t vkr_rg_pass_read_image_slice(VkrRgPassBuilder *pb,
@@ -1073,7 +1070,7 @@ bool8_t vkr_rg_pass_read_image_slice_at_stages(
                        .array_index = array_index,
                        .slice = slice,
                        .has_slice = true_v};
-  return vector_push_VkrRgImageUse(&pass->desc.image_reads, use);
+  return array_push_VkrRgImageUse(&pass->desc.image_reads, use);
 }
 
 bool8_t vkr_rg_pass_write_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
@@ -1101,7 +1098,7 @@ bool8_t vkr_rg_pass_write_image_at_stages(
                        .stages = stages,
                        .binding = binding,
                        .array_index = array_index};
-  return vector_push_VkrRgImageUse(&pass->desc.image_writes, use);
+  return array_push_VkrRgImageUse(&pass->desc.image_writes, use);
 }
 
 bool8_t vkr_rg_pass_write_image_slice_at_stages(
@@ -1123,7 +1120,7 @@ bool8_t vkr_rg_pass_write_image_slice_at_stages(
                        .array_index = array_index,
                        .slice = slice,
                        .has_slice = true_v};
-  return vector_push_VkrRgImageUse(&pass->desc.image_writes, use);
+  return array_push_VkrRgImageUse(&pass->desc.image_writes, use);
 }
 
 bool8_t vkr_rg_pass_read_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
@@ -1154,7 +1151,7 @@ bool8_t vkr_rg_pass_read_buffer_at_stages(VkrRgPassBuilder *pb,
                         .stages = stages,
                         .binding = binding,
                         .array_index = array_index};
-  return vector_push_VkrRgBufferUse(&pass->desc.buffer_reads, use);
+  return array_push_VkrRgBufferUse(&pass->desc.buffer_reads, use);
 }
 
 bool8_t vkr_rg_pass_write_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
@@ -1185,7 +1182,7 @@ bool8_t vkr_rg_pass_write_buffer_at_stages(VkrRgPassBuilder *pb,
                         .stages = stages,
                         .binding = binding,
                         .array_index = array_index};
-  return vector_push_VkrRgBufferUse(&pass->desc.buffer_writes, use);
+  return array_push_VkrRgBufferUse(&pass->desc.buffer_writes, use);
 }
 
 bool8_t vkr_rg_set_present_image(VkrRenderGraph *graph,
@@ -1213,7 +1210,7 @@ bool8_t vkr_rg_export_image(VkrRenderGraph *graph, VkrRgImageHandle image) {
     return false_v;
   }
   if (!image_entry->exported) {
-    if (!vector_push_VkrRgImageHandle(&graph->export_images, image)) {
+    if (!array_push_VkrRgImageHandle(&graph->export_images, image)) {
       return false_v;
     }
     image_entry->exported = true_v;
@@ -1231,7 +1228,7 @@ bool8_t vkr_rg_export_buffer(VkrRenderGraph *graph, VkrRgBufferHandle buffer) {
     return false_v;
   }
   if (!buffer_entry->exported) {
-    if (!vector_push_VkrRgBufferHandle(&graph->export_buffers, buffer)) {
+    if (!array_push_VkrRgBufferHandle(&graph->export_buffers, buffer)) {
       return false_v;
     }
     buffer_entry->exported = true_v;

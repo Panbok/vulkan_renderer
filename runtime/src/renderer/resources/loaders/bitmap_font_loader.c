@@ -36,9 +36,9 @@ typedef struct VkrBitmapFontParseState {
   int32_t scale_h;
   uint32_t page_count;
 
-  Vector_VkrBitmapFontPage pages;
-  Vector_VkrFontGlyph glyphs;
-  Vector_VkrFontKerning kernings;
+  Array_VkrBitmapFontPage pages;
+  Array_VkrFontGlyph glyphs;
+  Array_VkrFontKerning kernings;
 
   VkrRendererError *out_error;
 } VkrBitmapFontParseState;
@@ -298,19 +298,19 @@ vkr_internal bool8_t vkr_bitmap_font_cache_read(VkrBitmapFontParseState *state,
   state->page_count = page_count;
 
   if (page_count > 0) {
-    if (!vector_reserve_VkrBitmapFontPage(&state->pages, page_count)) {
+    if (!array_reserve_VkrBitmapFontPage(&state->pages, page_count)) {
       vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return false_v;
     }
   }
   if (glyph_count > 0) {
-    if (!vector_reserve_VkrFontGlyph(&state->glyphs, glyph_count)) {
+    if (!array_reserve_VkrFontGlyph(&state->glyphs, glyph_count)) {
       vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return false_v;
     }
   }
   if (kerning_count > 0) {
-    if (!vector_reserve_VkrFontKerning(&state->kernings, kerning_count)) {
+    if (!array_reserve_VkrFontKerning(&state->kernings, kerning_count)) {
       vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return false_v;
     }
@@ -457,8 +457,8 @@ vkr_bitmap_font_cache_write(VkrAllocator *allocator, String8 cache_path,
   }
 
   for (uint32_t i = 0; ok && i < page_count; ++i) {
-    VkrBitmapFontPage *page = vector_get_VkrBitmapFontPage(
-        (Vector_VkrBitmapFontPage *)&state->pages, i);
+    VkrBitmapFontPage *page = array_get_VkrBitmapFontPage(
+        (Array_VkrBitmapFontPage *)&state->pages, i);
     uint64_t file_len =
         strnlen(page->file, sizeof(((VkrBitmapFontPage *)0)->file));
     if (file_len > UINT32_MAX) {
@@ -475,7 +475,7 @@ vkr_bitmap_font_cache_write(VkrAllocator *allocator, String8 cache_path,
 
   for (uint32_t i = 0; ok && i < glyph_count; ++i) {
     VkrFontGlyph *glyph =
-        vector_get_VkrFontGlyph((Vector_VkrFontGlyph *)&state->glyphs, i);
+        array_get_VkrFontGlyph((Array_VkrFontGlyph *)&state->glyphs, i);
     ok = ok && vkr_bitmap_font_cache_write_u32(&fh, glyph->codepoint);
     ok = ok && vkr_bitmap_font_cache_write_u16(&fh, glyph->x);
     ok = ok && vkr_bitmap_font_cache_write_u16(&fh, glyph->y);
@@ -489,7 +489,7 @@ vkr_bitmap_font_cache_write(VkrAllocator *allocator, String8 cache_path,
 
   for (uint32_t i = 0; ok && i < kerning_count; ++i) {
     VkrFontKerning *kerning =
-        vector_get_VkrFontKerning((Vector_VkrFontKerning *)&state->kernings, i);
+        array_get_VkrFontKerning((Array_VkrFontKerning *)&state->kernings, i);
     ok = ok && vkr_bitmap_font_cache_write_u32(&fh, kerning->codepoint_0);
     ok = ok && vkr_bitmap_font_cache_write_u32(&fh, kerning->codepoint_1);
     ok = ok && vkr_bitmap_font_cache_write_i16(&fh, kerning->amount);
@@ -534,9 +534,9 @@ vkr_internal VkrBitmapFontParseState vkr_bitmap_font_parse_state_create(
       .out_error = out_error,
   };
 
-  state.pages = (Vector_VkrBitmapFontPage){.allocator = temp_allocator};
-  state.glyphs = (Vector_VkrFontGlyph){.allocator = temp_allocator};
-  state.kernings = (Vector_VkrFontKerning){.allocator = temp_allocator};
+  state.pages = (Array_VkrBitmapFontPage){.allocator = temp_allocator};
+  state.glyphs = (Array_VkrFontGlyph){.allocator = temp_allocator};
+  state.kernings = (Array_VkrFontKerning){.allocator = temp_allocator};
 
   return state;
 }
@@ -675,7 +675,7 @@ vkr_bitmap_font_parse_common(VkrBitmapFontParseState *state, String8 line) {
   state->scale_h = scale_h;
   state->page_count = pages > 0 ? (uint32_t)pages : 0;
   if (state->page_count > 0) {
-    if (!vector_reserve_VkrBitmapFontPage(&state->pages, state->page_count)) {
+    if (!array_reserve_VkrBitmapFontPage(&state->pages, state->page_count)) {
       vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return false_v;
     }
@@ -713,7 +713,7 @@ vkr_internal bool8_t vkr_bitmap_font_parse_page(VkrBitmapFontParseState *state,
   page.id = (uint8_t)id;
   MemCopy(page.file, file.str, file.length);
   page.file[file.length] = '\0';
-  if (!vector_push_VkrBitmapFontPage(&state->pages, page)) {
+  if (!array_push_VkrBitmapFontPage(&state->pages, page)) {
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
   }
@@ -758,7 +758,7 @@ vkr_internal bool8_t vkr_bitmap_font_parse_char(VkrBitmapFontParseState *state,
   glyph.y_offset = (int16_t)y_offset;
   glyph.x_advance = (int16_t)x_advance;
   glyph.page_id = (uint8_t)page_id;
-  if (!vector_push_VkrFontGlyph(&state->glyphs, glyph)) {
+  if (!array_push_VkrFontGlyph(&state->glyphs, glyph)) {
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
   }
@@ -784,7 +784,7 @@ vkr_bitmap_font_parse_kerning(VkrBitmapFontParseState *state, String8 line) {
   kerning.codepoint_0 = (uint32_t)first;
   kerning.codepoint_1 = (uint32_t)second;
   kerning.amount = (int16_t)amount;
-  if (!vector_push_VkrFontKerning(&state->kernings, kerning)) {
+  if (!array_push_VkrFontKerning(&state->kernings, kerning)) {
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
   }
@@ -878,7 +878,7 @@ vkr_internal bool8_t vkr_bitmap_font_parse_fnt(VkrBitmapFontParseState *state,
     } else if (vkr_string8_starts_with(&line, "chars")) {
       int32_t count = 0;
       if (vkr_bitmap_font_parse_int(line, "count", &count) && count > 0) {
-        if (!vector_reserve_VkrFontGlyph(&state->glyphs, (uint32_t)count)) {
+        if (!array_reserve_VkrFontGlyph(&state->glyphs, (uint32_t)count)) {
           vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
           return false_v;
         }
@@ -890,7 +890,7 @@ vkr_internal bool8_t vkr_bitmap_font_parse_fnt(VkrBitmapFontParseState *state,
     } else if (vkr_string8_starts_with(&line, "kernings")) {
       int32_t count = 0;
       if (vkr_bitmap_font_parse_int(line, "count", &count) && count > 0) {
-        if (!vector_reserve_VkrFontKerning(&state->kernings, (uint32_t)count)) {
+        if (!array_reserve_VkrFontKerning(&state->kernings, (uint32_t)count)) {
           vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
           return false_v;
         }
@@ -975,7 +975,7 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
 
   uint32_t max_page_id = 0;
   for (uint64_t i = 0; i < state->pages.length; ++i) {
-    VkrBitmapFontPage *page = vector_get_VkrBitmapFontPage(&state->pages, i);
+    VkrBitmapFontPage *page = array_get_VkrBitmapFontPage(&state->pages, i);
     if (page && page->id > max_page_id) {
       max_page_id = page->id;
     }
@@ -987,7 +987,7 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
   }
 
   *out_pages =
-      array_create_VkrBitmapFontPage(state->load_allocator, page_slots);
+      array_create_filled_VkrBitmapFontPage(state->load_allocator, page_slots);
   if (!out_pages->data) {
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
@@ -995,7 +995,7 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
   MemZero(out_pages->data, page_slots * sizeof(VkrBitmapFontPage));
 
   *out_atlases =
-      array_create_VkrTextureHandle(state->load_allocator, page_slots);
+      array_create_filled_VkrTextureHandle(state->load_allocator, page_slots);
   if (!out_atlases->data) {
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
@@ -1006,7 +1006,7 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
   }
 
   for (uint64_t i = 0; i < state->pages.length; ++i) {
-    VkrBitmapFontPage *page = vector_get_VkrBitmapFontPage(&state->pages, i);
+    VkrBitmapFontPage *page = array_get_VkrBitmapFontPage(&state->pages, i);
     if (!page || page->file[0] == '\0') {
       log_error("BitmapFontLoader: page file is empty");
       vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
@@ -1035,7 +1035,7 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
   }
 
   for (uint64_t i = 0; i < state->pages.length; ++i) {
-    VkrBitmapFontPage *page = vector_get_VkrBitmapFontPage(&state->pages, i);
+    VkrBitmapFontPage *page = array_get_VkrBitmapFontPage(&state->pages, i);
     if (!page) {
       continue;
     }
@@ -1127,8 +1127,8 @@ vkr_internal bool8_t vkr_bitmap_font_build_result(
     return false_v;
   }
 
-  out_font->glyphs =
-      array_create_VkrFontGlyph(state->load_allocator, state->glyphs.length);
+  out_font->glyphs = array_create_filled_VkrFontGlyph(state->load_allocator,
+                                                      state->glyphs.length);
   if (!out_font->glyphs.data) {
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
@@ -1136,34 +1136,14 @@ vkr_internal bool8_t vkr_bitmap_font_build_result(
   MemCopy(out_font->glyphs.data, state->glyphs.data,
           state->glyphs.length * sizeof(VkrFontGlyph));
 
-  uint64_t glyph_count = out_font->glyphs.length;
-  uint64_t table_capacity = glyph_count * 2;
-  if (table_capacity < VKR_HASH_TABLE_INITIAL_CAPACITY) {
-    table_capacity = VKR_HASH_TABLE_INITIAL_CAPACITY;
-  }
-  out_font->glyph_indices =
-      vkr_hash_table_create_uint32_t(state->load_allocator, table_capacity);
-  if (!out_font->glyph_indices.entries) {
+  if (!vkr_text_font_index_glyphs(out_font, state->load_allocator)) {
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return false_v;
   }
-  for (uint64_t i = 0; i < glyph_count; ++i) {
-    VkrFontGlyph *glyph = &out_font->glyphs.data[i];
-    String8 key =
-        string8_create_formatted(state->load_allocator, "%u", glyph->codepoint);
-    if (!key.str ||
-        !vkr_hash_table_insert_uint32_t(&out_font->glyph_indices,
-                                        string8_cstr(&key), (uint32_t)i)) {
-      log_error("BitmapFontLoader: failed to index glyph %u", glyph->codepoint);
-      vkr_bitmap_font_set_error(state,
-                                VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED);
-      return false_v;
-    }
-  }
 
   if (state->kernings.length > 0) {
-    out_font->kernings = array_create_VkrFontKerning(state->load_allocator,
-                                                     state->kernings.length);
+    out_font->kernings = array_create_filled_VkrFontKerning(
+        state->load_allocator, state->kernings.length);
     if (!out_font->kernings.data) {
       vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return false_v;
@@ -1384,8 +1364,8 @@ vkr_bitmap_font_loader_unload(VkrResourceLoader *self,
     vkr_bitmap_font_unload_pages(&result->pages, &font->atlas_pages);
   }
 
-  if (font->glyph_indices.entries) {
-    vkr_hash_table_destroy_uint32_t(&font->glyph_indices);
+  if (font->glyph_index.data) {
+    array_destroy_VkrFontGlyphIndex(&font->glyph_index);
   }
   if (font->glyphs.data) {
     array_destroy_VkrFontGlyph(&font->glyphs);

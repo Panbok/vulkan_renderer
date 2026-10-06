@@ -1,5 +1,6 @@
 #include "core/vkr_text.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
@@ -304,36 +305,62 @@ vkr_internal void vkr_text_compute_metrics(const VkrTextStyle *style,
   }
 }
 
-vkr_internal bool8_t vkr_text_codepoint_key(char *buffer, uint64_t buffer_size,
-                                            uint32_t codepoint) {
-  if (buffer == NULL || buffer_size == 0) {
+/* Orders by codepoint, then glyph index, so the first glyph of a repeated
+ * codepoint wins, as in the linear scan. */
+vkr_internal int32_t vkr_text_glyph_index_compare(const void *lhs,
+                                                  const void *rhs) {
+  const VkrFontGlyphIndex *a = (const VkrFontGlyphIndex *)lhs;
+  const VkrFontGlyphIndex *b = (const VkrFontGlyphIndex *)rhs;
+  if (a->codepoint != b->codepoint) {
+    return a->codepoint < b->codepoint ? -1 : 1;
+  }
+  if (a->glyph_index != b->glyph_index) {
+    return a->glyph_index < b->glyph_index ? -1 : 1;
+  }
+  return 0;
+}
+
+bool8_t vkr_text_font_index_glyphs(VkrFont *font, VkrAllocator *allocator) {
+  assert_log(font != NULL, "Font is NULL");
+  assert_log(allocator != NULL, "Allocator is NULL");
+  const uint64_t glyph_count = font->glyphs.length;
+  font->glyph_index =
+      array_create_filled_VkrFontGlyphIndex(allocator, glyph_count);
+  if (glyph_count > 0 && !font->glyph_index.data) {
     return false_v;
   }
 
-  char tmp[16];
-  uint32_t v = codepoint;
-  uint32_t tmp_len = 0;
-  do {
-    tmp[tmp_len++] = (char)('0' + (v % 10u));
-    v /= 10u;
-  } while (v != 0u && tmp_len < (uint32_t)sizeof(tmp));
-
-  if (v != 0u) {
-    buffer[0] = '\0';
-    return false_v;
+  for (uint64_t i = 0; i < glyph_count; ++i) {
+    font->glyph_index.data[i] = (VkrFontGlyphIndex){
+        .codepoint = font->glyphs.data[i].codepoint,
+        .glyph_index = (uint32_t)i,
+    };
   }
-
-  if ((uint64_t)tmp_len + 1u > buffer_size) {
-    buffer[0] = '\0';
-    return false_v;
-  }
-
-  for (uint32_t i = 0; i < tmp_len; ++i) {
-    buffer[i] = tmp[tmp_len - 1u - i];
-  }
-
-  buffer[tmp_len] = '\0';
+  vkr_sort(font->glyph_index.data, glyph_count, sizeof(VkrFontGlyphIndex),
+           vkr_text_glyph_index_compare);
   return true_v;
+}
+
+/* The first index entry for `codepoint`, or NULL. */
+vkr_internal const VkrFontGlyphIndex *
+vkr_text_font_find_glyph_index(const VkrFont *font, uint32_t codepoint) {
+  uint64_t first = 0u;
+  uint64_t count = font->glyph_index.length;
+  while (count != 0u) {
+    const uint64_t step = count / 2u;
+    const uint64_t index = first + step;
+    if (font->glyph_index.data[index].codepoint < codepoint) {
+      first = index + 1u;
+      count -= step + 1u;
+    } else {
+      count = step;
+    }
+  }
+  if (first < font->glyph_index.length &&
+      font->glyph_index.data[first].codepoint == codepoint) {
+    return &font->glyph_index.data[first];
+  }
+  return NULL;
 }
 
 typedef struct VkrTextResolvedGlyph {
@@ -351,17 +378,16 @@ vkr_text_font_find_legacy_glyph(const VkrFont *font, uint32_t codepoint,
   if (font == NULL || font->glyphs.data == NULL) {
     return NULL;
   }
-  if (font->glyph_indices.entries != NULL && font->glyph_indices.size > 0) {
-    char key[16];
-    if (vkr_text_codepoint_key(key, sizeof(key), codepoint)) {
-      uint32_t *index = vkr_hash_table_get_uint32_t(&font->glyph_indices, key);
-      if (index && *index < font->glyphs.length) {
-        if (out_index) {
-          *out_index = *index;
-        }
-        return &font->glyphs.data[*index];
+  if (font->glyph_index.data != NULL) {
+    const VkrFontGlyphIndex *entry =
+        vkr_text_font_find_glyph_index(font, codepoint);
+    if (entry && entry->glyph_index < font->glyphs.length) {
+      if (out_index) {
+        *out_index = entry->glyph_index;
       }
+      return &font->glyphs.data[entry->glyph_index];
     }
+    return NULL;
   }
   for (uint64_t i = 0; i < font->glyphs.length; ++i) {
     if (font->glyphs.data[i].codepoint == codepoint) {
@@ -813,7 +839,7 @@ typedef struct VkrTextGlyphPlacement {
   float64_t advance;
   uint8_t page_id;
 } VkrTextGlyphPlacement;
-Vector(VkrTextGlyphPlacement);
+Array(VkrTextGlyphPlacement);
 
 VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
                                       const VkrText *text,
@@ -848,14 +874,13 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
   uint32_t prev_codepoint = 0;
   VkrTextResolvedGlyph previous = {0};
 
-  Vector_float64_t line_widths = {0};
-  Vector_VkrTextGlyphPlacement placements = {0};
+  Array_float64_t line_widths = {0};
+  Array_VkrTextGlyphPlacement placements = {0};
   bool8_t collect_positions = allocator != NULL;
   if (collect_positions) {
     // UTF-8 bytes bound glyph count; each byte can start at most one new line.
-    line_widths = vector_create_float64_t_with_capacity(
-        allocator, text->content.length + 1u);
-    placements = vector_create_VkrTextGlyphPlacement_with_capacity(
+    line_widths = array_create_float64_t(allocator, text->content.length + 1u);
+    placements = array_create_VkrTextGlyphPlacement(
         allocator, Max(text->content.length, 1u));
     if (!line_widths.data || !placements.data)
       goto failed;
@@ -975,14 +1000,15 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
 
   if (!collect_positions || placements.length == 0) {
     if (collect_positions) {
-      vector_destroy_float64_t(&line_widths);
-      vector_destroy_VkrTextGlyphPlacement(&placements);
+      array_destroy_float64_t(&line_widths);
+      array_destroy_VkrTextGlyphPlacement(&placements);
     }
     return layout;
   }
 
   const uint32_t glyph_count = (uint32_t)placements.length;
-  Array_VkrTextGlyph glyphs = array_create_VkrTextGlyph(allocator, glyph_count);
+  Array_VkrTextGlyph glyphs =
+      array_create_filled_VkrTextGlyph(allocator, glyph_count);
   if (!glyphs.data)
     goto failed;
 
@@ -1007,14 +1033,14 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
 
   layout.glyphs = glyphs;
 
-  vector_destroy_float64_t(&line_widths);
-  vector_destroy_VkrTextGlyphPlacement(&placements);
+  array_destroy_float64_t(&line_widths);
+  array_destroy_VkrTextGlyphPlacement(&placements);
 
   return layout;
 
 failed:
-  vector_destroy_float64_t(&line_widths);
-  vector_destroy_VkrTextGlyphPlacement(&placements);
+  array_destroy_float64_t(&line_widths);
+  array_destroy_VkrTextGlyphPlacement(&placements);
   return (VkrTextLayout){0};
 }
 

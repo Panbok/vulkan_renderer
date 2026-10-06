@@ -1,7 +1,7 @@
 #pragma once
 
+#include "containers/array.h"
 #include "containers/queue.h"
-#include "containers/vector.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "memory/arena.h"
@@ -46,17 +46,19 @@ typedef struct EventCallbackData {
 } EventCallbackData;
 
 Queue(Event);
-Vector(EventCallbackData);
+Array(EventCallbackData);
 
 #define DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY MB(4)
 #define DEFAULT_EVENT_QUEUE_CAPACITY 1024
+// Callbacks one event type holds before its first growth.
+#define EVENT_CALLBACK_INITIAL_CAPACITY 16
 
 typedef struct EventManager {
   Arena *arena;
   Arena *callback_arena; // Worker scratch; released after join.
   VkrAllocator allocator;
   Queue_Event queue;
-  Vector_EventCallbackData callbacks[EVENT_TYPE_MAX];
+  Array_EventCallbackData callbacks[EVENT_TYPE_MAX];
   VkrEventDataBuffer event_data_buf;
   VkrMutex
       mutex; // Protects the queue, subscriptions, payload buffer, and running.

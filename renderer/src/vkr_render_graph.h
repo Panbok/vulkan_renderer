@@ -1,7 +1,7 @@
 #pragma once
 
+#include "containers/array.h"
 #include "containers/str.h"
-#include "containers/vector.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 #include "vkr_gpu_abi.h"
@@ -70,8 +70,8 @@ vkr_internal INLINE bool8_t vkr_rg_buffer_handle_valid(VkrRgBufferHandle h) {
   return h.id != 0;
 }
 
-Vector(VkrRgImageHandle);
-Vector(VkrRgBufferHandle);
+Array(VkrRgImageHandle);
+Array(VkrRgBufferHandle);
 
 // =============================================================================
 // Resource Descriptions
@@ -274,7 +274,7 @@ typedef struct VkrRgImageUse {
   bool8_t has_slice;
 } VkrRgImageUse;
 
-Vector(VkrRgImageUse);
+Array(VkrRgImageUse);
 
 typedef VkrBufferAccessFlags VkrRgBufferAccessFlags;
 
@@ -366,7 +366,7 @@ typedef struct VkrRgBufferUse {
   uint32_t array_index;          /**< Descriptor array index */
 } VkrRgBufferUse;
 
-Vector(VkrRgBufferUse);
+Array(VkrRgBufferUse);
 
 /**
  * @brief Load/store and clear for a single attachment.
@@ -388,7 +388,7 @@ typedef struct VkrRgAttachment {
   bool8_t read_only; /**< If true, depth is read-only (e.g. depth prepass) */
 } VkrRgAttachment;
 
-Vector(VkrRgAttachment);
+Array(VkrRgAttachment);
 
 /**
  * @brief Full pass specification.
@@ -401,15 +401,15 @@ typedef struct VkrRgPassDesc {
   VkrRgPassFlags flags; /**< Pass flags */
 
   VkrPipelineDomain domain; /**< Pipeline domain for render pass selection */
-  Vector_VkrRgAttachment color_attachments; /**< Color attachments in order */
+  Array_VkrRgAttachment color_attachments; /**< Color attachments in order */
   bool8_t has_depth_attachment; /**< True if depth_attachment is used */
   VkrRgAttachment
       depth_attachment; /**< Depth attachment (valid if has_depth_attachment) */
 
-  Vector_VkrRgImageUse image_reads;    /**< Image read uses */
-  Vector_VkrRgImageUse image_writes;   /**< Image write uses */
-  Vector_VkrRgBufferUse buffer_reads;  /**< Buffer read uses */
-  Vector_VkrRgBufferUse buffer_writes; /**< Buffer write uses */
+  Array_VkrRgImageUse image_reads;    /**< Image read uses */
+  Array_VkrRgImageUse image_writes;   /**< Image write uses */
+  Array_VkrRgBufferUse buffer_reads;  /**< Buffer read uses */
+  Array_VkrRgBufferUse buffer_writes; /**< Buffer write uses */
 
   VkrRgComputeDispatchDesc dispatch; /**< Optional compute dispatch */
   uint32_t executor_id;  /**< Backend-local typed executor identity */
@@ -463,7 +463,7 @@ typedef struct VkrRgPassExecutor {
   VkrRgPassType type; /**< Only this pass type may select the executor */
 } VkrRgPassExecutor;
 
-Vector(VkrRgPassExecutor);
+Array(VkrRgPassExecutor);
 
 /**
  * @brief Registry of typed named pass executors resolved when JSON is loaded.
@@ -471,7 +471,7 @@ Vector(VkrRgPassExecutor);
  */
 typedef struct VkrRgExecutorRegistry {
   VkrAllocator *allocator; /**< Allocator for entries; must outlive registry */
-  Vector_VkrRgPassExecutor entries; /**< Registered executors */
+  Array_VkrRgPassExecutor entries;  /**< Registered executors */
   bool8_t initialized;              /**< True after init */
 } VkrRgExecutorRegistry;
 

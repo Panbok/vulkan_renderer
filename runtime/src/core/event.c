@@ -24,7 +24,7 @@ static void *events_processor(void *arg) {
       break;
     }
 
-    Vector_EventCallbackData *callbacks = &manager->callbacks[event.type];
+    Array_EventCallbackData *callbacks = &manager->callbacks[event.type];
     uint64_t count = callbacks->length;
     if (count == 0) {
       if (event.data_size > 0) {
@@ -139,7 +139,7 @@ void event_manager_destroy(EventManager *manager) {
   vkr_cond_destroy(&manager->allocator, &manager->cond);
 
   for (uint32_t i = 0; i < EVENT_TYPE_MAX; i++) {
-    vector_destroy_EventCallbackData(&manager->callbacks[i]);
+    array_destroy_EventCallbackData(&manager->callbacks[i]);
   }
 
   queue_destroy_Event(&manager->queue);
@@ -161,8 +161,8 @@ bool8_t event_manager_subscribe(EventManager *manager, EventType type,
   vkr_mutex_lock(manager->mutex);
 
   if (manager->callbacks[type].data == NULL) {
-    manager->callbacks[type] =
-        vector_create_EventCallbackData(&manager->allocator);
+    manager->callbacks[type] = array_create_EventCallbackData(
+        &manager->allocator, EVENT_CALLBACK_INITIAL_CAPACITY);
     if (!manager->callbacks[type].data) {
       vkr_mutex_unlock(manager->mutex);
       return false_v;
@@ -179,7 +179,7 @@ bool8_t event_manager_subscribe(EventManager *manager, EventType type,
     }
   }
 
-  const bool8_t subscribed = vector_push_EventCallbackData(
+  const bool8_t subscribed = array_push_EventCallbackData(
       &manager->callbacks[type], (EventCallbackData){callback, user_data});
   vkr_mutex_unlock(manager->mutex);
   return subscribed;
@@ -195,12 +195,12 @@ void event_manager_unsubscribe(EventManager *manager, EventType type,
 
   vkr_mutex_lock(manager->mutex);
   if (manager->callbacks[type].length > 0) {
-    VectorFindResult res = vector_find_EventCallbackData(
+    ArrayFindResult res = array_find_EventCallbackData(
         &manager->callbacks[type], &(EventCallbackData){callback, NULL},
         event_callback_equals);
     if (res.found) {
-      vector_pop_at_EventCallbackData(&manager->callbacks[type], res.index,
-                                      NULL);
+      array_pop_at_EventCallbackData(&manager->callbacks[type], res.index,
+                                     NULL);
     }
   }
   vkr_mutex_unlock(manager->mutex);

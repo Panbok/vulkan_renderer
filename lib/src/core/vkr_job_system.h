@@ -14,9 +14,9 @@
  */
 #pragma once
 
+#include "containers/array.h"
 #include "containers/bitset.h"
 #include "containers/queue.h"
-#include "containers/vector.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
@@ -51,7 +51,7 @@ typedef struct VkrJobHandle {
 } VkrJobHandle;
 
 Queue(VkrJobHandle);
-Vector(VkrJobHandle);
+Array(VkrJobHandle);
 
 /**
  * @brief Per-job context available to run/callback functions.

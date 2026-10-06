@@ -158,6 +158,8 @@ typedef struct VkrMeshManager {
   uint32_t static_change_count;
   uint64_t static_change_floor;
 
+  // Meshes, mesh assets and mesh instances are slot tables: sized once at
+  // init and never grown, so element pointers stay valid until shutdown.
   Array_VkrMesh meshes;
   Array_uint32_t mesh_live_indices;
   Array_uint32_t free_indices;

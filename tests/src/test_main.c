@@ -63,7 +63,6 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_metrics_tests),
     VKR_TEST_SUITE(run_arena_tests),
     VKR_TEST_SUITE(run_array_tests),
-    VKR_TEST_SUITE(run_vector_tests),
     VKR_TEST_SUITE(run_queue_tests),
     VKR_TEST_SUITE(run_event_data_buffer_tests),
     VKR_TEST_SUITE(run_threads_tests),

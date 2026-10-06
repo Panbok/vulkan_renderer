@@ -63,7 +63,7 @@ vkr_internal VkrRgPassBuilder rg_barrier_test_add_pass(VkrRenderGraph *graph,
 
 vkr_internal const VkrRgPass *rg_barrier_test_pass(const VkrRenderGraph *graph,
                                                    uint32_t index) {
-  return vector_get_VkrRgPass((Vector_VkrRgPass *)&graph->passes, index);
+  return array_get_VkrRgPass((Array_VkrRgPass *)&graph->passes, index);
 }
 
 vkr_internal void test_resource_instance_domains(void) {
@@ -116,18 +116,18 @@ vkr_internal void test_json_bindings_and_condition_parity(void) {
   VkrRgJsonGraph graph = {0};
   assert(rg_barrier_test_load_json(&allocator, valid, &graph));
   assert(graph.passes.length == 5u);
-  assert(vector_get_VkrRgJsonPass(&graph.passes, 0)->condition.kind ==
+  assert(array_get_VkrRgJsonPass(&graph.passes, 0)->condition.kind ==
          VKR_RG_JSON_CONDITION_EDITOR_ENABLED);
-  assert(vector_get_VkrRgJsonPass(&graph.passes, 1)->condition.kind ==
+  assert(array_get_VkrRgJsonPass(&graph.passes, 1)->condition.kind ==
          VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID);
-  assert(vector_get_VkrRgJsonPass(&graph.passes, 2)->condition.kind ==
+  assert(array_get_VkrRgJsonPass(&graph.passes, 2)->condition.kind ==
          VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING);
-  assert(vector_get_VkrRgJsonPass(&graph.passes, 3)->condition.kind ==
+  assert(array_get_VkrRgJsonPass(&graph.passes, 3)->condition.kind ==
          VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION);
-  assert(vector_get_VkrRgJsonPass(&graph.passes, 4)->condition.kind ==
+  assert(array_get_VkrRgJsonPass(&graph.passes, 4)->condition.kind ==
          VKR_RG_JSON_CONDITION_PICKING_PENDING_TRANSMISSION);
-  const VkrRgJsonResourceUse *use = vector_get_VkrRgJsonResourceUse(
-      &vector_get_VkrRgJsonPass(&graph.passes, 0)->reads, 0u);
+  const VkrRgJsonResourceUse *use = array_get_VkrRgJsonResourceUse(
+      &array_get_VkrRgJsonPass(&graph.passes, 0)->reads, 0u);
   assert(use && use->binding.is_set && use->binding.value == 2u);
   vkr_rg_json_destroy(&graph);
 
@@ -490,7 +490,7 @@ vkr_internal void test_shadow_reads_follow_active_cascades(void) {
   VkrRgJsonGraph json = {0};
   assert(rg_barrier_test_load_json(&allocator, source, &json));
   const VkrRgJsonResourceUse *parsed_use =
-      vector_get_VkrRgJsonResourceUse(&json.passes.data[0].reads, 0u);
+      array_get_VkrRgJsonResourceUse(&json.passes.data[0].reads, 0u);
   assert(parsed_use && parsed_use->condition.kind ==
                            VKR_RG_JSON_CONDITION_SHADOW_CASCADES_ACTIVE);
 
@@ -733,7 +733,7 @@ vkr_internal void test_indirect_dispatch_dependency_contract(void) {
   const VkrRgPass *consumer = rg_barrier_test_pass(graph, 1u);
   assert(consumer->pre_buffer_barriers.length == 1u);
   const VkrRgBufferBarrier *barrier =
-      vector_get_VkrRgBufferBarrier(&consumer->pre_buffer_barriers, 0u);
+      array_get_VkrRgBufferBarrier(&consumer->pre_buffer_barriers, 0u);
   assert(barrier->src_access == VKR_RG_BUFFER_ACCESS_STORAGE_WRITE);
   assert(barrier->dst_access == VKR_RG_BUFFER_ACCESS_INDIRECT_READ);
   assert(barrier->dependency.dst_stages == VKR_GPU_STAGE_DRAW_INDIRECT);
@@ -978,8 +978,8 @@ vkr_internal void test_same_layout_write_then_read_emits_barrier(void) {
 
   const VkrRgPass *reader_pass = rg_barrier_test_pass(graph, 1);
   assert(reader_pass->pre_image_barriers.length == 1);
-  const VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(
-      (Vector_VkrRgImageBarrier *)&reader_pass->pre_image_barriers, 0);
+  const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+      (Array_VkrRgImageBarrier *)&reader_pass->pre_image_barriers, 0);
   assert(barrier->src_access == VKR_RG_IMAGE_ACCESS_STORAGE_WRITE);
   assert(barrier->dst_access == VKR_RG_IMAGE_ACCESS_STORAGE_READ);
   assert(barrier->src_layout == barrier->dst_layout);
@@ -1040,8 +1040,8 @@ vkr_internal void test_explicit_stage_and_subresource_dependency(void) {
 
   const VkrRgImageBarrier *source_barrier = NULL;
   for (uint64_t i = 0; i < compiled->pre_image_barriers.length; ++i) {
-    const VkrRgImageBarrier *candidate = vector_get_VkrRgImageBarrier(
-        (Vector_VkrRgImageBarrier *)&compiled->pre_image_barriers, i);
+    const VkrRgImageBarrier *candidate = array_get_VkrRgImageBarrier(
+        (Array_VkrRgImageBarrier *)&compiled->pre_image_barriers, i);
     if (candidate->image.id == source.id) {
       source_barrier = candidate;
       break;
@@ -1106,14 +1106,14 @@ vkr_internal void test_present_target_import_and_terminal_states(void) {
     assert(vkr_rg_set_present_image(graph, target));
 
     assert(vkr_rg_compile_schedule(graph));
-    const VkrRgImageBarrier *initial = vector_get_VkrRgImageBarrier(
+    const VkrRgImageBarrier *initial = array_get_VkrRgImageBarrier(
         &graph->passes.data[0].pre_image_barriers, 0);
     assert(initial->src_layout ==
            (windowed ? VKR_TEXTURE_LAYOUT_UNDEFINED
                      : VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL));
     assert(graph->terminal_image_barriers.length == 1);
     const VkrRgImageBarrier *terminal =
-        vector_get_VkrRgImageBarrier(&graph->terminal_image_barriers, 0);
+        array_get_VkrRgImageBarrier(&graph->terminal_image_barriers, 0);
     assert(terminal->dst_layout ==
            (windowed ? VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR
                      : VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
@@ -1159,8 +1159,8 @@ vkr_internal void test_write_after_write_emits_barrier(void) {
 
   const VkrRgPass *second_pass = rg_barrier_test_pass(graph, 1);
   assert(second_pass->pre_image_barriers.length == 1);
-  const VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(
-      (Vector_VkrRgImageBarrier *)&second_pass->pre_image_barriers, 0);
+  const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+      (Array_VkrRgImageBarrier *)&second_pass->pre_image_barriers, 0);
   assert(barrier->src_access == VKR_RG_IMAGE_ACCESS_STORAGE_WRITE);
   assert(barrier->dst_access == VKR_RG_IMAGE_ACCESS_STORAGE_WRITE);
 
@@ -1233,8 +1233,8 @@ vkr_internal void test_same_pass_storage_read_write_combines(void) {
 
   const VkrRgPass *compiled = rg_barrier_test_pass(graph, 0);
   assert(compiled->pre_image_barriers.length == 1);
-  const VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(
-      (Vector_VkrRgImageBarrier *)&compiled->pre_image_barriers, 0);
+  const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+      (Array_VkrRgImageBarrier *)&compiled->pre_image_barriers, 0);
   assert(barrier->dst_access == (VKR_RG_IMAGE_ACCESS_STORAGE_READ |
                                  VKR_RG_IMAGE_ACCESS_STORAGE_WRITE));
   assert(barrier->dst_layout == VKR_TEXTURE_LAYOUT_GENERAL);
@@ -1322,8 +1322,8 @@ vkr_internal void test_cascade_slices_are_per_layer_then_coalesce(void) {
   for (uint32_t i = 0; i < cascade_count; ++i) {
     const VkrRgPass *pass = rg_barrier_test_pass(graph, i);
     assert(pass->pre_image_barriers.length == 1);
-    const VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(
-        (Vector_VkrRgImageBarrier *)&pass->pre_image_barriers, 0);
+    const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+        (Array_VkrRgImageBarrier *)&pass->pre_image_barriers, 0);
     assert(barrier->range.base_layer == i);
     assert(barrier->range.layer_count == 1);
     assert(barrier->dst_access == VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT);
@@ -1333,8 +1333,8 @@ vkr_internal void test_cascade_slices_are_per_layer_then_coalesce(void) {
   // into a single barrier rather than one per layer.
   const VkrRgPass *world = rg_barrier_test_pass(graph, cascade_count);
   assert(world->pre_image_barriers.length == 1);
-  const VkrRgImageBarrier *read_barrier = vector_get_VkrRgImageBarrier(
-      (Vector_VkrRgImageBarrier *)&world->pre_image_barriers, 0);
+  const VkrRgImageBarrier *read_barrier = array_get_VkrRgImageBarrier(
+      (Array_VkrRgImageBarrier *)&world->pre_image_barriers, 0);
   assert(read_barrier->range.base_layer == 0);
   assert(read_barrier->range.layer_count == cascade_count);
   assert(read_barrier->src_access == VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT);
@@ -1386,8 +1386,8 @@ vkr_internal void test_disjoint_layer_writes_coalesce_on_read(void) {
 
   const VkrRgPass *reader = rg_barrier_test_pass(graph, 2);
   assert(reader->pre_image_barriers.length == 1);
-  const VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(
-      (Vector_VkrRgImageBarrier *)&reader->pre_image_barriers, 0);
+  const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+      (Array_VkrRgImageBarrier *)&reader->pre_image_barriers, 0);
   assert(barrier->range.base_layer == 0);
   assert(barrier->range.layer_count == 4);
 
@@ -1430,8 +1430,8 @@ vkr_internal void test_capture_read_uses_exact_array_slice(void) {
   assert(vkr_rg_compile_schedule(graph));
   const VkrRgPass *compiled = rg_barrier_test_pass(graph, 1u);
   assert(compiled->pre_image_barriers.length == 1u);
-  const VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(
-      (Vector_VkrRgImageBarrier *)&compiled->pre_image_barriers, 0u);
+  const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(
+      (Array_VkrRgImageBarrier *)&compiled->pre_image_barriers, 0u);
   assert(barrier->range.base_layer == 2u);
   assert(barrier->range.layer_count == 1u);
   assert(barrier->range.base_mip == 0u);
@@ -1566,7 +1566,7 @@ vkr_internal void test_tiled_graph_topology(void) {
       blend = i;
     else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Opaque")) {
       const VkrRgAttachment *attachment =
-          vector_get_VkrRgAttachment(&pass->desc.color_attachments, 0u);
+          array_get_VkrRgAttachment(&pass->desc.color_attachments, 0u);
       assert(attachment && attachment->image.id == color.id);
       assert(pass->desc.has_depth_attachment &&
              pass->desc.depth_attachment.image.id == depth.id);
@@ -1651,7 +1651,7 @@ vkr_internal void test_main_graph_editor_metalfx_topology(void) {
   assert(vkr_rg_executor_registry_init(&registry, &allocator));
   uint32_t executor_id = 1u;
   for (uint64_t i = 0u; i < json.passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&json.passes, i);
+    VkrRgJsonPass *pass = array_get_VkrRgJsonPass(&json.passes, i);
     if (!pass || vkr_rg_executor_registry_find(&registry, pass->execute))
       continue;
     const VkrRgPassExecutor executor = {
@@ -1896,7 +1896,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   assert(vkr_rg_executor_registry_init(&registry, &allocator));
   uint32_t executor_id = 1u;
   for (uint64_t i = 0u; i < graph.passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    VkrRgJsonPass *pass = array_get_VkrRgJsonPass(&graph.passes, i);
     if (!pass || vkr_rg_executor_registry_find(&registry, pass->execute))
       continue;
     const VkrRgPassExecutor executor = {
@@ -2122,7 +2122,7 @@ vkr_internal void test_main_graph_fits_runtime_pass_capacity(void) {
   assert(lighting_passes == 1u);
   bool8_t found_vbuffer = false_v;
   for (uint64_t i = 0u; i < runtime->passes.length; ++i) {
-    VkrRgPass *pass = vector_get_VkrRgPass(&runtime->passes, i);
+    VkrRgPass *pass = array_get_VkrRgPass(&runtime->passes, i);
     if (!pass || !vkr_string8_equals_cstr(&pass->desc.name, "VBuffer.Opaque"))
       continue;
     found_vbuffer = true_v;

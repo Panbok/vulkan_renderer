@@ -94,7 +94,9 @@ typedef struct VkrFontSystem {
   VkrAllocator temp_allocator; // temporary allocator for scratch operations
   Arena *temp_arena;           // temporary arena (reset after each operation)
 
-  Array_VkrFont fonts; // contiguous array of fonts
+  // Slot table: sized once at init and never grown, so element pointers
+  // stay valid until shutdown.
+  Array_VkrFont fonts;
   VkrHashTable_VkrFontSystemEntry
       font_map; // name -> ref (index, refcount, flags)
 

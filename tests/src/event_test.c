@@ -684,28 +684,30 @@ static void test_subscription_allocation_failure(void) {
   EventManager manager = {.allocator = container_test_allocator(&state)};
   assert(vkr_mutex_create(&test_allocator, &manager.mutex));
   const EventType type = EVENT_TYPE_BUTTON_PRESS;
-  uint32_t subscribers[DEFAULT_VECTOR_CAPACITY + 1] = {0};
+  uint32_t subscribers[EVENT_CALLBACK_INITIAL_CAPACITY + 1] = {0};
   assert(!event_manager_subscribe(&manager, type, test_callback1,
                                   &subscribers[0]));
   assert(manager.callbacks[type].data == NULL);
   state.fail = false_v;
-  for (uint32_t i = 0; i < DEFAULT_VECTOR_CAPACITY; ++i)
+  for (uint32_t i = 0; i < EVENT_CALLBACK_INITIAL_CAPACITY; ++i)
     assert(event_manager_subscribe(&manager, type, test_callback1,
                                    &subscribers[i]));
   EventCallbackData *original = manager.callbacks[type].data;
   state.fail = true_v;
-  assert(!event_manager_subscribe(&manager, type, test_callback1,
-                                  &subscribers[DEFAULT_VECTOR_CAPACITY]));
+  assert(
+      !event_manager_subscribe(&manager, type, test_callback1,
+                               &subscribers[EVENT_CALLBACK_INITIAL_CAPACITY]));
   assert(manager.callbacks[type].data == original);
-  assert(manager.callbacks[type].length == DEFAULT_VECTOR_CAPACITY);
-  for (uint32_t i = 0; i < DEFAULT_VECTOR_CAPACITY; ++i) {
+  assert(manager.callbacks[type].length == EVENT_CALLBACK_INITIAL_CAPACITY);
+  for (uint32_t i = 0; i < EVENT_CALLBACK_INITIAL_CAPACITY; ++i) {
     assert(original[i].callback == test_callback1);
     assert(original[i].user_data == &subscribers[i]);
   }
   state.fail = false_v;
-  assert(event_manager_subscribe(&manager, type, test_callback1,
-                                 &subscribers[DEFAULT_VECTOR_CAPACITY]));
-  vector_destroy_EventCallbackData(&manager.callbacks[type]);
+  assert(
+      event_manager_subscribe(&manager, type, test_callback1,
+                              &subscribers[EVENT_CALLBACK_INITIAL_CAPACITY]));
+  array_destroy_EventCallbackData(&manager.callbacks[type]);
   assert(state.live_bytes == 0);
   vkr_mutex_destroy(&test_allocator, &manager.mutex);
   teardown_suite();

@@ -356,7 +356,6 @@ typedef struct VkrFontGlyph {
   uint8_t page_id;    // The page id of the glyph.
 } VkrFontGlyph;
 Array(VkrFontGlyph);
-Vector(VkrFontGlyph);
 
 /**
  * @brief A font kerning.
@@ -370,7 +369,6 @@ typedef struct VkrFontKerning {
   int16_t amount;       // The kerning amount.
 } VkrFontKerning;
 Array(VkrFontKerning);
-Vector(VkrFontKerning);
 
 /**
  * @brief MTSDF glyph data (normalized coordinates).
@@ -401,7 +399,6 @@ typedef struct VkrMtsdfGlyph {
   bool8_t has_geometry; // false for space-like glyphs
 } VkrMtsdfGlyph;
 Array(VkrMtsdfGlyph);
-Vector(VkrMtsdfGlyph);
 
 /** A unique cooked glyph record retained in artifact glyph-ID order. */
 typedef struct VkrFontGlyphId {
@@ -427,6 +424,13 @@ typedef struct VkrFontCodepointMapEntry {
   uint32_t glyph_index; // Derived index into glyphs_by_id.
 } VkrFontCodepointMapEntry;
 Array(VkrFontCodepointMapEntry);
+
+// A legacy glyph's codepoint and its index in VkrFont::glyphs.
+typedef struct VkrFontGlyphIndex {
+  uint32_t codepoint;
+  uint32_t glyph_index;
+} VkrFontGlyphIndex;
+Array(VkrFontGlyphIndex);
 
 /** Kerning retained in the cooked artifact's glyph-ID domain. */
 typedef struct VkrFontGlyphKerning {
@@ -475,7 +479,7 @@ typedef struct VkrFont {
   uint32_t page_count;  // Number of texture pages.
   VkrTextureHandle atlas;              // Page 0 atlas handle.
   Array_VkrTextureHandle atlas_pages;  // Page handles, indexed by page id.
-  VkrHashTable_uint32_t glyph_indices; // Codepoint -> glyph index lookup.
+  Array_VkrFontGlyphIndex glyph_index; // Legacy glyphs sorted by codepoint.
   Array_VkrFontGlyph glyphs;           // The font glyphs.
   Array_VkrFontKerning kernings;       // The font kernings.
   float32_t tab_x_advance;             // The tab x advance.
@@ -506,7 +510,6 @@ typedef struct VkrBitmapFontPage {
   char file[256]; // The page file.
 } VkrBitmapFontPage;
 Array(VkrBitmapFontPage);
-Vector(VkrBitmapFontPage);
 
 /**
  * @brief A bitmap font resource data.

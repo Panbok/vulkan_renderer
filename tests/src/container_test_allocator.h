@@ -48,10 +48,45 @@ static inline void container_test_free(void *ctx, void *data, uint64_t size,
   free(data);
 }
 
+/* Over-allocates and stores the malloc base just before the aligned block, so
+ * alignments above malloc's guarantee are honoured. */
+static inline void *container_test_alloc_aligned(void *ctx, uint64_t size,
+                                                 uint64_t alignment,
+                                                 VkrAllocatorMemoryTag tag) {
+  (void)tag;
+  ContainerTestAllocator *state = ctx;
+  state->calls++;
+  if (state->fail || state->calls == state->fail_at) {
+    return NULL;
+  }
+  uint8_t *base = malloc(size + alignment + sizeof(void *));
+  assert(base);
+  const uintptr_t start = (uintptr_t)(base + sizeof(void *));
+  const uintptr_t aligned =
+      (start + alignment - 1u) & ~(uintptr_t)(alignment - 1u);
+  ((void **)aligned)[-1] = base;
+  state->live_bytes += size;
+  return (void *)aligned;
+}
+
+static inline void container_test_free_aligned(void *ctx, void *data,
+                                               uint64_t size,
+                                               uint64_t alignment,
+                                               VkrAllocatorMemoryTag tag) {
+  (void)alignment;
+  (void)tag;
+  ContainerTestAllocator *state = ctx;
+  assert(state->live_bytes >= size);
+  state->live_bytes -= size;
+  free(((void **)data)[-1]);
+}
+
 static inline VkrAllocator
 container_test_allocator(ContainerTestAllocator *state) {
   return (VkrAllocator){.ctx = state,
                         .alloc = container_test_alloc,
+                        .alloc_aligned = container_test_alloc_aligned,
                         .realloc = container_test_realloc,
-                        .free = container_test_free};
+                        .free = container_test_free,
+                        .free_aligned = container_test_free_aligned};
 }

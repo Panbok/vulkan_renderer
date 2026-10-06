@@ -677,7 +677,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   }
   system->job_system = NULL;
 
-  system->fonts = array_create_VkrFont(&system->allocator, max_fonts);
+  system->fonts = array_create_filled_VkrFont(&system->allocator, max_fonts);
   if (!system->fonts.data) {
     log_error("Failed to allocate fonts array");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;

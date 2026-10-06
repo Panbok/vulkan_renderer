@@ -146,8 +146,8 @@ static bool8_t vkr_cooked_font_build_font(const VkrFontCookedDecoded *decoded,
   vkr_cooked_font_copy_face(out_font, decoded->face);
 
   out_font->glyphs_by_id =
-      array_create_VkrFontGlyphId(allocator, decoded->glyph_count);
-  out_font->codepoint_map = array_create_VkrFontCodepointMapEntry(
+      array_create_filled_VkrFontGlyphId(allocator, decoded->glyph_count);
+  out_font->codepoint_map = array_create_filled_VkrFontCodepointMapEntry(
       allocator, decoded->codepoint_count);
   if (!out_font->glyphs_by_id.data || !out_font->codepoint_map.data) {
     return false_v;
@@ -193,8 +193,8 @@ static bool8_t vkr_cooked_font_build_font(const VkrFontCookedDecoded *decoded,
   }
 
   if (decoded->kerning_count > 0) {
-    out_font->glyph_kernings =
-        array_create_VkrFontGlyphKerning(allocator, decoded->kerning_count);
+    out_font->glyph_kernings = array_create_filled_VkrFontGlyphKerning(
+        allocator, decoded->kerning_count);
     if (!out_font->glyph_kernings.data) {
       return false_v;
     }
@@ -226,7 +226,7 @@ static bool8_t vkr_cooked_font_build_font(const VkrFontCookedDecoded *decoded,
   if (out_font->tab_x_advance == 0.0f) {
     out_font->tab_x_advance = 2.0f;
   }
-  out_font->atlas_pages = array_create_VkrTextureHandle(allocator, 1u);
+  out_font->atlas_pages = array_create_filled_VkrTextureHandle(allocator, 1u);
   if (!out_font->atlas_pages.data) {
     return false_v;
   }

@@ -510,10 +510,10 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
     const VkrMeshCookedHeaderView *header, uint64_t expected_string_offset,
     VkrMeshSource *source, VkrMeshSkinData *skin,
     VkrMeshCookedLightmap *lightmap) {
-  source->nodes = array_create_VkrMeshSourceNode(result_allocator,
-                                                 header->header_reserved[0]);
-  source->meshes = array_create_VkrMeshSourceMesh(result_allocator,
-                                                  header->header_reserved[1]);
+  source->nodes = array_create_filled_VkrMeshSourceNode(
+      result_allocator, header->header_reserved[0]);
+  source->meshes = array_create_filled_VkrMeshSourceMesh(
+      result_allocator, header->header_reserved[1]);
   if ((header->header_reserved[0] && !source->nodes.data) ||
       (header->header_reserved[1] && !source->meshes.data))
     return false_v;
@@ -963,7 +963,8 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
                                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
                           : NULL;
   Array_VkrGeometryUploadRange output_ranges =
-      array_create_VkrGeometryUploadRange(result_allocator, header.range_count);
+      array_create_filled_VkrGeometryUploadRange(result_allocator,
+                                                 header.range_count);
   VkrGpuGeometryDecodeRecord *decodes =
       header.range_count
           ? vkr_allocator_alloc(result_allocator,

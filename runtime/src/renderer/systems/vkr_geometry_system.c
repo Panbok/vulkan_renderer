@@ -312,8 +312,8 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
   system->max_geometries =
       (config->max_geometries > 0) ? config->max_geometries : 1024;
 
-  system->geometries =
-      array_create_VkrGeometry(&system->allocator, system->max_geometries);
+  system->geometries = array_create_filled_VkrGeometry(&system->allocator,
+                                                       system->max_geometries);
   if (!system->geometries.data) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_geometry_system_shutdown(system);
@@ -325,7 +325,7 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
     array_set_VkrGeometry(&system->geometries, geometry, init);
   }
   system->free_ids =
-      array_create_uint32_t(&system->allocator, system->max_geometries);
+      array_create_filled_uint32_t(&system->allocator, system->max_geometries);
   system->free_count = 0;
 
   system->geometry_by_name = vkr_hash_table_create_VkrGeometryEntry(

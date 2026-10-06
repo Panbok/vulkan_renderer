@@ -253,7 +253,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyph_bounds(
 
 vkr_internal bool8_t vkr_mtsdf_parse_glyphs(
     VkrJsonReader *reader, const VkrMtsdfFontMetadata *metadata,
-    Vector_VkrMtsdfGlyph *out_glyphs, VkrRendererError *out_error) {
+    Array_VkrMtsdfGlyph *out_glyphs, VkrRendererError *out_error) {
   assert_log(reader != NULL, "Reader is NULL");
   assert_log(metadata != NULL, "Metadata is NULL");
   assert_log(out_glyphs != NULL, "Out glyphs is NULL");
@@ -332,7 +332,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyphs(
       return false_v;
     }
 
-    if (!vector_push_VkrMtsdfGlyph(out_glyphs, glyph)) {
+    if (!array_push_VkrMtsdfGlyph(out_glyphs, glyph)) {
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       return false_v;
     }
@@ -380,7 +380,7 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
   out_font->atlas_size_y = (int32_t)metadata->atlas_height;
 
   out_font->glyphs =
-      array_create_VkrFontGlyph(allocator, metadata->glyphs.length);
+      array_create_filled_VkrFontGlyph(allocator, metadata->glyphs.length);
   if (!out_font->glyphs.data) {
     return false_v;
   }
@@ -432,31 +432,14 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
     }
   }
 
-  uint64_t glyph_count = out_font->glyphs.length;
-  uint64_t table_capacity = glyph_count * 2;
-  if (table_capacity < VKR_HASH_TABLE_INITIAL_CAPACITY) {
-    table_capacity = VKR_HASH_TABLE_INITIAL_CAPACITY;
-  }
-  out_font->glyph_indices =
-      vkr_hash_table_create_uint32_t(allocator, table_capacity);
-  if (!out_font->glyph_indices.entries)
+  if (!vkr_text_font_index_glyphs(out_font, allocator)) {
+    log_error("MtsdfFontLoader: failed to index glyphs");
     return false_v;
-
-  for (uint64_t i = 0; i < glyph_count; i++) {
-    String8 key = string8_create_formatted(allocator, "%u",
-                                           out_font->glyphs.data[i].codepoint);
-    if (!key.str ||
-        !vkr_hash_table_insert_uint32_t(&out_font->glyph_indices,
-                                        string8_cstr(&key), (uint32_t)i)) {
-      log_error("MtsdfFontLoader: failed to index glyph %u",
-                out_font->glyphs.data[i].codepoint);
-      return false_v;
-    }
   }
 
   if (metadata->kernings.length > 0) {
-    out_font->kernings =
-        array_create_VkrFontKerning(allocator, metadata->kernings.length);
+    out_font->kernings = array_create_filled_VkrFontKerning(
+        allocator, metadata->kernings.length);
     if (!out_font->kernings.data) {
       return false_v;
     }
@@ -479,7 +462,7 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
     out_font->tab_x_advance = (float32_t)out_font->size * 2.0f;
   }
 
-  out_font->atlas_pages = array_create_VkrTextureHandle(allocator, 1);
+  out_font->atlas_pages = array_create_filled_VkrTextureHandle(allocator, 1);
   if (!out_font->atlas_pages.data)
     return false_v;
   out_font->atlas_pages.data[0] = atlas;
@@ -619,14 +602,14 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
     goto fail;
   }
 
-  Vector_VkrMtsdfGlyph glyphs = {.allocator = temp_alloc};
+  Array_VkrMtsdfGlyph glyphs = {.allocator = temp_alloc};
   *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
   if (!vkr_mtsdf_parse_glyphs(&reader, &metadata, &glyphs, out_error)) {
     goto fail;
   }
 
   metadata.glyphs =
-      array_create_VkrMtsdfGlyph(&result->allocator, glyphs.length);
+      array_create_filled_VkrMtsdfGlyph(&result->allocator, glyphs.length);
   if (!metadata.glyphs.data) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     goto fail;
@@ -767,8 +750,8 @@ vkr_mtsdf_font_loader_unload(VkrResourceLoader *self,
     vkr_resource_system_unload(&atlas_info, result->atlas_texture_name);
   }
 
-  if (font->glyph_indices.entries) {
-    vkr_hash_table_destroy_uint32_t(&font->glyph_indices);
+  if (font->glyph_index.data) {
+    array_destroy_VkrFontGlyphIndex(&font->glyph_index);
   }
 
   if (font->glyphs.data) {

@@ -1621,8 +1621,8 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->asset_publisher = config->asset_publisher;
 
   system->config = *config;
-  system->materials =
-      array_create_VkrMaterial(&system->allocator, config->max_material_count);
+  system->materials = array_create_filled_VkrMaterial(
+      &system->allocator, config->max_material_count);
   if (!system->materials.data) {
     vkr_material_system_shutdown(system);
     return false_v;
@@ -1640,8 +1640,8 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->material_by_name =
       vkr_hash_table_create_VkrMaterialEntry(&system->allocator, hash_size);
 
-  system->free_ids =
-      array_create_uint32_t(&system->allocator, config->max_material_count);
+  system->free_ids = array_create_filled_uint32_t(&system->allocator,
+                                                  config->max_material_count);
   if (!system->material_by_name.entries || !system->free_ids.data) {
     vkr_material_system_shutdown(system);
     return false_v;

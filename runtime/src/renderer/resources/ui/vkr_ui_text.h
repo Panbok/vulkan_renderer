@@ -81,7 +81,7 @@ typedef struct VkrUiText {
   bool8_t layout_dirty;  // Need to recompute layout
   bool8_t buffers_dirty; // Need to regenerate shaped CPU geometry
 } VkrUiText;
-Vector(VkrUiText);
+Array(VkrUiText);
 
 // =============================================================================
 // UI Text API

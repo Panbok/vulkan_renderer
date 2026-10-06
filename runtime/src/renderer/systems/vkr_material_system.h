@@ -126,7 +126,9 @@ typedef struct VkrMaterialSystem {
   VkrMaterialSystemConfig config;
   const VkrAssetPublisher *asset_publisher;
 
-  Array_VkrMaterial materials;                    // contiguous array
+  // Slot table: sized once at init and never grown, so element pointers
+  // stay valid until shutdown.
+  Array_VkrMaterial materials;
   VkrHashTable_VkrMaterialEntry material_by_name; // lifetime map
 
   // ID reuse tracking (stack of free indices)

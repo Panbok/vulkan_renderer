@@ -1,7 +1,7 @@
 #pragma once
 
+#include "containers/array.h"
 #include "containers/str.h"
-#include "containers/vector.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 #include "vkr_render_graph.h"
@@ -276,7 +276,7 @@ typedef struct VkrRgJsonResource {
   VkrRgJsonImageDesc image;     // The image description of the resource.
   VkrRgJsonBufferDesc buffer;   // The buffer description of the resource.
 } VkrRgJsonResource;
-Vector(VkrRgJsonResource);
+Array(VkrRgJsonResource);
 
 /**
  * Image access flags.
@@ -353,7 +353,7 @@ typedef struct VkrRgJsonResourceUse {
   VkrRgJsonIndex slice_base_layer;
   VkrRgJsonIndex slice_layer_count;
 } VkrRgJsonResourceUse;
-Vector(VkrRgJsonResourceUse);
+Array(VkrRgJsonResourceUse);
 
 /**
  * Attachment.
@@ -370,14 +370,14 @@ typedef struct VkrRgJsonAttachment {
   VkrRgJsonIndex slice_base_layer;  // The slice base layer of the attachment.
   VkrRgJsonIndex slice_layer_count; // The slice layer count of the attachment.
 } VkrRgJsonAttachment;
-Vector(VkrRgJsonAttachment);
+Array(VkrRgJsonAttachment);
 
 /**
  * Attachments.
  * @note: The attachments are only used to describe the attachments of a pass.
  */
 typedef struct VkrRgJsonAttachments {
-  Vector_VkrRgJsonAttachment colors; // The color attachments.
+  Array_VkrRgJsonAttachment colors;  // The color attachments.
   bool8_t has_depth;                 // Whether the pass has a depth attachment.
   VkrRgJsonAttachment depth;         // The depth attachment.
   bool8_t depth_read_only; // Whether the depth attachment is read only.
@@ -405,15 +405,15 @@ typedef struct VkrRgJsonPass {
   VkrPipelineDomain domain;           // The domain of the pass.
   VkrRgJsonCondition condition;       // The condition of the pass.
   VkrRgJsonRepeat repeat;             // The repeat of the pass.
-  Vector_VkrRgJsonResourceUse reads;  // The reads of the pass.
-  Vector_VkrRgJsonResourceUse writes; // The writes of the pass.
+  Array_VkrRgJsonResourceUse reads;   // The reads of the pass.
+  Array_VkrRgJsonResourceUse writes;  // The writes of the pass.
   VkrRgJsonAttachments attachments;   // The attachments of the pass.
   VkrRgComputeDispatchDesc dispatch;  // Optional typed compute dispatch.
   String8 execute;                    // The execute of the pass.
   uint32_t executor_id;               // Stable backend-local executor kind.
   bool8_t executor_resolved;          // Whether the typed binding succeeded.
 } VkrRgJsonPass;
-Vector(VkrRgJsonPass);
+Array(VkrRgJsonPass);
 
 /**
  * Outputs.
@@ -421,8 +421,8 @@ Vector(VkrRgJsonPass);
  */
 typedef struct VkrRgJsonOutputs {
   String8 present;               // The present output.
-  Vector_String8 export_images;  // The export images.
-  Vector_String8 export_buffers; // The export buffers.
+  Array_String8 export_images;   // The export images.
+  Array_String8 export_buffers;  // The export buffers.
 } VkrRgJsonOutputs;
 
 /**
@@ -432,8 +432,8 @@ typedef struct VkrRgJsonOutputs {
 typedef struct VkrRgJsonGraph {
   uint32_t version;                   // The version of the graph.
   String8 name;                       // The name of the graph.
-  Vector_VkrRgJsonResource resources; // The resources of the graph.
-  Vector_VkrRgJsonPass passes;        // The passes of the graph.
+  Array_VkrRgJsonResource resources;  // The resources of the graph.
+  Array_VkrRgJsonPass passes;         // The passes of the graph.
   VkrRgJsonOutputs outputs;           // The outputs of the graph.
   String8 source;                     // The source of the graph.
   VkrAllocator *allocator;            // The allocator of the graph.

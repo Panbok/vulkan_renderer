@@ -215,7 +215,7 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
 
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     VkrRgAttachment *att =
-        vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
+        array_get_VkrRgAttachment(&pass->desc.color_attachments, i);
     if (!att) {
       continue;
     }
@@ -244,7 +244,7 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
   }
 
   for (uint64_t i = 0; i < pass->desc.image_reads.length; ++i) {
-    VkrRgImageUse *use = vector_get_VkrRgImageUse(&pass->desc.image_reads, i);
+    VkrRgImageUse *use = array_get_VkrRgImageUse(&pass->desc.image_reads, i);
     if (!use) {
       continue;
     }
@@ -258,7 +258,7 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
   }
 
   for (uint64_t i = 0; i < pass->desc.image_writes.length; ++i) {
-    VkrRgImageUse *use = vector_get_VkrRgImageUse(&pass->desc.image_writes, i);
+    VkrRgImageUse *use = array_get_VkrRgImageUse(&pass->desc.image_writes, i);
     if (!use) {
       continue;
     }
@@ -272,8 +272,7 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
   }
 
   for (uint64_t i = 0; i < pass->desc.buffer_reads.length; ++i) {
-    VkrRgBufferUse *use =
-        vector_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
+    VkrRgBufferUse *use = array_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
     if (!use) {
       continue;
     }
@@ -288,7 +287,7 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
 
   for (uint64_t i = 0; i < pass->desc.buffer_writes.length; ++i) {
     VkrRgBufferUse *use =
-        vector_get_VkrRgBufferUse(&pass->desc.buffer_writes, i);
+        array_get_VkrRgBufferUse(&pass->desc.buffer_writes, i);
     if (!use) {
       continue;
     }
@@ -313,7 +312,7 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges_direct(FileHandle *handle,
   }
 
   for (uint64_t i = 0; i < pass->out_edges.length; ++i) {
-    uint32_t to = *vector_get_uint32_t(&pass->out_edges, i);
+    uint32_t to = *array_get_uint32_t(&pass->out_edges, i);
     vkr_rg_dot_write_fmt(handle, allocator,
                          "  p%u -> p%u [style=dashed color=\"gray50\"];\n",
                          pass_index, to);
@@ -396,34 +395,34 @@ bool8_t vkr_rg_export_dot_ex(const VkrRenderGraph *graph,
                        "  edge [fontname=\"Helvetica\" fontsize=9];\n");
 
   for (uint32_t i = 0; i < rg->passes.length; ++i) {
-    VkrRgPass *pass = vector_get_VkrRgPass(&rg->passes, i);
+    VkrRgPass *pass = array_get_VkrRgPass(&rg->passes, i);
     vkr_rg_dot_write_pass_node(&handle, allocator, pass, i);
   }
 
   if (desc->flags & VKR_RG_DOT_EXPORT_RESOURCES) {
     for (uint32_t i = 0; i < rg->images.length; ++i) {
-      VkrRgImage *image = vector_get_VkrRgImage(&rg->images, i);
+      VkrRgImage *image = array_get_VkrRgImage(&rg->images, i);
       bool8_t is_present = vkr_rg_image_handle_valid(rg->present_image) &&
                            (rg->present_image.id - 1) == i;
       vkr_rg_dot_write_image_node(&handle, allocator, image, i, is_present);
     }
 
     for (uint32_t i = 0; i < rg->buffers.length; ++i) {
-      VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&rg->buffers, i);
+      VkrRgBuffer *buffer = array_get_VkrRgBuffer(&rg->buffers, i);
       vkr_rg_dot_write_buffer_node(&handle, allocator, buffer, i);
     }
   }
 
   if (desc->flags & VKR_RG_DOT_EXPORT_RESOURCES) {
     for (uint32_t i = 0; i < rg->passes.length; ++i) {
-      VkrRgPass *pass = vector_get_VkrRgPass(&rg->passes, i);
+      VkrRgPass *pass = array_get_VkrRgPass(&rg->passes, i);
       vkr_rg_dot_write_pass_edges(&handle, allocator, rg, pass, i);
     }
   }
 
   if (desc->flags & VKR_RG_DOT_EXPORT_PASS_EDGES) {
     for (uint32_t i = 0; i < rg->passes.length; ++i) {
-      VkrRgPass *pass = vector_get_VkrRgPass(&rg->passes, i);
+      VkrRgPass *pass = array_get_VkrRgPass(&rg->passes, i);
       vkr_rg_dot_write_pass_edges_direct(&handle, allocator, pass, i);
     }
   }

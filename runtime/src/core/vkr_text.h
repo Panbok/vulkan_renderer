@@ -7,7 +7,6 @@
 
 #include "containers/array.h"
 #include "containers/str.h"
-#include "containers/vector.h"
 #include "defines.h"
 #include "math/vec.h"
 #include "memory/vkr_allocator.h"
@@ -405,6 +404,14 @@ void vkr_text_layout_destroy(VkrTextLayout *layout);
  * @return The yellow text color.
  */
 #define VKR_TEXT_COLOR_YELLOW (Vec4){1.0f, 1.0f, 0.0f, 1.0f}
+
+/**
+ * @brief Builds font->glyph_index from font->glyphs for codepoint lookup.
+ * @param font A legacy font whose glyphs are loaded.
+ * @param allocator Allocator that owns the index until the font unloads.
+ * @return false when the index cannot be allocated.
+ */
+bool8_t vkr_text_font_index_glyphs(VkrFont *font, VkrAllocator *allocator);
 
 /**
  * @brief Compares two font kernings for qsort in font loaders.

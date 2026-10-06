@@ -1,138 +1,224 @@
 /**
  * @file array.h
- * @brief Fixed-size array implementation
+ * @brief Growable typed array
  *
- * This file provides a generic, type-safe fixed-size array implementation using
- * the C preprocessor. Arrays are allocated from an allocator and provide
- * efficient O(1) access operations with bounds checking.
+ * Array(type) declares Array_type and its functions. A record holds an
+ * allocator, a capacity, a length and contiguous storage aligned for the
+ * element type.
  *
- * Memory Layout:
- * An array consists of a metadata structure and a contiguous block of elements:
+ * - array_create_TYPE(allocator, capacity) reserves capacity with length 0.
+ * - array_create_filled_TYPE(allocator, length) allocates length zeroed
+ *   elements and sets the length.
+ * - A record set only with .allocator is a valid empty array; its first
+ *   reserve or push allocates.
  *
- * +---------------------+ <-- Array_TYPE structure
- * | VkrAllocator *alloc |     (Allocator used for memory)
- * | uint64_t length       |     (Number of elements in the array)
- * | TYPE *data          | --> Points to contiguous memory block of length *
- * | sizeof(TYPE)        |     (Size of each element in the array)
- * +---------------------+
+ * Constructors return an all-zero record when the size overflows or the
+ * allocation fails. Capacity 0 returns an empty record that keeps the
+ * allocator. Growth preserves data, length and capacity on failure.
  *
- * This implementation is useful for scenarios where:
- * - The size of the array is known at creation time
- * - Random access to elements is required
- * - The array size doesn't need to change during its lifetime
- *
- * Each array operation includes bounds checking to ensure memory safety
- * and prevent buffer overflows.
- *
- * Usage Pattern:
- * 1. Create an array using array_create_TYPE()
- * 2. Set elements with array_set_TYPE()
- * 3. Get elements with array_get_TYPE()
- * 4. When done, optionally call array_destroy_TYPE() to clean up metadata
+ * A successful push, reserve or grow can move the storage and invalidates
+ * borrowed element pointers. An owner that hands out element pointers, such
+ * as a fixed slot table, allocates once and never grows the array. The
+ * allocator owns the storage until destroy.
  */
 
 #pragma once
 
+#include "containers/str.h"
 #include "core/logger.h"
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 
+#define VKR_ARRAY_GROWTH_FACTOR 2
+#define VKR_ARRAY_FIRST_GROWTH_CAPACITY 16
+
+typedef struct ArrayFindResult {
+  uint64_t index;
+  bool32_t found;
+} ArrayFindResult;
+
 #define ArrayConstructor(type, name)                                           \
-  /**                                                                          \
-   * @brief Array structure for storing fixed-size collections of elements of  \
-   * type 'type' A fixed-size array of type 'name' with bounds checking        \
-   */                                                                          \
-  struct Array_##name;                                                         \
   typedef struct Array_##name {                                                \
-    VkrAllocator *allocator; /**< Allocator used for memory allocation */      \
-    uint64_t length;         /**< Number of elements in the array */           \
-    type *data;              /**< Pointer to the contiguous array storage */   \
+    VkrAllocator *allocator;                                                   \
+    uint64_t capacity;                                                         \
+    uint64_t length;                                                           \
+    type *data;                                                                \
   } Array_##name;                                                              \
                                                                                \
-  /**                                                                          \
-   * @brief Creates a new array with the specified length                      \
-   * @param allocator Allocator to use for memory allocation                   \
-   * @param length Number of elements to allocate in the array                 \
-   * @return Initialized record, or an all-zero record on allocation failure   \
-   */                                                                          \
   static inline VKR_MAYBE_UNUSED VKR_MUST_USE                                  \
       Array_##name array_create_##name(VkrAllocator *allocator,                \
-                                       const uint64_t length) {                \
+                                       uint64_t capacity) {                    \
     assert_log(allocator != NULL, "Allocator is NULL");                        \
-    if (length == 0 || length > SIZE_MAX / sizeof(type)) {                     \
+    if (capacity > SIZE_MAX / sizeof(type)) {                                  \
       return (Array_##name){0};                                                \
     }                                                                          \
+    if (capacity == 0) {                                                       \
+      return (Array_##name){.allocator = allocator};                           \
+    }                                                                          \
+    type *data = vkr_allocator_alloc_aligned(                                  \
+        allocator, capacity * sizeof(type), AlignOf(type),                     \
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                                       \
+    if (!data) {                                                               \
+      return (Array_##name){0};                                                \
+    }                                                                          \
+    return (Array_##name){                                                     \
+        .allocator = allocator, .capacity = capacity, .data = data};           \
+  }                                                                            \
                                                                                \
-    type *buf = vkr_allocator_alloc_aligned(allocator, length * sizeof(type),  \
-                                            AlignOf(type),                     \
-                                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);   \
-    if (!buf) {                                                                \
-      return (Array_##name){0};                                                \
+  static inline VKR_MAYBE_UNUSED VKR_MUST_USE                                  \
+      Array_##name array_create_filled_##name(VkrAllocator *allocator,         \
+                                              uint64_t length) {               \
+    Array_##name array = array_create_##name(allocator, length);               \
+    if (array.data) {                                                          \
+      MemZero(array.data, length * sizeof(type));                              \
+      array.length = length;                                                   \
     }                                                                          \
-    Array_##name array = {allocator, length, buf};                             \
     return array;                                                              \
   }                                                                            \
                                                                                \
-  /**                                                                          \
-   * @brief Retrieves a pointer to an element at the specified index           \
-   * @param array Pointer to the array                                         \
-   * @param index Zero-based index of the element to retrieve                  \
-   * @return Pointer to the element at the specified index                     \
-   * @note Asserts if index is out of bounds                                   \
-   */                                                                          \
-  static inline VKR_MAYBE_UNUSED type *array_get_##name(                       \
-      const Array_##name *array, const uint64_t index) {                       \
+  static inline VKR_MAYBE_UNUSED VKR_MUST_USE bool8_t array_reserve_##name(    \
+      Array_##name *array, uint64_t capacity) {                                \
+    assert_log(array != NULL, "Array is NULL");                                \
+    assert_log(array->allocator != NULL, "Allocator is NULL");                 \
+    if (capacity <= array->capacity) {                                         \
+      return true_v;                                                           \
+    }                                                                          \
+    if (capacity > SIZE_MAX / sizeof(type)) {                                  \
+      return false_v;                                                          \
+    }                                                                          \
+    type *data = vkr_allocator_alloc_aligned(                                  \
+        array->allocator, capacity * sizeof(type), AlignOf(type),              \
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                                       \
+    if (!data) {                                                               \
+      return false_v;                                                          \
+    }                                                                          \
+    /* Only live elements move; an arena keeps the old block, so copying       \
+     * the unused capacity would only cost time. */                            \
+    if (array->data) {                                                         \
+      MemCopy(data, array->data, array->length * sizeof(type));                \
+      vkr_allocator_free_aligned(                                              \
+          array->allocator, array->data, array->capacity * sizeof(type),       \
+          AlignOf(type), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                      \
+    }                                                                          \
+    array->data = data;                                                        \
+    array->capacity = capacity;                                                \
+    return true_v;                                                             \
+  }                                                                            \
+                                                                               \
+  /* Grows by VKR_ARRAY_GROWTH_FACTOR, or to VKR_ARRAY_FIRST_GROWTH_CAPACITY   \
+   * from an empty record. */                                                  \
+  static inline VKR_MAYBE_UNUSED VKR_MUST_USE bool8_t array_grow_##name(       \
+      Array_##name *array) {                                                   \
+    assert_log(array != NULL, "Array is NULL");                                \
+    const uint64_t max_capacity = SIZE_MAX / sizeof(type);                     \
+    if (array->capacity == max_capacity) {                                     \
+      return false_v;                                                          \
+    }                                                                          \
+    uint64_t capacity =                                                        \
+        array->capacity > max_capacity / VKR_ARRAY_GROWTH_FACTOR               \
+            ? max_capacity                                                     \
+            : array->capacity * VKR_ARRAY_GROWTH_FACTOR;                       \
+    if (capacity == 0) {                                                       \
+      capacity = VKR_ARRAY_FIRST_GROWTH_CAPACITY;                              \
+    }                                                                          \
+    return array_reserve_##name(array, capacity);                              \
+  }                                                                            \
+                                                                               \
+  static inline VKR_MAYBE_UNUSED VKR_MUST_USE bool8_t array_push_##name(       \
+      Array_##name *array, type value) {                                       \
+    assert_log(array != NULL, "Array is NULL");                                \
+    if (array->length == array->capacity && !array_grow_##name(array)) {       \
+      return false_v;                                                          \
+    }                                                                          \
+    assert_log(array->data != NULL, "Array storage is NULL");                  \
+    array->data[array->length++] = value;                                      \
+    return true_v;                                                             \
+  }                                                                            \
+                                                                               \
+  static inline VKR_MAYBE_UNUSED type array_pop_##name(Array_##name *array) {  \
+    assert_log(array != NULL, "Array is NULL");                                \
+    assert_log(array->length > 0, "Array is empty");                           \
+    assert_log(array->data != NULL, "Array storage is NULL");                  \
+    return array->data[--array->length];                                       \
+  }                                                                            \
+                                                                               \
+  /* Removes the element at `index`, keeps the order of the rest and copies    \
+   * the removed element to `dest` when it is not NULL. */                     \
+  static inline VKR_MAYBE_UNUSED type *array_pop_at_##name(                    \
+      Array_##name *array, uint64_t index, type *dest) {                       \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     assert_log(array->data != NULL, "Array storage is NULL");                  \
-    return (type *)(array->data + index);                                      \
+    if (dest != NULL) {                                                        \
+      MemCopy(dest, array->data + index, sizeof(type));                        \
+    }                                                                          \
+    const uint64_t elements_to_move = array->length - 1 - index;               \
+    if (elements_to_move > 0) {                                                \
+      MemCopy(array->data + index, array->data + index + 1,                    \
+              elements_to_move * sizeof(type));                                \
+    }                                                                          \
+    array->length--;                                                           \
+    return dest;                                                               \
   }                                                                            \
                                                                                \
-  /**                                                                          \
-   * @brief Sets the value of an element at the specified index                \
-   * @param array Pointer to the array                                         \
-   * @param index Zero-based index of the element to set                       \
-   * @param value Value to assign to the element                               \
-   * @note Asserts if index is out of bounds                                   \
-   */                                                                          \
+  typedef bool8_t (*ArrayFindCallback_##name)(type * current_value,            \
+                                              type * value);                   \
+                                                                               \
+  static inline VKR_MAYBE_UNUSED ArrayFindResult array_find_##name(            \
+      const Array_##name *array, type *value,                                  \
+      ArrayFindCallback_##name callback) {                                     \
+    assert_log(array != NULL, "Array is NULL");                                \
+    assert_log(callback != NULL, "Callback is NULL");                          \
+    for (uint64_t i = 0; i < array->length; i++) {                             \
+      if (callback(&array->data[i], value)) {                                  \
+        return (ArrayFindResult){i, true_v};                                   \
+      }                                                                        \
+    }                                                                          \
+    return (ArrayFindResult){0, false_v};                                      \
+  }                                                                            \
+                                                                               \
+  static inline VKR_MAYBE_UNUSED void array_clear_##name(                      \
+      Array_##name *array) {                                                   \
+    assert_log(array != NULL, "Array is NULL");                                \
+    array->length = 0;                                                         \
+  }                                                                            \
+                                                                               \
   static inline VKR_MAYBE_UNUSED void array_set_##name(                        \
-      Array_##name *array, const uint64_t index, type value) {                 \
+      Array_##name *array, uint64_t index, type value) {                       \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     assert_log(array->data != NULL, "Array storage is NULL");                  \
     array->data[index] = value;                                                \
   }                                                                            \
-  /**                                                                          \
-   * @brief Marks the array as destroyed, sets all members to NULL/0           \
-   * @param array Pointer to the array                                         \
-   */                                                                          \
+                                                                               \
+  static inline VKR_MAYBE_UNUSED type *array_get_##name(                       \
+      const Array_##name *array, uint64_t index) {                             \
+    assert_log(array != NULL, "Array is NULL");                                \
+    assert_log(index < array->length, "Index is out of bounds");               \
+    assert_log(array->data != NULL, "Array storage is NULL");                  \
+    return array->data + index;                                                \
+  }                                                                            \
+                                                                               \
+  /* Frees the storage and resets the record to all zeros. */                  \
   static inline VKR_MAYBE_UNUSED void array_destroy_##name(                    \
       Array_##name *array) {                                                   \
     assert_log(array != NULL, "Array is NULL");                                \
     if (array->allocator && array->data) {                                     \
-      vkr_allocator_free_aligned(array->allocator, array->data,                \
-                                 array->length * sizeof(type), AlignOf(type),  \
-                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY);              \
+      vkr_allocator_free_aligned(                                              \
+          array->allocator, array->data, array->capacity * sizeof(type),       \
+          AlignOf(type), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                      \
     }                                                                          \
-    array->data = NULL;                                                        \
-    array->allocator = NULL;                                                   \
-    array->length = 0;                                                         \
+    *array = (Array_##name){0};                                                \
   }                                                                            \
-  /**                                                                          \
-   * @brief Checks if the array was never initialized or has been destroyed    \
-   * @param array Pointer to the array                                         \
-   * @return True if the array data pointer is NULL, false otherwise           \
-   */                                                                          \
+                                                                               \
+  /* True when the record has no storage: never allocated, empty or            \
+   * destroyed. */                                                             \
   static inline VKR_MAYBE_UNUSED bool32_t array_is_null_##name(                \
       const Array_##name *array) {                                             \
     assert_log(array != NULL, "Array is NULL");                                \
     return array->data == NULL;                                                \
   }                                                                            \
-  /**                                                                          \
-   * @brief Checks if the array is empty (has zero length)                     \
-   * @param array Pointer to the array                                         \
-   * @return True if the array has zero length, false otherwise                \
-   */                                                                          \
+                                                                               \
   static inline VKR_MAYBE_UNUSED bool32_t array_is_empty_##name(               \
       const Array_##name *array) {                                             \
     assert_log(array != NULL, "Array is NULL");                                \

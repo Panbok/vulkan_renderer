@@ -214,7 +214,8 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
     return false_v;
   }
   Array_VkrMaterialHandle material_handles =
-      array_create_VkrMaterialHandle(&result->allocator, decoded.ranges.length);
+      array_create_filled_VkrMaterialHandle(&result->allocator,
+                                            decoded.ranges.length);
   if (decoded.ranges.length && !material_handles.data) {
     vkr_mesh_loader_destroy_result(context, result);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;

@@ -5,8 +5,8 @@
 #include "assets/vkr_mesh_encode.h"
 #include "assets/vkr_meshoptimizer_bridge.h"
 
+#include "containers/array.h"
 #include "containers/str.h"
-#include "containers/vector.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_hash.h"
@@ -22,17 +22,16 @@
 #include "platform/vkr_platform.h"
 #include "vkr_geometry_data.h"
 #include "vkr_vkt_packer.h"
-Vector(Vec2);
-Vector(Vec3);
-Vector(VkrVertex3d);
-Vector(VkrMeshSkinVertex);
-Vector(VkrMeshLoaderSubmeshRange);
+Array(Vec2);
+Array(Vec3);
+Array(VkrVertex3d);
+Array(VkrMeshSkinVertex);
 #define DEFAULT_SHADER string8_lit("shader.default.world")
 
 typedef struct VkrMeshSourceDependency {
   String8 path;
 } VkrMeshSourceDependency;
-Vector(VkrMeshSourceDependency);
+Array(VkrMeshSourceDependency);
 
 typedef struct VkrMeshLoaderMaterialDef {
   String8 name;
@@ -50,12 +49,12 @@ typedef struct VkrMeshLoaderMaterialDef {
   String8 generated_path;
   bool8_t generated;
 } VkrMeshLoaderMaterialDef;
-Vector(VkrMeshLoaderMaterialDef);
+Array(VkrMeshLoaderMaterialDef);
 
 typedef struct VkrMeshLoaderSubsetBuilder {
-  Vector_VkrVertex3d vertices;
-  Vector_VkrMeshSkinVertex skin_vertices;
-  Vector_uint32_t indices;
+  Array_VkrVertex3d vertices;
+  Array_VkrMeshSkinVertex skin_vertices;
+  Array_uint32_t indices;
   String8 name;
   String8 material_name;
   bool8_t material_is_path;
@@ -68,7 +67,7 @@ typedef struct VkrMeshLoaderMaterialBucket {
   String8 material_name;
   VkrMeshLoaderSubsetBuilder builder;
 } VkrMeshLoaderMaterialBucket;
-Vector(VkrMeshLoaderMaterialBucket);
+Array(VkrMeshLoaderMaterialBucket);
 
 /* A file's SHA-256 and byte size: its bundle name and its dependency digest. */
 typedef struct VkrMeshLoaderBundleHash {
@@ -94,23 +93,23 @@ typedef struct VkrMeshLoaderBundleWrite {
   VkrMeshLoaderBundleHash hash;
   bool8_t placed;
 } VkrMeshLoaderBundleWrite;
-Vector(VkrMeshLoaderBundleWrite);
+Array(VkrMeshLoaderBundleWrite);
 
 typedef struct VkrMeshLoaderState {
   VkrAllocator *load_allocator;
   VkrAllocator *scratch_allocator;
 
-  Vector_Vec3 positions;
-  Vector_Vec3 normals;
-  Vector_Vec2 texcoords;
-  Vector_VkrMeshLoaderMaterialDef materials;
-  Vector_VkrMeshLoaderMaterialBucket material_buckets;
-  Vector_VkrVertex3d merged_vertices;
-  Vector_VkrMeshSkinVertex merged_skin_vertices;
+  Array_Vec3 positions;
+  Array_Vec3 normals;
+  Array_Vec2 texcoords;
+  Array_VkrMeshLoaderMaterialDef materials;
+  Array_VkrMeshLoaderMaterialBucket material_buckets;
+  Array_VkrVertex3d merged_vertices;
+  Array_VkrMeshSkinVertex merged_skin_vertices;
   VkrMeshSkinData skin;
-  Vector_uint32_t merged_indices;
-  Vector_VkrMeshLoaderSubmeshRange merged_submeshes;
-  Vector_VkrMeshSourceDependency source_dependencies;
+  Array_uint32_t merged_indices;
+  Array_VkrMeshLoaderSubmeshRange merged_submeshes;
+  Array_VkrMeshSourceDependency source_dependencies;
   VkrMeshLoaderPathSlots dependency_slots;
   VkrMeshLoaderBuffer merged_buffer;
   VkrMeshSource source;
@@ -133,7 +132,7 @@ typedef struct VkrMeshLoaderState {
   VkrMeshLoaderPathSlots bundle_hash_slots;
   /* Placements named since the last vkr_mesh_loader_publish_bundle; content
      names keep each physical path unique among them. */
-  Vector_VkrMeshLoaderBundleWrite bundle_writes;
+  Array_VkrMeshLoaderBundleWrite bundle_writes;
 
   VkrRendererError *out_error;
 } VkrMeshLoaderState;
@@ -179,7 +178,7 @@ vkr_internal bool8_t vkr_mesh_loader_path_is_absolute(String8 path);
 vkr_internal bool8_t vkr_mesh_loader_capture_source_dependency(
     VkrMeshLoaderState *state, String8 path);
 vkr_internal bool8_t vkr_mesh_loader_collect_source_dependencies(
-    VkrMeshLoaderState *state, Vector_String8 *paths);
+    VkrMeshLoaderState *state, Array_String8 *paths);
 
 /* Set by vkr_mesh_cook_set_defer_textures for every later cook. */
 vkr_internal bool8_t vkr_mesh_cook_defer_textures = false_v;
@@ -332,8 +331,8 @@ vkr_internal bool8_t vkr_mesh_loader_push_source_dependency(
   const uint32_t position = (uint32_t)state->source_dependencies.length;
   VkrMeshSourceDependency dependency = {.path = owned_path};
   bool8_t rebuilt = false_v;
-  if (!vector_push_VkrMeshSourceDependency(&state->source_dependencies,
-                                           dependency) ||
+  if (!array_push_VkrMeshSourceDependency(&state->source_dependencies,
+                                          dependency) ||
       !vkr_mesh_loader_slots_grow(state->load_allocator,
                                   &state->dependency_slots, position,
                                   &rebuilt)) {
@@ -374,13 +373,13 @@ vkr_internal bool8_t vkr_mesh_loader_capture_source_dependency(
 }
 
 vkr_internal bool8_t vkr_mesh_loader_collect_source_dependencies(
-    VkrMeshLoaderState *state, Vector_String8 *paths) {
+    VkrMeshLoaderState *state, Array_String8 *paths) {
   if (!state || !paths) {
     return false_v;
   }
 
   for (uint64_t i = 0; i < paths->length; ++i) {
-    String8 *path = vector_get_String8(paths, i);
+    String8 *path = array_get_String8(paths, i);
     if (!path || !path->str || path->length == 0) {
       return false_v;
     }
@@ -489,9 +488,9 @@ vkr_internal uint32_t vkr_mesh_loader_fix_index(int32_t value, uint32_t count) {
 
 vkr_internal bool8_t vkr_mesh_loader_builder_init(
     VkrMeshLoaderSubsetBuilder *builder, VkrAllocator *allocator) {
-  builder->vertices = (Vector_VkrVertex3d){.allocator = allocator};
-  builder->skin_vertices = (Vector_VkrMeshSkinVertex){.allocator = allocator};
-  builder->indices = (Vector_uint32_t){.allocator = allocator};
+  builder->vertices = (Array_VkrVertex3d){.allocator = allocator};
+  builder->skin_vertices = (Array_VkrMeshSkinVertex){.allocator = allocator};
+  builder->indices = (Array_uint32_t){.allocator = allocator};
   builder->name = vkr_string8_duplicate_cstr(allocator, "default");
   builder->material_name = (String8){0};
   builder->material_is_path = false_v;
@@ -514,7 +513,7 @@ vkr_internal uint32_t vkr_mesh_loader_find_material_bucket(
 
   for (uint64_t i = 0; i < state->material_buckets.length; ++i) {
     VkrMeshLoaderMaterialBucket *bucket =
-        vector_get_VkrMeshLoaderMaterialBucket(&state->material_buckets, i);
+        array_get_VkrMeshLoaderMaterialBucket(&state->material_buckets, i);
     if (!bucket || !bucket->material_name.str)
       continue;
     if (string8_equalsi(&bucket->material_name, material_name)) {
@@ -543,8 +542,7 @@ vkr_internal uint32_t vkr_mesh_loader_add_material_bucket(
     bucket.builder.name = bucket.material_name;
   }
 
-  if (!vector_push_VkrMeshLoaderMaterialBucket(&state->material_buckets,
-                                               bucket))
+  if (!array_push_VkrMeshLoaderMaterialBucket(&state->material_buckets, bucket))
     return VKR_INVALID_ID;
   return (uint32_t)(state->material_buckets.length - 1);
 }
@@ -575,7 +573,7 @@ vkr_mesh_loader_get_current_builder(VkrMeshLoaderState *state) {
     state->current_bucket = 0;
   }
 
-  VkrMeshLoaderMaterialBucket *bucket = vector_get_VkrMeshLoaderMaterialBucket(
+  VkrMeshLoaderMaterialBucket *bucket = array_get_VkrMeshLoaderMaterialBucket(
       &state->material_buckets, state->current_bucket);
   return bucket ? &bucket->builder : NULL;
 }
@@ -599,7 +597,7 @@ vkr_mesh_loader_prepare_merged_buffer(VkrMeshLoaderState *state) {
 }
 
 vkr_internal VkrMeshLoaderMaterialDef *
-vkr_mesh_loader_find_material(Vector_VkrMeshLoaderMaterialDef *materials,
+vkr_mesh_loader_find_material(Array_VkrMeshLoaderMaterialDef *materials,
                               const String8 *name) {
   assert_log(materials != NULL, "Materials is NULL");
 
@@ -608,7 +606,7 @@ vkr_mesh_loader_find_material(Vector_VkrMeshLoaderMaterialDef *materials,
 
   for (uint64_t i = 0; i < materials->length; ++i) {
     VkrMeshLoaderMaterialDef *def =
-        vector_get_VkrMeshLoaderMaterialDef(materials, i);
+        array_get_VkrMeshLoaderMaterialDef(materials, i);
     if (string8_equalsi(&def->name, name))
       return def;
   }
@@ -858,9 +856,9 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
   assert_log(builder != NULL, "Builder is NULL");
 
   if (builder->indices.length == 0 || builder->vertices.length == 0) {
-    vector_clear_VkrVertex3d(&builder->vertices);
-    vector_clear_VkrMeshSkinVertex(&builder->skin_vertices);
-    vector_clear_uint32_t(&builder->indices);
+    array_clear_VkrVertex3d(&builder->vertices);
+    array_clear_VkrMeshSkinVertex(&builder->skin_vertices);
+    array_clear_uint32_t(&builder->indices);
     return true_v;
   }
 
@@ -913,16 +911,16 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
   uint32_t index_base = (uint32_t)state->merged_indices.length;
   if (state->merged_vertices.length + dedup_vertex_count > UINT32_MAX ||
       state->merged_indices.length + index_count > UINT32_MAX ||
-      !vector_reserve_VkrVertex3d(&state->merged_vertices,
-                                  state->merged_vertices.length +
-                                      dedup_vertex_count) ||
+      !array_reserve_VkrVertex3d(&state->merged_vertices,
+                                 state->merged_vertices.length +
+                                     dedup_vertex_count) ||
       (state->skin.skin_count &&
-       !vector_reserve_VkrMeshSkinVertex(&state->merged_skin_vertices,
-                                         state->merged_vertices.length +
-                                             dedup_vertex_count)) ||
-      !vector_reserve_uint32_t(&state->merged_indices,
-                               state->merged_indices.length + index_count) ||
-      !vector_reserve_VkrMeshLoaderSubmeshRange(
+       !array_reserve_VkrMeshSkinVertex(&state->merged_skin_vertices,
+                                        state->merged_vertices.length +
+                                            dedup_vertex_count)) ||
+      !array_reserve_uint32_t(&state->merged_indices,
+                              state->merged_indices.length + index_count) ||
+      !array_reserve_VkrMeshLoaderSubmeshRange(
           &state->merged_submeshes, state->merged_submeshes.length + 1u)) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -980,9 +978,9 @@ vkr_internal bool8_t vkr_mesh_loader_finalize_builder(
                      (uint64_t)index_count * sizeof(uint32_t),
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  vector_clear_VkrVertex3d(&builder->vertices);
-  vector_clear_VkrMeshSkinVertex(&builder->skin_vertices);
-  vector_clear_uint32_t(&builder->indices);
+  array_clear_VkrVertex3d(&builder->vertices);
+  array_clear_VkrMeshSkinVertex(&builder->skin_vertices);
+  array_clear_uint32_t(&builder->indices);
   return true_v;
 }
 
@@ -1013,20 +1011,20 @@ vkr_mesh_loader_finalize_all_buckets(VkrMeshLoaderState *state) {
       return false_v;
     }
   }
-  if (!vector_reserve_VkrVertex3d(&state->merged_vertices, vertex_capacity) ||
+  if (!array_reserve_VkrVertex3d(&state->merged_vertices, vertex_capacity) ||
       (state->skin.skin_count &&
-       !vector_reserve_VkrMeshSkinVertex(&state->merged_skin_vertices,
-                                         vertex_capacity)) ||
-      !vector_reserve_uint32_t(&state->merged_indices, index_capacity) ||
-      !vector_reserve_VkrMeshLoaderSubmeshRange(&state->merged_submeshes,
-                                                range_capacity)) {
+       !array_reserve_VkrMeshSkinVertex(&state->merged_skin_vertices,
+                                        vertex_capacity)) ||
+      !array_reserve_uint32_t(&state->merged_indices, index_capacity) ||
+      !array_reserve_VkrMeshLoaderSubmeshRange(&state->merged_submeshes,
+                                               range_capacity)) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
   for (uint64_t i = 0; i < state->material_buckets.length; ++i) {
     VkrMeshLoaderMaterialBucket *bucket =
-        vector_get_VkrMeshLoaderMaterialBucket(&state->material_buckets, i);
+        array_get_VkrMeshLoaderMaterialBucket(&state->material_buckets, i);
     if (!bucket)
       continue;
     if (!vkr_mesh_loader_finalize_builder(state, &bucket->builder)) {
@@ -1046,8 +1044,8 @@ vkr_internal uint64_t vkr_mesh_loader_grown_capacity(uint64_t capacity,
   if (required <= capacity) {
     return capacity;
   }
-  return Max(required, Min((uint64_t)UINT32_MAX,
-                           capacity * DEFAULT_VECTOR_RESIZE_FACTOR));
+  return Max(required,
+             Min((uint64_t)UINT32_MAX, capacity * VKR_ARRAY_GROWTH_FACTOR));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_push_face(
@@ -1063,14 +1061,14 @@ vkr_internal bool8_t vkr_mesh_loader_push_face(
   const uint64_t index_count = (uint64_t)(token_count - 2u) * 3u;
   if (builder->vertices.length + token_count > UINT32_MAX ||
       builder->indices.length + index_count > UINT32_MAX ||
-      !vector_reserve_VkrVertex3d(
-          &builder->vertices, vkr_mesh_loader_grown_capacity(
-                                  builder->vertices.capacity,
-                                  builder->vertices.length + token_count)) ||
-      !vector_reserve_uint32_t(&builder->indices,
-                               vkr_mesh_loader_grown_capacity(
-                                   builder->indices.capacity,
-                                   builder->indices.length + index_count))) {
+      !array_reserve_VkrVertex3d(&builder->vertices,
+                                 vkr_mesh_loader_grown_capacity(
+                                     builder->vertices.capacity,
+                                     builder->vertices.length + token_count)) ||
+      !array_reserve_uint32_t(&builder->indices,
+                              vkr_mesh_loader_grown_capacity(
+                                  builder->indices.capacity,
+                                  builder->indices.length + index_count))) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1088,14 +1086,14 @@ vkr_internal bool8_t vkr_mesh_loader_push_face(
     VkrVertex3d vert = {0};
     vert.position =
         vkr_vertex_pack_vec3((pos_idx < state->positions.length)
-                                 ? *vector_get_Vec3(&state->positions, pos_idx)
+                                 ? *array_get_Vec3(&state->positions, pos_idx)
                                  : vec3_zero());
     vert.texcoord = (tex_idx < state->texcoords.length)
-                        ? *vector_get_Vec2(&state->texcoords, tex_idx)
+                        ? *array_get_Vec2(&state->texcoords, tex_idx)
                         : vec2_zero();
     vert.normal =
         vkr_vertex_pack_vec3((norm_idx < state->normals.length)
-                                 ? *vector_get_Vec3(&state->normals, norm_idx)
+                                 ? *array_get_Vec3(&state->normals, norm_idx)
                                  : vec3_new(0.0f, 1.0f, 0.0f));
     vert.colour = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
     vert.tangent = vec4_zero();
@@ -1186,12 +1184,12 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
           .cutout = false_v,
       };
       if (!def.name.str ||
-          !vector_push_VkrMeshLoaderMaterialDef(&state->materials, def)) {
+          !array_push_VkrMeshLoaderMaterialDef(&state->materials, def)) {
         *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
         return false_v;
       }
-      current = vector_get_VkrMeshLoaderMaterialDef(
-          &state->materials, state->materials.length - 1);
+      current = array_get_VkrMeshLoaderMaterialDef(&state->materials,
+                                                   state->materials.length - 1);
       continue;
     }
 
@@ -1289,7 +1287,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
     Vec3 vec3_val;
     if (vkr_string8_starts_with(&line, "v ")) {
       if (vkr_mesh_loader_parse_vec3_line(&line, 1, &vec3_val) &&
-          !vector_push_Vec3(&state->positions, vec3_val)) {
+          !array_push_Vec3(&state->positions, vec3_val)) {
         *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
         return false_v;
       }
@@ -1298,7 +1296,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
 
     if (vkr_string8_starts_with(&line, "vn")) {
       if (vkr_mesh_loader_parse_vec3_line(&line, 2, &vec3_val) &&
-          !vector_push_Vec3(&state->normals, vec3_val)) {
+          !array_push_Vec3(&state->normals, vec3_val)) {
         *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
         return false_v;
       }
@@ -1312,7 +1310,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
         float32_t u = 0, v = 0;
         string8_to_f32(&tokens[0], &u);
         string8_to_f32(&tokens[1], &v);
-        if (!vector_push_Vec2(&state->texcoords, vec2_new(u, v))) {
+        if (!array_push_Vec2(&state->texcoords, vec2_new(u, v))) {
           *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
           return false_v;
         }
@@ -1375,7 +1373,7 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
-  VkrMeshLoaderMaterialBucket *bucket = vector_get_VkrMeshLoaderMaterialBucket(
+  VkrMeshLoaderMaterialBucket *bucket = array_get_VkrMeshLoaderMaterialBucket(
       &state->material_buckets, bucket_index);
   if (!bucket) {
     return false_v;
@@ -1397,11 +1395,11 @@ vkr_internal bool8_t vkr_mesh_loader_accept_gltf_primitive(
   const uint64_t index_capacity =
       vkr_mesh_loader_grown_capacity(builder->indices.capacity, index_count);
   if (vertex_count > UINT32_MAX || index_count > UINT32_MAX ||
-      !vector_reserve_VkrVertex3d(&builder->vertices, vertex_capacity) ||
-      !vector_reserve_uint32_t(&builder->indices, index_capacity) ||
+      !array_reserve_VkrVertex3d(&builder->vertices, vertex_capacity) ||
+      !array_reserve_uint32_t(&builder->indices, index_capacity) ||
       (primitive->skin_vertices &&
-       !vector_reserve_VkrMeshSkinVertex(&builder->skin_vertices,
-                                         vertex_capacity))) {
+       !array_reserve_VkrMeshSkinVertex(&builder->skin_vertices,
+                                        vertex_capacity))) {
     *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1427,7 +1425,7 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
     return false_v;
   }
 
-  vector_clear_VkrMeshSourceDependency(&state->source_dependencies);
+  array_clear_VkrMeshSourceDependency(&state->source_dependencies);
   if (!vkr_mesh_loader_capture_source_dependency(state, state->source_path)) {
     if (*state->out_error == VKR_RENDERER_ERROR_NONE)
       *state->out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
@@ -1443,8 +1441,8 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
   String8 glb_ext = string8_lit("glb");
   if (string8_equalsi(&state->source_extension, &gltf_ext) ||
       string8_equalsi(&state->source_extension, &glb_ext)) {
-    Vector_String8 dependency_paths = {.allocator = state->load_allocator};
-    Vector_String8 generated_asset_paths = {.allocator = state->load_allocator};
+    Array_String8 dependency_paths = {.allocator = state->load_allocator};
+    Array_String8 generated_asset_paths = {.allocator = state->load_allocator};
     VkrMeshLoaderGltfParseInfo parse_info = {
         .bundle_root = state->bundle_root,
         .generated_root = state->generated_root,
@@ -1475,8 +1473,8 @@ vkr_internal bool8_t vkr_mesh_loader_parse_source(VkrMeshLoaderState *state) {
     }
 
     for (uint64_t i = 0; i < generated_asset_paths.length; ++i) {
-      String8 *path = vector_get_String8(&generated_asset_paths, i);
-      if (!vector_push_String8(&dependency_paths, *path)) {
+      String8 *path = array_get_String8(&generated_asset_paths, i);
+      if (!array_push_String8(&dependency_paths, *path)) {
         *state->out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
         return false_v;
       }
@@ -1587,7 +1585,7 @@ vkr_mesh_loader_queue_bundle_write(VkrMeshLoaderState *state, String8 source,
       .bytes = bytes,
   };
   return write.physical.str && (!source.length || write.source.str) &&
-         vector_push_VkrMeshLoaderBundleWrite(&state->bundle_writes, write);
+         array_push_VkrMeshLoaderBundleWrite(&state->bundle_writes, write);
 }
 
 /* SHA-256 and size of a file, resolved as file_path_create would; workers

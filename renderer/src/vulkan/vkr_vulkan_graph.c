@@ -39,9 +39,9 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
   for (uint64_t order = 0; order < renderer->graph->execution_order.length;
        ++order) {
     const uint32_t pass_index =
-        *vector_get_uint32_t(&renderer->graph->execution_order, order);
+        *array_get_uint32_t(&renderer->graph->execution_order, order);
     const VkrRgPass *pass =
-        vector_get_VkrRgPass(&renderer->graph->passes, pass_index);
+        array_get_VkrRgPass(&renderer->graph->passes, pass_index);
     VkrRgExecutorKind kind;
     if (!vkr_render_graph_executor_kind(pass, &kind)) {
       log_error("Vulkan graph pass '%.*s' has no executor kind",
@@ -85,7 +85,7 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
     }
     for (uint64_t i = 0; i < pass->pre_image_barriers.length; ++i) {
       const VkrRgImageBarrier *barrier =
-          vector_get_VkrRgImageBarrier(&pass->pre_image_barriers, i);
+          array_get_VkrRgImageBarrier(&pass->pre_image_barriers, i);
       VkrVulkanDependency lowered = {0};
       const VkrVulkanDependencyResult result = vkr_vk_lower_image_dependency(
           barrier->src_access, barrier->dst_access, &barrier->dependency,
@@ -100,7 +100,7 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
     }
     for (uint64_t i = 0; i < pass->pre_buffer_barriers.length; ++i) {
       const VkrRgBufferBarrier *barrier =
-          vector_get_VkrRgBufferBarrier(&pass->pre_buffer_barriers, i);
+          array_get_VkrRgBufferBarrier(&pass->pre_buffer_barriers, i);
       VkrVulkanDependency lowered = {0};
       const VkrVulkanDependencyResult result = vkr_vk_lower_buffer_dependency(
           barrier->src_access, barrier->dst_access, &barrier->dependency,
@@ -394,8 +394,7 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
   if (renderer->graph->images.length > renderer->config.max_graph_images)
     return false_v;
   for (uint64_t i = 0; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame)
       continue;
     VkrVulkanGraphImage *slot = &renderer->graph_images[i];
@@ -474,7 +473,7 @@ vkr_vk_retained_slot(VkrVulkanRenderer *renderer, uint32_t image_index,
   if (image_index >= renderer->graph->images.length)
     return NULL;
   const VkrRgImage *image =
-      vector_get_VkrRgImage(&renderer->graph->images, image_index);
+      array_get_VkrRgImage(&renderer->graph->images, image_index);
   VkrVulkanGraphImage *slot = &renderer->graph_images[image_index];
   if (!image || !slot->live || slot->graph_generation != image->generation ||
       instance_index >= slot->instance_count)
@@ -523,8 +522,7 @@ void vkr_vulkan_renderer_retained_editor_extent(VkrVulkanRenderer *renderer,
   *out_width = 0u;
   *out_height = 0u;
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (!vkr_string8_equals_cstr(&image->name, "editor_scene_image"))
       continue;
     const VkrVulkanGraphImage *slot = &renderer->graph_images[i];
@@ -544,8 +542,7 @@ void vkr_vulkan_renderer_retained_editor_extent(VkrVulkanRenderer *renderer,
 vkr_internal uint32_t vkr_vk_retained_moments_mask(VkrVulkanRenderer *renderer,
                                                    uint32_t image_index) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_moments"))
       continue;
     const VkrVulkanGraphImage *slot = &renderer->graph_images[i];
@@ -571,8 +568,7 @@ void vkr_vulkan_renderer_retained_shadow_token(
     VkrRetainedShadowToken *out_token) {
   *out_token = (VkrRetainedShadowToken){0};
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_map"))
       continue;
     VkrVulkanGraphImage *slot = &renderer->graph_images[i];
@@ -616,8 +612,7 @@ vkr_vk_retained_local_shadow_image(VkrVulkanRenderer *renderer,
                                    const char *name, uint32_t extent,
                                    uint32_t layers, VkrTextureFormat format) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !vkr_string8_equals_cstr(&image->name, name))
       continue;
     VkrVulkanGraphImage *slot = &renderer->graph_images[i];
@@ -754,8 +749,7 @@ VkrVulkanGraphImageInstance *vkr_vk_graph_image(VkrVulkanRenderer *renderer,
 void vkr_vk_mark_graph_images_submitted(VkrVulkanRenderer *renderer,
                                         uint64_t submit_value) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame)
       continue;
     VkrVulkanGraphImageInstance *instance =
@@ -823,7 +817,7 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
   renderer->skinning_output_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+        array_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame)
       continue;
     const VkrRgBufferHandle handle = {
@@ -912,8 +906,7 @@ bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer) {
   uint64_t candidate_use[VKR_VULKAN_HISTORY_INSTANCE_COUNT] = {0};
 
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame ||
         (image->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) == 0u)
       continue;
@@ -932,7 +925,7 @@ bool8_t vkr_vk_select_history_output(VkrVulkanRenderer *renderer) {
 
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+        array_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) == 0u)
       continue;
@@ -997,7 +990,7 @@ void vkr_vk_mark_graph_buffers_submitted(VkrVulkanRenderer *renderer,
                                          uint64_t submit_value) {
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+        array_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame)
       continue;
     VkrVulkanGraphBufferInstance *instance = vkr_vk_graph_buffer(
@@ -1009,7 +1002,7 @@ void vkr_vk_mark_graph_buffers_submitted(VkrVulkanRenderer *renderer,
 }
 
 vkr_internal bool8_t vkr_vk_prepare_graph_image_barriers(
-    VkrVulkanRenderer *renderer, const Vector_VkrRgImageBarrier *barriers,
+    VkrVulkanRenderer *renderer, const Array_VkrRgImageBarrier *barriers,
     VkDependencyInfo *out) {
   if (barriers->length > UINT32_MAX)
     return false_v;
@@ -1023,8 +1016,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_image_barriers(
     return false_v;
   out->pImageMemoryBarriers = native;
   for (uint32_t i = 0u; i < out->imageMemoryBarrierCount; ++i) {
-    const VkrRgImageBarrier *barrier =
-        vector_get_VkrRgImageBarrier(barriers, i);
+    const VkrRgImageBarrier *barrier = array_get_VkrRgImageBarrier(barriers, i);
     VkrVulkanGraphImageInstance *instance = vkr_vk_graph_image(
         renderer, barrier->image, renderer->prepared_frame.image_index);
     if (!instance)
@@ -1092,7 +1084,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass_barriers(
   out->pBufferMemoryBarriers = native;
   for (uint64_t i = 0u; i < pass->pre_buffer_barriers.length; ++i) {
     const VkrRgBufferBarrier *barrier =
-        vector_get_VkrRgBufferBarrier(&pass->pre_buffer_barriers, i);
+        array_get_VkrRgBufferBarrier(&pass->pre_buffer_barriers, i);
     VkrVulkanGraphBufferInstance *instance =
         vkr_vk_graph_buffer(renderer, barrier->buffer);
     VkrVulkanDependency lowered = {0};
@@ -1474,7 +1466,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_graphics_pass(
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     uint32_t attachment_width = 0, attachment_height = 0, attachment_layers = 0;
     const bool8_t attachment_ready = vkr_vk_graph_attachment(
-        renderer, vector_get_VkrRgAttachment(&pass->desc.color_attachments, i),
+        renderer, array_get_VkrRgAttachment(&pass->desc.color_attachments, i),
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &colors[i], &attachment_width,
         &attachment_height, &attachment_layers);
     if (!attachment_ready || (layers != 0u && layers != attachment_layers)) {

@@ -509,7 +509,7 @@ vkr_internal bool8_t vkr_metal_packet_reclaim_graph_targets(
       !vkr_metal_packet_wait(renderer, renderer->submit_value))
     return false_v;
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
-    const VkrRgImage *image = vector_get_VkrRgImage(&renderer->graph->images, i);
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
     VkrMetalPacketImage *slot = &renderer->images[i];
     if (!image->declared_this_frame || image->imported || !slot->live ||
         slot->external || vkr_metal_packet_image_desc_equal(&slot->desc,
@@ -524,7 +524,7 @@ vkr_internal bool8_t vkr_metal_packet_reclaim_graph_targets(
   }
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+        array_get_VkrRgBuffer(&renderer->graph->buffers, i);
     VkrMetalPacketGraphBuffer *slot = &renderer->graph_buffers[i];
     if (!buffer->declared_this_frame || buffer->imported || !slot->live ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_GROW_ONLY) ||
@@ -560,7 +560,7 @@ vkr_metal_packet_realize_images(
   }
   for (uint64_t i = 0; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame)
       continue;
     VkrMetalPacketImage *slot = &renderer->images[i];
@@ -698,7 +698,7 @@ vkr_metal_packet_named_image_slot(VkrMetalPacketRenderer *renderer,
     return NULL;
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (image && image->declared_this_frame &&
         vkr_string8_equals_cstr(&image->name, name))
       return &renderer->images[i];
@@ -712,7 +712,7 @@ vkr_metal_packet_select_history_output(VkrMetalPacketRenderer *renderer) {
   const uint64_t completed = renderer->completion.signaledValue;
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame ||
         (image->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) == 0u)
       continue;
@@ -732,7 +732,7 @@ vkr_metal_packet_select_history_output(VkrMetalPacketRenderer *renderer) {
 
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+        array_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame ||
         (buffer->desc.flags & VKR_RG_RESOURCE_FLAG_HISTORY) == 0u)
       continue;
@@ -1491,7 +1491,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
   renderer->exposure_state_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+        array_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame)
       continue;
     const VkrRgBufferHandle handle = {
@@ -1614,7 +1614,7 @@ vkr_metal_packet_retained_slot(VkrMetalPacketRenderer *renderer,
   if (image_index >= renderer->graph->images.length)
     return NULL;
   const VkrRgImage *image =
-      vector_get_VkrRgImage(&renderer->graph->images, image_index);
+      array_get_VkrRgImage(&renderer->graph->images, image_index);
   VkrMetalPacketImage *slot = &renderer->images[image_index];
   if (!image || !slot->live || slot->graph_generation != image->generation ||
       !vkr_metal_packet_image_desc_equal(&slot->desc, &image->desc) ||
@@ -1666,7 +1666,7 @@ void vkr_metal_packet_renderer_retained_editor_extent(
   *out_height = 0u;
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (!vkr_string8_equals_cstr(&image->name, "editor_scene_image"))
       continue;
     const VkrMetalPacketImage *slot = &renderer->images[i];
@@ -1688,7 +1688,7 @@ vkr_internal uint32_t vkr_metal_packet_retained_moments_mask(
     VkrMetalPacketRenderer *renderer, uint32_t image_index) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_moments"))
       continue;
     const VkrMetalPacketImage *slot = &renderer->images[i];
@@ -1716,7 +1716,7 @@ void vkr_metal_packet_renderer_retained_shadow_token(
   *out_token = (VkrRetainedShadowToken){0};
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_map"))
       continue;
     VkrMetalPacketImage *slot = &renderer->images[i];
@@ -1760,7 +1760,7 @@ void vkr_metal_packet_renderer_retained_local_shadow_token(
     VkrMetalPacketImage *slot = NULL;
     for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
       const VkrRgImage *image =
-          vector_get_VkrRgImage(&renderer->graph->images, i);
+          array_get_VkrRgImage(&renderer->graph->images, i);
       if (vkr_string8_equals_cstr(&image->name, names[resource])) {
         VkrMetalPacketImage *candidate = &renderer->images[i];
         if (candidate->graph_generation == image->generation)
@@ -1816,7 +1816,7 @@ vkr_metal_packet_mark_graph_images_submitted(VkrMetalPacketRenderer *renderer,
                                              uint64_t submit_value) {
   for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame)
       continue;
     VkrMetalPacketImageInstance *instance = vkr_metal_packet_image_instance(
@@ -2238,7 +2238,7 @@ vkr_metal_packet_mark_graph_buffers_submitted(VkrMetalPacketRenderer *renderer,
                                               uint64_t submit_value) {
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
-        vector_get_VkrRgBuffer(&renderer->graph->buffers, i);
+        array_get_VkrRgBuffer(&renderer->graph->buffers, i);
     if (!buffer || !buffer->declared_this_frame)
       continue;
     VkrMetalPacketGraphBufferInstance *instance = vkr_metal_packet_graph_buffer(
@@ -2254,7 +2254,7 @@ vkr_metal_packet_named_texture(VkrMetalPacketRenderer *renderer,
                                const char *name) {
   for (uint64_t i = 0; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (image && image->declared_this_frame &&
         vkr_string8_equals_cstr(&image->name, name))
       return vkr_metal_packet_texture(
@@ -2271,7 +2271,7 @@ vkr_internal bool8_t vkr_metal_packet_named_texture_info(
     return false_v;
   for (uint64_t i = 0; i < renderer->graph->images.length; ++i) {
     const VkrRgImage *image =
-        vector_get_VkrRgImage(&renderer->graph->images, i);
+        array_get_VkrRgImage(&renderer->graph->images, i);
     if (!image || !image->declared_this_frame ||
         !vkr_string8_equals_cstr(&image->name, name))
       continue;
@@ -2632,7 +2632,7 @@ vkr_internal bool8_t vkr_metal_packet_configure_render_pass(
     return false_v;
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     const VkrRgAttachment *attachment =
-        vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
+        array_get_VkrRgAttachment(&pass->desc.color_attachments, i);
     id<MTLTexture> texture =
         vkr_metal_packet_texture(renderer, attachment->image);
     if (!texture ||
@@ -2705,7 +2705,7 @@ vkr_internal bool8_t vkr_metal_packet_pass_uses_image(const VkrRgPass *pass,
                                                       VkrRgImageHandle image) {
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     const VkrRgAttachment *attachment =
-        vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
+        array_get_VkrRgAttachment(&pass->desc.color_attachments, i);
     if (attachment && attachment->image.id == image.id)
       return true_v;
   }
@@ -2714,13 +2714,13 @@ vkr_internal bool8_t vkr_metal_packet_pass_uses_image(const VkrRgPass *pass,
     return true_v;
   for (uint64_t i = 0; i < pass->desc.image_reads.length; ++i) {
     const VkrRgImageUse *use =
-        vector_get_VkrRgImageUse(&pass->desc.image_reads, i);
+        array_get_VkrRgImageUse(&pass->desc.image_reads, i);
     if (use && use->image.id == image.id)
       return true_v;
   }
   for (uint64_t i = 0; i < pass->desc.image_writes.length; ++i) {
     const VkrRgImageUse *use =
-        vector_get_VkrRgImageUse(&pass->desc.image_writes, i);
+        array_get_VkrRgImageUse(&pass->desc.image_writes, i);
     if (use && use->image.id == image.id)
       return true_v;
   }
@@ -2731,13 +2731,13 @@ vkr_internal bool8_t vkr_metal_packet_pass_uses_buffer(
     const VkrRgPass *pass, VkrRgBufferHandle buffer) {
   for (uint64_t i = 0; i < pass->desc.buffer_reads.length; ++i) {
     const VkrRgBufferUse *use =
-        vector_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
+        array_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
     if (use && use->buffer.id == buffer.id)
       return true_v;
   }
   for (uint64_t i = 0; i < pass->desc.buffer_writes.length; ++i) {
     const VkrRgBufferUse *use =
-        vector_get_VkrRgBufferUse(&pass->desc.buffer_writes, i);
+        array_get_VkrRgBufferUse(&pass->desc.buffer_writes, i);
     if (use && use->buffer.id == buffer.id)
       return true_v;
   }
@@ -3058,7 +3058,7 @@ vkr_internal bool8_t vkr_metal_packet_pass_writes_present(
     const VkrMetalPacketRenderer *renderer, const VkrRgPass *pass) {
   for (uint64_t i = 0; i < pass->desc.color_attachments.length; ++i) {
     const VkrRgAttachment *attachment =
-        vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
+        array_get_VkrRgAttachment(&pass->desc.color_attachments, i);
     if (attachment && attachment->image.id == renderer->graph->present_image.id)
       return true_v;
   }
@@ -3068,17 +3068,17 @@ vkr_internal bool8_t vkr_metal_packet_pass_writes_present(
 vkr_internal bool8_t vkr_metal_packet_is_last_present_writer(
     const VkrMetalPacketRenderer *renderer, uint64_t order_index) {
   const uint32_t *pass_index =
-      vector_get_uint32_t(&renderer->graph->execution_order, order_index);
+      array_get_uint32_t(&renderer->graph->execution_order, order_index);
   const VkrRgPass *pass =
-      vector_get_VkrRgPass(&renderer->graph->passes, *pass_index);
+      array_get_VkrRgPass(&renderer->graph->passes, *pass_index);
   if (!vkr_metal_packet_pass_writes_present(renderer, pass))
     return false_v;
   for (uint64_t i = order_index + 1;
        i < renderer->graph->execution_order.length; ++i) {
     const uint32_t *future_index =
-        vector_get_uint32_t(&renderer->graph->execution_order, i);
+        array_get_uint32_t(&renderer->graph->execution_order, i);
     const VkrRgPass *future =
-        vector_get_VkrRgPass(&renderer->graph->passes, *future_index);
+        array_get_VkrRgPass(&renderer->graph->passes, *future_index);
     if (vkr_metal_packet_pass_writes_present(renderer, future))
       return false_v;
   }

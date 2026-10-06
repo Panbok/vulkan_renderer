@@ -248,24 +248,24 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_path_equals(String8 lhs,
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_push_unique_path(
-    Vector_String8 *paths, String8 value, VkrAllocator *allocator) {
+    Array_String8 *paths, String8 value, VkrAllocator *allocator) {
   if (!paths || !allocator || !value.str || value.length == 0) {
     return true_v;
   }
 
   for (uint64_t i = 0; i < paths->length; ++i) {
-    String8 *existing = vector_get_String8(paths, i);
+    String8 *existing = array_get_String8(paths, i);
     if (existing && vkr_mesh_loader_gltf_path_equals(*existing, value)) {
       return true_v;
     }
   }
 
   String8 copy = string8_duplicate(allocator, &value);
-  return copy.str && vector_push_String8(paths, copy);
+  return copy.str && array_push_String8(paths, copy);
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_publish_pair_paths(
-    Vector_String8 *paths, String8 normal_path, String8 roughness_path,
+    Array_String8 *paths, String8 normal_path, String8 roughness_path,
     VkrAllocator *allocator) {
   if (!paths) {
     return true_v;
@@ -274,7 +274,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_publish_pair_paths(
   bool8_t have_normal = false_v;
   bool8_t have_roughness = false_v;
   for (uint64_t i = 0; i < paths->length; ++i) {
-    String8 *existing = vector_get_String8(paths, i);
+    String8 *existing = array_get_String8(paths, i);
     have_normal =
         have_normal ||
         (existing && vkr_mesh_loader_gltf_path_equals(*existing, normal_path));
@@ -289,7 +289,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_publish_pair_paths(
     return true_v;
   }
   if (paths->length > UINT64_MAX - additions ||
-      !vector_reserve_String8(paths, paths->length + additions)) {
+      !array_reserve_String8(paths, paths->length + additions)) {
     return false_v;
   }
 
@@ -302,8 +302,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_publish_pair_paths(
       (!have_roughness && !roughness_copy.str)) {
     return false_v;
   }
-  return (have_normal || vector_push_String8(paths, normal_copy)) &&
-         (have_roughness || vector_push_String8(paths, roughness_copy));
+  return (have_normal || array_push_String8(paths, normal_copy)) &&
+         (have_roughness || array_push_String8(paths, roughness_copy));
 }
 
 vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(
@@ -2994,7 +2994,7 @@ vkr_internal void *vkr_mesh_loader_gltf_material_worker(void *argument) {
       continue;
     }
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&load);
-    Vector_String8 generated = {.allocator = &load};
+    Array_String8 generated = {.allocator = &load};
     VkrMeshLoaderGltfParseInfo private_info = *job->info;
     private_info.load_allocator = &load;
     private_info.scratch_allocator = &scratch;
@@ -3008,7 +3008,7 @@ vkr_internal void *vkr_mesh_loader_gltf_material_worker(void *argument) {
       work->generated = calloc(generated.length, sizeof(String8));
       ok = work->generated != NULL;
       for (uint64_t g = 0; ok && g < generated.length; ++g) {
-        const String8 path = *vector_get_String8(&generated, g);
+        const String8 path = *array_get_String8(&generated, g);
         uint8_t *copy = malloc(path.length ? path.length : 1u);
         ok = copy != NULL;
         if (ok) {
@@ -3035,7 +3035,7 @@ vkr_internal void *vkr_mesh_loader_gltf_material_worker(void *argument) {
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
     const VkrMeshLoaderGltfParseInfo *info, const cgltf_data *data,
-    String8 *material_paths, Vector_String8 *out_generated_material_paths) {
+    String8 *material_paths, Array_String8 *out_generated_material_paths) {
   if (!info || !data || !material_paths) {
     return false_v;
   }
@@ -4009,10 +4009,10 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_scene(
   if (mesh_capacity < data->meshes_count || mesh_capacity > UINT32_MAX)
     return false_v;
   *source = (VkrMeshSource){
-      .nodes = array_create_VkrMeshSourceNode(info->load_allocator,
-                                              data->nodes_count),
-      .meshes =
-          array_create_VkrMeshSourceMesh(info->load_allocator, mesh_capacity),
+      .nodes = array_create_filled_VkrMeshSourceNode(info->load_allocator,
+                                                     data->nodes_count),
+      .meshes = array_create_filled_VkrMeshSourceMesh(info->load_allocator,
+                                                      mesh_capacity),
       .animation_count = (uint32_t)data->animations_count,
       .fingerprint = vkr_cgltf_source_fingerprint(data),
   };

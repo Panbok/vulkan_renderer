@@ -1347,8 +1347,7 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
   assert_log(ctx != NULL, "ctx is NULL");
 
   *out_attach = (VkrRgJsonAttachments){0};
-  out_attach->colors =
-      (Vector_VkrRgJsonAttachment){.allocator = ctx->allocator};
+  out_attach->colors = (Array_VkrRgJsonAttachment){.allocator = ctx->allocator};
 
   VkrJsonReader attachments_reader = *obj;
   if (!vkr_json_find_field(&attachments_reader, "attachments")) {
@@ -1379,7 +1378,7 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
         return false_v;
       }
 
-      if (!vector_push_VkrRgJsonAttachment(&out_attach->colors, attachment)) {
+      if (!array_push_VkrRgJsonAttachment(&out_attach->colors, attachment)) {
         return vkr_rg_json_error(ctx, field_path, "out of memory");
       }
       color_index++;
@@ -1410,7 +1409,7 @@ vkr_rg_json_find_resource(const VkrRgJsonGraph *graph, String8 name) {
   assert_log(graph != NULL, "graph is NULL");
 
   for (uint64_t i = 0; i < graph->resources.length; ++i) {
-    VkrRgJsonResource *res = vector_get_VkrRgJsonResource(&graph->resources, i);
+    VkrRgJsonResource *res = array_get_VkrRgJsonResource(&graph->resources, i);
     if (string8_equals(&res->name, &name)) {
       return res;
     }
@@ -1502,8 +1501,8 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
 
   bool8_t ok = true_v;
   *out_pass = (VkrRgJsonPass){0};
-  out_pass->reads = (Vector_VkrRgJsonResourceUse){.allocator = ctx->allocator};
-  out_pass->writes = (Vector_VkrRgJsonResourceUse){.allocator = ctx->allocator};
+  out_pass->reads = (Array_VkrRgJsonResourceUse){.allocator = ctx->allocator};
+  out_pass->writes = (Array_VkrRgJsonResourceUse){.allocator = ctx->allocator};
 
   char field_path[128];
   snprintf(field_path, sizeof(field_path), "passes[%u]", index);
@@ -1618,7 +1617,7 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
         goto cleanup;
       }
 
-      if (!vector_push_VkrRgJsonResourceUse(&out_pass->reads, use)) {
+      if (!array_push_VkrRgJsonResourceUse(&out_pass->reads, use)) {
         ok = vkr_rg_json_error(ctx, field_path, "out of memory");
         goto cleanup;
       }
@@ -1658,7 +1657,7 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
         goto cleanup;
       }
 
-      if (!vector_push_VkrRgJsonResourceUse(&out_pass->writes, use)) {
+      if (!array_push_VkrRgJsonResourceUse(&out_pass->writes, use)) {
         ok = vkr_rg_json_error(ctx, field_path, "out of memory");
         goto cleanup;
       }
@@ -1690,9 +1689,9 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
 
 cleanup:
   if (!ok) {
-    vector_destroy_VkrRgJsonResourceUse(&out_pass->reads);
-    vector_destroy_VkrRgJsonResourceUse(&out_pass->writes);
-    vector_destroy_VkrRgJsonAttachment(&out_pass->attachments.colors);
+    array_destroy_VkrRgJsonResourceUse(&out_pass->reads);
+    array_destroy_VkrRgJsonResourceUse(&out_pass->writes);
+    array_destroy_VkrRgJsonAttachment(&out_pass->attachments.colors);
     *out_pass = (VkrRgJsonPass){0};
   }
 
@@ -1707,8 +1706,8 @@ vkr_internal bool8_t vkr_rg_json_parse_outputs(VkrRgJsonParseContext *ctx,
   assert_log(ctx != NULL, "ctx is NULL");
 
   *out_outputs = (VkrRgJsonOutputs){0};
-  out_outputs->export_images = (Vector_String8){.allocator = ctx->allocator};
-  out_outputs->export_buffers = (Vector_String8){.allocator = ctx->allocator};
+  out_outputs->export_images = (Array_String8){.allocator = ctx->allocator};
+  out_outputs->export_buffers = (Array_String8){.allocator = ctx->allocator};
 
   VkrJsonReader outputs_reader = *root;
   if (!vkr_json_find_field(&outputs_reader, "outputs")) {
@@ -1731,7 +1730,7 @@ vkr_internal bool8_t vkr_rg_json_parse_outputs(VkrRgJsonParseContext *ctx,
         return vkr_rg_json_error(ctx, "outputs.export_images",
                                  "export_images must be strings");
       }
-      if (!vector_push_String8(&out_outputs->export_images, value)) {
+      if (!array_push_String8(&out_outputs->export_images, value)) {
         return vkr_rg_json_error(ctx, "outputs.export_images", "out of memory");
       }
     }
@@ -1745,7 +1744,7 @@ vkr_internal bool8_t vkr_rg_json_parse_outputs(VkrRgJsonParseContext *ctx,
         return vkr_rg_json_error(ctx, "outputs.export_buffers",
                                  "export_buffers must be strings");
       }
-      if (!vector_push_String8(&out_outputs->export_buffers, value)) {
+      if (!array_push_String8(&out_outputs->export_buffers, value)) {
         return vkr_rg_json_error(ctx, "outputs.export_buffers",
                                  "out of memory");
       }
@@ -1764,9 +1763,8 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
   *out_graph = (VkrRgJsonGraph){0};
   out_graph->allocator = ctx->allocator;
   out_graph->source = json;
-  out_graph->resources =
-      (Vector_VkrRgJsonResource){.allocator = ctx->allocator};
-  out_graph->passes = (Vector_VkrRgJsonPass){.allocator = ctx->allocator};
+  out_graph->resources = (Array_VkrRgJsonResource){.allocator = ctx->allocator};
+  out_graph->passes = (Array_VkrRgJsonPass){.allocator = ctx->allocator};
 
   VkrJsonReader root = vkr_json_reader_from_string(json);
 
@@ -1807,13 +1805,13 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
 
     for (uint64_t i = 0; i < out_graph->resources.length; ++i) {
       VkrRgJsonResource *existing =
-          vector_get_VkrRgJsonResource(&out_graph->resources, i);
+          array_get_VkrRgJsonResource(&out_graph->resources, i);
       if (string8_equals(&existing->name, &resource.name)) {
         return vkr_rg_json_error(ctx, "resources", "duplicate resource name");
       }
     }
 
-    if (!vector_push_VkrRgJsonResource(&out_graph->resources, resource)) {
+    if (!array_push_VkrRgJsonResource(&out_graph->resources, resource)) {
       return vkr_rg_json_error(ctx, "resources", "out of memory");
     }
     resource_index++;
@@ -1837,19 +1835,19 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
     }
 
     for (uint64_t i = 0; i < out_graph->passes.length; ++i) {
-      VkrRgJsonPass *existing = vector_get_VkrRgJsonPass(&out_graph->passes, i);
+      VkrRgJsonPass *existing = array_get_VkrRgJsonPass(&out_graph->passes, i);
       if (string8_equals(&existing->name, &pass.name)) {
-        vector_destroy_VkrRgJsonResourceUse(&pass.reads);
-        vector_destroy_VkrRgJsonResourceUse(&pass.writes);
-        vector_destroy_VkrRgJsonAttachment(&pass.attachments.colors);
+        array_destroy_VkrRgJsonResourceUse(&pass.reads);
+        array_destroy_VkrRgJsonResourceUse(&pass.writes);
+        array_destroy_VkrRgJsonAttachment(&pass.attachments.colors);
         return vkr_rg_json_error(ctx, "passes", "duplicate pass name");
       }
     }
 
-    if (!vector_push_VkrRgJsonPass(&out_graph->passes, pass)) {
-      vector_destroy_VkrRgJsonResourceUse(&pass.reads);
-      vector_destroy_VkrRgJsonResourceUse(&pass.writes);
-      vector_destroy_VkrRgJsonAttachment(&pass.attachments.colors);
+    if (!array_push_VkrRgJsonPass(&out_graph->passes, pass)) {
+      array_destroy_VkrRgJsonResourceUse(&pass.reads);
+      array_destroy_VkrRgJsonResourceUse(&pass.writes);
+      array_destroy_VkrRgJsonAttachment(&pass.attachments.colors);
       return vkr_rg_json_error(ctx, "passes", "out of memory");
     }
     pass_index++;
@@ -1869,7 +1867,7 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
   }
 
   for (uint64_t i = 0; i < out_graph->outputs.export_images.length; ++i) {
-    String8 *name = vector_get_String8(&out_graph->outputs.export_images, i);
+    String8 *name = array_get_String8(&out_graph->outputs.export_images, i);
     const VkrRgJsonResource *resource =
         vkr_rg_json_find_resource(out_graph, *name);
     if (!resource || resource->type != VKR_RG_JSON_RESOURCE_IMAGE) {
@@ -1879,7 +1877,7 @@ vkr_internal bool8_t vkr_rg_json_parse_graph(VkrRgJsonParseContext *ctx,
   }
 
   for (uint64_t i = 0; i < out_graph->outputs.export_buffers.length; ++i) {
-    String8 *name = vector_get_String8(&out_graph->outputs.export_buffers, i);
+    String8 *name = array_get_String8(&out_graph->outputs.export_buffers, i);
     const VkrRgJsonResource *resource =
         vkr_rg_json_find_resource(out_graph, *name);
     if (!resource || resource->type != VKR_RG_JSON_RESOURCE_BUFFER) {
@@ -1959,16 +1957,16 @@ void vkr_rg_json_destroy(VkrRgJsonGraph *graph) {
   }
 
   for (uint64_t i = 0; i < graph->passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph->passes, i);
-    vector_destroy_VkrRgJsonResourceUse(&pass->reads);
-    vector_destroy_VkrRgJsonResourceUse(&pass->writes);
-    vector_destroy_VkrRgJsonAttachment(&pass->attachments.colors);
+    VkrRgJsonPass *pass = array_get_VkrRgJsonPass(&graph->passes, i);
+    array_destroy_VkrRgJsonResourceUse(&pass->reads);
+    array_destroy_VkrRgJsonResourceUse(&pass->writes);
+    array_destroy_VkrRgJsonAttachment(&pass->attachments.colors);
   }
 
-  vector_destroy_VkrRgJsonPass(&graph->passes);
-  vector_destroy_VkrRgJsonResource(&graph->resources);
-  vector_destroy_String8(&graph->outputs.export_images);
-  vector_destroy_String8(&graph->outputs.export_buffers);
+  array_destroy_VkrRgJsonPass(&graph->passes);
+  array_destroy_VkrRgJsonResource(&graph->resources);
+  array_destroy_String8(&graph->outputs.export_images);
+  array_destroy_String8(&graph->outputs.export_buffers);
 
   if (graph->allocator && graph->source.str) {
     vkr_allocator_free(graph->allocator, graph->source.str,
@@ -1986,7 +1984,7 @@ bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
     return false_v;
   }
   for (uint64_t i = 0; i < graph->passes.length; ++i) {
-    const VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph->passes, i);
+    const VkrRgJsonPass *pass = array_get_VkrRgJsonPass(&graph->passes, i);
     const VkrRgPassExecutor *executor =
         vkr_rg_executor_registry_find(executors, pass->execute);
     if (!executor) {
@@ -2005,7 +2003,7 @@ bool8_t vkr_rg_json_bind_executors(VkrRgJsonGraph *graph,
   }
 
   for (uint64_t i = 0; i < graph->passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph->passes, i);
+    VkrRgJsonPass *pass = array_get_VkrRgJsonPass(&graph->passes, i);
     const VkrRgPassExecutor *executor =
         vkr_rg_executor_registry_find(executors, pass->execute);
     pass->executor_id = executor->id;
@@ -2892,7 +2890,7 @@ vkr_internal bool8_t vkr_rg_json_build_resources(
     const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator) {
   for (uint64_t i = 0; i < json_graph->resources.length; ++i) {
     VkrRgJsonResource *resource =
-        vector_get_VkrRgJsonResource(&json_graph->resources, i);
+        array_get_VkrRgJsonResource(&json_graph->resources, i);
 
     if (!vkr_rg_json_condition_enabled(&resource->condition, frame)) {
       continue;
@@ -2941,7 +2939,7 @@ vkr_internal bool8_t vkr_rg_json_add_pass_attachments(
     uint32_t r) {
   for (uint64_t c = 0; c < pass->attachments.colors.length; ++c) {
     VkrRgJsonAttachment *att =
-        vector_get_VkrRgJsonAttachment(&pass->attachments.colors, c);
+        array_get_VkrRgJsonAttachment(&pass->attachments.colors, c);
     String8 resolved_image = {0};
     bool8_t owned_image = false_v;
     if (!vkr_rg_expand_name(frame_allocator, att->image, r, &resolved_image,
@@ -3018,8 +3016,7 @@ vkr_internal bool8_t vkr_rg_json_add_pass_reads(
     const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator,
     uint32_t r) {
   for (uint64_t u = 0; u < pass->reads.length; ++u) {
-    VkrRgJsonResourceUse *use =
-        vector_get_VkrRgJsonResourceUse(&pass->reads, u);
+    VkrRgJsonResourceUse *use = array_get_VkrRgJsonResourceUse(&pass->reads, u);
     if (!vkr_rg_json_condition_enabled(&use->condition, frame))
       continue;
 
@@ -3096,7 +3093,7 @@ vkr_internal bool8_t vkr_rg_json_add_pass_writes(
     uint32_t r) {
   for (uint64_t u = 0; u < pass->writes.length; ++u) {
     VkrRgJsonResourceUse *use =
-        vector_get_VkrRgJsonResourceUse(&pass->writes, u);
+        array_get_VkrRgJsonResourceUse(&pass->writes, u);
     if (!vkr_rg_json_condition_enabled(&use->condition, frame))
       continue;
 
@@ -3171,7 +3168,7 @@ vkr_internal bool8_t vkr_rg_json_build_passes(
     VkrRenderGraph *rg, const VkrRgJsonGraph *json_graph,
     const VkrRenderGraphFrameInfo *frame, VkrAllocator *frame_allocator) {
   for (uint64_t i = 0; i < json_graph->passes.length; ++i) {
-    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&json_graph->passes, i);
+    VkrRgJsonPass *pass = array_get_VkrRgJsonPass(&json_graph->passes, i);
 
     if (!vkr_rg_json_condition_enabled(&pass->condition, frame)) {
       continue;
@@ -3225,7 +3222,7 @@ vkr_internal bool8_t vkr_rg_json_build_passes(
         return false_v;
       }
 
-      VkrRgPass *graph_pass = vector_get_VkrRgPass(&rg->passes, pb.pass_index);
+      VkrRgPass *graph_pass = array_get_VkrRgPass(&rg->passes, pb.pass_index);
       graph_pass->desc.executor_id = pass->executor_id;
       graph_pass->desc.dispatch = pass->dispatch;
 

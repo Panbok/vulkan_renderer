@@ -143,6 +143,8 @@ typedef struct VkrCameraSystemConfig {
 typedef struct VkrCameraSystem {
   Arena *arena;
   VkrAllocator allocator;
+  // Slot table: sized once at init and never grown, so element pointers
+  // stay valid until shutdown.
   Array_VkrCamera cameras;
   VkrHashTable_VkrCameraEntry camera_map;
   uint32_t next_free_index;

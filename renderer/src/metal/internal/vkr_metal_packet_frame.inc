@@ -4403,7 +4403,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   id<MTLTexture> target = nil;
   if (pass->desc.color_attachments.length > 0) {
     const VkrRgAttachment *attachment =
-        vector_get_VkrRgAttachment(&pass->desc.color_attachments, 0);
+        array_get_VkrRgAttachment(&pass->desc.color_attachments, 0);
     target = vkr_metal_packet_texture(renderer, attachment->image);
   } else if (pass->desc.has_depth_attachment) {
     target =

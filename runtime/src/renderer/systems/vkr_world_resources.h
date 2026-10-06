@@ -48,7 +48,9 @@ Array(VkrWorldTextSlot);
  * Holds a fixed array of packet-ready 3D text slots.
  */
 typedef struct VkrWorldResources {
-  Array_VkrWorldTextSlot text_slots; /**< Allocated 3D text slots */
+  /** Allocated 3D text slots; a slot table sized once at init and never
+   * grown, so element pointers stay valid until shutdown. */
+  Array_VkrWorldTextSlot text_slots;
 
   bool8_t initialized; /**< Resources have been initialized */
 } VkrWorldResources;

@@ -352,8 +352,8 @@ bool8_t vkr_camera_registry_init(const VkrCameraSystemConfig *config,
     return false_v;
   }
 
-  out_system->cameras =
-      array_create_VkrCamera(&out_system->allocator, config->max_camera_count);
+  out_system->cameras = array_create_filled_VkrCamera(&out_system->allocator,
+                                                      config->max_camera_count);
   out_system->camera_map = vkr_hash_table_create_VkrCameraEntry(
       &out_system->allocator, ((uint64_t)config->max_camera_count) * 2ULL);
 

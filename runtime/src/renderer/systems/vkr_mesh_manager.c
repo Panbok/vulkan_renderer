@@ -1187,12 +1187,12 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   if (!vkr_allocator_arena(&manager->scratch_allocator))
     goto allocation_failure;
 
-  manager->meshes =
-      array_create_VkrMesh(&manager->allocator, manager->config.max_mesh_count);
-  manager->mesh_live_indices = array_create_uint32_t(
-      &manager->allocator, manager->config.max_mesh_count);
-  manager->free_indices = array_create_uint32_t(&manager->allocator,
+  manager->meshes = array_create_filled_VkrMesh(&manager->allocator,
                                                 manager->config.max_mesh_count);
+  manager->mesh_live_indices = array_create_filled_uint32_t(
+      &manager->allocator, manager->config.max_mesh_count);
+  manager->free_indices = array_create_filled_uint32_t(
+      &manager->allocator, manager->config.max_mesh_count);
   if (!manager->meshes.data || !manager->mesh_live_indices.data ||
       !manager->free_indices.data)
     goto allocation_failure;
@@ -1214,9 +1214,9 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
 
   uint32_t max_assets = manager->config.max_mesh_count;
   manager->mesh_assets =
-      array_create_VkrMeshAsset(&manager->allocator, max_assets);
+      array_create_filled_VkrMeshAsset(&manager->allocator, max_assets);
   manager->asset_free_indices =
-      array_create_uint32_t(&manager->allocator, max_assets);
+      array_create_filled_uint32_t(&manager->allocator, max_assets);
   manager->asset_free_count = 0;
   manager->asset_count = 0;
   manager->next_asset_index = 0;
@@ -1224,9 +1224,9 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   manager->asset_by_key = vkr_hash_table_create_VkrMeshAssetEntry(
       &manager->allocator, ((uint64_t)max_assets) * 2u);
   manager->asset_instance_heads =
-      array_create_uint32_t(&manager->allocator, max_assets);
+      array_create_filled_uint32_t(&manager->allocator, max_assets);
   manager->asset_instance_generations =
-      array_create_uint32_t(&manager->allocator, max_assets);
+      array_create_filled_uint32_t(&manager->allocator, max_assets);
 
   if (!manager->mesh_assets.data || !manager->asset_free_indices.data ||
       !manager->asset_by_key.entries || !manager->asset_instance_heads.data ||
@@ -1242,15 +1242,15 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
 
   uint32_t max_instances = manager->config.max_mesh_count;
   manager->mesh_instances =
-      array_create_VkrMeshInstance(&manager->allocator, max_instances);
+      array_create_filled_VkrMeshInstance(&manager->allocator, max_instances);
   manager->instance_live_indices =
-      array_create_uint32_t(&manager->allocator, max_instances);
+      array_create_filled_uint32_t(&manager->allocator, max_instances);
   manager->instance_free_indices =
-      array_create_uint32_t(&manager->allocator, max_instances);
+      array_create_filled_uint32_t(&manager->allocator, max_instances);
   manager->instance_asset_next =
-      array_create_uint32_t(&manager->allocator, max_instances);
+      array_create_filled_uint32_t(&manager->allocator, max_instances);
   manager->instance_asset_prev =
-      array_create_uint32_t(&manager->allocator, max_instances);
+      array_create_filled_uint32_t(&manager->allocator, max_instances);
   manager->instance_free_count = 0;
   manager->instance_count = 0;
   manager->next_instance_index = 0;
@@ -1376,7 +1376,7 @@ vkr_internal bool8_t vkr_mesh_manager_build_submeshes(
     VkrMeshManager *manager, const VkrMeshDesc *desc,
     Array_VkrSubMesh *out_submeshes, VkrRendererError *out_error) {
   Array_VkrSubMesh submesh_array =
-      array_create_VkrSubMesh(&manager->allocator, desc->submesh_count);
+      array_create_filled_VkrSubMesh(&manager->allocator, desc->submesh_count);
   if (!submesh_array.data) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -3130,8 +3130,8 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     }
   }
 
-  asset->submeshes =
-      array_create_VkrMeshAssetSubmesh(&manager->asset_allocator, subset_count);
+  asset->submeshes = array_create_filled_VkrMeshAssetSubmesh(
+      &manager->asset_allocator, subset_count);
   if (!asset->submeshes.data) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -3280,8 +3280,8 @@ vkr_internal VkrMeshAsset *vkr_mesh_manager_init_loaded_asset_slot(
     return NULL;
   }
 
-  asset->submeshes =
-      array_create_VkrMeshAssetSubmesh(&manager->asset_allocator, subset_count);
+  asset->submeshes = array_create_filled_VkrMeshAssetSubmesh(
+      &manager->asset_allocator, subset_count);
   if (!asset->submeshes.data) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_mesh_manager_free_asset_strings(manager, asset);

@@ -31,7 +31,7 @@ typedef struct VkrRgImage {
   uint32_t last_pass;  /**< Last pass that uses this image */
 } VkrRgImage;
 
-Vector(VkrRgImage);
+Array(VkrRgImage);
 
 /**
  * @brief Internal buffer resource state; one per declared/imported buffer in
@@ -52,7 +52,7 @@ typedef struct VkrRgBuffer {
   uint32_t last_pass;  /**< Last pass that uses this buffer */
 } VkrRgBuffer;
 
-Vector(VkrRgBuffer);
+Array(VkrRgBuffer);
 
 /**
  * @brief Image layout/access transition inserted before or after a pass.
@@ -68,7 +68,7 @@ typedef struct VkrRgImageBarrier {
   VkrImageSubresourceRange range;
 } VkrRgImageBarrier;
 
-Vector(VkrRgImageBarrier);
+Array(VkrRgImageBarrier);
 
 /**
  * @brief Access and layout of one image subresource during barrier generation.
@@ -104,7 +104,7 @@ typedef struct VkrRgBufferBarrier {
   VkrGpuDependency dependency;       /**< Canonical execution/visibility */
 } VkrRgBufferBarrier;
 
-Vector(VkrRgBufferBarrier);
+Array(VkrRgBufferBarrier);
 
 /**
  * @brief Internal pass state; one per pass added to the graph.
@@ -112,18 +112,18 @@ Vector(VkrRgBufferBarrier);
 typedef struct VkrRgPass {
   VkrRgPassDesc desc; /**< Pass descriptor (name, attachments, uses, execute) */
 
-  Vector_uint32_t out_edges; /**< Indices of passes that depend on this pass */
-  Vector_uint32_t in_edges;  /**< Indices of passes this pass depends on */
+  Array_uint32_t out_edges; /**< Indices of passes that depend on this pass */
+  Array_uint32_t in_edges;  /**< Indices of passes this pass depends on */
 
-  Vector_VkrRgImageBarrier
+  Array_VkrRgImageBarrier
       pre_image_barriers; /**< Image barriers to record before the pass */
-  Vector_VkrRgBufferBarrier
+  Array_VkrRgBufferBarrier
       pre_buffer_barriers; /**< Buffer barriers to record before the pass */
 
   bool8_t culled; /**< True if pass was culled (outputs unused) */
 } VkrRgPass;
 
-Vector(VkrRgPass);
+Array(VkrRgPass);
 
 /**
  * @brief Render graph state: resources, passes, barriers, and execution order.
@@ -139,21 +139,21 @@ typedef struct VkrRenderGraph {
   const VkrPreparedFrame *packet; /**< Frame-local; set via vkr_rg_set_packet;
                                     valid during execute */
 
-  Vector_VkrRgImage images;   /**< All image resources */
-  Vector_VkrRgBuffer buffers; /**< All buffer resources */
+  Array_VkrRgImage images;   /**< All image resources */
+  Array_VkrRgBuffer buffers; /**< All buffer resources */
   /** Name to vector index. Resources are never removed, so the keys borrow
    * their graph-owned names until vkr_rg_destroy. */
   VkrHashTable_uint32_t image_index_by_name;
   VkrHashTable_uint32_t buffer_index_by_name;
-  Vector_VkrRgPass passes; /**< All passes */
+  Array_VkrRgPass passes; /**< All passes */
 
   VkrRgImageHandle present_image; /**< Image used for present (swapchain) */
-  Vector_VkrRgImageBarrier
+  Array_VkrRgImageBarrier
       terminal_image_barriers; /**< Graph-owned target completion barriers */
-  Vector_VkrRgImageHandle export_images;   /**< Images marked for export */
-  Vector_VkrRgBufferHandle export_buffers; /**< Buffers marked for export */
+  Array_VkrRgImageHandle export_images;   /**< Images marked for export */
+  Array_VkrRgBufferHandle export_buffers; /**< Buffers marked for export */
 
-  Vector_uint32_t
+  Array_uint32_t
       execution_order; /**< Pass indices in execution order (after compile) */
 
   /**

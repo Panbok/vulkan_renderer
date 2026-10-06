@@ -25,7 +25,7 @@ typedef struct VkrJobSlot {
   uint32_t payload_capacity;
   uint32_t remaining_dependencies;
   bool8_t defer_enqueue;
-  Vector_VkrJobHandle dependents;
+  Array_VkrJobHandle dependents;
   bool8_t success;
 } VkrJobSlot;
 
@@ -122,7 +122,7 @@ vkr_internal bool8_t job_system_register_dependency_locked(
     return true_v;
   }
 
-  if (!vector_push_VkrJobHandle(&parent->dependents, child->handle))
+  if (!array_push_VkrJobHandle(&parent->dependents, child->handle))
     return false_v;
   child->remaining_dependencies++;
   return true_v;

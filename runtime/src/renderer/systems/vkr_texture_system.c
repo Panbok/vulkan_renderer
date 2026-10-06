@@ -769,8 +769,8 @@ bool8_t vkr_texture_system_init(const VkrDeviceInformation *device_info,
   out_system->supports_texture_bc7 = device_info->supports_texture_bc7;
   out_system->supports_texture_bc5 = device_info->supports_texture_bc5;
 
-  out_system->textures = array_create_VkrTexture(&out_system->allocator,
-                                                 config->max_texture_count);
+  out_system->textures = array_create_filled_VkrTexture(
+      &out_system->allocator, config->max_texture_count);
   if (!out_system->textures.data) {
     vkr_texture_system_shutdown(out_system);
     return false_v;
