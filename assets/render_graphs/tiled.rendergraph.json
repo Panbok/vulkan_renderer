@@ -1100,8 +1100,8 @@
       "execute": "pass.clouds.trace"
     },
     {
-      "name": "Tiled.Clouds",
-      "condition": "scene_rendering && clouds_enabled",
+      "name": "Tiled.Atmosphere",
+      "condition": "scene_rendering && (clouds_enabled || fog_apply_enabled)",
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
@@ -1119,7 +1119,20 @@
         {
           "image": "cloud_history",
           "access": "SAMPLED",
-          "binding": 34
+          "binding": 34,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "aerial_perspective_enabled"
         }
       ],
       "attachments": {
@@ -1131,7 +1144,7 @@
           }
         ]
       },
-      "execute": "pass.tiled.clouds"
+      "execute": "pass.tiled.atmosphere"
     },
     {
       "name": "Tiled.Blend",
@@ -1168,6 +1181,12 @@
           "access": "SAMPLED",
           "binding": 8,
           "when": "local_shadows_active"
+        },
+        {
+          "image": "aerial_perspective",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "aerial_perspective_enabled"
         }
       ],
       "attachments": {

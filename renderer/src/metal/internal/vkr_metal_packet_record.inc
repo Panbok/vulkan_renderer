@@ -384,15 +384,16 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
                                               VKR_METAL_TILED_TILE_HEIGHT, 1u)];
 }
 
-/* The cloud layer over the tiled pipeline's resolved image. */
-vkr_internal void vkr_metal_packet_record_tiled_clouds(
+/* The cloud layer, aerial perspective and fog over the tiled pipeline's
+   resolved image. */
+vkr_internal void vkr_metal_packet_record_tiled_atmosphere(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
-  [encoder setViewport:pass->tiled_clouds.viewport];
-  [renderer->argument_table setAddress:pass->tiled_clouds.root atIndex:1u];
+  [encoder setViewport:pass->tiled_atmosphere.viewport];
+  [renderer->argument_table setAddress:pass->tiled_atmosphere.root atIndex:1u];
   [encoder setArgumentTable:renderer->argument_table
                    atStages:MTLRenderStageVertex | MTLRenderStageFragment];
-  [encoder setRenderPipelineState:renderer->tiled_clouds_pipeline];
+  [encoder setRenderPipelineState:renderer->tiled_atmosphere_pipeline];
   [encoder setCullMode:MTLCullModeNone];
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle
               vertexStart:0u
@@ -406,8 +407,8 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
   case VKR_RG_EXECUTOR_TILED_OPAQUE:
     vkr_metal_packet_record_tiled_opaque(renderer, encoder, pass);
     break;
-  case VKR_RG_EXECUTOR_TILED_CLOUDS:
-    vkr_metal_packet_record_tiled_clouds(renderer, encoder, pass);
+  case VKR_RG_EXECUTOR_TILED_ATMOSPHERE:
+    vkr_metal_packet_record_tiled_atmosphere(renderer, encoder, pass);
     break;
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:

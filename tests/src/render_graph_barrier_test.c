@@ -1560,7 +1560,7 @@ vkr_internal void test_tiled_graph_topology(void) {
       cloud_light = i;
     else if (vkr_string8_equals_cstr(&pass->desc.name, "Clouds.Trace"))
       trace = i;
-    else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Clouds"))
+    else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Atmosphere"))
       clouds = i;
     else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Blend"))
       blend = i;

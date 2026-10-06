@@ -653,7 +653,9 @@ typedef enum VkrMetalTiledLighting {
   VKR_METAL_TILED_LIGHTING_SHADOWED = 2,
   /* Rectangle lights besides shadowed point and spot lights. */
   VKR_METAL_TILED_LIGHTING_ALL = 3,
-  VKR_METAL_TILED_LIGHTING_COUNT = 4,
+  /* Every light, and the editor's inspection modes. */
+  VKR_METAL_TILED_LIGHTING_INSPECT = 4,
+  VKR_METAL_TILED_LIGHTING_COUNT = 5,
 } VkrMetalTiledLighting;
 
 struct VkrMetalPacketRenderer {
@@ -792,7 +794,7 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> tiled_sky_pipeline;
   /* Tone-mapped multisample resolve at the end of the opaque pass. */
   id<MTLRenderPipelineState> tiled_resolve_pipeline;
-  id<MTLRenderPipelineState> tiled_clouds_pipeline;
+  id<MTLRenderPipelineState> tiled_atmosphere_pipeline;
   /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
   id<MTLRenderPipelineState> tiled_picking_pipeline;
   /* Glass and blended surfaces, and world text, over the resolved image. */

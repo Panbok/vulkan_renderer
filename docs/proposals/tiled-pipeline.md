@@ -235,8 +235,8 @@ Remaining phases:
    ([measurements](../adr/087-gpu-class-graphics-pipelines.md#adaptive-quality-measurement)).
    Remaining: the opaque pass on the widest views, the dynamic-light tier
    at its 0.65 floor (17.1 to 17.5 ms p95), the remaining material layers,
-   IBL probes, fog, rough and thick glass, specular highlights of static
-   lights, and making the tiled pipeline the Apple default.
+   IBL probes, rough and thick glass, specular highlights of static lights,
+   and making the tiled pipeline the Apple default.
 3. Cooked mesh LOD: implemented
    ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels));
    the tiled native orbit takes 11.3 ms median and 15.5 ms p95 with it.

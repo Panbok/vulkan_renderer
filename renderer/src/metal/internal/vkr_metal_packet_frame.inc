@@ -220,6 +220,8 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       upload->froxel_integrated_texture_id;
   frame_root->sky = upload->sky_gpu;
   frame_root->lightmap = upload->lightmap_gpu;
+  frame_root->terrain_materials =
+      vkr_metal_material_table_device_terrain_gpu_address(renderer->materials);
   uint64_t anisotropy_gpu = 0u;
   VkrMetalPacketAnisotropy *anisotropy =
       vkr_metal_packet_next_root(upload, sizeof(*anisotropy), &anisotropy_gpu);
@@ -4342,10 +4344,19 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
 }
 
 /* The tiled pipeline's shading variant for the frame's dynamic lights
-   (ADR-087). Without a local shadow view no light carries a shadow, so the
-   variant without shadow filtering shades the same result. */
+   (ADR-087), or the inspection variant for the editor's unlit, detail
+   lighting, lighting only and wireframe modes. Without a local shadow view
+   no light carries a shadow, so the variant without shadow filtering shades
+   the same result. */
 vkr_internal VkrMetalTiledLighting
 vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet) {
+  const uint32_t mode = packet->input.globals.render_mode;
+  if (mode == VKR_RENDER_MODE_UNLIT ||
+      mode == VKR_RENDER_MODE_DETAIL_LIGHTING ||
+      mode == VKR_RENDER_MODE_LIGHTING_ONLY ||
+      mode == VKR_RENDER_MODE_WIREFRAME) {
+    return VKR_METAL_TILED_LIGHTING_INSPECT;
+  }
   const VkrFrameLighting *lighting = packet->input.lighting;
   if (!lighting) {
     return VKR_METAL_TILED_LIGHTING_NONE;
@@ -4412,9 +4423,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   return true_v;
 }
 
-/* Prepares the cloud draw over the tiled pipeline's resolved image: it reads
-   the resolved depth at binding 0 and the sky-view lookup at 15. */
-vkr_internal bool8_t vkr_metal_packet_prepare_tiled_clouds(
+/* Prepares the atmosphere draw over the tiled pipeline's resolved image: it
+   reads the resolved depth at binding 0 and the sky-view lookup at 15. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload, id<MTLTexture> target)
@@ -4424,11 +4435,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_clouds(
     return false_v;
   const uint32_t width = (uint32_t)target.width;
   const uint32_t height = (uint32_t)target.height;
-  if (!vkr_metal_packet_prepare_tiled_sky_root(renderer, pass, packet, upload,
-                                               width, height, 15u, depth,
-                                               &prepared->tiled_clouds.root))
+  if (!vkr_metal_packet_prepare_tiled_sky_root(
+          renderer, pass, packet, upload, width, height, 15u, depth,
+          &prepared->tiled_atmosphere.root))
     return false_v;
-  prepared->tiled_clouds.viewport =
+  prepared->tiled_atmosphere.viewport =
       (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
   prepared->active = true_v;
   return true_v;
@@ -4521,9 +4532,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE)
     return vkr_metal_packet_prepare_tiled_opaque(renderer, pass, packet,
                                                  prepared, upload, target);
-  if (kind == VKR_RG_EXECUTOR_TILED_CLOUDS)
-    return vkr_metal_packet_prepare_tiled_clouds(renderer, pass, packet,
-                                                 prepared, upload, target);
+  if (kind == VKR_RG_EXECUTOR_TILED_ATMOSPHERE)
+    return vkr_metal_packet_prepare_tiled_atmosphere(renderer, pass, packet,
+                                                     prepared, upload, target);
   if (kind == VKR_RG_EXECUTOR_TILED_PICKING)
     return renderer->tiled &&
            vkr_metal_packet_prepare_gpu_draws(renderer, pass, packet, prepared,

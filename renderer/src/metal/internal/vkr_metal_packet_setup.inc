@@ -1036,6 +1036,15 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
                   @"VKR tiled alpha-tested forward with all lights",
               .blend_label = @"VKR tiled blend with all lights",
           },
+      [VKR_METAL_TILED_LIGHTING_INSPECT] =
+          {
+              .forward = "vkr_metal_tiled_forward_inspect_fragment",
+              .coverage = "vkr_metal_tiled_forward_inspect_coverage_fragment",
+              .blend = "vkr_metal_tiled_blend_inspect_fragment",
+              .forward_label = @"VKR tiled forward inspection",
+              .coverage_label = @"VKR tiled alpha-tested forward inspection",
+              .blend_label = @"VKR tiled blend inspection",
+          },
   };
   for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
     renderer->tiled_forward_pipelines[i] =
@@ -1108,9 +1117,9 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
   vertex.name = @"vkr_metal_tiled_sky_vertex";
   MTL4LibraryFunctionDescriptor *clouds = [MTL4LibraryFunctionDescriptor new];
   clouds.library = fragment;
-  clouds.name = @"vkr_metal_tiled_clouds_fragment";
+  clouds.name = @"vkr_metal_tiled_atmosphere_fragment";
   MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
-  descriptor.label = @"VKR tiled clouds";
+  descriptor.label = @"VKR tiled atmosphere";
   descriptor.vertexFunctionDescriptor = vertex;
   descriptor.fragmentFunctionDescriptor = clouds;
   MTL4PipelineOptions *options = [MTL4PipelineOptions new];
@@ -1129,19 +1138,19 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
   descriptor.colorAttachments[0].destinationAlphaBlendFactor =
       MTLBlendFactorOne;
   NSError *error = nil;
-  renderer->tiled_clouds_pipeline = [renderer->compiler
+  renderer->tiled_atmosphere_pipeline = [renderer->compiler
       newRenderPipelineStateWithDescriptor:descriptor
                        compilerTaskOptions:renderer->compiler_options
                                      error:&error];
-  if (!renderer->tiled_clouds_pipeline)
-    vkr_metal_packet_print_error("tiled_clouds_pipeline", error);
-  if (renderer->tiled_clouds_pipeline &&
+  if (!renderer->tiled_atmosphere_pipeline)
+    vkr_metal_packet_print_error("tiled_atmosphere_pipeline", error);
+  if (renderer->tiled_atmosphere_pipeline &&
       !vkr_metal_packet_validate_abi_binding(
           descriptor.label,
-          renderer->tiled_clouds_pipeline.reflection.fragmentBindings,
+          renderer->tiled_atmosphere_pipeline.reflection.fragmentBindings,
           VKR_METAL_PACKET_ABI_TILED_SKY_ROOT)) {
-    [renderer->tiled_clouds_pipeline release];
-    renderer->tiled_clouds_pipeline = nil;
+    [renderer->tiled_atmosphere_pipeline release];
+    renderer->tiled_atmosphere_pipeline = nil;
   }
   [descriptor release];
   [clouds release];
@@ -1884,7 +1893,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       }
     }
     if (!lighting_ready || !renderer->tiled_depth_pipeline ||
-        !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
+        !renderer->tiled_sky_pipeline || !renderer->tiled_atmosphere_pipeline ||
         !renderer->tiled_resolve_pipeline ||
         !renderer->tiled_picking_pipeline || !renderer->tiled_text_pipeline ||
         !renderer->tiled_prepass_state || !renderer->tiled_shade_state ||

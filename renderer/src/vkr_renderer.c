@@ -1183,8 +1183,10 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.ssgi_enabled && !rf->ssgi_forced_disabled &&
       !orthographic && packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.fog = vkr_fog_prepare(&packet->globals.fog);
+  /* The tiled graph has no froxel fog; its forward shading applies the
+     analytic fog (ADR-087). */
   prepared->frame.froxel_fog =
-      prepared->frame.scene_rendering && !orthographic
+      prepared->frame.scene_rendering && !orthographic && !tiled
           ? vkr_froxel_fog_prepare(&prepared->frame.input, temporal_width,
                                    temporal_height)
           : (VkrFroxelFogGpuParams){0};
@@ -1357,7 +1359,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
           !orthographic && !wireframe,
       packet->globals.gtao_radius, packet->globals.gtao_power);
   /* The tiled graph has none of the desktop pipeline's screen-space effects,
-     surface diffusion, lens effects or froxel fog (ADR-087). */
+     surface diffusion or lens effects (ADR-087). */
   if (tiled) {
     prepared->frame.subsurface_enabled = false_v;
     prepared->frame.dof_enabled = false_v;
@@ -1366,7 +1368,6 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     prepared->frame.ssgi_enabled = false_v;
     prepared->frame.gtao = vkr_gtao_prepare(
         false_v, packet->globals.gtao_radius, packet->globals.gtao_power);
-    prepared->frame.froxel_fog = (VkrFroxelFogGpuParams){0};
   }
 }
 

@@ -145,11 +145,11 @@ typedef struct VkrMetalPacketPreparedPass {
       VkrMetalPacketIndirectPass draws;
       uint64_t sky_root;
     } tiled;
-    /* The tiled pipeline's cloud draw over the resolved image. */
+    /* The tiled pipeline's atmosphere draw over the resolved image. */
     struct {
       uint64_t root;
       MTLViewport viewport;
-    } tiled_clouds;
+    } tiled_atmosphere;
     struct {
       uint64_t root;
       MTLViewport viewport;

@@ -119,7 +119,7 @@ typedef enum VkrRgExecutorKind {
   /** The tiled pipeline's opaque render pass and its cloud layer
    * (ADR-087). */
   VKR_RG_EXECUTOR_TILED_OPAQUE,
-  VKR_RG_EXECUTOR_TILED_CLOUDS,
+  VKR_RG_EXECUTOR_TILED_ATMOSPHERE,
   /** Object ids of the tiled pipeline's opaque draws for a pick. */
   VKR_RG_EXECUTOR_TILED_PICKING,
   /** The tiled pipeline's glass, blended surfaces and world text. */

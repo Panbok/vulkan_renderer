@@ -168,6 +168,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"picking_pending && !transmission_pending",
      VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION},
     {"blend_pending", VKR_RG_JSON_CONDITION_BLEND_PENDING},
+    {"(clouds_enabled || fog_apply_enabled)",
+     VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED},
 };
 
 vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
@@ -2218,6 +2220,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->picking_pending && !frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_BLEND_PENDING:
     return frame->blend_pending;
+  case VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED:
+    return frame->clouds_enabled || frame->fog_apply_enabled;
   default:
     return false_v;
   }

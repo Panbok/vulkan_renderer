@@ -233,6 +233,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t sky;
   /** The frame's VkrMetalPacketLightmap; always set. */
   uint64_t lightmap;
+  /** The material table's terrain rows, which the tiled pipeline's forward
+      shading reads by material index (ADR-084). */
+  uint64_t terrain_materials;
 } VkrMetalPacketFrameRoot;
 
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, dfg_texture_id) == 472u,
@@ -259,6 +262,8 @@ _Static_assert(offsetof(VkrMetalPacketFrameRoot, sky) == 536u,
                "Metal sky record offset drift");
 _Static_assert(offsetof(VkrMetalPacketFrameRoot, lightmap) == 544u,
                "Metal lightmap record offset drift");
+_Static_assert(offsetof(VkrMetalPacketFrameRoot, terrain_materials) == 552u,
+               "Metal terrain material rows offset drift");
 _Static_assert(sizeof(VkrMetalPacketFrameRoot) == 560u,
                "Metal frame root ABI size drift");
 

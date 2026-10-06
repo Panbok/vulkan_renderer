@@ -226,6 +226,7 @@ struct VkrMetalPacketFrameRoot
     VkrMetalPacketLocalShadowTransmission* local_shadow_transmission;
     VkrMetalPacketSky* sky;
     VkrMetalPacketLightmap* lightmap;
+    uint64_t terrain_materials;
 };
 
 #include "../../../shared/gpu_draw.slangh"

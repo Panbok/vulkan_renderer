@@ -105,10 +105,14 @@ pipeline rather than a backend mechanism.
    colour and depth are memoryless four-sample targets the Metal backend
    owns; they resolve on chip into the graph's `hdr_scene_color` and
    `opaque_vbuffer_depth`, depth to the nearest sample. The graph compiler is
-   unchanged. The cloud trace needs that depth, so `Tiled.Clouds`
-   (`pass.tiled.clouds`) lays the cloud layer and the discs it lets through
-   over the resolved sky pixels afterwards; edge pixels mixing sky and surface
-   samples miss the clouds. Opaque draws shade at the laid depth with
+   unchanged. The cloud trace needs that depth, so `Tiled.Atmosphere`
+   (`pass.tiled.atmosphere`) afterwards lays the cloud layer and the discs it
+   lets through over the resolved sky pixels, and aerial perspective and
+   analytic height fog over every pixel, as the desktop pipeline's
+   `Fog.Apply` lays them; it runs while clouds, aerial perspective or fog
+   are on. A pixel takes its nearest sample's depth, so edge pixels mixing
+   sky and surface samples miss the clouds and take the surface's media.
+   Opaque draws shade at the laid depth with
    fragment variants that never discard, so hidden-surface removal keeps its
    fast path; alpha-tested draws, which the pre-pass skips, shade after them
    with their alpha sharpened about the material's cut-off to a transition
@@ -142,11 +146,16 @@ pipeline rather than a backend mechanism.
    comes from the draw's lightmap
    ([ADR-088](088-baked-lightmap-sets.md)): the frame's active layers, each
    weighed by the sun and its light group; a draw without one takes the baked
-   diffuse volume, else the global environment. Clearcoat, sheen, anisotropy,
-   diffuse transmission, IBL probes and punctual and rectangle lights are not
-   drawn yet. The vertex stage is MSL, because the Slang module numbers entry
-   point buffers in declaration order and the GPU-encoded commands bind the
-   draw root at buffer 0.
+   diffuse volume, else the global environment. A terrain material blends its
+   four layers by the vertex colour's weights as the G-buffer resolve does
+   ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), reading the
+   material table's terrain rows through the frame root. Blended surfaces,
+   drawn after `Tiled.Atmosphere`, apply aerial perspective and fog to their
+   own light only. Clearcoat, sheen,
+   anisotropy, diffuse transmission and IBL probes are not drawn yet. The
+   vertex stage is MSL, because the Slang module numbers entry point buffers
+   in declaration order and the GPU-encoded commands bind the draw root at
+   buffer 0.
 9. The editor runs the tiled pipeline. The tiled graph carries the editor's
    Scene image passes (resolve, grid, selection mask and outline, overlay
    and composite), which read the resolved `hdr_scene_color` and
@@ -177,10 +186,13 @@ pipeline rather than a backend mechanism.
     thickness and an effective roughness of zero. The pass runs only on
     frames with blended draws or world text, because its load and store of
     the resolved colour and depth cost about 0.4 ms at 2560×1440.
-11. The tiled pipeline lights static lights only through baked data, the
-    lightmaps and diffuse volumes, and draws a bounded set of dynamic lights
-    forward. With `static_lights_baked`, which the runtime sets for the tiled
-    class, the lighting system leaves static lights out of its tables; then
+11. The tiled pipeline lights a baked scene's static lights only through its
+    baked data, the lightmaps and diffuse volumes, and draws a bounded set of
+    dynamic lights forward. With `static_lights_baked`, which the runtime sets
+    on the tiled class for each scene with a loaded lightmap set, the
+    lighting system leaves that scene's static lights out of its tables; a
+    scene without one keeps them, so they draw with the dynamic lights until
+    it is baked (owner decision, 2026-10-06). Then
     `vkr_lighting_system_limit_point_lights`
     ([`vkr_lighting_system.h`](../../runtime/src/renderer/systems/vkr_lighting_system.h))
     keeps the 16 dynamic point and spot lights nearest the camera by the
@@ -195,12 +207,14 @@ pipeline rather than a backend mechanism.
     and shows shadow-map texels at the edge (owner decision, 2026-10-06).
     The tiled graph renders the local shadow atlas with the desktop passes
     `Shadow.Local.Clear` and `Shadow.Local`; glass casts no local shadow, so
-    the sampler reads no refractive layers. A static light in an unbaked
-    scene adds no light. Each frame shades with the fragment variant for its
-    dynamic lights (`VkrMetalTiledLighting` in
+    the sampler reads no refractive layers. Each frame shades with the
+    fragment variant for its dynamic lights (`VkrMetalTiledLighting` in
     [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)
     and `vkr_metal_packet_tiled_lighting`): none, point and spot lights
-    without shadows, with shadows, or rectangle lights as well. Light code a
+    without shadows, with shadows, or rectangle lights as well; the editor's
+    unlit, detail lighting, lighting only and wireframe modes take an
+    inspection variant with every light, so lit frames pay nothing for them.
+    Light code a
     frame does not use still costs `Tiled.Opaque` its registers with no light
     in range, on Bistro 0.65 ms median for the light loop, 1.2 ms for the
     former shadow filter and 1.1 ms for the rectangle-light path.
@@ -526,6 +540,50 @@ stepped once per 33 frames and left the p95 at 16.6 and 20.6 ms. A 0.75 capture
 of `tiled_bistro_baked_capture` is visibly softer at text and thin edges than
 native. Metal API validation passed a run of the dynamic-light case that
 stepped six times (4 ms target).
+
+### Unbaked lights, terrain, inspection and atmosphere
+
+Release, M1 Pro, 2026-10-06: the build before these changes
+(`VKR_SHADER_CATALOG` copy) alternated with the build after them, two runs
+each, both forced to the tiled class; `gpu.submission` median / p95 from
+`local-windowed-gpu-submission-single`:
+
+| Case | Before | After |
+|---|---|---|
+| `tiled_bistro_baked_native` | 11.33 / 15.46, 11.35 / 15.40 ms | 11.55 / 15.76, 11.54 / 15.79 ms |
+| `tiled_bistro_baked_dynamic_native` | 13.23 / 20.64, 13.25 / 20.63 ms | 13.44 / 20.87, 13.50 / 20.88 ms |
+| `tiled_bistro_native` (no lightmap set) | 10.24 / 13.87, 10.25 / 14.01 ms | 16.35 / 24.08, 18.12 / 26.95 ms |
+
+Unbaked Bistro now draws its glTF lamps as dynamic lights, 16 of them with 4
+shadowed, instead of none; adaptive quality absorbs that until the scene is
+baked. With pass timestamps (`local-windowed-gpu-single`), `Tiled.Opaque` on
+the baked orbit went from 7.43 to 7.57 ms median and 11.50 to 11.82 ms p95 to
+7.54 to 7.67 and 11.66 to 11.94 ms, and the atmosphere draw took 0.38 ms
+against the cloud draw's 0.32 ms. In earlier builds of this change, applying
+aerial perspective in the forward shading cost `Tiled.Opaque` 0.5 ms median
+and 1.2 ms p95 even with the lookup read by reference, which is why it moved
+to the full-screen draw; the terrain branch costs about 0.07 ms median and
+0.24 ms p95 on a frame without terrain. Reports, before then after: baked
+`sha256:9ca665c6f4b300b6e7d52a4b163b14845a79b1824ac9df147e1bd2c84ba467ef`,
+`sha256:97c82fb42077e43053540a6131a997f2f291bc3089a22b591df285d430bd670c`,
+`sha256:c8a1b015383043fc0aa76ea3b25f5d0ed5433c14861ad0d0409b4b343c854742`,
+`sha256:18432cbbf61abd424eb62118c2ac9ec9840b380471de901154cc4b50ae374c52`;
+dynamic
+`sha256:a34c57a772c729d3135c9198841306e7deeb392755fdea97eb62121f4507db60`,
+`sha256:68a586c3f435a3108587468b3c37300d85be088365b6e4854545fa53bb9538c7`,
+`sha256:67e425fbb25ab2d2f33fac739d9df3750d2d6e9c3f6d6ab7b21118284d4c927d`,
+`sha256:c1f306cb31965da4f87a2c334972b8a8bd52e72c612b1d4d6ab05f06f871550b`;
+unbaked
+`sha256:828fd7ee343c4c1ce708130cf8f879b126f6636d4bf669122b574f23a993b1cf`,
+`sha256:e35b2226629593cd9607c51ddbed699264cbe0adbc7cb3bb236e4b654270c473`,
+`sha256:62fc47a50dde9ffa2db38940c0846b49b93f1545d2ec5482a807ac536bbede95`,
+`sha256:785e1cc481c9183709ef459c1024686fa2ff7fa6ed3cf5d4dd630c92ff03607e`.
+
+By inspection against the desktop pipeline: a 128 m terrain painted with its
+four layers in the headless editor shows the same layer regions; harness
+captures of unlit, detail lighting, lighting only and wireframe match their
+desktop counterparts (unlit within about 1 of 255), and a Bistro capture with
+height fog shows the same haze and sky (sky means within 0.2 of 255).
 
 ## Consequences
 

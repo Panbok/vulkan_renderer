@@ -2401,6 +2401,14 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   }
 }
 
+/* The tiled pipeline lights a scene's static lights through its lightmap set
+   (ADR-087); a scene without a loaded set draws them with its dynamic
+   lights, so its lamps show before a bake. */
+vkr_internal bool8_t vkr_standard_scene_runtime_static_lights_baked(
+    const VkrScene *scene, bool8_t tiled) {
+  return tiled && scene->lightmaps && scene->lightmaps->texture.id != 0u;
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     void *state, const VkrApplicationHostFrame *host_frame) {
   VkrStandardSceneRuntime *application = state;
@@ -2480,11 +2488,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     vkr_world_resources_poll_scene_atmosphere(&application->assets,
                                               render_scene);
     vkr_standard_scene_runtime_advance_cloud_wind(application, delta);
-    /* The tiled pipeline lights static lights through baked data only
-       (ADR-087). */
     const bool8_t tiled =
         application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
-    application->lighting_system.static_lights_baked = tiled;
+    application->lighting_system.static_lights_baked =
+        vkr_standard_scene_runtime_static_lights_baked(render_scene, tiled);
     vkr_lighting_system_sync_from_scene(&application->lighting_system,
                                         render_scene);
     /* Additive scenes' light groups follow the rendered scene's sun and
@@ -2493,6 +2500,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
       vkr_scene_update_light_groups(
           application->additive_scenes[i], render_scene->clock.night,
           render_scene->world_state.time_of_day.night_groups);
+      application->lighting_system.static_lights_baked =
+          vkr_standard_scene_runtime_static_lights_baked(
+              application->additive_scenes[i], tiled);
       vkr_lighting_system_append_scene(&application->lighting_system,
                                        application->additive_scenes[i]);
     }
