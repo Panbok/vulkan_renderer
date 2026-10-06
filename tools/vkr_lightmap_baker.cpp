@@ -36,12 +36,24 @@ extern "C" {
  * gathers cosine-weighted samples per texel through the ADR-054 integrator and
  * reports throughput. `--gpu trace` measures Metal ray throughput; `--gpu
  * gather` bakes the layer irradiance on Metal and checks it against the CPU
- * integrator. `--output` bakes the scene's lightmap set (VKLM) on Metal and
- * `--manifest` writes the bake's source closure for `vkr_bakery bake
- * lightmap`; `--inspect` stops after the manifest.
+ * integrator, and counts each layer's outlier texels. `--output` bakes the
+ * scene's lightmap set (VKLM) on Metal, rejecting outlier texels before
+ * encoding, and `--manifest` writes the bake's source closure for
+ * `vkr_bakery bake lightmap`; `--inspect` stops after the manifest.
  */
 
 namespace {
+
+/* Outlier rejection (vkr_bake_lightmap_reject_outliers): a texel brighter
+   than kOutlierRatio times its brightest same-surface neighbor, of at least
+   kOutlierMinNeighbors within kOutlierNeighborTexels texels in world space.
+   On Bistro's first page at 64 samples such texels are 1% of the lamp layer
+   and carry 1.3% of its light. */
+constexpr float32_t kOutlierRatio = 2.0f;
+constexpr uint32_t kOutlierMinNeighbors = 3u;
+constexpr float32_t kOutlierNeighborTexels = 4.0f;
+/* Smoothing passes (vkr_bake_lightmap_smooth) over a published layer. */
+constexpr uint32_t kSmoothPasses = 1u;
 
 enum class GpuMode : uint8_t {
   Off,
@@ -77,6 +89,10 @@ struct Options {
   /* astcenc effort for the layer pages, 0 (fastest) to 100. */
   float32_t astc_effort = 10.0f;
   uint32_t dilation_passes = 4u;
+  /* Outlier rejection ratio for published layers; zero keeps every texel. */
+  float32_t outlier_ratio = kOutlierRatio;
+  /* Smoothing passes over published layers after outlier rejection. */
+  uint32_t smooth_passes = kSmoothPasses;
 };
 
 void usage() {
@@ -88,7 +104,8 @@ void usage() {
       "[--pages <n>] [--threads <n>] [--seed <n>] [--gpu <trace|gather>] "
       "[--check-texels <n>] [--check-samples <n>] "
       "[--check-transport <all|sky|sun|lamps>] [--astc-effort <0-100>] "
-      "[--dilation <passes>]\n");
+      "[--dilation <passes>] [--outlier-ratio <ratio, 0 off>] "
+      "[--smooth <passes>]\n");
 }
 
 bool parse_u32(const char *text, uint32_t *out) {
@@ -156,6 +173,17 @@ bool parse(int argc, char **argv, Options *options) {
       options->astc_effort = std::strtof(value, nullptr);
     } else if (std::strcmp(flag, "--dilation") == 0) {
       if (!parse_u32(value, &options->dilation_passes)) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--smooth") == 0) {
+      if (!parse_u32(value, &options->smooth_passes)) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--outlier-ratio") == 0) {
+      char *end = nullptr;
+      options->outlier_ratio = std::strtof(value, &end);
+      if (!end || *end != '\0' || !std::isfinite(options->outlier_ratio) ||
+          (options->outlier_ratio != 0.0f && options->outlier_ratio < 1.0f)) {
         return false;
       }
     } else if (std::strcmp(flag, "--check-transport") == 0) {
@@ -495,6 +523,11 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
   sun_key.sky = sky;
   lamps.emission = true;
   lamps.texel_direct = true;
+  /* The lamp layer split: its lights alone, and surface emission alone. */
+  VkrBakeMetalLayer lamp_lights = lamps;
+  lamp_lights.emission = false;
+  VkrBakeMetalLayer emission;
+  emission.emission = true;
   std::printf("layers sun_key_lights=%zu lamp_lights=%zu sky=%d\n",
               sun_key.lights.size(), lamps.lights.size(), sky ? 1 : 0);
 
@@ -512,13 +545,22 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
   };
   NamedLayer layers[] = {{"parity", &parity, 0.0, 0u},
                          {"sun_key0", &sun_key, 0.0, 0u},
-                         {"lamps0", &lamps, 0.0, 0u}};
+                         {"lamps0", &lamps, 0.0, 0u},
+                         {"lamp_lights0", &lamp_lights, 0.0, 0u},
+                         {"emission0", &emission, 0.0, 0u}};
   const uint32_t page_end = std::min(options.pages, layout.page_count);
   for (uint32_t page = 0u; page < page_end; ++page) {
     std::vector<VkrBakeLightmapTexel> texels;
     if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
                                           (uint32_t)scene.triangles.size(),
                                           layout, page, &texels)) {
+      vkr_bake_metal_destroy(gpu);
+      return 1;
+    }
+    VkrBakeLightmapNeighbors neighbors;
+    if (!vkr_bake_lightmap_neighbors(
+            layout.page_size, texels,
+            kOutlierNeighborTexels / options.texels_per_unit, &neighbors)) {
       vkr_bake_metal_destroy(gpu);
       return 1;
     }
@@ -530,6 +572,13 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
         vkr_bake_metal_destroy(gpu);
         return 1;
       }
+      /* Counted, not replaced: the parity check compares raw transport. */
+      const VkrBakeLightmapOutliers outliers =
+          vkr_bake_lightmap_reject_outliers(
+              neighbors,
+              options.outlier_ratio > 0.0f ? options.outlier_ratio
+                                           : kOutlierRatio,
+              kOutlierMinNeighbors, false, &irradiance);
       float64_t mean = 0.0;
       uint64_t nonfinite = 0u;
       for (const Vec3 &value : irradiance) {
@@ -544,10 +593,13 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
       named.seconds += seconds;
       named.texels += texels.size();
       std::printf("gpu page=%u layer=%s texels=%zu gpu_s=%.3f "
-                  "paths_per_s=%.3g mean_luminance=%.5g nonfinite=%llu\n",
+                  "paths_per_s=%.3g mean_luminance=%.5g nonfinite=%llu "
+                  "outliers=%llu outlier_energy=%.4f\n",
                   page, named.name, texels.size(), seconds,
                   (double)texels.size() * options.samples / seconds, mean,
-                  (unsigned long long)nonfinite);
+                  (unsigned long long)nonfinite,
+                  (unsigned long long)outliers.texels,
+                  outliers.energy_fraction);
       std::fflush(stdout);
       if (!report_encoding(options, layout, page, texels, irradiance,
                            named.name)) {
@@ -906,9 +958,13 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   std::vector<uint8_t> blocks;
   for (uint32_t page = 0u; ok && page < layout.page_count; ++page) {
     std::vector<VkrBakeLightmapTexel> texels;
+    VkrBakeLightmapNeighbors neighbors;
     ok = vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
                                           (uint32_t)scene.triangles.size(),
-                                          layout, page, &texels);
+                                          layout, page, &texels) &&
+         vkr_bake_lightmap_neighbors(
+             layout.page_size, texels,
+             kOutlierNeighborTexels / options.texels_per_unit, &neighbors);
     for (uint32_t l = 0u; ok && l < layers.size(); ++l) {
       if (layers[l].sun_key >= 0) {
         vkr_bake_scene_use_atmosphere(
@@ -923,6 +979,17 @@ int bake_set(const Options &options, VkrBakeScene &scene,
       ok = vkr_bake_metal_gather(gpu, texels, layers[l].transport, settings,
                                  &irradiance, &seconds);
       gpu_seconds += seconds;
+      /* Lone high-energy paths stay visible at any practical sample count;
+         they take their neighbors' mean, and the remaining noise is smoothed
+         along each surface, before the page is composed. */
+      const VkrBakeLightmapOutliers outliers =
+          ok && options.outlier_ratio > 0.0f
+              ? vkr_bake_lightmap_reject_outliers(
+                    neighbors, options.outlier_ratio, kOutlierMinNeighbors,
+                    true, &irradiance)
+              : VkrBakeLightmapOutliers{};
+      ok = ok && vkr_bake_lightmap_smooth(neighbors, texels,
+                                          options.smooth_passes, &irradiance);
       const auto encode_start = std::chrono::steady_clock::now();
       ok = ok &&
            vkr_bake_lightmap_compose_page(layout, page, texels, irradiance,
@@ -942,16 +1009,18 @@ int bake_set(const Options &options, VkrBakeScene &scene,
         luminance_sum += luminance(value);
       }
       const VkrLightLayer &record = layers[l].record;
-      std::printf("baked page=%u/%u layer=%u/%zu %s=%s texels=%zu "
-                  "gpu_s=%.2f mean_luminance=%.5g\n",
-                  page + 1u, layout.page_count, l + 1u, layers.size(),
-                  record.kind == VKR_LIGHT_LAYER_SUN_KEY ? "sun_key"
-                                                         : "lamp_group",
-                  record.kind == VKR_LIGHT_LAYER_SUN_KEY
-                      ? std::to_string(record.index).c_str()
-                      : record.name,
-                  texels.size(), seconds,
-                  texels.empty() ? 0.0 : luminance_sum / texels.size());
+      std::printf(
+          "baked page=%u/%u layer=%u/%zu %s=%s texels=%zu "
+          "gpu_s=%.2f mean_luminance=%.5g outliers=%llu "
+          "outlier_energy=%.4f\n",
+          page + 1u, layout.page_count, l + 1u, layers.size(),
+          record.kind == VKR_LIGHT_LAYER_SUN_KEY ? "sun_key" : "lamp_group",
+          record.kind == VKR_LIGHT_LAYER_SUN_KEY
+              ? std::to_string(record.index).c_str()
+              : record.name,
+          texels.size(), seconds,
+          texels.empty() ? 0.0 : luminance_sum / texels.size(),
+          (unsigned long long)outliers.texels, outliers.energy_fraction);
       std::fflush(stdout);
     }
   }

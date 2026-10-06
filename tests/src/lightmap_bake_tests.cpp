@@ -495,6 +495,72 @@ void test_diffuse_volume_layers_round_trip() {
   printf("  test_diffuse_volume_layers_round_trip PASSED\n");
 }
 
+/* Outlier rejection replaces a lone firefly on a smooth surface with its
+   neighbors' mean, leaves a gradient alone, and does not take a texel that
+   is next to it on the page but on another surface as a neighbor; smoothing
+   does not mix the two surfaces either. */
+void test_lightmap_denoise_stays_on_surfaces() {
+  printf("  test_lightmap_denoise_stays_on_surfaces...\n");
+  /* An 8x8 floor at 8 texels per unit, and one wall texel at (7, 0) that the
+     atlas packed next to it but which lies 3 units away facing sideways. */
+  std::vector<VkrBakeLightmapTexel> texels;
+  std::vector<Vec3> values;
+  for (uint32_t y = 0u; y < 8u; ++y) {
+    for (uint32_t x = 0u; x < 8u; ++x) {
+      VkrBakeLightmapTexel texel;
+      texel.x = x;
+      texel.y = y;
+      texel.position =
+          vec3_new(0.125f * (float32_t)x, 0.0f, 0.125f * (float32_t)y);
+      texel.normal = vec3_new(0.0f, 1.0f, 0.0f);
+      if (x == 7u && y == 0u) {
+        texel.position = vec3_new(3.0f, 1.0f, 0.0f);
+        texel.normal = vec3_new(1.0f, 0.0f, 0.0f);
+      }
+      texels.push_back(texel);
+      /* A gradient that rises 50% per texel: steep, yet no texel exceeds
+         twice its brightest neighbor. */
+      const float32_t gray = powf(1.5f, (float32_t)x);
+      values.push_back(vec3_new(gray, gray, gray));
+    }
+  }
+  values[4u * 8u + 3u] = vec3_scale(values[4u * 8u + 3u], 10.0f);
+  values[0u * 8u + 7u] = vec3_new(1000.0f, 1000.0f, 1000.0f);
+  VkrBakeLightmapNeighbors neighbors;
+  assert(vkr_bake_lightmap_neighbors(8u, texels, 0.5f, &neighbors));
+  /* The wall texel has no neighbor, and the floor texel next to it on the
+     page does not count it. */
+  assert(neighbors.first[7u + 1u] == neighbors.first[7u]);
+  for (uint32_t n = neighbors.first[6u]; n < neighbors.first[7u]; ++n) {
+    assert(neighbors.indices[n] != 7u);
+  }
+  const std::vector<Vec3> before = values;
+  const VkrBakeLightmapOutliers outliers =
+      vkr_bake_lightmap_reject_outliers(neighbors, 2.0f, 3u, true, &values);
+  assert(outliers.texels == 1u);
+  assert(outliers.energy_fraction > 0.0 && outliers.energy_fraction < 1.0);
+  const float32_t replaced = values[4u * 8u + 3u].x;
+  assert(replaced > before[4u * 8u + 2u].x &&
+         replaced < before[4u * 8u + 4u].x);
+  for (size_t i = 0u; i < values.size(); ++i) {
+    if (i != 4u * 8u + 3u) {
+      assert(values[i].x == before[i].x);
+    }
+  }
+
+  /* Smoothing keeps a constant floor constant beside the bright wall texel,
+     which is not its neighbor, and leaves the lone wall texel as it was. */
+  for (size_t i = 0u; i < values.size(); ++i) {
+    values[i] = i == 7u ? vec3_new(1000.0f, 1000.0f, 1000.0f)
+                        : vec3_new(2.0f, 2.0f, 2.0f);
+  }
+  assert(vkr_bake_lightmap_smooth(neighbors, texels, 2u, &values));
+  for (size_t i = 0u; i < values.size(); ++i) {
+    assert(fabsf(values[i].x - (i == 7u ? 1000.0f : 2.0f)) < 1.0e-4f);
+  }
+  printf("  test_lightmap_denoise_stays_on_surfaces PASSED\n");
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -508,6 +574,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_lightmap_set_round_trip_and_rejects();
   test_light_layer_sun_weights();
   test_diffuse_volume_layers_round_trip();
+  test_lightmap_denoise_stays_on_surfaces();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }

@@ -31,6 +31,10 @@ float32_t edge(float32_t ax, float32_t ay, float32_t bx, float32_t by,
   return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
+float64_t luminance(Vec3 value) {
+  return 0.2126 * value.x + 0.7152 * value.y + 0.0722 * value.z;
+}
+
 } // namespace
 
 bool vkr_bake_lightmap_pack(
@@ -243,6 +247,129 @@ bool vkr_bake_lightmap_rasterize_page(
                 return a.y != b.y ? a.y < b.y : a.x < b.x;
               });
     *out_texels = std::move(texels);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool vkr_bake_lightmap_neighbors(
+    uint32_t page_size, const std::vector<VkrBakeLightmapTexel> &texels,
+    float32_t max_distance, VkrBakeLightmapNeighbors *out_neighbors) {
+  if (!out_neighbors || page_size == 0u || !std::isfinite(max_distance) ||
+      max_distance <= 0.0f || texels.size() >= UINT32_MAX) {
+    return false;
+  }
+  /* About 37 degrees. */
+  constexpr float32_t kMinNormalCosine = 0.8f;
+  try {
+    const size_t size = page_size;
+    std::vector<uint32_t> at(size * size, UINT32_MAX);
+    for (size_t i = 0u; i < texels.size(); ++i) {
+      at[(size_t)texels[i].y * size + texels[i].x] = (uint32_t)i;
+    }
+    out_neighbors->first.assign(texels.size() + 1u, 0u);
+    out_neighbors->indices.clear();
+    out_neighbors->indices.reserve(texels.size() * 8u);
+    const float32_t max_distance_squared = max_distance * max_distance;
+    for (size_t i = 0u; i < texels.size(); ++i) {
+      const VkrBakeLightmapTexel &texel = texels[i];
+      out_neighbors->first[i] = (uint32_t)out_neighbors->indices.size();
+      for (int32_t dy = -1; dy <= 1; ++dy) {
+        for (int32_t dx = -1; dx <= 1; ++dx) {
+          const int64_t x = (int64_t)texel.x + dx;
+          const int64_t y = (int64_t)texel.y + dy;
+          if ((dx == 0 && dy == 0) || x < 0 || y < 0 || x >= (int64_t)size ||
+              y >= (int64_t)size) {
+            continue;
+          }
+          const uint32_t j = at[(size_t)y * size + (size_t)x];
+          if (j == UINT32_MAX) {
+            continue;
+          }
+          const VkrBakeLightmapTexel &other = texels[j];
+          const Vec3 delta = vec3_sub(other.position, texel.position);
+          if (vec3_dot(delta, delta) > max_distance_squared ||
+              vec3_dot(other.normal, texel.normal) < kMinNormalCosine) {
+            continue;
+          }
+          out_neighbors->indices.push_back(j);
+        }
+      }
+    }
+    out_neighbors->first[texels.size()] =
+        (uint32_t)out_neighbors->indices.size();
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+VkrBakeLightmapOutliers
+vkr_bake_lightmap_reject_outliers(const VkrBakeLightmapNeighbors &neighbors,
+                                  float32_t ratio, uint32_t min_neighbors,
+                                  bool replace, std::vector<Vec3> *values) {
+  VkrBakeLightmapOutliers result;
+  if (!values || neighbors.first.size() != values->size() + 1u) {
+    return result;
+  }
+  const std::vector<Vec3> source = *values;
+  float64_t total = 0.0;
+  float64_t rejected = 0.0;
+  for (size_t i = 0u; i < source.size(); ++i) {
+    const float64_t y = luminance(source[i]);
+    total += y;
+    const uint32_t begin = neighbors.first[i];
+    const uint32_t end = neighbors.first[i + 1u];
+    if (end - begin < min_neighbors) {
+      continue;
+    }
+    float64_t brightest = 0.0;
+    Vec3 sum = vec3_zero();
+    for (uint32_t n = begin; n < end; ++n) {
+      const Vec3 value = source[neighbors.indices[n]];
+      brightest = std::max(brightest, luminance(value));
+      sum = vec3_add(sum, value);
+    }
+    if (!(y > ratio * brightest)) {
+      continue;
+    }
+    ++result.texels;
+    rejected += y;
+    if (replace) {
+      (*values)[i] = vec3_scale(sum, 1.0f / (float32_t)(end - begin));
+    }
+  }
+  result.energy_fraction = total > 0.0 ? rejected / total : 0.0;
+  return result;
+}
+
+bool vkr_bake_lightmap_smooth(const VkrBakeLightmapNeighbors &neighbors,
+                              const std::vector<VkrBakeLightmapTexel> &texels,
+                              uint32_t passes, std::vector<Vec3> *values) {
+  if (!values || values->size() != texels.size() ||
+      neighbors.first.size() != texels.size() + 1u) {
+    return false;
+  }
+  try {
+    std::vector<Vec3> source;
+    for (uint32_t pass = 0u; pass < passes; ++pass) {
+      source = *values;
+      for (size_t i = 0u; i < texels.size(); ++i) {
+        Vec3 sum = vec3_scale(source[i], 4.0f);
+        float32_t weight = 4.0f;
+        for (uint32_t n = neighbors.first[i]; n < neighbors.first[i + 1u];
+             ++n) {
+          const uint32_t j = neighbors.indices[n];
+          const bool edge =
+              texels[j].x == texels[i].x || texels[j].y == texels[i].y;
+          const float32_t w = edge ? 2.0f : 1.0f;
+          sum = vec3_add(sum, vec3_scale(source[j], w));
+          weight += w;
+        }
+        (*values)[i] = vec3_scale(sum, 1.0f / weight);
+      }
+    }
     return true;
   } catch (const std::bad_alloc &) {
     return false;

@@ -244,8 +244,8 @@ scale 1.0, 120 warm-up and 300 measured frames, one process per run,
 The scene is the fixture
 [`bistro_tiled_local`](../../assets/scenes/fixtures/bistro_tiled_local.scene.json):
 Bistro cooked with lightmap UVs and its 16-sample lightmap set from the bake
-recorded in [ADR-088](088-baked-lightmap-sets.md#evidence); the 64-sample set
-that replaced it has the same pages, layers and format. The dynamic variant,
+recorded in [ADR-088](088-baked-lightmap-sets.md#evidence); the sets baked
+since have the same pages, layers and format. The dynamic variant,
 [`bistro_tiled_dynamic_lights_local`](../../assets/scenes/fixtures/bistro_tiled_dynamic_lights_local.scene.json),
 adds 16 dynamic lights near the orbit centre, 4 shadowed spot lights and 12
 point lights. The desktop pipeline ignores the set and lights the model's

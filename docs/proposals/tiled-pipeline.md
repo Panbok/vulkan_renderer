@@ -232,9 +232,8 @@ Remaining phases:
    ([measurement](../adr/087-gpu-class-graphics-pipelines.md#baked-bistro-measurement)).
    Remaining: 1.8 ms of p95, mostly the opaque pass on the widest views and
    cascade re-renders; a cheaper dynamic-light tier, since 16 lights with 4
-   shadowed add 4 ms median and 10 ms p95; lightmap noise from small
-   emitters; the remaining material layers, IBL probes, fog, rough and
-   thick glass, specular highlights of static lights, and making the tiled
+   shadowed add 4 ms median and 10 ms p95; the remaining material layers,
+   IBL probes, fog, rough and thick glass, specular highlights of static lights, and making the tiled
    pipeline the Apple default.
 
 ## Acceptance evidence

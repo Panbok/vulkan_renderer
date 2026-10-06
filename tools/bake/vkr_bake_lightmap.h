@@ -109,6 +109,53 @@ bool vkr_bake_lightmap_compose_page(
     std::vector<float32_t> *out_rgba);
 
 /*
+ * Same-surface neighbors of a page's texels: for texel i, the entries
+ * [first[i], first[i + 1]) of `indices` name the covered texels among its
+ * eight around it on the page whose positions lie within `max_distance`
+ * world units of its own and whose normals lie within about 37 degrees of
+ * its own, so a chart seam or an unrelated chart next to it in the atlas is
+ * not a neighbor.
+ */
+struct VkrBakeLightmapNeighbors {
+  std::vector<uint32_t> first;
+  std::vector<uint32_t> indices;
+};
+
+bool vkr_bake_lightmap_neighbors(
+    uint32_t page_size, const std::vector<VkrBakeLightmapTexel> &texels,
+    float32_t max_distance, VkrBakeLightmapNeighbors *out_neighbors);
+
+/* Texels a layer's outlier rejection flagged, and their share of the
+   layer's summed luminance before rejection. */
+struct VkrBakeLightmapOutliers {
+  uint64_t texels = 0u;
+  float64_t energy_fraction = 0.0;
+};
+
+/*
+ * Rejects firefly texels: a texel with at least `min_neighbors` same-surface
+ * neighbors whose luminance exceeds `ratio` times the brightest of them is a
+ * rare high-energy path the sample count cannot average out, and takes the
+ * mean of its neighbors when `replace`. Decisions read the values before any
+ * replacement, so the result does not depend on texel order.
+ */
+VkrBakeLightmapOutliers
+vkr_bake_lightmap_reject_outliers(const VkrBakeLightmapNeighbors &neighbors,
+                                  float32_t ratio, uint32_t min_neighbors,
+                                  bool replace, std::vector<Vec3> *values);
+
+/*
+ * Smooths a layer's sampling noise in `passes` passes: each texel takes the
+ * weighted mean of itself (weight 4), its same-surface edge neighbors
+ * (weight 2) and corner neighbors (weight 1), so light does not bleed across
+ * chart seams or onto another surface. One pass blurs irradiance by about a
+ * texel. Each pass reads the previous pass's values.
+ */
+bool vkr_bake_lightmap_smooth(const VkrBakeLightmapNeighbors &neighbors,
+                              const std::vector<VkrBakeLightmapTexel> &texels,
+                              uint32_t passes, std::vector<Vec3> *values);
+
+/*
  * Encodes a composed page to ASTC 4x4 blocks in the HDR RGB, LDR alpha
  * profile at astcenc `effort` (0 to 100) on `threads` workers. Writes 16
  * bytes per 4x4 block in row-major block order. `size` is a multiple of four.

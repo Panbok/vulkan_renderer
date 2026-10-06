@@ -13,9 +13,10 @@ the editor controls, runtime loading and binding of a set, and sampling in
 the tiled pipeline's forward shader
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8) are
 implemented. The toolkit test level and a lightmap-UV Bistro fixture render
-with their sets on the tiled pipeline, in the editor too; Bistro's set
-shows speckle noise at 16 and at 64 samples (see Evidence). The
-desktop pipeline lights static and dynamic lights alike. The bake needs
+with their sets on the tiled pipeline, in the editor too; Bistro bakes
+without visible noise at 16 samples once outlier texels are rejected and
+each layer is smoothed (see Evidence). The desktop pipeline lights static
+and dynamic lights alike. The bake needs
 Metal ray tracing.
 
 ## Context
@@ -159,6 +160,22 @@ tints. It is a lightmap subset of the ADR-054 transport:
 - normal maps, clearcoat, sheen, subsurface and anisotropy are not modeled.
 
 ### Encoding
+
+Before a page is composed, the bake rejects outlier texels
+([`vkr_bake_lightmap_reject_outliers`](../../tools/bake/vkr_bake_lightmap.h)):
+a texel with at least three same-surface neighbors, the covered texels among
+the eight around it on the page that lie within four texels of it in world
+space and face within about 37 degrees of its normal, whose luminance exceeds
+twice the brightest of them takes their mean. Rare high-energy paths
+otherwise remain as speckles at any practical sample count, and a rejected
+texel's own light is lost, about 1% of a layer. One smoothing pass then
+gives each texel the mean of itself and its same-surface neighbors, weighted
+4 for the texel, 2 for edge and 1 for corner neighbors
+(`vkr_bake_lightmap_smooth`), which blurs irradiance by about a texel and
+never across a chart seam. `--outlier-ratio` (0 turns rejection off) and
+`--smooth <passes>` set them; `--gpu gather` counts each layer's outliers
+without replacing or smoothing anything, so its parity check still compares
+raw transport.
 
 Each layer page is composed in float RGBA: covered texels take their value,
 up to four rings of empty texels take the mean of their filled 8-neighbors
@@ -399,23 +416,39 @@ texels per meter with deferred textures:
   (`tiled_bistro_baked_capture`); its frame cost is in
   [ADR-087](087-gpu-class-graphics-pipelines.md#baked-bistro-measurement).
   At 16 samples the set shows bright single-texel speckles on walls and
-  pavement, likely rare paths that reach the small emissive bulbs; the
-  desktop capture of the same view lights the lamps analytically and shows
-  none. The same bake at 64 samples, after the gather split its samples into
-  runs of eight (`--samples 64`: 1,819.4 s, 1,643.1 s of it GPU time and
-  37.7 s encoding, 6.7 GB peak,
+  pavement; the desktop capture of the same view lights the lamps
+  analytically and shows none. The same bake at 64 samples, after the gather
+  split its samples into runs of eight (`--samples 64`: 1,819.4 s, 1,643.1 s
+  of it GPU time and 37.7 s encoding, 6.7 GB peak,
   `sha256:ae552816713073148735a6ce8d6cc2b92a21650d48ecc4dbd2927293f9938056`),
   reproduces the 64-sample mean luminance of the first layer (0.038691) and
   turns the speckles into more numerous, dimmer blotches
   (`tiled_bistro_baked_capture`,
-  `sha256:15a6bf11227b53f2cf9e7f168dab9bbd1cb06135f15db88dffb17c1446d3b37a`);
-  more samples alone do not remove them.
+  `sha256:15a6bf11227b53f2cf9e7f168dab9bbd1cb06135f15db88dffb17c1446d3b37a`).
+- Bistro speckle sources, `vkr_bakery tool lightmap-baker --scene
+  assets/scenes/fixtures/bistro_tiled_local.scene.json --gpu gather --pages 1
+  --check-texels 0 --samples 64`, first page: surface emission alone has mean
+  luminance 0.0018 against 0.221 for the lamp lights alone, so the bulbs'
+  emissive surfaces are not the source. Texels brighter than twice their
+  brightest same-surface neighbor are 2.4% of the sun-key layer, carrying
+  0.44% of its light, and 1.0% of the lamp layer, carrying 1.3%; at four
+  times, 16 samples flag 19,939 sun-key texels and 64 samples 16,499, so the
+  count falls far slower than the noise. With rejection the 64-sample set
+  loses its bright dots but keeps faint ones
+  (`sha256:d87e27d60edf00ebed67fd96fa06946d2d12dc4f5f264dfe5703099c4739c197`);
+  16 samples with rejection and one smoothing pass (423.1 s GPU time, 35.4 s
+  encoding; set
+  `sha256:a276a3501d1b7aa676e27f436a2936f0c085b7432872aa7c295a345e6be959d0`)
+  render without visible noise
+  (`sha256:77a108b3ab6558f3d540f252939712011a301a6c642f3f0585cfb9e59a96ca5f`).
+  The fixture uses that set.
 
 Unavailable: a Windows or Vulkan host.
 
 ## Revisit when
 
-Sampling noise from small emitters needs firefly clamping or denoising in
-the baker, a level needs more than four baked groups, the spread specular
-lobe's sun bias shows against the art-level contract, or the CPU path gains
-the layer split.
+Smoothing visibly softens light detail a level needs at its texel density,
+outlier rejection removes real single-texel light such as a beam through a
+small opening, a level needs more than four baked groups, the spread
+specular lobe's sun bias shows against the art-level contract, or the CPU
+path gains the layer split.
