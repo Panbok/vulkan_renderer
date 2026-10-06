@@ -10,9 +10,10 @@ authority: adr
 
 Accepted (partial). The decision is in force. A first tiled pipeline runs on
 Metal when a renderer or the editor selects it (decisions 6, 7 and 9), draws
-glass (decision 10) and a bounded set of dynamic lights (decision 11); every
-device runs the desktop pipeline by default until the tiled one is measured
-complete on a baked Bistro. The remaining design is in
+glass (decision 10) and a bounded set of dynamic lights (decision 11). On a
+lightmap-baked Bistro it takes 18.5 ms p95, 1.8 ms over the budget (see
+[Baked Bistro measurement](#baked-bistro-measurement)); every device runs the
+desktop pipeline by default until the tiled one meets it. The remaining design is in
 [Tiled graphics pipeline](../proposals/tiled-pipeline.md).
 
 ## Context
@@ -167,7 +168,12 @@ pipeline rather than a backend mechanism.
     does, and dynamic rectangle lights through the shared LTC path. The
     tiled graph renders the local shadow atlas with the desktop passes
     `Shadow.Local.Clear` and `Shadow.Local`; glass casts no local shadow.
-    A static light in an unbaked scene adds no light.
+    A static light in an unbaked scene adds no light. Frames without dynamic
+    lights shade with fragment variants that leave the light loop out
+    (`vkr_metal_tiled_forward_fragment` against
+    `vkr_metal_tiled_forward_lights_fragment`, and the blend pair): its
+    registers alone cost `Tiled.Opaque` 2.5 ms median on Bistro with no light
+    in range.
 
 ### First tiled pipeline measurement
 
@@ -229,6 +235,43 @@ grid and labels drew. On Bistro, which has no collision, `camera.view top;
 grid.fit` read the picked depth as 16.8432 m on the tiled pipeline and
 16.8431 m on the desktop one. The CPU test `test_tiled_graph_topology`
 compiles an editor frame that picks.
+
+### Baked Bistro measurement
+
+Release, M1 Pro, 2026-10-06: the production Bistro orbit at 2560×1440, render
+scale 1.0, 120 warm-up and 300 measured frames, one process per run,
+`local-windowed-gpu-submission-single`, the three cases run alternately twice.
+The scene is the fixture
+[`bistro_tiled_local`](../../assets/scenes/fixtures/bistro_tiled_local.scene.json):
+Bistro cooked with lightmap UVs and its 16-sample lightmap set from the bake
+recorded in [ADR-088](088-baked-lightmap-sets.md#evidence); the 64-sample set
+that replaced it has the same pages, layers and format. The dynamic variant,
+[`bistro_tiled_dynamic_lights_local`](../../assets/scenes/fixtures/bistro_tiled_dynamic_lights_local.scene.json),
+adds 16 dynamic lights near the orbit centre, 4 shadowed spot lights and 12
+point lights. The desktop pipeline ignores the set and lights the model's
+static lamps at runtime.
+
+| Case | `gpu.submission` median | p95 | Reports |
+|---|---|---|---|
+| `tiled_bistro_baked_native` | 14.49 / 14.46 ms | 18.60 / 18.49 ms | `sha256:8b6eb2b5d7e0deedced8148b7fe9342605a1c2035ac827a5a35d80961632955c`, `sha256:6f562f20b182258a08fd0e485500eba196a8a189d38174776a96b5af44f11d47` |
+| `tiled_bistro_baked_dynamic_native` | 18.47 / 18.52 ms | 28.75 / 28.65 ms | `sha256:2a68b2cf854f0e0a7e508a47dfc033449592f4b0ecd28b433146458c565b98ba`, `sha256:4866e1037fd267a5a481f68f752fa1d3db61cdbb99095e19fe3ad20accb86a5a` |
+| `tiled_bistro_baked_native_desktop` | 53.91 / 53.97 ms | 68.35 / 68.26 ms | `sha256:640ff3fa474ed74a7ffae1dca91b105c86c1c67325fdc79e2871f63acc8f5785`, `sha256:f24a324dad57ed7810c1a72b53dffd9540bd4489e959aea366b8ffcc93dae0e1` |
+
+The baked tiled frame misses the 16.7 ms p95 budget by 1.8 ms. With pass
+timestamps (`local-windowed-gpu-single`), `Tiled.Opaque` takes 8.88 ms
+median and 12.68 ms p95
+(`sha256:d19cc35f8121b66703e7c264b7f6aa58b3e1fa5f6921bf8975a080d01f71869f`)
+against 8.06 and 11.48 ms for `tiled_bistro_native`, the model without
+lightmap UVs or a set
+(`sha256:57124e7e7cf50bca5649a93025147d48f3206b5009d106bda0151ddfd8352972`):
+the extra vertices of the lightmap-UV seams and the three active layers
+cost about 0.8 ms median and 1.2 ms p95, and `Tiled.Blend` 0.43 and 0.63 ms.
+The p95 frames add a re-rendered cascade, 1.3 to 2.2 ms, to the largest
+opaque cost. Sixteen dynamic lights raise `Tiled.Opaque` to 12.71 ms median
+and 22.71 ms p95
+(`sha256:0c972501f6e4f479e7465aa475e0dcb823b95d1a5589b3ba4fab461dd714101c`);
+their four shadow faces stay cached, so the cost is the per-pixel light
+loop and its inline shadow filtering, and that tier does not fit the budget.
 
 ## Consequences
 

@@ -346,7 +346,7 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
                                                              sizeof(uint32_t)];
     }
     [encoder setDepthStencilState:renderer->tiled_shade_state];
-    [encoder setRenderPipelineState:renderer->tiled_forward_pipeline];
+    [encoder setRenderPipelineState:draw->pipeline];
     for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
          ++bucket) {
       [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];

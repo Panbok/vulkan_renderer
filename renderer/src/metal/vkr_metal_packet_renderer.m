@@ -617,6 +617,9 @@ typedef struct VkrMetalPacketCommandSlot {
 #define VKR_METAL_PACKET_UPLOAD_SLOT_COUNT_MAX 4u
 #define VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_MAX 64u
 #define VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES MB(32)
+/* Texture uploads larger than this go in submissions of whole regions of at
+   most this size (vkr_metal_packet_upload_texture). */
+#define VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES MB(64)
 typedef struct VkrMetalPacketTextureUploadBatch {
   id<MTL4ComputeCommandEncoder> encoder;
   id<MTLBuffer> upload_buffer;
@@ -763,12 +766,14 @@ struct VkrMetalPacketRenderer {
   bool8_t tiled;
   id<MTLRenderPipelineState> tiled_depth_pipeline;
   id<MTLRenderPipelineState> tiled_forward_pipeline;
+  id<MTLRenderPipelineState> tiled_forward_lights_pipeline;
   id<MTLRenderPipelineState> tiled_sky_pipeline;
   id<MTLRenderPipelineState> tiled_clouds_pipeline;
   /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
   id<MTLRenderPipelineState> tiled_picking_pipeline;
   /* Glass and blended surfaces, and world text, over the resolved image. */
   id<MTLRenderPipelineState> tiled_blend_pipeline;
+  id<MTLRenderPipelineState> tiled_blend_lights_pipeline;
   id<MTLRenderPipelineState> tiled_text_pipeline;
   id<MTLDepthStencilState> tiled_prepass_state;
   id<MTLDepthStencilState> tiled_shade_state;

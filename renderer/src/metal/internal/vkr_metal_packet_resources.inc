@@ -1271,9 +1271,15 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
         .region_count = prepared->upload_region_count,
         .regions = prepared->upload_regions,
     };
-    const bool8_t requested_batch = renderer->texture_upload_batch.enabled;
+    /* An upload in chunks takes no batch and the publication slot of its
+       largest chunk. */
+    const bool8_t chunked =
+        payload.data_size > VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES;
+    const bool8_t requested_batch =
+        renderer->texture_upload_batch.enabled && !chunked;
     const uint64_t aligned_upload_size = vkr_metal_packet_align_up(
-        payload.data_size, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+        vkr_metal_packet_texture_upload_peak_bytes(&payload),
+        VKR_METAL_PACKET_ROOT_ALIGNMENT);
     const uint64_t upload_capacity =
         requested_batch && aligned_upload_size <
                                VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES

@@ -842,10 +842,12 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->blend_pipeline release];
   [renderer->tiled_depth_pipeline release];
   [renderer->tiled_forward_pipeline release];
+  [renderer->tiled_forward_lights_pipeline release];
   [renderer->tiled_sky_pipeline release];
   [renderer->tiled_clouds_pipeline release];
   [renderer->tiled_picking_pipeline release];
   [renderer->tiled_blend_pipeline release];
+  [renderer->tiled_blend_lights_pipeline release];
   [renderer->tiled_text_pipeline release];
   [renderer->tiled_prepass_state release];
   [renderer->tiled_shade_state release];

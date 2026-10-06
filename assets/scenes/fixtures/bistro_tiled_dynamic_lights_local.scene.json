@@ -1,0 +1,95 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 1.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 1.0
+  },
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [0.57735, 0.57735, 0.57735]
+  },
+  "clouds": {
+    "enabled": true,
+    "base_altitude_m": 1500,
+    "top_altitude_m": 4000,
+    "coverage": 0.45,
+    "density": 0.02,
+    "wind_mps": [10, 0]
+  },
+  "lightmaps": {
+    "path": "assets/scenes/bistro_tiled.vklm"
+  },
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [-7.5, 2.2, 9.0],
+      "extents": [5.5, 2.5, 8.0],
+      "blend_distance": 0.75,
+      "intensity": 1.0,
+      "diffuse_intensity": 1.0,
+      "specular_intensity": 0.0,
+      "cubemap": {
+        "base_path": "assets/textures/bistro_indoor_probe",
+        "extension": "png"
+      }
+    }
+  ],
+  "entities": [
+        {
+          "name": "SceneRoot",
+          "parent": null,
+          "transform": {
+            "pos": [0.0, 0.0, 0.0],
+            "rot": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0]
+          }
+        },
+        {
+          "name": "Sun",
+          "parent": 0,
+          "transform": {
+            "pos": [0.0, 0.0, 0.0],
+            "rot": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0]
+          },
+          "directional_light": {
+            "enabled": true,
+            "color": [0.77092856, 0.9677925, 1.0],
+            "intensity": 1.91198,
+            "direction_local": [-0.57735, -0.57735, -0.57735],
+            "atmosphere_sun": true
+          }
+        },
+        {
+            "name": "Bistro Lights",
+            "parent": null,
+            "transform": {
+                "pos": [0.0, 0.0, 0.0],
+                "rot": [0.0, 0.0, 0.0, 1.0],
+                "scale": [1.0, 1.0, 1.0]
+              },
+            "mesh": {
+              "path": "assets/models/bistro-lights-lightmapped.vkb",
+              "pipeline_domain": "world"
+            }
+        },
+    {"name": "Dynamic Spot 1", "parent": null, "transform": {"pos": [-22.901, 3.398, 2.414], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 2, "color": [1.0, 0.85, 0.65], "intensity": 400.0, "range": 12.0, "direction_local": [0.0, -1.0, 0.0], "inner_cone_angle": 0.55, "outer_cone_angle": 0.9, "casts_shadow": true, "mobility": "dynamic"}},
+    {"name": "Dynamic Spot 2", "parent": null, "transform": {"pos": [-15.299, 3.752, 7.868], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 2, "color": [1.0, 0.85, 0.65], "intensity": 400.0, "range": 12.0, "direction_local": [0.0, -1.0, 0.0], "inner_cone_angle": 0.55, "outer_cone_angle": 0.9, "casts_shadow": true, "mobility": "dynamic"}},
+    {"name": "Dynamic Spot 3", "parent": null, "transform": {"pos": [-19.41, 3.423, 0.644], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 2, "color": [1.0, 0.85, 0.65], "intensity": 400.0, "range": 12.0, "direction_local": [0.0, -1.0, 0.0], "inner_cone_angle": 0.55, "outer_cone_angle": 0.9, "casts_shadow": true, "mobility": "dynamic"}},
+    {"name": "Dynamic Spot 4", "parent": null, "transform": {"pos": [-20.597, 3.754, 14.138], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 2, "color": [1.0, 0.85, 0.65], "intensity": 400.0, "range": 12.0, "direction_local": [0.0, -1.0, 0.0], "inner_cone_angle": 0.55, "outer_cone_angle": 0.9, "casts_shadow": true, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 1", "parent": null, "transform": {"pos": [-18.363, 3.773, 3.884], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [1.0, 0.55, 0.25], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 2", "parent": null, "transform": {"pos": [-18.389, 3.652, 3.872], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [0.35, 0.6, 1.0], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 3", "parent": null, "transform": {"pos": [-17.174, 3.505, 4.438], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [1.0, 0.3, 0.45], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 4", "parent": null, "transform": {"pos": [-16.522, 3.645, 4.742], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [0.45, 1.0, 0.5], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 5", "parent": null, "transform": {"pos": [-14.689, 3.391, 5.597], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [1.0, 0.55, 0.25], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 6", "parent": null, "transform": {"pos": [-16.889, 4.093, 1.214], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [0.35, 0.6, 1.0], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 7", "parent": null, "transform": {"pos": [-15.322, 3.926, 2.312], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [1.0, 0.3, 0.45], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 8", "parent": null, "transform": {"pos": [-20.04, 3.188, 12.111], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [0.45, 1.0, 0.5], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 9", "parent": null, "transform": {"pos": [-14.305, 3.784, 3.023], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [1.0, 0.55, 0.25], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 10", "parent": null, "transform": {"pos": [-20.751, 3.493, 12.329], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [0.35, 0.6, 1.0], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 11", "parent": null, "transform": {"pos": [-20.787, 3.35, 12.34], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [1.0, 0.3, 0.45], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}},
+    {"name": "Dynamic Point 12", "parent": null, "transform": {"pos": [-13.757, 3.818, 3.407], "rot": [0, 0, 0, 1], "scale": [1, 1, 1]}, "point_light": {"enabled": true, "kind": 1, "color": [0.45, 1.0, 0.5], "intensity": 60.0, "range": 6.0, "casts_shadow": false, "mobility": "dynamic"}}
+  ]
+}

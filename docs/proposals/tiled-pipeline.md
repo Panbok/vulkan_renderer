@@ -226,12 +226,16 @@ Remaining phases:
    stacked cutout foliage (textured Bistro bakes at a third of the untextured
    rate).
 2. Tiled runtime: the forward shader samples the blended sun keys and
-   scaled lamp groups (ADR-087, decision 8). Remaining: a lightmap-baked
-   Bistro measured against the 16.7 ms budget and checked against the
-   desktop image, the remaining material layers, IBL probes, fog, rough and
+   scaled lamp groups (ADR-087, decision 8); the editor runs it, and it
+   draws thin glass and a bounded set of dynamic lights (decisions 9 to
+   11). The lightmap-baked Bistro takes 14.5 ms median and 18.5 ms p95
+   ([measurement](../adr/087-gpu-class-graphics-pipelines.md#baked-bistro-measurement)).
+   Remaining: 1.8 ms of p95, mostly the opaque pass on the widest views and
+   cascade re-renders; a cheaper dynamic-light tier, since 16 lights with 4
+   shadowed add 4 ms median and 10 ms p95; lightmap noise from small
+   emitters; the remaining material layers, IBL probes, fog, rough and
    thick glass, specular highlights of static lights, and making the tiled
-   pipeline the Apple default. The editor runs it, and it draws thin glass
-   and a bounded set of dynamic lights (ADR-087, decisions 9 to 11).
+   pipeline the Apple default.
 
 ## Acceptance evidence
 

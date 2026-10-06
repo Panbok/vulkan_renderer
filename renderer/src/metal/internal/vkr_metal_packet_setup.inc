@@ -981,6 +981,8 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
           VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
           true_v, false_v, false_v, VKR_METAL_TILED_SAMPLE_COUNT,
           @"VKR tiled depth pre-pass");
+  /* Frames with dynamic local lights take the variants with the light
+     loop; the others keep its registers free. */
   renderer->tiled_forward_pipeline =
       vkr_metal_packet_create_pipeline_with_targets(
           renderer, fragment, "vkr_metal_tiled_vertex", fragment,
@@ -988,6 +990,13 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
           VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
           VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
           VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled forward");
+  renderer->tiled_forward_lights_pipeline =
+      vkr_metal_packet_create_pipeline_with_targets(
+          renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+          "vkr_metal_tiled_forward_lights_fragment", MTLPixelFormatRGBA16Float,
+          VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+          VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
+          VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled forward with lights");
   /* Without a visibility buffer, a pick replays the opaque draws; their
      alpha-tested surfaces pick whole. */
   renderer->tiled_picking_pipeline = vkr_metal_packet_create_pipeline(
@@ -1008,6 +1017,11 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       "vkr_metal_tiled_blend_fragment", MTLPixelFormatRGBA16Float,
       VKR_METAL_PACKET_BLEND_BEHIND, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, @"VKR tiled blend");
+  renderer->tiled_blend_lights_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+      "vkr_metal_tiled_blend_lights_fragment", MTLPixelFormatRGBA16Float,
+      VKR_METAL_PACKET_BLEND_BEHIND, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, @"VKR tiled blend with lights");
   renderer->tiled_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float,
@@ -1787,7 +1801,9 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
   if (renderer->tiled &&
       (!renderer->tiled_depth_pipeline || !renderer->tiled_forward_pipeline ||
        !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
+       !renderer->tiled_forward_lights_pipeline ||
        !renderer->tiled_picking_pipeline || !renderer->tiled_blend_pipeline ||
+       !renderer->tiled_blend_lights_pipeline ||
        !renderer->tiled_text_pipeline || !renderer->tiled_prepass_state ||
        !renderer->tiled_shade_state || !renderer->tiled_sky_state)) {
     log_error("Metal renderer startup object unavailable: tiled pipeline");
@@ -2196,11 +2212,14 @@ vkr_internal bool8_t vkr_metal_packet_validate_texture_upload(
   return true_v;
 }
 
+/* Copies `payload`'s regions from `upload_buffer`, where the payload byte at
+   `data_offset` sits at `upload_offset`. */
 vkr_internal void vkr_metal_packet_encode_texture_upload(
     const VkrMetalPacketTextureUpload *payload,
     const VkrTextureFormatInfo *info, id<MTLBuffer> upload_buffer,
-    uint64_t upload_offset, id<MTL4ComputeCommandEncoder> encoder,
-    id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
+    uint64_t upload_offset, uint64_t data_offset,
+    id<MTL4ComputeCommandEncoder> encoder, id<MTLTexture> destination)
+    API_AVAILABLE(macos(26.0)) {
   for (uint32_t i = 0; i < payload->region_count; ++i) {
     const VkrTextureUploadRegion *region = &payload->regions[i];
     const uint64_t blocks_x =
@@ -2210,7 +2229,7 @@ vkr_internal void vkr_metal_packet_encode_texture_upload(
         info->block_height;
     const uint64_t bytes_per_row = blocks_x * info->bytes_per_block;
     [encoder copyFromBuffer:upload_buffer
-               sourceOffset:upload_offset + region->byte_offset
+               sourceOffset:upload_offset + (region->byte_offset - data_offset)
           sourceBytesPerRow:bytes_per_row
         sourceBytesPerImage:bytes_per_row * blocks_y
                  sourceSize:MTLSizeMake(region->width, region->height, 1)
@@ -2257,13 +2276,62 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture_batched(
   MemCopy((uint8_t *)batch->upload.cpu_address + offset, payload->data,
           payload->data_size);
   vkr_metal_packet_encode_texture_upload(payload, &info, batch->upload_buffer,
-                                         batch->slice.offset + offset,
+                                         batch->slice.offset + offset, 0u,
                                          batch->encoder, destination);
   batch->used = offset + payload->data_size;
   batch->texture_count++;
   return true_v;
 }
 
+/* One past the last region of the upload chunk that starts at region
+   `first`: the regions after it that follow it contiguously in the payload,
+   together at most VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES, or the first
+   region alone when it is larger. */
+vkr_internal uint32_t vkr_metal_packet_texture_upload_chunk_end(
+    const VkrMetalPacketTextureUpload *payload, uint32_t first) {
+  const uint64_t start = payload->regions[first].byte_offset;
+  uint64_t end = start + payload->regions[first].byte_size;
+  uint32_t next = first + 1u;
+  while (next < payload->region_count) {
+    const VkrTextureUploadRegion *region = &payload->regions[next];
+    if (region->byte_offset != end ||
+        end - start + region->byte_size >
+            VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES)
+      break;
+    end += region->byte_size;
+    ++next;
+  }
+  return next;
+}
+
+/* Payload bytes of the regions [first, end). */
+vkr_internal uint64_t vkr_metal_packet_texture_upload_chunk_bytes(
+    const VkrMetalPacketTextureUpload *payload, uint32_t first, uint32_t end) {
+  const VkrTextureUploadRegion *last = &payload->regions[end - 1u];
+  return last->byte_offset + last->byte_size -
+         payload->regions[first].byte_offset;
+}
+
+/* The largest submission vkr_metal_packet_upload_texture makes for
+   `payload`. */
+vkr_internal uint64_t vkr_metal_packet_texture_upload_peak_bytes(
+    const VkrMetalPacketTextureUpload *payload) {
+  if (payload->data_size <= VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES)
+    return payload->data_size;
+  uint64_t peak = 0u;
+  for (uint32_t first = 0u; first < payload->region_count;) {
+    const uint32_t end =
+        vkr_metal_packet_texture_upload_chunk_end(payload, first);
+    peak = Max(
+        peak, vkr_metal_packet_texture_upload_chunk_bytes(payload, first, end));
+    first = end;
+  }
+  return peak;
+}
+
+/* A payload larger than VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES uploads
+   in consecutive submissions of whole regions, so a lightmap set's page
+   array (ADR-088) needs no publication slot the size of the set. */
 vkr_internal bool8_t vkr_metal_packet_upload_texture(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketTextureUpload *payload, VkrTextureFormat format,
@@ -2272,17 +2340,42 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture(
   if (!renderer || !vkr_metal_packet_validate_texture_upload(
                        payload, format, destination, &info))
     return false_v;
-  VkrMetalRingSlice slice = {0};
-  VkrMetalAddressPair upload = {0};
-  id<MTLBuffer> upload_buffer = nil;
-  id<MTL4ComputeCommandEncoder> encoder = nil;
-  if (!vkr_metal_packet_begin_upload(renderer, payload->data_size, &slice,
-                                     &upload, &upload_buffer, &encoder))
-    return false_v;
-  MemCopy(upload.cpu_address, payload->data, payload->data_size);
-  vkr_metal_packet_encode_texture_upload(payload, &info, upload_buffer,
-                                         slice.offset, encoder, destination);
-  return vkr_metal_packet_submit_upload(renderer, encoder, slice);
+  const bool8_t chunked =
+      payload->data_size > VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES;
+  for (uint32_t first = 0u; first < payload->region_count;) {
+    const uint32_t end =
+        chunked ? vkr_metal_packet_texture_upload_chunk_end(payload, first)
+                : payload->region_count;
+    const uint64_t start = chunked ? payload->regions[first].byte_offset : 0u;
+    const uint64_t size =
+        chunked
+            ? vkr_metal_packet_texture_upload_chunk_bytes(payload, first, end)
+            : payload->data_size;
+    const VkrMetalPacketTextureUpload chunk = {
+        .data = payload->data + start,
+        .data_size = size,
+        .mip_levels = payload->mip_levels,
+        .array_layers = payload->array_layers,
+        .is_compressed = payload->is_compressed,
+        .region_count = end - first,
+        .regions = payload->regions + first,
+    };
+    VkrMetalRingSlice slice = {0};
+    VkrMetalAddressPair upload = {0};
+    id<MTLBuffer> upload_buffer = nil;
+    id<MTL4ComputeCommandEncoder> encoder = nil;
+    if (!vkr_metal_packet_begin_upload(renderer, size, &slice, &upload,
+                                       &upload_buffer, &encoder))
+      return false_v;
+    MemCopy(upload.cpu_address, chunk.data, size);
+    vkr_metal_packet_encode_texture_upload(&chunk, &info, upload_buffer,
+                                           slice.offset, start, encoder,
+                                           destination);
+    if (!vkr_metal_packet_submit_upload(renderer, encoder, slice))
+      return false_v;
+    first = end;
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_metal_packet_create_gtao_white_visibility(

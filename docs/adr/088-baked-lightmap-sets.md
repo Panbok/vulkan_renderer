@@ -12,10 +12,11 @@ Accepted (partial). Baking, storage, packaging, light mobility and groups,
 the editor controls, runtime loading and binding of a set, and sampling in
 the tiled pipeline's forward shader
 ([ADR-087](087-gpu-class-graphics-pipelines.md), decision 8) are
-implemented. The toolkit test level renders with its set on the tiled
-pipeline; Bistro has no current set, and the editor does not run the tiled
-pipeline. The desktop pipeline lights static and dynamic lights alike. The
-bake needs Metal ray tracing.
+implemented. The toolkit test level and a lightmap-UV Bistro fixture render
+with their sets on the tiled pipeline, in the editor too; Bistro's set
+shows speckle noise at 16 and at 64 samples (see Evidence). The
+desktop pipeline lights static and dynamic lights alike. The bake needs
+Metal ray tracing.
 
 ## Context
 
@@ -131,8 +132,12 @@ changes color.
 (an acceleration structure, corner attributes, materials, base color,
 emission, metallic-roughness and transmission textures resampled to 128×128
 RGBA16F, the lights, the renderer's DFG table and a 512×256 equirectangular
-sky) and gathers cosine-weighted paths per texel in 65,536-texel command
-buffers, which stay under the system watchdog. The acceleration structure
+sky) and gathers cosine-weighted paths per texel in command buffers of
+65,536 texels and 8 samples per texel, each adding its share of the texel's
+mean, so a buffer stays near a second of a textured Bistro layer and under
+the system watchdog. Each sample's random sequence follows its texel and
+sample index. Textured Bistro layers at 64 samples in one buffer per 65,536
+texels ran 7 s each and were ended for impacting interactivity. The acceleration structure
 holds two geometries: opaque triangles, and cutout triangles whose lowest
 alpha can fall below their cutoff. Rays test those as candidates in one
 traversal; blended and tinting surfaces stop the traversal and are resolved
@@ -212,7 +217,10 @@ The scene loader reads a `lightmaps` block's `path`
 decodes the set and publishes every layer page as one
 `VKR_TEXTURE_FORMAT_ASTC_4x4_HDR` 2D array whose slice
 `page * layer_count + layer` is the file's page image, uploaded from the file
-bytes in place. Metal 4 devices always sample ASTC HDR; Vulkan enables
+bytes in place. Metal uploads a texture larger than 64 MB in consecutive
+submissions of whole slices or mips (`vkr_metal_packet_upload_texture`),
+because Bistro's 453 MB set exceeds the largest publication slot the
+upload ring can grow to. Metal 4 devices always sample ASTC HDR; Vulkan enables
 `textureCompressionASTC_HDR` when the device has it and reports
 `supports_texture_astc_hdr`, and a device without it keeps the set off.
 
@@ -375,11 +383,39 @@ texels per meter with deferred textures:
   (z = -0.5 and 0.8, RMS 1.0 and 0.97), so it comes from the diffusely spread
   specular lobe.
 
-Unavailable: any runtime use, and a Windows or Vulkan host.
+- Bistro on the tiled pipeline, 2026-10-06: the model cooked with lightmap
+  UVs by `vkr_bakery tool mesh --input assets/models/bistro-lights.gltf
+  --output assets/models/bistro-lights-lightmapped.vkb
+  --lightmap-texels-per-unit 8` and the six string-light ranges of
+  `assets/bakery.json` (26.0 s, 3.0 GB peak; the default texture tier keeps
+  the shared materials, which `--texture-tier deferred` would strip of their
+  textures), then `vkr_bakery bake lightmap --scene
+  assets/scenes/fixtures/bistro_tiled_local.scene.json --output
+  assets/scenes/bistro_tiled.vklm --samples 16`: 578.6 s, 408.6 s of it GPU
+  time and 37.0 s encoding, 5.6 GB peak, 453 MB, eight sun keys and lamp
+  group `default` on three pages
+  (`sha256:3aebcd4a95e5f98ef25c5521f1df0b8e341776633758f90759dd71b919ca8909`).
+  The set loads, binds all 2,909 instances and renders
+  (`tiled_bistro_baked_capture`); its frame cost is in
+  [ADR-087](087-gpu-class-graphics-pipelines.md#baked-bistro-measurement).
+  At 16 samples the set shows bright single-texel speckles on walls and
+  pavement, likely rare paths that reach the small emissive bulbs; the
+  desktop capture of the same view lights the lamps analytically and shows
+  none. The same bake at 64 samples, after the gather split its samples into
+  runs of eight (`--samples 64`: 1,819.4 s, 1,643.1 s of it GPU time and
+  37.7 s encoding, 6.7 GB peak,
+  `sha256:ae552816713073148735a6ce8d6cc2b92a21650d48ecc4dbd2927293f9938056`),
+  reproduces the 64-sample mean luminance of the first layer (0.038691) and
+  turns the speckles into more numerous, dimmer blotches
+  (`tiled_bistro_baked_capture`,
+  `sha256:15a6bf11227b53f2cf9e7f168dab9bbd1cb06135f15db88dffb17c1446d3b37a`);
+  more samples alone do not remove them.
+
+Unavailable: a Windows or Vulkan host.
 
 ## Revisit when
 
-The tiled runtime samples lightmaps, the time-of-day system defines sun keys
-and drives group intensities, a level needs more than four baked groups, the
-spread specular lobe's sun bias shows against the art-level contract, or the
-CPU path gains the layer split.
+Sampling noise from small emitters needs firefly clamping or denoising in
+the baker, a level needs more than four baked groups, the spread specular
+lobe's sun bias shows against the art-level contract, or the CPU path gains
+the layer split.

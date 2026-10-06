@@ -14,9 +14,15 @@
 
 namespace {
 
-/* Texels per command buffer: each buffer stays short so a long bake never
-   holds the GPU long enough to trip the system watchdog. */
+/* Texels per command buffer, and samples per texel the gather takes per
+   command buffer: each buffer stays near a second of a textured Bistro
+   layer on the M1 Pro, so a long bake leaves the display GPU time and never
+   trips the system watchdog, while a buffer still fills the GPU. Textured
+   Bistro layers at 64 samples in one buffer per 65,536 texels ran 7 s each
+   and were ended for impacting interactivity. */
 constexpr uint32_t kTexelsPerDispatch = 65536u;
+constexpr uint32_t kSamplesPerDispatch = 8u;
+
 /* Material textures are resampled to this edge for transport: bounce light
    needs their low frequencies only. */
 constexpr uint32_t kTextureEdge = 128u;
@@ -140,7 +146,10 @@ struct GpuLight {
 struct GatherArgs {
   uint first_texel;
   uint texel_count;
+  /* All samples per texel, and the run of them this dispatch takes. */
   uint samples;
+  uint first_sample;
+  uint sample_count;
   uint seed;
   uint max_depth;
   uint rr_start_depth;
@@ -649,7 +658,8 @@ kernel void lightmap_gather(
   bool texel_direct = (args.flags & 4u) != 0u;
   uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
   float3 total = float3(0.0f);
-  for (uint s = 0u; s < args.samples; ++s) {
+  for (uint s = args.first_sample;
+       s < args.first_sample + args.sample_count; ++s) {
     Rng rng;
     rng.state = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
     if (texel_direct) {
@@ -704,7 +714,12 @@ kernel void lightmap_gather(
     /* Cosine-weighted sampling: irradiance is pi times mean radiance. */
     total += kPi * radiance;
   }
-  irradiance[texel] = float4(total / float(args.samples), 1.0f);
+  /* Each run of samples adds its share of the mean; the first run starts
+     it. */
+  float3 share = total / float(args.samples);
+  irradiance[texel] = args.first_sample == 0u
+                          ? float4(share, 1.0f)
+                          : irradiance[texel] + float4(share, 0.0f);
 }
 )METAL";
 
@@ -719,6 +734,8 @@ struct GatherArgs {
   uint32_t first_texel;
   uint32_t texel_count;
   uint32_t samples;
+  uint32_t first_sample;
+  uint32_t sample_count;
   uint32_t seed;
   uint32_t max_depth;
   uint32_t rr_start_depth;
@@ -1324,11 +1341,22 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
     const uint32_t flags = (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
                            (layer.texel_direct ? 4u : 0u);
     const NSUInteger width = context->gather.threadExecutionWidth;
-    for (NSUInteger first = 0u; first < count; first += kTexelsPerDispatch) {
+    /* Each batch of texels takes its samples in runs of
+       kSamplesPerDispatch, a command buffer each. */
+    const uint32_t runs =
+        (settings.samples + kSamplesPerDispatch - 1u) / kSamplesPerDispatch;
+    const NSUInteger batches =
+        (count + kTexelsPerDispatch - 1u) / kTexelsPerDispatch;
+    for (NSUInteger dispatch = 0u; dispatch < batches * runs; ++dispatch) {
+      const NSUInteger first = (dispatch / runs) * kTexelsPerDispatch;
+      const uint32_t first_sample =
+          (uint32_t)(dispatch % runs) * kSamplesPerDispatch;
       const GatherArgs args = {
           (uint32_t)first,
           (uint32_t)std::min<NSUInteger>(kTexelsPerDispatch, count - first),
           settings.samples,
+          first_sample,
+          std::min(kSamplesPerDispatch, settings.samples - first_sample),
           settings.seed,
           settings.max_depth,
           settings.rr_start_depth,

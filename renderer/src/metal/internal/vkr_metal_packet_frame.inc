@@ -4321,6 +4321,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
   return true_v;
 }
 
+/* Whether the frame has dynamic local lights for the tiled pipeline's
+   shading variants with the light loop (ADR-087). */
+vkr_internal bool8_t
+vkr_metal_packet_tiled_local_lights(const VkrPreparedFrame *packet) {
+  return packet->input.lighting &&
+         (packet->input.lighting->point_light_count > 0u ||
+          packet->input.lighting->rectangle_light_count > 0u);
+}
+
 /* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
    opaque draws, the clear sky's root, and multisampled targets in place of
    the pass's graph colour and depth, which they resolve into. Depth resolves
@@ -4332,7 +4341,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
     API_AVAILABLE(macos(26.0)) {
   if (!renderer->tiled || !vkr_metal_packet_prepare_gpu_draws(
                               renderer, pass, packet, prepared,
-                              renderer->tiled_forward_pipeline, nil, upload))
+                              vkr_metal_packet_tiled_local_lights(packet)
+                                  ? renderer->tiled_forward_lights_pipeline
+                                  : renderer->tiled_forward_pipeline,
+                              nil, upload))
     return false_v;
   VkrMetalPacketIndirectPass draws = prepared->indirect;
   const uint32_t width = (uint32_t)target.width;
@@ -4496,7 +4508,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
                  packet->input.globals.view));
     if (!vkr_metal_packet_prepare_draws(
             renderer, &prepared->world.direct,
-            tiled ? renderer->tiled_blend_pipeline : renderer->blend_pipeline,
+            !tiled ? renderer->blend_pipeline
+            : vkr_metal_packet_tiled_local_lights(packet)
+                ? renderer->tiled_blend_lights_pipeline
+                : renderer->tiled_blend_pipeline,
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
