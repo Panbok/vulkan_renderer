@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-06
+updated: 2026-10-07
 authority: proposal
 ---
 
@@ -40,7 +40,7 @@ measured.
 | Reflections | IBL and optional SSR | IBL and one reflection probe per surface (decided, ADR-087); [planar reflections](planar-reflections.md) for mirror-like surfaces; no SSR (owner decision, 2026-10-06) |
 | Directional shadows | Retained cascades with PCF | Shared retained cascades; a tier may lower filtering |
 | Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights filtered in the lighting pass with a four-tap tent (decided: 4 of the 16 dynamic lights, ADR-087) |
-| Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance for thin glass; volumes absorb and refract through a half-resolution copy, only on frames with one in view (decided, ADR-087) |
+| Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance for smooth thin glass; volumes absorb and refract, and rough glass blurs, through a half-resolution copy taken only on frames with either in view (decided, ADR-087) |
 | Post-processing | Compute bloom, exposure, tonemap | Shared color pipeline; the tonemap pass samples the bloom chain itself (decided, ADR-087) |
 | Arithmetic | 32-bit throughout | 32-bit; 16-bit only where a measured kernel is register-bound (no ALU gain on M1, see below) |
 
@@ -265,12 +265,10 @@ Also open: the opaque pass on the widest views (its depth pre-pass is examined
 in [tiled-depth-prepass.md](tiled-depth-prepass.md)), the dynamic-light tier at
 its 0.65 floor (17.1 to 17.5 ms p95 before the cooked mesh levels), the
 remaining material layers (clearcoat, sheen, anisotropy and diffuse
-transmission), and the specular highlights of static lights. Glass has two
-gaps: thin rough glass takes no blur, because the runtime cannot see a
-roughness the importer folded into a texture, and the refraction copy's
-base level reads the full-resolution image (0.3 ms at 2560×1440 on frames
-with a volume in view), which writing the copy from tile memory during the
-atmosphere draw would avoid.
+transmission), and the specular highlights of static lights. The refraction
+copy's base level reads the full-resolution image (0.3 ms at 2560×1440 on
+frames with a glass volume or rough glass in view), which writing the copy
+from tile memory during the atmosphere draw would avoid.
 
 ## Acceptance evidence
 

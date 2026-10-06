@@ -4,8 +4,10 @@ extern "C" {
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
 #include "core/vkr_hash.h"
+#include "memory/vkr_arena_allocator.h"
 }
 #include "bake/vkr_bake_lightmap.h"
+#include "bake/vkr_bake_material.h"
 #include "bake/vkr_bake_mesh_decode.h"
 #include "mesh_cooked_tests.h"
 
@@ -571,6 +573,32 @@ void test_lightmap_denoise_stays_on_surfaces() {
   printf("  test_lightmap_denoise_stays_on_surfaces PASSED\n");
 }
 
+/* The bake reads the material files the glTF importer writes, including the
+   roughness bound it records where it folds the factor into a texture; the
+   loader rejects keys it does not know. */
+void test_bake_material_accepts_roughness_bound() {
+  const char *path = PROJECT_SOURCE_DIR "tests/tmp/lightmap_bake_rough.mt";
+  FILE *file = fopen(path, "wb");
+  assert(file);
+  fputs("type=pbr\nbase_color=0.5,0.5,0.5,1\nroughness=1\n"
+        "roughness_max=0.25\n",
+        file);
+  fclose(file);
+  Arena *arena = arena_create(KB(256), KB(256));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrBakeTextureStore *store = vkr_bake_texture_store_create(&allocator);
+  assert(store);
+  VkrBakeMaterial material = {};
+  VkrBakeMaterialError error = VKR_BAKE_MATERIAL_ERROR_NONE;
+  assert(vkr_bake_material_load(store, path, &material, &error));
+  assert(error == VKR_BAKE_MATERIAL_ERROR_NONE);
+  vkr_bake_texture_store_release(store);
+  arena_destroy(arena);
+  remove(path);
+}
+
 } // namespace
 
 bool32_t run_lightmap_bake_tests(void) {
@@ -585,6 +613,7 @@ bool32_t run_lightmap_bake_tests(void) {
   test_light_layer_sun_weights();
   test_diffuse_volume_layers_round_trip();
   test_lightmap_denoise_stays_on_surfaces();
+  test_bake_material_accepts_roughness_bound();
   printf("--- Lightmap Bake Tests Completed ---\n");
   return true_v;
 }

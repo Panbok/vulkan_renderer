@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-07
 authority: adr
 ---
 
@@ -104,7 +104,8 @@ on Metal. It shares kernels and host records with the desktop pipeline:
   - The tiled blend fragment composes glass with the shared
     `vkr_transmission_compose` and returns the factor the destination keeps
     as its second, dual-source output; the Vulkan transmission kernels use
-    the same composition. A glass volume refracts through the shared
+    the same composition. A glass volume refracts, and glass whose material
+    sets `VKR_METAL_PACKET_MATERIAL_ROUGH` blurs, through the shared
     `vkr_transmission_exit_point`, `vkr_transmission_project_uv` and
     `vkr_transmission_rough_lod`, sampling a half-resolution copy of the
     image through the frame root's `transmission_source` at byte 424, which

@@ -145,6 +145,9 @@ typedef enum VkrMetalPacketMaterialTextureFlag {
   /* A terrain material: the vertex color weighs layer 0 against the terrain
      segment's layers 1 to 3. */
   VKR_METAL_PACKET_MATERIAL_TERRAIN = 1u << 11u,
+  /* A rough surface (VkrMaterial::rough): thin glass with it blurs through
+     the tiled pipeline's refraction copy. */
+  VKR_METAL_PACKET_MATERIAL_ROUGH = 1u << 12u,
 } VkrMetalPacketMaterialTextureFlag;
 
 /* Texture references a published material tracks: the twelve common-row and

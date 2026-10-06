@@ -1029,6 +1029,8 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       flags |= VKR_METAL_PACKET_MATERIAL_TEXTURE_ANISOTROPY;
     if (material->terrain)
       flags |= VKR_METAL_PACKET_MATERIAL_TERRAIN;
+    if (material->rough)
+      flags |= VKR_METAL_PACKET_MATERIAL_ROUGH;
     const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                           ? material->pbr.base_color
                           : material->phong.diffuse_color;

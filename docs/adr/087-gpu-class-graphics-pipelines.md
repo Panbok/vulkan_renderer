@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-06
+updated: 2026-10-07
 authority: adr
 ---
 
@@ -219,25 +219,30 @@ pipeline rather than a backend mechanism.
     transmission rows. A volume, glass with a thickness, absorbs the light
     behind it as the desktop pipeline does, `pow(attenuation colour, path
     length / attenuation distance)` along the refracted path through its
-    object-space thickness (`vkr_transmission_exit_point`), and refracts it.
-    On frames whose blend list holds a volume (`refractive_draw_count` in
-    the world payload, `tiled_refraction_pending` in the graph),
+    object-space thickness (`vkr_transmission_exit_point`), and refracts it;
+    rough glass blurs it. On frames whose blend list holds a volume or rough
+    glass (`refractive_draw_count` in the world payload,
+    `tiled_refraction_pending` in the graph),
     `Tiled.Refraction.Base` copies the image after the atmosphere draw into
     the half-resolution `tiled_refraction_source` with a 2×2 box, and
     `Tiled.Refraction.Downsample.${i}` (`pass.transmission.downsample`)
-    reduces it to six levels with a four-tap box. The volume samples the
-    copy at its projected exit point, at the level its roughness picks
-    (`vkr_transmission_rough_lod`), and adds that light itself, so the
-    blend keeps none of the destination. The copy holds no blended surface,
-    so a volume hides the panes behind it, and as in any screen-space
-    refraction its offset can pick up nearer surfaces. Thin glass takes no
-    offset or blur: the importer folds the roughness factor into the
-    roughness texture (Bistro's normal-mapped panes carry a factor of one
-    over a zero-roughness texture), so the runtime cannot tell rough thin
-    glass from smooth before shading, and gating the copy on a volume keeps
-    frames without one free of it. Bistro's 18 glass materials have no
-    thickness and an effective roughness of zero, so no Bistro frame takes
-    the copy (see [Refraction measurement](#refraction-measurement)). The
+    reduces it to six levels with a four-tap box. A volume samples the copy
+    at its projected exit point and rough thin glass at its own position,
+    at the level the roughness picks (`vkr_transmission_rough_lod`), and
+    adds that light itself, so the blend keeps none of the destination. The
+    copy holds no blended surface, so such glass hides the panes behind it,
+    and as in any screen-space refraction a volume's offset can pick up
+    nearer surfaces. Rough glass is a material whose `rough` flag
+    (`VkrMaterial`, published as `VKR_METAL_PACKET_MATERIAL_ROUGH`) is set:
+    its `roughness_max`, or without one an untextured material's roughness
+    factor, exceeds zero. The importer folds the roughness factor into the
+    roughness texture and records it as `roughness_max`
+    ([ADR-012](012-texture-compression-pipeline.md)); a textured material
+    without the key counts as smooth, because its texture may hold no
+    roughness at all, as on Bistro's normal-mapped panes, which carry a
+    factor of one over a zero-roughness texture. Bistro's 18 glass materials
+    have no thickness and no rough flag, so no Bistro frame takes the copy
+    (see [Refraction measurement](#refraction-measurement)). The
     blend pass on the baked orbit took 0.47 / 0.85 and 0.48 / 0.78 ms
     median / p95 before volume absorption and 0.51 / 1.11 and 0.49 / 0.83 ms
     after
@@ -754,6 +759,27 @@ rough panes blurring the interior and the smooth ones bending it slightly
 before, `sha256:bcfe529c3dc64ad86eb8e5b59229ad57e106325984ecf00eb7f7a3453ec889e8`
 after), and a Metal API validation run of that view with the copy passed
 (`sha256:5ddd829c21b0b89f3fb439fa46db9149af5b37abc5506010a7ea8363f8dd8208`).
+
+The rough flag, measured 2026-10-07 the same way against the build before it
+(`a9e10cba`), four alternating runs each: with Bistro's glass unchanged,
+`Tiled.Blend` took 0.49 to 0.50 ms median and 0.84 to 0.86 ms p95 before and
+0.50 to 0.51 and 0.90 to 0.92 ms after
+(`sha256:c8893a84f97adcdaad35b7638a218cec50a3a126d3e03cf4003ac71099689498`,
+`sha256:433e907cfb7e5cebe9319b71b9c6c2245ba63bfcca84eb03a88184f641916b05`),
+and `gpu.submission` 11.62 to 11.66 / 15.99 to 16.20 ms before and 11.64 to
+11.70 / 16.01 to 16.11 ms after
+(`sha256:e63af818bcd7c926efefb957ecd559af0914adf3ffc1b4ad2f48b4a16188bd57`,
+`sha256:eb2e4f405fb0d3306db973c96870f073b5136bd457f035b5d3ac3cf5988f194a`).
+`tiled_bistro_glass` is unchanged pixel for pixel. With the six normal-mapped
+panes temporarily given a roughness of 0.45 without their roughness texture,
+and every pane thin, the rough windows and lamp covers blur the light behind
+them while the smooth panes stay sharp
+(`sha256:72f0f3f575becd84d98bac4547e51c8b3154d11e65e73f4be12ce9702538e284`
+before, `sha256:cc0d08a622e71f878d2d81a66bf429381c7471698207826b61886936756edf7f`
+after), and a Metal API validation run of that view passed
+(`sha256:0c25064f855ac655f715a10013053fe7f9bd2ac84ceab927c0603138c9a5db50`).
+`tiled_bistro_baked_capture` takes one of two cloud states from run to run on
+either build, so its comparison holds outside the clouds.
 
 ## Consequences
 

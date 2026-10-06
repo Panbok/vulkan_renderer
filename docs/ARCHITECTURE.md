@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-06
+updated: 2026-10-07
 authority: architecture
 ---
 
@@ -738,8 +738,9 @@ four-sample render pass resolved on chip, with baked lightmaps for static
 diffuse light; a scene without a lightmap set draws its static lights as
 dynamic lights. `Tiled.Atmosphere` lays the clouds, aerial perspective and
 analytic height fog over the resolved image, and `Tiled.Blend` draws glass
-with the blended surfaces, back to front; glass volumes refract through a
-half-resolution copy of the image, taken only on frames with one in view. It
+with the blended surfaces, back to front; glass volumes refract and rough
+glass blurs through a half-resolution copy of the image, taken only on frames
+with either in view. It
 draws the 16 dynamic lights nearest the camera, 4 of them shadowed with a
 four-comparison tent each, and no FXAA, screen-space effects or temporal
 history. Its

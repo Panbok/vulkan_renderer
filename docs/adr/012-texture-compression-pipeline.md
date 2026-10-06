@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-07
 authority: adr
 ---
 # ADR-012: Host-native KTX2 texture artifacts
@@ -256,7 +256,11 @@ MR R/B/A keep ordinary area filtering. A material without an MR image receives a
 texture with neutral AO/metallic channels. Normal strength and roughness factor
 are folded into both base and lower mips, within byte/compression precision;
 generated materials set those two factors to one and retain the metallic factor.
-Changing the factors afterward requires recooking. An authored zero normal scale
+Every generated material with a roughness texture also records the factor
+before folding as `roughness_max`, the largest roughness the surface reaches,
+which the tiled pipeline reads to tell rough glass from smooth
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 10). Changing the
+factors afterward requires recooking. An authored zero normal scale
 flattens the normal; an omitted scale defaults to one.
 
 Pairing requires decodable external images with identical extents, untransformed

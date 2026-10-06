@@ -932,6 +932,14 @@ extern "C" bool8_t vkr_bake_material_load(VkrBakeTextureStore *store,
       final_pbr = true_v;
       continue;
     }
+    /* A bound the renderer gates glass blur on; diffuse transport ignores
+       roughness. */
+    if (key == "roughness_max") {
+      float32_t ignored = 0.0f;
+      if (!parse_float(value, &ignored))
+        goto parse_error;
+      continue;
+    }
     if (key == "normal_scale") {
       if (!parse_float(value, &material.normal_scale))
         goto parse_error;

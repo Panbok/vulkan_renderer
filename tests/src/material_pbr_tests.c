@@ -656,6 +656,86 @@ vkr_internal void test_material_transmission_is_independent_of_alpha(
   printf("  test_material_transmission_is_independent_of_alpha PASSED\n");
 }
 
+/* A roughness texture hides the folded factor, so only a recorded bound can
+   flag a textured surface rough; old imports of Bistro's normal-mapped panes
+   carry a factor of one over a zero-roughness texture. */
+vkr_internal void test_material_rough_flag(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_rough_flag...\n");
+
+  const struct {
+    const char *stem;
+    const char *text;
+    bool8_t expected;
+  } cases[] = {
+      {"rough_untextured", "type=pbr\nroughness=0.4\n", true_v},
+      {"rough_untextured_smooth", "type=pbr\nroughness=0\n", false_v},
+      {"rough_textured_unbounded",
+       "type=pbr\nroughness=1\nmetallic_roughness_texture="
+       "tests/fixtures/rendering/diffuse_sheet/sheet_base_color.png\n",
+       false_v},
+      {"rough_textured_bounded",
+       "type=pbr\nroughness=1\nroughness_max=0.3\nmetallic_roughness_texture="
+       "tests/fixtures/rendering/diffuse_sheet/sheet_base_color.png\n",
+       true_v},
+      {"rough_bound_overrides_factor",
+       "type=pbr\nroughness=0.4\nroughness_max=0\n", false_v},
+  };
+
+  for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
+    char material_path[1024] = {0};
+    VkrResourceHandleInfo handle_info = {0};
+    assert(material_pbr_test_load_material(ctx, cases[i].stem, cases[i].text,
+                                           material_path, sizeof(material_path),
+                                           &handle_info) == true_v);
+
+    VkrMaterial *material = vkr_material_system_get_by_handle(
+        &ctx->material_system, handle_info.as.material);
+    assert(material != NULL);
+    assert(material->rough == cases[i].expected);
+
+    material_pbr_test_unload_material(ctx, &handle_info, material_path);
+    material_pbr_test_remove_file(material_path);
+  }
+
+  /* Scenes load their materials through the batch path, which builds each
+     material itself. */
+  char dir_abs[1024] = {0};
+  snprintf(dir_abs, sizeof(dir_abs), "%stests/tmp/material_pbr/rough",
+           PROJECT_SOURCE_DIR);
+  assert(material_pbr_test_make_dir(dir_abs) == true_v);
+  char relative_paths[ArrayCount(cases)][256];
+  String8 batch_paths[ArrayCount(cases)];
+  for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
+    snprintf(relative_paths[i], sizeof(relative_paths[i]),
+             "tests/tmp/material_pbr/rough/%s.mt", cases[i].stem);
+    char absolute_path[1024] = {0};
+    snprintf(absolute_path, sizeof(absolute_path), "%s%s", PROJECT_SOURCE_DIR,
+             relative_paths[i]);
+    char text[1024] = {0};
+    snprintf(text, sizeof(text), "name=batch_%s\n%s", cases[i].stem,
+             cases[i].text);
+    assert(material_pbr_test_write_text_file(absolute_path, text) == true_v);
+    batch_paths[i] = string8_create_from_cstr(
+        (const uint8_t *)relative_paths[i], string_length(relative_paths[i]));
+  }
+  VkrResourceHandleInfo batch_handles[ArrayCount(cases)] = {0};
+  VkrRendererError batch_errors[ArrayCount(cases)] = {0};
+  assert(ctx->material_loader.batch_load(&ctx->material_loader, batch_paths,
+                                         ArrayCount(cases),
+                                         &ctx->temp_allocator, batch_handles,
+                                         batch_errors) == ArrayCount(cases));
+  for (uint32_t i = 0u; i < ArrayCount(cases); ++i) {
+    assert(batch_errors[i] == VKR_RENDERER_ERROR_NONE);
+    VkrMaterial *material = vkr_material_system_get_by_handle(
+        &ctx->material_system, batch_handles[i].as.material);
+    assert(material != NULL);
+    assert(material->rough == cases[i].expected);
+    material_pbr_test_remove_file(relative_paths[i]);
+  }
+
+  printf("  test_material_rough_flag PASSED\n");
+}
+
 vkr_internal void
 test_material_pbr_alias_slots_and_inference(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_pbr_alias_slots_and_inference...\n");
@@ -2299,6 +2379,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_pbr_inference_from_scalar_keys(&context);
   test_material_temporal_reactivity_authoring(&context);
   test_material_transmission_is_independent_of_alpha(&context);
+  test_material_rough_flag(&context);
   test_material_pbr_alias_slots_and_inference(&context);
   test_material_alpha_mode_cutout_defaults(&context);
   test_material_double_sided_state(&context);

@@ -59,6 +59,9 @@ typedef struct VkrParsedMaterialData {
   float32_t alpha_cutoff;
   bool8_t alpha_cutoff_set;
   bool8_t cutout_enabled;
+  /** The largest roughness the surface reaches, when the file records it. */
+  float32_t roughness_max;
+  bool8_t roughness_max_set;
 
   // Texture paths as fixed buffers (thread-safe for parallel parsing)
   char texture_paths[VKR_TEXTURE_SLOT_COUNT][VKR_MATERIAL_PATH_MAX];
@@ -972,6 +975,18 @@ vkr_internal bool8_t vkr_material_copy_trimmed_value_to_cstr(
   return true_v;
 }
 
+/* Whether the surface's roughness exceeds zero somewhere (VkrMaterial::rough).
+   A roughness texture scales the factor by an unknown amount, so a file that
+   has one and records no bound counts as smooth. */
+vkr_internal bool8_t
+vkr_material_loader_rough(const VkrParsedMaterialData *parsed) {
+  if (parsed->roughness_max_set)
+    return parsed->roughness_max > 0.0f;
+  const bool8_t roughness_textured =
+      parsed->texture_paths[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS][0] != '\0';
+  return !roughness_textured && parsed->pbr.roughness > 0.0f;
+}
+
 vkr_internal void
 vkr_material_loader_init_from_parsed(VkrMaterial *material,
                                      const VkrParsedMaterialData *parsed,
@@ -997,6 +1012,7 @@ vkr_material_loader_init_from_parsed(VkrMaterial *material,
       material->alpha_cutoff <= 0.0f) {
     material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
   }
+  material->rough = vkr_material_loader_rough(parsed);
 }
 
 vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
@@ -1688,6 +1704,8 @@ vkr_material_loader_set_parse_defaults(VkrParsedMaterialData *out_data) {
   out_data->alpha_cutoff = 0.0f;
   out_data->alpha_cutoff_set = false_v;
   out_data->cutout_enabled = false_v;
+  out_data->roughness_max = 0.0f;
+  out_data->roughness_max_set = false_v;
   out_data->pipeline_id = VKR_INVALID_ID;
   for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
     out_data->texture_paths[slot][0] = '\0';
@@ -1745,6 +1763,10 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_surface_key(
   } else if (vkr_string8_equals_cstr_i(&key, "roughness")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     (void)string8_to_f32(&value, &out_data->pbr.roughness);
+  } else if (vkr_string8_equals_cstr_i(&key, "roughness_max")) {
+    out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+    out_data->roughness_max_set =
+        string8_to_f32(&value, &out_data->roughness_max);
   } else if (vkr_string8_equals_cstr_i(&key, "normal_scale")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     (void)string8_to_f32(&value, &out_data->pbr.normal_scale);
@@ -2647,6 +2669,7 @@ vkr_internal bool8_t vkr_material_batch_create_material(
   material->alpha_mode = parsed->alpha_mode;
   material->alpha_mode_explicit = parsed->alpha_mode_explicit;
   material->double_sided = parsed->double_sided;
+  material->rough = vkr_material_loader_rough(parsed);
   material->phong = parsed->phong;
   material->pbr = parsed->pbr;
   if (parsed->alpha_cutoff_set) {

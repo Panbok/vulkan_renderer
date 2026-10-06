@@ -320,8 +320,9 @@ typedef struct VkrWorldPassPayload {
   const VkrDrawItem *transparent_draws;
   uint32_t transparent_draw_count;
   /** Those of transparent_draws whose transmissive material has a volume
-   * (thickness > 0). The tiled pipeline copies the scene for their refraction
-   * only when this is nonzero (ADR-087). */
+   * (thickness > 0) or a rough surface (VkrMaterial::rough). The tiled
+   * pipeline copies the scene for their refraction only when this is nonzero
+   * (ADR-087). */
   uint32_t refractive_draw_count;
   const VkrInstanceDataGPU *instances;
   uint32_t instance_count;

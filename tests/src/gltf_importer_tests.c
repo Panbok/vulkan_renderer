@@ -2170,6 +2170,8 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
                   shared_metallic_roughness_reference));
     assert(strstr((const char *)materials[i].str, "normal_scale=1.000000"));
     assert(strstr((const char *)materials[i].str, "roughness=1.000000"));
+    // The folded factor stays as the bound the texture scales.
+    assert(strstr((const char *)materials[i].str, "roughness_max=0.250000"));
   }
   char factor_only_metallic_roughness_reference[1200];
   snprintf(factor_only_metallic_roughness_reference,
@@ -2178,6 +2180,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
            (int32_t)factor_only_metallic_roughness.length,
            factor_only_metallic_roughness.str);
   assert(strstr((const char *)materials[4].str, "roughness=1.000000"));
+  assert(strstr((const char *)materials[4].str, "roughness_max=0.250000"));
   assert(strstr((const char *)materials[4].str, "metallic=0.700000"));
   assert(strstr((const char *)materials[4].str,
                 factor_only_metallic_roughness_reference));
@@ -2191,6 +2194,7 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
            rougher_metallic_roughness.str);
   assert(strstr((const char *)materials[3].str,
                 rougher_metallic_roughness_reference));
+  assert(strstr((const char *)materials[3].str, "roughness_max=0.500000"));
   assert(strstr((const char *)materials[3].str, shared_normal_reference));
   assert(strstr((const char *)materials[4].str, shared_normal_reference));
 
@@ -2213,6 +2217,8 @@ static void test_gltf_import_bakes_normal_roughness_texture_pairs(void) {
   }
 
   assert(strstr((const char *)materials[8].str, "normal_scale=0.000000"));
+  // Without a roughness texture the factor is exact and needs no bound.
+  assert(!strstr((const char *)materials[8].str, "roughness_max="));
   assert(strstr((const char *)materials[9].str, "normal_scale=1.000000"));
   assert(strstr((const char *)materials[8].str, normal_source_reference));
   assert(strstr((const char *)materials[9].str, normal_source_reference));

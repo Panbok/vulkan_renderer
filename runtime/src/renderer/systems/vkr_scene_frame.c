@@ -242,6 +242,13 @@ typedef struct VkrSceneWorldClassification {
   uint32_t refractive_draw_count;
 } VkrSceneWorldClassification;
 
+/* Glass the tiled pipeline shades from its refraction copy (ADR-087): a
+   volume, or a rough surface. */
+vkr_internal bool8_t vkr_scene_material_refracts(const VkrMaterial *material) {
+  return vkr_material_system_material_is_transmissive(material) &&
+         (material->pbr.thickness_factor > 0.0f || material->rough);
+}
+
 /* Counting pass: sizes the GPU candidate span and its static-caster prefix,
    and flags visible sources that are not loaded yet. */
 vkr_internal void vkr_scene_count_world_sources(
@@ -338,9 +345,7 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
         transparent_visible[source_index] = visible;
         transparent_draw_count += visible ? 1u : 0u;
         refractive_draw_count +=
-            visible && transmissive && material->pbr.thickness_factor > 0.0f
-                ? 1u
-                : 0u;
+            visible && vkr_scene_material_refracts(material) ? 1u : 0u;
         stats.objects_culled_camera += visible ? 0u : 1u;
       }
       source_index++;
@@ -390,9 +395,7 @@ vkr_internal VkrSceneWorldClassification vkr_scene_classify_world_sources(
         transparent_visible[source_index] = visible;
         transparent_draw_count += visible ? 1u : 0u;
         refractive_draw_count +=
-            visible && transmissive && material->pbr.thickness_factor > 0.0f
-                ? 1u
-                : 0u;
+            visible && vkr_scene_material_refracts(material) ? 1u : 0u;
         stats.objects_culled_camera += visible ? 0u : 1u;
       }
       source_index++;

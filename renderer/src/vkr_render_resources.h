@@ -239,6 +239,11 @@ typedef struct VkrMaterial {
   bool8_t alpha_mode_explicit;
   /** Disable face culling for thin or explicitly two-sided surfaces. */
   bool8_t double_sided;
+  /** The surface's roughness, factor times texture, exceeds zero somewhere.
+   * A material file records the bound as `roughness_max`; without one, an
+   * untextured surface's factor is exact and a textured surface counts as
+   * smooth. The tiled pipeline blurs thin glass only when set (ADR-087). */
+  bool8_t rough;
 
   // Material parameters. `phong` remains for backwards compatibility.
   VkrPhongProperties phong;

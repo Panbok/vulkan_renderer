@@ -2820,6 +2820,10 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
     }
   }
 
+  /* The pairing below folds the roughness factor into its texture; the file
+     keeps the factor as the bound the texture scales, which the renderer
+     needs to tell rough glass from smooth (ADR-087). */
+  const float32_t roughness_max = roughness;
   if (textures.normal_texture.str && textures.normal_texture.length > 0u) {
     String8 cooked_normal_texture = {0};
     String8 cooked_metallic_roughness_texture = {0};
@@ -2886,6 +2890,11 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
                                                 "metallic", metallic);
   ok = ok && vkr_mesh_loader_gltf_write_key_f32(&text, info->load_allocator,
                                                 "roughness", roughness);
+  if (textures.metallic_roughness_texture.str &&
+      textures.metallic_roughness_texture.length > 0u) {
+    ok = ok && vkr_mesh_loader_gltf_write_key_f32(
+                   &text, info->load_allocator, "roughness_max", roughness_max);
+  }
   ok = ok && vkr_mesh_loader_gltf_write_key_vec3(&text, info->load_allocator,
                                                  "dielectric_specular",
                                                  dielectric_specular);
