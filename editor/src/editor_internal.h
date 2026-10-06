@@ -160,6 +160,30 @@ uint32_t vkr_editor_selection_list(const VkrEditorUi *editor,
 /* Brush roles as operations name them: solid, visual, clip, trigger. */
 extern const char *const vkr_editor_brush_roles[];
 #define VKR_EDITOR_BRUSH_ROLE_COUNT 4u
+/* The dev materials the Level Design palette paints with; the first is the
+   one a brush face without a material shows. */
+typedef struct VkrEditorBrushMaterial {
+  const char *label;
+  const char *path;
+} VkrEditorBrushMaterial;
+#define VKR_EDITOR_BRUSH_MATERIAL_COUNT 7u
+extern const VkrEditorBrushMaterial
+    vkr_editor_brush_materials[VKR_EDITOR_BRUSH_MATERIAL_COUNT];
+/* `world` in window pixels through the Scene's view projection; false
+   behind the eye. */
+bool8_t vkr_editor_viewport_pixel(const VkrSampleUiFrame *frame, Vec3 world,
+                                  Vec2 *out);
+/* The stairs the stairs tool would place, from `out_from` with the yaw
+   `out_yaw` (degrees about +Y); false while no drag runs. */
+bool8_t vkr_editor_path_stairs(const VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame,
+                               SceneBlockout *out, Vec3 *out_from,
+                               float32_t *out_yaw);
+/* The `"role"` and, for a solid or visual brush, `"material"` arguments of
+   the next brush the editor creates, from the palette. Clip and trigger
+   brushes keep their roles' dev materials. */
+void vkr_editor_brush_style(const VkrEditorUi *editor, char *out,
+                            uint64_t size);
 /* The open scene's name as the workbench row shows it. */
 void vkr_editor_scene_label(const VkrEditorUi *editor,
                             const VkrSampleUiFrame *frame, char *out,

@@ -296,8 +296,10 @@ typedef struct VkrSampleScriptResult {
   char message[256];
 } VkrSampleScriptResult;
 
-/* Most edits one batch request may carry (ADR-084). */
-#define VKR_SAMPLE_EDIT_BATCH_MAX 256u
+/* Most edits one batch request may carry (ADR-084): a blockout shape's
+   rebuild, which deletes its old brushes and creates 240 stair steps or 48
+   corridor stretches, fits. */
+#define VKR_SAMPLE_EDIT_BATCH_MAX 2048u
 
 /* One edit of a batch. A nonnegative `entity_ref` or `parent_ref` names the
  * entity that batch edit `k` created and replaces `request.entity` or
@@ -425,6 +427,9 @@ typedef struct VkrSampleUiFrame {
   bool8_t simulation_running;
   /** Script modules drive the Scene camera and HUD this frame. */
   bool8_t scripts_running;
+  /** The game plays with script instances or engine IO components (relays,
+   * timers, movers), so inputs fired at entities reach them. */
+  bool8_t io_running;
   bool8_t scene_rendering_stopped;
   VkrRendererError scene_error;
   float32_t scene_output_scale;
@@ -471,6 +476,18 @@ typedef struct VkrSampleUiClient {
                               VkrScene *scene, String8 runtime_scene_path);
   /** Optional projection of current UI anchors after Scene camera input. */
   void (*project_scene)(void *state, const VkrSampleUiFrame *frame);
+  /** Optional: the world position a move drag gives `entity`, from the one
+   * the pointer asks for (`to`), such as one snapped against nearby
+   * objects. The drag started at `from`; the camera is at `eye`; `start`
+   * marks a drag's first call, before the entity moved. The runtime keeps
+   * the result on the handle's axis or plane. */
+  Vec3 (*snap_move)(void *state, const VkrScene *scene, VkrEntityId entity,
+                    Vec3 from, Vec3 to, Vec3 eye, bool8_t start);
+  /** Optional: other entities a move of `primary` carries by the same world
+   * offset, such as the rest of a selection; returns how many it wrote. Those
+   * outside `primary`'s scene stay. The move undoes as one step. */
+  uint32_t (*move_companions)(void *state, VkrEntityId primary,
+                              VkrEntityId *out, uint32_t capacity);
   bool8_t (*shutdown)(void *state, const VkrUiDockTree *dock, VkrUiSystem *ui);
 } VkrSampleUiClient;
 

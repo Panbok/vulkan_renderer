@@ -1,6 +1,7 @@
 #include "script/vkr_io_router.h"
 
 #include "core/logger.h"
+#include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 
@@ -83,6 +84,23 @@ typedef struct IoCounter {
   int32_t min;
   int32_t max;
 } IoCounter;
+
+typedef struct IoMover {
+  VkrEntityId entity;
+  /* World offset of the open pose from the saved one (vkr_io_mover_travel),
+     fixed at publication. */
+  Vec3 travel;
+  float32_t speed;
+  float32_t wait;
+  bool8_t loop;
+  bool8_t locked;
+  /* 0 at the saved pose to 1 open, and where it heads. */
+  float64_t progress;
+  float64_t target;
+  /* Seconds left resting at an end before it turns back; negative when it
+     stays. */
+  float64_t wait_left;
+} IoMover;
 
 // =============================================================================
 // Ports and values
@@ -518,6 +536,7 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
   router->relay_count = 0u;
   router->timer_count = 0u;
   router->counter_count = 0u;
+  router->mover_count = 0u;
   const uint32_t connections = io_count_typed(
       router->scenes, router->scene_count, &vkr_scene_io_connection_type);
   const uint32_t triggers = io_count_typed(router->scenes, router->scene_count,
@@ -528,11 +547,14 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
                                          &vkr_scene_timer_type);
   const uint32_t counters = io_count_typed(router->scenes, router->scene_count,
                                            &vkr_scene_counter_type);
+  const uint32_t movers = io_count_typed(router->scenes, router->scene_count,
+                                         &vkr_scene_mover_type);
   router->capacities[0] = connections;
   router->capacities[1] = triggers;
   router->capacities[2] = relays;
   router->capacities[3] = timers;
   router->capacities[4] = counters;
+  router->capacities[5] = movers;
   bool8_t ok = true_v;
   router->connections =
       io_alloc(router, connections, sizeof(IoConnection), &ok);
@@ -540,6 +562,7 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
   router->relays = io_alloc(router, relays, sizeof(IoRelay), &ok);
   router->timers = io_alloc(router, timers, sizeof(IoTimer), &ok);
   router->counters = io_alloc(router, counters, sizeof(IoCounter), &ok);
+  router->movers = io_alloc(router, movers, sizeof(IoMover), &ok);
   if (!ok) {
     return false_v;
   }
@@ -595,6 +618,30 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
                         .min = counter->min,
                         .max = counter->max};
       }
+      const SceneMover *mover =
+          vkr_scene_get_typed(scene, entity, &vkr_scene_mover_type);
+      if (mover && router->mover_count < movers) {
+        Vec3 travel = vec3_zero();
+        (void)vkr_io_mover_travel(scene, entity, &travel);
+        const float64_t start = mover->start_open ? 1.0 : 0.0;
+        /* A looping mover sets off for its other end at once. */
+        router->movers[router->mover_count++] =
+            (IoMover){.entity = entity,
+                      .travel = travel,
+                      .speed = mover->speed,
+                      .wait = mover->wait,
+                      .loop = mover->loop,
+                      .locked = mover->locked,
+                      .progress = start,
+                      .target = mover->loop ? 1.0 - start : start,
+                      .wait_left = -1.0};
+        if (vec3_length(travel) <= 0.0f) {
+          const String8 name = io_name(scene, entity);
+          log_warn("[io] Mover '%.*s' has nowhere to move: give it a "
+                   "distance or something to move",
+                   (int)name.length, name.str);
+        }
+      }
       if (router->connection_count < connections &&
           vkr_scene_get_typed(scene, entity, &vkr_scene_io_connection_type)) {
         char error[160];
@@ -618,6 +665,90 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
         io_connection_compare);
   io_warn_cycles(router);
   return true_v;
+}
+
+/* The saved world pose of `entity`: its parent's world matrix times its
+   local one, as the transform update composes them, which an evaluated pose
+   of its own does not change. */
+static bool8_t io_mover_rest(const VkrScene *scene, VkrEntityId entity,
+                             Mat4 *out) {
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  if (!transform) {
+    return false_v;
+  }
+  const SceneTransform *parent =
+      transform->parent.u64
+          ? vkr_entity_get_component(scene->world, transform->parent,
+                                     scene->comp_transform)
+          : NULL;
+  *out = parent ? mat4_mul(parent->world, transform->local) : transform->local;
+  return true_v;
+}
+
+bool8_t vkr_io_mover_travel(const VkrScene *scene, VkrEntityId entity,
+                            Vec3 *out) {
+  *out = vec3_zero();
+  const SceneMover *mover =
+      scene ? vkr_scene_get_typed(scene, entity, &vkr_scene_mover_type) : NULL;
+  Mat4 rest;
+  if (!mover || !io_mover_rest(scene, entity, &rest)) {
+    return false_v;
+  }
+  const Vec3 local = vec3_normalize(mover->direction);
+  const Vec4 world = mat4_mul_vec4(rest, vec3_to_vec4(local, 0.0f));
+  const Vec3 along = vec3_new(world.x, world.y, world.z);
+  /* World metres per metre of its own space along the direction. */
+  const float32_t stretch = vec3_length(along);
+  if (!(stretch > 1.0e-6f)) {
+    return true_v;
+  }
+  float32_t distance = mover->distance;
+  Vec3 lo = vec3_zero();
+  Vec3 hi = vec3_zero();
+  if (distance <= 0.0f &&
+      vkr_scene_entity_local_bounds(scene, entity, &lo, &hi)) {
+    const float32_t extent = fabsf(local.x) * (hi.x - lo.x) +
+                             fabsf(local.y) * (hi.y - lo.y) +
+                             fabsf(local.z) * (hi.z - lo.z);
+    distance = Max(0.0f, extent * stretch - mover->lip);
+  }
+  *out = vec3_scale(along, Max(0.0f, distance) / stretch);
+  return true_v;
+}
+
+/* Writes the mover's evaluated pose, the saved one moved `progress` of the
+   way open, and its brushes' kinematic target. Adds the evaluated
+   transform when it has none, so only publication and refresh may. */
+static void io_mover_pose(VkrScene *scene, const IoMover *mover) {
+  Mat4 pose;
+  if (!io_mover_rest(scene, mover->entity, &pose)) {
+    return;
+  }
+  const Vec3 offset = vec3_scale(mover->travel, (float32_t)mover->progress);
+  pose.elements[12] += offset.x;
+  pose.elements[13] += offset.y;
+  pose.elements[14] += offset.z;
+  (void)vkr_scene_set_evaluated_transform(scene, mover->entity, &pose);
+  vkr_scene_brush_mover_move(scene, mover->entity, offset);
+}
+
+/* Returns a mover to its saved pose: no evaluated transform, its body at
+   rest from the next step. */
+static void io_mover_release(VkrScene *scene, const IoMover *mover) {
+  if (scene && vkr_scene_entity_alive(scene, mover->entity)) {
+    (void)vkr_scene_set_evaluated_transform(scene, mover->entity, NULL);
+    vkr_scene_brush_mover_move(scene, mover->entity, vec3_zero());
+  }
+}
+
+static void io_movers_publish(VkrIoRouter *router) {
+  for (uint32_t i = 0; i < router->mover_count; ++i) {
+    VkrScene *scene = io_scene_of(router, router->movers[i].entity);
+    if (scene && vkr_scene_entity_alive(scene, router->movers[i].entity)) {
+      io_mover_pose(scene, &router->movers[i]);
+    }
+  }
 }
 
 bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
@@ -646,6 +777,7 @@ bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
     return false_v;
   }
   router->published = true_v;
+  io_movers_publish(router);
   return true_v;
 }
 
@@ -675,6 +807,7 @@ bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
     io_free(router, router->relays, router->capacities[2], sizeof(IoRelay));
     io_free(router, router->timers, router->capacities[3], sizeof(IoTimer));
     io_free(router, router->counters, router->capacities[4], sizeof(IoCounter));
+    io_free(router, router->movers, router->capacities[5], sizeof(IoMover));
     *router = previous;
     return false_v;
   }
@@ -682,6 +815,19 @@ bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
   IO_CARRY(relays, relay_count)
   IO_CARRY(timers, timer_count)
   IO_CARRY(counters, counter_count)
+  IO_CARRY(movers, mover_count)
+  /* A mover whose component went while its entity stayed rests again. */
+  for (uint32_t o = 0; o < previous.mover_count; ++o) {
+    bool8_t kept = false_v;
+    for (uint32_t n = 0; n < router->mover_count && !kept; ++n) {
+      kept = router->movers[n].entity.u64 == previous.movers[o].entity.u64;
+    }
+    if (!kept) {
+      io_mover_release(io_scene_of(router, previous.movers[o].entity),
+                       &previous.movers[o]);
+    }
+  }
+  io_movers_publish(router);
   /* Fire counts of connections that stayed carry over too. */
   for (uint32_t n = 0; n < router->connection_count; ++n) {
     for (uint32_t o = 0; o < previous.connection_count; ++o) {
@@ -698,6 +844,7 @@ bool8_t vkr_io_router_refresh(VkrIoRouter *router) {
   io_free(router, previous.relays, previous.capacities[2], sizeof(IoRelay));
   io_free(router, previous.timers, previous.capacities[3], sizeof(IoTimer));
   io_free(router, previous.counters, previous.capacities[4], sizeof(IoCounter));
+  io_free(router, previous.movers, previous.capacities[5], sizeof(IoMover));
   return true_v;
 }
 #undef IO_CARRY
@@ -707,12 +854,17 @@ void vkr_io_router_clear(VkrIoRouter *router) {
     *router = (VkrIoRouter){.trace = router->trace};
     return;
   }
+  for (uint32_t i = 0; i < router->mover_count; ++i) {
+    io_mover_release(io_scene_of(router, router->movers[i].entity),
+                     &router->movers[i]);
+  }
   io_free(router, router->connections, router->capacities[0],
           sizeof(IoConnection));
   io_free(router, router->triggers, router->capacities[1], sizeof(IoTrigger));
   io_free(router, router->relays, router->capacities[2], sizeof(IoRelay));
   io_free(router, router->timers, router->capacities[3], sizeof(IoTimer));
   io_free(router, router->counters, router->capacities[4], sizeof(IoCounter));
+  io_free(router, router->movers, router->capacities[5], sizeof(IoMover));
   io_free(router, router->queue, VKR_IO_QUEUE_MAX, sizeof(IoDelivery));
   io_free(router, router->delayed, VKR_IO_QUEUE_MAX, sizeof(IoDelivery));
   io_free(router, router->fired, VKR_IO_QUEUE_MAX, sizeof(IoFired));
@@ -721,9 +873,25 @@ void vkr_io_router_clear(VkrIoRouter *router) {
   *router = (VkrIoRouter){.trace = router->trace};
 }
 
+void vkr_io_router_detach(VkrIoRouter *router, const VkrScene *scene) {
+  for (uint32_t i = 0; i < router->scene_count; ++i) {
+    if (router->scenes[i] != scene) {
+      continue;
+    }
+    for (uint32_t m = 0; m < router->mover_count; ++m) {
+      if (router->movers[m].entity.parts.world == scene->world_id) {
+        io_mover_release(router->scenes[i], &router->movers[m]);
+      }
+    }
+    router->scenes[i] = router->scenes[--router->scene_count];
+    return;
+  }
+}
+
 bool8_t vkr_io_router_active(const VkrIoRouter *router) {
-  return router->published && (router->connection_count ||
-                               router->trigger_count || router->timer_count);
+  return router->published &&
+         (router->connection_count || router->trigger_count ||
+          router->timer_count || router->mover_count);
 }
 
 // =============================================================================
@@ -911,12 +1079,53 @@ static IoCounter *io_counter(VkrIoRouter *router, VkrEntityId entity) {
   return NULL;
 }
 
+static IoMover *io_mover(VkrIoRouter *router, VkrEntityId entity) {
+  for (uint32_t i = 0; i < router->mover_count; ++i) {
+    if (router->movers[i].entity.u64 == entity.u64) {
+      return &router->movers[i];
+    }
+  }
+  return NULL;
+}
+
 static VkrIoEndpoint io_out(const VkrTypeDesc *type, const char *name) {
   return (VkrIoEndpoint){
       .type = type,
       .port = vkr_io_port_find(
           type->outputs,
           string8_create_from_cstr((const uint8_t *)name, strlen(name)))};
+}
+
+/* Seconds a mover rests at the end it reached before it turns back, or
+   negative when it stays: a looping mover always turns back. */
+static float64_t io_mover_rest_time(const IoMover *mover) {
+  if (mover->loop) {
+    return Max(0.0f, mover->wait);
+  }
+  return mover->progress == 1.0 ? mover->wait : -1.0;
+}
+
+/* Sends `mover` toward `target` (0 closed to 1 open). Setting off, or
+   turning around, fires on_open or on_close; a mover asked for the end it
+   rests at waits there afresh. */
+static bool8_t io_mover_head(VkrIoRouter *router, IoMover *mover,
+                             float64_t target, uint32_t depth) {
+  if (target == mover->progress) {
+    mover->target = target;
+    mover->wait_left = io_mover_rest_time(mover);
+    return true_v;
+  }
+  const bool8_t moving = mover->target != mover->progress;
+  const bool8_t was_opening = mover->target > mover->progress;
+  const bool8_t opening = target > mover->progress;
+  mover->target = target;
+  mover->wait_left = -1.0;
+  if (moving && was_opening == opening) {
+    return true_v;
+  }
+  const VkrIoEndpoint output =
+      io_out(&vkr_scene_mover_type, opening ? "on_open" : "on_close");
+  return io_emit(router, mover->entity, output, NULL, depth);
 }
 
 /* Engine component inputs; false only when the router faulted. */
@@ -1005,6 +1214,32 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
                      depth);
     }
     return true_v;
+  }
+  if (type == &vkr_scene_mover_type) {
+    IoMover *mover = io_mover(router, delivery->target);
+    if (!mover) {
+      return true_v;
+    }
+    if (!strcmp(name, "lock") || !strcmp(name, "unlock")) {
+      mover->locked = !strcmp(name, "lock");
+      return true_v;
+    }
+    /* A locked mover still closes; it refuses everything else. */
+    if (mover->locked && strcmp(name, "close")) {
+      return true_v;
+    }
+    float64_t target = 0.0;
+    if (!strcmp(name, "open")) {
+      target = 1.0;
+    } else if (!strcmp(name, "toggle")) {
+      /* Heading open or resting open closes; anything else opens. */
+      const bool8_t open =
+          mover->target > mover->progress || mover->target == 1.0;
+      target = open ? 0.0 : 1.0;
+    } else if (!strcmp(name, "set_position")) {
+      target = Clamp((float64_t)delivery->value.f32, 0.0, 1.0);
+    }
+    return io_mover_head(router, mover, target, depth);
   }
   /* A script type: its behavior's handler. */
   if (router->hooks.script_input &&
@@ -1173,6 +1408,62 @@ static bool8_t io_sense(VkrIoRouter *router, VkrScene *scene,
   return trigger->occupant_count ||
          io_emit(router, entity, io_out(&vkr_scene_trigger_type, "on_empty"),
                  NULL, 0u);
+}
+
+bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
+  if (!router->published || router->faulted) {
+    return !router->faulted;
+  }
+  /* Outputs fired here are this tick's; delayed ones count from its end. */
+  router->now += dt;
+  for (uint32_t i = 0; i < router->mover_count; ++i) {
+    IoMover *mover = &router->movers[i];
+    VkrScene *scene = io_scene_of(router, mover->entity);
+    /* Only publication adds the evaluated transform; a tick may not. */
+    if (!scene || !vkr_entity_has_component(scene->world, mover->entity,
+                                            scene->comp_evaluated_transform)) {
+      continue;
+    }
+    if (mover->progress == mover->target) {
+      /* At rest: the wait runs out at the end of this step, and the move
+         back starts with the next one. */
+      if (mover->wait_left < 0.0) {
+        continue;
+      }
+      mover->wait_left -= dt;
+      if (mover->wait_left > 1.0e-9) {
+        continue;
+      }
+      if (!io_mover_head(router, mover, mover->progress == 1.0 ? 0.0 : 1.0,
+                         0u)) {
+        return false_v;
+      }
+      continue;
+    }
+    /* A full travel takes its length over the speed; none takes one tick. */
+    const float64_t length = vec3_length(mover->travel);
+    const float64_t step =
+        length > 0.0 ? (float64_t)mover->speed * dt / length : 1.0;
+    const float64_t remaining = mover->target - mover->progress;
+    if (fabs(remaining) <= step * (1.0 + 1.0e-9)) {
+      mover->progress = mover->target;
+    } else {
+      mover->progress += remaining > 0.0 ? step : -step;
+    }
+    io_mover_pose(scene, mover);
+    if (mover->progress != mover->target) {
+      continue;
+    }
+    mover->wait_left = io_mover_rest_time(mover);
+    if (mover->progress == 1.0 || mover->progress == 0.0) {
+      const char *output = mover->progress == 1.0 ? "on_opened" : "on_closed";
+      if (!io_emit(router, mover->entity, io_out(&vkr_scene_mover_type, output),
+                   NULL, 0u)) {
+        return false_v;
+      }
+    }
+  }
+  return true_v;
 }
 
 bool8_t vkr_io_router_tick(VkrIoRouter *router, VkrScene *scene,

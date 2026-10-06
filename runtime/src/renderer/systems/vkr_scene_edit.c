@@ -1830,6 +1830,30 @@ static bool8_t edit_delete_one(VkrSceneEditState *s, VkrScene *scene,
   return true_v;
 }
 
+/* The world matrix of `entity` from the local values along its parents. An
+   earlier edit of the same batch, such as a snap before a move or a parent
+   created and placed just before, leaves the cached world matrices behind
+   until the scene updates. A transform without editable values gives its
+   cached world. */
+static Mat4 edit_world_now(VkrScene *scene, VkrEntityId entity) {
+  Mat4 world = mat4_identity();
+  for (uint32_t depth = 0; entity.u64 && depth < 256u; ++depth) {
+    const SceneTransform *link = vkr_scene_get_transform(scene, entity);
+    if (!link) {
+      break;
+    }
+    if (!link->trs_editable) {
+      return mat4_mul(link->world, world);
+    }
+    const Mat4 local = mat4_mul(mat4_mul(mat4_translate(link->position),
+                                         vkr_quat_to_mat4(link->rotation)),
+                                mat4_scale(link->scale));
+    world = mat4_mul(local, world);
+    entity = link->parent;
+  }
+  return world;
+}
+
 bool8_t vkr_scene_edit_reparent(VkrSceneEditState *s, VkrScene *scene,
                                 VkrEntityId entity, VkrEntityId parent) {
   SceneTransform *transform = vkr_scene_get_transform(scene, entity);
@@ -1860,12 +1884,12 @@ bool8_t vkr_scene_edit_reparent(VkrSceneEditState *s, VkrScene *scene,
   structure->position[0] = transform->position;
   structure->rotation[0] = transform->rotation;
   structure->scale[0] = transform->scale;
-  const SceneTransform *parent_transform =
-      parent.u64 ? vkr_scene_get_transform(scene, parent) : NULL;
+  /* The world poses from the local values now (edit_world_now). */
+  const Mat4 world_now = edit_world_now(scene, entity);
   const Mat4 local =
-      parent_transform
-          ? mat4_mul(mat4_inverse(parent_transform->world), transform->world)
-          : transform->world;
+      parent.u64
+          ? mat4_mul(mat4_inverse(edit_world_now(scene, parent)), world_now)
+          : world_now;
   edit_decompose(local, &structure->position[1], &structure->rotation[1],
                  &structure->scale[1]);
   if (!edit_set_parent(scene, entity, parent, structure->position[1],
@@ -2428,7 +2452,7 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         p->body.restitution,    p->body.gravity_factor,
         p->body.linear_damping, p->body.angular_damping};
     if (!vkr_json_writer_name(w, string8_lit("physics")) ||
-        !vkr_json_writer_begin_object(w) || !WRITE_INT("version", 2) ||
+        !vkr_json_writer_begin_object(w) || !WRITE_INT("version", 3) ||
         !WRITE_BOOL("present", p->present) ||
         !WRITE_INT("motion", p->body.motion) ||
         !WRITE_INT("layer", p->collision_layer) ||
@@ -2462,6 +2486,9 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
           !vkr_json_writer_string(w,
                                   (String8){.str = (uint8_t *)c->asset_path,
                                             .length = strlen(c->asset_path)}) ||
+          !WRITE_INT("fit", c->fit) ||
+          !json_floats(w, "fit_offset", &c->fit_offset.x, 3) ||
+          !json_floats(w, "padding", &c->padding.x, 3) ||
           !vkr_json_writer_end_object(w)) {
         return false_v;
       }
@@ -3205,7 +3232,7 @@ static bool8_t edit_json_physics(EditJson *j, VkrScenePhysicsSnapshot *p) {
   float32_t params[6];
   p->attachment.rotation = vkr_quat_identity();
   if (!edit_json_take(j, '{') || !edit_json_key(j, "version", false_v) ||
-      !edit_json_int(j, 1, 2, &version) ||
+      !edit_json_int(j, 1, 3, &version) ||
       !edit_json_key(j, "present", true_v) || !edit_json_bool(j, &p->present) ||
       !edit_json_key(j, "motion", true_v) ||
       !edit_json_int(j, VKR_PHYSICS_STATIC, VKR_PHYSICS_DYNAMIC, &integer)) {
@@ -3282,8 +3309,24 @@ static bool8_t edit_json_physics(EditJson *j, VkrScenePhysicsSnapshot *p) {
            (!edit_json_key(j, "scale", true_v) ||
             !edit_json_floats(j, &c->scale.x, 3) ||
             !edit_json_key(j, "asset", true_v) ||
-            !edit_json_string(j, c->asset_path, sizeof(c->asset_path)))) ||
-          !edit_json_take(j, '}')) {
+            !edit_json_string(j, c->asset_path, sizeof(c->asset_path))))) {
+        return false_v;
+      }
+      /* Colliders saved before fits existed keep their authored sizes. */
+      c->fit = VKR_SCENE_COLLIDER_FIT_MANUAL;
+      if (version >= 3) {
+        if (!edit_json_key(j, "fit", true_v) ||
+            !edit_json_int(j, VKR_SCENE_COLLIDER_FIT_MANUAL,
+                           VKR_SCENE_COLLIDER_FIT_AUTO, &integer) ||
+            !edit_json_key(j, "fit_offset", true_v) ||
+            !edit_json_floats(j, &c->fit_offset.x, 3) ||
+            !edit_json_key(j, "padding", true_v) ||
+            !edit_json_floats(j, &c->padding.x, 3)) {
+          return false_v;
+        }
+        c->fit = (VkrSceneColliderFit)integer;
+      }
+      if (!edit_json_take(j, '}')) {
         return false_v;
       }
       c->half_extent = vec3_new(dimensions[0], dimensions[1], dimensions[2]);

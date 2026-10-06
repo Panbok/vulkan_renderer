@@ -230,9 +230,27 @@ preset does not retroactively rewrite bodies that previously used it.
 [Inspector authoring](../../editor/src/editor_scene_panels.c) uses local drafts.
 Apply submits a complete owning-body snapshot to the runtime; UI construction
 borrows scene data and does not mutate ECS. Add, duplicate, remove, enable,
-placement, scale, cooked asset, attachment and joint settings share this transaction. Fit uses loaded descendant render
-bounds conservatively, changes only the chosen collider draft and resets its local
-rotation. It is an approximation requiring Apply, not an assertion of mesh fit.
+placement, scale, cooked asset, attachment and joint settings share this transaction.
+
+A box, sphere or capsule collider has a fit
+(`VkrSceneColliderFit`). Auto is the default for colliders the editor adds
+(Details shape buttons, Cmd `component.add physics_body`). Auto sizes the
+collider to its owner's box: the box around the owner's meshes and shapes
+and those of its descendants, in the owner's frame
+(`vkr_scene_entity_local_bounds`). It moves the collider by `fit_offset`,
+grows it by `padding` on each side, and sets the collider's pose and
+dimensions, which Details shows without edits. A sphere takes the box's
+largest half extent. A capsule stands along Y and takes the larger
+horizontal one as its radius.
+[`vkr_scene_physics_prepare`](../../runtime/src/renderer/systems/vkr_scene_physics.c)
+fits the replacement body's authored copy. When the box is not known yet,
+as while meshes load, the body keeps its stored dimensions. It then queues
+for a refit, which the next paused update retries for up to 1,800 updates.
+A generated mesh that attaches or is replaced (a brush rebuild) calls
+`vkr_scene_physics_bounds_changed`. That queues the automatic bodies of the
+entity and of its ancestors, so a collider follows its brush. Manual keeps
+the authored pose and dimensions. Its "Fit to the object once" action sets
+them from the same exact box.
 Selecting a collider child opens an owner-selection action; viewport move/rotate/
 resize edits the same owning snapshot, records one journal entry on release and
 restores the initial snapshot on Escape. Fallible rebuild and restore errors are
@@ -248,8 +266,10 @@ undo/recreation preserves authored IDs without promising identical ECS generatio
 Overlay version 3 adds scene collision settings and a version 2 physics object
 with scale, cooked paths, attachments and joints within each source-node record.
 Owner source IDs and source fingerprints continue to detect reimport conflicts.
-Collider IDs are hexadecimal strings to preserve all 64 bits. Legacy version 1/2 overlays and physics version 1 remain readable; old colliders
-receive unit scale. Runtime handles, velocities, evaluated
+Collider IDs are hexadecimal strings to preserve all 64 bits. Physics version 3
+adds each collider's `fit`, `fit_offset` and `padding`. Legacy version 1/2
+overlays and physics versions 1 and 2 remain readable; old colliders receive
+unit scale and a manual fit. Runtime handles, velocities, evaluated
 poses, session mutes and contacts are never serialized. Managed scene publication
 continues through the existing immutable overlay-revision owner. The journal
 allocates exact payload storage for each live entry and frees redo/evicted entries.
@@ -271,7 +291,8 @@ is an authoring aid and is separate from native collision queries.
 The implementation supplies rigid-body response while keeping authoring and
 saved identities in VKR. The dependency adds C++ build and adapter maintenance.
 Positive scale, decomposable transforms and bounded compound sizes constrain
-authoring. Conservative bounds fitting can substantially overestimate geometry.
+authoring. An automatic fit follows the owner's axis-aligned local box, so it
+overestimates a rotated or concave child, and it waits for a pause to refit.
 Projected debug lines are capped and do not establish depth-tested native debug
 rendering. Allocator tags do not measure the complete physics memory footprint.
 

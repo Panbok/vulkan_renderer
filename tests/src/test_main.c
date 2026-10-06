@@ -34,6 +34,7 @@ bool32_t run_process_path_tests(void);
 int32_t process_path_test_child(void);
 bool32_t run_asset_path_tests(void);
 bool32_t run_local_shadow_tests(void);
+bool32_t run_local_socket_tests(void);
 
 typedef bool32_t (*VkrTestSuite)(void);
 
@@ -91,6 +92,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_atmosphere_bake_dark_tests),
     VKR_TEST_SUITE(run_lighting_system_tests),
     VKR_TEST_SUITE(run_local_shadow_tests),
+    VKR_TEST_SUITE(run_local_socket_tests),
     VKR_TEST_SUITE(run_texture_vkt_tests),
     VKR_TEST_SUITE(run_renderer_impl_tests),
     VKR_TEST_SUITE(run_vulkan_tests),

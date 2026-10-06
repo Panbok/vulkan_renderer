@@ -88,6 +88,9 @@ vkr_global const FilterModeEntry FILTER_MODES[] = {
 /**
  * @brief Persistent gizmo drag state between pick and drag frames.
  */
+/* Most entities a move drag carries beside its own. */
+#define GIZMO_COMPANION_MAX 16u
+
 typedef struct GizmoDragState {
   bool8_t active;
   bool8_t pending_pick;
@@ -108,6 +111,14 @@ typedef struct GizmoDragState {
   float32_t start_radius;
   /* Axis handles: the start hit's signed distance along `axis`. */
   float32_t start_distance;
+  /* The UI client's move snap has not run for this drag yet. */
+  bool8_t snap_pending;
+  /* Entities a move carries along, with their local positions when it
+     began and their parents' inverse world matrices. */
+  uint32_t companion_count;
+  VkrEntityId companions[GIZMO_COMPANION_MAX];
+  Vec3 companion_start[GIZMO_COMPANION_MAX];
+  Mat4 companion_parent_inverse[GIZMO_COMPANION_MAX];
   bool8_t uses_text_pivot;
   Vec3 text_pivot_local;
   Vec2 pick_position;
@@ -1431,6 +1442,8 @@ sample_sync_texture_limit(VkrStandardSceneRuntime *application) {
   sample_apply_texture_limit(application);
 }
 
+static void gizmo_companions_move(VkrScene *scene, Vec3 offset);
+
 vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
     VkrStandardSceneRuntime *application) {
   VkrSceneEditState *edits = NULL;
@@ -1458,6 +1471,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
     }
     vkr_standard_scene_runtime_sync_world_text_transform(
         application, scene, state->gizmo_drag.entity);
+    gizmo_companions_move(scene, vec3_zero());
   }
   return true_v;
 }
@@ -1617,6 +1631,59 @@ vkr_internal bool8_t vkr_standard_scene_runtime_gizmo_parent_frame(
   return true_v;
 }
 
+/* Asks the UI client which entities a move carries along, keeping those of
+   `scene` with editable transforms that are not physics-owned. */
+static void gizmo_companions_begin(VkrStandardSceneRuntime *application,
+                                   VkrScene *scene, VkrGizmoMode mode) {
+  state->gizmo_drag.companion_count = 0u;
+  if (mode != VKR_GIZMO_MODE_TRANSLATE || !state->ui.move_companions ||
+      (state->gizmo_before.fields & VKR_SCENE_EDIT_PHYSICS)) {
+    return;
+  }
+  VkrEntityId found[GIZMO_COMPANION_MAX];
+  const uint32_t count =
+      Min(state->ui.move_companions(state->ui.state, state->gizmo_drag.entity,
+                                    found, GIZMO_COMPANION_MAX),
+          GIZMO_COMPANION_MAX);
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrScene *owner = sample_entity_container(application, found[i], NULL);
+    const SceneTransform *transform =
+        owner == scene ? vkr_scene_get_transform(scene, found[i]) : NULL;
+    if (!transform || !transform->trs_editable ||
+        found[i].u64 == state->gizmo_drag.entity.u64 ||
+        vkr_scene_physics_owner(scene, found[i]).u64) {
+      continue;
+    }
+    const SceneTransform *parent =
+        transform->parent.u64
+            ? vkr_scene_get_transform(scene, transform->parent)
+            : NULL;
+    const uint32_t slot = state->gizmo_drag.companion_count++;
+    state->gizmo_drag.companions[slot] = found[i];
+    state->gizmo_drag.companion_start[slot] = transform->position;
+    state->gizmo_drag.companion_parent_inverse[slot] =
+        parent ? mat4_inverse_affine(parent->world) : mat4_identity();
+  }
+}
+
+/* Moves the companions by the world `offset` from where the move began. */
+static void gizmo_companions_move(VkrScene *scene, Vec3 offset) {
+  for (uint32_t i = 0; i < state->gizmo_drag.companion_count; ++i) {
+    SceneTransform *transform =
+        vkr_scene_get_transform(scene, state->gizmo_drag.companions[i]);
+    if (!transform) {
+      continue;
+    }
+    const Vec4 local =
+        mat4_mul_vec4(state->gizmo_drag.companion_parent_inverse[i],
+                      vec3_to_vec4(offset, 0.0f));
+    (void)vkr_scene_set_transform(scene, state->gizmo_drag.companions[i],
+                                  vec3_add(state->gizmo_drag.companion_start[i],
+                                           vec3_new(local.x, local.y, local.z)),
+                                  transform->rotation, transform->scale);
+  }
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
     VkrStandardSceneRuntime *application, VkrGizmoHandle handle) {
   if (!application || !state || !state->has_selection) {
@@ -1732,8 +1799,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_gizmo_drag(
   state->gizmo_drag.start_rotation = transform->rotation;
   state->gizmo_drag.start_radius = vec3_length(offset);
   state->gizmo_drag.start_distance = vec3_dot(offset, axis);
+  state->gizmo_drag.snap_pending = true_v;
   state->gizmo_drag.uses_text_pivot = has_text_pivot;
   state->gizmo_drag.text_pivot_local = pivot_local;
+  gizmo_companions_begin(application, scene, mode);
   return true_v;
 }
 
@@ -1804,6 +1873,29 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
       Vec3 axis_delta = vec3_scale(state->gizmo_drag.axis, dist);
       new_pivot = vec3_add(state->gizmo_drag.start_world_position, axis_delta);
     }
+    if (state->ui.snap_move && !state->gizmo_drag.uses_text_pivot) {
+      /* The client's snap stays on an axis handle's axis and in a plane
+         handle's plane; the free handle takes it whole. */
+      const Vec3 start = state->gizmo_drag.start_world_position;
+      Vec3 offset =
+          vec3_sub(state->ui.snap_move(
+                       state->ui.state, scene, state->gizmo_drag.entity, start,
+                       new_pivot, ray_origin, state->gizmo_drag.snap_pending),
+                   start);
+      state->gizmo_drag.snap_pending = false_v;
+      if (vkr_gizmo_handle_plane_normal_index(state->gizmo_drag.handle) >= 0) {
+        const Vec3 normal = state->gizmo_drag.plane_normal;
+        offset = vec3_sub(offset, vec3_scale(normal, vec3_dot(offset, normal)));
+      } else if (!vkr_gizmo_handle_is_free_translate(
+                     state->gizmo_drag.handle)) {
+        offset = vec3_scale(state->gizmo_drag.axis,
+                            vec3_dot(offset, state->gizmo_drag.axis));
+      }
+      new_pivot = vec3_add(start, offset);
+    }
+
+    gizmo_companions_move(
+        scene, vec3_sub(new_pivot, state->gizmo_drag.start_world_position));
 
     Vec3 local_pos;
     if (state->gizmo_drag.uses_text_pivot) {
@@ -4161,10 +4253,33 @@ vkr_internal void vkr_standard_scene_runtime_finish_gizmo_edit(
                     !vec3_equal(state->gizmo_before.scale, after.scale, 0.0f) ||
                     MemCompare(&state->gizmo_before.rotation, &after.rotation,
                                sizeof(after.rotation)) != 0;
-      if (changed &&
-          !vkr_scene_edit_record_external(edits, scene,
-                                          state->gizmo_edit_entity,
-                                          &state->gizmo_before, &after) &&
+      const bool8_t grouped = changed && state->gizmo_drag.companion_count &&
+                              vkr_scene_edit_group_begin(edits) != 0u;
+      bool8_t recorded = !changed || vkr_scene_edit_record_external(
+                                         edits, scene, state->gizmo_edit_entity,
+                                         &state->gizmo_before, &after);
+      for (uint32_t i = 0;
+           changed && recorded && i < state->gizmo_drag.companion_count; ++i) {
+        /* A companion's values before the move differ only in position. */
+        const VkrEntityId companion = state->gizmo_drag.companions[i];
+        VkrSceneEditValues moved;
+        if (!vkr_scene_edit_read(scene, companion, &moved)) {
+          continue;
+        }
+        moved.fields = VKR_SCENE_EDIT_TRANSFORM;
+        VkrSceneEditValues before = moved;
+        before.position = state->gizmo_drag.companion_start[i];
+        recorded = vkr_scene_edit_record_external(edits, scene, companion,
+                                                  &before, &moved);
+      }
+      if (grouped) {
+        if (recorded) {
+          vkr_scene_edit_group_end(edits);
+        } else {
+          (void)vkr_scene_edit_group_rollback(edits, scene);
+        }
+      }
+      if (!recorded &&
           !vkr_standard_scene_runtime_restore_gizmo_edit(application)) {
         state->gizmo_drag.active = false_v;
         vkr_standard_scene_runtime_clear_gizmo_handles(application);
@@ -5023,6 +5138,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .simulation_running = application->editor_viewport.simulation_running,
       .scripts_running = vkr_script_host_active(&state->scripts) &&
                          application->editor_viewport.simulation_running,
+      .io_running = (vkr_script_host_active(&state->scripts) ||
+                     vkr_io_router_active(&state->scripts.io)) &&
+                    application->editor_viewport.simulation_running,
       .scene_rendering_stopped =
           application->editor_viewport.scene_rendering_stopped,
       .scene_error = application->editor_viewport.scene_error,

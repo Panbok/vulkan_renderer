@@ -1,5 +1,6 @@
 #include "brush_test.h"
 
+#include "level/vkr_blockout.h"
 #include "level/vkr_brush.h"
 
 #include <assert.h>
@@ -212,7 +213,7 @@ static void brush_test_grid_editing(VkrBrushGeometry *geometry) {
   uint32_t piece_count = 0u;
   const Vec3 edge[2] = {{0.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}};
   assert(vkr_brush_reshape(box, 6u, NULL, edge, 2u, vec3_new(0.0f, 1.0f, 0.0f),
-                           pieces, &piece_count, geometry) == VKR_BRUSH_OK);
+                           pieces, 2u, &piece_count, geometry) == VKR_BRUSH_OK);
   assert(piece_count == 1u);
   assert(vkr_brush_build(pieces[0].planes, pieces[0].count, geometry, NULL) ==
          VKR_BRUSH_OK);
@@ -230,7 +231,7 @@ static void brush_test_grid_editing(VkrBrushGeometry *geometry) {
   const VkrBrushPlane split = {vec3_new(1.0f, 0.0f, 0.0f), 1.0f};
   const Vec3 line[2] = {{1.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}};
   assert(vkr_brush_reshape(long_box, 6u, &split, line, 2u,
-                           vec3_new(0.0f, 0.5f, 0.0f), pieces, &piece_count,
+                           vec3_new(0.0f, 0.5f, 0.0f), pieces, 2u, &piece_count,
                            geometry) == VKR_BRUSH_OK);
   assert(piece_count == 2u);
   for (uint32_t p = 0; p < 2u; ++p) {
@@ -243,14 +244,9 @@ static void brush_test_grid_editing(VkrBrushGeometry *geometry) {
     assert(pieces[p].source[inner] == VKR_BRUSH_SOURCE_NEW);
   }
 
-  /* Pushing a corner deep inside would dent the cube; a point off the brush
-     moves nothing. */
-  const Vec3 corner = {1.0f, 1.0f, 1.0f};
-  assert(vkr_brush_reshape(box, 6u, NULL, &corner, 1u,
-                           vec3_new(-0.6f, -0.6f, -0.6f), pieces, &piece_count,
-                           geometry) == VKR_BRUSH_ERROR_CONCAVE);
+  /* A point off the brush moves nothing. */
   const Vec3 away = {5.0f, 5.0f, 5.0f};
-  assert(vkr_brush_reshape(box, 6u, NULL, &away, 1u, vec3_one(), pieces,
+  assert(vkr_brush_reshape(box, 6u, NULL, &away, 1u, vec3_one(), pieces, 2u,
                            &piece_count,
                            geometry) == VKR_BRUSH_ERROR_NO_CORNER);
 
@@ -406,6 +402,252 @@ static void brush_test_lightmap(VkrBrushGeometry *geometry) {
          layout.height <= VKR_BRUSH_LIGHTMAP_MAX_SIZE);
 }
 
+/* Stairs or a corridor with every size set and no corner of its own. */
+static SceneBlockout brush_test_shape(SceneBlockoutShape kind,
+                                      SceneStairsKind stairs) {
+  SceneBlockout shape;
+  MemZero(&shape, sizeof(shape));
+  shape.shape = kind;
+  shape.stairs = stairs;
+  shape.height = 3.0f;
+  shape.width = 1.5f;
+  shape.length = 4.0f;
+  shape.step_height = 0.2f;
+  shape.turn = 180.0f;
+  shape.radius = 1.0f;
+  for (uint32_t i = 0; i < SCENE_BLOCKOUT_POINT_MAX; ++i) {
+    shape.corners[i] = -1.0f;
+  }
+  return shape;
+}
+
+/* Lays `shape` out into exactly the pieces vkr_blockout_piece_capacity asks
+   for, followed by guard pieces the layout must leave untouched. */
+static uint32_t brush_test_layout(const SceneBlockout *shape,
+                                  VkrBlockoutPiece **out) {
+  const uint32_t capacity = vkr_blockout_piece_capacity(shape);
+  const uint32_t guard = 4u;
+  VkrBlockoutPiece *pieces = malloc((capacity + guard) * sizeof(*pieces));
+  assert(pieces);
+  MemSet(pieces, 0xA5, (capacity + guard) * sizeof(*pieces));
+  char error[160] = {0};
+  const uint32_t count =
+      vkr_blockout_layout(shape, pieces, capacity, error, sizeof(error));
+  assert(count <= capacity);
+  const uint8_t *tail = (const uint8_t *)(pieces + capacity);
+  for (uint64_t i = 0; i < guard * sizeof(*pieces); ++i) {
+    assert(tail[i] == 0xA5);
+  }
+  *out = pieces;
+  return count;
+}
+
+/* The box around a piece's points. */
+static void brush_test_piece_box(const VkrBlockoutPiece *piece, Vec3 *lo,
+                                 Vec3 *hi) {
+  *lo = vec3_new(INFINITY, INFINITY, INFINITY);
+  *hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  for (uint32_t p = 0; p < piece->point_count; ++p) {
+    const Vec3 at = piece->points[p];
+    *lo = vec3_new(fminf(lo->x, at.x), fminf(lo->y, at.y), fminf(lo->z, at.z));
+    *hi = vec3_new(fmaxf(hi->x, at.x), fmaxf(hi->y, at.y), fmaxf(hi->z, at.z));
+  }
+}
+
+/* Blockout layouts (ADR-084) fit the capacity they ask for, every piece is
+   a convex solid, a spiral climbs hundreds of meters at an even pitch with
+   no flight buried in the one below, and the step limit refuses more. */
+static void brush_test_blockout(VkrBrushGeometry *geometry) {
+  VkrBlockoutPiece *pieces = NULL;
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+
+  /* Every kind of stairs, solid and floating. */
+  for (uint32_t kind = 0; kind < SCENE_STAIRS_KIND_COUNT; ++kind) {
+    for (uint32_t floating = 0; floating < 2u; ++floating) {
+      SceneBlockout stairs =
+          brush_test_shape(SCENE_BLOCKOUT_STAIRS, (SceneStairsKind)kind);
+      stairs.thickness = floating ? 0.1f : 0.0f;
+      const uint32_t count = brush_test_layout(&stairs, &pieces);
+      assert(count >= 15u);
+      for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t plane_count =
+            vkr_brush_hull(pieces[i].points, pieces[i].point_count, planes,
+                           VKR_BRUSH_FACE_MAX);
+        assert(plane_count >= VKR_BRUSH_FACE_MIN);
+        assert(vkr_brush_build(planes, plane_count, geometry, NULL) ==
+               VKR_BRUSH_OK);
+      }
+      free(pieces);
+    }
+  }
+
+  /* An 800 m spiral: 4000 steps and its pole, an even rise, and each step
+     clear above the one a full turn below it. */
+  SceneBlockout spiral =
+      brush_test_shape(SCENE_BLOCKOUT_STAIRS, SCENE_STAIRS_SPIRAL);
+  spiral.height = 800.0f;
+  spiral.turn = 72000.0f;
+  const uint32_t steps = 4000u;
+  uint32_t count = brush_test_layout(&spiral, &pieces);
+  assert(count == steps + 1u);
+  const uint32_t per_turn = steps / 200u;
+  for (uint32_t i = 0; i < steps; ++i) {
+    Vec3 lo = {0};
+    Vec3 hi = {0};
+    brush_test_piece_box(&pieces[i], &lo, &hi);
+    assert(pieces[i].kind == VKR_BLOCKOUT_PIECE_STEP);
+    assert(brush_test_near(hi.y, 0.2f * (float32_t)(i + 1u), 2.0e-3f));
+    if (i >= per_turn) {
+      Vec3 below_lo = {0};
+      Vec3 below_hi = {0};
+      brush_test_piece_box(&pieces[i - per_turn], &below_lo, &below_hi);
+      assert(lo.y >= below_hi.y - 1.0e-3f);
+    }
+  }
+  assert(pieces[steps].kind == VKR_BLOCKOUT_PIECE_POLE);
+  free(pieces);
+
+  /* More steps than the limit is refused. */
+  spiral.height = 0.2f * (float32_t)(VKR_BLOCKOUT_STEP_MAX + 1u);
+  assert(brush_test_layout(&spiral, &pieces) == 0u);
+  free(pieces);
+
+  /* The longest corridor: 16 points zigzagging at 90 degrees, every corner
+     rounded and eight openings, in the room it asks for. */
+  SceneBlockout corridor =
+      brush_test_shape(SCENE_BLOCKOUT_CORRIDOR, SCENE_STAIRS_STRAIGHT);
+  corridor.width = 2.0f;
+  corridor.thickness = 0.25f;
+  corridor.radius = 2.0f;
+  corridor.ceiling = true_v;
+  corridor.point_count = SCENE_BLOCKOUT_POINT_MAX;
+  for (uint32_t i = 0; i < SCENE_BLOCKOUT_POINT_MAX; ++i) {
+    corridor.points[i] = vec3_new((float32_t)((i + 1u) / 2u) * 10.0f, 0.0f,
+                                  (float32_t)(i / 2u) * 10.0f);
+  }
+  corridor.opening_count = SCENE_BLOCKOUT_OPENING_MAX;
+  for (uint32_t i = 0; i < SCENE_BLOCKOUT_OPENING_MAX; ++i) {
+    corridor.walls[i] = i;
+    corridor.openings[i] = vec4_new(3.0f, 5.0f, 0.5f, 2.0f);
+  }
+  count = brush_test_layout(&corridor, &pieces);
+  assert(count > 0u);
+  free(pieces);
+
+  /* With sharp corners each stretch is one of the path: two walls each,
+     and an opening inside a wall adds the pieces after, above and below
+     it. */
+  corridor.radius = 0.0f;
+  count = brush_test_layout(&corridor, &pieces);
+  uint32_t walls = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    walls += pieces[i].kind == VKR_BLOCKOUT_PIECE_WALL;
+  }
+  assert(walls == 2u * (SCENE_BLOCKOUT_POINT_MAX - 1u) +
+                      3u * SCENE_BLOCKOUT_OPENING_MAX);
+  free(pieces);
+}
+
+/* True when `point` lies inside every plane of `piece`. */
+static bool8_t brush_test_inside(const VkrBrushPiece *piece, Vec3 point) {
+  for (uint32_t i = 0; i < piece->count; ++i) {
+    const float32_t length = vec3_length(piece->planes[i].normal);
+    if (vec3_dot(piece->planes[i].normal, point) / length >
+        piece->planes[i].distance / length + 1.0e-5f) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Dents a unit cube by moving `points` by `delta` and checks the pieces
+   against the dented solid: `volume`, a point `kept` inside it and a point
+   `removed` in the dent. Returns the piece count. */
+static uint32_t brush_test_dent(const Vec3 *points, uint32_t point_count,
+                                Vec3 delta, float32_t volume, Vec3 kept,
+                                Vec3 removed, VkrBrushGeometry *geometry) {
+  VkrBrushPlane cube[6];
+  (void)vkr_brush_box_planes(vec3_zero(), vec3_one(), cube);
+  VkrBrushPiece *pieces =
+      malloc(sizeof(*pieces) * (VKR_BRUSH_RESHAPE_PIECE_MAX + 1u));
+  assert(pieces);
+  uint32_t count = 0u;
+  assert(vkr_brush_reshape(cube, 6u, NULL, points, point_count, delta, pieces,
+                           VKR_BRUSH_RESHAPE_PIECE_MAX, &count,
+                           geometry) == VKR_BRUSH_OK);
+  assert(count >= 2u && count <= VKR_BRUSH_RESHAPE_PIECE_MAX);
+
+  /* Convex pieces inside the cube, each face copying a cube face, that
+     fill the dented solid's volume. */
+  float32_t sum = 0.0f;
+  uint32_t holding_kept = 0u;
+  for (uint32_t a = 0; a < count; ++a) {
+    assert(vkr_brush_build(pieces[a].planes, pieces[a].count, geometry, NULL) ==
+           VKR_BRUSH_OK);
+    sum += geometry->volume;
+    for (uint32_t v = 0; v < geometry->vertex_count; ++v) {
+      const Vec3 p = geometry->vertices[v];
+      assert(p.x > -1.0e-4f && p.y > -1.0e-4f && p.z > -1.0e-4f &&
+             p.x < 1.0f + 1.0e-4f && p.y < 1.0f + 1.0e-4f &&
+             p.z < 1.0f + 1.0e-4f);
+    }
+    for (uint32_t f = 0; f < pieces[a].count; ++f) {
+      assert(pieces[a].source[f] < 6u);
+    }
+    holding_kept += brush_test_inside(&pieces[a], kept) ? 1u : 0u;
+    assert(!brush_test_inside(&pieces[a], removed));
+  }
+  assert(fabsf(sum - volume) <= 1.0e-4f * volume);
+  assert(holding_kept == 1u);
+
+  /* Two pieces share at most a face: their planes together bound no
+     volume. */
+  for (uint32_t a = 0; a < count; ++a) {
+    for (uint32_t b = a + 1u; b < count; ++b) {
+      VkrBrushPiece *both = &pieces[VKR_BRUSH_RESHAPE_PIECE_MAX];
+      *both = pieces[a];
+      for (uint32_t f = 0; f < pieces[b].count; ++f) {
+        assert(both->count < VKR_BRUSH_FACE_MAX);
+        both->planes[both->count] = pieces[b].planes[f];
+        both->source[both->count++] = pieces[b].source[f];
+      }
+      assert(!vkr_brush_prune(both, geometry) || geometry->volume < 1.0e-5f);
+    }
+  }
+  free(pieces);
+  return count;
+}
+
+static void brush_test_dents(VkrBrushGeometry *geometry) {
+  /* A unit cube's top front edge pushed 0.75 m down and 0.75 m back ends
+     inside the solid: the cross-section is the square without the quad
+     between the old edge and the new one, 0.25 m^2. */
+  const Vec3 edge[2] = {{0.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}};
+  const Vec3 edge_delta = vec3_new(0.0f, -0.75f, -0.75f);
+  (void)brush_test_dent(edge, 2u, edge_delta, 0.25f, vec3_new(0.5f, 0.1f, 0.1f),
+                        vec3_new(0.5f, 0.4f, 0.4f), geometry);
+
+  /* A corner pushed to (0.4, 0.4, 0.4) bends each of its faces along the
+     line between its unmoved neighbours: the cube loses the corner's
+     tetrahedron (1/6 m^3) and the pit under it to the new corner (0.8/6 m^3).
+   */
+  const Vec3 corner = {1.0f, 1.0f, 1.0f};
+  (void)brush_test_dent(&corner, 1u, vec3_new(-0.6f, -0.6f, -0.6f), 0.7f,
+                        vec3_new(0.1f, 0.1f, 0.1f), vec3_new(0.6f, 0.6f, 0.6f),
+                        geometry);
+
+  /* A dent needing more pieces than the caller takes is refused. */
+  VkrBrushPlane cube[6];
+  (void)vkr_brush_box_planes(vec3_zero(), vec3_one(), cube);
+  VkrBrushPiece *piece = malloc(sizeof(*piece));
+  assert(piece);
+  uint32_t count = 0u;
+  assert(vkr_brush_reshape(cube, 6u, NULL, edge, 2u, edge_delta, piece, 1u,
+                           &count, geometry) == VKR_BRUSH_ERROR_CONCAVE &&
+         count == 0u);
+  free(piece);
+}
+
 bool32_t run_brush_tests(void) {
   printf("--- Brush Tests ---\n");
   VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
@@ -413,8 +655,10 @@ bool32_t run_brush_tests(void) {
   brush_test_solids(geometry);
   brush_test_editing(geometry);
   brush_test_grid_editing(geometry);
+  brush_test_dents(geometry);
   brush_test_uv();
   brush_test_lightmap(geometry);
+  brush_test_blockout(geometry);
   free(geometry);
   printf("--- Brush Tests Completed ---\n");
   return true_v;

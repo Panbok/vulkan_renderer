@@ -493,7 +493,7 @@ static bool8_t cmd_run_io_fire(CmdContext *ctx, const CmdDef *def,
              "value");
     return false_v;
   }
-  if (!ctx->frame->scripts_running) {
+  if (!ctx->frame->io_running) {
     snprintf(ctx->message, sizeof(ctx->message),
              "Inputs reach objects only while the game plays");
     return false_v;
@@ -2109,8 +2109,8 @@ static const CmdDef cmd_defs[] = {
      "Sculpt and paint terrain in the Scene with the Terrain window's brush",
      cmd_run_brush_draw, CMD_COUNT, 2u},
     {"brush.clip_tool", CMD_ARG_SWITCH, "[on|off|toggle]",
-     "Cut the selected brush with the vertical plane through two grid "
-     "clicks",
+     "Cut the selected brush on its face grid: along a grid line, or "
+     "through clicked corners, edges and grid crossings",
      cmd_run_brush_draw, CMD_COUNT, 1u},
     {"brush.stairs_tool", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Build stairs rising 3 m between two grid clicks", cmd_run_brush_draw,

@@ -62,8 +62,9 @@ and visible row per candidate are unchanged.
 ### Terrain geomorphing
 
 Terrain tiles ([vkr_scene_terrain.c](../../runtime/src/renderer/systems/vkr_scene_terrain.c))
-have seven levels, 64 cells a side down to one, each with its skirt. A
-level's error is its surface's largest height difference from the samples,
+have seven levels, 64 cells a side down to one, each with its skirt. A tile
+with a hole sample (ADR-084) keeps level 0 alone, so its row has one level
+and never morphs. A level's error is its surface's largest height difference from the samples,
 at least a tenth of its cell size so that painted weights thin out with
 distance. A morphing view starts moving the vertices level L + 1 drops at 75%
 of the distance where level L + 1 takes over, and has finished there, so the
@@ -146,7 +147,10 @@ the borders between them unlock.
   too many levels, and level ranges outside the buffer or not matching the
   range (2026-10-04, macOS Debug). Suite `heightfield` covers terrain tile
   levels: each level covers the tile's cells once counter-clockwise, a spike
-  at an odd sample is level 1's error, and flat ground costs the cell floor.
+  at an odd sample is level 1's error, and flat ground costs the cell floor;
+  and terrain holes: Jolt's height field from the same samples hits exactly
+  where a drawn triangle covers four probes per cell (2026-10-06, Windows
+  Debug).
 - Headless macOS Release on Bistro, M1 Pro (2026-10-04): a 1 km terrain at
   1 m spacing north of the town. Wireframe captures from 300 m show finer
   tiles below the camera and coarser ones around them; an orthographic top

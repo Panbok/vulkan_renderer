@@ -1,6 +1,7 @@
 #include "editor_level.h"
 
 #include "editor_agent.h"
+#include "editor_brush_grid.h"
 #include "editor_internal.h"
 
 #include "level/vkr_brush.h"
@@ -813,6 +814,447 @@ uint32_t vkr_editor_brush_build(const VkrScene *scene, VkrEntityId brush,
   return count;
 }
 
+// =============================================================================
+// Brush magnet
+// =============================================================================
+
+/* The world boxes of the brushes a moved or drawn brush snaps to, and the
+   moved brush's box relative to where its move started. */
+typedef struct VkrEditorMagnet {
+  bool8_t moving;
+  Vec3 moving_lo;
+  Vec3 moving_hi;
+  float32_t moving_floor;
+  uint32_t count;
+  uint32_t capacity;
+  /* Minimum and maximum corner of each brush, and its floor: a slab's top,
+     else its bottom. */
+  Vec3 *boxes;
+  float32_t *floors;
+  VkrBrushGeometry geometry;
+} VkrEditorMagnet;
+
+static VkrEditorMagnet *magnet_state(VkrEditorUi *editor) {
+  if (!editor->magnet) {
+    editor->magnet = calloc(1u, sizeof(*editor->magnet));
+  }
+  return editor->magnet;
+}
+
+/* Whether `entity` is `ancestor` or lies below it. */
+static bool8_t level_within(const VkrScene *scene, VkrEntityId entity,
+                            VkrEntityId ancestor) {
+  for (uint32_t depth = 0; entity.u64 && depth < 64u; ++depth) {
+    if (entity.u64 == ancestor.u64) {
+      return true_v;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return false_v;
+}
+
+bool8_t vkr_editor_entity_free(const VkrScene *scene, VkrEntityId entity) {
+  const SceneFreePlacement *free =
+      scene && vkr_scene_entity_alive(scene, entity)
+          ? vkr_scene_get_typed(scene, entity, &vkr_scene_free_placement_type)
+          : NULL;
+  return free && free->enabled;
+}
+
+uint32_t vkr_editor_shape_pieces(const VkrScene *scene, VkrEntityId entity,
+                                 VkrBlockoutPiece **out) {
+  *out = NULL;
+  const SceneBlockout *shape =
+      scene && vkr_scene_entity_alive(scene, entity)
+          ? vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type)
+          : NULL;
+  const SceneTransform *transform =
+      shape ? vkr_entity_get_component(scene->world, entity,
+                                       scene->comp_transform)
+            : NULL;
+  if (!transform) {
+    return 0u;
+  }
+  const uint32_t capacity = vkr_blockout_piece_capacity(shape);
+  VkrBlockoutPiece *pieces = malloc((size_t)capacity * sizeof(*pieces));
+  char error[8];
+  const uint32_t count = pieces ? vkr_blockout_layout(shape, pieces, capacity,
+                                                      error, sizeof(error))
+                                : 0u;
+  if (!count) {
+    free(pieces);
+    return 0u;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t p = 0; p < pieces[i].point_count; ++p) {
+      pieces[i].points[p] =
+          mat4_mul_vec3(transform->world, pieces[i].points[p]);
+    }
+  }
+  *out = pieces;
+  return count;
+}
+
+/* A solid of a scene, by its world box: a brush that builds, or a piece of
+   a blockout shape. */
+typedef struct LevelSolid {
+  /* The brush, or the shape the piece belongs to. */
+  VkrEntityId entity;
+  Vec3 lo;
+  Vec3 hi;
+  bool8_t trigger;
+} LevelSolid;
+
+typedef void (*LevelSolidVisit)(void *context, const LevelSolid *solid);
+
+/* Visits every solid of `scene`; `scratch` holds the last brush built. */
+static void level_solids(const VkrScene *scene, VkrBrushGeometry *scratch,
+                         LevelSolidVisit visit, void *context) {
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  for (uint32_t i = 0; scene && i < scene->world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    if (!vkr_scene_entity_alive(scene, entity)) {
+      continue;
+    }
+    const SceneBrushSettings *brush =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type);
+    if (brush && vkr_editor_brush_build(scene, entity, scratch, faces)) {
+      const LevelSolid solid = {
+          .entity = entity,
+          .lo = scratch->min,
+          .hi = scratch->max,
+          .trigger = brush->role == SCENE_BRUSH_ROLE_TRIGGER,
+      };
+      visit(context, &solid);
+      continue;
+    }
+    VkrBlockoutPiece *pieces = NULL;
+    const uint32_t count = vkr_editor_shape_pieces(scene, entity, &pieces);
+    for (uint32_t k = 0; k < count; ++k) {
+      LevelSolid solid = {
+          .entity = entity,
+          .lo = vec3_new(INFINITY, INFINITY, INFINITY),
+          .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY),
+      };
+      for (uint32_t p = 0; p < pieces[k].point_count; ++p) {
+        const Vec3 at = pieces[k].points[p];
+        solid.lo = vec3_new(Min(solid.lo.x, at.x), Min(solid.lo.y, at.y),
+                            Min(solid.lo.z, at.z));
+        solid.hi = vec3_new(Max(solid.hi.x, at.x), Max(solid.hi.y, at.y),
+                            Max(solid.hi.z, at.z));
+      }
+      visit(context, &solid);
+    }
+    free(pieces);
+  }
+}
+
+/* The box around the solids within `root`, and whether any is. */
+typedef struct LevelBox {
+  const VkrScene *scene;
+  VkrEntityId root;
+  Vec3 lo;
+  Vec3 hi;
+  bool8_t found;
+} LevelBox;
+
+static void level_box_visit(void *context, const LevelSolid *solid) {
+  LevelBox *box = context;
+  if (!level_within(box->scene, solid->entity, box->root)) {
+    return;
+  }
+  box->lo = vec3_new(Min(box->lo.x, solid->lo.x), Min(box->lo.y, solid->lo.y),
+                     Min(box->lo.z, solid->lo.z));
+  box->hi = vec3_new(Max(box->hi.x, solid->hi.x), Max(box->hi.y, solid->hi.y),
+                     Max(box->hi.z, solid->hi.z));
+  box->found = true_v;
+}
+
+bool8_t vkr_editor_entity_world_box(const VkrScene *scene, VkrEntityId entity,
+                                    VkrBrushGeometry *scratch, Vec3 *out_lo,
+                                    Vec3 *out_hi) {
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+    return false_v;
+  }
+  LevelBox box = {
+      .scene = scene,
+      .root = entity,
+      .lo = vec3_new(INFINITY, INFINITY, INFINITY),
+      .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY),
+  };
+  level_solids(scene, scratch, level_box_visit, &box);
+  Vec3 lo = box.lo;
+  Vec3 hi = box.hi;
+  bool8_t found = box.found;
+  /* Without brushes, the box around its meshes and shapes. */
+  Vec3 local_lo = vec3_zero();
+  Vec3 local_hi = vec3_zero();
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  if (!found && transform &&
+      vkr_scene_entity_local_bounds(scene, entity, &local_lo, &local_hi)) {
+    for (uint32_t c = 0; c < 8u; ++c) {
+      const Vec3 corner = mat4_mul_vec3(
+          transform->world, vec3_new((c & 1u) ? local_hi.x : local_lo.x,
+                                     (c & 2u) ? local_hi.y : local_lo.y,
+                                     (c & 4u) ? local_hi.z : local_lo.z));
+      lo = vec3_new(Min(lo.x, corner.x), Min(lo.y, corner.y),
+                    Min(lo.z, corner.z));
+      hi = vec3_new(Max(hi.x, corner.x), Max(hi.y, corner.y),
+                    Max(hi.z, corner.z));
+    }
+    found = true_v;
+  }
+  *out_lo = lo;
+  *out_hi = hi;
+  return found;
+}
+
+bool8_t vkr_editor_box_slab(Vec3 lo, Vec3 hi) {
+  return hi.y - lo.y <= Max(0.5f, 0.25f * Min(hi.x - lo.x, hi.z - lo.z));
+}
+
+/* The slabs at the bottom of the box `lo` around `root`'s solids: the area
+   they cover and the highest top. */
+typedef struct LevelFloor {
+  const VkrScene *scene;
+  VkrEntityId root;
+  Vec3 lo;
+  float32_t covered;
+  float32_t top;
+} LevelFloor;
+
+static void level_floor_visit(void *context, const LevelSolid *solid) {
+  LevelFloor *floor = context;
+  if (level_within(floor->scene, solid->entity, floor->root) &&
+      solid->lo.y - floor->lo.y < 0.02f &&
+      vkr_editor_box_slab(solid->lo, solid->hi)) {
+    floor->covered += (solid->hi.x - solid->lo.x) * (solid->hi.z - solid->lo.z);
+    floor->top = Max(floor->top, solid->hi.y);
+  }
+}
+
+float32_t vkr_editor_entity_floor(const VkrScene *scene, VkrEntityId entity,
+                                  VkrBrushGeometry *scratch, Vec3 lo, Vec3 hi) {
+  const SceneBlockout *shape =
+      scene && vkr_scene_entity_alive(scene, entity)
+          ? vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type)
+          : NULL;
+  if (!scene || (shape && shape->shape == SCENE_BLOCKOUT_STAIRS)) {
+    return lo.y;
+  }
+  LevelFloor floor = {.scene = scene, .root = entity, .lo = lo, .top = lo.y};
+  level_solids(scene, scratch, level_floor_visit, &floor);
+  const float32_t footprint = Max((hi.x - lo.x) * (hi.z - lo.z), 1.0e-4f);
+  return floor.covered >= footprint * 0.25f ? floor.top : lo.y;
+}
+
+/* The magnet gathering the solids of a scene outside `exclude`. */
+typedef struct MagnetGather {
+  VkrEditorMagnet *magnet;
+  const VkrScene *scene;
+  VkrEntityId exclude;
+} MagnetGather;
+
+static void magnet_gather_visit(void *context, const LevelSolid *solid) {
+  MagnetGather *gather = context;
+  VkrEditorMagnet *magnet = gather->magnet;
+  /* Triggers are not solids to line up with. */
+  if (solid->trigger ||
+      (gather->exclude.u64 &&
+       level_within(gather->scene, solid->entity, gather->exclude))) {
+    return;
+  }
+  if (magnet->count == magnet->capacity) {
+    const uint32_t capacity = Max(64u, magnet->capacity * 2u);
+    Vec3 *grown =
+        realloc(magnet->boxes, 2u * (size_t)capacity * sizeof(*grown));
+    if (!grown) {
+      return;
+    }
+    magnet->boxes = grown;
+    float32_t *floors =
+        realloc(magnet->floors, (size_t)capacity * sizeof(*floors));
+    if (!floors) {
+      return;
+    }
+    magnet->floors = floors;
+    magnet->capacity = capacity;
+  }
+  magnet->boxes[2u * magnet->count] = solid->lo;
+  magnet->boxes[2u * magnet->count + 1u] = solid->hi;
+  magnet->floors[magnet->count] =
+      vkr_editor_box_slab(solid->lo, solid->hi) ? solid->hi.y : solid->lo.y;
+  magnet->count++;
+}
+
+/* Adds the boxes of `scene`'s solids outside `exclude`: brushes and the
+   pieces of blockout shapes. */
+static void magnet_gather(VkrEditorMagnet *magnet, const VkrScene *scene,
+                          VkrEntityId exclude) {
+  MagnetGather gather = {.magnet = magnet, .scene = scene, .exclude = exclude};
+  level_solids(scene, &magnet->geometry, magnet_gather_visit, &gather);
+}
+
+/* How far apart boxes `lo`-`hi` and `blo`-`bhi` lie on `axis`; zero when
+   they overlap or touch. */
+static float32_t magnet_gap(Vec3 lo, Vec3 hi, Vec3 blo, Vec3 bhi,
+                            uint32_t axis) {
+  return Max(0.0f, Max(blo.elements[axis] - hi.elements[axis],
+                       lo.elements[axis] - bhi.elements[axis]));
+}
+
+/* The reach of the magnet at `point`: 2 % of its distance from the eye,
+   about 15 to 20 pixels on screen. */
+static float32_t magnet_reach(Vec3 point, Vec3 eye) {
+  return vkr_clamp_f32(0.02f * vec3_length(vec3_sub(point, eye)), 0.05f, 2.0f);
+}
+
+Vec3 vkr_editor_magnet_move(VkrEditorUi *editor, const VkrScene *scene,
+                            VkrEntityId entity, Vec3 from, Vec3 to, Vec3 eye,
+                            bool8_t start) {
+  if (!editor->placement.magnet || !scene ||
+      !vkr_scene_entity_alive(scene, entity) ||
+      vkr_editor_entity_free(scene, entity)) {
+    return to;
+  }
+  VkrEditorMagnet *magnet = magnet_state(editor);
+  if (!magnet) {
+    return to;
+  }
+  if (start) {
+    /* The entity has not moved yet: its box is where the move starts. */
+    Vec3 lo = vec3_zero();
+    Vec3 hi = vec3_zero();
+    magnet->count = 0u;
+    magnet->moving =
+        vkr_editor_entity_world_box(scene, entity, &magnet->geometry, &lo, &hi);
+    magnet->moving_lo = vec3_sub(lo, from);
+    magnet->moving_hi = vec3_sub(hi, from);
+    magnet->moving_floor =
+        magnet->moving ? vkr_editor_entity_floor(scene, entity,
+                                                 &magnet->geometry, lo, hi) -
+                             from.y
+                       : 0.0f;
+    if (magnet->moving) {
+      magnet_gather(magnet, scene, entity);
+    }
+  }
+  if (!magnet->moving) {
+    return to;
+  }
+
+  /* Per axis, the smallest shift within reach that makes a side flush
+     against a neighbour it overlaps on the other axes, or level with a
+     side of a neighbour it touches. */
+  const Vec3 lo = vec3_add(magnet->moving_lo, to);
+  const Vec3 hi = vec3_add(magnet->moving_hi, to);
+  const float32_t reach = magnet_reach(vec3_scale(vec3_add(lo, hi), 0.5f), eye);
+  float32_t best[3] = {reach, reach, reach};
+  Vec3 shift = vec3_zero();
+  for (uint32_t b = 0; b < magnet->count; ++b) {
+    const Vec3 blo = magnet->boxes[2u * b];
+    const Vec3 bhi = magnet->boxes[2u * b + 1u];
+    float32_t gaps[3];
+    bool8_t touching = true_v;
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      gaps[axis] = magnet_gap(lo, hi, blo, bhi, axis);
+      touching = touching && gaps[axis] <= reach;
+    }
+    if (!touching) {
+      continue;
+    }
+    /* Stacked boxes overlap across X and Z: one rests on the other and
+       neither sinks to the other's bottom. Boxes side by side level their
+       floors instead of their bottoms or tops. */
+    const bool8_t stacked = gaps[0] <= 1.0e-4f && gaps[2] <= 1.0e-4f;
+    const float32_t floor_shift =
+        magnet->floors[b] - (magnet->moving_floor + to.y);
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      const bool8_t flush = gaps[(axis + 1u) % 3u] <= 1.0e-4f &&
+                            gaps[(axis + 2u) % 3u] <= 1.0e-4f;
+      float32_t candidates[4] = {
+          blo.elements[axis] - hi.elements[axis],
+          bhi.elements[axis] - lo.elements[axis],
+          blo.elements[axis] - lo.elements[axis],
+          bhi.elements[axis] - hi.elements[axis],
+      };
+      uint32_t first = flush ? 0u : 2u;
+      uint32_t end = 4u;
+      if (axis == 1u && stacked) {
+        end = 2u;
+      } else if (axis == 1u) {
+        candidates[2] = floor_shift;
+        first = 2u;
+        end = 3u;
+      }
+      for (uint32_t c = first; c < end; ++c) {
+        if (fabsf(candidates[c]) < best[axis]) {
+          best[axis] = fabsf(candidates[c]);
+          shift.elements[axis] = candidates[c];
+        }
+      }
+    }
+  }
+  return vec3_add(to, shift);
+}
+
+void vkr_editor_magnet_begin(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame) {
+  VkrEditorMagnet *magnet =
+      editor->placement.magnet ? magnet_state(editor) : NULL;
+  if (!magnet) {
+    return;
+  }
+  magnet->count = 0u;
+  magnet->moving = false_v;
+  magnet_gather(magnet, frame->scene, VKR_ENTITY_ID_INVALID);
+  magnet_gather(magnet, frame->world, VKR_ENTITY_ID_INVALID);
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    magnet_gather(magnet, frame->additive[i], VKR_ENTITY_ID_INVALID);
+  }
+}
+
+float32_t vkr_editor_magnet_value(const VkrEditorUi *editor, uint32_t axis,
+                                  float32_t value, Vec3 lo, Vec3 hi, Vec3 eye) {
+  const VkrEditorMagnet *magnet = editor->magnet;
+  if (!editor->placement.magnet || !magnet) {
+    return value;
+  }
+  Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
+  center.elements[axis] = value;
+  const float32_t reach = magnet_reach(center, eye);
+  float32_t best = reach;
+  float32_t snapped = value;
+  for (uint32_t b = 0; b < magnet->count; ++b) {
+    const Vec3 blo = magnet->boxes[2u * b];
+    const Vec3 bhi = magnet->boxes[2u * b + 1u];
+    if (magnet_gap(lo, hi, blo, bhi, (axis + 1u) % 3u) > reach ||
+        magnet_gap(lo, hi, blo, bhi, (axis + 2u) % 3u) > reach) {
+      continue;
+    }
+    const float32_t sides[2] = {blo.elements[axis], bhi.elements[axis]};
+    for (uint32_t i = 0; i < 2u; ++i) {
+      if (fabsf(sides[i] - value) < best) {
+        best = fabsf(sides[i] - value);
+        snapped = sides[i];
+      }
+    }
+  }
+  return snapped;
+}
+
+void vkr_editor_magnet_destroy(VkrEditorUi *editor) {
+  if (editor->magnet) {
+    free(editor->magnet->boxes);
+    free(editor->magnet->floors);
+  }
+  free(editor->magnet);
+  editor->magnet = NULL;
+}
+
 uint32_t vkr_editor_brush_face_outline(const VkrScene *scene, VkrEntityId face,
                                        VkrBrushGeometry *scratch, Vec3 *out,
                                        uint32_t capacity) {
@@ -1082,6 +1524,42 @@ static void palette_op(VkrEditorUi *editor, const char *op, const char *key,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
+/* The swatch of material file `path`, the Grid one for an empty path, or
+   VKR_EDITOR_BRUSH_MATERIAL_COUNT for a material no swatch paints. */
+static uint32_t palette_material_index(const char *path) {
+  if (!path[0]) {
+    return 0u;
+  }
+  for (uint32_t i = 0; i < VKR_EDITOR_BRUSH_MATERIAL_COUNT; ++i) {
+    if (strcmp(path, vkr_editor_brush_materials[i].path) == 0) {
+      return i;
+    }
+  }
+  return VKR_EDITOR_BRUSH_MATERIAL_COUNT;
+}
+
+/* The swatch every face of `brush` shows, or VKR_EDITOR_BRUSH_MATERIAL_COUNT
+   when they differ. */
+static uint32_t palette_brush_material(const VkrScene *scene,
+                                       VkrEntityId brush) {
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  const uint32_t count =
+      Min(vkr_scene_brush_faces(scene, brush, faces, ArrayCount(faces)),
+          (uint32_t)ArrayCount(faces));
+  uint32_t shared = VKR_EDITOR_BRUSH_MATERIAL_COUNT;
+  for (uint32_t i = 0; i < count; ++i) {
+    const SceneBrushFace *face =
+        vkr_scene_get_typed(scene, faces[i], &vkr_scene_brush_face_type);
+    const uint32_t index = face ? palette_material_index(face->material)
+                                : VKR_EDITOR_BRUSH_MATERIAL_COUNT;
+    if (i > 0u && index != shared) {
+      return VKR_EDITOR_BRUSH_MATERIAL_COUNT;
+    }
+    shared = index;
+  }
+  return shared;
+}
+
 void vkr_editor_level_palette_build(VkrEditorUi *editor,
                                     const VkrSampleUiFrame *frame,
                                     VkrUiRect bounds) {
@@ -1127,8 +1605,8 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   if (vkr_editor_palette_button(
           &palette, string8_lit("palette.stairs"), "Stairs",
           VKR_UI_ICON_CHART_BAR,
-          string8_lit("Click where stairs start, then where they end; they "
-                      "rise 3 m"),
+          string8_lit("Click where stairs start, then where their run ends, "
+                      "then raise them to their height and click"),
           running == VKR_EDITOR_SCENE_TOOL_STAIRS, !ops)) {
     vkr_editor_scene_tool_set(editor, running == VKR_EDITOR_SCENE_TOOL_STAIRS
                                           ? VKR_EDITOR_SCENE_TOOL_NONE
@@ -1137,11 +1615,49 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   if (vkr_editor_palette_button(
           &palette, string8_lit("palette.corridor"), "Corridor",
           VKR_UI_ICON_ARROW_RIGHT,
-          string8_lit("Click where a corridor starts, then where it ends"),
+          string8_lit("Click the corridor's points; click the last one again "
+                      "or press Enter to build it"),
           running == VKR_EDITOR_SCENE_TOOL_CORRIDOR, !ops)) {
     vkr_editor_scene_tool_set(editor, running == VKR_EDITOR_SCENE_TOOL_CORRIDOR
                                           ? VKR_EDITOR_SCENE_TOOL_NONE
                                           : VKR_EDITOR_SCENE_TOOL_CORRIDOR);
+  }
+
+  /* The kind of the next stairs and the shape of the next corridor. */
+  vkr_editor_palette_heading(&palette, string8_lit("palette.paths"),
+                             string8_lit("STAIRS AND CORRIDORS"));
+  static const char *const stairs_labels[SCENE_STAIRS_KIND_COUNT] = {
+      "Straight", "L turn", "U turn", "Curved", "Spiral"};
+  static const VkrUiIcon stairs_icons[SCENE_STAIRS_KIND_COUNT] = {
+      VKR_UI_ICON_CHART_BAR, VKR_UI_ICON_ARROW_RIGHT, VKR_UI_ICON_ARROW_UP,
+      VKR_UI_ICON_WAVES, VKR_UI_ICON_CIRCLE};
+  for (uint32_t i = 0; i < SCENE_STAIRS_KIND_COUNT; ++i) {
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_editor_palette_button(
+            &palette, string8_lit("palette.stairs_kind"), stairs_labels[i],
+            stairs_icons[i],
+            string8_lit("Straight; two flights turning at a landing; two "
+                        "flights running back; steps along an arc; or steps "
+                        "around a pole"),
+            editor->stairs_kind == i, false_v)) {
+      editor->stairs_kind = i;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.stairs_left"), "Turn left",
+          VKR_UI_ICON_ARROW_LEFT,
+          string8_lit("Turning and spiral stairs turn left instead of right"),
+          editor->stairs_left, false_v)) {
+    editor->stairs_left = !editor->stairs_left;
+  }
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.corridor_curved"), "Curved",
+          VKR_UI_ICON_WAVES,
+          string8_lit("New corridors round their corners with 2 m arcs; "
+                      "Details sets the radius afterwards"),
+          editor->corridor_curved, false_v)) {
+    editor->corridor_curved = !editor->corridor_curved;
   }
 
   /* The role of the next box, wedge, cylinder or stairs. */
@@ -1208,9 +1724,12 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   if (vkr_editor_palette_button(
           &palette, string8_lit("palette.doorway"), "Doorway",
           VKR_UI_ICON_FRAME,
-          string8_lit("Cut a doorway through the middle of the selected "
-                      "box wall brush"),
-          false_v, !ops || !brush.u64)) {
+          string8_lit("Cut the patch selected on the brush's grid (drag "
+                      "across cells) through it, as a door or window; "
+                      "without a patch, a 1 x 2.125 m doorway through the "
+                      "middle of a box wall"),
+          false_v, !ops || !brush.u64) &&
+      !vkr_editor_brush_grid_patch_cut(editor)) {
     palette_op(editor, "blockout.doorway", "wall", brush, NULL);
   }
   /* Merge joins the selected brushes (Ctrl+click adds them). */
@@ -1218,30 +1737,126 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   const uint32_t selected = vkr_editor_selection_list(editor, frame, selection,
                                                       ArrayCount(selection));
   char brushes[VKR_EDITOR_SELECTION_MAX * 32u] = "";
+  char objects[VKR_EDITOR_SELECTION_MAX * 32u] = "";
   uint32_t brush_count = 0u;
+  uint32_t free_count = 0u;
   uint64_t used = 0u;
-  for (uint32_t i = 0u; i < selected && brush_count < 8u; ++i) {
+  uint64_t objects_used = 0u;
+  for (uint32_t i = 0u; i < selected; ++i) {
     const VkrScene *owner = vkr_editor_entity_scene(frame, selection[i]);
+    char id[32];
+    snprintf(id, sizeof(id), "\"%u:%u:%u\"", (unsigned)selection[i].parts.world,
+             (unsigned)selection[i].parts.index,
+             (unsigned)selection[i].parts.generation);
+    objects_used += (uint64_t)snprintf(objects + objects_used,
+                                       sizeof(objects) - objects_used, "%s%s",
+                                       i ? "," : "", id);
+    free_count += vkr_editor_entity_free(owner, selection[i]) ? 1u : 0u;
     if (owner &&
         vkr_scene_get_typed(owner, selection[i], &vkr_scene_brush_type)) {
-      used += (uint64_t)snprintf(brushes + used, sizeof(brushes) - used,
-                                 "%s\"%u:%u:%u\"", brush_count ? "," : "",
-                                 (unsigned)selection[i].parts.world,
-                                 (unsigned)selection[i].parts.index,
-                                 (unsigned)selection[i].parts.generation);
+      used += (uint64_t)snprintf(brushes + used, sizeof(brushes) - used, "%s%s",
+                                 brush_count ? "," : "", id);
       brush_count++;
     }
+  }
+  /* Mover groups the selection under a new entity that opens and closes
+     it in play (ADR-084). */
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.mover"), "Mover", VKR_UI_ICON_ARROW_UP,
+          string8_lit("Group the selected objects under a mover: in play its "
+                      "open and close inputs slide them along its direction, "
+                      "colliding as they go; Details sets how"),
+          false_v, !ops || !selected)) {
+    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"palette\",\"op\":\"mover.create\",\"args\":"
+             "{\"objects\":[%s],\"review\":false,\"select\":true}}",
+             objects);
+    (void)vkr_editor_agent_submit(editor->agent, line);
   }
   if (vkr_editor_palette_button(
           &palette, string8_lit("palette.merge"), "Merge", VKR_UI_ICON_LAYERS,
           string8_lit("Join 2 to 8 selected touching brushes into one when "
                       "their union is convex; Ctrl+click selects more"),
-          false_v, !ops || brush_count < 2u)) {
+          false_v, !ops || brush_count < 2u || brush_count > 8u)) {
     char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.merge\",\"args\":"
              "{\"brushes\":[%s],\"review\":false,\"select\":true}}",
              brushes);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.snap_together"), "Snap",
+          VKR_UI_ICON_SNAP,
+          string8_lit("Move the other selected objects flush against and "
+                      "lined up with the first one, free ones excepted; "
+                      "Ctrl+click selects more"),
+          false_v, !ops || selected < 2u)) {
+    char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.snap\",\"args\":"
+             "{\"brushes\":[%s],\"review\":false}}",
+             objects);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+  /* Free marks the selection to stay out of every snap, or clears it. */
+  const bool8_t all_free = selected && free_count == selected;
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.free"), "Free", VKR_UI_ICON_HAND,
+          string8_lit("The selected objects never snap: the magnet, Snap and "
+                      "parenting in the Outliner leave them where they are"),
+          all_free, !ops || !selected)) {
+    char line[VKR_EDITOR_SELECTION_MAX * 120u + 160u];
+    int written = snprintf(line, sizeof(line),
+                           "{\"v\":1,\"id\":\"palette\",\"op\":\"batch\","
+                           "\"args\":{\"review\":false,\"ops\":[");
+    uint32_t added = 0u;
+    for (uint32_t i = 0u;
+         i < selected && written > 0 && (size_t)written < sizeof(line); ++i) {
+      const VkrScene *owner = vkr_editor_entity_scene(frame, selection[i]);
+      const bool8_t has =
+          owner && vkr_scene_get_typed(owner, selection[i],
+                                       &vkr_scene_free_placement_type) != NULL;
+      /* Clearing removes the marker; marking adds it where it is missing
+         and enables it where it is off. */
+      const char *op = all_free ? "component.remove"
+                       : has    ? "component.set"
+                                : "component.add";
+      if (all_free && !has) {
+        continue;
+      }
+      written +=
+          snprintf(line + written, sizeof(line) - (size_t)written,
+                   "%s{\"op\":\"%s\",\"args\":{\"entity\":\"%u:%u:%u\","
+                   "\"type\":\"free_placement\"%s}}",
+                   added ? "," : "", op, (unsigned)selection[i].parts.world,
+                   (unsigned)selection[i].parts.index,
+                   (unsigned)selection[i].parts.generation,
+                   has && !all_free ? ",\"values\":{\"enabled\":true}" : "");
+      added++;
+    }
+    if (added && written > 0 && (size_t)written < sizeof(line)) {
+      snprintf(line + written, sizeof(line) - (size_t)written, "]}}");
+      (void)vkr_editor_agent_submit(editor->agent, line);
+    }
+  }
+  const bool8_t shape_selected =
+      alive && vkr_scene_get_typed(scene, frame->selected_entity,
+                                   &vkr_scene_blockout_type) != NULL;
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.bake"), "Bake", VKR_UI_ICON_LAYERS,
+          string8_lit("Turn the selected stairs or corridor into plain "
+                      "brushes to edit one by one; its handles and settings "
+                      "go"),
+          false_v, !ops || !shape_selected)) {
+    char line[256];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"palette\",\"op\":\"blockout.bake\","
+             "\"args\":{\"entity\":\"%u:%u:%u\",\"review\":false}}",
+             (unsigned)frame->selected_entity.parts.world,
+             (unsigned)frame->selected_entity.parts.index,
+             (unsigned)frame->selected_entity.parts.generation);
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
   vkr_editor_palette_command(&palette, string8_lit("palette.duplicate"),
@@ -1250,33 +1865,34 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
   vkr_editor_palette_command(&palette, string8_lit("palette.delete"), "Delete",
                              VKR_UI_ICON_TRASH, CMD_DELETE, false_v);
 
-  /* The selected face alone, else every face of the selected brush. */
+  /* A swatch paints the selected face alone, else every face of the
+     selected brush, and new brushes take it; without a selection it only
+     picks the material of new brushes. It shows the selection's material,
+     or the new brushes' one. */
   vkr_editor_palette_heading(&palette, string8_lit("palette.materials"),
                              string8_lit("MATERIAL"));
-  static const struct {
-    const char *label;
-    const char *path;
-  } swatches[] = {
-      {"Grid", "assets/materials/dev/dev_grid.mt"},
-      {"Floor", "assets/materials/dev/dev_floor.mt"},
-      {"Wall", "assets/materials/dev/dev_wall.mt"},
-      {"Orange", "assets/materials/dev/dev_orange.mt"},
-      {"Blue", "assets/materials/dev/dev_blue.mt"},
-      {"Clip", "assets/materials/dev/dev_clip.mt"},
-      {"Trigger", "assets/materials/dev/dev_trigger.mt"},
-  };
-  for (uint32_t i = 0; i < ArrayCount(swatches); ++i) {
-    const bool8_t current =
-        face && strcmp(face->material, swatches[i].path) == 0;
+  const uint32_t shown = face        ? palette_material_index(face->material)
+                         : brush.u64 ? palette_brush_material(scene, brush)
+                                     : editor->brush_material;
+  for (uint32_t i = 0; i < VKR_EDITOR_BRUSH_MATERIAL_COUNT; ++i) {
+    const VkrEditorBrushMaterial *swatch = &vkr_editor_brush_materials[i];
     (void)vkr_ui_push_id_u64(ui, i);
     const bool8_t clicked = vkr_editor_palette_button(
-        &palette, string8_lit("palette.swatch"), swatches[i].label,
+        &palette, string8_lit("palette.swatch"), swatch->label,
         VKR_UI_ICON_MATERIAL,
-        face ? string8_lit("Paint the selected face")
-             : string8_lit("Paint every face of the selected brush"),
-        current, !brush.u64 || (!face && !ops));
+        face        ? string8_lit("Paint the selected face; new brushes "
+                                         "take this material too")
+        : brush.u64 ? string8_lit("Paint every face of the selected brush; "
+                                  "new brushes take this material too")
+                    : string8_lit("New brushes take this material; select a "
+                                  "brush or face to paint it"),
+        shown == i, brush.u64 && !face && !ops);
     (void)vkr_ui_pop_id(ui);
     if (!clicked) {
+      continue;
+    }
+    editor->brush_material = i;
+    if (!brush.u64) {
       continue;
     }
     if (face) {
@@ -1286,12 +1902,11 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
       request.values.component_type = &vkr_scene_brush_face_type;
       SceneBrushFace *value = (SceneBrushFace *)request.values.component;
       *value = *face;
-      snprintf(value->material, sizeof(value->material), "%s",
-               swatches[i].path);
+      snprintf(value->material, sizeof(value->material), "%s", swatch->path);
       *frame->scene_edit = request;
     } else {
       char extra[96];
-      snprintf(extra, sizeof(extra), ",\"material\":\"%s\"", swatches[i].path);
+      snprintf(extra, sizeof(extra), ",\"material\":\"%s\"", swatch->path);
       palette_op(editor, "brush.set_material", "brush", brush, extra);
     }
   }
@@ -1311,6 +1926,13 @@ void vkr_editor_level_palette_build(VkrEditorUi *editor,
       editor->placement.target = (VkrEditorSnapTarget)i;
     }
     (void)vkr_ui_pop_id(ui);
+  }
+  if (vkr_editor_palette_button(
+          &palette, string8_lit("palette.magnet"), "Magnet", VKR_UI_ICON_SNAP,
+          string8_lit("Moved and drawn brushes snap flush against and level "
+                      "with nearby brushes"),
+          editor->placement.magnet, false_v)) {
+    editor->placement.magnet = !editor->placement.magnet;
   }
   char step[48];
   snprintf(step, sizeof(step), "GRID STEP %g M", grid);

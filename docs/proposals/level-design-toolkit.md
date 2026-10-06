@@ -10,8 +10,8 @@ and recorded in [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md),
 with terrain levels in
 [ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md): the agent
 channel, brushes, brush editing and level checks, entity IO, terrain, and
-population. This proposal keeps the brush tools, gameplay pieces, terrain
-holes and population features no phase covered, and the visual scripting
+population. This proposal keeps the brush tools, gameplay pieces and
+population features no phase covered, and the visual scripting
 that builds on IO. Each addition puts its operations in the ADR-084
 operation table, so the viewport, the Cmd bar and agents share them.
 
@@ -42,11 +42,10 @@ are recorded in ADR-084 and ADR-085.
   cells pulls out into a new brush or pushes in as a recess
   (`brush.patch`), and a corner, an edge or a grid line moves along its
   face's normal or along the face (`brush.reshape`), which splits the brush
-  at a grid line. A move that would dent a brush is refused. ADR-084
+  at a grid line. A move that dents a brush splits it into convex pieces. ADR-084
   records it; its follow-ups are below.
-- **Not present.** glTF export of a blockout, Replace with mesh, movers, IO
-  across containers, terrain holes, meshes bent along a spline and linked
-  prefabs. The
+- **Not present.** glTF export of a blockout, Replace with mesh, IO
+  across containers, meshes bent along a spline and linked prefabs. The
   [behavior proposal](entity-behavior-system.md#second-deliverable-connections-and-constrained-state-charts)
   plans connection assets that bind a typed event to an action on an entity.
 
@@ -70,25 +69,17 @@ are recorded in ADR-084 and ADR-085.
 ### Face grid follow-ups
 
 The face grid's limits, each with its next step and the evidence that
-closes it. The first two change what a designer can build; the rest are
-comfort.
+closes it. They are comfort.
 
 | Limit | Next step | Evidence |
 |---|---|---|
-| A corner or outer edge pushed into the solid is refused, because the dented shape is not convex. | Build the dented solid from the brush's faces with the moved corners, then cut it along the face planes at its reflex edges until every piece is convex (at most eight pieces, else refuse), as one batch. | CPU test: a cube's top edge pushed 0.5 m inward gives non-overlapping convex pieces whose volumes sum to the dented solid's. |
-| A patch or a reshape replaces the brush with new entities, so its id, its components, scripts and IO connections, and references to it do not carry over. | Edit the faces in place when the result is one piece: set the moved planes, create the added faces and delete the vanished ones in one journal group. With several pieces the original keeps the first. | `scene_edit` test and a headless run: the brush keeps its id and an IO connection through a reshape, and `undo` restores the faces. |
 | A patch is one rectangle. | Ctrl+drag adds rectangles to the patch, pulled or pushed together in one batch, with adjacent ones merged; an inset (ProBuilder) shrinks a patch inside its face first. | Headless run: an L-shaped patch pulls into a wall with one `undo`. |
-| One corner, edge or grid line moves per drag. | Ctrl+click collects corners and edges and one drag moves them together; `brush.reshape` already takes eight points. | Headless run: two opposite top edges raised together make a gable. |
 | A bend is one ridge per grid line. | An arch or ramp operation raises consecutive grid lines along a curve in one batch. | CPU test: a 4 m wide top bent into a 1 m arch over four lines matches the arc's area within the grid step. |
-| Picking tolerances scale with distance (corners within 2.5% of it), so they vary with the field of view and orthographic views. | Measure in window pixels through the view projection: corners 8, edges 6 and grid lines 5 pixels. | Headless run: the same pixel offsets pick in perspective and top orthographic views. |
 | Light icons over a grid target take its press. | Give grid targets of the selected brush priority over icons, or fade icons while a brush is selected in Level Design. | Headless run with icons on: an edge under a light icon drags. |
 | No Metal run. | Run suite `brush` and a headless Level Design session on macOS. | macOS Debug suite and Release captures. |
 
 ### Gameplay
 
-- **Movers.** A brush role or component that moves between positions on
-  inputs, as Source's func_door and func_movelinear do; the sample `door`
-  script shows the shape.
 - **Targets across containers.** Named targets resolved in other loaded
   containers would let a zone scene open a door in the World.
 - **Visual scripting.** A future graph asset is a script component whose
@@ -98,8 +89,6 @@ comfort.
 
 ### Terrain and population
 
-- **Holes** for brush-built entrances: the height field's hole samples
-  (`VKR_PHYSICS_HEIGHT_HOLE`) and a cut in the tile meshes and levels.
 - **Bent spline meshes**, which deform each copy's vertices along the curve
   for kerbs, fences and pipes, in addition to the rigid copies.
 - **Linked prefabs**, once the behavior proposal defines their lifecycle

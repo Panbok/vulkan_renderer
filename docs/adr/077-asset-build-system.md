@@ -10,8 +10,8 @@ authority: adr
 
 Accepted (partial). Every phase of the
 [asset build system proposal](../proposals/asset-build-system.md) is
-implemented on macOS. The daemon has no Windows transport, the Windows script
-and bundle paths are unverified, and no executable loads a script module's
+implemented on macOS; on Windows the daemon serves over the same local
+socket (2026-10-06). The Windows script and bundle paths are unverified, and no executable loads a script module's
 library yet; the script ABI is [ADR-079](079-c-script-modules.md).
 Bundles of managed projects are
 [ADR-078](078-project-build-and-packaging.md).
@@ -217,7 +217,7 @@ from it.
   published outputs so the daemon ignores its own writes. One daemon serves a
   socket; a stale socket is replaced; SIGINT/SIGTERM cancel the running
   command and stop the daemon. `vkr_bakery send` is the command-line client.
-  FSEvents feeds the watcher on macOS; Windows reports the daemon unavailable.
+  FSEvents feeds the watcher on macOS and ReadDirectoryChangesW on Windows.
 - **Editor daemon.** Each editor process
   ([service](../../editor/src/editor_bakery_service.c)) starts one daemon on a
   per-process socket under the temporary directory when the first watch

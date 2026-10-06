@@ -5,7 +5,8 @@
 /* Terrain sculpting and painting in the Scene (ADR-084). While the tool is
  * on, the Scene takes the mouse: the brush follows the terrain under the
  * pointer, and holding the left button applies the Terrain window's mode,
- * radius, strength and layer every frame as one undoable stroke. */
+ * radius, strength and layer every frame as one undoable stroke. The brush
+ * still meets the ground over a hole, so Fill can close it. */
 
 typedef enum VkrEditorTerrainMode {
   VKR_EDITOR_TERRAIN_RAISE = 0,
@@ -13,6 +14,9 @@ typedef enum VkrEditorTerrainMode {
   VKR_EDITOR_TERRAIN_SMOOTH,
   VKR_EDITOR_TERRAIN_FLATTEN,
   VKR_EDITOR_TERRAIN_PAINT,
+  /* Cut hole samples for an entrance, or fill them back to ground. */
+  VKR_EDITOR_TERRAIN_HOLE,
+  VKR_EDITOR_TERRAIN_FILL,
   VKR_EDITOR_TERRAIN_MODE_COUNT,
 } VkrEditorTerrainMode;
 

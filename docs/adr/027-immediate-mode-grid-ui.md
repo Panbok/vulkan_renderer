@@ -107,7 +107,7 @@ share the command table's names, icons and shortcuts.
 One keymap (`s_keymap` in `editor_windows.c`) binds keys to those commands
 after Unity's conventions, with Cmd in place of Ctrl on macOS: Ctrl+S save,
 Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo, Ctrl+K the Cmd field, Ctrl+Space the
-Content browser, Ctrl+= / Ctrl+- / Ctrl+0 interface zoom, Ctrl+1 to Ctrl+5 and
+Content browser, Ctrl+= / Ctrl+- / Ctrl+0 interface zoom, Ctrl+1 to Ctrl+9 and
 Ctrl+PageUp / Ctrl+PageDown workbenches (ADR-089), F1 controls, Q/W/E/R
 tools, Shift+F frame, F free camera, End snap, Ctrl+D duplicate, Delete delete, F2 rename, B brush
 drawing, Shift+X the clip tool, Ctrl+P play (again stops and resets),
@@ -115,7 +115,12 @@ Ctrl+Shift+P pause and resume, Ctrl+Alt+P step, Ctrl+B build and run,
 Ctrl+Shift+B build settings. A plain
 key acts while the Scene or no widget holds the keyboard and a modified one
 unless a text field does; none act while the camera flies or a menu or the Cmd
-field is open. Menus, toolbar tooltips and the controls window print each
+field is open. Windows key messages name Shift, Ctrl and Alt by their generic codes. The
+window ([vkr_window_windows.c](../../runtime/src/platform/vkr_window_windows.c))
+reports the left or right key, telling them apart by scan code or the
+extended-key bit. As on macOS, it also keeps the generic Shift and Ctrl keys
+down while either side is. A lost focus releases them all, since Alt+Tab
+releases its keys in the other window. Menus, toolbar tooltips and the controls window print each
 command's first binding from the same table, so a hint cannot disagree with
 its key. The editor owns save and undo, so the runtime's own Ctrl+S and
 Ctrl+Z stay off under it; the runtime keeps F, F3 and Tab for the free camera

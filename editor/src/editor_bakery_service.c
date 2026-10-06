@@ -4,19 +4,13 @@
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
+#include "filesystem/filesystem.h"
+#include "platform/vkr_local_socket.h"
 #include "platform/vkr_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if !defined(_WIN32)
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#endif
 
 #define EDITOR_BAKERY_SERVICE_WATCHES 16u
 #define EDITOR_BAKERY_SERVICE_PATHS 16u
@@ -59,7 +53,7 @@ struct EditorBakeryService {
   /* The current daemon accepted this editor once; a closed connection then
      means it is exiting. */
   bool8_t connected;
-  int socket_fd;
+  VkrLocalSocket socket;
   float64_t started_at;
   float64_t lost_at;
   float64_t restart_at;
@@ -74,63 +68,6 @@ struct EditorBakeryService {
   char inbox[EDITOR_BAKERY_SERVICE_INBOX];
   uint32_t inbox_length;
 };
-
-#if defined(_WIN32)
-
-/* `vkr_bakery serve` has no Windows transport yet; watches are unavailable
-   and Bakery recipes keep running as explicit jobs. */
-EditorBakeryService *editor_bakery_service_create(VkrAllocator *allocator) {
-  (void)allocator;
-  return NULL;
-}
-
-void editor_bakery_service_destroy(EditorBakeryService *service) {
-  (void)service;
-}
-
-void editor_bakery_service_update(EditorBakeryService *service) {
-  (void)service;
-}
-
-uint32_t editor_bakery_service_watch(EditorBakeryService *service,
-                                     const char *const *paths,
-                                     uint32_t path_count,
-                                     const char *const *argv,
-                                     uint32_t argument_count) {
-  (void)service;
-  (void)paths;
-  (void)path_count;
-  (void)argv;
-  (void)argument_count;
-  return EDITOR_BAKERY_SERVICE_NONE;
-}
-
-void editor_bakery_service_unwatch(EditorBakeryService *service,
-                                   uint32_t handle) {
-  (void)service;
-  (void)handle;
-}
-
-uint32_t editor_bakery_service_take_changes(
-    EditorBakeryService *service, uint32_t handle,
-    char (*out)[EDITOR_BAKERY_SERVICE_PATH], uint32_t capacity) {
-  (void)service;
-  (void)handle;
-  (void)out;
-  (void)capacity;
-  return 0u;
-}
-
-bool8_t editor_bakery_service_take_rebuild(EditorBakeryService *service,
-                                           uint32_t handle,
-                                           EditorBakeryRebuild *out) {
-  (void)service;
-  (void)handle;
-  (void)out;
-  return false_v;
-}
-
-#else
 
 // =============================================================================
 // Child supervision
@@ -171,10 +108,8 @@ static void *editor_bakery_service_supervise(void *context) {
 }
 
 static void editor_bakery_service_disconnect(EditorBakeryService *service) {
-  if (service->socket_fd >= 0) {
-    close(service->socket_fd);
-    service->socket_fd = -1;
-  }
+  vkr_local_socket_close(service->socket);
+  service->socket = VKR_LOCAL_SOCKET_INVALID;
   service->inbox_length = 0u;
   service->lost_at = vkr_platform_get_absolute_time();
   for (uint32_t i = 0u; i < EDITOR_BAKERY_SERVICE_WATCHES; ++i) {
@@ -184,7 +119,7 @@ static void editor_bakery_service_disconnect(EditorBakeryService *service) {
 }
 
 static bool8_t editor_bakery_service_start(EditorBakeryService *service) {
-  (void)unlink(service->socket_path);
+  (void)vkr_local_socket_remove_path(service->socket_path);
   service->connected = false_v;
   vkr_atomic_bool_store(&service->stopping, false_v, VKR_MEMORY_ORDER_RELEASE);
   vkr_atomic_bool_store(&service->exited, false_v, VKR_MEMORY_ORDER_RELEASE);
@@ -198,16 +133,18 @@ static bool8_t editor_bakery_service_start(EditorBakeryService *service) {
 
 static bool8_t editor_bakery_service_send(EditorBakeryService *service,
                                           const char *line, uint64_t length) {
-  while (length && service->socket_fd >= 0) {
-    const ssize_t sent = send(service->socket_fd, line, (size_t)length, 0);
-    if (sent < 0 && (errno == EAGAIN || errno == EINTR)) {
+  while (length && service->socket != VKR_LOCAL_SOCKET_INVALID) {
+    uint64_t sent = 0u;
+    const VkrLocalSocketStatus status =
+        vkr_local_socket_send(service->socket, line, length, &sent);
+    if (status == VKR_LOCAL_SOCKET_WOULD_BLOCK) {
       continue;
     }
-    if (sent <= 0) {
+    if (status != VKR_LOCAL_SOCKET_OK || !sent) {
       return false_v;
     }
     line += sent;
-    length -= (uint64_t)sent;
+    length -= sent;
   }
   return length == 0u;
 }
@@ -297,23 +234,12 @@ static void editor_bakery_service_register(EditorBakeryService *service,
 }
 
 static void editor_bakery_service_connect(EditorBakeryService *service) {
-  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
+  VkrLocalSocket connection = VKR_LOCAL_SOCKET_INVALID;
+  if (!vkr_local_socket_connect(service->socket_path, &connection)) {
     return;
   }
-  struct sockaddr_un address = {.sun_family = AF_UNIX};
-  snprintf(address.sun_path, sizeof(address.sun_path), "%s",
-           service->socket_path);
-  if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
-    close(fd);
-    return;
-  }
-#if defined(SO_NOSIGPIPE)
-  const int one = 1;
-  (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
-  (void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-  service->socket_fd = fd;
+  (void)vkr_local_socket_set_nonblocking(connection);
+  service->socket = connection;
   service->connected = true_v;
   for (uint32_t i = 0u; i < EDITOR_BAKERY_SERVICE_WATCHES; ++i) {
     if (service->watches[i].handle) {
@@ -540,15 +466,14 @@ static void editor_bakery_service_read(EditorBakeryService *service) {
       service->inbox_length = 0u;
       continue;
     }
-    const ssize_t received = recv(
-        service->socket_fd, service->inbox + service->inbox_length, space, 0);
-    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    uint64_t received = 0u;
+    const VkrLocalSocketStatus status = vkr_local_socket_recv(
+        service->socket, service->inbox + service->inbox_length, space,
+        &received);
+    if (status == VKR_LOCAL_SOCKET_WOULD_BLOCK) {
       return;
     }
-    if (received < 0 && errno == EINTR) {
-      continue;
-    }
-    if (received <= 0) {
+    if (status != VKR_LOCAL_SOCKET_OK) {
       editor_bakery_service_disconnect(service);
       return;
     }
@@ -584,24 +509,27 @@ EditorBakeryService *editor_bakery_service_create(VkrAllocator *allocator) {
   }
   MemZero(service, sizeof(*service));
   service->allocator = allocator;
-  service->socket_fd = -1;
+  service->socket = VKR_LOCAL_SOCKET_INVALID;
   service->available = true_v;
-  const char *directory = getenv("TMPDIR");
-  if (!directory || !directory[0]) {
-    directory = "/tmp";
-  }
+  /* The daemon serves the temporary directory; its socket and log live in
+     the per-user directory beside the agent channel's socket. */
   const uint32_t pid = vkr_platform_get_process_id();
-  const uint64_t length = strlen(directory);
-  const char *separator = directory[length - 1u] == '/' ? "" : "/";
-  snprintf(service->root, sizeof(service->root), "%s", directory);
-  const int socket_length =
-      snprintf(service->socket_path, sizeof(service->socket_path),
-               "%s%svkr-editor-%u.sock", directory, separator, pid);
-  snprintf(service->log_path, sizeof(service->log_path),
-           "%s%svkr-editor-%u.bakery.log", directory, separator, pid);
-  if (socket_length <= 0 ||
-      (uint64_t)socket_length >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
-    log_warn("Bakery daemon disabled: the socket path is too long");
+  char name[64];
+  snprintf(name, sizeof(name), "vkr-editor-%u.sock", pid);
+  const bool8_t socket_ok = vkr_local_socket_user_path(
+      name, service->socket_path, sizeof(service->socket_path));
+  char directory[EDITOR_BAKERY_SERVICE_PATH];
+  const bool8_t directory_ok =
+      vkr_local_socket_user_directory(directory, sizeof(directory));
+  const int log_length =
+      snprintf(service->log_path, sizeof(service->log_path),
+               "%s/vkr-editor-%u.bakery.log", directory, pid);
+  if (!socket_ok || !directory_ok || log_length <= 0 ||
+      (uint64_t)log_length >= sizeof(service->log_path) ||
+      !vkr_platform_user_directory(VKR_PLATFORM_USER_TEMP, service->root,
+                                   sizeof(service->root))) {
+    log_warn("Bakery daemon disabled: no private directory for its socket, "
+             "or the socket path is too long");
     service->available = false_v;
   }
   return service;
@@ -611,7 +539,7 @@ void editor_bakery_service_destroy(EditorBakeryService *service) {
   if (!service) {
     return;
   }
-  if (service->socket_fd >= 0) {
+  if (service->socket != VKR_LOCAL_SOCKET_INVALID) {
     static const char shutdown[] =
         "{\"v\":1,\"id\":1000000000,\"req\":\"shutdown\"}\n";
     (void)editor_bakery_service_send(service, shutdown, sizeof(shutdown) - 1u);
@@ -622,8 +550,12 @@ void editor_bakery_service_destroy(EditorBakeryService *service) {
     (void)vkr_thread_destroy(service->allocator, &service->supervisor);
   }
   editor_bakery_service_disconnect(service);
-  (void)unlink(service->socket_path);
-  (void)unlink(service->log_path);
+  (void)vkr_local_socket_remove_path(service->socket_path);
+  const FilePath log = {
+      .path = string8_create_from_cstr((const uint8_t *)service->log_path,
+                                       strlen(service->log_path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  (void)file_remove(&log);
   vkr_allocator_free(service->allocator, service, sizeof(*service),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
 }
@@ -692,7 +624,7 @@ void editor_bakery_service_update(EditorBakeryService *service) {
     }
     return;
   }
-  if (service->socket_fd < 0 && service->connected) {
+  if (service->socket == VKR_LOCAL_SOCKET_INVALID && service->connected) {
     /* A daemon that closed the connection is exiting; one that stays alive
        without its editor is stopped, and the exit path restarts it. */
     if (now - service->lost_at > EDITOR_BAKERY_SERVICE_CONNECT_SECONDS) {
@@ -701,9 +633,9 @@ void editor_bakery_service_update(EditorBakeryService *service) {
     }
     return;
   }
-  if (service->socket_fd < 0) {
+  if (service->socket == VKR_LOCAL_SOCKET_INVALID) {
     editor_bakery_service_connect(service);
-    if (service->socket_fd < 0 &&
+    if (service->socket == VKR_LOCAL_SOCKET_INVALID &&
         now - service->started_at > EDITOR_BAKERY_SERVICE_CONNECT_SECONDS) {
       log_error("Bakery daemon did not accept connections; see %s",
                 service->log_path);
@@ -745,7 +677,7 @@ uint32_t editor_bakery_service_watch(EditorBakeryService *service,
   watch->path_count = path_count;
   watch->argument_count = argument_count;
   watch->handle = ++service->next_handle;
-  if (service->socket_fd >= 0) {
+  if (service->socket != VKR_LOCAL_SOCKET_INVALID) {
     editor_bakery_service_register(service, watch);
   }
   return watch->handle;
@@ -768,7 +700,7 @@ void editor_bakery_service_unwatch(EditorBakeryService *service,
   if (!watch) {
     return;
   }
-  if (watch->daemon_watch && service->socket_fd >= 0) {
+  if (watch->daemon_watch && service->socket != VKR_LOCAL_SOCKET_INVALID) {
     char line[128];
     const int length = snprintf(
         line, sizeof(line),
@@ -805,5 +737,3 @@ bool8_t editor_bakery_service_take_rebuild(EditorBakeryService *service,
   watch->has_finished = false_v;
   return true_v;
 }
-
-#endif

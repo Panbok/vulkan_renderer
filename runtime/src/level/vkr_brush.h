@@ -51,7 +51,8 @@ typedef enum VkrBrushError {
   VKR_BRUSH_ERROR_EMPTY_FACE,
   VKR_BRUSH_ERROR_OPEN,
   VKR_BRUSH_ERROR_FLAT,
-  /* A reshape would leave a moved corner inside the solid: a dent. */
+  /* A reshape dents the solid into more convex pieces than allowed, or
+     folds a face through another. */
   VKR_BRUSH_ERROR_CONCAVE,
   /* No corner of the brush lies at a point a reshape moves. */
   VKR_BRUSH_ERROR_NO_CORNER,
@@ -173,16 +174,25 @@ uint32_t vkr_brush_hull(const Vec3 *points, uint32_t count, VkrBrushPlane *out,
 
 /* Moves the corners of the brush `planes` that lie at one of `points`
    (within 1 mm) by `delta`, after cutting it with `split` when that is not
-   NULL, and writes each piece's hull to `out` (two at most) and their count
-   to `out_count`. A hull plane copies the source of the input plane it lies
-   on, or of the input plane facing most like it; the split's planes are
-   VKR_BRUSH_SOURCE_NEW. Fails with VKR_BRUSH_ERROR_CONCAVE when a moved
-   corner would end inside its piece, which a convex brush cannot show. */
+   NULL, and writes the result to `out` as at most `capacity` (up to
+   VKR_BRUSH_RESHAPE_PIECE_MAX) convex pieces and their count to
+   `out_count`. A piece whose moved corners stay on its hull becomes that
+   hull: a hull plane copies the source of the input plane it lies on, or of
+   the input plane facing most like it, and the split's planes are
+   VKR_BRUSH_SOURCE_NEW. A piece a moved corner dents becomes the solid
+   bounded by its faces through the moved corners, a face no longer flat
+   split into triangles from its unmoved corners, cut along those faces'
+   planes until every part is convex; each part's plane copies the source of
+   the face it lies on, or of the face whose plane cut it. Fails with
+   VKR_BRUSH_ERROR_CONCAVE when the result needs more than `capacity`
+   pieces or their volumes do not add up to the dented solid's, as when a
+   face folds through another. */
+#define VKR_BRUSH_RESHAPE_PIECE_MAX 8u
 VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
                                 const VkrBrushPlane *split, const Vec3 *points,
                                 uint32_t point_count, Vec3 delta,
-                                VkrBrushPiece out[2], uint32_t *out_count,
-                                VkrBrushGeometry *scratch);
+                                VkrBrushPiece *out, uint32_t capacity,
+                                uint32_t *out_count, VkrBrushGeometry *scratch);
 
 /* The part of the slab between `inner` and `outer` meters out from face `face`
    (negative is inside) within the four `rect` planes, also bounded by the

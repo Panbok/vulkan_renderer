@@ -29,14 +29,23 @@ the result and a way for the designer to review its work.
 ### Socket and messages
 
 The editor listens on a per-user local socket and speaks newline-delimited
-JSON ([editor_agent.c](../../editor/src/editor_agent.c)). On macOS and Linux it
-creates `$TMPDIR/vkr` (`/tmp/vkr` without `TMPDIR`) with mode 0700, refuses a
-directory another user owns or others can open, and binds
-`editor-<uid>.sock` under a 0177 umask. When a live editor already answers
-there, the next editor binds `editor-<uid>-<pid>.sock` and logs the path. A
-socket file nobody answers is stale and is replaced. `--agent-socket <path>`
-and `VKR_EDITOR_AGENT_SOCKET` choose the path; `--no-agent-socket` turns the
-listener off. Windows has no listener yet and reports the channel as off.
+JSON ([editor_agent.c](../../editor/src/editor_agent.c)). Every host uses an
+AF_UNIX stream socket
+([vkr_local_socket.h](../../lib/src/platform/vkr_local_socket.h); Windows 10
+1803 or later through `afunix.h`). Paths are UTF-8, also on Windows, and must
+fit `sun_path` (104 bytes on macOS, 108 on Linux and Windows). The editor uses
+a private directory `<temp>/vkr`. On macOS and Linux it is `$TMPDIR/vkr`
+(`/tmp/vkr` without `TMPDIR`) with mode 0700, and the editor refuses a
+directory another user owns or others can open. On Windows it is `vkr` in the
+user's temporary directory, owned by the user with a protected DACL that
+grants only that user; the editor refuses one another account owns and
+restores the DACL on one the user owns. It binds `editor-<uid>.sock` there
+(on Windows the uid is the relative identifier of the account SID), under a
+0177 umask on POSIX. When a live editor already answers there, the next
+editor binds `editor-<uid>-<pid>.sock` and logs the path. A socket file
+nobody answers is stale and is replaced. `--agent-socket <path>` and
+`VKR_EDITOR_AGENT_SOCKET` choose the path; `--no-agent-socket` turns the
+listener off. `vkr_mcp` computes the same default path.
 
 The editor polls the nonblocking listener once per UI build, serves at most 4
 clients, closes a client whose unfinished line passes 1 MiB, and queues at
@@ -90,7 +99,7 @@ degrees XYZ. Lights are set through `component.set` and created through
 
 ### Batches and journal groups
 
-Every write runs as a batch: one `VkrSampleEditBatchRequest` of at most 256
+Every write runs as a batch: one `VkrSampleEditBatchRequest` of at most 1,024
 `VkrSampleEditBatchItem` edits, all in one container, that the runtime applies
 after the UI build ([vkr_sample_runtime.c](../../runtime/src/vkr_sample_runtime.c)).
 The editor validates every argument and component value before submission.
@@ -104,8 +113,8 @@ A journal group ([vkr_scene_edit.c](../../runtime/src/renderer/systems/vkr_scene
 tags each entry appended between `vkr_scene_edit_group_begin` and
 `vkr_scene_edit_group_end`. Undo and redo move over a whole group; a failure
 inside one stops there, as between two entries. The journal holds 1,024
-entries; eviction removes the oldest whole group, and a group past 512 entries
-fails. `vkr_scene_edit_group_rollback` undoes and drops the open group.
+entries; eviction removes the oldest whole group, and a group past 1,024
+entries, one full batch, fails. `vkr_scene_edit_group_rollback` undoes and drops the open group.
 
 ### Review
 
@@ -210,13 +219,83 @@ destroys them, and snapshots, documents, the journal and Reset never see
 them. The first generated body creates a scene's physics state when the
 scene had none.
 
-Operations `brush.box`, `brush.wedge`, `brush.cylinder`, `brush.stairs`
-(solid steps of at most `step_height` under a group yawed from `from` toward
-`to`), `brush.set_material` (faces by `top`, `bottom`, `sides`, `+x`, `-x`,
-`+z`, `-z`), `blockout.room` (floor, ceiling and four walls around an
-interior box), `blockout.corridor` (open ends, yawed from `from` toward `to`)
-and `blockout.doorway` (an unscaled axis-aligned box wall becomes up to three
-brushes around an opening) build ordinary brushes. Every operation snaps
+Operations `brush.box`, `brush.wedge`, `brush.cylinder`, `brush.stairs`,
+`brush.set_material` (faces by `top`, `bottom`, `sides`, `+x`, `-x`, `+z`,
+`-z`), `blockout.room` (floor, ceiling and four walls around an interior box),
+`blockout.corridor` and `blockout.doorway` (an unscaled axis-aligned box wall
+becomes up to three brushes around an opening) build ordinary brushes.
+Stairs and corridors are editable blockout shapes: an entity with a
+`blockout` component (`SceneBlockout` in
+[vkr_blockout.h](../../runtime/src/level/vkr_blockout.h)) that the scene
+builds the way it builds a brush. The layout in
+[vkr_blockout.c](../../runtime/src/level/vkr_blockout.c) turns the settings
+into convex pieces, each the hull of its points. One generated mesh holds
+them, in chunks of 512 pieces with a submesh per chunk and material (floors
+take the floor material), textured in world space and without a lightmap.
+The shape owns one static body whose triangle mesh holds every piece's faces.
+A shape has no child entities, so a change of its settings is one undo
+entry at any size, and a document stores only the component. The component
+holds the shape and the following settings:
+
+- the stairs kind;
+- height, width, length and step height;
+- turn and radius;
+- the thickness of corridor walls or of floating steps;
+- the turn direction and the ceiling;
+- up to 16 corridor points in the group's space, each with its own corner
+  radius or the shape's;
+- up to 8 wall openings, each a wall (stretch and side), a span along it
+  and a span above its floor;
+- the materials.
+
+`blockout.create` adds one, `blockout.build` (or `component.set` of
+`blockout`) sets its settings, refused when they would not lay out, and
+`blockout.bake` turns it into plain brushes under its entity in one undo
+step. Bake refuses a shape of more pieces than one batch of 2,048 items
+holds, each brush taking one item and one per face. The kinds of stairs
+are:
+
+- `straight`;
+- `l`: two flights joined by a square landing, the second turned 90 degrees
+  left or right; the length includes the landing;
+- `u`: two flights joined by a landing, the second running back beside the
+  first;
+- `curved`: steps along an arc around a center beside the stairs, its inner
+  radius `radius`, sweeping `turn` degrees;
+- `spiral`: steps around a pole of `radius`, turning up to 92,160 degrees.
+  Past one turn its steps float, each at least a rise thick, so no step
+  buries the flight below it. `brush.stairs` turns a spiral 22.5 degrees a
+  step, at least once, unless `sweep` says otherwise.
+
+Steps share the height evenly, each at most `step_height` high, 4,096 at
+most, on stairs at most 1,024 m high. They are solid down to the floor, or
+slabs `thickness` thick. A corridor runs along its points with a floor, two
+walls mitred at the bends and an optional ceiling per stretch. Each corner's
+radius rounds it with an arc tangent to both stretches, shrunk to fit them,
+in pieces of about 10 degrees, at most 12 per corner and 256 stretches in
+all. A wall with openings splits into the pieces beside, above and below
+each. `vkr_blockout_piece_capacity` gives the pieces a shape may lay out,
+which the scene, the operations and the previews allocate; previews of
+longer shapes outline every n-th piece, at most 112. The journal keeps 2,048
+changes per group and 4,096 in all.
+`brush.stairs` and `blockout.corridor` create these shapes from the earlier
+arguments. `brush.snap` moves 2 to 16 objects against the
+first. Each other object, unless it carries `free_placement`, moves the least
+distance that sets its world box flush against a side of an object placed
+before it, `gap` apart, lined up with that object's sides or center on the
+other two axes. The box is the one around an object's brushes and shape
+pieces and those below it, else around its meshes and shapes
+(`vkr_editor_entity_world_box`).
+`entity.parent` with `snap` first sets the child flush against its new
+parent the same way, unless it is free; the reparent then keeps that pose.
+A child over the parent's footprint rests on top unless it lies wholly
+below the parent's middle, where it hangs beneath. Beside it, the child moves
+up or down so the two floors meet: an object's floor is the top of the slabs
+at its bottom when they cover a quarter of its footprint, as a room's or a
+corridor's floor, else its bottom, as for stairs. A slab is at most 0.5 m or
+a quarter of its shorter side thick (`vkr_editor_box_slab`), and a parent
+brush's floor is its top when it is one.
+Every operation snaps
 corners to `grid` (1/16 m unless set; 0 turns snapping off) and validates the
 solid before submission. `scene.describe` and `entity.get` summarise a
 brush's role, face count, build status and materials and list faces only with
@@ -235,14 +314,81 @@ box starts and its steps. Surface starts it on the upward-facing collision
 surface under the pointer, so a brush drawn on another brush sits on top of
 it, and falls back to the grid plane. Grid draws on the grid plane. Both keep
 the corners on grid crossings and the height in whole cells; Free draws on the
-grid plane in 1/16 m steps. Cmd `op <operation> [json]` runs any operation of
-the table.
+grid plane in 1/16 m steps. A new box, wedge, cylinder or stairs takes the
+palette's role and, when solid or visual, its last Material swatch.
+
+The stairs tool places stairs in the palette's kind and turn with a drag
+from where they start toward where they go, on a surface with Surface
+snapping. Straight, L and U stairs run as far as the drag, and a spiral
+reaches it with its rim. A click places them facing away from the camera.
+The corridor tool adds a floor point per click. A click on the last point
+again, or Enter, builds the corridor, its corners rounded by 2 m arcs when
+the palette says Curved. Backspace drops the last point. Both draw the
+shape they would build, and Escape steps back before it ends the tool.
+
+With the Select tool a selected shape shows handles
+([editor_blockout.c](../../editor/src/editor_blockout.c)):
+
+- stairs drag their length, height and width along arrows, and curved and
+  spiral stairs their turn, in 15 degree steps, and their radius;
+- dragging a spiral's top or turn keeps its pitch, so the stairs climb on
+  as they turn;
+- corridors drag their points on their level, a + between two points adds
+  one there, Ctrl+click on a point removes it, a handle in each bend sets
+  that corner's radius, and arrows set the height and width.
+
+A selected corridor shows the face grid of the wall under the pointer, where
+only cells answer: Delete with cells selected cuts them as an opening of the
+shape, which stays editable. On a brush, Delete pushes the patch through the
+brush.
+
+Lengths follow the grid step, or 1/16 m with Free snapping. A drag previews
+the shape and its release builds it. Details shows the component's rows for
+the shape's kind. A row's drag previews the same way and builds once it
+ends. Bake in the palette runs `blockout.bake`.
+Doorway in the palette cuts the patch selected on a
+brush's face grid through the brush, through `brush.patch` pushed past the
+brush's depth behind the face. A door, window or arch opening then has the
+patch's exact size, which the hint shows. Without a patch it runs
+`blockout.doorway`. Collision display draws the convex hulls of solid and
+clip brushes and of shape pieces, the selected one's or every one's (at most
+256 objects), as it draws physics colliders. Cmd
+`op <operation> [json]` runs any operation of the table.
+
+With the Snapping menu's magnet on (default; Cmd `view.snap_magnet`), objects
+snap to nearby brushes within 2 % of their distance from the camera (0.05 m
+to 2 m), about 15 to 20 pixels on screen. A move by the gizmo or a
+Select-tool drag shifts the object, per axis, onto the nearest of: flush
+against a neighbour it overlaps on the other two axes, or level with a
+neighbour's side, top or bottom when the two touch. The object can be a
+brush, a group of brushes such as a room, a shape or a mesh, by its world
+box; its own brushes and pieces are no neighbours. An object with an enabled
+`free_placement` component never snaps: Free in the palette adds it to the
+selection or clears it. The runtime keeps the snapped
+position on an axis handle's axis or a plane handle's plane
+(`VkrSampleUiClient.snap_move`). A drawn box's corners snap onto the sides of
+brushes beside them and its top onto their tops and bottoms. The magnet
+compares axis-aligned world boxes of the other brushes, triggers excepted,
+and of shape pieces, gathered once when a move or a box starts
+([editor_level.c](../../editor/src/editor_level.c)), so a slanted face snaps
+by its box.
+
+Dragging an Outliner row onto another row of the same scene parents the
+object under it (`entity.parent` with `snap`) as one undo step. A reparent
+keeps the world pose computed from the local values along both chains, so a
+parent created or moved earlier in the same batch places the child
+correctly. Dropping it
+on the list's empty space makes it a root again.
 
 ### Brush editing
 
 Editing operations replace brushes in one journal group, keeping each
 derived face's material and texture settings from the face it copies
-([vkr_brush.c](../../runtime/src/level/vkr_brush.c), `VkrBrushPiece`):
+([vkr_brush.c](../../runtime/src/level/vkr_brush.c), `VkrBrushPiece`). An
+operation that replaces a brush keeps it as its first piece: the faces that
+piece keeps take their new planes, its new planes become new faces and the
+faces it drops go, so the brush keeps its id, its components, scripts and
+connections and the references to it. Further pieces are new brushes:
 
 | Operation | Result |
 |---|---|
@@ -253,7 +399,7 @@ derived face's material and texture settings from the face it copies
 | `brush.carve` | Subtracts a `cutter` from `target`, or from every brush it touches, as non-overlapping convex pieces, at most one per cutter face; deletes the cutter unless `keep_cutter` |
 | `brush.merge` | Joins 2 to 8 brushes into one when their union is convex: the merged solid's volume must equal the sum of theirs |
 | `brush.patch` | Pulls a rectangle of a face's grid (`min` and `max` as `[u, v]` on the face's grid axes) out by `distance`, or pushes it in when negative. Pulled, it joins the brush when the union stays convex (a whole face stretches the brush) and is a new brush otherwise; pushed, it carves a recess or a hole. Every new face copies the face's material |
-| `brush.reshape` | Moves brush corners at `points` by the world `delta`: a corner, an edge's two ends, or with `split` {`point`, `normal`} a grid line's ends after cutting the brush along that plane. Each piece becomes the hull of its corners; refused when a moved corner would end inside its piece, a dent a convex brush cannot show |
+| `brush.reshape` | Moves brush corners at `points` by the world `delta`: a corner, an edge's two ends, or with `split` {`point`, `normal`} a grid line's ends after cutting the brush along that plane. A piece whose moved corners stay on its hull becomes that hull. A piece a moved corner dents becomes the solid bounded by its faces through the moved corners (a face no longer flat bends along the line between the unmoved corners beside the moved ones), cut along its face planes until every part is convex: at most eight pieces in one batch, the brush keeping the first. Refused when the dent needs more pieces or a face folds through another |
 
 Carving keeps no boolean tree: pieces are ordinary brushes. Operations work
 on unscaled brushes, since a scaled brush's planes are not the planes the
@@ -265,7 +411,9 @@ face wider than 24 cells doubles its grid step until it fits
 ([editor_brush_grid.c](../../editor/src/editor_brush_grid.c)). The move
 tools keep their gizmo instead. Under the pointer, nearest kind first, the
 patch arrow, a corner, an edge, a grid line or a cell lights up and takes the
-press from object picking:
+press from object picking. Targets are measured on screen through the view
+projection: corners and the patch arrow within 8 points, edges within 6 and
+grid lines within 5, the same in every view:
 
 - A drag across cells selects a patch, a rectangle of cells on one face; a
   second press on the face within 0.4 s selects all of it, and Escape clears
@@ -273,23 +421,40 @@ press from object picking:
   patch (`brush.patch`), so a strip of a floor becomes a wall; dragging it in
   pushes a recess or a hole through.
 - A drag on a corner or an edge moves it along the normal of the face it was
-  picked on, or along that face with Shift (`brush.reshape`).
+  picked on, or along that face with Shift (`brush.reshape`). Ctrl+click
+  gathers up to eight corners from corners and edges, or takes them out
+  again; a drag on a gathered one moves them all, so two raised top edges
+  make a gable. With Ctrl held only corners and edges answer, and
+  Ctrl+click elsewhere still adds objects to the selection.
 - A drag on a grid line splits the brush along it and moves the line the
   same way, so a ridge or a valley bends the face into two brushes.
 
 Moves snap to the grid step, or 1/16 m with Free snapping. A drag previews
-its result in orange and refuses a dent in red, with the reason in the hint
-under the Scene. While boxes are drawn, cells start boxes and only corners,
-edges and grid lines take presses. Dents, kept brush identity and the other
-limits have next steps in the
+its result in orange, a dent as its convex pieces, and refuses in red a dent
+that needs more than eight pieces or folds the brush, with the reason in the
+hint under the Scene. While boxes are drawn, cells start boxes and only corners,
+edges and grid lines take presses. The other limits have next steps in
+the
 [Level design toolkit proposal](../proposals/level-design-toolkit.md#face-grid-follow-ups).
 Alt+click selects the brush face under
 the pointer instead of its object, which then shows its outline and a handle
 out of its center that pushes or pulls it, and Alt+Up or Alt+Down moves it
-0.25 m out or in (1 m with Shift). The clip tool (View > Clip brushes,
-Cmd `brush.clip_tool`) cuts the selected brush with the vertical plane
-through two clicks on the grid plane and keeps both pieces. All three submit
-the operations above through the agent queue, so they undo like agent work.
+0.25 m out or in (1 m with Shift).
+
+The clip tool (Shift+X, View > Clip brushes, Cmd `brush.clip_tool`) cuts on
+the same grid, shown on the selected brush with any transform tool; without
+a selection a click selects a brush. A click on a grid line cuts the brush
+along it, through the plane perpendicular to that face. Corners, the points
+where edges cross the face grid and grid crossings light up as points: a
+click sets the first point and a second click cuts straight across the first
+point's face through both; Shift+click on the second point holds it, and a
+third click cuts through all three for a slanted cut. Once the cut has a
+point, the pointer anywhere on a face takes its nearest crossing. The cut
+the pointer would make previews its two pieces in orange with the new faces
+lit, and a plane that misses the brush is refused in the hint. `brush.clip`
+keeps both pieces and selects the first. Escape drops the points, then ends
+the tool. All of these submit the operations above through the agent queue,
+so they undo like agent work.
 
 ### Level checks
 
@@ -333,6 +498,7 @@ are:
 | `relay` | `on_trigger` | `trigger`, `enable`, `disable` |
 | `timer` (`interval`, `start_running`, `once`) | `on_timer` | `start`, `stop`, `set_interval` |
 | `counter` (`start`, `min`, `max`) | `on_changed` (the value), `on_max`, `on_min` | `add`, `subtract`, `set` |
+| `mover` (`direction`, `distance`, `lip`, `speed`, `wait`, `start_open`, `loop`, `locked`) | `on_open`, `on_opened`, `on_close`, `on_closed` | `open`, `close`, `toggle`, `lock`, `unlock`, `set_position` (0 to 1) |
 | Every entity | none | `show`, `hide`, `destroy` |
 
 Script behaviors declare theirs with `VKR_OUTPUTS` and `VKR_INPUTS`
@@ -374,6 +540,31 @@ The script host owns one router per session
    `[io] 12.350 Lobby trigger.on_enter(Player) -> Door A.open`; `io.trace`
    turns it off.
 
+A `mover` moves its entity and everything under it between its saved pose
+and an open pose `distance` meters along `direction` in its own space, as
+Source's func_door and func_movelinear do; a zero distance takes the extent
+of its meshes and shapes along the direction less `lip`. It moves only
+during Play: publication and refresh give each mover an evaluated transform
+at its pose, `vkr_io_router_step` rewrites it first in each tick's
+`before_physics`, and clearing the router removes it, so the saved transform
+never changes and children follow through the transform update. Setting off
+or turning around fires `on_open` or `on_close`; reaching an end fires
+`on_opened` or `on_closed`. At the open end it closes after `wait` seconds
+unless `wait` is negative; `loop` sets off at session start and turns back
+after `wait` (at least zero) at each end; `locked` refuses `open`, `toggle`
+and `set_position` but still closes. Solid and clip brushes under a mover
+(the nearest at or above them) join one kinematic generated body per mover
+instead of a cell, at most 32 hulls; the hulls stay in world space at rest
+and the body's kinematic target is the mover's world offset, so a character
+on it reads its ground velocity. The mover's motion never rebuilds its
+brushes, and their own edits wait until its evaluated pose clears; trigger
+brushes and blockout shapes under a mover keep their static bodies at rest.
+A reset rebuilds kinematic generated bodies at rest; an origin rebase moves
+each generated body's origin, and targets stay offsets from rest. Generated
+body keys: cells set bit 63; trigger brushes bits 63 and 62; blockout shapes
+bit 62 over the entity's index and generation; movers bits 62 and 48 over
+the same; terrain bodies are the entity id XOR "terrain".
+
 Physics serves triggers in two ways the toolkit needed. Sensors test
 character capsules directly, so the player enters triggers
 ([ADR-073](073-native-gameplay-foundation.md)). Generated bodies count as
@@ -393,8 +584,14 @@ and blue lines from the sources that reach it. Connections and faces show no
 transform, script, component or physics rows. The Create menu's Level group
 adds Trigger Volume (a trigger brush with `trigger`), Relay, Timer and
 Counter. Cmd `io.trace` and `io.fire <object> <input> [value]` work in the
-bar, and `level.lint` reports connections that will not route as
-`broken_connection`.
+bar during Play, with script instances or engine IO components alone, and
+`level.lint` reports connections that will not route as
+`broken_connection`. The Level Design palette's Mover button and operation
+`mover.create` (`objects` that share one parent, `name`, and `values` over
+the mover's defaults) group the objects under a new entity carrying a
+`mover` at the center of their world box, as one batch. The Create menu's
+Level group adds Mover. Outside Play, the Scene draws the selected mover's
+box at its open pose and a line to it.
 
 Operations `io.connect` (`source`, `output`, `target`, `input`, `value`,
 `delay`, `limit`; a target the same batch creates is allowed, because a
@@ -442,6 +639,17 @@ writes each changed terrain's file. Each update rebuilds the marked tiles:
   [ADR-072](072-entity-collision-and-rigid-body-physics.md)) is rebuilt
   eight updates after the last edit, so a stroke does not rebuild it every
   frame.
+- **Holes.** A sample whose four weights are zero is a hole
+  (`VKR_HEIGHTFIELD_HOLE_WEIGHTS`): it keeps its height but opens every
+  triangle it is a corner of, in the mesh and in the collision alike. A cell
+  with a hole corner splits along its (x, z) to (x + 1, z + 1) diagonal, as
+  Jolt's height field does, drops each triangle a hole touches and the skirt
+  below a tile edge whose triangle went, and its tile keeps level 0 only.
+  Collision reads hole samples as `VKR_PHYSICS_HEIGHT_HOLE`. Overview tiles
+  draw holes as layer 0. Paint leaves holes alone; filling one returns it to
+  layer 0 at the height it kept. `vkr_scene_terrain_ground`, scatter
+  placement and `terrain.sample` find no ground over a hole; the editor brush
+  still meets it, so Fill can close it.
 
 A terrain material
 ([vkr_material_loader_replace_terrain](../../runtime/src/renderer/resources/loaders/material_loader.h))
@@ -483,15 +691,17 @@ Agents edit regions with operations that take world coordinates:
 | Operation | Purpose |
 |---|---|
 | `terrain.create` | A terrain of `size` metres at `spacing` (default 256 m at 1 m) whose file is `assets/terrain/<uuid>.vkrhf`: a resident one starts in memory and its scene's first save writes the file, a streamed one is written at once |
-| `terrain.brush` | Raise, lower, smooth, flatten or paint a layer with a round brush at up to 256 points |
+| `terrain.brush` | Raise, lower, smooth, flatten, paint a layer, cut holes or fill them with a round brush at up to 256 points |
 | `terrain.flatten` | Level a footprint at a height, blending over a falloff |
 | `terrain.ramp` | A straight slope of a width between two surface points |
 | `terrain.stamp` | Add or set heights from a grayscale PNG over a square |
-| `terrain.sample` | Ground heights at x and z points |
+| `terrain.sample` | Ground heights at x and z points; null over a hole |
+| `terrain.hole` | Cut holes for an entrance, the samples strictly inside a `min`/`max` box (a box on grid lines opens exactly) or within `radius` of `points`; `fill` closes them |
 
 In the editor ([editor_terrain.c](../../editor/src/editor_terrain.c)), the
-Terrain window holds the sculpt tool and its mode, radius, strength and
-paint layer. While the tool is on, the Scene draws the brush circle where
+Terrain window holds the sculpt tool and its mode (Raise, Lower, Smooth,
+Flatten, Paint, Hole, Fill), radius, strength and paint layer. Hole and Fill
+change every sample inside the radius and take no strength. While the tool is on, the Scene draws the brush circle where
 the pointer's ray meets a terrain, and holding the left button applies the
 mode every frame as one stroke. Raise and lower move a sample by up to four
 times the strength in metres per second. The Create menu's Level group adds
@@ -598,7 +808,7 @@ one, takes its mesh at once and shows it as the uploads finish.
 
 ## Revisit when
 
-A Windows listener is needed, an agent needs notifications pushed to it,
+An agent needs notifications pushed to it,
 reviews must survive a scene reload, or a level's brush count makes the
 per-brush draw cost visible next to its other geometry (merge per cell and
 material then).
@@ -697,8 +907,33 @@ material then).
   by `--exec` and in-process `op`): the CPU suites, terrain sculpt and paint,
   proxies, rebase and large terrain files pass; the
   [Windows record](../proposals/windows-vulkan-verification.md) lists the
-  fixes this needed and the open items. The socket and `vkr_mcp` remain
-  unavailable on Windows.
+  fixes this needed and the open items. The socket and `vkr_mcp` were
+  unavailable on Windows then.
+- Windows and native Vulkan, 2026-10-06 (headless Release editor, Bistro):
+  `brush.stairs` built a 300 m spiral of 1,500 steps as one shape whose
+  collision a downward ray hits at 97.6, 197.6 and 249.6 m; `blockout.build`
+  raised it to 600 m in one undo step (a hit at 549.6 m) and `undo` brought
+  back 300 m; `blockout.bake` refused it. Tiles cut from a corridor's wall
+  let a ray through to the far wall. `brush.reshape` and `brush.clip` kept
+  the brush's id and its `free_placement`, and two `undo` restored the box.
+  A room and stairs parented onto a 1 m slab rest with floors at its top
+  (1 m). `mover.create` (+Y, 3 m) and `io.fire` of `open` in a session
+  without scripts raised the door to 3..6 m, a ray through the doorway
+  missed, and Stop returned it to its saved pose. Suite `brush` covers the
+  layout's capacity, a 4,000-step spiral and openings, and edge and corner
+  dents; suite `heightfield` covers holes against Jolt; suites `io` and
+  `scene_physics` cover movers and kinematic generated bodies; 684 passed
+  (Windows Debug).
+- Windows (2026-10-06, Windows 10 Pro 19045, headless Release editor on
+  Bistro, temporary directory under a Cyrillic account name): the editor
+  listened on `C:/Users/<name>/AppData/Local/Temp/vkr/editor-1001.sock`, and
+  `vkr_mcp` without `--socket` resolved the same path. It answered
+  `server/discover`, listed 65 tools, ran `vkr_cmd` `wait.scene` and
+  `vkr_editor_status` (scene loaded, 5,989 entities), and `initialize`
+  returned -32022. An explicit `--agent-socket` path behaved the same, and
+  the socket file was removed on exit. Suite `local_socket` covers listen,
+  nonblocking accept, a 1.5 MiB line, peer close, stale and live socket
+  files, the wake pair, a non-ASCII directory and the path limit.
 - Windows and native Vulkan, 2026-10-05 (RX 6700 XT, headless Release
   editor, Bistro): `./build_test.bat` suite `brush` covers a cube's hull, a
   raised edge (1.5 m³), a grid-line bend split into two 1.25 m³ pieces with

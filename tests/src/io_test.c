@@ -6,6 +6,7 @@
 #include "script/vkr_io_router.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -364,6 +365,97 @@ static void io_test_refresh(void) {
   printf("  io_test_refresh PASSED\n");
 }
 
+/* The mover's offset from its saved position, read from its evaluated
+   pose. */
+static float32_t io_test_mover_offset(IoTest *test, VkrEntityId mover,
+                                      Vec3 saved) {
+  const SceneEvaluatedTransform *pose = vkr_entity_get_component(
+      test->scene.world, mover, test->scene.comp_evaluated_transform);
+  assert(pose);
+  assert(fabsf(pose->world.elements[13] - saved.y) < 1e-6f &&
+         fabsf(pose->world.elements[14] - saved.z) < 1e-6f);
+  return pose->world.elements[12] - saved.x;
+}
+
+/* A mover (ADR-084) 2 m along +X at 1 m/s waiting 1 s. Oracles: the
+ * evaluated pose each tick against the travel profile (open over 2 s, rest
+ * 1 s, close over 2 s), the outputs a probe records with the tick they
+ * reached it, a saved transform that stays bit-identical, and the authored
+ * world pose once the router clears. */
+static void io_test_mover(void) {
+  printf("  Running io_test_mover...\n");
+  IoTest test;
+  io_test_begin(&test);
+  const SceneMover settings = {.direction = vec3_new(1.0f, 0.0f, 0.0f),
+                               .distance = 2.0f,
+                               .speed = 1.0f,
+                               .wait = 1.0f};
+  const VkrEntityId mover =
+      io_test_entity(&test, "door", &vkr_scene_mover_type, &settings);
+  const Vec3 saved = vec3_new(5.0f, 1.0f, -3.0f);
+  assert(vkr_scene_set_transform(&test.scene, mover, saved, vkr_quat_identity(),
+                                 vec3_one()));
+  const VkrEntityId probe = io_test_entity(&test, "probe", &s_probe_type, NULL);
+  static const char *const outputs[4] = {"on_open", "on_opened", "on_close",
+                                         "on_closed"};
+  for (uint32_t i = 0; i < 4u; ++i) {
+    char value[4];
+    snprintf(value, sizeof(value), "%u", i + 1u);
+    (void)io_test_connect(&test, mover, outputs[i], probe, "record", value,
+                          0.0f, 0u);
+  }
+  vkr_scene_update_transforms(&test.scene);
+  const SceneTransform authored = *vkr_scene_get_transform(&test.scene, mover);
+  io_test_publish(&test);
+  assert(test.router.problems == 0u);
+  assert(io_test_mover_offset(&test, mover, saved) == 0.0f);
+
+  assert(vkr_io_router_send(&test.router, mover,
+                            io_test_input_of(&test, mover, "open"), NULL,
+                            false_v));
+  assert(test.record_count == 1u && test.records[0].value == 1);
+  /* The tick each output reached the probe at. */
+  uint32_t reached[5] = {0};
+  const float64_t dt = 1.0 / 60.0;
+  for (uint32_t tick = 1; tick <= 330u; ++tick) {
+    const uint32_t before = test.record_count;
+    assert(vkr_io_router_step(&test.router, dt));
+    assert(vkr_io_router_tick(&test.router, &test.scene, tick * dt));
+    for (uint32_t r = before; r < test.record_count; ++r) {
+      const int32_t value = test.records[r].value;
+      assert(value >= 1 && value <= 4 && !reached[value]);
+      reached[value] = tick;
+    }
+    const float32_t t = (float32_t)tick / 60.0f;
+    const float32_t expected = tick <= 120u   ? t
+                               : tick <= 180u ? 2.0f
+                               : tick <= 300u ? 2.0f - (t - 3.0f)
+                                              : 0.0f;
+    assert(fabsf(io_test_mover_offset(&test, mover, saved) - expected) < 1e-5f);
+    const SceneTransform *now = vkr_scene_get_transform(&test.scene, mover);
+    assert(
+        MemCompare(&now->position, &authored.position,
+                   sizeof(authored.position)) == 0 &&
+        MemCompare(&now->rotation, &authored.rotation,
+                   sizeof(authored.rotation)) == 0 &&
+        MemCompare(&now->scale, &authored.scale, sizeof(authored.scale)) == 0 &&
+        MemCompare(&now->local, &authored.local, sizeof(authored.local)) == 0);
+  }
+  /* on_opened at 2 s, on_close when the wait ends at 3 s, on_closed after
+     the travel back at 5 s; each once. */
+  assert(test.record_count == 4u);
+  assert(reached[2] == 120u && reached[3] == 180u && reached[4] == 300u);
+
+  vkr_io_router_clear(&test.router);
+  assert(!vkr_entity_has_component(test.scene.world, mover,
+                                   test.scene.comp_evaluated_transform));
+  vkr_scene_update_transforms(&test.scene);
+  assert(MemCompare(&vkr_scene_get_transform(&test.scene, mover)->world,
+                    &authored.world, sizeof(authored.world)) == 0);
+  io_test_end(&test);
+  printf("  io_test_mover PASSED\n");
+}
+
 bool32_t run_io_tests(void) {
   printf("--- Starting IO Tests ---\n");
   io_test_order();
@@ -374,6 +466,7 @@ bool32_t run_io_tests(void) {
   io_test_refresh();
   io_test_timer();
   io_test_problems();
+  io_test_mover();
   printf("--- IO Tests Completed ---\n");
   return true_v;
 }

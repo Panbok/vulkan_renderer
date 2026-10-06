@@ -11,6 +11,7 @@
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
+#include "platform/vkr_local_socket.h"
 #include "vkr_bakery_json.h"
 
 #include <stdarg.h>
@@ -18,10 +19,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
 #endif
 
 #define MCP_VERSION "2026-07-28"
@@ -49,7 +49,7 @@ static const char *s_instructions =
 
 typedef struct McpState {
   char socket_path[512];
-  int fd;
+  VkrLocalSocket socket;
   uint64_t next_id;
   /* Bytes received after the last complete editor line. */
   char *pending;
@@ -147,56 +147,20 @@ static void mcp_send_result(Arena *arena, const VkrBakeryJson *id,
 // Editor socket
 // =============================================================================
 
-#if !defined(_WIN32)
-
 static void mcp_disconnect(McpState *state) {
-  if (state->fd >= 0) {
-    close(state->fd);
-  }
-  state->fd = -1;
+  vkr_local_socket_close(state->socket);
+  state->socket = VKR_LOCAL_SOCKET_INVALID;
   state->pending_length = 0u;
 }
 
 static bool8_t mcp_connect(McpState *state) {
-  if (state->fd >= 0) {
+  if (state->socket != VKR_LOCAL_SOCKET_INVALID) {
     return true_v;
   }
-  struct sockaddr_un address = {.sun_family = AF_UNIX};
-  if (strlen(state->socket_path) >= sizeof(address.sun_path)) {
+  if (!vkr_local_socket_connect(state->socket_path, &state->socket)) {
     return false_v;
   }
-  snprintf(address.sun_path, sizeof(address.sun_path), "%s",
-           state->socket_path);
-  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return false_v;
-  }
-#if defined(SO_NOSIGPIPE)
-  const int one = 1;
-  (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
-  if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
-    close(fd);
-    return false_v;
-  }
-  state->fd = fd;
   state->pending_length = 0u;
-  return true_v;
-}
-
-static bool8_t mcp_send_all(int fd, const char *data, uint64_t length) {
-  while (length) {
-#if defined(MSG_NOSIGNAL)
-    const ssize_t sent = send(fd, data, length, MSG_NOSIGNAL);
-#else
-    const ssize_t sent = send(fd, data, length, 0);
-#endif
-    if (sent <= 0) {
-      return false_v;
-    }
-    data += sent;
-    length -= (uint64_t)sent;
-  }
   return true_v;
 }
 
@@ -232,17 +196,16 @@ static bool8_t mcp_read_line(McpState *state, Arena *arena, String8 *out) {
       state->pending = grown;
       state->pending_capacity = capacity;
     }
-    const ssize_t got =
-        recv(state->fd, state->pending + state->pending_length,
-             state->pending_capacity - state->pending_length, 0);
-    if (got <= 0) {
+    uint64_t got = 0u;
+    if (vkr_local_socket_recv(state->socket,
+                              state->pending + state->pending_length,
+                              state->pending_capacity - state->pending_length,
+                              &got) != VKR_LOCAL_SOCKET_OK) {
       return false_v;
     }
-    state->pending_length += (uint64_t)got;
+    state->pending_length += got;
   }
 }
-
-#endif
 
 /* Runs one editor operation and returns its response object, or NULL with
    `error` set when the editor cannot be reached. */
@@ -250,15 +213,6 @@ static const VkrBakeryJson *mcp_editor_call(McpState *state, Arena *arena,
                                             const char *op,
                                             const VkrBakeryJson *args,
                                             char *error, uint64_t capacity) {
-#if defined(_WIN32)
-  (void)state;
-  (void)arena;
-  (void)op;
-  (void)args;
-  snprintf(error, capacity,
-           "The editor agent channel is not available on Windows yet");
-  return NULL;
-#else
   VkrBakeryJson *request = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, request, "v", vkr_bakery_json_int(arena, 1));
   vkr_bakery_json_set(arena, request, "id",
@@ -283,8 +237,8 @@ static const VkrBakeryJson *mcp_editor_call(McpState *state, Arena *arena,
       return NULL;
     }
     String8 line = {0};
-    if (mcp_send_all(state->fd, (const char *)text.str, text.length) &&
-        mcp_send_all(state->fd, "\n", 1u) &&
+    if (vkr_local_socket_send_all(state->socket, text.str, text.length) &&
+        vkr_local_socket_send_all(state->socket, "\n", 1u) &&
         mcp_read_line(state, arena, &line)) {
       const VkrBakeryJson *response =
           vkr_bakery_json_parse(arena, line.str, line.length, 64u, NULL);
@@ -297,7 +251,6 @@ static const VkrBakeryJson *mcp_editor_call(McpState *state, Arena *arena,
   }
   snprintf(error, capacity, "The editor closed the connection");
   return NULL;
-#endif
 }
 
 // =============================================================================
@@ -602,25 +555,23 @@ static void mcp_handle(McpState *state, Arena *arena, String8 line) {
   }
 }
 
+/* The editor's default socket (editor_agent.c): `editor-<uid>.sock` in the
+   per-user directory. */
 static void mcp_default_socket(char *out, uint64_t capacity) {
-#if defined(_WIN32)
-  snprintf(out, capacity, "vkr-editor.sock");
-#else
-  const char *tmp = getenv("TMPDIR");
-  if (!tmp || !tmp[0]) {
-    tmp = "/tmp";
+  char name[64];
+  snprintf(name, sizeof(name), "editor-%u.sock", vkr_local_socket_user_id());
+  if (!vkr_local_socket_user_path(name, out, capacity)) {
+    snprintf(out, capacity, "%s", name);
   }
-  uint64_t length = strlen(tmp);
-  while (length > 1u && tmp[length - 1u] == '/') {
-    length--;
-  }
-  snprintf(out, capacity, "%.*s/vkr/editor-%u.sock", (int)length, tmp,
-           (unsigned)getuid());
-#endif
 }
 
 int main(int argc, char **argv) {
-  McpState state = {.fd = -1};
+  McpState state = {.socket = VKR_LOCAL_SOCKET_INVALID};
+#if defined(_WIN32)
+  /* JSON-RPC lines end in a bare line feed; text mode would add returns. */
+  (void)_setmode(_fileno(stdin), _O_BINARY);
+  (void)_setmode(_fileno(stdout), _O_BINARY);
+#endif
   const char *socket = getenv("VKR_EDITOR_AGENT_SOCKET");
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -680,9 +631,7 @@ int main(int argc, char **argv) {
   }
   free(line);
   free(state.pending);
-#if !defined(_WIN32)
   mcp_disconnect(&state);
-#endif
   arena_destroy(arena);
   return 0;
 }

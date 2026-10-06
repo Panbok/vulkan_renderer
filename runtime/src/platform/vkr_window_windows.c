@@ -181,6 +181,8 @@ static bool8_t window_frame_for_client(const PlatformState *state, UINT dpi,
   return AdjustWindowRectExForDpi(rect, style, FALSE, ex_style, dpi) != 0;
 }
 static Keys translate_keycode(uint32_t vk_keycode);
+static bool8_t process_modifier_key(PlatformState *state, WPARAM wparam,
+                                    LPARAM lparam, bool8_t down);
 static void hide_cursor(PlatformState *state);
 static void show_cursor(PlatformState *state);
 static void update_cursor_image(PlatformState *state);
@@ -1052,19 +1054,16 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   }
 
   case WM_KEYDOWN:
-  case WM_SYSKEYDOWN: {
-    Keys key = translate_keycode((uint32_t)wparam);
-    if (key != KEY_MAX_KEYS) {
-      input_process_key(state->input_state, key, true_v);
-    }
-    return FALSE;
-  }
-
+  case WM_SYSKEYDOWN:
   case WM_KEYUP:
   case WM_SYSKEYUP: {
+    const bool8_t down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+    if (process_modifier_key(state, wparam, lparam, down)) {
+      return FALSE;
+    }
     Keys key = translate_keycode((uint32_t)wparam);
     if (key != KEY_MAX_KEYS) {
-      input_process_key(state->input_state, key, false_v);
+      input_process_key(state->input_state, key, down);
     }
     return FALSE;
   }
@@ -1173,6 +1172,14 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       /* A release outside this window may never arrive. End editor RMB holds
          without changing latched camera capture. */
       input_process_button(state->input_state, BUTTON_RIGHT, false_v);
+      /* Alt+Tab releases its keys in the other window; modifiers held when
+         focus left would stay down. */
+      static const Keys modifiers[] = {KEY_SHIFT,   KEY_LSHIFT,   KEY_RSHIFT,
+                                       KEY_CONTROL, KEY_LCONTROL, KEY_RCONTROL,
+                                       KEY_LMENU,   KEY_RMENU};
+      for (uint32_t i = 0; i < ArrayCount(modifiers); ++i) {
+        input_process_key(state->input_state, modifiers[i], false_v);
+      }
       if (state->mouse_captured) {
         ClipCursor(NULL);
         show_cursor(state);
@@ -1501,6 +1508,49 @@ static Keys translate_keycode(uint32_t vk_keycode) {
     return KEY_MAX_KEYS;
   }
   return s_win32_keys[vk_keycode];
+}
+
+/* Key messages name Shift, Ctrl and Alt by their generic codes; the scan code
+   tells the Shift keys apart and the extended-key bit the right Ctrl and Alt.
+   The side key changes, and, as on macOS, the generic Shift and Ctrl keys
+   stay down while either side is. False for other keys. */
+static bool8_t process_modifier_key(PlatformState *state, WPARAM wparam,
+                                    LPARAM lparam, bool8_t down) {
+  const bool8_t extended = (lparam & (1 << 24)) != 0;
+  Keys left = KEY_MAX_KEYS;
+  Keys right = KEY_MAX_KEYS;
+  Keys aggregate = KEY_MAX_KEYS;
+  Keys side = KEY_MAX_KEYS;
+  switch (wparam) {
+  case VK_SHIFT: {
+    const UINT scan = (UINT)((lparam >> 16) & 0xff);
+    left = KEY_LSHIFT;
+    right = KEY_RSHIFT;
+    aggregate = KEY_SHIFT;
+    side = MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) == VK_RSHIFT ? right : left;
+    break;
+  }
+  case VK_CONTROL:
+    left = KEY_LCONTROL;
+    right = KEY_RCONTROL;
+    aggregate = KEY_CONTROL;
+    side = extended ? right : left;
+    break;
+  case VK_MENU:
+    left = KEY_LMENU;
+    right = KEY_RMENU;
+    side = extended ? right : left;
+    break;
+  default:
+    return false_v;
+  }
+  input_process_key(state->input_state, side, down);
+  if (aggregate != KEY_MAX_KEYS) {
+    input_process_key(state->input_state, aggregate,
+                      input_is_key_down(state->input_state, left) ||
+                          input_is_key_down(state->input_state, right));
+  }
+  return true_v;
 }
 
 #endif

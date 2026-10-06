@@ -4,6 +4,7 @@
 #include "level/vkr_heightfield.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "physics/vkr_physics.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_terrain.h"
@@ -311,15 +312,20 @@ static void heightfield_test_tile_levels(void) {
   static VkrVertex3d
       vertices[VKR_GPU_TERRAIN_TILE_SIDE * VKR_GPU_TERRAIN_TILE_SIDE +
                4u * VKR_GPU_TERRAIN_TILE_SIDE];
+  /* Every sample is ground on layer 0; zero weights would make it a
+     hole. */
+  const Vec4 ground = vec4_new(1.0f, 0.0f, 0.0f, 0.0f);
   for (uint32_t z = 0; z < side; ++z) {
     for (uint32_t x = 0; x < side; ++x) {
       vertices[z * side + x] = (VkrVertex3d){
-          .position = {(float32_t)x * 2.0f, 0.0f, (float32_t)z * 2.0f}};
+          .position = {(float32_t)x * 2.0f, 0.0f, (float32_t)z * 2.0f},
+          .colour = ground};
     }
   }
   /* Skirt vertices hang below their edge samples. */
   for (uint32_t i = side * side; i < vertex_count; ++i) {
-    vertices[i] = (VkrVertex3d){.position = {0.0f, -4.0f, 0.0f}};
+    vertices[i] =
+        (VkrVertex3d){.position = {0.0f, -4.0f, 0.0f}, .colour = ground};
   }
   vertices[1u * side + 1u].position.y = 3.0f;
   const uint32_t capacity = vkr_scene_terrain_tile_index_count();
@@ -432,7 +438,7 @@ static void heightfield_test_streamed(void) {
   const VkrHeightfieldRect span = {150u, 250u, 270u, 262u};
   assert(vkr_heightfield_load_rect(&field, span));
   static float32_t metres[121u * 13u];
-  vkr_heightfield_read_metres(&field, span, metres, 121u);
+  vkr_heightfield_read_metres(&field, span, metres, 121u, 0.0f);
   for (uint32_t z = span.z0; z <= span.z1; ++z) {
     for (uint32_t x = span.x0; x <= span.x1; ++x) {
       const float32_t expected = vkr_heightfield_at(&field, x, z);
@@ -533,6 +539,301 @@ static void heightfield_test_streamed(void) {
   printf("  heightfield_test_streamed PASSED\n");
 }
 
+#define HOLES_SIDE (VKR_HEIGHTFIELD_TILE_CELLS + 1u)
+#define HOLES_GRID (HOLES_SIDE * HOLES_SIDE)
+#define HOLES_VERTICES (HOLES_GRID + 4u * HOLES_SIDE)
+/* The physics grid: the tile's samples padded to a multiple of four. */
+#define HOLES_PADDED 68u
+
+/* The one tile of a 64-cell field as the terrain system builds it: a
+   vertex per sample whose color holds its four weights, then a skirt
+   vertex 2 m below each edge sample, edges -Z, +X, +Z, -X. */
+static void heightfield_test_tile_vertices(const VkrHeightfield *field,
+                                           VkrVertex3d *vertices) {
+  const float32_t half = vkr_heightfield_half_size(field);
+  for (uint32_t z = 0; z < HOLES_SIDE; ++z) {
+    for (uint32_t x = 0; x < HOLES_SIDE; ++x) {
+      const uint32_t w = vkr_heightfield_weights_at(field, x, z);
+      vertices[z * HOLES_SIDE + x] = (VkrVertex3d){
+          .position = {(float32_t)x * field->spacing - half,
+                       vkr_heightfield_at(field, x, z),
+                       (float32_t)z * field->spacing - half},
+          .colour = vec4_new((float32_t)(w & 0xFFu) / 255.0f,
+                             (float32_t)((w >> 8u) & 0xFFu) / 255.0f,
+                             (float32_t)((w >> 16u) & 0xFFu) / 255.0f,
+                             (float32_t)(w >> 24u) / 255.0f),
+      };
+    }
+  }
+  const uint32_t last = VKR_HEIGHTFIELD_TILE_CELLS;
+  for (uint32_t edge = 0; edge < 4u; ++edge) {
+    for (uint32_t i = 0; i < HOLES_SIDE; ++i) {
+      const uint32_t x = edge == 0u   ? i
+                         : edge == 1u ? last
+                         : edge == 2u ? last - i
+                                      : 0u;
+      const uint32_t z = edge == 0u   ? 0u
+                         : edge == 1u ? i
+                         : edge == 2u ? last
+                                      : last - i;
+      VkrVertex3d skirt = vertices[z * HOLES_SIDE + x];
+      skirt.position.y -= 2.0f;
+      vertices[HOLES_GRID + edge * HOLES_SIDE + i] = skirt;
+    }
+  }
+}
+
+static bool8_t heightfield_test_vertex_open(const VkrVertex3d *vertices,
+                                            uint32_t index) {
+  const Vec4 w = vertices[index].colour;
+  return w.x == 0.0f && w.y == 0.0f && w.z == 0.0f && w.w == 0.0f;
+}
+
+/* Holes open the same ground in a tile's mesh as in Jolt's height field
+   built from the same samples. A probe in each quarter the two diagonals
+   cut from every cell lies on one side of both, so it is covered by a
+   drawn triangle exactly when a ray down hits the collision, and
+   vkr_heightfield_open answers the same. No skirt hangs from a hole; paint
+   keeps a hole, a file keeps it, and fill closes it at its old height. */
+static void heightfield_test_holes(void) {
+  printf("  Running heightfield_test_holes...\n");
+  HeightfieldTest test;
+  heightfield_test_begin(&test);
+  VkrHeightfield field;
+  /* One tile of 1 m cells: local x and z run from -32 to 32. */
+  assert(vkr_heightfield_create(&field, 64u, 1.0f, -50.0f, 50.0f, 0.0f,
+                                &test.allocator));
+  const VkrHeightfieldRect all = {0u, 0u, HOLES_SIDE - 1u, HOLES_SIDE - 1u};
+  static uint16_t heights[HOLES_GRID];
+  static uint32_t weights[HOLES_GRID];
+  for (uint32_t z = 0; z < HOLES_SIDE; ++z) {
+    for (uint32_t x = 0; x < HOLES_SIDE; ++x) {
+      const float32_t h = 3.0f * sinf(0.37f * (float32_t)x) +
+                          2.0f * cosf(0.23f * (float32_t)z) +
+                          0.05f * (float32_t)x;
+      heights[z * HOLES_SIDE + x] = vkr_heightfield_quantize(&field, h);
+      weights[z * HOLES_SIDE + x] = 0xFFu;
+    }
+  }
+  vkr_heightfield_write_rect(&field, all, heights, weights);
+
+  /* A hole brush over the -Z edge, so skirts must open, and a box with
+     off-grid corners inside the tile. */
+  VkrHeightfieldRect touched;
+  VkrHeightfieldOp op = {.kind = VKR_HEIGHTFIELD_OP_BRUSH,
+                         .brush = VKR_HEIGHTFIELD_HOLE,
+                         .a = vec3_new(-20.0f, 0.0f, -31.6f),
+                         .radius = 2.5f};
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  /* The brush centre is sample (12, 0.4). */
+  assert(vkr_heightfield_hole(&field, 12u, 0u) &&
+         vkr_heightfield_hole(&field, 14u, 0u) &&
+         vkr_heightfield_hole(&field, 12u, 2u));
+  assert(!vkr_heightfield_hole(&field, 15u, 0u) &&
+         !vkr_heightfield_hole(&field, 12u, 3u));
+  const VkrHeightfieldOp box = {.kind = VKR_HEIGHTFIELD_OP_HOLE,
+                                .min = vec2_new(5.3f, 4.7f),
+                                .max = vec2_new(11.6f, 9.2f),
+                                .add = true_v};
+  assert(vkr_heightfield_op_apply(&field, &box, &test.allocator, &touched));
+  /* Local x 6 to 11 and z 5 to 9 are samples 38 to 43 and 37 to 41. */
+  assert(vkr_heightfield_hole(&field, 38u, 37u) &&
+         vkr_heightfield_hole(&field, 43u, 41u));
+  assert(!vkr_heightfield_hole(&field, 37u, 37u) &&
+         !vkr_heightfield_hole(&field, 44u, 41u) &&
+         !vkr_heightfield_hole(&field, 38u, 36u) &&
+         !vkr_heightfield_hole(&field, 38u, 42u));
+
+  /* Paint over the box keeps its holes and paints the ground beside it. */
+  op = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_BRUSH,
+                          .brush = VKR_HEIGHTFIELD_PAINT,
+                          .layer = 2u,
+                          .a = vec3_new(6.0f, 0.0f, 7.0f),
+                          .radius = 2.0f,
+                          .strength = 1.0f};
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  assert(vkr_heightfield_hole(&field, 38u, 39u));
+  assert(((vkr_heightfield_weights_at(&field, 37u, 39u) >> 16u) & 0xFFu) > 0u);
+
+  /* The tile's mesh. */
+  static VkrVertex3d vertices[HOLES_VERTICES];
+  heightfield_test_tile_vertices(&field, vertices);
+  const uint32_t capacity = vkr_scene_terrain_tile_index_count();
+  uint32_t *indices = malloc(sizeof(uint32_t) * capacity);
+  assert(indices);
+  VkrGpuGeometryLodRow lod;
+  assert(vkr_scene_terrain_tile_indices(vertices, field.spacing, indices,
+                                        capacity, &lod));
+  assert(lod.level_count == 1u);
+
+  /* Jolt's height field of the same samples, holes padding it. */
+  static float32_t metres[HOLES_PADDED * HOLES_PADDED];
+  for (uint32_t i = 0; i < ArrayCount(metres); ++i) {
+    metres[i] = VKR_PHYSICS_HEIGHT_HOLE;
+  }
+  vkr_heightfield_read_metres(&field, all, metres, HOLES_PADDED,
+                              VKR_PHYSICS_HEIGHT_HOLE);
+  VkrPhysicsWorld *world = vkr_physics_world_create(4);
+  assert(world);
+  const float32_t half = vkr_heightfield_half_size(&field);
+  const VkrPhysicsColliderDesc collider = {
+      .entity_id = 70,
+      .shape = VKR_PHYSICS_HEIGHT_FIELD,
+      .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+      .scale = {1.0f, 1.0f, 1.0f},
+      .geometry = {.positions = metres,
+                   .vertex_count = HOLES_PADDED * HOLES_PADDED,
+                   .height_samples = HOLES_PADDED,
+                   .height_spacing = field.spacing},
+      .enabled = true_v,
+  };
+  const VkrPhysicsBodyDesc desc = {.entity_id = 7,
+                                   .motion = VKR_PHYSICS_STATIC,
+                                   .position = {-half, 0.0f, -half},
+                                   .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+                                   .mass = 1.0f,
+                                   .enabled = true_v,
+                                   .collision_layer = 1,
+                                   .collision_mask = UINT16_MAX,
+                                   .colliders = &collider,
+                                   .collider_count = 1};
+  VkrPhysicsBody body;
+  assert(vkr_physics_body_create(world, &desc, &body));
+
+  /* Each probe, in cell units: the middle of one quarter of the cell. */
+  static const float32_t s_probe[4][2] = {
+      {0.5f, 0.2f}, {0.8f, 0.5f}, {0.5f, 0.8f}, {0.2f, 0.5f}};
+  const uint32_t cells = VKR_HEIGHTFIELD_TILE_CELLS;
+  static uint8_t
+      covered[VKR_HEIGHTFIELD_TILE_CELLS * VKR_HEIGHTFIELD_TILE_CELLS * 4u];
+  for (uint32_t level = 0; level < lod.level_count; ++level) {
+    const VkrGpuGeometryLodLevel range = lod.levels[level];
+    MemZero(covered, sizeof(covered));
+    uint32_t skirts = 0u;
+    for (uint32_t t = 0; t < range.index_count; t += 3u) {
+      const uint32_t *tri = &indices[range.first_index + t];
+      if (tri[0] >= HOLES_GRID || tri[1] >= HOLES_GRID ||
+          tri[2] >= HOLES_GRID) {
+        /* A skirt hangs from drawn ground only. */
+        for (uint32_t k = 0; k < 3u; ++k) {
+          assert(!heightfield_test_vertex_open(vertices, tri[k]));
+        }
+        skirts++;
+        continue;
+      }
+      Vec2 p[3];
+      for (uint32_t k = 0; k < 3u; ++k) {
+        assert(!heightfield_test_vertex_open(vertices, tri[k]));
+        p[k] = vec2_new(vertices[tri[k]].position.x + half,
+                        vertices[tri[k]].position.z + half);
+      }
+      /* Counter-clockwise from +Y: a negative x-z cross. */
+      assert((p[1].x - p[0].x) * (p[2].y - p[0].y) -
+                 (p[1].y - p[0].y) * (p[2].x - p[0].x) <
+             0.0f);
+      const uint32_t x0 = (uint32_t)Min(p[0].x, Min(p[1].x, p[2].x));
+      const uint32_t z0 = (uint32_t)Min(p[0].y, Min(p[1].y, p[2].y));
+      const uint32_t x1 = (uint32_t)Max(p[0].x, Max(p[1].x, p[2].x));
+      const uint32_t z1 = (uint32_t)Max(p[0].y, Max(p[1].y, p[2].y));
+      for (uint32_t cz = z0; cz < z1; ++cz) {
+        for (uint32_t cx = x0; cx < x1; ++cx) {
+          for (uint32_t k = 0; k < 4u; ++k) {
+            const Vec2 q = vec2_new((float32_t)cx + s_probe[k][0],
+                                    (float32_t)cz + s_probe[k][1]);
+            bool8_t inside = true_v;
+            for (uint32_t e = 0; e < 3u; ++e) {
+              const Vec2 a = p[e];
+              const Vec2 b = p[(e + 1u) % 3u];
+              inside =
+                  inside &&
+                  (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x) < 0.0f;
+            }
+            covered[(cz * cells + cx) * 4u + k] += inside;
+          }
+        }
+      }
+    }
+    /* The brush opened part of the -Z edge's skirt. */
+    assert(skirts > 0u && skirts < 4u * cells * 2u);
+    uint32_t open = 0u;
+    uint32_t ground = 0u;
+    for (uint32_t cz = 0; cz < cells; ++cz) {
+      for (uint32_t cx = 0; cx < cells; ++cx) {
+        for (uint32_t k = 0; k < 4u; ++k) {
+          const uint8_t count = covered[(cz * cells + cx) * 4u + k];
+          const float32_t x = (float32_t)cx + s_probe[k][0] - half;
+          const float32_t z = (float32_t)cz + s_probe[k][1] - half;
+          const float32_t from[3] = {x, 100.0f, z};
+          const float32_t down[3] = {0.0f, -200.0f, 0.0f};
+          VkrPhysicsRayHit hit;
+          const bool8_t struck = vkr_physics_raycast(world, from, down, &hit);
+          assert(count <= 1u);
+          assert((count == 1u) == struck);
+          assert(vkr_heightfield_open(&field, x, z) == !struck);
+          open += !struck;
+          ground += struck;
+        }
+      }
+    }
+    assert(open > 0u && ground > open);
+  }
+  /* The box's middle is open, ground far from both holes is not. */
+  assert(vkr_heightfield_open(&field, 8.5f, 7.0f));
+  assert(!vkr_heightfield_open(&field, 20.3f, 20.6f));
+  vkr_physics_world_destroy(world);
+
+  /* A file keeps the holes. */
+  char path[1024];
+  snprintf(path, sizeof(path),
+           PROJECT_SOURCE_DIR "tests/tmp/heightfield_holes_%u.vkrhf",
+           vkr_platform_get_process_id());
+  FilePath directory = {.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp"),
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&directory));
+  char error[160];
+  assert(vkr_heightfield_save(&field, path, error, sizeof(error)));
+  VkrHeightfield read;
+  assert(
+      vkr_heightfield_load(&read, path, &test.allocator, error, sizeof(error)));
+  static uint16_t read_heights[HOLES_GRID];
+  static uint32_t read_weights[HOLES_GRID];
+  vkr_heightfield_read_rect(&field, all, heights, weights);
+  vkr_heightfield_read_rect(&read, all, read_heights, read_weights);
+  assert(MemCompare(read_weights, weights, sizeof(weights)) == 0);
+  assert(vkr_heightfield_hole(&read, 40u, 39u));
+  vkr_heightfield_destroy(&read, &test.allocator);
+  FilePath file = {
+      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_remove(&file) == FILE_ERROR_NONE);
+
+  /* Fill closes every hole on layer 0 at the height it kept, and the tile
+     takes all its levels again. */
+  VkrHeightfieldOp fill = box;
+  fill.add = false_v;
+  assert(vkr_heightfield_op_apply(&field, &fill, &test.allocator, &touched));
+  op = (VkrHeightfieldOp){.kind = VKR_HEIGHTFIELD_OP_BRUSH,
+                          .brush = VKR_HEIGHTFIELD_FILL,
+                          .a = vec3_new(-20.0f, 0.0f, -31.6f),
+                          .radius = 2.5f};
+  assert(vkr_heightfield_op_apply(&field, &op, &test.allocator, &touched));
+  for (uint32_t z = 0; z < HOLES_SIDE; ++z) {
+    for (uint32_t x = 0; x < HOLES_SIDE; ++x) {
+      assert(!vkr_heightfield_hole(&field, x, z));
+      assert(vkr_heightfield_raw(&field, x, z) == heights[z * HOLES_SIDE + x]);
+    }
+  }
+  assert(vkr_heightfield_weights_at(&field, 40u, 39u) == 0xFFu);
+  heightfield_test_tile_vertices(&field, vertices);
+  assert(vkr_scene_terrain_tile_indices(vertices, field.spacing, indices,
+                                        capacity, &lod) == capacity);
+  assert(lod.level_count == VKR_SCENE_TERRAIN_LOD_LEVELS);
+  free(indices);
+  vkr_heightfield_destroy(&field, &test.allocator);
+  heightfield_test_end(&test);
+  printf("  heightfield_test_holes PASSED\n");
+}
+
 bool32_t run_heightfield_tests(void) {
   printf("--- Starting Heightfield Tests ---\n");
   heightfield_test_file();
@@ -540,6 +841,7 @@ bool32_t run_heightfield_tests(void) {
   heightfield_test_operations();
   heightfield_test_journal();
   heightfield_test_tile_levels();
+  heightfield_test_holes();
   printf("--- Heightfield Tests Completed ---\n");
   return true_v;
 }

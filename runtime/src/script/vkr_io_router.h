@@ -20,7 +20,15 @@
  * delivery to a destroyed target is dropped and counted.
  *
  * The router keeps engine components' runtime state (occupants, running
- * timers, counter values) itself; components hold only authored values.
+ * timers, counter values, mover positions) itself; components hold only
+ * authored values.
+ *
+ * Movers (SceneMover) move during play only. Publication and refresh give
+ * each one an evaluated transform at its pose, so ticks only rewrite it,
+ * and clearing the router removes it: the saved transform never changes.
+ * vkr_io_router_step runs first in each tick, before physics: it moves the
+ * movers, sets their brushes' kinematic body (vkr_scene_brush.h) and queues
+ * their outputs for the tick's end.
  */
 #pragma once
 
@@ -77,6 +85,7 @@ struct IoTrigger;
 struct IoRelay;
 struct IoTimer;
 struct IoCounter;
+struct IoMover;
 
 typedef struct VkrIoRouter {
   VkrAllocator *allocator;
@@ -102,8 +111,10 @@ typedef struct VkrIoRouter {
   uint32_t timer_count;
   struct IoCounter *counters;
   uint32_t counter_count;
+  struct IoMover *movers;
+  uint32_t mover_count;
   /* What publication reserved for each list. */
-  uint32_t capacities[5];
+  uint32_t capacities[6];
   /* Zero-delay deliveries, a ring. */
   struct IoDelivery *queue;
   uint32_t queue_head;
@@ -158,9 +169,12 @@ bool8_t vkr_io_router_publish(VkrIoRouter *router, VkrScene *const *scenes,
  * that stayed keep their runtime state, and pending deliveries stay queued.
  * False, routing as before, when storage could not be reserved. */
 bool8_t vkr_io_router_refresh(VkrIoRouter *router);
-/** Frees everything publication reserved; pending deliveries and fire
- * counts end with it. */
+/** Frees everything publication reserved and returns movers to their saved
+ * poses; pending deliveries and fire counts end with it. */
 void vkr_io_router_clear(VkrIoRouter *router);
+/** Stops routing `scene` before it unloads during a session: its movers
+ * return to their saved poses and deliveries to it are dropped. */
+void vkr_io_router_detach(VkrIoRouter *router, const VkrScene *scene);
 /** Published with something to route or sense. */
 bool8_t vkr_io_router_active(const VkrIoRouter *router);
 
@@ -178,3 +192,16 @@ bool8_t vkr_io_router_send(VkrIoRouter *router, VkrEntityId target,
  * timers, deferred fires and deliveries. False when the router faulted;
  * `error` says why. */
 bool8_t vkr_io_router_tick(VkrIoRouter *router, VkrScene *scene, float64_t now);
+/** Before physics in a tick of `dt` seconds: moves each mover toward where
+ * it heads and counts down its wait, writing its evaluated pose and its
+ * brushes' kinematic target; outputs it fires deliver at the tick's end
+ * (vkr_io_router_tick). No structural edits. False when the router
+ * faulted. */
+bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt);
+
+/** World offset of mover `entity`'s open pose from its saved one: its
+ * direction through its world rotation and scale, `distance` metres long,
+ * or with distance zero the extent of its meshes and shapes along it less
+ * `lip`. False when it is not a mover. */
+bool8_t vkr_io_mover_travel(const VkrScene *scene, VkrEntityId entity,
+                            Vec3 *out);

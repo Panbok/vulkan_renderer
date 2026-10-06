@@ -8,9 +8,10 @@
 #include "renderer/systems/vkr_scene_types.h"
 
 #define VKR_SCENE_EDIT_NAME_CAPACITY 512u
-#define VKR_SCENE_EDIT_UNDO_CAPACITY 1024u
-/* Entries one journal group may hold; a larger group fails and rolls back. */
-#define VKR_SCENE_EDIT_GROUP_MAX 512u
+#define VKR_SCENE_EDIT_UNDO_CAPACITY 4096u
+/* Entries one journal group may hold, as many as one agent batch
+   (VKR_SAMPLE_EDIT_BATCH_MAX); a larger group fails and rolls back. */
+#define VKR_SCENE_EDIT_GROUP_MAX 2048u
 
 typedef enum VkrSceneEditAction {
   VKR_SCENE_EDIT_NONE,

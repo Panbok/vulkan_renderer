@@ -187,11 +187,12 @@ review:
 
 | Palette | Section | Buttons | Runs |
 |---|---|---|---|
-| Level Design | Draw and create | Draw box, Box, Wedge, Cylinder, Room, Trigger, Stairs, Corridor | `CMD_BRUSH_DRAW`; the Create menu's Level kinds at the Scene's placement point; the two-click stairs and corridor tools |
+| Level Design | Draw and create | Draw box, Box, Wedge, Cylinder, Room, Trigger, Stairs, Corridor | `CMD_BRUSH_DRAW`; the Create menu's Level kinds at the Scene's placement point; the drag-to-place stairs tool and the multi-point corridor tool, both building editable shapes (ADR-084) |
+| Level Design | Stairs and corridors | Straight, L turn, U turn, Curved, Spiral; Turn left, Curved | The kind and turn of the next stairs; whether the next corridor rounds its corners |
 | Level Design | New brush role | Solid, Visual, Clip, Trigger | The `role` of the next box, wedge or cylinder from the palette or the Create menu, a drawn box and stairs |
-| Level Design | Edit | Select, Move, Clip, Extrude, Hollow, Carve, Doorway, Merge, Duplicate, Delete | Tool and brush commands; `brush.extrude` on the selected face by one grid step; `brush.hollow`; `brush.carve` with the selection as cutter; `blockout.doorway` through the middle of the selected wall brush; `brush.merge` of 2 to 8 selected brushes |
-| Level Design | Material | Grid, Floor, Wall, Orange, Blue, Clip, Trigger | The selected face's `brush_face` material as one edit, else `brush.set_material` on every face of the selected brush |
-| Level Design | Snapping | Free, Surface, Grid; Show grid, Finer, Coarser | The Snapping target; the grid toggle; the grid step halved or doubled between 1/16 m and 64 m |
+| Level Design | Edit | Select, Move, Clip, Extrude, Hollow, Carve, Doorway, Merge, Snap, Free, Bake, Duplicate, Delete | Tool and brush commands; `brush.extrude` on the selected face by one grid step; `brush.hollow`; `brush.carve` with the selection as cutter; the grid patch cut through the brush, else `blockout.doorway` through the middle of the selected wall brush; `brush.merge` of 2 to 8 selected brushes; `brush.snap` of 2 to 16 selected objects against the first; `free_placement` added to the selection or cleared; the selected shape's `blockout` component removed |
+| Level Design | Material | Grid, Floor, Wall, Orange, Blue, Clip, Trigger | The material of the next solid or visual brush, and the selected face's `brush_face` material as one edit, else `brush.set_material` on every face of the selected brush. The lit swatch is the selected face's material, the selected brush's when all its faces share one, else the next brush's |
+| Level Design | Snapping | Free, Surface, Grid, Magnet; Show grid, Finer, Coarser | The Snapping target; the brush magnet (ADR-084); the grid toggle; the grid step halved or doubled between 1/16 m and 64 m |
 | Level Design | Check | Level checks | Shows the Level checks tab |
 | Terrain body | Create | Terrain, Spline, Scatter, Road | The Level kinds; `terrain.road` along the selected spline over the first terrain of its scene |
 | Lighting | Lights, Environment | Point, Spot, Rect, Directional; Sky, Clouds, Fog, Volumetric fog, Post process | The Create menu's kinds |
@@ -228,8 +229,11 @@ Delete (Ctrl+D, Delete, the Edit and context menus, and Cmd `duplicate` and
 container as one edit batch and one undo step
 (`vkr_editor_selection_apply`): Duplicate skips an object whose ancestor is
 selected, because the ancestor's copy includes it, and selects the copies;
-Delete removes the deepest objects first. The transform tools act on the
-primary selection. Cmd `select.toggle <name>` toggles as a Ctrl+click does,
+Delete removes the deepest objects first. A move (the Move gizmo or a
+Select-tool drag) carries the other selected objects of the primary's
+container by the same world offset (`VkrSampleUiClient.move_companions`) and
+undoes as one step; rotate and scale act on the primary selection alone.
+Cmd `select.toggle <name>` toggles as a Ctrl+click does,
 and `ui.selected` reads the count.
 
 ### Agent operations
@@ -327,7 +331,7 @@ the body itself.
 Teams sharing a project want per-user layouts, a task needs a palette the
 five kinds do not cover, warm assets cost more memory than a project can
 spare, switches back need to skip rebuilding objects too (two live scenes),
-or the transform tools need to act on the whole selection.
+or rotate and scale need to act on the whole selection.
 
 ## Implementation
 

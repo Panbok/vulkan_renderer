@@ -1,9 +1,11 @@
 #include "editor_application.h"
 #include "editor_agent.h"
+#include "editor_blockout.h"
 #include "editor_brush_grid.h"
 #include "editor_content.h"
 #include "editor_install.h"
 #include "editor_internal.h"
+#include "editor_level.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
 
@@ -321,6 +323,8 @@ static bool8_t editor_application_shutdown(void *state,
   free(editor->ui.level_report);
   editor->ui.level_report = NULL;
   vkr_editor_brush_grid_destroy(&editor->ui);
+  vkr_editor_magnet_destroy(&editor->ui);
+  vkr_editor_blockout_destroy(&editor->ui);
   /* A running game stops with the editor; Bakery cancels a package job. */
   vkr_editor_build_destroy(editor->ui.build);
   editor->ui.build = NULL;
@@ -362,6 +366,30 @@ static void editor_application_project_scene(void *state,
   vkr_editor_labels_project(&editor->ui, frame);
   vkr_editor_physics_project(&editor->ui, frame);
   vkr_editor_grid_project(&editor->ui, frame);
+}
+
+static Vec3 editor_application_snap_move(void *state, const VkrScene *scene,
+                                         VkrEntityId entity, Vec3 from, Vec3 to,
+                                         Vec3 eye, bool8_t start) {
+  VkrEditorApplication *editor = state;
+  return vkr_editor_magnet_move(&editor->ui, scene, entity, from, to, eye,
+                                start);
+}
+
+/* A move of the primary selection carries the rest of the selection. */
+static uint32_t editor_application_move_companions(void *state,
+                                                   VkrEntityId primary,
+                                                   VkrEntityId *out,
+                                                   uint32_t capacity) {
+  const VkrEditorApplication *editor = state;
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < editor->ui.selection_extra_count && count < capacity;
+       ++i) {
+    if (editor->ui.selection_extra[i].u64 != primary.u64) {
+      out[count++] = editor->ui.selection_extra[i];
+    }
+  }
+  return count;
 }
 
 VkrSampleRuntimeConfig
@@ -441,6 +469,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .save_scene_edits =
           editor->project_managed ? editor_application_save_scene : NULL,
       .project_scene = editor_application_project_scene,
+      .snap_move = editor_application_snap_move,
+      .move_companions = editor_application_move_companions,
       .shutdown = editor_application_shutdown,
   };
   return config;

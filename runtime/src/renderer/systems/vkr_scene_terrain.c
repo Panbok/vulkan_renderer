@@ -661,7 +661,8 @@ bool8_t vkr_scene_terrain_ground(VkrScene *scene, Vec3 top, float32_t bottom,
     float32_t height = 0.0f;
     if (!vkr_heightfield_rect_around(field, x, z, 2.0f * d, &rect) ||
         !vkr_heightfield_load_rect(field, rect) ||
-        !vkr_heightfield_sample(field, x, z, &height)) {
+        !vkr_heightfield_sample(field, x, z, &height) ||
+        vkr_heightfield_open(field, x, z)) {
       continue;
     }
     const float32_t y = origin.y + height;
@@ -805,17 +806,26 @@ static Vec3 terrain_normal(const TerrainGrid *grid, uint32_t x, uint32_t z) {
   return vec3_normalize(vec3_new(-dx, 1.0f, -dz));
 }
 
-/* Layer weights of grid sample (x, z), each 0 to 1. */
+/* Layer weights of grid sample (x, z), each 0 to 1; a fine grid's hole
+   sample has none. */
 static uint32_t terrain_grid_weights(const TerrainGrid *grid, uint32_t x,
                                      uint32_t z) {
   const VkrHeightfield *field = grid->field;
+  uint32_t weights = 0u;
   if (grid->weights) {
-    return grid
-        ->weights[(z - grid->z0) * TERRAIN_SNAPSHOT_SIDE + (x - grid->x0)];
+    weights =
+        grid->weights[(z - grid->z0) * TERRAIN_SNAPSHOT_SIDE + (x - grid->x0)];
+  } else {
+    weights = grid->overview
+                  ? field->overview_weights
+                        [z * vkr_heightfield_overview_samples(field) + x]
+                  : vkr_heightfield_weights_at(field, x, z);
   }
-  return grid->overview ? field->overview_weights
-                              [z * vkr_heightfield_overview_samples(field) + x]
-                        : vkr_heightfield_weights_at(field, x, z);
+  /* Overview cells are wider than a hole; they draw it as layer 0. */
+  if (grid->overview && weights == VKR_HEIGHTFIELD_HOLE_WEIGHTS) {
+    weights = 0xFFu;
+  }
+  return weights;
 }
 
 static Vec4 terrain_weights(const TerrainGrid *grid, uint32_t x, uint32_t z) {
@@ -901,20 +911,36 @@ uint32_t vkr_scene_terrain_tile_index_count(void) {
   return index_count;
 }
 
+/* Whether tile vertex `index` is a hole sample: its four layer weights are
+   zero. */
+static bool8_t terrain_vertex_open(const VkrVertex3d *vertices,
+                                   uint32_t index) {
+  const Vec4 weights = vertices[index].colour;
+  return weights.x == 0.0f && weights.y == 0.0f && weights.z == 0.0f &&
+         weights.w == 0.0f;
+}
+
 /* vkr_scene_terrain_tile_indices, leaving out the cells and edge skirts
-   `holes` covers; a tile with holes keeps only the levels whose cells each
-   lie in one fine tile. */
+   `holes` covers; an overview tile with holes keeps only the levels whose
+   cells each lie in one fine tile. */
 static uint32_t terrain_grid_indices(const VkrVertex3d *vertices,
                                      float32_t spacing, const uint64_t *holes,
                                      uint32_t *indices, uint32_t capacity,
                                      VkrGpuGeometryLodRow *out_lod) {
   const uint32_t side = VKR_HEIGHTFIELD_TILE_CELLS + 1u;
   const uint32_t grid = side * side;
-  const uint32_t levels =
-      holes ? TERRAIN_HOLED_LEVELS : VKR_SCENE_TERRAIN_LOD_LEVELS;
   if (capacity < vkr_scene_terrain_tile_index_count()) {
     return 0u;
   }
+  /* A tile with a hole sample keeps level 0: a coarser cell would cover the
+     hole or drop ground around it. */
+  bool8_t open = false_v;
+  for (uint32_t i = 0; !open && i < grid; ++i) {
+    open = terrain_vertex_open(vertices, i);
+  }
+  const uint32_t levels = open    ? 1u
+                          : holes ? TERRAIN_HOLED_LEVELS
+                                  : VKR_SCENE_TERRAIN_LOD_LEVELS;
   /* Level L draws every 2^L-th grid line with level 0's diagonal (ADR-084);
      its error is its surface's largest height difference from the samples,
      at least a share of its cell size so that painted weights thin out
@@ -934,13 +960,33 @@ static uint32_t terrain_grid_indices(const VkrVertex3d *vertices,
         const uint32_t b = a + stride;
         const uint32_t c = a + stride * side;
         const uint32_t d = c + stride;
-        /* Counter-clockwise seen from above. */
-        indices[count++] = a;
-        indices[count++] = c;
-        indices[count++] = b;
-        indices[count++] = b;
-        indices[count++] = c;
-        indices[count++] = d;
+        const bool8_t open_a = open && terrain_vertex_open(vertices, a);
+        const bool8_t open_b = open && terrain_vertex_open(vertices, b);
+        const bool8_t open_c = open && terrain_vertex_open(vertices, c);
+        const bool8_t open_d = open && terrain_vertex_open(vertices, d);
+        if (!open_a && !open_b && !open_c && !open_d) {
+          /* Counter-clockwise seen from above. */
+          indices[count++] = a;
+          indices[count++] = c;
+          indices[count++] = b;
+          indices[count++] = b;
+          indices[count++] = c;
+          indices[count++] = d;
+          continue;
+        }
+        /* A cell with a hole corner splits along its a to d diagonal, as
+           the height field collision does, and drops every triangle a hole
+           corner touches. */
+        if (!open_a && !open_c && !open_d) {
+          indices[count++] = a;
+          indices[count++] = c;
+          indices[count++] = d;
+        }
+        if (!open_a && !open_d && !open_b) {
+          indices[count++] = a;
+          indices[count++] = d;
+          indices[count++] = b;
+        }
       }
     }
     for (uint32_t edge = 0; edge < 4u; ++edge) {
@@ -951,13 +997,27 @@ static uint32_t terrain_grid_indices(const VkrVertex3d *vertices,
         uint32_t zb = 0u;
         terrain_edge_sample(edge, i, &xa, &za);
         terrain_edge_sample(edge, i + stride, &xb, &zb);
-        if (terrain_hole(holes,
-                         Min(Min(xa, xb), VKR_HEIGHTFIELD_TILE_CELLS - 1u),
-                         Min(Min(za, zb), VKR_HEIGHTFIELD_TILE_CELLS - 1u))) {
+        const uint32_t cell_x =
+            Min(Min(xa, xb), VKR_HEIGHTFIELD_TILE_CELLS - stride);
+        const uint32_t cell_z =
+            Min(Min(za, zb), VKR_HEIGHTFIELD_TILE_CELLS - stride);
+        if (terrain_hole(holes, cell_x, cell_z)) {
           continue;
         }
         const uint32_t top_a = za * side + xa;
         const uint32_t top_b = zb * side + xb;
+        if (open) {
+          /* The skirt hangs only from an edge its cell's triangle draws:
+             -Z and +X edges belong to the a, d, b triangle, +Z and -X
+             edges to a, c, d. */
+          const uint32_t a = cell_z * side + cell_x;
+          const uint32_t corner = edge < 2u ? a + stride : a + stride * side;
+          if (terrain_vertex_open(vertices, a) ||
+              terrain_vertex_open(vertices, a + stride * side + stride) ||
+              terrain_vertex_open(vertices, corner)) {
+            continue;
+          }
+        }
         const uint32_t low_a = grid + edge * side + i;
         const uint32_t low_b = grid + edge * side + i + stride;
         indices[count++] = top_a;
@@ -967,6 +1027,13 @@ static uint32_t terrain_grid_indices(const VkrVertex3d *vertices,
         indices[count++] = top_b;
         indices[count++] = low_b;
       }
+    }
+    /* A wholly open tile keeps one degenerate triangle, which draws
+       nothing, so it still has geometry and stays loaded. */
+    if (count == first) {
+      indices[count++] = 0u;
+      indices[count++] = 0u;
+      indices[count++] = 0u;
     }
     lod.levels[level] = (VkrGpuGeometryLodLevel){
         .first_index = first,
@@ -1734,7 +1801,8 @@ static void terrain_body_poll(VkrScene *scene, TerrainRecord *record) {
 }
 
 /* One height field body over the whole terrain, holes padding the grid to a
-   multiple of four samples; at once when the terrain has none. */
+   multiple of four samples and cut where its hole samples are; at once when
+   the terrain has none. */
 static void terrain_build_collision(VkrScene *scene, TerrainRecord *record,
                                     Vec3 position) {
   const VkrHeightfield *field = &record->field;
@@ -1746,12 +1814,13 @@ static void terrain_build_collision(VkrScene *scene, TerrainRecord *record,
     return;
   }
   for (uint32_t z = 0; z < padded; ++z) {
-    for (uint32_t x = 0; x < padded; ++x) {
-      heights[(size_t)z * padded + x] = x < samples && z < samples
-                                            ? vkr_heightfield_at(field, x, z)
-                                            : VKR_PHYSICS_HEIGHT_HOLE;
+    for (uint32_t x = z < samples ? samples : 0u; x < padded; ++x) {
+      heights[(size_t)z * padded + x] = VKR_PHYSICS_HEIGHT_HOLE;
     }
   }
+  vkr_heightfield_read_metres(
+      field, (VkrHeightfieldRect){0u, 0u, samples - 1u, samples - 1u}, heights,
+      padded, VKR_PHYSICS_HEIGHT_HOLE);
   const bool8_t now = !record->collision_built;
   const bool8_t ok = terrain_body_set(scene, record, heights, padded, position,
                                       vec2_new(0.0f, 0.0f), now);
@@ -1795,7 +1864,8 @@ static void terrain_build_window_collision(VkrScene *scene,
   for (uint64_t i = 0; i < (uint64_t)padded * padded; ++i) {
     heights[i] = VKR_PHYSICS_HEIGHT_HOLE;
   }
-  vkr_heightfield_read_metres(field, rect, heights, padded);
+  vkr_heightfield_read_metres(field, rect, heights, padded,
+                              VKR_PHYSICS_HEIGHT_HOLE);
   const Vec2 corner = vec2_new((float32_t)rect.x0 * field->spacing,
                                (float32_t)rect.z0 * field->spacing);
   const bool8_t ok =

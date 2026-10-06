@@ -4,21 +4,12 @@
 #include "editor_ops.h"
 
 #include "core/logger.h"
-#include "filesystem/filesystem.h"
+#include "platform/vkr_local_socket.h"
 #include "platform/vkr_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if !defined(_WIN32)
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
-#include <unistd.h>
-#endif
 
 /* Clients a listener serves at once, the longest request line and the
  * requests that may wait behind the active one. */
@@ -30,7 +21,7 @@
 #define AGENT_CLIENT_SELF UINT32_MAX
 
 typedef struct AgentClient {
-  int fd;
+  VkrLocalSocket socket;
   /* Increments when the slot takes a new client, so a response never
      reaches a later client in the same slot. */
   uint32_t generation;
@@ -52,7 +43,7 @@ typedef struct AgentQueued {
 struct VkrEditorAgent {
   VkrAllocator *allocator;
   VkrEditorOps *ops;
-  int listen_fd;
+  VkrLocalSocket listener;
   char socket_path[256];
   char status[320];
   AgentClient clients[AGENT_CLIENT_MAX];
@@ -90,12 +81,8 @@ static bool8_t agent_reserve(uint8_t **data, uint64_t *capacity,
 }
 
 static void agent_client_close(AgentClient *client) {
-#if !defined(_WIN32)
-  if (client->fd >= 0) {
-    close(client->fd);
-  }
-#endif
-  client->fd = -1;
+  vkr_local_socket_close(client->socket);
+  client->socket = VKR_LOCAL_SOCKET_INVALID;
   client->in_length = 0u;
   client->out_length = 0u;
 }
@@ -110,7 +97,8 @@ static void agent_send(VkrEditorAgent *agent, uint32_t slot,
     return;
   }
   AgentClient *client = &agent->clients[slot];
-  if (client->fd < 0 || client->generation != generation) {
+  if (client->socket == VKR_LOCAL_SOCKET_INVALID ||
+      client->generation != generation) {
     return;
   }
   if (!agent_reserve(&client->out, &client->out_capacity,
@@ -283,101 +271,60 @@ bool8_t vkr_editor_agent_submit(VkrEditorAgent *agent, const char *line) {
 // =============================================================================
 
 bool8_t vkr_editor_agent_directory(char *out, uint64_t capacity) {
-  char temp[512];
-  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_TEMP, temp,
-                                   sizeof(temp))) {
-    return false_v;
-  }
-  const int written = snprintf(out, capacity, "%s/vkr", temp);
-  if (written <= 0 || (uint64_t)written >= capacity) {
-    return false_v;
-  }
-#if defined(_WIN32)
-  /* The per-user temporary directory already admits only its user. */
-  const FilePath path = {
-      .path = string8_create_from_cstr((const uint8_t *)out, strlen(out)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
-  return file_create_directory(&path);
-#else
-  if (mkdir(out, 0700) != 0 && errno != EEXIST) {
-    return false_v;
-  }
-  struct stat info;
-  return lstat(out, &info) == 0 && S_ISDIR(info.st_mode) &&
-         info.st_uid == getuid() && (info.st_mode & 0077) == 0;
-#endif
+  return vkr_local_socket_user_directory(out, capacity);
 }
 
-#if !defined(_WIN32)
-
-static bool8_t agent_socket_live(const char *path) {
-  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return false_v;
+static void agent_listen_failed(VkrEditorAgent *agent,
+                                VkrLocalSocketListenStatus status) {
+  if (status == VKR_LOCAL_SOCKET_LISTEN_TOO_LONG) {
+    snprintf(agent->status, sizeof(agent->status),
+             "Agent channel off: the socket path is too long.");
+  } else if (status == VKR_LOCAL_SOCKET_LISTEN_IN_USE) {
+    snprintf(agent->status, sizeof(agent->status),
+             "Agent channel off: another editor listens on %s.",
+             agent->socket_path);
+  } else {
+    char error[200];
+    vkr_local_socket_error_text(error, sizeof(error));
+    snprintf(agent->status, sizeof(agent->status),
+             "Agent channel off: cannot listen on %s (%s).", agent->socket_path,
+             error);
   }
-  struct sockaddr_un address = {.sun_family = AF_UNIX};
-  snprintf(address.sun_path, sizeof(address.sun_path), "%s", path);
-  const bool8_t live =
-      connect(fd, (struct sockaddr *)&address, sizeof(address)) == 0;
-  close(fd);
-  return live;
 }
 
 static bool8_t agent_listen(VkrEditorAgent *agent, const char *requested) {
-  char directory[200];
-  if (requested && requested[0]) {
+  const bool8_t explicit_path = requested && requested[0];
+  if (explicit_path) {
     snprintf(agent->socket_path, sizeof(agent->socket_path), "%s", requested);
   } else {
-    if (!vkr_editor_agent_directory(directory, sizeof(directory))) {
+    char name[64];
+    snprintf(name, sizeof(name), "editor-%u.sock", vkr_local_socket_user_id());
+    if (!vkr_local_socket_user_path(name, agent->socket_path,
+                                    sizeof(agent->socket_path))) {
       snprintf(agent->status, sizeof(agent->status),
                "Agent channel off: no private directory for its socket.");
       return false_v;
     }
-    snprintf(agent->socket_path, sizeof(agent->socket_path),
-             "%s/editor-%u.sock", directory, (unsigned)getuid());
+  }
+  VkrLocalSocketListenStatus status = vkr_local_socket_listen(
+      agent->socket_path, (int32_t)AGENT_CLIENT_MAX, &agent->listener);
+  if (status == VKR_LOCAL_SOCKET_LISTEN_IN_USE && !explicit_path) {
     /* Another editor already serves the default path. */
-    if (agent_socket_live(agent->socket_path)) {
-      snprintf(agent->socket_path, sizeof(agent->socket_path),
-               "%s/editor-%u-%d.sock", directory, (unsigned)getuid(),
-               (int)getpid());
-    }
+    char name[64];
+    snprintf(name, sizeof(name), "editor-%u-%u.sock",
+             vkr_local_socket_user_id(), vkr_platform_get_process_id());
+    status = vkr_local_socket_user_path(name, agent->socket_path,
+                                        sizeof(agent->socket_path))
+                 ? vkr_local_socket_listen(agent->socket_path,
+                                           (int32_t)AGENT_CLIENT_MAX,
+                                           &agent->listener)
+                 : VKR_LOCAL_SOCKET_LISTEN_TOO_LONG;
   }
-  struct sockaddr_un address = {.sun_family = AF_UNIX};
-  if (strlen(agent->socket_path) >= sizeof(address.sun_path)) {
-    snprintf(agent->status, sizeof(agent->status),
-             "Agent channel off: the socket path is too long.");
+  if (status != VKR_LOCAL_SOCKET_LISTEN_OK) {
+    agent_listen_failed(agent, status);
     return false_v;
   }
-  if (agent_socket_live(agent->socket_path)) {
-    snprintf(agent->status, sizeof(agent->status),
-             "Agent channel off: another editor listens on %s.",
-             agent->socket_path);
-    return false_v;
-  }
-  /* A socket file nobody answers is stale. */
-  (void)unlink(agent->socket_path);
-  snprintf(address.sun_path, sizeof(address.sun_path), "%s",
-           agent->socket_path);
-  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    snprintf(agent->status, sizeof(agent->status),
-             "Agent channel off: no socket (%s).", strerror(errno));
-    return false_v;
-  }
-  /* Owner-only from creation: bind under a restrictive umask. */
-  const mode_t previous = umask(0177);
-  const int bound = bind(fd, (struct sockaddr *)&address, sizeof(address));
-  umask(previous);
-  if (bound != 0 || chmod(agent->socket_path, 0600) != 0 ||
-      listen(fd, (int)AGENT_CLIENT_MAX) != 0) {
-    snprintf(agent->status, sizeof(agent->status),
-             "Agent channel off: cannot listen on %s (%s).", agent->socket_path,
-             strerror(errno));
-    close(fd);
-    return false_v;
-  }
-  (void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-  agent->listen_fd = fd;
+  (void)vkr_local_socket_set_nonblocking(agent->listener);
   snprintf(agent->status, sizeof(agent->status), "Listening on %s",
            agent->socket_path);
   return true_v;
@@ -385,27 +332,24 @@ static bool8_t agent_listen(VkrEditorAgent *agent, const char *requested) {
 
 static void agent_accept(VkrEditorAgent *agent) {
   for (;;) {
-    const int fd = accept(agent->listen_fd, NULL, NULL);
-    if (fd < 0) {
+    VkrLocalSocket accepted = VKR_LOCAL_SOCKET_INVALID;
+    if (vkr_local_socket_accept(agent->listener, &accepted) !=
+        VKR_LOCAL_SOCKET_OK) {
       return;
     }
     AgentClient *slot = NULL;
     for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {
-      if (agent->clients[i].fd < 0) {
+      if (agent->clients[i].socket == VKR_LOCAL_SOCKET_INVALID) {
         slot = &agent->clients[i];
         break;
       }
     }
     if (!slot) {
-      close(fd);
+      vkr_local_socket_close(accepted);
       continue;
     }
-#if defined(SO_NOSIGPIPE)
-    const int one = 1;
-    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
-    (void)fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-    slot->fd = fd;
+    (void)vkr_local_socket_set_nonblocking(accepted);
+    slot->socket = accepted;
     slot->generation++;
     slot->in_length = 0u;
     slot->out_length = 0u;
@@ -421,17 +365,18 @@ static void agent_read(VkrEditorAgent *agent, uint32_t index) {
       agent_client_close(client);
       return;
     }
-    const ssize_t got = recv(client->fd, client->in + client->in_length,
-                             client->in_capacity - client->in_length, 0);
-    if (got == 0 || (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
-                     errno != EINTR)) {
+    uint64_t got = 0u;
+    const VkrLocalSocketStatus status =
+        vkr_local_socket_recv(client->socket, client->in + client->in_length,
+                              client->in_capacity - client->in_length, &got);
+    if (status == VKR_LOCAL_SOCKET_WOULD_BLOCK) {
+      break;
+    }
+    if (status != VKR_LOCAL_SOCKET_OK) {
       agent_client_close(client);
       return;
     }
-    if (got < 0) {
-      break;
-    }
-    client->in_length += (uint64_t)got;
+    client->in_length += got;
   }
   uint64_t start = 0u;
   for (uint64_t i = 0u; i < client->in_length; ++i) {
@@ -463,21 +408,18 @@ static void agent_read(VkrEditorAgent *agent, uint32_t index) {
 static void agent_write(AgentClient *client) {
   uint64_t sent_total = 0u;
   while (sent_total < client->out_length) {
-#if defined(MSG_NOSIGNAL)
-    const int flags = MSG_NOSIGNAL;
-#else
-    const int flags = 0;
-#endif
-    const ssize_t sent = send(client->fd, client->out + sent_total,
-                              client->out_length - sent_total, flags);
-    if (sent < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-        break;
-      }
+    uint64_t sent = 0u;
+    const VkrLocalSocketStatus status =
+        vkr_local_socket_send(client->socket, client->out + sent_total,
+                              client->out_length - sent_total, &sent);
+    if (status == VKR_LOCAL_SOCKET_WOULD_BLOCK) {
+      break;
+    }
+    if (status != VKR_LOCAL_SOCKET_OK) {
       agent_client_close(client);
       return;
     }
-    sent_total += (uint64_t)sent;
+    sent_total += sent;
   }
   if (sent_total) {
     MemCopy(client->out, client->out + sent_total,
@@ -485,8 +427,6 @@ static void agent_write(AgentClient *client) {
     client->out_length -= sent_total;
   }
 }
-
-#endif
 
 // =============================================================================
 // Lifetime
@@ -499,9 +439,9 @@ VkrEditorAgent *vkr_editor_agent_create(VkrAllocator *allocator,
     return NULL;
   }
   agent->allocator = allocator;
-  agent->listen_fd = -1;
+  agent->listener = VKR_LOCAL_SOCKET_INVALID;
   for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {
-    agent->clients[i].fd = -1;
+    agent->clients[i].socket = VKR_LOCAL_SOCKET_INVALID;
   }
   agent->arena = arena_create(AGENT_ARENA_RESERVE, KB(64));
   agent->ops = vkr_editor_ops_create(allocator);
@@ -512,11 +452,6 @@ VkrEditorAgent *vkr_editor_agent_create(VkrAllocator *allocator,
   if (!socket || !socket[0]) {
     socket = getenv("VKR_EDITOR_AGENT_SOCKET");
   }
-#if defined(_WIN32)
-  (void)socket;
-  snprintf(agent->status, sizeof(agent->status),
-           "Agent channel off: Windows support is pending.");
-#else
   if (!enabled) {
     snprintf(agent->status, sizeof(agent->status),
              "Agent channel off (--no-agent-socket).");
@@ -525,7 +460,6 @@ VkrEditorAgent *vkr_editor_agent_create(VkrAllocator *allocator,
   } else {
     log_warn("%s", agent->status);
   }
-#endif
   return agent;
 }
 
@@ -538,12 +472,10 @@ void vkr_editor_agent_destroy(VkrEditorAgent *agent) {
     free(agent->clients[i].in);
     free(agent->clients[i].out);
   }
-#if !defined(_WIN32)
-  if (agent->listen_fd >= 0) {
-    close(agent->listen_fd);
-    (void)unlink(agent->socket_path);
+  if (agent->listener != VKR_LOCAL_SOCKET_INVALID) {
+    vkr_local_socket_close(agent->listener);
+    (void)vkr_local_socket_remove_path(agent->socket_path);
   }
-#endif
   while (agent->queue_count) {
     free(agent->queue[agent->queue_head].line);
     agent->queue_head = (agent->queue_head + 1u) % AGENT_QUEUE_MAX;
@@ -563,24 +495,21 @@ void vkr_editor_agent_update(VkrEditorAgent *agent, VkrEditorUi *editor,
     return;
   }
   vkr_editor_ops_update(agent->ops, frame);
-#if !defined(_WIN32)
-  if (agent->listen_fd >= 0) {
+  if (agent->listener != VKR_LOCAL_SOCKET_INVALID) {
     agent_accept(agent);
     for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {
-      if (agent->clients[i].fd >= 0) {
+      if (agent->clients[i].socket != VKR_LOCAL_SOCKET_INVALID) {
         agent_read(agent, i);
       }
     }
   }
-#endif
   agent_advance(agent, editor, frame);
-#if !defined(_WIN32)
   for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {
-    if (agent->clients[i].fd >= 0 && agent->clients[i].out_length) {
+    if (agent->clients[i].socket != VKR_LOCAL_SOCKET_INVALID &&
+        agent->clients[i].out_length) {
       agent_write(&agent->clients[i]);
     }
   }
-#endif
 }
 
 bool8_t vkr_editor_agent_busy(const VkrEditorAgent *agent) {
@@ -588,7 +517,7 @@ bool8_t vkr_editor_agent_busy(const VkrEditorAgent *agent) {
     return false_v;
   }
   for (uint32_t i = 0; i < AGENT_CLIENT_MAX; ++i) {
-    if (agent->clients[i].fd >= 0) {
+    if (agent->clients[i].socket != VKR_LOCAL_SOCKET_INVALID) {
       return true_v;
     }
   }

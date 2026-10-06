@@ -131,6 +131,8 @@ typedef struct VkrEditorPlacement {
   float32_t offset;
   /* Turn about the snap normal, degrees. */
   float32_t yaw_degrees;
+  /* Moved and drawn brushes snap to nearby brushes (editor_level.h). */
+  bool8_t magnet;
 } VkrEditorPlacement;
 
 /* Objects one selection holds: the primary and the extra ones. */
@@ -454,12 +456,8 @@ typedef struct VkrEditorUi {
   struct VkrEditorAgent *agent;
   /* The Level checks window's last report (editor_level.h). */
   struct VkrEditorLevelReport *level_report;
-  /* Brush clipping: two clicks on the grid plane cut the selected brush
-     with the vertical plane through them. */
+  /* Brush clipping on the selected brush's grid (editor_brush_grid.h). */
   bool8_t clip_tool;
-  bool8_t clip_has_first;
-  Vec3 clip_first;
-  Vec3 clip_current;
   /* Brush face handles (ADR-084): one per face of a brush selected with
      the Select tool, or of the selected face alone, along the face's world
      normal from its center. `face_handle_hot` is the handle under the
@@ -477,14 +475,25 @@ typedef struct VkrEditorUi {
   float32_t face_drag_distance;
   /* Brush grid editing of the selected brush (editor_brush_grid.h). */
   struct VkrEditorBrushGrid *brush_grid;
+  /* The brushes a moved or drawn brush snaps to (editor_level.h). */
+  struct VkrEditorMagnet *magnet;
+  /* Handles of the selected blockout shape (editor_blockout.h). */
+  struct VkrEditorBlockout *blockout;
   /* Terrain sculpting (editor_terrain.h): the tool, its settings, the
      stroke in progress and the ground under the pointer. */
   bool8_t terrain_tool;
   /* The stairs or corridor tool, else NONE, and its start once clicked. */
   VkrEditorSceneTool path_tool;
-  bool8_t path_has_first;
-  Vec3 path_first;
+  /* The points clicked so far (stairs: where a drag started; corridors: up
+     to 16 floor points) and the pointer's point on their plane. */
+  uint32_t path_count;
+  Vec3 path_points[16];
   Vec3 path_current;
+  /* The palette's stairs kind (SceneStairsKind), which way turning
+     stairs turn, and whether corridors curve through their points. */
+  uint32_t stairs_kind;
+  bool8_t stairs_left;
+  bool8_t corridor_curved;
   /* Objects selected beside the runtime's selection, the primary one, by
      Ctrl+click (Cmd on macOS) in the Outliner or the Scene. A change of the
      primary selection that no toggle made clears them. */
@@ -499,6 +508,9 @@ typedef struct VkrEditorUi {
   /* The role (index into vkr_editor_brush_roles) of the next brush the
      Create path, box drawing or the stairs tool makes. */
   uint32_t brush_role;
+  /* Its material, an index into vkr_editor_brush_materials: the palette's
+     last swatch. */
+  uint32_t brush_material;
   uint32_t terrain_mode;
   float32_t terrain_radius;
   float32_t terrain_strength;

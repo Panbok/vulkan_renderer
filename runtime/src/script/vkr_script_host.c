@@ -984,7 +984,16 @@ static bool8_t script_host_tick(VkrScriptHost *host, VkrScene *scene,
 static bool8_t script_host_before_physics(VkrScene *scene, uint64_t tick,
                                           void *context) {
   (void)tick;
-  return script_host_tick(context, scene, SCRIPT_HOOK_FIXED_UPDATE);
+  VkrScriptHost *host = context;
+  /* Movers move first, so behaviors and physics see this tick's poses. */
+  if (!host->faulted &&
+      !vkr_io_router_step(&host->io, VKR_SCENE_SIMULATION_FIXED_DT)) {
+    snprintf(host->error, sizeof(host->error), "Entity IO: %s", host->io.error);
+    host->faulted = true_v;
+    scene->simulation.error = host->error;
+    return false_v;
+  }
+  return script_host_tick(host, scene, SCRIPT_HOOK_FIXED_UPDATE);
 }
 
 static bool8_t script_host_after_physics(VkrScene *scene, uint64_t tick,
@@ -2353,6 +2362,7 @@ void vkr_script_host_detach(VkrScriptHost *host, const VkrScene *scene) {
   /* The container's instances end, and World-scoped behaviors on its
      entities stop, before its entities go; unloading runs no destroy hook. */
   (void)vkr_scene_unobserve_destroy(host->containers[slot].scene, host);
+  vkr_io_router_detach(&host->io, host->containers[slot].scene);
   for (uint32_t i = host->instance_count; i-- > 0u;) {
     VkrScriptInstance *instance = host->instances[i];
     if (instance->container == slot) {

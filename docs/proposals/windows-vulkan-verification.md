@@ -31,7 +31,7 @@ validation off. Captures are local (`%TEMP%\vkr\captures`).
 | H6 Origin rebase | Pass. `Origin rebased by 4096, 0 m`; `SceneRoot` at `[-4096,0,0]` during Play and the raycast hits `Terrain`; `[0,0,0]` exactly after `sim.stop`; the clouds keep their layout | Release editor captures |
 | H7 Hitch measurement | Measured; see below. With `VKR_RG_GPU_TIMING=1` and `VKR_RG_SLOW_FRAME_MS=8`, the slowest frames are local shadow redraws: `Shadow.Local.*` fills 2,027 of the slow frames' top-three entries and `Shadow.Cascade.*` 19 (2026-10-05) | Release editor |
 | H8 Large files | Pass. A raise at `[0,-6000]` samples 59.498 m, saves, and a second run samples 59.498 m; the file stays 410,548,278 bytes. Offsets past 2 GiB remain untested | Release editor |
-| H9 Agent operations | Pass. Every `op` above printed `"ok":true`. The socket and `vkr_mcp` remain unavailable on Windows (ADR-084) | logs |
+| H9 Agent operations | Pass. Every `op` above printed `"ok":true`. The socket and `vkr_mcp` work on Windows since 2026-10-06 (ADR-084) | logs |
 
 H7, Release, 240 gliding 3 m moves every 0.1 s from `[0,60,-700]`, reading
 `stats.frame_ms`, `frame_ms_p95` and `frame_ms_max` every 40 moves (ms,

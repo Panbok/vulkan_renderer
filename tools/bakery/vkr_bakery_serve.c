@@ -1,21 +1,19 @@
 #include "vkr_bakery_commands.h"
 
 #include "core/vkr_threads.h"
+#include "platform/vkr_local_socket.h"
+#include "platform/vkr_platform.h"
 #include "vkr_bakery_buffer.h"
 
-#include <errno.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/un.h>
+#if defined(_WIN32)
+#include <direct.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -53,25 +51,7 @@
 /* File systems report one save as several events; a watch waits this long
    after the last change before it reports and rebuilds. */
 #define VKR_SERVE_SETTLE_SECONDS 0.3
-#define VKR_SERVE_SEND_TIMEOUT_SECONDS 2
-
-#if defined(_WIN32)
-
-int vkr_bakery_cmd_serve(VkrBakeryCli *cli) {
-  (void)cli;
-  fprintf(stderr, "error VKR-CLI-0003: serve is not available on Windows "
-                  "yet; run vkr_bakery commands directly\n");
-  return VKR_BAKERY_EXIT_ENVIRONMENT;
-}
-
-int vkr_bakery_cmd_send(VkrBakeryCli *cli) {
-  (void)cli;
-  fprintf(stderr, "error VKR-CLI-0003: send is not available on Windows "
-                  "yet\n");
-  return VKR_BAKERY_EXIT_ENVIRONMENT;
-}
-
-#else
+#define VKR_SERVE_SEND_TIMEOUT_MS 2000u
 
 // =============================================================================
 // State
@@ -83,7 +63,8 @@ typedef struct VkrServeArguments {
 } VkrServeArguments;
 
 typedef struct VkrServeClient {
-  int fd; /* -1 when the slot is free. */
+  /* VKR_LOCAL_SOCKET_INVALID when the slot is free. */
+  VkrLocalSocket socket;
   uint32_t generation;
   VkrBakeryBuffer inbox;
 } VkrServeClient;
@@ -110,13 +91,30 @@ typedef struct VkrServeWatch {
   uint32_t changed_count;
 } VkrServeWatch;
 
+#if defined(_WIN32)
+/* Directories one Windows watcher thread waits on, beside its stop event. */
+#define VKR_SERVE_WATCH_DIRECTORIES (MAXIMUM_WAIT_OBJECTS - 1u)
+
+/* One directory the Windows watcher reads changes from. */
+typedef struct VkrServeDirectory {
+  HANDLE handle;
+  OVERLAPPED overlapped;
+  /* A read is outstanding, so closing must cancel and wait for it. */
+  bool8_t armed;
+  char path[VKR_BAKERY_PATH_CAPACITY];
+  /* 64 KiB, the largest buffer a network share accepts; DWORD-aligned. */
+  DWORD buffer[16384];
+} VkrServeDirectory;
+#endif
+
 typedef struct VkrServe {
   VkrAllocator allocator;
   char root[VKR_BAKERY_PATH_CAPACITY];
   char socket_path[VKR_BAKERY_PATH_CAPACITY];
   char program[VKR_BAKERY_PATH_CAPACITY];
-  int listen_fd;
-  int wake[2];
+  VkrLocalSocket listener;
+  /* The loop polls wake[0]; other threads send a byte to wake[1]. */
+  VkrLocalSocket wake[2];
   VkrServeClient clients[VKR_SERVE_MAX_CLIENTS];
   uint32_t next_generation;
   uint32_t next_watch;
@@ -147,6 +145,11 @@ typedef struct VkrServe {
 #if defined(__APPLE__)
   FSEventStreamRef stream;
   dispatch_queue_t stream_queue;
+#elif defined(_WIN32)
+  VkrServeDirectory *directories;
+  uint32_t directory_count;
+  HANDLE watcher;
+  HANDLE watcher_stop;
 #endif
 } VkrServe;
 
@@ -161,37 +164,50 @@ vkr_internal void vkr_serve_signal(int signal_number) {
 
 vkr_internal void vkr_serve_wake(VkrServe *serve) {
   const char byte = 1;
-  (void)write(serve->wake[1], &byte, 1u);
+  uint64_t sent = 0u;
+  (void)vkr_local_socket_send(serve->wake[1], &byte, 1u, &sent);
+}
+
+/* First occurrence of `needle` in `length` bytes of `text`, or NULL. */
+vkr_internal const char *vkr_serve_find(const char *text, uint64_t length,
+                                        const char *needle) {
+  const uint64_t needle_length = strlen(needle);
+  for (uint64_t i = 0u; needle_length <= length && i <= length - needle_length;
+       ++i) {
+    if (MemCompare(text + i, needle, needle_length) == 0) {
+      return text + i;
+    }
+  }
+  return NULL;
 }
 
 // =============================================================================
 // Socket paths
 // =============================================================================
 
-/* Unix socket paths are limited to about 100 bytes, so the default lives in
+/* Local socket paths are limited to about 100 bytes, so the default lives in
    the per-user temporary directory, named by the root's digest. */
 vkr_internal bool8_t vkr_serve_default_socket(const char *root, char *out,
                                               uint32_t capacity) {
   char digest[VKR_BAKERY_SHA256_HEX];
   vkr_bakery_hash_bytes(root, strlen(root), digest);
-  const char *directory = getenv("TMPDIR");
-  if (!directory || !directory[0]) {
-    directory = "/tmp";
+  char directory[VKR_BAKERY_PATH_CAPACITY];
+  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_TEMP, directory,
+                                   sizeof(directory))) {
+    return false_v;
   }
-  const uint64_t length = strlen(directory);
   const int written =
-      snprintf(out, capacity, "%s%svkr-bakery-%.16s.sock", directory,
-               directory[length - 1u] == '/' ? "" : "/", digest);
+      snprintf(out, capacity, "%s/vkr-bakery-%.16s.sock", directory, digest);
   return written > 0 && (uint32_t)written < capacity &&
-         (uint32_t)written < sizeof(((struct sockaddr_un *)0)->sun_path);
+         vkr_local_socket_path_fits(out);
 }
 
 vkr_internal bool8_t vkr_serve_socket_path(const VkrBakeryCli *cli, char *out,
                                            uint32_t capacity) {
   if (cli->socket) {
-    if (strlen(cli->socket) >= sizeof(((struct sockaddr_un *)0)->sun_path)) {
+    if (!vkr_local_socket_path_fits(cli->socket)) {
       fprintf(stderr, "error VKR-CLI-0001: --socket path is too long for a "
-                      "Unix socket\n");
+                      "local socket\n");
       return false_v;
     }
     (void)snprintf(out, capacity, "%s", cli->socket);
@@ -205,49 +221,21 @@ vkr_internal bool8_t vkr_serve_socket_path(const VkrBakeryCli *cli, char *out,
   return true_v;
 }
 
-vkr_internal int vkr_serve_connect(const char *path) {
-  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return -1;
-  }
-  struct sockaddr_un address = {.sun_family = AF_UNIX};
-  (void)snprintf(address.sun_path, sizeof(address.sun_path), "%s", path);
-  if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) {
-    close(fd);
-    return -1;
-  }
-#if defined(SO_NOSIGPIPE)
-  const int one = 1;
-  (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
-  return fd;
-}
-
 /* Binds the socket; a stale socket file with no listener is replaced, while
    a live daemon for the same path makes this one exit. */
 vkr_internal bool8_t vkr_serve_listen(VkrServe *serve) {
-  const int existing = vkr_serve_connect(serve->socket_path);
-  if (existing >= 0) {
-    close(existing);
+  const VkrLocalSocketListenStatus status =
+      vkr_local_socket_listen(serve->socket_path, 8, &serve->listener);
+  if (status == VKR_LOCAL_SOCKET_LISTEN_IN_USE) {
     fprintf(stderr, "error VKR-CLI-0004: a daemon already serves %s\n",
             serve->socket_path);
     return false_v;
   }
-  (void)unlink(serve->socket_path);
-  serve->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (serve->listen_fd < 0) {
-    return false_v;
-  }
-  struct sockaddr_un address = {.sun_family = AF_UNIX};
-  (void)snprintf(address.sun_path, sizeof(address.sun_path), "%s",
-                 serve->socket_path);
-  const mode_t previous = umask(0077);
-  const bool8_t bound =
-      bind(serve->listen_fd, (struct sockaddr *)&address, sizeof(address)) == 0;
-  (void)umask(previous);
-  if (!bound || listen(serve->listen_fd, 8) != 0) {
+  if (status != VKR_LOCAL_SOCKET_LISTEN_OK) {
+    char error[256];
+    vkr_local_socket_error_text(error, sizeof(error));
     fprintf(stderr, "error VKR-CLI-0004: cannot listen on %s: %s\n",
-            serve->socket_path, strerror(errno));
+            serve->socket_path, error);
     return false_v;
   }
   return true_v;
@@ -257,31 +245,17 @@ vkr_internal bool8_t vkr_serve_listen(VkrServe *serve) {
 // Client writes
 // =============================================================================
 
-vkr_internal bool8_t vkr_serve_send_all(int fd, const char *data,
-                                        uint64_t length) {
-  while (length) {
-    const ssize_t sent = send(fd, data, (size_t)length, 0);
-    if (sent <= 0) {
-      if (sent < 0 && errno == EINTR) {
-        continue;
-      }
-      return false_v;
-    }
-    data += sent;
-    length -= (uint64_t)sent;
-  }
-  return true_v;
-}
-
 /* Sends one line to a client still holding `generation`; a client that
    stopped reading loses the line, not the daemon. */
 vkr_internal void vkr_serve_send(VkrServe *serve, uint32_t client,
                                  uint32_t generation, const char *line,
                                  uint64_t length) {
   vkr_mutex_lock(serve->write_mutex);
-  if (client < VKR_SERVE_MAX_CLIENTS && serve->clients[client].fd >= 0 &&
+  if (client < VKR_SERVE_MAX_CLIENTS &&
+      serve->clients[client].socket != VKR_LOCAL_SOCKET_INVALID &&
       serve->clients[client].generation == generation) {
-    (void)vkr_serve_send_all(serve->clients[client].fd, line, length);
+    (void)vkr_local_socket_send_all(serve->clients[client].socket, line,
+                                    length);
   }
   vkr_mutex_unlock(serve->write_mutex);
 }
@@ -301,11 +275,26 @@ vkr_internal void vkr_serve_sendf(VkrServe *serve, uint32_t client,
   vkr_serve_send(serve, client, generation, line, (uint64_t)length + 1u);
 }
 
+/* The form the watcher reports `path` in: resolved through symbolic links on
+   POSIX (FSEvents reports /private/tmp for /tmp) and absolute with '/'
+   separators on Windows, as vkr_bake_resolve does. */
+vkr_internal void vkr_serve_resolve(const char *path, char *out) {
+#if defined(_WIN32)
+  if (!vkr_bakery_path_absolute(path, out, VKR_BAKERY_PATH_CAPACITY)) {
+    (void)snprintf(out, VKR_BAKERY_PATH_CAPACITY, "%s", path);
+  }
+#else
+  if (!realpath(path, out)) {
+    (void)snprintf(out, VKR_BAKERY_PATH_CAPACITY, "%s", path);
+  }
+#endif
+}
+
 /* Records the output paths of a `done` event so the watcher can tell the
    daemon's own publications from edits. */
 vkr_internal void vkr_serve_note_outputs(VkrServe *serve, const char *line,
                                          uint64_t length) {
-  if (!memmem(line, (size_t)length, "\"ev\":\"done\"", 11u)) {
+  if (!vkr_serve_find(line, length, "\"ev\":\"done\"")) {
     return;
   }
   Arena *arena = arena_create(MB(1), KB(64));
@@ -322,11 +311,8 @@ vkr_internal void vkr_serve_note_outputs(VkrServe *serve, const char *line,
         serve->published_count == ArrayCount(serve->published)) {
       continue;
     }
-    char *slot = serve->published[serve->published_count++];
-    if (!realpath((const char *)output->string.str, slot)) {
-      (void)snprintf(slot, VKR_BAKERY_PATH_CAPACITY, "%s",
-                     (const char *)output->string.str);
-    }
+    vkr_serve_resolve((const char *)output->string.str,
+                      serve->published[serve->published_count++]);
   }
   vkr_mutex_unlock(serve->changes_mutex);
   arena_destroy(arena);
@@ -523,6 +509,48 @@ vkr_internal void vkr_serve_note_change(VkrServe *serve, const char *path) {
   vkr_serve_wake(serve);
 }
 
+vkr_internal bool8_t vkr_serve_separator(char c) {
+#if defined(_WIN32)
+  return c == '/' || c == '\\';
+#else
+  return c == '/';
+#endif
+}
+
+/* The first `length` bytes of `path` and `prefix` name the same path. Windows
+   file systems ignore case and accept either separator. */
+vkr_internal bool8_t vkr_serve_path_prefix(const char *path, const char *prefix,
+                                           uint64_t length) {
+#if defined(_WIN32)
+  for (uint64_t i = 0u; i < length; ++i) {
+    const char a = path[i];
+    const char b = prefix[i];
+    if (vkr_serve_separator(a) && vkr_serve_separator(b)) {
+      continue;
+    }
+    const char folded_a = a >= 'A' && a <= 'Z' ? (char)(a + 32) : a;
+    const char folded_b = b >= 'A' && b <= 'Z' ? (char)(b + 32) : b;
+    if (!a || folded_a != folded_b) {
+      return false_v;
+    }
+  }
+  return true_v;
+#else
+  return strncmp(path, prefix, length) == 0;
+#endif
+}
+
+vkr_internal bool8_t vkr_serve_path_under(const char *path, const char *root) {
+  const uint64_t length = strlen(root);
+  return vkr_serve_path_prefix(path, root, length) &&
+         (path[length] == 0 || vkr_serve_separator(path[length]));
+}
+
+vkr_internal bool8_t vkr_serve_path_equal(const char *a, const char *b) {
+  const uint64_t length = strlen(b);
+  return strlen(a) == length && vkr_serve_path_prefix(a, b, length);
+}
+
 #if defined(__APPLE__)
 
 vkr_internal void vkr_serve_fsevents(ConstFSEventStreamRef stream,
@@ -585,6 +613,225 @@ vkr_internal bool8_t vkr_serve_restart_stream(VkrServe *serve) {
   return ok;
 }
 
+#elif defined(_WIN32)
+
+vkr_internal bool8_t vkr_serve_directory_read(VkrServeDirectory *directory) {
+  (void)ResetEvent(directory->overlapped.hEvent);
+  directory->armed =
+      ReadDirectoryChangesW(
+          directory->handle, directory->buffer, sizeof(directory->buffer), TRUE,
+          FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+              FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE |
+              FILE_NOTIFY_CHANGE_CREATION,
+          NULL, &directory->overlapped, NULL)
+          ? true_v
+          : false_v;
+  return directory->armed;
+}
+
+/* Reports each changed path of a completed read; an empty read means the
+   buffer overflowed and individual paths are lost. */
+vkr_internal void vkr_serve_directory_changes(VkrServe *serve,
+                                              VkrServeDirectory *directory,
+                                              DWORD bytes) {
+  if (!bytes) {
+    vkr_mutex_lock(serve->changes_mutex);
+    serve->change_overflow = true_v;
+    vkr_mutex_unlock(serve->changes_mutex);
+    vkr_serve_wake(serve);
+    return;
+  }
+  const uint8_t *cursor = (const uint8_t *)directory->buffer;
+  for (;;) {
+    const FILE_NOTIFY_INFORMATION *info =
+        (const FILE_NOTIFY_INFORMATION *)cursor;
+    char name[VKR_BAKERY_PATH_CAPACITY];
+    char path[VKR_BAKERY_PATH_CAPACITY];
+    const int length = WideCharToMultiByte(
+        CP_UTF8, 0, info->FileName, (int)(info->FileNameLength / sizeof(WCHAR)),
+        name, (int)sizeof(name) - 1, NULL, NULL);
+    if (length > 0) {
+      name[length] = 0;
+      if (vkr_bakery_path_join(path, sizeof(path), directory->path, name)) {
+        vkr_bakery_path_portable(path);
+        vkr_serve_note_change(serve, path);
+      }
+    }
+    if (!info->NextEntryOffset) {
+      break;
+    }
+    cursor += info->NextEntryOffset;
+  }
+}
+
+/* Waits on every directory's read and the stop event; a directory whose read
+   cannot be rearmed leaves the wait set. */
+vkr_internal DWORD WINAPI vkr_serve_watcher(LPVOID context) {
+  VkrServe *serve = (VkrServe *)context;
+  HANDLE handles[VKR_SERVE_WATCH_DIRECTORIES + 1u];
+  uint32_t indices[VKR_SERVE_WATCH_DIRECTORIES + 1u];
+  uint32_t count = 0u;
+  handles[count++] = serve->watcher_stop;
+  for (uint32_t i = 0u; i < serve->directory_count; ++i) {
+    if (serve->directories[i].armed) {
+      indices[count] = i;
+      handles[count++] = serve->directories[i].overlapped.hEvent;
+    }
+  }
+  for (;;) {
+    const DWORD signalled =
+        WaitForMultipleObjects((DWORD)count, handles, FALSE, INFINITE);
+    if (signalled <= WAIT_OBJECT_0 || signalled >= WAIT_OBJECT_0 + count) {
+      return 0u;
+    }
+    const uint32_t slot = (uint32_t)(signalled - WAIT_OBJECT_0);
+    VkrServeDirectory *directory = &serve->directories[indices[slot]];
+    DWORD bytes = 0u;
+    if (!GetOverlappedResult(directory->handle, &directory->overlapped, &bytes,
+                             FALSE)) {
+      bytes = 0u;
+    }
+    directory->armed = false_v;
+    vkr_serve_directory_changes(serve, directory, bytes);
+    if (!vkr_serve_directory_read(directory)) {
+      count -= 1u;
+      handles[slot] = handles[count];
+      indices[slot] = indices[count];
+    }
+  }
+}
+
+vkr_internal void vkr_serve_stop_stream(VkrServe *serve) {
+  if (serve->watcher) {
+    (void)SetEvent(serve->watcher_stop);
+    (void)WaitForSingleObject(serve->watcher, INFINITE);
+    (void)CloseHandle(serve->watcher);
+    serve->watcher = NULL;
+  }
+  for (uint32_t i = 0u; i < serve->directory_count; ++i) {
+    VkrServeDirectory *directory = &serve->directories[i];
+    /* The kernel writes the buffer until a cancelled read completes. */
+    if (directory->armed) {
+      DWORD bytes = 0u;
+      (void)CancelIoEx(directory->handle, &directory->overlapped);
+      (void)GetOverlappedResult(directory->handle, &directory->overlapped,
+                                &bytes, TRUE);
+    }
+    (void)CloseHandle(directory->handle);
+    (void)CloseHandle(directory->overlapped.hEvent);
+  }
+  free(serve->directories);
+  serve->directories = NULL;
+  serve->directory_count = 0u;
+  if (serve->watcher_stop) {
+    (void)CloseHandle(serve->watcher_stop);
+    serve->watcher_stop = NULL;
+  }
+}
+
+/* Opens `path` for change reads; false when it cannot be watched. */
+vkr_internal bool8_t vkr_serve_directory_open(VkrServeDirectory *directory,
+                                              const char *path) {
+  wchar_t wide[VKR_BAKERY_PATH_CAPACITY];
+  if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide,
+                           (int)ArrayCount(wide))) {
+    return false_v;
+  }
+  for (wchar_t *c = wide; *c; ++c) {
+    if (*c == L'/') {
+      *c = L'\\';
+    }
+  }
+  directory->handle = CreateFileW(
+      wide, FILE_LIST_DIRECTORY,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
+  if (directory->handle == INVALID_HANDLE_VALUE) {
+    return false_v;
+  }
+  directory->overlapped.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+  (void)snprintf(directory->path, sizeof(directory->path), "%s", path);
+  if (!directory->overlapped.hEvent || !vkr_serve_directory_read(directory)) {
+    (void)CloseHandle(directory->handle);
+    if (directory->overlapped.hEvent) {
+      (void)CloseHandle(directory->overlapped.hEvent);
+    }
+    MemZero(directory, sizeof(*directory));
+    return false_v;
+  }
+  return true_v;
+}
+
+/* Each watched directory, or the parent of each watched file, is read with
+   its subtree; a directory under one already read is skipped. The watcher
+   thread is rebuilt whenever the watch set changes. */
+vkr_internal bool8_t vkr_serve_restart_stream(VkrServe *serve) {
+  vkr_serve_stop_stream(serve);
+  char (*chosen)[VKR_BAKERY_PATH_CAPACITY] =
+      malloc(VKR_SERVE_WATCH_DIRECTORIES * VKR_BAKERY_PATH_CAPACITY);
+  if (!chosen) {
+    return false_v;
+  }
+  uint32_t chosen_count = 0u;
+  bool8_t complete = true_v;
+  for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
+    const VkrServeWatch *watch = &serve->watches[w];
+    for (uint32_t p = 0u; watch->id && p < watch->path_count; ++p) {
+      char directory[VKR_BAKERY_PATH_CAPACITY];
+      VkrBakeryStat info = {0};
+      if (vkr_bakery_stat(watch->paths[p], &info) && info.exists &&
+          info.is_directory) {
+        (void)snprintf(directory, sizeof(directory), "%s", watch->paths[p]);
+      } else {
+        vkr_bakery_path_parent(directory, sizeof(directory), watch->paths[p]);
+      }
+      bool8_t covered = !directory[0];
+      for (uint32_t c = 0u; c < chosen_count && !covered; ++c) {
+        covered = vkr_serve_path_under(directory, chosen[c]);
+      }
+      if (covered) {
+        continue;
+      }
+      if (chosen_count == VKR_SERVE_WATCH_DIRECTORIES) {
+        complete = false_v;
+        continue;
+      }
+      MemCopy(chosen[chosen_count++], directory, strlen(directory) + 1u);
+    }
+  }
+  if (!chosen_count) {
+    free(chosen);
+    return complete;
+  }
+
+  serve->watcher_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+  serve->directories =
+      (VkrServeDirectory *)calloc(chosen_count, sizeof(VkrServeDirectory));
+  if (!serve->watcher_stop || !serve->directories) {
+    free(chosen);
+    vkr_serve_stop_stream(serve);
+    return false_v;
+  }
+  for (uint32_t c = 0u; c < chosen_count; ++c) {
+    /* A path that does not exist yet has nothing to read. */
+    if (vkr_serve_directory_open(&serve->directories[serve->directory_count],
+                                 chosen[c])) {
+      serve->directory_count += 1u;
+    }
+  }
+  free(chosen);
+  if (!serve->directory_count) {
+    vkr_serve_stop_stream(serve);
+    return false_v;
+  }
+  serve->watcher = CreateThread(NULL, 0u, vkr_serve_watcher, serve, 0u, NULL);
+  if (!serve->watcher) {
+    vkr_serve_stop_stream(serve);
+    return false_v;
+  }
+  return complete;
+}
+
 #else
 
 vkr_internal void vkr_serve_stop_stream(VkrServe *serve) { (void)serve; }
@@ -597,12 +844,6 @@ vkr_internal bool8_t vkr_serve_restart_stream(VkrServe *serve) {
 }
 
 #endif
-
-vkr_internal bool8_t vkr_serve_path_under(const char *path, const char *root) {
-  const uint64_t length = strlen(root);
-  return strncmp(path, root, length) == 0 &&
-         (path[length] == 0 || path[length] == '/');
-}
 
 /* Matches drained changes against watches; returns the earliest due time. */
 vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
@@ -626,7 +867,7 @@ vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
                       strcmp(path + length - 4u, ".tmp") == 0;
     for (uint32_t p = 0u; recent && !ignored && p < serve->published_count;
          ++p) {
-      ignored = strcmp(path, serve->published[p]) == 0;
+      ignored = vkr_serve_path_equal(path, serve->published[p]);
     }
     if (!ignored) {
       MemCopy(changes[count++], path, length + 1u);
@@ -653,7 +894,7 @@ vkr_internal void vkr_serve_match_changes(VkrServe *serve, float64_t now) {
       }
       bool8_t listed = false_v;
       for (uint32_t i = 0u; i < watch->changed_count && !listed; ++i) {
-        listed = strcmp(watch->changed[i], changes[c]) == 0;
+        listed = vkr_serve_path_equal(watch->changed[i], changes[c]);
       }
       if (!listed && watch->changed_count < VKR_SERVE_MAX_CHANGED) {
         (void)snprintf(watch->changed[watch->changed_count++],
@@ -776,11 +1017,7 @@ vkr_internal void vkr_serve_request_watch(VkrServe *serve, uint32_t client,
       vkr_serve_reply_error(serve, client, request, "invalid watch path");
       return;
     }
-    /* FSEvents reports resolved paths (/private/tmp for /tmp). */
-    char *resolved = prepared.paths[prepared.path_count++];
-    if (!realpath(absolute, resolved)) {
-      (void)snprintf(resolved, VKR_BAKERY_PATH_CAPACITY, "%s", absolute);
-    }
+    vkr_serve_resolve(absolute, prepared.paths[prepared.path_count++]);
   }
   const VkrBakeryJson *argv = vkr_bakery_json_get(document, "argv");
   const char *error = NULL;
@@ -922,8 +1159,8 @@ vkr_internal void vkr_serve_request(VkrServe *serve, uint32_t client,
 vkr_internal void vkr_serve_close_client(VkrServe *serve, uint32_t index) {
   VkrServeClient *client = &serve->clients[index];
   vkr_mutex_lock(serve->write_mutex);
-  close(client->fd);
-  client->fd = -1;
+  vkr_local_socket_close(client->socket);
+  client->socket = VKR_LOCAL_SOCKET_INVALID;
   vkr_mutex_unlock(serve->write_mutex);
   vkr_bakery_buffer_free(&client->inbox);
   /* Watches die with their client; its queued runs are dropped. */
@@ -953,27 +1190,24 @@ vkr_internal void vkr_serve_close_client(VkrServe *serve, uint32_t index) {
 }
 
 vkr_internal void vkr_serve_accept(VkrServe *serve) {
-  const int fd = accept(serve->listen_fd, NULL, NULL);
-  if (fd < 0) {
+  VkrLocalSocket accepted = VKR_LOCAL_SOCKET_INVALID;
+  if (vkr_local_socket_accept(serve->listener, &accepted) !=
+      VKR_LOCAL_SOCKET_OK) {
     return;
   }
   uint32_t slot = VKR_SERVE_MAX_CLIENTS;
   for (uint32_t i = 0u;
        i < VKR_SERVE_MAX_CLIENTS && slot == VKR_SERVE_MAX_CLIENTS; ++i) {
-    slot = serve->clients[i].fd < 0 ? i : slot;
+    slot = serve->clients[i].socket == VKR_LOCAL_SOCKET_INVALID ? i : slot;
   }
   if (slot == VKR_SERVE_MAX_CLIENTS) {
-    close(fd);
+    vkr_local_socket_close(accepted);
     return;
   }
-#if defined(SO_NOSIGPIPE)
-  const int one = 1;
-  (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
-  const struct timeval timeout = {.tv_sec = VKR_SERVE_SEND_TIMEOUT_SECONDS};
-  (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+  (void)vkr_local_socket_set_send_timeout_ms(accepted,
+                                             VKR_SERVE_SEND_TIMEOUT_MS);
   vkr_mutex_lock(serve->write_mutex);
-  serve->clients[slot].fd = fd;
+  serve->clients[slot].socket = accepted;
   serve->clients[slot].generation = ++serve->next_generation;
   vkr_mutex_unlock(serve->write_mutex);
   MemZero(&serve->clients[slot].inbox, sizeof(serve->clients[slot].inbox));
@@ -982,15 +1216,17 @@ vkr_internal void vkr_serve_accept(VkrServe *serve) {
 vkr_internal void vkr_serve_read(VkrServe *serve, uint32_t index) {
   VkrServeClient *client = &serve->clients[index];
   char chunk[4096];
-  const ssize_t received = recv(client->fd, chunk, sizeof(chunk), 0);
-  if (received <= 0) {
-    if (received < 0 && errno == EINTR) {
-      return;
-    }
+  uint64_t received = 0u;
+  const VkrLocalSocketStatus status =
+      vkr_local_socket_recv(client->socket, chunk, sizeof(chunk), &received);
+  if (status == VKR_LOCAL_SOCKET_WOULD_BLOCK) {
+    return;
+  }
+  if (status != VKR_LOCAL_SOCKET_OK) {
     vkr_serve_close_client(serve, index);
     return;
   }
-  vkr_bakery_buffer_append(&client->inbox, chunk, (uint64_t)received);
+  vkr_bakery_buffer_append(&client->inbox, chunk, received);
   if (client->inbox.failed ||
       client->inbox.length > VKR_SERVE_MAX_REQUEST_BYTES) {
     vkr_serve_close_client(serve, index);
@@ -1009,7 +1245,7 @@ vkr_internal void vkr_serve_read(VkrServe *serve, uint32_t index) {
       vkr_serve_request(serve, index, start, length);
     }
     consumed += length + 1u;
-    if (client->fd < 0) {
+    if (client->socket == VKR_LOCAL_SOCKET_INVALID) {
       return;
     }
   }
@@ -1024,9 +1260,20 @@ vkr_internal void vkr_serve_read(VkrServe *serve, uint32_t index) {
 // Main loop
 // =============================================================================
 
+vkr_internal bool8_t vkr_serve_enter(const char *root) {
+#if defined(_WIN32)
+  wchar_t wide[VKR_BAKERY_PATH_CAPACITY];
+  return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, root, -1, wide,
+                             (int)ArrayCount(wide)) > 0 &&
+         _wchdir(wide) == 0;
+#else
+  return chdir(root) == 0;
+#endif
+}
+
 vkr_internal bool8_t vkr_serve_idle(const VkrServe *serve) {
   for (uint32_t i = 0u; i < VKR_SERVE_MAX_CLIENTS; ++i) {
-    if (serve->clients[i].fd >= 0) {
+    if (serve->clients[i].socket != VKR_LOCAL_SOCKET_INVALID) {
       return false_v;
     }
   }
@@ -1049,17 +1296,16 @@ vkr_internal void vkr_serve_loop(VkrServe *serve, uint64_t idle_exit_seconds) {
         }
       }
     }
-    struct pollfd fds[VKR_SERVE_MAX_CLIENTS + 2u];
+    VkrLocalSocketPoll fds[VKR_SERVE_MAX_CLIENTS + 2u];
     uint32_t indices[VKR_SERVE_MAX_CLIENTS];
-    nfds_t count = 0u;
-    fds[count++] = (struct pollfd){.fd = serve->listen_fd, .events = POLLIN};
-    fds[count++] = (struct pollfd){.fd = serve->wake[0], .events = POLLIN};
+    uint32_t count = 0u;
+    fds[count++] = (VkrLocalSocketPoll){.socket = serve->listener};
+    fds[count++] = (VkrLocalSocketPoll){.socket = serve->wake[0]};
     uint32_t client_count = 0u;
     for (uint32_t i = 0u; i < VKR_SERVE_MAX_CLIENTS; ++i) {
-      if (serve->clients[i].fd >= 0) {
+      if (serve->clients[i].socket != VKR_LOCAL_SOCKET_INVALID) {
         indices[client_count++] = i;
-        fds[count++] =
-            (struct pollfd){.fd = serve->clients[i].fd, .events = POLLIN};
+        fds[count++] = (VkrLocalSocketPoll){.socket = serve->clients[i].socket};
       }
     }
     const float64_t now = vkr_bakery_monotonic_seconds();
@@ -1072,20 +1318,23 @@ vkr_internal void vkr_serve_loop(VkrServe *serve, uint64_t idle_exit_seconds) {
     }
     const int timeout_ms =
         next_due > now ? (int)((next_due - now) * 1000.0) + 1 : 0;
-    const int ready = poll(fds, count, timeout_ms);
-    if (ready < 0 && errno != EINTR) {
+    /* A signal ends the wait without readable sockets. */
+    const int32_t ready = vkr_local_socket_poll(fds, count, timeout_ms);
+    if (ready < 0) {
       break;
     }
-    if (ready > 0 && (fds[1].revents & POLLIN)) {
+    if (ready > 0 && fds[1].readable) {
       char drain[64];
-      while (read(serve->wake[0], drain, sizeof(drain)) > 0) {
+      uint64_t drained = 0u;
+      while (vkr_local_socket_recv(serve->wake[0], drain, sizeof(drain),
+                                   &drained) == VKR_LOCAL_SOCKET_OK) {
       }
     }
-    if (ready > 0 && (fds[0].revents & POLLIN)) {
+    if (ready > 0 && fds[0].readable) {
       vkr_serve_accept(serve);
     }
     for (uint32_t i = 0u; ready > 0 && i < client_count; ++i) {
-      if (fds[i + 2u].revents & (POLLIN | POLLHUP | POLLERR)) {
+      if (fds[i + 2u].readable) {
         vkr_serve_read(serve, indices[i]);
       }
     }
@@ -1115,10 +1364,11 @@ int vkr_bakery_cmd_serve(VkrBakeryCli *cli) {
   VkrThread builder = NULL;
   Arena *arena = arena_create(MB(4), KB(64));
   serve->allocator.ctx = arena;
-  serve->listen_fd = -1;
-  serve->wake[0] = serve->wake[1] = -1;
+  serve->listener = VKR_LOCAL_SOCKET_INVALID;
+  serve->wake[0] = VKR_LOCAL_SOCKET_INVALID;
+  serve->wake[1] = VKR_LOCAL_SOCKET_INVALID;
   for (uint32_t i = 0u; i < VKR_SERVE_MAX_CLIENTS; ++i) {
-    serve->clients[i].fd = -1;
+    serve->clients[i].socket = VKR_LOCAL_SOCKET_INVALID;
   }
   (void)snprintf(serve->root, sizeof(serve->root), "%s", cli->config.root);
   (void)snprintf(serve->program, sizeof(serve->program), "%s",
@@ -1130,17 +1380,20 @@ int vkr_bakery_cmd_serve(VkrBakeryCli *cli) {
       !vkr_cond_create(&serve->allocator, &serve->ready) ||
       !vkr_serve_socket_path(cli, serve->socket_path,
                              sizeof(serve->socket_path)) ||
-      pipe(serve->wake) != 0) {
+      !vkr_local_socket_pair(serve->wake)) {
     goto cleanup;
   }
-  (void)fcntl(serve->wake[0], F_SETFL, O_NONBLOCK);
-  (void)fcntl(serve->wake[1], F_SETFL, O_NONBLOCK);
+  /* Neither a full wake socket nor an empty one may block. */
+  (void)vkr_local_socket_set_nonblocking(serve->wake[0]);
+  (void)vkr_local_socket_set_nonblocking(serve->wake[1]);
   /* Relative paths in requests resolve against the served root. */
-  if (chdir(serve->root) != 0) {
+  if (!vkr_serve_enter(serve->root)) {
     fprintf(stderr, "error VKR-CLI-0004: cannot enter %s\n", serve->root);
     goto cleanup;
   }
+#if defined(SIGPIPE)
   signal(SIGPIPE, SIG_IGN);
+#endif
   /* Commands keep the daemon's handlers: a signal stops the daemon, not only
      the command it is running. */
   vkr_bakery_signal_owner = vkr_serve_signal;
@@ -1157,9 +1410,22 @@ int vkr_bakery_cmd_serve(VkrBakeryCli *cli) {
     goto cleanup;
   }
   /* The editor and scripts read this one line to learn the socket. */
-  printf("{\"v\":1,\"ev\":\"listening\",\"socket\":\"%s\",\"root\":\"%s\","
-         "\"protocol\":%u}\n",
-         serve->socket_path, serve->root, VKR_SERVE_PROTOCOL);
+  VkrBakeryBuffer listening = {0};
+  vkr_bakery_buffer_append_cstr(&listening,
+                                "{\"v\":1,\"ev\":\"listening\",\"socket\":");
+  vkr_bakery_json_write_string(&listening,
+                               (String8){.str = (uint8_t *)serve->socket_path,
+                                         .length = strlen(serve->socket_path)});
+  vkr_bakery_buffer_append_cstr(&listening, ",\"root\":");
+  vkr_bakery_json_write_string(
+      &listening,
+      (String8){.str = (uint8_t *)serve->root, .length = strlen(serve->root)});
+  vkr_bakery_buffer_appendf(&listening, ",\"protocol\":%u}\n",
+                            VKR_SERVE_PROTOCOL);
+  if (!listening.failed) {
+    fwrite(listening.data, 1u, (size_t)listening.length, stdout);
+  }
+  vkr_bakery_buffer_free(&listening);
   fflush(stdout);
   vkr_serve_loop(serve, cli->idle_exit_seconds);
   code = VKR_BAKERY_EXIT_OK;
@@ -1176,7 +1442,7 @@ cleanup:
     (void)vkr_thread_join(builder);
   }
   for (uint32_t i = 0u; i < VKR_SERVE_MAX_CLIENTS; ++i) {
-    if (serve->clients[i].fd >= 0) {
+    if (serve->clients[i].socket != VKR_LOCAL_SOCKET_INVALID) {
       vkr_serve_close_client(serve, i);
     }
   }
@@ -1186,14 +1452,12 @@ cleanup:
   for (uint32_t w = 0u; w < VKR_SERVE_MAX_WATCHES; ++w) {
     vkr_serve_arguments_free(&serve->watches[w].arguments);
   }
-  if (serve->listen_fd >= 0) {
-    close(serve->listen_fd);
-    (void)unlink(serve->socket_path);
+  if (serve->listener != VKR_LOCAL_SOCKET_INVALID) {
+    vkr_local_socket_close(serve->listener);
+    (void)vkr_local_socket_remove_path(serve->socket_path);
   }
-  if (serve->wake[0] >= 0) {
-    close(serve->wake[0]);
-    close(serve->wake[1]);
-  }
+  vkr_local_socket_close(serve->wake[0]);
+  vkr_local_socket_close(serve->wake[1]);
 #if defined(__APPLE__)
   if (serve->stream_queue) {
     dispatch_release(serve->stream_queue);
@@ -1239,9 +1503,11 @@ int vkr_bakery_cmd_send(VkrBakeryCli *cli) {
   }
   const bool8_t follow =
       vkr_bakery_json_is_string(vkr_bakery_json_get(request, "req"), "watch");
+#if defined(SIGPIPE)
   signal(SIGPIPE, SIG_IGN);
-  const int fd = vkr_serve_connect(socket_path);
-  if (fd < 0) {
+#endif
+  VkrLocalSocket connection = VKR_LOCAL_SOCKET_INVALID;
+  if (!vkr_local_socket_connect(socket_path, &connection)) {
     arena_destroy(arena);
     fprintf(stderr, "error VKR-CLI-0005: no daemon at %s\n", socket_path);
     return VKR_BAKERY_EXIT_ENVIRONMENT;
@@ -1251,7 +1517,7 @@ int vkr_bakery_cmd_send(VkrBakeryCli *cli) {
   vkr_bakery_buffer_append_cstr(&line, request_text);
   vkr_bakery_buffer_append(&line, "\n", 1u);
   if (line.failed ||
-      !vkr_serve_send_all(fd, (const char *)line.data, line.length)) {
+      !vkr_local_socket_send_all(connection, line.data, line.length)) {
     goto done;
   }
   VkrBakeryBuffer inbox = {0};
@@ -1259,12 +1525,13 @@ int vkr_bakery_cmd_send(VkrBakeryCli *cli) {
   (void)snprintf(needle, sizeof(needle), "\"req\":%lld,", (long long)id);
   for (;;) {
     char chunk[4096];
-    const ssize_t received = recv(fd, chunk, sizeof(chunk), 0);
-    if (received <= 0) {
+    uint64_t received = 0u;
+    if (vkr_local_socket_recv(connection, chunk, sizeof(chunk), &received) !=
+        VKR_LOCAL_SOCKET_OK) {
       code = follow ? VKR_BAKERY_EXIT_OK : VKR_BAKERY_EXIT_ENVIRONMENT;
       break;
     }
-    vkr_bakery_buffer_append(&inbox, chunk, (uint64_t)received);
+    vkr_bakery_buffer_append(&inbox, chunk, received);
     bool8_t finished = false_v;
     uint64_t consumed = 0u;
     for (;;) {
@@ -1278,10 +1545,10 @@ int vkr_bakery_cmd_send(VkrBakeryCli *cli) {
       fwrite(start, 1u, (size_t)length, stdout);
       fflush(stdout);
       const bool8_t reply =
-          memmem(start, (size_t)length, "\"ev\":\"reply\"", 12u) != NULL &&
-          memmem(start, (size_t)length, needle, strlen(needle)) != NULL;
+          vkr_serve_find(start, length, "\"ev\":\"reply\"") != NULL &&
+          vkr_serve_find(start, length, needle) != NULL;
       if (reply && !finished) {
-        const char *exit_field = memmem(start, (size_t)length, "\"exit\":", 7u);
+        const char *exit_field = vkr_serve_find(start, length, "\"exit\":");
         code = exit_field ? atoi(exit_field + 7) : VKR_BAKERY_EXIT_FAILED;
         finished = !follow || code != 0;
       }
@@ -1299,9 +1566,7 @@ int vkr_bakery_cmd_send(VkrBakeryCli *cli) {
   vkr_bakery_buffer_free(&inbox);
 done:
   vkr_bakery_buffer_free(&line);
-  close(fd);
+  vkr_local_socket_close(connection);
   arena_destroy(arena);
   return code;
 }
-
-#endif

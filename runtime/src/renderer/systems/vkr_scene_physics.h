@@ -62,6 +62,18 @@ bool8_t vkr_scene_character_get_state(VkrScene *scene, VkrEntityId entity,
                                       VkrPhysicsCharacterState *state,
                                       const char **error);
 
+/* How a box, sphere or capsule collider takes its size. */
+typedef enum VkrSceneColliderFit {
+  /* Its pose and dimensions as authored. */
+  VKR_SCENE_COLLIDER_FIT_MANUAL = 0,
+  /* The box around its owner's meshes and shapes in the owner's frame,
+     moved by `fit_offset` and grown by `padding` on each side; the runtime
+     sets the pose and dimensions, and sets them again when that box
+     changes. */
+  VKR_SCENE_COLLIDER_FIT_AUTO,
+  VKR_SCENE_COLLIDER_FIT_COUNT,
+} VkrSceneColliderFit;
+
 typedef struct VkrSceneColliderConfig {
   uint64_t
       authored_id; /* Nonzero, unique within its body; survives save/undo. */
@@ -74,6 +86,9 @@ typedef struct VkrSceneColliderConfig {
   float32_t radius;
   float32_t half_height;
   bool8_t enabled;
+  VkrSceneColliderFit fit;
+  Vec3 fit_offset;
+  Vec3 padding;
 } VkrSceneColliderConfig;
 
 /* Explicit position/rotation below offset the body from this evaluated bone.
@@ -172,6 +187,10 @@ bool8_t vkr_scene_physics_transform_validate(const VkrScene *scene,
                                              VkrQuat rotation, Vec3 scale,
                                              VkrEntityId parent,
                                              const char **error);
+/* The box around `entity`'s meshes and shapes changed, as when its generated
+   mesh is replaced: automatic colliders of it and of its ancestors refit
+   while physics is paused. */
+void vkr_scene_physics_bounds_changed(VkrScene *scene, VkrEntityId entity);
 /* Reads absent bodies successfully. Collider children resolve via owner(). */
 bool8_t vkr_scene_physics_read(const VkrScene *scene, VkrEntityId entity,
                                VkrScenePhysicsSnapshot *snapshot);
@@ -289,6 +308,19 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
                                         const VkrPhysicsColliderDesc *colliders,
                                         uint32_t collider_count, bool8_t sensor,
                                         const char **error);
+/* A kinematic generated body, such as a mover's brushes: it rests at the
+   identity pose and moves to the pose vkr_scene_physics_generated_move set
+   at each step, so what stands on it rides. Replacing it keeps that pose;
+   a reset puts it back at rest. */
+bool8_t vkr_scene_physics_generated_set_kinematic(
+    VkrScene *scene, uint64_t key, VkrEntityId entity,
+    const VkrPhysicsColliderDesc *colliders, uint32_t collider_count,
+    const char **error);
+/* The pose kinematic generated body `key` moves to from the next step: a
+   rigid motion of its world-space colliders. */
+bool8_t vkr_scene_physics_generated_move(VkrScene *scene, uint64_t key,
+                                         Vec3 position, VkrQuat rotation,
+                                         const char **error);
 void vkr_scene_physics_generated_remove(VkrScene *scene, uint64_t key);
 bool8_t vkr_scene_physics_matrix_allowed(const VkrScene *scene,
                                          VkrEntityId entity, Mat4 local);

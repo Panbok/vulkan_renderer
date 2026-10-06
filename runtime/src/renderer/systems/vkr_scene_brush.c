@@ -21,8 +21,11 @@
 /* Collision bodies hold at most this many brush hulls. */
 #define BRUSH_CHUNK_HULLS VKR_PHYSICS_MAX_COLLIDERS
 /* Distinct face materials one brush may use; more fall back to the
-   default. */
+   default. A blockout shape's mesh uses up to two per chunk of pieces. */
 #define BRUSH_MATERIAL_GROUPS 16u
+/* Pieces of a blockout shape one geometry holds, so a long shape's mesh
+   stays within the scratch arena and each upload stays small. */
+#define BRUSH_SHAPE_CHUNK_PIECES 512u
 
 typedef struct BrushRecord {
   VkrEntityId entity;
@@ -31,10 +34,25 @@ typedef struct BrushRecord {
   Mat4 last_world;
   /* Collision cell this brush's hull joined, or zero. */
   uint64_t cell;
+  /* The nearest mover at or above the brush when it last built, or none.
+     A solid or clip brush under one joins the mover's kinematic body
+     instead of a cell, and the mover's motion never rebuilds it. */
+  VkrEntityId mover;
+  /* Its hull did not fit in the mover's body. */
+  bool8_t mover_overflow;
   /* World-space hull points of a solid or clip brush, xyz packed. */
   float32_t *hull;
   uint32_t hull_count;
   uint32_t hull_capacity;
+  /* A blockout shape's collision: its pieces' faces as one world-space
+     triangle mesh, xyz packed, in a static body of its own. */
+  float32_t *mesh;
+  uint32_t mesh_vertex_count;
+  uint32_t mesh_vertex_capacity;
+  uint32_t *mesh_indices;
+  uint32_t mesh_index_count;
+  uint32_t mesh_index_capacity;
+  bool8_t shape_body;
   uint32_t serial;
   uint8_t settle;
   bool8_t built;
@@ -72,6 +90,10 @@ struct s_VkrSceneBrushes {
   uint64_t *dirty_cells;
   uint32_t dirty_cell_count;
   uint32_t dirty_cell_capacity;
+  /* Movers whose kinematic body rebuilds in the next update. */
+  VkrEntityId *dirty_movers;
+  uint32_t dirty_mover_count;
+  uint32_t dirty_mover_capacity;
   BrushCell *cells;
   uint32_t cell_count;
   uint32_t cell_capacity;
@@ -158,10 +180,33 @@ static void brush_mark_cell(VkrScene *scene, VkrSceneBrushes *state,
   }
 }
 
-/* Marks the brush `entity` for a rebuild in the next update. */
+static void brush_mark_mover(VkrScene *scene, VkrSceneBrushes *state,
+                             VkrEntityId mover) {
+  if (!mover.u64) {
+    return;
+  }
+  for (uint32_t i = 0; i < state->dirty_mover_count; ++i) {
+    if (state->dirty_movers[i].u64 == mover.u64) {
+      return;
+    }
+  }
+  if (brush_grow(scene->alloc, (void **)&state->dirty_movers,
+                 &state->dirty_mover_capacity, state->dirty_mover_count + 1u,
+                 sizeof(*state->dirty_movers))) {
+    state->dirty_movers[state->dirty_mover_count++] = mover;
+  }
+}
+
+/* Whether `entity` is built here: a brush or a blockout shape. */
+static bool8_t brush_built_here(const VkrScene *scene, VkrEntityId entity) {
+  return vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
+         vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type);
+}
+
+/* Marks the brush or blockout shape `entity` for a rebuild in the next
+   update. */
 static void brush_mark(VkrScene *scene, VkrEntityId entity) {
-  if (!entity.u64 ||
-      !vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type)) {
+  if (!entity.u64 || !brush_built_here(scene, entity)) {
     return;
   }
   VkrSceneBrushes *state = brush_state(scene, true_v);
@@ -188,8 +233,22 @@ static void brush_mark(VkrScene *scene, VkrEntityId entity) {
   record->settle = BRUSH_SETTLE_UPDATES;
 }
 
+/* Generated body keys, per scene: cell keys (brush_cell_key) set bit 63
+   and leave bit 62 clear; a trigger brush's sensor sets both; a blockout
+   shape's body sets bit 62 alone over the entity's index and generation;
+   a mover's kinematic body sets bit 62 and bit 48 over the same. Terrain
+   bodies (vkr_scene_terrain.c) are the entity id XOR "terrain". */
 static uint64_t brush_trigger_key(VkrEntityId entity) {
   return (UINT64_C(3) << 62) | (entity.u64 & UINT64_C(0xFFFFFFFFFFFF));
+}
+
+static uint64_t brush_shape_key(VkrEntityId entity) {
+  return (UINT64_C(1) << 62) | (entity.u64 & UINT64_C(0xFFFFFFFFFFFF));
+}
+
+static uint64_t brush_mover_key(VkrEntityId mover) {
+  return (UINT64_C(1) << 62) | (UINT64_C(1) << 48) |
+         (mover.u64 & UINT64_C(0xFFFFFFFFFFFF));
 }
 
 /* Drops a brush's mesh and collision; the record stays. */
@@ -221,24 +280,46 @@ static void brush_clear(VkrScene *scene, VkrSceneBrushes *state,
     brush_mark_cell(scene, state, record->cell);
     record->cell = 0u;
   }
+  if (record->mover.u64 && record->hull_count) {
+    brush_mark_mover(scene, state, record->mover);
+  }
   record->hull_count = 0u;
   if (record->trigger_body) {
     vkr_scene_physics_generated_remove(scene,
                                        brush_trigger_key(record->entity));
     record->trigger_body = false_v;
   }
+  if (record->shape_body) {
+    vkr_scene_physics_generated_remove(scene, brush_shape_key(record->entity));
+    record->shape_body = false_v;
+  }
   record->built = false_v;
+}
+
+/* Frees a record's collision storage. */
+static void brush_record_free(VkrScene *scene, BrushRecord *record) {
+  if (record->hull) {
+    vkr_allocator_free(scene->alloc, record->hull,
+                       record->hull_capacity * 3u * sizeof(float32_t),
+                       BRUSH_TAG);
+  }
+  if (record->mesh) {
+    vkr_allocator_free(scene->alloc, record->mesh,
+                       record->mesh_vertex_capacity * 3u * sizeof(float32_t),
+                       BRUSH_TAG);
+  }
+  if (record->mesh_indices) {
+    vkr_allocator_free(scene->alloc, record->mesh_indices,
+                       record->mesh_index_capacity * sizeof(uint32_t),
+                       BRUSH_TAG);
+  }
 }
 
 static void brush_forget(VkrScene *scene, VkrSceneBrushes *state,
                          uint32_t index) {
   BrushRecord *record = &state->records[index];
   brush_clear(scene, state, record);
-  if (record->hull) {
-    vkr_allocator_free(scene->alloc, record->hull,
-                       record->hull_capacity * 3u * sizeof(float32_t),
-                       BRUSH_TAG);
-  }
+  brush_record_free(scene, record);
   state->records[index] = state->records[--state->record_count];
 }
 
@@ -252,13 +333,48 @@ static VkrEntityId brush_parent(const VkrScene *scene, VkrEntityId entity) {
   return transform ? transform->parent : VKR_ENTITY_ID_INVALID;
 }
 
+/* Hierarchies deeper than this find no mover above their first levels. */
+#define BRUSH_MOVER_DEPTH_MAX 64u
+
+/* The nearest entity at or above `entity` that carries a mover, or none. */
+static VkrEntityId brush_mover_of(const VkrScene *scene, VkrEntityId entity) {
+  for (uint32_t depth = 0; entity.u64 && depth < BRUSH_MOVER_DEPTH_MAX;
+       ++depth) {
+    if (vkr_scene_get_typed(scene, entity, &vkr_scene_mover_type)) {
+      return entity;
+    }
+    entity = brush_parent(scene, entity);
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+/* Marks the brushes at or below `root` whose nearest mover is no longer the
+   one they built under, as when a mover comes, goes or a group moves under
+   another parent. */
+static void brush_mark_mover_changes(VkrScene *scene, VkrEntityId root) {
+  VkrSceneBrushes *state = brush_state(scene, false_v);
+  for (uint32_t i = 0; state && i < state->record_count; ++i) {
+    BrushRecord *record = &state->records[i];
+    VkrEntityId at = record->entity;
+    for (uint32_t depth = 0;
+         at.u64 && at.u64 != root.u64 && depth < BRUSH_MOVER_DEPTH_MAX;
+         ++depth) {
+      at = brush_parent(scene, at);
+    }
+    if (at.u64 == root.u64 &&
+        brush_mover_of(scene, record->entity).u64 != record->mover.u64) {
+      brush_mark(scene, record->entity);
+    }
+  }
+}
+
 void vkr_scene_brush_changed(VkrScene *scene, VkrEntityId entity,
                              const VkrTypeDesc *type) {
   if (!scene || !entity.u64) {
     return;
   }
-  if (type == &vkr_scene_brush_type) {
-    if (vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type)) {
+  if (type == &vkr_scene_brush_type || type == &vkr_scene_blockout_type) {
+    if (brush_built_here(scene, entity)) {
       brush_mark(scene, entity);
       return;
     }
@@ -272,6 +388,9 @@ void vkr_scene_brush_changed(VkrScene *scene, VkrEntityId entity,
   if (type == &vkr_scene_brush_face_type) {
     brush_mark(scene, brush_parent(scene, entity));
   }
+  if (type == &vkr_scene_mover_type) {
+    brush_mark_mover_changes(scene, entity);
+  }
 }
 
 void vkr_scene_brush_parent_changed(VkrScene *scene, VkrEntityId entity,
@@ -280,6 +399,15 @@ void vkr_scene_brush_parent_changed(VkrScene *scene, VkrEntityId entity,
   if (scene && vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type)) {
     brush_mark(scene, old_parent);
     brush_mark(scene, new_parent);
+  }
+  /* Brushes under `entity` change mover only when no mover at or below it
+     keeps them and the ones above its old and new parents differ, which
+     loading a scene without movers never pays for past these walks. */
+  if (scene && scene->brushes &&
+      !vkr_scene_get_typed(scene, entity, &vkr_scene_mover_type) &&
+      brush_mover_of(scene, old_parent).u64 !=
+          brush_mover_of(scene, new_parent).u64) {
+    brush_mark_mover_changes(scene, entity);
   }
 }
 
@@ -429,6 +557,11 @@ static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
   }
 }
 
+static bool8_t brush_publish_mesh(VkrScene *scene, VkrSceneBrushes *state,
+                                  BrushRecord *record,
+                                  const VkrSubMeshDesc *submeshes,
+                                  uint32_t submesh_count, bool8_t ok);
+
 /* Builds the brush's mesh, one submesh per distinct face material. */
 static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
                                 BrushRecord *record,
@@ -553,6 +686,18 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
     };
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return brush_publish_mesh(scene, state, record, submeshes, submesh_count, ok);
+}
+
+/* Shows the record's new mesh, from `submesh_count` submeshes holding one
+   geometry reference each, which this releases. A record without a mesh
+   takes it at once; one with a mesh keeps drawing the old one until every
+   upload settles. False when `ok` is false or the mesh does not attach. */
+static bool8_t brush_publish_mesh(VkrScene *scene, VkrSceneBrushes *state,
+                                  BrushRecord *record,
+                                  const VkrSubMeshDesc *submeshes,
+                                  uint32_t submesh_count, bool8_t ok) {
+  struct VkrRenderAssets *assets = scene->assets;
   brush_pending_drop(scene, state, record->entity);
   /* A brush with no mesh has nothing to keep drawing, so it takes the new
      one at once and shows it as the uploads finish. */
@@ -669,9 +814,240 @@ static bool8_t brush_store_hull(VkrScene *scene, BrushRecord *record,
   return true_v;
 }
 
+/* Builds one piece of a blockout shape into `geometry`. */
+static bool8_t brush_shape_piece(const VkrBlockoutPiece *piece,
+                                 VkrBrushGeometry *geometry) {
+  VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+  const uint32_t plane_count = vkr_brush_hull(piece->points, piece->point_count,
+                                              planes, VKR_BRUSH_FACE_MAX);
+  uint32_t failed = UINT32_MAX;
+  return plane_count && vkr_brush_build(planes, plane_count, geometry,
+                                        &failed) == VKR_BRUSH_OK;
+}
+
+/* Appends a built piece's faces to the shape's world-space collision mesh
+   as triangle fans. */
+static bool8_t brush_shape_collision(VkrScene *scene, BrushRecord *record,
+                                     const VkrBrushGeometry *geometry,
+                                     const Mat4 *world) {
+  uint32_t indices = 0u;
+  for (uint32_t f = 0; f < geometry->face_count; ++f) {
+    indices += (geometry->polygons[f].count - 2u) * 3u;
+  }
+  if (!brush_grow(scene->alloc, (void **)&record->mesh,
+                  &record->mesh_vertex_capacity,
+                  record->mesh_vertex_count + geometry->vertex_count,
+                  3u * sizeof(float32_t)) ||
+      !brush_grow(scene->alloc, (void **)&record->mesh_indices,
+                  &record->mesh_index_capacity,
+                  record->mesh_index_count + indices, sizeof(uint32_t))) {
+    return false_v;
+  }
+  for (uint32_t f = 0; f < geometry->face_count; ++f) {
+    const VkrBrushPolygon polygon = geometry->polygons[f];
+    const uint32_t first = record->mesh_vertex_count;
+    for (uint32_t c = 0; c < polygon.count; ++c) {
+      const Vec3 at =
+          mat4_mul_vec3(*world, geometry->vertices[polygon.first + c]);
+      float32_t *out = record->mesh + record->mesh_vertex_count++ * 3u;
+      out[0] = at.x;
+      out[1] = at.y;
+      out[2] = at.z;
+    }
+    for (uint32_t c = 2; c < polygon.count; ++c) {
+      record->mesh_indices[record->mesh_index_count++] = first;
+      record->mesh_indices[record->mesh_index_count++] = first + c - 1u;
+      record->mesh_indices[record->mesh_index_count++] = first + c;
+    }
+  }
+  return true_v;
+}
+
+/* Builds a blockout shape (ADR-084) from its settings: its pieces' mesh in
+   chunks of pieces, a submesh per chunk and material (floors take the floor
+   material), and one static body whose triangle mesh holds every piece.
+   Pieces texture in world space, so neighbours line up; shapes take no
+   lightmap. */
+static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
+                                BrushRecord *record, const SceneBlockout *shape,
+                                const Mat4 *world) {
+  struct VkrRenderAssets *assets = scene->assets;
+  VkrAllocator *scratch = &assets->scratch_allocator;
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+  const uint32_t capacity = vkr_blockout_piece_capacity(shape);
+  VkrBlockoutPiece *pieces =
+      vkr_allocator_alloc(scratch, capacity * sizeof(*pieces), BRUSH_TAG);
+  char error[96] = "no memory for the shape's pieces";
+  const uint32_t count = pieces ? vkr_blockout_layout(shape, pieces, capacity,
+                                                      error, sizeof(error))
+                                : 0u;
+  const uint32_t chunks =
+      (count + BRUSH_SHAPE_CHUNK_PIECES - 1u) / BRUSH_SHAPE_CHUNK_PIECES;
+  if (!count || chunks * 2u > BRUSH_MATERIAL_GROUPS) {
+    vkr_allocator_end_scope(&scope, BRUSH_TAG);
+    brush_clear(scene, state, record);
+    snprintf(record->status, sizeof(record->status), "%s",
+             count ? "the shape has too many pieces" : error);
+    return;
+  }
+
+  SceneBrushFace faces[2];
+  vkr_type_defaults(&vkr_scene_brush_face_type, &faces[0]);
+  faces[0].uv_world = true_v;
+  faces[1] = faces[0];
+  snprintf(faces[0].material, sizeof(faces[0].material), "%s", shape->material);
+  snprintf(faces[1].material, sizeof(faces[1].material), "%s",
+           shape->floor_material[0] ? shape->floor_material : shape->material);
+  const Mat4 world_inverse = mat4_inverse_affine(*world);
+  VkrSubMeshDesc submeshes[BRUSH_MATERIAL_GROUPS];
+  uint32_t submesh_count = 0u;
+  bool8_t ok = true_v;
+  record->serial = ++state->serial;
+  record->mesh_vertex_count = 0u;
+  record->mesh_index_count = 0u;
+
+  for (uint32_t chunk = 0; chunk < chunks && ok; ++chunk) {
+    const uint32_t first = chunk * BRUSH_SHAPE_CHUNK_PIECES;
+    const uint32_t last = Min(first + BRUSH_SHAPE_CHUNK_PIECES, count);
+    for (uint32_t material = 0; material < 2u && ok; ++material) {
+      /* Count the chunk's faces of this material, then write them. */
+      uint32_t vertex_capacity = 0u;
+      uint32_t index_capacity = 0u;
+      for (uint32_t i = first; i < last; ++i) {
+        const uint32_t piece_material =
+            pieces[i].kind == VKR_BLOCKOUT_PIECE_FLOOR ? 1u : 0u;
+        if (piece_material != material ||
+            !brush_shape_piece(&pieces[i], state->geometry)) {
+          continue;
+        }
+        for (uint32_t f = 0; f < state->geometry->face_count; ++f) {
+          vertex_capacity += state->geometry->polygons[f].count;
+          index_capacity += (state->geometry->polygons[f].count - 2u) * 3u;
+        }
+      }
+      if (!vertex_capacity) {
+        continue;
+      }
+      VkrVertex3d *vertices = vkr_allocator_alloc(
+          scratch, vertex_capacity * sizeof(*vertices), BRUSH_TAG);
+      uint32_t *indices = vkr_allocator_alloc(
+          scratch, index_capacity * sizeof(*indices), BRUSH_TAG);
+      if (!vertices || !indices) {
+        ok = false_v;
+        break;
+      }
+      uint32_t vertex_count = 0u;
+      uint32_t index_count = 0u;
+      Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
+      Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+      for (uint32_t i = first; i < last && ok; ++i) {
+        const uint32_t piece_material =
+            pieces[i].kind == VKR_BLOCKOUT_PIECE_FLOOR ? 1u : 0u;
+        if (piece_material != material ||
+            !brush_shape_piece(&pieces[i], state->geometry)) {
+          continue;
+        }
+        const VkrBrushGeometry *geometry = state->geometry;
+        for (uint32_t f = 0; f < geometry->face_count; ++f) {
+          brush_write_face(geometry, f, &faces[material], world, &world_inverse,
+                           NULL, vertices, NULL, &vertex_count, indices,
+                           &index_count);
+        }
+        lo = vec3_new(Min(lo.x, geometry->min.x), Min(lo.y, geometry->min.y),
+                      Min(lo.z, geometry->min.z));
+        hi = vec3_new(Max(hi.x, geometry->max.x), Max(hi.y, geometry->max.y),
+                      Max(hi.z, geometry->max.z));
+        /* Each piece is one material, so it joins the collision once. */
+        ok = brush_shape_collision(scene, record, geometry, world);
+      }
+      if (!ok) {
+        break;
+      }
+      VkrGeometryConfig config = {
+          .vertex_size = sizeof(VkrVertex3d),
+          .vertex_count = vertex_count,
+          .vertices = vertices,
+          .index_size = sizeof(uint32_t),
+          .index_count = index_count,
+          .indices = indices,
+          .center = vec3_scale(vec3_add(lo, hi), 0.5f),
+          .min_extents = lo,
+          .max_extents = hi,
+      };
+      snprintf(config.name, sizeof(config.name), "shape_%u_%u_%u_%u_%u",
+               (unsigned)record->entity.parts.world,
+               (unsigned)record->entity.parts.index,
+               (unsigned)record->entity.parts.generation, record->serial,
+               chunk * 2u + material);
+      VkrRendererError error_code = VKR_RENDERER_ERROR_NONE;
+      const VkrGeometryHandle handle = vkr_geometry_system_create(
+          &assets->geometry_system, &config, true_v, &error_code);
+      if (!handle.id) {
+        ok = false_v;
+        break;
+      }
+      bool8_t owned = false_v;
+      const VkrMaterialHandle handle_material =
+          brush_material(scene, state, faces[material].material, &owned);
+      submeshes[submesh_count++] = (VkrSubMeshDesc){
+          .geometry = handle,
+          .material = handle_material,
+          .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+          .owns_geometry = true_v,
+          .owns_material = owned,
+      };
+    }
+  }
+  vkr_allocator_end_scope(&scope, BRUSH_TAG);
+  if (!brush_publish_mesh(scene, state, record, submeshes, submesh_count, ok)) {
+    brush_clear(scene, state, record);
+    snprintf(record->status, sizeof(record->status), "the mesh failed");
+    return;
+  }
+  const VkrPhysicsColliderDesc collider = {
+      .entity_id = record->entity.u64,
+      .shape = VKR_PHYSICS_TRIANGLE_MESH,
+      .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+      .scale = {1.0f, 1.0f, 1.0f},
+      .geometry = {.positions = record->mesh,
+                   .vertex_count = record->mesh_vertex_count,
+                   .indices = record->mesh_indices,
+                   .index_count = record->mesh_index_count},
+      .enabled = true_v,
+  };
+  const char *physics_error = NULL;
+  record->shape_body = vkr_scene_physics_generated_set(
+      scene, brush_shape_key(record->entity), record->entity, &collider, 1u,
+      false_v, &physics_error);
+  if (!record->shape_body) {
+    log_warn("Scene: blockout shape collision failed: %s",
+             physics_error ? physics_error : "unknown");
+  }
+  record->built = true_v;
+  record->built_world = *world;
+  record->last_world = *world;
+  record->status[0] = '\0';
+}
+
 static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
                           BrushRecord *record) {
   record->dirty = false_v;
+  /* A brush that left its mover leaves that mover's body. */
+  const VkrEntityId mover = brush_mover_of(scene, record->entity);
+  if (mover.u64 != record->mover.u64) {
+    brush_mark_mover(scene, state, record->mover);
+    record->mover = mover;
+  }
+  const SceneBlockout *shape =
+      vkr_scene_get_typed(scene, record->entity, &vkr_scene_blockout_type);
+  const SceneTransform *shape_transform =
+      shape ? vkr_entity_get_component(scene->world, record->entity,
+                                       scene->comp_transform)
+            : NULL;
+  if (shape_transform) {
+    brush_rebuild_shape(scene, state, record, shape, &shape_transform->world);
+    return;
+  }
   const SceneBrushSettings *settings =
       vkr_scene_get_typed(scene, record->entity, &vkr_scene_brush_type);
   const SceneTransform *transform = vkr_entity_get_component(
@@ -717,9 +1093,12 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
     snprintf(record->status, sizeof(record->status), "the mesh failed");
     return;
   }
-  /* Collision: solid and clip join their cell; a trigger owns a sensor. */
+  /* Collision: solid and clip join their cell, or their mover's kinematic
+     body; a trigger owns a sensor, which stays where it built. */
   const uint64_t old_cell = record->cell;
+  const bool8_t old_member = record->mover.u64 && record->hull_count;
   record->cell = 0u;
+  record->hull_count = 0u;
   if (record->trigger_body) {
     vkr_scene_physics_generated_remove(scene,
                                        brush_trigger_key(record->entity));
@@ -746,7 +1125,7 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
         log_warn("Scene: trigger brush collision failed: %s", physics_error);
       }
       record->hull_count = 0u;
-    } else {
+    } else if (!record->mover.u64) {
       const Vec3 center = mat4_mul_vec3(
           world,
           vec3_scale(vec3_add(state->geometry->min, state->geometry->max),
@@ -758,6 +1137,9 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
     brush_mark_cell(scene, state, old_cell);
   }
   brush_mark_cell(scene, state, record->cell);
+  if (old_member || record->hull_count) {
+    brush_mark_mover(scene, state, record->mover);
+  }
   record->built = true_v;
   record->built_world = world;
   record->last_world = world;
@@ -828,6 +1210,54 @@ static void brush_rebuild_cell(VkrScene *scene, VkrSceneBrushes *state,
   }
 }
 
+/* Rebuilds a mover's kinematic body from the hulls of the solid and clip
+   brushes that built under it, at most BRUSH_CHUNK_HULLS; the rest report
+   it and do not collide. The hulls are world-space at rest, so the body's
+   pose is the mover's motion from rest (vkr_scene_brush_mover_move). */
+static void brush_rebuild_mover(VkrScene *scene, VkrSceneBrushes *state,
+                                VkrEntityId mover) {
+  VkrPhysicsColliderDesc colliders[BRUSH_CHUNK_HULLS];
+  uint32_t collider_count = 0u;
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    BrushRecord *record = &state->records[i];
+    if (record->mover.u64 != mover.u64 || record->hull_count < 4u) {
+      continue;
+    }
+    record->mover_overflow = collider_count == BRUSH_CHUNK_HULLS;
+    if (record->mover_overflow) {
+      continue;
+    }
+    colliders[collider_count++] = (VkrPhysicsColliderDesc){
+        .entity_id = record->entity.u64,
+        .shape = VKR_PHYSICS_CONVEX_HULL,
+        .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+        .scale = {1.0f, 1.0f, 1.0f},
+        .geometry = {.positions = record->hull,
+                     .vertex_count = record->hull_count},
+        .enabled = true_v,
+    };
+  }
+  if (!collider_count || !vkr_scene_entity_alive(scene, mover)) {
+    vkr_scene_physics_generated_remove(scene, brush_mover_key(mover));
+    return;
+  }
+  const char *error = NULL;
+  if (!vkr_scene_physics_generated_set_kinematic(scene, brush_mover_key(mover),
+                                                 mover, colliders,
+                                                 collider_count, &error)) {
+    log_warn("Scene: mover collision failed: %s", error ? error : "unknown");
+  }
+}
+
+void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover,
+                                Vec3 offset) {
+  /* A mover without solid brushes has no body; nothing collides to move. */
+  if (scene && scene->brushes) {
+    (void)vkr_scene_physics_generated_move(scene, brush_mover_key(mover),
+                                           offset, vkr_quat_identity(), NULL);
+  }
+}
+
 static bool8_t brush_matrix_equal(const Mat4 *a, const Mat4 *b) {
   return MemCompare(a->elements, b->elements, sizeof(a->elements)) == 0;
 }
@@ -840,6 +1270,14 @@ void vkr_scene_brush_update(VkrScene *scene) {
   uint32_t budget = VKR_SCENE_BRUSH_REBUILD_BUDGET;
   for (uint32_t i = 0; i < state->record_count; ++i) {
     BrushRecord *record = &state->records[i];
+    /* While the game plays its mover, a brush keeps what it built at rest:
+       the evaluated pose moves its mesh and the mover's body moves its
+       collision. Its own edits rebuild once the pose clears. */
+    if (record->mover.u64 &&
+        vkr_entity_has_component(scene->world, record->mover,
+                                 scene->comp_evaluated_transform)) {
+      continue;
+    }
     const SceneTransform *transform = vkr_entity_get_component(
         scene->world, record->entity, scene->comp_transform);
     if (record->built && transform) {
@@ -864,6 +1302,10 @@ void vkr_scene_brush_update(VkrScene *scene) {
     brush_rebuild_cell(scene, state, state->dirty_cells[i]);
   }
   state->dirty_cell_count = 0u;
+  for (uint32_t i = 0; i < state->dirty_mover_count; ++i) {
+    brush_rebuild_mover(scene, state, state->dirty_movers[i]);
+  }
+  state->dirty_mover_count = 0u;
   brush_pending_attach(scene, state);
 }
 
@@ -873,11 +1315,7 @@ void vkr_scene_brush_shutdown(VkrScene *scene) {
     return;
   }
   for (uint32_t i = 0; i < state->record_count; ++i) {
-    if (state->records[i].hull) {
-      vkr_allocator_free(
-          scene->alloc, state->records[i].hull,
-          state->records[i].hull_capacity * 3u * sizeof(float32_t), BRUSH_TAG);
-    }
+    brush_record_free(scene, &state->records[i]);
   }
   for (uint32_t i = 0; scene->assets && i < state->pending_count; ++i) {
     brush_pending_release(scene, &state->pending[i]);
@@ -907,6 +1345,11 @@ void vkr_scene_brush_shutdown(VkrScene *scene) {
     vkr_allocator_free(scene->alloc, state->cells,
                        state->cell_capacity * sizeof(*state->cells), BRUSH_TAG);
   }
+  if (state->dirty_movers) {
+    vkr_allocator_free(
+        scene->alloc, state->dirty_movers,
+        state->dirty_mover_capacity * sizeof(*state->dirty_movers), BRUSH_TAG);
+  }
   if (state->materials) {
     vkr_allocator_free(scene->alloc, state->materials,
                        state->material_capacity * sizeof(*state->materials),
@@ -926,5 +1369,8 @@ const char *vkr_scene_brush_status(const VkrScene *scene, VkrEntityId brush) {
     return "pending";
   }
   const BrushRecord *record = &state->records[index];
+  if (record->built && record->mover_overflow) {
+    return "its mover's body is full (32 brushes); it does not collide";
+  }
   return record->built ? NULL : record->status;
 }

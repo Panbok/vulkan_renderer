@@ -77,7 +77,7 @@ const char *vkr_brush_error_text(VkrBrushError error) {
   case VKR_BRUSH_ERROR_FLAT:
     return "the solid has no volume";
   case VKR_BRUSH_ERROR_CONCAVE:
-    return "that would dent the brush, and a brush stays convex";
+    return "that dent needs too many convex pieces or folds the brush";
   case VKR_BRUSH_ERROR_NO_CORNER:
     return "no corner of the brush is at the dragged point";
   }
@@ -736,15 +736,410 @@ static uint32_t brush_reshape_source(const VkrBrushPiece *input,
   return source;
 }
 
+/* A dented solid as faces: each a flat polygon, wound counterclockwise seen
+   from outside, with its outward plane and the input face it copies. Faces
+   share no corner storage; cutting clips each face on its own. */
+#define BRUSH_DENT_FACE_MAX 384u
+#define BRUSH_DENT_VERTEX_MAX 2048u
+/* Points this close to a cutting plane, in meters, lie on it. */
+#define BRUSH_DENT_ON_PLANE 1.0e-5
+/* Polygons smaller than this, in square meters, vanish. */
+#define BRUSH_DENT_AREA_MIN 1.0e-8
+
+typedef struct BrushDentFace {
+  uint32_t first;
+  uint32_t count;
+  uint32_t source;
+  BrushPlaneD plane;
+} BrushDentFace;
+
+typedef struct BrushDentSolid {
+  uint32_t face_count;
+  uint32_t vertex_count;
+  BrushDentFace faces[BRUSH_DENT_FACE_MAX];
+  Vec3 vertices[BRUSH_DENT_VERTEX_MAX];
+} BrushDentSolid;
+
+/* A part of the dented solid: the cuts on its way down the splits, each
+   kept behind, and the face each cut ran along. */
+typedef struct BrushDentCell {
+  uint32_t count;
+  BrushPlaneD planes[VKR_BRUSH_RESHAPE_PIECE_MAX];
+  uint32_t source[VKR_BRUSH_RESHAPE_PIECE_MAX];
+} BrushDentCell;
+
+/* Newell's normal of a polygon: it points the way the polygon winds
+   counterclockwise, and its length is twice the area. */
+static BrushPoint brush_newell(const BrushPoint *points, uint32_t count) {
+  BrushPoint normal = {0.0, 0.0, 0.0};
+  for (uint32_t i = 0; i < count; ++i) {
+    const BrushPoint a = points[i];
+    const BrushPoint b = points[(i + 1u) % count];
+    normal.x += (a.y - b.y) * (a.z + b.z);
+    normal.y += (a.z - b.z) * (a.x + b.x);
+    normal.z += (a.x - b.x) * (a.y + b.y);
+  }
+  return normal;
+}
+
+/* The plane of `count` (up to VKR_BRUSH_POLYGON_MAX + 1) corners through
+   their mean, and the farthest any corner lies from it; false when the
+   polygon has no area. */
+static bool8_t brush_dent_plane(const Vec3 *corners, uint32_t count,
+                                BrushPlaneD *out, float64_t *out_deviation) {
+  BrushPoint points[VKR_BRUSH_POLYGON_MAX + 1u];
+  for (uint32_t i = 0; i < count; ++i) {
+    points[i] = brush_point(corners[i]);
+  }
+  const BrushPoint normal = brush_newell(points, count);
+  const float64_t length = brush_length(normal);
+  if (!(0.5 * length > BRUSH_DENT_AREA_MIN)) {
+    return false_v;
+  }
+  out->normal = brush_scale(normal, 1.0 / length);
+  out->distance = 0.0;
+  for (uint32_t i = 0; i < count; ++i) {
+    out->distance += brush_dot(out->normal, points[i]);
+  }
+  out->distance /= (float64_t)count;
+
+  *out_deviation = 0.0;
+  for (uint32_t i = 0; i < count; ++i) {
+    *out_deviation =
+        Max(*out_deviation,
+            fabs(brush_dot(out->normal, points[i]) - out->distance));
+  }
+  return true_v;
+}
+
+/* Adds the polygon `corners` as a face, or, when it is not flat, as a fan
+   of triangles from its first corner; a polygon without area adds nothing.
+   False when the solid is full. */
+static bool8_t brush_dent_add(BrushDentSolid *solid, const Vec3 *corners,
+                              uint32_t count, uint32_t source) {
+  BrushPlaneD plane = {0};
+  float64_t deviation = 0.0;
+  if (!brush_dent_plane(corners, count, &plane, &deviation)) {
+    return true_v;
+  }
+  if (count > 3u && deviation > VKR_BRUSH_WELD) {
+    for (uint32_t i = 1; i + 1u < count; ++i) {
+      const Vec3 triangle[3] = {corners[0], corners[i], corners[i + 1u]};
+      if (!brush_dent_add(solid, triangle, 3u, source)) {
+        return false_v;
+      }
+    }
+    return true_v;
+  }
+  if (solid->face_count >= BRUSH_DENT_FACE_MAX ||
+      solid->vertex_count + count > BRUSH_DENT_VERTEX_MAX) {
+    return false_v;
+  }
+  solid->faces[solid->face_count++] = (BrushDentFace){
+      .first = solid->vertex_count,
+      .count = count,
+      .source = source,
+      .plane = plane,
+  };
+  MemCopy(solid->vertices + solid->vertex_count, corners,
+          count * sizeof(*corners));
+  solid->vertex_count += count;
+  return true_v;
+}
+
+/* Adds an input face whose `moved` corners moved to `corners`. A face that
+   stays flat stays one face. Otherwise its unmoved corners keep their face
+   on the input plane, and each run of moved corners, with the unmoved
+   corner on either side, becomes a face of its own: the dent bends the face
+   along the line between those two corners. */
+static bool8_t brush_dent_face(BrushDentSolid *solid, const Vec3 *corners,
+                               const bool8_t *moved, uint32_t count,
+                               uint32_t source) {
+  BrushPlaneD plane = {0};
+  float64_t deviation = 0.0;
+  if (brush_dent_plane(corners, count, &plane, &deviation) &&
+      deviation <= VKR_BRUSH_WELD) {
+    return brush_dent_add(solid, corners, count, source);
+  }
+  Vec3 kept[VKR_BRUSH_POLYGON_MAX];
+  uint32_t kept_count = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!moved[i]) {
+      kept[kept_count++] = corners[i];
+    }
+  }
+  if (kept_count == 0u) {
+    return brush_dent_add(solid, corners, count, source);
+  }
+  if (kept_count >= 3u && !brush_dent_add(solid, kept, kept_count, source)) {
+    return false_v;
+  }
+
+  Vec3 run[VKR_BRUSH_POLYGON_MAX + 1u];
+  for (uint32_t start = 0; start < count; ++start) {
+    const uint32_t before = (start + count - 1u) % count;
+    if (!moved[start] || moved[before]) {
+      continue;
+    }
+    uint32_t run_count = 0u;
+    run[run_count++] = corners[before];
+    uint32_t i = start;
+    while (moved[i]) {
+      run[run_count++] = corners[i];
+      i = (i + 1u) % count;
+    }
+    /* With one unmoved corner the run ends where it began. */
+    if (i != before) {
+      run[run_count++] = corners[i];
+    }
+    if (!brush_dent_add(solid, run, run_count, source)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* The part of face `face` inside `cell`, written to `out`, which holds
+   VKR_BRUSH_POLYGON_MAX + 2 points; 0 when none of its area is. A face on a
+   cell plane stays only when it faces the same way, so the face a cut ran
+   along goes to one side. */
+static uint32_t brush_dent_fragment(const BrushDentSolid *solid, uint32_t face,
+                                    const BrushDentCell *cell,
+                                    BrushPoint *out) {
+  const BrushDentFace *source = &solid->faces[face];
+  BrushPoint polygon[2][VKR_BRUSH_POLYGON_MAX + 2u];
+  uint32_t count = Min(source->count, VKR_BRUSH_POLYGON_MAX);
+  uint32_t current = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    polygon[0][i] = brush_point(solid->vertices[source->first + i]);
+  }
+  for (uint32_t c = 0; c < cell->count && count; ++c) {
+    const BrushPlaneD *plane = &cell->planes[c];
+    float64_t above = -INFINITY;
+    float64_t below = INFINITY;
+    for (uint32_t i = 0; i < count; ++i) {
+      const float64_t s =
+          brush_dot(plane->normal, polygon[current][i]) - plane->distance;
+      above = Max(above, s);
+      below = Min(below, s);
+    }
+    if (above <= BRUSH_DENT_ON_PLANE && below >= -BRUSH_DENT_ON_PLANE) {
+      if (brush_dot(plane->normal, source->plane.normal) < 0.0) {
+        return 0u;
+      }
+      continue;
+    }
+    if (above <= BRUSH_DENT_ON_PLANE) {
+      continue;
+    }
+    if (below >= -BRUSH_DENT_ON_PLANE) {
+      return 0u;
+    }
+    count = brush_clip(polygon[current], count, plane, polygon[current ^ 1u]);
+    current ^= 1u;
+    if (count > VKR_BRUSH_POLYGON_MAX) {
+      count = 0u;
+    }
+  }
+  if (count < 3u ||
+      !(0.5 * brush_length(brush_newell(polygon[current], count)) >
+        BRUSH_DENT_AREA_MIN)) {
+    return 0u;
+  }
+  MemCopy(out, polygon[current], count * sizeof(*out));
+  return count;
+}
+
+/* Adds `plane` to `piece` unless the piece holds it already. */
+static bool8_t brush_dent_push(VkrBrushPiece *piece, BrushPlaneD plane,
+                               uint32_t source) {
+  const VkrBrushPlane value = {
+      .normal = vec3_new((float32_t)plane.normal.x, (float32_t)plane.normal.y,
+                         (float32_t)plane.normal.z),
+      .distance = (float32_t)plane.distance,
+  };
+  for (uint32_t i = 0; i < piece->count; ++i) {
+    if (vec3_dot(piece->planes[i].normal, value.normal) > 1.0f - 1.0e-6f &&
+        fabsf(piece->planes[i].distance - value.distance) < VKR_BRUSH_WELD) {
+      return true_v;
+    }
+  }
+  return brush_piece_push(piece, value, source);
+}
+
+/* The faces of `input` with its corners at `points` moved by `delta`, and
+   the volume they enclose. */
+static VkrBrushError brush_dent_build(const VkrBrushPiece *input,
+                                      const Vec3 *points, uint32_t point_count,
+                                      Vec3 delta, BrushDentSolid *solid,
+                                      float64_t *out_volume,
+                                      VkrBrushGeometry *scratch) {
+  const VkrBrushError error =
+      vkr_brush_build(input->planes, input->count, scratch, NULL);
+  if (error != VKR_BRUSH_OK) {
+    return error;
+  }
+  solid->face_count = 0u;
+  solid->vertex_count = 0u;
+  for (uint32_t face = 0; face < scratch->face_count; ++face) {
+    const VkrBrushPolygon polygon = scratch->polygons[face];
+    Vec3 corners[VKR_BRUSH_POLYGON_MAX];
+    bool8_t moved[VKR_BRUSH_POLYGON_MAX];
+    for (uint32_t i = 0; i < polygon.count; ++i) {
+      corners[i] = scratch->vertices[polygon.first + i];
+      moved[i] = false_v;
+      for (uint32_t k = 0; k < point_count && !moved[i]; ++k) {
+        moved[i] = vec3_length(vec3_sub(corners[i], points[k])) <= 1.0e-3f;
+      }
+      if (moved[i]) {
+        corners[i] = vec3_add(corners[i], delta);
+      }
+    }
+    if (!brush_dent_face(solid, corners, moved, polygon.count,
+                         input->source[face])) {
+      return VKR_BRUSH_ERROR_CONCAVE;
+    }
+  }
+  if (!solid->face_count) {
+    return VKR_BRUSH_ERROR_FLAT;
+  }
+
+  /* Divergence theorem: tetrahedra from one corner to every face's fan. */
+  const BrushPoint origin = brush_point(solid->vertices[0]);
+  float64_t volume = 0.0;
+  for (uint32_t f = 0; f < solid->face_count; ++f) {
+    const BrushDentFace *face = &solid->faces[f];
+    const BrushPoint a =
+        brush_sub(brush_point(solid->vertices[face->first]), origin);
+    for (uint32_t i = 1; i + 1u < face->count; ++i) {
+      const BrushPoint b =
+          brush_sub(brush_point(solid->vertices[face->first + i]), origin);
+      const BrushPoint c =
+          brush_sub(brush_point(solid->vertices[face->first + i + 1u]), origin);
+      volume += brush_dot(a, brush_cross(b, c)) / 6.0;
+    }
+  }
+  *out_volume = volume;
+  return volume > 1.0e-6 ? VKR_BRUSH_OK : VKR_BRUSH_ERROR_FLAT;
+}
+
+/* Cuts the dented `solid` of `volume` into convex pieces, appended to `out`
+   after `*written` up to `capacity` in all. A part is convex when no corner
+   of it lies in front of one of its faces; else the plane of such a face
+   with the fewest faces across it cuts the part in two. The pieces must
+   add up to the solid's volume, which a fold breaks. */
+static VkrBrushError brush_dent_cut(const BrushDentSolid *solid,
+                                    float64_t volume, VkrBrushPiece *out,
+                                    uint32_t capacity, uint32_t *written,
+                                    VkrBrushGeometry *scratch) {
+  /* Every part on the stack and every piece written makes a piece, so the
+     stack never holds more than `capacity` parts. */
+  BrushDentCell stack[VKR_BRUSH_RESHAPE_PIECE_MAX];
+  uint32_t stack_count = 1u;
+  stack[0] = (BrushDentCell){0};
+  bool8_t present[BRUSH_DENT_FACE_MAX];
+  bool8_t bent[BRUSH_DENT_FACE_MAX];
+  uint32_t crossing[BRUSH_DENT_FACE_MAX];
+  BrushPoint fragment[VKR_BRUSH_POLYGON_MAX + 2u];
+  float64_t pieces_volume = 0.0;
+  while (stack_count) {
+    const BrushDentCell cell = stack[--stack_count];
+    for (uint32_t f = 0; f < solid->face_count; ++f) {
+      present[f] = brush_dent_fragment(solid, f, &cell, fragment) > 0u;
+      bent[f] = false_v;
+      crossing[f] = 0u;
+    }
+    for (uint32_t j = 0; j < solid->face_count; ++j) {
+      const uint32_t count =
+          present[j] ? brush_dent_fragment(solid, j, &cell, fragment) : 0u;
+      for (uint32_t f = 0; f < solid->face_count && count; ++f) {
+        if (!present[f] || f == j) {
+          continue;
+        }
+        const BrushPlaneD *plane = &solid->faces[f].plane;
+        float64_t above = -INFINITY;
+        float64_t below = INFINITY;
+        for (uint32_t i = 0; i < count; ++i) {
+          const float64_t s =
+              brush_dot(plane->normal, fragment[i]) - plane->distance;
+          above = Max(above, s);
+          below = Min(below, s);
+        }
+        bent[f] = bent[f] || above > VKR_BRUSH_WELD;
+        crossing[f] +=
+            above > BRUSH_DENT_ON_PLANE && below < -BRUSH_DENT_ON_PLANE ? 1u
+                                                                        : 0u;
+      }
+    }
+    uint32_t cut = UINT32_MAX;
+    for (uint32_t f = 0; f < solid->face_count; ++f) {
+      if (present[f] && bent[f] &&
+          (cut == UINT32_MAX || crossing[f] < crossing[cut])) {
+        cut = f;
+      }
+    }
+
+    if (cut != UINT32_MAX) {
+      if (*written + stack_count + 2u > capacity ||
+          cell.count >= VKR_BRUSH_RESHAPE_PIECE_MAX) {
+        return VKR_BRUSH_ERROR_CONCAVE;
+      }
+      const BrushPlaneD plane = solid->faces[cut].plane;
+      BrushDentCell back = cell;
+      back.planes[back.count] = plane;
+      back.source[back.count++] = solid->faces[cut].source;
+      BrushDentCell front = cell;
+      front.planes[front.count] = (BrushPlaneD){
+          .normal = brush_scale(plane.normal, -1.0),
+          .distance = -plane.distance,
+      };
+      front.source[front.count++] = solid->faces[cut].source;
+      stack[stack_count++] = front;
+      stack[stack_count++] = back;
+      continue;
+    }
+
+    /* A convex part is its face planes and the cuts around it. */
+    VkrBrushPiece piece = {0};
+    for (uint32_t f = 0; f < solid->face_count; ++f) {
+      if (present[f] && !brush_dent_push(&piece, solid->faces[f].plane,
+                                         solid->faces[f].source)) {
+        return VKR_BRUSH_ERROR_CONCAVE;
+      }
+    }
+    for (uint32_t c = 0; c < cell.count; ++c) {
+      if (!brush_dent_push(&piece, cell.planes[c], cell.source[c])) {
+        return VKR_BRUSH_ERROR_CONCAVE;
+      }
+    }
+    /* A sliver without volume makes no piece; the volume check below
+       notices one that mattered. */
+    if (!vkr_brush_prune(&piece, scratch)) {
+      continue;
+    }
+    if (*written >= capacity) {
+      return VKR_BRUSH_ERROR_CONCAVE;
+    }
+    pieces_volume += scratch->volume;
+    out[(*written)++] = piece;
+  }
+  if (!(fabs(pieces_volume - volume) <= 1.0e-3 * Max(volume, 1.0e-3))) {
+    return VKR_BRUSH_ERROR_CONCAVE;
+  }
+  return VKR_BRUSH_OK;
+}
+
 VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
                                 const VkrBrushPlane *split, const Vec3 *points,
                                 uint32_t point_count, Vec3 delta,
-                                VkrBrushPiece out[2], uint32_t *out_count,
+                                VkrBrushPiece *out, uint32_t capacity,
+                                uint32_t *out_count,
                                 VkrBrushGeometry *scratch) {
   *out_count = 0u;
   if (count < VKR_BRUSH_FACE_MIN || count > VKR_BRUSH_FACE_MAX) {
     return VKR_BRUSH_ERROR_FACE_COUNT;
   }
+  capacity = Min(capacity, VKR_BRUSH_RESHAPE_PIECE_MAX);
   VkrBrushPiece whole = {0};
   for (uint32_t i = 0; i < count; ++i) {
     (void)brush_piece_push(&whole, planes[i], i);
@@ -771,6 +1166,8 @@ VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
   }
 
   bool8_t moved_any = false_v;
+  uint32_t written = 0u;
+  BrushDentSolid dent;
   for (uint32_t p = 0; p < input_count; ++p) {
     const VkrBrushError error =
         vkr_brush_build(inputs[p].planes, inputs[p].count, scratch, NULL);
@@ -803,8 +1200,9 @@ VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
     if (!hull_count) {
       return VKR_BRUSH_ERROR_FLAT;
     }
-    /* A moved corner the hull swallows was meant to dent the solid. */
-    for (uint32_t c = 0; c < corner_count; ++c) {
+    /* A moved corner the hull swallows dents the solid. */
+    bool8_t dented = false_v;
+    for (uint32_t c = 0; c < corner_count && !dented; ++c) {
       if (!moved[c]) {
         continue;
       }
@@ -813,18 +1211,66 @@ VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
         outside = Max(outside,
                       vec3_dot(hull[h].normal, corners[c]) - hull[h].distance);
       }
-      if (outside < -1.0e-3f) {
-        return VKR_BRUSH_ERROR_CONCAVE;
+      dented = outside < -1.0e-3f;
+    }
+    /* So may one on the hull's surface but not at a hull corner, as an edge
+       pushed in along the faces at its ends: then the faces through it fold
+       inward and the dented solid holds less than the hull. */
+    float64_t dent_volume = 0.0;
+    bool8_t dent_built = false_v;
+    if (!dented) {
+      const VkrBrushError built =
+          vkr_brush_build(hull, hull_count, scratch, NULL);
+      if (built != VKR_BRUSH_OK) {
+        return built;
+      }
+      const float64_t hull_volume = scratch->volume;
+      bool8_t off_corner = false_v;
+      for (uint32_t c = 0; c < corner_count && !off_corner; ++c) {
+        bool8_t at_corner = !moved[c];
+        for (uint32_t v = 0; v < scratch->vertex_count && !at_corner; ++v) {
+          at_corner = vec3_length(vec3_sub(corners[c], scratch->vertices[v])) <=
+                      1.0e-3f;
+        }
+        off_corner = !at_corner;
+      }
+      if (off_corner) {
+        const VkrBrushError dent_error =
+            brush_dent_build(&inputs[p], points, point_count, delta, &dent,
+                             &dent_volume, scratch);
+        if (dent_error != VKR_BRUSH_OK) {
+          return dent_error;
+        }
+        dent_built = true_v;
+        dented = dent_volume < hull_volume - 1.0e-3 * Max(hull_volume, 1.0e-3);
       }
     }
+    if (dented) {
+      VkrBrushError dent_error =
+          dent_built ? VKR_BRUSH_OK
+                     : brush_dent_build(&inputs[p], points, point_count, delta,
+                                        &dent, &dent_volume, scratch);
+      if (dent_error == VKR_BRUSH_OK) {
+        dent_error = brush_dent_cut(&dent, dent_volume, out, capacity, &written,
+                                    scratch);
+      }
+      if (dent_error != VKR_BRUSH_OK) {
+        return dent_error;
+      }
+      continue;
+    }
 
-    out[p] = (VkrBrushPiece){0};
+    if (written >= capacity) {
+      return VKR_BRUSH_ERROR_CONCAVE;
+    }
+    VkrBrushPiece *piece = &out[written++];
+    *piece = (VkrBrushPiece){0};
     for (uint32_t h = 0; h < hull_count; ++h) {
-      (void)brush_piece_push(&out[p], hull[h],
+      (void)brush_piece_push(piece, hull[h],
                              brush_reshape_source(&inputs[p], hull[h]));
     }
     const VkrBrushError built =
-        vkr_brush_build(out[p].planes, out[p].count, scratch, NULL);
+        vkr_brush_build(piece->planes, piece->count, scratch, NULL);
     if (built != VKR_BRUSH_OK) {
       return built;
     }
@@ -832,7 +1278,7 @@ VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
   if (!moved_any) {
     return VKR_BRUSH_ERROR_NO_CORNER;
   }
-  *out_count = input_count;
+  *out_count = written;
   return VKR_BRUSH_OK;
 }
 

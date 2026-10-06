@@ -22,6 +22,7 @@
 #include "containers/str.h"
 #include "core/vkr_entity.h"
 #include "core/vkr_type_desc.h"
+#include "level/vkr_blockout.h"
 #include "math/mat.h"
 #include "math/vec.h"
 #include "math/vkr_quat.h"
@@ -266,6 +267,12 @@ typedef struct SceneAlwaysLoaded {
   bool8_t enabled;
 } SceneAlwaysLoaded;
 
+/* An entity the editor never snaps (ADR-084): the magnet, Snap and parenting
+   in the Outliner leave it where it is placed. */
+typedef struct SceneFreePlacement {
+  bool8_t enabled;
+} SceneFreePlacement;
+
 /* Population (ADR-084). A `spline`
  * curve passes through its `spline_point` child entities in `order`, in the
  * spline entity's space. A `spline_mesh` on a spline repeats a cooked mesh
@@ -348,6 +355,29 @@ typedef struct SceneCounter {
   int32_t min;
   int32_t max;
 } SceneCounter;
+
+/* Moves the entity and everything under it between its authored pose and
+ * an open pose `distance` metres along `direction` (in the entity's own
+ * space), as Source's func_door and func_movelinear do. It moves only while
+ * the game plays, through an evaluated pose; the saved transform never
+ * changes. Solid and clip brushes under it collide where it moves. */
+typedef struct SceneMover {
+  Vec3 direction;
+  /* Metres to the open pose; zero takes the size of what it moves along
+     `direction`, less `lip`. */
+  float32_t distance;
+  /* What stays in view of an automatic distance, as Source's lip. */
+  float32_t lip;
+  /* Metres per second. */
+  float32_t speed;
+  /* Seconds it stays open before it closes by itself; negative stays open. */
+  float32_t wait;
+  bool8_t start_open;
+  /* Moves back and forth without inputs, resting `wait` at each end. */
+  bool8_t loop;
+  /* Refuses `open`, `toggle` and `set_position` until unlocked. */
+  bool8_t locked;
+} SceneMover;
 
 /* One connection, a child entity of its source: when the source fires
  * `output`, `target` receives `input` after `delay` seconds. `value`, when

@@ -57,7 +57,9 @@ connected. Send one JSON request per line
 the first request should be `{"op":"cmd","args":{"line":"wait.scene"}}`.
 Through MCP, run `build_release/tools/vkr_mcp --socket <path>` and send MCP
 2026-07-28 requests with the version in `_meta`. Captures land in
-`$TMPDIR/vkr/captures/`; read the PNG to see the result.
+`$TMPDIR/vkr/captures/` (`%TEMP%\vkr\captures` on Windows); read the PNG to
+see the result. Windows uses the same AF_UNIX socket, but Python's `socket`
+module there has no `AF_UNIX`, so script it through `vkr_mcp`.
 
 ## Read results
 

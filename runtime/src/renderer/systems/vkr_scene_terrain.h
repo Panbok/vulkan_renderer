@@ -10,8 +10,9 @@
  * builds one generated mesh with a submesh per 64-cell tile, so culling works
  * tile by tile, and re-attaches it only once every rebuilt tile has uploaded,
  * so the terrain never leaves a frame; one static height field body follows
- * once edits rest. A terrain ignores its entity's rotation and scale. The
- * scene owns all of it and releases it at shutdown.
+ * once edits rest. Hole samples open both the tile meshes and the body, on
+ * the same triangles. A terrain ignores its entity's rotation and scale.
+ * The scene owns all of it and releases it at shutdown.
  *
  * A terrain larger than VKR_HEIGHTFIELD_RESIDENT_CELLS streams (ADR-086): it
  * keeps the samples, tiles and a body near the scene's streaming
@@ -79,8 +80,9 @@ bool8_t vkr_scene_terrain_require(VkrScene *scene, VkrEntityId entity,
                                   VkrHeightfieldRect rect);
 /* The highest terrain surface under world point `top` and at or above
    height `bottom`, from the samples, which load as needed: its world
-   position and normal. False where no loaded terrain lies there. Unlike a
-   physics ray, it finds a streamed terrain away from its body. */
+   position and normal. False where no loaded terrain lies there or its
+   ground is open (vkr_heightfield_open). Unlike a physics ray, it finds a
+   streamed terrain away from its body. */
 bool8_t vkr_scene_terrain_ground(VkrScene *scene, Vec3 top, float32_t bottom,
                                  Vec3 *out_position, Vec3 *out_normal);
 /* Writes samples back, as undo and redo do. */
@@ -94,9 +96,13 @@ uint32_t vkr_scene_terrain_tile_index_count(void);
 /* A tile's indices for every level (ADR-084) over `vertices`: its 65 x 65
    grid, then a skirt vertex below each edge vertex, edges -Z, +X, +Z, -X.
    Level L draws every 2^L-th grid line, cells split along their +X to +Z
-   diagonal, and its skirt. Fills the LOD row with each level's range and
-   error (`spacing` sets the error floor of coarser levels) and returns the
-   index count, or zero when `capacity` is too small. */
+   diagonal, and its skirt. A grid vertex whose four color weights are zero
+   is a hole sample: a cell with a hole corner splits along its -X-Z to
+   +X+Z diagonal, as the height field collision does, and drops each
+   triangle with a hole corner and the skirt below its tile edge, and the
+   tile keeps level 0 only. Fills the LOD row with each level's range and error
+   (`spacing` sets the error floor of coarser levels) and returns the index
+   count, or zero when `capacity` is too small. */
 uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
                                         float32_t spacing, uint32_t *indices,
                                         uint32_t capacity,

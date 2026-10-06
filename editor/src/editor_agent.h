@@ -36,8 +36,9 @@ bool8_t vkr_editor_agent_submit(VkrEditorAgent *agent, const char *line);
 
 struct VkrEditorOps *vkr_editor_agent_ops(VkrEditorAgent *agent);
 
-/* The per-user directory for the socket and captures: `$TMPDIR/vkr` (or
-   `/tmp/vkr`), created with mode 0700; false unless it exists, belongs to
-   this user and admits no one else. Windows creates `vkr` in the user's
-   temporary directory (GetTempPathW), which admits only that user. */
+/* The per-user directory for the socket and captures
+   (vkr_local_socket_user_directory): `$TMPDIR/vkr` (or `/tmp/vkr`), created
+   with mode 0700, or `vkr` in the Windows temporary directory with a DACL
+   that grants only this user; false unless it exists, belongs to this user
+   and admits no one else. */
 bool8_t vkr_editor_agent_directory(char *out, uint64_t capacity);

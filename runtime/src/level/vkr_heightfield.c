@@ -253,6 +253,15 @@ float32_t vkr_heightfield_overview_at(const VkrHeightfield *field, uint32_t x,
       field->overview_heights[z * vkr_heightfield_overview_samples(field) + x]);
 }
 
+/* Whether the four samples of cell (x, z) are resident. */
+static bool8_t heightfield_cell_resident(const VkrHeightfield *field,
+                                         uint32_t x, uint32_t z) {
+  return vkr_heightfield_tile_of(field, x, z) &&
+         vkr_heightfield_tile_of(field, x + 1u, z) &&
+         vkr_heightfield_tile_of(field, x, z + 1u) &&
+         vkr_heightfield_tile_of(field, x + 1u, z + 1u);
+}
+
 bool8_t vkr_heightfield_sample(const VkrHeightfield *field, float32_t x,
                                float32_t z, float32_t *out_height) {
   const float32_t half = vkr_heightfield_half_size(field);
@@ -264,10 +273,7 @@ bool8_t vkr_heightfield_sample(const VkrHeightfield *field, float32_t x,
   }
   uint32_t x0 = Min((uint32_t)gx, field->cells - 1u);
   uint32_t z0 = Min((uint32_t)gz, field->cells - 1u);
-  const bool8_t resident = vkr_heightfield_tile_of(field, x0, z0) &&
-                           vkr_heightfield_tile_of(field, x0 + 1u, z0) &&
-                           vkr_heightfield_tile_of(field, x0, z0 + 1u) &&
-                           vkr_heightfield_tile_of(field, x0 + 1u, z0 + 1u);
+  const bool8_t resident = heightfield_cell_resident(field, x0, z0);
   float32_t h00, h10, h01, h11;
   if (resident) {
     h00 = vkr_heightfield_at(field, x0, z0);
@@ -291,6 +297,33 @@ bool8_t vkr_heightfield_sample(const VkrHeightfield *field, float32_t x,
   *out_height = (h00 * (1.0f - fx) + h10 * fx) * (1.0f - fz) +
                 (h01 * (1.0f - fx) + h11 * fx) * fz;
   return true_v;
+}
+
+bool8_t vkr_heightfield_open(const VkrHeightfield *field, float32_t x,
+                             float32_t z) {
+  const float32_t half = vkr_heightfield_half_size(field);
+  const float32_t gx = (x + half) / field->spacing;
+  const float32_t gz = (z + half) / field->spacing;
+  if (!(gx >= 0.0f) || !(gz >= 0.0f) || gx > (float32_t)field->cells ||
+      gz > (float32_t)field->cells) {
+    return false_v;
+  }
+  const uint32_t x0 = Min((uint32_t)gx, field->cells - 1u);
+  const uint32_t z0 = Min((uint32_t)gz, field->cells - 1u);
+  if (!heightfield_cell_resident(field, x0, z0)) {
+    return false_v;
+  }
+  /* Both triangles share the (x, z) to (x + 1, z + 1) diagonal. */
+  if (vkr_heightfield_hole(field, x0, z0) ||
+      vkr_heightfield_hole(field, x0 + 1u, z0 + 1u)) {
+    return true_v;
+  }
+  const float32_t fx = gx - (float32_t)x0;
+  const float32_t fz = gz - (float32_t)z0;
+  /* Jolt's first triangle adds corner (x, z + 1) and holds fz >= fx; the
+     second adds (x + 1, z). */
+  return fz >= fx ? vkr_heightfield_hole(field, x0, z0 + 1u)
+                  : vkr_heightfield_hole(field, x0 + 1u, z0);
 }
 
 bool8_t vkr_heightfield_resident(const VkrHeightfield *field,
@@ -361,16 +394,21 @@ void vkr_heightfield_read_rect(const VkrHeightfield *field,
 
 void vkr_heightfield_read_metres(const VkrHeightfield *field,
                                  VkrHeightfieldRect rect, float32_t *out,
-                                 uint32_t stride) {
+                                 uint32_t stride, float32_t hole) {
   const uint32_t size = VKR_HEIGHTFIELD_TILE_SAMPLES;
   const float32_t range = field->height_max - field->height_min;
   for (uint32_t z = rect.z0; z <= rect.z1; ++z) {
     float32_t *row = out + (size_t)(z - rect.z0) * stride;
     for (uint32_t x = rect.x0; x <= rect.x1;) {
-      const uint16_t *heights =
-          vkr_heightfield_tile_of(field, x, z)->heights + (z % size) * size;
+      const VkrHeightfieldTile *tile = vkr_heightfield_tile_of(field, x, z);
+      const uint16_t *heights = tile->heights + (z % size) * size;
+      const uint32_t *weights = tile->weights + (z % size) * size;
       const uint32_t span_end = Min(rect.x1, x / size * size + size - 1u);
       for (; x <= span_end; ++x) {
+        if (weights[x % size] == VKR_HEIGHTFIELD_HOLE_WEIGHTS) {
+          row[x - rect.x0] = hole;
+          continue;
+        }
         /* vkr_heightfield_metres, bit for bit. */
         row[x - rect.x0] = field->height_min +
                            range * ((float32_t)heights[x % size] / 65535.0f);
@@ -422,6 +460,10 @@ static void heightfield_blend(VkrHeightfield *field, uint32_t x, uint32_t z,
 static void heightfield_paint(VkrHeightfield *field, uint32_t x, uint32_t z,
                               uint32_t layer, float32_t t) {
   uint32_t *weights = heightfield_weights_ref(field, x, z);
+  /* Paint does not fill a hole. */
+  if (*weights == VKR_HEIGHTFIELD_HOLE_WEIGHTS) {
+    return;
+  }
   float32_t w[VKR_HEIGHTFIELD_LAYERS];
   float32_t sum = 0.0f;
   for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
@@ -442,6 +484,18 @@ static void heightfield_paint(VkrHeightfield *field, uint32_t x, uint32_t z,
   bytes[layer] = (uint32_t)((int32_t)bytes[layer] + 255 - (int32_t)total);
   *weights =
       bytes[0] | (bytes[1] << 8u) | (bytes[2] << 16u) | (bytes[3] << 24u);
+}
+
+/* Makes sample (x, z) a hole (`open`), or returns a hole to ground on layer
+   0 at the height it kept. */
+static void heightfield_cut(VkrHeightfield *field, uint32_t x, uint32_t z,
+                            bool8_t open) {
+  uint32_t *weights = heightfield_weights_ref(field, x, z);
+  if (open) {
+    *weights = VKR_HEIGHTFIELD_HOLE_WEIGHTS;
+  } else if (*weights == VKR_HEIGHTFIELD_HOLE_WEIGHTS) {
+    *weights = 0xFFu;
+  }
 }
 
 bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
@@ -510,6 +564,11 @@ bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
       case VKR_HEIGHTFIELD_PAINT:
         heightfield_paint(field, sx, sz, layer,
                           Min(1.0f, Max(0.0f, strength)) * w);
+        break;
+      case VKR_HEIGHTFIELD_HOLE:
+      case VKR_HEIGHTFIELD_FILL:
+        /* Every sample inside the radius, whatever its falloff. */
+        heightfield_cut(field, sx, sz, brush == VKR_HEIGHTFIELD_HOLE);
         break;
       default:
         break;
@@ -638,6 +697,9 @@ bool8_t vkr_heightfield_op_rect(const VkrHeightfield *field,
            heightfield_rect(field, vec2_new(lo.x - reach, lo.y - reach),
                             vec2_new(hi.x + reach, hi.y + reach), out);
   }
+  case VKR_HEIGHTFIELD_OP_HOLE:
+    return op->min.x < op->max.x && op->min.y < op->max.y &&
+           heightfield_rect(field, op->min, op->max, out);
   default:
     return false_v;
   }
@@ -699,6 +761,22 @@ static bool8_t heightfield_op_run(VkrHeightfield *field,
       (void)vkr_heightfield_ramp(field, vec3_add(op->path[i], op->a),
                                  vec3_add(op->path[i + 1u], op->a), op->width,
                                  op->falloff, &segment);
+    }
+    return true_v;
+  }
+  case VKR_HEIGHTFIELD_OP_HOLE: {
+    if (!vkr_heightfield_op_rect(field, op, touched)) {
+      return false_v;
+    }
+    for (uint32_t sz = touched->z0; sz <= touched->z1; ++sz) {
+      for (uint32_t sx = touched->x0; sx <= touched->x1; ++sx) {
+        /* Samples on the box's edge keep the ground up to it. */
+        const Vec2 at = heightfield_local(field, sx, sz);
+        if (at.x > op->min.x && at.x < op->max.x && at.y > op->min.y &&
+            at.y < op->max.y) {
+          heightfield_cut(field, sx, sz, op->add);
+        }
+      }
     }
     return true_v;
   }

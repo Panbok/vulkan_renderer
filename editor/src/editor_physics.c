@@ -1,6 +1,7 @@
 #include "editor_physics.h"
 
 #include "editor_agent.h"
+#include "editor_blockout.h"
 #include "editor_brush_grid.h"
 #include "editor_internal.h"
 #include "editor_level.h"
@@ -11,8 +12,10 @@
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_types.h"
+#include "script/vkr_io_router.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PHYSICS_LINE_MAX 512u
@@ -382,6 +385,72 @@ static uint32_t physics_io_lines(VkrEditorUi *editor,
   return count;
 }
 
+/* The open pose of the selected mover, or of the mover above the selected
+   entity (ADR-084): the box around what it moves, at the offset its open
+   pose puts it, and a line from where it rests to there. Returns how many
+   lines it would draw. */
+static uint32_t physics_mover_lines(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    uint32_t capacity, bool8_t draw) {
+  const VkrScene *scene =
+      vkr_editor_entity_scene(frame, frame->selected_entity);
+  VkrEntityId mover = frame->selected_entity;
+  for (uint32_t depth = 0; scene && mover.u64 && depth < 64u; ++depth) {
+    if (vkr_scene_get_typed(scene, mover, &vkr_scene_mover_type)) {
+      break;
+    }
+    const SceneTransform *transform =
+        vkr_scene_entity_alive(scene, mover)
+            ? vkr_entity_get_component(scene->world, mover,
+                                       scene->comp_transform)
+            : NULL;
+    mover = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  Vec3 offset = vec3_zero();
+  if (!scene || !mover.u64 || !vkr_io_mover_travel(scene, mover, &offset) ||
+      vec3_length(offset) <= 0.0f) {
+    return 0u;
+  }
+  if (!draw) {
+    return 13u;
+  }
+  VkrBrushGeometry *geometry =
+      vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*geometry),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  Vec3 lo = vec3_zero();
+  Vec3 hi = vec3_zero();
+  if (!geometry ||
+      !vkr_editor_entity_world_box(scene, mover, geometry, &lo, &hi)) {
+    return 0u;
+  }
+  const Vec4 color = {0.55f, 0.85f, 1.0f, 1.0f};
+  const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
+  physics_line(editor, frame, VKR_ENTITY_ID_INVALID, center,
+               vec3_add(center, offset), color, capacity);
+  lo = vec3_add(lo, offset);
+  hi = vec3_add(hi, offset);
+  for (uint32_t corner = 0; corner < 8u; ++corner) {
+    const Vec3 from = {(corner & 1u) ? hi.x : lo.x, (corner & 2u) ? hi.y : lo.y,
+                       (corner & 4u) ? hi.z : lo.z};
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      if (corner & (1u << axis)) {
+        continue;
+      }
+      Vec3 to = from;
+      if (axis == 0u) {
+        to.x = hi.x;
+      } else if (axis == 1u) {
+        to.y = hi.y;
+      } else {
+        to.z = hi.z;
+      }
+      physics_line(editor, frame, VKR_ENTITY_ID_INVALID, from, to, color,
+                   capacity);
+    }
+  }
+  return 13u;
+}
+
 /* Whether the selection is a brush face. */
 /* Level tool outlines in world space: the selected brush face, the cut the
    clip tool previews, and the issues and region of the last level check
@@ -466,6 +535,178 @@ static uint32_t physics_population_lines(VkrEditorUi *editor,
   return count;
 }
 
+/* At most this many brushes draw their collision a frame. */
+#define PHYSICS_BRUSH_HULL_MAX 256u
+
+static void physics_pieces(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                           const VkrBlockoutPiece *pieces, uint32_t count,
+                           Vec3 origin, VkrQuat rotation, Vec4 color,
+                           uint32_t capacity);
+
+/* The collision of solid and clip brushes and of blockout shapes, their
+   convex hulls (ADR-084), in the static-body color: the selected one's, or
+   every one's when the Show menu draws all collision. */
+static void physics_brush_hulls(VkrEditorUi *editor,
+                                const VkrSampleUiFrame *frame,
+                                uint32_t capacity) {
+  const VkrScene *scene = frame->scene;
+  const VkrEntityId selected = frame->selected_entity;
+  static VkrBrushGeometry hull_scratch;
+  const Vec4 color = {0.3f, 0.9f, 0.45f, 1.0f};
+  VkrEntityId faces[VKR_BRUSH_FACE_MAX];
+  uint32_t drawn = 0u;
+  for (uint32_t i = 0;
+       i < scene->world->dir.living && drawn < PHYSICS_BRUSH_HULL_MAX; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+    if (frame->view_state.collision_display == 1u &&
+        entity.u64 != selected.u64) {
+      continue;
+    }
+    VkrBlockoutPiece *pieces = NULL;
+    const uint32_t piece_count =
+        vkr_editor_shape_pieces(scene, entity, &pieces);
+    if (piece_count) {
+      drawn++;
+      physics_pieces(editor, frame, pieces, piece_count, vec3_zero(),
+                     vkr_quat_identity(), color, capacity);
+      free(pieces);
+      continue;
+    }
+    const SceneBrushSettings *brush =
+        vkr_scene_entity_alive(scene, entity)
+            ? vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type)
+            : NULL;
+    if (!brush ||
+        (brush->role != SCENE_BRUSH_ROLE_SOLID &&
+         brush->role != SCENE_BRUSH_ROLE_CLIP) ||
+        !vkr_editor_brush_build(scene, entity, &hull_scratch, faces)) {
+      continue;
+    }
+    drawn++;
+    for (uint32_t f = 0; f < hull_scratch.face_count; ++f) {
+      const VkrBrushPolygon polygon = hull_scratch.polygons[f];
+      for (uint32_t c = 0; c < polygon.count; ++c) {
+        physics_line(
+            editor, frame, VKR_ENTITY_ID_INVALID,
+            hull_scratch.vertices[polygon.first + c],
+            hull_scratch.vertices[polygon.first + (c + 1u) % polygon.count],
+            color, capacity);
+      }
+    }
+  }
+}
+
+/* The edges of layout `pieces`, placed by `rotation` then `origin`. */
+static void physics_pieces(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                           const VkrBlockoutPiece *pieces, uint32_t count,
+                           Vec3 origin, VkrQuat rotation, Vec4 color,
+                           uint32_t capacity) {
+  static VkrBrushGeometry piece_scratch;
+  /* A long shape shows every n-th piece and its last. */
+  const uint32_t stride = (count + 111u) / 112u;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (stride > 1u && i % stride && i + 1u != count) {
+      continue;
+    }
+    const VkrBlockoutPiece *piece = &pieces[i];
+    Vec3 center = vec3_zero();
+    for (uint32_t p = 0; p < piece->point_count; ++p) {
+      center = vec3_add(center, piece->points[p]);
+    }
+    center = vec3_scale(center, 1.0f / (float32_t)piece->point_count);
+    Vec3 local[VKR_BLOCKOUT_PIECE_POINT_MAX];
+    for (uint32_t p = 0; p < piece->point_count; ++p) {
+      local[p] = vec3_sub(piece->points[p], center);
+    }
+    VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
+    const uint32_t plane_count =
+        vkr_brush_hull(local, piece->point_count, planes, VKR_BRUSH_FACE_MAX);
+    if (!plane_count || vkr_brush_build(planes, plane_count, &piece_scratch,
+                                        NULL) != VKR_BRUSH_OK) {
+      continue;
+    }
+    for (uint32_t f = 0; f < piece_scratch.face_count; ++f) {
+      const VkrBrushPolygon polygon = piece_scratch.polygons[f];
+      for (uint32_t c = 0; c < polygon.count; ++c) {
+        const Vec3 a =
+            vec3_add(center, piece_scratch.vertices[polygon.first + c]);
+        const Vec3 b = vec3_add(
+            center,
+            piece_scratch.vertices[polygon.first + (c + 1u) % polygon.count]);
+        physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                     vec3_add(origin, vkr_quat_rotate_vec3(rotation, a)),
+                     vec3_add(origin, vkr_quat_rotate_vec3(rotation, b)), color,
+                     capacity);
+      }
+    }
+  }
+}
+
+/* The stairs or corridor the path tool would build, with the pointer as
+   its next point; corridors use the operation's default size. */
+static void physics_path_preview(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame,
+                                 uint32_t capacity) {
+  if (editor->path_tool == VKR_EDITOR_SCENE_TOOL_NONE || !editor->path_count) {
+    return;
+  }
+  const Vec4 color = {0.45f, 0.75f, 1.0f, 1.0f};
+  char error[160];
+  VkrBlockoutPiece *pieces = NULL;
+  if (editor->path_tool == VKR_EDITOR_SCENE_TOOL_STAIRS) {
+    SceneBlockout stairs;
+    Vec3 from = vec3_zero();
+    float32_t yaw = 0.0f;
+    if (!vkr_editor_path_stairs(editor, frame, &stairs, &from, &yaw)) {
+      return;
+    }
+    const uint32_t stairs_capacity = vkr_blockout_piece_capacity(&stairs);
+    pieces = vkr_allocator_alloc(frame->ui->frame_allocator,
+                                 stairs_capacity * sizeof(*pieces),
+                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    const uint32_t count =
+        pieces ? vkr_blockout_layout(&stairs, pieces, stairs_capacity, error,
+                                     sizeof(error))
+               : 0u;
+    physics_pieces(editor, frame, pieces, count, from,
+                   vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f),
+                                            yaw * 0.0174532925f),
+                   color, capacity);
+    return;
+  }
+  /* The corridor's points relative to the first, the pointer last. */
+  SceneBlockout corridor;
+  vkr_type_defaults(&vkr_scene_blockout_type, &corridor);
+  corridor.shape = SCENE_BLOCKOUT_CORRIDOR;
+  corridor.width = 2.0f;
+  corridor.height = 3.0f;
+  corridor.thickness = 0.25f;
+  corridor.radius = editor->corridor_curved ? 2.0f : 0.0f;
+  corridor.point_count = 0u;
+  const Vec3 first = editor->path_points[0];
+  for (uint32_t i = 0; i < editor->path_count; ++i) {
+    corridor.points[corridor.point_count++] =
+        vec3_sub(editor->path_points[i], first);
+  }
+  if (vec3_length(vec3_sub(editor->path_current,
+                           editor->path_points[editor->path_count - 1u])) >
+          0.25f &&
+      corridor.point_count < SCENE_BLOCKOUT_POINT_MAX) {
+    corridor.points[corridor.point_count++] =
+        vec3_sub(editor->path_current, first);
+  }
+  const uint32_t corridor_capacity = vkr_blockout_piece_capacity(&corridor);
+  pieces = vkr_allocator_alloc(frame->ui->frame_allocator,
+                               corridor_capacity * sizeof(*pieces),
+                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  const uint32_t count =
+      pieces ? vkr_blockout_layout(&corridor, pieces, corridor_capacity, error,
+                                   sizeof(error))
+             : 0u;
+  physics_pieces(editor, frame, pieces, count, first, vkr_quat_identity(),
+                 color, capacity);
+}
+
 static void physics_level_tools(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 uint32_t capacity) {
@@ -476,6 +717,12 @@ static void physics_level_tools(VkrEditorUi *editor,
   for (uint32_t i = 0; i < grid_count; ++i) {
     physics_line(editor, frame, VKR_ENTITY_ID_INVALID, grid_lines[i].from,
                  grid_lines[i].to, grid_lines[i].color, capacity);
+  }
+  const VkrEditorBrushGridLine *shape_lines = NULL;
+  const uint32_t shape_count = vkr_editor_blockout_lines(editor, &shape_lines);
+  for (uint32_t i = 0; i < shape_count; ++i) {
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, shape_lines[i].from,
+                 shape_lines[i].to, shape_lines[i].color, capacity);
   }
   if (editor->face_handle_count) {
     /* The brush's edges, each face's arrow, the hot face's outline and
@@ -554,19 +801,6 @@ static void physics_level_tools(VkrEditorUi *editor,
                  circle[(i + 1u) % circle_count],
                  (Vec4){0.45f, 0.95f, 0.55f, 1.0f}, capacity);
   }
-  if (editor->clip_tool && editor->clip_has_first) {
-    const Vec4 color = {1.0f, 0.35f, 0.35f, 1.0f};
-    const Vec3 a = editor->clip_first;
-    const Vec3 b = editor->clip_current;
-    const Vec3 up = {0.0f, 4.0f, 0.0f};
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, b, color, capacity);
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, vec3_add(a, up),
-                 vec3_add(b, up), color, capacity);
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, vec3_add(a, up),
-                 color, capacity);
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, b, vec3_add(b, up),
-                 color, capacity);
-  }
   /* The extra selected brushes outline their faces, as the Scene outlines
      the primary selection. */
   for (uint32_t s = 0u; s < editor->selection_extra_count; ++s) {
@@ -591,21 +825,7 @@ static void physics_level_tools(VkrEditorUi *editor,
       }
     }
   }
-  /* Stairs and corridors between the start and the pointer. */
-  if (editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE &&
-      editor->path_has_first) {
-    const Vec4 color = {0.45f, 0.75f, 1.0f, 1.0f};
-    const Vec3 a = editor->path_first;
-    const Vec3 b = {editor->path_current.x, a.y, editor->path_current.z};
-    const Vec3 up = {0.0f, 3.0f, 0.0f};
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, b, color, capacity);
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID, b, vec3_add(b, up),
-                 color, capacity);
-    physics_line(
-        editor, frame, VKR_ENTITY_ID_INVALID,
-        editor->path_tool == VKR_EDITOR_SCENE_TOOL_STAIRS ? a : vec3_add(a, up),
-        vec3_add(b, up), color, capacity);
-  }
+  physics_path_preview(editor, frame, capacity);
   const VkrEditorLevelReport *report = editor->level_report;
   if (!report || !report->checked ||
       !vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_LEVEL)) {
@@ -656,22 +876,27 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   const uint32_t changes =
       vkr_editor_ops_change_count(vkr_editor_agent_ops(editor->agent)) +
       (editor->brush_dragging || editor->brush_raising ? 1u : 0u) +
-      (editor->clip_tool && editor->clip_has_first ? 1u : 0u) +
       (editor->selection_extra_count ? 1u : 0u) +
-      (editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE && editor->path_has_first
+      (editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE && editor->path_count
            ? 1u
            : 0u) +
       (editor->terrain_tool && editor->terrain_hit_valid ? 1u : 0u) +
       (editor->face_handle_count ? 1u : 0u) +
       vkr_editor_brush_grid_lines(editor, NULL) +
+      vkr_editor_blockout_lines(editor, NULL) +
       (report && report->checked &&
                vkr_editor_window_shown(editor, frame, VKR_EDITOR_WINDOW_LEVEL)
            ? 1u
            : 0u) +
-      (frame->scripts_running ? 0u
-                              : physics_io_lines(editor, frame, 0u, false_v)) +
+      (frame->scripts_running
+           ? 0u
+           : physics_io_lines(editor, frame, 0u, false_v) +
+                 physics_mover_lines(editor, frame, 0u, false_v)) +
       physics_population_lines(editor, frame, 0u, false_v);
-  if (!bodies && !starts && !changes) {
+  /* Brushes collide through their hulls, which the collision display draws
+     too. */
+  const bool8_t hulls = frame->scene && frame->view_state.collision_display;
+  if (!bodies && !starts && !changes && !hulls) {
     return;
   }
   VkrUiSystem *ui = frame->ui;
@@ -719,8 +944,12 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     physics_level_tools(editor, frame, capacity);
     if (!frame->scripts_running) {
       (void)physics_io_lines(editor, frame, capacity, true_v);
+      (void)physics_mover_lines(editor, frame, capacity, true_v);
     }
     (void)physics_population_lines(editor, frame, capacity, true_v);
+  }
+  if (hulls && editor->physics_lines) {
+    physics_brush_hulls(editor, frame, capacity);
   }
   if (frame->view_state.collision_display && capacity && bodies) {
     if (editor->physics_lines) {

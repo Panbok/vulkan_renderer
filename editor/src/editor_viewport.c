@@ -1,10 +1,13 @@
 #include "editor_agent.h"
+#include "editor_blockout.h"
 #include "editor_brush_grid.h"
 #include "editor_internal.h"
 #include "editor_level.h"
+#include "editor_ops.h"
 #include "editor_projects.h"
 
 #include "renderer/systems/vkr_gizmo_system.h"
+#include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
 
 #include <math.h>
@@ -536,6 +539,10 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     *align = (ViewRow){.checked = place->align_to_normal,
                        .disabled = place->target != VKR_EDITOR_SNAP_SURFACE};
     snprintf(align->text, sizeof(align->text), "Align to surface normal");
+    ViewRow *magnet = &rows[count++];
+    *magnet = (ViewRow){.checked = place->magnet};
+    snprintf(magnet->text, sizeof(magnet->text),
+             "Snap brushes to nearby brushes");
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
     snprintf(rows[count++].text, sizeof(rows[0].text), "Rotation  %.0f\xc2\xb0",
              (double)place->yaw_degrees);
@@ -671,13 +678,15 @@ static bool8_t brush_plane_point(const VkrSampleUiFrame *frame, Vec2 pixel,
   return true_v;
 }
 
-/* The height a brush drag starts at. With Surface snapping it is the
-   upward-facing solid under the pointer, so a brush drawn on another brush
-   sits on top of it; otherwise, and over a wall or nothing, the grid plane. */
+/* The height a brush drag starts at. With Surface snapping, or `surface`
+   (stairs and corridors), it is the upward-facing solid under the pointer,
+   so what is drawn on another brush sits on top of it; otherwise, and over a
+   wall or nothing, the grid plane. */
 static float32_t brush_draw_base(const VkrEditorUi *editor,
-                                 const VkrSampleUiFrame *frame, Vec2 pixel) {
+                                 const VkrSampleUiFrame *frame, Vec2 pixel,
+                                 bool8_t surface) {
   const float32_t ground = frame->view_state.grid_height;
-  if (editor->placement.target != VKR_EDITOR_SNAP_SURFACE) {
+  if (!surface && editor->placement.target != VKR_EDITOR_SNAP_SURFACE) {
     return ground;
   }
   Vec3 origin = {0};
@@ -692,6 +701,14 @@ static float32_t brush_draw_base(const VkrEditorUi *editor,
   return hit.position[1];
 }
 
+/* A corner of a box being drawn, moved onto the sides of brushes beside it
+   (editor_level.h). */
+static Vec3 brush_draw_magnet(const VkrEditorUi *editor, Vec3 point, Vec3 eye) {
+  point.x = vkr_editor_magnet_value(editor, 0u, point.x, point, point, eye);
+  point.z = vkr_editor_magnet_value(editor, 2u, point.z, point, point, eye);
+  return point;
+}
+
 /* Brush drawing (ADR-084): while it is on,
    the Scene image takes the mouse from picking, a left drag outlines the
    base, then the pointer raises the box, as Chisel and Hammer draw, and a
@@ -700,7 +717,9 @@ static float32_t brush_draw_base(const VkrEditorUi *editor,
    instead of starting a box. The Snapping menu picks the plane and
    the steps: Surface starts on the solid under the pointer, Grid on the grid
    plane, both on grid crossings and in whole cells; Free draws on the grid
-   plane in 1/16 m steps. Escape cancels a box, or turns drawing off. */
+   plane in 1/16 m steps. With the magnet on, corners and the top snap to
+   the sides, tops and bottoms of brushes beside them. Escape cancels a box,
+   or turns drawing off. */
 static void viewport_brush_draw(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
@@ -748,6 +767,15 @@ static void viewport_brush_draw(VkrEditorUi *editor,
       editor->brush_draw_height = Max(
           step, roundf((along - editor->brush_draw_raise_start + step) / step) *
                     step);
+      /* The top levels with nearby brushes' tops and bottoms. */
+      const float32_t top = a.y + editor->brush_draw_height;
+      const Vec3 lo = vec3_new(Min(a.x, b.x), top, Min(a.z, b.z));
+      const Vec3 hi = vec3_new(Max(a.x, b.x), top, Max(a.z, b.z));
+      const float32_t snapped =
+          vkr_editor_magnet_value(editor, 1u, top, lo, hi, origin);
+      if (snapped - a.y > 1.0e-3f) {
+        editor->brush_draw_height = snapped - a.y;
+      }
     }
     if (!ui->mouse_pressed || !inside || editor->menu != VKR_EDITOR_MENU_NONE) {
       return;
@@ -761,12 +789,16 @@ static void viewport_brush_draw(VkrEditorUi *editor,
     const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
                         input_is_key_down(frame->input, KEY_RMENU);
     if (editor->face_dragging || editor->face_handle_hot >= 0 || alt ||
-        vkr_editor_brush_grid_busy(editor)) {
+        vkr_editor_brush_grid_busy(editor) ||
+        vkr_editor_blockout_busy(editor)) {
       return;
     }
     if (ui->mouse_pressed && inside && editor->menu == VKR_EDITOR_MENU_NONE &&
-        brush_plane_point(frame, mouse, brush_draw_base(editor, frame, mouse),
-                          grid, &point)) {
+        brush_plane_point(frame, mouse,
+                          brush_draw_base(editor, frame, mouse, false_v), grid,
+                          &point)) {
+      vkr_editor_magnet_begin(editor, frame);
+      point = brush_draw_magnet(editor, point, origin);
       editor->brush_dragging = true_v;
       editor->brush_draw_start = point;
       editor->brush_draw_end = point;
@@ -778,7 +810,7 @@ static void viewport_brush_draw(VkrEditorUi *editor,
   }
   if (brush_plane_point(frame, mouse, editor->brush_draw_start.y, grid,
                         &point)) {
-    editor->brush_draw_end = point;
+    editor->brush_draw_end = brush_draw_magnet(editor, point, origin);
   }
   if (input_is_button_down(frame->input, BUTTON_LEFT) && !ui->mouse_released) {
     return;
@@ -805,6 +837,32 @@ static void viewport_brush_draw(VkrEditorUi *editor,
 const char *const vkr_editor_brush_roles[] = {"solid", "visual", "clip",
                                               "trigger", NULL};
 
+const VkrEditorBrushMaterial
+    vkr_editor_brush_materials[VKR_EDITOR_BRUSH_MATERIAL_COUNT] = {
+        {"Grid", VKR_SCENE_BRUSH_DEFAULT_MATERIAL},
+        {"Floor", "assets/materials/dev/dev_floor.mt"},
+        {"Wall", "assets/materials/dev/dev_wall.mt"},
+        {"Orange", "assets/materials/dev/dev_orange.mt"},
+        {"Blue", "assets/materials/dev/dev_blue.mt"},
+        {"Clip", "assets/materials/dev/dev_clip.mt"},
+        {"Trigger", "assets/materials/dev/dev_trigger.mt"},
+};
+
+void vkr_editor_brush_style(const VkrEditorUi *editor, char *out,
+                            uint64_t size) {
+  const uint32_t role = editor->brush_role;
+  const uint32_t material = editor->brush_material;
+  /* The default material is what a brush without one shows. */
+  if (role > 1u || material == 0u ||
+      material >= VKR_EDITOR_BRUSH_MATERIAL_COUNT) {
+    snprintf(out, size, "\"role\":\"%s\"", vkr_editor_brush_roles[role]);
+    return;
+  }
+  snprintf(out, size, "\"role\":\"%s\",\"material\":\"%s\"",
+           vkr_editor_brush_roles[role],
+           vkr_editor_brush_materials[material].path);
+}
+
 VkrEditorSceneTool vkr_editor_scene_tool(const VkrEditorUi *editor) {
   if (editor->brush_draw) {
     return VKR_EDITOR_SCENE_TOOL_BRUSH_DRAW;
@@ -823,13 +881,12 @@ void vkr_editor_scene_tool_set(VkrEditorUi *editor, VkrEditorSceneTool tool) {
   editor->brush_dragging = false_v;
   editor->brush_raising = false_v;
   editor->clip_tool = tool == VKR_EDITOR_SCENE_TOOL_CLIP;
-  editor->clip_has_first = false_v;
   editor->terrain_tool = tool == VKR_EDITOR_SCENE_TOOL_TERRAIN;
   editor->path_tool = tool == VKR_EDITOR_SCENE_TOOL_STAIRS ||
                               tool == VKR_EDITOR_SCENE_TOOL_CORRIDOR
                           ? tool
                           : VKR_EDITOR_SCENE_TOOL_NONE;
-  editor->path_has_first = false_v;
+  editor->path_count = 0u;
 }
 
 /* The `container` argument of an operation that creates in the container
@@ -851,7 +908,8 @@ static bool8_t viewport_target(const VkrSampleUiFrame *frame, char *out,
 }
 
 /* Creates the box the brush tool outlined through brush.box, in the
-   container new objects go to, with the palette's brush role. */
+   container new objects go to, with the palette's brush role and
+   material. */
 static void viewport_brush_create(VkrEditorUi *editor,
                                   const VkrSampleUiFrame *frame) {
   const Vec3 a = editor->brush_draw_start;
@@ -860,15 +918,15 @@ static void viewport_brush_create(VkrEditorUi *editor,
   if (!viewport_target(frame, target, sizeof(target))) {
     return;
   }
-  char line[360];
+  char style[160];
+  vkr_editor_brush_style(editor, style, sizeof(style));
+  char line[480];
   snprintf(line, sizeof(line),
            "{\"v\":1,\"id\":\"draw\",\"op\":\"brush.box\",\"args\":{"
            "\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
-           "\"role\":\"%s\",\"grid\":0,\"review\":false,"
-           "\"select\":true}}",
+           "%s,\"grid\":0,\"review\":false,\"select\":true}}",
            Min(a.x, b.x), a.y, Min(a.z, b.z), Max(a.x, b.x),
-           a.y + editor->brush_draw_height, Max(a.z, b.z), target,
-           vkr_editor_brush_roles[editor->brush_role]);
+           a.y + editor->brush_draw_height, Max(a.z, b.z), target, style);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -1066,12 +1124,12 @@ static void viewport_face_tools(VkrEditorUi *editor,
       editor->cmd_active || editor->menu != VKR_EDITOR_MENU_NONE ||
       (editor->brush_draw &&
        (editor->brush_dragging || editor->brush_raising)) ||
-      editor->clip_tool || editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE) {
+      editor->path_tool != VKR_EDITOR_SCENE_TOOL_NONE) {
     editor->face_dragging = false_v;
     editor->face_handle_hot = -1;
     vkr_editor_brush_grid_update(editor, frame, NULL, VKR_ENTITY_ID_INVALID,
-                                 false_v, vec3_zero(), vec3_zero(), false_v,
-                                 false_v, true_v);
+                                 VKR_EDITOR_BRUSH_GRID_EDIT, vec3_zero(),
+                                 vec3_zero(), false_v, false_v, true_v);
     return;
   }
   const bool8_t alt = input_is_key_down(frame->input, KEY_LMENU) ||
@@ -1082,6 +1140,18 @@ static void viewport_face_tools(VkrEditorUi *editor,
   Vec3 origin = {0};
   Vec3 direction = {0};
   const bool8_t has_ray = viewport_ray(frame, mouse, &origin, &direction);
+  if (editor->clip_tool) {
+    /* The Clip tool cuts on the selected brush's grid, with any transform
+       tool. */
+    editor->face_dragging = false_v;
+    editor->face_handle_hot = -1;
+    const VkrEntityId brush = viewport_selected_brush(frame);
+    vkr_editor_brush_grid_update(editor, frame,
+                                 vkr_editor_entity_scene(frame, brush), brush,
+                                 VKR_EDITOR_BRUSH_GRID_CLIP, origin, direction,
+                                 has_ray, inside, false_v);
+    return;
+  }
   if (alt && inside && !editor->face_dragging) {
     /* The Scene image stops picking objects while Alt is held. */
     (void)vkr_ui_input_layer_register(
@@ -1101,11 +1171,19 @@ static void viewport_face_tools(VkrEditorUi *editor,
   const bool8_t alive = scene && vkr_scene_entity_alive(scene, selected);
   const bool8_t face_selected =
       alive && vkr_scene_get_typed(scene, selected, &vkr_scene_brush_face_type);
-  /* A brush selected with the Select tool shows its grid; the transform
-     tools keep their gizmo instead. */
+  /* A selected blockout shape shows its handles with the Select tool. */
+  vkr_editor_blockout_update(
+      editor, frame,
+      frame->view_state.gizmo_tool == VKR_GIZMO_MODE_NONE && alive
+          ? selected
+          : VKR_ENTITY_ID_INVALID,
+      origin, direction, has_ray, inside && !alt);
+  /* A brush, or a corridor's wall, selected with the Select tool shows its
+     grid; the transform tools keep their gizmo instead. */
   const bool8_t brush_selected =
       alive && frame->view_state.gizmo_tool == VKR_GIZMO_MODE_NONE &&
-      vkr_scene_get_typed(scene, selected, &vkr_scene_brush_type);
+      (vkr_scene_get_typed(scene, selected, &vkr_scene_brush_type) ||
+       vkr_scene_get_typed(scene, selected, &vkr_scene_blockout_type));
   if (face_selected) {
     const SceneTransform *transform =
         vkr_entity_get_component(scene->world, selected, scene->comp_transform);
@@ -1119,8 +1197,11 @@ static void viewport_face_tools(VkrEditorUi *editor,
   /* While boxes are drawn, cells start boxes rather than patches. */
   vkr_editor_brush_grid_update(
       editor, frame, scene, brush_selected ? selected : VKR_ENTITY_ID_INVALID,
-      !editor->brush_draw, origin, direction, has_ray, inside,
-      alt || editor->face_handle_hot >= 0 || editor->face_dragging);
+      editor->brush_draw ? VKR_EDITOR_BRUSH_GRID_DRAW
+                         : VKR_EDITOR_BRUSH_GRID_EDIT,
+      origin, direction, has_ray, inside,
+      alt || editor->face_handle_hot >= 0 || editor->face_dragging ||
+          vkr_editor_blockout_busy(editor));
   if (!face_selected) {
     return;
   }
@@ -1170,143 +1251,221 @@ static void viewport_plane_missed(VkrEditorUi *editor,
                          : "Click on the ground grid; look down at it first");
 }
 
-/* Brush clipping: the first click on the grid plane sets one end of the
-   cut and the second cuts the selected brush with the vertical plane
-   through both points, keeping both pieces. Escape drops the first point,
-   or turns the tool off. */
+/* Brush clipping (ADR-084): the selected brush shows its face grid, and
+   the grid takes the clicks that cut it (editor_brush_grid.h). Without a
+   brush the Scene keeps picking, so a click selects one. Escape drops the
+   cut's points, or turns the tool off. */
 static void viewport_clip_tool(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
-  VkrUiSystem *ui = frame->ui;
   if (!editor->clip_tool || frame->scene_rendering_stopped ||
       frame->mouse_captured) {
-    editor->clip_has_first = false_v;
     return;
   }
-  const Vec4 image = frame->mapping.image_rect_px;
-  (void)vkr_ui_input_layer_register(
-      ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
-      (VkrUiRect){image.x, image.y, image.z, image.w});
-  if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
-    if (editor->clip_has_first) {
-      editor->clip_has_first = false_v;
-    } else {
-      editor->clip_tool = false_v;
-    }
-    return;
+  if (input_key_just_pressed(frame->input, KEY_ESCAPE) &&
+      !vkr_editor_brush_grid_clip_pending(editor)) {
+    editor->clip_tool = false_v;
   }
-  const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
-  const bool8_t inside = editor->scene_pointer_free;
-  Vec3 point = {0};
-  if (!brush_plane_point(frame, mouse, frame->view_state.grid_height, true_v,
-                         &point)) {
-    viewport_plane_missed(editor, frame, mouse, inside);
-    return;
-  }
-  editor->clip_current = point;
-  if (!ui->mouse_pressed || !inside || editor->menu != VKR_EDITOR_MENU_NONE) {
-    return;
-  }
-  if (!editor->clip_has_first) {
-    editor->clip_first = point;
-    editor->clip_has_first = true_v;
-    return;
-  }
-  editor->clip_has_first = false_v;
-  const Vec3 along = vec3_new(point.x - editor->clip_first.x, 0.0f,
-                              point.z - editor->clip_first.z);
-  if (vec3_length(along) < 1.0e-3f) {
-    return;
-  }
-  const VkrEntityId brush = viewport_selected_brush(frame);
-  if (!brush.u64) {
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
-                     "Select a brush to clip");
-    return;
-  }
-  const Vec3 normal = vec3_normalize(vec3_new(-along.z, 0.0f, along.x));
-  char line[320];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"clip\",\"op\":\"brush.clip\",\"args\":{"
-           "\"brush\":\"%u:%u:%u\",\"point\":[%g,%g,%g],"
-           "\"normal\":[%g,%g,%g],\"keep\":\"both\",\"review\":false}}",
-           (unsigned)brush.parts.world, (unsigned)brush.parts.index,
-           (unsigned)brush.parts.generation, editor->clip_first.x,
-           editor->clip_first.y, editor->clip_first.z, normal.x, normal.y,
-           normal.z);
-  (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
-/* How high the stairs tool's stairs rise, in metres. */
-#define VIEWPORT_STAIRS_RISE_M 3.0f
+/* The stairs the stairs tool places from a drag `from` toward `to` in the
+   palette's kind and turn: straight, L and U stairs run as far as the drag,
+   a spiral reaches it with its rim, and a short drag or a click leaves the
+   defaults. Its yaw (degrees about +Y) faces the drag, or away from the
+   camera. */
+static SceneBlockout viewport_stairs_shape(const VkrEditorUi *editor, Vec3 from,
+                                           Vec3 to, Vec3 facing,
+                                           float32_t *out_yaw) {
+  SceneBlockout shape;
+  vkr_type_defaults(&vkr_scene_blockout_type, &shape);
+  shape.shape = SCENE_BLOCKOUT_STAIRS;
+  shape.stairs = (SceneStairsKind)editor->stairs_kind;
+  shape.left = editor->stairs_left;
+  if (shape.stairs == SCENE_STAIRS_CURVED) {
+    shape.radius = 2.0f;
+    shape.turn = 90.0f;
+  } else if (shape.stairs == SCENE_STAIRS_SPIRAL) {
+    shape.radius = 0.3f;
+    shape.turn = 360.0f;
+    shape.width = 1.2f;
+  }
+  Vec3 run = vec3_new(to.x - from.x, 0.0f, to.z - from.z);
+  const float32_t reach = vec3_length(run);
+  if (reach < 0.5f) {
+    run = vec3_new(facing.x, 0.0f, facing.z);
+  } else if (shape.stairs == SCENE_STAIRS_SPIRAL) {
+    shape.width = Max(reach - shape.radius, 0.5f);
+  } else if (shape.stairs != SCENE_STAIRS_CURVED) {
+    shape.length =
+        Max(reach,
+            shape.stairs == SCENE_STAIRS_STRAIGHT ? 0.5f : shape.width + 1.0f);
+  }
+  *out_yaw =
+      vec3_length(run) > 1.0e-4f ? atan2f(run.x, run.z) * 57.2957795f : 0.0f;
+  return shape;
+}
 
-/* Stairs and corridors: the first click on the grid plane sets where they
-   start and the second where they end, and brush.stairs (rising
-   VIEWPORT_STAIRS_RISE_M) or blockout.corridor builds between them as one
-   undo step. Escape drops the start, or turns the tool off. */
+bool8_t vkr_editor_path_stairs(const VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame,
+                               SceneBlockout *out, Vec3 *out_from,
+                               float32_t *out_yaw) {
+  (void)frame;
+  if (editor->path_tool != VKR_EDITOR_SCENE_TOOL_STAIRS ||
+      !editor->path_count) {
+    return false_v;
+  }
+  *out_from = editor->path_points[0];
+  *out =
+      viewport_stairs_shape(editor, editor->path_points[0],
+                            editor->path_current, vec3_new(0, 0, 1), out_yaw);
+  return true_v;
+}
+
+/* Stairs and corridors (ADR-084). Stairs: a drag on the grid plane, or on
+   the surface under the pointer with Surface snapping, places editable
+   stairs in the palette's kind from where it starts toward where it ends
+   (a click faces them away from the camera); their handles and Details
+   shape them afterwards. Corridors: each click adds a floor point; a click
+   on the last point again, or Enter, builds an editable corridor through
+   them, its corners rounded when the palette says Curved, and Backspace
+   drops the last point. Escape steps back, then turns the tool off. */
 static void viewport_path_tool(VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   if (editor->path_tool == VKR_EDITOR_SCENE_TOOL_NONE ||
       frame->scene_rendering_stopped || frame->mouse_captured) {
-    editor->path_has_first = false_v;
+    editor->path_count = 0u;
     return;
   }
+  const bool8_t stairs = editor->path_tool == VKR_EDITOR_SCENE_TOOL_STAIRS;
   const Vec4 image = frame->mapping.image_rect_px;
   (void)vkr_ui_input_layer_register(
       ui, VKR_EDITOR_VIEW_TOOLBAR_LAYER,
       (VkrUiRect){image.x, image.y, image.z, image.w});
   if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
-    if (editor->path_has_first) {
-      editor->path_has_first = false_v;
+    if (editor->path_count) {
+      editor->path_count = 0u;
     } else {
       vkr_editor_scene_tool_set(editor, VKR_EDITOR_SCENE_TOOL_NONE);
     }
     return;
   }
+  if (!stairs && editor->path_count &&
+      input_key_just_pressed(frame->input, KEY_BACKSPACE)) {
+    editor->path_count--;
+    return;
+  }
   const Vec2 mouse = {(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
   const bool8_t inside = editor->scene_pointer_free;
+  const bool8_t pressed =
+      ui->mouse_pressed && inside && editor->menu == VKR_EDITOR_MENU_NONE;
+  const bool8_t grid = editor->placement.target != VKR_EDITOR_SNAP_FREE;
+  Vec3 origin = {0};
+  Vec3 direction = {0};
+  (void)viewport_ray(frame, mouse, &origin, &direction);
+
+  if (stairs && editor->path_count) {
+    /* The drag runs until the release places the stairs. */
+    Vec3 point = {0};
+    if (brush_plane_point(frame, mouse, editor->path_points[0].y, grid,
+                          &point)) {
+      editor->path_current = point;
+    }
+    if (input_is_button_down(frame->input, BUTTON_LEFT) &&
+        !ui->mouse_released) {
+      return;
+    }
+    editor->path_count = 0u;
+    char target[16];
+    if (!viewport_target(frame, target, sizeof(target)) || !editor->agent) {
+      return;
+    }
+    float32_t yaw = 0.0f;
+    SceneBlockout shape = viewport_stairs_shape(
+        editor, editor->path_points[0], editor->path_current, direction, &yaw);
+    char style[160];
+    vkr_editor_brush_style(editor, style, sizeof(style));
+    if (editor->brush_material > 0u &&
+        editor->brush_material < VKR_EDITOR_BRUSH_MATERIAL_COUNT &&
+        editor->brush_role <= 1u) {
+      snprintf(shape.material, sizeof(shape.material), "%s",
+               vkr_editor_brush_materials[editor->brush_material].path);
+    }
+    char values[4096];
+    if (!vkr_editor_ops_component_text(&vkr_scene_blockout_type, &shape, values,
+                                       sizeof(values))) {
+      return;
+    }
+    const Vec3 at = editor->path_points[0];
+    char line[4608];
+    snprintf(line, sizeof(line),
+             "{\"v\":1,\"id\":\"path\",\"op\":\"blockout.create\",\"args\":{"
+             "\"shape\":\"stairs\",\"position\":[%g,%g,%g],\"yaw\":%g,"
+             "\"values\":%s,\"container\":%s,%s,\"grid\":0,"
+             "\"review\":false,\"select\":true}}",
+             at.x, at.y, at.z, yaw, values, target, style);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+    return;
+  }
+
+  /* Points lie on the plane of the first one; the first starts on the
+     surface under the pointer with Surface snapping. */
   Vec3 point = {0};
-  if (!brush_plane_point(frame, mouse, frame->view_state.grid_height, true_v,
-                         &point)) {
+  const float32_t height = editor->path_count
+                               ? editor->path_points[0].y
+                               : brush_draw_base(editor, frame, mouse, true_v);
+  if (!brush_plane_point(frame, mouse, height, grid, &point)) {
     viewport_plane_missed(editor, frame, mouse, inside);
     return;
   }
   editor->path_current = point;
-  if (!ui->mouse_pressed || !inside || editor->menu != VKR_EDITOR_MENU_NONE) {
+  const bool8_t finish = !stairs && editor->path_count >= 2u &&
+                         input_key_just_pressed(frame->input, KEY_ENTER);
+  if (!pressed && !finish) {
     return;
   }
-  if (!editor->path_has_first) {
-    editor->path_first = point;
-    editor->path_has_first = true_v;
+  if (stairs) {
+    editor->path_points[0] = point;
+    editor->path_current = point;
+    editor->path_count = 1u;
     return;
   }
-  editor->path_has_first = false_v;
-  const Vec3 a = editor->path_first;
-  if (vec3_length(vec3_new(point.x - a.x, 0.0f, point.z - a.z)) < 0.5f) {
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
-                     "The end must lie at least 0.5 m from the start");
+
+  /* Corridors: a click on the last point again finishes them. */
+  const bool8_t again =
+      editor->path_count &&
+      vec3_length(vec3_sub(
+          point, editor->path_points[editor->path_count - 1u])) < 0.25f;
+  if (!finish && !again) {
+    if (editor->path_count < ArrayCount(editor->path_points)) {
+      editor->path_points[editor->path_count++] = point;
+    }
+    return;
+  }
+  if (editor->path_count < 2u) {
     return;
   }
   char target[16];
   if (!viewport_target(frame, target, sizeof(target))) {
     return;
   }
-  char line[400];
-  if (editor->path_tool == VKR_EDITOR_SCENE_TOOL_STAIRS) {
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"path\",\"op\":\"brush.stairs\",\"args\":{"
-             "\"from\":[%g,%g,%g],\"to\":[%g,%g,%g],\"container\":%s,"
-             "\"role\":\"%s\",\"review\":false,\"select\":true}}",
-             a.x, a.y, a.z, point.x, a.y + VIEWPORT_STAIRS_RISE_M, point.z,
-             target, vkr_editor_brush_roles[editor->brush_role]);
-  } else {
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"path\",\"op\":\"blockout.corridor\","
-             "\"args\":{\"from\":[%g,%g,%g],\"to\":[%g,%g,%g],"
-             "\"container\":%s,\"review\":false,\"select\":true}}",
-             a.x, a.y, a.z, point.x, a.y, point.z, target);
+  char line[2048];
+  int used = snprintf(line, sizeof(line),
+                      "{\"v\":1,\"id\":\"path\",\"op\":"
+                      "\"blockout.corridor\",\"args\":{\"points\":[");
+  for (uint32_t i = 0;
+       i < editor->path_count && used > 0 && (size_t)used < sizeof(line); ++i) {
+    const Vec3 at = editor->path_points[i];
+    used += snprintf(line + used, sizeof(line) - (size_t)used, "%s[%g,%g,%g]",
+                     i ? "," : "", at.x, at.y, at.z);
   }
-  (void)vkr_editor_agent_submit(editor->agent, line);
+  if (used > 0 && (size_t)used < sizeof(line)) {
+    snprintf(line + used, sizeof(line) - (size_t)used,
+             "],\"curved\":%s,\"container\":%s,\"grid\":0,"
+             "\"review\":false,\"select\":true}}",
+             editor->corridor_curved ? "true" : "false", target);
+    (void)vkr_editor_agent_submit(editor->agent, line);
+  }
+  editor->path_count = 0u;
 }
 
 /* One line under the Scene's centre that says what the running tool does
@@ -1321,28 +1480,39 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
                : "Drag to draw a box brush's base. Esc stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_CLIP:
-    hint = editor->clip_has_first
-               ? "Click the cut's second point. Esc drops the first."
-               : "Click the first point of a cut through the selected brush. "
-                 "Esc stops.";
+    hint = vkr_editor_brush_grid_hint(editor);
+    if (!hint) {
+      hint = "Click a brush to cut it on its grid. Esc stops.";
+    }
     break;
   case VKR_EDITOR_SCENE_TOOL_TERRAIN:
     hint = "Hold the left button over a terrain to sculpt or paint. Esc "
            "stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_STAIRS:
-    hint = editor->path_has_first
-               ? "Click where the stairs end; they rise 3 m. Esc drops the "
-                 "start."
-               : "Click where the stairs start. Esc stops.";
+    hint = editor->path_count
+               ? (editor->stairs_kind == SCENE_STAIRS_SPIRAL
+                      ? "Release at the spiral's rim. Esc cancels."
+                  : editor->stairs_kind == SCENE_STAIRS_CURVED
+                      ? "Release toward where the stairs head. Esc cancels."
+                      : "Release where the stairs end. Esc cancels.")
+               : "Drag from where the stairs start toward where they go, or "
+                 "click to place them facing away. Esc stops.";
     break;
   case VKR_EDITOR_SCENE_TOOL_CORRIDOR:
-    hint = editor->path_has_first
-               ? "Click where the corridor ends. Esc drops the start."
+    hint = editor->path_count >= 2u
+               ? "Click the next point; click the last one again or press "
+                 "Enter to build, then drag its points to steer it. "
+                 "Backspace drops a point, Esc all."
+           : editor->path_count
+               ? "Click the corridor's next point. Esc drops the start."
                : "Click where the corridor starts. Esc stops.";
     break;
   default:
-    hint = vkr_editor_brush_grid_hint(editor);
+    hint = vkr_editor_blockout_hint(editor);
+    if (!hint) {
+      hint = vkr_editor_brush_grid_hint(editor);
+    }
     if (!hint) {
       return;
     }
@@ -1591,13 +1761,16 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
     view_show_activate(editor, frame, index, next);
     return true_v;
   case VIEW_POPUP_SNAP:
-    /* Rows: header, the targets, cell centers, normal alignment. */
+    /* Rows: header, the targets, cell centers, normal alignment, the
+       magnet. */
     if (index >= 1 && index <= VKR_EDITOR_SNAP_COUNT) {
       editor->placement.target = (VkrEditorSnapTarget)(index - 1u);
     } else if (index == VKR_EDITOR_SNAP_COUNT + 1u) {
       editor->placement.cell_centers = !editor->placement.cell_centers;
     } else if (index == VKR_EDITOR_SNAP_COUNT + 2u) {
       editor->placement.align_to_normal = !editor->placement.align_to_normal;
+    } else if (index == VKR_EDITOR_SNAP_COUNT + 3u) {
+      editor->placement.magnet = !editor->placement.magnet;
     }
     return true_v;
   case VIEW_POPUP_SPEED:
@@ -1643,7 +1816,7 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                              bool8_t done, VkrSampleViewState *next) {
   if (popup == VIEW_POPUP_SNAP) {
     /* Rotation in 15 degree steps, offset in centimetres. */
-    if (index == VKR_EDITOR_SNAP_COUNT + 4u)
+    if (index == VKR_EDITOR_SNAP_COUNT + 5u)
       editor->placement.yaw_degrees = roundf(value / 15.0f) * 15.0f;
     else
       editor->placement.offset = roundf(value * 100.0f) / 100.0f;
@@ -1971,6 +2144,19 @@ static bool8_t grid_plane_point(const VkrSampleUiFrame *frame, Vec2 ndc,
 
 static Vec3 grid_world(Vec2 point, bool8_t side) {
   return side ? (Vec3){0, point.y, point.x} : (Vec3){point.x, 0, point.y};
+}
+
+bool8_t vkr_editor_viewport_pixel(const VkrSampleUiFrame *frame, Vec3 world,
+                                  Vec2 *out) {
+  const Vec4 clip =
+      mat4_mul_vec4(frame->view_projection, vec3_to_vec4(world, 1.0f));
+  if (!isfinite(clip.w) || clip.w <= 1.0e-6f) {
+    return false_v;
+  }
+  const Vec4 image = frame->mapping.image_rect_px;
+  *out = (Vec2){image.x + (clip.x / clip.w * 0.5f + 0.5f) * image.z,
+                image.y + (clip.y / clip.w * 0.5f + 0.5f) * image.w};
+  return isfinite(out->x) && isfinite(out->y);
 }
 
 static bool8_t grid_screen(const VkrSampleUiFrame *frame, Vec3 world,

@@ -51,9 +51,9 @@ typedef struct PhysicsStagedJoints {
   VkrPhysicsJoint handles[VKR_SCENE_PHYSICS_MAX_JOINTS];
 } PhysicsStagedJoints;
 
-/* A static or sensor body the scene generates from authored data. It keeps
-   its own copy of the colliders and their points, so a reset rebuilds it in
-   the replacement world without asking its owner. */
+/* A static, sensor or kinematic body the scene generates from authored
+   data. It keeps its own copy of the colliders and their points, so a reset
+   rebuilds it in the replacement world without asking its owner. */
 typedef struct ScenePhysicsGenerated {
   uint64_t key;
   VkrPhysicsBody body;
@@ -61,6 +61,14 @@ typedef struct ScenePhysicsGenerated {
   VkrPhysicsBody reset_body;
   VkrEntityId entity;
   bool8_t sensor;
+  /* A kinematic body moves to its target pose at each step; a reset puts
+     it back at rest, the identity pose. */
+  bool8_t kinematic;
+  Vec3 target_position;
+  VkrQuat target_rotation;
+  /* Where origin rebases moved the colliders' world origin since they were
+     set; the body's pose adds it. */
+  Vec3 origin;
   uint32_t collider_count;
   /* One allocation: the colliders, then their points and indices. */
   VkrPhysicsColliderDesc *colliders;
@@ -68,12 +76,17 @@ typedef struct ScenePhysicsGenerated {
 } ScenePhysicsGenerated;
 
 /* Generated bodies one scene may hold; brush collision uses one per world
-   cell and one per trigger brush. */
+   cell, one per trigger brush and one per mover. */
 #define SCENE_PHYSICS_GENERATED_MAX 1024u
 
 static bool8_t physics_generated_create(VkrPhysicsWorld *world,
                                         const ScenePhysicsGenerated *generated,
                                         VkrPhysicsBody *out);
+
+/* Bodies whose automatic colliders wait for their owner's box, as while its
+   meshes load; each waits at most SCENE_PHYSICS_FIT_WAIT_MAX updates. */
+#define SCENE_PHYSICS_FIT_PENDING_MAX 64u
+#define SCENE_PHYSICS_FIT_WAIT_MAX 1800u
 
 struct s_VkrScenePhysics {
   VkrDMemory memory;
@@ -102,6 +115,9 @@ struct s_VkrScenePhysics {
   VkrPhysicsCharacterState reset_states[VKR_PHYSICS_MAX_CHARACTERS];
   const char *error;
   char error_storage[512];
+  VkrEntityId fit_pending[SCENE_PHYSICS_FIT_PENDING_MAX];
+  uint32_t fit_waits[SCENE_PHYSICS_FIT_PENDING_MAX];
+  uint32_t fit_pending_count;
 };
 
 struct s_VkrScenePhysicsSet {
@@ -559,11 +575,20 @@ static const char *const s_physics_shape_names[] = {
     "box", "sphere", "capsule", "convex_hull", "triangle_mesh", NULL};
 
 enum {
-  PHYSICS_COLLIDER_HALF_EXTENT = 5,
+  PHYSICS_COLLIDER_FIT = 2,
+  PHYSICS_COLLIDER_FIT_OFFSET,
+  PHYSICS_COLLIDER_PADDING,
+  PHYSICS_COLLIDER_POSITION,
+  PHYSICS_COLLIDER_ROTATION,
+  PHYSICS_COLLIDER_SCALE,
+  PHYSICS_COLLIDER_HALF_EXTENT,
   PHYSICS_COLLIDER_RADIUS,
   PHYSICS_COLLIDER_HALF_HEIGHT,
   PHYSICS_COLLIDER_ASSET,
 };
+
+static const char *const s_physics_collider_fit_names[] = {
+    "Manual", "Auto (fit the object)", NULL};
 
 static const VkrPropertyDesc s_physics_collider_properties[] = {
     {.name = "enabled",
@@ -577,23 +602,57 @@ static const VkrPropertyDesc s_physics_collider_properties[] = {
      .names = s_physics_shape_names,
      .offset = PHYSICS_OFFSET(VkrSceneColliderConfig, shape),
      .kind = VKR_PROPERTY_ENUM},
-    {.name = "position",
-     .label = "Offset",
-     .unit = "m",
-     .offset = PHYSICS_OFFSET(VkrSceneColliderConfig, position),
-     .kind = VKR_PROPERTY_VEC3,
-     .step = 0.01f},
-    {.name = "rotation",
-     .label = "Rotation",
-     .offset = PHYSICS_OFFSET(VkrSceneColliderConfig, rotation),
-     .kind = VKR_PROPERTY_QUAT,
-     .step = 0.5f},
-    {.name = "scale",
-     .label = "Scale",
-     .tooltip = "Spheres and capsules need a uniform scale",
-     .offset = PHYSICS_OFFSET(VkrSceneColliderConfig, scale),
-     .kind = VKR_PROPERTY_VEC3,
-     .step = 0.01f},
+    [PHYSICS_COLLIDER_FIT] = {.name = "fit",
+                              .label = "Fit",
+                              .tooltip = "Auto sizes a box, sphere or capsule "
+                                         "to the object and follows it when "
+                                         "it changes; Manual keeps the "
+                                         "pose and dimensions below",
+                              .names = s_physics_collider_fit_names,
+                              .offset =
+                                  PHYSICS_OFFSET(VkrSceneColliderConfig, fit),
+                              .kind = VKR_PROPERTY_ENUM},
+    [PHYSICS_COLLIDER_FIT_OFFSET] = {.name = "fit_offset",
+                                     .label = "Offset",
+                                     .tooltip = "Moves the fitted collider "
+                                                "from the object's center",
+                                     .unit = "m",
+                                     .offset = PHYSICS_OFFSET(
+                                         VkrSceneColliderConfig, fit_offset),
+                                     .kind = VKR_PROPERTY_VEC3,
+                                     .step = 0.01f},
+    [PHYSICS_COLLIDER_PADDING] = {.name = "padding",
+                                  .label = "Padding",
+                                  .tooltip = "Grows the fitted collider on "
+                                             "each side; negative shrinks it",
+                                  .unit = "m",
+                                  .offset = PHYSICS_OFFSET(
+                                      VkrSceneColliderConfig, padding),
+                                  .kind = VKR_PROPERTY_VEC3,
+                                  .min = -1.0e3f,
+                                  .max = 1.0e3f,
+                                  .step = 0.01f},
+    [PHYSICS_COLLIDER_POSITION] = {.name = "position",
+                                   .label = "Position",
+                                   .unit = "m",
+                                   .offset = PHYSICS_OFFSET(
+                                       VkrSceneColliderConfig, position),
+                                   .kind = VKR_PROPERTY_VEC3,
+                                   .step = 0.01f},
+    [PHYSICS_COLLIDER_ROTATION] = {.name = "rotation",
+                                   .label = "Rotation",
+                                   .offset = PHYSICS_OFFSET(
+                                       VkrSceneColliderConfig, rotation),
+                                   .kind = VKR_PROPERTY_QUAT,
+                                   .step = 0.5f},
+    [PHYSICS_COLLIDER_SCALE] = {.name = "scale",
+                                .label = "Scale",
+                                .tooltip =
+                                    "Spheres and capsules need a uniform scale",
+                                .offset = PHYSICS_OFFSET(VkrSceneColliderConfig,
+                                                         scale),
+                                .kind = VKR_PROPERTY_VEC3,
+                                .step = 0.01f},
     [PHYSICS_COLLIDER_HALF_EXTENT] = {.name = "half_extent",
                                       .label = "Half extent",
                                       .unit = "m",
@@ -652,6 +711,11 @@ static bool8_t physics_collider_validate(const void *value, char *error,
     message = "Collider dimensions must be greater than zero";
   } else if (physics_collider_cooked(shape->shape) && !shape->asset_path[0]) {
     message = "Convex hulls and triangle meshes need a collision asset";
+  } else if ((uint32_t)shape->fit >= VKR_SCENE_COLLIDER_FIT_COUNT ||
+             !isfinite(shape->fit_offset.x) || !isfinite(shape->fit_offset.y) ||
+             !isfinite(shape->fit_offset.z) || !isfinite(shape->padding.x) ||
+             !isfinite(shape->padding.y) || !isfinite(shape->padding.z)) {
+    message = "Collider fit, offset and padding must be valid";
   }
   if (message && error && capacity) {
     snprintf(error, capacity, "%s", message);
@@ -659,20 +723,99 @@ static bool8_t physics_collider_validate(const void *value, char *error,
   return message == NULL;
 }
 
-/* Dimensions a shape does not use stay hidden. */
+/* Dimensions a shape does not use stay hidden. An automatic fit shows its
+   offset and padding and the pose and dimensions it set, which take no
+   edits. */
 static VkrPropertyState physics_collider_state(const void *value,
                                                uint32_t property,
                                                const void *context) {
   (void)context;
-  const VkrPhysicsShape shape = ((const VkrSceneColliderConfig *)value)->shape;
+  const VkrSceneColliderConfig *collider = value;
+  const VkrPhysicsShape shape = collider->shape;
+  const bool8_t fits = !physics_collider_cooked(shape);
+  const bool8_t automatic =
+      fits && collider->fit == VKR_SCENE_COLLIDER_FIT_AUTO;
   const bool8_t shown =
       property == PHYSICS_COLLIDER_HALF_EXTENT ? shape == VKR_PHYSICS_BOX
       : property == PHYSICS_COLLIDER_RADIUS
           ? shape == VKR_PHYSICS_SPHERE || shape == VKR_PHYSICS_CAPSULE
       : property == PHYSICS_COLLIDER_HALF_HEIGHT ? shape == VKR_PHYSICS_CAPSULE
       : property == PHYSICS_COLLIDER_ASSET ? physics_collider_cooked(shape)
-                                           : true_v;
-  return (VkrPropertyState){.flags = shown ? 0u : VKR_PROPERTY_STATE_HIDDEN};
+      : property == PHYSICS_COLLIDER_FIT   ? fits
+      : property == PHYSICS_COLLIDER_FIT_OFFSET ||
+              property == PHYSICS_COLLIDER_PADDING
+          ? automatic
+          : true_v;
+  const bool8_t fitted =
+      automatic && (property == PHYSICS_COLLIDER_POSITION ||
+                    property == PHYSICS_COLLIDER_ROTATION ||
+                    property == PHYSICS_COLLIDER_SCALE ||
+                    property == PHYSICS_COLLIDER_HALF_EXTENT ||
+                    property == PHYSICS_COLLIDER_RADIUS ||
+                    property == PHYSICS_COLLIDER_HALF_HEIGHT);
+  return (VkrPropertyState){.flags =
+                                (shown ? 0u : VKR_PROPERTY_STATE_HIDDEN) |
+                                (fitted ? VKR_PROPERTY_STATE_DISABLED : 0u)};
+}
+
+/* Sizes the automatic box, sphere and capsule colliders of `snapshot` to the
+   box around `owner`'s meshes and shapes in the owner's frame (a capsule
+   stands along Y). False when that box is not known yet, as while meshes
+   load; the colliders keep their dimensions then. */
+static bool8_t physics_fit_colliders(const VkrScene *scene, VkrEntityId owner,
+                                     VkrScenePhysicsSnapshot *snapshot) {
+  bool8_t automatic = false_v;
+  for (uint32_t i = 0; i < snapshot->collider_count; ++i) {
+    const VkrSceneColliderConfig *collider = &snapshot->colliders[i];
+    automatic = automatic || (collider->fit == VKR_SCENE_COLLIDER_FIT_AUTO &&
+                              !physics_collider_cooked(collider->shape));
+  }
+  if (!automatic) {
+    return true_v;
+  }
+  Vec3 lo = vec3_zero();
+  Vec3 hi = vec3_zero();
+  if (!vkr_scene_entity_local_bounds(scene, owner, &lo, &hi)) {
+    return false_v;
+  }
+  const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
+  const Vec3 half = vec3_scale(vec3_sub(hi, lo), 0.5f);
+  /* Collider dimensions must stay above zero. */
+  const float32_t smallest = 0.005f;
+  for (uint32_t i = 0; i < snapshot->collider_count; ++i) {
+    VkrSceneColliderConfig *collider = &snapshot->colliders[i];
+    if (collider->fit != VKR_SCENE_COLLIDER_FIT_AUTO ||
+        physics_collider_cooked(collider->shape)) {
+      continue;
+    }
+    const Vec3 size = vec3_new(Max(half.x + collider->padding.x, smallest),
+                               Max(half.y + collider->padding.y, smallest),
+                               Max(half.z + collider->padding.z, smallest));
+    collider->position = vec3_add(center, collider->fit_offset);
+    collider->rotation = vkr_quat_identity();
+    collider->scale = vec3_one();
+    collider->half_extent = size;
+    if (collider->shape == VKR_PHYSICS_SPHERE) {
+      collider->radius = Max(size.x, Max(size.y, size.z));
+    } else if (collider->shape == VKR_PHYSICS_CAPSULE) {
+      collider->radius = Max(size.x, size.z);
+      collider->half_height = Max(size.y - collider->radius, smallest);
+    }
+  }
+  return true_v;
+}
+
+/* Queues `entity`'s body to refit once its box is known. */
+static void physics_fit_defer(VkrScenePhysics *physics, VkrEntityId entity) {
+  for (uint32_t i = 0; i < physics->fit_pending_count; ++i) {
+    if (physics->fit_pending[i].u64 == entity.u64) {
+      return;
+    }
+  }
+  if (physics->fit_pending_count < SCENE_PHYSICS_FIT_PENDING_MAX) {
+    physics->fit_waits[physics->fit_pending_count] = 0u;
+    physics->fit_pending[physics->fit_pending_count++] = entity;
+  }
 }
 
 const VkrTypeDesc vkr_scene_physics_collider_type = {
@@ -1474,6 +1617,9 @@ bool8_t vkr_scene_physics_prepare(VkrScene *scene, VkrEntityId entity,
     return physics_fail(error, "Physics body allocation failed");
   }
   *body = (ScenePhysicsBody){.entity = entity, .authored = *snapshot};
+  if (!physics_fit_colliders(scene, entity, &body->authored)) {
+    physics_fit_defer(physics, entity);
+  }
   physics_capture_authored(scene, body);
   body->disabled = old ? old->disabled : false_v;
   pending->replacement = body;
@@ -1484,8 +1630,8 @@ bool8_t vkr_scene_physics_prepare(VkrScene *scene, VkrEntityId entity,
   physics->editing = true_v;
   scene->queries_valid = false_v;
   scene->child_index_valid = false_v;
-  for (uint32_t i = 0; i < snapshot->collider_count; ++i) {
-    const VkrSceneColliderConfig *shape = &snapshot->colliders[i];
+  for (uint32_t i = 0; i < body->authored.collider_count; ++i) {
+    const VkrSceneColliderConfig *shape = &body->authored.colliders[i];
     body->colliders[i] =
         vkr_scene_physics_collider_entity(scene, entity, shape->authored_id);
     if (body->colliders[i].u64 != VKR_ENTITY_ID_INVALID.u64) {
@@ -1990,6 +2136,23 @@ static bool8_t physics_step_begin(VkrScene *scene, const char **error) {
       }
     }
   }
+  /* Kinematic generated bodies, such as a mover's brushes (ADR-084). */
+  for (uint32_t i = 0; i < physics->generated_count; ++i) {
+    const ScenePhysicsGenerated *generated = &physics->generated[i];
+    if (!generated->kinematic || generated->body == VKR_PHYSICS_BODY_INVALID) {
+      continue;
+    }
+    const Vec3 at = vec3_add(generated->origin, generated->target_position);
+    const float32_t position[3] = {at.x, at.y, at.z};
+    const float32_t rotation[4] = {
+        generated->target_rotation.x, generated->target_rotation.y,
+        generated->target_rotation.z, generated->target_rotation.w};
+    if (!vkr_physics_body_move_kinematic(
+            physics->world, generated->body, position, rotation,
+            (float32_t)VKR_SCENE_PHYSICS_FIXED_DT)) {
+      return physics_fail(error, vkr_physics_last_error(physics->world));
+    }
+  }
   for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
     body->previous_pose = body->current_pose;
   }
@@ -2123,10 +2286,65 @@ bool8_t vkr_scene_physics_step(VkrScene *scene, const char **error) {
   return success;
 }
 
+/* Refits the queued bodies whose boxes are known now; a body whose box stays
+   unknown leaves the queue after SCENE_PHYSICS_FIT_WAIT_MAX updates, keeping
+   its dimensions. Physics edits need a pause, so a running simulation
+   waits. */
+static void physics_fit_pending(VkrScene *scene) {
+  VkrScenePhysics *physics = scene->physics;
+  if (!physics || !physics->fit_pending_count || !physics_paused(scene) ||
+      physics->prepared || physics->resetting) {
+    return;
+  }
+  VkrScenePhysicsSnapshot snapshot;
+  for (uint32_t i = 0; i < physics->fit_pending_count;) {
+    const VkrEntityId entity = physics->fit_pending[i];
+    const ScenePhysicsBody *body = physics_body(scene, entity);
+    bool8_t known = false_v;
+    if (body) {
+      snapshot = body->authored;
+      known = physics_fit_colliders(scene, entity, &snapshot);
+    }
+    if (body && !known &&
+        ++physics->fit_waits[i] < SCENE_PHYSICS_FIT_WAIT_MAX) {
+      ++i;
+      continue;
+    }
+    physics->fit_pending_count--;
+    physics->fit_pending[i] = physics->fit_pending[physics->fit_pending_count];
+    physics->fit_waits[i] = physics->fit_waits[physics->fit_pending_count];
+    if (known &&
+        MemCompare(&snapshot, &body->authored, sizeof(snapshot)) != 0) {
+      const char *error = NULL;
+      if (!vkr_scene_physics_apply(scene, entity, &snapshot, &error)) {
+        log_warn("Physics: collider refit failed: %s", error ? error : "?");
+      }
+    }
+  }
+}
+
+void vkr_scene_physics_bounds_changed(VkrScene *scene, VkrEntityId entity) {
+  VkrScenePhysics *physics = scene ? scene->physics : NULL;
+  /* The changed box is part of every ancestor's box. */
+  for (uint32_t depth = 0; physics && entity.u64 && depth < 64u; ++depth) {
+    const ScenePhysicsBody *body = physics_body(scene, entity);
+    for (uint32_t i = 0; body && i < body->authored.collider_count; ++i) {
+      if (body->authored.colliders[i].fit == VKR_SCENE_COLLIDER_FIT_AUTO) {
+        physics_fit_defer(physics, entity);
+        break;
+      }
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+}
+
 void vkr_scene_physics_update(VkrScene *scene, float64_t dt) {
   if (!scene || scene->simulation.active) {
     return;
   }
+  physics_fit_pending(scene);
   VkrScenePhysics *physics = scene->physics;
   if (physics && physics->body_count) {
     if (physics->prepared) {
@@ -2172,9 +2390,13 @@ static bool8_t physics_reset_stage(VkrScene *scene,
     }
     physics_capture_authored(scene, copy);
   }
-  /* Generated bodies come back from their own copies. */
+  /* Generated bodies come back from their own copies, kinematic ones at
+     rest. */
   for (uint32_t i = 0; i < physics->generated_count; ++i) {
-    if (!physics_generated_create(replacement, &physics->generated[i],
+    ScenePhysicsGenerated rest = physics->generated[i];
+    rest.target_position = vec3_zero();
+    rest.target_rotation = vkr_quat_identity();
+    if (!physics_generated_create(replacement, &rest,
                                   &physics->generated[i].reset_body)) {
       return physics_fail(error, vkr_physics_last_error(replacement));
     }
@@ -2247,6 +2469,8 @@ static void physics_reset_commit(VkrScene *scene,
   for (uint32_t i = 0; i < physics->generated_count; ++i) {
     physics->generated[i].body = physics->generated[i].reset_body;
     physics->generated[i].reset_body = VKR_PHYSICS_BODY_INVALID;
+    physics->generated[i].target_position = vec3_zero();
+    physics->generated[i].target_rotation = vkr_quat_identity();
   }
   for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
     ScenePhysicsBodyComponent *component = vkr_entity_get_component_mut(
@@ -2324,11 +2548,11 @@ bool8_t vkr_scene_physics_shift(VkrScene *const *scenes, uint32_t count,
       physics_shift_point(character->current.foot_position, shift);
       character->spawn_foot = vec3_sub(character->spawn_foot, shift);
     }
-    /* A reset rebuilds generated bodies from these copies. */
+    /* A reset rebuilds generated bodies from their copies at this origin;
+       a kinematic body's targets stay offsets from it. */
     for (uint32_t g = 0; g < physics->generated_count; ++g) {
-      for (uint32_t c = 0; c < physics->generated[g].collider_count; ++c) {
-        physics_shift_point(physics->generated[g].colliders[c].position, shift);
-      }
+      physics->generated[g].origin =
+          vec3_sub(physics->generated[g].origin, shift);
     }
   }
   return true_v;
@@ -3312,10 +3536,17 @@ static bool8_t physics_generated_create(VkrPhysicsWorld *world,
                                         const ScenePhysicsGenerated *generated,
                                         VkrPhysicsBody *out) {
   const VkrScenePhysicsSnapshot defaults = vkr_scene_physics_default();
+  const Vec3 at = generated->kinematic
+                      ? vec3_add(generated->origin, generated->target_position)
+                      : generated->origin;
+  const VkrQuat rotation =
+      generated->kinematic ? generated->target_rotation : vkr_quat_identity();
   const VkrPhysicsBodyDesc desc = {
       .entity_id = generated->entity.u64,
-      .motion = VKR_PHYSICS_STATIC,
-      .rotation = {0.0f, 0.0f, 0.0f, 1.0f},
+      .motion =
+          generated->kinematic ? VKR_PHYSICS_KINEMATIC : VKR_PHYSICS_STATIC,
+      .position = {at.x, at.y, at.z},
+      .rotation = {rotation.x, rotation.y, rotation.z, rotation.w},
       .mass = 1.0f,
       .friction = defaults.body.friction,
       .restitution = defaults.body.restitution,
@@ -3357,11 +3588,13 @@ void vkr_scene_physics_generated_remove(VkrScene *scene, uint64_t key) {
   physics->generated[index] = physics->generated[--physics->generated_count];
 }
 
-bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
-                                        VkrEntityId entity,
-                                        const VkrPhysicsColliderDesc *colliders,
-                                        uint32_t collider_count, bool8_t sensor,
-                                        const char **error) {
+/* Sets the generated body under `key`, static or sensor unless
+   `kinematic`; a kinematic body replacing one keeps its target pose. */
+static bool8_t physics_generated_add(VkrScene *scene, uint64_t key,
+                                     VkrEntityId entity,
+                                     const VkrPhysicsColliderDesc *colliders,
+                                     uint32_t collider_count, bool8_t sensor,
+                                     bool8_t kinematic, const char **error) {
   /* Generated collision is the first physics some scenes have. */
   if (!scene || !physics_ensure(scene, error)) {
     return false_v;
@@ -3373,6 +3606,13 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
   if (!key || !colliders || !collider_count ||
       collider_count > VKR_PHYSICS_MAX_COLLIDERS) {
     return physics_fail(error, "Generated collision needs 1 to 32 colliders");
+  }
+  Vec3 target_position = vec3_zero();
+  VkrQuat target_rotation = vkr_quat_identity();
+  const int32_t previous = physics_generated_find(physics, key);
+  if (kinematic && previous >= 0 && physics->generated[previous].kinematic) {
+    target_position = physics->generated[previous].target_position;
+    target_rotation = physics->generated[previous].target_rotation;
   }
   vkr_scene_physics_generated_remove(scene, key);
   if (physics->generated_count == SCENE_PHYSICS_GENERATED_MAX) {
@@ -3387,6 +3627,9 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
   ScenePhysicsGenerated generated = {.key = key,
                                      .entity = entity,
                                      .sensor = sensor,
+                                     .kinematic = kinematic,
+                                     .target_position = target_position,
+                                     .target_rotation = target_rotation,
                                      .collider_count = collider_count,
                                      .bytes = bytes};
   generated.colliders = vkr_dmemory_alloc(&physics->memory, bytes);
@@ -3426,5 +3669,41 @@ bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
                             : "The generated collision body was rejected");
   }
   physics->generated[physics->generated_count++] = generated;
+  return true_v;
+}
+
+bool8_t vkr_scene_physics_generated_set(VkrScene *scene, uint64_t key,
+                                        VkrEntityId entity,
+                                        const VkrPhysicsColliderDesc *colliders,
+                                        uint32_t collider_count, bool8_t sensor,
+                                        const char **error) {
+  return physics_generated_add(scene, key, entity, colliders, collider_count,
+                               sensor, false_v, error);
+}
+
+bool8_t vkr_scene_physics_generated_set_kinematic(
+    VkrScene *scene, uint64_t key, VkrEntityId entity,
+    const VkrPhysicsColliderDesc *colliders, uint32_t collider_count,
+    const char **error) {
+  return physics_generated_add(scene, key, entity, colliders, collider_count,
+                               false_v, true_v, error);
+}
+
+bool8_t vkr_scene_physics_generated_move(VkrScene *scene, uint64_t key,
+                                         Vec3 position, VkrQuat rotation,
+                                         const char **error) {
+  VkrScenePhysics *physics = scene ? scene->physics : NULL;
+  if (physics && physics->dispatching) {
+    return physics_fail(
+        error, "Queue physics mutations until contact dispatch returns");
+  }
+  const int32_t index = physics ? physics_generated_find(physics, key) : -1;
+  if (index < 0 || !physics->generated[index].kinematic ||
+      !physics_vec_finite(position) || !physics_rotation_valid(rotation)) {
+    return physics_fail(error, "A generated move needs a kinematic generated "
+                               "body and a finite unit pose");
+  }
+  physics->generated[index].target_position = position;
+  physics->generated[index].target_rotation = rotation;
   return true_v;
 }

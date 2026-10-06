@@ -51,11 +51,14 @@ extern const VkrTypeDesc vkr_scene_scatter_type;
 /* World partition (ADR-086). */
 extern const VkrTypeDesc vkr_scene_world_partition_type;
 extern const VkrTypeDesc vkr_scene_always_loaded_type;
+extern const VkrTypeDesc vkr_scene_free_placement_type;
+extern const VkrTypeDesc vkr_scene_blockout_type;
 /* Entity IO (ADR-084). */
 extern const VkrTypeDesc vkr_scene_trigger_type;
 extern const VkrTypeDesc vkr_scene_relay_type;
 extern const VkrTypeDesc vkr_scene_timer_type;
 extern const VkrTypeDesc vkr_scene_counter_type;
+extern const VkrTypeDesc vkr_scene_mover_type;
 extern const VkrTypeDesc vkr_scene_io_connection_type;
 /** Read-only SceneMeshInfo rows; not a component type. */
 extern const VkrTypeDesc vkr_scene_mesh_info_type;

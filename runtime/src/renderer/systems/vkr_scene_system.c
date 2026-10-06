@@ -4596,7 +4596,8 @@ vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
 /* Typed components whose authored values drive generated runtime state. */
 vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
                                       const VkrTypeDesc *type) {
-  if (type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type) {
+  if (type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
+      type == &vkr_scene_blockout_type || type == &vkr_scene_mover_type) {
     vkr_scene_brush_changed(scene, entity, type);
   } else if (type == &vkr_scene_terrain_type) {
     vkr_scene_terrain_changed(scene, entity);
@@ -4831,6 +4832,7 @@ bool8_t vkr_scene_attach_generated_mesh(VkrScene *scene, VkrEntityId entity,
 
   scene_invalidate_queries(scene);
   scene->mesh_revision++;
+  vkr_scene_physics_bounds_changed(scene, entity);
 
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
@@ -4867,6 +4869,7 @@ bool8_t vkr_scene_replace_generated_mesh(
       *out_error = VKR_SCENE_ERROR_MESH_LOAD_FAILED;
     return false_v;
   }
+  vkr_scene_physics_bounds_changed(scene, entity);
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
   return true_v;

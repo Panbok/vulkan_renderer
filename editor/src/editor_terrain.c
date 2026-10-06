@@ -17,8 +17,11 @@
 /* Terrains one ray tests per scene. */
 #define TERRAIN_RAY_MAX VKR_SCENE_TERRAIN_MAX
 
+/* Mode buttons one row of the Terrain window holds. */
+#define TERRAIN_MODES_PER_ROW 4u
+
 static const char *const s_terrain_mode_labels[VKR_EDITOR_TERRAIN_MODE_COUNT] =
-    {"Raise", "Lower", "Smooth", "Flatten", "Paint"};
+    {"Raise", "Lower", "Smooth", "Flatten", "Paint", "Hole", "Fill"};
 
 // =============================================================================
 // Rays
@@ -183,8 +186,9 @@ void vkr_editor_terrain_update(VkrEditorUi *editor,
   /* Raise and lower move `strength` metres a second; the rest blend by
      their fraction a second. */
   static const VkrHeightfieldBrush brushes[VKR_EDITOR_TERRAIN_MODE_COUNT] = {
-      VKR_HEIGHTFIELD_RAISE, VKR_HEIGHTFIELD_LOWER, VKR_HEIGHTFIELD_SMOOTH,
-      VKR_HEIGHTFIELD_FLATTEN, VKR_HEIGHTFIELD_PAINT};
+      VKR_HEIGHTFIELD_RAISE,   VKR_HEIGHTFIELD_LOWER, VKR_HEIGHTFIELD_SMOOTH,
+      VKR_HEIGHTFIELD_FLATTEN, VKR_HEIGHTFIELD_PAINT, VKR_HEIGHTFIELD_HOLE,
+      VKR_HEIGHTFIELD_FILL};
   const VkrHeightfieldOp op = {
       .kind = VKR_HEIGHTFIELD_OP_BRUSH,
       .brush = brushes[editor->terrain_mode],
@@ -297,13 +301,15 @@ void vkr_editor_terrain_window_build(VkrEditorUi *editor,
                                           : VKR_EDITOR_SCENE_TOOL_TERRAIN);
   }
   y += TERRAIN_ROW_PT + 8.0f;
-  /* Modes, one button each. */
-  const float32_t mode_w = (width - TERRAIN_PAD_PT * 2.0f) /
-                           (float32_t)VKR_EDITOR_TERRAIN_MODE_COUNT;
+  /* Modes, one button each, in rows of TERRAIN_MODES_PER_ROW. */
+  const float32_t mode_w =
+      (width - TERRAIN_PAD_PT * 2.0f) / (float32_t)TERRAIN_MODES_PER_ROW;
   for (uint32_t i = 0; i < VKR_EDITOR_TERRAIN_MODE_COUNT; ++i) {
-    VkrUiWidgetConfig mode =
-        vkr_editor_details_widget(TERRAIN_PAD_PT + mode_w * (float32_t)i, y,
-                                  mode_w - 4.0f, TERRAIN_ROW_PT);
+    const float32_t column = (float32_t)(i % TERRAIN_MODES_PER_ROW);
+    const float32_t row = (float32_t)(i / TERRAIN_MODES_PER_ROW);
+    VkrUiWidgetConfig mode = vkr_editor_details_widget(
+        TERRAIN_PAD_PT + mode_w * column, y + (TERRAIN_ROW_PT + 4.0f) * row,
+        mode_w - 4.0f, TERRAIN_ROW_PT);
     vkr_editor_toggle_style(&mode, editor->terrain_mode == i);
     (void)vkr_ui_push_id_u64(ui, i);
     if (vkr_ui_button(
@@ -315,15 +321,22 @@ void vkr_editor_terrain_window_build(VkrEditorUi *editor,
     }
     (void)vkr_ui_pop_id(ui);
   }
-  y += TERRAIN_ROW_PT + 8.0f;
+  const uint32_t mode_rows =
+      (VKR_EDITOR_TERRAIN_MODE_COUNT + TERRAIN_MODES_PER_ROW - 1u) /
+      TERRAIN_MODES_PER_ROW;
+  y += (TERRAIN_ROW_PT + 4.0f) * (float32_t)mode_rows + 4.0f;
   editor->terrain_radius =
       terrain_slider(ui, string8_lit("terrain.radius"), string8_lit("Radius"),
                      y, width, editor->terrain_radius, 0.5f, 64.0f, "%.1f m");
   y += TERRAIN_ROW_PT;
-  editor->terrain_strength = terrain_slider(
-      ui, string8_lit("terrain.strength"), string8_lit("Strength"), y, width,
-      editor->terrain_strength, 0.05f, 4.0f, "%.2f");
-  y += TERRAIN_ROW_PT;
+  /* Hole and fill change every sample inside the radius alike. */
+  if (editor->terrain_mode != VKR_EDITOR_TERRAIN_HOLE &&
+      editor->terrain_mode != VKR_EDITOR_TERRAIN_FILL) {
+    editor->terrain_strength = terrain_slider(
+        ui, string8_lit("terrain.strength"), string8_lit("Strength"), y, width,
+        editor->terrain_strength, 0.05f, 4.0f, "%.2f");
+    y += TERRAIN_ROW_PT;
+  }
   if (editor->terrain_mode == VKR_EDITOR_TERRAIN_PAINT) {
     const float32_t layer = terrain_slider(
         ui, string8_lit("terrain.layer"), string8_lit("Layer"), y, width,

@@ -133,6 +133,59 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame,
                                    VkrUiRect bounds);
 
+/* Whether `entity` carries an enabled free_placement: the editor never snaps
+   it. */
+bool8_t vkr_editor_entity_free(const VkrScene *scene, VkrEntityId entity);
+
+/* The pieces of blockout shape `entity` in world space, in memory the caller
+   frees with free(); zero when it is not a shape or does not lay out. */
+uint32_t vkr_editor_shape_pieces(const VkrScene *scene, VkrEntityId entity,
+                                 VkrBlockoutPiece **out);
+
+/* The world box around the solids of `entity` and below it, its brushes and
+   the pieces of its blockout shapes, else around its meshes and shapes;
+   false without geometry. `scratch` holds the last brush built. */
+bool8_t vkr_editor_entity_world_box(const VkrScene *scene, VkrEntityId entity,
+                                    VkrBrushGeometry *scratch, Vec3 *out_lo,
+                                    Vec3 *out_hi);
+
+/* Whether box `lo`-`hi` is a slab: at most 0.5 m thick, or a quarter of
+   its shorter side, as a floor is. */
+bool8_t vkr_editor_box_slab(Vec3 lo, Vec3 hi);
+
+/* The height of the floor of `entity`, whose world box is `lo`-`hi`: the top
+   of the slabs (vkr_editor_box_slab) at the bottom of its box when they
+   cover a quarter of its footprint, as a room's or a corridor's floor, or a
+   floor slab's top; else the bottom of its box, as for stairs, a box
+   standing on the ground or a mesh. */
+float32_t vkr_editor_entity_floor(const VkrScene *scene, VkrEntityId entity,
+                                  VkrBrushGeometry *scratch, Vec3 lo, Vec3 hi);
+
+/* Brush magnet (ADR-084): with the Snapping menu's magnet on, a brush moved
+   or drawn within reach of another brush, about 1.5 % of its distance from
+   the camera, snaps flush against it or level with its sides, top or
+   bottom. It snaps against the boxes around the other brushes, gathered
+   once when a move or a drawn box starts. */
+
+/* The world position a move puts `entity` (a brush, a group of brushes or a
+   mesh, unless free) at, from the one the pointer asks for (`to`); `start`
+   gathers the brushes of `scene` outside it, on a move's first call. */
+Vec3 vkr_editor_magnet_move(VkrEditorUi *editor, const VkrScene *scene,
+                            VkrEntityId entity, Vec3 from, Vec3 to, Vec3 eye,
+                            bool8_t start);
+
+/* Gathers the brushes of every loaded scene for a box being drawn. */
+void vkr_editor_magnet_begin(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame);
+
+/* `value` on `axis` (0 X, 1 Y, 2 Z), moved onto the nearest side, top or
+   bottom on that axis of a gathered brush within reach of it, seen from
+   `eye`, and of the region `lo`-`hi` on the other axes. */
+float32_t vkr_editor_magnet_value(const VkrEditorUi *editor, uint32_t axis,
+                                  float32_t value, Vec3 lo, Vec3 hi, Vec3 eye);
+
+void vkr_editor_magnet_destroy(VkrEditorUi *editor);
+
 /* The Level Design workbench's Tools palette: drawing and creating brushes,
    brush operations on the selection, dev materials, snapping and Level
    checks. Every button runs an existing command or agent operation. */

@@ -413,6 +413,74 @@ static void physics_test_rebase(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* The floor's top as a downward ray at (x, z) meets it, or NAN on a miss. */
+static float32_t physics_test_floor_top(VkrScene *scene, float32_t x,
+                                        float32_t z) {
+  VkrPhysicsRayHit hit;
+  if (!vkr_scene_physics_raycast(scene, vec3_new(x, 5.0f, z),
+                                 vec3_new(0.0f, -10.0f, 0.0f), &hit)) {
+    return NAN;
+  }
+  return hit.position[1];
+}
+
+/* A kinematic generated body, as a mover's brushes use (ADR-084). Oracles:
+ * a downward ray meets its top where the targets moved it, an origin rebase
+ * keeps it there while it keeps its target, and a reset puts it back at
+ * rest. A body that ignored the rebase would jump back 100 m. */
+static void physics_test_generated_kinematic(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 13, 16, NULL));
+  const char *error = NULL;
+  const VkrEntityId floor = physics_test_entity(&scene, vec3_zero());
+  const VkrPhysicsColliderDesc box = {.entity_id = floor.u64,
+                                      .shape = VKR_PHYSICS_BOX,
+                                      .position = {0.0f, -0.5f, 0.0f},
+                                      .rotation = {0, 0, 0, 1},
+                                      .scale = {1, 1, 1},
+                                      .half_extent = {4.0f, 0.5f, 4.0f},
+                                      .enabled = true_v};
+  assert(vkr_scene_physics_generated_set_kinematic(&scene, 7u, floor, &box, 1u,
+                                                   &error));
+  assert(fabsf(physics_test_floor_top(&scene, 0.5f, 0.5f)) < 1e-3f);
+  /* Only a kinematic generated body takes a target. */
+  assert(!vkr_scene_physics_generated_move(&scene, 9u, vec3_zero(),
+                                           vkr_quat_identity(), &error));
+  /* A session's callbacks run the clock, as the script host's do. */
+  const VkrSceneSimulationCallbacks callbacks = {.after_tick =
+                                                     physics_test_after_tick};
+  assert(vkr_scene_simulation_configure(&scene, &callbacks, &error));
+
+  /* One metre up over 60 ticks. */
+  for (uint32_t i = 1; i <= 60u; ++i) {
+    assert(vkr_scene_physics_generated_move(
+        &scene, 7u, vec3_new(0.0f, (float32_t)i / 60.0f, 0.0f),
+        vkr_quat_identity(), &error));
+    assert(vkr_scene_physics_step(&scene, &error));
+  }
+  assert(fabsf(physics_test_floor_top(&scene, 0.5f, 0.5f) - 1.0f) < 1e-3f);
+
+  /* An origin rebase moves it with the world, and its target stays an
+     offset from rest. */
+  const Vec3 shift = vec3_new(100.0f, 0.0f, 0.0f);
+  VkrScene *scenes[1] = {&scene};
+  assert(vkr_scene_shift_origin(&scene, shift));
+  assert(vkr_scene_physics_shift(scenes, 1u, shift, &error));
+  assert(vkr_scene_physics_step(&scene, &error));
+  assert(fabsf(physics_test_floor_top(&scene, -99.5f, 0.5f) - 1.0f) < 1e-3f);
+  assert(isnan(physics_test_floor_top(&scene, 0.5f, 0.5f)));
+
+  /* A reset rebuilds it at rest. */
+  vkr_scene_physics_set_paused(&scene, true_v);
+  assert(vkr_scene_physics_reset(&scene, &error));
+  assert(fabsf(physics_test_floor_top(&scene, -99.5f, 0.5f)) < 1e-3f);
+  assert(vkr_scene_physics_step(&scene, &error));
+  assert(fabsf(physics_test_floor_top(&scene, -99.5f, 0.5f)) < 1e-3f);
+  vkr_scene_physics_set_paused(&scene, true_v);
+  assert(vkr_scene_simulation_detach(&scene, NULL));
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 bool32_t run_scene_physics_tests(void) {
   printf("--- Starting Scene Physics Tests ---\n");
   physics_test_descriptors();
@@ -423,6 +491,7 @@ bool32_t run_scene_physics_tests(void) {
   physics_test_world_gravity(&allocator);
   physics_test_empty_finalize(&allocator);
   physics_test_generated(&allocator);
+  physics_test_generated_kinematic(&allocator);
   physics_test_rebase(&allocator);
   VkrScene scene;
   assert(vkr_scene_init(&scene, &allocator, 31, 16, NULL));

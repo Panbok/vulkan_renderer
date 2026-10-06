@@ -1,3 +1,4 @@
+#include "editor_brush_grid.h"
 #include "editor_internal.h"
 #include "editor_level.h"
 #include "editor_ops.h"
@@ -722,6 +723,10 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
   }
   case CMD_DUPLICATE:
   case CMD_DELETE: {
+    /* Tiles selected on a brush's grid go before the brush does. */
+    if (command == CMD_DELETE && vkr_editor_brush_grid_patch_cut(editor)) {
+      break;
+    }
     const VkrSceneEditAction action = command == CMD_DUPLICATE
                                           ? VKR_SCENE_EDIT_DUPLICATE
                                           : VKR_SCENE_EDIT_DELETE;

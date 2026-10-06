@@ -17,7 +17,13 @@
  * stream tiles (docs/proposals/world-partition.md). An overview of every
  * VKR_HEIGHTFIELD_OVERVIEW_STRIDE-th sample is always resident and follows
  * every write. The module owns no global state; region operations change
- * resident samples in place and return the rectangle they touched. */
+ * resident samples in place and return the rectangle they touched.
+ *
+ * A sample whose four weights are all zero is a hole: it keeps its height,
+ * but every triangle with a hole corner is open ground, with no mesh and no
+ * collision. Triangles follow Jolt's height field, which splits each cell
+ * along its (x, z) to (x + 1, z + 1) diagonal. Filling a hole returns it to
+ * layer 0 at the height it kept. */
 
 #define VKR_HEIGHTFIELD_LAYERS 4u
 /* Cells of one terrain tile per side: meshes, LOD and file chunks follow
@@ -135,6 +141,16 @@ static inline uint32_t vkr_heightfield_weights_at(const VkrHeightfield *field,
       ->weights[vkr_heightfield_tile_index(x, z)];
 }
 
+/* The weights of a hole sample. */
+#define VKR_HEIGHTFIELD_HOLE_WEIGHTS 0u
+
+/* Whether resident sample (x, z) is a hole. */
+static inline bool8_t vkr_heightfield_hole(const VkrHeightfield *field,
+                                           uint32_t x, uint32_t z) {
+  return vkr_heightfield_weights_at(field, x, z) ==
+         VKR_HEIGHTFIELD_HOLE_WEIGHTS;
+}
+
 /* Half the side length in metres. */
 static inline float32_t vkr_heightfield_half_size(const VkrHeightfield *field) {
   return 0.5f * field->spacing * (float32_t)field->cells;
@@ -153,6 +169,11 @@ float32_t vkr_heightfield_overview_at(const VkrHeightfield *field, uint32_t x,
    resident samples or else the overview; false outside the terrain. */
 bool8_t vkr_heightfield_sample(const VkrHeightfield *field, float32_t x,
                                float32_t z, float32_t *out_height);
+/* Whether local (x, z) lies in a triangle with a hole corner, as Jolt
+   splits the cell; false outside the terrain or where its samples are not
+   resident. */
+bool8_t vkr_heightfield_open(const VkrHeightfield *field, float32_t x,
+                             float32_t z);
 /* Whether every tile `rect` reaches is resident. */
 bool8_t vkr_heightfield_resident(const VkrHeightfield *field,
                                  VkrHeightfieldRect rect);
@@ -179,10 +200,11 @@ void vkr_heightfield_write_rect(VkrHeightfield *field, VkrHeightfieldRect rect,
                                 const uint16_t *heights,
                                 const uint32_t *weights);
 /* Heights in metres of resident `rect`, as vkr_heightfield_at gives them,
-   into rows `stride` floats apart, a tile's row span at a time. */
+   into rows `stride` floats apart, a tile's row span at a time; hole
+   samples read `hole`. */
 void vkr_heightfield_read_metres(const VkrHeightfield *field,
                                  VkrHeightfieldRect rect, float32_t *out,
-                                 uint32_t stride);
+                                 uint32_t stride, float32_t hole);
 
 typedef enum VkrHeightfieldBrush {
   VKR_HEIGHTFIELD_RAISE = 0,
@@ -190,15 +212,19 @@ typedef enum VkrHeightfieldBrush {
   VKR_HEIGHTFIELD_SMOOTH,
   /* Moves heights toward `height`. */
   VKR_HEIGHTFIELD_FLATTEN,
-  /* Adds weight to `layer`, taking it from the others. */
+  /* Adds weight to `layer`, taking it from the others; holes stay holes. */
   VKR_HEIGHTFIELD_PAINT,
+  /* Makes every sample within the radius a hole. */
+  VKR_HEIGHTFIELD_HOLE,
+  /* Returns every hole within the radius to ground on layer 0. */
+  VKR_HEIGHTFIELD_FILL,
   VKR_HEIGHTFIELD_BRUSH_COUNT,
 } VkrHeightfieldBrush;
 
 /* One round brush stroke step at local (x, z): `strength` is metres (raise,
    lower) or a 0..1 fraction (smooth, flatten, paint) at the centre, falling
-   off smoothly to zero at `radius`. Smoothing stages the touched heights in
-   `scratch`. */
+   off smoothly to zero at `radius`; hole and fill ignore it. Smoothing
+   stages the touched heights in `scratch`. */
 bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
                               float32_t x, float32_t z, float32_t radius,
                               float32_t strength, float32_t height,
@@ -227,6 +253,10 @@ typedef enum VkrHeightfieldOpKind {
   /* A road: a ramp `width` wide from each of `path_count` points, offset by
      `a`, to the next, blending over `falloff`. */
   VKR_HEIGHTFIELD_OP_ROAD,
+  /* Holes at the samples strictly inside [`min`, `max`], or with `add`
+     false the holes there filled. A box on grid lines opens exactly that
+     box, as the triangles around its samples open with them. */
+  VKR_HEIGHTFIELD_OP_HOLE,
   VKR_HEIGHTFIELD_OP_KIND_COUNT,
 } VkrHeightfieldOpKind;
 

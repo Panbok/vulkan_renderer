@@ -61,6 +61,12 @@ VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
    undo followed by another edit. Call once per build. */
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame);
 
+/* `value` of `type` as the JSON object documents and `values` arguments
+   take, into `out`; false when it does not fit. */
+bool8_t vkr_editor_ops_component_text(const VkrTypeDesc *type,
+                                      const void *value, char *out,
+                                      uint64_t capacity);
+
 uint32_t vkr_editor_ops_change_count(const VkrEditorOps *ops);
 const VkrEditorChange *vkr_editor_ops_change(const VkrEditorOps *ops,
                                              uint32_t index);

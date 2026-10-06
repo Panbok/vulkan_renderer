@@ -2388,6 +2388,115 @@ const VkrTypeDesc vkr_scene_counter_type = {
     .inputs = s_counter_inputs,
 };
 
+static const VkrIoPort s_mover_outputs[] = {
+    {"on_open", "On open", VKR_IO_PORT_NONE},
+    {"on_opened", "On opened", VKR_IO_PORT_NONE},
+    {"on_close", "On close", VKR_IO_PORT_NONE},
+    {"on_closed", "On closed", VKR_IO_PORT_NONE},
+    {NULL, NULL, 0u}};
+static const VkrIoPort s_mover_inputs[] = {
+    {"open", "Open", VKR_IO_PORT_NONE},
+    {"close", "Close", VKR_IO_PORT_NONE},
+    {"toggle", "Toggle", VKR_IO_PORT_NONE},
+    {"lock", "Lock", VKR_IO_PORT_NONE},
+    {"unlock", "Unlock", VKR_IO_PORT_NONE},
+    {"set_position", "Set position", VKR_PROPERTY_F32},
+    {NULL, NULL, 0u}};
+
+static const VkrPropertyDesc s_mover_properties[] = {
+    {.name = "direction",
+     .label = "Direction",
+     .tooltip = "Where it opens, in its own space",
+     .offset = TYPE_OFFSET(SceneMover, direction),
+     .kind = VKR_PROPERTY_DIRECTION,
+     .step = 1.0f},
+    {.name = "distance",
+     .label = "Distance",
+     .tooltip = "How far it opens; automatic takes the size of what it moves "
+                "along the direction, less the lip",
+     .unit = "m",
+     .zero_label = "Automatic",
+     .offset = TYPE_OFFSET(SceneMover, distance),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 10000.0f,
+     .step = 0.05f},
+    {.name = "lip",
+     .label = "Lip",
+     .tooltip = "What stays in view when the distance is automatic",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneMover, lip),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.0f,
+     .max = 100.0f,
+     .step = 0.01f},
+    {.name = "speed",
+     .label = "Speed",
+     .unit = "m/s",
+     .offset = TYPE_OFFSET(SceneMover, speed),
+     .kind = VKR_PROPERTY_F32,
+     .min = 0.01f,
+     .max = 1000.0f,
+     .step = 0.05f},
+    {.name = "wait",
+     .label = "Wait",
+     .tooltip = "Seconds it stays open before it closes by itself; -1 stays "
+                "open",
+     .unit = "s",
+     .offset = TYPE_OFFSET(SceneMover, wait),
+     .kind = VKR_PROPERTY_F32,
+     .min = -1.0f,
+     .max = 86400.0f,
+     .step = 0.05f},
+    {.name = "start_open",
+     .label = "Start open",
+     .offset = TYPE_OFFSET(SceneMover, start_open),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "loop",
+     .label = "Loop",
+     .tooltip = "Move back and forth without inputs, resting the wait at "
+                "each end",
+     .offset = TYPE_OFFSET(SceneMover, loop),
+     .kind = VKR_PROPERTY_BOOL},
+    {.name = "locked",
+     .label = "Locked",
+     .tooltip = "Refuse open, toggle and set position until unlocked",
+     .offset = TYPE_OFFSET(SceneMover, locked),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void mover_defaults(void *value) {
+  *(SceneMover *)value = (SceneMover){
+      .direction = vec3_new(1.0f, 0.0f, 0.0f), .speed = 2.0f, .wait = -1.0f};
+}
+
+static bool8_t mover_validate(const void *value, char *error,
+                              uint32_t capacity) {
+  const SceneMover *mover = value;
+  if (!isfinite(vec3_length(mover->direction)) ||
+      vec3_length(mover->direction) < 1.0e-4f) {
+    if (error) {
+      snprintf(error, capacity, "A mover needs a direction");
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+const VkrTypeDesc vkr_scene_mover_type = {
+    .name = "mover",
+    .label = "Mover",
+    .category = "Level",
+    .properties = s_mover_properties,
+    .property_count = ArrayCount(s_mover_properties),
+    .size = sizeof(SceneMover),
+    .align = _Alignof(SceneMover),
+    .defaults = mover_defaults,
+    .validate = mover_validate,
+    .outputs = s_mover_outputs,
+    .inputs = s_mover_inputs,
+};
+
 static const VkrPropertyDesc s_io_connection_properties[] = {
     {.name = "output",
      .label = "Output",
@@ -2525,6 +2634,517 @@ const VkrTypeDesc vkr_scene_always_loaded_type = {
     .defaults = always_loaded_defaults,
 };
 
+static const VkrPropertyDesc s_free_placement_properties[] = {
+    {.name = "enabled",
+     .label = "Free placement",
+     .tooltip = "The editor never snaps this object: moving it, Snap and "
+                "parenting it in the Outliner leave it where it is placed",
+     .offset = TYPE_OFFSET(SceneFreePlacement, enabled),
+     .kind = VKR_PROPERTY_BOOL},
+};
+
+static void free_placement_defaults(void *value) {
+  *(SceneFreePlacement *)value = (SceneFreePlacement){.enabled = true_v};
+}
+
+const VkrTypeDesc vkr_scene_free_placement_type = {
+    .name = "free_placement",
+    .label = "Free placement",
+    .category = "Level",
+    .properties = s_free_placement_properties,
+    .property_count = ArrayCount(s_free_placement_properties),
+    .size = sizeof(SceneFreePlacement),
+    .align = _Alignof(SceneFreePlacement),
+    .defaults = free_placement_defaults,
+};
+
+static const char *const s_blockout_shape_names[] = {"Stairs", "Corridor",
+                                                     NULL};
+static const char *const s_stairs_kind_names[] = {
+    "Straight", "L turn", "U turn", "Curved", "Spiral", NULL};
+
+enum {
+  BLOCKOUT_SHAPE = 0,
+  BLOCKOUT_STAIRS,
+  BLOCKOUT_HEIGHT,
+  BLOCKOUT_WIDTH,
+  BLOCKOUT_LENGTH,
+  BLOCKOUT_STEP_HEIGHT,
+  BLOCKOUT_TURN,
+  BLOCKOUT_RADIUS,
+  BLOCKOUT_THICKNESS,
+  BLOCKOUT_LEFT,
+  BLOCKOUT_CEILING,
+  BLOCKOUT_MATERIAL,
+  BLOCKOUT_FLOOR_MATERIAL,
+  BLOCKOUT_POINT_COUNT,
+  BLOCKOUT_OPENING_COUNT,
+  BLOCKOUT_POINT_FIRST,
+  BLOCKOUT_CORNER_FIRST = BLOCKOUT_POINT_FIRST + SCENE_BLOCKOUT_POINT_MAX,
+  BLOCKOUT_WALL_FIRST = BLOCKOUT_CORNER_FIRST + SCENE_BLOCKOUT_POINT_MAX,
+  BLOCKOUT_OPENING_FIRST = BLOCKOUT_WALL_FIRST + SCENE_BLOCKOUT_OPENING_MAX,
+};
+
+static const VkrPropertyDesc s_blockout_properties[] = {
+    [BLOCKOUT_SHAPE] = {.name = "shape",
+                        .label = "Shape",
+                        .names = s_blockout_shape_names,
+                        .offset = TYPE_OFFSET(SceneBlockout, shape),
+                        .kind = VKR_PROPERTY_ENUM},
+    [BLOCKOUT_STAIRS] = {.name = "stairs",
+                         .label = "Stairs",
+                         .tooltip = "Straight; two flights turning at a "
+                                    "landing; two flights running back; "
+                                    "steps along an arc; or steps around a "
+                                    "pole",
+                         .names = s_stairs_kind_names,
+                         .offset = TYPE_OFFSET(SceneBlockout, stairs),
+                         .kind = VKR_PROPERTY_ENUM},
+    [BLOCKOUT_HEIGHT] = {.name = "height",
+                         .label = "Height",
+                         .unit = "m",
+                         .offset = TYPE_OFFSET(SceneBlockout, height),
+                         .kind = VKR_PROPERTY_F32,
+                         .min = 0.0625f,
+                         .max = VKR_BLOCKOUT_HEIGHT_MAX,
+                         .step = 0.0625f},
+    [BLOCKOUT_WIDTH] = {.name = "width",
+                        .label = "Width",
+                        .unit = "m",
+                        .offset = TYPE_OFFSET(SceneBlockout, width),
+                        .kind = VKR_PROPERTY_F32,
+                        .min = 0.25f,
+                        .max = 64.0f,
+                        .step = 0.0625f},
+    [BLOCKOUT_LENGTH] = {.name = "length",
+                         .label = "Length",
+                         .tooltip = "The run; for L and U stairs the first "
+                                    "flight with its landing",
+                         .unit = "m",
+                         .offset = TYPE_OFFSET(SceneBlockout, length),
+                         .kind = VKR_PROPERTY_F32,
+                         .min = 0.25f,
+                         .max = 128.0f,
+                         .step = 0.0625f},
+    [BLOCKOUT_STEP_HEIGHT] = {.name = "step_height",
+                              .label = "Step height",
+                              .tooltip = "The highest a step may rise; the "
+                                         "steps share the height evenly",
+                              .unit = "m",
+                              .offset = TYPE_OFFSET(SceneBlockout, step_height),
+                              .kind = VKR_PROPERTY_F32,
+                              .min = 0.05f,
+                              .max = 2.0f,
+                              .step = 0.0125f},
+    [BLOCKOUT_TURN] = {.name = "turn",
+                       .label = "Turn",
+                       .tooltip = "Degrees the steps sweep; a spiral may "
+                                  "turn more than once",
+                       .unit = "deg",
+                       .offset = TYPE_OFFSET(SceneBlockout, turn),
+                       .kind = VKR_PROPERTY_F32,
+                       .min = 15.0f,
+                       .max = VKR_BLOCKOUT_TURN_MAX,
+                       .step = 5.0f},
+    [BLOCKOUT_RADIUS] = {.name = "radius",
+                         .label = "Radius",
+                         .tooltip = "Stairs: the inner radius; corridors: "
+                                    "the radius of the arcs at the corners, "
+                                    "zero for sharp corners",
+                         .unit = "m",
+                         .offset = TYPE_OFFSET(SceneBlockout, radius),
+                         .kind = VKR_PROPERTY_F32,
+                         .min = 0.0f,
+                         .max = 64.0f,
+                         .step = 0.0625f},
+    [BLOCKOUT_THICKNESS] = {.name = "thickness",
+                            .label = "Thickness",
+                            .tooltip = "Corridors: walls, floor and ceiling; "
+                                       "stairs: each step's slab, zero for "
+                                       "steps solid down to the floor",
+                            .unit = "m",
+                            .offset = TYPE_OFFSET(SceneBlockout, thickness),
+                            .kind = VKR_PROPERTY_F32,
+                            .min = 0.0f,
+                            .max = 4.0f,
+                            .step = 0.0125f},
+    [BLOCKOUT_LEFT] = {.name = "left",
+                       .label = "Turn left",
+                       .offset = TYPE_OFFSET(SceneBlockout, left),
+                       .kind = VKR_PROPERTY_BOOL},
+    [BLOCKOUT_CEILING] = {.name = "ceiling",
+                          .label = "Ceiling",
+                          .offset = TYPE_OFFSET(SceneBlockout, ceiling),
+                          .kind = VKR_PROPERTY_BOOL},
+    [BLOCKOUT_MATERIAL] = {.name = "material",
+                           .label = "Material",
+                           .tooltip = "Material file of the steps or the "
+                                      "walls; empty uses the dev grid",
+                           .offset = TYPE_OFFSET(SceneBlockout, material),
+                           .capacity = SCENE_BLOCKOUT_MATERIAL_CAPACITY,
+                           .kind = VKR_PROPERTY_STRING},
+    [BLOCKOUT_FLOOR_MATERIAL] = {.name = "floor_material",
+                                 .label = "Floor material",
+                                 .offset =
+                                     TYPE_OFFSET(SceneBlockout, floor_material),
+                                 .capacity = SCENE_BLOCKOUT_MATERIAL_CAPACITY,
+                                 .kind = VKR_PROPERTY_STRING},
+    [BLOCKOUT_POINT_COUNT] = {.name = "point_count",
+                              .label = "Points",
+                              .offset = TYPE_OFFSET(SceneBlockout, point_count),
+                              .kind = VKR_PROPERTY_U32,
+                              .max = (float32_t)SCENE_BLOCKOUT_POINT_MAX},
+    [BLOCKOUT_POINT_FIRST + 0u] = {.name = "point_0",
+                                   .label = "Point 1",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[0]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 1u] = {.name = "point_1",
+                                   .label = "Point 2",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[1]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 2u] = {.name = "point_2",
+                                   .label = "Point 3",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[2]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 3u] = {.name = "point_3",
+                                   .label = "Point 4",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[3]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 4u] = {.name = "point_4",
+                                   .label = "Point 5",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[4]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 5u] = {.name = "point_5",
+                                   .label = "Point 6",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[5]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 6u] = {.name = "point_6",
+                                   .label = "Point 7",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[6]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 7u] = {.name = "point_7",
+                                   .label = "Point 8",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[7]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 8u] = {.name = "point_8",
+                                   .label = "Point 9",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[8]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 9u] = {.name = "point_9",
+                                   .label = "Point 10",
+                                   .offset =
+                                       TYPE_OFFSET(SceneBlockout, points[9]),
+                                   .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 10u] = {.name = "point_10",
+                                    .label = "Point 11",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, points[10]),
+                                    .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 11u] = {.name = "point_11",
+                                    .label = "Point 12",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, points[11]),
+                                    .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 12u] = {.name = "point_12",
+                                    .label = "Point 13",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, points[12]),
+                                    .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 13u] = {.name = "point_13",
+                                    .label = "Point 14",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, points[13]),
+                                    .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 14u] = {.name = "point_14",
+                                    .label = "Point 15",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, points[14]),
+                                    .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_POINT_FIRST + 15u] = {.name = "point_15",
+                                    .label = "Point 16",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, points[15]),
+                                    .kind = VKR_PROPERTY_VEC3},
+    [BLOCKOUT_OPENING_COUNT] = {.name = "opening_count",
+                                .label = "Openings",
+                                .offset =
+                                    TYPE_OFFSET(SceneBlockout, opening_count),
+                                .kind = VKR_PROPERTY_U32,
+                                .max = (float32_t)SCENE_BLOCKOUT_OPENING_MAX},
+    [BLOCKOUT_CORNER_FIRST + 0u] = {.name = "corner_0",
+                                    .label = "Corner 1",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[0]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 1u] = {.name = "corner_1",
+                                    .label = "Corner 2",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[1]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 2u] = {.name = "corner_2",
+                                    .label = "Corner 3",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[2]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 3u] = {.name = "corner_3",
+                                    .label = "Corner 4",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[3]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 4u] = {.name = "corner_4",
+                                    .label = "Corner 5",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[4]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 5u] = {.name = "corner_5",
+                                    .label = "Corner 6",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[5]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 6u] = {.name = "corner_6",
+                                    .label = "Corner 7",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[6]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 7u] = {.name = "corner_7",
+                                    .label = "Corner 8",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[7]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 8u] = {.name = "corner_8",
+                                    .label = "Corner 9",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[8]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST + 9u] = {.name = "corner_9",
+                                    .label = "Corner 10",
+                                    .offset =
+                                        TYPE_OFFSET(SceneBlockout, corners[9]),
+                                    .kind = VKR_PROPERTY_F32,
+                                    .min = -1.0f,
+                                    .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST +
+        10u] = {.name = "corner_10",
+                .label = "Corner 11",
+                .offset = TYPE_OFFSET(SceneBlockout, corners[10]),
+                .kind = VKR_PROPERTY_F32,
+                .min = -1.0f,
+                .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST +
+        11u] = {.name = "corner_11",
+                .label = "Corner 12",
+                .offset = TYPE_OFFSET(SceneBlockout, corners[11]),
+                .kind = VKR_PROPERTY_F32,
+                .min = -1.0f,
+                .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST +
+        12u] = {.name = "corner_12",
+                .label = "Corner 13",
+                .offset = TYPE_OFFSET(SceneBlockout, corners[12]),
+                .kind = VKR_PROPERTY_F32,
+                .min = -1.0f,
+                .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST +
+        13u] = {.name = "corner_13",
+                .label = "Corner 14",
+                .offset = TYPE_OFFSET(SceneBlockout, corners[13]),
+                .kind = VKR_PROPERTY_F32,
+                .min = -1.0f,
+                .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST +
+        14u] = {.name = "corner_14",
+                .label = "Corner 15",
+                .offset = TYPE_OFFSET(SceneBlockout, corners[14]),
+                .kind = VKR_PROPERTY_F32,
+                .min = -1.0f,
+                .max = 64.0f},
+    [BLOCKOUT_CORNER_FIRST +
+        15u] = {.name = "corner_15",
+                .label = "Corner 16",
+                .offset = TYPE_OFFSET(SceneBlockout, corners[15]),
+                .kind = VKR_PROPERTY_F32,
+                .min = -1.0f,
+                .max = 64.0f},
+    [BLOCKOUT_WALL_FIRST + 0u] = {.name = "wall_0",
+                                  .label = "Opening wall 1",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[0]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_WALL_FIRST + 1u] = {.name = "wall_1",
+                                  .label = "Opening wall 2",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[1]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_WALL_FIRST + 2u] = {.name = "wall_2",
+                                  .label = "Opening wall 3",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[2]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_WALL_FIRST + 3u] = {.name = "wall_3",
+                                  .label = "Opening wall 4",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[3]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_WALL_FIRST + 4u] = {.name = "wall_4",
+                                  .label = "Opening wall 5",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[4]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_WALL_FIRST + 5u] = {.name = "wall_5",
+                                  .label = "Opening wall 6",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[5]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_WALL_FIRST + 6u] = {.name = "wall_6",
+                                  .label = "Opening wall 7",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[6]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_WALL_FIRST + 7u] = {.name = "wall_7",
+                                  .label = "Opening wall 8",
+                                  .offset =
+                                      TYPE_OFFSET(SceneBlockout, walls[7]),
+                                  .kind = VKR_PROPERTY_U32},
+    [BLOCKOUT_OPENING_FIRST +
+        0u] = {.name = "opening_0",
+               .label = "Opening 1",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[0]),
+               .kind = VKR_PROPERTY_VEC4},
+    [BLOCKOUT_OPENING_FIRST +
+        1u] = {.name = "opening_1",
+               .label = "Opening 2",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[1]),
+               .kind = VKR_PROPERTY_VEC4},
+    [BLOCKOUT_OPENING_FIRST +
+        2u] = {.name = "opening_2",
+               .label = "Opening 3",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[2]),
+               .kind = VKR_PROPERTY_VEC4},
+    [BLOCKOUT_OPENING_FIRST +
+        3u] = {.name = "opening_3",
+               .label = "Opening 4",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[3]),
+               .kind = VKR_PROPERTY_VEC4},
+    [BLOCKOUT_OPENING_FIRST +
+        4u] = {.name = "opening_4",
+               .label = "Opening 5",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[4]),
+               .kind = VKR_PROPERTY_VEC4},
+    [BLOCKOUT_OPENING_FIRST +
+        5u] = {.name = "opening_5",
+               .label = "Opening 6",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[5]),
+               .kind = VKR_PROPERTY_VEC4},
+    [BLOCKOUT_OPENING_FIRST +
+        6u] = {.name = "opening_6",
+               .label = "Opening 7",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[6]),
+               .kind = VKR_PROPERTY_VEC4},
+    [BLOCKOUT_OPENING_FIRST +
+        7u] = {.name = "opening_7",
+               .label = "Opening 8",
+               .offset = TYPE_OFFSET(SceneBlockout, openings[7]),
+               .kind = VKR_PROPERTY_VEC4},
+};
+
+static void blockout_defaults(void *value) {
+  *(SceneBlockout *)value = (SceneBlockout){
+      .shape = SCENE_BLOCKOUT_STAIRS,
+      .stairs = SCENE_STAIRS_STRAIGHT,
+      .height = 3.0f,
+      .width = 1.5f,
+      .length = 4.5f,
+      .step_height = 0.1875f,
+      .turn = 180.0f,
+      .radius = 1.0f,
+      .thickness = 0.0f,
+      .ceiling = true_v,
+  };
+  for (uint32_t i = 0; i < SCENE_BLOCKOUT_POINT_MAX; ++i) {
+    ((SceneBlockout *)value)->corners[i] = -1.0f;
+  }
+}
+
+/* Each shape shows only what shapes it; corridor points are edited in the
+   Scene. */
+static VkrPropertyState blockout_state(const void *value, uint32_t property,
+                                       const void *context) {
+  (void)context;
+  const SceneBlockout *blockout = value;
+  const bool8_t stairs = blockout->shape == SCENE_BLOCKOUT_STAIRS;
+  const SceneStairsKind kind = blockout->stairs;
+  const bool8_t round =
+      kind == SCENE_STAIRS_CURVED || kind == SCENE_STAIRS_SPIRAL;
+  bool8_t shown = true_v;
+  switch (property) {
+  case BLOCKOUT_STAIRS:
+  case BLOCKOUT_STEP_HEIGHT:
+    shown = stairs;
+    break;
+  case BLOCKOUT_LENGTH:
+    shown = stairs && !round;
+    break;
+  case BLOCKOUT_TURN:
+    shown = stairs && round;
+    break;
+  case BLOCKOUT_RADIUS:
+    shown = !stairs || round;
+    break;
+  case BLOCKOUT_LEFT:
+    shown = stairs && kind != SCENE_STAIRS_STRAIGHT;
+    break;
+  case BLOCKOUT_CEILING:
+  case BLOCKOUT_FLOOR_MATERIAL:
+    shown = !stairs;
+    break;
+  default:
+    shown = property < BLOCKOUT_POINT_COUNT;
+    break;
+  }
+  return (VkrPropertyState){
+      .flags = (shown ? 0u : VKR_PROPERTY_STATE_HIDDEN) |
+               (property == BLOCKOUT_SHAPE ? VKR_PROPERTY_STATE_DISABLED : 0u)};
+}
+
+const VkrTypeDesc vkr_scene_blockout_type = {
+    .name = "blockout",
+    .label = "Blockout shape",
+    .category = "Level",
+    .properties = s_blockout_properties,
+    .property_count = ArrayCount(s_blockout_properties),
+    .size = sizeof(SceneBlockout),
+    .align = _Alignof(SceneBlockout),
+    .defaults = blockout_defaults,
+    .state = blockout_state,
+};
+
 static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_environment_type,
     &vkr_scene_atmosphere_type,
@@ -2557,6 +3177,9 @@ static const VkrTypeDesc *const s_world_types[] = {
     &vkr_scene_scatter_type,
     &vkr_scene_world_partition_type,
     &vkr_scene_always_loaded_type,
+    &vkr_scene_free_placement_type,
+    &vkr_scene_blockout_type,
+    &vkr_scene_mover_type,
 };
 
 /* Types registered at startup by modules outside the renderer. */
@@ -2624,11 +3247,14 @@ bool8_t vkr_scene_world_type_live(const VkrTypeDesc *type) {
          type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
          type == &vkr_scene_trigger_type || type == &vkr_scene_relay_type ||
          type == &vkr_scene_timer_type || type == &vkr_scene_counter_type ||
+         type == &vkr_scene_mover_type ||
          type == &vkr_scene_io_connection_type ||
          type == &vkr_scene_terrain_type || type == &vkr_scene_spline_type ||
          type == &vkr_scene_spline_point_type ||
          type == &vkr_scene_spline_mesh_type ||
          type == &vkr_scene_scatter_type ||
          type == &vkr_scene_world_partition_type ||
-         type == &vkr_scene_always_loaded_type;
+         type == &vkr_scene_always_loaded_type ||
+         type == &vkr_scene_free_placement_type ||
+         type == &vkr_scene_blockout_type;
 }

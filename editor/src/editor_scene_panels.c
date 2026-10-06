@@ -1,5 +1,6 @@
 #include "editor_scene_panels.h"
 #include "editor_agent.h"
+#include "editor_blockout.h"
 
 #include "core/vkr_json.h"
 #include "editor_details.h"
@@ -66,6 +67,21 @@ typedef struct TreeContainer {
 } TreeContainer;
 
 struct VkrEditorScenePanels {
+  /* A blockout shape's settings while Details edits them: shown instead of
+     the scene's, built once the edit ends, and dropped once the scene holds
+     them or after `shape_wait` builds. */
+  bool8_t shape_drafting;
+  bool8_t shape_submitted;
+  uint32_t shape_wait;
+  VkrEntityId shape_entity;
+  SceneBlockout shape_draft;
+  /* A row pressed in the Outliner, which a drag parents under the row it is
+     released on; `drop_target` is the row under the pointer this build. */
+  VkrEntityId drag_entity;
+  const VkrScene *drag_scene;
+  Vec2 drag_press;
+  bool8_t drag_active;
+  VkrEntityId drop_target;
   /* A physics row drag is in progress; the draft commits when it ends. */
   bool8_t physics_dragging;
   /* Component type whose Presets button was pressed this build. */
@@ -643,6 +659,8 @@ VkrUiIcon vkr_editor_world_type_icon(const VkrTypeDesc *type) {
     return VKR_UI_ICON_TIMER;
   if (type == &vkr_scene_counter_type)
     return VKR_UI_ICON_LIST;
+  if (type == &vkr_scene_mover_type)
+    return VKR_UI_ICON_ARROW_UP;
   if (type == &vkr_scene_io_connection_type)
     return VKR_UI_ICON_ARROW_RIGHT;
   if (type == &vkr_scene_terrain_type)
@@ -712,6 +730,8 @@ static const EditorObjectKind s_object_kinds[] = {
     {"timer", "Timer", VKR_UI_ICON_TIMER, &vkr_scene_timer_type, false_v,
      "Level"},
     {"counter", "Counter", VKR_UI_ICON_LIST, &vkr_scene_counter_type, false_v,
+     "Level"},
+    {"mover", "Mover", VKR_UI_ICON_ARROW_UP, &vkr_scene_mover_type, false_v,
      "Level"},
     {"atmosphere", "Sky Atmosphere", VKR_UI_ICON_PLANET,
      &vkr_scene_atmosphere_type, false_v, "Environment"},
@@ -1083,6 +1103,8 @@ static bool8_t editor_request_brush(const VkrEditorUi *editor,
   } else {
     snprintf(target, sizeof(target), "%u", (unsigned)container);
   }
+  char style[160];
+  vkr_editor_brush_style(editor, style, sizeof(style));
   char line[640];
   if (brush == 7u) {
     /* A three-point spline running along X through the placement point. */
@@ -1128,17 +1150,16 @@ static bool8_t editor_request_brush(const VkrEditorUi *editor,
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"create\",\"op\":\"brush.cylinder\",\"args\":"
              "{\"center\":[%g,%g,%g],\"radius\":1,\"height\":2,"
-             "\"sides\":12,\"container\":%s,\"role\":\"%s\","
+             "\"sides\":12,\"container\":%s,%s,"
              "\"review\":false,\"select\":true}}",
-             p.x, p.y, p.z, target, vkr_editor_brush_roles[editor->brush_role]);
+             p.x, p.y, p.z, target, style);
   } else {
     snprintf(line, sizeof(line),
              "{\"v\":1,\"id\":\"create\",\"op\":\"%s\",\"args\":"
              "{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
-             "\"role\":\"%s\",\"review\":false,\"select\":true}}",
+             "%s,\"review\":false,\"select\":true}}",
              brush == 2u ? "brush.wedge" : "brush.box", p.x - 1.0f, p.y,
-             p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f, target,
-             vkr_editor_brush_roles[editor->brush_role]);
+             p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f, target, style);
   }
   return vkr_editor_agent_submit(editor->agent, line);
 }
@@ -1274,9 +1295,11 @@ bool8_t vkr_editor_request_physics_body(const VkrSampleUiFrame *frame,
       values.physics.present == present) {
     return false_v;
   }
-  /* A new body is a static unit box collider; removal drops its colliders. */
+  /* A new body is a static box collider fitted to the object; removal drops
+     its colliders. */
   values.physics = vkr_scene_physics_default();
   values.physics.body.motion = VKR_PHYSICS_STATIC;
+  values.physics.colliders[0].fit = VKR_SCENE_COLLIDER_FIT_AUTO;
   if (!present) {
     values.physics.present = false_v;
     values.physics.collider_count = 0u;
@@ -2021,9 +2044,28 @@ static bool8_t hierarchy_entity_row(
   if (!name.length)
     name = string8_lit("(unnamed)");
   c.tooltip = name;
-  if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c))
+  /* A row being dragged onto lights as the new parent. */
+  VkrUiRect row_rect = {0};
+  const bool8_t drop_over = p->drag_active && p->drag_scene == row_scene &&
+                            vkr_ui_widget_rect(ui, node_id, &row_rect) &&
+                            in_rect(ui, row_rect) && in_rect(ui, list) &&
+                            n->entity.u64 != p->drag_entity.u64;
+  if (drop_over) {
+    p->drop_target = n->entity;
+    c.style.background_color = vkr_ui_color_alpha(theme->accent, 0.35f);
+  }
+  if (vkr_ui_button(ui, string8_lit("node"), (String8){0}, &c) &&
+      !p->drag_active)
     hierarchy_row_click(editor, p, frame, n->entity);
   const bool8_t row_hot = ui->hot_id == node_id;
+  if (row_hot && !ui->mouse_captured &&
+      input_button_just_pressed(frame->input, BUTTON_LEFT) &&
+      !vkr_editor_selection_modifier(frame)) {
+    p->drag_entity = n->entity;
+    p->drag_scene = row_scene;
+    p->drag_press = (Vec2){(float32_t)ui->mouse_x, (float32_t)ui->mouse_y};
+    p->drag_active = false_v;
+  }
   if (row_hot && !ui->mouse_captured &&
       input_button_just_pressed(frame->input, BUTTON_RIGHT))
     hierarchy_row_menu(editor, frame, n->entity);
@@ -2234,6 +2276,78 @@ static float32_t hierarchy_pinned_build(VkrEditorUi *editor,
   return height;
 }
 
+/* Whether `entity` is `ancestor` or lies below it in `scene`. */
+static bool8_t hierarchy_within(const VkrScene *scene, VkrEntityId entity,
+                                VkrEntityId ancestor) {
+  for (uint32_t depth = 0; entity.u64 && depth < 64u; ++depth) {
+    if (entity.u64 == ancestor.u64) {
+      return true_v;
+    }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+  }
+  return false_v;
+}
+
+/* A row dragged 6 points becomes a drag; released on another row of its
+   scene, the object becomes that row's child and snaps flush against it
+   unless free (entity.parent with snap), and released on the list's empty
+   space it becomes a root. One undo step either way. */
+static void hierarchy_drag_finish(VkrEditorUi *editor, VkrEditorScenePanels *p,
+                                  const VkrSampleUiFrame *frame,
+                                  VkrUiRect list) {
+  VkrUiSystem *ui = frame->ui;
+  if (!p->drag_entity.u64) {
+    return;
+  }
+  const bool8_t held =
+      input_is_button_down(frame->input, BUTTON_LEFT) && !ui->mouse_released;
+  if (held) {
+    const float32_t dx = (float32_t)ui->mouse_x - p->drag_press.x;
+    const float32_t dy = (float32_t)ui->mouse_y - p->drag_press.y;
+    if (!p->drag_active &&
+        dx * dx + dy * dy > 36.0f * ui->content_scale * ui->content_scale) {
+      p->drag_active = true_v;
+    }
+    return;
+  }
+  const VkrScene *scene = p->drag_scene;
+  const VkrEntityId entity = p->drag_entity;
+  const VkrEntityId target = p->drop_target;
+  const bool8_t active = p->drag_active;
+  p->drag_entity = VKR_ENTITY_ID_INVALID;
+  p->drag_active = false_v;
+  if (!active || !editor->agent || !scene ||
+      !vkr_scene_entity_alive(scene, entity) ||
+      (!target.u64 && !in_rect(ui, list))) {
+    return;
+  }
+  const SceneTransform *transform =
+      vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+  if (target.u64 && (hierarchy_within(scene, target, entity) ||
+                     (transform && transform->parent.u64 == target.u64))) {
+    return;
+  }
+  if (!target.u64 && (!transform || !transform->parent.u64)) {
+    return;
+  }
+  char parent[48] = "null";
+  if (target.u64) {
+    snprintf(parent, sizeof(parent), "\"%u:%u:%u\"",
+             (unsigned)target.parts.world, (unsigned)target.parts.index,
+             (unsigned)target.parts.generation);
+  }
+  char line[256];
+  snprintf(line, sizeof(line),
+           "{\"v\":1,\"id\":\"outliner\",\"op\":\"entity.parent\","
+           "\"args\":{\"entity\":\"%u:%u:%u\",\"parent\":%s,"
+           "\"snap\":true,\"review\":false}}",
+           (unsigned)entity.parts.world, (unsigned)entity.parts.index,
+           (unsigned)entity.parts.generation, parent);
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
 void vkr_editor_hierarchy_build(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame, VkrUiRect rect,
                                 VkrFontHandle heading) {
@@ -2300,6 +2414,7 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
   }
   const HierarchyColumns cols = hierarchy_columns(w);
   hierarchy_column_header(ui, cols, HIERARCHY_TOOLS_PT, heading);
+  p->drop_target = VKR_ENTITY_ID_INVALID;
   const float32_t pinned_top = HIERARCHY_TOOLS_PT + HIERARCHY_HEADER_PT;
   const float32_t pinned_h = hierarchy_pinned_build(
       editor, p, frame, cols, pinned_top,
@@ -2413,6 +2528,7 @@ void vkr_editor_hierarchy_build(VkrEditorUi *editor,
     }
     (void)vkr_ui_panel_end(ui);
   }
+  hierarchy_drag_finish(editor, p, frame, rect);
   if (next_focus.u64)
     p->pending_focus = next_focus;
   c = widget_at(10, h - HIERARCHY_FOOTER_PT, w - 20, HIERARCHY_FOOTER_PT);
@@ -2655,76 +2771,33 @@ static uint64_t physics_next_collider_id(const VkrScenePhysicsSnapshot *body) {
   return 0;
 }
 
+/* Sizes a manual collider once to the box around the selection's meshes and
+   shapes in its own frame, as an automatic fit does continuously. */
 static bool8_t physics_fit_collider(VkrEditorScenePanels *p,
                                     const VkrSampleUiFrame *f,
                                     VkrSceneColliderConfig *collider) {
-  const SceneTransform *root = vkr_entity_get_component(
-      f->scene->world, f->selected_entity, f->scene->comp_transform);
-  if (!root || !f->assets) {
+  Vec3 lower = vec3_zero();
+  Vec3 upper = vec3_zero();
+  if (!vkr_scene_entity_local_bounds(f->scene, f->selected_entity, &lower,
+                                     &upper)) {
+    snprintf(p->error, sizeof(p->error), "No loaded geometry to fit.");
     return false_v;
   }
-  const Mat4 inverse = mat4_inverse_affine(root->world);
-  Vec3 lower = {0}, upper = {0};
-  bool8_t found = false_v;
-  for (uint32_t i = 0; i < f->scene->topo_count; ++i) {
-    VkrEntityId candidate = f->scene->topo_order[i];
-    VkrEntityId ancestor = candidate;
-    while (ancestor.u64 && ancestor.u64 != f->selected_entity.u64) {
-      const SceneTransform *transform = vkr_entity_get_component(
-          f->scene->world, ancestor, f->scene->comp_transform);
-      ancestor = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
-    }
-    if (!ancestor.u64) {
-      continue;
-    }
-    const SceneMeshRenderer *mesh = vkr_entity_get_component(
-        f->scene->world, candidate, f->scene->comp_mesh_renderer);
-    const VkrMeshInstance *instance =
-        mesh ? vkr_mesh_manager_get_instance(&f->assets->mesh_manager,
-                                             mesh->instance)
-             : NULL;
-    if (!instance || !instance->bounds_valid ||
-        !isfinite(instance->bounds_world_radius) ||
-        instance->bounds_world_radius <= 0) {
-      continue;
-    }
-    const Vec3 center_world = instance->bounds_world_center;
-    const Vec4 center_local = mat4_mul_vec4(
-        inverse, vec4_new(center_world.x, center_world.y, center_world.z, 1));
-    const Vec3 center = {center_local.x, center_local.y, center_local.z};
-    const float32_t r = instance->bounds_world_radius;
-    const Vec3 radius = {
-        r * sqrtf(inverse.elements[0] * inverse.elements[0] +
-                  inverse.elements[4] * inverse.elements[4] +
-                  inverse.elements[8] * inverse.elements[8]),
-        r * sqrtf(inverse.elements[1] * inverse.elements[1] +
-                  inverse.elements[5] * inverse.elements[5] +
-                  inverse.elements[9] * inverse.elements[9]),
-        r * sqrtf(inverse.elements[2] * inverse.elements[2] +
-                  inverse.elements[6] * inverse.elements[6] +
-                  inverse.elements[10] * inverse.elements[10])};
-    const Vec3 lo = vec3_sub(center, radius), hi = vec3_add(center, radius);
-    lower = found ? vec3_new(Min(lower.x, lo.x), Min(lower.y, lo.y),
-                             Min(lower.z, lo.z))
-                  : lo;
-    upper = found ? vec3_new(Max(upper.x, hi.x), Max(upper.y, hi.y),
-                             Max(upper.z, hi.z))
-                  : hi;
-    found = true_v;
-  }
-  if (!found) {
-    snprintf(p->error, sizeof(p->error), "No loaded render bounds to fit.");
-    return false_v;
-  }
+  const Vec3 half = vec3_scale(vec3_sub(upper, lower), 0.5f);
   collider->position = vec3_scale(vec3_add(lower, upper), 0.5f);
   collider->rotation = vkr_quat_identity();
   collider->scale = vec3_one();
-  collider->half_extent = vec3_scale(vec3_sub(upper, lower), 0.5f);
-  collider->radius =
-      collider->shape == VKR_PHYSICS_CAPSULE
-          ? hypotf(collider->half_extent.x, collider->half_extent.z)
-          : vec3_length(collider->half_extent);
-  collider->half_height = collider->half_extent.y;
+  collider->half_extent =
+      vec3_new(Max(half.x, 0.005f), Max(half.y, 0.005f), Max(half.z, 0.005f));
+  if (collider->shape == VKR_PHYSICS_SPHERE) {
+    collider->radius =
+        Max(collider->half_extent.x,
+            Max(collider->half_extent.y, collider->half_extent.z));
+  } else if (collider->shape == VKR_PHYSICS_CAPSULE) {
+    collider->radius = Max(collider->half_extent.x, collider->half_extent.z);
+    collider->half_height =
+        Max(collider->half_extent.y - collider->radius, 0.005f);
+  }
   return true_v;
 }
 
@@ -3324,11 +3397,12 @@ static bool8_t physics_collider_widgets(VkrEditorScenePanels *p,
     }
     focused |= physics_details(p, f, w, y, &vkr_scene_physics_collider_type,
                                shape, disabled);
-    if (shape->shape < VKR_PHYSICS_CONVEX_HULL) {
+    if (shape->shape < VKR_PHYSICS_CONVEX_HULL &&
+        shape->fit == VKR_SCENE_COLLIDER_FIT_MANUAL) {
       c = widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 24);
       c.disabled = disabled;
       if (inspector_button(ui, string8_lit("fit"),
-                           string8_lit("Fit loaded bounds (approx.)"), &c) &&
+                           string8_lit("Fit to the object once"), &c) &&
           physics_fit_collider(p, f, shape)) {
         p->changed = true_v;
       }
@@ -3497,7 +3571,8 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
                                    .half_extent = {0.5f, 0.5f, 0.5f},
                                    .radius = 0.5f,
                                    .half_height = 0.5f,
-                                   .enabled = true_v};
+                                   .enabled = true_v,
+                                   .fit = VKR_SCENE_COLLIDER_FIT_AUTO};
       p->open_collider = id;
       physics_numbers_read(p);
       p->changed = true_v;
@@ -3921,6 +3996,46 @@ static void inspector_mesh_section(VkrEditorScenePanels *p,
                                 &vkr_scene_mesh_info_type, &info, NULL, true_v);
 }
 
+/* Details edits of a blockout shape: the draft shows in Details and as the
+   shape it would build while a drag lasts, and builds through
+   blockout.build when the edit ends. */
+static void inspector_shape_edit(VkrEditorUi *editor, VkrEditorScenePanels *p,
+                                 const VkrSampleUiFrame *f,
+                                 const InspectorComponentEdit *edit) {
+  const VkrScene *scene = vkr_editor_entity_scene(f, f->selected_entity);
+  if (p->shape_drafting && p->shape_entity.u64 != f->selected_entity.u64) {
+    p->shape_drafting = false_v;
+    vkr_editor_blockout_preview(editor, VKR_ENTITY_ID_INVALID, NULL);
+  }
+  if (edit->type == &vkr_scene_blockout_type) {
+    MemCopy(&p->shape_draft, edit->value, sizeof(p->shape_draft));
+    p->shape_entity = f->selected_entity;
+    p->shape_drafting = true_v;
+    p->shape_submitted = false_v;
+    vkr_editor_blockout_preview(editor, f->selected_entity, &p->shape_draft);
+  }
+  if (!p->shape_drafting) {
+    return;
+  }
+  if (!p->shape_submitted && !p->details.gesture_active) {
+    vkr_editor_blockout_submit(editor, p->shape_entity, &p->shape_draft);
+    p->shape_submitted = true_v;
+    p->shape_wait = 0u;
+    return;
+  }
+  const SceneBlockout *current =
+      scene ? vkr_scene_get_typed(scene, p->shape_entity,
+                                  &vkr_scene_blockout_type)
+            : NULL;
+  if (p->shape_submitted &&
+      (!current ||
+       MemCompare(current, &p->shape_draft, sizeof(p->shape_draft)) == 0 ||
+       ++p->shape_wait > 120u)) {
+    p->shape_drafting = false_v;
+    vkr_editor_blockout_preview(editor, VKR_ENTITY_ID_INVALID, NULL);
+  }
+}
+
 /* One section per world component on the entity (ADR-076). A singleton that
    lost resolution to another instance says so; its values still edit. A
    World object resolves through `resolver`, the scene that renders. */
@@ -3979,6 +4094,10 @@ static bool8_t inspector_world_sections(VkrEditorScenePanels *p,
       }
       _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
       MemCopy(value, current, type->size);
+      if (type == &vkr_scene_blockout_type && p->shape_drafting &&
+          p->shape_entity.u64 == f->selected_entity.u64) {
+        MemCopy(value, &p->shape_draft, sizeof(p->shape_draft));
+      }
       const VkrEditorDetailsResult result = vkr_editor_details_type(
           &p->details, ui, f->input, w, y, type, value, NULL, false_v);
       focused |= result.focused;
@@ -4357,6 +4476,12 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
   vkr_editor_context_open_choice(editor, &p->details);
   vkr_editor_color_picker_open(editor, &p->details);
 
+  /* A blockout shape builds its brushes again from its settings, once per
+   * edit: a drag shows the shape it would build until it ends. */
+  inspector_shape_edit(editor, p, f, &component_edit);
+  if (component_edit.type == &vkr_scene_blockout_type) {
+    return;
+  }
   /* Component rows apply each finished entry, toggle or drag step at once; a
    * drag folds into one undo entry through its gesture. */
   if (component_edit.type && component_edit.world) {
