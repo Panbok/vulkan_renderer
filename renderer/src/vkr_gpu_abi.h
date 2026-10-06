@@ -177,7 +177,7 @@ _Static_assert(sizeof(VkrPackedStaticVertex) == 32,
 _Static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
                "Geometry decode record ABI must be 32 bytes");
 
-/* Detail levels of one range (ADR-084). Level 0 is the range itself; each
+/* Detail levels of one range (ADR-085). Level 0 is the range itself; each
    later level holds fewer indices over the same vertices and a larger
    model-space error. Culling picks a level per candidate and view, and
    encoding draws that level's indices. */

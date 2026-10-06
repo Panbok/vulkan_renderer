@@ -1,5 +1,6 @@
 #include "assets/vkr_meshoptimizer_bridge.h"
 
+#include <float.h>
 #include <meshoptimizer.h>
 
 extern "C" size_t vkr_meshopt_optimize_range(
@@ -99,4 +100,34 @@ extern "C" size_t vkr_meshopt_encode_indices(uint8_t *destination,
   (void)index_codec_version_initialized;
   return meshopt_encodeIndexBuffer(destination, destination_size, indices,
                                    index_count);
+}
+
+extern "C" size_t vkr_meshopt_simplify_level(
+    uint32_t *destination, const uint32_t *indices, size_t index_count,
+    const void *vertices, size_t vertex_count, size_t vertex_stride,
+    size_t attribute_offset, const float *attribute_weights,
+    size_t attribute_count, size_t target_index_count, float *out_error) {
+  if (!destination || !indices || !vertices || !attribute_weights ||
+      !out_error || index_count == 0 || index_count % 3 != 0 ||
+      vertex_count == 0 || vertex_stride % 4 != 0 || attribute_count == 0 ||
+      attribute_count > 32 || attribute_offset % 4 != 0 ||
+      attribute_offset + attribute_count * sizeof(float) > vertex_stride) {
+    return 0;
+  }
+  const float *positions = static_cast<const float *>(vertices);
+  const float *attributes = reinterpret_cast<const float *>(
+      static_cast<const uint8_t *>(vertices) + attribute_offset);
+  float error = 0.0f;
+  const size_t count = meshopt_simplifyWithAttributes(
+      destination, indices, index_count, positions, vertex_count, vertex_stride,
+      attributes, vertex_stride, attribute_weights, attribute_count, nullptr,
+      target_index_count, FLT_MAX,
+      meshopt_SimplifyLockBorder | meshopt_SimplifyErrorAbsolute |
+          meshopt_SimplifyPrune,
+      &error);
+  if (count != 0) {
+    meshopt_optimizeVertexCache(destination, destination, count, vertex_count);
+  }
+  *out_error = error;
+  return count;
 }

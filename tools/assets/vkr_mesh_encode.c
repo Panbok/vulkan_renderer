@@ -57,6 +57,16 @@ typedef struct VkrMeshCookedRangeBuild {
   Vec3 center;
   Vec3 min_extents;
   Vec3 max_extents;
+  /* Detail levels (ADR-085): the count including the range itself, and the
+     index count and model-space error of each later level, whose indices
+     share one encoded stream after every range's own streams. */
+  uint32_t lod_level_count;
+  uint32_t lod_index_counts[VKR_GPU_GEOMETRY_LOD_LEVEL_MAX];
+  float32_t lod_errors[VKR_GPU_GEOMETRY_LOD_LEVEL_MAX];
+  uint8_t *encoded_lod_indices;
+  uint64_t encoded_lod_index_size;
+  uint64_t lod_stream_offset;
+  uint32_t lod_crc;
 } VkrMeshCookedRangeBuild;
 
 static bool8_t vkr_mesh_cooked_path_is_absolute(String8 path) {
@@ -318,6 +328,8 @@ typedef struct VkrMeshCookedHeaderBuild {
   uint8_t source_hash[32];
   uint8_t settings_hash[32];
   VkrMeshCookedLightmap lightmap;
+  /* Some range carries detail levels, so the artifact has an LOD block. */
+  bool8_t has_lod;
   uint64_t directory_offset;
   uint64_t dependency_offset;
   uint64_t string_offset;
@@ -366,6 +378,100 @@ vkr_internal bool8_t vkr_mesh_cooked_validate_vertices(
              info->skin.joint_counts || info->skin.animation_fingerprint) {
     return false_v;
   }
+  return true_v;
+}
+
+/* Cooked detail levels (ADR-085). Each level targets half the previous
+   level's triangles and is simplified from the range itself, so errors do not
+   compound. Levels stop when one shrinks by less than 15% or would fall
+   below 64 triangles. Open borders stay locked, so ranges that meet do not
+   crack, and small disconnected parts may be dropped, their removal counted
+   in the error. Normals and texture coordinates weigh in at a tenth of a
+   mesh extent per unit: enough to steer collapses away from shading and
+   alpha-cut changes while the recorded error stays close to the surface's
+   own (on Bistro, weight 0.5 raised level 2's median error from 0.0007 to
+   0.0013 model units and left the camera's selection finer). */
+#define VKR_MESH_COOKED_LOD_MIN_TRIANGLES 64u
+#define VKR_MESH_COOKED_LOD_MAX_KEPT_FRACTION 0.85
+static const float32_t vkr_mesh_cooked_lod_attribute_weights[5] = {
+    0.1f, 0.1f, 0.1f, 0.1f, 0.1f};
+
+/* Fills `range`'s detail levels from its optimized vertices and indices and
+   encodes levels 1 and up into one stream. Skinned and non-world ranges, and
+   ranges too small to halve, keep only themselves. */
+vkr_internal bool8_t vkr_mesh_cooked_build_lods(
+    VkrAllocator *scratch_allocator, const VkrGeometryUploadRange *source,
+    bool8_t has_skin, const VkrVertex3d *vertices, uint32_t vertex_count,
+    const uint32_t *indices, uint32_t index_count,
+    VkrMeshCookedRangeBuild *range) {
+  range->lod_level_count = 1u;
+  range->lod_index_counts[0] = index_count;
+  range->lod_errors[0] = 0.0f;
+  if (has_skin || source->pipeline_domain != VKR_PIPELINE_DOMAIN_WORLD ||
+      index_count / 3u < 2u * VKR_MESH_COOKED_LOD_MIN_TRIANGLES) {
+    return true_v;
+  }
+  /* Levels 1 and up together hold fewer indices than the range itself. */
+  uint32_t *level_indices = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)index_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *simplified = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)index_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!level_indices || !simplified) {
+    return false_v;
+  }
+  uint32_t level_index_total = 0u;
+  uint32_t previous_count = index_count;
+  float32_t previous_error = 0.0f;
+  while (range->lod_level_count < VKR_GPU_GEOMETRY_LOD_LEVEL_MAX) {
+    const uint32_t target = (previous_count / 6u) * 3u;
+    if (target / 3u < VKR_MESH_COOKED_LOD_MIN_TRIANGLES) {
+      break;
+    }
+    float error = 0.0f;
+    const size_t count = vkr_meshopt_simplify_level(
+        simplified, indices, index_count, vertices, vertex_count,
+        sizeof(VkrVertex3d), offsetof(VkrVertex3d, normal),
+        vkr_mesh_cooked_lod_attribute_weights,
+        ArrayCount(vkr_mesh_cooked_lod_attribute_weights), target, &error);
+    if (count == 0u || count % 3u != 0u ||
+        (float64_t)count >
+            (float64_t)previous_count * VKR_MESH_COOKED_LOD_MAX_KEPT_FRACTION ||
+        !isfinite(error) || error < 0.0f ||
+        level_index_total + count > index_count) {
+      break;
+    }
+    const uint32_t level = range->lod_level_count++;
+    previous_error = Max(previous_error, error);
+    range->lod_index_counts[level] = (uint32_t)count;
+    range->lod_errors[level] = previous_error;
+    MemCopy(level_indices + level_index_total, simplified,
+            count * sizeof(uint32_t));
+    level_index_total += (uint32_t)count;
+    previous_count = (uint32_t)count;
+  }
+  if (range->lod_level_count == 1u) {
+    return true_v;
+  }
+  const size_t bound =
+      vkr_meshopt_index_encode_bound(level_index_total, vertex_count);
+  range->encoded_lod_indices = vkr_allocator_alloc(
+      scratch_allocator, bound, VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  if (!range->encoded_lod_indices) {
+    return false_v;
+  }
+  range->encoded_lod_index_size = vkr_meshopt_encode_indices(
+      range->encoded_lod_indices, bound, level_indices, level_index_total,
+      vertex_count);
+  if (range->encoded_lod_index_size == 0u ||
+      vkr_meshopt_index_codec_version(range->encoded_lod_indices,
+                                      range->encoded_lod_index_size) !=
+          (int)VKR_MESHOPT_INDEX_CODEC_VERSION) {
+    return false_v;
+  }
+  range->lod_crc =
+      vkr_crc32(range->encoded_lod_indices, range->encoded_lod_index_size);
   return true_v;
 }
 
@@ -568,7 +674,10 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
       .min_extents = optimized_min,
       .max_extents = optimized_max,
   };
-  return true_v;
+  return vkr_mesh_cooked_build_lods(
+      scratch_allocator, range, has_skin, optimized_vertices,
+      (uint32_t)optimized_vertex_count, optimized_indices, range->index_count,
+      out_range);
 }
 
 /* Folds one encoded range into the header in range order: the first range's
@@ -607,6 +716,7 @@ vkr_mesh_cooked_accumulate_range(VkrMeshCookedHeaderBuild *header, uint32_t i,
   }
   header->total_vertices += range->vertex_count;
   header->total_indices += range->index_count;
+  header->has_lod = header->has_lod || range->lod_level_count > 1u;
   return header->total_vertices <= UINT32_MAX &&
          header->total_indices <= UINT32_MAX;
 }
@@ -718,6 +828,10 @@ vkr_internal bool8_t vkr_mesh_cooked_compute_layout(
                     (uint64_t)header->lightmap.atlas_count *
                         VKR_MESH_COOKED_LIGHTMAP_ATLAS_SIZE;
   }
+  if (header->has_lod) {
+    source_bytes +=
+        (uint64_t)info->range_count * VKR_MESH_COOKED_LOD_ENTRY_SIZE;
+  }
   header->directory_offset = VKR_MESH_COOKED_HEADER_SIZE;
   if (!vkr_checked_add_u64(header->directory_offset, range_bytes,
                            &header->dependency_offset) ||
@@ -741,6 +855,19 @@ vkr_internal bool8_t vkr_mesh_cooked_compute_layout(
         vkr_align_up_u64(header->file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
     ranges[i].index_stream_offset = header->file_size;
     if (!vkr_checked_add_u64(header->file_size, ranges[i].encoded_index_size,
+                             &header->file_size)) {
+      return false_v;
+    }
+    header->file_size =
+        vkr_align_up_u64(header->file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
+  }
+  for (uint32_t i = 0; i < info->range_count; ++i) {
+    if (ranges[i].lod_level_count < 2u) {
+      continue;
+    }
+    ranges[i].lod_stream_offset = header->file_size;
+    if (!vkr_checked_add_u64(header->file_size,
+                             ranges[i].encoded_lod_index_size,
                              &header->file_size)) {
       return false_v;
     }
@@ -781,9 +908,11 @@ vkr_internal bool8_t vkr_mesh_cooked_write_header(
   ok = ok && vkr_byte_writer_u64(writer, header->file_size);
   ok = ok && vkr_byte_writer_u64(writer, 0u);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)info->source_path.length);
-  ok = ok && vkr_byte_writer_u32(writer, header->lightmap.atlas_count != 0u
-                                             ? VKR_MESH_COOKED_FLAG_LIGHTMAP_UV
-                                             : 0u);
+  ok = ok && vkr_byte_writer_u32(
+                 writer, (header->lightmap.atlas_count != 0u
+                              ? VKR_MESH_COOKED_FLAG_LIGHTMAP_UV
+                              : 0u) |
+                             (header->has_lod ? VKR_MESH_COOKED_FLAG_LOD : 0u));
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_vertices);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_indices);
   ok = ok && vkr_byte_writer_bytes(writer, header->source_hash, 32u);
@@ -918,6 +1047,23 @@ vkr_internal bool8_t vkr_mesh_cooked_write_metadata(
       ok = ok && vkr_byte_writer_u32(writer, atlas->width);
       ok = ok && vkr_byte_writer_u32(writer, atlas->height);
       ok = ok && vkr_byte_writer_f32(writer, atlas->texels_per_unit);
+    }
+  }
+  if (header->has_lod) {
+    for (uint32_t i = 0; ok && i < info->range_count; ++i) {
+      const VkrMeshCookedRangeBuild *range = &ranges[i];
+      ok = ok && vkr_byte_writer_u32(writer, range->lod_level_count);
+      ok = ok && vkr_byte_writer_u32(writer, range->lod_crc);
+      ok = ok && vkr_byte_writer_u64(writer, range->lod_stream_offset);
+      ok = ok && vkr_byte_writer_u64(writer, range->encoded_lod_index_size);
+      for (uint32_t level = 1u; ok && level < VKR_GPU_GEOMETRY_LOD_LEVEL_MAX;
+           ++level) {
+        const bool8_t used = level < range->lod_level_count;
+        ok = ok && vkr_byte_writer_u32(
+                       writer, used ? range->lod_index_counts[level] : 0u);
+        ok = ok && vkr_byte_writer_f32(writer,
+                                       used ? range->lod_errors[level] : 0.0f);
+      }
     }
   }
   return ok;
@@ -1321,10 +1467,22 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_artifact(
       !vkr_mesh_cooked_encode_ranges(scratch_allocator, range_job)) {
     return false_v;
   }
+  uint32_t lod_ranges = 0u;
+  uint64_t lod_indices = 0u;
   for (uint32_t i = 0; i < info->range_count; ++i) {
     if (!vkr_mesh_cooked_accumulate_range(&header, i, &ranges[i])) {
       return false_v;
     }
+    lod_ranges += ranges[i].lod_level_count > 1u ? 1u : 0u;
+    for (uint32_t level = 1u; level < ranges[i].lod_level_count; ++level) {
+      lod_indices += ranges[i].lod_index_counts[level];
+    }
+  }
+  if (lod_ranges != 0u) {
+    log_info("MeshCooked: %u of %u ranges carry detail levels: %llu more "
+             "indices over %llu",
+             lod_ranges, info->range_count, (unsigned long long)lod_indices,
+             (unsigned long long)header.total_indices);
   }
 
   if (!vkr_mesh_cooked_hash_dependencies(
@@ -1376,6 +1534,10 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_artifact(
             ranges[i].encoded_vertices, ranges[i].encoded_vertex_size);
     MemCopy(artifact + ranges[i].index_stream_offset, ranges[i].encoded_indices,
             ranges[i].encoded_index_size);
+    if (ranges[i].lod_level_count > 1u) {
+      MemCopy(artifact + ranges[i].lod_stream_offset,
+              ranges[i].encoded_lod_indices, ranges[i].encoded_lod_index_size);
+    }
   }
   vkr_store_le_u32(artifact + VKR_MESH_COOKED_METADATA_CRC_OFFSET,
                    vkr_crc32(artifact + header.directory_offset,
@@ -1535,14 +1697,17 @@ bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
       return false_v;
     }
   }
-  /* A static mesh's lightmap block follows its source metadata and is copied
-     verbatim with the streams. */
+  /* A static mesh's lightmap and LOD blocks follow its source metadata and
+     are copied verbatim with the streams. */
   const uint64_t static_tail =
-      (header_flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u
-          ? VKR_MESH_COOKED_LIGHTMAP_BLOCK_HEADER_SIZE +
-                (uint64_t)Max(mesh_count, 1u) *
-                    VKR_MESH_COOKED_LIGHTMAP_ATLAS_SIZE
-          : 0u;
+      ((header_flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u
+           ? VKR_MESH_COOKED_LIGHTMAP_BLOCK_HEADER_SIZE +
+                 (uint64_t)Max(mesh_count, 1u) *
+                     VKR_MESH_COOKED_LIGHTMAP_ATLAS_SIZE
+           : 0u) +
+      ((header_flags & VKR_MESH_COOKED_FLAG_LOD) != 0u
+           ? (uint64_t)range_count * VKR_MESH_COOKED_LOD_ENTRY_SIZE
+           : 0u);
   const uint64_t source_end = original.offset;
   if ((version == VKR_MESH_COOKED_VERSION &&
        string_offset - source_end != static_tail) ||

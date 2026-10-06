@@ -1181,6 +1181,188 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   printf("  test_mesh_cooked_lightmap_uv_round_trip PASSED\n");
 }
 
+#define TEST_LOD_GRID_CELLS 40u
+#define TEST_LOD_GRID_VERTICES                                                 \
+  ((TEST_LOD_GRID_CELLS + 1u) * (TEST_LOD_GRID_CELLS + 1u))
+#define TEST_LOD_GRID_INDICES (TEST_LOD_GRID_CELLS * TEST_LOD_GRID_CELLS * 6u)
+#define TEST_STRING_OFFSET_FIELD 64u
+
+/* Two copies of a gently curved 40 x 40 grid: an opaque world range and a
+ * blended one. The encode info points into the record. */
+typedef struct TestLodGrid {
+  VkrVertex3d vertices[2u * TEST_LOD_GRID_VERTICES];
+  uint32_t indices[2u * TEST_LOD_GRID_INDICES];
+  VkrGeometryUploadRange ranges[2];
+  VkrMeshSourceMesh source_meshes[2];
+  VkrMeshSourceNode nodes[2];
+  VkrMeshCookedEncodeInfo info;
+} TestLodGrid;
+
+static void test_lod_grid_build(TestLodGrid *grid, String8 dependency_string) {
+  const uint32_t side = TEST_LOD_GRID_CELLS + 1u;
+  for (uint32_t copy = 0u; copy < 2u; ++copy) {
+    const uint32_t vertex_base = copy * TEST_LOD_GRID_VERTICES;
+    for (uint32_t y = 0u; y < side; ++y) {
+      for (uint32_t x = 0u; x < side; ++x) {
+        const float32_t fx = (float32_t)x / (float32_t)TEST_LOD_GRID_CELLS;
+        const float32_t fy = (float32_t)y / (float32_t)TEST_LOD_GRID_CELLS;
+        VkrVertex3d *vertex = &grid->vertices[vertex_base + y * side + x];
+        *vertex =
+            test_vertex(fx, fy, 0.05f * sinf(6.0f * fx) * cosf(5.0f * fy));
+      }
+    }
+    uint32_t *indices = &grid->indices[copy * TEST_LOD_GRID_INDICES];
+    for (uint32_t y = 0u; y < TEST_LOD_GRID_CELLS; ++y) {
+      for (uint32_t x = 0u; x < TEST_LOD_GRID_CELLS; ++x) {
+        const uint32_t a = vertex_base + y * side + x;
+        const uint32_t quad[6] = {a, a + 1u,        a + side + 1u,
+                                  a, a + side + 1u, a + side};
+        MemCopy(indices, quad, sizeof(quad));
+        indices += 6u;
+      }
+    }
+    grid->ranges[copy] = (VkrGeometryUploadRange){
+        .range_id = copy,
+        .first_index = copy * TEST_LOD_GRID_INDICES,
+        .index_count = TEST_LOD_GRID_INDICES,
+        .min_extents = {0.0f, 0.0f, -0.05f},
+        .max_extents = {1.0f, 1.0f, 0.05f},
+        .material_name = string8_lit("material.grid"),
+        .pipeline_domain = copy == 0u ? VKR_PIPELINE_DOMAIN_WORLD
+                                      : VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT};
+    grid->source_meshes[copy] = (VkrMeshSourceMesh){
+        .source_mesh_index = copy, .first_range = copy, .range_count = 1};
+    grid->nodes[copy] = (VkrMeshSourceNode){.name = string8_lit("grid"),
+                                            .local = mat4_identity(),
+                                            .parent = UINT32_MAX,
+                                            .mesh = copy,
+                                            .mesh_variant = copy,
+                                            .camera = UINT32_MAX,
+                                            .skin = UINT32_MAX,
+                                            .light = UINT32_MAX,
+                                            .in_scene = true_v};
+  }
+  grid->info = (VkrMeshCookedEncodeInfo){
+      .source = {.nodes = {.data = grid->nodes, .length = 2},
+                 .meshes = {.data = grid->source_meshes, .length = 2}},
+      .source_path = dependency_string,
+      .dependency_count = 1,
+      .mesh_buffer = {.vertex_size = sizeof(VkrVertex3d),
+                      .vertex_count = 2u * TEST_LOD_GRID_VERTICES,
+                      .vertices = grid->vertices,
+                      .index_size = sizeof(uint32_t),
+                      .index_count = 2u * TEST_LOD_GRID_INDICES,
+                      .indices = grid->indices},
+      .ranges = grid->ranges,
+      .range_count = 2,
+      .budgets = vkr_packed_geometry_default_budgets(),
+  };
+  grid->info.dependency_paths = &grid->info.source_path;
+}
+
+/* Cooked detail levels (ADR-085): the opaque grid gains halving levels with
+ * errors that never shrink, the blended grid keeps itself only, the decoder
+ * appends one LOD row that the publication checks accept, every level draws
+ * the range's own vertices, cooking is deterministic, and malformed entries
+ * are rejected. */
+static void test_mesh_cooked_lod_round_trip(void) {
+  printf("  Running test_mesh_cooked_lod_round_trip...\n");
+  static const char dependency_path[] = "build/vkr_mesh_cooked_lod.bin";
+  FILE *dependency = fopen(dependency_path, "wb");
+  assert(dependency != NULL);
+  assert(fwrite("lod\n", 1u, 4u, dependency) == 4u);
+  assert(fclose(dependency) == 0);
+  Arena *scratch_arena = arena_create(MB(64), MB(4));
+  Arena *result_arena = arena_create(MB(16), MB(1));
+  assert(scratch_arena != NULL && result_arena != NULL);
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  VkrAllocator result = {.ctx = result_arena};
+  assert(vkr_allocator_arena(&scratch));
+  assert(vkr_allocator_arena(&result));
+
+  static TestLodGrid grid;
+  test_lod_grid_build(&grid, string8_lit(dependency_path));
+  uint8_t *cooked = NULL;
+  uint64_t cooked_size = 0;
+  uint8_t *again = NULL;
+  uint64_t again_size = 0;
+  assert(vkr_mesh_cooked_encode(&scratch, &grid.info, &cooked, &cooked_size));
+  assert(vkr_mesh_cooked_encode(&scratch, &grid.info, &again, &again_size));
+  assert(cooked_size == again_size &&
+         MemCompare(cooked, again, cooked_size) == 0);
+  assert(test_read_le32(cooked + TEST_HEADER_FLAGS_FIELD) ==
+         VKR_MESH_COOKED_FLAG_LOD);
+
+  VkrMeshCookedDecoded decoded = {0};
+  assert(
+      vkr_mesh_cooked_decode(&result, &scratch, cooked, cooked_size, &decoded));
+  const VkrGpuGeometryDecodeRecord *decodes = decoded.mesh_buffer.decodes;
+  assert(decoded.ranges.length == 2u);
+  assert(decoded.mesh_buffer.decode_count == 2u + VKR_GPU_GEOMETRY_LOD_RECORDS);
+  assert(decodes[0].lod_record == 2u && decodes[1].lod_record == 0u);
+  uint32_t record_count = 0u;
+  assert(vkr_packed_geometry_metadata_is_valid(
+      decodes, decoded.mesh_buffer.decode_count, &record_count));
+  assert(record_count == 2u);
+
+  const VkrGeometryUploadRange *opaque = &decoded.ranges.data[0];
+  const VkrGpuGeometryLodRow *row = vkr_packed_geometry_lod_row(decodes, 0u);
+  assert(row != NULL && row->flags == 0u && row->level_count >= 3u);
+  assert(row->levels[0].first_index == 0u &&
+         row->levels[0].index_count == opaque->index_count &&
+         row->levels[0].error == 0.0f);
+  const uint32_t *indices = decoded.mesh_buffer.indices;
+  uint32_t opaque_vertex_end = 0u;
+  for (uint32_t i = 0u; i < opaque->index_count; ++i) {
+    opaque_vertex_end =
+        Max(opaque_vertex_end, indices[opaque->first_index + i]);
+  }
+  for (uint32_t level = 1u; level < row->level_count; ++level) {
+    const VkrGpuGeometryLodLevel *current = &row->levels[level];
+    assert(current->index_count < row->levels[level - 1u].index_count);
+    assert(current->error >= row->levels[level - 1u].error);
+    assert(opaque->first_index + current->first_index + current->index_count <=
+           decoded.mesh_buffer.index_count);
+    for (uint32_t i = 0u; i < current->index_count; ++i) {
+      assert(indices[opaque->first_index + current->first_index + i] <=
+             opaque_vertex_end);
+    }
+  }
+  /* The curved grid cannot halve twice without moving off its surface. */
+  assert(row->levels[row->level_count - 1u].error > 0.0f);
+  assert(vkr_packed_geometry_lod_ranges_are_valid(
+      decodes, 0u, opaque->first_index, opaque->index_count, 0,
+      decoded.mesh_buffer.indices, decoded.mesh_buffer.index_count,
+      decoded.mesh_buffer.vertex_count));
+
+  /* Entries must keep the table's limits and errors that never shrink. */
+  const uint64_t entry = test_read_le64(cooked + TEST_STRING_OFFSET_FIELD) -
+                         2u * (uint64_t)VKR_MESH_COOKED_LOD_ENTRY_SIZE;
+  uint8_t *mutated = vkr_allocator_alloc(&scratch, cooked_size,
+                                         VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  assert(mutated != NULL);
+  VkrMeshCookedDecoded rejected = {0};
+  MemCopy(mutated, cooked, cooked_size);
+  test_write_le32(mutated + entry, VKR_GPU_GEOMETRY_LOD_LEVEL_MAX + 1u);
+  test_refresh_integrity(mutated);
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, cooked_size,
+                                 &rejected));
+  MemCopy(mutated, cooked, cooked_size);
+  test_write_f32(mutated + entry + 24u + 8u + 4u, -1.0f);
+  test_refresh_integrity(mutated);
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, cooked_size,
+                                 &rejected));
+  MemCopy(mutated, cooked, cooked_size);
+  test_write_le32(mutated + TEST_HEADER_FLAGS_FIELD, 0u);
+  test_refresh_integrity(mutated);
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, cooked_size,
+                                 &rejected));
+
+  arena_destroy(result_arena);
+  arena_destroy(scratch_arena);
+  printf("  test_mesh_cooked_lod_round_trip PASSED\n");
+}
+
 uint8_t *test_cook_lightmap_cube(float32_t texels_per_unit,
                                  uint64_t *out_size) {
   static const char dependency_path[] = "build/vkr_mesh_cooked_lightmap.bin";
@@ -1211,6 +1393,7 @@ bool32_t run_mesh_cooked_tests(void) {
   test_tangent_generation_repairs_parallel_accumulation();
   test_mesh_cooked_round_trip_and_malformed_boundaries();
   test_mesh_cooked_lightmap_uv_round_trip();
+  test_mesh_cooked_lod_round_trip();
   test_cooked_optimization_preserves_triangles();
   test_obj_face_storage_grows_geometrically();
   test_metadata_only_gltf_cooked_load_without_source();

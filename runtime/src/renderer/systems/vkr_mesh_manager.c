@@ -1650,6 +1650,20 @@ vkr_internal bool8_t vkr_mesh_manager_acquire_merged_geometry(
   cfg.index_size = mesh_result->mesh_buffer.index_size;
   cfg.index_count = mesh_result->mesh_buffer.index_count;
   cfg.indices = mesh_result->mesh_buffer.indices;
+  /* Cooked detail levels follow every range's own indices (ADR-085), so the
+     geometry's default submesh stops before them; when the first range has
+     levels its row requires the default submesh to be that range. */
+  if (mesh_result->submeshes.length != 0u) {
+    const VkrGeometryUploadRange *first = &mesh_result->submeshes.data[0];
+    const VkrGeometryUploadRange *last =
+        &mesh_result->submeshes.data[mesh_result->submeshes.length - 1u];
+    const bool8_t first_has_levels =
+        cfg.decodes && cfg.decode_count > first->decode_index &&
+        cfg.decodes[first->decode_index].lod_record != 0u;
+    cfg.range_index_count = first_has_levels
+                                ? first->index_count
+                                : last->first_index + last->index_count;
+  }
   cfg.center = center;
   cfg.min_extents = min_extents;
   cfg.max_extents = max_extents;

@@ -237,9 +237,11 @@ Remaining phases:
    at its 0.65 floor (17.1 to 17.5 ms p95), the remaining material layers,
    IBL probes, fog, rough and thick glass, specular highlights of static
    lights, and making the tiled pipeline the Apple default.
-3. Cooked mesh LOD. The runtime selects and encodes geometry levels
-   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)),
-   but cooked meshes carry none, so Bistro always draws full detail. A
+3. Cooked mesh LOD: implemented
+   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels));
+   the tiled native orbit takes 11.3 ms median and 15.5 ms p95 with it.
+   Remaining: simplifying a source mesh's primitives together, so the
+   borders between them unlock. Before the levels, a
    diagnostic that drew only the first half of every index range
    (2026-10-06, Release, M1 Pro, the tiled native cases alternating with
    the unchanged build twice, incomplete image) lowered `Tiled.Opaque` from

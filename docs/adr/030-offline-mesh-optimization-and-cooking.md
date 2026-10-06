@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-05
+updated: 2026-10-06
 authority: adr
 ---
 # ADR-030: Versioned meshoptimizer-cooked mesh artifacts
@@ -108,6 +108,13 @@ Source-metadata variants copy the block verbatim. xatlas is built with
 `xatlas::Destroy`, which happened once across Bistro's per-mesh unwraps, and
 single-threaded charting is also independent of thread timing. Meshes without
 the recipe field cook byte-identical artifacts.
+
+Static world ranges also carry simplified detail levels: header flag
+`VKR_MESH_COOKED_FLAG_LOD` (bit 1), an LOD block after the source metadata
+and any lightmap block, and one index stream per range with levels after all
+range streams. [ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels)
+owns their generation, layout and decoding; source-metadata variants copy the
+block verbatim.
 
 The importer supports paired `JOINTS_0` and `WEIGHTS_0`, including sparse/strided
 accessors and normalized unsigned-byte/unsigned-short weights. It rejects extra

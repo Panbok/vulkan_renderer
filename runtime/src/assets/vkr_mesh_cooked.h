@@ -38,6 +38,17 @@
 #define VKR_MESH_COOKED_LIGHTMAP_ATLAS_SIZE 12u
 #define VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE 8192u
 
+/* Header flag: static ranges carry simplified detail levels (ADR-085). The
+ * LOD block follows the source metadata and any lightmap block: one entry per
+ * range in range order, each its level count (1 when the range has only
+ * itself), the CRC, offset and size of the encoded stream that holds levels 1
+ * and up one after another, and those levels' index counts and model-space
+ * errors in metres. The streams follow every range's own streams, in range
+ * order. A level's indices reference its range's vertices. */
+#define VKR_MESH_COOKED_FLAG_LOD 2u
+#define VKR_MESH_COOKED_LOD_ENTRY_SIZE                                         \
+  (24u + (VKR_GPU_GEOMETRY_LOD_LEVEL_MAX - 1u) * 8u)
+
 /* One source mesh's chart atlas: UV2 spans width x height texels at
  * texels_per_unit. */
 typedef struct VkrMeshCookedLightmapAtlas {

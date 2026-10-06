@@ -68,7 +68,7 @@ typedef struct VkrGeometryConfig {
   /** Indices the geometry's one range draws; zero draws them all. Indices
       past it hold that range's coarser `lod` levels. */
   uint32_t range_index_count;
-  /** Levels of the range (ADR-084); a level_count below two means one level.
+  /** Levels of the range (ADR-085); a level_count below two means one level.
       Packing appends the row to the decode records. */
   VkrGpuGeometryLodRow lod;
   Vec3 center;

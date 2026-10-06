@@ -1,4 +1,4 @@
-// Shared level-of-detail selection and visible-row LOD state (ADR-084).
+// Shared level-of-detail selection and visible-row LOD state (ADR-085).
 // Culling projects each level's model-space error onto the view: a level is
 // acceptable while its projected error stays at or below one (the view scale
 // already divides by the threshold). Classification picks the coarsest

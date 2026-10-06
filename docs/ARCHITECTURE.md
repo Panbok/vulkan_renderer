@@ -1449,8 +1449,8 @@ These are limits of current code or retained acceptance, not scheduled promises:
   Vulkan execution remains unavailable; see
   [ADR-068](adr/068-profiled-surface-diffusion.md).
 - Arbitrary indirect-light occlusion outside valid baked-volume
-  coverage, meshlets, cooked mesh levels and shader hot reload are absent; the
-  GPU LOD table serves terrain tiles only
+  coverage, meshlets and shader hot reload are absent. The GPU LOD table serves
+  terrain tiles and cooked static meshes' levels, whose open borders stay locked
   ([ADR-085](adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)).
 - Imported scene documents, the
   World and added scenes do not stream by cells

@@ -39,6 +39,13 @@ typedef struct VkrMeshCookedRangeView {
   Vec3 max_extents;
   VkrGeometryQuantizationMetrics quantization;
   VkrGpuGeometryDecodeRecord decode;
+  /* The LOD block's entry (ADR-085): one level when the range has none. */
+  uint32_t lod_level_count;
+  uint32_t lod_crc;
+  uint64_t lod_stream_offset;
+  uint64_t lod_stream_size;
+  uint32_t lod_index_counts[VKR_GPU_GEOMETRY_LOD_LEVEL_MAX];
+  float32_t lod_errors[VKR_GPU_GEOMETRY_LOD_LEVEL_MAX];
 } VkrMeshCookedRangeView;
 
 void vkr_mesh_cooked_hash_settings(
@@ -330,8 +337,10 @@ vkr_internal bool8_t vkr_mesh_cooked_header_valid(
       (!header->range_count &&
        (header->total_vertex_count || header->total_index_count ||
         !header->header_reserved[0])) ||
-      (header->flags & ~VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u ||
-      ((header->flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u &&
+      (header->flags &
+       ~(VKR_MESH_COOKED_FLAG_LIGHTMAP_UV | VKR_MESH_COOKED_FLAG_LOD)) != 0u ||
+      ((header->flags &
+        (VKR_MESH_COOKED_FLAG_LIGHTMAP_UV | VKR_MESH_COOKED_FLAG_LOD)) != 0u &&
        (header->version != VKR_MESH_COOKED_VERSION || !header->range_count)) ||
       header->header_reserved[0] > VKR_MESH_COOKED_MAX_RANGES ||
       header->header_reserved[1] > VKR_MESH_COOKED_MAX_RANGES ||
@@ -502,6 +511,54 @@ vkr_internal bool8_t vkr_mesh_cooked_read_lightmap(
 }
 
 /**
+ * Reads the LOD block of a static artifact into each range's view: level
+ * counts within the table's limit, index counts in whole triangles and errors
+ * that never shrink. Streams and ranges are checked once they are read.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_read_lods(
+    VkrByteReader *source_reader, const VkrMeshCookedHeaderView *header,
+    VkrMeshCookedRangeView *ranges) {
+  for (uint32_t i = 0; i < header->range_count; ++i) {
+    VkrMeshCookedRangeView *range = &ranges[i];
+    if (!vkr_byte_reader_u32(source_reader, &range->lod_level_count) ||
+        !vkr_byte_reader_u32(source_reader, &range->lod_crc) ||
+        !vkr_byte_reader_u64(source_reader, &range->lod_stream_offset) ||
+        !vkr_byte_reader_u64(source_reader, &range->lod_stream_size) ||
+        range->lod_level_count == 0u ||
+        range->lod_level_count > VKR_GPU_GEOMETRY_LOD_LEVEL_MAX ||
+        (range->lod_level_count == 1u &&
+         (range->lod_crc != 0u || range->lod_stream_offset != 0u ||
+          range->lod_stream_size != 0u)) ||
+        (range->lod_level_count > 1u && range->lod_stream_size == 0u)) {
+      return false_v;
+    }
+    float32_t previous_error = 0.0f;
+    for (uint32_t level = 1u; level < VKR_GPU_GEOMETRY_LOD_LEVEL_MAX; ++level) {
+      uint32_t index_count = 0u;
+      float32_t error = 0.0f;
+      if (!vkr_byte_reader_u32(source_reader, &index_count) ||
+          !vkr_byte_reader_f32(source_reader, &error)) {
+        return false_v;
+      }
+      if (level >= range->lod_level_count) {
+        if (index_count != 0u || error != 0.0f) {
+          return false_v;
+        }
+        continue;
+      }
+      if (index_count == 0u || index_count % 3u != 0u || !isfinite(error) ||
+          error < previous_error) {
+        return false_v;
+      }
+      range->lod_index_counts[level] = index_count;
+      range->lod_errors[level] = error;
+      previous_error = error;
+    }
+  }
+  return true_v;
+}
+
+/**
  * Reads the source scene nodes, mesh ranges, and the skin or lightmap block
  * that fill the space between the dependency records and the string table.
  */
@@ -509,7 +566,7 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
     VkrAllocator *result_allocator, const uint8_t *data,
     const VkrMeshCookedHeaderView *header, uint64_t expected_string_offset,
     VkrMeshSource *source, VkrMeshSkinData *skin,
-    VkrMeshCookedLightmap *lightmap) {
+    VkrMeshCookedLightmap *lightmap, VkrMeshCookedRangeView *ranges) {
   source->nodes = array_create_filled_VkrMeshSourceNode(
       result_allocator, header->header_reserved[0]);
   source->meshes = array_create_filled_VkrMeshSourceMesh(
@@ -599,6 +656,10 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
                                      lightmap)) {
     return false_v;
   }
+  if ((header->flags & VKR_MESH_COOKED_FLAG_LOD) != 0u &&
+      !vkr_mesh_cooked_read_lods(&source_reader, header, ranges)) {
+    return false_v;
+  }
   if (source_reader.offset != header->string_offset ||
       (source->meshes.length && next_range != header->range_count))
     return false_v;
@@ -640,7 +701,8 @@ vkr_internal bool8_t vkr_mesh_cooked_read_dependencies(
  */
 vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
     VkrByteReader *reader, const uint8_t *data, uint64_t size,
-    const VkrMeshCookedHeaderView *header, VkrMeshCookedRangeView *ranges) {
+    uint64_t streams_end, const VkrMeshCookedHeaderView *header,
+    VkrMeshCookedRangeView *ranges) {
   uint64_t accumulated_vertices = 0;
   uint64_t accumulated_indices = 0;
   uint64_t prior_stream_end = header->stream_offset;
@@ -806,13 +868,59 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
   if (reader->offset != header->dependency_offset ||
       accumulated_vertices != header->total_vertex_count ||
       accumulated_indices != header->total_index_count ||
-      prior_stream_end != size) {
+      prior_stream_end != streams_end) {
     return false_v;
   }
   if (!vkr_mesh_cooked_quantization_equal(&range_quantization_max,
                                           &header->quantization)) {
     return false_v;
   }
+  return true_v;
+}
+
+/**
+ * Checks the LOD streams, which tile the file after the ranges' own streams
+ * in range order, and each level against its range: fewer indices than the
+ * level before it. Returns the total index count of levels 1 and up.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_read_lod_streams(
+    const uint8_t *data, uint64_t size, uint64_t streams_end,
+    const VkrMeshCookedHeaderView *header, const VkrMeshCookedRangeView *ranges,
+    uint64_t *out_lod_index_count) {
+  uint64_t expected = streams_end;
+  uint64_t lod_index_count = 0u;
+  for (uint32_t i = 0; i < header->range_count; ++i) {
+    const VkrMeshCookedRangeView *range = &ranges[i];
+    if (range->lod_level_count < 2u) {
+      continue;
+    }
+    uint32_t previous_count = range->index_count;
+    for (uint32_t level = 1u; level < range->lod_level_count; ++level) {
+      if (range->lod_index_counts[level] >= previous_count) {
+        return false_v;
+      }
+      previous_count = range->lod_index_counts[level];
+      lod_index_count += range->lod_index_counts[level];
+    }
+    uint64_t stream_end = 0u;
+    if (range->lod_stream_offset != expected ||
+        !vkr_checked_add_u64(range->lod_stream_offset, range->lod_stream_size,
+                             &stream_end) ||
+        stream_end > size ||
+        vkr_crc32(data + range->lod_stream_offset, range->lod_stream_size) !=
+            range->lod_crc ||
+        vkr_meshopt_index_codec_version(data + range->lod_stream_offset,
+                                        range->lod_stream_size) !=
+            (int)header->index_codec_version) {
+      return false_v;
+    }
+    expected = vkr_align_up_u64(stream_end, VKR_MESH_COOKED_STREAM_ALIGNMENT);
+  }
+  if (expected != size || lod_index_count > UINT32_MAX ||
+      header->total_index_count + lod_index_count > UINT32_MAX) {
+    return false_v;
+  }
+  *out_lod_index_count = lod_index_count;
   return true_v;
 }
 
@@ -852,6 +960,53 @@ bool8_t vkr_mesh_cooked_read_identity(const uint8_t *data, uint64_t size,
   }
   MemCopy(out_settings_hash, header.settings_hash,
           sizeof(header.settings_hash));
+  return true_v;
+}
+
+/**
+ * Decodes a range's levels 1 and up to `*lod_index_base` in the merged index
+ * buffer, rebased onto the range's vertices, and writes its LOD row at
+ * `*lod_record`, which the range's decode record then references. Level
+ * offsets are relative to the range's first index.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_decode_lods(
+    const VkrMeshCookedRangeView *range, const uint8_t *data,
+    uint32_t vertex_base, uint32_t *indices, uint32_t *lod_index_base,
+    VkrGpuGeometryDecodeRecord *decodes, uint32_t *lod_record,
+    VkrGpuGeometryDecodeRecord *range_decode) {
+  uint32_t level_index_count = 0u;
+  for (uint32_t level = 1u; level < range->lod_level_count; ++level) {
+    level_index_count += range->lod_index_counts[level];
+  }
+  uint32_t *level_indices = indices + *lod_index_base;
+  if (vkr_meshopt_decode_indices(level_indices, level_index_count,
+                                 data + range->lod_stream_offset,
+                                 range->lod_stream_size) != 0) {
+    return false_v;
+  }
+  for (uint32_t j = 0; j < level_index_count; ++j) {
+    if (level_indices[j] >= range->vertex_count) {
+      return false_v;
+    }
+    level_indices[j] += vertex_base;
+  }
+  VkrGpuGeometryLodRow row = {
+      .level_count = range->lod_level_count,
+      .levels[0] = {.first_index = 0u, .index_count = range->index_count},
+  };
+  uint32_t first_index = *lod_index_base - range->first_index;
+  for (uint32_t level = 1u; level < range->lod_level_count; ++level) {
+    row.levels[level] = (VkrGpuGeometryLodLevel){
+        .first_index = first_index,
+        .index_count = range->lod_index_counts[level],
+        .error = range->lod_errors[level],
+    };
+    first_index += range->lod_index_counts[level];
+  }
+  MemCopy(&decodes[*lod_record], &row, sizeof(row));
+  range_decode->lod_record = *lod_record;
+  *lod_record += VKR_GPU_GEOMETRY_LOD_RECORDS;
+  *lod_index_base += level_index_count;
   return true_v;
 }
 
@@ -895,17 +1050,6 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     return false_v;
   }
 
-  VkrMeshSource *source = &out_decoded->source;
-  VkrMeshSkinData *skin = &out_decoded->skin;
-  if (!vkr_mesh_cooked_read_source(result_allocator, data, &header,
-                                   expected_string_offset, source, skin,
-                                   &out_decoded->lightmap)) {
-    return false_v;
-  }
-  if (!vkr_mesh_cooked_source_validate(scratch_allocator, source,
-                                       header.range_count))
-    return false_v;
-
   VkrMeshCookedDependencyView *dependencies = vkr_allocator_alloc(
       scratch_allocator,
       (uint64_t)header.dependency_count * sizeof(*dependencies),
@@ -924,6 +1068,17 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   if (header.range_count)
     MemZero(ranges, (uint64_t)header.range_count * sizeof(*ranges));
 
+  VkrMeshSource *source = &out_decoded->source;
+  VkrMeshSkinData *skin = &out_decoded->skin;
+  if (!vkr_mesh_cooked_read_source(result_allocator, data, &header,
+                                   expected_string_offset, source, skin,
+                                   &out_decoded->lightmap, ranges)) {
+    return false_v;
+  }
+  if (!vkr_mesh_cooked_source_validate(scratch_allocator, source,
+                                       header.range_count))
+    return false_v;
+
   uint64_t source_bytes = 0;
   reader.offset = header.dependency_offset;
   if (!vkr_mesh_cooked_read_dependencies(&reader, data, &header, dependencies,
@@ -934,8 +1089,22 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     return false_v;
   }
 
+  /* The ranges' own streams end where the first LOD stream starts. */
+  uint64_t streams_end = size;
+  uint32_t lod_range_count = 0u;
+  for (uint32_t i = 0; i < header.range_count; ++i) {
+    if (ranges[i].lod_level_count > 1u) {
+      streams_end =
+          lod_range_count == 0u ? ranges[i].lod_stream_offset : streams_end;
+      ++lod_range_count;
+    }
+  }
+  uint64_t lod_index_count = 0u;
   reader.offset = header.directory_offset;
-  if (!vkr_mesh_cooked_read_ranges(&reader, data, size, &header, ranges)) {
+  if (!vkr_mesh_cooked_read_ranges(&reader, data, size, streams_end, &header,
+                                   ranges) ||
+      !vkr_mesh_cooked_read_lod_streams(data, size, streams_end, &header,
+                                        ranges, &lod_index_count)) {
     return false_v;
   }
 
@@ -946,12 +1115,20 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
           &source_path_view)) {
     return false_v;
   }
+  /* Levels 1 and up follow every range's indices in the merged buffer, and
+     each range with levels takes one LOD row after the decode records. */
+  const uint64_t buffer_index_count =
+      header.total_index_count + lod_index_count;
+  const uint64_t decode_count =
+      (uint64_t)header.range_count +
+      (uint64_t)lod_range_count * VKR_GPU_GEOMETRY_LOD_RECORDS;
   uint64_t vertex_bytes = 0;
   uint64_t index_bytes = 0;
   if (!vkr_checked_mul_u64(header.total_vertex_count, header.vertex_stride,
                            &vertex_bytes) ||
-      !vkr_checked_mul_u64(header.total_index_count, header.index_stride,
-                           &index_bytes)) {
+      !vkr_checked_mul_u64(buffer_index_count, header.index_stride,
+                           &index_bytes) ||
+      decode_count > UINT32_MAX) {
     return false_v;
   }
   VkrPackedStaticVertex *vertices =
@@ -968,7 +1145,7 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   VkrGpuGeometryDecodeRecord *decodes =
       header.range_count
           ? vkr_allocator_alloc(result_allocator,
-                                (uint64_t)header.range_count *
+                                decode_count *
                                     sizeof(VkrGpuGeometryDecodeRecord),
                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
           : NULL;
@@ -978,6 +1155,8 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   }
 
   uint32_t vertex_base = 0;
+  uint32_t lod_index_base = header.total_index_count;
+  uint32_t lod_record = header.range_count;
   for (uint32_t i = 0; i < header.range_count; ++i) {
     const VkrMeshCookedRangeView *range = &ranges[i];
     VkrPackedStaticVertex *range_vertices = vertices + vertex_base;
@@ -1018,6 +1197,12 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     };
     array_set_VkrGeometryUploadRange(&output_ranges, i, output_range);
     decodes[i] = range->decode;
+    if (range->lod_level_count > 1u &&
+        !vkr_mesh_cooked_decode_lods(range, data, vertex_base, indices,
+                                     &lod_index_base, decodes, &lod_record,
+                                     &decodes[i])) {
+      return false_v;
+    }
     vertex_base += range->vertex_count;
   }
 
@@ -1033,11 +1218,11 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
       .vertex_count = header.total_vertex_count,
       .vertices = vertices,
       .index_size = header.index_stride,
-      .index_count = header.total_index_count,
+      .index_count = (uint32_t)buffer_index_count,
       .indices = indices,
       .vertex_layout = VKR_GPU_VERTEX_LAYOUT_STATIC_PACKED_V1,
       .decodes = decodes,
-      .decode_count = header.range_count,
+      .decode_count = (uint32_t)decode_count,
   };
   out_decoded->ranges = output_ranges;
   out_decoded->quantization = header.quantization;
@@ -1047,7 +1232,7 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
       vertex_bytes + index_bytes +
       (uint64_t)skin->skin_count * sizeof(uint32_t) +
       (uint64_t)skin->vertex_count * sizeof(VkrMeshSkinVertex) +
-      (uint64_t)header.range_count * sizeof(VkrGpuGeometryDecodeRecord);
+      decode_count * sizeof(VkrGpuGeometryDecodeRecord);
   return true_v;
 }
 
