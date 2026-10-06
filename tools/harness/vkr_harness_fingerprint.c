@@ -136,9 +136,9 @@ bool8_t vkr_harness_shadow_evsm_enabled(void) {
 bool8_t
 vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
   /* Mirrors vkr_renderer_prepare_frame_data: the renderer filters
-     display-linear pixels when FXAA (omitted by MetalFX temporal frames) or
-     sharpening runs, unless the explicit "0" spelling selects the analytic
-     reference path. */
+     display-linear pixels when FXAA (omitted by MetalFX temporal frames and
+     by the tiled pipeline) or sharpening runs, unless the explicit "0"
+     spelling selects the analytic reference path. */
   const VkrHarnessRendererConfig *renderer = &case_manifest->renderer;
   const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
   if ((post_cache && string_equals(post_cache, "0")) ||
@@ -148,7 +148,9 @@ vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
   const bool8_t metalfx_frames =
       string_equals(renderer->upscaler, "metalfx_temporal") &&
       !vkr_harness_camera_is_orthographic(case_manifest->camera.mode);
-  return (renderer->fxaa_enabled && !metalfx_frames) ||
+  const bool8_t tiled =
+      renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
+  return (renderer->fxaa_enabled && !metalfx_frames && !tiled) ||
          renderer->image_sharpness > 0.0f;
 }
 
@@ -245,8 +247,8 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
     ADD("renderer.texture_max_load_dimension", "%u",
         renderer->texture_max_load_dimension);
   }
-  /* Desktop, the default, preserves identities authored before the tiled
-     pipeline (ADR-087). */
+  /* The class of the backend the case resolves to (ADR-087). Desktop adds
+     nothing, preserving identities authored before the tiled pipeline. */
   if (renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
     ADD("renderer.graphics_pipeline", "%s", "tiled");
   }

@@ -312,32 +312,52 @@ static void test_graphics_preferences_type(void) {
   assert(!vkr_graphics_settings_valid(&settings));
   vkr_graphics_settings_type.normalize(&settings);
   assert(settings.anti_aliasing && vkr_graphics_settings_valid(&settings));
-  settings.temporal_upscaling = false_v;
-  settings.dynamic_resolution = true_v;
-  vkr_graphics_settings_type.normalize(&settings);
-  assert(!settings.dynamic_resolution);
 
+  /* Which backend offers dynamic resolution, and which effects the tiled
+   * pipeline draws, follow the running renderer's state (ADR-087). */
   const uint32_t dynamic = vkr_type_find_property(
       &vkr_graphics_settings_type, string8_lit("dynamic_resolution"));
-  assert(dynamic != UINT32_MAX);
-  const VkrPropertyState state = vkr_type_property_state(
-      &vkr_graphics_settings_type, &settings, dynamic, NULL);
-  assert(state.flags & VKR_PROPERTY_STATE_DISABLED);
+  const uint32_t occlusion = vkr_type_find_property(
+      &vkr_graphics_settings_type, string8_lit("ambient_occlusion"));
+  assert(dynamic != UINT32_MAX && occlusion != UINT32_MAX);
+  const VkrGraphicsSettingsState vulkan_state = {
+      .temporal_upscaling_available = true_v,
+      .graphics_pipeline = VKR_GRAPHICS_PIPELINE_DESKTOP,
+  };
+  const VkrGraphicsSettingsState metal_state = {
+      .dynamic_resolution_available = true_v,
+      .graphics_pipeline = VKR_GRAPHICS_PIPELINE_TILED,
+  };
+  assert(vkr_type_property_state(&vkr_graphics_settings_type, &settings,
+                                 dynamic, &vulkan_state)
+             .flags &
+         VKR_PROPERTY_STATE_DISABLED);
+  assert(!(vkr_type_property_state(&vkr_graphics_settings_type, &settings,
+                                   dynamic, &metal_state)
+               .flags &
+           VKR_PROPERTY_STATE_DISABLED));
+  assert(!(vkr_type_property_state(&vkr_graphics_settings_type, &settings,
+                                   occlusion, &vulkan_state)
+               .flags &
+           VKR_PROPERTY_STATE_DISABLED));
+  assert(vkr_type_property_state(&vkr_graphics_settings_type, &settings,
+                                 occlusion, &metal_state)
+             .flags &
+         VKR_PROPERTY_STATE_DISABLED);
+  /* Files written while the pipeline class was a preference still load. */
+  assert(vkr_graphics_settings_read_json(
+      string8_lit("{\"version\":1,\"tiled_pipeline\":true}"), &settings));
 
   /* A project opened in a running editor keeps the machine's restart-time
    * settings and its own others, and leaves no restart pending. */
   VkrGraphicsSettings running =
       vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_METAL);
-  running.tiled_pipeline = true_v;
-  running.temporal_upscaling = false_v;
   running.dynamic_resolution = false_v;
   running.vsync = false_v;
   running.hdr = true_v;
   running.render_scale = 0.75f;
   VkrGraphicsSettings project =
       vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_METAL);
-  project.tiled_pipeline = false_v;
-  project.temporal_upscaling = true_v;
   project.dynamic_resolution = true_v;
   project.anti_aliasing = true_v;
   project.vsync = true_v;

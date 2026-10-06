@@ -7,6 +7,7 @@
 
 #include <float.h>
 #include <math.h>
+#include <stdlib.h>
 
 #define VKR_HARNESS_MANIFEST_MAX_BYTES MB(1)
 
@@ -534,8 +535,24 @@ typedef struct VkrHarnessRendererFields {
   int32_t gtao_power_token;
   int32_t ibl_probe_limit_token;
   int32_t motion_blur_entity_velocity_token;
-  char graphics_pipeline[16];
 } VkrHarnessRendererFields;
+
+/* The renderer.render_mode names, by VkrRenderMode. */
+static const char *const s_render_mode_names[VKR_RENDER_MODE_COUNT] = {
+    [VKR_RENDER_MODE_DEFAULT] = "default",
+    [VKR_RENDER_MODE_LIGHTING] = "lighting",
+    [VKR_RENDER_MODE_NORMAL] = "normal",
+    [VKR_RENDER_MODE_UNLIT] = "unlit",
+    [VKR_RENDER_MODE_DIRECT_DIFFUSE] = "direct_diffuse",
+    [VKR_RENDER_MODE_DIRECT_SPECULAR] = "direct_specular",
+    [VKR_RENDER_MODE_MATERIAL_PARAMS] = "material_params",
+    [VKR_RENDER_MODE_TEMPORAL_MOTION] = "temporal_motion",
+    [VKR_RENDER_MODE_TEMPORAL_HISTORY] = "temporal_history",
+    [VKR_RENDER_MODE_INDIRECT_DIFFUSE] = "indirect_diffuse",
+    [VKR_RENDER_MODE_DETAIL_LIGHTING] = "detail_lighting",
+    [VKR_RENDER_MODE_LIGHTING_ONLY] = "lighting_only",
+    [VKR_RENDER_MODE_WIREFRAME] = "wireframe",
+};
 
 void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   VKR_STRING_COPY_LITERAL(renderer->render_mode, "default");
@@ -606,9 +623,6 @@ vkr_internal bool8_t vkr_harness_parse_renderer_fields(
       !vkr_harness_manifest_string(doc, token, "upscaler", false_v,
                                    renderer->upscaler,
                                    sizeof(renderer->upscaler), error) ||
-      !vkr_harness_manifest_string(doc, token, "graphics_pipeline", false_v,
-                                   fields->graphics_pipeline,
-                                   sizeof(fields->graphics_pipeline), error) ||
       !vkr_harness_manifest_bool(doc, token, "dynamic_resolution", false_v,
                                  &renderer->dynamic_resolution, error) ||
       !vkr_harness_manifest_f64(doc, token, "dynamic_resolution_min_scale",
@@ -753,23 +767,26 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       string_equals(renderer->shadow_preset, "balanced") ||
       string_equals(renderer->shadow_preset, "high") ||
       string_equals(renderer->shadow_preset, "ultra");
-  const bool8_t mode_valid =
-      string_equals(renderer->render_mode, "default") ||
-      string_equals(renderer->render_mode, "lighting") ||
-      string_equals(renderer->render_mode, "normal") ||
-      string_equals(renderer->render_mode, "unlit") ||
-      string_equals(renderer->render_mode, "direct_diffuse") ||
-      string_equals(renderer->render_mode, "direct_specular") ||
-      string_equals(renderer->render_mode, "material_params") ||
-      string_equals(renderer->render_mode, "temporal_motion") ||
-      string_equals(renderer->render_mode, "temporal_history") ||
-      string_equals(renderer->render_mode, "indirect_diffuse") ||
-      string_equals(renderer->render_mode, "detail_lighting") ||
-      string_equals(renderer->render_mode, "lighting_only") ||
-      string_equals(renderer->render_mode, "wireframe");
+  uint32_t render_mode = VKR_RENDER_MODE_COUNT;
+  for (uint32_t i = 0; i < VKR_RENDER_MODE_COUNT; ++i) {
+    if (string_equals(renderer->render_mode, s_render_mode_names[i])) {
+      render_mode = i;
+    }
+  }
+  const bool8_t mode_valid = render_mode < VKR_RENDER_MODE_COUNT;
   const bool8_t backend_valid = renderer->backend[0] == '\0' ||
                                 string_equals(renderer->backend, "vulkan") ||
                                 string_equals(renderer->backend, "metal");
+  /* The class follows the backend the case runs on (ADR-087); an unpinned
+     case takes the host's, so a run's identity names the pipeline it
+     rendered with. */
+  VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+  renderer->graphics_pipeline =
+      backend_valid && vkr_harness_renderer_backend_resolve(
+                           renderer, getenv("VKR_HARNESS_RENDERER_BACKEND"),
+                           &resolved_backend)
+          ? vkr_graphics_pipeline_for_backend(resolved_backend)
+          : VKR_GRAPHICS_PIPELINE_DESKTOP;
   const bool8_t display_output_valid =
       string_equals(renderer->display_output, "sdr") ||
       string_equals(renderer->display_output, "auto_extended_linear");
@@ -777,14 +794,6 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       string_equals(renderer->upscaler, "spatial") ||
       string_equals(renderer->upscaler, "metalfx_temporal") ||
       string_equals(renderer->upscaler, "fsr31");
-  const bool8_t graphics_pipeline_valid =
-      fields->graphics_pipeline[0] == '\0' ||
-      string_equals(fields->graphics_pipeline, "desktop") ||
-      string_equals(fields->graphics_pipeline, "tiled");
-  renderer->graphics_pipeline =
-      string_equals(fields->graphics_pipeline, "tiled")
-          ? VKR_GRAPHICS_PIPELINE_TILED
-          : VKR_GRAPHICS_PIPELINE_DESKTOP;
   const bool8_t exposure_mode_valid =
       string_equals(renderer->exposure_mode, "manual") ||
       string_equals(renderer->exposure_mode, "automatic");
@@ -840,12 +849,11 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
        renderer->motion_blur_entity_velocity_y == 0.0f &&
        renderer->motion_blur_entity_velocity_z == 0.0f);
   if (!preset_valid || !mode_valid || !backend_valid || !upscaler_valid ||
-      !graphics_pipeline_valid || !display_output_valid ||
-      fields->cascades < 1u || fields->cascades > 8u || !exposure_mode_valid ||
-      !display_transform_valid || !automatic_controls_valid ||
-      !bloom_controls_valid || !gtao_controls_valid || !dof_focus_valid ||
-      !dof_f_stop_valid || !motion_blur_controls_valid ||
-      !motion_blur_entity_valid ||
+      !display_output_valid || fields->cascades < 1u || fields->cascades > 8u ||
+      !exposure_mode_valid || !display_transform_valid ||
+      !automatic_controls_valid || !bloom_controls_valid ||
+      !gtao_controls_valid || !dof_focus_valid || !dof_f_stop_valid ||
+      !motion_blur_controls_valid || !motion_blur_entity_valid ||
       (fields->ibl_probe_limit_token >= 0 &&
        fields->ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
       !isfinite(fields->manual_exposure) || fields->manual_exposure <= 0.0 ||
@@ -870,6 +878,14 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
         "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/"
         "image-sharpness controls, "
         "probe limit, or cascade count is invalid");
+    return false_v;
+  }
+  if (!vkr_graphics_pipeline_draws_render_mode(renderer->graphics_pipeline,
+                                               render_mode)) {
+    vkr_harness_error_set(
+        error, "renderer.render_mode", "$.renderer.render_mode",
+        "The tiled pipeline (Metal) draws only the default, unlit, "
+        "detail_lighting, lighting_only and wireframe render modes");
     return false_v;
   }
   renderer->manual_exposure = (float32_t)fields->manual_exposure;
@@ -1046,7 +1062,6 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "render_scale",
       "texture_max_load_dimension",
       "upscaler",
-      "graphics_pipeline",
       "dynamic_resolution",
       "dynamic_resolution_min_scale",
       "dynamic_resolution_max_scale",

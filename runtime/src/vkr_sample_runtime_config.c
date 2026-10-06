@@ -123,8 +123,8 @@ vkr_internal bool8_t sample_bootstrap_font_directory(char *path,
 }
 
 /* Missing files keep defaults; an invalid file is reported and ignored.
- * Temporal upscaling needs FSR on Vulkan or MetalFX outside Metal validation;
- * dynamic resolution also needs MetalFX temporal upscaling. */
+ * Vulkan's desktop pipeline offers FSR 3.1 temporal upscaling; Metal's tiled
+ * pipeline offers dynamic resolution of its spatial upscale (ADR-087). */
 vkr_internal bool8_t
 sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
                      VkrSampleRuntimeOptions *options) {
@@ -164,24 +164,13 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
     fprintf(stderr, "Ignoring invalid Graphics settings: %s\n", graphics_path);
   }
 
-  const bool8_t metal = backend == VKR_RENDERER_BACKEND_TYPE_METAL;
   const bool8_t temporal_available =
-      backend == VKR_RENDERER_BACKEND_TYPE_VULKAN ||
-      (metal && !options->metal_validation_enabled);
-  const bool8_t dynamic_available = metal && !options->metal_validation_enabled;
+      backend == VKR_RENDERER_BACKEND_TYPE_VULKAN;
+  const bool8_t dynamic_available = backend == VKR_RENDERER_BACKEND_TYPE_METAL;
   if (!temporal_available) {
     settings.temporal_upscaling = false_v;
   }
-  /* The tiled pipeline runs on Metal only and replaces temporal upscaling
-     (ADR-087). */
-  if (!metal) {
-    settings.tiled_pipeline = false_v;
-  }
-  if (settings.tiled_pipeline) {
-    settings.temporal_upscaling = false_v;
-  }
-  if (!settings.tiled_pipeline &&
-      (!dynamic_available || !settings.temporal_upscaling)) {
+  if (!dynamic_available) {
     settings.dynamic_resolution = false_v;
   }
   const bool8_t high_dpi_available = vkr_window_high_dpi_switchable();
@@ -194,11 +183,12 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
       .settings = settings,
       .temporal_upscaling_available = temporal_available,
       .dynamic_resolution_available = dynamic_available,
-      .tiled_pipeline_available = metal,
-      .spatial_render_scale_available = metal,
+      .graphics_pipeline = vkr_graphics_pipeline_for_backend(backend),
+      .spatial_render_scale_available =
+          backend == VKR_RENDERER_BACKEND_TYPE_METAL,
       .high_dpi_available = high_dpi_available,
       .temporal_upscaling_name =
-          metal ? string8_lit("MetalFX") : string8_lit("FSR 3.1"),
+          temporal_available ? string8_lit("FSR 3.1") : (String8){0},
   };
   return true_v;
 }
@@ -258,9 +248,6 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
       sample_env_flag("VKR_GPU_SUBMISSION_TIMING", false_v);
   options->metrics_event_subjects =
       sample_env_flag("VKR_METRICS_EVENT_SUBJECTS", false_v);
-  options->metal_validation_enabled =
-      sample_env_flag("MTL_DEBUG_LAYER", false_v) ||
-      sample_env_flag("MTL_SHADER_VALIDATION", false_v);
 
   if (runtime_config->project_managed &&
       !sample_bootstrap_font_directory(
@@ -297,12 +284,10 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
                                 const VkrSampleRuntimeOptions *options) {
   const VkrGraphicsSettings *graphics = &options->graphics.settings;
   const bool8_t paneled = runtime_config->presentation.paneled;
-  VkrUpscaleMode upscale_mode = VKR_UPSCALE_MODE_SPATIAL;
-  if (graphics->temporal_upscaling && !graphics->tiled_pipeline) {
-    upscale_mode = options->renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL
-                       ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
-                       : VKR_UPSCALE_MODE_FSR31;
-  }
+  /* Only Vulkan offers temporal upscaling (sample_load_graphics). */
+  const VkrUpscaleMode upscale_mode = graphics->temporal_upscaling
+                                          ? VKR_UPSCALE_MODE_FSR31
+                                          : VKR_UPSCALE_MODE_SPATIAL;
   const uint32_t width = runtime_config->presentation.window_width_pt
                              ? runtime_config->presentation.window_width_pt
                          : paneled ? 1280
@@ -360,18 +345,14 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .render_scale =
           vkr_graphics_settings_render_scale(&options->graphics, graphics),
       .upscale_mode = upscale_mode,
-      .graphics_pipeline = graphics->tiled_pipeline
-                               ? VKR_GRAPHICS_PIPELINE_TILED
-                               : VKR_GRAPHICS_PIPELINE_DESKTOP,
-      /* MetalFX reconstructs from a third of the pixels; the tiled
-         pipeline's adaptive quality upscales spatially, so it keeps 0.65 of
-         each axis at least and holds the 60 Hz frame (ADR-087). */
+      /* The tiled pipeline's adaptive quality upscales spatially, so it
+         keeps 0.65 of each axis at least and holds the 60 Hz frame
+         (ADR-087). */
       .dynamic_resolution =
           {
-              .min_scale = graphics->tiled_pipeline ? 0.65f : .334f,
+              .min_scale = 0.65f,
               .max_scale = 1.0f,
-              .target_frame_ms =
-                  graphics->tiled_pipeline ? 16.0f : 1000.0f / 75.0f,
+              .target_frame_ms = 16.0f,
               .enabled = graphics->dynamic_resolution,
           },
       /* The UI may capture the window (VkrSampleCaptureRequest), one capture

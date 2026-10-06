@@ -51,14 +51,6 @@ static const VkrPropertyDesc s_graphics_properties[] = {
                 "gameplay",
      .offset = GRAPHICS_OFFSET(invert_mouse_y),
      .kind = VKR_PROPERTY_BOOL},
-    {.name = "tiled_pipeline",
-     .label = "Tiled pipeline",
-     .tooltip = "Render with forward multisampled shading and baked "
-                "lightmaps for Apple GPUs; static lights need a lightmap "
-                "bake, and there are no screen-space effects yet. Applies "
-                "after restart",
-     .offset = GRAPHICS_OFFSET(tiled_pipeline),
-     .kind = VKR_PROPERTY_BOOL},
     {.name = "temporal_upscaling",
      .label = "Temporal upscaling",
      .tooltip = "Reconstruct a higher-resolution image from temporal data",
@@ -179,12 +171,13 @@ static const VkrPropertyDesc s_graphics_properties[] = {
 };
 #undef GRAPHICS_OFFSET
 
-/* Grading and effect strengths moved to the post_process component; files
- * written before the move still load. */
+/* Grading and effect strengths moved to the post_process component, and the
+ * pipeline class follows the backend (ADR-087); files written before still
+ * load. */
 static const char *const s_graphics_retired[] = {
-    "brightness", "contrast",  "saturation",      "temperature",
-    "tint",       "sharpness", "bloom_intensity", "motion_blur_amount",
-    NULL};
+    "brightness",     "contrast",  "saturation",      "temperature",
+    "tint",           "sharpness", "bloom_intensity", "motion_blur_amount",
+    "tiled_pipeline", NULL};
 
 static bool8_t graphics_validate(const void *value, char *error,
                                  uint32_t capacity) {
@@ -193,33 +186,15 @@ static bool8_t graphics_validate(const void *value, char *error,
     snprintf(error, capacity, "Temporal upscaling requires anti-aliasing");
     return false_v;
   }
-  if (settings->dynamic_resolution && !settings->temporal_upscaling &&
-      !settings->tiled_pipeline) {
-    snprintf(error, capacity,
-             "Dynamic resolution requires temporal upscaling or the tiled "
-             "pipeline");
-    return false_v;
-  }
-  if (settings->tiled_pipeline && settings->temporal_upscaling) {
-    snprintf(error, capacity,
-             "The tiled pipeline resolves multisampled edges without "
-             "temporal upscaling");
-    return false_v;
-  }
   return true_v;
 }
 
+/* Which backend offers temporal upscaling and dynamic resolution is the
+   runtime's to gate (VkrGraphicsSettingsState). */
 static void graphics_normalize(void *value) {
   VkrGraphicsSettings *settings = value;
-  /* The pipeline class is the explicit choice; upscaling follows it. */
-  if (settings->tiled_pipeline) {
-    settings->temporal_upscaling = false_v;
-  }
-  /* The tiled pipeline's adaptive quality steps its spatial resolution. */
   if (settings->temporal_upscaling) {
     settings->anti_aliasing = true_v;
-  } else if (!settings->tiled_pipeline) {
-    settings->dynamic_resolution = false_v;
   }
 }
 
@@ -230,34 +205,32 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
   const VkrGraphicsSettingsState *state = context;
   VkrPropertyState result = {0};
   const uint32_t offset = s_graphics_properties[property].offset;
-  /* Effects the tiled pipeline does not draw (ADR-087). */
+  /* Effects the tiled pipeline does not draw (ADR-087); its four-sample
+     edges need no anti-aliasing setting. */
   const bool8_t tiled_unused =
+      offset == offsetof(VkrGraphicsSettings, anti_aliasing) ||
+      offset == offsetof(VkrGraphicsSettings, contact_shadows) ||
       offset == offsetof(VkrGraphicsSettings, ambient_occlusion) ||
       offset == offsetof(VkrGraphicsSettings, screen_space_gi) ||
       offset == offsetof(VkrGraphicsSettings, screen_space_reflections) ||
+      offset == offsetof(VkrGraphicsSettings, reflection_probes) ||
       offset == offsetof(VkrGraphicsSettings, subsurface_scattering) ||
       offset == offsetof(VkrGraphicsSettings, volumetric_fog) ||
       offset == offsetof(VkrGraphicsSettings, depth_of_field) ||
       offset == offsetof(VkrGraphicsSettings, motion_blur);
-  if (settings->tiled_pipeline && tiled_unused) {
+  if (state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED &&
+      tiled_unused) {
     result.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
-  if (offset == offsetof(VkrGraphicsSettings, tiled_pipeline)) {
-    if (state && !state->tiled_pipeline_available) {
-      result.flags |= VKR_PROPERTY_STATE_DISABLED;
-    }
-  } else if (offset == offsetof(VkrGraphicsSettings, temporal_upscaling)) {
-    if ((state && !state->temporal_upscaling_available) ||
-        settings->tiled_pipeline) {
+  if (offset == offsetof(VkrGraphicsSettings, temporal_upscaling)) {
+    if (state && !state->temporal_upscaling_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
     if (state && state->temporal_upscaling_name.length) {
       result.label = state->temporal_upscaling_name;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, dynamic_resolution)) {
-    if (!settings->tiled_pipeline &&
-        (!settings->temporal_upscaling ||
-         (state && !state->dynamic_resolution_available))) {
+    if (state && !state->dynamic_resolution_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, anti_aliasing)) {
@@ -307,11 +280,13 @@ const VkrTypeDesc vkr_graphics_settings_type = {
 
 VkrGraphicsSettings
 vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
+  /* Vulkan's desktop pipeline upscales with FSR 3.1; Metal's tiled pipeline
+     upscales spatially, adapting its resolution to the frame (ADR-087). */
   return (VkrGraphicsSettings){
       .vsync = true_v,
       .hdr = false_v,
       .high_dpi = true_v,
-      .temporal_upscaling = true_v,
+      .temporal_upscaling = backend != VKR_RENDERER_BACKEND_TYPE_METAL,
       .dynamic_resolution = backend == VKR_RENDERER_BACKEND_TYPE_METAL,
       .anti_aliasing = true_v,
       /* With dynamic resolution the scale caps the controller, so Metal
@@ -411,7 +386,6 @@ bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings) {
 bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
                                                const VkrGraphicsSettings *b) {
   return a->vsync != b->vsync || a->hdr != b->hdr ||
-         a->tiled_pipeline != b->tiled_pipeline ||
          a->temporal_upscaling != b->temporal_upscaling ||
          a->dynamic_resolution != b->dynamic_resolution ||
          a->render_scale != b->render_scale;
@@ -422,7 +396,6 @@ void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
   /* The fields vkr_graphics_settings_restart_required compares. */
   settings->vsync = running->vsync;
   settings->hdr = running->hdr;
-  settings->tiled_pipeline = running->tiled_pipeline;
   settings->temporal_upscaling = running->temporal_upscaling;
   settings->dynamic_resolution = running->dynamic_resolution;
   settings->render_scale = running->render_scale;

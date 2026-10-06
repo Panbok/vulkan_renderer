@@ -368,7 +368,7 @@ vkr_internal void test_harness_case_parser(void) {
       "\"bloom_intensity\":0.08,\"gtao_enabled\":true,"
       "\"gtao_radius\":0.5,\"gtao_power\":2.2,"
       "\"transmission_depth_diagnostic_enabled\":true,"
-      "\"render_mode\":\"indirect_diffuse\",\"ibl_probe_limit\":1},"
+      "\"render_mode\":\"lighting_only\",\"ibl_probe_limit\":1},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
       "\"pitch\":-5}}";
   VkrHarnessError backend_error = {0};
@@ -403,7 +403,21 @@ vkr_internal void test_harness_case_parser(void) {
   assert(parsed.renderer.gtao_radius == 0.5f);
   assert(parsed.renderer.gtao_power == 2.2f);
   assert(parsed.renderer.transmission_depth_diagnostic_enabled);
-  assert(strcmp(parsed.renderer.render_mode, "indirect_diffuse") == 0);
+  assert(strcmp(parsed.renderer.render_mode, "lighting_only") == 0);
+  assert(parsed.renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED);
+  /* Metal runs the tiled pipeline, which draws none of the desktop
+   * pipeline's diagnostic render modes (ADR-087). */
+  const char *mode = strstr(metal_case, "lighting_only");
+  assert(mode);
+  char desktop_mode[4096];
+  snprintf(desktop_mode, sizeof(desktop_mode), "%.*sindirect_diffuse%s",
+           (int)(mode - metal_case), metal_case,
+           mode + sizeof("lighting_only") - 1u);
+  assert(!vkr_harness_case_parse(desktop_mode, strlen(desktop_mode), "memory",
+                                 &parsed, &backend_error));
+  assert(strcmp(backend_error.code, "renderer.render_mode") == 0);
+  assert(vkr_harness_case_parse(metal_case, strlen(metal_case), "memory",
+                                &parsed, &backend_error));
   assert(parsed.renderer.ibl_probe_limit == 1u);
   assert(parsed.renderer.render_scale == 0.5f);
   assert(strcmp(parsed.renderer.upscaler, "spatial") == 0);
@@ -1053,6 +1067,9 @@ vkr_internal void test_harness_fingerprints(void) {
       environment, output, policy, &error))
   char analytic_workload[VKR_HARNESS_DIGEST_MAX];
   char cached_workload[VKR_HARNESS_DIGEST_MAX];
+  /* A desktop-pipeline case, whose final pass filters with FXAA. */
+  const uint32_t resolved_graphics = case_manifest.renderer.graphics_pipeline;
+  case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_DESKTOP;
   assert(case_manifest.renderer.fxaa_enabled &&
          case_manifest.renderer.image_sharpness == 0.0f);
   SET_POST_CACHE("0");
@@ -1071,6 +1088,14 @@ vkr_internal void test_harness_fingerprints(void) {
   POST_FINGERPRINT(workload);
   assert(strcmp(cached_workload, workload) == 0);
   VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "spatial");
+  // The tiled pipeline draws no FXAA either (ADR-087).
+  case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_TILED;
+  SET_POST_CACHE("");
+  POST_FINGERPRINT(cached_workload);
+  SET_POST_CACHE("0");
+  POST_FINGERPRINT(workload);
+  assert(strcmp(cached_workload, workload) == 0);
+  case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_DESKTOP;
   // Sharpening alone filters the final pass.
   case_manifest.renderer.fxaa_enabled = false_v;
   POST_FINGERPRINT(analytic_workload);
@@ -1084,6 +1109,7 @@ vkr_internal void test_harness_fingerprints(void) {
   assert(strcmp(cached_workload, workload) != 0);
   case_manifest.renderer.image_sharpness = 0.0f;
   case_manifest.renderer.fxaa_enabled = true_v;
+  case_manifest.renderer.graphics_pipeline = resolved_graphics;
   if (had_post_cache) {
     SET_POST_CACHE(saved_post_cache);
   } else {

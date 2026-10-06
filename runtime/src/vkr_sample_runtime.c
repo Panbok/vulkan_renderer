@@ -464,9 +464,8 @@ static void sample_graphics_apply_display(VkrStandardSceneRuntime *application,
   float32_t live_min = 1.0f;
   float32_t live_max = 1.0f;
   vkr_renderer_render_scale_range(renderer, &live_min, &live_max);
-  const bool8_t dynamic =
-      settings->dynamic_resolution &&
-      (settings->temporal_upscaling || settings->tiled_pipeline);
+  const bool8_t dynamic = settings->dynamic_resolution &&
+                          state->graphics.dynamic_resolution_available;
   if ((!state->graphics_scale_live ||
        settings->render_scale != state->graphics_started.render_scale ||
        settings->dynamic_resolution !=
@@ -6968,11 +6967,6 @@ int vkr_sample_runtime_run(int argc, char **argv,
                              runtime_config->presentation.window_mode)) {
       log_warn("The window could not enter its display mode");
     }
-  }
-  if (options.metal_validation_enabled &&
-      renderer_backend == VKR_RENDERER_BACKEND_TYPE_METAL) {
-    log_info("Metal validation enabled; the Scene uses fixed-scale spatial "
-             "reconstruction instead of MetalFX");
   }
   application.editor_viewport.enabled = runtime_config->presentation.paneled;
   application.editor_viewport.scene_only =

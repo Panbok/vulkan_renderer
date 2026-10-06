@@ -373,8 +373,8 @@ unavailable on that Windows host.
 Metal's native library concatenates the shared temporal filter helper before
 its MSL consumers. Shader size assertions match the existing 416-byte G-buffer
 and 224-byte temporal host roots. Native Release startup/reflection and the
-serial [candidate residency fixture](../../tools/cases/local/metal_candidate_residency_audit.case.json)
-with TAA pass API/shader validation on M1 Pro. Static and moving Bistro
+serial candidate residency fixture (`metal_candidate_residency_audit`, a
+Metal desktop case since removed) with TAA pass API/shader validation on M1 Pro. Static and moving Bistro
 final-color/depth captures at native 1280×720 remain byte-identical across the
 CPU preparation changes. This adds Metal execution evidence; same-revision
 bilateral captures and full stationary-accumulation/moving-image quality gates

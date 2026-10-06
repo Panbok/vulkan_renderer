@@ -8,18 +8,17 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The decision is in force. A first tiled pipeline runs on
-Metal when a renderer or the editor selects it (decisions 6, 7 and 9), draws
-glass (decision 10) and a bounded set of dynamic lights (decision 11), and
-holds the frame with adaptive quality (decision 12). On a lightmap-baked
+Accepted (partial). The decision is in force. Since 2026-10-06 the class
+follows the backend (decisions 1 and 7): Metal runs the tiled pipeline,
+including in the editor (decision 9), and Vulkan the desktop pipeline. The
+tiled pipeline draws glass (decision 10) and a bounded set of dynamic lights
+(decision 11), and holds the frame with adaptive quality (decision 12). On a lightmap-baked
 Bistro with cooked mesh levels
 ([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels))
 it takes 15.5 ms p95 at native scale and 14.9 ms with adaptive quality, within
 the budget; 16 dynamic lights reach 20.7 ms at native scale and, before the
 levels, 17.1 to 17.5 ms at the lowest scale (see
-[Adaptive quality measurement](#adaptive-quality-measurement)). Every device
-runs the desktop pipeline by default until the tiled one is made the Apple
-default.
+[Adaptive quality measurement](#adaptive-quality-measurement)).
 The remaining design is in
 [Tiled graphics pipeline](../proposals/tiled-pipeline.md).
 
@@ -78,10 +77,15 @@ pipeline rather than a backend mechanism.
      current pipeline and may add ray-traced and path-traced techniques.
    Either backend may implement either pipeline. The tiled pipeline is
    designed so that Vulkan can implement it for mobile GPUs, for example
-   through dynamic-rendering local read.
-2. Within one pipeline class, Metal and Vulkan share rendering semantics and
-   evidence states as [ADR-044](044-shader-cross-backend-contract.md) defines.
-   Parity is not required between pipeline classes.
+   through dynamic-rendering local read. Today each backend implements one
+   class (owner decision, 2026-10-06): Metal the tiled pipeline, because
+   every supported Mac GPU is an M-series tile-based GPU
+   ([ADR-083](083-supported-hardware-matrix.md)), and Vulkan the desktop
+   pipeline, which serves the immediate-mode discrete GPUs on Windows.
+2. A class that both backends implement shares rendering semantics and
+   evidence states as [ADR-044](044-shader-cross-backend-contract.md)
+   defines. Today each class has one backend, so its native evidence comes
+   from that backend alone. Parity is not required between pipeline classes.
 3. Both pipeline classes share an art-level contract: the material model and
    its inputs, the color pipeline (exposure, tonemapping, display transform and
    color grading), scene and asset data, and the render graph, upload,
@@ -89,8 +93,7 @@ pipeline rather than a backend mechanism.
    shadows, anti-aliasing, screen-space effects and quality presets may differ.
 4. The tiled pipeline budget on the M1 Pro is Bistro at 2560×1440, render scale
    1.0, no upscaler, 16.7 ms p95 (60 fps). Quality tiers that lower M1 cost are
-   allowed. Until the tiled pipeline ships, `bistro_metal_production_040` (0.4
-   render scale) remains the M-series regression case for the desktop pipeline.
+   allowed.
 5. The tiled pipeline shades opaque surfaces forward, after a depth pre-pass,
    in one multisampled render pass (owner decision 2026-10-05). On Bistro
    it costs the same as a G-buffer kept in tile memory without multisampling
@@ -129,10 +132,15 @@ pipeline rather than a backend mechanism.
    (`VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM`) with the combine's FP16 rounding,
    so the image is unchanged and the `hdr_combined` capture channel is
    unavailable on tiled.
-7. `VkrRendererBackendConfig.graphics_pipeline` selects the class
-   (`VKR_GRAPHICS_PIPELINE=desktop|tiled` overrides it, and harness cases set
-   `renderer.graphics_pipeline`). Zero is the desktop pipeline. The tiled
-   class requires the Metal backend without temporal upscaling; it turns
+7. The class follows the renderer's backend
+   (`vkr_graphics_pipeline_for_backend` in
+   [`vkr_renderer.h`](../../renderer/src/vkr_renderer.h)): Metal runs the
+   tiled class without temporal upscaling, Vulkan the desktop class. Nothing
+   else selects it. A harness case records the class its backend resolves to
+   on the host in its report and workload fingerprint, so no desktop
+   evidence matches a tiled run, and a case that names a render mode or
+   replay channel the tiled class does not draw fails on Metal
+   (`vkr_graphics_pipeline_draws_render_mode`). The tiled class turns
    off temporal reconstruction, SSR, SSGI, GTAO,
    surface diffusion, depth of field, motion blur, froxel fog, the local
    shadow mask, SDSM and the transmission passes
@@ -164,9 +172,10 @@ pipeline rather than a backend mechanism.
    `pass.picking.tiled`); picks are rare, so frames without one pay nothing,
    and an alpha-tested surface picks whole. The pick readback also copies the
    picked pixel's resolved depth, which grid fit reads in scenes without
-   collision. Preferences ▸ Graphics ▸ Tiled pipeline and `gfx.tiled`
-   ([ADR-075](075-editor-cmd-bar-and-evaluator.md)) select the class for the
-   next start. A project-managed editor starts from a machine-local
+   collision. Graphics settings written while the class was a preference
+   still load and ignore the retired `tiled_pipeline` key; on Metal,
+   temporal upscaling is unavailable and dynamic resolution steps the
+   spatial upscale. A project-managed editor starts from a machine-local
    `graphics.json` beside the workspace locator
    ([ADR-069](069-editor-projects-and-workspaces.md)), and a project's stored
    restart-time settings do not override it
@@ -297,9 +306,10 @@ time-of-day lighting test cover the limit and the static-light filter.
 ### Editor evidence
 
 Release editor, M1 Pro, 2026-10-06, isolated `HOME`. On the toolkit test
-level, a headless run setting `gfx.tiled = true` wrote the machine-local
-`graphics.json`; the next start ran the tiled pipeline with `gfx.restart`
-false after the project opened, a click picked the floor and its outline,
+level, a headless run selecting the tiled pipeline (then a graphics
+preference, since retired) wrote the machine-local `graphics.json`; the next
+start ran the tiled pipeline with `gfx.restart` false after the project
+opened, a click picked the floor and its outline,
 grid and labels drew. On Bistro, which has no collision, `camera.view top;
 grid.fit` read the picked depth as 16.8432 m on the tiled pipeline and
 16.8431 m on the desktop one. The CPU test `test_tiled_graph_topology`
@@ -589,9 +599,12 @@ height fog shows the same haze and sky (sky means within 0.2 of 255).
 
 - Lighting, shadow, AA and screen-space work is implemented and validated once
   per pipeline class. Harness cases, baselines and ADR-044 evidence states are
-  kept per class.
+  kept per class. Cases that need the desktop pipeline name the Vulkan
+  backend, so their native evidence needs a Windows machine; the Metal
+  desktop and MetalFX cases and the Metal desktop baselines were removed.
 - The `AGENTS.md` rule that Metal and Vulkan share rendering semantics applies
-  within a pipeline class.
+  within a pipeline class; with one backend per class, a change is validated
+  natively on its class's backend.
 - Ray and path tracing can be added to the desktop pipeline without a
   tile-based equivalent.
 - The tiled pipeline needs more baked data, which `vkr_bakery` owns
@@ -602,8 +615,10 @@ height fog shows the same haze and sky (sky means within 0.2 of 255).
 
 - **One pipeline with quality presets.** Rejected: the measured M1 Pro cost is
   in techniques that presets can only scale, not replace.
-- **Pipelines selected by API.** Rejected: a later Vulkan mobile renderer would
-  need a third pipeline or a port of the Metal one.
+- **Pipelines defined by API.** Rejected as the design: a later Vulkan mobile
+  renderer would need a third pipeline or a port of the Metal one. The class
+  follows the backend today only because each supported GPU family has one
+  API (owner decision, 2026-10-06).
 - **Fixed upscaling on M-series.** Rejected by the owner: native resolution
   is the target. Decision 12 lowers it only while frames miss the budget
   (revised by the owner, 2026-10-06).
@@ -614,4 +629,6 @@ height fog shows the same haze and sky (sky means within 0.2 of 255).
   techniques.
 - Apple9 dynamic register allocation changes the measured cost structure on M3
   or M4 ([ADR-083](083-supported-hardware-matrix.md)).
-- A mobile target is scheduled and needs its own budget.
+- A mobile target is scheduled and needs its own budget, or a backend must
+  run a second class (a tile-based Vulkan GPU, or an immediate-mode GPU on
+  Metal).

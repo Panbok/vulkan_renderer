@@ -44,18 +44,24 @@ typedef enum VkrUpscaleMode {
   VKR_UPSCALE_MODE_COUNT,
 } VkrUpscaleMode;
 
-/** Graphics pipeline class (ADR-087): which render graph and shading path a
- * renderer runs. Zero-initialized selects the desktop pipeline. */
+/** Graphics pipeline class (ADR-087): the render graph and shading path a
+ * renderer's backend runs (vkr_graphics_pipeline_for_backend). */
 typedef enum VkrGraphicsPipelineClass {
   /** Visibility buffer, compute deferred lighting and temporal
-   * reconstruction, for immediate-mode GPUs. */
+   * reconstruction, for immediate-mode GPUs. Vulkan. */
   VKR_GRAPHICS_PIPELINE_DESKTOP = 0,
   /** Forward shading after a depth pre-pass in one multisampled render pass,
-   * with baked lightmaps, for tile-based GPUs. Metal only, without the
-   * editor or temporal upscaling. */
+   * with baked lightmaps, for tile-based GPUs. Metal, without temporal
+   * upscaling. */
   VKR_GRAPHICS_PIPELINE_TILED,
   VKR_GRAPHICS_PIPELINE_COUNT,
 } VkrGraphicsPipelineClass;
+
+/** The graphics pipeline class `backend` runs (ADR-087): Metal runs the tiled
+ * pipeline on Apple's tile-based GPUs, Vulkan the desktop pipeline on
+ * immediate-mode discrete GPUs. */
+VkrGraphicsPipelineClass
+vkr_graphics_pipeline_for_backend(VkrRendererBackendType backend);
 
 /**
  * Completion-feedback policy for bounded scene-resolution changes.
@@ -913,6 +919,13 @@ typedef enum VkrRenderMode {
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 
+/** Whether `graphics` draws `mode`: the desktop pipeline draws every mode, the
+ * tiled pipeline the lit image and the editor's unlit, detail lighting,
+ * lighting only and wireframe modes (ADR-087). */
+bool8_t
+vkr_graphics_pipeline_draws_render_mode(VkrGraphicsPipelineClass graphics,
+                                        uint32_t mode);
+
 // =============================================================================
 // Text
 // =============================================================================
@@ -988,9 +1001,8 @@ typedef struct VkrRendererBackendConfig {
   float32_t render_scale;
   /** Reconstruction path. Zero-initialized preserves spatial sampling. */
   VkrUpscaleMode upscale_mode;
-  /** VKR_GRAPHICS_PIPELINE=desktop or tiled overrides it. */
-  VkrGraphicsPipelineClass graphics_pipeline;
-  /** Valid only with VKR_UPSCALE_MODE_METALFX_TEMPORAL on Metal. */
+  /** Valid only on Metal, whose tiled pipeline steps the resolution of its
+   * spatial upscale (ADR-087). */
   VkrDynamicResolutionConfig dynamic_resolution;
   bool8_t capture_enabled;
   /** Diagnostic-only API validation. Never part of a performance profile. */

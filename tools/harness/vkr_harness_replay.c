@@ -196,6 +196,21 @@ bool8_t vkr_harness_capture_replays_build(const VkrHarnessCase *case_manifest,
     for (uint32_t i = 0; i < capture->channel_count; ++i) {
       const VkrHarnessCaptureChannelDescription *channel =
           vkr_harness_replay_channel(capture, i, out_error);
+      /* The tiled pipeline draws neither the desktop pipeline's diagnostic
+         render modes nor its shadow debug views (ADR-087). */
+      if (channel && (!vkr_graphics_pipeline_draws_render_mode(
+                          case_manifest->renderer.graphics_pipeline,
+                          channel->render_mode) ||
+                      (channel->shadow_debug_mode != 0u &&
+                       case_manifest->renderer.graphics_pipeline ==
+                           VKR_GRAPHICS_PIPELINE_TILED))) {
+        vkr_harness_error_set(out_error, "capture.channel_unsupported",
+                              "$.captures[].channels[]",
+                              "The tiled pipeline (Metal) cannot render "
+                              "capture channel '%s'",
+                              channel->name);
+        return false_v;
+      }
       VkrHarnessCaptureReplay *replay =
           channel ? vkr_harness_replay_get(out_replays, out_count, capacity,
                                            capture_index, channel, out_error)

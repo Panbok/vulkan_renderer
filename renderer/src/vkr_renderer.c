@@ -48,6 +48,26 @@ vkr_renderer_dynamic_resolution_policy(VkrGraphicsPipelineClass graphics) {
              : VKR_DYNAMIC_RESOLUTION_POLICY_STABLE;
 }
 
+VkrGraphicsPipelineClass
+vkr_graphics_pipeline_for_backend(VkrRendererBackendType backend) {
+  return backend == VKR_RENDERER_BACKEND_TYPE_METAL
+             ? VKR_GRAPHICS_PIPELINE_TILED
+             : VKR_GRAPHICS_PIPELINE_DESKTOP;
+}
+
+bool8_t
+vkr_graphics_pipeline_draws_render_mode(VkrGraphicsPipelineClass graphics,
+                                        uint32_t mode) {
+  if (mode >= VKR_RENDER_MODE_COUNT) {
+    return false_v;
+  }
+  return graphics != VKR_GRAPHICS_PIPELINE_TILED ||
+         mode == VKR_RENDER_MODE_DEFAULT || mode == VKR_RENDER_MODE_UNLIT ||
+         mode == VKR_RENDER_MODE_DETAIL_LIGHTING ||
+         mode == VKR_RENDER_MODE_LIGHTING_ONLY ||
+         mode == VKR_RENDER_MODE_WIREFRAME;
+}
+
 vkr_internal bool8_t vkr_renderer_env_enabled(const char *name) {
   const char *value = name ? getenv(name) : NULL;
   return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
@@ -804,38 +824,22 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     log_error("FSR 3.1 render scale must be in [1/3, 1]");
     return false_v;
   }
-  VkrGraphicsPipelineClass requested_graphics =
-      backend_config ? backend_config->graphics_pipeline
-                     : VKR_GRAPHICS_PIPELINE_DESKTOP;
-  const char *graphics_override = getenv("VKR_GRAPHICS_PIPELINE");
-  if (graphics_override && strcmp(graphics_override, "tiled") == 0) {
-    requested_graphics = VKR_GRAPHICS_PIPELINE_TILED;
-  } else if (graphics_override && strcmp(graphics_override, "desktop") == 0) {
-    requested_graphics = VKR_GRAPHICS_PIPELINE_DESKTOP;
-  }
-  if (requested_graphics < VKR_GRAPHICS_PIPELINE_DESKTOP ||
-      requested_graphics >= VKR_GRAPHICS_PIPELINE_COUNT) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    log_error("Renderer graphics pipeline class is invalid");
-    return false_v;
-  }
-  /* The tiled pipeline resolves MSAA in tile memory and upscales spatially
-     (ADR-087). */
+  /* The class follows the backend (ADR-087). The tiled pipeline resolves
+     MSAA in tile memory and upscales spatially; its adaptive quality steps
+     the resolution of that upscale. */
+  const VkrGraphicsPipelineClass requested_graphics =
+      vkr_graphics_pipeline_for_backend(backend_type);
   if (requested_graphics == VKR_GRAPHICS_PIPELINE_TILED &&
-      (backend_type != VKR_RENDERER_BACKEND_TYPE_METAL ||
-       requested_upscale_mode != VKR_UPSCALE_MODE_SPATIAL)) {
+      requested_upscale_mode != VKR_UPSCALE_MODE_SPATIAL) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-    log_error("The tiled graphics pipeline requires the Metal backend without "
+    log_error("Metal's tiled graphics pipeline upscales spatially, without "
               "temporal upscaling");
     return false_v;
   }
-  /* Its adaptive quality steps the resolution of the spatial upscale. */
   if (requested_dynamic_resolution.enabled &&
-      requested_upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
       requested_graphics != VKR_GRAPHICS_PIPELINE_TILED) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-    log_error("Dynamic resolution requires MetalFX temporal upscaling or the "
-              "tiled graphics pipeline");
+    log_error("Dynamic resolution requires Metal's tiled graphics pipeline");
     return false_v;
   }
   /* The live range: MetalFX builds its scaler once from the

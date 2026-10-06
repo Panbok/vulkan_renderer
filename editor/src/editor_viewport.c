@@ -276,7 +276,8 @@ static void view_chip_text(const VkrEditorUi *editor,
     const VkrGraphicsSettings settings = view_graphics(editor, frame);
     const char *preset =
         vkr_graphics_preset_name(vkr_graphics_settings_preset(&settings));
-    if (settings.dynamic_resolution && settings.temporal_upscaling)
+    if (settings.dynamic_resolution &&
+        frame->graphics->dynamic_resolution_available)
       snprintf(text[4], 48, "%s \xc2\xb7 Dynamic %.0f%%", preset,
                (double)(settings.render_scale * 100.0f));
     else
@@ -475,8 +476,8 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     snprintf(custom->text, sizeof(custom->text), "Custom settings...");
     /* With dynamic resolution the percentage caps the scale it chooses; a
        backend that cannot scale without temporal upscaling renders at 100%. */
-    const bool8_t automatic =
-        settings.dynamic_resolution && settings.temporal_upscaling;
+    const bool8_t automatic = settings.dynamic_resolution &&
+                              frame->graphics->dynamic_resolution_available;
     const float32_t render_scale =
         vkr_graphics_settings_render_scale(frame->graphics, &settings);
     const bool8_t fixed = !settings.temporal_upscaling &&
@@ -494,8 +495,7 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     ViewRow *dynamic = &rows[count++];
     *dynamic =
         (ViewRow){.checked = settings.dynamic_resolution,
-                  .disabled = !frame->graphics->dynamic_resolution_available ||
-                              !settings.temporal_upscaling};
+                  .disabled = !frame->graphics->dynamic_resolution_available};
     snprintf(dynamic->text, sizeof(dynamic->text), "Dynamic resolution");
 
     /* The scene's texture limit; the Graphics limit still caps it. */

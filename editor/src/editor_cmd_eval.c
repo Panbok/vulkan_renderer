@@ -107,12 +107,15 @@ static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 static const char *const eval_ui_members[] = {"zoom", "reduce_motion",
                                               "workbench", "selected", NULL};
-static const char *const eval_gfx_members[] = {
-    "render_scale", "dynamic",
-    "vsync",        "preset",
-    "restart",      "invert_mouse_y",
-    "high_dpi",     "texture_resolution",
-    "tiled",        NULL};
+static const char *const eval_gfx_members[] = {"render_scale",
+                                               "dynamic",
+                                               "vsync",
+                                               "preset",
+                                               "restart",
+                                               "invert_mouse_y",
+                                               "high_dpi",
+                                               "texture_resolution",
+                                               NULL};
 static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
                                                "epic", "custom", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
@@ -766,9 +769,6 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
         /* Texels; zero is full resolution. */
         *out =
             eval_number(vkr_graphics_settings_texture_max_dimension(settings));
-        return true_v;
-      case 8:
-        *out = eval_bool(settings->tiled_pipeline);
         return true_v;
       default:
         break;
@@ -1464,20 +1464,9 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
         eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member)) {
       settings.render_scale =
           vkr_clamp_f32((float32_t)value->number, 1.0f / 3.0f, 1.0f);
-    } else if ((index == 1 || index == 2 || index == 5 || index == 6 ||
-                index == 8) &&
+    } else if ((index == 1 || index == 2 || index == 5 || index == 6) &&
                eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
-      if (index == 8) {
-        if (value->number != 0.0 && !frame->graphics->tiled_pipeline_available)
-          return eval_fail(eval, "The tiled pipeline needs Metal");
-        settings.tiled_pipeline = value->number != 0.0;
-        /* As the Graphics panel's normalization does: the tiled pipeline
-           resolves edges without temporal upscaling (ADR-087). */
-        if (settings.tiled_pipeline) {
-          settings.temporal_upscaling = false_v;
-          settings.dynamic_resolution = false_v;
-        }
-      } else if (index == 1)
+      if (index == 1)
         settings.dynamic_resolution = value->number != 0.0;
       else if (index == 2)
         settings.vsync = value->number != 0.0;

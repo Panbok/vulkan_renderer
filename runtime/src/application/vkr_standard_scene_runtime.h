@@ -108,9 +108,8 @@ typedef struct VkrStandardSceneRuntimeConfig {
   float32_t render_scale;
   /** Cold reconstruction path; zero preserves spatial sampling. */
   VkrUpscaleMode upscale_mode;
-  /** Graphics pipeline class (ADR-087); zero selects the desktop pipeline. */
-  VkrGraphicsPipelineClass graphics_pipeline;
-  /** Completion-driven policy; valid only for MetalFX temporal mode. */
+  /** Valid only on Metal, whose tiled pipeline adapts its resolution
+      (ADR-087). */
   VkrDynamicResolutionConfig dynamic_resolution;
   bool8_t capture_enabled;
   const char *bootstrap_font_directory;
