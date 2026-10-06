@@ -8747,11 +8747,13 @@ static const OpsDef s_ops[] = {
      "read on; 'missed' means older events left the ring. 'revisions' grow "
      "with every edit, including the designer's. 'wait' (up to 60 s) "
      "answers once something newer happens, an event or any edit, without "
-     "holding other requests.",
+     "holding other requests; pass back the 'revisions' you read so an edit "
+     "made since then answers at once.",
      "{\"type\":\"object\",\"properties\":{\"after\":{\"type\":\"integer\","
      "\"minimum\":0},\"limit\":{\"type\":\"integer\",\"minimum\":1,"
      "\"maximum\":128},\"wait\":{\"type\":\"number\",\"minimum\":0,"
-     "\"maximum\":60}}}",
+     "\"maximum\":60},\"revisions\":{\"type\":\"object\",\"properties\":{"
+     "\"scene\":{\"type\":\"integer\"},\"world\":{\"type\":\"integer\"}}}}}",
      ops_run_feed, NULL, OPS_QUICK},
     {"claims.set",
      "Claim a box of a scene: other agents' writes that touch it are "

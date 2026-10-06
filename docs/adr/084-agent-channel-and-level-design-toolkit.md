@@ -47,10 +47,11 @@ nobody answers is stale and is replaced. `--agent-socket <path>` and
 `VKR_EDITOR_AGENT_SOCKET` choose the path; `--no-agent-socket` turns the
 listener off. `vkr_mcp` computes the same default path.
 
-The editor polls the nonblocking listener once per UI build, serves at most 8
-clients, closes a client whose unfinished line passes 1 MiB, and queues at
-most 64 requests. A ninth client receives one `VKR-AGENT-0008` line before
-the editor closes it. A request is
+The editor polls the nonblocking listener once per UI build, serves at most 16
+clients (a `vkr_mcp` with an open subscription holds two), closes a client
+whose unfinished line passes 1 MiB, and queues at most 64 requests. A
+seventeenth client receives one `VKR-AGENT-0008` line before the editor
+closes it. A request is
 `{"v":1,"id":<number|string>,"op":"<name>","agent":"<name>","args":{...}}`
 with `agent` optional; a response is
 `{"v":1,"id":<same>,"ok":true,"result":{...}}` or
@@ -231,8 +232,9 @@ finds nothing newer than `after` leaves the request queue
 and returns to it once a feed event arrives, a journal revision moves (the
 designer's edits and undos included) or the time ends, so the wait holds
 no other request and the agent learns of the others' work without polling.
-The MCP revision has no push for tool calls; the wait is a long poll that
-any client can make.
+A read that passes back the `revisions` it last read answers at once when
+an edit came between two waits. `vkr_mcp` turns these waits into MCP
+notifications (see MCP adapter).
 
 ### Captures
 
@@ -287,7 +289,8 @@ the [2026-07-28 revision](https://modelcontextprotocol.io/specification/2026-07-
   `2026-07-28` in `_meta`; another version, a missing one or an `initialize`
   request returns `UnsupportedProtocolVersion` (-32022) with the supported
   versions;
-- `server/discover` returns the version, the `tools` capability, usage
+- `server/discover` returns the version, the `tools` capability with
+  `listChanged`, the `resources` capability with `subscribe`, usage
   instructions (the verification order: plan as data and send one batch,
   measure with queries and `level.map`, then capture) and the server
   identity;
@@ -296,8 +299,35 @@ the [2026-07-28 revision](https://modelcontextprotocol.io/specification/2026-07-
 - `tools/call` forwards the arguments to the editor and returns the result as
   `structuredContent` and as JSON text, an editor error with `isError`, and a
   capture's PNG also as image content;
+- `resources/list` names one resource, the change feed
+  `vkr://editor/changes`, and `resources/templates/list` its form
+  `vkr://editor/changes{?after}`; `resources/read` answers what
+  `changes.feed` returns after `after` (128 events at most) as JSON text
+  with `ttlMs` 0, and another URI fails with -32602;
+- `subscriptions/listen` acknowledges the notifications it honours, tool
+  list changes and the change feed, leaving other types and URIs out of the
+  acknowledgement, and keeps the request open, without a response, until
+  the client cancels it with `notifications/cancelled`;
 - every result carries `resultType` `complete` and `serverInfo` in `_meta`;
-  notifications are ignored and logs go to stderr.
+  other notifications are ignored and logs go to stderr.
+
+A listener thread serves the subscriptions on a second editor connection,
+so the main thread answers requests in order while subscriptions are open.
+It starts with the first subscription and closes its connection while none
+is open. Each pass reads `changes.feed` with `wait` 30 and the `revisions`
+it last read, so the read waits in the editor and costs nothing between
+edits. When the newest event or a revision moved, it sends
+`notifications/resources/updated` for the feed, tagged with the
+subscription's id, to each feed subscription, then lets 0.5 s pass before
+it reads again. A designer's drag moves a revision every frame, so a client
+hears at most two notifications a second, the last after the last change.
+A notification names only the resource; the agent then reads the feed from
+its `next`. When the editor answers again after the listener lost it (it
+started or restarted), each subscription with `toolsListChanged` gets
+`notifications/tools/list_changed`, so a client that started before the
+editor lists the tools again. An acknowledgement and its subscription enter
+under the lock that guards stdout, so no notification precedes its
+acknowledgement. Closing stdin stops the listener and the adapter.
 
 The adapter reconnects once per call, so it survives an editor restart.
 `--agent <name>` (or `VKR_AGENT_NAME`) adds `agent` to every request, so
@@ -938,6 +968,9 @@ can be refused although no face enters it, and a write that only moves
 something into a claim costs a revert of the whole batch. The feed lives in
 memory, so an editor restart loses it, and a crashed agent's
 claims stay, across restarts too, until the designer releases them.
+A feed notification says only that the feed moved, so the agent reads the
+feed to learn what changed; an MCP client without `subscriptions/listen`
+waits with `changes.feed` instead.
 
 ## Alternatives considered
 
@@ -981,8 +1014,7 @@ one, takes its mesh at once and shows it as the uploads finish.
 
 ## Revisit when
 
-An agent needs events pushed without a request (MCP notifications),
-reviews must survive a scene reload, or a level's brush count makes the
+Reviews must survive a scene reload, or a level's brush count makes the
 per-brush draw cost visible next to its other geometry (merge per cell and
 material then).
 
@@ -1184,3 +1216,16 @@ material then).
   the designer's input answered after 1.67 s; with input every 0.4 s for
   3 s it answered after 4.44 s, while a third client's status reads took 15
   to 29 ms. The headless suites passed unchanged.
+- Windows and native Vulkan, 2026-10-06 (headless Release editor on
+  Bistro, one `vkr_mcp` with three subscriptions read by a Python client):
+  each subscription's first message was its acknowledgement, naming only
+  the feed and tool changes; another agent's batch notified both feed
+  subscriptions after 39 ms and its undo after 68 ms, while the subscribed
+  adapter's own status calls took 14 to 26 ms; 16 batches in 0.55 s gave
+  two notifications 0.52 s apart, the second 15 ms after the last batch; a
+  cancelled subscription received nothing more and no response; after the
+  editor quit and started again, the tools-only subscription heard
+  `tools/list_changed` 0.9 s after the new socket appeared; closing stdin
+  ended the adapter in 3 ms. A feed wait with older `revisions` answered in
+  16 ms and with the current ones after 1.03 s. The earlier headless suites
+  passed with the 16-client limit.

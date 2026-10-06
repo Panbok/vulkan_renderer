@@ -97,19 +97,6 @@ closes it. They are comfort.
 - **Scatter rules** that a designer can stack, as PCG does: density from
   terrain layers, slope limits and exclusion near roads.
 
-### Agents
-
-ADR-084 gives agents authors, scoped undo, reads that wait for rebuilds,
-quick reads that share a build, `level.map`, claims, the change feed and
-`entity.place`, capture options (`max_width`, sheets of views,
-labelled marks that report whether collision hides them), checks spread
-over builds, claims that outlive a restart and feed reads that wait.
-These remain:
-
-| Item | Need | Evidence |
-|---|---|---|
-| MCP notifications for feed events | A client hears of others' work with no request open | An MCP client receives a notification for another agent's batch |
-
 ## Acceptance evidence
 
 Each item lands with the CPU test that falsifies its contract and a

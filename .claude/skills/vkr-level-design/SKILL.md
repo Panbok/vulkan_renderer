@@ -69,7 +69,9 @@ brushes, blockout shapes, terrain and colliders.
 - Read `changes.feed` from your last `next` to see what others changed near
   you, instead of paging `scene.describe`. To wait for them, add `wait`
   (up to 60 s): the read answers when something changes and holds no one
-  else's requests.
+  else's requests. An MCP client with `subscriptions/listen` can subscribe
+  to `vkr://editor/changes` instead; each notification means read the feed
+  again.
 - The designer reviews every change: report each change id with what it
   built.
 

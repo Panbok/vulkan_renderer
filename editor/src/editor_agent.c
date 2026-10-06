@@ -12,8 +12,9 @@
 #include <string.h>
 
 /* Clients a listener serves at once, the longest request line and the
- * requests that may wait behind the active one. */
-#define AGENT_CLIENT_MAX 8u
+ * requests that may wait behind the active one. An MCP adapter that pushes
+ * notifications holds two clients. */
+#define AGENT_CLIENT_MAX 16u
 #define AGENT_LINE_MAX MB(1)
 #define AGENT_QUEUE_MAX 64u
 /* Time a build may spend on quick reads after its first request, so reads
@@ -247,9 +248,28 @@ static void agent_wait_slot(VkrEditorAgent *agent, AgentWait wait) {
   agent->current.line = NULL;
 }
 
+/* Whether `revisions` in a feed request's arguments, the journal
+   revisions its client last read, differ from the loaded journals', so an
+   edit made between two waits answers at once. */
+static bool8_t agent_revisions_moved(const VkrSampleUiFrame *frame,
+                                     const VkrBakeryJson *args) {
+  const VkrBakeryJson *seen = vkr_bakery_json_get(args, "revisions");
+  int64_t scene = 0;
+  int64_t world = 0;
+  if (!seen || !vkr_bakery_json_get_int(seen, "scene", &scene) ||
+      !vkr_bakery_json_get_int(seen, "world", &world)) {
+    return false_v;
+  }
+  const uint64_t scene_now = frame->edits ? frame->edits->revision : 0u;
+  const uint64_t world_now =
+      frame->world_edits ? frame->world_edits->revision : 0u;
+  return (uint64_t)Max(scene, 0) != scene_now ||
+         (uint64_t)Max(world, 0) != world_now;
+}
+
 /* Sets a `changes.feed` request with `wait` aside when nothing is newer
-   than its `after`, so it holds no other request. True when parked; the
-   wait then owns the request's line. */
+   than its `after` and its `revisions`, so it holds no other request. True
+   when parked; the wait then owns the request's line. */
 static bool8_t agent_park(VkrEditorAgent *agent, const VkrSampleUiFrame *frame,
                           const VkrBakeryJson *args) {
   float64_t wait = 0.0;
@@ -260,7 +280,8 @@ static bool8_t agent_park(VkrEditorAgent *agent, const VkrSampleUiFrame *frame,
     return false_v;
   }
   (void)vkr_bakery_json_get_int(args, "after", &after);
-  if (vkr_editor_ops_feed_latest(agent->ops) > (uint64_t)Max(after, 0)) {
+  if (vkr_editor_ops_feed_latest(agent->ops) > (uint64_t)Max(after, 0) ||
+      agent_revisions_moved(frame, args)) {
     return false_v;
   }
   agent_wait_slot(agent, (AgentWait){
