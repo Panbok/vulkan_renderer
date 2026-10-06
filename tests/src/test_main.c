@@ -148,6 +148,8 @@ int main(int argc, char **argv) {
     return process_path_test_child();
   }
   if (argc == 4 && strcmp(argv[1], "--lock-owner-test-child") == 0) {
+    /* The child times the background process it starts. */
+    vkr_platform_init();
     return harness_lock_owner_test_child(argv[2], argv[3]);
   }
   printf("Running tests...\n\n");
