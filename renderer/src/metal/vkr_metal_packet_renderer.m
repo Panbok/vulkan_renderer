@@ -638,6 +638,20 @@ typedef struct VkrMetalPacketTextureUploadBatch {
    0.3 to 0.5 ms over one on the M1 Pro. */
 #define VKR_METAL_TILED_SAMPLE_COUNT 4u
 
+/* The tiled pipeline's shading variants by the dynamic lights a frame has
+   (ADR-087), each without the light code its frames do not need; mirrors
+   VkrMetalTiledLighting in tiled.metal. */
+typedef enum VkrMetalTiledLighting {
+  VKR_METAL_TILED_LIGHTING_NONE = 0,
+  /* Point and spot lights, none of them shadowed. */
+  VKR_METAL_TILED_LIGHTING_PUNCTUAL = 1,
+  /* Point and spot lights with their local shadows. */
+  VKR_METAL_TILED_LIGHTING_SHADOWED = 2,
+  /* Rectangle lights besides shadowed point and spot lights. */
+  VKR_METAL_TILED_LIGHTING_ALL = 3,
+  VKR_METAL_TILED_LIGHTING_COUNT = 4,
+} VkrMetalTiledLighting;
+
 struct VkrMetalPacketRenderer {
   VkrPixelReadbackResult picking_result;
   uint64_t picking_submit_value;
@@ -765,15 +779,15 @@ struct VkrMetalPacketRenderer {
      the cloud draw over the resolved image. */
   bool8_t tiled;
   id<MTLRenderPipelineState> tiled_depth_pipeline;
-  id<MTLRenderPipelineState> tiled_forward_pipeline;
-  id<MTLRenderPipelineState> tiled_forward_lights_pipeline;
+  id<MTLRenderPipelineState>
+      tiled_forward_pipelines[VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_sky_pipeline;
   id<MTLRenderPipelineState> tiled_clouds_pipeline;
   /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
   id<MTLRenderPipelineState> tiled_picking_pipeline;
   /* Glass and blended surfaces, and world text, over the resolved image. */
-  id<MTLRenderPipelineState> tiled_blend_pipeline;
-  id<MTLRenderPipelineState> tiled_blend_lights_pipeline;
+  id<MTLRenderPipelineState>
+      tiled_blend_pipelines[VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_text_pipeline;
   id<MTLDepthStencilState> tiled_prepass_state;
   id<MTLDepthStencilState> tiled_shade_state;

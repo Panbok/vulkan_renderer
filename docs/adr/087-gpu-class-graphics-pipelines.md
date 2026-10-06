@@ -164,16 +164,23 @@ pipeline rather than a backend mechanism.
     distance to their range, and lets the 4 nearest shadow casters among
     them cast shadows. The forward shader evaluates them through the shared
     light grid and local-light loop (`vkr_metal_packet_punctual_layered`),
-    filtering their local shadow maps inline as desktop forward shading
-    does, and dynamic rectangle lights through the shared LTC path. The
-    tiled graph renders the local shadow atlas with the desktop passes
-    `Shadow.Local.Clear` and `Shadow.Local`; glass casts no local shadow.
-    A static light in an unbaked scene adds no light. Frames without dynamic
-    lights shade with fragment variants that leave the light loop out
-    (`vkr_metal_tiled_forward_fragment` against
-    `vkr_metal_tiled_forward_lights_fragment`, and the blend pair): its
-    registers alone cost `Tiled.Opaque` 2.5 ms median on Bistro with no light
-    in range.
+    and dynamic rectangle lights through the shared LTC path. A shadowed
+    light takes one bilinear comparison of its local shadow map
+    (`vkr_metal_packet_local_shadow_sample<false, false>` in
+    [`sampling.metalh`](../../renderer/src/shaders/metal/msl/shadow/sampling.metalh))
+    instead of the desktop Poisson disk, so its shadow has no soft penumbra
+    and shows shadow-map texels at the edge (owner decision, 2026-10-06).
+    The tiled graph renders the local shadow atlas with the desktop passes
+    `Shadow.Local.Clear` and `Shadow.Local`; glass casts no local shadow, so
+    the sampler reads no refractive layers. A static light in an unbaked
+    scene adds no light. Each frame shades with the fragment variant for its
+    dynamic lights (`VkrMetalTiledLighting` in
+    [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)
+    and `vkr_metal_packet_tiled_lighting`): none, point and spot lights
+    without shadows, with shadows, or rectangle lights as well. Light code a
+    frame does not use still costs `Tiled.Opaque` its registers with no light
+    in range, on Bistro 0.65 ms median for the light loop, 1.2 ms for the
+    former shadow filter and 1.1 ms for the rectangle-light path.
 
 ### First tiled pipeline measurement
 
@@ -272,6 +279,78 @@ and 22.71 ms p95
 (`sha256:0c972501f6e4f479e7465aa475e0dcb823b95d1a5589b3ba4fab461dd714101c`);
 their four shadow faces stay cached, so the cost is the per-pixel light
 loop and its inline shadow filtering, and that tier does not fit the budget.
+The shading variants of decision 11 lower that cost; see
+[Light shading variants](#light-shading-variants).
+
+### Light shading variants
+
+Release, M1 Pro, 2026-10-06, the cases and settings above. HEAD is commit
+`b34e8ee3`, whose one variant with lights carried the light loop, the
+Poisson shadow filter with refractive layers and the rectangle-light path.
+Each build ran its cases in one session, the new build first, ten minutes
+apart. `zz_tmp_dyn_unshadowed` and `zz_tmp_dyn_rect` were temporary copies of
+the dynamic case: the same 16 lights with `casts_shadow` false, and the 16
+lights with one dynamic 2×1 m rectangle light at the orbit centre.
+
+`gpu.submission`, `local-windowed-gpu-submission-single`, two runs each:
+
+| Case | HEAD median | HEAD p95 | New median | New p95 |
+|---|---|---|---|---|
+| `tiled_bistro_baked_native` | 14.66 / 14.59 ms | 19.17 / 19.29 ms | 15.02 / 14.67 ms | 19.94 / 19.04 ms |
+| `tiled_bistro_baked_dynamic_native` | 18.70 / 18.76 ms | 30.27 / 29.37 ms | 16.59 / 16.57 ms | 24.45 / 24.55 ms |
+
+HEAD reports:
+`sha256:4be20ae9d0653b1f101e3abaa00932393158c9afbb2b56f8b42ed54bbcf8c2d8`,
+`sha256:c43d1fda944a2ff98e8f768f1ff1c4ad9fd788ffbee1b1f55a7c3cf01d90813f`,
+`sha256:b1b437d5a74dcd264591934b4b4d37145a9684d729a1962d7e0226db797de904`,
+`sha256:bf10df4585b3762cde3a4506d95ac1ec023f64e24a2086e4f8396dfb47cd0cb4`.
+New reports:
+`sha256:7b85145ad41c9f5a95a0124100985c1af2a5de8c6d8e5e31cf97854a9229ff49`,
+`sha256:aa80cf19c7076024c4d0214d92ec6aa3f69a1c6eed5be1855aeac218913c2e17`,
+`sha256:dd469cb270a8ec60bdb7b326eb1b904ec305b2bd220e1288b2e52cb2e1ac6731`,
+`sha256:60243c90c4ac6fbabfb8fc32586ad588114a34db78810a1868cfe9b216c58f78`.
+
+`Tiled.Opaque` with pass timestamps, `local-windowed-gpu-single`, one run
+each for HEAD and two for the new build:
+
+| Case | HEAD median / p95 | New median / p95 |
+|---|---|---|
+| `tiled_bistro_baked_native` | 9.04 / 12.86 ms | 8.94 / 13.01 ms |
+| `zz_tmp_dyn_unshadowed` | 13.13 / 22.36 ms | 10.38 / 16.87, 10.25 / 17.48 ms |
+| `tiled_bistro_baked_dynamic_native` | 12.99 / 22.94 ms | 10.89 / 18.15, 10.73 / 18.21 ms |
+| `zz_tmp_dyn_rect` | 15.48 / 29.29 ms | 15.53 / 30.98, 15.60 / 28.71 ms |
+
+HEAD reports, in table order:
+`sha256:f5e800d0f081903869d7713f29631daba77373fd98cc403a6a1f852604c0e75d`,
+`sha256:112398773dddf5ee423700f68dfd03c757e277abde474186ff56df9d67c9ab97`,
+`sha256:9c8aae3e62072d37bab0a92b1a3c1b2ebdd54dd8b98fd719771165e2266d346d`,
+`sha256:6ca66b2bb8ded1d67c6cbec83ff61597c942d1d5ab9aa8270a5f4536785eab2a`.
+New reports, in table order:
+`sha256:b703a4440f25199a0186a6855a03dc857d049db2046fdeed9511478861edd331`,
+`sha256:77b41c3a832ea644c40af4a209bee0ee0f4db3452121722ef8ca43e608f25b8b`,
+`sha256:4a7f4f6f9913c1c8f3ef6f93942aa11979aa8b08f3903e483c0e4667dc0ae8ab`,
+`sha256:24567d77a583888d1575e6b988a23df65c40855398e23065f7447d13d594e891`,
+`sha256:dc5df88170f4de67ebf63c55f23483434ac66e8757970a746aa844b58efacaa2`,
+`sha256:46874c6d84b1e12e6c860800c2d03dffd15bfee1b6a6c24193eda56bd0a9b919`,
+`sha256:d15938024eaba05851c1a86128db90574c4b1ca40027dd9bea66cf20b680de16`.
+
+Sixteen lights with four shadowed now add 1.7 ms median and 5.0 ms p95 to
+the frame, against 4.1 and 10.6 ms at HEAD; the tier still misses the
+budget. Sixteen unshadowed lights add 1.3 to 1.4 ms median to
+`Tiled.Opaque`. Of
+the shadow saving, the single tap gives 0.66 ms median and 1.64 ms p95: in
+an earlier pair of runs in the same session, the shadowed case measured
+11.24 / 19.57 ms with the Poisson filter without refractive layers
+(`sha256:c2c158ab7f61889a817a62b3a2a373767f04d91a67b3e2e31bb61ff5a16338f2`)
+and 10.58 / 17.93 ms with the single tap
+(`sha256:e3e07a7e5c988853ce73208989513c38bf744de81492ea0555db430542595ca8`).
+One rectangle light keeps `Tiled.Opaque` near 15.5 ms median and 29 to
+31 ms p95 in both builds: its path and registers dominate that variant.
+
+On a temporary night copy of `tiled_bistro_baked_dynamic_capture` looking at
+a hedge under a shadowed spot, the single tap changes 0.7% of pixels by more
+than 8 of 255, all along shadow edges, which become harder and stepped; the
+daylight capture changes by at most 6 of 255, in the clouds.
 
 ## Consequences
 

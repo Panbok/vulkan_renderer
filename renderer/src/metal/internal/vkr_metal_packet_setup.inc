@@ -981,22 +981,52 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
           VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
           true_v, false_v, false_v, VKR_METAL_TILED_SAMPLE_COUNT,
           @"VKR tiled depth pre-pass");
-  /* Frames with dynamic local lights take the variants with the light
-     loop; the others keep its registers free. */
-  renderer->tiled_forward_pipeline =
-      vkr_metal_packet_create_pipeline_with_targets(
-          renderer, fragment, "vkr_metal_tiled_vertex", fragment,
-          "vkr_metal_tiled_forward_fragment", MTLPixelFormatRGBA16Float,
-          VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-          VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
-          VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled forward");
-  renderer->tiled_forward_lights_pipeline =
-      vkr_metal_packet_create_pipeline_with_targets(
-          renderer, fragment, "vkr_metal_tiled_vertex", fragment,
-          "vkr_metal_tiled_forward_lights_fragment", MTLPixelFormatRGBA16Float,
-          VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-          VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
-          VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled forward with lights");
+  /* Each frame takes the shading variant for its dynamic lights; the light
+     code a frame does not need would still cost it registers. */
+  static const struct {
+    const char *forward;
+    const char *blend;
+    NSString *forward_label;
+    NSString *blend_label;
+  } tiled_lighting[VKR_METAL_TILED_LIGHTING_COUNT] = {
+      [VKR_METAL_TILED_LIGHTING_NONE] =
+          {
+              .forward = "vkr_metal_tiled_forward_fragment",
+              .blend = "vkr_metal_tiled_blend_fragment",
+              .forward_label = @"VKR tiled forward",
+              .blend_label = @"VKR tiled blend",
+          },
+      [VKR_METAL_TILED_LIGHTING_PUNCTUAL] =
+          {
+              .forward = "vkr_metal_tiled_forward_punctual_fragment",
+              .blend = "vkr_metal_tiled_blend_punctual_fragment",
+              .forward_label = @"VKR tiled forward with punctual lights",
+              .blend_label = @"VKR tiled blend with punctual lights",
+          },
+      [VKR_METAL_TILED_LIGHTING_SHADOWED] =
+          {
+              .forward = "vkr_metal_tiled_forward_shadowed_fragment",
+              .blend = "vkr_metal_tiled_blend_shadowed_fragment",
+              .forward_label = @"VKR tiled forward with shadowed lights",
+              .blend_label = @"VKR tiled blend with shadowed lights",
+          },
+      [VKR_METAL_TILED_LIGHTING_ALL] =
+          {
+              .forward = "vkr_metal_tiled_forward_all_fragment",
+              .blend = "vkr_metal_tiled_blend_all_fragment",
+              .forward_label = @"VKR tiled forward with all lights",
+              .blend_label = @"VKR tiled blend with all lights",
+          },
+  };
+  for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+    renderer->tiled_forward_pipelines[i] =
+        vkr_metal_packet_create_pipeline_with_targets(
+            renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+            tiled_lighting[i].forward, MTLPixelFormatRGBA16Float,
+            VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
+            VKR_METAL_TILED_SAMPLE_COUNT, tiled_lighting[i].forward_label);
+  }
   /* Without a visibility buffer, a pick replays the opaque draws; their
      alpha-tested surfaces pick whole. */
   renderer->tiled_picking_pipeline = vkr_metal_packet_create_pipeline(
@@ -1012,16 +1042,13 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled sky");
   /* Glass and alpha-blended surfaces, back to front over the resolved
      image, and world text over them. */
-  renderer->tiled_blend_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, fragment, "vkr_metal_tiled_vertex", fragment,
-      "vkr_metal_tiled_blend_fragment", MTLPixelFormatRGBA16Float,
-      VKR_METAL_PACKET_BLEND_BEHIND, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, @"VKR tiled blend");
-  renderer->tiled_blend_lights_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, fragment, "vkr_metal_tiled_vertex", fragment,
-      "vkr_metal_tiled_blend_lights_fragment", MTLPixelFormatRGBA16Float,
-      VKR_METAL_PACKET_BLEND_BEHIND, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, @"VKR tiled blend with lights");
+  for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+    renderer->tiled_blend_pipelines[i] = vkr_metal_packet_create_pipeline(
+        renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+        tiled_lighting[i].blend, MTLPixelFormatRGBA16Float,
+        VKR_METAL_PACKET_BLEND_BEHIND, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+        VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, tiled_lighting[i].blend_label);
+  }
   renderer->tiled_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float,
@@ -1798,16 +1825,22 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       return false_v;
     }
   }
-  if (renderer->tiled &&
-      (!renderer->tiled_depth_pipeline || !renderer->tiled_forward_pipeline ||
-       !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
-       !renderer->tiled_forward_lights_pipeline ||
-       !renderer->tiled_picking_pipeline || !renderer->tiled_blend_pipeline ||
-       !renderer->tiled_blend_lights_pipeline ||
-       !renderer->tiled_text_pipeline || !renderer->tiled_prepass_state ||
-       !renderer->tiled_shade_state || !renderer->tiled_sky_state)) {
-    log_error("Metal renderer startup object unavailable: tiled pipeline");
-    return false_v;
+  if (renderer->tiled) {
+    bool8_t lighting_ready = true_v;
+    for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+      if (!renderer->tiled_forward_pipelines[i] ||
+          !renderer->tiled_blend_pipelines[i]) {
+        lighting_ready = false_v;
+      }
+    }
+    if (!lighting_ready || !renderer->tiled_depth_pipeline ||
+        !renderer->tiled_sky_pipeline || !renderer->tiled_clouds_pipeline ||
+        !renderer->tiled_picking_pipeline || !renderer->tiled_text_pipeline ||
+        !renderer->tiled_prepass_state || !renderer->tiled_shade_state ||
+        !renderer->tiled_sky_state) {
+      log_error("Metal renderer startup object unavailable: tiled pipeline");
+      return false_v;
+    }
   }
   return true_v;
 }

@@ -387,7 +387,12 @@ static float vkr_metal_local_shadow_blocker_forward(
 // filtered lights take `tap_count` Poisson taps rotated by `tap_rotation`. A
 // nonzero `blocker_count` widens their disk by the light's source radius from
 // that many blocker-search taps (contact-hardening); an empty search keeps the
-// fixed radius, since sparse taps do not prove the receiver is lit.
+// fixed radius, since sparse taps do not prove the receiver is lit. Without
+// SoftFilter every light takes the one hardware-filtered tap. Without
+// Transmission the refractive layers are not read. The tiled pipeline takes
+// neither: its glass casts no local shadow, and the registers of the Poisson
+// filter and those reads cost its opaque pass (ADR-087).
+template <bool Transmission = true, bool SoftFilter = true>
 float3 vkr_metal_packet_local_shadow_sample(
     constant VkrMetalPacketFrameRoot *root, uint first_view_encoded, uint kind,
     float3 world_position, float3 normal,
@@ -427,7 +432,8 @@ float3 vkr_metal_packet_local_shadow_sample(
   float2 uv = projected.xy * 0.5 + 0.5;
   if (!point && (any(uv < 0.0) || any(uv > 1.0)))
     return float3(1.0);
-  if (root->local_shadow_views[first_view].shadow_params.z > 0.5) {
+  if (!SoftFilter ||
+      root->local_shadow_views[first_view].shadow_params.z > 0.5) {
     // Lights past the most important few take one hardware-filtered tap.
     float opaque = root->local_shadow_map.sample_compare(
         vkr_metal_shadow_compare_sampler,
@@ -435,7 +441,7 @@ float3 vkr_metal_packet_local_shadow_sample(
                                   uv),
         uint(view.atlas_rect.w), projected.z);
     float3 transmission =
-        opaque > 0.0
+        Transmission && opaque > 0.0
             ? vkr_metal_local_shadow_transmission_tap(
                   root->local_shadow_transmission,
                   uint(view.shadow_params.y), uv, projected.z)
@@ -500,7 +506,7 @@ float3 vkr_metal_packet_local_shadow_sample(
         uint(tap_view.atlas_rect.w), reference);
     // An opaque-occluded tap contributes zero whatever its transmission.
     float3 transmission =
-        opaque > 0.0
+        Transmission && opaque > 0.0
             ? vkr_metal_local_shadow_transmission_tap(
                   root->local_shadow_transmission,
                   uint(tap_view.shadow_params.y), tap_uv, reference)

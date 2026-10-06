@@ -62,12 +62,20 @@ have no bilateral gate yet.
     as its second, dual-source output; the transmission kernels and the
     desktop composition are unchanged.
   - The tiled shading calls the shared local-light loop and rectangle-light
-    path with inline local shadows, unchanged, without the coat and sheen
-    layers.
+    path, unchanged, without the coat and sheen layers. Its local shadows
+    take one bilinear comparison and read no refractive layers, through the
+    `Transmission` and `SoftFilter` template parameters of
+    `vkr_metal_packet_local_shadow_sample`; their defaults keep every
+    desktop caller unchanged. The harder tiled shadow edge is a class
+    difference the owner accepted (ADR-087, decision 11).
 - **Metal evidence.** Pipeline creation validates the new layouts, and the
   Bistro street view renders on both pipeline classes
   (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`), as do the café
-  windows (`tiled_bistro_glass`, `tiled_bistro_glass_desktop`).
+  windows (`tiled_bistro_glass`, `tiled_bistro_glass_desktop`). The tiled
+  lighting variants render Bistro with no dynamic lights, unshadowed and
+  shadowed point and spot lights, and a rectangle light; a night view
+  compares the single-tap local shadow with the former filter (ADR-087,
+  [Light shading variants](087-gpu-class-graphics-pipelines.md#light-shading-variants)).
 - **Vulkan evidence.** The Vulkan frame layouts are unchanged; the Vulkan
   sources build on macOS. No native Vulkan run.
 - **Missing gates.** A numeric before/after comparison of the desktop Metal

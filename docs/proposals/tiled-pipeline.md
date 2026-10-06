@@ -55,7 +55,7 @@ Every item below is open until the prototype measures it.
 | Ambient occlusion | GTAO in compute | Baked or probe occlusion |
 | Reflections | IBL and optional SSR | IBL and local probes |
 | Directional shadows | Retained cascades with PCF | Shared retained cascades; a tier may lower filtering |
-| Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights with PCF, drawn in the lighting pass (decided: 4 of the 16 dynamic lights, ADR-087) |
+| Local shadows | Mask pass, nine-tap PCF, contact march | A tier-bounded count of shadowed lights with one bilinear comparison each, drawn in the lighting pass (decided: 4 of the 16 dynamic lights, ADR-087) |
 | Transmission | Four peeled layers shaded in compute | Sorted forward blend with dual-source transmittance (decided for thin glass, ADR-087); one refraction sample for thick and rough glass |
 | Post-processing | Compute bloom, exposure, tonemap | Shared color pipeline; tonemap and bloom combine in the final render pass where possible |
 | Arithmetic | 32-bit throughout | 32-bit; 16-bit only where a measured kernel is register-bound (no ALU gain on M1, see below) |

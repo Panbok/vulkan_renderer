@@ -176,12 +176,53 @@ struct VkrMetalTiledSurfaceLight {
   float metallic;
 };
 
+// The shading variants by the dynamic lights a frame has (ADR-087); mirrors
+// VkrMetalTiledLighting. Each leaves out the code its frames do not need,
+// whose registers cost the opaque pass even when no light is in range: on
+// Bistro 0.65 ms median for the light loop, 1.2 ms for the desktop local
+// shadow filter and 1.1 ms for rectangle lights.
+enum VkrMetalTiledLighting : uint {
+  VKR_METAL_TILED_LIGHTING_NONE = 0u,
+  // Point and spot lights, none of them shadowed.
+  VKR_METAL_TILED_LIGHTING_PUNCTUAL = 1u,
+  // Point and spot lights with their local shadows.
+  VKR_METAL_TILED_LIGHTING_SHADOWED = 2u,
+  // Rectangle lights besides shadowed point and spot lights.
+  VKR_METAL_TILED_LIGHTING_ALL = 3u,
+};
+
+// The tiled pipeline's local shadows: one hardware-filtered tap on the opaque
+// atlas, without a soft penumbra and without the refractive layers its glass
+// never casts into.
+struct VkrMetalTiledLocalShadow {
+  float3 operator()(constant VkrMetalPacketFrameRoot *frame,
+                    uint first_view_encoded, uint, uint kind,
+                    float3 world_position, float3 normal) const {
+    return vkr_metal_packet_local_shadow_sample<false, false>(
+        frame, first_view_encoded, kind, world_position, normal);
+  }
+
+  bool contribution_cutoff() const { return false; }
+  void measure(uint, float) const {}
+};
+
+// Point and spot lights take no shadow in the variant without shadowed
+// lights.
+struct VkrMetalTiledNoLocalShadow {
+  float3 operator()(constant VkrMetalPacketFrameRoot *, uint, uint, uint,
+                    float3, float3) const {
+    return float3(1.0f);
+  }
+
+  bool contribution_cutoff() const { return false; }
+  void measure(uint, float) const {}
+};
+
 // Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
-// with LocalLights the dynamic local lights, diffuse light from its lightmap,
-// the diffuse volume or the global environment, and environment specular.
-// Frames without dynamic lights take the variant without the light loop,
-// whose registers cost the opaque pass about 2.5 ms on Bistro (ADR-087).
-template <bool LocalLights>
+// the dynamic local lights that Lighting includes, diffuse light from its
+// lightmap, the diffuse volume or the global environment, and environment
+// specular.
+template <VkrMetalTiledLighting Lighting>
 static VkrMetalTiledSurfaceLight
 vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                       constant VkrMetalPacketFrameRoot *frame,
@@ -262,26 +303,36 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   }
 
   // The dynamic local lights, the bounded set the runtime keeps, through the
-  // world-space light grid with their shadows filtered inline. Static lights
+  // world-space light grid with their shadows sampled inline. Static lights
   // are baked (ADR-088).
-  if (LocalLights) {
+  if (Lighting != VKR_METAL_TILED_LIGHTING_NONE) {
     VkrClearcoatLayer no_coat = {};
     VkrSheenLayer no_sheen = {};
     float3 punctual_irradiance = float3(0.0f);
     float3 coat_unused = float3(0.0f);
     float3 sheen_unused = float3(0.0f);
-    vkr_metal_packet_punctual_layered<true>(
-        frame, input.world_position, normal, view, base, metallic, roughness,
-        f0, energy, false, no_coat, false, no_sheen, 0.0f, punctual_irradiance,
-        light.diffuse, light.specular, coat_unused, sheen_unused,
-        VkrMetalInlineLocalShadow{});
-    VkrMetalPacketDirectResult rectangles =
-        vkr_metal_packet_layered_rectangle_lights<true>(
-            frame, input.world_position, normal, view, base, metallic,
-            roughness, f0, energy, false, no_coat, false, no_sheen,
-            coat_unused, sheen_unused);
-    light.diffuse += rectangles.diffuse;
-    light.specular += rectangles.specular;
+    if (Lighting == VKR_METAL_TILED_LIGHTING_PUNCTUAL) {
+      vkr_metal_packet_punctual_layered<true>(
+          frame, input.world_position, normal, view, base, metallic,
+          roughness, f0, energy, false, no_coat, false, no_sheen, 0.0f,
+          punctual_irradiance, light.diffuse, light.specular, coat_unused,
+          sheen_unused, VkrMetalTiledNoLocalShadow{});
+    } else {
+      vkr_metal_packet_punctual_layered<true>(
+          frame, input.world_position, normal, view, base, metallic,
+          roughness, f0, energy, false, no_coat, false, no_sheen, 0.0f,
+          punctual_irradiance, light.diffuse, light.specular, coat_unused,
+          sheen_unused, VkrMetalTiledLocalShadow{});
+    }
+    if (Lighting == VKR_METAL_TILED_LIGHTING_ALL) {
+      VkrMetalPacketDirectResult rectangles =
+          vkr_metal_packet_layered_rectangle_lights<true>(
+              frame, input.world_position, normal, view, base, metallic,
+              roughness, f0, energy, false, no_coat, false, no_sheen,
+              coat_unused, sheen_unused);
+      light.diffuse += rectangles.diffuse;
+      light.specular += rectangles.specular;
+    }
   }
 
   // Diffuse light: the lightmap stores irradiance, the volume and the global
@@ -325,7 +376,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   return light;
 }
 
-template <bool LocalLights>
+template <VkrMetalTiledLighting Lighting>
 static float4
 vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                         constant VkrMetalPacketDrawRoot *root,
@@ -340,7 +391,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                 material.tint * input.color;
   if (material.alpha_mode == 1u && base.a < material.material_alpha.x)
     discard_fragment();
-  VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<LocalLights>(
+  VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, base.rgb, front_facing);
   return float4(light.diffuse + light.specular + light.emissive, 1.0f);
 }
@@ -349,14 +400,32 @@ fragment float4 vkr_metal_tiled_forward_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<false>(input, root, front_facing);
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_NONE>(
+      input, root, front_facing);
 }
 
-fragment float4 vkr_metal_tiled_forward_lights_fragment(
+fragment float4 vkr_metal_tiled_forward_punctual_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_forward<true>(input, root, front_facing);
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_PUNCTUAL>(
+      input, root, front_facing);
+}
+
+fragment float4 vkr_metal_tiled_forward_shadowed_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_SHADOWED>(
+      input, root, front_facing);
+}
+
+fragment float4 vkr_metal_tiled_forward_all_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_ALL>(
+      input, root, front_facing);
 }
 
 // The blend pass's two outputs: the surface's own light, and the factor the
@@ -373,7 +442,7 @@ struct VkrMetalTiledBlendOutput {
 // hardware blend, so stacked panes compose in draw order. The tiled pipeline
 // draws all glass as thin and smooth: it takes no refraction offset, rough
 // blur, volume attenuation or transmission textures (ADR-087).
-template <bool LocalLights>
+template <VkrMetalTiledLighting Lighting>
 static VkrMetalTiledBlendOutput
 vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
                       constant VkrMetalPacketDrawRoot *root,
@@ -390,7 +459,7 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   float alpha = transmission > 0.0f ? 1.0f : base.a;
   if (alpha <= 1e-4f)
     discard_fragment();
-  VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<LocalLights>(
+  VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, base.rgb, front_facing);
   VkrMetalTiledBlendOutput output;
   if (transmission > 0.0f) {
@@ -418,12 +487,30 @@ fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_blend<false>(input, root, front_facing);
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_NONE>(
+      input, root, front_facing);
 }
 
-fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_lights_fragment(
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_punctual_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
-  return vkr_metal_tiled_blend<true>(input, root, front_facing);
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_PUNCTUAL>(
+      input, root, front_facing);
+}
+
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_shadowed_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_SHADOWED>(
+      input, root, front_facing);
+}
+
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_all_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_ALL>(
+      input, root, front_facing);
 }

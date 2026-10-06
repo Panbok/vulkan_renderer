@@ -726,7 +726,8 @@ on chip, with baked lightmaps for static diffuse light. Its `Tiled.Blend`
 pass draws glass with the blended surfaces, back to front over the resolved
 image, and the editor runs it. Static lights reach it only through baked
 data; it draws the 16 dynamic lights nearest the camera, 4 of them
-shadowed, and no screen-space effects yet.
+shadowed with one bilinear shadow-map comparison each, and no screen-space
+effects yet.
 
 Editor inspection adds Detail lighting, Lighting only and visible-edge Wireframe
 to Lit and Unlit. The two lighting views use neutral material response; Detail

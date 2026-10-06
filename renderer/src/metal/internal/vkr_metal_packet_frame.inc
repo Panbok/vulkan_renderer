@@ -4309,13 +4309,26 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
   return true_v;
 }
 
-/* Whether the frame has dynamic local lights for the tiled pipeline's
-   shading variants with the light loop (ADR-087). */
-vkr_internal bool8_t
-vkr_metal_packet_tiled_local_lights(const VkrPreparedFrame *packet) {
-  return packet->input.lighting &&
-         (packet->input.lighting->point_light_count > 0u ||
-          packet->input.lighting->rectangle_light_count > 0u);
+/* The tiled pipeline's shading variant for the frame's dynamic lights
+   (ADR-087). Without a local shadow view no light carries a shadow, so the
+   variant without shadow filtering shades the same result. */
+vkr_internal VkrMetalTiledLighting
+vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet) {
+  const VkrFrameLighting *lighting = packet->input.lighting;
+  if (!lighting) {
+    return VKR_METAL_TILED_LIGHTING_NONE;
+  }
+  if (lighting->rectangle_light_count > 0u) {
+    return VKR_METAL_TILED_LIGHTING_ALL;
+  }
+  if (lighting->point_light_count == 0u) {
+    return VKR_METAL_TILED_LIGHTING_NONE;
+  }
+  if (packet->input.local_shadow &&
+      packet->input.local_shadow->view_count > 0u) {
+    return VKR_METAL_TILED_LIGHTING_SHADOWED;
+  }
+  return VKR_METAL_TILED_LIGHTING_PUNCTUAL;
 }
 
 /* Prepares the tiled pipeline's opaque pass (ADR-087): the camera's culled
@@ -4327,13 +4340,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
     VkrMetalPacketFrameUpload *upload, id<MTLTexture> target)
     API_AVAILABLE(macos(26.0)) {
-  if (!renderer->tiled || !vkr_metal_packet_prepare_gpu_draws(
-                              renderer, pass, packet, prepared,
-                              vkr_metal_packet_tiled_local_lights(packet)
-                                  ? renderer->tiled_forward_lights_pipeline
-                                  : renderer->tiled_forward_pipeline,
-                              nil, upload))
+  if (!renderer->tiled) {
     return false_v;
+  }
+  const VkrMetalTiledLighting lighting =
+      vkr_metal_packet_tiled_lighting(packet);
+  if (!vkr_metal_packet_prepare_gpu_draws(
+          renderer, pass, packet, prepared,
+          renderer->tiled_forward_pipelines[lighting], nil, upload)) {
+    return false_v;
+  }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
   const uint32_t width = (uint32_t)target.width;
   const uint32_t height = (uint32_t)target.height;
@@ -4494,12 +4510,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         renderer->convert_vulkan_clip_y,
         mat4_mul(packet->temporal.jittered_projection,
                  packet->input.globals.view));
+    id<MTLRenderPipelineState> pipeline = renderer->blend_pipeline;
+    if (tiled) {
+      const VkrMetalTiledLighting lighting =
+          vkr_metal_packet_tiled_lighting(packet);
+      pipeline = renderer->tiled_blend_pipelines[lighting];
+    }
     if (!vkr_metal_packet_prepare_draws(
-            renderer, &prepared->world.direct,
-            !tiled ? renderer->blend_pipeline
-            : vkr_metal_packet_tiled_local_lights(packet)
-                ? renderer->tiled_blend_lights_pipeline
-                : renderer->tiled_blend_pipeline,
+            renderer, &prepared->world.direct, pipeline,
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
