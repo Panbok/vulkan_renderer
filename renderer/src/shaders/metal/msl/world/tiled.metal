@@ -1,9 +1,8 @@
 /* The tiled pipeline's opaque render pass (ADR-087): forward shading of the
- * culled opaque draws after a depth pre-pass, and the clear background sky,
- * in one multisampled render pass resolved on chip. The cloud trace needs the
- * resolved depth, so a later full-screen draw lays the cloud layer and the
- * discs it lets through over the sky, and aerial perspective and fog over
- * every pixel.
+ * culled opaque draws, and the clear background sky, in one multisampled
+ * render pass resolved on chip. The cloud trace needs the resolved depth, so
+ * a later full-screen draw lays the cloud layer and the discs it lets through
+ * over the sky, and aerial perspective and fog over every pixel.
  *
  * Static surfaces take diffuse light from their baked lightmap (ADR-088):
  * the frame's active layers, the two sun keys nearest the sun and every lamp
@@ -13,11 +12,11 @@
  * lightmap take diffuse light from the baked diffuse volume, else the global
  * environment. */
 
-// The forward and depth pre-pass vertex. It transforms like the Slang
-// vkr_metal_packet_vertex, whose draw root sits at the same buffer for the
-// GPU-encoded commands, and adds the draw's lightmap coordinates: an
-// instance's lightmap slot travels as an exact float (ADR-088) and its
-// lightmap UVs span its rectangle on its page.
+// The forward vertex. It transforms like the Slang vkr_metal_packet_vertex,
+// whose draw root sits at the same buffer for the GPU-encoded commands, and
+// adds the draw's lightmap coordinates: an instance's lightmap slot travels as
+// an exact float (ADR-088) and its lightmap UVs span its rectangle on its
+// page.
 vertex VkrMetalTiledVertexOutput
 vkr_metal_tiled_vertex(uint vertex_id [[vertex_id]],
                        uint instance_id [[instance_id]],

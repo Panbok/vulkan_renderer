@@ -273,32 +273,17 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   }
 }
 
-/* The tiled pipeline's opaque pass (ADR-087): a depth pre-pass over the
-   opaque buckets, which cannot discard, then shading of the opaque buckets
-   at the laid depth and of the alpha-tested buckets, which lay the depth of
-   the samples they cover, then the clear sky behind them, then the
-   tone-mapped resolve of their samples. */
+/* The tiled pipeline's opaque pass (ADR-087): shading of the opaque
+   buckets, which cannot discard, so hidden-surface removal shades each
+   sample's nearest surface once, then of the alpha-tested buckets, which lay
+   the depth of the samples they cover, then the clear sky behind them, then
+   the tone-mapped resolve of their samples. */
 vkr_internal void vkr_metal_packet_record_tiled_opaque(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   const VkrMetalPacketIndirectPass *draw = &pass->tiled.draws;
   [encoder setViewport:draw->viewport];
   if (draw->commands) {
-    [encoder setDepthStencilState:renderer->tiled_prepass_state];
-    [encoder setRenderPipelineState:renderer->tiled_depth_pipeline];
-    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-         ++bucket) {
-      if ((bucket & 2u) != 0u)
-        continue;
-      [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
-      [encoder
-          setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
-                                    ? MTLWindingClockwise
-                                    : MTLWindingCounterClockwise];
-      [encoder executeCommandsInBuffer:draw->commands
-                        indirectBuffer:draw->arguments + (uint64_t)bucket * 2u *
-                                                             sizeof(uint32_t)];
-    }
     /* Opaque buckets shade first, without discard, then the alpha-tested
        ones write the samples their alpha covers. */
     [encoder setDepthStencilState:renderer->tiled_shade_state];

@@ -48,9 +48,8 @@ typedef enum VkrGraphicsPipelineClass {
   /** Visibility buffer, compute deferred lighting and temporal
    * reconstruction, for immediate-mode GPUs. Vulkan. */
   VKR_GRAPHICS_PIPELINE_DESKTOP = 0,
-  /** Forward shading after a depth pre-pass in one multisampled render pass,
-   * with baked lightmaps, for tile-based GPUs. Metal, without temporal
-   * upscaling. */
+  /** Forward shading in one multisampled render pass, with baked lightmaps,
+   * for tile-based GPUs. Metal, without temporal upscaling. */
   VKR_GRAPHICS_PIPELINE_TILED,
   VKR_GRAPHICS_PIPELINE_COUNT,
 } VkrGraphicsPipelineClass;

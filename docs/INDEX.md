@@ -282,7 +282,6 @@ decisions before dependent implementation.
 | [Level toolkit Windows/Vulkan handoff](proposals/level-toolkit-windows-vulkan-handoff.md) | Steps for a Windows Vulkan host to verify the level toolkit, terrain, geometry LOD and world partition natively, with the commands, expected results and the audit findings each step closes. |
 | [Visibility-buffer MSAA](proposals/visibility-buffer-msaa.md) | Multisample visibility and resolve after a demonstrated quality need. |
 | [Tiled graphics pipeline](proposals/tiled-pipeline.md) | Design of the ADR-087 tiled pipeline: the stage-by-stage comparison with the desktop pipeline, the prototype measurements that chose its structure, lightmap phases, and the remaining work in order: per-draw reflection probes, baked AO in the lightmap alpha, gather PCF for shadowed dynamic lights and thick glass; no SSR. |
-| [Tiled depth pre-pass](proposals/tiled-depth-prepass.md) | M1 Pro experiments on `Tiled.Opaque`'s depth pre-pass: missing position invariance between the pre-pass and shading pipelines, the pass without a pre-pass now that opaque shading never discards, then a partial or position-only pre-pass, each with commands and a decision rule. |
 | [Planar reflections](proposals/planar-reflections.md) | Planar reflections for mirror-like surfaces on the tiled pipeline: a mirrored, clipped, reduced-resolution render pass before `Tiled.Opaque` culled as one more GPU-driven view, a reflector component, open choices with recommendations and the Bistro evidence needed. |
 
 ## Maintaining this tree

@@ -748,7 +748,6 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->gpu_shadow_pipeline release];
   [renderer->gpu_shadow_opaque_pipeline release];
   [renderer->depth_clear_pipeline release];
-  [renderer->tiled_depth_pipeline release];
   for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
        ++probes) {
     for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
@@ -762,7 +761,6 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->tiled_atmosphere_pipeline release];
   [renderer->tiled_picking_pipeline release];
   [renderer->tiled_text_pipeline release];
-  [renderer->tiled_prepass_state release];
   [renderer->tiled_shade_state release];
   [renderer->tiled_sky_state release];
   [renderer->tiled_msaa_color release];

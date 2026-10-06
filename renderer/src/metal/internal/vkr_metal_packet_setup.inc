@@ -703,21 +703,14 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
       false_v, @"VKR Metal packet depth clear");
 }
 
-/* Creates the tiled pipeline's raster pipelines (ADR-087): the depth
-   pre-pass, forward shading and the clear sky, multisampled; the cloud draw
-   over the resolved image, which adds cloud radiance to the destination
-   scaled by the cloud's transmittance (vkr_cloud_composite); and the blend
-   pass's glass, blended surfaces and world text. */
+/* Creates the tiled pipeline's raster pipelines (ADR-087): forward shading
+   and the clear sky, multisampled; the cloud draw over the resolved image,
+   which adds cloud radiance to the destination scaled by the cloud's
+   transmittance (vkr_cloud_composite); and the blend pass's glass, blended
+   surfaces and world text. */
 vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
-  /* Without a fragment stage the pre-pass writes depth only. */
-  renderer->tiled_depth_pipeline =
-      vkr_metal_packet_create_pipeline_with_targets(
-          renderer, fragment, "vkr_metal_tiled_vertex", nil, NULL,
-          MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_NONE,
-          VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-          true_v, VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled depth pre-pass");
   /* Each frame takes the shading variant for its dynamic lights; the light
      code a frame does not need would still cost it registers. */
   static const struct {
@@ -1169,14 +1162,10 @@ vkr_metal_packet_create_render_states(VkrMetalPacketRenderer *renderer)
   depth.depthWriteEnabled = NO;
   renderer->depth_read_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
-  /* The tiled pre-pass lays opaque depth; shading passes its equal depth and
-     lays the alpha-tested surfaces the pre-pass skipped; the sky passes where
-     no surface was drawn. */
-  depth.depthCompareFunction = MTLCompareFunctionLess;
-  depth.depthWriteEnabled = YES;
-  renderer->tiled_prepass_state =
-      [renderer->device newDepthStencilStateWithDescriptor:depth];
+  /* Tiled shading lays its own depth, the later of two coplanar surfaces
+     winning; the sky passes where no surface was drawn. */
   depth.depthCompareFunction = MTLCompareFunctionLessEqual;
+  depth.depthWriteEnabled = YES;
   renderer->tiled_shade_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
   depth.depthWriteEnabled = NO;
@@ -1252,7 +1241,6 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->bloom_downsample_box2_pipeline,
        "bloom box2 downsample pipeline"},
       {renderer->bloom_upsample_pipeline, "bloom upsample pipeline"},
-      {renderer->tiled_depth_pipeline, "tiled depth pre-pass pipeline"},
       {renderer->tiled_sky_pipeline, "tiled sky pipeline"},
       {renderer->tiled_atmosphere_pipeline, "tiled atmosphere pipeline"},
       {renderer->tiled_resolve_pipeline, "tiled resolve pipeline"},
@@ -1261,7 +1249,6 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->depth_write_state, "depth-write state"},
       {renderer->depth_clear_state, "depth-clear state"},
       {renderer->depth_read_state, "depth-read state"},
-      {renderer->tiled_prepass_state, "tiled pre-pass depth state"},
       {renderer->tiled_shade_state, "tiled shading depth state"},
       {renderer->tiled_sky_state, "tiled sky depth state"},
       {renderer->argument_table, "argument table"},

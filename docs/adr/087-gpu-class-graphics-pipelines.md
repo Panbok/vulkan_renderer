@@ -96,17 +96,21 @@ pipeline rather than a backend mechanism.
 4. The tiled pipeline budget on the M1 Pro is Bistro at 2560×1440, render scale
    1.0, no upscaler, 16.7 ms p95 (60 fps). Quality tiers that lower M1 cost are
    allowed.
-5. The tiled pipeline shades opaque surfaces forward, after a depth pre-pass,
-   in one multisampled render pass (owner decision 2026-10-05). On Bistro
-   it costs the same as a G-buffer kept in tile memory without multisampling
-   and 1.7 to 3.4 ms less with four samples
+5. The tiled pipeline shades opaque surfaces forward in one multisampled
+   render pass (owner decision 2026-10-05). On Bistro, with a depth pre-pass
+   in both, it costs the same as a G-buffer kept in tile memory without
+   multisampling and 1.7 to 3.4 ms less with four samples
    ([measurements](../proposals/tiled-pipeline.md#first-prototype-measurements)).
+   Since 2026-10-07 it has no depth pre-pass: the opaque variants never
+   discard, so hidden-surface removal already shades each sample's nearest
+   opaque surface once, and the pre-pass only drew every opaque triangle a
+   second time ([measurement](#depth-pre-pass-measurement)).
 
 6. The tiled pipeline has its own render graph,
    [`tiled.rendergraph.json`](../../assets/render_graphs/tiled.rendergraph.json),
    and keeps the desktop graph's culling, cascades, sky, cloud and post
-   passes. One graph pass, `Tiled.Opaque` (`pass.tiled.opaque`), owns the
-   depth pre-pass, forward shading and the clear sky in one render pass whose
+   passes. One graph pass, `Tiled.Opaque` (`pass.tiled.opaque`), owns
+   forward shading and the clear sky in one render pass whose
    colour and depth are memoryless four-sample targets the Metal backend
    owns; they resolve on chip into the graph's `hdr_scene_color` and
    `opaque_vbuffer_depth`, depth to the nearest sample. The graph compiler is
@@ -117,9 +121,9 @@ pipeline rather than a backend mechanism.
    `Fog.Apply` lays them; it runs while clouds, aerial perspective or fog
    are on. A pixel takes its nearest sample's depth, so edge pixels mixing
    sky and surface samples miss the clouds and take the surface's media.
-   Opaque draws shade at the laid depth with
+   Opaque draws shade first and lay their own depth, with
    fragment variants that never discard, so hidden-surface removal keeps its
-   fast path; alpha-tested draws, which the pre-pass skips, shade after them
+   fast path; alpha-tested draws shade after them
    with their alpha sharpened about the material's cut-off to a transition
    about one pixel wide and turned into covered samples (alpha to coverage).
    Before the resolve, a tile kernel (`vkr_metal_tiled_resolve_tile`, one
@@ -781,6 +785,84 @@ after), and a Metal API validation run of that view passed
 `tiled_bistro_baked_capture` takes one of two cloud states from run to run on
 either build, so its comparison holds outside the clouds.
 
+### Depth pre-pass measurement
+
+Release, M1 Pro, 2026-10-07: HEAD `eb2d05df`, copied with its shader
+catalog (`VKR_SHADER_CATALOG`), alternating with a build that skipped the
+pre-pass loop, two runs each, then the same against the committed change,
+which also removes the depth-only pipeline and its depth state. Shading keeps
+`LessEqual` with depth write, so the later of two coplanar opaque surfaces
+still wins. Pass timings use `local-windowed-gpu-single`, the others
+`local-windowed-gpu-submission-single`.
+
+| Case, metric | HEAD median / p95 | Without pre-pass |
+|---|---|---|
+| `tiled_bistro_baked_native`, `gpu.submission` | 11.65 / 16.06, 11.67 / 16.15 ms | 11.09 / 15.59, 11.09 / 15.66 ms |
+| the same, committed change | 11.63 / 16.01, 11.65 / 16.03 ms | 11.21 / 15.84, 11.15 / 15.69 ms |
+| `tiled_bistro_baked_native`, `Tiled.Opaque` | 7.75 / 12.18, 7.77 / 12.09 ms | 7.21 / 11.59, 7.22 / 11.62 ms |
+| the same, committed change | 7.76 / 12.07, 7.77 / 12.05 ms | 7.24 / 11.66, 7.22 / 11.68 ms |
+| `tiled_bistro_baked_dynamic_native`, `gpu.submission` | 13.84 / 21.78, 13.88 / 21.78 ms | 13.43 / 21.38, 13.48 / 21.57 ms |
+| `tiled_bistro_baked_dynamic_native`, `Tiled.Opaque` | 9.82 / 17.50, 9.79 / 17.48 ms | 9.45 / 17.19, 9.45 / 17.12 ms |
+
+Three HEAD runs report `incomplete`: they fail the case's minimum of one
+cascade-0 indirect command, as runs of either build did in earlier series,
+and their 300 samples are valid. Reports, HEAD then without the pre-pass, in
+table order:
+`sha256:246de3a3337f382eb2e71b638f5e68358e43d225456d5c73eeb2e733b64c24c8`,
+`sha256:a9bade5389fd35563c1671f87f5436702ad1344616728bf4407c361739bd116c`,
+`sha256:4ab7605f63bc3426b4a45526c24fef9edf925d09ae7fc1709e88360643d7706e`,
+`sha256:5609e8978b30a7465e76d23fbbf4204c6dfe76f03623e54871b584559014fd7a`;
+`sha256:64210691928b2447c42a816b3b3ef85447848fae83f0ddc60d4a974f61459298`,
+`sha256:65a9a9e483373675d0cd65be998d41e76f96bf1dd63eccf3b04ebd089328e58e`,
+`sha256:aa1b1212741db6f4ee7b22635703cea3fbb19aeba457c5bb365bde1d87397295`,
+`sha256:fc0ac619c91aeaddde6093c9b556409d3345407556e4d9455b927b40890d4229`;
+`sha256:523008b72d70d25cd69cda002b5d6e5a7a2be025648f72aa7e9d1046f0541e01`,
+`sha256:40284af7b0b8d8cc58ee603e216454357aa83490ce12ab5d742c32c0a36028a0`,
+`sha256:fe1103426370bf3625e336ce463e09b26efbbe69b9406d28e671d3a87ead0735`,
+`sha256:dbe155a847747cc7ce901f257105a54a2c3fe9c1269b2b02546c0535bcb2b827`;
+`sha256:233cf6ee90ea48d9e7925e5bab4bdbf6407fc546b3b4f695672f804462591a78`,
+`sha256:6d7cdef09146ffd496594e235cd4948a786387d25c2c055e1f2db3350f36eb2f`,
+`sha256:b61ab7d2b1ee6c16032b182570648a513ee2f3b67101d5adaf5e00ad283e62ea`,
+`sha256:a68aab936674aaa12b290136c6aaf51545ee4d9673029d1f48251faa3ff6eb34`;
+`sha256:7c9ad3ac8d4207a8b5c3330ad190378f16a215a43072d0dc8828b731bcb00c26`,
+`sha256:a80884ef6eaaf7764d189b2191eafe3def4d00f18c2b424b543fec3170b3a0e2`,
+`sha256:31fe053b0ee9cc52f5cb59190a2ae7e4a76a6c162966610d6f5f8675547b2b6f`,
+`sha256:7c9cf6a89729bcf82cb3046b258915541511900a0601f5334fbe6ca8f1b94bcb`;
+`sha256:8ac5dbff3777844af6afc85ed5b44c6f3f0ab0582e6970d19f3433e1ea2fa755`,
+`sha256:63ed511646d35c2b3539e0d2c2873074c984e9a457f83dd7e2b5ba7184bd4349`,
+`sha256:e20c4b07f0fd73d6644794a3040cb8b905d564ad48ff5d30f6e4695ec4b7eeb8`,
+`sha256:8b58451796c58adae95a7adc012856345e9a37ee9745a39d7f56befa6d7201cc`.
+
+`tiled_bistro_baked_capture` (`local-offscreen`) keeps HEAD's depth and
+differs in 1 pixel by more than 8 of 255, within the variation between two
+runs of one build (up to 3 pixels)
+(`sha256:d6439365f2e702a19020aba8a86e111e2e56391d5afc743fcfb6c2946fdfbc41`
+HEAD,
+`sha256:e83d70b6b1e7c68a10e70f7b2ab047db9740755364668275954296de24b65d11`
+committed), and `tiled_bistro_glass` is identical to HEAD pixel for pixel
+(`sha256:441cb2f024b9db28384fcc9e047b859f267b8775bb82c88aa9e4cffdc403ffe7`,
+`sha256:56d605a72218811a87baadfcc10f6bdbade4de18e89fac81fbbf35d2ddf8fe2a`).
+Builds that differ only in shader comments or in the pass's clear colour
+switch 2 pixels of that view between two states, up to 6 of 255 apart, so a
+difference there alone does not show a change. A Metal API validation run of
+the baked view passed
+(`sha256:b52262e5cbd9603a329f0428096ffd532135073a297fb3cfa9990b3c9dc1ba6c`).
+
+Before the removal, `[[invariant]]` on the tiled vertex position with
+`-fpreserve-invariance` was measured as the guarantee that the pre-pass and
+shading compilations lacked. In the linked library only
+`vkr_metal_tiled_vertex` then compiles without fast math; its position
+rounding changes depth within 16 ULP almost everywhere and moves sample
+coverage in 50 edge pixels of the baked view by more than 8 of 255, and
+`Tiled.Opaque` took 7.83 / 12.24 and 7.85 / 12.25 ms, 0.06 to 0.08 ms more at
+the median, with `gpu.submission` at 11.74 / 16.30 and 11.69 / 16.19 ms
+(`sha256:b6c06088edd944bc0c3ce9105418b65dcf75c58f55de4e15fee2d4016408a872`,
+`sha256:983b4c54e2989b02713bee4d42227711e489dfda589adaf2900e769bada4cd7a`,
+`sha256:050ccf547442aaf385c861fe42a18a9a74e4238f06960f348e46f5c5e5f294d3`,
+`sha256:e871dc11d2ef85da0699b12de1b5b6456c96de2e11db7d266d30d5105940095a`).
+With one pipeline per opaque surface no pass depends on two compilations of
+a position agreeing, so it was not kept.
+
 ## Consequences
 
 - Lighting, shadow, AA and screen-space work is implemented and validated once
@@ -806,6 +888,9 @@ either build, so its comparison holds outside the clouds.
   renderer would need a third pipeline or a port of the Metal one. The class
   follows the backend today only because each supported GPU family has one
   API (owner decision, 2026-10-06).
+- **A depth pre-pass before forward shading.** Removed 2026-10-07: with
+  opaque variants that never discard it only drew the opaque geometry twice
+  ([measurement](#depth-pre-pass-measurement)).
 - **Fixed upscaling on M-series.** Rejected by the owner: native resolution
   is the target. Decision 12 lowers it only while frames miss the budget
   (revised by the owner, 2026-10-06).
@@ -816,6 +901,8 @@ either build, so its comparison holds outside the clouds.
   techniques.
 - Apple9 dynamic register allocation changes the measured cost structure on M3
   or M4 ([ADR-083](083-supported-hardware-matrix.md)).
+- An opaque fragment variant must discard or write depth: hidden-surface
+  removal then loses its fast path, and a depth pre-pass may pay again.
 - A mobile target is scheduled and needs its own budget, or a backend must
   run a second class (a tile-based Vulkan GPU, or an immediate-mode GPU on
   Metal).

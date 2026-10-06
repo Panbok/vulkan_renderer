@@ -657,14 +657,12 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
   id<MTLRenderPipelineState> depth_clear_pipeline;
-  /* The tiled pipeline (ADR-087) with VKR_METAL_TILED_SAMPLE_COUNT samples: a
-     depth pre-pass, forward shading and the clear sky draw into memoryless
-     multisampled targets that resolve into the graph's colour and depth, and
-     the cloud draw over the resolved image. */
-  id<MTLRenderPipelineState> tiled_depth_pipeline;
-  /* Opaque draws, which never discard, and alpha-tested draws, which write
-     the samples their alpha covers; without and with reflection probes, by
-     shading variant. */
+  /* The tiled pipeline (ADR-087) with VKR_METAL_TILED_SAMPLE_COUNT samples:
+     forward shading and the clear sky draw into memoryless multisampled
+     targets that resolve into the graph's colour and depth, and the cloud
+     draw over the resolved image. Opaque draws, which never discard, and
+     alpha-tested draws, which write the samples their alpha covers; without
+     and with reflection probes, by shading variant. */
   id<MTLRenderPipelineState>
       tiled_forward_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                              [VKR_METAL_TILED_LIGHTING_COUNT];
@@ -682,7 +680,6 @@ struct VkrMetalPacketRenderer {
       tiled_blend_pipelines[VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                            [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState> tiled_text_pipeline;
-  id<MTLDepthStencilState> tiled_prepass_state;
   id<MTLDepthStencilState> tiled_shade_state;
   id<MTLDepthStencilState> tiled_sky_state;
   id<MTLTexture> tiled_msaa_color;

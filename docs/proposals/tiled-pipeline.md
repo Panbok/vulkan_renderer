@@ -32,7 +32,7 @@ measured.
 | Stage | Desktop pipeline (Vulkan) | Tiled pipeline |
 |---|---|---|
 | Culling and draw encoding | GPU classification, indirect-count draws | Shared classification, Metal ICB draws |
-| Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass: depth pre-pass, then forward shading with clustered lists of the dynamic lights (decided) |
+| Opaque surfaces | Visibility buffer, compute G-buffer resolve, compute lighting | One MSAA render pass of forward shading with clustered lists of the dynamic lights, without a depth pre-pass (decided) |
 | Anti-aliasing | Portable TAA or FSR 3.1 | 4× MSAA with alpha to coverage and a tone-mapped resolve in tile memory; no FXAA or temporal history (decided, ADR-087) |
 | Static light | Every static light evaluated per pixel each frame | Lightmaps baked by `vkr_bakery`: direct and bounced diffuse light from static lights, on a second UV set (owner decision, 2026-10-05) |
 | Indirect light | IBL, baked diffuse volumes ([ADR-054](../adr/054-baked-diffuse-volumes.md)), optional SSGI | Lightmaps on static surfaces; IBL and baked volumes for dynamic objects; no SSGI |
@@ -64,9 +64,9 @@ for tile-memory reads and lazily allocated transient attachments.
   and specular, and how dynamic objects and the specular highlights of static
   lights are lit.
 
-- Forward shading or deferred shading in tile memory: decided, forward after
-  a depth pre-pass ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
-  measured below).
+- Forward shading or deferred shading in tile memory: decided, forward,
+  without a depth pre-pass since 2026-10-07
+  ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md), measured below).
 - The M1 Pro quality tier: which effects drop or lower first.
 - MSAA sample count and graph representation: decided, four samples and one
   graph pass that owns its sub-stages
@@ -241,10 +241,11 @@ Remaining phases:
    `sha256:9debfb308675f0c6b217bfb477abe93bf71240dba078e834dad073fd790f29a0`,
    `sha256:6d7c661b105ce1b05365c62d0ca8def16c9d78a86c783fb18d8046a819af8025`,
    `sha256:6a04af645bef9b83e8daef7d8ed8c19ba7956441d21fcf3bccb00e36399ad290`).
-   The widest views, which set the p95, are bound by geometry: the
-   pre-pass and forward pass both draw every triangle. Cooked levels are
-   the largest remaining lever for the tiled p95; their saving is below
-   this bound, since near geometry keeps its detail.
+   The widest views, which set the p95, were bound by geometry: the
+   pre-pass and forward pass both drew every triangle. The cooked levels
+   save less than this bound, since near geometry keeps its detail, and
+   the pre-pass was later removed
+   ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#depth-pre-pass-measurement)).
 
 ## Remaining work
 
@@ -261,8 +262,7 @@ SSR is not planned for the tiled pipeline (owner decision, 2026-10-06).
 Mirror-like surfaces get [planar reflections](planar-reflections.md) per
 surface instead; other glossy surfaces use the probes of item 1.
 
-Also open: the opaque pass on the widest views (its depth pre-pass is examined
-in [tiled-depth-prepass.md](tiled-depth-prepass.md)), the dynamic-light tier at
+Also open: the opaque pass on the widest views, the dynamic-light tier at
 its 0.65 floor (17.1 to 17.5 ms p95 before the cooked mesh levels), the
 remaining material layers (clearcoat, sheen, anisotropy and diffuse
 transmission), and the specular highlights of static lights. The refraction

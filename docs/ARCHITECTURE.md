@@ -733,8 +733,8 @@ clouds, IBL, exposure, bloom, tonemapping, editor, UI and text passes, the
 material model and the kernels in `renderer/src/shaders/shared/`.
 
 The tiled pipeline runs `tiled.rendergraph.json`. Its `Tiled.Opaque` pass
-shades the culled opaque draws forward after a depth pre-pass in one
-four-sample render pass resolved on chip, with baked lightmaps for static
+shades the culled opaque draws forward in one four-sample render pass
+resolved on chip, with baked lightmaps for static
 diffuse light; a scene without a lightmap set draws its static lights as
 dynamic lights. `Tiled.Atmosphere` lays the clouds, aerial perspective and
 analytic height fog over the resolved image, and `Tiled.Blend` draws glass
