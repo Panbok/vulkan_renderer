@@ -15,12 +15,14 @@
 namespace {
 
 /* Texels per command buffer, and samples per texel the gather takes per
-   command buffer: each buffer stays near a second of a textured Bistro
-   layer on the M1 Pro, so a long bake leaves the display GPU time and never
-   trips the system watchdog, while a buffer still fills the GPU. Textured
-   Bistro layers at 64 samples in one buffer per 65,536 texels ran 7 s each
-   and were ended for impacting interactivity. */
-constexpr uint32_t kTexelsPerDispatch = 65536u;
+   command buffer: each buffer stays near a quarter second of a textured
+   Bistro layer on the M1 Pro, so a long bake leaves the display GPU time and
+   never trips the system watchdog, while a buffer still fills the GPU.
+   Textured Bistro layers at 64 samples in one buffer per 65,536 texels ran
+   7 s each and were ended for impacting interactivity, and so was a buffer
+   of 65,536 texels at 8 samples, near a second, while a browser drew on the
+   same GPU (2026-10-06). */
+constexpr uint32_t kTexelsPerDispatch = 16384u;
 constexpr uint32_t kSamplesPerDispatch = 8u;
 
 /* Material textures are resampled to this edge for transport: bounce light
@@ -154,11 +156,14 @@ struct GatherArgs {
   uint max_depth;
   uint rr_start_depth;
   uint light_count;
-  /* bit 0 sky, bit 1 emission, bit 2 texel direct. */
+  /* bit 0 sky, bit 1 emission, bit 2 texel direct, bit 3 occlusion. */
   uint flags;
   /* First triangle of each geometry in the acceleration structure's index
      buffer: opaque triangles, then cutout and blended ones. */
   uint geometry_first[2];
+  /* World distance within which a first hit occludes, falling off linearly
+     to it. */
+  float occlusion_radius;
 };
 
 struct Scene {
@@ -627,6 +632,7 @@ kernel void lightmap_gather(
     device const GpuLight *lights [[buffer(11)]],
     device const uint *layer_lights [[buffer(12)]],
     device const uint *as_indices [[buffer(13)]],
+    device float *occlusion [[buffer(14)]],
     texture2d_array<half> textures [[texture(0)]],
     texture2d<float> sky [[texture(1)]],
     texture2d<float> dfg [[texture(2)]],
@@ -656,8 +662,13 @@ kernel void lightmap_gather(
   bool use_sky = (args.flags & 1u) != 0u;
   bool use_emission = (args.flags & 2u) != 0u;
   bool texel_direct = (args.flags & 4u) != 0u;
+  bool use_occlusion = (args.flags & 8u) != 0u;
   uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
   float3 total = float3(0.0f);
+  /* Ambient occlusion from each sample's first bounce: a hit within the
+     radius occludes by its distance and its opacity; glass lets the rest
+     through. */
+  float occluded = 0.0f;
   for (uint s = args.first_sample;
        s < args.first_sample + args.sample_count; ++s) {
     Rng rng;
@@ -673,6 +684,13 @@ kernel void lightmap_gather(
     float3 radiance = float3(0.0f);
     for (uint depth = 0u; depth < args.max_depth; ++depth) {
       Hit hit = trace_surface(scene, ray_origin, direction, rng);
+      if (use_occlusion && depth == 0u && hit.found) {
+        float opacity = 1.0f - (1.0f - saturate(hit.material.metallic)) *
+                                   saturate(hit.material.transmission);
+        occluded += opacity *
+                    saturate(1.0f - distance(hit.position, ray_origin) /
+                                        args.occlusion_radius);
+      }
       if (!hit.found) {
         if (use_sky) {
           radiance += throughput * sky_radiance(sky, sky_sampler, direction);
@@ -720,6 +738,12 @@ kernel void lightmap_gather(
   irradiance[texel] = args.first_sample == 0u
                           ? float4(share, 1.0f)
                           : irradiance[texel] + float4(share, 0.0f);
+  if (use_occlusion) {
+    float visibility = (float(args.sample_count) - occluded) /
+                       float(args.samples);
+    occlusion[texel] = args.first_sample == 0u ? visibility
+                                               : occlusion[texel] + visibility;
+  }
 }
 )METAL";
 
@@ -742,6 +766,7 @@ struct GatherArgs {
   uint32_t light_count;
   uint32_t flags;
   uint32_t geometry_first[2];
+  float occlusion_radius;
 };
 
 struct GpuMaterial {
@@ -1312,14 +1337,19 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
                            const VkrBakeMetalLayer &layer,
                            const VkrBakeMetalGatherSettings &settings,
                            std::vector<Vec3> *out_irradiance,
+                           std::vector<float32_t> *out_occlusion,
                            double *out_gpu_seconds) {
   @autoreleasepool {
     if (!context || !out_irradiance || !out_gpu_seconds ||
-        settings.samples == 0u || settings.max_depth == 0u) {
+        settings.samples == 0u || settings.max_depth == 0u ||
+        (out_occlusion && !(settings.occlusion_radius > 0.0f))) {
       return false;
     }
     const NSUInteger count = texels.size();
     out_irradiance->assign(count, vec3_zero());
+    if (out_occlusion) {
+      out_occlusion->assign(count, 1.0f);
+    }
     *out_gpu_seconds = 0.0;
     if (count == 0u) {
       return true;
@@ -1330,7 +1360,10 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
         shared_buffer(context->device, count * 4u * sizeof(float));
     id<MTLBuffer> layer_lights =
         shared_buffer(context->device, layer.lights.size() * sizeof(uint32_t));
-    if (!result || !layer_lights ||
+    id<MTLBuffer> occlusion =
+        out_occlusion ? shared_buffer(context->device, count * sizeof(float))
+                      : result;
+    if (!result || !layer_lights || !occlusion ||
         !upload_texels(context->device, texels, &positions, &normals)) {
       return false;
     }
@@ -1339,7 +1372,8 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
                   layer.lights.size() * sizeof(uint32_t));
     }
     const uint32_t flags = (layer.sky ? 1u : 0u) | (layer.emission ? 2u : 0u) |
-                           (layer.texel_direct ? 4u : 0u);
+                           (layer.texel_direct ? 4u : 0u) |
+                           (out_occlusion ? 8u : 0u);
     const NSUInteger width = context->gather.threadExecutionWidth;
     /* Each batch of texels takes its samples in runs of
        kSamplesPerDispatch, a command buffer each. */
@@ -1362,7 +1396,8 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
           settings.rr_start_depth,
           (uint32_t)layer.lights.size(),
           flags,
-          {context->geometry_first[0], context->geometry_first[1]}};
+          {context->geometry_first[0], context->geometry_first[1]},
+          settings.occlusion_radius};
       id<MTLCommandBuffer> command = [context->queue commandBuffer];
       id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
       [encoder setComputePipelineState:context->gather];
@@ -1380,6 +1415,7 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
       [encoder setBuffer:context->lights offset:0u atIndex:11u];
       [encoder setBuffer:layer_lights offset:0u atIndex:12u];
       [encoder setBuffer:context->as_indices offset:0u atIndex:13u];
+      [encoder setBuffer:occlusion offset:0u atIndex:14u];
       [encoder setTexture:context->textures atIndex:0u];
       [encoder setTexture:context->sky atIndex:1u];
       [encoder setTexture:context->dfg atIndex:2u];
@@ -1395,6 +1431,12 @@ bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
     for (NSUInteger i = 0u; i < count; ++i) {
       (*out_irradiance)[i] =
           vec3_new(values[4u * i], values[4u * i + 1u], values[4u * i + 2u]);
+    }
+    if (out_occlusion) {
+      const float *visibility = static_cast<const float *>(occlusion.contents);
+      for (NSUInteger i = 0u; i < count; ++i) {
+        (*out_occlusion)[i] = std::clamp(visibility[i], 0.0f, 1.0f);
+      }
     }
     return true;
   }

@@ -54,6 +54,9 @@ constexpr uint32_t kOutlierMinNeighbors = 3u;
 constexpr float32_t kOutlierNeighborTexels = 4.0f;
 /* Smoothing passes (vkr_bake_lightmap_smooth) over a published layer. */
 constexpr uint32_t kSmoothPasses = 1u;
+/* World distance within which a first bounce occludes for the ambient
+   occlusion every layer's alpha carries (ADR-088). */
+constexpr float32_t kOcclusionRadius = 1.0f;
 
 enum class GpuMode : uint8_t {
   Off,
@@ -93,6 +96,8 @@ struct Options {
   float32_t outlier_ratio = kOutlierRatio;
   /* Smoothing passes over published layers after outlier rejection. */
   uint32_t smooth_passes = kSmoothPasses;
+  /* Ambient occlusion radius in world units; zero writes alpha one. */
+  float32_t ao_radius = kOcclusionRadius;
 };
 
 void usage() {
@@ -105,7 +110,7 @@ void usage() {
       "[--check-texels <n>] [--check-samples <n>] "
       "[--check-transport <all|sky|sun|lamps>] [--astc-effort <0-100>] "
       "[--dilation <passes>] [--outlier-ratio <ratio, 0 off>] "
-      "[--smooth <passes>]\n");
+      "[--smooth <passes>] [--ao-radius <world units, 0 off>]\n");
 }
 
 bool parse_u32(const char *text, uint32_t *out) {
@@ -177,6 +182,13 @@ bool parse(int argc, char **argv, Options *options) {
       }
     } else if (std::strcmp(flag, "--smooth") == 0) {
       if (!parse_u32(value, &options->smooth_passes)) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--ao-radius") == 0) {
+      char *end = nullptr;
+      options->ao_radius = std::strtof(value, &end);
+      if (!end || *end != '\0' || !std::isfinite(options->ao_radius) ||
+          options->ao_radius < 0.0f) {
         return false;
       }
     } else if (std::strcmp(flag, "--outlier-ratio") == 0) {
@@ -435,7 +447,7 @@ bool report_encoding(const Options &options,
                       : std::max(1u, std::thread::hardware_concurrency());
   const auto compose_start = std::chrono::steady_clock::now();
   std::vector<float32_t> rgba;
-  if (!vkr_bake_lightmap_compose_page(layout, page, texels, values,
+  if (!vkr_bake_lightmap_compose_page(layout, page, texels, values, nullptr,
                                       options.dilation_passes, &rgba)) {
     std::fprintf(stderr, "Composing page %u failed\n", page);
     return false;
@@ -568,7 +580,7 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
       std::vector<Vec3> irradiance;
       double seconds = 0.0;
       if (!vkr_bake_metal_gather(gpu, texels, *named.layer, settings,
-                                 &irradiance, &seconds)) {
+                                 &irradiance, nullptr, &seconds)) {
         vkr_bake_metal_destroy(gpu);
         return 1;
       }
@@ -642,7 +654,7 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
     std::vector<Vec3> gpu_values;
     double seconds = 0.0;
     if (!vkr_bake_metal_gather(gpu, subset, check_layer, check_settings,
-                               &gpu_values, &seconds)) {
+                               &gpu_values, nullptr, &seconds)) {
       vkr_bake_metal_destroy(gpu);
       return 1;
     }
@@ -699,9 +711,9 @@ int run_gpu_gather(const Options &options, VkrBakeScene &scene,
     std::vector<Vec3> sun_values;
     std::vector<Vec3> lamp_values;
     if (!vkr_bake_metal_gather(gpu, subset, sun_key, check_settings,
-                               &sun_values, &seconds) ||
+                               &sun_values, nullptr, &seconds) ||
         !vkr_bake_metal_gather(gpu, subset, lamps_bounce, check_settings,
-                               &lamp_values, &seconds)) {
+                               &lamp_values, nullptr, &seconds)) {
       vkr_bake_metal_destroy(gpu);
       return 1;
     }
@@ -946,6 +958,7 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   settings.max_depth = options.max_depth;
   settings.rr_start_depth = options.max_depth >= 4u ? 4u : 0u;
   settings.seed = options.seed;
+  settings.occlusion_radius = options.ao_radius;
   const uint32_t threads =
       options.threads ? options.threads
                       : std::max(1u, std::thread::hardware_concurrency());
@@ -965,6 +978,11 @@ int bake_set(const Options &options, VkrBakeScene &scene,
          vkr_bake_lightmap_neighbors(
              layout.page_size, texels,
              kOutlierNeighborTexels / options.texels_per_unit, &neighbors);
+    /* The page's ambient occlusion comes from its first layer's first-bounce
+       rays and goes into every layer's alpha, so whichever layers a frame
+       weighs carry it (ADR-088). */
+    std::vector<float32_t> occlusion;
+    const bool bake_occlusion = options.ao_radius > 0.0f;
     for (uint32_t l = 0u; ok && l < layers.size(); ++l) {
       if (layers[l].sun_key >= 0) {
         vkr_bake_scene_use_atmosphere(
@@ -976,9 +994,21 @@ int bake_set(const Options &options, VkrBakeScene &scene,
       }
       std::vector<Vec3> irradiance;
       double seconds = 0.0;
-      ok = vkr_bake_metal_gather(gpu, texels, layers[l].transport, settings,
-                                 &irradiance, &seconds);
+      ok = vkr_bake_metal_gather(
+          gpu, texels, layers[l].transport, settings, &irradiance,
+          bake_occlusion && l == 0u ? &occlusion : nullptr, &seconds);
       gpu_seconds += seconds;
+      if (ok && bake_occlusion && l == 0u) {
+        std::vector<Vec3> smoothed(occlusion.size());
+        for (size_t i = 0u; i < occlusion.size(); ++i) {
+          smoothed[i] = vec3_new(occlusion[i], occlusion[i], occlusion[i]);
+        }
+        ok = vkr_bake_lightmap_smooth(neighbors, texels, options.smooth_passes,
+                                      &smoothed);
+        for (size_t i = 0u; ok && i < occlusion.size(); ++i) {
+          occlusion[i] = smoothed[i].x;
+        }
+      }
       /* Lone high-energy paths stay visible at any practical sample count;
          they take their neighbors' mean, and the remaining noise is smoothed
          along each surface, before the page is composed. */
@@ -993,6 +1023,7 @@ int bake_set(const Options &options, VkrBakeScene &scene,
       const auto encode_start = std::chrono::steady_clock::now();
       ok = ok &&
            vkr_bake_lightmap_compose_page(layout, page, texels, irradiance,
+                                          bake_occlusion ? &occlusion : nullptr,
                                           options.dilation_passes, &rgba) &&
            vkr_bake_lightmap_encode_astc_hdr(
                rgba, layout.page_size, options.astc_effort, threads, &blocks);

@@ -379,16 +379,20 @@ bool vkr_bake_lightmap_smooth(const VkrBakeLightmapNeighbors &neighbors,
 bool vkr_bake_lightmap_compose_page(
     const VkrBakeLightmapLayout &layout, uint32_t page,
     const std::vector<VkrBakeLightmapTexel> &texels,
-    const std::vector<Vec3> &values, uint32_t dilation_passes,
-    std::vector<float32_t> *out_rgba) {
+    const std::vector<Vec3> &values, const std::vector<float32_t> *occlusion,
+    uint32_t dilation_passes, std::vector<float32_t> *out_rgba) {
   if (!out_rgba || page >= layout.page_count ||
-      texels.size() != values.size()) {
+      texels.size() != values.size() ||
+      (occlusion && occlusion->size() != texels.size())) {
     return false;
   }
   try {
     const size_t size = layout.page_size;
     out_rgba->assign(size * size * 4u, 0.0f);
     float32_t *rgba = out_rgba->data();
+    for (size_t i = 0u; i < size * size; ++i) {
+      rgba[4u * i + 3u] = 1.0f;
+    }
     /* Zero is empty, one covered, and 2 + pass a texel filled in that pass,
        so a pass reads only texels filled before it. */
     std::vector<uint8_t> state(size * size, 0u);
@@ -397,6 +401,7 @@ bool vkr_bake_lightmap_compose_page(
       rgba[4u * index + 0u] = values[i].x;
       rgba[4u * index + 1u] = values[i].y;
       rgba[4u * index + 2u] = values[i].z;
+      rgba[4u * index + 3u] = occlusion ? (*occlusion)[i] : 1.0f;
       state[index] = 1u;
     }
 
@@ -417,7 +422,7 @@ bool vkr_bake_lightmap_compose_page(
             if (state[index] != 0u) {
               continue;
             }
-            float32_t sum[3] = {0.0f, 0.0f, 0.0f};
+            float32_t sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
             uint32_t count = 0u;
             for (int32_t dy = -1; dy <= 1; ++dy) {
               for (int32_t dx = -1; dx <= 1; ++dx) {
@@ -431,9 +436,9 @@ bool vkr_bake_lightmap_compose_page(
                 if (neighbor_state == 0u || neighbor_state >= filled_before) {
                   continue;
                 }
-                sum[0] += rgba[4u * neighbor + 0u];
-                sum[1] += rgba[4u * neighbor + 1u];
-                sum[2] += rgba[4u * neighbor + 2u];
+                for (uint32_t c = 0u; c < 4u; ++c) {
+                  sum[c] += rgba[4u * neighbor + c];
+                }
                 ++count;
               }
             }
@@ -441,9 +446,9 @@ bool vkr_bake_lightmap_compose_page(
               continue;
             }
             const float32_t scale = 1.0f / (float32_t)count;
-            rgba[4u * index + 0u] = sum[0] * scale;
-            rgba[4u * index + 1u] = sum[1] * scale;
-            rgba[4u * index + 2u] = sum[2] * scale;
+            for (uint32_t c = 0u; c < 4u; ++c) {
+              rgba[4u * index + c] = sum[c] * scale;
+            }
             state[index] = filled_before;
             filled_any = true;
           }
@@ -453,38 +458,36 @@ bool vkr_bake_lightmap_compose_page(
         }
       }
 
-      float64_t mean[3] = {0.0, 0.0, 0.0};
+      float64_t mean[4] = {0.0, 0.0, 0.0, 0.0};
       uint64_t covered = 0u;
       for (uint32_t y = rect.y; y < y_end; ++y) {
         for (uint32_t x = rect.x; x < x_end; ++x) {
           const size_t index = (size_t)y * size + x;
           if (state[index] == 1u) {
-            mean[0] += rgba[4u * index + 0u];
-            mean[1] += rgba[4u * index + 1u];
-            mean[2] += rgba[4u * index + 2u];
+            for (uint32_t c = 0u; c < 4u; ++c) {
+              mean[c] += rgba[4u * index + c];
+            }
             ++covered;
           }
         }
       }
       if (covered != 0u) {
-        mean[0] /= (float64_t)covered;
-        mean[1] /= (float64_t)covered;
-        mean[2] /= (float64_t)covered;
+        for (uint32_t c = 0u; c < 4u; ++c) {
+          mean[c] /= (float64_t)covered;
+        }
+      } else {
+        mean[3] = 1.0;
       }
       for (uint32_t y = rect.y; y < y_end; ++y) {
         for (uint32_t x = rect.x; x < x_end; ++x) {
           const size_t index = (size_t)y * size + x;
           if (state[index] == 0u) {
-            rgba[4u * index + 0u] = (float32_t)mean[0];
-            rgba[4u * index + 1u] = (float32_t)mean[1];
-            rgba[4u * index + 2u] = (float32_t)mean[2];
+            for (uint32_t c = 0u; c < 4u; ++c) {
+              rgba[4u * index + c] = (float32_t)mean[c];
+            }
           }
         }
       }
-    }
-
-    for (size_t i = 0u; i < size * size; ++i) {
-      rgba[4u * i + 3u] = 1.0f;
     }
     return true;
   } catch (const std::bad_alloc &) {

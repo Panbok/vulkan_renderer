@@ -49,6 +49,9 @@ struct VkrBakeMetalGatherSettings {
   /* Zero disables Russian roulette; otherwise it starts at this depth. */
   uint32_t rr_start_depth = 4u;
   uint32_t seed = 1u;
+  /* World distance within which a first hit occludes, for gathers that
+     return ambient occlusion. */
+  float occlusion_radius = 0.0f;
 };
 
 /* Whether this host can run Metal ray-traced bakes. */
@@ -77,10 +80,13 @@ bool vkr_bake_metal_trace_benchmark(
 /* Gathers one layer's irradiance at every texel: the cosine-weighted
  * hemisphere integral of incoming radiance, plus the layer lights' direct
  * irradiance when texel_direct is set. Writes one RGB value per texel and
- * reports the GPU time in seconds. */
+ * reports the GPU time in seconds. With `out_occlusion`, also writes each
+ * texel's ambient visibility in [0, 1] from the same first-bounce rays, which
+ * needs a positive settings.occlusion_radius. */
 bool vkr_bake_metal_gather(VkrBakeMetalContext *context,
                            const std::vector<VkrBakeLightmapTexel> &texels,
                            const VkrBakeMetalLayer &layer,
                            const VkrBakeMetalGatherSettings &settings,
                            std::vector<Vec3> *out_irradiance,
+                           std::vector<float32_t> *out_occlusion,
                            double *out_gpu_seconds);

@@ -94,19 +94,21 @@ bool vkr_bake_lightmap_rasterize_page(
 
 /*
  * Writes a page's texel values into `out_rgba`, page_size x page_size RGBA
- * floats in row-major order with alpha one, and fills the texels of each
- * rectangle that no triangle covers. Up to `dilation_passes` rings around the
- * covered texels take the mean of their filled 8-neighbors in the same
- * rectangle, so bilinear filtering and 4x4 blocks at chart edges see chart
- * values instead of black; the rest of the rectangle takes the mean of its
- * covered texels. Texels outside every rectangle are zero. `values` holds one
- * finite, non-negative value per texel of `texels`.
+ * floats in row-major order, and fills the texels of each rectangle that no
+ * triangle covers. Alpha is the texel's ambient occlusion from `occlusion`
+ * (one visibility in [0, 1] per texel of `texels`), or one without it. Up to
+ * `dilation_passes` rings around the covered texels take the mean of their
+ * filled 8-neighbors in the same rectangle, so bilinear filtering and 4x4
+ * blocks at chart edges see chart values instead of black; the rest of the
+ * rectangle takes the mean of its covered texels. Texels outside every
+ * rectangle are zero with alpha one. `values` holds one finite, non-negative
+ * value per texel of `texels`.
  */
 bool vkr_bake_lightmap_compose_page(
     const VkrBakeLightmapLayout &layout, uint32_t page,
     const std::vector<VkrBakeLightmapTexel> &texels,
-    const std::vector<Vec3> &values, uint32_t dilation_passes,
-    std::vector<float32_t> *out_rgba);
+    const std::vector<Vec3> &values, const std::vector<float32_t> *occlusion,
+    uint32_t dilation_passes, std::vector<float32_t> *out_rgba);
 
 /*
  * Same-surface neighbors of a page's texels: for texel i, the entries

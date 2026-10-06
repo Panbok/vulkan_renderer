@@ -253,8 +253,9 @@ this order as one measured change each against the 16.7 ms p95 budget:
 
 1. Per-draw reflection probes: done, one probe per surface
    ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#reflection-probe-measurement)).
-2. Baked ambient occlusion in the lightmap alpha, applied to environment
-   specular and dynamic lights.
+2. Baked ambient occlusion: done, in every lightmap layer's alpha and applied
+   to environment specular
+   ([ADR-088](../adr/088-baked-lightmap-sets.md#encoding)).
 3. A small fixed gather PCF for the four shadowed dynamic lights, in the
    shadowed shading variant only.
 4. Thick glass: Beer-Lambert absorption in the blend shader first, then

@@ -134,11 +134,18 @@ changes color.
 emission, metallic-roughness and transmission textures resampled to 128×128
 RGBA16F, the lights, the renderer's DFG table and a 512×256 equirectangular
 sky) and gathers cosine-weighted paths per texel in command buffers of
-65,536 texels and 8 samples per texel, each adding its share of the texel's
-mean, so a buffer stays near a second of a textured Bistro layer and under
-the system watchdog. Each sample's random sequence follows its texel and
-sample index. Textured Bistro layers at 64 samples in one buffer per 65,536
-texels ran 7 s each and were ended for impacting interactivity. The acceleration structure
+16,384 texels and 8 samples per texel, each adding its share of the texel's
+mean, so a buffer stays near a quarter second of a textured Bistro layer and
+under the system watchdog. Each sample's random sequence follows its texel
+and sample index. Textured Bistro layers at 64 samples in one buffer per
+65,536 texels ran 7 s each and were ended for impacting interactivity, and so
+was a buffer of 65,536 texels at 8 samples while a browser drew on the same
+GPU. The first layer's gather of each page also returns each texel's ambient
+visibility from the same first-bounce rays: one minus the mean occlusion of
+its samples, where a first hit within the occlusion radius occludes by its
+opacity (one minus its glass fraction) times one minus its distance over the
+radius. The radius is one world unit (`--ao-radius` of the lightmap baker,
+0 turning it off). The acceleration structure
 holds two geometries: opaque triangles, and cutout triangles whose lowest
 alpha can fall below their cutoff. Rays test those as candidates in one
 traversal; blended and tinting surfaces stop the traversal and are resolved
@@ -181,8 +188,11 @@ Each layer page is composed in float RGBA: covered texels take their value,
 up to four rings of empty texels take the mean of their filled 8-neighbors
 inside the same rectangle, and the rest of the rectangle takes its mean, so
 bilinear filtering and blocks at chart edges never read black or another
-instance. Pages are encoded with astcenc to ASTC 4×4 in the HDR RGB, LDR alpha
-profile at effort 10.
+instance. Alpha is the page's ambient visibility, smoothed like irradiance
+but without outlier rejection, in every layer, so whichever layers a frame
+weighs carry it; texels outside every rectangle keep alpha one. Pages are
+encoded with astcenc to ASTC 4×4 in the HDR RGB, LDR alpha profile at effort
+10.
 
 ### VKLM file
 
@@ -197,8 +207,10 @@ entity array (the document's entities, then the World's, then editor-created
 ones) and its source-node index in the entity's cooked model (zero without
 source nodes and for brushes), and records its page rectangle. The runtime
 matches an instance by document id and falls back to the index. Instances are
-sorted by index and node. Versions 1 (keyed by index only) and 2 (without
-group names) were never read by a runtime. Producers stream the payload and
+sorted by index and node. Page alpha is ambient visibility; sets baked
+before it carry alpha one, which reads as unoccluded, so v3 is unchanged.
+Versions 1 (keyed by index only) and 2 (without group names) were never read
+by a runtime. Producers stream the payload and
 write the header last; the decoder checks header, table and payload CRCs,
 sizes, layer meanings, that lamp groups have distinct valid names and sun
 keys none, that a set holds at most four lamp groups, and that every
@@ -419,6 +431,18 @@ texels per meter with deferred textures:
   At 16 samples the set shows bright single-texel speckles on walls and
   pavement; the desktop capture of the same view, on the Metal desktop
   implementation since removed, lights the lamps analytically and shows none.
+  The same bake with ambient visibility in every layer's alpha, after the
+  gather's command buffers shrank to 16,384 texels (2026-10-06, `--samples
+  16`, a browser drawing on the same GPU): 734.3 s, 555.5 s of it GPU time
+  and 36.6 s encoding, 5.6 GB peak, 453 MB
+  (`sha256:b508f705f7deaad5b2152d0be8e7bfd6af20d33478ca94f177fad1f3f8ead3c7`).
+  Rendered by the tiled pipeline against the previous set on the same build,
+  `tiled_bistro_baked_capture` darkens environment specular in window
+  frames, door insets and alcoves, 237,979 pixels by more than 2 of 255 with
+  a mean of 99.02 against 99.37
+  (`sha256:72215c6c1bdf16bfe51b019cfd646fcffd32fd73cc5191be3ed294e92dcf3ba3`,
+  `sha256:48630f36075db11aca4a79c31bbfbcf792e621b0c10632737ac502c40f3740d3`),
+  with no visible block artifacts.
   The same bake at 64 samples, after the gather
   split its samples into runs of eight (`--samples 64`: 1,819.4 s, 1,643.1 s
   of it GPU time and 37.7 s encoding, 6.7 GB peak,

@@ -156,7 +156,18 @@ pipeline rather than a backend mechanism.
    comes from the draw's lightmap
    ([ADR-088](088-baked-lightmap-sets.md)): the frame's active layers, each
    weighed by the sun and its light group; a draw without one takes the baked
-   diffuse volume, else the global environment. A terrain material blends its
+   diffuse volume, else the global environment. The first active layer's
+   alpha, the set's baked ambient visibility, multiplies the material
+   occlusion that occludes environment specular; the lightmap's diffuse
+   light already holds its occlusion, so it does not scale diffuse light.
+   Applying it cost nothing measurable: `Tiled.Opaque` on the baked orbit
+   7.95 / 12.39 and 7.94 / 12.46 ms before, 7.75 / 12.26 and 7.76 / 12.06 ms
+   after
+   (`sha256:43f91acefad036ef9bdbff5e3365b639f64daee0f6a5387b0ab116314d70e2a9`,
+   `sha256:4acbb6970105fbab718dcf2f1e2bbba1f3bde70fc7baa05b8e0e7806947fe4cb`,
+   `sha256:3d997af39190c2f9509c53699ecb461bb6158eb84bd7c8a6d4034d28caec4a91`,
+   `sha256:12fddc9dd2ba7295ac64a6fdccf432e849011c4b276d4ddca3c0e0cc4cd7ce07`;
+   2026-10-06, both on the set with visibility). A terrain material blends its
    four layers by the vertex colour's weights as the G-buffer resolve does
    ([ADR-084](084-agent-channel-and-level-design-toolkit.md)), reading the
    material table's terrain rows through the frame root. Blended surfaces,

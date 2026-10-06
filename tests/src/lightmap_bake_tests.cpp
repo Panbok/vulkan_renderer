@@ -235,8 +235,9 @@ void test_pack_fitted_shrinks_small_scenes() {
 }
 
 /* Two adjacent rectangles with one covered texel each: dilation and the
-   rectangle mean fill each rectangle with its own value, nothing crosses the
-   shared edge, and texels outside both stay zero. */
+   rectangle mean fill each rectangle with its own value and occlusion,
+   nothing crosses the shared edge, and texels outside both stay zero with
+   alpha one. Without occlusion every alpha is one. */
 void test_compose_fills_each_rect_alone() {
   VkrBakeLightmapLayout layout;
   layout.page_size = 8u;
@@ -252,20 +253,29 @@ void test_compose_fills_each_rect_alone() {
   const std::vector<VkrBakeLightmapTexel> texels = {left, right};
   const std::vector<Vec3> values = {vec3_new(2.0f, 0.0f, 0.0f),
                                     vec3_new(0.0f, 0.0f, 3.0f)};
-  std::vector<float32_t> rgba;
-  assert(vkr_bake_lightmap_compose_page(layout, 0u, texels, values, 1u, &rgba));
-  assert(rgba.size() == 8u * 8u * 4u);
-  for (uint32_t y = 0u; y < 8u; ++y) {
-    for (uint32_t x = 0u; x < 8u; ++x) {
-      const float32_t *texel = &rgba[4u * (y * 8u + x)];
-      Vec3 expected = vec3_zero();
-      if (y < 4u) {
-        expected = x < 4u ? values[0] : values[1];
+  const std::vector<float32_t> occlusion = {0.25f, 0.75f};
+  for (uint32_t with_occlusion = 0u; with_occlusion < 2u; ++with_occlusion) {
+    std::vector<float32_t> rgba;
+    assert(vkr_bake_lightmap_compose_page(layout, 0u, texels, values,
+                                          with_occlusion ? &occlusion : nullptr,
+                                          1u, &rgba));
+    assert(rgba.size() == 8u * 8u * 4u);
+    for (uint32_t y = 0u; y < 8u; ++y) {
+      for (uint32_t x = 0u; x < 8u; ++x) {
+        const float32_t *texel = &rgba[4u * (y * 8u + x)];
+        Vec3 expected = vec3_zero();
+        float32_t expected_alpha = 1.0f;
+        if (y < 4u) {
+          expected = x < 4u ? values[0] : values[1];
+          if (with_occlusion) {
+            expected_alpha = x < 4u ? occlusion[0] : occlusion[1];
+          }
+        }
+        assert(fabsf(texel[0] - expected.x) < 1.0e-6f);
+        assert(fabsf(texel[1] - expected.y) < 1.0e-6f);
+        assert(fabsf(texel[2] - expected.z) < 1.0e-6f);
+        assert(fabsf(texel[3] - expected_alpha) < 1.0e-6f);
       }
-      assert(fabsf(texel[0] - expected.x) < 1.0e-6f);
-      assert(fabsf(texel[1] - expected.y) < 1.0e-6f);
-      assert(fabsf(texel[2] - expected.z) < 1.0e-6f);
-      assert(texel[3] == 1.0f);
     }
   }
   printf("  test_compose_fills_each_rect_alone PASSED\n");

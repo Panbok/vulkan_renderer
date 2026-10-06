@@ -199,20 +199,22 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
   return float4(added, kept);
 }
 
-// Irradiance of a lightmapped surface at `uv` on `page`: the frame's active
-// layers, each scaled by its weight.
-static float3 vkr_metal_tiled_lightmap_irradiance(
+// Irradiance of a lightmapped surface at `uv` on `page`, the frame's active
+// layers each scaled by its weight, and in alpha the baked ambient
+// visibility every layer's alpha carries (ADR-088; one for sets baked
+// without it or with no active layer).
+static float4 vkr_metal_tiled_lightmap_irradiance(
     constant VkrMetalPacketLightmap &lightmap, float2 uv, uint page) {
   constexpr sampler lightmap_sampler(coord::normalized, address::clamp_to_edge,
                                      filter::linear);
-  float3 irradiance = float3(0.0f);
+  float4 irradiance = float4(0.0f, 0.0f, 0.0f, 1.0f);
   const uint slice_base = page * lightmap.layer_count;
   for (uint i = 0u; i < lightmap.active_layer_count; ++i) {
-    irradiance += lightmap.texture
-                      .sample(lightmap_sampler, uv,
-                              slice_base + lightmap.active_layers[i])
-                      .rgb *
-                  lightmap.active_weights[i];
+    float4 layer = lightmap.texture.sample(
+        lightmap_sampler, uv, slice_base + lightmap.active_layers[i]);
+    irradiance.rgb += layer.rgb * lightmap.active_weights[i];
+    if (i == 0u)
+      irradiance.a = saturate(layer.a);
   }
   return irradiance;
 }
@@ -506,11 +508,14 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   // environment the Lambertian response; each is pre-exposed here.
   float3 diffuse_light = float3(0.0f);
   bool environment_diffuse = false;
+  // The lightmap's diffuse light already holds its occlusion; its baked
+  // ambient visibility only occludes environment specular.
+  float baked_occlusion = 1.0f;
   if (input.lightmap_page != ~0u) {
-    diffuse_light = vkr_metal_tiled_lightmap_irradiance(
-                        *frame->lightmap, input.lightmap_uv,
-                        input.lightmap_page) *
-                    (frame->pre_exposure / M_PI_F);
+    float4 lightmap = vkr_metal_tiled_lightmap_irradiance(
+        *frame->lightmap, input.lightmap_uv, input.lightmap_page);
+    diffuse_light = lightmap.rgb * (frame->pre_exposure / M_PI_F);
+    baked_occlusion = lightmap.a;
   } else {
     float4 volume =
         vkr_metal_packet_diffuse_volume(frame, input.world_position, normal);
@@ -556,7 +561,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                       frame->ibl_controls.x;
     float horizon = saturate(1.0f + dot(reflection, geometric_normal));
     float specular_visibility =
-        horizon * horizon * vkr_metal_packet_specular_ao(ao, no_v, roughness);
+        horizon * horizon *
+        vkr_metal_packet_specular_ao(ao * baked_occlusion, no_v, roughness);
     light.specular += prefiltered * energy.reflectance * specular_visibility *
                       frame->ibl_controls.z * frame->ibl_controls.x;
   } else if (environment_diffuse) {
