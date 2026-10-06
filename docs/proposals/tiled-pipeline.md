@@ -265,7 +265,8 @@ SSR is not planned for the tiled pipeline (owner decision, 2026-10-06).
 Mirror-like surfaces get [planar reflections](planar-reflections.md) per
 surface instead; other glossy surfaces use the probes of item 1.
 
-Also open: the opaque pass on the widest views, the dynamic-light tier at
+Also open: the opaque pass on the widest views (its depth pre-pass is examined
+in [tiled-depth-prepass.md](tiled-depth-prepass.md)), the dynamic-light tier at
 its 0.65 floor (17.1 to 17.5 ms p95 before the cooked mesh levels), the
 remaining material layers (clearcoat, sheen, anisotropy and diffuse
 transmission), and the specular highlights of static lights.
