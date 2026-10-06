@@ -34,9 +34,6 @@ struct VkrTemporalTransform {
   uint reserved;
 };
 
-constant uint VKR_INSTANCE_TEMPORAL_OWNER = 1u;
-constant uint VKR_TEMPORAL_TRANSFORM_CAPACITY = 32768u;
-
 struct VkrMetalPacketMaterial {
   float4 tint;
   texture2d<float, access::sample> base_color_texture;
@@ -205,8 +202,9 @@ struct alignas(16) VkrMetalPacketLocalShadowTransmission {
 
 // Frame-slot sky record. The builders read both lookup textures of the
 // published generation; forward shading samples aerial perspective and the
-// deferred disc samples transmittance. Deferred lighting composites the cloud
-// radiance over the sky, and every sun evaluation samples the cloud shadow.
+// sky's disc samples transmittance. The sky and atmosphere draws composite the
+// cloud radiance over the sky, and every sun evaluation samples the cloud
+// shadow.
 struct alignas(16) VkrMetalPacketSky {
   VkrSkyParams params;
   texture3d<float, access::sample> aerial_perspective;
@@ -428,16 +426,6 @@ VkrGpuDecodedVertex vkr_apply_deformation(VkrGpuDecodedVertex decoded,
     return decoded;
 }
 
-float3 vkr_previous_deformed_position(float3 fallback, ulong address,
-                                      uint vertex_index)
-{
-    if (address == 0)
-    {
-        return fallback;
-    }
-    return float3(((device const VkrGpuDeformedVertex*)address)[vertex_index].position);
-}
-
 struct VkrGpuCandidateDrawRow {
   uint geometry_index;
   uint material_index;
@@ -583,22 +571,6 @@ struct VkrMetalTiledVertexOutput {
   uint visible_row_index [[user(TEXCOORD_5), flat]];
   float2 lightmap_uv [[user(TEXCOORD_6)]];
   uint lightmap_page [[user(TEXCOORD_7), flat]];
-};
-
-struct VkrMetalPacketTemporalVertexOutput {
-  float4 position [[position]];
-  float2 texcoord [[user(TEXCOORD)]];
-  float4 color [[user(COLOR)]];
-  uint object_id [[user(TEXCOORD_1), flat]];
-  float3 world_position [[user(TEXCOORD_2)]];
-  float3 world_normal [[user(TEXCOORD_3)]];
-  float4 world_tangent [[user(TEXCOORD_4)]];
-  uint visible_row_index [[user(TEXCOORD_5), flat]];
-  uint instance_index [[user(TEXCOORD_10), flat]];
-  float3 object_position [[user(TEXCOORD_6)]];
-  uint temporal_index [[user(TEXCOORD_7), flat]];
-  uint temporal_generation [[user(TEXCOORD_8), flat]];
-  uint temporal_flags [[user(TEXCOORD_9), flat]];
 };
 
 static_assert(sizeof(VkrMetalPacketVertex) == 64,

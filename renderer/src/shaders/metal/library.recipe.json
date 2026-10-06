@@ -5,21 +5,13 @@
   "sources": [
     "../shared/exposure_kernel.slangh",
     "../shared/bloom_kernel.slangh",
-    "../shared/dof_kernel.slangh",
-    "../shared/motion_blur_kernel.slangh",
-    "../shared/subsurface_kernel.slangh",
     "../shared/gtao_kernel.slangh",
     "../shared/ltc_kernel.slangh",
     "../shared/sheen_kernel.slangh",
-    "../shared/ssr_kernel.slangh",
-    "../shared/ssgi_contract.slangh",
-    "../shared/ssgi_kernel.slangh",
     "../shared/fog_kernel.slangh",
     "../shared/froxel_fog_kernel.slangh",
     "../shared/atmosphere_kernel.slangh",
     "../shared/cloud_kernel.slangh",
-    "../shared/temporal_contract.slangh",
-    "../shared/temporal_filter_kernel.slangh",
     "../shared/dfg_contract.slangh",
     "../shared/ggx_kernel.slangh",
     "../shared/anisotropy_kernel.slangh",
@@ -52,7 +44,6 @@
     "msl/world/skinning.metal",
     "msl/editor/animation_preview.metal",
     "msl/world/gpu_draws.metal",
-    "msl/world/default.metal",
     "msl/world/tiled.metal",
     "msl/ibl/common.metalh",
     "msl/ibl/sh_projection.metal",
@@ -63,15 +54,6 @@
     "msl/ui/default.metal",
     "msl/post/exposure.metal",
     "msl/post/bloom.metal",
-    "msl/post/dof.metal",
-    "msl/post/motion_blur.metal",
-    "msl/post/metalfx.metal",
-    "msl/post/gtao.metal",
-    "msl/post/ssr.metal",
-    "msl/post/ssgi.metal",
-    "msl/post/subsurface.metal",
-    "msl/post/fog.metal",
-    "msl/post/froxel_fog.metal",
     "msl/post/tonemap.metal"
   ],
   "order_notes": [
@@ -85,7 +67,7 @@
     },
     {
       "before": "../shared/sh_l2_kernel.slangh",
-      "note": "VkrShL2Packed and its evaluation are referenced by the deferred lighting path and by the IBL projection kernel, so the shared header precedes both."
+      "note": "VkrShL2Packed and its evaluation are referenced by forward lighting and by the IBL projection kernel, so the shared header precedes both."
     },
     {
       "before": "msl/world/lighting.metalh",

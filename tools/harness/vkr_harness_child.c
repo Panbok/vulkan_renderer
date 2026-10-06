@@ -1508,12 +1508,9 @@ vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
       .render_scale = case_manifest->renderer.render_scale,
       .texture_max_load_dimension =
           case_manifest->renderer.texture_max_load_dimension,
-      .upscale_mode =
-          string_equals(case_manifest->renderer.upscaler, "metalfx_temporal")
-              ? VKR_UPSCALE_MODE_METALFX_TEMPORAL
-          : string_equals(case_manifest->renderer.upscaler, "fsr31")
-              ? VKR_UPSCALE_MODE_FSR31
-              : VKR_UPSCALE_MODE_SPATIAL,
+      .upscale_mode = string_equals(case_manifest->renderer.upscaler, "fsr31")
+                          ? VKR_UPSCALE_MODE_FSR31
+                          : VKR_UPSCALE_MODE_SPATIAL,
       .dynamic_resolution =
           {
               .min_scale = case_manifest->renderer.dynamic_resolution_min_scale,

@@ -8,13 +8,10 @@
 #include "vkr_buffer.h"
 #include "vkr_display_output.h"
 #include "vkr_gpu_abi.h"
-#include "vkr_gtao.h"
 #include "vkr_ibl_math.h"
 #include "vkr_prepared_frame.h"
 #include "vkr_render_graph.h"
 #include "vkr_renderer_impl.h"
-#include "vkr_ssgi.h"
-#include "vkr_ssr.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
 struct VkrGeometryUpload;
@@ -50,12 +47,6 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrAllocator *allocator;
   /** A zeroed record selects the production bloom defaults. */
   VkrBloomConfig bloom;
-  /** A zeroed record selects the production GTAO defaults. */
-  VkrGtaoConfig gtao;
-  /** Set explicitly with vkr_ssr_config_default() for production defaults. */
-  VkrSsrConfig ssr;
-  /** Set explicitly with vkr_ssgi_config_default() for production defaults. */
-  VkrSsgiConfig ssgi;
   const char *graph_path;
   const char *slang_msl_path;
   const char *fragment_msl_path;
@@ -69,14 +60,8 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrMetalPacketTargetKind target_kind;
   uint32_t target_width;
   uint32_t target_height;
-  float32_t render_scale;
-  /** Render scales the MetalFX scaler must accept, covering later live
-   * changes; zero bounds use the dynamic-resolution range or render_scale. */
-  float32_t render_scale_min;
-  float32_t render_scale_max;
-  VkrUpscaleMode upscale_mode;
-  /** The tiled class runs the tiled graph's forward pass (ADR-087). */
-  VkrGraphicsPipelineClass graphics_pipeline;
+  /** The tiled pipeline steps the resolution of its spatial upscale
+   * (ADR-087); frames then report their GPU time. */
   VkrDynamicResolutionConfig dynamic_resolution;
   /** Borrowed CAMetalLayer pointer; required only for WINDOW. */
   void *metal_layer;
@@ -110,9 +95,7 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t tonemap_enabled;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
-  /** Enables P19 transmission compaction; production defaults on. */
-  bool8_t transmission_compact_enabled;
-  /** Diagnostic rollback for P14 while retaining the deferred graph. */
+  /** Diagnostic rollback for P14 while retaining the graph. */
   bool8_t hzb_enabled;
   bool8_t frustum_enabled;
   uint32_t max_images;
@@ -222,7 +205,6 @@ typedef struct VkrMetalPacketResult {
   uint32_t indexed_draw_count;
   uint32_t shadow_draw_count;
   uint32_t opaque_draw_count;
-  uint32_t transmission_draw_count;
   uint32_t blend_draw_count;
   uint32_t ui_draw_count;
   uint32_t text_draw_count;
@@ -233,25 +215,11 @@ typedef struct VkrMetalPacketResult {
   uint32_t gpu_overflow_count;
   uint32_t gpu_resolve_invalid_count;
   uint32_t gpu_occlusion_culled_count;
-  uint32_t transmission_gpu_candidate_count;
-  uint32_t transmission_gpu_visible_count;
-  uint32_t transmission_gpu_bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
-  uint32_t transmission_gpu_overflow_count;
-  uint32_t transmission_gpu_resolve_invalid_count;
-  uint32_t transmission_gpu_occlusion_culled_count;
-  uint32_t transmission_compact_overflow_count;
-  uint32_t
-      transmission_covered_pixels[VKR_GPU_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT];
-  uint32_t transmission_coverage_extent[2];
-  bool8_t has_transmission_coverage;
   uint32_t shadow_gpu_visible_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_gpu_bucket_counts[VKR_SHADOW_CASCADE_COUNT_MAX]
                                    [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t shadow_gpu_overflow_count[VKR_SHADOW_CASCADE_COUNT_MAX];
   bool8_t hzb_history_valid;
-  VkrShadowDepthRangeSample shadow_depth_range;
-  /** Visible contribution per light, measured by deferred lighting. */
-  VkrLocalLightContributionSample local_light_contribution;
   bool8_t has_gpu_draw_diagnostics;
   VkrExposureDebugSample exposure;
   uint32_t resize_count;
@@ -260,7 +228,6 @@ typedef struct VkrMetalPacketResult {
   bool8_t has_shadow_depth;
   uint32_t picking_id;
   bool8_t has_picking_id;
-  uint32_t pipeline_count;
   uint32_t pass_timing_count;
   VkrMetalPacketPassTiming pass_timings[VKR_METAL_PACKET_MAX_PASS_TIMINGS];
   bool8_t pipeline_archive_warm;
@@ -423,10 +390,6 @@ bool8_t vkr_metal_packet_renderer_submit_result_poll_next(
 
 /** Waits for submitted work without retiring live assets. */
 bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer);
-/** Rebuilds the cold MetalFX scaler after the caller proves GPU idle. */
-bool8_t
-vkr_metal_packet_renderer_resize_metalfx(VkrMetalPacketRenderer *renderer,
-                                         uint32_t width, uint32_t height);
 uint64_t
 vkr_metal_packet_renderer_submit_value(const VkrMetalPacketRenderer *renderer);
 uint64_t vkr_metal_packet_renderer_completed_value(

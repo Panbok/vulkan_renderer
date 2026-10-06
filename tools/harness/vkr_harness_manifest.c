@@ -790,10 +790,9 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
   const bool8_t display_output_valid =
       string_equals(renderer->display_output, "sdr") ||
       string_equals(renderer->display_output, "auto_extended_linear");
-  const bool8_t upscaler_valid =
-      string_equals(renderer->upscaler, "spatial") ||
-      string_equals(renderer->upscaler, "metalfx_temporal") ||
-      string_equals(renderer->upscaler, "fsr31");
+  /* MetalFX temporal upscaling is retired; a case naming it is invalid. */
+  const bool8_t upscaler_valid = string_equals(renderer->upscaler, "spatial") ||
+                                 string_equals(renderer->upscaler, "fsr31");
   const bool8_t exposure_mode_valid =
       string_equals(renderer->exposure_mode, "manual") ||
       string_equals(renderer->exposure_mode, "automatic");
@@ -874,7 +873,8 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       fields->exposure_reset_frame > UINT32_MAX) {
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
-        "Renderer backend, preset, render/exposure/display-transform mode, "
+        "Renderer backend, preset, upscaler, "
+        "render/exposure/display-transform mode, "
         "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/"
         "image-sharpness controls, "
         "probe limit, or cascade count is invalid");
@@ -926,24 +926,19 @@ vkr_internal bool8_t vkr_harness_parse_renderer_upscaling(
     return false_v;
   }
   renderer->render_scale = (float32_t)fields->render_scale;
-  const bool8_t metalfx_temporal =
-      string_equals(renderer->upscaler, "metalfx_temporal");
   const bool8_t fsr31 = string_equals(renderer->upscaler, "fsr31");
-  if ((metalfx_temporal && (!string_equals(renderer->backend, "metal") ||
-                            !renderer->taa_enabled)) ||
-      (fsr31 &&
+  if ((fsr31 &&
        (!string_equals(renderer->backend, "vulkan") || !renderer->taa_enabled ||
         fields->render_scale < (1.0 / 3.0))) ||
-      (renderer->dynamic_resolution && !metalfx_temporal &&
+      (renderer->dynamic_resolution &&
        renderer->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED)) {
     vkr_harness_error_set(
         error, "renderer.upscaler", "$.renderer.upscaler",
-        "MetalFX requires Metal, FSR 3.1 requires Vulkan with temporal jitter "
-        "and scale in [1/3, 1], and dynamic resolution requires MetalFX or "
-        "the tiled pipeline");
+        "FSR 3.1 requires Vulkan with temporal jitter and scale in [1/3, 1], "
+        "and dynamic resolution requires the tiled pipeline");
     return false_v;
   }
-  if (metalfx_temporal || fsr31)
+  if (fsr31)
     renderer->fxaa_enabled = false_v;
   if (!vkr_harness_manifest_bool(doc, token, "fxaa_enabled", false_v,
                                  &renderer->fxaa_enabled, error))

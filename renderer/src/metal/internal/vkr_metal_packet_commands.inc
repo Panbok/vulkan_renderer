@@ -150,11 +150,8 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
       slot->gpu_draw_diagnostics_readback) {
     vkr_metal_packet_decode_gpu_draw_diagnostics(
         &slot->pending_result, slot->gpu_draw_diagnostics_readback,
-        slot->shadow_cascade_count, slot->gpu_draw_view_count,
-        slot->transmission_coverage_readback);
+        slot->shadow_cascade_count, slot->gpu_draw_view_count);
   }
-  if (slot->sdsm_requested && slot->sdsm_readback)
-    vkr_metal_packet_decode_sdsm(&slot->pending_result, slot->sdsm_readback);
   if (slot->exposure_requested && slot->exposure_readback) {
     const uint8_t *readback = slot->exposure_readback;
     MemCopy(&slot->pending_result.exposure.state, readback,
@@ -169,33 +166,6 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
     (void)vkr_capture_ring_set_display_exposure(
         &renderer->capture_ring, slot->submit_value,
         slot->pending_result.exposure.state.exposure_multiplier);
-  }
-  if (slot->light_contribution_readback) {
-    VkrLocalLightContributionSample *sample =
-        &slot->pending_result.local_light_contribution;
-    *sample = slot->light_contribution_source;
-    sample->submit_value = slot->submit_value;
-    MemCopy(sample->contribution, slot->light_contribution_readback,
-            sizeof(sample->contribution));
-    sample->valid = true_v;
-  }
-  if (slot->transmission_coverage_requested &&
-      slot->transmission_coverage_readback) {
-    const VkrMetalPacketTransmissionDiagnostics *diagnostics =
-        (const VkrMetalPacketTransmissionDiagnostics *)
-            slot->transmission_coverage_readback;
-    MemCopy(slot->pending_result.transmission_covered_pixels,
-            diagnostics->covered_pixels,
-            sizeof(slot->pending_result.transmission_covered_pixels));
-    MemCopy(slot->pending_result.transmission_coverage_extent,
-            slot->transmission_coverage_extent,
-            sizeof(slot->pending_result.transmission_coverage_extent));
-    for (uint32_t layer = 0u; layer < VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT;
-         ++layer) {
-      slot->pending_result.transmission_compact_overflow_count +=
-          diagnostics->compact_overflow[layer];
-    }
-    slot->pending_result.has_transmission_coverage = true_v;
   }
   if (slot->commit_feedback) {
     slot->commit_feedback->result = slot->pending_result;
@@ -288,17 +258,10 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->commit_feedback = NULL;
   slot->picking_readback = NULL;
   slot->gpu_draw_diagnostics_readback = NULL;
-  slot->transmission_coverage_readback = NULL;
-  slot->sdsm_readback = NULL;
   slot->exposure_readback = NULL;
-  slot->light_contribution_readback = NULL;
   slot->shadow_cascade_count = 0u;
   slot->gpu_draw_view_count = 0u;
-  slot->transmission_coverage_extent[0] = 0u;
-  slot->transmission_coverage_extent[1] = 0u;
   slot->gpu_draw_diagnostics_requested = false_v;
-  slot->transmission_coverage_requested = false_v;
-  slot->sdsm_requested = false_v;
   slot->exposure_requested = false_v;
   slot->pending_result = (VkrMetalPacketResult){0};
   return true_v;
@@ -511,7 +474,6 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
                        (unsigned long long)batch->used);
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
   [renderer->queue commit:submissions count:1];
-  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   VKR_METAL_DIAGNOSTIC(renderer, "upload_batch_commit_end", "slot=%u",
                        (uint32_t)(slot - renderer->upload_slots));
@@ -615,7 +577,6 @@ vkr_internal bool8_t vkr_metal_packet_submit_upload(
                        (uint32_t)(slot - renderer->upload_slots));
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
   [renderer->queue commit:submissions count:1];
-  vkr_metal_packet_advance_revision(&renderer->radiance_revision);
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   VKR_METAL_DIAGNOSTIC(renderer, "upload_commit_end", "slot=%u",
                        (uint32_t)(slot - renderer->upload_slots));

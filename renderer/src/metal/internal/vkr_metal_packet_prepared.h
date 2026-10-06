@@ -43,8 +43,6 @@ typedef struct VkrMetalPacketIndirectPass {
   id<MTLRenderPipelineState> pipeline;
   id<MTLRenderPipelineState> opaque_pipeline;
   uint64_t arguments;
-  uint64_t draw_root;
-  uint64_t peel_root;
   MTLViewport viewport;
   VkrShadowConfigOverride depth_bias;
   /* Local shadow faces clear only their atlas square before drawing. */
@@ -68,21 +66,11 @@ typedef struct VkrMetalPacketBufferCopy {
   uint64_t size;
 } VkrMetalPacketBufferCopy;
 
-typedef struct VkrMetalPacketTextureCopy {
-  id<MTLTexture> source;
-  id<MTLTexture> destination;
-  uint32_t source_slice;
-  uint32_t source_level;
-  uint32_t destination_slice;
-  uint32_t destination_level;
-  MTLSize extent;
-} VkrMetalPacketTextureCopy;
-
+/* Two candidate ranges, each with its candidate and instance rows, then the
+   zeroed compaction state. */
 typedef struct VkrMetalPacketTransferPass {
-  VkrMetalPacketBufferCopy buffers[6];
-  VkrMetalPacketTextureCopy textures[3];
+  VkrMetalPacketBufferCopy buffers[5];
   uint32_t buffer_count;
-  uint32_t texture_count;
 } VkrMetalPacketTransferPass;
 
 typedef struct VkrMetalPacketPreparedPass {
@@ -105,17 +93,6 @@ typedef struct VkrMetalPacketPreparedPass {
       uint32_t count;
     } skinning;
     struct {
-      id<MTLComputePipelineState> pipeline;
-      uint64_t root;
-      uint64_t arguments;
-      MTLSize threads;
-      bool8_t indirect;
-    } transmission;
-    struct {
-      uint64_t root;
-      MTLSize extent;
-    } compact;
-    struct {
       uint64_t root;
       MTLSize groups;
     } histogram;
@@ -124,7 +101,6 @@ typedef struct VkrMetalPacketPreparedPass {
       uint32_t extent;
     } cloud_sky_light;
     struct {
-      id<MTLComputePipelineState> pipeline;
       VkrMetalPacketGpuEncodeGroup
           groups[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
       uint32_t group_count;
@@ -155,24 +131,10 @@ typedef struct VkrMetalPacketPreparedPass {
       MTLViewport viewport;
       MTLScissorRect scissor;
     } tonemap;
-    struct {
-      id<MTLTexture> color;
-      id<MTLTexture> depth;
-      id<MTLTexture> motion;
-      id<MTLTexture> output;
-      uint32_t width;
-      uint32_t height;
-      Vec2 jitter;
-      /** The input colour's pre-exposure; MetalFX keeps its history in
-          exposure-independent units and writes output at this scale. */
-      float32_t pre_exposure;
-      bool8_t reset;
-    } metalfx;
     VkrMetalPacketTransferPass transfer;
     struct {
       id<MTLTexture> source;
-      /* The tiled pipeline reads the picked pixel's resolved depth here,
-         which the desktop picking resolve writes itself. */
+      /* The picked pixel's resolved depth, copied after its object id. */
       id<MTLTexture> depth_source;
       id<MTLBuffer> destination;
       uint64_t destination_offset;

@@ -99,21 +99,16 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_SUBSURFACE_DISABLED_EDITOR_DISABLED},
 
     {"motion_blur_enabled", VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED},
-    {"!motion_blur_enabled && metalfx_enabled",
-     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_ENABLED},
     {"!motion_blur_enabled && fsr31_enabled",
      VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED},
-    {"!motion_blur_enabled && !metalfx_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED},
+    {"!motion_blur_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_DISABLED},
     {"!dof_enabled && motion_blur_enabled",
      VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED},
-    {"!dof_enabled && !motion_blur_enabled && metalfx_enabled",
-     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_ENABLED},
     {"!dof_enabled && !motion_blur_enabled && fsr31_enabled",
      VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED},
-    {"!dof_enabled && !motion_blur_enabled && !metalfx_enabled && "
-     "!fsr31_enabled",
-     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED},
+    {"!dof_enabled && !motion_blur_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_DISABLED},
     {"gtao_enabled", VKR_RG_JSON_CONDITION_GTAO_ENABLED},
     {"fog_apply_enabled && editor_enabled",
      VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_ENABLED},
@@ -137,30 +132,16 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"ssr_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SSR_EDITOR_ENABLED},
     {"ssr_enabled && !editor_enabled",
      VKR_RG_JSON_CONDITION_SSR_EDITOR_DISABLED},
-    {"metalfx_enabled", VKR_RG_JSON_CONDITION_METALFX_ENABLED},
-    {"!metalfx_enabled", VKR_RG_JSON_CONDITION_METALFX_DISABLED},
-    {"editor_enabled && !metalfx_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED},
-    {"!editor_enabled && !metalfx_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_DISABLED},
-    {"bloom_enabled && metalfx_enabled",
-     VKR_RG_JSON_CONDITION_BLOOM_METALFX_ENABLED},
-    {"bloom_enabled && !metalfx_enabled",
-     VKR_RG_JSON_CONDITION_BLOOM_METALFX_DISABLED},
     {"fsr31_enabled", VKR_RG_JSON_CONDITION_FSR31_ENABLED},
     {"!fsr31_enabled", VKR_RG_JSON_CONDITION_FSR31_DISABLED},
-    {"!metalfx_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_METALFX_FSR31_DISABLED},
-    {"editor_enabled && !metalfx_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_FSR31_DISABLED},
-    {"!editor_enabled && !metalfx_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_FSR31_DISABLED},
+    {"editor_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_FSR31_DISABLED},
+    {"!editor_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_FSR31_DISABLED},
     {"bloom_enabled && fsr31_enabled",
      VKR_RG_JSON_CONDITION_BLOOM_FSR31_ENABLED},
     {"bloom_enabled && !fsr31_enabled",
      VKR_RG_JSON_CONDITION_BLOOM_FSR31_DISABLED},
-    {"bloom_enabled && !metalfx_enabled && !fsr31_enabled",
-     VKR_RG_JSON_CONDITION_BLOOM_METALFX_FSR31_DISABLED},
     {"picking_pending", VKR_RG_JSON_CONDITION_PICKING_PENDING},
     {"!picking_pending", VKR_RG_JSON_CONDITION_PICKING_IDLE},
     {"picking_pending && transmission_pending",
@@ -2131,24 +2112,18 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->dof_enabled;
   case VKR_RG_JSON_CONDITION_MOTION_BLUR_ENABLED:
     return frame->motion_blur_enabled;
-  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_ENABLED:
-    return !frame->motion_blur_enabled && frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_ENABLED:
     return !frame->motion_blur_enabled && frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED:
-    return !frame->motion_blur_enabled && !frame->metalfx_enabled &&
-           !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_MOTION_BLUR_DISABLED_FSR31_DISABLED:
+    return !frame->motion_blur_enabled && !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_DOF_DISABLED_MOTION_BLUR_ENABLED:
     return !frame->dof_enabled && frame->motion_blur_enabled;
-  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_ENABLED:
-    return !frame->dof_enabled && !frame->motion_blur_enabled &&
-           frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_ENABLED:
     return !frame->dof_enabled && !frame->motion_blur_enabled &&
            frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_METALFX_FSR31_DISABLED:
+  case VKR_RG_JSON_CONDITION_DOF_MOTION_BLUR_DISABLED_FSR31_DISABLED:
     return !frame->dof_enabled && !frame->motion_blur_enabled &&
-           !frame->metalfx_enabled && !frame->fsr31_enabled;
+           !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_GTAO_ENABLED:
     return frame->gtao_enabled;
   case VKR_RG_JSON_CONDITION_FOG_APPLY_EDITOR_ENABLED:
@@ -2179,37 +2154,18 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->ssr_enabled && frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_SSR_EDITOR_DISABLED:
     return frame->ssr_enabled && !frame->editor_enabled;
-  case VKR_RG_JSON_CONDITION_METALFX_ENABLED:
-    return frame->metalfx_enabled;
-  case VKR_RG_JSON_CONDITION_METALFX_DISABLED:
-    return !frame->metalfx_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_DISABLED:
-    return frame->editor_enabled && !frame->metalfx_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_DISABLED:
-    return !frame->editor_enabled && !frame->metalfx_enabled;
-  case VKR_RG_JSON_CONDITION_BLOOM_METALFX_ENABLED:
-    return frame->bloom_enabled && frame->metalfx_enabled;
-  case VKR_RG_JSON_CONDITION_BLOOM_METALFX_DISABLED:
-    return frame->bloom_enabled && !frame->metalfx_enabled;
   case VKR_RG_JSON_CONDITION_FSR31_ENABLED:
     return frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_FSR31_DISABLED:
     return !frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_METALFX_FSR31_DISABLED:
-    return !frame->metalfx_enabled && !frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_METALFX_FSR31_DISABLED:
-    return frame->editor_enabled && !frame->metalfx_enabled &&
-           !frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_METALFX_FSR31_DISABLED:
-    return !frame->editor_enabled && !frame->metalfx_enabled &&
-           !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_FSR31_DISABLED:
+    return frame->editor_enabled && !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_FSR31_DISABLED:
+    return !frame->editor_enabled && !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_BLOOM_FSR31_ENABLED:
     return frame->bloom_enabled && frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_BLOOM_FSR31_DISABLED:
     return frame->bloom_enabled && !frame->fsr31_enabled;
-  case VKR_RG_JSON_CONDITION_BLOOM_METALFX_FSR31_DISABLED:
-    return frame->bloom_enabled && !frame->metalfx_enabled &&
-           !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_PICKING_PENDING:
     return frame->picking_pending;
   case VKR_RG_JSON_CONDITION_PICKING_IDLE:

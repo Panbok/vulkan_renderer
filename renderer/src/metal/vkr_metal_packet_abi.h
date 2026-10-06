@@ -9,41 +9,23 @@
 #include "vkr_bloom.h"
 #include "vkr_buffer.h"
 #include "vkr_display_output.h"
-#include "vkr_dof.h"
 #include "vkr_exposure.h"
 #include "vkr_fog.h"
 #include "vkr_froxel_fog.h"
 #include "vkr_gpu_abi.h"
-#include "vkr_gtao.h"
 #include "vkr_lighting.h"
-#include "vkr_motion_blur.h"
 #include "vkr_render_resources.h"
 #include "vkr_shadow.h"
-#include "vkr_ssgi.h"
-#include "vkr_ssr.h"
-#include "vkr_subsurface.h"
 
 enum {
   VKR_METAL_PACKET_ROOT_ALIGNMENT = 256,
   VKR_METAL_PACKET_DRAW_ROOT_STRIDE = 512,
-  VKR_METAL_PACKET_TRANSMISSION_LAYER_COUNT = 4,
-  VKR_METAL_PACKET_TRANSMISSION_DIAGNOSTIC_LAYER_COUNT = 5,
 };
 
 /** Converts VKR's column-major matrix for Slang's row-vector MSL lowering. */
 vkr_internal INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
   return mat4_transpose(matrix);
 }
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalDrawState {
-  uint64_t previous_transforms;
-  uint32_t previous_transform_address_padding[2];
-  Mat4 current_view_projection;
-  Mat4 previous_view_projection;
-  uint32_t history_valid;
-  uint32_t previous_frame_index;
-  uint32_t reserved[2];
-} VkrMetalPacketTemporalDrawState;
 
 /** Values shared by every indexed draw encoded for one pass. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDiffuseVolume {
@@ -353,11 +335,10 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
 typedef VkrMetalPacketDrawRoot VkrMetalPacketVertexDrawRoot;
 
 enum {
-  /* Camera, directional cascades, then opaque and transmitting local render
-     slots. */
+  /* Camera, directional cascades, then the local render slots. */
   VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX =
       1u + VKR_SHADOW_CASCADE_COUNT_MAX +
-      2u * VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+      VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
 };
 
 /** One frustum and routing policy in the bounded multi-view cull set. */
@@ -403,16 +384,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
 _Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 192,
                "Metal GPU draw root ABI must remain 192 bytes");
 
-/** Per-peel visibility raster state bound outside GPU-encoded draw commands. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionPeelRoot {
-  uint64_t previous_depth_texture_id;
-  float32_t depth_epsilon;
-  uint32_t previous_depth_enabled;
-} VkrMetalPacketTransmissionPeelRoot;
-
-_Static_assert(sizeof(VkrMetalPacketTransmissionPeelRoot) == 16,
-               "Metal transmission-peel root ABI must remain 16 bytes");
-
 /** One HZB base/reduction dispatch over explicit source/destination views. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
   uint64_t source_texture_id;
@@ -438,104 +409,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowMomentsRoot {
 
 _Static_assert(sizeof(VkrMetalPacketShadowMomentsRoot) == 32,
                "Metal shadow moments root ABI must remain 32 bytes");
-
-/** Explicit-subresource GTAO depth prefilter/reduction root. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketGtaoDepthRoot {
-  VkrGtaoGpuParams params;
-  uint64_t source_texture_id;
-  uint64_t destination_texture_id;
-  uint32_t source_extent[2];
-  uint32_t destination_extent[2];
-} VkrMetalPacketGtaoDepthRoot;
-
-_Static_assert(sizeof(VkrMetalPacketGtaoDepthRoot) == 224,
-               "Metal GTAO depth root ABI must remain 224 bytes");
-
-/** Full-resolution GTAO horizon evaluation resources. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketGtaoEvaluateRoot {
-  VkrGtaoGpuParams params;
-  uint64_t vbuffer_texture_id;
-  uint64_t view_depth_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t destination_texture_id;
-  uint64_t edges_texture_id;
-  uint32_t source_extent[2];
-  uint32_t destination_extent[2];
-  uint32_t reserved[2];
-} VkrMetalPacketGtaoEvaluateRoot;
-
-_Static_assert(sizeof(VkrMetalPacketGtaoEvaluateRoot) == 256,
-               "Metal GTAO evaluate root ABI must remain 256 bytes");
-
-/** Full-resolution edge-aware GTAO spatial denoise resources. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketGtaoDenoiseRoot {
-  VkrGtaoGpuParams params;
-  uint64_t source_texture_id;
-  uint64_t edges_texture_id;
-  uint64_t destination_texture_id;
-  uint32_t source_extent[2];
-  uint32_t destination_extent[2];
-  uint32_t reserved[2];
-} VkrMetalPacketGtaoDenoiseRoot;
-
-_Static_assert(sizeof(VkrMetalPacketGtaoDenoiseRoot) == 240,
-               "Metal GTAO denoise root ABI must remain 240 bytes");
-
-/** Half-resolution current-frame depth and receiver selection for SSR. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketFogRoot {
-  VkrFogGpuParams params;
-  Mat4 inverse_view_projection;
-  Vec4 camera_position;
-  uint64_t depth_texture_id;
-  uint64_t target_texture_id;
-  uint32_t extent[2];
-  uint64_t aerial_perspective_texture_id;
-  uint64_t sky;
-  uint64_t frame;
-} VkrMetalPacketFogRoot;
-
-_Static_assert(sizeof(VkrMetalPacketFogRoot) == 176u,
-               "Metal fog root ABI drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelInjectRoot {
-  uint64_t frame;
-  uint64_t params;
-  uint64_t history_texture_id;
-  uint64_t output_texture_id;
-  uint32_t history_valid;
-  uint32_t extent[3];
-  /** Converts history source radiance to this frame's pre-exposure. */
-  float32_t history_pre_exposure_scale;
-  uint32_t reserved[3];
-} VkrMetalPacketFroxelInjectRoot;
-
-_Static_assert(sizeof(VkrMetalPacketFroxelInjectRoot) == 64u,
-               "Metal froxel inject root ABI drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelIntegrateRoot {
-  uint64_t frame;
-  uint64_t params;
-  uint64_t scattering_texture_id;
-  uint64_t integrated_texture_id;
-  uint32_t extent[3];
-  uint32_t reserved;
-} VkrMetalPacketFroxelIntegrateRoot;
-
-_Static_assert(sizeof(VkrMetalPacketFroxelIntegrateRoot) == 48u,
-               "Metal froxel integrate root ABI drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketFroxelApplyRoot {
-  uint64_t frame;
-  uint64_t params;
-  uint64_t depth_texture_id;
-  uint64_t integrated_texture_id;
-  uint64_t target_texture_id;
-  uint32_t extent[2];
-  uint64_t aerial_perspective_texture_id;
-} VkrMetalPacketFroxelApplyRoot;
-
-_Static_assert(sizeof(VkrMetalPacketFroxelApplyRoot) == 64u,
-               "Metal froxel apply root ABI drift");
 
 /** Per-frame sky-view lookup and aerial-perspective volume builders. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkyBuildRoot {
@@ -601,231 +474,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketCloudSkyLightRoot {
 _Static_assert(sizeof(VkrMetalPacketCloudSkyLightRoot) == 80u,
                "Metal cloud sky-light root ABI drift");
 
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiDepthBaseRoot {
-  VkrSsgiGpuParams params;
-  uint64_t depth_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t pyramid_texture_id;
-  uint64_t receiver_texture_id;
-} VkrMetalPacketSsgiDepthBaseRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsgiDepthBaseRoot) == 320u,
-               "Metal SSGI depth-base root ABI must remain 320 bytes");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiDepthMipRoot {
-  VkrSsgiGpuParams params;
-  uint64_t source_texture_id;
-  uint64_t destination_texture_id;
-  uint32_t source_extent[2];
-  uint32_t destination_extent[2];
-} VkrMetalPacketSsgiDepthMipRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsgiDepthMipRoot) == 320u,
-               "Metal SSGI depth-mip root ABI must remain 320 bytes");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiTraceRoot {
-  VkrSsgiGpuParams params;
-  uint64_t depth_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t albedo_texture_id;
-  uint64_t pyramid_texture_id;
-  uint64_t direct_source_texture_id;
-  uint64_t raw_texture_id;
-  uint64_t receiver_texture_id;
-} VkrMetalPacketSsgiTraceRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsgiTraceRoot) == 352u,
-               "Metal SSGI trace root ABI must remain 352 bytes");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiTemporalRoot {
-  VkrSsgiGpuParams params;
-  uint64_t raw_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t motion_texture_id;
-  uint64_t validity_texture_id;
-  uint64_t history_color_texture_id;
-  uint64_t history_depth_texture_id;
-  uint64_t history_identity_texture_id;
-  uint64_t output_color_texture_id;
-  uint64_t output_depth_texture_id;
-  uint64_t output_identity_texture_id;
-  uint64_t visible_rows;
-  uint64_t instances;
-  uint64_t receiver_texture_id;
-  /** Converts history radiance to this frame's pre-exposure. */
-  float32_t history_pre_exposure_scale;
-  uint32_t reserved;
-} VkrMetalPacketSsgiTemporalRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsgiTemporalRoot) == 416u,
-               "Metal SSGI temporal root ABI must remain 416 bytes");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsgiCompositeRoot {
-  uint64_t frame;
-  VkrSsgiGpuParams params;
-  uint64_t hdr_texture_id;
-  uint64_t history_color_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t albedo_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t history_depth_texture_id;
-  uint64_t specular_texture_id;
-  Mat4 inverse_view_projection;
-  uint32_t extent[2];
-  uint32_t subsurface_profile_count;
-  uint32_t reserved;
-  uint64_t clearcoat_texture_id;
-  uint64_t sheen_texture_id;
-  uint64_t anisotropy_texture_id;
-  uint32_t visible_rows_padding[2];
-  uint64_t visible_rows;
-  uint64_t subsurface_source_texture_id;
-  uint64_t receiver_texture_id;
-} VkrMetalPacketSsgiCompositeRoot;
-_Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot,
-                        subsurface_source_texture_id) == 488u &&
-                   offsetof(VkrMetalPacketSsgiCompositeRoot,
-                            subsurface_profile_count) == 440u,
-               "Subsurface source producer ABI drift");
-
-_Static_assert(sizeof(VkrMetalPacketSsgiCompositeRoot) == 512u,
-               "Metal SSGI composite root ABI must remain 512 bytes");
-_Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot,
-                        clearcoat_texture_id) == 448u,
-               "Metal SSGI clearcoat ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot, sheen_texture_id) ==
-                   456u,
-               "Metal SSGI sheen ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot,
-                        anisotropy_texture_id) == 464u,
-               "Metal SSGI anisotropy ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketSsgiCompositeRoot, visible_rows) == 480u,
-               "Metal SSGI visible-row ABI offset drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrDepthBaseRoot {
-  VkrSsrGpuParams params;
-  uint64_t depth_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t pyramid_texture_id;
-} VkrMetalPacketSsrDepthBaseRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsrDepthBaseRoot) == 320,
-               "Metal SSR depth-base root ABI must remain 320 bytes");
-
-/** One explicit subresource reduction in the current-frame SSR pyramid. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrDepthMipRoot {
-  VkrSsrGpuParams params;
-  uint64_t source_texture_id;
-  uint64_t destination_texture_id;
-  uint32_t source_extent[2];
-  uint32_t destination_extent[2];
-} VkrMetalPacketSsrDepthMipRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsrDepthMipRoot) == 320,
-               "Metal SSR depth-mip root ABI must remain 320 bytes");
-
-/** Each source pixel owns one SSR trace and its reflected-hit record. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTraceRoot {
-  VkrSsrGpuParams params;
-  uint64_t depth_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t specular_texture_id;
-  uint64_t pyramid_texture_id;
-  uint64_t hdr_texture_id;
-  uint64_t raw_texture_id;
-  uint64_t clearcoat_texture_id;
-  uint64_t hit_texture_id;
-} VkrMetalPacketSsrTraceRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsrTraceRoot) == 368,
-               "Metal SSR trace root ABI must remain 368 bytes");
-_Static_assert(offsetof(VkrMetalPacketSsrTraceRoot, clearcoat_texture_id) ==
-                       344u &&
-                   offsetof(VkrMetalPacketSsrTraceRoot, hit_texture_id) == 352u,
-               "Metal SSR trace texture ABI offset drift");
-
-/** SSR temporal filtering owns incoming radiance and reflected-hit geometry. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrTemporalRoot {
-  VkrSsrGpuParams params;
-  uint64_t raw_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t history_color_texture_id;
-  uint64_t history_depth_texture_id;
-  uint64_t history_identity_texture_id;
-  uint64_t output_color_texture_id;
-  uint64_t output_depth_texture_id;
-  uint64_t output_identity_texture_id;
-  uint64_t visible_rows;
-  uint64_t instances;
-  uint64_t specular_texture_id;
-  uint64_t clearcoat_texture_id;
-  uint64_t hit_texture_id;
-  uint64_t previous_transforms;
-  uint64_t reprojection;
-  uint32_t previous_frame_index;
-  /** Converts history radiance to this frame's pre-exposure. */
-  float32_t history_pre_exposure_scale;
-} VkrMetalPacketSsrTemporalRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsrTemporalRoot) == 432,
-               "Metal SSR temporal root ABI must remain 432 bytes");
-_Static_assert(
-    offsetof(VkrMetalPacketSsrTemporalRoot, clearcoat_texture_id) == 392u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, hit_texture_id) == 400u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, previous_transforms) == 408u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, reprojection) == 416u &&
-        offsetof(VkrMetalPacketSsrTemporalRoot, previous_frame_index) == 424u,
-    "Metal SSR temporal reprojection ABI offset drift");
-
-/** Full-resolution matching-pixel replacement of environment specular. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSsrCompositeRoot {
-  uint64_t frame;
-  VkrSsrGpuParams params;
-  uint64_t hdr_texture_id;
-  uint64_t history_color_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t albedo_texture_id;
-  uint64_t specular_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t gtao_visibility_texture_id;
-  Mat4 inverse_view_projection;
-  uint32_t extent[2];
-  uint32_t reserved[2];
-  uint64_t clearcoat_texture_id;
-  uint64_t sheen_texture_id;
-  uint64_t anisotropy_texture_id;
-} VkrMetalPacketSsrCompositeRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSsrCompositeRoot) == 480,
-               "Metal SSR composite root ABI must remain 480 bytes");
-_Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot, clearcoat_texture_id) ==
-                   448u,
-               "Metal SSR composite clearcoat ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot, sheen_texture_id) ==
-                   456u,
-               "Metal SSR composite sheen ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketSsrCompositeRoot,
-                        anisotropy_texture_id) == 464u,
-               "Metal SSR composite anisotropy ABI offset drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSdsmRoot {
-  uint64_t depth_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t reduce_state;
-  uint32_t extent[2];
-} VkrMetalPacketSdsmRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSdsmRoot) == 32,
-               "Metal SDSM root ABI must remain 32 bytes");
-
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketExposureRoot {
   uint64_t histogram;
   uint64_t state;
@@ -839,56 +487,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketExposureRoot {
 
 _Static_assert(sizeof(VkrMetalPacketExposureRoot) == 112,
                "Metal exposure root ABI must remain 112 bytes");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketSubsurfaceRoot {
-  VkrSubsurfaceGpuParams params;
-  Mat4 inverse_view_projection;
-  uint64_t frame;
-  uint64_t visible_rows;
-  uint64_t hdr;
-  uint64_t source;
-  uint64_t depth;
-  uint64_t normal;
-  uint64_t vbuffer;
-  uint64_t profile_bank;
-  uint64_t albedo;
-  uint64_t specular;
-  uint64_t clearcoat;
-  uint64_t sheen;
-  uint64_t anisotropy;
-  uint64_t destination;
-} VkrMetalPacketSubsurfaceRoot;
-
-_Static_assert(sizeof(VkrMetalPacketSubsurfaceRoot) == 208u,
-               "Subsurface gather root ABI drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketMotionBlurRoot {
-  VkrMotionBlurGpuParams params;
-  uint64_t source0;
-  uint64_t source1;
-  uint64_t source2;
-  uint64_t source3;
-  uint64_t source4;
-  uint64_t destination0;
-} VkrMetalPacketMotionBlurRoot;
-
-_Static_assert(sizeof(VkrMetalPacketMotionBlurRoot) == 96u,
-               "Motion-blur root ABI size drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketDofRoot {
-  VkrDofGpuParams params;
-  uint64_t source0;
-  uint64_t source1;
-  uint64_t source2;
-  uint64_t source3;
-  uint64_t source4;
-  uint64_t destination0;
-  uint64_t destination1;
-  uint32_t reserved[2];
-} VkrMetalPacketDofRoot;
-
-_Static_assert(sizeof(VkrMetalPacketDofRoot) == 112u,
-               "Metal DoF root ABI size drift");
 
 /** Mirrors VkrMetalPacketBloomRoot in shaders/metal/msl/post/bloom.metal. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketBloomRoot {
@@ -911,16 +509,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketBloomRoot {
 
 _Static_assert(sizeof(VkrMetalPacketBloomRoot) == 80,
                "Metal bloom root ABI must remain 80 bytes");
-
-typedef struct VkrMetalPacketSdsmState {
-  uint32_t min_device_z_bits;
-  uint32_t max_device_z_bits;
-  uint32_t occupied_count;
-  uint32_t reserved;
-} VkrMetalPacketSdsmState;
-
-_Static_assert(sizeof(VkrMetalPacketSdsmState) == 16,
-               "Metal SDSM state ABI must remain 16 bytes");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketAnimationPreviewRoot {
   Mat4 model;
@@ -951,361 +539,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkinningRoot {
 
 _Static_assert(sizeof(VkrMetalPacketSkinningRoot) == 48,
                "Metal skinning root ABI must remain 48 bytes");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalTransformRoot {
-  uint64_t instances;
-  uint64_t transforms;
-  uint32_t instance_count;
-  uint32_t transform_capacity;
-  uint32_t frame_index;
-  uint32_t reserved;
-} VkrMetalPacketTemporalTransformRoot;
-
-_Static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32,
-               "Metal temporal-transform root ABI must remain 32 bytes");
-
-/** Per-dispatch material-resolve resource table and viewport contract. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketGBufferResolveRoot {
-  uint64_t visible_rows;
-  uint64_t geometry_rows;
-  uint64_t instances;
-  uint64_t materials;
-  uint64_t compaction_state;
-  uint64_t vbuffer_texture_id;
-  uint64_t albedo_texture_id;
-  uint64_t specular_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t emissive_texture_id;
-  uint64_t debug_texture_id;
-  uint64_t hdr_seed_texture_id;
-  Mat4 view_projection;
-  Mat4 current_view_projection;
-  Mat4 previous_view_projection;
-  uint64_t previous_transforms;
-  uint64_t motion_texture_id;
-  uint64_t validity_texture_id;
-  uint32_t extent[2];
-  uint32_t visible_capacity;
-  uint32_t geometry_count;
-  uint32_t material_count;
-  uint32_t instance_count;
-  uint32_t render_mode;
-  uint32_t history_valid;
-  uint32_t previous_frame_index;
-  float32_t pre_exposure;
-  Mat4 sky_reprojection;
-  uint64_t clearcoat_texture_id;
-  uint64_t sheen_texture_id;
-  uint64_t anisotropy_texture_id;
-  /** The material table's terrain segment, indexed like `materials`. */
-  uint64_t terrain_materials;
-} VkrMetalPacketGBufferResolveRoot;
-
-_Static_assert(sizeof(VkrMetalPacketGBufferResolveRoot) == 448,
-               "Metal G-buffer resolve root ABI must remain 448 bytes");
-_Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot, sky_reprojection) ==
-                   352,
-               "Metal G-buffer sky-reprojection matrix ABI drift");
-_Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot,
-                        clearcoat_texture_id) == 416u,
-               "Metal G-buffer clearcoat ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot, sheen_texture_id) ==
-                   424u,
-               "Metal G-buffer sheen ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot,
-                        anisotropy_texture_id) == 432u,
-               "Metal G-buffer anisotropy ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketGBufferResolveRoot, terrain_materials) ==
-                   440u,
-               "Metal G-buffer terrain material ABI offset drift");
-
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalResolveRoot {
-  uint64_t visible_rows;
-  uint64_t instances;
-  uint64_t scene_texture_id;
-  uint64_t pre_transmission_texture_id;
-  uint64_t motion_texture_id;
-  uint64_t validity_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t vbuffer_texture_id;
-  uint64_t history_color_texture_id;
-  uint64_t history_depth_texture_id;
-  uint64_t history_identity_texture_id;
-  uint64_t history_surface_texture_id;
-  uint64_t output_color_texture_id;
-  uint64_t output_depth_texture_id;
-  uint64_t output_identity_texture_id;
-  uint64_t output_surface_texture_id;
-  uint32_t extent[2];
-  uint32_t history_valid;
-  uint32_t render_mode;
-  uint32_t camera_stationary;
-  uint64_t transmission_visible_rows;
-  uint64_t transmission_instances;
-  uint64_t transmission_vbuffer_texture_id;
-  uint64_t transmission_depth_texture_id;
-  uint32_t transmission_enabled;
-  /** Converts history radiance to this frame's pre-exposure. */
-  float32_t history_pre_exposure_scale;
-  /** Scales the absolute luminance floor of the transmission reactivity. */
-  float32_t pre_exposure;
-  uint32_t transmission_reserved;
-  Vec2 current_jitter_pixels;
-  Vec2 previous_jitter_pixels;
-  uint32_t scene_history_mode;
-} VkrMetalPacketTemporalResolveRoot;
-
-_Static_assert(sizeof(VkrMetalPacketTemporalResolveRoot) == 224,
-               "Metal temporal-resolve root ABI must remain 224 bytes");
-_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot,
-                        current_jitter_pixels) == 200u &&
-                   offsetof(VkrMetalPacketTemporalResolveRoot,
-                            previous_jitter_pixels) == 208u,
-               "Metal temporal-resolve jitter ABI drift");
-_Static_assert(offsetof(VkrMetalPacketTemporalResolveRoot,
-                        scene_history_mode) == 216u,
-               "Metal temporal static-scene ABI drift");
-
-/** Post-MetalFX stationary mean. Output alpha stores private sample age. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketMetalfxStabilizeRoot {
-  uint64_t output_texture_id;
-  uint64_t history_texture_id;
-  uint64_t validity_texture_id;
-  uint32_t output_extent[2];
-  uint32_t source_extent[2];
-  /** Current raster jitter in top-left source pixels, separate from motion. */
-  Vec2 jitter_pixels;
-  uint32_t history_valid;
-  uint32_t scene_stationary;
-  /** Converts history radiance to this frame's pre-exposure. */
-  float32_t history_pre_exposure_scale;
-  uint32_t reserved;
-} VkrMetalPacketMetalfxStabilizeRoot;
-
-_Static_assert(sizeof(VkrMetalPacketMetalfxStabilizeRoot) == 64u &&
-                   _Alignof(VkrMetalPacketMetalfxStabilizeRoot) == 16u,
-               "MetalFX stabilize root size/alignment ABI drift");
-_Static_assert(
-    offsetof(VkrMetalPacketMetalfxStabilizeRoot, output_texture_id) == 0u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, history_texture_id) ==
-            8u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, validity_texture_id) ==
-            16u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, output_extent) == 24u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, source_extent) == 32u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, jitter_pixels) == 40u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, history_valid) == 48u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, scene_stationary) == 52u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot,
-                 history_pre_exposure_scale) == 56u &&
-        offsetof(VkrMetalPacketMetalfxStabilizeRoot, reserved) == 60u,
-    "MetalFX stabilize root field ABI drift");
-
-/** Per-dispatch Shadow.LocalMask inputs: the G-buffer surface, its camera
- * reconstruction, the noise index that varies the contact-shadow march and
- * tap rotation between frames, and the temporal filter selection. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketLocalShadowMaskRoot {
-  uint64_t frame;
-  uint64_t vbuffer_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t normal_texture_id;
-  /** One RGBA8 layer of visibility per shadowed light. */
-  uint64_t mask_texture_id;
-  uint64_t visible_rows;
-  Mat4 inverse_view_projection;
-  uint32_t extent[2];
-  /** Zero without temporal reconstruction, so the march and tap patterns stay
-   * fixed. */
-  uint32_t contact_noise_index;
-  /** Nonzero under temporal reconstruction: fully filtered lights take the
-   * rotated temporal taps. */
-  uint32_t temporal_filter;
-} VkrMetalPacketLocalShadowMaskRoot;
-_Static_assert(sizeof(VkrMetalPacketLocalShadowMaskRoot) == 128u &&
-                   offsetof(VkrMetalPacketLocalShadowMaskRoot,
-                            inverse_view_projection) == 48u &&
-                   offsetof(VkrMetalPacketLocalShadowMaskRoot,
-                            contact_noise_index) == 120u &&
-                   offsetof(VkrMetalPacketLocalShadowMaskRoot,
-                            temporal_filter) == 124u,
-               "Metal local shadow mask root ABI drift");
-
-/** Per-dispatch deferred-lighting resources and reconstruction contract. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketDeferredLightingRoot {
-  uint64_t frame;
-  uint64_t vbuffer_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t albedo_texture_id;
-  uint64_t specular_texture_id;
-  uint64_t normal_texture_id;
-  uint64_t hdr_texture_id;
-  uint64_t sky_view_texture_id;
-  uint64_t gtao_visibility_texture_id;
-  Mat4 inverse_view_projection;
-  uint32_t extent[2];
-  /** VkrSkyMode: fallback colour, uniform radiance or the atmosphere. */
-  uint32_t sky_mode;
-  uint32_t subsurface_profile_count;
-  /** Uniform background radiance for the constant sky mode. */
-  Vec4 sky_radiance;
-  uint64_t direct_source_texture_id;
-  uint32_t ssgi_enabled;
-  /** Nonzero when the layered kernel also runs and owns layered tiles. */
-  uint32_t layered_tiles;
-  uint64_t clearcoat_texture_id;
-  uint64_t sheen_texture_id;
-  uint64_t anisotropy_texture_id;
-  /** Shadow.LocalMask output: one RGBA8 layer per shadowed light. */
-  uint64_t local_shadow_mask_texture_id;
-  uint64_t visible_rows;
-  uint64_t subsurface_source_texture_id;
-  /** Per-light visible contribution counters (VkrLocalLightContributionSample)
-   * in the slot readback, or zero when not measured. */
-  uint64_t light_contribution;
-  /** Far-cascade EVSM moments array, or zero without filtered far cascades. */
-  uint64_t shadow_moments_texture_id;
-} VkrMetalPacketDeferredLightingRoot;
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
-                        subsurface_source_texture_id) == 232u &&
-                   offsetof(VkrMetalPacketDeferredLightingRoot,
-                            subsurface_profile_count) == 156u,
-               "Subsurface source producer ABI drift");
-
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
-                        direct_source_texture_id) == 176u,
-               "Metal SSGI direct-source ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
-                        clearcoat_texture_id) == 192u,
-               "Metal deferred clearcoat ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot, sheen_texture_id) ==
-                   200u,
-               "Metal deferred sheen ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
-                        anisotropy_texture_id) == 208u,
-               "Metal deferred anisotropy ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot, visible_rows) ==
-                   224u,
-               "Metal deferred visible-row ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
-                        light_contribution) == 240u,
-               "Metal deferred light-contribution ABI offset drift");
-_Static_assert(offsetof(VkrMetalPacketDeferredLightingRoot,
-                        shadow_moments_texture_id) == 248u,
-               "Metal deferred shadow-moments ABI offset drift");
-_Static_assert(sizeof(VkrMetalPacketDeferredLightingRoot) == 256u,
-               "Metal deferred-lighting root ABI must remain 256 bytes");
-
-/** Per-dispatch frontmost transmission visibility resolve and shading. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionShadeRoot {
-  uint64_t frame;
-  uint64_t visible_rows;
-  uint64_t geometry_rows;
-  uint64_t instances;
-  uint64_t materials;
-  uint64_t transmission_materials;
-  uint64_t compaction_state;
-  uint64_t pixel_list;
-  uint64_t compact_counts;
-  uint64_t vbuffer_texture_id;
-  uint64_t depth_texture_id;
-  uint64_t source_texture_id;
-  uint64_t destination_texture_id;
-  Mat4 view_projection;
-  Mat4 inverse_view_projection;
-  uint32_t extent[2];
-  uint32_t visible_capacity;
-  uint32_t geometry_count;
-  uint32_t material_count;
-  uint32_t instance_count;
-  uint32_t pixel_capacity;
-  uint32_t compact_layer;
-  uint32_t compact_enabled;
-  uint32_t opaque_mip_count;
-  uint64_t opaque_texture_id;
-  uint64_t motion_texture_id;
-  uint64_t validity_texture_id;
-  uint64_t previous_transforms;
-  uint32_t previous_transform_address_padding[2];
-  Mat4 current_view_projection;
-  Mat4 previous_view_projection;
-  uint32_t history_valid;
-  uint32_t previous_frame_index;
-  uint32_t temporal_outputs_enabled;
-  uint32_t temporal_reserved;
-} VkrMetalPacketTransmissionShadeRoot;
-_Static_assert(sizeof(VkrMetalPacketTransmissionShadeRoot) == 464,
-               "Metal transmission-shade root ABI must remain 464 bytes");
-
-typedef VkrGpuTransmissionDiagnostics VkrMetalPacketTransmissionDiagnostics;
-
-_Static_assert(sizeof(VkrMetalPacketTransmissionDiagnostics) == 180,
-               "Metal transmission diagnostics ABI must remain 180 bytes");
-_Static_assert(offsetof(VkrMetalPacketTransmissionDiagnostics,
-                        covered_pixels) == sizeof(VkrGpuDrawCompactionState),
-               "Metal transmission coverage must follow compaction state");
-
-/** Scans one final transmission layer and finalizes its indirect dispatch. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionCompactRoot {
-  uint64_t vbuffer_texture_id;
-  uint64_t pixel_list;
-  uint64_t covered_pixels;
-  uint64_t overflow_counts;
-  uint64_t indirect_arguments;
-  uint64_t visible_rows;
-  uint64_t materials;
-  uint64_t source_texture_id;
-  uint64_t destination_texture_id;
-  uint32_t extent[2];
-  uint32_t layer;
-  uint32_t capacity;
-  uint32_t reserved[2];
-} VkrMetalPacketTransmissionCompactRoot;
-
-_Static_assert(sizeof(VkrMetalPacketTransmissionCompactRoot) == 96,
-               "Metal transmission-compact root ABI must remain 96 bytes");
-
-/** Timing-only scan of one transmission visibility layer. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketTransmissionCoverageRoot {
-  uint64_t vbuffer_texture_id;
-  uint64_t covered_pixels;
-  uint32_t extent[2];
-  uint32_t layer;
-  uint32_t reserved;
-} VkrMetalPacketTransmissionCoverageRoot;
-
-_Static_assert(sizeof(VkrMetalPacketTransmissionCoverageRoot) == 32,
-               "Metal transmission-coverage root ABI must remain 32 bytes");
-
-/** Resolves the requested deferred visibility pixel to one object ID. */
-typedef struct VKR_SIMD_ALIGN VkrMetalPacketPickingResolveRoot {
-  uint64_t opaque_visible_rows;
-  uint64_t opaque_instances;
-  uint64_t opaque_compaction_state;
-  uint64_t transmission_visible_rows;
-  uint64_t transmission_instances;
-  uint64_t transmission_compaction_state;
-  uint64_t opaque_vbuffer_texture_id;
-  uint64_t opaque_depth_texture_id;
-  uint64_t transmission_vbuffer_texture_id;
-  uint64_t transmission_depth_texture_id;
-  uint64_t destination_texture_id;
-  uint32_t pixel[2];
-  uint32_t extent[2];
-  uint32_t opaque_visible_capacity;
-  uint32_t opaque_instance_count;
-  uint32_t transmission_visible_capacity;
-  uint32_t transmission_instance_count;
-  uint32_t transmission_enabled;
-  uint32_t reserved[1];
-  /* Address of one float: the opaque depth at `pixel`, read back with the
-     object id. */
-  uint64_t depth_output;
-  /* Keeps the shader's size at the host's 16-byte-aligned 144 bytes. */
-  uint64_t reserved_tail;
-} VkrMetalPacketPickingResolveRoot;
-
-_Static_assert(sizeof(VkrMetalPacketPickingResolveRoot) == 144,
-               "Metal picking-resolve root ABI must remain 144 bytes");
 
 /** One upload-ring cell used by the retained table-driven forward path. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTableDrawUpload {
@@ -1338,7 +571,6 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketShadowCascade {
 } VkrMetalPacketShadowCascade;
 
 enum {
-  VKR_METAL_PACKET_TONEMAP_FLAG_OPAQUE_ALPHA = 1u << 4u,
   VKR_METAL_PACKET_TONEMAP_FLAG_SOURCE_DISPLAY_LINEAR = 1u << 5u,
   VKR_METAL_PACKET_TONEMAP_FLAG_PREPARE_DISPLAY_LINEAR = 1u << 6u,
   VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR = 1u << 7u,
@@ -1465,7 +697,6 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL,
   VKR_METAL_PACKET_ABI_TEXT_VERTEX,
   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-  VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_FRAME_ROOT,
   VKR_METAL_PACKET_ABI_IBL_PROBE,
@@ -1488,54 +719,14 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_VIEW,
-  VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT,
-  VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM,
-  VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
   VKR_METAL_PACKET_ABI_SKINNING_ROOT,
   VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT,
-  VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT,
-  VKR_METAL_PACKET_ABI_GTAO_PARAMS,
-  VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT,
-  VKR_METAL_PACKET_ABI_GTAO_EVALUATE_ROOT,
-  VKR_METAL_PACKET_ABI_GTAO_DENOISE_ROOT,
-  VKR_METAL_PACKET_ABI_SSGI_PARAMS,
-  VKR_METAL_PACKET_ABI_SSGI_DEPTH_BASE_ROOT,
-  VKR_METAL_PACKET_ABI_SSGI_DEPTH_MIP_ROOT,
-  VKR_METAL_PACKET_ABI_SSGI_TRACE_ROOT,
-  VKR_METAL_PACKET_ABI_SSGI_TEMPORAL_ROOT,
-  VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT,
-  VKR_METAL_PACKET_ABI_SSR_PARAMS,
-  VKR_METAL_PACKET_ABI_SSR_REPROJECTION_PARAMS,
-  VKR_METAL_PACKET_ABI_SSR_DEPTH_BASE_ROOT,
-  VKR_METAL_PACKET_ABI_SSR_DEPTH_MIP_ROOT,
-  VKR_METAL_PACKET_ABI_SSR_TRACE_ROOT,
-  VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT,
-  VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT,
-  VKR_METAL_PACKET_ABI_FOG_ROOT,
   VKR_METAL_PACKET_ABI_FOG_PARAMS,
   VKR_METAL_PACKET_ABI_FROXEL_PARAMS,
-  VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT,
-  VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT,
-  VKR_METAL_PACKET_ABI_FROXEL_APPLY_ROOT,
-  VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT,
-  VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT,
-  VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT,
-  VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT,
-  VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT,
-  VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT,
-  VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT,
   VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT,
   VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT,
-  VKR_METAL_PACKET_ABI_SDSM_ROOT,
   VKR_METAL_PACKET_ABI_EXPOSURE_ROOT,
-  VKR_METAL_PACKET_ABI_SUBSURFACE_PARAMS,
-  VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT,
-  VKR_METAL_PACKET_ABI_MOTION_BLUR_PARAMS,
-  VKR_METAL_PACKET_ABI_MOTION_BLUR_ROOT,
-  VKR_METAL_PACKET_ABI_DOF_PARAMS,
-  VKR_METAL_PACKET_ABI_DOF_ROOT,
   VKR_METAL_PACKET_ABI_BLOOM_ROOT,
-  VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT,
   VKR_METAL_PACKET_ABI_SKY,
   VKR_METAL_PACKET_ABI_SKY_PARAMS,
   VKR_METAL_PACKET_ABI_SKY_VIEW_ROOT,

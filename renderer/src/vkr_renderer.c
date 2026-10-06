@@ -39,15 +39,6 @@ vkr_renderer_graph_path(VkrGraphicsPipelineClass graphics, char *storage,
   return storage;
 }
 
-/* The tiled pipeline upscales spatially without history, so its adaptive
- * quality follows each frame like Valve's VR controller (ADR-087). */
-vkr_internal VkrDynamicResolutionPolicy
-vkr_renderer_dynamic_resolution_policy(VkrGraphicsPipelineClass graphics) {
-  return graphics == VKR_GRAPHICS_PIPELINE_TILED
-             ? VKR_DYNAMIC_RESOLUTION_POLICY_RESPONSIVE
-             : VKR_DYNAMIC_RESOLUTION_POLICY_STABLE;
-}
-
 VkrGraphicsPipelineClass
 vkr_graphics_pipeline_for_backend(VkrRendererBackendType backend) {
   return backend == VKR_RENDERER_BACKEND_TYPE_METAL
@@ -196,14 +187,9 @@ vkr_internal bool8_t vkr_renderer_worker_create(VkrRenderer *renderer) {
 }
 
 vkr_internal uint32_t vkr_renderer_scaled_extent(uint32_t extent,
-                                                 float32_t render_scale,
-                                                 VkrUpscaleMode upscale_mode) {
+                                                 float32_t render_scale) {
   const float64_t scaled = (float64_t)extent * (float64_t)render_scale;
-  // MetalFX must not round content below a supported minimum input scale.
-  const float64_t quantized = upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL
-                                  ? ceil(scaled)
-                                  : floor(scaled + 0.5);
-  return ClampBot((uint32_t)quantized, 1u);
+  return ClampBot((uint32_t)floor(scaled + 0.5), 1u);
 }
 
 vkr_internal VkrMetricReason
@@ -252,27 +238,14 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .indexed_draw_count = source->indexed_draw_count,
       .shadow_draw_count = source->shadow_draw_count,
       .opaque_draw_count = source->opaque_draw_count,
-      .transmission_draw_count = source->transmission_draw_count,
       .blend_draw_count = source->blend_draw_count,
       .gpu_visible_count = source->gpu_visible_count,
       .gpu_overflow_count = source->gpu_overflow_count,
       .gpu_resolve_invalid_count = source->gpu_resolve_invalid_count,
       .gpu_occlusion_culled_count = source->gpu_occlusion_culled_count,
-      .transmission_gpu_visible_count = source->transmission_gpu_visible_count,
-      .transmission_gpu_overflow_count =
-          source->transmission_gpu_overflow_count,
-      .transmission_gpu_resolve_invalid_count =
-          source->transmission_gpu_resolve_invalid_count,
-      .transmission_gpu_occlusion_culled_count =
-          source->transmission_gpu_occlusion_culled_count,
-      .transmission_compact_overflow_count =
-          source->transmission_compact_overflow_count,
       .hzb_history_valid = source->hzb_history_valid,
-      .shadow_depth_range = source->shadow_depth_range,
-      .local_light_contribution = source->local_light_contribution,
       .has_gpu_draw_diagnostics = source->has_gpu_draw_diagnostics,
       .exposure = source->exposure,
-      .transmission_coverage_valid = source->has_transmission_coverage,
       .capture = source->capture,
       .materials =
           {
@@ -290,17 +263,8 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .pass_timing_count =
           Min(source->pass_timing_count, VKR_RENDERER_IMPL_MAX_PASS_TIMINGS),
   };
-  MemCopy(destination->transmission_covered_pixels,
-          source->transmission_covered_pixels,
-          sizeof(destination->transmission_covered_pixels));
-  MemCopy(destination->transmission_coverage_extent,
-          source->transmission_coverage_extent,
-          sizeof(destination->transmission_coverage_extent));
   MemCopy(destination->gpu_bucket_counts, source->gpu_bucket_counts,
           sizeof(destination->gpu_bucket_counts));
-  MemCopy(destination->transmission_gpu_bucket_counts,
-          source->transmission_gpu_bucket_counts,
-          sizeof(destination->transmission_gpu_bucket_counts));
   MemCopy(destination->shadow_gpu_visible_count,
           source->shadow_gpu_visible_count,
           sizeof(destination->shadow_gpu_visible_count));
@@ -486,20 +450,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
     uint32_t height, VkrDeviceRequirements *device_requirements,
     const VkrRendererBackendConfig *backend_config,
     VkrRendererError *out_error) {
-  VkrSsrQuality ssr_quality = VKR_SSR_QUALITY_HIGH;
-  const char *ssr_quality_env = getenv("VKR_SSR_QUALITY");
-  if (ssr_quality_env && ssr_quality_env[0] != '\0') {
-    if (strcmp(ssr_quality_env, "balanced") == 0) {
-      ssr_quality = VKR_SSR_QUALITY_BALANCED;
-    } else if (strcmp(ssr_quality_env, "high") != 0) {
-      log_error("VKR_SSR_QUALITY must be high or balanced");
-      if (out_error) {
-        *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-      }
-      return false_v;
-    }
-  }
-  const VkrSsrConfig ssr_config = vkr_ssr_config_for_quality(ssr_quality);
 #if defined(PLATFORM_APPLE)
   (void)device_requirements;
   /* Two completion-protected slots; backing heaps grow only at resource
@@ -550,8 +500,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   if (!pipeline_archive_path || pipeline_archive_path[0] == '\0')
     pipeline_archive_path = archive_default;
   VkrMetalPacketRendererConfig metal_config = {
-      .ssr = ssr_config,
-      .ssgi = vkr_ssgi_config_default(),
       .allocator = &renderer->render_graph_allocator,
       .graph_path = vkr_renderer_graph_path(renderer->graphics_pipeline,
                                             graph_path, sizeof(graph_path)),
@@ -566,11 +514,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
               : VKR_METAL_PACKET_TARGET_WINDOW,
       .target_width = width,
       .target_height = height,
-      .render_scale = renderer->render_scale,
-      .render_scale_min = renderer->render_scale_min,
-      .render_scale_max = renderer->render_scale_max,
-      .upscale_mode = renderer->upscale_mode,
-      .graphics_pipeline = renderer->graphics_pipeline,
       .dynamic_resolution = renderer->dynamic_resolution_config,
       .metal_layer = surface ? surface->metal_layer : NULL,
       .display_output_mode = backend_config->display_output_mode,
@@ -590,8 +533,6 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .srgb_output = true_v,
       .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
       .convert_vulkan_clip_y = true_v,
-      .transmission_compact_enabled =
-          !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
       .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
       .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
       .max_images = 128,
@@ -616,6 +557,20 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   return true_v;
 #else
   (void)device_requirements;
+  VkrSsrQuality ssr_quality = VKR_SSR_QUALITY_HIGH;
+  const char *ssr_quality_env = getenv("VKR_SSR_QUALITY");
+  if (ssr_quality_env && ssr_quality_env[0] != '\0') {
+    if (strcmp(ssr_quality_env, "balanced") == 0) {
+      ssr_quality = VKR_SSR_QUALITY_BALANCED;
+    } else if (strcmp(ssr_quality_env, "high") != 0) {
+      log_error("VKR_SSR_QUALITY must be high or balanced");
+      if (out_error) {
+        *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      }
+      return false_v;
+    }
+  }
+  const VkrSsrConfig ssr_config = vkr_ssr_config_for_quality(ssr_quality);
   char graph_path[4096];
   VkrVulkanRendererConfig config = {
       .ssr = ssr_config,
@@ -806,12 +761,6 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     log_error("Renderer upscale mode is invalid");
     return false_v;
   }
-  if (requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
-      backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
-    *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
-    log_error("MetalFX temporal upscaling requires the Metal backend");
-    return false_v;
-  }
   if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 &&
       backend_type != VKR_RENDERER_BACKEND_TYPE_VULKAN) {
     *out_error = VKR_RENDERER_ERROR_UNSUPPORTED_INPUT;
@@ -842,24 +791,15 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
     log_error("Dynamic resolution requires Metal's tiled graphics pipeline");
     return false_v;
   }
-  /* The live range: MetalFX builds its scaler once from the
-     dynamic-resolution floor up to native, the FSR 3.1 context accepts any
-     render extent up to its output, and the spatial Metal path resamples any
-     extent. Vulkan spatial fixes unit scale. */
+  /* The live range: the FSR 3.1 context accepts any render extent up to its
+     output, and the spatial Metal path resamples any extent. Vulkan spatial
+     fixes unit scale. */
   const VkrDynamicResolutionConfig dynamic_resolution_request =
       requested_dynamic_resolution;
   float32_t live_min = requested_render_scale;
   float32_t live_max = requested_render_scale;
-  if (requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL) {
-    /* Up to native: the dynamic-resolution cap and fixed scale may rise. */
-    const float32_t dynamic_min =
-        requested_dynamic_resolution.min_scale > 0.0f
-            ? requested_dynamic_resolution.min_scale
-            : VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE;
-    live_min = Min(live_min, dynamic_min);
-    live_max = 1.0f;
-  } else if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
-             backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+  if (requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
+      backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
     live_min = Min(live_min, 1.0f / 3.0f);
     live_max = 1.0f;
   }
@@ -913,10 +853,9 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->graphics_pipeline = requested_graphics;
   renderer->dynamic_resolution_request = dynamic_resolution_request;
   renderer->dynamic_resolution_config = requested_dynamic_resolution;
-  vkr_dynamic_resolution_init(
-      &renderer->dynamic_resolution_state, &requested_dynamic_resolution,
-      requested_render_scale,
-      vkr_renderer_dynamic_resolution_policy(requested_graphics));
+  vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state,
+                              &requested_dynamic_resolution,
+                              requested_render_scale);
   renderer->frame_active = false;
   renderer->asset_publisher = (VkrAssetPublisher){0};
   renderer->timing_result = (VkrRendererImplSubmitResult){0};
@@ -930,7 +869,6 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->temporal_state = (VkrTemporalState){0};
   renderer->temporal_reset_reasons = 0u;
   renderer->temporal_enabled =
-      requested_upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
       requested_upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
       !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
   renderer->exposure_state = (VkrExposureState){0};
@@ -995,11 +933,9 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->scene_output_height = initial.height;
   renderer->scene_output_extent_overridden = false_v;
   renderer->render_width = vkr_renderer_scaled_extent(
-      renderer->scene_output_width, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_width, renderer->render_scale);
   renderer->render_height = vkr_renderer_scaled_extent(
-      renderer->scene_output_height, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_height, renderer->render_scale);
   uint32_t width = initial.width;
   uint32_t height = initial.height;
 
@@ -1090,9 +1026,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.tiled_pipeline = tiled;
   prepared->frame.scene_rendering =
       !packet->editor || !packet->editor->scene_rendering_stopped;
-  /* Portable TAA, MetalFX and FSR all reconstruct edges temporally, so FXAA
-     filters only frames without temporal reconstruction. The tiled
-     pipeline's multisampling resolves its edges instead (ADR-087). */
+  /* Portable TAA and FSR both reconstruct edges temporally, so FXAA filters
+     only frames without temporal reconstruction. The tiled pipeline's
+     multisampling resolves its edges instead (ADR-087). */
   const bool8_t temporal_frame =
       rf->temporal_enabled && !tiled &&
       packet->globals.render_mode != VKR_RENDER_MODE_INDIRECT_DIFFUSE &&
@@ -1710,16 +1646,10 @@ vkr_internal bool8_t vkr_renderer_backend_memory_metrics(
 vkr_internal void vkr_renderer_backend_resize(VkrRenderer *renderer,
                                               uint32_t width, uint32_t height) {
 #if defined(PLATFORM_APPLE)
-  if (!renderer ||
-      renderer->upscale_mode != VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
-      width == 0u || height == 0u)
-    return;
-  if (renderer->scene_output_extent_overridden)
-    return;
-  if (vkr_renderer_backend_wait_idle(renderer) != VKR_RENDERER_ERROR_NONE ||
-      !vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer, width,
-                                                height))
-    log_error("MetalFX temporal scaler resize failed for %ux%u", width, height);
+  /* Metal realizes its targets from each prepared frame's extent. */
+  (void)renderer;
+  (void)width;
+  (void)height;
 #else
   if (vkr_vulkan_renderer_resize(
           renderer->vulkan_renderer, width, height,
@@ -1745,15 +1675,6 @@ vkr_internal VkrRendererError vkr_renderer_backend_present_target_recreate(
   renderer->present_target.height = height;
   renderer->present_target.image_count =
       renderer->impl.caps.present_target_image_count;
-  const uint32_t scene_width = renderer->scene_output_extent_overridden
-                                   ? renderer->scene_output_width
-                                   : width;
-  const uint32_t scene_height = renderer->scene_output_extent_overridden
-                                    ? renderer->scene_output_height
-                                    : height;
-  if (!vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer,
-                                                scene_width, scene_height))
-    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   return VKR_RENDERER_ERROR_NONE;
 #else
   if (!vkr_vulkan_renderer_resize(renderer->vulkan_renderer, width, height,
@@ -2067,11 +1988,9 @@ VkrRendererError vkr_renderer_present_target_recreate(VkrRenderer *renderer,
     renderer->scene_output_height = height;
   }
   renderer->render_width = vkr_renderer_scaled_extent(
-      renderer->scene_output_width, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_width, renderer->render_scale);
   renderer->render_height = vkr_renderer_scaled_extent(
-      renderer->scene_output_height, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_height, renderer->render_scale);
   renderer->timing_result.shadow_depth_range = (VkrShadowDepthRangeSample){0};
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -2142,13 +2061,11 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
         renderer->timing_result.source_render_width ==
             vkr_renderer_scaled_extent(
                 renderer->scene_output_width,
-                renderer->timing_result.source_render_scale,
-                renderer->upscale_mode) &&
+                renderer->timing_result.source_render_scale) &&
         renderer->timing_result.source_render_height ==
             vkr_renderer_scaled_extent(
                 renderer->scene_output_height,
-                renderer->timing_result.source_render_scale,
-                renderer->upscale_mode) &&
+                renderer->timing_result.source_render_scale) &&
         vkr_dynamic_resolution_update(
             &renderer->dynamic_resolution_state,
             renderer->timing_result.submit_value,
@@ -2159,11 +2076,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
     }
   }
   renderer->render_width = vkr_renderer_scaled_extent(
-      renderer->scene_output_width, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_width, renderer->render_scale);
   renderer->render_height = vkr_renderer_scaled_extent(
-      renderer->scene_output_height, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_height, renderer->render_scale);
   renderer->frame_active = true_v;
   VkrRenderGraphFrameInfo frame = {
       .frame_index = (uint32_t)(renderer->frame_number + 1u),
@@ -2178,8 +2093,6 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
       .viewport_width = renderer->render_width,
       .viewport_height = renderer->render_height,
       .render_scale = renderer->render_scale,
-      .metalfx_enabled =
-          renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL,
       .fsr31_enabled = renderer->upscale_mode == VKR_UPSCALE_MODE_FSR31,
       .picking_pending = false_v,
       .target_color_format = renderer->impl.caps.present_color_format,
@@ -2255,11 +2168,9 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
     renderer->scene_output_height = out_setup->window_height;
   }
   renderer->render_width = vkr_renderer_scaled_extent(
-      renderer->scene_output_width, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_width, renderer->render_scale);
   renderer->render_height = vkr_renderer_scaled_extent(
-      renderer->scene_output_height, renderer->render_scale,
-      renderer->upscale_mode);
+      renderer->scene_output_height, renderer->render_scale);
   renderer->timing_completed_ready = vkr_renderer_backend_poll_submit_result(
       renderer, renderer->timing_last_completed_submit_value,
       &renderer->timing_result);
@@ -2831,10 +2742,10 @@ void vkr_renderer_resize(VkrRenderer *renderer, uint32_t width,
     rf->scene_output_width = width;
     rf->scene_output_height = height;
   }
-  rf->render_width = vkr_renderer_scaled_extent(
-      rf->scene_output_width, rf->render_scale, rf->upscale_mode);
-  rf->render_height = vkr_renderer_scaled_extent(
-      rf->scene_output_height, rf->render_scale, rf->upscale_mode);
+  rf->render_width =
+      vkr_renderer_scaled_extent(rf->scene_output_width, rf->render_scale);
+  rf->render_height =
+      vkr_renderer_scaled_extent(rf->scene_output_height, rf->render_scale);
 
   /* Every resize path recreates or invalidates target state. A skipped frame
      may separate the stored fit from the next camera pose. */
@@ -2857,31 +2768,16 @@ vkr_internal VkrRendererError vkr_renderer_configure_scene_output_extent(
       renderer->scene_output_height == height)
     return VKR_RENDERER_ERROR_NONE;
 
-  if (renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
-      (renderer->scene_output_width != width ||
-       renderer->scene_output_height != height)) {
-#if defined(PLATFORM_APPLE)
-    const VkrRendererError idle = vkr_renderer_wait_idle(renderer);
-    if (idle != VKR_RENDERER_ERROR_NONE)
-      return idle;
-    if (!vkr_metal_packet_renderer_resize_metalfx(renderer->metal_renderer,
-                                                  width, height))
-      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-#else
-    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
-#endif
-  }
-
   if (renderer->scene_output_width != width ||
       renderer->scene_output_height != height)
     vkr_dynamic_resolution_reset_feedback(&renderer->dynamic_resolution_state);
   renderer->scene_output_width = width;
   renderer->scene_output_height = height;
   renderer->scene_output_extent_overridden = overridden;
-  renderer->render_width = vkr_renderer_scaled_extent(
-      width, renderer->render_scale, renderer->upscale_mode);
-  renderer->render_height = vkr_renderer_scaled_extent(
-      height, renderer->render_scale, renderer->upscale_mode);
+  renderer->render_width =
+      vkr_renderer_scaled_extent(width, renderer->render_scale);
+  renderer->render_height =
+      vkr_renderer_scaled_extent(height, renderer->render_scale);
   renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -2955,9 +2851,7 @@ VkrRendererError vkr_renderer_set_present_mode(VkrRenderer *renderer,
 
 bool8_t
 vkr_renderer_dynamic_resolution_switchable(const VkrRenderer *renderer) {
-  return renderer &&
-         (renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
-          renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED);
+  return renderer && renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
 }
 
 VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
@@ -2994,9 +2888,8 @@ VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
       config.max_scale == renderer->dynamic_resolution_config.max_scale)
     return VKR_RENDERER_ERROR_NONE;
   renderer->dynamic_resolution_config = config;
-  vkr_dynamic_resolution_init(
-      &renderer->dynamic_resolution_state, &config, scale,
-      vkr_renderer_dynamic_resolution_policy(renderer->graphics_pipeline));
+  vkr_dynamic_resolution_init(&renderer->dynamic_resolution_state, &config,
+                              scale);
   renderer->render_scale = scale;
   renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
 #if defined(PLATFORM_APPLE)

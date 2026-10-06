@@ -699,7 +699,6 @@ bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
   /* The render extent is the one the last acquisition chose; reading the
      renderer's would race the render thread's next acquisition. */
   const bool8_t renderer_scaled_scene =
-      application->renderer.upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
       application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31 ||
       application->renderer.scene_output_extent_overridden ||
       application->renderer.render_scale != 1.0f;
@@ -746,11 +745,7 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_scene_output_request(
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
   /* Unit-scale editor scenes already use the packet's mapped viewport. */
-  /* Only MetalFX's dynamic resolution changes the scale during acquisition,
-     so the scale is read only when that cannot happen. */
   if ((paneled &&
-       application->renderer.upscale_mode !=
-           VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
        application->renderer.upscale_mode != VKR_UPSCALE_MODE_FSR31 &&
        application->renderer.render_scale == 1.0f &&
        application->scene_output_scale == 1.0f) ||
@@ -1257,10 +1252,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_picking_source(
 vkr_internal void vkr_standard_scene_runtime_scale_picking_payload(
     const VkrRenderer *renderer, VkrStandardSceneRuntimeDrawContext *draw) {
   const VkrFrame *setup = draw->setup;
-  if (draw->has_picking &&
-      (renderer->scene_output_extent_overridden ||
-       renderer->render_scale != 1.0f ||
-       renderer->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL)) {
+  if (draw->has_picking && (renderer->scene_output_extent_overridden ||
+                            renderer->render_scale != 1.0f)) {
     draw->picking_payload.x = vkr_standard_scene_runtime_picking_pixel(
         draw->picking_payload.x, draw->picking_source_width,
         setup->render_width);
@@ -1770,8 +1763,6 @@ vkr_internal void vkr_standard_scene_runtime_finish_submit(
       const bool8_t scaled_scene =
           application->renderer.scene_output_extent_overridden ||
           application->renderer.render_scale != 1.0f ||
-          application->renderer.upscale_mode ==
-              VKR_UPSCALE_MODE_METALFX_TEMPORAL ||
           application->renderer.upscale_mode == VKR_UPSCALE_MODE_FSR31;
       application->editor_viewport.output_width =
           scaled_scene ? application->renderer.scene_output_width

@@ -116,15 +116,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
       vkr_metal_packet_record_dispatch(renderer, encoder, &dispatch);
     }
     break;
-  case VKR_RG_EXECUTOR_METALFX_STABILIZE:
-    // MetalFX owns its encoders; its final write is published through this
-    // fence.
-    [encoder waitForFence:renderer->metalfx_temporal_scaler.fence
-        beforeEncoderStages:MTLStageDispatch];
-    vkr_metal_packet_record_dispatch(renderer, encoder, &pass->dispatch);
-    break;
-  case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE:
-  case VKR_RG_EXECUTOR_TRANSMISSION_GPU_DRAW_ENCODE: {
+  case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE: {
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
       for (uint32_t view = 0u; view < group->view_count; ++view) {
@@ -150,7 +142,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
         .visibility_options = MTL4VisibilityOptionDevice,
     };
     vkr_metal_dependency_encode_intra(encoder, &reset_to_encode);
-    [encoder setComputePipelineState:pass->gpu_encode.pipeline];
+    [encoder setComputePipelineState:renderer->gpu_draw_encode_pipeline];
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
       [renderer->argument_table setAddress:group->root atIndex:0u];
@@ -164,39 +156,6 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
   }
   case VKR_RG_EXECUTOR_IBL_BAKE:
     vkr_metal_packet_record_ibl_bakes(renderer, encoder);
-    break;
-  case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:
-    [renderer->argument_table setAddress:pass->transmission.root atIndex:0u];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder setComputePipelineState:pass->transmission.pipeline];
-    if (pass->transmission.indirect)
-      [encoder
-          dispatchThreadgroupsWithIndirectBuffer:pass->transmission.arguments
-                           threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
-    else
-      [encoder dispatchThreads:pass->transmission.threads
-          threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
-    break;
-  case VKR_RG_EXECUTOR_TRANSMISSION_COMPACT:
-    [renderer->argument_table setAddress:pass->compact.root atIndex:0u];
-    [encoder
-        setComputePipelineState:renderer->transmission_compact_clear_pipeline];
-    [encoder setArgumentTable:renderer->argument_table];
-    [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
-        threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
-    [encoder barrierAfterEncoderStages:MTLStageDispatch
-                   beforeEncoderStages:MTLStageDispatch
-                     visibilityOptions:MTL4VisibilityOptionDevice];
-    [encoder setComputePipelineState:renderer->transmission_compact_pipeline];
-    [encoder dispatchThreads:pass->compact.extent
-        threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
-    [encoder barrierAfterEncoderStages:MTLStageDispatch
-                   beforeEncoderStages:MTLStageDispatch
-                     visibilityOptions:MTL4VisibilityOptionDevice];
-    [encoder setComputePipelineState:renderer->
-                                     transmission_compact_finalize_pipeline];
-    [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
-        threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
     break;
   case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
     [renderer->argument_table setAddress:pass->histogram.root atIndex:0u];
@@ -277,13 +236,6 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   const VkrMetalPacketIndirectPass *draw = &pass->indirect;
-  if (pass->kind == VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION) {
-    [renderer->argument_table setAddress:draw->peel_root atIndex:2u];
-    [renderer->argument_table setAddress:draw->draw_root atIndex:0u];
-    [renderer->argument_table setAddress:draw->draw_root atIndex:1u];
-    [encoder setArgumentTable:renderer->argument_table
-                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
-  }
   [encoder setViewport:draw->viewport];
   if (draw->clear_depth) {
     [encoder setScissorRect:draw->clear_rect];
@@ -412,15 +364,9 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     break;
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
-  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
-  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
-  case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION_OVERFLOW:
-  case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
-  case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
   case VKR_RG_EXECUTOR_TILED_PICKING:
     vkr_metal_packet_record_indirect_pass(renderer, encoder, pass);
     break;
-  case VKR_RG_EXECUTOR_WORLD_BLEND:
   case VKR_RG_EXECUTOR_TILED_BLEND:
   case VKR_RG_EXECUTOR_PICKING: {
     const VkrMetalPacketDirectPass *direct = &pass->world.direct;
@@ -486,27 +432,4 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
   default:
     break;
   }
-}
-
-vkr_internal void
-vkr_metal_packet_record_metalfx(VkrMetalPacketRenderer *renderer,
-                                const VkrMetalPacketPreparedPass *pass)
-    API_AVAILABLE(macos(26.0)) {
-  id<MTL4FXTemporalScaler> scaler = renderer->metalfx_temporal_scaler;
-  scaler.colorTexture = pass->metalfx.color;
-  scaler.depthTexture = pass->metalfx.depth;
-  scaler.motionTexture = pass->metalfx.motion;
-  scaler.outputTexture = pass->metalfx.output;
-  scaler.exposureTexture = nil;
-  scaler.reactiveMaskTexture = nil;
-  scaler.inputContentWidth = pass->metalfx.width;
-  scaler.inputContentHeight = pass->metalfx.height;
-  scaler.preExposure = pass->metalfx.pre_exposure;
-  scaler.jitterOffsetX = pass->metalfx.jitter.x;
-  scaler.jitterOffsetY = pass->metalfx.jitter.y;
-  scaler.motionVectorScaleX = (float32_t)pass->metalfx.width;
-  scaler.motionVectorScaleY = (float32_t)pass->metalfx.height;
-  scaler.depthReversed = NO;
-  scaler.reset = pass->metalfx.reset;
-  [scaler encodeToCommandBuffer:renderer->command_buffer];
 }

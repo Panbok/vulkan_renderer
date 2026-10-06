@@ -227,27 +227,6 @@ bool8_t vkr_metal_packet_renderer_refresh_display_output(
 }
 
 bool8_t
-vkr_metal_packet_renderer_resize_metalfx(VkrMetalPacketRenderer *renderer,
-                                         uint32_t width, uint32_t height) {
-  @autoreleasepool {
-    if (!renderer || width == 0u || height == 0u || renderer->frame_prepared ||
-        renderer->active_command_slot)
-      return false_v;
-    if (!renderer->metalfx_enabled ||
-        (renderer->metalfx_output_width == width &&
-         renderer->metalfx_output_height == height))
-      return true_v;
-    if (@available(macOS 26.0, *)) {
-      if (renderer->completion.signaledValue < renderer->submit_value)
-        return false_v;
-      return vkr_metal_packet_create_metalfx_temporal_scaler(renderer, width,
-                                                             height);
-    }
-    return false_v;
-  }
-}
-
-bool8_t
 vkr_metal_packet_renderer_cancel_frame(VkrMetalPacketRenderer *renderer) {
   @autoreleasepool {
     if (@available(macOS 26.0, *)) {
@@ -389,16 +368,6 @@ bool8_t vkr_metal_packet_renderer_drain(
         return false_v;
       renderer->cloud_noise[index] = (VkrMetalTextureResource){0};
       renderer->cloud_noise_live_count = index;
-    }
-
-    if (renderer->gtao_white_live) {
-      if (vkr_metal_memory_device_retire(
-              renderer->memory, renderer->gtao_white_visibility.handle,
-              renderer->gtao_white_last_use_submit_value) !=
-          VKR_METAL_MEMORY_STATUS_OK)
-        return false_v;
-      renderer->gtao_white_live = false_v;
-      renderer->gtao_white_visibility = (VkrMetalTextureResource){0};
     }
 
     if (renderer->ibl_black_live) {
@@ -700,16 +669,11 @@ vkr_metal_packet_release_command_slots(VkrMetalPacketRenderer *renderer)
         if (slot->gpu_draw_icbs[group])
           [slot->gpu_draw_icb_residencies[group]
               removeAllocation:slot->gpu_draw_icbs[group]];
-        if (group == 0u && slot->transmission_gpu_draw_icb)
-          [slot->gpu_draw_icb_residencies[group]
-              removeAllocation:slot->transmission_gpu_draw_icb];
         [slot->gpu_draw_icb_residencies[group] commit];
         vkr_metal_packet_release_budgeted_resource(renderer,
                                                    slot->gpu_draw_icbs[group]);
         [slot->gpu_draw_icb_residencies[group] release];
       }
-      vkr_metal_packet_release_budgeted_resource(
-          renderer, slot->transmission_gpu_draw_icb);
       [slot->timestamp_heap release];
       [slot->buffer release];
       [slot->allocator release];
@@ -747,7 +711,6 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->depth_read_state release];
   [renderer->depth_write_state release];
   [renderer->depth_clear_state release];
-  [renderer->world_text_pipeline release];
   [renderer->picking_text_pipeline release];
   [renderer->tonemap_pipeline release];
   [renderer->display_linear_pipeline release];
@@ -770,57 +733,9 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   vkr_metal_packet_release_budgeted_resource(renderer,
                                              renderer->sh_coefficients);
   [renderer->gpu_draw_encode_pipeline release];
-  [renderer->gpu_draw_encode_inherited_pipeline release];
   [renderer->skinning_pipeline release];
-  [renderer->temporal_transform_pipeline release];
-  for (uint32_t i = 0u; i < ArrayCount(renderer->gbuffer_resolve_pipelines);
-       ++i)
-    [renderer->gbuffer_resolve_pipelines[i] release];
-  [renderer->gtao_denoise_pipeline release];
-  [renderer->ssr_composite_pipeline release];
-  [renderer->ssgi_composite_pipeline release];
-  [renderer->ssgi_temporal_pipeline release];
-  [renderer->ssgi_trace_pipeline release];
-  [renderer->ssgi_depth_mip_pipeline release];
-  [renderer->ssgi_depth_base_pipeline release];
-  [renderer->fog_pipeline release];
-  [renderer->froxel_apply_pipeline release];
-  [renderer->froxel_integrate_pipeline release];
-  [renderer->froxel_inject_pipeline release];
-  [renderer->ssr_temporal_pipeline release];
-  [renderer->ssr_trace_pipeline release];
-  [renderer->ssr_depth_mip_pipeline release];
-  [renderer->ssr_depth_base_pipeline release];
-  [renderer->gtao_evaluate_pipeline release];
-  [renderer->gtao_depth_mip_pipeline release];
-  [renderer->gtao_depth_prefilter_pipeline release];
-  [renderer->local_shadow_mask_pipeline release];
-  [renderer->local_shadow_mask_contact_pipeline release];
-  [renderer->deferred_lighting_pipeline release];
-  [renderer->deferred_lighting_layered_pipeline release];
-  [renderer->temporal_resolve_pipeline release];
-  [renderer->metalfx_stabilize_pipeline release];
-  [renderer->transmission_shade_pipeline release];
-  [renderer->transmission_shade_partitioned_pipeline release];
-  [renderer->transmission_shade_production_pipeline release];
-  [renderer->transmission_shade_production_temporal_pipeline release];
-  [renderer->transmission_shade_partitioned_production_pipeline release];
-  [renderer->transmission_shade_partitioned_production_temporal_pipeline
-          release];
-  [renderer->transmission_coverage_pipeline release];
-  [renderer->transmission_compact_clear_pipeline release];
-  [renderer->transmission_compact_pipeline release];
-  [renderer->transmission_compact_finalize_pipeline release];
-  [renderer->picking_resolve_pipeline release];
   [renderer->hzb_build_pipeline release];
   [renderer->shadow_moments_pipeline release];
-  [renderer->sdsm_reduce_pipeline release];
-  [renderer->subsurface_pipeline release];
-  for (uint32_t i = 0u; i < ArrayCount(renderer->motion_blur_pipelines); ++i)
-    [renderer->motion_blur_pipelines[i] release];
-  for (uint32_t i = 0u; i < ArrayCount(renderer->dof_pipelines); ++i)
-    [renderer->dof_pipelines[i] release];
-  [renderer->bloom_combine_pipeline release];
   [renderer->bloom_upsample_pipeline release];
   [renderer->bloom_downsample_box4_pipeline release];
   [renderer->bloom_downsample_tent13_pipeline release];
@@ -830,16 +745,9 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->exposure_clear_pipeline release];
   [renderer->gpu_draw_prefix_pipeline release];
   [renderer->gpu_draw_classify_pipeline release];
-  [renderer->vbuffer_pipeline release];
-  [renderer->transmission_vbuffer_pipeline release];
   [renderer->gpu_shadow_pipeline release];
-  for (uint32_t i = 0u;
-       i < ArrayCount(renderer->local_shadow_transmission_pipelines); ++i)
-    [renderer->local_shadow_transmission_pipelines[i] release];
   [renderer->gpu_shadow_opaque_pipeline release];
   [renderer->depth_clear_pipeline release];
-  [renderer->vbuffer_opaque_pipeline release];
-  [renderer->blend_pipeline release];
   [renderer->tiled_depth_pipeline release];
   for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
     [renderer->tiled_forward_pipelines[i] release];
@@ -921,7 +829,6 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
           [renderer->samplers[i].state release];
       }
       vkr_metal_packet_release_pipelines(renderer);
-      [renderer->metalfx_temporal_scaler release];
       [renderer->compiler release];
       [renderer->compiler_options release];
       [renderer->pipeline_archive release];
@@ -963,8 +870,7 @@ vkr_metal_packet_renderer_set_present_mode(VkrMetalPacketRenderer *renderer,
 void vkr_metal_packet_renderer_set_dynamic_resolution(
     VkrMetalPacketRenderer *renderer, bool8_t enabled) {
   if (renderer)
-    renderer->dynamic_resolution_enabled =
-        (renderer->metalfx_enabled || renderer->tiled) && enabled;
+    renderer->dynamic_resolution_enabled = enabled;
 }
 
 void vkr_metal_packet_renderer_request_memory_relief(

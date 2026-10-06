@@ -786,8 +786,9 @@ static void test_vulkan_shader_abi_reflection(void) {
   printf("  test_vulkan_shader_abi_reflection PASSED\n");
 }
 
-static void test_shared_graph_metalfx_capability_boundary(void) {
-  printf("  Running test_shared_graph_metalfx_capability_boundary...\n");
+/* Builds `graph_path` with and without the editor and returns whether Vulkan
+   validated every build. */
+static bool8_t vulkan_test_graph_validates(const char *graph_path) {
   // Exercise production binding and validation without creating a GPU device.
   // All graph storage belongs to this arena and is released after validation.
   Arena *arena = arena_create(MB(16), MB(2));
@@ -797,9 +798,7 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
   VkrVulkanRenderer renderer = {.allocator = &allocator};
   assert(vkr_rg_executor_registry_init(&renderer.executors, &allocator));
   assert(vkr_render_graph_register_executors(&renderer.executors));
-  assert(vkr_rg_json_load_file(&allocator,
-                               "assets/render_graphs/main.rendergraph.json",
-                               &renderer.json_graph));
+  assert(vkr_rg_json_load_file(&allocator, graph_path, &renderer.json_graph));
   assert(vkr_rg_json_bind_executors(&renderer.json_graph, &renderer.executors));
   renderer.graph = vkr_rg_create(&allocator);
   assert(renderer.graph);
@@ -828,14 +827,14 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
       .shadow_map_size = 2048u,
       .shadow_map_layer_count = 4u,
   };
-  for (uint32_t mode = 0u; mode < 4u; ++mode) {
-    frame.editor_enabled = (mode & 1u) != 0u;
-    frame.metalfx_enabled = (mode & 2u) != 0u;
+  bool8_t validated = true_v;
+  for (uint32_t mode = 0u; mode < 2u; ++mode) {
+    frame.editor_enabled = mode != 0u;
     assert(vkr_rg_begin_frame(renderer.graph, &frame));
     assert(
         vkr_rg_build_from_json(renderer.graph, &renderer.json_graph, &frame));
     assert(vkr_rg_compile_schedule(renderer.graph));
-    assert(vkr_vk_validate_graph(&renderer) == !frame.metalfx_enabled);
+    validated = vkr_vk_validate_graph(&renderer) && validated;
     vkr_rg_end_frame(renderer.graph);
   }
 
@@ -843,12 +842,23 @@ static void test_shared_graph_metalfx_capability_boundary(void) {
   vkr_rg_json_destroy(&renderer.json_graph);
   vkr_rg_executor_registry_destroy(&renderer.executors);
   arena_destroy(arena);
-  printf("  test_shared_graph_metalfx_capability_boundary PASSED\n");
+  return validated;
+}
+
+/* Vulkan runs the desktop graph and rejects the tiled pipeline's executors
+   (ADR-087). */
+static void test_shared_graph_pipeline_capability_boundary(void) {
+  printf("  Running test_shared_graph_pipeline_capability_boundary...\n");
+  assert(vulkan_test_graph_validates(
+      "assets/render_graphs/main.rendergraph.json"));
+  assert(!vulkan_test_graph_validates(
+      "assets/render_graphs/tiled.rendergraph.json"));
+  printf("  test_shared_graph_pipeline_capability_boundary PASSED\n");
 }
 
 bool32_t run_vulkan_tests(void) {
   printf("--- Running Vulkan tests... ---\n");
-  test_shared_graph_metalfx_capability_boundary();
+  test_shared_graph_pipeline_capability_boundary();
   test_vulkan_shader_abi_reflection();
   test_cancelled_asset_use_serials();
   test_direct_draw_publication_admission();

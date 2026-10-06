@@ -79,8 +79,8 @@ vkr_metal_tiled_vertex(uint vertex_id [[vertex_id]],
   return output;
 }
 
-// The sky draws: the frame and the deferred-lighting sky inputs
-// (vkr_metal_packet_sky_background). The atmosphere draw also reads the
+// The sky draws: the frame and the sky inputs of
+// vkr_metal_packet_sky_background. The atmosphere draw also reads the
 // resolved depth. Mirrors VkrMetalTiledSkyRoot.
 struct VkrMetalTiledSkyRoot {
   constant VkrMetalPacketFrameRoot *frame;

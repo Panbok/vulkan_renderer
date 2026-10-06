@@ -69,8 +69,6 @@ vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
 
 vkr_internal uint32_t
 vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
-  if (record_id == VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT)
-    return 2;
   switch (record_id) {
   case VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT:
   case VKR_METAL_PACKET_ABI_ATMOSPHERE_ROOT:
@@ -78,46 +76,15 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_SH_PROJECT_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT:
   case VKR_METAL_PACKET_ABI_SKINNING_ROOT:
-  case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
-  case VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT:
-  case VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT:
-  case VKR_METAL_PACKET_ABI_GTAO_EVALUATE_ROOT:
-  case VKR_METAL_PACKET_ABI_GTAO_DENOISE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_DEPTH_BASE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_DEPTH_MIP_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_TRACE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_TEMPORAL_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_DEPTH_BASE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_DEPTH_MIP_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_TRACE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT:
-  case VKR_METAL_PACKET_ABI_FOG_ROOT:
-  case VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT:
-  case VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT:
-  case VKR_METAL_PACKET_ABI_FROXEL_APPLY_ROOT:
   case VKR_METAL_PACKET_ABI_SKY_VIEW_ROOT:
   case VKR_METAL_PACKET_ABI_AERIAL_PERSPECTIVE_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_NOISE_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT:
   case VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT:
-  case VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT:
-  case VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT:
-  case VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT:
-  case VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT:
-  case VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT:
-  case VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT:
-  case VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT:
-  case VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
   case VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT:
-  case VKR_METAL_PACKET_ABI_SDSM_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
-  case VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT:
-  case VKR_METAL_PACKET_ABI_MOTION_BLUR_ROOT:
-  case VKR_METAL_PACKET_ABI_DOF_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
     return 0;
   default:
@@ -272,38 +239,6 @@ vkr_metal_packet_nested_struct(MTLStructType *root_type,
   return member ? member.pointerType.elementStructType : nil;
 }
 
-/* Compute roots whose `params` member addresses one shared parameter record;
-   the record count means the root has none. */
-vkr_internal VkrMetalPacketAbiRecordId
-vkr_metal_packet_abi_params_record(VkrMetalPacketAbiRecordId record_id) {
-  switch (record_id) {
-  case VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT:
-    return VKR_METAL_PACKET_ABI_SUBSURFACE_PARAMS;
-  case VKR_METAL_PACKET_ABI_MOTION_BLUR_ROOT:
-    return VKR_METAL_PACKET_ABI_MOTION_BLUR_PARAMS;
-  case VKR_METAL_PACKET_ABI_DOF_ROOT:
-    return VKR_METAL_PACKET_ABI_DOF_PARAMS;
-  case VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT:
-  case VKR_METAL_PACKET_ABI_GTAO_EVALUATE_ROOT:
-  case VKR_METAL_PACKET_ABI_GTAO_DENOISE_ROOT:
-    return VKR_METAL_PACKET_ABI_GTAO_PARAMS;
-  case VKR_METAL_PACKET_ABI_SSGI_DEPTH_BASE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_DEPTH_MIP_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_TRACE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_TEMPORAL_ROOT:
-  case VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT:
-    return VKR_METAL_PACKET_ABI_SSGI_PARAMS;
-  case VKR_METAL_PACKET_ABI_SSR_DEPTH_BASE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_DEPTH_MIP_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_TRACE_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT:
-  case VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT:
-    return VKR_METAL_PACKET_ABI_SSR_PARAMS;
-  default:
-    return VKR_METAL_PACKET_ABI_RECORD_COUNT;
-  }
-}
-
 /* The frame-slot sky record and its embedded parameters. */
 vkr_internal bool8_t vkr_metal_packet_validate_sky_abi(NSString *pipeline_label,
                                                        MTLStructType *root_type)
@@ -365,8 +300,7 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
                                             VKR_METAL_PACKET_ABI_UI_VERTEX))
     return false_v;
   if (record_id == VKR_METAL_PACKET_ABI_DRAW_ROOT ||
-      record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT ||
-      record_id == VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT) {
+      record_id == VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT) {
     if (!vkr_metal_packet_validate_nested_gpu_abi(
             pipeline_label, root.bufferStructType, "geometry_rows",
             VKR_GPU_ABI_GEOMETRY_ROW) ||
@@ -466,155 +400,19 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_binding(
            pipeline_label, root.bufferStructType, "draw_roots",
            VKR_METAL_PACKET_ABI_DRAW_ROOT)))
     return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT &&
-      (!vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "instances",
-                                             VKR_METAL_PACKET_ABI_INSTANCE) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "transforms",
-           VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM)))
-    return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT &&
-      (!vkr_metal_packet_validate_nested_gpu_abi(
-           pipeline_label, root.bufferStructType, "visible_rows",
-           VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
-       !vkr_metal_packet_validate_nested_gpu_abi(
-           pipeline_label, root.bufferStructType, "geometry_rows",
-           VKR_GPU_ABI_GEOMETRY_ROW) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "instances",
-                                             VKR_METAL_PACKET_ABI_INSTANCE) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "materials",
-                                             VKR_METAL_PACKET_ABI_MATERIAL) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "terrain_materials",
-           VKR_METAL_PACKET_ABI_TERRAIN_MATERIAL)))
-    return false_v;
   if ((record_id == VKR_METAL_PACKET_ABI_SKY_VIEW_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_AERIAL_PERSPECTIVE_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_CLOUD_SHADOW_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_FOG_ROOT) &&
+       record_id == VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT) &&
       !vkr_metal_packet_validate_sky_abi(pipeline_label, root.bufferStructType))
     return false_v;
-  if ((record_id == VKR_METAL_PACKET_ABI_FOG_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT ||
+  if ((record_id == VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT ||
        record_id == VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT) &&
       !vkr_metal_packet_validate_nested_abi(pipeline_label,
                                             root.bufferStructType, "frame",
                                             VKR_METAL_PACKET_ABI_FRAME_ROOT))
     return false_v;
-  const VkrMetalPacketAbiRecordId params_record =
-      vkr_metal_packet_abi_params_record(record_id);
-  if (params_record != VKR_METAL_PACKET_ABI_RECORD_COUNT &&
-      !vkr_metal_packet_validate_nested_abi(
-          pipeline_label, root.bufferStructType, "params", params_record))
-    return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT &&
-      !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                            root.bufferStructType, "frame",
-                                            VKR_METAL_PACKET_ABI_FRAME_ROOT))
-    return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_SSGI_TEMPORAL_ROOT &&
-      (!vkr_metal_packet_validate_nested_gpu_abi(
-           pipeline_label, root.bufferStructType, "visible_rows",
-           VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "instances",
-                                             VKR_METAL_PACKET_ABI_INSTANCE)))
-    return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT &&
-      (!vkr_metal_packet_validate_nested_gpu_abi(
-           pipeline_label, root.bufferStructType, "visible_rows",
-           VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "instances",
-                                             VKR_METAL_PACKET_ABI_INSTANCE) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "previous_transforms",
-           VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "reprojection",
-           VKR_METAL_PACKET_ABI_SSR_REPROJECTION_PARAMS)))
-    return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT &&
-      !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                            root.bufferStructType, "frame",
-                                            VKR_METAL_PACKET_ABI_FRAME_ROOT))
-    return false_v;
-  if ((record_id == VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT) &&
-      !vkr_metal_packet_validate_nested_abi(
-          pipeline_label,
-          vkr_metal_packet_nested_struct(root.bufferStructType, "frame"),
-          "local_shadow_transmission",
-          VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION))
-    return false_v;
-  if ((record_id == VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT ||
-       record_id == VKR_METAL_PACKET_ABI_FROXEL_APPLY_ROOT) &&
-      (!vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "frame",
-                                             VKR_METAL_PACKET_ABI_FRAME_ROOT) ||
-       !vkr_metal_packet_validate_nested_abi(
-           pipeline_label, root.bufferStructType, "params",
-           VKR_METAL_PACKET_ABI_FROXEL_PARAMS)))
-    return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT &&
-      (!vkr_metal_packet_validate_nested_gpu_abi(
-           pipeline_label, root.bufferStructType, "visible_rows",
-           VKR_GPU_ABI_VISIBLE_DRAW_ROW) ||
-       !vkr_metal_packet_validate_nested_abi(pipeline_label,
-                                             root.bufferStructType, "instances",
-                                             VKR_METAL_PACKET_ABI_INSTANCE)))
-    return false_v;
-  if (record_id == VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT ||
-      record_id == VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT ||
-      record_id == VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT) {
-    MTLStructType *frame_type =
-        vkr_metal_packet_nested_struct(root.bufferStructType, "frame");
-    if (!frame_type ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, root.bufferStructType, "frame",
-            VKR_METAL_PACKET_ABI_FRAME_ROOT) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "diffuse_volume_params",
-            VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME) ||
-        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type,
-                                              "lightmap",
-                                              VKR_METAL_PACKET_ABI_LIGHTMAP) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "fog",
-            VKR_METAL_PACKET_ABI_FOG_PARAMS) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "froxel_fog",
-            VKR_METAL_PACKET_ABI_FROXEL_PARAMS) ||
-        !vkr_metal_packet_validate_nested_abi(pipeline_label, frame_type, "ltc",
-                                              VKR_METAL_PACKET_ABI_LTC) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "sheen", VKR_METAL_PACKET_ABI_SHEEN) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "anisotropy",
-            VKR_METAL_PACKET_ABI_ANISOTROPY) ||
-        !vkr_metal_packet_validate_nested_gpu_abi(
-            pipeline_label, vkr_metal_packet_nested_struct(frame_type, "ltc"),
-            "lights", VKR_GPU_ABI_RECTANGLE_LIGHT_ROW) ||
-        !vkr_metal_packet_validate_nested_gpu_abi(
-            pipeline_label, frame_type, "point_light_data",
-            VKR_GPU_ABI_POINT_LIGHT_ROW) ||
-        !vkr_metal_packet_validate_nested_abi(
-            pipeline_label, frame_type, "local_shadow_transmission",
-            VKR_METAL_PACKET_ABI_LOCAL_SHADOW_TRANSMISSION) ||
-        !vkr_metal_packet_validate_nested_gpu_abi(
-            pipeline_label, frame_type, "local_shadow_views",
-            VKR_GPU_ABI_LOCAL_SHADOW_VIEW) ||
-        !vkr_metal_packet_validate_sky_abi(pipeline_label, frame_type))
-      return false_v;
-  }
   return true_v;
 }
 
@@ -637,8 +435,7 @@ vkr_metal_packet_create_pipeline_with_targets(
     const char *fragment_name, MTLPixelFormat color_format,
     VkrMetalPacketBlend blend, VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
-    bool8_t temporal_targets, bool8_t temporal_writes, uint32_t sample_count,
-    NSString *label) API_AVAILABLE(macos(26.0)) {
+    uint32_t sample_count, NSString *label) API_AVAILABLE(macos(26.0)) {
   MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
   vertex.library = vertex_library;
   vertex.name = [NSString stringWithUTF8String:vertex_name];
@@ -692,17 +489,6 @@ vkr_metal_packet_create_pipeline_with_targets(
       descriptor.alphaToOneState = MTL4AlphaToOneStateEnabled;
     }
   }
-  if (temporal_targets) {
-    descriptor.colorAttachments[1].pixelFormat = MTLPixelFormatRG32Uint;
-    descriptor.colorAttachments[2].pixelFormat = MTLPixelFormatRG16Float;
-    descriptor.colorAttachments[3].pixelFormat = MTLPixelFormatRG16Float;
-    const MTLColorWriteMask temporal_mask =
-        temporal_writes ? MTLColorWriteMaskRed | MTLColorWriteMaskGreen
-                        : MTLColorWriteMaskNone;
-    descriptor.colorAttachments[1].writeMask = temporal_mask;
-    descriptor.colorAttachments[2].writeMask = temporal_mask;
-    descriptor.colorAttachments[3].writeMask = temporal_mask;
-  }
   NSError *error = nil;
   id<MTLRenderPipelineState> pipeline = [renderer->compiler
       newRenderPipelineStateWithDescriptor:descriptor
@@ -733,8 +519,7 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
     NSString *label) API_AVAILABLE(macos(26.0)) {
   return vkr_metal_packet_create_pipeline_with_targets(
       renderer, vertex_library, vertex_name, fragment_library, fragment_name,
-      color_format, blend, vertex_abi, fragment_abi, supports_icb, false_v,
-      false_v, 1u, label);
+      color_format, blend, vertex_abi, fragment_abi, supports_icb, 1u, label);
 }
 
 vkr_internal id<MTLComputePipelineState>
@@ -891,8 +676,8 @@ vkr_internal bool8_t vkr_metal_packet_configure_window_output(
   return true_v;
 }
 
-/* Creates the shadow, visibility-buffer, animation preview and alpha-blend
-   raster pipelines. A failure leaves nil for the startup checks. */
+/* Creates the shadow, depth-clear and animation preview raster pipelines. A
+   failure leaves nil for the startup checks. */
 vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
@@ -906,23 +691,6 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
       "vkr_metal_packet_gpu_shadow_fragment", MTLPixelFormatInvalid,
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, @"VKR Metal packet GPU shadow");
-  const char *local_transmission_fragments[] = {
-      "vkr_metal_packet_local_shadow_transmission0_fragment",
-      "vkr_metal_packet_local_shadow_transmission1_fragment",
-      "vkr_metal_packet_local_shadow_transmission_overflow_fragment"};
-  for (uint32_t layer = 0u; layer < ArrayCount(local_transmission_fragments);
-       ++layer) {
-    renderer->local_shadow_transmission_pipelines[layer] =
-        vkr_metal_packet_create_pipeline(
-            renderer, fragment,
-            "vkr_metal_packet_local_shadow_transmission_vertex", fragment,
-            local_transmission_fragments[layer],
-            layer < 2u ? MTLPixelFormatRGBA16Float : MTLPixelFormatInvalid,
-            VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-            [NSString
-                stringWithFormat:@"VKR local shadow transmission %u", layer]);
-  }
   // Opaque cascade geometry never alpha-tests, so it needs no fragment stage.
   renderer->gpu_shadow_opaque_pipeline = vkr_metal_packet_create_pipeline(
       renderer, slang, "vkr_metal_packet_vertex", nil, NULL,
@@ -934,41 +702,6 @@ vkr_internal void vkr_metal_packet_create_scene_raster_pipelines(
       MTLPixelFormatInvalid, VKR_METAL_PACKET_BLEND_NONE,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, VKR_METAL_PACKET_ABI_RECORD_COUNT,
       false_v, @"VKR Metal packet depth clear");
-  renderer->vbuffer_opaque_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_vbuffer_opaque_fragment", MTLPixelFormatRG32Uint,
-      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-      // The opaque variant binds no fragment root buffer, so there is no
-      // fragment-side ABI record to validate.
-      VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
-      @"VKR Metal packet vbuffer opaque");
-  renderer->vbuffer_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_vbuffer_fragment", MTLPixelFormatRG32Uint,
-      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-      VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-      @"VKR Metal packet opaque visibility buffer");
-  renderer->transmission_vbuffer_pipeline = vkr_metal_packet_create_pipeline(
-      renderer, slang, "vkr_metal_packet_vertex", fragment,
-      "vkr_metal_packet_transmission_vbuffer_fragment", MTLPixelFormatRG32Uint,
-      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-      VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-      @"VKR Metal packet transmission peel visibility buffer");
-  if (renderer->transmission_vbuffer_pipeline &&
-      !vkr_metal_packet_validate_abi_binding(
-          @"VKR Metal packet transmission peel visibility buffer",
-          renderer->transmission_vbuffer_pipeline.reflection.fragmentBindings,
-          VKR_METAL_PACKET_ABI_TRANSMISSION_PEEL_ROOT)) {
-    [renderer->transmission_vbuffer_pipeline release];
-    renderer->transmission_vbuffer_pipeline = nil;
-  }
-  renderer->blend_pipeline = vkr_metal_packet_create_pipeline_with_targets(
-      renderer, slang, "vkr_metal_packet_temporal_vertex", fragment,
-      "vkr_metal_packet_temporal_blend_fragment", MTLPixelFormatRGBA16Float,
-      VKR_METAL_PACKET_BLEND_ALPHA,
-      VKR_METAL_PACKET_ABI_TEMPORAL_VERTEX_DRAW_ROOT,
-      VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, true_v, true_v, 1u,
-      @"VKR Metal packet alpha blend");
 }
 
 /* Creates the tiled pipeline's raster pipelines (ADR-087): the depth
@@ -985,8 +718,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
           renderer, fragment, "vkr_metal_tiled_vertex", nil, NULL,
           MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_NONE,
           VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT, VKR_METAL_PACKET_ABI_DRAW_ROOT,
-          true_v, false_v, false_v, VKR_METAL_TILED_SAMPLE_COUNT,
-          @"VKR tiled depth pre-pass");
+          true_v, VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled depth pre-pass");
   /* Each frame takes the shading variant for its dynamic lights; the light
      code a frame does not need would still cost it registers. */
   static const struct {
@@ -1052,7 +784,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
             renderer, fragment, "vkr_metal_tiled_vertex", fragment,
             tiled_lighting[i].forward, MTLPixelFormatRGBA16Float,
             VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
+            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
             VKR_METAL_TILED_SAMPLE_COUNT, tiled_lighting[i].forward_label);
     renderer->tiled_coverage_pipelines[i] =
         vkr_metal_packet_create_pipeline_with_targets(
@@ -1060,7 +792,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
             tiled_lighting[i].coverage, MTLPixelFormatRGBA16Float,
             VKR_METAL_PACKET_BLEND_COVERAGE,
             VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v, false_v, false_v,
+            VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
             VKR_METAL_TILED_SAMPLE_COUNT, tiled_lighting[i].coverage_label);
   }
   /* Without a visibility buffer, a pick replays the opaque draws; their
@@ -1074,7 +806,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
       "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float,
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v, false_v, false_v,
+      VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v,
       VKR_METAL_TILED_SAMPLE_COUNT, @"VKR tiled sky");
   {
     MTL4LibraryFunctionDescriptor *function =
@@ -1180,12 +912,6 @@ vkr_internal void vkr_metal_packet_create_picking_text_pipelines(
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_EDITOR_OVERLAY_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v,
       @"VKR Metal editor selection mask");
-  renderer->world_text_pipeline = vkr_metal_packet_create_pipeline_with_targets(
-      renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
-      "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float,
-      VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_TEXT_ROOT,
-      VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v, true_v, false_v, 1u,
-      @"VKR Metal packet world text");
   renderer->picking_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
       "vkr_metal_packet_text_picking_fragment", MTLPixelFormatR32Uint,
@@ -1304,8 +1030,7 @@ vkr_internal bool8_t vkr_metal_packet_create_sh_coefficients(
   return true_v;
 }
 
-/* Creates the GPU draw, skinning, G-buffer resolve, GTAO, SSR, SSGI, fog
-   and deferred lighting compute pipelines. */
+/* Creates the GPU draw and skinning compute pipelines. */
 vkr_internal void vkr_metal_packet_create_scene_compute_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment)
     API_AVAILABLE(macos(26.0)) {
@@ -1322,207 +1047,16 @@ vkr_internal void vkr_metal_packet_create_scene_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_gpu_draw_encode",
       VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
       @"VKR Metal packet GPU draw encode");
-  renderer->gpu_draw_encode_inherited_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_gpu_draw_encode_inherited",
-          VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
-          @"VKR Metal packet inherited GPU draw encode");
   renderer->skinning_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_skinning",
       VKR_METAL_PACKET_ABI_SKINNING_ROOT, false_v, @"VKR compute skinning");
-  renderer->temporal_transform_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_temporal_transform",
-          VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT, false_v,
-          @"VKR Metal packet temporal transform");
-  renderer->gbuffer_resolve_pipelines[0] =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_gbuffer_resolve_none",
-          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
-          @"VKR Metal packet G-buffer resolve");
-  renderer->gbuffer_resolve_pipelines[1] =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_gbuffer_resolve_emissive",
-          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
-          @"VKR Metal packet G-buffer resolve emissive capture");
-  renderer->gbuffer_resolve_pipelines[2] =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_gbuffer_resolve_debug",
-          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
-          @"VKR Metal packet G-buffer resolve debug capture");
-  renderer->gbuffer_resolve_pipelines[3] =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_gbuffer_resolve_emissive_debug",
-          VKR_METAL_PACKET_ABI_GBUFFER_RESOLVE_ROOT, false_v,
-          @"VKR Metal packet G-buffer resolve diagnostics capture");
-  renderer->gtao_depth_prefilter_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_gtao_depth_prefilter",
-          VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT, false_v,
-          @"VKR Metal packet GTAO depth prefilter");
-  renderer->gtao_depth_mip_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_gtao_depth_mip",
-      VKR_METAL_PACKET_ABI_GTAO_DEPTH_ROOT, false_v,
-      @"VKR Metal packet GTAO depth mip");
-  renderer->gtao_evaluate_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_gtao_evaluate",
-      VKR_METAL_PACKET_ABI_GTAO_EVALUATE_ROOT, false_v,
-      @"VKR Metal packet GTAO evaluate");
-  renderer->gtao_denoise_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_gtao_denoise",
-      VKR_METAL_PACKET_ABI_GTAO_DENOISE_ROOT, false_v,
-      @"VKR Metal packet GTAO denoise");
-  renderer->ssr_depth_base_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssr_depth_base",
-      VKR_METAL_PACKET_ABI_SSR_DEPTH_BASE_ROOT, false_v,
-      @"VKR Metal packet SSR depth base");
-  renderer->ssr_depth_mip_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssr_depth_mip",
-      VKR_METAL_PACKET_ABI_SSR_DEPTH_MIP_ROOT, false_v,
-      @"VKR Metal packet SSR depth mip");
-  renderer->ssr_trace_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssr_trace",
-      VKR_METAL_PACKET_ABI_SSR_TRACE_ROOT, false_v,
-      @"VKR Metal packet SSR trace");
-  renderer->ssr_temporal_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssr_temporal",
-      VKR_METAL_PACKET_ABI_SSR_TEMPORAL_ROOT, false_v,
-      @"VKR Metal packet SSR temporal");
-  renderer->ssgi_depth_base_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssgi_depth_base",
-      VKR_METAL_PACKET_ABI_SSGI_DEPTH_BASE_ROOT, false_v,
-      @"VKR Metal packet SSGI depth base");
-  renderer->ssgi_depth_mip_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssgi_depth_mip",
-      VKR_METAL_PACKET_ABI_SSGI_DEPTH_MIP_ROOT, false_v,
-      @"VKR Metal packet SSGI depth mip");
-  renderer->ssgi_trace_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssgi_trace",
-      VKR_METAL_PACKET_ABI_SSGI_TRACE_ROOT, false_v,
-      @"VKR Metal packet SSGI trace");
-  renderer->ssgi_temporal_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssgi_temporal",
-      VKR_METAL_PACKET_ABI_SSGI_TEMPORAL_ROOT, false_v,
-      @"VKR Metal packet SSGI temporal");
-  renderer->ssgi_composite_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssgi_composite",
-      VKR_METAL_PACKET_ABI_SSGI_COMPOSITE_ROOT, false_v,
-      @"VKR Metal packet SSGI composite");
-  renderer->fog_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_fog_apply",
-      VKR_METAL_PACKET_ABI_FOG_ROOT, false_v, @"VKR Metal packet analytic fog");
-  renderer->froxel_inject_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_froxel_inject",
-      VKR_METAL_PACKET_ABI_FROXEL_INJECT_ROOT, false_v,
-      @"VKR Metal packet froxel inject");
-  renderer->froxel_integrate_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_froxel_integrate",
-          VKR_METAL_PACKET_ABI_FROXEL_INTEGRATE_ROOT, false_v,
-          @"VKR Metal packet froxel integrate");
-  renderer->froxel_apply_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_froxel_apply",
-      VKR_METAL_PACKET_ABI_FROXEL_APPLY_ROOT, false_v,
-      @"VKR Metal packet froxel apply");
-  renderer->ssr_composite_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_ssr_composite",
-      VKR_METAL_PACKET_ABI_SSR_COMPOSITE_ROOT, false_v,
-      @"VKR Metal packet SSR composite");
-  renderer->local_shadow_mask_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_local_shadow_mask",
-          VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT, false_v,
-          @"VKR Metal packet local shadow mask");
-  renderer->local_shadow_mask_contact_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_local_shadow_mask_contact",
-          VKR_METAL_PACKET_ABI_LOCAL_SHADOW_MASK_ROOT, false_v,
-          @"VKR Metal packet local shadow mask with contact shadows");
-  renderer->deferred_lighting_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_deferred_lighting",
-          VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
-          @"VKR Metal packet deferred lighting");
-  renderer->deferred_lighting_layered_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_deferred_lighting_layered",
-          VKR_METAL_PACKET_ABI_DEFERRED_LIGHTING_ROOT, false_v,
-          @"VKR Metal packet layered deferred lighting");
 }
 
-/* Creates the temporal, transmission, picking, reduction and exposure
-   compute pipelines. */
+/* Creates the depth-reduction, shadow-moment and exposure compute
+   pipelines. */
 vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment)
     API_AVAILABLE(macos(26.0)) {
-  renderer->temporal_resolve_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_temporal_resolve",
-          VKR_METAL_PACKET_ABI_TEMPORAL_RESOLVE_ROOT, false_v,
-          @"VKR Metal packet temporal resolve");
-  renderer->metalfx_stabilize_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_metalfx_stabilize",
-          VKR_METAL_PACKET_ABI_METALFX_STABILIZE_ROOT, false_v,
-          @"VKR MetalFX stationary accumulation");
-  renderer->transmission_shade_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_shade",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-          @"VKR Metal packet transmission shade");
-  renderer->transmission_shade_partitioned_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_shade_partitioned",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-          @"VKR Metal packet partitioned transmission shade");
-  renderer->transmission_shade_production_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_shade_production",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-          @"VKR Metal packet production transmission shade");
-  renderer->transmission_shade_production_temporal_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment,
-          "vkr_metal_packet_transmission_shade_production_temporal",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-          @"VKR Metal packet temporal production transmission shade");
-  renderer->transmission_shade_partitioned_production_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment,
-          "vkr_metal_packet_transmission_shade_partitioned_production",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-          @"VKR Metal packet partitioned production transmission shade");
-  renderer->transmission_shade_partitioned_production_temporal_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment,
-          "vkr_metal_packet_transmission_shade_partitioned_production_temporal",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_SHADE_ROOT, false_v,
-          @"VKR Metal packet temporal partitioned production transmission "
-           "shade");
-  renderer->transmission_coverage_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_coverage",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_COVERAGE_ROOT, false_v,
-          @"VKR Metal packet transmission coverage");
-  renderer->transmission_compact_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_compact",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
-          @"VKR Metal packet transmission compact");
-  renderer->transmission_compact_clear_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_compact_clear",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
-          @"VKR Metal packet transmission compact clear");
-  renderer->transmission_compact_finalize_pipeline =
-      vkr_metal_packet_create_compute_pipeline(
-          renderer, fragment, "vkr_metal_packet_transmission_compact_finalize",
-          VKR_METAL_PACKET_ABI_TRANSMISSION_COMPACT_ROOT, false_v,
-          @"VKR Metal packet transmission compact finalize");
-  renderer->picking_resolve_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_picking_resolve",
-      VKR_METAL_PACKET_ABI_PICKING_RESOLVE_ROOT, false_v,
-      @"VKR Metal packet deferred picking resolve");
   renderer->hzb_build_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_hzb_build",
       VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
@@ -1531,9 +1065,6 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_shadow_moments",
       VKR_METAL_PACKET_ABI_SHADOW_MOMENTS_ROOT, false_v,
       @"VKR Metal packet shadow moments");
-  renderer->sdsm_reduce_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_sdsm_reduce",
-      VKR_METAL_PACKET_ABI_SDSM_ROOT, false_v, @"VKR Metal packet SDSM reduce");
   renderer->exposure_clear_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_exposure_clear",
       VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
@@ -1550,47 +1081,11 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
           @"VKR Metal packet exposure resolve");
 }
 
-/* Creates the subsurface, motion blur, depth-of-field, bloom and
-   display-linear pipelines. Returns false at the first subsurface, motion blur
-   or depth-of-field pipeline that fails. */
-vkr_internal bool8_t vkr_metal_packet_create_post_pipelines(
-    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment)
+/* Creates the bloom and display-linear pipelines. */
+vkr_internal void
+vkr_metal_packet_create_post_pipelines(VkrMetalPacketRenderer *renderer,
+                                       id<MTLLibrary> fragment)
     API_AVAILABLE(macos(26.0)) {
-  renderer->subsurface_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_subsurface_gather",
-      VKR_METAL_PACKET_ABI_SUBSURFACE_ROOT, false_v,
-      @"VKR Metal subsurface gather");
-  if (!renderer->subsurface_pipeline)
-    return false_v;
-  static const char *const motion_blur_entries[] = {
-      "vkr_metal_packet_motion_blur_tile_max",
-      "vkr_metal_packet_motion_blur_neighbor_max",
-      "vkr_metal_packet_motion_blur_reconstruct",
-  };
-  for (uint32_t i = 0u; i < ArrayCount(motion_blur_entries); ++i) {
-    renderer->motion_blur_pipelines[i] =
-        vkr_metal_packet_create_compute_pipeline(
-            renderer, fragment, motion_blur_entries[i],
-            VKR_METAL_PACKET_ABI_MOTION_BLUR_ROOT, false_v,
-            @"VKR Metal packet motion blur");
-    if (!renderer->motion_blur_pipelines[i])
-      return false_v;
-  }
-  static const char *const dof_entries[] = {
-      "vkr_metal_packet_dof_coc",
-      "vkr_metal_packet_dof_dilate_horizontal",
-      "vkr_metal_packet_dof_dilate_vertical",
-      "vkr_metal_packet_dof_prefilter",
-      "vkr_metal_packet_dof_gather",
-      "vkr_metal_packet_dof_composite",
-  };
-  for (uint32_t i = 0u; i < ArrayCount(dof_entries); ++i) {
-    renderer->dof_pipelines[i] = vkr_metal_packet_create_compute_pipeline(
-        renderer, fragment, dof_entries[i], VKR_METAL_PACKET_ABI_DOF_ROOT,
-        false_v, @"VKR Metal packet depth of field");
-    if (!renderer->dof_pipelines[i])
-      return false_v;
-  }
   renderer->bloom_prefilter_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_bloom_prefilter",
       VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
@@ -1618,85 +1113,6 @@ vkr_internal bool8_t vkr_metal_packet_create_post_pipelines(
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
       VKR_METAL_PACKET_ABI_TONEMAP_ROOT, false_v,
       @"VKR Metal display-linear preparation");
-  renderer->bloom_combine_pipeline = vkr_metal_packet_create_compute_pipeline(
-      renderer, fragment, "vkr_metal_packet_bloom_combine",
-      VKR_METAL_PACKET_ABI_BLOOM_ROOT, false_v,
-      @"VKR Metal packet bloom combine");
-  return true_v;
-}
-
-/* True when every deferred pipeline, the SH buffer and the indirect argument
-   encoder exist. */
-vkr_internal bool8_t vkr_metal_packet_deferred_pipelines_ready(
-    const VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
-  if (!renderer->gpu_draw_classify_pipeline ||
-      !renderer->gpu_draw_prefix_pipeline ||
-      !renderer->gpu_draw_encode_pipeline ||
-      !renderer->gpu_draw_encode_inherited_pipeline ||
-      !renderer->skinning_pipeline || !renderer->temporal_transform_pipeline ||
-      !renderer->gbuffer_resolve_pipelines[0] ||
-      !renderer->gbuffer_resolve_pipelines[1] ||
-      !renderer->gbuffer_resolve_pipelines[2] ||
-      !renderer->gbuffer_resolve_pipelines[3] ||
-      !renderer->gtao_depth_prefilter_pipeline ||
-      !renderer->gtao_depth_mip_pipeline || !renderer->gtao_evaluate_pipeline ||
-      !renderer->gtao_denoise_pipeline || !renderer->ssr_depth_base_pipeline ||
-      !renderer->ssr_depth_mip_pipeline || !renderer->ssr_trace_pipeline ||
-      !renderer->ssr_temporal_pipeline || !renderer->ssr_composite_pipeline ||
-      !renderer->ssgi_depth_base_pipeline ||
-      !renderer->ssgi_depth_mip_pipeline || !renderer->ssgi_trace_pipeline ||
-      !renderer->ssgi_temporal_pipeline || !renderer->ssgi_composite_pipeline ||
-      !renderer->fog_pipeline || !renderer->froxel_inject_pipeline ||
-      !renderer->froxel_integrate_pipeline ||
-      !renderer->froxel_apply_pipeline ||
-      !renderer->local_shadow_mask_pipeline ||
-      !renderer->local_shadow_mask_contact_pipeline ||
-      !renderer->deferred_lighting_pipeline ||
-      !renderer->deferred_lighting_layered_pipeline ||
-      !renderer->sh_coefficients || renderer->sh_coefficients.gpuAddress == 0 ||
-      !renderer->ibl_sh_pipeline ||
-      !renderer->atmosphere_transmittance_pipeline ||
-      !renderer->atmosphere_multiple_scattering_pipeline ||
-      !renderer->atmosphere_source_pipeline || !renderer->sky_view_pipeline ||
-      !renderer->aerial_perspective_pipeline ||
-      !renderer->cloud_noise_pipelines[0] ||
-      !renderer->cloud_noise_pipelines[1] ||
-      !renderer->cloud_noise_pipelines[2] || !renderer->cloud_shadow_pipeline ||
-      !renderer->cloud_trace_pipeline || !renderer->temporal_resolve_pipeline ||
-      !renderer->metalfx_stabilize_pipeline ||
-      !renderer->transmission_shade_pipeline ||
-      !renderer->transmission_shade_partitioned_pipeline ||
-      !renderer->transmission_shade_production_pipeline ||
-      !renderer->transmission_shade_production_temporal_pipeline ||
-      !renderer->transmission_shade_partitioned_production_pipeline ||
-      !renderer->transmission_shade_partitioned_production_temporal_pipeline ||
-      !renderer->transmission_coverage_pipeline ||
-      !renderer->transmission_compact_clear_pipeline ||
-      !renderer->transmission_compact_pipeline ||
-      !renderer->transmission_compact_finalize_pipeline ||
-      !renderer->picking_resolve_pipeline || !renderer->hzb_build_pipeline ||
-      !renderer->shadow_moments_pipeline || !renderer->sdsm_reduce_pipeline ||
-      !renderer->exposure_clear_pipeline ||
-      !renderer->exposure_histogram_pipeline ||
-      !renderer->exposure_resolve_pipeline ||
-      !renderer->bloom_prefilter_pipeline ||
-      !renderer->bloom_downsample_tent13_pipeline ||
-      !renderer->bloom_downsample_box4_pipeline ||
-      !renderer->bloom_upsample_pipeline || !renderer->bloom_combine_pipeline ||
-      !renderer->animation_preview_pipeline || !renderer->gpu_shadow_pipeline ||
-      !renderer->gpu_shadow_opaque_pipeline ||
-      !renderer->depth_clear_pipeline ||
-      !renderer->local_shadow_transmission_pipelines[0] ||
-      !renderer->local_shadow_transmission_pipelines[1] ||
-      !renderer->local_shadow_transmission_pipelines[2] ||
-      !renderer->vbuffer_pipeline || !renderer->vbuffer_opaque_pipeline ||
-      !renderer->transmission_vbuffer_pipeline ||
-      !renderer->gpu_draw_icb_argument_encoder) {
-    log_error("Metal deferred pipelines or indirect argument encoder are "
-              "unavailable");
-    return false_v;
-  }
-  return true_v;
 }
 
 /* Creates the depth-stencil states and the shared argument table. */
@@ -1715,21 +1131,19 @@ vkr_metal_packet_create_render_states(VkrMetalPacketRenderer *renderer)
   depth.depthWriteEnabled = NO;
   renderer->depth_read_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
-  if (renderer->tiled) {
-    /* The pre-pass lays opaque depth; shading passes its equal depth and
-       lays the alpha-tested surfaces the pre-pass skipped; the sky passes
-       where no surface was drawn. */
-    depth.depthCompareFunction = MTLCompareFunctionLess;
-    depth.depthWriteEnabled = YES;
-    renderer->tiled_prepass_state =
-        [renderer->device newDepthStencilStateWithDescriptor:depth];
-    depth.depthCompareFunction = MTLCompareFunctionLessEqual;
-    renderer->tiled_shade_state =
-        [renderer->device newDepthStencilStateWithDescriptor:depth];
-    depth.depthWriteEnabled = NO;
-    renderer->tiled_sky_state =
-        [renderer->device newDepthStencilStateWithDescriptor:depth];
-  }
+  /* The tiled pre-pass lays opaque depth; shading passes its equal depth and
+     lays the alpha-tested surfaces the pre-pass skipped; the sky passes where
+     no surface was drawn. */
+  depth.depthCompareFunction = MTLCompareFunctionLess;
+  depth.depthWriteEnabled = YES;
+  renderer->tiled_prepass_state =
+      [renderer->device newDepthStencilStateWithDescriptor:depth];
+  depth.depthCompareFunction = MTLCompareFunctionLessEqual;
+  renderer->tiled_shade_state =
+      [renderer->device newDepthStencilStateWithDescriptor:depth];
+  depth.depthWriteEnabled = NO;
+  renderer->tiled_sky_state =
+      [renderer->device newDepthStencilStateWithDescriptor:depth];
   [depth release];
   MTL4ArgumentTableDescriptor *table = [MTL4ArgumentTableDescriptor new];
   table.maxBufferBindCount = 3;
@@ -1749,7 +1163,6 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
     id object;
     const char *label;
   } required[] = {
-      {renderer->blend_pipeline, "alpha blend pipeline"},
       {renderer->ui_pipeline, "UI stream pipeline"},
       {renderer->picking_pipeline, "picking pipeline"},
       {renderer->tonemap_pipeline, "tonemap pipeline"},
@@ -1763,56 +1176,25 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->editor_selection_outline_pipeline,
        "editor selection outline pipeline"},
       {renderer->editor_grid_pipeline, "editor grid pipeline"},
-      {renderer->world_text_pipeline, "world text pipeline"},
       {renderer->picking_text_pipeline, "picking text pipeline"},
+      {renderer->animation_preview_pipeline, "animation preview pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},
       {renderer->ibl_sh_pipeline, "IBL SH projection pipeline"},
+      {renderer->sh_coefficients, "SH coefficient pool"},
+      {renderer->atmosphere_transmittance_pipeline,
+       "atmosphere transmittance pipeline"},
+      {renderer->atmosphere_multiple_scattering_pipeline,
+       "atmosphere multiple-scattering pipeline"},
+      {renderer->atmosphere_source_pipeline, "atmosphere source pipeline"},
       {renderer->gpu_shadow_pipeline, "GPU shadow pipeline"},
-      {renderer->local_shadow_transmission_pipelines[0],
-       "local shadow transmission 0 pipeline"},
-      {renderer->local_shadow_transmission_pipelines[1],
-       "local shadow transmission 1 pipeline"},
-      {renderer->local_shadow_transmission_pipelines[2],
-       "local shadow transmission overflow pipeline"},
       {renderer->gpu_shadow_opaque_pipeline, "opaque GPU shadow pipeline"},
       {renderer->depth_clear_pipeline, "depth clear pipeline"},
-      {renderer->vbuffer_pipeline, "visibility-buffer pipeline"},
-      {renderer->vbuffer_opaque_pipeline, "opaque visibility-buffer pipeline"},
-      {renderer->transmission_vbuffer_pipeline,
-       "transmission visibility-buffer pipeline"},
       {renderer->gpu_draw_classify_pipeline, "draw classify pipeline"},
       {renderer->gpu_draw_prefix_pipeline, "draw prefix pipeline"},
       {renderer->gpu_draw_encode_pipeline, "draw encode pipeline"},
-      {renderer->gpu_draw_encode_inherited_pipeline,
-       "inherited draw encode pipeline"},
+      {renderer->gpu_draw_icb_argument_encoder,
+       "indirect command argument encoder"},
       {renderer->skinning_pipeline, "skinning pipeline"},
-      {renderer->temporal_transform_pipeline, "temporal transform pipeline"},
-      {renderer->gbuffer_resolve_pipelines[0], "G-buffer resolve pipeline"},
-      {renderer->gbuffer_resolve_pipelines[1],
-       "G-buffer emissive capture pipeline"},
-      {renderer->gbuffer_resolve_pipelines[2],
-       "G-buffer debug capture pipeline"},
-      {renderer->gbuffer_resolve_pipelines[3],
-       "G-buffer diagnostics capture pipeline"},
-      {renderer->gtao_depth_prefilter_pipeline,
-       "GTAO depth prefilter pipeline"},
-      {renderer->gtao_depth_mip_pipeline, "GTAO depth mip pipeline"},
-      {renderer->gtao_evaluate_pipeline, "GTAO evaluate pipeline"},
-      {renderer->gtao_denoise_pipeline, "GTAO denoise pipeline"},
-      {renderer->ssr_depth_base_pipeline, "SSR depth-base pipeline"},
-      {renderer->ssr_depth_mip_pipeline, "SSR depth-mip pipeline"},
-      {renderer->ssr_trace_pipeline, "SSR trace pipeline"},
-      {renderer->ssr_temporal_pipeline, "SSR temporal pipeline"},
-      {renderer->ssr_composite_pipeline, "SSR composite pipeline"},
-      {renderer->ssgi_depth_base_pipeline, "SSGI depth-base pipeline"},
-      {renderer->ssgi_depth_mip_pipeline, "SSGI depth-mip pipeline"},
-      {renderer->ssgi_trace_pipeline, "SSGI trace pipeline"},
-      {renderer->ssgi_temporal_pipeline, "SSGI temporal pipeline"},
-      {renderer->ssgi_composite_pipeline, "SSGI composite pipeline"},
-      {renderer->fog_pipeline, "Analytic fog pipeline"},
-      {renderer->froxel_inject_pipeline, "Froxel injection pipeline"},
-      {renderer->froxel_integrate_pipeline, "Froxel integration pipeline"},
-      {renderer->froxel_apply_pipeline, "Froxel application pipeline"},
       {renderer->sky_view_pipeline, "Sky-view lookup pipeline"},
       {renderer->aerial_perspective_pipeline, "Aerial perspective pipeline"},
       {renderer->cloud_noise_pipelines[0], "Cloud base-noise pipeline"},
@@ -1820,60 +1202,29 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->cloud_noise_pipelines[2], "Cloud weather pipeline"},
       {renderer->cloud_shadow_pipeline, "Cloud shadow pipeline"},
       {renderer->cloud_trace_pipeline, "Cloud trace pipeline"},
-      {renderer->local_shadow_mask_pipeline, "local shadow mask pipeline"},
-      {renderer->local_shadow_mask_contact_pipeline,
-       "local shadow mask contact pipeline"},
-      {renderer->deferred_lighting_pipeline, "deferred lighting pipeline"},
-      {renderer->deferred_lighting_layered_pipeline,
-       "layered deferred lighting pipeline"},
-      {renderer->temporal_resolve_pipeline, "temporal resolve pipeline"},
-      {renderer->metalfx_stabilize_pipeline, "MetalFX stationary accumulation"},
-      {renderer->transmission_shade_pipeline, "transmission shade pipeline"},
-      {renderer->transmission_shade_partitioned_pipeline,
-       "partitioned transmission shade pipeline"},
-      {renderer->transmission_shade_production_pipeline,
-       "production transmission shade pipeline"},
-      {renderer->transmission_shade_production_temporal_pipeline,
-       "temporal production transmission shade pipeline"},
-      {renderer->transmission_shade_partitioned_production_pipeline,
-       "partitioned production transmission shade pipeline"},
-      {renderer->transmission_shade_partitioned_production_temporal_pipeline,
-       "temporal partitioned production transmission shade pipeline"},
-      {renderer->transmission_coverage_pipeline,
-       "transmission coverage pipeline"},
-      {renderer->transmission_compact_pipeline,
-       "transmission compact pipeline"},
-      {renderer->transmission_compact_clear_pipeline,
-       "transmission compact clear pipeline"},
-      {renderer->transmission_compact_finalize_pipeline,
-       "transmission compact finalize pipeline"},
-      {renderer->picking_resolve_pipeline, "picking resolve pipeline"},
       {renderer->hzb_build_pipeline, "HZB build pipeline"},
       {renderer->shadow_moments_pipeline, "shadow moments pipeline"},
-      {renderer->sdsm_reduce_pipeline, "SDSM reduce pipeline"},
       {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
       {renderer->exposure_histogram_pipeline, "exposure histogram pipeline"},
       {renderer->exposure_resolve_pipeline, "exposure resolve pipeline"},
-      {renderer->subsurface_pipeline, "subsurface gather pipeline"},
-      {renderer->motion_blur_pipelines[0], "motion blur tile_max pipeline"},
-      {renderer->motion_blur_pipelines[1], "motion blur neighbor_max pipeline"},
-      {renderer->motion_blur_pipelines[2], "motion blur reconstruct pipeline"},
-      {renderer->dof_pipelines[0], "DoF coc pipeline"},
-      {renderer->dof_pipelines[1], "DoF dilate_horizontal pipeline"},
-      {renderer->dof_pipelines[2], "DoF dilate_vertical pipeline"},
-      {renderer->dof_pipelines[3], "DoF prefilter pipeline"},
-      {renderer->dof_pipelines[4], "DoF gather pipeline"},
-      {renderer->dof_pipelines[5], "DoF composite pipeline"},
       {renderer->bloom_prefilter_pipeline, "bloom prefilter pipeline"},
       {renderer->bloom_downsample_tent13_pipeline,
        "bloom tent13 downsample pipeline"},
       {renderer->bloom_downsample_box4_pipeline,
        "bloom box4 downsample pipeline"},
       {renderer->bloom_upsample_pipeline, "bloom upsample pipeline"},
-      {renderer->bloom_combine_pipeline, "bloom combine pipeline"},
+      {renderer->tiled_depth_pipeline, "tiled depth pre-pass pipeline"},
+      {renderer->tiled_sky_pipeline, "tiled sky pipeline"},
+      {renderer->tiled_atmosphere_pipeline, "tiled atmosphere pipeline"},
+      {renderer->tiled_resolve_pipeline, "tiled resolve pipeline"},
+      {renderer->tiled_picking_pipeline, "tiled picking pipeline"},
+      {renderer->tiled_text_pipeline, "tiled world text pipeline"},
       {renderer->depth_write_state, "depth-write state"},
       {renderer->depth_clear_state, "depth-clear state"},
       {renderer->depth_read_state, "depth-read state"},
+      {renderer->tiled_prepass_state, "tiled pre-pass depth state"},
+      {renderer->tiled_shade_state, "tiled shading depth state"},
+      {renderer->tiled_sky_state, "tiled sky depth state"},
       {renderer->argument_table, "argument table"},
   };
   for (uint32_t i = 0u; i < ArrayCount(required); ++i) {
@@ -1883,22 +1234,18 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       return false_v;
     }
   }
-  if (renderer->tiled) {
-    bool8_t lighting_ready = true_v;
-    for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-      if (!renderer->tiled_forward_pipelines[i] ||
-          !renderer->tiled_coverage_pipelines[i] ||
-          !renderer->tiled_blend_pipelines[i]) {
-        lighting_ready = false_v;
-      }
-    }
-    if (!lighting_ready || !renderer->tiled_depth_pipeline ||
-        !renderer->tiled_sky_pipeline || !renderer->tiled_atmosphere_pipeline ||
-        !renderer->tiled_resolve_pipeline ||
-        !renderer->tiled_picking_pipeline || !renderer->tiled_text_pipeline ||
-        !renderer->tiled_prepass_state || !renderer->tiled_shade_state ||
-        !renderer->tiled_sky_state) {
-      log_error("Metal renderer startup object unavailable: tiled pipeline");
+  if (renderer->sh_coefficients.gpuAddress == 0) {
+    log_error("Metal renderer startup object unavailable: SH coefficient pool "
+              "address");
+    return false_v;
+  }
+  for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+    if (!renderer->tiled_forward_pipelines[i] ||
+        !renderer->tiled_coverage_pipelines[i] ||
+        !renderer->tiled_blend_pipelines[i]) {
+      log_error("Metal renderer startup object unavailable: tiled shading "
+                "variant %u",
+                i);
       return false_v;
     }
   }
@@ -1926,8 +1273,7 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   if (!slang || !fragment)
     goto cleanup;
   vkr_metal_packet_create_scene_raster_pipelines(renderer, slang, fragment);
-  if (renderer->tiled)
-    vkr_metal_packet_create_tiled_pipelines(renderer, slang, fragment);
+  vkr_metal_packet_create_tiled_pipelines(renderer, slang, fragment);
   VkrMetalPacketPresentationPipelines presentation_pipelines;
   if (!vkr_metal_packet_create_presentation_pipelines(
           renderer, fragment, vkr_metal_packet_target_pixel_format(renderer),
@@ -1941,15 +1287,12 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
     goto cleanup;
   vkr_metal_packet_create_scene_compute_pipelines(renderer, fragment);
   vkr_metal_packet_create_frame_compute_pipelines(renderer, fragment);
-  if (!vkr_metal_packet_create_post_pipelines(renderer, fragment))
-    goto cleanup;
+  vkr_metal_packet_create_post_pipelines(renderer, fragment);
   id<MTLFunction> encode_function =
       [fragment newFunctionWithName:@"vkr_metal_packet_gpu_draw_encode"];
   renderer->gpu_draw_icb_argument_encoder =
       [encode_function newArgumentEncoderWithBufferIndex:1u];
   [encode_function release];
-  if (!vkr_metal_packet_deferred_pipelines_ready(renderer))
-    goto cleanup;
   renderer->fragment_library = [fragment retain];
   created = true_v;
   log_info("Metal shader startup: libraries %.1f ms (%s), pipelines %.1f ms "
@@ -1995,7 +1338,7 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icb_residencies(
     VkrMetalPacketCommandSlot *slot = &renderer->command_slots[i];
     for (uint32_t group = 0u; group < renderer->gpu_draw_icb_group_count;
          ++group) {
-      residency_descriptor.initialCapacity = group == 0u ? 2u : 1u;
+      residency_descriptor.initialCapacity = 1u;
       NSError *residency_error = nil;
       id<MTLResidencySet> residency =
           [renderer->device newResidencySetWithDescriptor:residency_descriptor
@@ -2035,8 +1378,8 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icb_residencies(
 vkr_internal bool8_t vkr_metal_packet_reserve_gpu_draw_icb(
     VkrMetalPacketRenderer *renderer, id<MTLResidencySet> residency,
     id<MTLIndirectCommandBuffer> *icb, uint32_t *capacity,
-    uint32_t required_commands, bool8_t transmission,
-    VkrRendererError *out_error) API_AVAILABLE(macos(26.0)) {
+    uint32_t required_commands, VkrRendererError *out_error)
+    API_AVAILABLE(macos(26.0)) {
   if (required_commands <= *capacity)
     return true_v;
   if (*icb) {
@@ -2050,11 +1393,11 @@ vkr_internal bool8_t vkr_metal_packet_reserve_gpu_draw_icb(
       [MTLIndirectCommandBufferDescriptor new];
   descriptor.commandTypes = MTLIndirectCommandTypeDrawIndexed;
   descriptor.inheritPipelineState = YES;
-  descriptor.inheritBuffers = transmission ? YES : NO;
+  descriptor.inheritBuffers = NO;
   descriptor.inheritDepthStencilState = YES;
   descriptor.inheritCullMode = YES;
-  descriptor.maxVertexBufferBindCount = transmission ? 0u : 1u;
-  descriptor.maxFragmentBufferBindCount = transmission ? 0u : 3u;
+  descriptor.maxVertexBufferBindCount = 1u;
+  descriptor.maxFragmentBufferBindCount = 3u;
   /* Metal has no ICB size query. Reject and release a provisional native
      object before residency if its actual allocation cannot enter the cap. */
   *icb = [renderer->device
@@ -2069,29 +1412,25 @@ vkr_internal bool8_t vkr_metal_packet_reserve_gpu_draw_icb(
   }
   [descriptor release];
   if (!*icb) {
-    log_error("Metal indirect command buffer growth failed: commands=%u "
-              "transmission=%u",
-              required_commands, transmission);
+    log_error("Metal indirect command buffer growth failed: commands=%u",
+              required_commands);
     return false_v;
   }
   [residency addAllocation:*icb];
   [residency commit];
   *capacity = required_commands;
   VKR_METAL_DIAGNOSTIC(
-      renderer, "icb_capacity",
-      "slot=%u commands=%u transmission=%u bytes=%llu",
+      renderer, "icb_capacity", "slot=%u commands=%u bytes=%llu",
       (uint32_t)(renderer->active_command_slot - renderer->command_slots),
-      required_commands, transmission,
-      (unsigned long long)(*icb).allocatedSize);
+      required_commands, (unsigned long long)(*icb).allocatedSize);
   return true_v;
 }
 
 vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_icbs(
     VkrMetalPacketRenderer *renderer, uint32_t candidate_count,
-    uint32_t transmission_count, uint32_t view_count,
-    VkrRendererError *out_error) API_AVAILABLE(macos(26.0)) {
+    uint32_t view_count, VkrRendererError *out_error)
+    API_AVAILABLE(macos(26.0)) {
   if (candidate_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
-      transmission_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY ||
       view_count > VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX ||
       (candidate_count > 0u && view_count == 0u))
     return false_v;
@@ -2111,20 +1450,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_icbs(
               renderer, slot->gpu_draw_icb_residencies[group],
               &slot->gpu_draw_icbs[group],
               &slot->gpu_draw_icb_capacities[group],
-              candidate_capacity * group_view_count, false_v, out_error))
+              candidate_capacity * group_view_count, out_error))
         return false_v;
     }
-  }
-  if (transmission_count > 0u) {
-    uint32_t transmission_capacity = 1u;
-    while (transmission_capacity < transmission_count)
-      transmission_capacity *= 2u;
-    if (!vkr_metal_packet_reserve_gpu_draw_icb(
-            renderer, slot->gpu_draw_icb_residencies[0],
-            &slot->transmission_gpu_draw_icb,
-            &slot->transmission_gpu_draw_icb_capacity, transmission_capacity,
-            true_v, out_error))
-      return false_v;
   }
   return true_v;
 }
@@ -2469,53 +1797,6 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture(
     first = end;
   }
   return true_v;
-}
-
-vkr_internal bool8_t vkr_metal_packet_create_gtao_white_visibility(
-    VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
-  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-  descriptor.textureType = MTLTextureType2D;
-  descriptor.pixelFormat = MTLPixelFormatRGBA8Unorm;
-  descriptor.width = 1u;
-  descriptor.height = 1u;
-  descriptor.mipmapLevelCount = 1u;
-  descriptor.usage = MTLTextureUsageShaderRead;
-  const bool8_t created =
-      vkr_metal_memory_device_create_texture(
-          renderer->memory, descriptor, VKR_GPU_ALLOCATION_OWNER_SHADER,
-          &renderer->gtao_white_visibility) == VKR_METAL_MEMORY_STATUS_OK;
-  [descriptor release];
-  if (!created)
-    return false_v;
-
-  renderer->gtao_white_live = true_v;
-  /* RGB encodes +Z; alpha is full visibility. Deferred consumers blend the
-   * decoded direction to their shading normal when alpha reaches one. */
-  const uint8_t neutral[4] = {128u, 128u, 255u, 255u};
-  const VkrTextureUploadRegion region = {
-      .mip_level = 0u,
-      .array_layer = 0u,
-      .width = 1u,
-      .height = 1u,
-      .depth = 1u,
-      .byte_offset = 0u,
-      .byte_size = sizeof(neutral),
-  };
-  const bool8_t uploaded = vkr_metal_packet_upload_texture(
-      renderer,
-      &(VkrMetalPacketTextureUpload){
-          .data = neutral,
-          .data_size = sizeof(neutral),
-          .mip_levels = 1u,
-          .array_layers = 1u,
-          .is_compressed = false_v,
-          .region_count = 1u,
-          .regions = &region,
-      },
-      VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
-      (id<MTLTexture>)renderer->gtao_white_visibility.metal_texture);
-  renderer->gtao_white_last_use_submit_value = renderer->submit_value;
-  return uploaded;
 }
 
 vkr_internal bool8_t vkr_metal_packet_create_dfg_lut(
@@ -2936,107 +2217,6 @@ vkr_internal uint32_t vkr_metal_packet_mip_count(uint32_t extent) {
   return count;
 }
 
-vkr_internal bool8_t vkr_metal_packet_create_metalfx_temporal_scaler(
-    VkrMetalPacketRenderer *renderer, uint32_t output_width,
-    uint32_t output_height) API_AVAILABLE(macos(26.0)) {
-  if (!renderer || !renderer->metalfx_enabled)
-    return true_v;
-  if (!renderer->device || !renderer->compiler || output_width == 0u ||
-      output_height == 0u ||
-      ![MTLFXTemporalScalerDescriptor supportsDevice:renderer->device] ||
-      ![MTLFXTemporalScalerDescriptor supportsMetal4FX:renderer->device]) {
-    log_error("MetalFX temporal scaling is unavailable on the selected GPU");
-    return false_v;
-  }
-  const float supported_min = [MTLFXTemporalScalerDescriptor
-      supportedInputContentMinScaleForDevice:renderer->device];
-  const float supported_max = [MTLFXTemporalScalerDescriptor
-      supportedInputContentMaxScaleForDevice:renderer->device];
-  // Match the shared Scene extent owner's conservative MetalFX quantization.
-  const uint32_t widest_content =
-      MAX((uint32_t)ceil((float64_t)output_width *
-                         (float64_t)renderer->metalfx_max_render_scale),
-          1u);
-  const uint32_t tallest_content =
-      MAX((uint32_t)ceil((float64_t)output_height *
-                         (float64_t)renderer->metalfx_max_render_scale),
-          1u);
-  const uint32_t narrowest_content =
-      MAX((uint32_t)ceil((float64_t)output_width *
-                         (float64_t)renderer->metalfx_min_render_scale),
-          1u);
-  const uint32_t shortest_content =
-      MAX((uint32_t)ceil((float64_t)output_height *
-                         (float64_t)renderer->metalfx_min_render_scale),
-          1u);
-  const float requested_min_factor =
-      MIN((float)output_width / (float)widest_content,
-          (float)output_height / (float)tallest_content);
-  const float requested_max_factor =
-      MAX((float)output_width / (float)narrowest_content,
-          (float)output_height / (float)shortest_content);
-  if (!isfinite(supported_min) || !isfinite(supported_max) ||
-      !isfinite(requested_min_factor) || !isfinite(requested_max_factor) ||
-      requested_min_factor + 1e-5f < supported_min ||
-      requested_max_factor - 1e-5f > supported_max ||
-      requested_min_factor > requested_max_factor) {
-    log_error("MetalFX temporal render-scale range [%.3f, %.3f] requires "
-              "upscaling factors [%.3f, %.3f], outside the device range "
-              "[%.3f, %.3f]",
-              renderer->metalfx_min_render_scale,
-              renderer->metalfx_max_render_scale, requested_min_factor,
-              requested_max_factor, supported_min, supported_max);
-    return false_v;
-  }
-
-  MTLFXTemporalScalerDescriptor *descriptor =
-      [MTLFXTemporalScalerDescriptor new];
-  descriptor.colorTextureFormat = MTLPixelFormatRGBA16Float;
-  descriptor.depthTextureFormat = MTLPixelFormatDepth32Float;
-  descriptor.motionTextureFormat = MTLPixelFormatRG16Float;
-  descriptor.outputTextureFormat = MTLPixelFormatRGBA16Float;
-  descriptor.inputWidth = output_width;
-  descriptor.inputHeight = output_height;
-  descriptor.outputWidth = output_width;
-  descriptor.outputHeight = output_height;
-  descriptor.autoExposureEnabled = YES;
-  descriptor.requiresSynchronousInitialization = YES;
-  descriptor.inputContentPropertiesEnabled = YES;
-  descriptor.inputContentMinScale = requested_min_factor;
-  descriptor.inputContentMaxScale = requested_max_factor;
-  descriptor.reactiveMaskTextureEnabled = NO;
-  id<MTL4FXTemporalScaler> scaler =
-      [descriptor newTemporalScalerWithDevice:renderer->device
-                                     compiler:renderer->compiler];
-  [descriptor release];
-  if (!scaler) {
-    log_error("MetalFX temporal scaler creation failed for %ux%u", output_width,
-              output_height);
-    return false_v;
-  }
-  /* Graph textures use untracked placement-heap hazards. MetalFX owns its
-     internal encoders, so its public fence must carry that synchronization. */
-  id<MTLFence> fence = [renderer->device newFence];
-  if (!fence) {
-    [scaler release];
-    log_error("MetalFX temporal synchronization fence creation failed");
-    return false_v;
-  }
-  fence.label = @"VKR MetalFX temporal untracked-resource fence";
-  scaler.fence = fence;
-  [fence release];
-  [renderer->metalfx_temporal_scaler release];
-  renderer->metalfx_temporal_scaler = scaler;
-  renderer->metalfx_output_width = output_width;
-  renderer->metalfx_output_height = output_height;
-  log_info("MetalFX temporal scaler: %ux%u, render scale [%.2f, %.2f], "
-           "upscaling factor [%.2f, %.2f]",
-           output_width, output_height, renderer->metalfx_min_render_scale,
-           renderer->metalfx_max_render_scale, requested_min_factor,
-           requested_max_factor);
-  return true_v;
-}
-
 /* Validates create arguments before anything is allocated. */
 vkr_internal bool8_t vkr_metal_packet_create_arguments_valid(
     const VkrMetalPacketRendererConfig *config,
@@ -3061,11 +2241,6 @@ vkr_internal bool8_t vkr_metal_packet_create_arguments_valid(
               VKR_METAL_PACKET_ROOT_ALIGNMENT !=
           0 ||
       config->target_kind > VKR_METAL_PACKET_TARGET_WINDOW ||
-      config->upscale_mode >= VKR_UPSCALE_MODE_COUNT ||
-      (config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL &&
-       (config->target_width == 0u || config->target_height == 0u ||
-        !isfinite(config->render_scale) || config->render_scale <= 0.0f ||
-        config->render_scale > 1.0f)) ||
       (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW &&
        !config->metal_layer))
     return false_v;
@@ -3083,7 +2258,7 @@ vkr_internal bool8_t vkr_metal_packet_create_capacities(
     const VkrMetalPacketRendererConfig *config,
     VkrMetalPacketCreateCapacities *out_capacities) {
   const VkrMetalPacketReadbackLayout maximum_readback =
-      vkr_metal_packet_readback_layout(true_v, true_v, true_v, true_v, true_v,
+      vkr_metal_packet_readback_layout(true_v, true_v,
                                        VKR_SHADOW_CASCADE_COUNT_MAX);
   const uint64_t readback_prefix_size = vkr_metal_packet_align_up(
       maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);
@@ -3136,19 +2311,15 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   if (diagnostics_directory && diagnostics_directory[0]) {
     (void)vkr_metal_diagnostics_open(&renderer->diagnostics,
                                      diagnostics_directory);
-    VKR_METAL_DIAGNOSTIC(
-        renderer, "renderer_create",
-        "target=%u extent=%ux%u slots=%u upscale=%u managed_budget=%llu",
-        config->target_kind, config->target_width, config->target_height,
-        config->frame_slot_count, config->upscale_mode,
-        (unsigned long long)config->managed_budget_size);
+    VKR_METAL_DIAGNOSTIC(renderer, "renderer_create",
+                         "target=%u extent=%ux%u slots=%u managed_budget=%llu",
+                         config->target_kind, config->target_width,
+                         config->target_height, config->frame_slot_count,
+                         (unsigned long long)config->managed_budget_size);
     VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
   }
   renderer->exposure_metering = vkr_exposure_metering_config_normalize(NULL);
   renderer->bloom_config = vkr_bloom_config_normalize(&config->bloom);
-  renderer->gtao_config = vkr_gtao_config_normalize(&config->gtao);
-  renderer->ssr_config = vkr_ssr_config_normalize(&config->ssr);
-  renderer->ssgi_config = vkr_ssgi_config_normalize(&config->ssgi);
   renderer->candidate_publication_generation = 1u;
   renderer->graph_frame_arena = arena_create(MB(8), KB(256));
   renderer->graph_frame_allocator =
@@ -3158,7 +2329,6 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->max_meshes = config->max_meshes;
   renderer->max_materials = config->max_material_rows;
   renderer->max_textures = config->max_textures;
-  renderer->transmission_compact_enabled = config->transmission_compact_enabled;
   renderer->hzb_enabled = config->hzb_enabled;
   renderer->frustum_enabled = config->frustum_enabled;
   renderer->max_samplers = VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY;
@@ -3169,7 +2339,7 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->upload_slot_count =
       Min(config->frame_slot_count, VKR_METAL_PACKET_UPLOAD_SLOT_COUNT_MAX);
   /* At most N-1 command slots remain in flight. Their distinct outputs plus
-     one shared temporal input and one shared HZB input can occupy N+1
+     one shared cloud-history input and one shared HZB input can occupy N+1
      instances, so one additional output must remain completion-safe. */
   renderer->history_instance_count = config->frame_slot_count + 2u;
   renderer->upload_slot_size =
@@ -3193,22 +2363,7 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
                     renderer->target_kind == VKR_METAL_PACKET_TARGET_WINDOW));
   renderer->srgb_output = config->srgb_output;
   renderer->tonemap_enabled = config->tonemap_enabled;
-  renderer->metalfx_enabled =
-      config->upscale_mode == VKR_UPSCALE_MODE_METALFX_TEMPORAL;
-  renderer->tiled = config->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
-  renderer->dynamic_resolution_enabled =
-      (renderer->metalfx_enabled || renderer->tiled) &&
-      config->dynamic_resolution.enabled;
-  renderer->metalfx_min_render_scale =
-      config->render_scale_min > 0.0f ? config->render_scale_min
-      : config->dynamic_resolution.enabled
-          ? config->dynamic_resolution.min_scale
-          : config->render_scale;
-  renderer->metalfx_max_render_scale =
-      config->render_scale_max > 0.0f ? config->render_scale_max
-      : config->dynamic_resolution.enabled
-          ? config->dynamic_resolution.max_scale
-          : config->render_scale;
+  renderer->dynamic_resolution_enabled = config->dynamic_resolution.enabled;
   renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
   renderer->synchronous_validation_readback =
       config->synchronous_validation_readback;
@@ -3384,8 +2539,8 @@ vkr_internal bool8_t vkr_metal_packet_create_commit_feedback_records(
 }
 
 /* An explicit request wins. Otherwise two thirds of the recommended working
- * set leaves room for driver, MetalFX and drawable allocations outside the
- * cap and for the rest of the system on unified memory. */
+ * set leaves room for driver and drawable allocations outside the cap and
+ * for the rest of the system on unified memory. */
 vkr_internal uint64_t vkr_metal_packet_managed_budget(id<MTLDevice> device,
                                                       uint64_t requested) {
   if (requested)
@@ -3435,7 +2590,6 @@ vkr_internal bool8_t vkr_metal_packet_create_device_resources(
          vkr_metal_packet_create_ltc_luts(renderer) &&
          vkr_metal_packet_create_sheen_luts(renderer) &&
          vkr_metal_packet_create_anisotropy_luts(renderer) &&
-         vkr_metal_packet_create_gtao_white_visibility(renderer) &&
          vkr_metal_packet_create_pipelines(
              renderer, config->slang_msl_path, config->slang_metallib_path,
              config->fragment_msl_path, config->fragment_metallib_path) &&
@@ -3447,6 +2601,7 @@ vkr_internal bool8_t vkr_metal_packet_create_device_resources(
                                &renderer->json_graph) &&
          vkr_rg_json_bind_executors(&renderer->json_graph,
                                     &renderer->executors) &&
+         vkr_metal_packet_validate_graph_executors(&renderer->json_graph) &&
          (renderer->graph = vkr_rg_create(renderer->allocator)) != NULL &&
          vkr_rg_set_frame_allocator(renderer->graph,
                                     &renderer->graph_frame_allocator) &&
@@ -3529,8 +2684,6 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
           [renderer->device supportsFamily:MTLGPUFamilyMetal4] &&
           vkr_metal_packet_create_compiler(renderer,
                                            config->pipeline_archive_path) &&
-          vkr_metal_packet_create_metalfx_temporal_scaler(
-              renderer, config->target_width, config->target_height) &&
           renderer->queue && renderer->completion && commit_feedback_created &&
           renderer->timestamp_frequency > 0u;
       if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {

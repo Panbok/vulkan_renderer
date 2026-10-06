@@ -133,8 +133,11 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     : 0u;
   const VkrLocalShadowPassPayload *local_shadow = packet->input.local_shadow;
   frame->local_shadow_view_count = local_shadow ? local_shadow->view_count : 0u;
-  frame->local_shadow_refractive_casters =
-      local_shadow && local_shadow->refractive_casters;
+  /* The tiled pipeline's glass casts no local shadow, so its faces draw no
+     transmission layers (ADR-087). */
+  frame->local_shadow_refractive_casters = !packet->tiled_pipeline &&
+                                           local_shadow &&
+                                           local_shadow->refractive_casters;
   frame->local_shadow_contact = local_shadow && local_shadow->contact_shadows;
   frame->local_shadow_transmission_layer_count =
       frame->local_shadow_refractive_casters
@@ -354,12 +357,6 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                          VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TEMPORAL_RESOLVE] = {"pass.temporal.resolve",
                                           VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_METALFX_STAGE] = {"pass.metalfx.stage",
-                                       VKR_RG_PASS_TYPE_TRANSFER},
-    [VKR_RG_EXECUTOR_METALFX_TEMPORAL] = {"pass.metalfx.temporal",
-                                          VKR_RG_PASS_TYPE_COMPUTE},
-    [VKR_RG_EXECUTOR_METALFX_STABILIZE] = {"pass.metalfx.stabilize",
-                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM] = {"pass.exposure.histogram",
                                             VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_EXPOSURE_RESOLVE] = {"pass.exposure.resolve",

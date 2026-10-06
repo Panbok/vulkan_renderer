@@ -166,13 +166,11 @@ if(APPLE)
     find_library(COCOA_LIBRARY Cocoa)
     find_library(FOUNDATION_LIBRARY Foundation)
     find_library(METAL_LIBRARY Metal)
-    find_library(METALFX_LIBRARY MetalFX)
     find_library(QUARTZCORE_LIBRARY QuartzCore)
     target_link_libraries(renderer_lib PRIVATE
         ${COCOA_LIBRARY}
         ${FOUNDATION_LIBRARY}
         ${METAL_LIBRARY}
-        ${METALFX_LIBRARY}
         ${QUARTZCORE_LIBRARY}
         )
 elseif(WIN32)

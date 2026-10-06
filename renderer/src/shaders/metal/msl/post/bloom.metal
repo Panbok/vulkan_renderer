@@ -1,9 +1,8 @@
-// Bloom prefilter, downsample, upsample, and combine entry points. The threshold
-// curve,
-// the non-finite/firefly sanitizer, and the Karis weight live in
-// shared/bloom_kernel.slangh so the Vulkan path uses the same definitions. Tap
-// patterns stay here because they are inseparable from the backend's sampling
-// call.
+// Bloom prefilter, downsample, and upsample entry points; the tonemap pass adds
+// the chain's first level (ADR-087). The threshold curve, the non-finite/firefly
+// sanitizer, and the Karis weight live in shared/bloom_kernel.slangh so the
+// Vulkan path uses the same definitions. Tap patterns stay here because they
+// are inseparable from the backend's sampling call.
 
 struct VkrMetalPacketBloomRoot {
   texture2d<float, access::sample> source;
@@ -176,18 +175,6 @@ kernel void vkr_metal_packet_bloom_upsample(
   // resolved chain is the sum of the scales rather than a weighted average that
   // drops energy at every step.
   root.destination.write(float4(fine + coarse, 1.0), pixel);
-}
-
-kernel void vkr_metal_packet_bloom_combine(
-    constant VkrMetalPacketBloomRoot &root [[buffer(0)]],
-    uint2 pixel [[thread_position_in_grid]]) {
-  if (!all(pixel < root.destination_extent))
-    return;
-  float2 uv = vkr_bloom_destination_uv(root, pixel);
-  float3 hdr = root.source.sample(vkr_bloom_sampler, uv).rgb;
-  float3 bloom = root.coarse.sample(vkr_bloom_sampler, uv).rgb;
-  root.destination.write(float4(hdr + bloom * root.params.intensity, 1.0),
-                         pixel);
 }
 
 static_assert(sizeof(VkrBloomParams) == 32,

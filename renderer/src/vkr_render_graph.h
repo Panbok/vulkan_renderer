@@ -544,8 +544,6 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
   float32_t render_scale;   /**< Internal Scene extent / Scene output extent. */
-  /** True only for the MetalFX temporal reconstruction topology. */
-  bool8_t metalfx_enabled;
   /** True only for the Vulkan FSR 3.1 temporal reconstruction topology. */
   bool8_t fsr31_enabled;
   bool8_t editor_enabled; /**< Whether editor is enabled */

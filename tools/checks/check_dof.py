@@ -2,7 +2,7 @@
 """Validate synthetic depth-of-field snapshots.
 
 Argument: a JSON mapping `old_off`, `off`, `focus`, `resize`, `odd`, `taa`,
-`spatial`, and `metalfx` to snapshot run directories. `old_off` is the retained pre-DoF capture of
+and `spatial` to snapshot run directories. `old_off` is the retained pre-DoF capture of
 local.dof.off. The checker derives card interiors from its HDR colors rather
 than from fixed screen rectangles.
 """
@@ -123,8 +123,8 @@ def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit(__doc__.strip())
     runs = {name: Path(path) for name, path in json.loads(Path(sys.argv[1]).read_text()).items()}
-    if set(runs) != {"old_off", "off", "focus", "resize", "odd", "taa", "spatial", "metalfx"}:
-        raise AssertionError("mapping must contain old_off, off, focus, resize, odd, taa, spatial, and metalfx")
+    if set(runs) != {"old_off", "off", "focus", "resize", "odd", "taa", "spatial"}:
+        raise AssertionError("mapping must contain old_off, off, focus, resize, odd, taa, and spatial")
 
     for channel in ("final_color", "hdr_pre_bloom"):
         before_item, before_path = capture(runs["old_off"], channel)
@@ -206,8 +206,7 @@ def main() -> None:
         raise AssertionError("temporal DoF case did not enable TAA")
     if len(captures(runs["taa"], "dof_color")) != 2 or len(captures(runs["taa"], "dof_coc")) != 2:
         raise AssertionError("temporal DoF case requires two color and CoC frames")
-    for name, upscaler, scale in (("spatial", "spatial", 0.666666667),
-                                  ("metalfx", "metalfx_temporal", 0.8)):
+    for name, upscaler, scale in (("spatial", "spatial", 0.666666667),):
         config = report(runs[name])["effective_config"]
         if config["upscaler"] != upscaler or abs(config["render_scale"] - scale) > 1e-5:
             raise AssertionError(f"{name} DoF reconstruction mode was not realized")

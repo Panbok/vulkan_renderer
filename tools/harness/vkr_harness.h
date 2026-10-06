@@ -299,10 +299,11 @@ typedef struct VkrHarnessRendererConfig {
    */
   uint32_t render_width;
   uint32_t render_height;
-  /** Reconstruction implementation: `spatial`, `metalfx_temporal`, or `fsr31`.
-   */
+  /** Reconstruction implementation: `spatial` or `fsr31`. Stored summaries
+   * may name the retired `metalfx_temporal`. */
   char upscaler[24];
-  /** Completion-driven MetalFX resolution policy. FSR 3.1 uses fixed scale. */
+  /** Completion-driven resolution policy of the tiled pipeline's spatial
+   * upscale. FSR 3.1 uses fixed scale. */
   bool8_t dynamic_resolution;
   float32_t dynamic_resolution_min_scale;
   float32_t dynamic_resolution_max_scale;

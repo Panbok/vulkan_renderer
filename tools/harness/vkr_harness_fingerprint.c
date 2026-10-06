@@ -136,22 +136,18 @@ bool8_t vkr_harness_shadow_evsm_enabled(void) {
 bool8_t
 vkr_harness_post_transform_cache_enabled(const VkrHarnessCase *case_manifest) {
   /* Mirrors vkr_renderer_prepare_frame_data: the renderer filters
-     display-linear pixels when FXAA (omitted by MetalFX temporal frames and
-     by the tiled pipeline) or sharpening runs, unless the explicit "0"
-     spelling selects the analytic reference path. */
+     display-linear pixels when FXAA (omitted by the tiled pipeline) or
+     sharpening runs, unless the explicit "0" spelling selects the analytic
+     reference path. */
   const VkrHarnessRendererConfig *renderer = &case_manifest->renderer;
   const char *post_cache = getenv("VKR_POST_TRANSFORM_CACHE");
   if ((post_cache && string_equals(post_cache, "0")) ||
       !string_equals(renderer->render_mode, "default")) {
     return false_v;
   }
-  const bool8_t metalfx_frames =
-      string_equals(renderer->upscaler, "metalfx_temporal") &&
-      !vkr_harness_camera_is_orthographic(case_manifest->camera.mode);
   const bool8_t tiled =
       renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
-  return (renderer->fxaa_enabled && !metalfx_frames && !tiled) ||
-         renderer->image_sharpness > 0.0f;
+  return (renderer->fxaa_enabled && !tiled) || renderer->image_sharpness > 0.0f;
 }
 
 vkr_internal bool8_t vkr_harness_renderer_fields(

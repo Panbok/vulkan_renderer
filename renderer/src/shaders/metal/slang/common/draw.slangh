@@ -254,20 +254,3 @@ struct VkrMetalPacketVertexOutput
     nointerpolation uint visible_row_index : TEXCOORD5;
     nointerpolation uint instance_index : TEXCOORD10;
 };
-
-struct VkrMetalPacketTemporalVertexOutput
-{
-    float4 position : SV_Position;
-    float2 texcoord : TEXCOORD0;
-    float4 color : COLOR0;
-    nointerpolation uint object_id : TEXCOORD1;
-    float3 world_position : TEXCOORD2;
-    float3 world_normal : TEXCOORD3;
-    float4 world_tangent : TEXCOORD4;
-    nointerpolation uint visible_row_index : TEXCOORD5;
-    nointerpolation uint instance_index : TEXCOORD10;
-    float3 object_position : TEXCOORD6;
-    nointerpolation uint temporal_index : TEXCOORD7;
-    nointerpolation uint temporal_generation : TEXCOORD8;
-    nointerpolation uint temporal_flags : TEXCOORD9;
-};

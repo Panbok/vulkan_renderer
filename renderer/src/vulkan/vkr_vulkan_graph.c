@@ -57,14 +57,6 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
       log_error("FSR 3.1 graph work requires an FSR-enabled Vulkan device");
       return false_v;
     }
-    if (kind == VKR_RG_EXECUTOR_METALFX_STAGE ||
-        kind == VKR_RG_EXECUTOR_METALFX_TEMPORAL ||
-        kind == VKR_RG_EXECUTOR_METALFX_STABILIZE) {
-      log_error(
-          "Vulkan graph pass '%.*s' requires unsupported MetalFX executor '%s'",
-          (int)pass->desc.name.length, pass->desc.name.str, executor_name);
-      return false_v;
-    }
     /* Vulkan implements only the desktop pipeline (ADR-087). */
     if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE ||
         kind == VKR_RG_EXECUTOR_TILED_ATMOSPHERE ||

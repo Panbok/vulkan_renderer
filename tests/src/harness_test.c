@@ -457,8 +457,9 @@ vkr_internal void test_harness_case_parser(void) {
   MemCopy(scale_value + strlen("\"render_scale\":"), "1.1", 3u);
   assert(!vkr_harness_case_parse(invalid_scale, strlen(invalid_scale), "memory",
                                  &parsed, &backend_error));
-  const char *metalfx_case =
-      "{\"schema_version\":1,\"id\":\"smoke.test.metalfx\","
+  /* The tiled pipeline's dynamic resolution steps its spatial upscale. */
+  const char *dynamic_case =
+      "{\"schema_version\":1,\"id\":\"smoke.test.dynamic\","
       "\"suite\":\"smoke\",\"scene\":\"assets/scenes/default.scene.json\","
       "\"seed\":1,\"resolution\":[64,64],\"boot\":\"full\","
       "\"target\":\"offscreen\",\"present\":\"none\","
@@ -466,33 +467,42 @@ vkr_internal void test_harness_case_parser(void) {
       "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,"
       "\"skybox\":true,\"taa_enabled\":true,\"backend\":\"metal\","
       "\"shadow_preset\":\"default\",\"shadow_cascades\":4,"
-      "\"render_scale\":0.72,\"upscaler\":\"metalfx_temporal\","
+      "\"render_scale\":0.72,\"upscaler\":\"spatial\","
       "\"dynamic_resolution\":true,"
       "\"dynamic_resolution_min_scale\":0.55,"
       "\"dynamic_resolution_max_scale\":0.85,"
       "\"dynamic_resolution_target_frame_ms\":13.333333},"
       "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],"
       "\"yaw\":10,\"pitch\":-5}}";
-  assert(vkr_harness_case_parse(metalfx_case, strlen(metalfx_case), "memory",
+  assert(vkr_harness_case_parse(dynamic_case, strlen(dynamic_case), "memory",
                                 &parsed, &backend_error));
-  assert(strcmp(parsed.renderer.upscaler, "metalfx_temporal") == 0);
+  assert(strcmp(parsed.renderer.upscaler, "spatial") == 0);
+  assert(parsed.renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED);
   assert(parsed.renderer.dynamic_resolution);
   assert(parsed.renderer.render_scale == 0.7f);
   assert(parsed.renderer.dynamic_resolution_min_scale == 0.55f);
   assert(parsed.renderer.dynamic_resolution_max_scale == 0.85f);
-  assert(!parsed.renderer.fxaa_enabled);
-  char editor_metalfx[2048];
-  snprintf(editor_metalfx, sizeof(editor_metalfx), "%s", metalfx_case);
-  editor_value = strstr(editor_metalfx, "\"editor\":false");
+  /* MetalFX temporal upscaling is retired; a case naming it is invalid. */
+  const char *spatial = strstr(dynamic_case, "\"spatial\"");
+  assert(spatial);
+  char retired_upscaler[2048];
+  snprintf(retired_upscaler, sizeof(retired_upscaler),
+           "%.*s\"metalfx_temporal\"%s", (int)(spatial - dynamic_case),
+           dynamic_case, spatial + sizeof("\"spatial\"") - 1u);
+  assert(!vkr_harness_case_parse(retired_upscaler, strlen(retired_upscaler),
+                                 "memory", &parsed, &backend_error));
+  char editor_dynamic[2048];
+  snprintf(editor_dynamic, sizeof(editor_dynamic), "%s", dynamic_case);
+  editor_value = strstr(editor_dynamic, "\"editor\":false");
   assert(editor_value);
   MemCopy(editor_value, "\"editor\":true ", 14u);
-  assert(vkr_harness_case_parse(editor_metalfx, strlen(editor_metalfx),
+  assert(vkr_harness_case_parse(editor_dynamic, strlen(editor_dynamic),
                                 "memory", &parsed, &backend_error));
   assert(parsed.renderer.editor && parsed.renderer.dynamic_resolution &&
-         strcmp(parsed.renderer.upscaler, "metalfx_temporal") == 0);
+         strcmp(parsed.renderer.upscaler, "spatial") == 0);
   char invalid_dynamic_bounds[2048];
   snprintf(invalid_dynamic_bounds, sizeof(invalid_dynamic_bounds), "%s",
-           metalfx_case);
+           dynamic_case);
   char *dynamic_min =
       strstr(invalid_dynamic_bounds, "\"dynamic_resolution_min_scale\":0.55");
   assert(dynamic_min);
@@ -864,14 +874,14 @@ vkr_internal void test_harness_fingerprints(void) {
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   case_manifest.renderer.render_scale = 1.0f;
-  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "metalfx_temporal");
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "fsr31");
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
-  char metalfx_workload[VKR_HARNESS_DIGEST_MAX];
-  snprintf(metalfx_workload, sizeof(metalfx_workload), "%s", workload);
+  char upscaler_workload[VKR_HARNESS_DIGEST_MAX];
+  snprintf(upscaler_workload, sizeof(upscaler_workload), "%s", workload);
   case_manifest.renderer.dynamic_resolution = true_v;
   case_manifest.renderer.dynamic_resolution_min_scale = 0.55f;
   case_manifest.renderer.dynamic_resolution_max_scale = 0.85f;
@@ -880,7 +890,7 @@ vkr_internal void test_harness_fingerprints(void) {
                                        &case_manifest, &profile,
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
-  assert(strcmp(metalfx_workload, workload) != 0);
+  assert(strcmp(upscaler_workload, workload) != 0);
   VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "spatial");
   case_manifest.renderer.dynamic_resolution = false_v;
   case_manifest.renderer.dynamic_resolution_min_scale = 0.0f;
@@ -1080,15 +1090,8 @@ vkr_internal void test_harness_fingerprints(void) {
   SET_POST_CACHE("1");
   POST_FINGERPRINT(workload);
   assert(strcmp(cached_workload, workload) == 0);
-  // MetalFX temporal frames omit FXAA, so an unsharpened case keeps the
-  // analytic identity under the default spelling.
-  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "metalfx_temporal");
-  POST_FINGERPRINT(cached_workload);
-  SET_POST_CACHE("0");
-  POST_FINGERPRINT(workload);
-  assert(strcmp(cached_workload, workload) == 0);
-  VKR_STRING_COPY_LITERAL(case_manifest.renderer.upscaler, "spatial");
-  // The tiled pipeline draws no FXAA either (ADR-087).
+  // The tiled pipeline draws no FXAA (ADR-087), so an unsharpened case keeps
+  // the analytic identity under the default spelling.
   case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_TILED;
   SET_POST_CACHE("");
   POST_FINGERPRINT(cached_workload);
@@ -1557,8 +1560,7 @@ vkr_internal void test_harness_report_shape(void) {
   report.case_manifest.renderer.render_scale = 0.5f;
   report.case_manifest.renderer.render_width = 320u;
   report.case_manifest.renderer.render_height = 180u;
-  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.upscaler,
-                          "metalfx_temporal");
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.upscaler, "fsr31");
   report.case_manifest.renderer.dynamic_resolution = true_v;
   report.case_manifest.renderer.dynamic_resolution_min_scale = 0.5f;
   report.case_manifest.renderer.dynamic_resolution_max_scale = 0.8f;
@@ -1641,7 +1643,7 @@ vkr_internal void test_harness_report_shape(void) {
   assert(strstr(json, "\"ibl_probe_limit\":1") != NULL);
   assert(strstr(json, "\"render_scale\":0.5") != NULL);
   assert(strstr(json, "\"render_resolution\":[320,180]") != NULL);
-  assert(strstr(json, "\"upscaler\":\"metalfx_temporal\"") != NULL);
+  assert(strstr(json, "\"upscaler\":\"fsr31\"") != NULL);
   assert(strstr(json, "\"dynamic_resolution\":true") != NULL);
   assert(strstr(json, "\"content_scale\":1.25") != NULL);
   assert(strstr(json, "\"scale_range\":[") != NULL);
@@ -2054,6 +2056,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.render_scale = 0.5f;
   report.case_manifest.renderer.render_width = 320u;
   report.case_manifest.renderer.render_height = 180u;
+  /* Stored summaries may name the retired MetalFX upscaler; reading keeps the
+     string. */
   VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.upscaler,
                           "metalfx_temporal");
   report.case_manifest.renderer.dynamic_resolution = true_v;
