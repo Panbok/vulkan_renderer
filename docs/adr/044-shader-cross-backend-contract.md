@@ -67,7 +67,12 @@ have no bilateral gate yet.
     `Transmission` and `SoftFilter` template parameters of
     `vkr_metal_packet_local_shadow_sample`; their defaults keep every
     desktop caller unchanged. The harder tiled shadow edge is a class
-    difference the owner accepted (ADR-087, decision 11).
+    difference the owner accepted (ADR-087, decision 11). Tiled rectangle
+    lights skip rows below a contribution bound through the
+    `ContributionCutoff` parameter of
+    `vkr_metal_packet_layered_rectangle_lights`; on every Metal caller a
+    receiver that no row faces skips the LTC table reads, which changes no
+    result.
 - **Metal evidence.** Pipeline creation validates the new layouts, and the
   Bistro street view renders on both pipeline classes
   (`tiled_bistro_capture`, `tiled_bistro_capture_desktop`), as do the café

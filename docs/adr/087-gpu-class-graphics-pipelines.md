@@ -181,6 +181,14 @@ pipeline rather than a backend mechanism.
     frame does not use still costs `Tiled.Opaque` its registers with no light
     in range, on Bistro 0.65 ms median for the light loop, 1.2 ms for the
     former shadow filter and 1.1 ms for the rectangle-light path.
+    Rectangle lights have no range, so the tiled shader skips a rectangle
+    whose contribution bound falls below the cut-off deferred shading
+    applies to punctual lights (`VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF`): its
+    solid angle, bounded through the distance to its nearest point, times
+    its luminance and the receiver's largest diffuse and GGX specular
+    response (`vkr_metal_packet_layered_rectangle_lights<true, true>` in
+    [`lighting.metalh`](../../renderer/src/shaders/metal/msl/world/lighting.metalh)).
+    A glossy receiver keeps distant rectangles it can reflect.
 
 ### First tiled pipeline measurement
 
@@ -346,6 +354,14 @@ and 10.58 / 17.93 ms with the single tap
 (`sha256:e3e07a7e5c988853ce73208989513c38bf744de81492ea0555db430542595ca8`).
 One rectangle light keeps `Tiled.Opaque` near 15.5 ms median and 29 to
 31 ms p95 in both builds: its path and registers dominate that variant.
+The rectangle cut-off of decision 11, measured the same day against the
+build before it with one run each, lowers it from 15.38 / 28.83 ms
+(`sha256:77ab400225bad60adebaeae243b17853c4473c01160589af5500b6106f97beac`)
+to 13.79 / 26.28 ms
+(`sha256:f6168aec396c8a082c6abada566cd249aa375bd21fb0134bb5ff71282753154a`);
+the case without a rectangle light measured 10.90 / 18.24 and
+10.82 / 18.10 ms. Night and daylight captures with the rectangle light
+changed by at most 4 and 8 of 255, in 6 and 24 pixels above 2.
 
 On a temporary night copy of `tiled_bistro_baked_dynamic_capture` looking at
 a hedge under a shadowed spot, the single tap changes 0.7% of pixels by more

@@ -212,10 +212,36 @@ VkrSheenLtcSample vkr_metal_packet_prepare_sheen_rectangle(
   return sample;
 }
 
+// An upper bound of a rectangle row's contribution at a receiver, in the
+// units of vkr_local_light_contribution before its compression. The row's
+// solid angle is bounded through the distance to its nearest point; `lobe`
+// bounds the receiver's diffuse plus specular response per unit radiance and
+// solid angle.
+static float vkr_metal_rectangle_contribution_bound(
+    const device VkrGpuRectangleLightRow &row, float3 world_position,
+    float lobe, float pre_exposure) {
+  float half_width = row.center_half_width.w;
+  float half_height = row.right_half_height.w;
+  float nearest = max(length(row.center_half_width.xyz - world_position) -
+                          sqrt(half_width * half_width +
+                               half_height * half_height),
+                      0.0f);
+  float solid_angle =
+      min(4.0f * half_width * half_height / max(nearest * nearest, 1e-8f),
+          2.0f * M_PI_F);
+  float luminance = dot(row.color.rgb, float3(0.2126f, 0.7152f, 0.0722f)) *
+                    row.up_radiance.w;
+  return luminance * solid_angle * lobe * pre_exposure;
+}
+
 // Rectangle rows are one-sided, unshadowed radiance emitters. The texture
 // samples and receiver frame are shared by all eight rows, so lookup cost is
-// independent of rectangle count. The cosine integral already contains /pi.
-template <bool EvaluateDiffuse>
+// independent of rectangle count, and a receiver no row faces skips them.
+// The cosine integral already contains /pi. With ContributionCutoff a row
+// whose contribution bound falls below VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF is
+// skipped, as deferred shading skips punctual lights: rectangles have no
+// range, so without it every receiver they face evaluates them.
+template <bool EvaluateDiffuse, bool ContributionCutoff = false>
 VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
     float3 normal, float3 view, float3 diffuse_albedo, float metallic,
@@ -227,9 +253,38 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
   if (frame->ltc->light_count == 0u)
     return result;
 
+  const constant VkrMetalPacketLtc &ltc = *frame->ltc;
+  uint light_count = min(ltc.light_count, 8u);
+  bool anisotropic = energy.anisotropy_strength > 0.0f;
+  // Diffuse response is at most 1/pi; the GGX specular response at most its
+  // peak D / (4 n.v), doubled for multiple-scattering compensation. An
+  // anisotropic lobe can be narrower than roughness implies, so it keeps
+  // every row.
+  float alpha = max(roughness * roughness, 1e-4f);
+  float lobe = (1.0f + 0.5f / (alpha * alpha * max(energy.no_v, 1e-3f))) /
+               M_PI_F;
+  uint active_rows = 0u;
+  for (uint index = 0u; index < light_count; ++index) {
+    const device VkrGpuRectangleLightRow &row = ltc.lights[index];
+    float3 center = row.center_half_width.xyz;
+    float3 right = row.right_half_height.xyz * row.center_half_width.w;
+    float3 up = row.up_radiance.xyz * row.right_half_height.w;
+    // `-cross(right, up)` is the frozen emitting front. The validated axes are
+    // orthonormal, so no per-light normalization is needed.
+    if (dot(world_position - center, -cross(right, up)) <= 0.0f)
+      continue;
+    if (ContributionCutoff && !anisotropic &&
+        vkr_metal_rectangle_contribution_bound(row, world_position, lobe,
+                                               frame->pre_exposure) <
+            VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+      continue;
+    active_rows |= 1u << index;
+  }
+  if (active_rows == 0u)
+    return result;
+
   constexpr sampler ltc_sampler(coord::normalized, address::clamp_to_edge,
                                 filter::linear, mip_filter::none);
-  const constant VkrMetalPacketLtc &ltc = *frame->ltc;
   float2 uv = vkr_ltc_lut_uv(energy.no_v, roughness);
   VkrLtcSample sample = {
       ltc.matrix_texture.sample(ltc_sampler, uv, level(0.0f)),
@@ -239,7 +294,6 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
   float3 specular_amplitude = vkr_ltc_specular_amplitude(
       sample, energy.no_v, f0, f90, energy.specular_scale);
     VkrAnisotropyLtc anisotropic_sample = {};
-    bool anisotropic = energy.anisotropy_strength > 0.0f;
     if (anisotropic) {
         VkrAnisotropyLookup lookup = vkr_anisotropy_lookup(
             normal, energy.anisotropy_tangent, view, roughness,
@@ -276,16 +330,13 @@ VkrMetalPacketDirectResult vkr_metal_packet_layered_rectangle_lights(
   }
   float3 coat_sum = 0.0f;
   float3 sheen_sum = 0.0f;
-  uint light_count = min(ltc.light_count, 8u);
-  for (uint index = 0u; index < light_count; ++index) {
+  while (active_rows != 0u) {
+    uint index = ctz(active_rows);
+    active_rows &= active_rows - 1u;
     const device VkrGpuRectangleLightRow &row = ltc.lights[index];
     float3 center = row.center_half_width.xyz;
     float3 right = row.right_half_height.xyz * row.center_half_width.w;
     float3 up = row.up_radiance.xyz * row.right_half_height.w;
-    // `-cross(right, up)` is the frozen emitting front. The validated axes are
-    // orthonormal, so no per-light normalization is needed.
-    if (dot(world_position - center, -cross(right, up)) <= 0.0f)
-      continue;
     VkrLtcRectangle local_rectangle = vkr_ltc_project_rectangle_in_frame(
         center - world_position, right, up, ltc_frame);
     float3 specular = anisotropic

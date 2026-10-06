@@ -326,7 +326,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     }
     if (Lighting == VKR_METAL_TILED_LIGHTING_ALL) {
       VkrMetalPacketDirectResult rectangles =
-          vkr_metal_packet_layered_rectangle_lights<true>(
+          vkr_metal_packet_layered_rectangle_lights<true, true>(
               frame, input.world_position, normal, view, base, metallic,
               roughness, f0, energy, false, no_coat, false, no_sheen,
               coat_unused, sheen_unused);
