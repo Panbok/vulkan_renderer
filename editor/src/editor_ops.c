@@ -122,8 +122,8 @@ struct VkrEditorOps {
      time its two-click Reject stops waiting for the confirming click. */
   char changes_filter[VKR_EDITOR_AUTHOR_CAPACITY];
   float64_t reject_all_armed_until;
-  /* Claimed boxes of the scene generation `claims_generation`; a scene
-     reload drops them. */
+  /* Claimed boxes of the scene generation `claims_generation`, kept in the
+     scene's claims file (ops_claims_save). */
   VkrEditorClaim claims[VKR_EDITOR_CLAIM_MAX];
   uint32_t claim_count;
   uint32_t next_claim_id;
@@ -668,6 +668,196 @@ static void ops_object_box(const VkrScene *scene, VkrEntityId entity,
   }
   const SceneTransform *transform = ops_transform(scene, entity);
   *lo = *hi = transform ? mat4_position(transform->world) : vec3_zero();
+}
+
+/* `name` under the user's private agent directory (editor_agent.c), made
+   when missing: captures and claims live there. */
+static bool8_t ops_private_directory(const char *name, char *out,
+                                     uint64_t capacity) {
+  char directory[256];
+  if (!vkr_editor_agent_directory(directory, sizeof(directory))) {
+    return false_v;
+  }
+  snprintf(out, capacity, "%s/%s", directory, name);
+#if !defined(_WIN32)
+  (void)mkdir(out, 0700);
+#else
+  const FilePath path = {
+      .path = string8_create_from_cstr((const uint8_t *)out, strlen(out)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  (void)file_create_directory(&path);
+#endif
+  return true_v;
+}
+
+/* Claims outlive an editor restart: each scene's claims live in a file of
+   the private agent directory named by a hash of the scene's path, which
+   the file repeats so a collision never loads another scene's claims. Two
+   editors on one scene share the file; the last writer wins. */
+static bool8_t ops_claims_path(const VkrSampleUiFrame *frame, char *out,
+                               uint64_t capacity) {
+  char directory[300];
+  if (!frame->scene_path.length ||
+      !ops_private_directory("claims", directory, sizeof(directory))) {
+    return false_v;
+  }
+  uint64_t hash = 1469598103934665603ull;
+  for (uint64_t i = 0; i < frame->scene_path.length; ++i) {
+    hash = (hash ^ frame->scene_path.str[i]) * 1099511628211ull;
+  }
+  snprintf(out, capacity, "%s/%016llx.json", directory,
+           (unsigned long long)hash);
+  return true_v;
+}
+
+/* Writes the scene's claims, replacing the file at once; no claims removes
+   it. */
+static void ops_claims_save(const VkrEditorOps *ops,
+                            const VkrSampleUiFrame *frame) {
+  char path[512];
+  if (!ops_claims_path(frame, path, sizeof(path))) {
+    return;
+  }
+  const FilePath target = {
+      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (!ops->claim_count) {
+    (void)file_remove(&target);
+    return;
+  }
+  Arena *arena = arena_create(KB(64), KB(64));
+  if (!arena) {
+    return;
+  }
+  VkrBakeryJson *root = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, root, "version", vkr_bakery_json_int(arena, 1));
+  vkr_bakery_json_set(arena, root, "scene",
+                      vkr_bakery_json_string(arena, frame->scene_path));
+  vkr_bakery_json_set(arena, root, "next",
+                      vkr_bakery_json_int(arena, ops->next_claim_id));
+  VkrBakeryJson *claims = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0; i < ops->claim_count; ++i) {
+    const VkrEditorClaim *claim = &ops->claims[i];
+    VkrBakeryJson *entry = vkr_bakery_json_object(arena);
+    VkrBakeryJson *lo = vkr_bakery_json_array(arena);
+    VkrBakeryJson *hi = vkr_bakery_json_array(arena);
+    const float32_t *lo_values = &claim->min.x;
+    const float32_t *hi_values = &claim->max.x;
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      vkr_bakery_json_append(lo, vkr_bakery_json_float(arena, lo_values[axis]));
+      vkr_bakery_json_append(hi, vkr_bakery_json_float(arena, hi_values[axis]));
+    }
+    vkr_bakery_json_set(arena, entry, "id",
+                        vkr_bakery_json_int(arena, claim->id));
+    vkr_bakery_json_set(arena, entry, "author",
+                        vkr_bakery_json_cstr(arena, claim->author));
+    vkr_bakery_json_set(arena, entry, "name",
+                        vkr_bakery_json_cstr(arena, claim->name));
+    vkr_bakery_json_set(arena, entry, "container",
+                        vkr_bakery_json_int(arena, claim->container));
+    vkr_bakery_json_set(arena, entry, "min", lo);
+    vkr_bakery_json_set(arena, entry, "max", hi);
+    vkr_bakery_json_append(claims, entry);
+  }
+  vkr_bakery_json_set(arena, root, "claims", claims);
+  String8 text = {0};
+  char temporary[520];
+  snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+  bool8_t written = false_v;
+  FILE *file =
+      vkr_bakery_json_write(arena, root, VKR_BAKERY_JSON_COMPACT, &text)
+          ? file_fopen(temporary, "wb")
+          : NULL;
+  if (file) {
+    written = fwrite(text.str, 1u, text.length, file) == text.length;
+    written = fclose(file) == 0 && written;
+  }
+  const FilePath staged = {.path = string8_create_from_cstr(
+                               (const uint8_t *)temporary, strlen(temporary)),
+                           .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (!written || file_rename(&staged, &target, true_v) != FILE_ERROR_NONE) {
+    log_warn("Agent claims: could not write %s", path);
+    (void)file_remove(&staged);
+  }
+  arena_destroy(arena);
+}
+
+/* Reads the claims of the scene that just loaded, replacing any others. */
+static void ops_claims_load(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
+  ops->claim_count = 0u;
+  char path[512];
+  FILE *file = ops_claims_path(frame, path, sizeof(path))
+                   ? file_fopen(path, "rb")
+                   : NULL;
+  if (!file) {
+    return;
+  }
+  Arena *arena = arena_create(KB(256), KB(64));
+  uint8_t *text =
+      arena ? arena_alloc(arena, KB(64), ARENA_MEMORY_TAG_STRING) : NULL;
+  const size_t length = text ? fread(text, 1u, KB(64), file) : 0u;
+  fclose(file);
+  const VkrBakeryJson *root =
+      length && length < KB(64)
+          ? vkr_bakery_json_parse(arena, text, length, 16u, NULL)
+          : NULL;
+  String8 scene = {0};
+  int64_t version = 0;
+  int64_t next = 0;
+  const VkrBakeryJson *claims =
+      root ? vkr_bakery_json_get(root, "claims") : NULL;
+  if (!root || !vkr_bakery_json_get_int(root, "version", &version) ||
+      version != 1 || !vkr_bakery_json_get_string(root, "scene", &scene) ||
+      !string8_equals(&scene, &frame->scene_path) || !claims ||
+      claims->type != VKR_BAKERY_JSON_ARRAY) {
+    if (arena) {
+      arena_destroy(arena);
+    }
+    return;
+  }
+  (void)vkr_bakery_json_get_int(root, "next", &next);
+  for (const VkrBakeryJson *entry = claims->first;
+       entry && ops->claim_count < VKR_EDITOR_CLAIM_MAX; entry = entry->next) {
+    int64_t id = 0;
+    int64_t container = 0;
+    String8 author = {0};
+    String8 name = {0};
+    const VkrBakeryJson *lo = vkr_bakery_json_get(entry, "min");
+    const VkrBakeryJson *hi = vkr_bakery_json_get(entry, "max");
+    if (!vkr_bakery_json_get_int(entry, "id", &id) || id <= 0 ||
+        !vkr_bakery_json_get_int(entry, "container", &container) ||
+        !vkr_bakery_json_get_string(entry, "author", &author) ||
+        !author.length || !lo || !hi || lo->type != VKR_BAKERY_JSON_ARRAY ||
+        hi->type != VKR_BAKERY_JSON_ARRAY || lo->count != 3u ||
+        hi->count != 3u) {
+      continue;
+    }
+    (void)vkr_bakery_json_get_string(entry, "name", &name);
+    VkrEditorClaim claim = {.id = (uint32_t)id,
+                            .container = (uint16_t)container};
+    snprintf(claim.author, sizeof(claim.author), "%.*s",
+             (int)Min(author.length, (uint64_t)sizeof(claim.author) - 1u),
+             (const char *)author.str);
+    snprintf(claim.name, sizeof(claim.name), "%.*s",
+             (int)Min(name.length, (uint64_t)sizeof(claim.name) - 1u),
+             (const char *)name.str);
+    float32_t *lo_values = &claim.min.x;
+    float32_t *hi_values = &claim.max.x;
+    const VkrBakeryJson *a = lo->first;
+    const VkrBakeryJson *b = hi->first;
+    for (uint32_t axis = 0; axis < 3u; ++axis, a = a->next, b = b->next) {
+      lo_values[axis] =
+          (float32_t)(a->type == VKR_BAKERY_JSON_INT ? (float64_t)a->integer
+                                                     : a->number);
+      hi_values[axis] =
+          (float32_t)(b->type == VKR_BAKERY_JSON_INT ? (float64_t)b->integer
+                                                     : b->number);
+    }
+    ops->claims[ops->claim_count++] = claim;
+    ops->next_claim_id = Max(ops->next_claim_id, claim.id);
+  }
+  ops->next_claim_id = Max(ops->next_claim_id, (uint32_t)Max(next, 0));
+  arena_destroy(arena);
 }
 
 /* Appends a feed event and returns it for the caller to fill. */
@@ -5341,20 +5531,9 @@ static void ops_image_mark(uint8_t *pixels, uint32_t width, uint32_t height,
 static bool8_t ops_capture_png(OpsContext *ctx, OpsPendingCapture *pending,
                                const uint8_t *pixels, uint32_t width,
                                uint32_t height) {
-  char directory[256];
   bool8_t written = false_v;
-  if (vkr_editor_agent_directory(directory, sizeof(directory))) {
-    char captures[300];
-    snprintf(captures, sizeof(captures), "%s/captures", directory);
-#if !defined(_WIN32)
-    (void)mkdir(captures, 0700);
-#else
-    const FilePath captures_path = {
-        .path = string8_create_from_cstr((const uint8_t *)captures,
-                                         strlen(captures)),
-        .type = FILE_PATH_TYPE_ABSOLUTE};
-    (void)file_create_directory(&captures_path);
-#endif
+  char captures[300];
+  if (ops_private_directory("captures", captures, sizeof(captures))) {
     const int pid = (int)vkr_platform_get_process_id();
     const uint32_t serial = ++ctx->ops->capture_serial;
     snprintf(pending->path, sizeof(pending->path), "%s/capture-%d-%u.png",
@@ -7619,9 +7798,6 @@ static VkrEditorOpStatus ops_run_claims_set(OpsContext *ctx) {
                VKR_EDITOR_CLAIM_MAX);
       return VKR_EDITOR_OP_DONE;
     }
-    if (!ops->claim_count) {
-      ops->claims_generation = ctx->frame->scene_generation;
-    }
     claim = &ops->claims[ops->claim_count++];
     *claim = (VkrEditorClaim){.id = ++ops->next_claim_id};
     snprintf(claim->author, sizeof(claim->author), "%s", ctx->call->author);
@@ -7641,6 +7817,7 @@ static VkrEditorOpStatus ops_run_claims_set(OpsContext *ctx) {
   event->max = hi;
   event->bounded = true_v;
   ctx->call->result = ops_claim_json(ctx, claim);
+  ops_claims_save(ops, ctx->frame);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -7696,6 +7873,7 @@ static VkrEditorOpStatus ops_run_claims_release(OpsContext *ctx) {
     ops_fail(ctx, OPS_NOT_FOUND, "No claim %u", id);
     return VKR_EDITOR_OP_DONE;
   }
+  ops_claims_save(ops, ctx->frame);
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "released", released);
   return VKR_EDITOR_OP_DONE;
@@ -8694,10 +8872,12 @@ bool8_t vkr_editor_ops_quick(String8 op) {
 }
 
 void vkr_editor_ops_update(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
-  /* Claims name boxes of the scene they were made in. */
-  if (ops && ops->claim_count &&
+  /* Claims name boxes of the scene they were made in: a newly loaded scene
+     brings its own from the claims file. */
+  if (ops && frame->scene && !frame->scene_loading &&
       ops->claims_generation != frame->scene_generation) {
-    ops->claim_count = 0u;
+    ops->claims_generation = frame->scene_generation;
+    ops_claims_load(ops, frame);
   }
   for (uint32_t i = 0; ops && i < ops->change_count;) {
     const VkrSceneEditState *journal =
@@ -9330,6 +9510,7 @@ static void changes_claim_card(VkrEditorUi *editor, VkrEditorOps *ops,
                      string8_lit("Free this region for every agent, as when "
                                  "its agent stopped"))) {
     ops_claim_release_at(ops, claim_index);
+    ops_claims_save(ops, frame);
   }
   (void)vkr_ui_panel_end(ui);
 }

@@ -208,9 +208,13 @@ a claim fails with `VKR-AGENT-0010`, naming the claim and its author:
 An object's box is its solids' (brushes and blockout pieces, from their
 faces, `vkr_editor_entity_world_box`), else its meshes', else its position,
 so a mesh whose model still loads counts as a point; terrains count only by
-their edits. The designer's edits ignore claims. At most 64 claims live in
-memory with the operation table and leave with a scene reload;
-`claims.release` frees one or all of the caller's, the editor's own
+their edits. The designer's edits ignore claims. At most 64 claims live
+with the operation table. They also persist per scene in the private agent
+directory (`claims/<hash of the scene path>.json`, which repeats the path),
+written in full after every change and read when a scene finishes loading,
+so they outlive an editor restart; two editors on one scene share the file
+and the last writer wins. `claims.release` frees one or all of the
+caller's, the editor's own
 requests may free any, and the Changes window lists claims after the
 changes, filtered with them, with Focus and Release claim. The Scene draws
 each claim as a blue box through the line overlay.
@@ -910,9 +914,9 @@ unrestricted undo, while each agent undoes only its own batches.
 
 Claims judge objects by boxes, so a slanted or hollow object near a claim
 can be refused although no face enters it, and a write that only moves
-something into a claim costs a revert of the whole batch. Claims and the
-feed live in memory: an editor restart loses them, and a crashed agent's
-claims stay until the designer releases them.
+something into a claim costs a revert of the whole batch. The feed lives in
+memory, so an editor restart loses it, and a crashed agent's
+claims stay, across restarts too, until the designer releases them.
 
 ## Alternatives considered
 
@@ -1137,3 +1141,8 @@ material then).
   40 m of terrain, it showed 12 % sampled, and the longest frames stayed
   between 12.7 and 16.6 ms (median 8.7 ms). `level.lint` over a room
   reported a 1 m crate's top as out of reach.
+- Windows, 2026-10-06 (headless Release editor on Bistro): claims of two
+  agents made before the editor quit came back after a restart on the same
+  scene with their ids 1 and 2; the restored claim still refused the other
+  agent's brush with `VKR-AGENT-0010`; the next claim took id 3; releasing
+  every claim removed the scene's claims file.
